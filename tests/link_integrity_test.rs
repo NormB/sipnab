@@ -731,7 +731,10 @@ fn wiki_intra_docs_links_resolve() {
     // within one link and the constant records THIS gate's count rather than
     // the approximation's. Generated site mirrors are not in the figure: the
     // extractor reads docs/.
-    const EXPECTED_WIKI_LINKS: usize = 693;
+    // 693 -> 694 by the `runtime_stats` row in the docs/mcp-tools.md index,
+    // linking its own section as every other row does. One row, one same-page
+    // link, one page; the site mirror is generated and this gate reads docs/.
+    const EXPECTED_WIKI_LINKS: usize = 694;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe 6d in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

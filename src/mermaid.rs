@@ -81,6 +81,93 @@ pub fn participant_id(index: usize) -> String {
     format!("p{index}")
 }
 
+/// A Mermaid `sequenceDiagram` for one dialog's messages.
+///
+/// # Why this lives here
+///
+/// The TUI has had a Mermaid exporter for some time and `render_ladder` — the
+/// MCP tool named for a ladder — returned tables. An agent asking for a ladder
+/// got a call report. This module is ungated, so the same generator serves the
+/// agent surface, and the escaping rule is the one every target already shares.
+///
+/// # Bounds
+///
+/// The vendored renderer refuses a diagram over `maxEdges: 500` or
+/// `maxTextSize: 50000` outright rather than degrading, so the output is
+/// capped and says so **inside the diagram** — a truncated ladder that does not
+/// admit it is a wrong picture rather than a partial one. Truncation lands on
+/// a message boundary, never mid-exchange.
+///
+/// # Arguments
+///
+/// * `rows` — `(from, to, label, is_request)` per message, in capture order.
+/// * `max_messages` — how many arrows to draw before truncating.
+///
+/// # Returns
+///
+/// Mermaid source. Participants are positional ids with the address carried
+/// only in the label, so no capture-derived text reaches an identifier.
+#[must_use]
+pub fn sequence_diagram(rows: &[(String, String, String, bool)], max_messages: usize) -> String {
+    let mut participants: Vec<&str> = Vec::new();
+    for (from, to, _, _) in rows {
+        for endpoint in [from.as_str(), to.as_str()] {
+            if !participants.contains(&endpoint) {
+                participants.push(endpoint);
+            }
+        }
+    }
+
+    let mut out = String::from(
+        "sequenceDiagram
+    autonumber
+",
+    );
+    for (i, p) in participants.iter().enumerate() {
+        // The id is positional and the address is escaped into the label: an
+        // id cannot carry a payload, and an IPv6 address mangled into an
+        // identifier can collide with a different one.
+        out.push_str(&format!(
+            "    participant {} as {}
+",
+            participant_id(i),
+            escape_mermaid_label(p)
+        ));
+    }
+    out.push('\n');
+
+    let index = |addr: &str| {
+        participants
+            .iter()
+            .position(|p| *p == addr)
+            .map_or_else(|| "p0".to_string(), participant_id)
+    };
+
+    for (from, to, label, is_request) in rows.iter().take(max_messages) {
+        out.push_str(&format!(
+            "    {}{}{}: {}
+",
+            index(from),
+            if *is_request { "->>" } else { "-->>" },
+            index(to),
+            escape_mermaid_label(label)
+        ));
+    }
+
+    if rows.len() > max_messages {
+        // In sipnab's own voice, and inside the diagram so it cannot be
+        // separated from the picture it qualifies.
+        out.push_str(&format!(
+            "    Note over {},{}: sipnab: {} of {} messages shown (message cap)\n",
+            participant_id(0),
+            participant_id(participants.len().saturating_sub(1)),
+            max_messages,
+            rows.len()
+        ));
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

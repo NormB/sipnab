@@ -880,7 +880,7 @@ per SIP message and grows with the call):
       "type": "report",
       "dialog": 0,
       "vendor": "sipnab",
-      "product": "sipnab 0.5.155 (passive observer; not a recording system)",
+      "product": "sipnab 0.5.156 (passive observer; not a recording system)",
       "schema": "sipnab-dialog-diagnosis/1",
       "mediatype": "application/json",
       "encoding": "json",
@@ -1544,6 +1544,120 @@ The MCP `get_capture_report` tool answers the same question. So does
 `sipnab --report`, which predates both servers.
 
 ---
+
+### GET /v1/runtime
+
+What sipnab is doing, and what it is costing the host it runs on.
+
+sipnab exports 32 Prometheus metrics, and the listener that serves them is off
+by default — so on most deployments those numbers exist inside the process and
+nothing can read them. This endpoint answers the same questions without one,
+and adds two things that did not exist anywhere: sipnab's own resource use, and
+its share of the machine.
+
+**curl:**
+
+```bash
+curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" http://127.0.0.1:8080/v1/runtime | jq .
+```
+
+**Response:**
+
+```json
+{
+  "schema_version": 1,
+  "process": {
+    "rss_bytes": 34471936,
+    "virtual_bytes": 1276837888,
+    "threads": 2,
+    "open_fds": 12,
+    "cpu_seconds": 0.01
+  },
+  "host": {
+    "memory_total_bytes": 131881889792,
+    "memory_available_bytes": 121499242496,
+    "cpus": 14,
+    "basis": "host"
+  },
+  "impact": {
+    "memory_pct": 0.026,
+    "significant": false,
+    "note": "sipnab holds 0.0% of the host memory total; the threshold for load-bearing is 10.0%"
+  },
+  "interfaces": [],
+  "dialogs": { "used": 2, "capacity": 100000, "pct": 0.002 },
+  "streams": { "used": 2, "capacity": 10000, "pct": 0.02 },
+  "capture_packets_total": 852,
+  "capture_queue_depth_packets": 0,
+  "capture_backpressure_blocks_total": 0,
+  "uptime_seconds": 41
+}
+```
+
+**An absent field means "not readable here", never zero.** Every value under
+`process` and `host` is optional because the sources are platform-specific. A
+field reported as `0` on a platform where it was never read is worse than one
+that says it does not know.
+
+**`host.basis` names the denominator.** Inside a container the real limits are
+the control group's limits rather than the machine's, so the basis reads
+`cgroup` and the totals
+come from `memory.max`. A percentage computed against the wrong total is worse
+than no percentage, because a reader believes it.
+
+**`impact.significant` is a verdict, not arithmetic.** A capture that is itself
+the reason a proxy started dropping calls is the worst failure this tool can
+have, and it used to be invisible. `note` carries the threshold, so you can disagree with the setting rather
+than with the finding.
+
+**`interfaces` reads the interface, not the capture handle.** sipnab's own
+counters — `ps_recv`, `ps_drop`, `ps_ifdrop` — describe what reached sipnab.
+These describe what reached the NIC. The pair is what separates the two
+remedies. `ps_ifdrop` climbing alongside `rx_missed_errors` is hardware that
+cannot keep up, and the fix is ring size, coalescing or RSS. `ps_drop` climbing
+alone is sipnab's read loop falling behind, and the fix is `--buffer` or a
+tighter filter. The handle counter on its own cannot tell you which.
+
+**Occupancy, not just counts.** `dialogs.used` alone is a number. Beside
+`capacity` it is a decision. An operator who cannot see occupancy learns about
+eviction by noticing that calls have gone missing.
+
+**Rates are opt-in, because measuring one costs a wait.** Every counter above
+is cumulative, and "1,284,301 messages" answers a different question from "312
+messages/second, of which 190 are OPTIONS". Add `?sample_seconds=N` to read the
+counters twice across an `N`-second window:
+
+```bash
+curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" \
+  "http://127.0.0.1:8080/v1/runtime?sample_seconds=5" | jq .rates
+```
+
+```json
+{
+  "window_seconds": 5,
+  "packets_per_second": 412.6,
+  "calls_per_second": 3.4,
+  "calls_per_second_by_method": [
+    ["OPTIONS", 2.8],
+    ["INVITE", 0.6]
+  ]
+}
+```
+
+The breakdown is the point: a message rate that does not separate INVITE from
+OPTIONS describes whatever the deployment does most, which in the field is the
+keepalive plane rather than the calls.
+
+`window_seconds` is the window sipnab **applied**, not the one you asked for.
+The request waits out the window before answering, so sipnab narrows a window
+longer than this route can answer inside its request timeout, and
+`window_seconds` tells you that happened. sipnab rejects `sample_seconds=0`
+rather than answering it: an empty window returns zero deltas, and zero deltas
+is exactly what a healthy quiet capture looks like.
+
+The MCP tool `runtime_stats` returns the same envelope from the same
+derivation — including the same refusal and the same clamp — so the two
+surfaces cannot disagree about one process.
 
 ### GET /v1/stats
 

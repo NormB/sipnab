@@ -981,6 +981,15 @@ const PROBES: &[(&str, &str)] = &[
 /// it grows past the probes.
 const NOT_PROBED: &[(&str, &str)] = &[
     (
+        "runtime_stats",
+        "reports OCCUPANCY against the caps rather than an answer drawn from \
+         the capture, so \"how much of the capture did you read\" does not \
+         apply: `dialogs.used` beside `dialogs.capacity` is a live gauge of \
+         what the store holds now, and it is already bounded by construction. \
+         A completeness stamp here would describe a question the tool does not \
+         ask",
+    ),
+    (
         "render_ladder",
         "answers with a drawn document, not an envelope; the prose it carries \
          instead is driven by RENDERED above",

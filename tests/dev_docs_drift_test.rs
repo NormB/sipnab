@@ -648,7 +648,15 @@ fn linked_code_targets_exist() {
     // `ci_success_gates_every_job`, and `src/privilege.rs` /
     // `src/process_isolation.rs` beside the `unsafe` count. Seven added links
     // against two the rewrite removed.
-    const EXPECTED_CODE_LINKS: usize = 418;
+    // 418 -> 420: two, both in `docs/internals/invariants.md` section 7, where
+    // the response-ceiling invariant gained the TIME ceiling beside the byte
+    // one -- `src/output/runtime.rs` for `MAX_SAMPLE_SECONDS` and the shared
+    // `resolve_sample_seconds()`, and `src/output/api.rs` for the const
+    // assertions that fail the build if the REST window stops fitting inside
+    // `REQUEST_TIMEOUT`. Attributed by counting every page under
+    // `docs/internals/` against HEAD: invariants.md moved 52 -> 54 and no
+    // other page changed.
+    const EXPECTED_CODE_LINKS: usize = 420;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \

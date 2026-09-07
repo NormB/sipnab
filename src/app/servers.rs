@@ -409,6 +409,11 @@ pub fn start_servers(
             // one capture and see one rotation.
             capture: Some(Arc::clone(&capture_state)),
             source_exhausted: Some(Arc::clone(&exhausted)),
+            // The interfaces sipnab was asked to capture on, so
+            // `GET /v1/runtime` can read each one's own counters — which are a
+            // different population from the capture handle's `ps_ifdrop`.
+            capture_interfaces: cli.capture_args.device.clone().into_iter().collect(),
+            started_at: std::time::Instant::now(),
             persistence_gate: Arc::clone(&persistence_gate),
             tfps: selection.tfps.clone(),
         };
@@ -466,6 +471,9 @@ pub fn start_servers(
                 // rather than built here, so a rotation one door performs is a
                 // rotation the other sees.
                 .with_capture_state(Arc::clone(&capture_state))
+                // The interfaces REST also names, so `runtime_stats` and
+                // `GET /v1/runtime` read the same NICs.
+                .with_capture_interfaces(cli.capture_args.device.clone().into_iter().collect())
                 .with_protected_inputs(protected_inputs.clone())
                 .with_max_concurrent(cli.mcp_args.mcp_max_concurrent as usize)
                 // Clap has already refused any spelling but `core` and

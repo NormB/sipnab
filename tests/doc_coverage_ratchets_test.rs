@@ -246,7 +246,24 @@ fn undocumented_numeric_ceilings_do_not_increase() {
 /// and `snapped_frames` because the schema never said they were not allowed.
 /// The check is one-directional: a response missing a documented field fails, a
 /// response carrying an undocumented one does not.
-const PERMISSIVE_SCHEMA_COMPONENTS: usize = 19;
+/// 19 -> 23 by the `GET /v1/runtime` envelope (OBS1-OBS7): `Runtime` and its
+/// nested `RuntimeProcess`, `RuntimeHost`, `RuntimeImpact`, `RuntimeInterface`
+/// and `RuntimeOccupancy`.
+///
+/// These describe a RESPONSE and derive no `Deserialize`, so
+/// `serde(deny_unknown_fields)` — a deserialization attribute — would be inert
+/// on them and this ratchet counts it textually. Raising the number rather than
+/// adding an attribute that does nothing keeps the count honest about what it
+/// measures.
+///
+/// The exposure the comment above names is still real for them, and the
+/// mitigation is `the_dialog_summary_component_declares_exactly_what_the_projection_emits`
+/// in `tests/openapi_contract_test.rs`: it compares a component's declared
+/// property set against what the projection actually serializes, in BOTH
+/// directions, which is the check `additionalProperties` would have given.
+/// Extending that test to the runtime envelope is the way to bring this back
+/// down rather than to keep raising it.
+const PERMISSIVE_SCHEMA_COMPONENTS: usize = 23;
 
 #[test]
 fn permissive_rest_schema_components_do_not_increase() {

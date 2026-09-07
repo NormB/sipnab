@@ -145,3 +145,61 @@ fn the_wired_metrics_stay_documented() {
         );
     }
 }
+
+/// Prose that counts the metrics says the number the exposition emits.
+///
+/// The concrete regression, on 0.5.156: one backlog line read "sipnab exports
+/// 42 Prometheus metrics". Nothing held it, so it was copied into a changelog
+/// entry, two operator pages, a tool description, a module doc and a test
+/// comment — six surfaces asserting a figure that was never measured. The
+/// formatter emits 32 families. A number is the most dangerous thing to
+/// repeat, because it looks measured even when it was invented.
+///
+/// Every surface that states the count is read here, and the count comes from
+/// the same scan `every_emitted_metric_is_documented` compares against — so
+/// adding a metric moves the gate rather than silently invalidating prose.
+#[test]
+fn prose_metric_counts_match_the_exposition() {
+    let emitted = emitted_families().len();
+    assert!(
+        emitted >= 20,
+        "only {emitted} families found — the scan stopped matching, so this \
+         gate is comparing prose against nothing"
+    );
+
+    let claim = regex::Regex::new(r"(\d+) Prometheus metrics").expect("regex");
+    let surfaces: [(&str, &str); 6] = [
+        ("CHANGELOG.md", include_str!("../CHANGELOG.md")),
+        ("docs/rest-api.md", include_str!("../docs/rest-api.md")),
+        ("docs/mcp-tools.md", include_str!("../docs/mcp-tools.md")),
+        (
+            "docs/design/backlog.md",
+            include_str!("../docs/design/backlog.md"),
+        ),
+        (
+            "src/output/runtime.rs",
+            include_str!("../src/output/runtime.rs"),
+        ),
+        ("src/mcp/server.rs", include_str!("../src/mcp/server.rs")),
+    ];
+
+    let mut checked = 0usize;
+    for (path, text) in surfaces {
+        for cap in claim.captures_iter(text) {
+            checked += 1;
+            let claimed: usize = cap[1].parse().unwrap_or(0);
+            assert_eq!(
+                claimed, emitted,
+                "{path} says {claimed} Prometheus metrics; the exposition \
+                 emits {emitted}. Move the prose in the same commit as the \
+                 metric."
+            );
+        }
+    }
+    assert!(
+        checked >= 4,
+        "only {checked} count(s) found across the surfaces that state one — \
+         either the sentence was reworded everywhere (drop this gate) or the \
+         pattern stopped matching and it is now checking nothing"
+    );
+}

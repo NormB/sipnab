@@ -361,8 +361,24 @@ the absence of the verb.
 response and checked by
 [`mcp_open_capture_test`](../../tests/mcp_open_capture_test.rs).
 
+**A wait is a ceiling too.** `capture_health` and `runtime_stats` measure a
+rate by reading the counters twice across a window the caller names, so the
+caller's own request blocks for exactly that long.
+[`MAX_SAMPLE_SECONDS`](../../src/output/runtime.rs) caps that window at 30
+seconds — long enough to smooth a bursty INVITE rate, short enough to stay
+inside the deadline an MCP client gives one call. `resolve_sample_seconds()`
+holds the rule for both surfaces, so a window MCP rejects is never one REST
+accepts. REST narrows it again with `MAX_REST_SAMPLE_SECONDS`, derived by
+subtracting a margin from `REQUEST_TIMEOUT` rather than written beside it: a
+window as long as the timeout gets canceled mid-sleep, and the caller reads a
+timeout where they asked for a rate. Three `const` assertions in
+[`api.rs`](../../src/output/api.rs) fail the **build** if that derivation ever
+collapses, widens past the shared cap, or reaches zero.
+
 **Fails as.** An agent that quietly truncates or floods, and an operator who
-cannot tell which.
+cannot tell which. For the time ceiling: one tool call that outlives its
+client, which the client reports as a dead server rather than as a long
+measurement.
 
 ## 8. No lock across `.await`
 

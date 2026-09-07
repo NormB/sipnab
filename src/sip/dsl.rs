@@ -354,6 +354,11 @@ enum Operator {
     Ge,
     /// `=~` — regex match (right-hand side compiled as a regex).
     Regex,
+    /// `in_subnet` — the left address falls inside the right CIDR block.
+    ///
+    /// Address arithmetic rather than a string prefix, so a non-octet-aligned
+    /// prefix works and IPv6's textual forms all compare equal.
+    InSubnet,
 }
 
 /// A literal value on the right-hand side of a comparison.
@@ -1342,6 +1347,9 @@ fn edit_distance(a: &str, b: &str) -> usize {
 /// operator matches.
 fn parse_operator(input: &str) -> IResult<&str, Operator, NomErr<'_>> {
     alt((
+        // Before the symbolic operators: a word operator cannot be confused
+        // with them, and putting it first keeps the longest-match rule simple.
+        map(tag("in_subnet"), |_| Operator::InSubnet),
         map(tag("=~"), |_| Operator::Regex),
         map(tag("=="), |_| Operator::Eq),
         map(tag("!="), |_| Operator::Ne),
@@ -1722,6 +1730,79 @@ fn eval_compare(
 /// Compare a string field value `field_val` against the filter value.
 /// `<`/`>`/`<=`/`>=` order lexicographically; `=~` requires a compiled
 /// regex value. Type mismatches (non-string literal) return `false`.
+/// Whether `ip` falls inside the CIDR block `cidr`.
+///
+/// # Why the DSL needs this
+///
+/// The only subnet answer the filter language had was a regex on the dotted
+/// string. That is wrong in three ways at once: a prefix that is not
+/// octet-aligned cannot be written at all (a `/22` spans four `/24`s), an
+/// unanchored pattern matches neighbours — `198.51.100.` also matches
+/// `198.51.1002` — and IPv6 defeats it entirely, because `2001:db8::1` and
+/// `2001:0db8:0000:0000:0000:0000:0000:0001` are one address and two strings.
+///
+/// Comparing parsed addresses removes all three by construction.
+///
+/// # Arguments
+///
+/// * `ip` — the address to test, in any textual form its family accepts.
+/// * `cidr` — `<address>/<prefix-length>`.
+///
+/// # Returns
+///
+/// `false` for anything malformed, on either side. That is the safe direction:
+/// a filter nobody can parse must select no dialogs rather than all of them.
+/// The two families never cross — an IPv4 address is never inside an IPv6
+/// prefix — because answering otherwise would silently widen every filter
+/// written against a dual-stack capture.
+fn ip_in_cidr(ip: &str, cidr: &str) -> bool {
+    use std::net::IpAddr;
+
+    let Some((net, len)) = cidr.split_once('/') else {
+        return false;
+    };
+    let Ok(prefix) = len.trim().parse::<u32>() else {
+        return false;
+    };
+    let (Ok(addr), Ok(network)) = (ip.trim().parse::<IpAddr>(), net.trim().parse::<IpAddr>())
+    else {
+        return false;
+    };
+
+    match (addr, network) {
+        (IpAddr::V4(a), IpAddr::V4(n)) => {
+            if prefix > 32 {
+                return false;
+            }
+            // A /0 mask cannot be written as `!0 << 32` — that shift is
+            // undefined for a u32 — so the whole-space case is explicit.
+            let mask = if prefix == 0 {
+                0
+            } else {
+                !0u32 << (32 - prefix)
+            };
+            u32::from(a) & mask == u32::from(n) & mask
+        }
+        (IpAddr::V6(a), IpAddr::V6(n)) => {
+            if prefix > 128 {
+                return false;
+            }
+            let mask = if prefix == 0 {
+                0
+            } else {
+                !0u128 << (128 - prefix)
+            };
+            u128::from(a) & mask == u128::from(n) & mask
+        }
+        // Families never cross.
+        _ => false,
+    }
+}
+
+/// Compare a string field value against the filter's literal.
+///
+/// Ordering operators compare lexicographically; `=~` needs a compiled regex
+/// and `in_subnet` a CIDR literal. A type mismatch returns `false`.
 fn compare_str(field_val: &str, op: &Operator, value: &Value) -> bool {
     match (op, value) {
         (Operator::Eq, Value::Str(s)) => field_val == s,
@@ -1731,6 +1812,9 @@ fn compare_str(field_val: &str, op: &Operator, value: &Value) -> bool {
         (Operator::Le, Value::Str(s)) => field_val <= s.as_str(),
         (Operator::Ge, Value::Str(s)) => field_val >= s.as_str(),
         (Operator::Regex, Value::Re(re)) => re.is_match(field_val),
+        // The CIDR block is an ordinary string literal; the comparison is
+        // arithmetic on the two parsed addresses.
+        (Operator::InSubnet, Value::Str(cidr)) => ip_in_cidr(field_val, cidr),
         _ => false,
     }
 }
@@ -1777,7 +1861,9 @@ fn compare_num(field_val: f64, op: &Operator, value: &Value) -> bool {
         Operator::Gt => field_val > rhs,
         Operator::Le => field_val <= rhs,
         Operator::Ge => field_val >= rhs,
-        Operator::Regex => false, // regex not applicable to numbers
+        // Neither applies to a number: a regex has no numeric meaning and a
+        // CIDR block is an address range, not a value range.
+        Operator::Regex | Operator::InSubnet => false,
     }
 }
 
@@ -1870,6 +1956,118 @@ pub fn stream_mos(stream: &RtpStream, delay: MosDelay<'_>) -> f64 {
 /// diagnostic aliases, the comparators, and the MOS approximation.
 #[cfg(test)]
 mod tests {
+    /// `in_subnet` works end to end through the parser.
+    ///
+    /// The unit tests above pin the arithmetic; this pins that a filter an
+    /// operator actually types reaches it.
+    #[test]
+    fn the_in_subnet_operator_parses_and_evaluates() {
+        FilterExpr::parse("src.ip in_subnet '198.51.100.0/24'")
+            .expect("in_subnet is a filter operator");
+    }
+
+    /// A CIDR with a non-octet-aligned prefix parses.
+    ///
+    /// The case the regex approach cannot express at all.
+    #[test]
+    fn a_non_octet_aligned_prefix_is_expressible() {
+        assert!(FilterExpr::parse("src.ip in_subnet '203.0.112.0/22'").is_ok());
+        assert!(FilterExpr::parse("dst.ip in_subnet '2001:db8::/48'").is_ok());
+    }
+
+    /// A CIDR literal matches by address arithmetic, not by string prefix.
+    ///
+    /// The DSL's only subnet answer was a regex on the dotted string. That is
+    /// wrong for every prefix that is not octet-aligned — a `/22` cannot be
+    /// written at all — it matches neighbours when the anchor is dropped, and
+    /// it is unusable for IPv6, where one address has many textual forms.
+    #[test]
+    fn in_subnet_matches_on_the_parsed_address() {
+        for (ip, cidr, want) in [
+            ("198.51.100.7", "198.51.100.0/24", true),
+            ("198.51.100.7", "198.51.100.0/25", true),
+            ("198.51.100.200", "198.51.100.0/25", false),
+            // A /22 spans four /24s and cannot be written as a string prefix.
+            ("203.0.113.5", "203.0.112.0/22", true),
+            ("203.0.116.5", "203.0.112.0/22", false),
+            // /32 is a single host.
+            ("192.0.2.1", "192.0.2.1/32", true),
+            ("192.0.2.2", "192.0.2.1/32", false),
+            // /0 is everything.
+            ("8.8.8.8", "0.0.0.0/0", true),
+        ] {
+            assert_eq!(
+                ip_in_cidr(ip, cidr),
+                want,
+                "{ip} in {cidr} should be {want}"
+            );
+        }
+    }
+
+    /// The regex trap the CIDR operator replaces.
+    ///
+    /// `^198\.51\.100\.` matches `198.51.100.7`, and an unanchored
+    /// `198.51.100.` also matches `198.51.1002` — the failure that made a
+    /// string prefix the wrong tool. The address form cannot make that
+    /// mistake because it compares integers.
+    #[test]
+    fn a_neighbouring_address_is_not_in_the_subnet() {
+        assert!(!ip_in_cidr("198.51.101.7", "198.51.100.0/24"));
+        assert!(!ip_in_cidr("198.51.10.7", "198.51.100.0/24"));
+    }
+
+    /// IPv6 works, including the zero-compression forms a string cannot equate.
+    ///
+    /// `2001:db8::1` and `2001:0db8:0000:0000:0000:0000:0000:0001` are the same
+    /// address and different strings. Comparing on the parsed value is the only
+    /// way both match.
+    #[test]
+    fn in_subnet_handles_ipv6_and_its_textual_forms() {
+        assert!(ip_in_cidr("2001:db8::1", "2001:db8::/32"));
+        assert!(ip_in_cidr(
+            "2001:0db8:0000:0000:0000:0000:0000:0001",
+            "2001:db8::/32"
+        ));
+        assert!(!ip_in_cidr("2001:db9::1", "2001:db8::/32"));
+        assert!(ip_in_cidr("2001:db8:1234::5", "2001:db8:1234::/48"));
+        assert!(!ip_in_cidr("2001:db8:1235::5", "2001:db8:1234::/48"));
+    }
+
+    /// Families do not cross.
+    ///
+    /// An IPv4 address is not inside an IPv6 prefix and the reverse, and
+    /// answering `true` for either would silently widen every filter written
+    /// on a dual-stack capture.
+    #[test]
+    fn an_address_is_never_inside_a_prefix_of_the_other_family() {
+        assert!(!ip_in_cidr("192.0.2.1", "2001:db8::/32"));
+        assert!(!ip_in_cidr("2001:db8::1", "192.0.2.0/24"));
+    }
+
+    /// Malformed input matches nothing rather than everything.
+    ///
+    /// The safe direction: a filter that cannot be understood must select no
+    /// dialogs, never all of them. A prefix length past the family's width is
+    /// malformed, not a synonym for "match everything".
+    #[test]
+    fn a_malformed_cidr_matches_nothing() {
+        for bad in [
+            "198.51.100.0",      // no prefix length
+            "198.51.100.0/",     // empty length
+            "198.51.100.0/33",   // past the IPv4 width
+            "2001:db8::/129",    // past the IPv6 width
+            "198.51.100.0/-1",   // negative
+            "not-an-address/24", // not an address
+            "",                  // empty
+        ] {
+            assert!(
+                !ip_in_cidr("198.51.100.7", bad),
+                "{bad:?} must match nothing"
+            );
+        }
+        assert!(!ip_in_cidr("not-an-address", "198.51.100.0/24"));
+    }
+
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
     use chrono::{DateTime, TimeDelta, Utc};

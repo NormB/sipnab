@@ -216,6 +216,10 @@ pub struct ApiState {
     /// flip together. A copy would let one door report a finished file as
     /// still running.
     pub source_exhausted: Option<Arc<std::sync::atomic::AtomicBool>>,
+    /// Interfaces sipnab was asked to capture on, for per-interface counters.
+    pub capture_interfaces: Vec<String>,
+    /// When this server started, for the uptime the runtime answer reports.
+    pub started_at: std::time::Instant,
     /// Whether content may still reach disk on this run.
     ///
     /// Not an `Option`, unlike the two flags above. Those describe a subsystem
@@ -321,6 +325,18 @@ impl RateLimiter {
 
 // ── Query parameter types ───────────────────────────────────────────
 
+/// Query parameters for the `GET /v1/runtime` endpoint.
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct RuntimeParams {
+    /// Seconds to sample rates across. Omitted, the route answers with the
+    /// cumulative counters and no `rates` object. Zero is refused; a window
+    /// longer than this route can answer inside its request timeout is clamped
+    /// to one it can, and the window actually applied comes back as
+    /// `rates.window_seconds` rather than being assumed.
+    pub sample_seconds: Option<u32>,
+}
+
 /// Query parameters for the `GET /v1/dialogs` endpoint.
 #[derive(Debug, Deserialize, utoipa::IntoParams)]
 #[into_params(parameter_in = Query)]
@@ -356,6 +372,47 @@ pub struct StreamListParams {
 const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 /// Max request body accepted (defense in depth; the API is GET-only today).
 const MAX_REQUEST_BODY_BYTES: usize = 1024 * 1024; // 1 MiB
+
+/// Longest rate window this route will wait out before answering.
+///
+/// `REQUEST_TIMEOUT` cancels the handler, so a window equal to it is killed
+/// mid-sleep and the caller gets a timeout instead of a rate. The margin is
+/// subtracted from the timeout rather than written beside it: lowering
+/// `REQUEST_TIMEOUT` has to lower this too, and two numbers maintained by hand
+/// drift until one of them is wrong.
+///
+/// The MCP cap ([`crate::output::runtime::MAX_SAMPLE_SECONDS`]) applies first;
+/// this only narrows it, so no window either surface accepts is one the other
+/// silently truncates.
+const MAX_REST_SAMPLE_SECONDS: u32 = {
+    let budget = REQUEST_TIMEOUT.as_secs().saturating_sub(5) as u32;
+    if budget < crate::output::runtime::MAX_SAMPLE_SECONDS {
+        budget
+    } else {
+        crate::output::runtime::MAX_SAMPLE_SECONDS
+    }
+};
+
+// Asserted at compile time rather than in a test, because both are statements
+// about constants and there is no reason to wait for a test run to learn that
+// the derivation collapsed. Lower `REQUEST_TIMEOUT` past the margin and the
+// build stops here, naming which half broke.
+const _: () = assert!(
+    (MAX_REST_SAMPLE_SECONDS as u64) < REQUEST_TIMEOUT.as_secs(),
+    "the REST rate window must fit inside the request timeout, or the handler \
+     is canceled mid-sleep and the caller gets a timeout where they asked for \
+     a rate"
+);
+const _: () = assert!(
+    MAX_REST_SAMPLE_SECONDS >= 1,
+    "the REST rate window collapsed to zero, which refuses every window a \
+     caller can ask for"
+);
+const _: () = assert!(
+    MAX_REST_SAMPLE_SECONDS <= crate::output::runtime::MAX_SAMPLE_SECONDS,
+    "REST may narrow the shared cap, never widen it: a window MCP refuses must \
+     not be one REST accepts"
+);
 
 /// Middleware: fail a request exceeding `REQUEST_TIMEOUT` with 408 rather than
 /// letting it hold a connection slot indefinitely.
@@ -415,6 +472,7 @@ pub fn build_router(state: ApiState) -> Router {
         .route("/v1/streams/{id}", get(get_stream))
         .route("/v1/report", get(get_capture_report))
         .route("/v1/stats", get(get_stats))
+        .route("/v1/runtime", get(get_runtime))
         .route("/metrics", get(get_metrics))
         .with_state(state)
         // Request hardening on every route.
@@ -1821,6 +1879,96 @@ async fn get_capture_report(
     Ok(Json(parsed))
 }
 
+/// Resolve a REST caller's rate window: the shared rule, narrowed to what this
+/// transport can wait out.
+///
+/// Extracted rather than written inline because the narrowing is the half no
+/// HTTP test can afford to prove — driving it over the wire means waiting out
+/// the cap — and an unexercised clamp is one somebody deletes.
+///
+/// # Arguments
+///
+/// * `requested` — the `sample_seconds` the caller sent.
+///
+/// # Errors
+///
+/// Propagates the shared refusal for a zero window.
+fn rest_sample_seconds(requested: u32) -> Result<u32, &'static str> {
+    Ok(crate::output::runtime::resolve_sample_seconds(requested)?.min(MAX_REST_SAMPLE_SECONDS))
+}
+
+/// `GET /v1/runtime` — what sipnab is doing and what it is costing the host.
+///
+/// 200 with the [`schema::Runtime`] envelope: process resources, the host's
+/// totals and which basis they came from, sipnab's share of them, per-interface
+/// counters, store occupancy against the caps, and the capture-path counters.
+#[utoipa::path(
+    get,
+    path = "/v1/runtime",
+    tag = "runtime",
+    description = "Runtime statistics: sipnab's own resource use, the host's totals and which basis they came from, its share of them, per-interface counters read from the interface rather than from the capture handle, and store occupancy against the caps that bound it.\n\nEvery process and host field is optional: absent means \"not readable on this platform\", which is a different fact from zero and must not be rendered as one.\n\nRates are opt-in via `sample_seconds`, because measuring one costs a wait of that length. The reply carries the window that was actually applied, not the one requested.",
+    params(RuntimeParams),
+    responses(
+        (status = 200, description = "Runtime statistics.", body = schema::Runtime),
+        (status = 400, description = "A sample window of zero, or one that is not a number.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 401, description = "No bearer credential, or one this server does not accept.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 503, description = "Over the per-source-IP rate limit of 100 requests per second.", body = schema::ProblemJson, content_type = "application/problem+json"),
+    )
+)]
+async fn get_runtime(
+    State(state): State<ApiState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Query(params): Query<RuntimeParams>,
+) -> Result<impl IntoResponse, Problem> {
+    guard(&state, &headers, addr.ip())?;
+
+    // Rates cost a wait, so they are opt-in — every counter below is
+    // cumulative without them, and a cumulative total answers a different
+    // question from a rate. The refusal and the clamp come from the same
+    // function MCP calls, so a window one surface takes is not one the other
+    // rejects.
+    let sampled = match params.sample_seconds {
+        Some(n) => {
+            let applied = rest_sample_seconds(n)
+                .map_err(|why| Problem::detailed(StatusCode::BAD_REQUEST, why.to_string()))?;
+            // Sampled without holding a store lock across the wait: a reader
+            // held for thirty seconds is a stall in the capture path, which is
+            // the exact harm this route exists to report.
+            let before = {
+                let ds = state.dialog_store.read();
+                crate::output::runtime::RateSample::read(&ds)
+            };
+            tokio::time::sleep(std::time::Duration::from_secs(u64::from(applied))).await;
+            let after = {
+                let ds = state.dialog_store.read();
+                crate::output::runtime::RateSample::read(&ds)
+            };
+            Some(crate::output::runtime::rates(&before, &after))
+        }
+        None => None,
+    };
+
+    let ds = state.dialog_store.read();
+    let ss = state.stream_store.read();
+    // One collector, shared with the MCP tool, so the two surfaces cannot
+    // report different numbers for the same process.
+    let mut stats = crate::output::runtime::collect(
+        &ds,
+        &ss,
+        None,
+        &state.capture_interfaces,
+        state.started_at.elapsed().as_secs(),
+        crate::output::runtime::SIGNIFICANT_MEMORY_PCT,
+    );
+    stats.rates = sampled;
+    drop(ss);
+    drop(ds);
+    Ok(Json(serde_json::to_value(stats).unwrap_or_else(
+        |e| json!({"error": format!("serialization failed: {e}")}),
+    )))
+}
+
 /// `GET /v1/stats` — aggregate statistics across dialogs and streams.
 ///
 /// # Arguments
@@ -1901,12 +2049,12 @@ async fn get_stats(
     // Diagnosis counts
     let mut failed_count = 0usize;
     let mut completed_count = 0usize;
-    let mut cancelled_count = 0usize;
+    let mut canceled_count = 0usize;
     for d in ds.iter() {
         match d.state() {
             DialogState::Failed => failed_count += 1,
             DialogState::Completed => completed_count += 1,
-            DialogState::Canceled => cancelled_count += 1,
+            DialogState::Canceled => canceled_count += 1,
             _ => {}
         }
     }
@@ -2004,7 +2152,7 @@ async fn get_stats(
             // dashboards read it by name. The US-English sweep renamed the
             // Rust identifiers around it; the key a consumer matches on
             // does not move for a spelling preference.
-            "canceled": cancelled_count,
+            "canceled": canceled_count,
         },
         "streams": {
             "total": total_streams,
@@ -2387,6 +2535,10 @@ pub mod schema {
         pub associated_dialog: Option<String>,
         /// Estimated MOS. Read `mos_grounded` before comparing it.
         pub mos: f64,
+        /// The E-model R-factor the MOS was converted from, same delay basis
+        /// and same grounding caveat. An SLA is written in R, and R is the
+        /// linear scale.
+        pub r_factor: f64,
         /// Whether `mos` is a measurement or a placeholder standing in for a
         /// codec with no published impairment value. `?mos_below=` admits only
         /// grounded scores.
@@ -2421,6 +2573,115 @@ pub mod schema {
         /// How many dialogs in the filtered set it opened.
         #[schema(example = 98)]
         pub count: usize,
+    }
+
+    /// sipnab's own process, from `/proc/self`.
+    ///
+    /// Every field is optional: absent means "not readable on this platform",
+    /// which is a different fact from zero and must not be rendered as one.
+    #[derive(Debug, Clone, ToSchema)]
+    pub struct RuntimeProcess {
+        /// Resident set size, bytes.
+        pub rss_bytes: Option<u64>,
+        /// Virtual size, bytes.
+        pub virtual_bytes: Option<u64>,
+        /// OS threads.
+        pub threads: Option<u64>,
+        /// Open file descriptors.
+        pub open_fds: Option<u64>,
+        /// CPU seconds, user plus system.
+        pub cpu_seconds: Option<f64>,
+    }
+
+    /// The host's totals, or the cgroup's limits inside a container.
+    #[derive(Debug, Clone, ToSchema)]
+    pub struct RuntimeHost {
+        /// Total memory, bytes.
+        pub memory_total_bytes: Option<u64>,
+        /// Memory available without swapping, bytes.
+        pub memory_available_bytes: Option<u64>,
+        /// Logical CPUs.
+        pub cpus: Option<u64>,
+        /// Which denominator the figures came from: `host` or `cgroup`.
+        ///
+        /// Named rather than assumed. A percentage against the machine's total
+        /// is wrong by a large factor inside a container with a small limit.
+        #[schema(example = "host")]
+        pub basis: String,
+    }
+
+    /// sipnab's share of the host, and whether that share is load-bearing.
+    #[derive(Debug, Clone, ToSchema)]
+    pub struct RuntimeImpact {
+        /// Resident set as a percentage of the host total.
+        pub memory_pct: Option<f64>,
+        /// Whether sipnab is a load-bearing consumer right now.
+        pub significant: Option<bool>,
+        /// Why, including the threshold and the basis.
+        pub note: Option<String>,
+    }
+
+    /// What an interface reports about itself, as distinct from what sipnab's
+    /// capture handle saw.
+    #[derive(Debug, Clone, ToSchema)]
+    pub struct RuntimeInterface {
+        /// The interface name.
+        pub name: String,
+        /// Link state.
+        pub operstate: Option<String>,
+        /// Negotiated speed, Mbit/s. Absent on a virtual interface.
+        pub speed_mbps: Option<u64>,
+        /// MTU.
+        pub mtu: Option<u64>,
+        /// Packets received by the interface.
+        pub rx_packets: Option<u64>,
+        /// Bytes received by the interface.
+        pub rx_bytes: Option<u64>,
+        /// Receive errors.
+        pub rx_errors: Option<u64>,
+        /// Packets the interface dropped.
+        pub rx_dropped: Option<u64>,
+        /// Packets missed because the NIC could not keep up.
+        pub rx_missed_errors: Option<u64>,
+    }
+
+    /// A store's occupancy against the cap it evicts at.
+    #[derive(Debug, Clone, ToSchema)]
+    pub struct RuntimeOccupancy {
+        /// What the store holds now.
+        pub used: u64,
+        /// What it can hold.
+        pub capacity: u64,
+        /// `used` over `capacity`, absent when the cap is zero.
+        pub pct: Option<f64>,
+    }
+
+    /// `GET /v1/runtime` — runtime statistics.
+    #[derive(Debug, Clone, ToSchema)]
+    pub struct Runtime {
+        /// Wire-format version of this envelope.
+        #[schema(example = 1)]
+        pub schema_version: u32,
+        /// sipnab's own process.
+        pub process: RuntimeProcess,
+        /// The host, or the cgroup when sipnab runs inside one.
+        pub host: RuntimeHost,
+        /// sipnab's share of it.
+        pub impact: RuntimeImpact,
+        /// Per-capture-interface counters.
+        pub interfaces: Vec<RuntimeInterface>,
+        /// Dialog-store occupancy.
+        pub dialogs: RuntimeOccupancy,
+        /// Stream-store occupancy.
+        pub streams: RuntimeOccupancy,
+        /// Packets the capture path has seen.
+        pub capture_packets_total: u64,
+        /// Packets waiting in the capture queue.
+        pub capture_queue_depth_packets: u64,
+        /// Times the capture path blocked on a full queue.
+        pub capture_backpressure_blocks_total: u64,
+        /// Seconds this process has been serving.
+        pub uptime_seconds: u64,
     }
 
     /// `GET /v1/dialogs` — one page of dialog summaries.
@@ -2848,6 +3109,7 @@ impl utoipa::Modify for BearerAuth {
         get_stream,
         get_capture_report,
         get_stats,
+        get_runtime,
         get_metrics,
     ),
     components(schemas(
@@ -3096,6 +3358,8 @@ mod tests {
             // would test a shape production never produces.
             capture: None,
             source_exhausted: None,
+            capture_interfaces: Vec::new(),
+            started_at: std::time::Instant::now(),
             // Fixtures build a run the command line never authorized, which
             // is the state a test has to opt OUT of rather than into: a
             // fixture defaulting to an open gate would let a route that
@@ -3125,6 +3389,8 @@ mod tests {
             // would test a shape production never produces.
             capture: None,
             source_exhausted: None,
+            capture_interfaces: Vec::new(),
+            started_at: std::time::Instant::now(),
             // Fixtures build a run the command line never authorized, which
             // is the state a test has to opt OUT of rather than into: a
             // fixture defaulting to an open gate would let a route that
@@ -3586,6 +3852,8 @@ mod tests {
             // would test a shape production never produces.
             capture: None,
             source_exhausted: None,
+            capture_interfaces: Vec::new(),
+            started_at: std::time::Instant::now(),
             // Fixtures build a run the command line never authorized, which
             // is the state a test has to opt OUT of rather than into: a
             // fixture defaulting to an open gate would let a route that
@@ -4358,6 +4626,8 @@ mod tests {
             // would test a shape production never produces.
             capture: None,
             source_exhausted: None,
+            capture_interfaces: Vec::new(),
+            started_at: std::time::Instant::now(),
             // Fixtures build a run the command line never authorized, which
             // is the state a test has to opt OUT of rather than into: a
             // fixture defaulting to an open gate would let a route that
@@ -5884,5 +6154,39 @@ mod tests {
         )
         .await;
         assert_eq!(posted, got, "POST and GET answer with one shape");
+    }
+    /// A window past what the transport can hold is narrowed, not refused.
+    ///
+    /// The caller still gets a measurement, and `rates.window_seconds` reports
+    /// the window that was applied, so the narrowing is visible rather than
+    /// silent.
+    #[test]
+    fn a_rest_window_past_the_transport_budget_is_narrowed() {
+        for requested in [crate::output::runtime::MAX_SAMPLE_SECONDS, 600, u32::MAX] {
+            assert_eq!(
+                rest_sample_seconds(requested),
+                Ok(MAX_REST_SAMPLE_SECONDS),
+                "{requested}s must come back as the window this route can \
+                 actually wait out"
+            );
+        }
+    }
+
+    /// A window the route can wait out survives intact.
+    #[test]
+    fn a_rest_window_inside_the_budget_is_returned_unchanged() {
+        for requested in [1u32, 2, MAX_REST_SAMPLE_SECONDS] {
+            assert_eq!(rest_sample_seconds(requested), Ok(requested));
+        }
+    }
+
+    /// Zero is refused here for the same reason it is refused over MCP.
+    #[test]
+    fn a_rest_window_of_zero_is_refused() {
+        assert!(
+            rest_sample_seconds(0).is_err(),
+            "zero deltas is what a quiet capture reports; an empty window must \
+             not be answered with one"
+        );
     }
 }

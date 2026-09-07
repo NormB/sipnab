@@ -1619,6 +1619,13 @@ impl StreamStore {
     }
 
     /// Total number of tracked streams.
+    /// The cap this store evicts against.
+    #[must_use]
+    pub fn max_streams(&self) -> usize {
+        self.max_streams
+    }
+
+    /// How many streams the store holds.
     pub fn len(&self) -> usize {
         self.streams.len()
     }

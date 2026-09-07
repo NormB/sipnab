@@ -609,7 +609,7 @@ sipnab -D
 `--version` lists the Cargo features compiled into the binary, e.g.
 
 ```text
-sipnab 0.5.155 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf,vcon
+sipnab 0.5.156 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf,vcon
 ```
 
 This is the fastest way to confirm a build carries the feature set

@@ -2451,9 +2451,14 @@ fn mcp_tool_table_lists_every_registered_tool() {
     // recording metadata a call carried. Read-only, so the `readOnlyHint`
     // split moves 51-of-63 to 52-of-64 and the twelve write-capable tools are
     // unchanged.
+    // 64 -> 65 by `runtime_stats` (OBS1-OBS7), which answers what sipnab is
+    // doing and what it costs the host — the 32 Prometheus metrics were
+    // unreachable over MCP, and the process and host figures did not exist at
+    // all. Read-only, so the split moves 52-of-64 to 53-of-65 and the twelve
+    // write-capable tools are unchanged.
     assert_eq!(
         registered.len(),
-        64,
+        65,
         "found only {} #[tool(name = ...)] entries under src/mcp/ — the \
          attribute shape changed and this test is no longer reading the \
          registry: {registered:?}",

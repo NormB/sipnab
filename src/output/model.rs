@@ -176,6 +176,14 @@ pub struct StreamSummary {
     pub associated_dialog: Option<String>,
     /// E-model MOS estimate (1.0–4.5).
     pub mos: f64,
+    /// The E-model R-factor the MOS was converted from, on the same delay
+    /// basis and with the same grounding caveat.
+    ///
+    /// Published because an SLA is written in R, and because R is the linear
+    /// scale: eight R-points is a real difference where the MOS gap it maps to
+    /// looks like rounding. Read [`Self::mos_grounded`] first — an ungrounded
+    /// R is exactly as meaningless as an ungrounded MOS.
+    pub r_factor: f64,
     /// Whether [`Self::mos`] rests on a real impairment value rather than the
     /// placeholder.
     ///
@@ -348,6 +356,7 @@ impl StreamSummary {
             orphaned: s.orphaned(),
             associated_dialog: s.associated_dialog.clone(),
             mos: delay.score(s),
+            r_factor: delay.r_factor(s),
             // Resolved once and destructured three ways, so the boolean, the
             // label and the note cannot describe three different groundings of
             // one stream. The vocabulary is the enum's, not this module's.

@@ -124,7 +124,7 @@ reference client of the Model Context Protocol project. Point it at sipnab and
 it lists every tool the binary registers, shows the JSON Schema of each tool's
 arguments, and calls one by hand so you can read the answer — what
 <https://sipnab.com/api-reference/> does for the [REST API](@/docs/api.md), for
-this surface instead. sipnab registers 64 MCP tools, which is more than anyone
+this surface instead. sipnab registers 65 MCP tools, which is more than anyone
 reads in a table, and the Tools tab is the fastest way to find the one you
 want. Inspector belongs to the protocol rather than to sipnab, so it also
 settles whose bug you are looking at.

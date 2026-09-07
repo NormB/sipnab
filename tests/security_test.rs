@@ -1422,6 +1422,8 @@ fn constant_time_eq_different_lengths_still_compares() {
         // null identity exist to describe.
         capture: None,
         source_exhausted: None,
+        capture_interfaces: Vec::new(),
+        started_at: std::time::Instant::now(),
         // A run the command line never authorized to persist, which is
         // what these fixtures are: bare stores behind a router. A route
         // that forgot to consult the gate cannot pass by defaulting open.
@@ -1475,6 +1477,8 @@ fn constant_time_eq_matching_strings() {
         // null identity exist to describe.
         capture: None,
         source_exhausted: None,
+        capture_interfaces: Vec::new(),
+        started_at: std::time::Instant::now(),
         // A run the command line never authorized to persist, which is
         // what these fixtures are: bare stores behind a router. A route
         // that forgot to consult the gate cannot pass by defaulting open.
@@ -1538,6 +1542,8 @@ fn constant_time_eq_different_strings_same_length() {
         // null identity exist to describe.
         capture: None,
         source_exhausted: None,
+        capture_interfaces: Vec::new(),
+        started_at: std::time::Instant::now(),
         // A run the command line never authorized to persist, which is
         // what these fixtures are: bare stores behind a router. A route
         // that forgot to consult the gate cannot pass by defaulting open.

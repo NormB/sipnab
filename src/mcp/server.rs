@@ -52,6 +52,15 @@ pub struct SipnabMcp {
     /// Optional shared alert engine for `security_findings`. When None,
     /// the tool returns an empty list rather than erroring.
     pub alert_engine: Option<Arc<RwLock<AlertEngine>>>,
+    /// Interfaces sipnab was asked to capture on, for per-interface counters.
+    ///
+    /// Read from the interface itself rather than from the capture handle:
+    /// `ps_ifdrop` rising with `rx_missed_errors` is a NIC that cannot keep up,
+    /// while `ps_drop` rising alone is sipnab's read loop falling behind, and
+    /// the two have opposite remedies.
+    pub capture_interfaces: Vec<String>,
+    /// When this server started, for the uptime `runtime_stats` reports.
+    pub started_at: std::time::Instant,
     /// The detectors this run armed, by the rule name each files findings
     /// under, sorted. Empty when none is armed.
     ///
@@ -293,6 +302,8 @@ impl SipnabMcp {
             dialog_store,
             stream_store,
             alert_engine: None,
+            capture_interfaces: Vec::new(),
+            started_at: std::time::Instant::now(),
             armed_detections: Vec::new(),
             source_exhausted: None,
             row_cap: HARD_LIMIT,
@@ -325,6 +336,18 @@ impl SipnabMcp {
             subscriptions: super::subscribe::Subscriptions::new(),
             tool_router: router,
         }
+    }
+
+    /// Name the interfaces sipnab is capturing on.
+    ///
+    /// Consumed by `runtime_stats` to read each interface's OWN counters,
+    /// which are a different population from the capture handle's `ps_ifdrop`
+    /// and are what separates a NIC that cannot keep up from a read loop that
+    /// cannot.
+    #[must_use]
+    pub fn with_capture_interfaces(mut self, interfaces: Vec<String>) -> Self {
+        self.capture_interfaces = interfaces;
+        self
     }
 
     /// Every tool name this server currently registers, sorted.
@@ -2728,7 +2751,8 @@ pub struct StreamPage {
 // enforces it by walking a serialized response and failing on any string
 // value at any depth.
 
-/// Longest window `capture_health` will hold one MCP call open for.
+/// Longest window `capture_health` and `runtime_stats` hold one MCP call open
+/// for.
 ///
 /// A tool call is synchronous from the agent's side: the handler occupies a
 /// request slot and the caller waits. Clients cancel a call that has not
@@ -2742,7 +2766,10 @@ pub struct StreamPage {
 /// Requests above the cap are clamped rather than refused, and the response
 /// reports `requested_seconds` beside `applied_seconds` so the clamp is
 /// visible instead of silent.
-pub const MAX_SAMPLE_SECONDS: u32 = 30;
+///
+/// The value and the clamp live in [`crate::output::runtime`]: REST samples the
+/// same windows, and two copies of a cap become two answers to one question.
+pub use crate::output::runtime::MAX_SAMPLE_SECONDS;
 
 /// How long `capture_health` should watch the counters for.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -3036,15 +3063,8 @@ fn attachment_of(context: Option<&CaptureContext>) -> CaptureAttachment {
 /// deltas is exactly what a healthy quiet capture looks like, and the caller
 /// would have no way to tell the two apart.
 fn resolve_sample_seconds(requested: u32) -> Result<u32, rmcp::ErrorData> {
-    if requested == 0 {
-        return Err(rmcp::ErrorData::invalid_params(
-            "sample_seconds must be at least 1. A zero-second window observes \
-             nothing, and a response of zero deltas reads as a quiet capture."
-                .to_string(),
-            None,
-        ));
-    }
-    Ok(requested.min(MAX_SAMPLE_SECONDS))
+    crate::output::runtime::resolve_sample_seconds(requested)
+        .map_err(|why| rmcp::ErrorData::invalid_params(why.to_string(), None))
 }
 
 /// `undecodable / packets`, or `0.0` when nothing was captured.
@@ -3145,6 +3165,14 @@ fn stream_json(
         // it implies a MOS is there.
         if let Some(n) = serde_json::Number::from_f64(stream_mos(s, delay)) {
             obj.insert("mos".into(), serde_json::Value::Number(n));
+        }
+        // The R-factor the MOS was converted from, on the same delay basis.
+        // An SLA is written in R and R is the linear scale, so eight R-points
+        // is a real difference where the MOS gap it maps to looks like
+        // rounding. It carries the same grounding flags below, because it is
+        // the same derivation.
+        if let Some(n) = serde_json::Number::from_f64(delay.r_factor(s)) {
+            obj.insert("r_factor".into(), serde_json::Value::Number(n));
         }
         // Resolved ONCE and matched, so the boolean, the label and the note
         // cannot describe three different groundings of the same stream.
@@ -4837,12 +4865,53 @@ impl SipnabMcp {
         &self,
         Parameters(params): Parameters<RenderLadderParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
+        // `mermaid` is handled before the report formats: it is the only one
+        // that actually draws a ladder, which is what this tool is named for.
+        if matches!(params.format.as_deref(), Some("mermaid")) {
+            let ds = self.dialog_store.read();
+            let dialog = ds.get(&params.call_id).ok_or_else(|| {
+                rmcp::ErrorData::invalid_params(
+                    format!("call_id '{}' not found", params.call_id),
+                    None,
+                )
+            })?;
+            let rows: Vec<(String, String, String, bool)> = dialog
+                .messages
+                .iter()
+                .map(|m| {
+                    let label = if m.is_request {
+                        m.method.as_ref().map_or("?", |x| x.as_str()).to_string()
+                    } else {
+                        format!(
+                            "{} {}",
+                            m.status_code.unwrap_or(0),
+                            m.reason.as_deref().unwrap_or("")
+                        )
+                    };
+                    (
+                        format!("{}:{}", m.src_addr, m.src_port),
+                        format!("{}:{}", m.dst_addr, m.dst_port),
+                        label,
+                        m.is_request,
+                    )
+                })
+                .collect();
+            let diagram = crate::mermaid::sequence_diagram(&rows, MERMAID_MAX_MESSAGES);
+            drop(ds);
+            // Fenced ONCE around the whole diagram rather than per label: the
+            // markers are visible glyphs that would render inside the picture,
+            // and a nested fence flattens to ASCII brackets.
+            return Ok(CallToolResult::success(vec![
+                ContentBlock::text(super::shape::fence(&diagram)),
+                ContentBlock::text(super::shape::untrusted_note()),
+            ]));
+        }
         let format = match params.format.as_deref() {
             Some("text") | Some("txt") => ReportFormat::Text,
             None | Some("markdown") | Some("md") => ReportFormat::Markdown,
             Some(other) => {
                 return Err(rmcp::ErrorData::invalid_params(
-                    format!("unknown format '{other}', expected markdown|text"),
+                    format!("unknown format '{other}', expected markdown|text|mermaid"),
                     None,
                 ));
             }
@@ -7780,6 +7849,107 @@ impl SipnabMcp {
     ///
     /// This runs on production servers carrying other people's calls. See the
     /// section comment above [`MAX_SAMPLE_SECONDS`]: the response type has no
+    /// Runtime statistics: what sipnab is doing, and what it costs the host.
+    ///
+    /// # Why this is a tool rather than a metrics scrape
+    ///
+    /// sipnab exports 32 Prometheus metrics and the listener that serves them
+    /// is off by default, so on most deployments those numbers exist in-process
+    /// and nothing can read them. An agent asked "is this server healthy"
+    /// cannot enable a listener to find out.
+    ///
+    /// # What is new here rather than a parity fix
+    ///
+    /// sipnab could not state its own resident set size, thread count or
+    /// descriptor count at all, and could not say what fraction of the host it
+    /// was using. A capture that is itself the reason a proxy started dropping
+    /// calls is the worst failure this tool can have, and it was invisible.
+    ///
+    /// Every process and host field is optional. Absent means "not readable on
+    /// this platform", which is a different fact from zero.
+    #[tool(
+        name = "runtime_stats",
+        description = "Returns what sipnab is doing and what it is costing the \
+                       host: its own resident set size, virtual size, threads, \
+                       open descriptors and CPU seconds; the host's memory and \
+                       CPU totals with the basis they came from (host or \
+                       cgroup, named because a percentage against the wrong \
+                       denominator will be believed); sipnab's share of them \
+                       and whether that share is load-bearing; per-interface \
+                       counters read from the interface itself rather than \
+                       from the capture handle, which is the pair that \
+                       separates a NIC that cannot keep up from a read loop \
+                       that cannot; dialog and stream occupancy against the \
+                       caps they evict against; and the capture-path totals. \
+                       Every one of those answers instantly. Send optional \
+                       sample_seconds to also get rates -- packets, calls, and \
+                       calls split by the method that opened them, per second \
+                       -- read across a window of that length, which costs a \
+                       wait of exactly that long; the reply carries the window \
+                       actually applied. Starts no capture. An absent field \
+                       means not readable here, never zero.",
+        annotations(read_only_hint = true, open_world_hint = false)
+    )]
+    pub async fn runtime_stats(
+        &self,
+        Parameters(params): Parameters<RuntimeStatsParams>,
+        Extension(progress): Extension<super::progress::Progress>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        // Rates cost a wait, so they are opt-in. Every counter below is
+        // cumulative without them, and a cumulative total answers a different
+        // question from a rate.
+        let sampled = match params.sample_seconds {
+            Some(n) => {
+                let applied = resolve_sample_seconds(n)?;
+                // Sampled without holding a lock across the wait, the same
+                // discipline `capture_health` uses.
+                let before = {
+                    let ds = self.dialog_store.read();
+                    let s = crate::output::runtime::RateSample::read(&ds);
+                    drop(ds);
+                    s
+                };
+                progress
+                    .sleep_reporting(
+                        std::time::Duration::from_secs(u64::from(applied)),
+                        "sampling runtime counters",
+                    )
+                    .await;
+                let after = {
+                    let ds = self.dialog_store.read();
+                    let s = crate::output::runtime::RateSample::read(&ds);
+                    drop(ds);
+                    s
+                };
+                Some(crate::output::runtime::rates(&before, &after))
+            }
+            None => None,
+        };
+
+        let ds = self.dialog_store.read();
+        let ss = self.stream_store.read();
+        // The same collector `GET /v1/runtime` calls, so the two surfaces
+        // cannot report different numbers for one process.
+        let stats = crate::output::runtime::collect(
+            &ds,
+            &ss,
+            None,
+            &self.capture_interfaces,
+            self.started_at.elapsed().as_secs(),
+            crate::output::runtime::SIGNIFICANT_MEMORY_PCT,
+        );
+        drop(ss);
+        drop(ds);
+        let mut stats = stats;
+        stats.rates = sampled;
+        let value = serde_json::to_value(stats).map_err(|e| {
+            rmcp::ErrorData::internal_error(format!("runtime stats did not serialize: {e}"), None)
+        })?;
+        // Unfenced: every value here is sipnab's own measurement of its own
+        // process and its host. None of it came from a packet.
+        Ok(CallToolResult::success(vec![ContentBlock::json(value)?]))
+    }
+
     /// `String` in it or in anything nested in it, so it cannot represent
     /// packet content at all.
     #[tool(
@@ -8059,6 +8229,27 @@ fn scope_of(_extensions: &rmcp::model::Extensions) -> String {
 /// limit the caller should back off from and retry. A distinct code lets a
 /// well-behaved client tell "try again in a moment" from "this will never
 /// work", which is the whole point of returning a cap rather than hanging.
+/// Arguments for `runtime_stats`.
+#[derive(Debug, serde::Deserialize, rmcp::schemars::JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+pub struct RuntimeStatsParams {
+    /// Seconds to sample for rates. Omit for cumulative counters only.
+    ///
+    /// Rates cost a wait, so they are opt-in — and the answer reports the
+    /// window that was actually applied, not the one requested, because a rate
+    /// over a shorter window than the sample has no population behind it.
+    pub sample_seconds: Option<u32>,
+}
+
+/// Arrows drawn before a Mermaid ladder truncates.
+///
+/// The vendored renderer refuses a diagram past `maxEdges: 500` outright rather
+/// than degrading, so this leaves headroom for the notes a diagram also
+/// carries. A capture with more messages than this gets a note inside the
+/// diagram saying so.
+const MERMAID_MAX_MESSAGES: usize = 200;
+
+/// JSON-RPC error code for a refused-because-busy tool call.
 const AT_CAPACITY_CODE: i32 = -32000;
 
 /// Take a concurrency permit for a tool call, or return the refusal to send

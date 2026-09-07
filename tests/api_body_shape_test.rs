@@ -44,6 +44,8 @@ fn state_with(gate: &Arc<PersistenceGate>) -> ApiState {
         max_rows: 50,
         capture: None,
         source_exhausted: None,
+        capture_interfaces: Vec::new(),
+        started_at: std::time::Instant::now(),
         persistence_gate: Arc::clone(gate),
         tfps: Default::default(),
     }

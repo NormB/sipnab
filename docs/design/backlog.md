@@ -44,7 +44,7 @@ Tiers:
 
 ## Status
 
-**56 open, 440 done** across 34 sections.
+**46 open, 450 done** across 34 sections.
 Regenerate with `python3 scripts/backlog-status.py --apply`.
 
 | Section | Open | Done | Progress |
@@ -70,11 +70,11 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
 | FLT | 0 | 1 | `##########` |
 | SPELL | 1 | 0 | `..........` |
 | MCPX | 1 | 6 | `#########.` |
-| OBS | 7 | 0 | `..........` |
+| OBS | 0 | 7 | `##########` |
 | REQ | 4 | 13 | `########..` |
-| CMP | 5 | 0 | `..........` |
+| CMP | 3 | 2 | `####......` |
 | GTP | 2 | 1 | `###.......` |
-| MER | 4 | 1 | `##........` |
+| MER | 3 | 2 | `####......` |
 | LIVE | 6 | 0 | `..........` |
 | P5 | 7 | 13 | `######....` |
 | Shipped (audit-period features, kept for context) | 0 | 6 | `##########` |
@@ -853,8 +853,8 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
   entry rested on. It is also the mechanism
   behind CT2 — a stalled reader is what overflows the ring. **Latent deadlock:**
   the ordering `stores → alerts` exists only on this path and is written down
-  nowhere; `security_findings` ([`src/mcp/server.rs:5408`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5408)) currently takes
-  nowhere; `security_findings` ([`src/mcp/server.rs:5408`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5408)) currently takes
+  nowhere; `security_findings` ([`src/mcp/server.rs:5480`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5480)) currently takes
+  nowhere; `security_findings` ([`src/mcp/server.rs:5480`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5480)) currently takes
   `alerts.read()` and no store lock, so there is no cycle *today*, and nothing
   stops the next MCP tool from creating one. **Do:** queue exec requests and
   per-message output during the locked section, drain them after the guards
@@ -1632,8 +1632,8 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
   `sipnab_capture_invalid_timestamps_total` (the field is declared at
   [`src/output/prometheus.rs:119`](https://github.com/NormB/sipnab/blob/main/src/output/prometheus.rs#L119), read from the atomic at `:149`, rendered at
   `:523`, and named in [`tests/metrics_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/metrics_test.rs) so a rename cannot silently drop
-  it); the MCP `capture_status` tool carries the field ([`src/mcp/server.rs:5523`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5523),
-  it); the MCP `capture_status` tool carries the field ([`src/mcp/server.rs:5523`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5523),
+  it); the MCP `capture_status` tool carries the field ([`src/mcp/server.rs:5595`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5595),
+  it); the MCP `capture_status` tool carries the field ([`src/mcp/server.rs:5595`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5595),
   populated at `:1356`) and reports it as a delta between two calls (`:1676`);
   and the batch summary explains it in prose
   ([`src/app/batch.rs:905-925`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L905-L925), the doc comment on `report_capture_quality`). The
@@ -2560,16 +2560,16 @@ output path.
     2026-08-06, verified against the tree).** Shipped: `FrameRef`
     ([`src/capture/packet.rs:377`](https://github.com/NormB/sipnab/blob/main/src/capture/packet.rs#L377)) and `capture::resolve::resolve`
     ([`src/capture/resolve.rs:191`](https://github.com/NormB/sipnab/blob/main/src/capture/resolve.rs#L191)); the `show_evidence` MCP tool
-    (`#[tool(` at [`src/mcp/server.rs:6846`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L6846), handler at `:3866`), confined to
+    (`#[tool(` at [`src/mcp/server.rs:6918`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L6918), handler at `:3866`), confined to
     the file root and honest about
     itself with three states — `verified` / `unverified` / `unresolvable` —
     rather than resolving a foreign ref against the wrong file; and
-    `findings_with_refs` ([`src/mcp/server.rs:1749`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1749)), which attaches `frame_ref`
+    `findings_with_refs` ([`src/mcp/server.rs:1772`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1772)), which attaches `frame_ref`
     (`#[tool(` at [`src/mcp/server.rs:4528`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L4528), handler at `:3866`), confined to
     the file root and honest about
     itself with three states — `verified` / `unverified` / `unresolvable` —
     rather than resolving a foreign ref against the wrong file; and
-    `findings_with_refs` ([`src/mcp/server.rs:1749`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1749)), which attaches `frame_ref`
+    `findings_with_refs` ([`src/mcp/server.rs:1772`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1772)), which attaches `frame_ref`
     to `lint_dialog`
     findings and OMITS the key when no pointer exists, because `""` and
     frame 0 both read as real pointers. Capture identity binding
@@ -2721,7 +2721,7 @@ output path.
     `SUPPRESSION_FILENAME` ([`src/sip/lint/mod.rs:70`](https://github.com/NormB/sipnab/blob/main/src/sip/lint/mod.rs#L70)),
     `SuppressionFile::load` (`:103`) and `SuppressionFile::discover` (`:120`)
     exist, and the MCP lint tools consume them through `resolve_suppressions`
-    ([`src/mcp/server.rs:919`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L919)), which takes an explicit filename or walks up from
+    ([`src/mcp/server.rs:942`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L942)), which takes an explicit filename or walks up from
     the capture's directory to a project root. **What is still missing is the
     suppression half of the CLI, and the evidence this line cited for that is
     now false too. Corrected 2026-08-06:** it read *"`grep -n lint src/cli.rs`
@@ -3186,7 +3186,7 @@ implementation.
   `value_parser = ["full", "metrics", "read"]`) rather than the
   `--mcp-token-scope` proposed above, with the help text drawing the
   audience line ("REST API tokens only" / "MCP tokens only"). Enforcement is
-  `scope_of` ([`src/mcp/server.rs:8056`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L8056), the `mcp-http` arm), reading the scope out of the
+  `scope_of` ([`src/mcp/server.rs:8210`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L8210), the `mcp-http` arm), reading the scope out of the
   `McpAuth::BearerVerified` admission record, and `scope_refusal` (`:4872`),
   which is called from the hand-written `call_tool` (`:4951`). The
   no-second-list requirement held literally: `scope_refusal` decides from the
@@ -5474,7 +5474,7 @@ promises an absence is acted on; a missing feature is merely absent.
 
 - [x] **DOC4 (done 2026-08-30) — [`docs/mcp-deploy.md:248`](https://github.com/NormB/sipnab/blob/main/docs/mcp-deploy.md#L248) opens the remote-access section by
   promising no tool mutates the stores.** `open_capture` calls `ds.clear()` and
-  `ss.clear()` ([`src/mcp/server.rs:7216`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L7216)). The code already knows: a note at
+  `ss.clear()` ([`src/mcp/server.rs:7288`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L7288)). The code already knows: a note at
   `:8377` records that the wire `instructions` string was corrected for exactly
   this. The page was not. [`SECURITY.md:35`](https://github.com/NormB/sipnab/blob/main/SECURITY.md#L35) scopes reports to "any MCP tool that
   mutates dialog/stream/alert state", so a good-faith reporter is told the scope
@@ -5900,7 +5900,7 @@ ones that fit an analysis tool.
 
 ## OBS — runtime statistics an operator expects from a server (added 2026-09-06)
 
-sipnab exports 42 Prometheus metrics and none of them are reachable over MCP or
+sipnab exports 32 Prometheus metrics and none of them are reachable over MCP or
 REST. An agent asked "is this server healthy" can read `capture_status` (live or
 file, uptime) and `capture_health` (capture-path counters), and then has no way
 to see queue depth, backpressure, store occupancy, tool-call volume, or anything
@@ -5912,7 +5912,7 @@ Some of these are new measurements. The rest is parity: the number already
 exists and is unreachable from the surfaces an operator and an agent actually
 use.
 
-- [ ] **OBS1 — `runtime_stats` over MCP and `GET /v1/runtime` over REST.**
+- [x] **OBS1 (done 2026-09-06) — `runtime_stats` over MCP and `GET /v1/runtime` over REST.**
   One read, returning what the 42 metrics already hold, grouped: capture
   (`packets_total`, `queue_depth_packets`, `backpressure_blocks_total`,
   `kernel_dropped_packets_total`, `interface_dropped_packets_total`,
@@ -5925,7 +5925,7 @@ use.
   process and nothing can read them. An agent cannot enable a listener to answer
   a question.
 
-- [ ] **OBS2 — process resource facts: none of these exist yet.**
+- [x] **OBS2 (done 2026-09-06) — process resource facts.**
   Resident set size, virtual size, thread count, open file descriptors, and CPU
   time. sipnab holds a bounded dialog store, a bounded stream store and a capped
   channel, so "how close am I to the caps" is answerable — but RSS is the number
@@ -5937,7 +5937,7 @@ use.
   `0 MB` on a platform where it was never read is worse than a field that says
   it does not know.
 
-- [ ] **OBS3 — occupancy against the caps, not just the counts.**
+- [x] **OBS3 (done 2026-09-06) — occupancy against the caps, not just the counts.**
   `dialogs_active` is a number; `dialogs_active` beside `max_dialogs` is a
   decision. The same for the stream store, the per-dialog message cap (D17), the
   HEP rate limiter's tracked-peer table (`max_tracked_peers`), and the orphan
@@ -5948,7 +5948,7 @@ use.
   evicting is a different fault from one at 100% that is merely full, and the
   two have different fixes.
 
-- [ ] **OBS4 — rates, not just totals: calls and messages per interval.**
+- [x] **OBS4 (done 2026-09-06) — rates, not just totals: calls and messages per interval.** `runtime_stats` takes `sample_seconds` and `GET /v1/runtime` takes `?sample_seconds=`; both read the counters twice across the window and report `rates.window_seconds` — the window applied, not the one requested. Rates are opt-in rather than defaulted, because the measurement costs a wait of exactly that length and every other field in the envelope answers instantly. Zero is refused and long windows are clamped by one shared function, so the two surfaces cannot take a window the other rejects.
   Every counter above is cumulative. "1,284,301 messages" answers nothing an
   operator asked; "312 messages/second, of which 190 are OPTIONS" answers the
   question they actually have. `capture_health` already demonstrates the shape —
@@ -5968,7 +5968,7 @@ use.
   AS4, and for the same reason: fleet traffic dominates by volume, so an
   undifferentiated total describes the fleet rather than the calls.
 
-- [ ] **OBS5 — interface statistics, from the interface and not only from the handle.**
+- [x] **OBS5 (done 2026-09-06) — interface statistics, from the interface and not only from the handle.**
   sipnab reads `pcap::Stat` — `ps_recv`, `ps_drop`, `ps_ifdrop` — in
   [`src/capture/live.rs`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs). Those three numbers are scoped to sipnab's own capture
   handle: what sipnab saw, and what was discarded on the way to it. They say
@@ -5990,7 +5990,7 @@ use.
   snaplen is silent loss *inside* packets that were never dropped, so it appears
   in no drop counter at all.
 
-- [ ] **OBS6 — sipnab's own impact on the host it is capturing on.**
+- [x] **OBS6 (done 2026-09-06) — sipnab's own impact on the host it is capturing on.**
   sipnab runs on the same machine as the thing being diagnosed. A capture that
   is itself the reason the proxy started dropping calls is the worst failure
   this tool can have, and it is currently invisible: sipnab reports nothing
@@ -6018,7 +6018,7 @@ use.
   percentage computed against the wrong total is worse than no percentage,
   because it will be believed.
 
-- [ ] **OBS7 — surface parity for all of the above.**
+- [x] **OBS7 (done 2026-09-06) — surface parity for all of the above.**
   Whatever OBS1-OBS6 land as, they land on MCP **and** REST, with the same field
   names and the same shapes, documented in [`docs/mcp-tools.md`](https://github.com/NormB/sipnab/blob/main/docs/mcp-tools.md) and
   [`docs/rest-api.md`](https://github.com/NormB/sipnab/blob/main/docs/rest-api.md), and covered by the OpenAPI document that
@@ -6089,7 +6089,7 @@ conformance linting, security detection and evidence are all categories the
 competitor does not compete in. Three things it does that sipnab cannot, and two
 cheap gaps its page made obvious.
 
-- [ ] **CMP1 — sipnab computes an R-factor and throws it away.**
+- [x] **CMP1 (done 2026-09-06) — the R-factor is published.**
   [`src/rtp/quality.rs`](https://github.com/NormB/sipnab/blob/main/src/rtp/quality.rs) computes `r = 93.2 - id - ie_eff` and converts it, and no
   surface publishes it. The only `r_factor` anywhere is the FAR END's RTCP XR
   value in [`src/mcp/server.rs`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs), which is a different measurement of a different
@@ -6120,7 +6120,7 @@ cheap gaps its page made obvious.
   configurable, moving the retention cap with it so a shorter interval cannot
   silently shorten the history.
 
-- [ ] **CMP3 — a subnet is not a regex.** The filter DSL's only subnet answer is
+- [x] **CMP3 (done 2026-09-06) — a subnet is not a regex.** The filter DSL's only subnet answer is
   a regex on the dotted string. That is wrong for every prefix that is not
   octet-aligned — a `/22` cannot be written at all — it matches neighbours if
   the anchor is dropped, and it is unusable for IPv6, where one address has many
@@ -6285,7 +6285,7 @@ the diagram throws away everything the ladder already knows.
   the call. Say so inside the diagram, in sipnab's own voice, naming the flag
   that widens it.
 
-- [ ] **MER4 — `render_ladder` does not render a ladder.** It calls
+- [x] **MER4 (done 2026-09-06) — `render_ladder` renders a ladder.** It calls
   `generate_call_report`, which emits tables. Its own description says the
   output is byte-identical to `--call-report --markdown`, which is true and is
   the problem: an agent asking for a ladder gets tables. The `text` arm is also

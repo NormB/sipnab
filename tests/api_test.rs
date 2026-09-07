@@ -853,3 +853,164 @@ fn dialog_list_by_method_has_one_row_per_method() {
         "a bucket with nothing in it must not be reported: {rows:?}"
     );
 }
+
+/// `GET /v1/runtime` answers with the envelope both surfaces share.
+///
+/// sipnab exports 32 Prometheus metrics and the listener that serves them is
+/// off by default, so on most deployments those numbers exist in-process and
+/// nothing can read them. This route answers without one.
+#[test]
+fn runtime_reports_the_process_and_the_host() {
+    let srv = ApiServer::spawn(&[]);
+    let resp = srv.get("/v1/runtime");
+    assert_eq!(resp.status, 200, "/v1/runtime status");
+    let body = resp.json();
+
+    assert_eq!(body["schema_version"], 1);
+    assert!(
+        body["process"]["rss_bytes"]
+            .as_u64()
+            .expect("Linux exposes VmRSS")
+            > 0,
+        "a running process holds memory"
+    );
+    assert!(body["process"]["threads"].as_u64().expect("Threads") >= 1);
+    assert!(
+        body["host"]["memory_total_bytes"]
+            .as_u64()
+            .expect("MemTotal")
+            > 0
+    );
+    assert!(
+        matches!(body["host"]["basis"].as_str(), Some("host" | "cgroup")),
+        "the denominator names itself: {}",
+        body["host"]["basis"]
+    );
+}
+
+/// Occupancy is reported against the cap, not as a bare count.
+///
+/// `dialogs.used` alone is a number; beside `capacity` it is a decision. An
+/// operator who cannot see occupancy learns about eviction by noticing that
+/// calls have gone missing.
+#[test]
+fn runtime_reports_occupancy_against_the_caps() {
+    let srv = ApiServer::spawn(&[]);
+    let body = srv.get("/v1/runtime").json();
+
+    for store in ["dialogs", "streams"] {
+        let cap = body[store]["capacity"].as_u64().expect("a cap");
+        let used = body[store]["used"].as_u64().expect("a count");
+        assert!(cap > 0, "{store} must report the cap it evicts against");
+        assert!(used <= cap, "{store}: {used} held against a cap of {cap}");
+        let pct = body[store]["pct"].as_f64().expect("a percentage");
+        assert!(
+            (0.0..=100.0).contains(&pct),
+            "{store} pct {pct} out of range"
+        );
+    }
+}
+
+/// The impact verdict is computed and stated, with its threshold.
+///
+/// A capture that is itself the reason a proxy started dropping calls is the
+/// worst failure this tool can have, and it used to be invisible.
+#[test]
+fn runtime_states_whether_sipnab_is_load_bearing() {
+    let srv = ApiServer::spawn(&[]);
+    let body = srv.get("/v1/runtime").json();
+
+    assert!(
+        body["impact"]["significant"].is_boolean(),
+        "the verdict is present: {}",
+        body["impact"]
+    );
+    let note = body["impact"]["note"].as_str().expect("a note");
+    assert!(
+        note.contains("threshold"),
+        "the note states the threshold so a reader can disagree with the \
+         setting rather than the finding: {note}"
+    );
+}
+
+/// A requested window is sampled and the window actually used is reported.
+///
+/// The rate half of the runtime answer is the half an operator asked for:
+/// "1,284,301 messages" answers nothing, "312 messages/second, of which 190
+/// are OPTIONS" answers the question they have. It has to be reachable from
+/// REST and not only from MCP, or the two surfaces answer different questions.
+#[test]
+fn runtime_samples_a_rate_when_a_window_is_requested() {
+    let srv = ApiServer::spawn(&[]);
+    let resp = srv.get("/v1/runtime?sample_seconds=1");
+    assert_eq!(resp.status, 200, "a one-second window is inside the cap");
+    let body = resp.json();
+
+    let rates = &body["rates"];
+    assert!(!rates.is_null(), "a window was requested: {body}");
+    assert!(
+        rates["window_seconds"].as_u64().expect("the window used") >= 1,
+        "the window that was applied is reported, not the one requested: \
+         {rates}"
+    );
+    assert!(
+        rates["packets_per_second"].as_f64().expect("a rate") >= 0.0,
+        "a rate is never negative: {rates}"
+    );
+    assert!(
+        rates["calls_per_second_by_method"].is_array(),
+        "the breakdown is the point — an undifferentiated total describes the \
+         keepalive plane rather than the calls: {rates}"
+    );
+}
+
+/// A zero window is refused rather than answered with zero deltas.
+///
+/// Zero deltas is exactly what a healthy quiet capture reports, so answering
+/// an empty window hands back a number the caller cannot tell from silence.
+/// The refusal is the same one MCP gives, from the same function.
+#[test]
+fn runtime_refuses_a_zero_sample_window() {
+    let srv = ApiServer::spawn(&[]);
+    let resp = srv.get("/v1/runtime?sample_seconds=0");
+    assert_eq!(resp.status, 400, "a zero window is refused: {}", resp.body);
+    assert!(
+        resp.body.contains("at least 1"),
+        "the refusal says what to send instead: {}",
+        resp.body
+    );
+}
+
+/// A window that is not a number is refused, not read as no window at all.
+///
+/// Silently ignoring an unparseable parameter would answer with the cumulative
+/// counters and no `rates` key — indistinguishable from a caller who never
+/// asked, which is the failure mode this route exists to avoid.
+#[test]
+fn runtime_refuses_a_sample_window_that_is_not_a_number() {
+    let srv = ApiServer::spawn(&[]);
+    let resp = srv.get("/v1/runtime?sample_seconds=soon");
+    assert_eq!(
+        resp.status, 400,
+        "an unparseable window is an error, not an absent one: {}",
+        resp.body
+    );
+}
+
+/// Rates are absent unless asked for, and the counters are cumulative.
+///
+/// Measuring a rate costs a wait, so it is opt-in over MCP. The REST route
+/// answers with the cumulative counters, and they must be present.
+#[test]
+fn runtime_reports_cumulative_counters_without_a_sampling_wait() {
+    let srv = ApiServer::spawn(&[]);
+    let body = srv.get("/v1/runtime").json();
+
+    assert!(body["capture_packets_total"].is_u64(), "a cumulative total");
+    assert!(body["capture_queue_depth_packets"].is_u64());
+    assert!(body["uptime_seconds"].is_u64());
+    assert!(
+        body.get("rates").is_none() || body["rates"].is_null(),
+        "no sampling window was requested, so no rate is claimed"
+    );
+}

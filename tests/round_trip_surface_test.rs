@@ -52,6 +52,7 @@ fn unmeasured() -> serde_json::Value {
         orphaned: false,
         associated_dialog: None,
         mos: 4.4,
+        r_factor: 0.0,
         // PCMU above, so the score is a published estimate. Spelled out rather
         // than defaulted: this suite hand-builds a summary, and a fixture that
         // silently claimed a grounding it had not thought about is how the
@@ -120,6 +121,7 @@ fn a_measured_round_trip_carries_its_provenance() {
         orphaned: false,
         associated_dialog: None,
         mos: 4.4,
+        r_factor: 0.0,
         // PCMU above, so the score is a published estimate. Spelled out rather
         // than defaulted: this suite hand-builds a summary, and a fixture that
         // silently claimed a grounding it had not thought about is how the
@@ -179,6 +181,7 @@ fn a_measured_zero_is_reported_rather_than_hidden() {
         orphaned: true,
         associated_dialog: None,
         mos: 4.4,
+        r_factor: 0.0,
         // PCMU above, so the score is a published estimate. Spelled out rather
         // than defaulted: this suite hand-builds a summary, and a fixture that
         // silently claimed a grounding it had not thought about is how the

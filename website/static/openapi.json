@@ -1586,6 +1586,315 @@
         ],
         "type": "object"
       },
+      "Runtime": {
+        "description": "`GET /v1/runtime` — runtime statistics.",
+        "properties": {
+          "capture_backpressure_blocks_total": {
+            "description": "Times the capture path blocked on a full queue.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "capture_packets_total": {
+            "description": "Packets the capture path has seen.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "capture_queue_depth_packets": {
+            "description": "Packets waiting in the capture queue.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "dialogs": {
+            "$ref": "#/components/schemas/RuntimeOccupancy",
+            "description": "Dialog-store occupancy."
+          },
+          "host": {
+            "$ref": "#/components/schemas/RuntimeHost",
+            "description": "The host, or the cgroup when sipnab runs inside one."
+          },
+          "impact": {
+            "$ref": "#/components/schemas/RuntimeImpact",
+            "description": "sipnab's share of it."
+          },
+          "interfaces": {
+            "description": "Per-capture-interface counters.",
+            "items": {
+              "$ref": "#/components/schemas/RuntimeInterface"
+            },
+            "type": "array"
+          },
+          "process": {
+            "$ref": "#/components/schemas/RuntimeProcess",
+            "description": "sipnab's own process."
+          },
+          "schema_version": {
+            "description": "Wire-format version of this envelope.",
+            "example": 1,
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "streams": {
+            "$ref": "#/components/schemas/RuntimeOccupancy",
+            "description": "Stream-store occupancy."
+          },
+          "uptime_seconds": {
+            "description": "Seconds this process has been serving.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "schema_version",
+          "process",
+          "host",
+          "impact",
+          "interfaces",
+          "dialogs",
+          "streams",
+          "capture_packets_total",
+          "capture_queue_depth_packets",
+          "capture_backpressure_blocks_total",
+          "uptime_seconds"
+        ],
+        "type": "object"
+      },
+      "RuntimeHost": {
+        "description": "The host's totals, or the cgroup's limits inside a container.",
+        "properties": {
+          "basis": {
+            "description": "Which denominator the figures came from: `host` or `cgroup`.\n\nNamed rather than assumed. A percentage against the machine's total\nis wrong by a large factor inside a container with a small limit.",
+            "example": "host",
+            "type": "string"
+          },
+          "cpus": {
+            "description": "Logical CPUs.",
+            "format": "int64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "memory_available_bytes": {
+            "description": "Memory available without swapping, bytes.",
+            "format": "int64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "memory_total_bytes": {
+            "description": "Total memory, bytes.",
+            "format": "int64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "basis"
+        ],
+        "type": "object"
+      },
+      "RuntimeImpact": {
+        "description": "sipnab's share of the host, and whether that share is load-bearing.",
+        "properties": {
+          "memory_pct": {
+            "description": "Resident set as a percentage of the host total.",
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "note": {
+            "description": "Why, including the threshold and the basis.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "significant": {
+            "description": "Whether sipnab is a load-bearing consumer right now.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "RuntimeInterface": {
+        "description": "What an interface reports about itself, as distinct from what sipnab's\ncapture handle saw.",
+        "properties": {
+          "mtu": {
+            "description": "MTU.",
+            "format": "int64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "name": {
+            "description": "The interface name.",
+            "type": "string"
+          },
+          "operstate": {
+            "description": "Link state.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "rx_bytes": {
+            "description": "Bytes received by the interface.",
+            "format": "int64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "rx_dropped": {
+            "description": "Packets the interface dropped.",
+            "format": "int64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "rx_errors": {
+            "description": "Receive errors.",
+            "format": "int64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "rx_missed_errors": {
+            "description": "Packets missed because the NIC could not keep up.",
+            "format": "int64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "rx_packets": {
+            "description": "Packets received by the interface.",
+            "format": "int64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "speed_mbps": {
+            "description": "Negotiated speed, Mbit/s. Absent on a virtual interface.",
+            "format": "int64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "RuntimeOccupancy": {
+        "description": "A store's occupancy against the cap it evicts at.",
+        "properties": {
+          "capacity": {
+            "description": "What it can hold.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "pct": {
+            "description": "`used` over `capacity`, absent when the cap is zero.",
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "used": {
+            "description": "What the store holds now.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "used",
+          "capacity"
+        ],
+        "type": "object"
+      },
+      "RuntimeProcess": {
+        "description": "sipnab's own process, from `/proc/self`.\n\nEvery field is optional: absent means \"not readable on this platform\",\nwhich is a different fact from zero and must not be rendered as one.",
+        "properties": {
+          "cpu_seconds": {
+            "description": "CPU seconds, user plus system.",
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "open_fds": {
+            "description": "Open file descriptors.",
+            "format": "int64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "rss_bytes": {
+            "description": "Resident set size, bytes.",
+            "format": "int64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "threads": {
+            "description": "OS threads.",
+            "format": "int64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "virtual_bytes": {
+            "description": "Virtual size, bytes.",
+            "format": "int64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
       "SkippedPort": {
         "description": "One of the busiest ports the port gate excluded.",
         "properties": {
@@ -2027,6 +2336,11 @@
             "minimum": 0,
             "type": "integer"
           },
+          "r_factor": {
+            "description": "The E-model R-factor the MOS was converted from, same delay basis\nand same grounding caveat. An SLA is written in R, and R is the\nlinear scale.",
+            "format": "double",
+            "type": "number"
+          },
           "round_trip_ms": {
             "description": "Round-trip time, milliseconds, when one could be measured.",
             "format": "double",
@@ -2061,6 +2375,7 @@
           "loss_pct",
           "orphaned",
           "mos",
+          "r_factor",
           "mos_grounded",
           "mos_grounding"
         ],
@@ -3419,6 +3734,71 @@
         "summary": "Analyze the whole capture",
         "tags": [
           "capture"
+        ]
+      }
+    },
+    "/v1/runtime": {
+      "get": {
+        "description": "Runtime statistics: sipnab's own resource use, the host's totals and which basis they came from, its share of them, per-interface counters read from the interface rather than from the capture handle, and store occupancy against the caps that bound it.\n\nEvery process and host field is optional: absent means \"not readable on this platform\", which is a different fact from zero and must not be rendered as one.\n\nRates are opt-in via `sample_seconds`, because measuring one costs a wait of that length. The reply carries the window that was actually applied, not the one requested.",
+        "operationId": "get_runtime",
+        "parameters": [
+          {
+            "description": "Seconds to sample rates across. Omitted, the route answers with the\ncumulative counters and no `rates` object. Zero is refused; a window\nlonger than this route can answer inside its request timeout is clamped\nto one it can, and the window actually applied comes back as\n`rates.window_seconds` rather than being assumed.",
+            "in": "query",
+            "name": "sample_seconds",
+            "required": false,
+            "schema": {
+              "format": "int32",
+              "minimum": 0,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Runtime"
+                }
+              }
+            },
+            "description": "Runtime statistics."
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "A sample window of zero, or one that is not a number."
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "No bearer credential, or one this server does not accept."
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Over the per-source-IP rate limit of 100 requests per second."
+          }
+        },
+        "summary": "`GET /v1/runtime` — what sipnab is doing and what it is costing the host.",
+        "tags": [
+          "runtime"
         ]
       }
     },

@@ -1061,6 +1061,16 @@ impl DialogStore {
     }
 
     /// Return the total number of tracked dialogs.
+    /// The cap this store evicts against.
+    ///
+    /// Published so a surface can report occupancy rather than a bare count:
+    /// `dialogs_active` alone is a number, beside its cap it is a decision.
+    #[must_use]
+    pub fn max_dialogs(&self) -> usize {
+        self.max_dialogs
+    }
+
+    /// How many dialogs the store holds.
     pub fn len(&self) -> usize {
         self.dialogs.len()
     }

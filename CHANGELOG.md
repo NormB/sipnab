@@ -8,6 +8,91 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [0.5.156] - 2026-09-06
+
+### Added
+
+- **`runtime_stats` over MCP and `GET /v1/runtime` over REST.** sipnab exports
+  32 Prometheus metrics and the listener that serves them is off by default, so
+  on most deployments those numbers existed inside the process and nothing could
+  read them — an agent asked "is this server healthy" could not enable a
+  listener to find out.
+
+  Two things here did not exist anywhere. sipnab could not state its own
+  resident set size, virtual size, thread count, descriptor count or CPU time;
+  and it could not say what fraction of the host it was using. A capture that is
+  itself the reason a proxy started dropping calls is the worst failure this
+  tool can have, and it was invisible.
+
+  **The host figures name their basis.** Inside a container the real
+  denominators are the control group's limits rather than the machine's, so the
+  answer says `cgroup` and reads `memory.max`. A percentage computed against the
+  wrong total is worse than no percentage, because a reader believes it.
+
+  **`impact.significant` is a verdict, not arithmetic**, with the threshold
+  stated so you can disagree with the setting rather than the finding. An absent
+  field means "not readable on this platform", never zero.
+
+- **Interface statistics, read from the interface rather than the capture
+  handle.** sipnab's own `ps_recv`/`ps_drop`/`ps_ifdrop` describe what reached
+  sipnab. `/sys/class/net` describes what reached the NIC. The pair is what
+  separates the two remedies: `ps_ifdrop` climbing with `rx_missed_errors` is
+  hardware that cannot keep up, and the fix is ring size, coalescing or RSS,
+  while `ps_drop` climbing alone is sipnab's read loop falling behind and the fix
+  is `--buffer` or a tighter filter. The handle counter alone cannot tell them
+  apart.
+
+- **Store occupancy against the caps.** `dialogs.used` alone is a number. Beside
+  `capacity` it is a decision, and an operator who cannot see occupancy learns
+  about eviction by noticing that calls have gone missing.
+
+- **Rates, opt-in via `sample_seconds`, broken down by method.** Every counter
+  above is cumulative, and a cumulative total answers a different question from a
+  rate. The breakdown is the point: a rate that does not separate INVITE from
+  OPTIONS describes whatever the deployment does most, which in the field is the
+  keepalive plane rather than the calls.
+
+  Opt-in rather than defaulted, because the measurement costs a wait of exactly
+  the window asked for while every other field answers instantly. The reply
+  carries the window that was **applied**, not the one requested. One function
+  refuses zero and clamps long windows for both surfaces, and REST narrows it
+  further to what it can answer inside its own request timeout — so no window
+  one surface accepts is one the other kills mid-sleep.
+
+- **The E-model R-factor is published.** sipnab computed
+  `R = R0 - Is - Id - Ie_eff + A` on every stream and returned only the MOS it
+  converts to. Carriers write thresholds and SLAs in R, and R is the linear
+  scale — eight R-points is a real difference where the MOS gap it maps to looks
+  like rounding. It carries the same grounding flags as the MOS, because it is
+  the same derivation: `estimate_mos_with_delay` is now `r_to_mos` of
+  `estimate_r_with_delay`, so the two scales cannot disagree about one stream.
+
+- **`in_subnet`, a filter operator that compares addresses rather than
+  strings.** The only subnet answer the DSL had was a regex on the dotted form.
+  That cannot express a prefix which is not octet-aligned — a `/22` spans four
+  `/24`s — it matches neighbours when the anchor is dropped, and IPv6 defeats it
+  entirely, because `2001:db8::1` and its fully expanded form are one address and
+  two strings. Malformed input now matches nothing rather than everything, and
+  the two families never cross.
+
+### Fixed
+
+- **The documented Prometheus metric count was wrong, and nothing held it.**
+  One backlog line claimed sipnab exports 42 metric families. The exposition
+  emits 32. Nothing gated the figure, so it propagated into a changelog entry,
+  two operator pages, a tool description and a module doc before anyone
+  measured it. `prose_metric_counts_match_the_exposition` now reads every
+  surface that states a count against the same scan the documentation-drift
+  gate uses, so adding a metric moves the number rather than quietly
+  invalidating six sentences.
+
+- **`render_ladder` returned tables.** The tool named for a ladder produced a
+  call report; its own description said so. It now emits a Mermaid
+  `sequenceDiagram` with `autonumber`, positional participant ids so no
+  capture-derived text reaches an identifier, and a message cap that states the
+  truncation inside the diagram rather than leaving a picture that quietly
+  omits half the call.
+
 ## [0.5.155] - 2026-09-06
 
 ### Fixed

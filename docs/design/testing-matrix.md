@@ -50,8 +50,8 @@ was driving all of them.
 | Surface | Rows | `e2e` | `parsed` | `referenced` | `none` |
 |---|---|---|---|---|---|
 | CLI flags | 261 | 132 | 50 | 78 | 1 |
-| HTTP routes | 17 | 17 | -- | 0 | 0 |
-| MCP tools | 63 | 63 | -- | 0 | 0 |
+| HTTP routes | 18 | 18 | -- | 0 | 0 |
+| MCP tools | 65 | 65 | -- | 0 | 0 |
 
 **Flags with no occurrence at all:** `--syslog`
 
@@ -86,7 +86,7 @@ behind them.
 | `--help` | `-h` |  | Options | e2e | `tests/cli_test.rs` |  |  |
 | `--version` | `-V` |  | Options | e2e | `tests/branch_protection_drift_test.rs`, `tests/cli_test.rs` +4 |  |  |
 | `--device` | `-d` | `IFACE` | Capture | e2e | `tests/cli_flag_behavior_test.rs`, `tests/hep_test.rs` +1 |  |  |
-| `--input` | `-I` |  | Capture | e2e | `tests/analyze_test.rs`, `tests/cli_flag_behavior_test.rs` +51 |  |  |
+| `--input` | `-I` |  | Capture | e2e | `tests/analyze_test.rs`, `tests/cli_flag_behavior_test.rs` +53 |  |  |
 | `--recursive` |  |  | Capture | e2e | `tests/input_set_accounting_test.rs`, `tests/multi_input_test.rs` |  |  |
 | `--input-name` |  | `GLOB` | Capture | e2e | `tests/multi_input_test.rs` |  |  |
 | `--output` | `-O` | `FILE` | Capture | e2e | `tests/cli_flag_behavior_test.rs`, `tests/filter_output_paths_test.rs` +5 |  |  |
@@ -111,9 +111,9 @@ behind them.
 | `--split-keep` |  | `N` | Capture | e2e | `tests/cli_flag_behavior_test.rs` |  |  |
 | `--replay` |  |  | Capture | e2e | `tests/mcp_stdio_shutdown_test.rs` |  |  |
 | `--pcapng` |  |  | Capture | e2e | `tests/cli_flag_behavior_test.rs`, `tests/integration_test.rs` +2 |  |  |
-| `--no-tui` | `-N` |  | Mode | e2e | `tests/analyze_test.rs`, `tests/cli_flag_behavior_test.rs` +50 |  |  |
+| `--no-tui` | `-N` |  | Mode | e2e | `tests/analyze_test.rs`, `tests/cli_flag_behavior_test.rs` +52 |  |  |
 | `--calls-only` | `-c` |  | Mode | e2e | `src/output/event_exec.rs`, `src/security/alerting.rs` +7 |  |  |
-| `--telephone-event` | `-t` |  | Mode | e2e | `tests/tui_e2e_test.rs` |  |  |
+| `--telephone-event` | `-t` |  | Mode | e2e | `tests/dtmf_retransmission_test.rs`, `tests/tui_e2e_test.rs` |  |  |
 | `--dtmf-cleartext` |  |  | Mode | referenced | `tests/dtmf_masking_test.rs` | **behavior** | dtmf_cleartext_emits_the_digit_value_at_debug_level (tests/dtmf_masking_test.rs), with an anti-vacuity guard |
 | `--quiet` | `-q` |  | Mode | e2e | `tests/cli_flag_behavior_test.rs`, `tests/config_wiring_test.rs` +33 |  |  |
 | `--resolve` |  |  | Name resolution | e2e | `tests/integration_test.rs` |  |  |
@@ -142,7 +142,7 @@ behind them.
 | `--json-pretty` |  |  | Output | e2e | `tests/json_schema_test.rs` |  |  |
 | `--json-dialogs` |  |  | Output | e2e | `tests/cli_flag_behavior_test.rs`, `tests/config_wiring_test.rs` +14 |  |  |
 | `--plugin` |  | `PATH` | Output | e2e | `tests/partial_run_exit_code_test.rs`, `tests/plugin_example_test.rs` |  |  |
-| `--report` |  |  | Output | e2e | `tests/cli_flag_behavior_test.rs`, `tests/cli_test.rs` +11 |  |  |
+| `--report` |  |  | Output | e2e | `tests/cli_flag_behavior_test.rs`, `tests/cli_test.rs` +12 |  |  |
 | `--stun` |  |  | Output | e2e | `tests/stun_test.rs`, `tests/turn_test.rs` |  |  |
 | `--json-stun` |  |  | Output | e2e | `tests/stun_test.rs`, `tests/turn_test.rs` |  |  |
 | `--analyze` |  |  | Output | e2e | `tests/analyze_test.rs` |  |  |
@@ -357,6 +357,7 @@ behind them.
 | `/v1/dialogs/{call_id}/vcon` | exercised | `tests/api_test.rs` |
 | `/v1/persistence` | exercised | `tests/api_test.rs`, `tests/openapi_contract_test.rs` |
 | `/v1/report` | exercised | `tests/api_test.rs` |
+| `/v1/runtime` | exercised | `tests/api_test.rs` |
 | `/v1/stats` | exercised | `tests/api_test.rs`, `tests/api_token_test.rs` +3 |
 | `/v1/streams` | exercised | `tests/api_operator_flows_test.rs`, `tests/api_test.rs` +2 |
 | `/v1/streams/{id}` | exercised | `tests/api_operator_flows_test.rs`, `tests/api_test.rs` |
@@ -404,7 +405,7 @@ behind them.
 | `group_dialogs` | exercised | `tests/mcp_completeness_test.rs`, `tests/mcp_stdio_test.rs` +1 |
 | `lint_dialog` | exercised | `tests/mcp_completeness_test.rs`, `tests/mcp_lint_tools_test.rs` +2 |
 | `list_captures` | exercised | `tests/mcp_diagnostic_tools_test.rs`, `tests/mcp_stdio_test.rs` |
-| `list_dialogs` | exercised | `tests/config_wiring_test.rs`, `tests/mcp_audit_sink_test.rs` +11 |
+| `list_dialogs` | exercised | `tests/config_wiring_test.rs`, `tests/mcp_audit_sink_test.rs` +12 |
 | `list_tls_libraries` | exercised | `tests/mcp_protocol_features_test.rs`, `tests/mcp_stdio_test.rs` |
 | `media_diagnostics` | exercised | `tests/mcp_completeness_test.rs`, `tests/mcp_media_diagnostics_test.rs` +1 |
 | `open_capture` | exercised | `tests/mcp_completeness_test.rs`, `tests/mcp_completion_test.rs` +4 |
@@ -412,6 +413,7 @@ behind them.
 | `reconcile_orphans` | exercised | `tests/mcp_completeness_test.rs`, `tests/mcp_protocol_features_test.rs` +2 |
 | `render_ladder` | exercised | `tests/mcp_completeness_test.rs`, `tests/mcp_operator_flows_test.rs` +2 |
 | `rtp_stats` | exercised | `tests/mcp_completeness_test.rs`, `tests/mcp_diagnostic_tools_test.rs` +4 |
+| `runtime_stats` | exercised | `tests/mcp_completeness_test.rs`, `tests/mcp_stdio_test.rs` |
 | `save_findings` | exercised | `tests/config_wiring_test.rs`, `tests/mcp_completeness_test.rs` +3 |
 | `search_by_time` | exercised | `tests/mcp_completeness_test.rs`, `tests/mcp_diagnostic_tools_test.rs` +2 |
 | `search_messages` | exercised | `tests/config_wiring_test.rs`, `tests/mcp_completeness_test.rs` +2 |
@@ -419,6 +421,7 @@ behind them.
 | `server_capabilities` | exercised | `tests/mcp_completeness_test.rs`, `tests/mcp_open_capture_test.rs` +2 |
 | `show_evidence` | exercised | `tests/mcp_operator_flows_test.rs`, `tests/mcp_stdio_test.rs` |
 | `shutdown_server` | exercised | `tests/mcp_completeness_test.rs`, `tests/mcp_diagnostic_tools_test.rs` +3 |
+| `siprec_metadata` | exercised | `tests/mcp_completeness_test.rs`, `tests/mcp_siprec_test.rs` +1 |
 | `start_tls_capture` | exercised | `tests/mcp_completeness_test.rs`, `tests/mcp_stdio_test.rs` |
 | `stop_tls_capture` | exercised | `tests/mcp_completeness_test.rs`, `tests/mcp_stdio_test.rs` |
 | `tail_dialogs` | exercised | `tests/mcp_completeness_test.rs`, `tests/mcp_open_capture_test.rs` +3 |

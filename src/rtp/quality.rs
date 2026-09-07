@@ -193,7 +193,7 @@ fn declared_codec_ie(codec: Option<&str>) -> Option<f64> {
 /// laundering a bad input into a confident-looking 7.3 or a NaN is worse than
 /// bounding it.
 #[must_use]
-pub fn estimate_mos_with_delay(
+pub fn estimate_r_with_delay(
     jitter_ms: f64,
     loss_pct: f64,
     codec: Option<&str>,
@@ -283,10 +283,41 @@ pub fn estimate_mos_with_delay(
 
     // R-factor: R = R0 - Is - Id - Ie_eff + A
     // R0 = 93.2 (default signal-to-noise), Is = 0 (no simultaneous impairment), A = 0
-    let r = 93.2 - id - ie_eff;
+    //
+    // Clamped to the scale G.107 defines for narrowband. An impairment large
+    // enough to drive R negative is unusable either way, and a reader
+    // comparing a published R against an SLA threshold cannot tell a value
+    // outside the scale from a computed one.
+    (93.2 - id - ie_eff).clamp(0.0, 100.0)
+}
 
-    // R-factor to MOS conversion (ITU-T G.107 Annex B)
-    r_to_mos(r)
+/// The MOS for a stream, converted from [`estimate_r_with_delay`].
+///
+/// One derivation, two scales: the R-factor is the linear one an SLA is
+/// written against, and the MOS is the one an operator reads. Computing them
+/// separately would let the two disagree about the same stream.
+///
+/// # Arguments
+///
+/// See [`estimate_r_with_delay`] — the arguments are identical.
+///
+/// # Returns
+///
+/// The MOS, 1.0 to 4.5.
+#[must_use]
+pub fn estimate_mos_with_delay(
+    jitter_ms: f64,
+    loss_pct: f64,
+    codec: Option<&str>,
+    one_way_delay_ms: f64,
+) -> f64 {
+    // ITU-T G.107 Annex B.
+    r_to_mos(estimate_r_with_delay(
+        jitter_ms,
+        loss_pct,
+        codec,
+        one_way_delay_ms,
+    ))
 }
 
 /// One-way delay for a stream, from RTCP when the far end reported it.
@@ -565,6 +596,35 @@ impl<'a> MosDelay<'a> {
     #[must_use]
     pub fn score(&self, stream: &crate::rtp::stream::RtpStream) -> f64 {
         estimate_mos_with_delay(
+            stream.jitter,
+            stream.loss_percent(),
+            stream.codec.as_deref(),
+            self.one_way_ms(stream),
+        )
+    }
+
+    /// The R-factor behind [`Self::score`], on the same delay basis.
+    ///
+    /// Carriers write thresholds and SLAs in R rather than in MOS, and R is
+    /// the linear scale — the difference between MOS 4.35 and 4.20 reads as
+    /// noise while the eight R-points behind it do not. sipnab computed this
+    /// on every stream and published only the MOS it converts to.
+    ///
+    /// It carries exactly the same grounding caveat as the MOS, because it is
+    /// the same derivation: an R resting on the placeholder impairment value
+    /// is as meaningless as the MOS resting on it, and a surface publishing
+    /// one must publish `mos_grounded` beside it.
+    ///
+    /// # Arguments
+    ///
+    /// * `stream` — the stream to score.
+    ///
+    /// # Returns
+    ///
+    /// The R-factor, 0 to 100 on the narrowband scale.
+    #[must_use]
+    pub fn r_factor(&self, stream: &crate::rtp::stream::RtpStream) -> f64 {
+        estimate_r_with_delay(
             stream.jitter,
             stream.loss_percent(),
             stream.codec.as_deref(),
@@ -898,6 +958,100 @@ mod grounding_tests {
 
 #[cfg(test)]
 mod tests {
+    /// The R-factor is published, not thrown away.
+    ///
+    /// `estimate_mos_with_delay` computes `R = R0 - Is - Id - Ie_eff + A` and
+    /// then returns only the MOS it converts to. Carriers write thresholds and
+    /// SLAs in R, and R is the LINEAR scale: the difference between MOS 4.35
+    /// and 4.20 reads as noise while the eight R-points behind it do not.
+    ///
+    /// The only `r_factor` on any surface was the FAR END's RTCP XR value,
+    /// which is a different measurement of a different path segment.
+    #[test]
+    fn the_r_factor_is_reported_alongside_the_mos() {
+        // With no impairment at all — no jitter, no loss, no delay — R is R0.
+        let ideal = estimate_r_with_delay(0.0, 0.0, Some("PCMU"), 0.0);
+        assert!(
+            (ideal - 93.2).abs() < 0.01,
+            "R0 = 93.2 with every impairment term zero, got {ideal}"
+        );
+
+        // At the default one-way delay the Id term applies: 0.024 x 100 ms.
+        // Pinned explicitly, because a clean stream is NOT R0 in practice and
+        // an operator comparing against an SLA needs to know the delay
+        // assumption is in the number.
+        let r = estimate_r_with_delay(0.0, 0.0, Some("PCMU"), DEFAULT_ONE_WAY_DELAY_MS);
+        assert!(
+            (r - (93.2 - 0.024 * DEFAULT_ONE_WAY_DELAY_MS)).abs() < 0.01,
+            "the default delay costs 0.024 per ms, got {r}"
+        );
+    }
+
+    /// The R-factor and the MOS describe the same stream.
+    ///
+    /// One derivation, two scales. If these ever disagree, the MOS is being
+    /// computed from an R nobody can see — which is the state this fixes.
+    #[test]
+    fn the_published_r_factor_is_the_one_the_mos_came_from() {
+        for (jitter, loss, codec) in [
+            (0.0, 0.0, Some("PCMU")),
+            (30.0, 2.0, Some("PCMA")),
+            (80.0, 5.0, Some("G729")),
+            (5.0, 0.5, Some("opus")),
+        ] {
+            let r = estimate_r_with_delay(jitter, loss, codec, DEFAULT_ONE_WAY_DELAY_MS);
+            let mos = estimate_mos_with_delay(jitter, loss, codec, DEFAULT_ONE_WAY_DELAY_MS);
+            assert!(
+                (r_to_mos(r) - mos).abs() < 1e-9,
+                "R {r} converts to {} but the MOS says {mos}",
+                r_to_mos(r)
+            );
+        }
+    }
+
+    /// Impairment lowers R, and it lowers it monotonically.
+    ///
+    /// The direction check: a scale that moved the wrong way, or not at all,
+    /// would still satisfy the equality above.
+    #[test]
+    fn more_impairment_means_a_lower_r_factor() {
+        let clean = estimate_r_with_delay(0.0, 0.0, Some("PCMU"), DEFAULT_ONE_WAY_DELAY_MS);
+        let jittery = estimate_r_with_delay(60.0, 0.0, Some("PCMU"), DEFAULT_ONE_WAY_DELAY_MS);
+        let lossy = estimate_r_with_delay(0.0, 8.0, Some("PCMU"), DEFAULT_ONE_WAY_DELAY_MS);
+        assert!(jittery < clean, "jitter must lower R: {jittery} vs {clean}");
+        assert!(lossy < clean, "loss must lower R: {lossy} vs {clean}");
+    }
+
+    /// R stays inside the scale the E-model defines.
+    ///
+    /// G.107 puts R in 0..=100 for narrowband. An impairment large enough to
+    /// drive it negative must clamp rather than publish a number outside the
+    /// scale, because a reader comparing it against an SLA threshold cannot
+    /// tell a clamped value from a computed one otherwise.
+    #[test]
+    fn the_r_factor_stays_within_its_scale() {
+        for (jitter, loss) in [(0.0, 0.0), (500.0, 50.0), (3000.0, 100.0)] {
+            let r = estimate_r_with_delay(jitter, loss, Some("PCMU"), DEFAULT_ONE_WAY_DELAY_MS);
+            assert!(
+                (0.0..=100.0).contains(&r),
+                "R must stay in 0..=100, got {r} for jitter {jitter} loss {loss}"
+            );
+        }
+    }
+
+    /// An ungrounded codec still yields an R, and it is the placeholder's.
+    ///
+    /// The grounding rule is unchanged by this: `mos_grounded` already says
+    /// whether the number rests on a published impairment value, and the R
+    /// carries exactly the same caveat because it is the same derivation.
+    /// Publishing R without that flag would be a second ungrounded number with
+    /// no warning attached.
+    #[test]
+    fn an_ungrounded_codec_still_yields_an_r_from_the_placeholder() {
+        let r = estimate_r_with_delay(0.0, 0.0, Some("G722"), DEFAULT_ONE_WAY_DELAY_MS);
+        assert!(r > 0.0 && r < 93.2, "the placeholder Ie lowers R: {r}");
+    }
+
     use super::*;
 
     // ── MOS estimation tests ─────────────────────────────────────────

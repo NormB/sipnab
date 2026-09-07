@@ -28,6 +28,7 @@ ordinary update.
 | Tool | Parameters | Returns |
 |---|---|---|
 | [`capture_status`](#capture_status) | -- | What this server captures: live or file, uptime, and whether stopping loses unsaved packets |
+| [`runtime_stats`](#runtime_stats) | `sample_seconds?` | What sipnab is doing and what it costs the host: its own memory, threads, descriptors and CPU; the host's totals and the basis they came from; its share of them and whether that share is load-bearing; per-interface counters; store occupancy against the caps |
 | [`capture_health`](#capture_health) | `sample_seconds` | Capture-path counters read twice: run totals, deltas across the window, `undecoded_fraction`, and undecodable frames by reason |
 | [`reconcile_orphans`](#reconcile_orphans) | `limit?` | Why each RTP stream with no dialog lacks one: a relay named the endpoint but no signaling arrived, SDP named it but no dialog claims it, or nothing named it at all |
 | [`get_capture_report`](#get_capture_report) | `format?` | Whole-capture analysis: findings, orphaned media, STUN/ICMP evidence, what the caps shed |
@@ -395,6 +396,104 @@ about to answer "there was no SIP on this capture", check this field first:
 says whether this RUN did.
 
 `GET /v1/stats` carries the same block under the same name.
+
+### `runtime_stats`
+
+What sipnab is doing, and what it is costing the host it runs on.
+
+sipnab exports 32 Prometheus metrics, and the listener that serves them is off
+by default — so on most deployments those numbers exist inside the process and
+nothing can read them. An agent asked "is this server healthy" could not enable
+a listener to find out. This answers without one.
+
+Starts no capture. Every field below answers instantly. The one optional
+parameter, `sample_seconds`, buys a rate at the cost of a wait that long.
+
+```jsonc
+// runtime_stats {}
+{
+  "schema_version": 1,
+  "process": {
+    "rss_bytes": 36831232, "virtual_bytes": 1276391424,
+    "threads": 3, "open_fds": 10, "cpu_seconds": 0.01
+  },
+  "host": {
+    "memory_total_bytes": 131881889792,
+    "memory_available_bytes": 121499242496,
+    "cpus": 14, "basis": "host"
+  },
+  "impact": {
+    "memory_pct": 0.0279, "significant": false,
+    "note": "sipnab holds 0.0% of the host memory total; the threshold for load-bearing is 10.0%"
+  },
+  "interfaces": [],
+  "dialogs": { "used": 1, "capacity": 100000, "pct": 0.001 },
+  "streams": { "used": 2, "capacity": 10000, "pct": 0.02 },
+  "capture_packets_total": 852,
+  "capture_queue_depth_packets": 0,
+  "capture_backpressure_blocks_total": 0,
+  "uptime_seconds": 41
+}
+```
+
+**An absent field means "not readable here", never zero.** Every value under
+`process` and `host` is optional, because the sources are platform-specific. A
+field reported as `0` on a platform where it was never read is worse than one
+that says it does not know.
+
+**`host.basis` names the denominator.** Inside a container the real limits are
+the control group's limits rather than the machine's, so the basis reads
+`cgroup` and the
+totals come from `memory.max`. A percentage against the wrong total is worse
+than no percentage, because a reader believes it.
+
+**`impact.significant` is a verdict.** A capture that is itself the reason a
+proxy started dropping calls is the worst failure this tool can have, and it
+used to be invisible. `note` carries the threshold, so you can disagree with the setting rather
+than with the finding.
+
+**`interfaces` reads the interface, not the capture handle.** sipnab's own
+counters describe what reached sipnab. These describe what reached the NIC. The
+pair separates the two remedies — `ps_ifdrop` climbing with `rx_missed_errors`
+is hardware that cannot keep up, and the fix is ring size, coalescing or RSS.
+`ps_drop` climbing alone is sipnab's read loop falling behind, and the fix is
+`--buffer` or a tighter filter. The handle counter alone cannot tell you
+which.
+
+**Occupancy, not just counts.** `dialogs.used` alone is a number. Beside
+`capacity` it is a decision. An operator who cannot see occupancy learns about
+eviction by noticing that calls have gone missing.
+
+**Rates cost a wait, so ask for one explicitly.** Every counter above is
+cumulative, and "1,284,301 messages" answers a different question from "312
+messages/second, of which 190 are OPTIONS". Send `sample_seconds` to read the
+counters twice across that window:
+
+```jsonc
+runtime_stats { "sample_seconds": 5 }
+// ... the same envelope, plus:
+{
+  "rates": {
+    "window_seconds": 5,
+    "packets_per_second": 412.6,
+    "calls_per_second": 3.4,
+    "calls_per_second_by_method": [["OPTIONS", 2.8], ["INVITE", 0.6]]
+  }
+}
+```
+
+The breakdown is the point: a rate that does not separate INVITE from OPTIONS
+describes whatever the deployment does most, which in the field is the
+keepalive plane rather than the calls.
+
+`window_seconds` is the window sipnab **applied**. sipnab caps a long window at
+30 seconds so one tool call cannot outlive the client's own deadline, and
+rejects `sample_seconds: 0` rather than answering it — an empty window returns
+zero deltas, and zero deltas is exactly what a healthy quiet capture reports.
+
+The REST endpoint `GET /v1/runtime` returns the same envelope from the same
+derivation — including the same refusal and the same cap — so the two surfaces
+cannot disagree about one process.
 
 ### `capture_health`
 
@@ -1266,7 +1365,7 @@ No parameters. Returns:
 ```jsonc
 {
   "schema_version": 1,
-  "version": "0.5.155",
+  "version": "0.5.156",
   "features": ["api", "hep", "mcp", "native", "tls", "tui"],
   "can_decrypt": true,           // tls
   "can_hep": true,               // hep
@@ -4767,7 +4866,7 @@ The container example runs against [`tests/pcap-samples/sip-rtp-g711.pcap`](http
       "type": "report",
       "dialog": 0,
       "vendor": "sipnab",
-      "product": "sipnab 0.5.155 (passive observer; not a recording system)",
+      "product": "sipnab 0.5.156 (passive observer; not a recording system)",
       "schema": "sipnab-dialog-diagnosis/1",
       "mediatype": "application/json",
       "encoding": "json",
