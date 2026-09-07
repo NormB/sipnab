@@ -854,6 +854,11 @@ fn dialog_list_by_method_has_one_row_per_method() {
     );
 }
 
+// Reads `/proc`, which exists on Linux and nowhere else. Guarded rather than
+// loosened: an assertion weakened until it passes on every platform stops
+// proving the values are readable on the one platform that has them. The other
+// arm is `off_linux_runtime_reports_absence_rather_than_zero`.
+#[cfg(target_os = "linux")]
 /// `GET /v1/runtime` answers with the envelope both surfaces share.
 ///
 /// sipnab exports 32 Prometheus metrics and the listener that serves them is
@@ -911,6 +916,11 @@ fn runtime_reports_occupancy_against_the_caps() {
     }
 }
 
+// Reads `/proc`, which exists on Linux and nowhere else. Guarded rather than
+// loosened: an assertion weakened until it passes on every platform stops
+// proving the values are readable on the one platform that has them. The other
+// arm is `off_linux_runtime_reports_absence_rather_than_zero`.
+#[cfg(target_os = "linux")]
 /// The impact verdict is computed and stated, with its threshold.
 ///
 /// A capture that is itself the reason a proxy started dropping calls is the
@@ -931,6 +941,56 @@ fn runtime_states_whether_sipnab_is_load_bearing() {
         "the note states the threshold so a reader can disagree with the \
          setting rather than the finding: {note}"
     );
+}
+
+/// Off Linux, the route answers with absence rather than with zeros.
+///
+/// A macOS or BSD reader gets the same envelope, and every field sourced from
+/// `/proc` is simply not there. Reporting `0` where nothing was read would
+/// tell that reader sipnab costs their host nothing, which is a stronger claim
+/// than "not measurable here" and a false one.
+#[cfg(not(target_os = "linux"))]
+#[test]
+fn off_linux_runtime_reports_absence_rather_than_zero() {
+    let srv = ApiServer::spawn(&[]);
+    let resp = srv.get("/v1/runtime");
+    assert_eq!(resp.status, 200, "the route still answers");
+    let body = resp.json();
+
+    assert_eq!(body["schema_version"], 1);
+    for absent in [
+        "rss_bytes",
+        "virtual_bytes",
+        "threads",
+        "open_fds",
+        "cpu_seconds",
+    ] {
+        assert!(
+            body["process"].get(absent).is_none() || body["process"][absent].is_null(),
+            "process.{absent} must be absent, not zero: {}",
+            body["process"]
+        );
+    }
+    assert!(
+        body["host"].get("memory_total_bytes").is_none()
+            || body["host"]["memory_total_bytes"].is_null(),
+        "there is no /proc/meminfo here: {}",
+        body["host"]
+    );
+    assert_eq!(
+        body["host"]["basis"], "host",
+        "with no control group to read, the machine is the honest basis"
+    );
+    assert!(
+        body["impact"].get("significant").is_none() || body["impact"]["significant"].is_null(),
+        "no denominator means no verdict, not a false negative: {}",
+        body["impact"]
+    );
+
+    // The platform-independent half still answers, which is what makes this a
+    // degraded reply rather than a broken route.
+    assert!(body["dialogs"]["capacity"].as_u64().expect("a cap") > 0);
+    assert!(body["capture_packets_total"].is_u64());
 }
 
 /// A requested window is sampled and the window actually used is reported.

@@ -650,6 +650,12 @@ mod tests {
         assert!(r.calls_per_second_by_method[0].1 >= 0.0);
     }
 
+    // Reads `/sys/class/net`, which exists on Linux and nowhere else. Guarded
+    // rather than loosened: an assertion weakened until it passes everywhere
+    // stops proving the counters are readable on the one platform that has
+    // them. The other arm is
+    // `off_linux_every_platform_fact_is_absent_rather_than_zero`.
+    #[cfg(target_os = "linux")]
     /// A real interface reports its own counters.
     ///
     /// Loopback exists on every Linux host and is the one interface a test can
@@ -668,6 +674,12 @@ mod tests {
         );
     }
 
+    // Reads `/sys/class/net`, which exists on Linux and nowhere else. Guarded
+    // rather than loosened: an assertion weakened until it passes everywhere
+    // stops proving the counters are readable on the one platform that has
+    // them. The other arm is
+    // `off_linux_every_platform_fact_is_absent_rather_than_zero`.
+    #[cfg(target_os = "linux")]
     /// A speed the driver does not report is absent, not zero.
     ///
     /// Loopback reports `-1` for speed, meaning unknown. Rendering that as
@@ -709,6 +721,12 @@ mod tests {
 
     use super::*;
 
+    // Reads `/proc`, which exists on Linux and nowhere else. Guarded
+    // rather than loosened: an assertion weakened until it passes everywhere
+    // stops proving the counters are readable on the one platform that has
+    // them. The other arm is
+    // `off_linux_every_platform_fact_is_absent_rather_than_zero`.
+    #[cfg(target_os = "linux")]
     /// sipnab can state its own resident set size.
     ///
     /// It could not, at all, before this — which is the first number an
@@ -724,6 +742,12 @@ mod tests {
         );
     }
 
+    // Reads `/proc`, which exists on Linux and nowhere else. Guarded
+    // rather than loosened: an assertion weakened until it passes everywhere
+    // stops proving the counters are readable on the one platform that has
+    // them. The other arm is
+    // `off_linux_every_platform_fact_is_absent_rather_than_zero`.
+    #[cfg(target_os = "linux")]
     /// Threads, descriptors and CPU time are all readable.
     #[test]
     fn the_process_reports_threads_descriptors_and_cpu() {
@@ -739,6 +763,12 @@ mod tests {
         );
     }
 
+    // Reads `/proc`, which exists on Linux and nowhere else. Guarded
+    // rather than loosened: an assertion weakened until it passes everywhere
+    // stops proving the counters are readable on the one platform that has
+    // them. The other arm is
+    // `off_linux_every_platform_fact_is_absent_rather_than_zero`.
+    #[cfg(target_os = "linux")]
     /// The host's totals are read, and the basis is named.
     ///
     /// Naming it is the point: a percentage against the machine's total is
@@ -882,6 +912,59 @@ mod tests {
             (1..=60).contains(&MAX_SAMPLE_SECONDS),
             "MAX_SAMPLE_SECONDS is {MAX_SAMPLE_SECONDS}s; a cap outside a \
              minute is not a window a synchronous caller waits out"
+        );
+    }
+    /// Off Linux, every platform-sourced fact is absent rather than zero.
+    ///
+    /// This is the contract the whole module rests on — a field reported as
+    /// `0` on a platform where it was never read is worse than one that says
+    /// it does not know — and nothing asserted it until macOS CI failed on
+    /// four assertions that only hold on Linux. Weakening those four to pass
+    /// everywhere would have deleted the Linux coverage instead of adding
+    /// this.
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn off_linux_every_platform_fact_is_absent_rather_than_zero() {
+        let p = process_stats();
+        assert!(
+            p.rss_bytes.is_none()
+                && p.virtual_bytes.is_none()
+                && p.threads.is_none()
+                && p.open_fds.is_none()
+                && p.cpu_seconds.is_none(),
+            "there is no /proc here, so every process field must say so: {p:?}"
+        );
+
+        let h = host_stats();
+        assert!(
+            h.memory_total_bytes.is_none() && h.memory_available_bytes.is_none(),
+            "there is no /proc/meminfo here: {h:?}"
+        );
+        assert_eq!(
+            h.basis, "host",
+            "with no control group to read, the machine is the honest basis"
+        );
+        assert!(
+            h.cpus.is_some(),
+            "the CPU count comes from the standard library, not from /proc, \
+             so it stays readable — an absent field here would mean the \
+             source moved"
+        );
+
+        // The verdict follows the missing half: no percentage at all, rather
+        // than a zero one that reads as "sipnab costs this host nothing".
+        let verdict = impact(&p, &h, SIGNIFICANT_MEMORY_PCT);
+        assert!(
+            verdict.memory_pct.is_none() && verdict.significant.is_none() && verdict.note.is_none(),
+            "a percentage against a denominator that was never read is the \
+             confidently wrong number this module exists to avoid: {verdict:?}"
+        );
+
+        let lo = interface_stats("lo");
+        assert_eq!(lo.name, "lo", "the name asked for is still reported");
+        assert!(
+            lo.mtu.is_none() && lo.rx_packets.is_none() && lo.operstate.is_none(),
+            "there is no /sys/class/net here: {lo:?}"
         );
     }
 }
