@@ -19,7 +19,7 @@ Annotated screenshots of every view are in the [TUI visual tour](#tui-views) at 
 |-----|--------|-------|
 | `j` / `k` | Navigate down / up | All list and scroll views |
 | `Enter` | Drill in (call flow, raw message, stream detail) | Call List, Call Flow, RTP Streams |
-| `Esc` | Back to the previous view (quits from the Call List) | All views |
+| `Esc` | Back to the previous view (asks to quit from the Call List) | All views |
 | `Tab` | Switch between Call List and RTP Streams | Call List, RTP Streams |
 | `/` | Search | Call List, Raw Message, RTP Streams |
 | `F7` | Open filter dialog | Call List, Call Flow, RTP Streams |
@@ -32,13 +32,28 @@ Annotated screenshots of every view are in the [TUI visual tour](#tui-views) at 
 
 | Key | Action |
 |-----|--------|
-| Ctrl+C | Force quit |
+| Ctrl+C | Force quit (skips the confirmation) |
 | Ctrl+L | Clear calls — Call List only, same as F5 there |
 | v | Show version (with git commit) in the status line |
 | n | Cycle name resolution (Off / Static / DNS) |
 | N | Name the selected address (map IP → host/FQDN) |
 | F12 | Toggle mouse capture — off enables the terminal's native drag-to-select (wheel scrolling pauses until re-enabled) |
 | Mouse wheel | Scroll (every view: lists move the selection, text views scroll) |
+
+### Quit confirmation
+
+`Esc` and the quit key open a confirmation rather than ending the session.
+`Esc` means "go back" in every other view, and it was ending captures that had
+been running for hours.
+
+| Key | Action |
+|-----|--------|
+| Y, Enter | Quit |
+| N, Esc, q | Return to the session |
+| Ctrl+C | Quit at once, from anywhere, including this dialog |
+
+Any other key leaves the question on screen. A stray keypress must not dismiss
+the dialog, and it certainly must not answer it.
 
 `v`, `n`, and `F12` ship as fallbacks: a key you explicitly rebind in
 `[keybindings]` always wins over them. In the Raw Message view with an active
@@ -71,7 +86,7 @@ without toggling anything.
 | End | Jump to last dialog |
 | Enter | Open call flow for the selected dialog — with two or more starred rows, opens one chronologically merged flow of all of them |
 | Space | Star/unstar dialog (`[*]`) for multi-select: F2 saves all starred dialogs, Enter opens them as one merged flow |
-| Esc / q | Quit **(configurable: `quit`)** |
+| Esc / q | Quit, after a confirmation **(configurable: `quit`)** |
 | < | Sort by previous column |
 | > | Sort by next column |
 | Z | Reverse sort direction |
@@ -117,7 +132,7 @@ active filter.
 | End | Jump to last message (or bottom of detail when focused) |
 | Enter | Open full-screen raw message view — or, with the cursor on an RTP bar, the Stream Detail view (MOS, jitter, quality intervals, burst/gap analysis, silence detection, sparklines) |
 | Space | Select message for diff (press on two messages to compare) |
-| q | Quit **(configurable: `quit`)** |
+| q | Quit, after a confirmation **(configurable: `quit`)** |
 | Esc | Back to call list |
 | d | Cycle SDP display mode (none / summary / full) |
 | t | Cycle timestamp mode (absolute / delta-prev / delta-first / scaled) |
@@ -170,7 +185,7 @@ detail pane regardless of focus.
 | y | Copy the displayed message's raw text to the clipboard (OSC 52, works over SSH — see [Copying text](#copying-text)) |
 | F1 / ? | Help **(configurable: `help`)** |
 | F2 | Save **(configurable: `save`)** |
-| q | Quit **(configurable: `quit`)** |
+| q | Quit, after a confirmation **(configurable: `quit`)** |
 | Esc | Back to the view you came from (call flow or call list) |
 
 ## Message diff
@@ -181,7 +196,7 @@ detail pane regardless of focus.
 | PgUp / PgDn | Page scroll |
 | Home / End | Jump to top/bottom |
 | h | Cycle header-name display (as captured / expanded / compact) |
-| q | Quit **(configurable: `quit`)** |
+| q | Quit, after a confirmation **(configurable: `quit`)** |
 | Esc | Back to call flow |
 | F1 / ? | Help **(configurable: `help`)** |
 
@@ -197,7 +212,7 @@ message of the selection rendered as one scrollable document.
 | Home / End | Jump to top/bottom |
 | h | Cycle header-name display (as captured / expanded / compact) |
 | F1 / ? | Help **(configurable: `help`)** |
-| q | Quit **(configurable: `quit`)** |
+| q | Quit, after a confirmation **(configurable: `quit`)** |
 | Esc | Back to call flow |
 
 ## RTP streams
@@ -214,7 +229,7 @@ message of the selection rendered as one scrollable document.
 | D | Open the Quality Dashboard (live MOS/jitter/loss) |
 | Tab | Switch to Call List |
 | Esc | Back to Call List |
-| q | Quit **(configurable: `quit`)** |
+| q | Quit, after a confirmation **(configurable: `quit`)** |
 | N | Name the selected stream's source address (map IP → host/FQDN) |
 | F1 / ? | Help **(configurable: `help`)** |
 | F2 | Save the selected stream's audio as WAV **(configurable: `save`)** |
@@ -232,7 +247,7 @@ message of the selection rendered as one scrollable document.
 | L | Open the packet loss map (RTP loss pattern) — a single screen with nothing to scroll, so `Esc` or `q` is the only key it takes, and either returns here |
 | F1 / ? | Help **(configurable: `help`)** |
 | F2 | Save the stream's audio as WAV **(configurable: `save`)** |
-| q | Quit **(configurable: `quit`)** |
+| q | Quit, after a confirmation **(configurable: `quit`)** |
 | Esc | Back to the view you came from (RTP Streams, Call Flow, or Quality Dashboard) |
 
 The Stream Detail view shows comprehensive per-stream quality data: MOS score, jitter statistics, quality intervals, burst/gap analysis ([RFC 3611](https://www.rfc-editor.org/rfc/rfc3611)), silence detection, and sparkline graphs for MOS and jitter trends over the stream's lifetime.

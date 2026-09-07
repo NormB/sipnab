@@ -889,7 +889,7 @@ convention a later edit can quietly drop:
    `wire`. There is no `expected` field for a surface to render as the truth and
    no `actual` field to render as the deviation.
 3. **The two gap lists come from ONE expression applied twice with the arguments
-   swapped.** A rule favouring either witness would have to be written into that
+   swapped.** A rule favoring either witness would have to be written into that
    single closure, where it is visible, rather than emerging from two
    similar-looking blocks that drifted apart.
 

@@ -1323,7 +1323,7 @@ fn f7_the_scan_is_over_what_is_tracked() {
 
 /// F8. A renamed transcript still fails on its contents.
 ///
-/// Defence in depth: the filename rule is the cheap one, and the path rule is
+/// Defense in depth: the filename rule is the cheap one, and the path rule is
 /// what makes renaming it to `notes.md` not a way through.
 #[test]
 fn f8_a_renamed_transcript_still_fails_on_its_contents() {

@@ -251,7 +251,7 @@ fn the_opening_frame_survives_losing_the_opening_message() {
 
     // The derived implementation would now be wrong -- assert that explicitly,
     // so this test keeps its teeth if someone later "simplifies" the stored
-    // field away in favour of reading `messages.first()`.
+    // field away in favor of reading `messages.first()`.
     let derived_now = d.messages.first().and_then(|m| m.frame.clone());
     assert_ne!(
         derived_now,

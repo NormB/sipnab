@@ -3179,12 +3179,17 @@ pub struct TlsArgs {
     #[arg(
         help_heading = "TLS / Decryption",
         long = "uprobe-flavor",
-        // The flag shipped as `--uprobe-flavour` through 0.5.104. The spelling
-        // moved to US English with the rest of the tree; the alias keeps every
-        // script that already names the old one working, because a flag that
-        // was documented and released is a contract, not a spelling choice.
+        // `--uprobe-flavor` is the spelling; the alias below keeps the one the
+        // flag shipped with through 0.5.104 working, because a released flag
+        // is a contract rather than a spelling choice.
+        //
+        // It was briefly removed in 0.5.157 on the argument that keeping it
+        // forced the British spelling out of the US-English gate's word list.
+        // That argument was wrong: the gate exempts this TOKEN, not the file
+        // and not the word, so the alias and a fully-populated word list cost
+        // nothing to hold at once. The word stays forbidden in prose
+        // everywhere, including in this comment; one flag name is not prose.
         alias = "uprobe-flavour",
-
         value_name = "NAME",
         value_parser = clap::builder::PossibleValuesParser::new(["openssl", "wolfssl"])
     )]

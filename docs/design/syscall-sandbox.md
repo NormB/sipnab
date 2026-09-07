@@ -17,7 +17,7 @@ different and false statement.
 **Upstream argument:**
 [`process-isolation-and-hot-path-cost.md`](process-isolation-and-hot-path-cost.md)
 §2b, which is where the threat is established and where forking was declined in
-favour of this.
+favor of this.
 
 Most of this page is about **how to derive an allowlist**, not what the
 allowlist is. That is deliberate: G5 is ranked P5 *"only because it needs a
@@ -413,7 +413,7 @@ routine case on the configuration most users run.
 syscalls, but the writer needs `link_type`, which comes from the first packet
 ([`src/app/batch.rs:2242`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L2242)). Re-architecting that to tighten a
 syscall list is the wrong trade. Instead: seccomp permits the file syscalls,
-and **Landlock bounds where they may point** (§5). That division of labour is
+and **Landlock bounds where they may point** (§5). That division of labor is
 what G5 means by Landlock being *"additionally"* useful, and it is why the two
 are one piece of work rather than two.
 

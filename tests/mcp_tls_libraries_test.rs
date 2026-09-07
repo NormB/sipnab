@@ -185,7 +185,7 @@ fn an_unsupported_build_says_so_rather_than_reporting_nothing() {
 #[test]
 fn every_entry_carries_the_inode_that_identifies_it() {
     let r = tls_libraries_response();
-    // Same vacuity as the flavour/symbol pairing above: zero entries off Linux,
+    // Same vacuity as the flavor/symbol pairing above: zero entries off Linux,
     // so the loop asserted nothing and the test reported `ok`.
     if !r.supported {
         eprintln!(

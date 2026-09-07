@@ -167,7 +167,7 @@ pub const TRUNCATED_IS_NOT_ABOUT_THE_POPULATION: &[&str] = &["save_findings"];
 /// A process-global for the same reason `crate::capture::captured_packets` and
 /// `crate::pipeline::portrange_skip_report` are: the fact belongs to the RUN
 /// rather than to any one server object, and `capture_status` already reports
-/// two of its neighbours.
+/// two of its neighbors.
 ///
 /// Written by [`note_source_stopped_early`] and cleared by
 /// [`clear_source_stopped_early`] when a new capture starts.
@@ -352,7 +352,7 @@ pub fn stamp(tool: &str, source_exhausted: bool, stopped_early: bool, result: &m
 ///
 /// * **Nothing at all when the answer is whole.** `--report` settled it:
 ///   [`crate::output::run_integrity::RunIntegrity::report_notice`] returns
-///   `None` on a clean run, for the reason its neighbour states — a marker
+///   `None` on a clean run, for the reason its neighbor states — a marker
 ///   emitted on every run "changes the shape of every existing consumer's
 ///   input to report that nothing happened". A caveat on every ladder is a
 ///   caveat nobody reads, which leaves the one that matters unread too.

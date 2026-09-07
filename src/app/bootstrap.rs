@@ -155,7 +155,7 @@ pub fn uprobe_list(cli: &Cli) -> i32 {
         // "what will this command probe" rather than "what exists".
         let mut flavors = Vec::new();
         for name in &cli.tls_args.uprobe_flavor {
-            match discover::parse_flavour(name) {
+            match discover::parse_flavor(name) {
                 Ok(f) => flavors.push(f),
                 Err(e) => {
                     eprintln!("{e}");
@@ -224,7 +224,7 @@ fn plan_uprobe_targets(cli: &Cli) -> Result<Vec<capture::UprobeTarget>, String> 
 
     let mut flavors = Vec::new();
     for name in &cli.tls_args.uprobe_flavor {
-        flavors.push(discover::parse_flavour(name)?);
+        flavors.push(discover::parse_flavor(name)?);
     }
     let planned = discover::plan_targets(
         &cli.tls_args.uprobe_library,

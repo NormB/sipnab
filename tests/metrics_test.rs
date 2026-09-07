@@ -73,7 +73,7 @@ fn metrics_expose_expected_families_with_types() {
         // the signal behind a one-way-audio complaint.
         ("sipnab_nat_unanswered_requests", "gauge"),
         // A relay torn down mid-call. A gauge for the same reason its
-        // neighbour is: a late Refresh unsays it, which no counter could.
+        // neighbor is: a late Refresh unsays it, which no counter could.
         ("sipnab_nat_lapsed_turn_allocations", "gauge"),
         // How much audio was on those relays when they were torn down. One
         // lapsed allocation carrying nothing and one carrying four calls read

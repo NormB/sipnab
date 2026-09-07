@@ -185,7 +185,7 @@ pub(in crate::tui) fn handle_call_list_key(app: &mut App, key: KeyEvent) {
 fn execute_call_list_action(app: &mut App, action: CallListAction) {
     let dialog_count = filtered_dialog_count(app);
     match action {
-        CallListAction::Quit => app.should_quit = true,
+        CallListAction::Quit => crate::tui::controllers::quit_confirm::request_quit(app),
         CallListAction::MoveUp => app.call_list.move_up(),
         CallListAction::MoveDown => app.call_list.move_down(dialog_count),
         CallListAction::MoveTop => app.call_list.move_to_top(),
@@ -741,10 +741,15 @@ mod tests {
 
     /// Esc from the top-level call list quits the app.
     #[test]
-    fn call_list_esc_quits() {
+    fn call_list_esc_asks_before_quitting() {
         let mut app = app_with_dialogs();
         handle_call_list_key(&mut app, key(KeyCode::Esc));
-        assert!(app.should_quit);
+        assert!(
+            !app.should_quit,
+            "Esc opens the confirmation rather than ending the session -- \
+             issue #283"
+        );
+        assert_eq!(app.active_popup, Some(Popup::QuitConfirm));
     }
 
     /// Ctrl-L clears every dialog (alias for the clear-calls key).

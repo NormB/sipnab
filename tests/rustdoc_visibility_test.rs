@@ -246,7 +246,7 @@ fn intra_doc_links(doc: &str) -> Vec<String> {
 /// after one.
 #[test]
 fn public_docs_do_not_link_to_items_rustdoc_cannot_reach() {
-    let mut offences: Vec<String> = Vec::new();
+    let mut offenses: Vec<String> = Vec::new();
     let mut scanned = 0usize;
     let mut links_seen = 0usize;
 
@@ -261,7 +261,7 @@ fn public_docs_do_not_link_to_items_rustdoc_cannot_reach() {
             for name in intra_doc_links(&item.doc) {
                 links_seen += 1;
                 if let Some(false) = decls.get(&name) {
-                    offences.push(format!(
+                    offenses.push(format!(
                         "{}:{} — public `{}` links to `{}`, which is not public here",
                         path.strip_prefix(repo()).unwrap_or(&path).display(),
                         item.line_no,
@@ -273,7 +273,7 @@ fn public_docs_do_not_link_to_items_rustdoc_cannot_reach() {
         }
     }
 
-    // An extractor that stopped matching would report zero offences and look
+    // An extractor that stopped matching would report zero offenses and look
     // exactly like a clean tree. Prove it still sees the shapes it reads.
     assert!(
         scanned > 500,
@@ -285,11 +285,11 @@ fn public_docs_do_not_link_to_items_rustdoc_cannot_reach() {
     );
 
     assert!(
-        offences.is_empty(),
+        offenses.is_empty(),
         "public documentation links to items rustdoc cannot reach:\n  {}\n\
          Name them in a code span (`Foo`) instead of a link ([`Foo`]), or make \
          the target public if it genuinely belongs to the public API.",
-        offences.join("\n  ")
+        offenses.join("\n  ")
     );
 }
 

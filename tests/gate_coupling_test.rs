@@ -158,7 +158,7 @@ struct SymbolClaim {
 ///   `discriminator_test`'s `"fn registered_mcp_tool_count"` — which names a
 ///   helper in `tests/site_journey_test.rs` and would never be found under
 ///   `src/` — because an unrelated `"src/mcp"` string sat 20 lines away. The
-///   pairing has to be with the read, not with the neighbourhood.
+///   pairing has to be with the read, not with the neighborhood.
 /// * **A 30-line window**, which is a proxy for "the same test body". A claim
 ///   further than that from its read is not scanned.
 /// * **Snake-case names only**, so `"fn "` used as a bare token separator (as

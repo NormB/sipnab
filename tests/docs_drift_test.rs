@@ -3175,7 +3175,14 @@ fn no_documentation_table_repeats_a_row() {
     // the default `any` device makes); docs/mcp-protocol.md +1 (the result
     // envelope, which `structuredContent` had never been documented in). Eight
     // written tables, each doubled by its generated site mirror, so sixteen.
-    const EXPECTED_TABLES: usize = 828;
+    // 828 -> 830 by the quit-confirmation key table in docs/keybindings.md
+    // and its site mirror: one written table, two pages. Attributed per file
+    // against HEAD before the number moved, and the attribution caught a real
+    // defect on the way — the first draft of that section landed BETWEEN the
+    // Global table's Ctrl+C row and the six rows under it, splitting one table
+    // into two on each page. That read as +4, and +4 was the alarm: a table
+    // broken in half renders as two tables with a heading wedged inside.
+    const EXPECTED_TABLES: usize = 830;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")
@@ -4418,6 +4425,71 @@ fn the_tree_spells_in_us_english() {
         "signalled",
         "travelled",
         "travelling",
+        // Added 2026-09-07: the list is only as good as the words in it, and
+        // `neighbours` shipped in a released changelog entry because nobody
+        // had thought of it. Every word below was found the same way -- by a
+        // reader, after the fact -- which is the argument for adding the whole
+        // family rather than the one form that got caught.
+        // `flavour` was exempt while `--uprobe-flavour` was an accepted alias.
+        // The alias is gone as of 0.5.157, and with it the reason this list
+        // had to carry a hole.
+        "flavour",
+        "flavours",
+        "flavoured",
+        "neighbour",
+        "neighbours",
+        "neighbouring",
+        "neighbourhood",
+        "favour",
+        "favours",
+        "favoured",
+        "favouring",
+        "favourite",
+        "favourites",
+        "defence",
+        "defences",
+        "offence",
+        "offences",
+        "pretence",
+        "centre",
+        "centres",
+        "centred",
+        "centring",
+        "fibre",
+        "fibres",
+        "calibre",
+        "endeavour",
+        "endeavours",
+        "rumour",
+        "rumours",
+        "humour",
+        "armour",
+        "vapour",
+        "odour",
+        "labour",
+        "labours",
+        "laboured",
+        "paralyse",
+        "paralysed",
+        "paralyses",
+        "fuelled",
+        "fuelling",
+        "specialise",
+        "specialised",
+        "specialises",
+        "specialising",
+        "prioritise",
+        "prioritised",
+        "prioritises",
+        "prioritising",
+        "utilise",
+        "utilised",
+        "utilises",
+        "utilising",
+        "realise",
+        "realised",
+        "realises",
+        "realising",
     ];
 
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -4462,6 +4534,27 @@ fn the_tree_spells_in_us_english() {
         let Ok(text) = std::fs::read_to_string(root.join(f)) else {
             continue;
         };
+        // Removed flags, quoted by name. `--uprobe-flavour` was accepted
+        // through 0.5.156 and refused from 0.5.157, and the test that proves
+        // the refusal has to type the name a script author typed — an error
+        // message naming a different flag is a different bug report.
+        //
+        // The exemption is the TOKEN, not the file: `flavour` anywhere else in
+        // `uprobe_cli_test.rs`, or this token in a page of prose, still fails.
+        // Exempting whole files is how a gate stops covering the file it was
+        // written for.
+        let text = text
+            .replace("uprobe-flavour", "")
+            // The MCP `start_tls_capture` params keep their British-spelled
+            // serde alias, for the reason stated at the field: serde drops an
+            // unknown key silently, so removing it would widen an agent's
+            // probe rather than tell it anything. The attribute is exempt; the
+            // word is not.
+            .replace("alias = \"flavours\"", "")
+            // ...and the wire key itself, where a test sends it to prove the
+            // alias still narrows an agent's probe. Quoted, so it matches the
+            // JSON key and not the word in a sentence.
+            .replace("\"flavours\"", "");
         scanned += 1;
         for (w, re) in BRITISH.iter().zip(patterns.iter()) {
             if re.is_match(&text) {

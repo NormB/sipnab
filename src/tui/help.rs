@@ -21,7 +21,7 @@ CALL LIST:
   Home/End         Jump to first/last
   Enter            Open call flow
   Space            Select/deselect dialog
-  Esc, q           Quit
+  Esc, q           Quit (asks first; Ctrl-C quits at once)
   < / >            Change sort column
   Z                Reverse sort direction
   A                Toggle autoscroll

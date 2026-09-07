@@ -344,7 +344,7 @@ pub fn plan_targets(
 /// # Errors
 ///
 /// The name, when it is not one sipnab probes.
-pub fn parse_flavour(name: &str) -> Result<Flavor, String> {
+pub fn parse_flavor(name: &str) -> Result<Flavor, String> {
     match name.to_ascii_lowercase().as_str() {
         "openssl" => Ok(Flavor::OpenSsl),
         "wolfssl" => Ok(Flavor::WolfSsl),
@@ -668,9 +668,9 @@ aaaab1200000-aaaab1290000 r-xp 00000000 fd:01 6311876 /usr/lib/aarch64-linux-gnu
 
     #[test]
     fn a_flavour_name_is_parsed_or_refused() {
-        assert_eq!(parse_flavour("OpenSSL"), Ok(Flavor::OpenSsl));
-        assert_eq!(parse_flavour("wolfssl"), Ok(Flavor::WolfSsl));
-        assert!(parse_flavour("gnutls").is_err());
+        assert_eq!(parse_flavor("OpenSSL"), Ok(Flavor::OpenSsl));
+        assert_eq!(parse_flavor("wolfssl"), Ok(Flavor::WolfSsl));
+        assert!(parse_flavor("gnutls").is_err());
     }
 
     /// Build a `TlsLibrary` that really is reachable under a fake `/proc`.

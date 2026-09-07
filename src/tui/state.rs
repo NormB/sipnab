@@ -1226,6 +1226,13 @@ pub enum Popup {
     FileOpenDialog,
     /// "Name Address" popup: map the selected IP to a host/FQDN.
     NameAddress,
+    /// "Quit sipnab?" confirmation.
+    ///
+    /// Opened by the quit key and by Esc, which in every other view means "go
+    /// back" and in the call list meant "go away" —
+    /// [issue #283](https://github.com/NormB/sipnab/issues/283). `Ctrl-C`
+    /// bypasses it entirely.
+    QuitConfirm,
 }
 
 /// Key identifying one exact displayed-dialog derivation: if every field

@@ -160,7 +160,8 @@ fn every_operator_environment_variable_is_documented() {
 
 /// Every accepted flag alias is documented.
 ///
-/// Also not a ratchet, and also one item: `--uprobe-flavour` was accepted and
+/// Also not a ratchet, and also one item: the British-spelled uprobe alias
+/// (removed in 0.5.157) was accepted and
 /// named nowhere. An alias exists because a released flag is a contract, which
 /// is exactly the argument for writing it down -- a reader with an old script
 /// needs to find out that the spelling still works.
@@ -177,7 +178,7 @@ fn every_flag_alias_is_documented() {
          this gate is checking nothing"
     );
     // Only the ones that are actually flag spellings. A value alias like
-    // `full` or `flavours` is an enum variant, documented with its values.
+    // `full` is an enum variant, documented with its values.
     let undocumented: Vec<&String> = aliases
         .iter()
         .filter(|a| a.contains('-'))

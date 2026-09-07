@@ -108,7 +108,7 @@ fn execute_stream_list_action(app: &mut App, action: StreamListAction) {
     let stream_count = app.stream_displayed.keys.len();
 
     match action {
-        StreamListAction::Quit => app.should_quit = true,
+        StreamListAction::Quit => crate::tui::controllers::quit_confirm::request_quit(app),
         StreamListAction::MoveUp => app.stream_list.move_up(),
         StreamListAction::MoveDown => app.stream_list.move_down(stream_count),
         StreamListAction::PageUp => app.stream_list.page_up(),
@@ -236,7 +236,7 @@ pub(in crate::tui) fn handle_stream_detail_key(app: &mut App, key: KeyEvent) {
 /// `handle_stream_detail_play`.
 fn execute_stream_detail_action(app: &mut App, action: StreamDetailAction) {
     match action {
-        StreamDetailAction::Quit => app.should_quit = true,
+        StreamDetailAction::Quit => crate::tui::controllers::quit_confirm::request_quit(app),
         StreamDetailAction::ScrollUp => {
             app.stream_detail_scroll = app.stream_detail_scroll.saturating_sub(1);
         }
@@ -389,7 +389,12 @@ mod tests {
         let mut app = App::new_test();
         app.current_view = View::StreamList;
         handle_stream_list_key(&mut app, key(KeyCode::Char('q')));
-        assert!(app.should_quit);
+        assert!(
+            !app.should_quit,
+            "the quit key opens the confirmation rather than ending the \
+             session -- issue #283"
+        );
+        assert_eq!(app.active_popup, Some(Popup::QuitConfirm));
 
         let mut app = App::new_test();
         app.current_view = View::StreamList;
@@ -507,7 +512,12 @@ mod tests {
     fn stream_detail_quit_help_save() {
         let mut app = app_in_stream_detail();
         handle_stream_detail_key(&mut app, key(KeyCode::Char('q')));
-        assert!(app.should_quit);
+        assert!(
+            !app.should_quit,
+            "the quit key opens the confirmation rather than ending the \
+             session -- issue #283"
+        );
+        assert_eq!(app.active_popup, Some(Popup::QuitConfirm));
 
         let mut app = app_in_stream_detail();
         handle_stream_detail_key(&mut app, key(KeyCode::F(1)));

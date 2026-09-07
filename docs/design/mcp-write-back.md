@@ -146,7 +146,7 @@ concrete rather than theoretical:
   populated at `:91-92`) are copied off the From/To URIs.
 - `get_message` ([`server.rs:4817`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L4817)) returns headers and
   body.
-- `search_messages` ([`server.rs:5225`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5225)) returns a
+- `search_messages` ([`server.rs:5251`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5251)) returns a
   `snippet` built at [`:1391`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1391) from
   `truncate_string(&String::from_utf8_lossy(&msg.raw), …)` — raw bytes off the
   wire, unmodified.

@@ -189,7 +189,7 @@ so `sip_portrange` is `None` and every port is considered for SIP. That matches
 the TUI's interactive open, and it is the direction that cannot under-report —
 `--portrange` narrows what counts as SIP, and a capture opened here is read
 wide. It does mean an opened capture and an `-I` one can disagree about the same
-file when `--portrange` is set, and the disagreement is in favour of the opened
+file when `--portrange` is set, and the disagreement is in favor of the opened
 one. `start_servers` takes the CLI without the config file, so plumbing the
 resolved range would change a public signature for a difference that only ever
 finds *more* SIP.

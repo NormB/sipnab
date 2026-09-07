@@ -4167,7 +4167,7 @@ per SIP message and grows with the call):
       "type": "report",
       "dialog": 0,
       "vendor": "sipnab",
-      "product": "sipnab 0.5.156 (passive observer; not a recording system)",
+      "product": "sipnab 0.5.157 (passive observer; not a recording system)",
       "schema": "sipnab-dialog-diagnosis/1",
       "mediatype": "application/json",
       "encoding": "json",
@@ -6163,7 +6163,7 @@ sipnab -D
 `--version` lists the Cargo features compiled into the binary, e.g.
 
 ```text
-sipnab 0.5.156 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf,vcon
+sipnab 0.5.157 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf,vcon
 ```
 
 This is the fastest way to confirm a build carries the feature set
@@ -7919,7 +7919,7 @@ Annotated screenshots of every view are in the [TUI visual tour](#tui-views) at 
 |-----|--------|-------|
 | `j` / `k` | Navigate down / up | All list and scroll views |
 | `Enter` | Drill in (call flow, raw message, stream detail) | Call List, Call Flow, RTP Streams |
-| `Esc` | Back to the previous view (quits from the Call List) | All views |
+| `Esc` | Back to the previous view (asks to quit from the Call List) | All views |
 | `Tab` | Switch between Call List and RTP Streams | Call List, RTP Streams |
 | `/` | Search | Call List, Raw Message, RTP Streams |
 | `F7` | Open filter dialog | Call List, Call Flow, RTP Streams |
@@ -7932,13 +7932,28 @@ Annotated screenshots of every view are in the [TUI visual tour](#tui-views) at 
 
 | Key | Action |
 |-----|--------|
-| Ctrl+C | Force quit |
+| Ctrl+C | Force quit (skips the confirmation) |
 | Ctrl+L | Clear calls — Call List only, same as F5 there |
 | v | Show version (with git commit) in the status line |
 | n | Cycle name resolution (Off / Static / DNS) |
 | N | Name the selected address (map IP → host/FQDN) |
 | F12 | Toggle mouse capture — off enables the terminal's native drag-to-select (wheel scrolling pauses until re-enabled) |
 | Mouse wheel | Scroll (every view: lists move the selection, text views scroll) |
+
+### Quit confirmation
+
+`Esc` and the quit key open a confirmation rather than ending the session.
+`Esc` means "go back" in every other view, and it was ending captures that had
+been running for hours.
+
+| Key | Action |
+|-----|--------|
+| Y, Enter | Quit |
+| N, Esc, q | Return to the session |
+| Ctrl+C | Quit at once, from anywhere, including this dialog |
+
+Any other key leaves the question on screen. A stray keypress must not dismiss
+the dialog, and it certainly must not answer it.
 
 `v`, `n`, and `F12` ship as fallbacks: a key you explicitly rebind in
 `[keybindings]` always wins over them. In the Raw Message view with an active
@@ -7971,7 +7986,7 @@ without toggling anything.
 | End | Jump to last dialog |
 | Enter | Open call flow for the selected dialog — with two or more starred rows, opens one chronologically merged flow of all of them |
 | Space | Star/unstar dialog (`[*]`) for multi-select: F2 saves all starred dialogs, Enter opens them as one merged flow |
-| Esc / q | Quit **(configurable: `quit`)** |
+| Esc / q | Quit, after a confirmation **(configurable: `quit`)** |
 | < | Sort by previous column |
 | > | Sort by next column |
 | Z | Reverse sort direction |
@@ -8017,7 +8032,7 @@ active filter.
 | End | Jump to last message (or bottom of detail when focused) |
 | Enter | Open full-screen raw message view — or, with the cursor on an RTP bar, the Stream Detail view (MOS, jitter, quality intervals, burst/gap analysis, silence detection, sparklines) |
 | Space | Select message for diff (press on two messages to compare) |
-| q | Quit **(configurable: `quit`)** |
+| q | Quit, after a confirmation **(configurable: `quit`)** |
 | Esc | Back to call list |
 | d | Cycle SDP display mode (none / summary / full) |
 | t | Cycle timestamp mode (absolute / delta-prev / delta-first / scaled) |
@@ -8070,7 +8085,7 @@ detail pane regardless of focus.
 | y | Copy the displayed message's raw text to the clipboard (OSC 52, works over SSH — see [Copying text](#copying-text)) |
 | F1 / ? | Help **(configurable: `help`)** |
 | F2 | Save **(configurable: `save`)** |
-| q | Quit **(configurable: `quit`)** |
+| q | Quit, after a confirmation **(configurable: `quit`)** |
 | Esc | Back to the view you came from (call flow or call list) |
 
 ## Message diff
@@ -8081,7 +8096,7 @@ detail pane regardless of focus.
 | PgUp / PgDn | Page scroll |
 | Home / End | Jump to top/bottom |
 | h | Cycle header-name display (as captured / expanded / compact) |
-| q | Quit **(configurable: `quit`)** |
+| q | Quit, after a confirmation **(configurable: `quit`)** |
 | Esc | Back to call flow |
 | F1 / ? | Help **(configurable: `help`)** |
 
@@ -8097,7 +8112,7 @@ message of the selection rendered as one scrollable document.
 | Home / End | Jump to top/bottom |
 | h | Cycle header-name display (as captured / expanded / compact) |
 | F1 / ? | Help **(configurable: `help`)** |
-| q | Quit **(configurable: `quit`)** |
+| q | Quit, after a confirmation **(configurable: `quit`)** |
 | Esc | Back to call flow |
 
 ## RTP streams
@@ -8114,7 +8129,7 @@ message of the selection rendered as one scrollable document.
 | D | Open the Quality Dashboard (live MOS/jitter/loss) |
 | Tab | Switch to Call List |
 | Esc | Back to Call List |
-| q | Quit **(configurable: `quit`)** |
+| q | Quit, after a confirmation **(configurable: `quit`)** |
 | N | Name the selected stream's source address (map IP → host/FQDN) |
 | F1 / ? | Help **(configurable: `help`)** |
 | F2 | Save the selected stream's audio as WAV **(configurable: `save`)** |
@@ -8132,7 +8147,7 @@ message of the selection rendered as one scrollable document.
 | L | Open the packet loss map (RTP loss pattern) — a single screen with nothing to scroll, so `Esc` or `q` is the only key it takes, and either returns here |
 | F1 / ? | Help **(configurable: `help`)** |
 | F2 | Save the stream's audio as WAV **(configurable: `save`)** |
-| q | Quit **(configurable: `quit`)** |
+| q | Quit, after a confirmation **(configurable: `quit`)** |
 | Esc | Back to the view you came from (RTP Streams, Call Flow, or Quality Dashboard) |
 
 The Stream Detail view shows comprehensive per-stream quality data: MOS score, jitter statistics, quality intervals, burst/gap analysis ([RFC 3611](https://www.rfc-editor.org/rfc/rfc3611)), silence detection, and sparkline graphs for MOS and jitter trends over the stream's lifetime.
@@ -9921,7 +9936,7 @@ it. See [MCP Server](mcp.md) for the full guide. [Network Listeners](#network-li
 | `--uprobe-tls` | -- | off | Read SIP plaintext straight out of the TLS libraries this host is running, using kernel uprobes. **No certificate, no private key, no keylog and no restart** of the process it observes. Probes **every** mapped TLS library rather than one, because an ordinary host runs OpenSSL and wolfSSL together. Needs root (or `CAP_SYS_ADMIN` + `CAP_PERFMON`) and a mounted `tracefs`. Linux only. **Read [the walkthrough](uprobe-walkthrough.md) before using this**: it reads the plaintext of every SIP session on the host, and states what that means. Feature: `native` |
 | `--uprobe-library` | `<PATH>` | discovered | Probe this library instead of discovering them; repeatable. Bypasses discovery, so it also reaches a library nothing has mapped **yet**. For a process inside a container, give the path as sipnab sees it: `/proc/<pid>/root/usr/lib/libssl.so.3`. Feature: `native` |
 | `--uprobe-symbol` | `<NAME>` | per flavor | Write symbol to probe. Defaults to the one the library's flavor exports — `SSL_write` for OpenSSL, `wolfSSL_write` for wolfSSL — so you need it only for a library sipnab cannot classify by name. Feature: `native` |
-| `--uprobe-flavor` | `<NAME>` | all | Probe only these flavors (`openssl`, `wolfssl`); repeatable. Feature: `native`. Accepts `--uprobe-flavour` as an alias: the flag shipped with the British spelling through 0.5.104, and a released flag is a contract rather than a spelling choice |
+| `--uprobe-flavor` | `<NAME>` | all | Probe only these flavors (`openssl`, `wolfssl`); repeatable. Feature: `native`. Also accepts `--uprobe-flavour`, the spelling the flag shipped with through 0.5.104: a released flag is a contract rather than a spelling choice |
 | `--uprobe-list` | -- | off | List the TLS libraries sipnab would probe, then exit **without installing anything in the kernel**. Run this first: it answers the question that decides whether the capture is worth starting. Exits `1` when nothing is visible, so a health check does not read "no TLS library" as success. Feature: `native` |
 | `--uprobe-backend` | `<NAME>` | `tracefs` | Which machinery reads the plaintext. `tracefs` works on any Linux with tracefs mounted and sees **no socket**, so its dialogs name a process rather than a peer. `bpf` pairs each write with its `tcp_sendmsg` and so recovers the **real addresses** — but needs a sipnab built with `--features bpf` and a kernel with `CONFIG_DEBUG_INFO_BTF` (BTF is the BPF Type Format, which tells sipnab where the socket's fields sit on *this* kernel). sipnab refuses `bpf` without those rather than quietly downgrading: the addresses are the only reason to ask for it. Feature: `native` |
 
@@ -13419,7 +13434,7 @@ itself):
 
    ```bash
    sipnab --version
-   # sipnab 0.5.156 (...) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,vcon,bpf
+   # sipnab 0.5.157 (...) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,vcon,bpf
    ```
 
    If `mcp` is missing you have a source build without features — rebuild
@@ -14567,7 +14582,7 @@ Then confirm the build can do what you are about to ask of it:
 ```json
 {
   "schema_version": 1,
-  "version": "0.5.156",
+  "version": "0.5.157",
   "features": ["api", "audio", "hep", "mcp", "mcp-http", "metrics",
                "native", "plugins", "tls", "tui"],
   "can_decrypt": true,
@@ -15133,7 +15148,7 @@ stdin and the `sleep`s pace the handshake — so paste it as a unit:
 Expected first line of response:
 
 ```json
-{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"sipnab","version": "0.5.156"},"instructions":"sipnab MCP server — queries captured SIP dialogs ..."}}
+{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"sipnab","version": "0.5.157"},"instructions":"sipnab MCP server — queries captured SIP dialogs ..."}}
 ```
 
 ### Test the HTTP wire by hand
@@ -17340,7 +17355,7 @@ No parameters. Returns:
 ```jsonc
 {
   "schema_version": 1,
-  "version": "0.5.156",
+  "version": "0.5.157",
   "features": ["api", "hep", "mcp", "native", "tls", "tui"],
   "can_decrypt": true,           // tls
   "can_hep": true,               // hep
@@ -20841,7 +20856,7 @@ The container example runs against [`tests/pcap-samples/sip-rtp-g711.pcap`](http
       "type": "report",
       "dialog": 0,
       "vendor": "sipnab",
-      "product": "sipnab 0.5.156 (passive observer; not a recording system)",
+      "product": "sipnab 0.5.157 (passive observer; not a recording system)",
       "schema": "sipnab-dialog-diagnosis/1",
       "mediatype": "application/json",
       "encoding": "json",
@@ -24450,7 +24465,7 @@ and a consumer parses it before indexing into it.
       "type": "report",
       "dialog": 0,
       "vendor": "sipnab",
-      "product": "sipnab 0.5.156 (passive observer; not a recording system)",
+      "product": "sipnab 0.5.157 (passive observer; not a recording system)",
       "schema": "sipnab-dialog-diagnosis/1",
       "mediatype": "application/json",
       "encoding": "json",

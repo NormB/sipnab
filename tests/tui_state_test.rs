@@ -111,13 +111,33 @@ mod tui_state {
         assert_eq!(*app.current_view(), View::CallList);
     }
 
-    /// Pressing `q` sets the quit flag.
+    /// Press a key that should reach the quit path, then answer the
+    /// confirmation it opens.
+    ///
+    /// Every test below meant "this key quits". Since #283 that takes two
+    /// steps, and asserting only that the popup opened would stop checking
+    /// the half that actually ends the session.
+    fn quit_via(app: &mut App, code: KeyCode) {
+        app.handle_key(code);
+        assert_eq!(
+            app.active_popup(),
+            Some(&Popup::QuitConfirm),
+            "{code:?} must open the quit confirmation"
+        );
+        assert!(
+            !app.should_quit(),
+            "and must not quit before it is answered"
+        );
+        app.handle_key(KeyCode::Char('y'));
+        assert!(app.should_quit(), "answering yes quits");
+    }
+
+    /// Pressing `q` reaches the quit path.
     #[test]
     fn q_sets_should_quit() {
         let mut app = App::new_test();
         assert!(!app.should_quit());
-        app.handle_key(KeyCode::Char('q'));
-        assert!(app.should_quit());
+        quit_via(&mut app, KeyCode::Char('q'));
     }
 
     /// F1 opens the Help view.
@@ -286,14 +306,12 @@ mod tui_state {
         // From stream list
         let mut app = App::new_test();
         app.handle_key(KeyCode::Tab);
-        app.handle_key(KeyCode::Char('q'));
-        assert!(app.should_quit());
+        quit_via(&mut app, KeyCode::Char('q'));
 
         // From call flow
         let mut app = app_with_three_dialogs();
         app.handle_key(KeyCode::Enter);
-        app.handle_key(KeyCode::Char('q'));
-        assert!(app.should_quit());
+        quit_via(&mut app, KeyCode::Char('q'));
     }
 
     /// Filter text like "[invalid" is a literal substring: no error, zero matches.
@@ -1371,11 +1389,12 @@ mod tui_state {
         app.keymap.quit = KeyCode::Char('x');
         app.handle_key(KeyCode::Char('q'));
         assert!(!app.should_quit(), "unbound 'q' must no longer quit");
-        app.handle_key(KeyCode::Char('x'));
-        assert!(
-            app.should_quit(),
-            "rebound quit key must work in the diff view"
+        assert_eq!(
+            app.active_popup(),
+            None,
+            "and must not even raise the question"
         );
+        quit_via(&mut app, KeyCode::Char('x'));
     }
 
     /// Rebinding help to F12 applies in the combined detail view.
@@ -1396,11 +1415,7 @@ mod tui_state {
     fn keymap_rebind_beats_global_fallback_keys() {
         let mut app = app_with_three_dialogs();
         app.keymap.quit = KeyCode::Char('n');
-        app.handle_key(KeyCode::Char('n'));
-        assert!(
-            app.should_quit(),
-            "'n' rebound to quit must quit, not cycle name mode"
-        );
+        quit_via(&mut app, KeyCode::Char('n'));
     }
 
     // ── Mouse wheel ────────────────────────────────────────────────────
@@ -1821,8 +1836,7 @@ mod tui_state {
     #[test]
     fn call_flow_q_quits() {
         let mut app = app_with_call_flow_open();
-        app.handle_key(KeyCode::Char('q'));
-        assert!(app.should_quit());
+        quit_via(&mut app, KeyCode::Char('q'));
     }
 
     /// Esc from the call flow returns to the call list.
@@ -2203,8 +2217,7 @@ mod tui_state {
     #[test]
     fn raw_msg_q_quits() {
         let mut app = app_in_raw_message();
-        app.handle_key(KeyCode::Char('q'));
-        assert!(app.should_quit());
+        quit_via(&mut app, KeyCode::Char('q'));
     }
 
     /// Esc from the raw view returns to the call flow it was opened from.
@@ -2327,8 +2340,7 @@ mod tui_state {
     #[test]
     fn message_diff_q_quits() {
         let mut app = app_in_message_diff();
-        app.handle_key(KeyCode::Char('q'));
-        assert!(app.should_quit());
+        quit_via(&mut app, KeyCode::Char('q'));
     }
 
     /// Esc from the diff returns to the call flow.
@@ -2755,8 +2767,7 @@ mod tui_state {
     fn stream_list_q_quits() {
         let mut app = App::new_test();
         app.handle_key(KeyCode::Tab);
-        app.handle_key(KeyCode::Char('q'));
-        assert!(app.should_quit());
+        quit_via(&mut app, KeyCode::Char('q'));
     }
 
     // ── Help: Esc closes ─────────────────────────────────────────────

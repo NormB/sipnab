@@ -335,7 +335,7 @@ pub fn write_crash_report(dir: &Path, contents: &str) -> std::io::Result<PathBuf
 /// On any write failure (e.g. `ENOSPC` surfacing mid-report) the partial
 /// file is removed before the error is propagated, so a caller never finds
 /// a truncated crash report on disk. Best-effort cleanup: a failed removal
-/// is ignored in favour of surfacing the original write error.
+/// is ignored in favor of surfacing the original write error.
 fn finish_report(path: &Path, file: &mut std::fs::File, contents: &str) -> std::io::Result<()> {
     use std::io::Write as _;
     if let Err(e) = file.write_all(contents.as_bytes()) {

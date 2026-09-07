@@ -530,6 +530,9 @@ pub(in crate::tui) fn render_app(
             Popup::NameAddress => {
                 render_name_popup(frame, area, app);
             }
+            Popup::QuitConfirm => {
+                render_quit_confirm_popup(frame, area, app);
+            }
         }
     }
 

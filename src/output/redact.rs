@@ -1145,7 +1145,7 @@ static E164: LazyLock<regex::Regex> = LazyLock::new(|| {
 /// A plain `str::replace` is wrong here and the reason is not hypothetical: a
 /// container named `db` is a legal node name, and replacing every `db` in the
 /// caveat's prose would also rewrite `2001:db8::1`. An occurrence counts only
-/// where neither neighbour is a character a host name is made of — letters,
+/// where neither neighbor is a character a host name is made of — letters,
 /// digits, `-`, `.` and `_`.
 ///
 /// **What this still cannot do**, stated rather than hidden: a node genuinely

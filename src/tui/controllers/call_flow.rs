@@ -425,7 +425,7 @@ fn execute_call_flow_action(app: &mut App, action: CallFlowAction) {
     let detail_focused = app.flow.raw_preview && app.flow.detail_focused;
 
     match action {
-        CallFlowAction::Quit => app.should_quit = true,
+        CallFlowAction::Quit => crate::tui::controllers::quit_confirm::request_quit(app),
         CallFlowAction::ToggleDetailFocus => {
             // Only meaningful when the detail pane is visible.
             if app.flow.raw_preview {
@@ -1124,7 +1124,7 @@ pub(in crate::tui) fn handle_raw_message_key(app: &mut App, key: KeyEvent) {
 /// `should_quit`.
 fn execute_raw_message_action(app: &mut App, action: RawMessageAction) {
     match action {
-        RawMessageAction::Quit => app.should_quit = true,
+        RawMessageAction::Quit => crate::tui::controllers::quit_confirm::request_quit(app),
         RawMessageAction::ScrollUp => {
             app.raw_msg_scroll = app.raw_msg_scroll.saturating_sub(1);
         }
@@ -1288,7 +1288,7 @@ pub(in crate::tui) fn handle_message_diff_key(app: &mut App, key: KeyEvent) {
 /// `Quit` sets `should_quit`.
 fn execute_message_diff_action(app: &mut App, action: MessageDiffAction) {
     match action {
-        MessageDiffAction::Quit => app.should_quit = true,
+        MessageDiffAction::Quit => crate::tui::controllers::quit_confirm::request_quit(app),
         MessageDiffAction::Help => app.current_view = View::Help,
         MessageDiffAction::ScrollUp => {
             app.diff_scroll = app.diff_scroll.saturating_sub(1);
@@ -1390,7 +1390,7 @@ pub(in crate::tui) fn handle_combined_detail_key(app: &mut App, key: KeyEvent) {
 /// detailed dialog's call flow); `Quit` sets `should_quit`.
 fn execute_combined_detail_action(app: &mut App, action: CombinedDetailAction) {
     match action {
-        CombinedDetailAction::Quit => app.should_quit = true,
+        CombinedDetailAction::Quit => crate::tui::controllers::quit_confirm::request_quit(app),
         CombinedDetailAction::Help => app.current_view = View::Help,
         CombinedDetailAction::Back => {
             // INVARIANT: combined detail is only reachable from the call
@@ -2013,7 +2013,12 @@ mod tests {
         let mut app = app_with_dialogs();
         open_call_flow(&mut app);
         handle_call_flow_key(&mut app, key(KeyCode::Char('q')));
-        assert!(app.should_quit);
+        assert!(
+            !app.should_quit,
+            "the quit key opens the confirmation rather than ending the \
+             session -- issue #283"
+        );
+        assert_eq!(app.active_popup, Some(Popup::QuitConfirm));
 
         let mut app = app_with_dialogs();
         open_call_flow(&mut app);
@@ -2178,7 +2183,12 @@ mod tests {
     fn raw_message_quit_help_save() {
         let mut app = app_in_raw_message();
         handle_raw_message_key(&mut app, key(KeyCode::Char('q')));
-        assert!(app.should_quit);
+        assert!(
+            !app.should_quit,
+            "the quit key opens the confirmation rather than ending the \
+             session -- issue #283"
+        );
+        assert_eq!(app.active_popup, Some(Popup::QuitConfirm));
 
         let mut app = app_in_raw_message();
         handle_raw_message_key(&mut app, key(KeyCode::F(1)));
@@ -2253,7 +2263,12 @@ mod tests {
     fn message_diff_q_quits() {
         let mut app = app_in_message_diff();
         handle_message_diff_key(&mut app, key(KeyCode::Char('q')));
-        assert!(app.should_quit);
+        assert!(
+            !app.should_quit,
+            "the quit key opens the confirmation rather than ending the \
+             session -- issue #283"
+        );
+        assert_eq!(app.active_popup, Some(Popup::QuitConfirm));
     }
 
     /// Esc returns from the diff view to the dialog's flow.

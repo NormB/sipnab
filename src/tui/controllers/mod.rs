@@ -14,6 +14,7 @@ mod file_open;
 mod filter_dialog;
 pub(crate) mod loss_map;
 mod name_dialog;
+mod quit_confirm;
 mod save_dialog;
 mod stream;
 mod timeline;
@@ -37,6 +38,7 @@ pub(in crate::tui) use file_open::*;
 pub(in crate::tui) use filter_dialog::*;
 pub use loss_map::{LossMapAction, loss_map_action};
 pub(in crate::tui) use name_dialog::*;
+pub(in crate::tui) use quit_confirm::*;
 pub(in crate::tui) use save_dialog::*;
 #[cfg(test)]
 pub(in crate::tui) use stream::get_selected_stream_key;
@@ -324,6 +326,7 @@ pub(in crate::tui) fn handle_popup_key(app: &mut App, key: KeyEvent) {
         Popup::SettingsDialog => handle_settings_popup_key(app, key),
         Popup::FileOpenDialog => handle_file_open_popup_key(app, key),
         Popup::NameAddress => handle_name_popup_key(app, key),
+        Popup::QuitConfirm => handle_quit_confirm_key(app, key),
     }
 }
 

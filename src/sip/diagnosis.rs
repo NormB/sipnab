@@ -891,7 +891,7 @@ fn name_a_few(items: &[UnwitnessedMessage]) -> String {
 ///    `mirror` AND `wire`; there is no `expected` field for a surface to render
 ///    as the truth and no `actual` field to render as the deviation.
 /// 3. **The two gap lists are produced by ONE expression applied twice with
-///    the arguments swapped**, below. A rule that favoured either witness would
+///    the arguments swapped**, below. A rule that favored either witness would
 ///    have to be written into that single closure, where it would be visible,
 ///    rather than emerging from two similar-looking blocks that drifted.
 ///

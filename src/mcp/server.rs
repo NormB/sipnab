@@ -1637,10 +1637,16 @@ pub struct StartTlsCaptureParams {
     /// Probe only these TLS flavors: "openssl", "wolfssl". Empty means every
     /// one found, which is the default because an ordinary host runs both.
     ///
-    /// The field shipped as `flavours` through 0.5.104. The alias keeps an
-    /// agent that already sends the old key working: a JSON field an MCP
-    /// client has been told to send is wire format, and wire format does not
-    /// get to change because the prose around it did.
+    /// The field shipped under the British spelling through 0.5.104 and the
+    /// alias below still accepts it. The `--uprobe-flavor` FLAG lost its alias
+    /// in 0.5.157; this one keeps it, and the difference is not inconsistency:
+    /// clap refuses an unknown flag out loud, while serde ignores an unknown
+    /// key in silence. Dropping this alias would not tell an agent anything —
+    /// it would quietly widen the probe from the one library it asked for to
+    /// every library found, which is a worse outcome than a spelling.
+    ///
+    /// `alias = "flavours"` is exempted by token in
+    /// `the_tree_spells_in_us_english`, so the word stays forbidden in prose.
     #[serde(default, alias = "flavours")]
     pub flavors: Vec<String>,
     /// Probe these libraries instead of discovering them. Each must be a path
@@ -5815,7 +5821,7 @@ impl SipnabMcp {
         let mut flavors = Vec::new();
         for name in &params.flavors {
             flavors.push(
-                discover::parse_flavour(name)
+                discover::parse_flavor(name)
                     .map_err(|e| rmcp::ErrorData::invalid_params(e, None))?,
             );
         }
@@ -8669,7 +8675,7 @@ impl ServerHandler for SipnabMcp {
     ///
     /// # Why the method rmcp calls legacy
     ///
-    /// rmcp 3.1.3 marks `ServerHandler::subscribe` deprecated in favour of the
+    /// rmcp 3.1.3 marks `ServerHandler::subscribe` deprecated in favor of the
     /// 2026-07-28 `subscriptions/listen`. sipnab negotiates 2025-06-18 and
     /// 2025-11-25, and rmcp routes BOTH of those revisions to this method --
     /// `subscriptions/listen` is refused as method-not-found below

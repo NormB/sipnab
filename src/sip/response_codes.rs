@@ -435,7 +435,7 @@ mod rfc_8224_naming_tests {
     ///
     /// The explanation body matters as much as the title: 437 is about a
     /// CREDENTIAL the verification service holds and cannot use, not about a
-    /// certificate that failed to validate, which is 438's neighbourhood.
+    /// certificate that failed to validate, which is 438's neighborhood.
     #[test]
     fn four_thirty_seven_uses_the_current_rfc_8224_name() {
         let text = explain_response_code(437).expect("437 is explained");

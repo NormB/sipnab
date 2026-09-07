@@ -1302,7 +1302,7 @@ input:focus-visible,
   // leaves line length alone. Measured at 1920px: content 820 -> 1352px, and
   // the first table's cells stop wrapping (2 lines -> 1).
   //
-  // `$doc-width` still sizes the homepage's centred blocks, which want a fixed
+  // `$doc-width` still sizes the homepage's centered blocks, which want a fixed
   // measure and are not in this grid.
   max-width: 100%;
   font-size: 1rem;

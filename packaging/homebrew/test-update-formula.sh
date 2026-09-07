@@ -26,7 +26,7 @@ bad()  { printf '  FAIL %s\n' "$1"; fail=$((fail+1)); }
 # release.yml builds the file with
 #   sha256sum *.tar.gz *.deb *.rpm *.cdx.json > SHA256SUMS.txt
 # which on 0.5.117 produced sixteen entries: six tarballs (gnu, musl, darwin),
-# four .deb and four .rpm (each in plain and `-noaudio` flavours), and two
+# four .deb and four .rpm (each in plain and `-noaudio` flavors), and two
 # CycloneDX SBOMs — in glob order, which is NOT the order the generator reads
 # them in. A fixture narrower than that cannot exercise the classes that
 # actually break a release: a new artifact name, a platform that did not build,

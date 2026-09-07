@@ -547,7 +547,7 @@ pub(crate) fn laid_out_width(widths: &[Option<Constraint>; 11], i: usize) -> Opt
 /// needs 15, so `203.0.113.145` and `203.0.113.101` both rendered as
 /// `203.0.113`: two different hosts, one string.
 ///
-/// The tail is favoured on an odd budget for the same reason — the end is what
+/// The tail is favored on an odd budget for the same reason — the end is what
 /// disambiguates. A value that already fits is returned untouched, and an
 /// unknown width never mangles anything.
 pub(crate) fn elide_middle(s: &str, width: Option<usize>) -> String {

@@ -344,6 +344,69 @@ pub(in crate::tui) fn render_name_popup(frame: &mut ratatui::Frame, area: Rect, 
     frame.render_widget(Paragraph::new(lines), inner);
 }
 
+/// Render the "Quit sipnab?" confirmation as a centered popup overlay.
+///
+/// Opened by the quit key and by Esc —
+/// [issue #283](https://github.com/NormB/sipnab/issues/283), where a reflexive
+/// Esc ended a running capture.
+///
+/// # Arguments
+/// * `frame` - Frame to draw into.
+/// * `area` - Full frame area the popup is centered within.
+/// * `app` - Application state (theme only).
+///
+/// # Side effects
+/// Draws to `frame` (clearing the cells behind the popup); no state is
+/// mutated.
+pub(in crate::tui) fn render_quit_confirm_popup(frame: &mut ratatui::Frame, area: Rect, app: &App) {
+    let lines: Vec<Line<'_>> = vec![
+        Line::from(""),
+        Line::from(Span::styled(
+            "  Are you sure you want to quit?",
+            Style::default().fg(app.theme.header),
+        )),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  Y", Style::default().add_modifier(Modifier::BOLD)),
+            Span::styled(" quit", Style::default().fg(app.theme.muted)),
+            Span::styled("    N/Esc", Style::default().add_modifier(Modifier::BOLD)),
+            Span::styled(" cancel", Style::default().fg(app.theme.muted)),
+        ]),
+        Line::from(Span::styled(
+            "  Ctrl-C always quits without asking.",
+            Style::default().fg(app.theme.muted),
+        )),
+    ];
+
+    // Sized to what it says, for the reason spelled out in `render_name_popup`:
+    // `Paragraph` truncates in silence here, and the line that would go is the
+    // one naming the way out.
+    let title = " Quit sipnab? ";
+    let content = lines
+        .iter()
+        .map(ratatui::text::Line::width)
+        .max()
+        .unwrap_or(0);
+    let desired = u16::try_from(content.max(title.len()).saturating_add(3)).unwrap_or(u16::MAX);
+    let popup_width = desired.clamp(20, area.width.saturating_sub(4).max(20));
+    let rows = u16::try_from(lines.len()).unwrap_or(u16::MAX);
+    let popup_height = rows
+        .saturating_add(2)
+        .min(area.height.saturating_sub(2))
+        .max(3);
+    let popup_area = centered_popup(area, popup_width, popup_height);
+
+    frame.render_widget(Clear, popup_area);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(title)
+        .style(Style::default().bg(app.theme.background));
+    let inner = block.inner(popup_area);
+    frame.render_widget(block, popup_area);
+
+    frame.render_widget(Paragraph::new(lines), inner);
+}
+
 /// Render the file-open dialog as a centered popup overlay.
 ///
 /// Two modes: a directory browser (default) that lists subdirectories and
@@ -1246,6 +1309,9 @@ mod tests {
             ("settings", |f, a, app| render_settings_popup(f, a, app)),
             ("filter", |f, a, app| {
                 render_filter_popup(f, a, &app.filter_dialog, &app.theme)
+            }),
+            ("quit_confirm", |f, a, app| {
+                render_quit_confirm_popup(f, a, app)
             }),
         ]
     }

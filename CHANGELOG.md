@@ -8,6 +8,49 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [0.5.157] - 2026-09-07
+
+### Fixed
+
+- **The US-English gate had a hole in it, and the spelling came back through
+  the hole.** Its word list left out `neighbour` entirely, so `neighbours`
+  reached a released changelog entry; `flavour` was deliberately excluded
+  because `--uprobe-flavour` is an accepted alias and the gate could only
+  exempt whole files. Both are fixed the same way — the list now carries the
+  full families (`neighbour`, `favour`, `defence`, `centre`, `labour`,
+  `realise`, `utilise` and the rest), and the two legitimate British spellings
+  are exempted by TOKEN rather than by file: the flag name `uprobe-flavour`,
+  and the serde attribute `alias = "flavours"` on the MCP
+  `start_tls_capture` params. The word stays forbidden in prose everywhere,
+  including in the files those two tokens live in.
+
+  It found 35 occurrences across the tree, nearly all of them older than this
+  release. `--uprobe-flavour` and the MCP `flavours` key both keep working: a
+  released flag and a wire field are contracts, not spelling choices.
+
+### Added
+
+- **A confirmation before quitting the TUI.** `Esc` ended the session outright.
+  In every other view in sipnab `Esc` means "go back" — in the call list it
+  meant "go away", and a capture that has been running for an hour does not
+  survive the difference. `Esc` and the quit key now open a "Quit sipnab?"
+  dialog: `Y` or Enter quits, `N`/`Esc`/`q` returns to the session, and any
+  other key leaves the question standing rather than dismissing it.
+
+  `Ctrl-C` still quits immediately, and it works while the dialog is open —
+  the popup handler runs before the view handlers, so a confirmation nobody
+  could dismiss would otherwise have trapped the terminal. That is the one
+  gesture nobody presses by accident.
+
+  Seven views each set `should_quit` themselves; they now route through one
+  `request_quit`, so the answer to "should this really exit?" lives in one
+  place rather than seven.
+
+  Reported by liwangob ([@WangKLi](https://github.com/WangKLi)), who pointed
+  out that `Esc` is the key a terminal user presses reflexively to back out of
+  something, which makes it the worst possible key to end a session with
+  (#283).
+
 ## [0.5.156] - 2026-09-07
 
 ### Added
@@ -70,7 +113,7 @@ entry that carries them.
 - **`in_subnet`, a filter operator that compares addresses rather than
   strings.** The only subnet answer the DSL had was a regex on the dotted form.
   That cannot express a prefix which is not octet-aligned — a `/22` spans four
-  `/24`s — it matches neighbours when the anchor is dropped, and IPv6 defeats it
+  `/24`s — it matches neighbors when the anchor is dropped, and IPv6 defeats it
   entirely, because `2001:db8::1` and its fully expanded form are one address and
   two strings. Malformed input now matches nothing rather than everything, and
   the two families never cross.
@@ -106,7 +149,7 @@ entry that carries them.
   built from `DialogStore::len()`, which is how many dialogs are HELD. At the
   store's cap that number is pinned while calls arrive and leave, so the
   headline rate of this release answered `0.0/s` on exactly the saturated
-  server an operator was asking about — and below the cap it cancelled to zero
+  server an operator was asking about — and below the cap it canceled to zero
   whenever completions matched arrivals. The store now carries a cumulative
   opened-per-method counter, and the total is its sum rather than a second
   counter that could drift from it. A method whose dialogs have all gone keeps

@@ -11,7 +11,7 @@
 
 use clap::Parser;
 use sipnab::capture::CaptureSource;
-use sipnab::capture::uprobe::discover::{Flavor, PlannedTarget, parse_flavour, plan_targets};
+use sipnab::capture::uprobe::discover::{Flavor, PlannedTarget, parse_flavor, plan_targets};
 use sipnab::cli::Cli;
 
 /// `--uprobe-list` is the flag an operator is told to run first, so it must
@@ -145,9 +145,40 @@ fn an_unclassifiable_library_without_a_symbol_is_refused_with_the_fix() {
     );
 }
 
+/// The MCP params keep the spelling the flag lost, and that is deliberate.
+///
+/// clap refuses an unknown flag out loud; serde ignores an unknown key in
+/// silence. Dropping the wire alias would not tell an agent it had gone — it
+/// would widen the probe from the one library the agent asked for to every
+/// library found, which is a worse outcome than a spelling. Pinned so the
+/// asymmetry is a decision rather than something nobody got round to.
+#[cfg(feature = "mcp")]
+#[test]
+fn the_mcp_params_still_accept_the_old_spelling_because_serde_is_silent() {
+    let old: sipnab::mcp::server::StartTlsCaptureParams =
+        serde_json::from_str(r#"{"flavours":["wolfssl"]}"#)
+            .expect("the wire alias is still accepted");
+    assert_eq!(
+        old.flavors,
+        vec!["wolfssl"],
+        "an agent sending the old key must still narrow the probe, not widen it"
+    );
+
+    let new: sipnab::mcp::server::StartTlsCaptureParams =
+        serde_json::from_str(r#"{"flavors":["wolfssl"]}"#).expect("and so is the new one");
+    assert_eq!(new.flavors, old.flavors, "both keys mean one thing");
+}
+
 /// The pre-0.5.105 spelling still parses, because a released flag is a
 /// contract. Asserts the EFFECT — the old name reaching the same field —
 /// rather than the presence of an `alias` attribute.
+///
+/// Removed in 0.5.157 and restored in the same release. The case for removing
+/// it was that the British spelling had to stay out of the US-English gate's
+/// word list for as long as the alias lived; that turned out to be false — the
+/// gate exempts this one token, so the word is forbidden in prose and this
+/// flag name still works. What was left was a contract break with nothing
+/// on the other side of it.
 #[test]
 fn the_old_uprobe_flavour_spelling_still_works() {
     let cli = Cli::parse_from([
@@ -161,6 +192,13 @@ fn the_old_uprobe_flavour_spelling_still_works() {
         cli.tls_args.uprobe_flavor,
         vec!["openssl", "wolfssl"],
         "--uprobe-flavour shipped through 0.5.104; scripts naming it must keep working"
+    );
+    assert_eq!(
+        Cli::parse_from(["sipnab", "--uprobe-flavor", "openssl"])
+            .tls_args
+            .uprobe_flavor,
+        vec!["openssl"],
+        "and the US spelling is the one the help text names"
     );
 }
 
@@ -176,8 +214,8 @@ fn uprobe_flavor_parses_both_and_is_repeatable() {
     ])
     .expect("parse");
     assert_eq!(cli.tls_args.uprobe_flavor, vec!["openssl", "wolfssl"]);
-    assert_eq!(parse_flavour("openssl"), Ok(Flavor::OpenSsl));
-    assert_eq!(parse_flavour("wolfssl"), Ok(Flavor::WolfSsl));
+    assert_eq!(parse_flavor("openssl"), Ok(Flavor::OpenSsl));
+    assert_eq!(parse_flavor("wolfssl"), Ok(Flavor::WolfSsl));
 }
 
 /// GnuTLS is mapped on ordinary hosts and is deliberately not probed: its

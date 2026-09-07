@@ -110,7 +110,7 @@ fn the_scanner_alphabet_accepts_a_digit_in_a_tool_name() {
          at the 2 and yields nothing, which is how a live tool went uncounted"
     );
 
-    // And it must not have become so wide that it swallows neighbouring text.
+    // And it must not have become so wide that it swallows neighboring text.
     let noisy = r#"name = "a_tool", description = "not a name""#;
     let found: Vec<String> = regex::Regex::new(r#"name = "([a-z0-9_]+)""#)
         .expect("regex")

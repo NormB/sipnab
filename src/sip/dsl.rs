@@ -1737,7 +1737,7 @@ fn eval_compare(
 /// The only subnet answer the filter language had was a regex on the dotted
 /// string. That is wrong in three ways at once: a prefix that is not
 /// octet-aligned cannot be written at all (a `/22` spans four `/24`s), an
-/// unanchored pattern matches neighbours — `198.51.100.` also matches
+/// unanchored pattern matches neighbors — `198.51.100.` also matches
 /// `198.51.1002` — and IPv6 defeats it entirely, because `2001:db8::1` and
 /// `2001:0db8:0000:0000:0000:0000:0000:0001` are one address and two strings.
 ///
@@ -1979,7 +1979,7 @@ mod tests {
     ///
     /// The DSL's only subnet answer was a regex on the dotted string. That is
     /// wrong for every prefix that is not octet-aligned — a `/22` cannot be
-    /// written at all — it matches neighbours when the anchor is dropped, and
+    /// written at all — it matches neighbors when the anchor is dropped, and
     /// it is unusable for IPv6, where one address has many textual forms.
     #[test]
     fn in_subnet_matches_on_the_parsed_address() {

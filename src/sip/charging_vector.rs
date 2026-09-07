@@ -451,7 +451,7 @@ mod tests {
         );
     }
 
-    /// A leftover assertion block, kept with its original neighbours.
+    /// A leftover assertion block, kept with its original neighbors.
     #[test]
     fn icid_value_reads_the_plain_form() {}
 

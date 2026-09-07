@@ -855,8 +855,8 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
   entry rested on. It is also the mechanism
   behind CT2 — a stalled reader is what overflows the ring. **Latent deadlock:**
   the ordering `stores → alerts` exists only on this path and is written down
-  nowhere; `security_findings` ([`src/mcp/server.rs:5480`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5480)) currently takes
-  nowhere; `security_findings` ([`src/mcp/server.rs:5480`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5480)) currently takes
+  nowhere; `security_findings` ([`src/mcp/server.rs:5506`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5506)) currently takes
+  nowhere; `security_findings` ([`src/mcp/server.rs:5506`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5506)) currently takes
   `alerts.read()` and no store lock, so there is no cycle *today*, and nothing
   stops the next MCP tool from creating one. **Do:** queue exec requests and
   per-message output during the locked section, drain them after the guards
@@ -1634,8 +1634,8 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
   `sipnab_capture_invalid_timestamps_total` (the field is declared at
   [`src/output/prometheus.rs:119`](https://github.com/NormB/sipnab/blob/main/src/output/prometheus.rs#L119), read from the atomic at `:149`, rendered at
   `:523`, and named in [`tests/metrics_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/metrics_test.rs) so a rename cannot silently drop
-  it); the MCP `capture_status` tool carries the field ([`src/mcp/server.rs:5595`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5595),
-  it); the MCP `capture_status` tool carries the field ([`src/mcp/server.rs:5595`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5595),
+  it); the MCP `capture_status` tool carries the field ([`src/mcp/server.rs:5621`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5621),
+  it); the MCP `capture_status` tool carries the field ([`src/mcp/server.rs:5621`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5621),
   populated at `:1356`) and reports it as a delta between two calls (`:1676`);
   and the batch summary explains it in prose
   ([`src/app/batch.rs:905-925`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L905-L925), the doc comment on `report_capture_quality`). The
@@ -3193,7 +3193,7 @@ implementation.
   which is called from the hand-written `call_tool` (`:4951`). The
   no-second-list requirement held literally: `scope_refusal` decides from the
   registered tool's own `read_only_hint` annotation, refuses a known tool whose
-  hint is absent rather than guessing in the caller's favour, and returns no
+  hint is absent rather than guessing in the caller's favor, and returns no
   scope error for an unknown tool so dispatch still reports "tool not found".
   On stdio there is no scope at all — process ownership is the boundary.
 - [x] **PB10 — Tool-call audit log.** Append-only: tool, arguments, caller
@@ -5608,8 +5608,8 @@ class recur:
   `top_talkers` example shipped green. One-line fix, and the same blind-counter
   shape already fixed twice this release.
 - [x] **DOC13 (done 2026-08-30) — clap aliases are ungated.** All three flag gates call
-  `get_long()`; nothing calls `get_all_aliases()`, so `--uprobe-flavour` is
-  accepted and documented nowhere.
+  `get_long()`; nothing calls `get_all_aliases()`, so the British-spelled
+  uprobe alias (since removed) was accepted and documented nowhere.
 - [x] **DOC14 (done 2026-08-30) — REST schemas are one-directional.** 17 of 30 OpenAPI components
   leave `additionalProperties` unset, so the contract test passes bodies
   carrying `input_origin`, `evidence_omitted` and `snapped_frames`. The
@@ -6124,7 +6124,7 @@ cheap gaps its page made obvious.
 
 - [x] **CMP3 (done 2026-09-06) — a subnet is not a regex.** The filter DSL's only subnet answer is
   a regex on the dotted string. That is wrong for every prefix that is not
-  octet-aligned — a `/22` cannot be written at all — it matches neighbours if
+  octet-aligned — a `/22` cannot be written at all — it matches neighbors if
   the anchor is dropped, and it is unusable for IPv6, where one address has many
   textual forms. `group_dialogs` has the matching hole: its dimensions take
   `src.ip` as an exact value, so "which access network" cannot be asked.

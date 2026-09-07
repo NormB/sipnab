@@ -108,7 +108,7 @@ process.** Threads therefore provide *zero* panic containment in a release
 build. A parser bug reached from a crafted packet does not kill a worker; it
 kills the capture, the servers, and the evidence.
 
-That is a genuine point in favour of processes. It is also a threat the project
+That is a genuine point in favor of processes. It is also a threat the project
 already attacks head-on. D17 / [invariant 11](../internals/invariants.md) says:
 
 > No parser reachable from packet bytes may panic, `unwrap()`, or exit.
@@ -276,7 +276,7 @@ the most expensive thing in the critical section, and it is there by accident.
 
 The nested `AlertEngine` lock is worse than it currently looks. The ordering
 `stores → alerts` exists only on this path; `security_findings`
-([`mcp/server.rs:5480`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5480)) takes `alerts.read()` and no
+([`mcp/server.rs:5506`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5506)) takes `alerts.read()` and no
 store lock, so there is no deadlock **today**. Nothing writes that ordering
 down, and nothing enforces it. The next MCP tool that reads an alert and then a
 dialog deadlocks the capture.
