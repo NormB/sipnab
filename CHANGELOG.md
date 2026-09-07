@@ -12,6 +12,15 @@ entry that carries them.
 
 ### Fixed
 
+- **`pre-push` now runs the E2E TUI tests, which ran nowhere else locally.**
+  They drive a real sipnab in a real PTY through tmux and are the only check
+  that a key does what a user pressing it would see — and they are `#[ignore]`d,
+  so `cargo test` skips them: the pre-commit suite, the feature matrix and
+  every local run passed without them. The quit confirmation below broke
+  `tui_quit_exits_cleanly`, which pressed `q` and waited for the process to
+  end, and nothing local could have caught it. Skipped with a stated verdict
+  when tmux is absent, never silently.
+
 - **The US-English gate had a hole in it, and the spelling came back through
   the hole.** Its word list left out `neighbour` entirely, so `neighbours`
   reached a released changelog entry; `flavour` was deliberately excluded

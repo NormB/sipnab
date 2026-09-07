@@ -369,6 +369,51 @@ else
 	esac
 fi
 
+# -- The E2E TUI tests, which are `#[ignore]` and so run nowhere else ---------
+#
+# They drive a real sipnab in a real PTY through tmux, and they are the only
+# check that a key does what a user pressing it would see. Being `#[ignore]`d
+# means `cargo test` skips them: the pre-commit suite, the feature matrix and
+# every local run above all pass without them.
+#
+# That cost a CI cycle on 0.5.157. `tui_quit_exits_cleanly` pressed `q` and
+# waited for the process to end; the quit confirmation added in #283 meant it
+# never did. Nothing local could have caught it, which is the argument for
+# running them here rather than reading about them in a CI log.
+#
+# Skipped with a stated verdict when tmux is absent, never silently: an absent
+# verdict that reads as a pass is worse than no gate, the same rule the
+# non-Linux and corpus gates follow.
+if ! command -v tmux >/dev/null 2>&1; then
+	printf '%b  E2E TUI (PTY): NOT CHECKED -- tmux is not on PATH%b\n' \
+		"$YELLOW" "$NC"
+	printf '    CI runs these and blocks there. Install tmux to check here.\n'
+else
+	printf '  E2E TUI tests (PTY, via tmux) ... '
+	set +e
+	E2E_OUTPUT=$(cargo test --features tui --test tui_e2e_test -- --ignored 2>&1)
+	E2E_RC=$?
+	set -e
+	if [ "$E2E_RC" -eq 0 ]; then
+		printf '%bOK%b\n' "$GREEN" "$NC"
+	else
+		printf '%bFAIL%b\n' "$RED" "$NC"
+		E2E_LOG="$(git rev-parse --git-dir 2>/dev/null || echo .)/sipnab-pre-push-e2e.log"
+		printf '%s\n' "$E2E_OUTPUT" >"$E2E_LOG"
+		printf '%s\n' "$E2E_OUTPUT" \
+			| grep -E '^test .* FAILED|panicked at|^test result:' \
+			| head -20 | sed 's/^/    /'
+		printf '  Full output: %s\n' "$E2E_LOG"
+		printf '\n'
+		printf '%bPush blocked: the TUI does not behave as a user would see it.%b\n' "$RED" "$NC"
+		printf 'Reproduce with:\n'
+		printf '    cargo test --features tui --test tui_e2e_test -- --ignored\n'
+		printf '\n'
+		printf 'Emergency bypass (discouraged): SKIP_FMT_HOOK=1 git push\n'
+		exit 1
+	fi
+fi
+
 # -- Hard gate: a v* tag must point at a commit whose CI is green -------------
 # `docs/internals/build-ci-release.md` used to open with "a release is a pushed
 # v* tag" and say nothing about checking first -- so the entire safeguard was

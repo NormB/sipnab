@@ -307,14 +307,55 @@ mod tui_e2e {
         s.wait_for("INVITE"); // ladder
     }
 
-    /// `q` exits the process: the tmux session ends within the timeout.
+    /// `q` asks, and answering yes exits: the tmux session ends within the
+    /// timeout.
+    ///
+    /// Two steps since #283. The dialog is asserted on screen between them,
+    /// so a build where `q` quit outright would end the session before the
+    /// question appeared and fail here rather than pass for the wrong reason.
     #[test]
     #[ignore]
     fn tui_quit_exits_cleanly() {
         let s = TuiSession::launch_sip_call();
         s.wait_for("Dialogs:");
         s.literal("q");
+        s.wait_for("Quit sipnab?");
+        assert!(
+            !s.ended(),
+            "the question must be on screen with the process still running"
+        );
+        s.literal("y");
         s.wait_until_ended();
+    }
+
+    /// Answering no returns to the session, which keeps running.
+    ///
+    /// The half that matters for the accident #283 reports: a reflexive key
+    /// must be recoverable, and a capture that was running is still running.
+    #[test]
+    #[ignore]
+    fn tui_quit_confirmation_can_be_declined() {
+        let s = TuiSession::launch_sip_call();
+        s.wait_for("Dialogs:");
+        s.literal("q");
+        s.wait_for("Quit sipnab?");
+        s.literal("n");
+        s.wait_for("Dialogs:");
+        assert!(
+            !s.ended(),
+            "declining must leave the capture running, not end it"
+        );
+    }
+
+    /// Esc opens the same question rather than ending the session.
+    #[test]
+    #[ignore]
+    fn tui_esc_asks_before_quitting() {
+        let s = TuiSession::launch_sip_call();
+        s.wait_for("Dialogs:");
+        s.key("Escape");
+        s.wait_for("Quit sipnab?");
+        assert!(!s.ended(), "Esc must not end the session on its own");
     }
 
     // ── New-feature coverage ─────────────────────────────────────────────
