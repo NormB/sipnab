@@ -1438,6 +1438,19 @@ pub enum MosGrounding {
 }
 
 impl MosGrounding {
+    /// Does the score rest on a real impairment value rather than the
+    /// placeholder?
+    ///
+    /// THE predicate. It used to be written twice — `output/model.rs` and
+    /// `mcp/server.rs` each compared against `Unpublished` themselves — so
+    /// adding a third grounding and narrowing one copy would have left MCP
+    /// disagreeing with REST, the CLI, the TUI and the vCon export about
+    /// whether a MOS is a measurement or a guess.
+    #[must_use]
+    pub const fn is_grounded(self) -> bool {
+        !matches!(self, Self::Unpublished)
+    }
+
     /// The wire spelling every surface serializes this as.
     ///
     /// One vocabulary in one place, the same rule

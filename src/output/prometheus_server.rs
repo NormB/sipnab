@@ -467,54 +467,15 @@ fn collect_metrics(
         metrics.capture_backpressure_blocks_total = meter.backpressure_blocks();
     }
 
-    // Dialog metrics (the stream store is read alongside them: the
-    // per-dialog media diagnosis needs both).
+    // One assembler, shared with the REST `/metrics` handler. They used to be
+    // two: this one published `state="Completed"` where the other published
+    // `state="completed"`, and the dashboards in `contrib/` query the
+    // lowercase form -- so their "Active Dialogs" panel read empty here, which
+    // looks exactly like an idle switch.
     {
         let ds = dialog_store.read();
         let ss = stream_store.read();
-        let capture_media = crate::rtp::diagnosis::CaptureMedia::of_store(&ss);
-        for dialog in ds.iter() {
-            let state_str = dialog.state().to_string();
-            *metrics.dialogs_total.entry(state_str).or_insert(0) += 1;
-
-            // Count messages by method
-            *metrics
-                .messages_total
-                .entry(dialog.method.to_string())
-                .or_insert(0) += dialog.messages.len() as u64;
-
-            for msg in &dialog.messages {
-                if let Some(code) = msg.status_code {
-                    metrics.record_response(code);
-                }
-            }
-
-            let dialog_streams: Vec<&crate::rtp::stream::RtpStream> =
-                ss.streams_for(&dialog.call_id).collect();
-            let media = crate::rtp::diagnosis::MediaContext::for_dialog(dialog, capture_media);
-            metrics.record_media_diagnosis(&crate::rtp::diagnosis::diagnose_media(
-                &dialog_streams,
-                &media,
-            ));
-        }
-
-        // Both gauges come from the store's own accessors rather than from
-        // the loop above, so the two numbers cannot drift apart from the
-        // definitions every other surface publishes.
-        metrics.dialogs_active = ds.active_dialog_count() as u64;
-        metrics.calls_active = ds.active_call_count() as u64;
-    }
-
-    // Stream metrics
-    {
-        let ss = stream_store.read();
-        let mut active_count: u64 = 0;
-        for stream in ss.iter() {
-            if stream.is_active() {
-                active_count += 1;
-            }
-        }
-        metrics.rtp_streams_active = active_count;
+        crate::output::prometheus::populate_from_stores(&mut metrics, &ds, &ss);
     }
 
     metrics
@@ -930,6 +891,56 @@ mod tests {
         assert!(handle.is_ok(), "loopback without auth should start");
     }
 
+    /// Both scrape doors publish byte-identical exposition for one capture.
+    ///
+    /// The gate that did not exist while the two doors were two assemblers.
+    /// `docs/prometheus-metrics.md` carried a table of four KNOWN
+    /// disagreements rather than a fix: the dialog-state label's case, what
+    /// `rtp_streams_active` counts, whether `rtp_streams_total` exists at all,
+    /// and whether the capture-queue counters are real or a flat zero.
+    ///
+    /// The case one was live damage. The dashboards in `contrib/` query
+    /// `state=~"trying|ringing|incall"`, so their "Active Dialogs" panel read
+    /// empty against this server — indistinguishable from an idle switch.
+    ///
+    /// Compares the FORMATTED text, not the struct: the exposition is what a
+    /// scrape target actually receives, and a difference that survives
+    /// formatting is a difference an operator sees.
+    #[test]
+    fn both_scrape_doors_publish_identical_exposition() {
+        let ds = populated_dialog_store();
+        let ss = populated_stream_store();
+
+        // This door.
+        let standalone =
+            crate::output::prometheus::format_metrics(&collect_metrics(&ds, &ss, None));
+
+        // The REST door, assembled the way `get_metrics` assembles it.
+        let mut via_api = crate::output::prometheus::PrometheusMetrics::for_scrape();
+        {
+            let d = ds.read();
+            let s = ss.read();
+            crate::output::prometheus::populate_from_stores(&mut via_api, &d, &s);
+        }
+        let rest = crate::output::prometheus::format_metrics(&via_api);
+
+        assert_eq!(
+            standalone, rest,
+            "the two scrape targets must publish the same series for the same \
+             capture; a rule tuned on one has to hold on the other"
+        );
+        assert!(
+            standalone.contains("sipnab_dialogs_total{state=\""),
+            "and the comparison must actually cover the label that drifted: \
+             {standalone}"
+        );
+        assert!(
+            !standalone.contains("state=\"Completed\"") && !standalone.contains("state=\"Trying\""),
+            "dialog-state labels are lowercase, which is what the shipped \
+             dashboards query: {standalone}"
+        );
+    }
+
     /// Collected metrics count the seeded dialog and the one active stream.
     #[test]
     fn collect_metrics_counts_dialogs_and_active_streams() {
@@ -937,8 +948,22 @@ mod tests {
         // One INVITE dialog was inserted.
         assert!(metrics.messages_total.values().sum::<u64>() >= 1);
         assert!(!metrics.dialogs_total.is_empty());
-        // The stream was created with a near-now timestamp, so it counts active.
-        assert_eq!(metrics.rtp_streams_active, 1);
+        // `active` means ESTABLISHED -- a dialog claims the stream -- which is
+        // the definition its sibling `rtp_streams_total{status="established"}`
+        // uses. This server used to count `is_active()` instead, a 30-second
+        // recency window, so one gauge name carried two populations depending
+        // on which port you scraped. The fixture stream has no dialog, so it
+        // is orphaned and the gauge is 0.
+        assert_eq!(
+            metrics.rtp_streams_active, 0,
+            "an unclaimed stream is orphaned, not active"
+        );
+        assert_eq!(
+            metrics.rtp_streams_total.get("orphaned").copied(),
+            Some(1),
+            "and it is counted as such, on this server too -- the family used \
+             to be absent here entirely, so a panel built on it stayed blank"
+        );
     }
 
     /// The two dialog gauges are scraped as different numbers, and the

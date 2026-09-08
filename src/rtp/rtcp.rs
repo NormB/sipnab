@@ -221,6 +221,21 @@ pub enum RttSource {
     SenderReportEcho,
 }
 
+impl RttSource {
+    /// The wire name for this source, as every surface publishes it.
+    ///
+    /// One map. `output/model.rs` and `mcp/server.rs` each carried their own,
+    /// so a renamed variant would have shipped two spellings of one fact to
+    /// consumers that are supposed to agree.
+    #[must_use]
+    pub const fn as_wire_str(self) -> &'static str {
+        match self {
+            Self::XrVoipMetrics => "xr_voip_metrics",
+            Self::SenderReportEcho => "sender_report_echo",
+        }
+    }
+}
+
 /// Seconds between the NTP epoch (1900-01-01) and the Unix epoch (1970-01-01).
 const NTP_UNIX_EPOCH_DELTA_SECS: u64 = 2_208_988_800;
 

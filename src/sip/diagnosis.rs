@@ -3480,4 +3480,74 @@ mod tests {
             "each address attributed to the witness that gave it: {hint}"
         );
     }
+    /// The shipped alert rules page at the threshold the code calls a fault.
+    ///
+    /// They disagreed. `contrib/prometheus/sipnab-alerts.yml` fired at 5.0 s
+    /// while `BUILT_IN.post_dial_delay_sec` is 11.0 — so an operator who
+    /// imported the shipped rules was paged for a condition sipnab's own
+    /// diagnosis reports as healthy, and 5.0 s is itself ITU-T E.721 Table 2's
+    /// TOLL normal-load MEAN target, which a conformant toll route meets.
+    ///
+    /// Both copies of the file are checked. They are byte-identical today, and
+    /// a fix that reached only one of them is the same defect one directory
+    /// along.
+    #[test]
+    fn the_shipped_alert_pdd_threshold_matches_the_code() {
+        let expected = SignalingThresholds::BUILT_IN.post_dial_delay_sec;
+        for (path, yaml) in [
+            (
+                "contrib/prometheus/sipnab-alerts.yml",
+                include_str!("../../contrib/prometheus/sipnab-alerts.yml"),
+            ),
+            (
+                "contrib/observability/prometheus/rules/sipnab-alerts.yml",
+                include_str!("../../contrib/observability/prometheus/rules/sipnab-alerts.yml"),
+            ),
+        ] {
+            let expr = yaml
+                .lines()
+                .skip_while(|l| !l.contains("alert: SipnabCriticalPDD"))
+                .find(|l| l.trim_start().starts_with("expr:"))
+                .unwrap_or_else(|| panic!("{path} has no SipnabCriticalPDD rule"));
+            let threshold: f64 = expr
+                .rsplit_once('>')
+                .map(|(_, rhs)| rhs.trim())
+                .and_then(|v| v.parse().ok())
+                .unwrap_or_else(|| panic!("{path}: cannot read a threshold from {expr}"));
+            assert!(
+                (threshold - expected).abs() < f64::EPSILON,
+                "{path} pages at {threshold}s; the code calls a call faulty at \
+                 {expected}s. An operator running the shipped rules must not \
+                 be paged for what sipnab itself reports as healthy."
+            );
+        }
+    }
+
+    /// The warning tier sits below the critical one and above the local target.
+    ///
+    /// A warning at or above the page threshold never fires before the page,
+    /// which makes it decoration. One below E.721's local 95% target would
+    /// warn on conformant local service.
+    #[test]
+    fn the_warning_tier_sits_between_the_local_target_and_the_page() {
+        let yaml = include_str!("../../contrib/prometheus/sipnab-alerts.yml");
+        let warn: f64 = yaml
+            .lines()
+            .skip_while(|l| !l.contains("alert: SipnabHighPDD"))
+            .find(|l| l.trim_start().starts_with("expr:"))
+            .and_then(|l| l.rsplit_once('>').map(|(_, r)| r.trim().to_string()))
+            .and_then(|v| v.parse().ok())
+            .expect("SipnabHighPDD carries a numeric threshold");
+
+        // 6.0 s is E.721 Table 2, local connection, normal load, 95%.
+        assert!(
+            (warn - 6.0).abs() < f64::EPSILON,
+            "the warning tier is {warn}s; E.721's local normal-load 95% target \
+             is 6.0s and that is the number this tier claims to use"
+        );
+        assert!(
+            warn < SignalingThresholds::BUILT_IN.post_dial_delay_sec,
+            "a warning at or above the page threshold never fires first"
+        );
+    }
 }

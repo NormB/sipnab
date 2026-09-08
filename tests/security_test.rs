@@ -88,64 +88,6 @@ fn wait_for_file(path: &str) -> String {
     .expect("event-exec child should write the file within 10s")
 }
 
-// ── Allocation accounting (M7 cleanup) ──────────────────────────────
-
-/// A counting allocator that tracks net live heap bytes. The library sets
-/// mimalloc as the global allocator only in its binary (`main.rs`), so this
-/// integration-test crate has no allocator of its own — installing one here is
-/// free of conflicts and gives the M7 test an *exact*, quantization-free view
-/// of a map's heap growth (an RSS probe cannot: the OS resident set is skewed
-/// by allocator arenas, page purging, and capacity rounding).
-#[cfg(feature = "api")]
-struct CountingAllocator;
-
-/// Net live bytes handed out by [`CountingAllocator`] (allocations minus frees).
-#[cfg(feature = "api")]
-static LIVE_BYTES: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
-
-// SAFETY: every method forwards to the system allocator and only additionally
-// updates a relaxed atomic counter; the returned pointers and their validity
-// are exactly those of `std::alloc::System`.
-#[cfg(feature = "api")]
-unsafe impl std::alloc::GlobalAlloc for CountingAllocator {
-    unsafe fn alloc(&self, layout: std::alloc::Layout) -> *mut u8 {
-        // SAFETY: `layout` is forwarded unchanged to the system allocator.
-        let ptr = unsafe { std::alloc::System.alloc(layout) };
-        if !ptr.is_null() {
-            LIVE_BYTES.fetch_add(layout.size() as i64, std::sync::atomic::Ordering::Relaxed);
-        }
-        ptr
-    }
-    unsafe fn dealloc(&self, ptr: *mut u8, layout: std::alloc::Layout) {
-        // SAFETY: `ptr`/`layout` come from a prior `alloc` and are forwarded
-        // unchanged to the system allocator that produced the pointer.
-        unsafe { std::alloc::System.dealloc(ptr, layout) };
-        LIVE_BYTES.fetch_sub(layout.size() as i64, std::sync::atomic::Ordering::Relaxed);
-    }
-    unsafe fn realloc(&self, ptr: *mut u8, layout: std::alloc::Layout, new_size: usize) -> *mut u8 {
-        // SAFETY: `ptr`/`layout`/`new_size` are forwarded unchanged to the
-        // system allocator that produced the pointer.
-        let new_ptr = unsafe { std::alloc::System.realloc(ptr, layout, new_size) };
-        if !new_ptr.is_null() {
-            LIVE_BYTES.fetch_add(
-                new_size as i64 - layout.size() as i64,
-                std::sync::atomic::Ordering::Relaxed,
-            );
-        }
-        new_ptr
-    }
-}
-
-#[cfg(feature = "api")]
-#[global_allocator]
-static GLOBAL: CountingAllocator = CountingAllocator;
-
-/// Snapshot of net live heap bytes (see [`CountingAllocator`]).
-#[cfg(feature = "api")]
-fn live_bytes() -> i64 {
-    LIVE_BYTES.load(std::sync::atomic::Ordering::Relaxed)
-}
-
 /// A minimal [`tracing::Subscriber`] that records each event's level and
 /// rendered message so a test can assert a specific warning fired. Only the
 /// `tracing` facade (a direct dependency) is used — the test crate has no
@@ -600,7 +542,7 @@ fn api_ignores_x_forwarded_for_header() {
     // The RateLimiter uses IpAddr directly (from ConnectInfo, not headers).
     // Verify that the rate limiter tracks by the provided IP, regardless
     // of what any header says.
-    let mut limiter = RateLimiter::new(5);
+    let mut limiter = RateLimiter::new(5, 1024);
     let real_ip = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 100));
 
     // 5 requests from the real IP should exhaust the limit
@@ -1414,7 +1356,7 @@ fn constant_time_eq_different_lengths_still_compares() {
                 ..Default::default()
             },
         )),
-        rate_limiter: Arc::new(Mutex::new(RateLimiter::new(100))),
+        rate_limiter: Arc::new(Mutex::new(RateLimiter::new(100, 1024))),
         max_inline_media_bytes: None,
         max_rows: sipnab::cli::Cli::DEFAULT_API_MAX_ROWS as usize,
         // No capture context. These fixtures exercise auth and rate limiting
@@ -1470,7 +1412,7 @@ fn constant_time_eq_matching_strings() {
                 ..Default::default()
             },
         )),
-        rate_limiter: Arc::new(Mutex::new(RateLimiter::new(100))),
+        rate_limiter: Arc::new(Mutex::new(RateLimiter::new(100, 1024))),
         max_inline_media_bytes: None,
         max_rows: sipnab::cli::Cli::DEFAULT_API_MAX_ROWS as usize,
         // No capture context. These fixtures exercise auth and rate limiting
@@ -1536,7 +1478,7 @@ fn constant_time_eq_different_strings_same_length() {
                 ..Default::default()
             },
         )),
-        rate_limiter: Arc::new(Mutex::new(RateLimiter::new(100))),
+        rate_limiter: Arc::new(Mutex::new(RateLimiter::new(100, 1024))),
         max_inline_media_bytes: None,
         max_rows: sipnab::cli::Cli::DEFAULT_API_MAX_ROWS as usize,
         // No capture context. These fixtures exercise auth and rate limiting
@@ -1680,65 +1622,54 @@ fn scanner_kill_per_destination_rate_limit() {
 // M7: Rate Limiter Cleanup
 // =====================================================================
 
-/// M7: API rate limiter must clean up old entries to prevent unbounded growth
-/// from diverse source IPs.
+/// M7: the API rate limiter's memory is bounded by configuration, not by a
+/// sweep that has to keep up.
 ///
-/// One batch fills the bucket map's capacity; a second, equal batch of fresh
-/// IPs follows after the first has aged past the 2s cleanup horizon. The
-/// periodic sweep (every 100th `check`) evicts the stale batch in step with the
-/// fresh inserts — and because at most 100 inserts land between sweeps, the
-/// live set never crosses its capacity tier's load-factor threshold, so the
-/// backing table is never reallocated and net heap growth is ~0. If cleanup
-/// regresses, the map doubles, the table reallocates to the next tier, and net
-/// heap jumps by tens of MiB.
+/// This used to measure process heap: the REST door carried its own limiter
+/// whose bucket map grew with every unique source address and was pruned every
+/// hundredth `check`, so the test drove 200,000 addresses through it twice and
+/// asserted the heap had not doubled. That design's ceiling was whatever the
+/// sweep managed to keep up with, and the assertion needed a nine-megabyte
+/// budget because it was hostage to every other allocation in this binary.
 ///
-/// Growth is measured exactly by the counting allocator (RSS cannot see this —
-/// arena reuse and page purging mask a doubled HashMap). `#[serial]` keeps
-/// other heavy/serial tests from perturbing the process-global counter.
+/// The door now uses the shared `FixedWindowLimiter`, which never admits more
+/// than `max_tracked_peers` entries. That is a property about the map, so it
+/// is asserted about the map — no allocator, no budget, no serial marker.
 #[cfg(feature = "api")]
 #[test]
-#[serial_test::serial]
-fn api_rate_limiter_cleans_old_entries() {
+fn api_rate_limiter_memory_is_bounded_by_max_tracked_peers() {
     use sipnab::output::api::RateLimiter;
 
-    /// Unique IPs per batch — large enough that a doubled (uncleaned) map
-    /// crosses into the next HashMap capacity tier, a multi-MiB reallocation.
+    /// Three orders of magnitude past the bound, so an unbounded map is
+    /// unmistakable.
     const BATCH: u32 = 200_000;
-    /// Permitted net heap growth for batch 2. Measured (Rust 1.97 / hashbrown):
-    /// the working path performs one tombstone-driven half-table rehash
-    /// (~6.4 MiB), a regressed cleanup a full doubling (~12.8 MiB). The budget
-    /// sits between them with headroom on both sides for concurrent-test churn.
-    const BUDGET_BYTES: i64 = 9_000_000;
+    /// The configured bound.
+    const TRACKED: usize = 1_024;
 
-    let mut limiter = RateLimiter::new(100);
-
-    // Batch 1: allocate the bucket map's backing table for ~BATCH entries.
+    let mut limiter = RateLimiter::new(100, TRACKED);
+    let mut admitted = 0usize;
     for i in 0..BATCH {
-        limiter.check(IpAddr::V4(Ipv4Addr::from(i + 1)));
+        if limiter.check(IpAddr::V4(Ipv4Addr::from(i + 1))) {
+            admitted += 1;
+        }
+        assert!(
+            limiter.tracked_peers() <= TRACKED,
+            "the bucket map reached {} entries against a bound of {TRACKED} \
+             after {i} addresses — a spoofed-source flood can size it",
+            limiter.tracked_peers()
+        );
     }
 
-    // Age batch 1 past the 2s cleanup horizon.
-    std::thread::sleep(std::time::Duration::from_millis(2_100));
-
-    // Batch 2: fresh IPs. Cleanup evicts stale batch 1 in step, so the table is
-    // reused rather than reallocated.
-    let before = live_bytes();
-    for i in 0..BATCH {
-        limiter.check(IpAddr::V4(Ipv4Addr::from(BATCH + i + 1)));
-    }
-    let after = live_bytes();
-
-    // Functional guarantee: still accepts a new IP after cleanup.
+    // Not vacuous: the flood has to have been refused rather than served,
+    // and a limiter that refused everything from the start would hold an
+    // empty map and pass the bound trivially.
     assert!(
-        limiter.check(IpAddr::V4(Ipv4Addr::new(10, 10, 10, 10))),
-        "limiter should still accept new IPs after cleanup"
+        admitted > 0,
+        "no address was admitted at all, so the bound above proved nothing"
     );
-
-    let grew = after - before;
     assert!(
-        grew < BUDGET_BYTES,
-        "rate-limiter bucket map grew {grew} bytes across a full stale-IP turnover \
-         (budget {BUDGET_BYTES}) — periodic cleanup is not evicting old entries"
+        admitted < BATCH as usize,
+        "every one of {BATCH} addresses was admitted, so nothing was bounded"
     );
 }
 

@@ -1069,6 +1069,108 @@ fn write_help_type(out: &mut String, name: &str, help: &str, metric_type: &str) 
     let _ = writeln!(out, "# TYPE {name} {metric_type}");
 }
 
+/// Populate every store-derived metric, for whichever door is scraping.
+///
+/// One assembler, because there used to be two and they disagreed. The REST
+/// `/metrics` handler lowercased the dialog-state label and the standalone
+/// `--metrics` server did not, so the same deployment published
+/// `state="completed"` on one port and `state="Completed"` on the other — and
+/// the dashboards shipped in `contrib/` query the lowercase form, so their
+/// "Active Dialogs" panel read empty against the standalone server. An empty
+/// panel is indistinguishable from an idle switch, which is the worst way for
+/// a metric to be wrong.
+///
+/// They also disagreed about what `sipnab_rtp_streams_active` counts: streams
+/// that are not orphaned on one door, streams `is_active()` (a 30-second
+/// window) on the other. One gauge name over two populations.
+///
+/// # Arguments
+/// * `metrics` — built with `for_scrape()`, so the closed label sets are
+///   already initialized; this only fills what the stores know.
+/// * `dialogs`, `streams` — read under locks the caller holds.
+///
+/// # Side effects
+/// None beyond mutating `metrics`. No locks taken here: the caller owns the
+/// ordering, which every other surface takes dialog-first.
+pub fn populate_from_stores(
+    metrics: &mut PrometheusMetrics,
+    dialogs: &crate::sip::dialog_store::DialogStore,
+    streams: &crate::rtp::stream_store::StreamStore,
+) {
+    let capture_media = crate::rtp::diagnosis::CaptureMedia::of_store(streams);
+    for d in dialogs.iter() {
+        // Lowercase, which is what the shipped dashboards query. `Display`
+        // gives `Completed`; the label has always been meant to be
+        // `completed`.
+        *metrics
+            .dialogs_total
+            .entry(d.state().to_string().to_lowercase())
+            .or_insert(0) += 1;
+
+        if let Some(pdd_ms) = d.timing.pdd_ms() {
+            metrics.pdd_histogram.push(pdd_ms as f64 / 1000.0);
+        }
+
+        // The metric is named `messages_total`, so it counts MESSAGES.
+        *metrics
+            .messages_total
+            .entry(d.method.to_string())
+            .or_insert(0) += d.messages.len() as u64;
+
+        for msg in &d.messages {
+            if let Some(code) = msg.status_code {
+                metrics.record_response(code);
+            }
+        }
+
+        let dialog_streams: Vec<&crate::rtp::stream::RtpStream> =
+            streams.streams_for(&d.call_id).collect();
+        let media = crate::rtp::diagnosis::MediaContext::for_dialog(d, capture_media);
+        metrics.record_media_diagnosis(&crate::rtp::diagnosis::diagnose_media(
+            &dialog_streams,
+            &media,
+        ));
+    }
+
+    // From the store's own accessors rather than the loop, so these cannot
+    // drift from the definitions every other surface publishes.
+    metrics.dialogs_active = dialogs.active_dialog_count() as u64;
+    metrics.calls_active = dialogs.active_call_count() as u64;
+
+    let mut established = 0u64;
+    let mut orphaned = 0u64;
+    // Hoisted: the scrape's MOS histogram must describe the same scores the
+    // `/v1/streams` rows carry, so it reads the same evidence rather than a
+    // per-stream reconstruction of it.
+    let delay = crate::rtp::quality::MosDelay::from_capture(streams);
+    for s in streams.iter() {
+        if s.orphaned() {
+            orphaned += 1;
+        } else {
+            established += 1;
+        }
+        metrics.mos_histogram.push(delay.score(s));
+        metrics.jitter_histogram.push(s.jitter);
+        let total = s.packet_count + s.lost_packets;
+        if total > 0 {
+            metrics
+                .loss_histogram
+                .push((s.lost_packets as f64 / total as f64) * 100.0);
+        }
+    }
+    // "Active" means established, i.e. not orphaned -- the definition the
+    // `rtp_streams_total{state="established"}` counter beside it uses. The
+    // standalone server used `is_active()`, a 30-second recency window, so
+    // one gauge name carried two populations.
+    metrics.rtp_streams_active = established;
+    metrics
+        .rtp_streams_total
+        .insert("established".to_string(), established);
+    metrics
+        .rtp_streams_total
+        .insert("orphaned".to_string(), orphaned);
+}
+
 /// Format a labeled counter family (e.g., `sipnab_dialogs_total{state="completed"} 150`).
 ///
 /// Appends nothing when `values` is empty; otherwise writes HELP/TYPE,

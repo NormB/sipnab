@@ -3127,6 +3127,72 @@ column_selector = "F10"
         let err = limits.validate().unwrap_err();
         assert!(err.to_string().contains("max_audio_frames"));
     }
+
+    /// The shipped starter config lists the paths sipnab actually searches.
+    ///
+    /// It listed `./sipnab.toml` first — which `default_config_paths` never
+    /// probes — and omitted `/etc/sipnab/sipnab.toml`, which it does. A reader
+    /// following the comment copied the file where sipnab would never look,
+    /// and the loader is lenient: a config it does not find produces no
+    /// warning, so the run silently used defaults.
+    ///
+    /// Compares the paths in the header comment against the real list, in both
+    /// directions and in order, so neither a stale entry nor a missing one
+    /// survives.
+    #[test]
+    fn the_starter_config_lists_the_paths_that_are_searched() {
+        let example = include_str!("../contrib/sipnabrc.example");
+        let listed: Vec<String> = example
+            .lines()
+            .skip_while(|l| !l.contains("locations sipnab searches"))
+            .skip(1)
+            .take_while(|l| l.starts_with("#   "))
+            .map(|l| l.trim_start_matches('#').trim().to_string())
+            .collect();
+        assert!(
+            listed.len() >= 2,
+            "no search paths found in the starter config's header; the scan \
+             stopped matching and this gate checks nothing: {listed:?}"
+        );
+
+        // `~` in the comment against the real home in the path list.
+        let home = home_dir().expect("a home directory to compare against");
+        let real: Vec<String> = default_config_paths()
+            .iter()
+            .map(|p| {
+                p.strip_prefix(&home).map_or_else(
+                    |_| p.display().to_string(),
+                    |rest| format!("~/{}", rest.display()),
+                )
+            })
+            .collect();
+
+        assert_eq!(
+            listed, real,
+            "the starter config advertises a different search order from the \
+             one `default_config_paths` uses. A reader copies the file where \
+             the comment says, and a lenient loader never tells them it was \
+             not read."
+        );
+    }
+
+    /// The working directory is not searched, and the example does not claim it.
+    ///
+    /// Named separately because it is the specific wrong entry that shipped,
+    /// and because the order comparison above would also pass if BOTH the code
+    /// and the comment gained `./sipnab.toml` — this says the behavior itself
+    /// is what it is.
+    #[test]
+    fn there_is_no_working_directory_config_search() {
+        assert!(
+            !default_config_paths()
+                .iter()
+                .any(|p| p == std::path::Path::new("sipnab.toml")
+                    || p == std::path::Path::new("./sipnab.toml")),
+            "a working-directory search would make a config's effect depend on \
+             where the operator happened to be standing"
+        );
+    }
 }
 
 #[cfg(test)]

@@ -545,21 +545,7 @@ fn write_icmp_media_section(out: &mut String, resolved: &crate::pipeline::Resolv
 
 /// Convert a `DialogState` to a short display string.
 fn state_str(state: &DialogState) -> &'static str {
-    match state {
-        DialogState::Trying => "Trying",
-        DialogState::Ringing => "Ringing",
-        DialogState::InCall => "InCall",
-        DialogState::Completed => "Completed",
-        DialogState::Canceled => "Canceled",
-        DialogState::Failed => "Failed",
-        DialogState::Redirected => "Redirected",
-        DialogState::Registered => "Registered",
-        DialogState::Expired => "Expired",
-        DialogState::Pending => "Pending",
-        DialogState::Active => "Active",
-        DialogState::Terminated => "Terminated",
-        DialogState::Transferring => "Transferring",
-    }
+    state.as_str()
 }
 
 /// Format the dialog duration (`created_at` to `updated_at`) as a

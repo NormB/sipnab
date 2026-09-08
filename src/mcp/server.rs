@@ -3208,7 +3208,7 @@ fn stream_json(
         let grounding = crate::rtp::quality::mos_grounding(s.codec.as_deref());
         obj.insert(
             "mos_grounded".into(),
-            serde_json::Value::Bool(grounding != crate::rtp::quality::MosGrounding::Unpublished),
+            serde_json::Value::Bool(grounding.is_grounded()),
         );
         obj.insert(
             "mos_grounding".into(),
@@ -3232,13 +3232,7 @@ fn stream_json(
                 }
                 obj.insert(
                     "round_trip_source".into(),
-                    serde_json::Value::String(
-                        match source {
-                            crate::rtp::rtcp::RttSource::XrVoipMetrics => "xr_voip_metrics",
-                            crate::rtp::rtcp::RttSource::SenderReportEcho => "sender_report_echo",
-                        }
-                        .into(),
-                    ),
+                    serde_json::Value::String(source.as_wire_str().into()),
                 );
                 if matches!(source, crate::rtp::rtcp::RttSource::SenderReportEcho) {
                     obj.insert(

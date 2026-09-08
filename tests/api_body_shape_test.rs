@@ -39,7 +39,7 @@ fn state_with(gate: &Arc<PersistenceGate>) -> ApiState {
                 ..Default::default()
             },
         )),
-        rate_limiter: Arc::new(Mutex::new(RateLimiter::new(1000))),
+        rate_limiter: Arc::new(Mutex::new(RateLimiter::new(1000, 1024))),
         max_inline_media_bytes: None,
         max_rows: 50,
         capture: None,

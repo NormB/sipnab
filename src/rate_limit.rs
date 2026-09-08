@@ -225,6 +225,18 @@ impl<K: Eq + Hash> FixedWindowLimiter<K> {
         Ok(())
     }
 
+    /// How many peers the map is holding right now.
+    ///
+    /// Exposed so a test can assert the memory bound DIRECTLY. Measuring
+    /// process heap instead makes the assertion hostage to every other
+    /// allocation in the test binary, which is how the old REST-limiter test
+    /// came to carry a nine-megabyte budget for a property that is exactly
+    /// "this map never exceeds N entries".
+    #[must_use]
+    pub fn tracked_peers(&self) -> usize {
+        self.per_peer.len()
+    }
+
     /// Events either cap has refused over this limiter's lifetime.
     ///
     /// A running total rather than a per-window one on purpose: the number an

@@ -1122,20 +1122,13 @@ pub(in crate::tui) fn state_display_labeled(
     state: &DialogState,
     failed_label: &'static str,
 ) -> &'static str {
+    // The canonical table, with the ONE label this surface overrides: the
+    // call list shouts a failure as "FAILED" while the export path renders a
+    // plain "Failed". Everything else comes from `as_str()`, so a spelling
+    // cannot drift here without drifting everywhere.
     match state {
-        DialogState::Trying => "Trying",
-        DialogState::Ringing => "Ringing",
-        DialogState::InCall => "InCall",
-        DialogState::Completed => "Completed",
-        DialogState::Canceled => "Canceled",
         DialogState::Failed => failed_label,
-        DialogState::Redirected => "Redirected",
-        DialogState::Registered => "Registered",
-        DialogState::Expired => "Expired",
-        DialogState::Pending => "Pending",
-        DialogState::Active => "Active",
-        DialogState::Terminated => "Terminated",
-        DialogState::Transferring => "Transferring",
+        other => other.as_str(),
     }
 }
 

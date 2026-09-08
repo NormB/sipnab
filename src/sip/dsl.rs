@@ -1906,22 +1906,24 @@ fn compare_bool(field_val: bool, op: &Operator, value: &Value) -> bool {
 
 /// Convert a [`DialogState`] to its string representation for comparison
 /// against `state` field literals.
+/// Test-only view of [`state_to_str`], so the cross-surface spelling gate in
+/// `sip::dialog` can compare what the DSL actually uses rather than a copy of
+/// it. Private otherwise: nothing outside this module should be choosing
+/// between the DSL's spelling and the canonical one.
+#[cfg(test)]
+pub(crate) fn state_to_str_for_test(state: &DialogState) -> &'static str {
+    state_to_str(state)
+}
+
+/// The spelling `--filter "state == '...'"` compares against.
+///
+/// Delegates to [`DialogState::as_str`] rather than restating the table: this
+/// used to be a byte-identical copy of `Display`, and renaming a variant here
+/// alone would have left a filter naming it matching nothing at all.
 fn state_to_str(state: &DialogState) -> &'static str {
-    match state {
-        DialogState::Trying => "Trying",
-        DialogState::Ringing => "Ringing",
-        DialogState::InCall => "InCall",
-        DialogState::Completed => "Completed",
-        DialogState::Canceled => "Canceled",
-        DialogState::Failed => "Failed",
-        DialogState::Redirected => "Redirected",
-        DialogState::Registered => "Registered",
-        DialogState::Expired => "Expired",
-        DialogState::Pending => "Pending",
-        DialogState::Active => "Active",
-        DialogState::Terminated => "Terminated",
-        DialogState::Transferring => "Transferring",
-    }
+    // The canonical table, not a copy of it. `--filter "state == '...'"`
+    // compares against exactly what every other surface prints.
+    state.as_str()
 }
 
 /// MOS for a stream, scored by [`MosDelay::score`].

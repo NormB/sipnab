@@ -556,7 +556,6 @@ pub(in crate::tui) fn render_app(
 /// The full multi-line statistics text: totals, per-state counts and the
 /// method distribution (both sorted by count descending, then name). Pure.
 pub(in crate::tui) fn statistics_text(ds: &DialogStore, ss: &StreamStore) -> String {
-    use crate::sip::dialog::DialogState;
     use std::collections::HashMap;
 
     let dialog_count = ds.len();
@@ -571,21 +570,7 @@ pub(in crate::tui) fn statistics_text(ds: &DialogStore, ss: &StreamStore) -> Str
     let mut total_messages: usize = 0;
 
     for dialog in ds.iter() {
-        let state_name = match dialog.state() {
-            DialogState::Trying => "Trying",
-            DialogState::Ringing => "Ringing",
-            DialogState::InCall => "InCall",
-            DialogState::Completed => "Completed",
-            DialogState::Canceled => "Canceled",
-            DialogState::Failed => "Failed",
-            DialogState::Redirected => "Redirected",
-            DialogState::Registered => "Registered",
-            DialogState::Expired => "Expired",
-            DialogState::Pending => "Pending",
-            DialogState::Active => "Active",
-            DialogState::Terminated => "Terminated",
-            DialogState::Transferring => "Transferring",
-        };
+        let state_name = dialog.state().as_str();
         *state_counts.entry(state_name).or_insert(0) += 1;
         *method_counts.entry(dialog.method.as_str()).or_insert(0) += 1;
         total_messages += dialog.messages.len();

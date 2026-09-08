@@ -8,6 +8,78 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Fixed
+
+- **Eight places where one rule was written twice.** Found by auditing the tree
+  for the class that produced the `P-Charging-Vector` leak. Two were already
+  wrong in production.
+
+  **The two scrape doors published different data.** `--api /metrics` lowercased
+  the dialog-state label and the standalone `--metrics` server did not, so one
+  deployment served `state="completed"` on one port and `state="Completed"` on
+  the other — and the dashboards in `contrib/` query the lowercase form, so
+  their "Active Dialogs" panel read empty against the standalone server, which
+  is indistinguishable from an idle switch. Five more differences travelled with
+  it: `sipnab_rtp_streams_active` counted two different populations under one
+  name, `sipnab_rtp_streams_total` existed on only one door, both dialog gauges
+  and all four quality histograms were missing from one, and the capture-queue
+  counters read a flat `0` on the other. `docs/prometheus-metrics.md` listed all
+  six as permanent. There is now one assembler, and
+  `both_scrape_doors_publish_identical_exposition` compares the formatted
+  exposition the two produce for one capture.
+
+  **The shipped alert rules paged on conformant traffic.**
+  `contrib/prometheus/sipnab-alerts.yml` fired at PDD > 5 s while the code calls
+  a call healthy until 11 s. 5.0 s is ITU-T E.721 (05/99) Table 2's toll
+  normal-load *mean* target — a toll route sitting there is meeting the
+  standard. Both tiers are now grounded in that table, read from the
+  recommendation itself: warn at 6.0 s (local connection, normal load, 95%,
+  which Twilio's Voice Insights documentation independently names as the US
+  carrier-escalation line) and page at 11.0 s (international, normal load,
+  95%), the same figure `SignalingThresholds::BUILT_IN` uses. A test fails the
+  build if the two ever disagree, in both copies of the file.
+
+  **`is_unconfigured` was answered twice**, and one copy gates the REST
+  per-request auth bypass while the other gates the MCP bind refusal. A third
+  credential source added to one and not the other would have allowed a
+  non-loopback bind while every request still short-circuited to `Ok(())`. One
+  predicate now, with a test that drives all four credential shapes through
+  both.
+
+  **REST carried a private rate limiter**, so `[limits] max_tracked_peers` was
+  inert there and its bucket map had no configured bound against a
+  spoofed-source flood. It now uses the shared `FixedWindowLimiter`, and the
+  wiring is gated separately from the limiter — testing the limiter proved the
+  limiter worked and said nothing about whether the configured numbers reached
+  it, which was the half that was broken.
+
+  **The shipped fail2ban filter was ungated.** It pins the field order of the
+  log lines sipnab writes, and a filter that stops matching fails silently: the
+  jail keeps running and bans nothing, which looks exactly like a quiet
+  network. It is now compiled against real log lines, with a decoy test so it
+  cannot pass by being a catch-all.
+
+  **`DialogState` spellings were written five times.** Adding a variant was
+  compiler-caught in all five; changing a spelling was caught in none, and
+  `Redirected` was asserted in none of them — so renaming it in the filter DSL
+  alone would have left `--filter "state == 'Redirected'"` silently returning
+  zero rows. One table now, driven by `DialogState::ALL`.
+
+  **The starter config named a path sipnab never reads.**
+  `contrib/sipnabrc.example` advertised `./sipnab.toml` first and omitted
+  `/etc/sipnab/sipnab.toml`, so a reader following it copied the file where
+  sipnab would not look — and the loader is lenient, so nothing said so.
+
+  **And three smaller pairs:** `MosGrounding::is_grounded()` and
+  `RttSource::as_wire_str()` are single definitions rather than one copy each in
+  the REST and MCP projections, and `limit=0` now means the default page on
+  every REST route, as it always did on MCP. It previously meant an empty page
+  on two of them — so a caller who interpolated an unset variable into a URL got
+  a successful response with no rows, reading as "there is nothing here" rather
+  than as a mistake.
+
 ## [0.5.157] - 2026-09-07
 
 ### Fixed

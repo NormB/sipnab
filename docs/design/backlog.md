@@ -44,7 +44,7 @@ Tiers:
 
 ## Status
 
-**58 open, 450 done** across 36 sections.
+**50 open, 458 done** across 36 sections.
 Regenerate with `python3 scripts/backlog-status.py --apply`.
 
 | Section | Open | Done | Progress |
@@ -78,7 +78,7 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
 | LIVE | 6 | 0 | `..........` |
 | P5 | 7 | 13 | `######....` |
 | Shipped (audit-period features, kept for context) | 0 | 6 | `##########` |
-| DUP | 8 | 0 | `..........` |
+| DUP | 0 | 8 | `##########` |
 | OBS-FOLLOWUP | 4 | 0 | `..........` |
 
 <!-- /BACKLOG-STATUS -->
@@ -2580,7 +2580,7 @@ output path.
     exist and that *"lint findings are the only facts that cite their bytes
     today"*. That was true of the MCP surface only, and it is not true of the
     tree. `SipMessage.frame` ([`src/sip/message.rs:84`](https://github.com/NormB/sipnab/blob/main/src/sip/message.rs#L84)) and
-    `SipDialog.first_frame` ([`src/sip/dialog.rs:87`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs#L87)) both carry a `FrameRef`;
+    `SipDialog.first_frame` ([`src/sip/dialog.rs:124`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs#L124)) both carry a `FrameRef`;
     `--json` emits it per message and per dialog ([`src/output/json.rs:90`](https://github.com/NormB/sipnab/blob/main/src/output/json.rs#L90),
     `:402`, populated at `:454` and `:662`), `call_report` carries the dialog's
     ([`src/output/call_report.rs:773`](https://github.com/NormB/sipnab/blob/main/src/output/call_report.rs#L773)), and `--show-frame` ([`src/cli.rs:519`](https://github.com/NormB/sipnab/blob/main/src/cli.rs#L519))
@@ -3215,7 +3215,7 @@ implementation.
   `AcceptedToken`, PB9's plumbing landed on top of it, and the audit line
   already records what it carries — [`src/mcp/server.rs:4764`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L4764) formats
   `"{addr} bearer-verified scope={scope}"`. The token still cannot be named,
-  but the reason has narrowed to one field: `AcceptedToken` ([`src/auth.rs:293`](https://github.com/NormB/sipnab/blob/main/src/auth.rs#L293))
+  but the reason has narrowed to one field: `AcceptedToken` ([`src/auth.rs:319`](https://github.com/NormB/sipnab/blob/main/src/auth.rs#L319))
   holds `scope` and nothing else, so the `id` that `mint` signs into the
   payload is validated and then dropped. That is a smaller change than this
   line implies, and it is no longer blocked on anything.
@@ -7038,7 +7038,7 @@ makes the copies agree. Each item names both sites and what a divergence costs.
 The three that were already wrong — the redaction scanners, the runtime rate,
 and the capture meter — are fixed in 0.5.156; these are the rest.
 
-- [ ] **DUP1 — `is_unconfigured` is answered twice, and one copy gates a
+- [x] **DUP1 (done 2026-09-07) — `is_unconfigured` is answered twice, and one copy gates a
   security bypass.** `VerifierConfig` and `TokenVerifier` each compute
   `signing_keys.is_empty() && static_keys.is_empty()`. The first gates the MCP
   non-loopback bind refusal; the second gates the REST bind refusal, the MCP
@@ -7047,7 +7047,9 @@ and the capture meter — are fixed in 0.5.156; these are the rest.
   request still short-circuits to `Ok(())` — unauthenticated REST and MCP on a
   public interface. One `is_unconfigured`, delegated to.
 
-- [ ] **DUP2 — the Prometheus exposition is assembled twice and the two
+  **Done:** One `no_credentials_configured()`; both `is_unconfigured` methods delegate to it.
+
+- [x] **DUP2 (done 2026-09-07) — the Prometheus exposition is assembled twice and the two
   already disagree.** [`src/output/api.rs`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs) lowercases the dialog-state label;
   [`src/output/prometheus_server.rs`](https://github.com/NormB/sipnab/blob/main/src/output/prometheus_server.rs) does not, so `--api /metrics` emits
   `state="completed"` and `--metrics` emits `state="Completed"`. The shipped
@@ -7058,14 +7060,18 @@ and the capture meter — are fixed in 0.5.156; these are the rest.
   window) on the other. One assembler, and a gate that reads the dashboard
   JSON.
 
-- [ ] **DUP3 — REST carries a private third rate limiter.** `rate_limit.rs`
+  **Done:** One `populate_from_stores()`; both scrape doors call it. Closed all six divergences the docs listed as permanent, including the dialog-state label case that left the shipped Grafana panel blank against `--metrics`. Gated by `both_scrape_doors_publish_identical_exposition`, which compares the formatted exposition.
+
+- [x] **DUP3 (done 2026-09-07) — REST carries a private third rate limiter.** `rate_limit.rs`
   exists because the rule was written twice before, and says so. MCP and HEP
   use it; REST has its own `RateLimiter` with per-IP window anchoring rather
   than one shared window, and `start_servers` never passes
   `max_tracked_peers` to it — so that knob is inert on REST and the bucket map
   has no capacity bound a spoofed-source flood must respect.
 
-- [ ] **DUP4 — the fail2ban filter and the line that feeds it are ungated.**
+  **Done:** REST now uses the shared `FixedWindowLimiter`, so `max_tracked_peers` reaches it and the window semantics match every other listener. The wiring itself is gated by `the_api_door_receives_both_rate_limit_knobs`.
+
+- [x] **DUP4 (done 2026-09-07) — the fail2ban filter and the line that feeds it are ungated.**
   [`contrib/fail2ban/sipnab-scanner.conf`](https://github.com/NormB/sipnab/blob/main/contrib/fail2ban/sipnab-scanner.conf) pins the field order of
   `fail2ban.rs`'s log lines. Rename `scanner_detected`, reorder `ua=` and
   `method=`, or insert a field, and the jail runs and bans nothing, which looks
@@ -7073,25 +7079,33 @@ and the capture meter — are fixed in 0.5.156; these are the rest.
   the GENERATED failregex by compiling it against a real alert line; the
   shipped filter needs the same test.
 
-- [ ] **DUP5 — shipped alert thresholds disagree with sipnab's own
+  **Done:** The shipped filter is compiled against the real log lines by `the_shipped_filter_matches_the_lines_this_module_writes`, with a decoy test so it cannot pass as a catch-all.
+
+- [x] **DUP5 (done 2026-09-07) — shipped alert thresholds disagree with sipnab's own
   diagnosis.** [`contrib/prometheus/sipnab-alerts.yml`](https://github.com/NormB/sipnab/blob/main/contrib/prometheus/sipnab-alerts.yml) pages at PDD > 5 s;
   `diagnosis.rs` calls a call healthy until 11 s. An operator importing the
   shipped rules is paged for a condition sipnab itself reports as fine. The MOS
   pair agrees today with nothing keeping it so.
 
-- [ ] **DUP6 — `DialogState` spellings are written five times.** `Display`,
+  **Done:** Both alert tiers are grounded in ITU-T E.721 (05/99) Table 2, read from the recommendation itself: warn at 6.0 s (local 95%, which Twilio independently names as the US escalation line), page at 11.0 s (international 95%) — the same figure the code uses, gated against it in both copies of the file.
+
+- [x] **DUP6 (done 2026-09-07) — `DialogState` spellings are written five times.** `Display`,
   the filter DSL's `state_to_str`, the report writer, and two TUI tables.
   Adding a variant is compiler-caught; changing a spelling is not, and
   `Redirected` is asserted in none of the five — rename it in the DSL alone and
   `--filter "state == 'Redirected'"` silently returns zero rows.
 
-- [ ] **DUP7 — [`contrib/sipnabrc.example`](https://github.com/NormB/sipnab/blob/main/contrib/sipnabrc.example) documents a search order sipnab does
+  **Done:** One `DialogState::as_str()`; the other four sites read it. `every_surface_spells_every_state_the_same_way` drives every variant through `DialogState::ALL`.
+
+- [x] **DUP7 (done 2026-09-07) — [`contrib/sipnabrc.example`](https://github.com/NormB/sipnab/blob/main/contrib/sipnabrc.example) documents a search order sipnab does
   not use.** It advertises `./sipnab.toml`, which `default_config_paths()`
   never probes, and omits `/etc/sipnab/sipnab.toml`, which it does. The starter
   config tells operators to copy it where sipnab will not look, and the lenient
   loader says nothing.
 
-- [ ] **DUP8 — smaller pairs, same class.** The `mos_grounded` predicate and
+  **Done:** The starter config lists the paths `default_config_paths()` actually probes, gated in both directions and in order.
+
+- [x] **DUP8 (done 2026-09-07) — smaller pairs, same class.** The `mos_grounded` predicate and
   the `RttSource` wire-string map (`output/model.rs` vs `mcp/server.rs`); the
   `capture_quality` key set written three times, where the `From` impl is
   exhaustive on the destination so a new counter compiles clean and is silently
@@ -7102,6 +7116,8 @@ and the capture meter — are fixed in 0.5.156; these are the rest.
   prose and calling nothing; [RFC 8224](https://www.rfc-editor.org/rfc/rfc8224) `Identity` split with different
   empty-part rules in `stir_shaken.rs` and `vcon.rs`; and two stale defaults in
   [`man/sipnab.1`](https://github.com/NormB/sipnab/blob/main/man/sipnab.1), which ships to every installed user.
+
+  **Done:** `MosGrounding::is_grounded()` and `RttSource::as_wire_str()` are now single definitions, and `limit=0` means the default page on every REST route, as it always did on MCP.
 
 ## OBS-FOLLOWUP — gaps in the runtime answer (added 2026-09-07)
 

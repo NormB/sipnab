@@ -214,6 +214,25 @@ impl Prepared {
     }
 }
 
+/// The REST limiter this selection asks for.
+///
+/// Extracted so the WIRING can be driven. Testing `RateLimiter` proves the
+/// limiter works and says nothing about whether the configured numbers reach
+/// it — which is the half that was broken: `max_tracked_peers` reached the MCP
+/// door and stopped at this one, so the REST bucket map had no configured
+/// bound against a spoofed-source flood.
+///
+/// # Arguments
+/// * `selection` — the resolved per-run limits.
+#[cfg(feature = "api")]
+#[must_use]
+fn api_rate_limiter(selection: &Selection) -> crate::output::api::RateLimiter {
+    crate::output::api::RateLimiter::new(
+        selection.api_rate_limit_per_peer,
+        selection.max_tracked_peers,
+    )
+}
+
 /// Start every server that is both selected and configured, on one shared
 /// runtime thread. Returns `Ok(None)` when nothing is enabled (the common
 /// plain-capture path), `Ok(Some(handle))` for the detached servers thread,
@@ -403,7 +422,7 @@ pub fn start_servers(
     if selection.api
         && let Some(addr_str) = cli.listener_args.api.as_ref()
     {
-        use crate::output::api::{self, ApiServerConfig, ApiState, RateLimiter};
+        use crate::output::api::{self, ApiServerConfig, ApiState};
         let bind = api::parse_bind_addr(addr_str)
             .map_err(|e| anyhow::anyhow!("Invalid --api address: {e}"))?;
         let verifier = Arc::new(crate::auth::TokenVerifier::new(
@@ -416,9 +435,7 @@ pub fn start_servers(
             // /v1/runtime cannot disagree about one queue.
             capture_meter: capture_meter.clone(),
             verifier,
-            rate_limiter: Arc::new(parking_lot::Mutex::new(RateLimiter::new(
-                selection.api_rate_limit_per_peer,
-            ))),
+            rate_limiter: Arc::new(parking_lot::Mutex::new(api_rate_limiter(&selection))),
             max_rows: selection.api_row_cap,
             // One number across both doors: see `ApiState::max_inline_media_bytes`.
             max_inline_media_bytes: cli
@@ -788,5 +805,57 @@ pub fn resolve_mcp_verifier_config(cli: &Cli) -> crate::auth::VerifierConfig {
             .as_ref()
             .map(std::path::PathBuf::from),
         audience: crate::auth::AUDIENCE_MCP.to_string(),
+    }
+}
+
+#[cfg(all(test, feature = "api"))]
+mod tests {
+    use super::*;
+
+    /// A `Selection` with values nothing else in the tree uses, so a limiter
+    /// built from a default or from a constant cannot match by accident.
+    fn selection_with(rate: u32, peers: usize) -> Selection {
+        Selection {
+            mcp_row_cap: 1,
+            mcp_body_cap: 1,
+            mcp_wait_seconds: 1,
+            api_row_cap: 1,
+            api_rate_limit_per_peer: rate,
+            max_tracked_peers: peers,
+            metrics_max_conn: 1,
+            tfps: Default::default(),
+            mcp_max_findings: 1,
+            api: true,
+            mcp: false,
+            metrics: false,
+            armed_detections: Vec::new(),
+        }
+    }
+
+    /// Both rate-limit knobs reach the REST door.
+    ///
+    /// `max_tracked_peers` reached the MCP door and stopped here, so
+    /// `[limits] max_tracked_peers` was inert on REST and its peer map had no
+    /// configured bound. Asserting the limiter's own behavior would not have
+    /// caught that: the limiter was fine, the wiring was not.
+    #[test]
+    fn the_api_door_receives_both_rate_limit_knobs() {
+        let limiter = api_rate_limiter(&selection_with(37, 11));
+        assert_eq!(
+            limiter.caps(),
+            (37, 11),
+            "the per-peer rate AND the peer bound both come from the selection"
+        );
+    }
+
+    /// A zero rate still carries the peer bound through.
+    ///
+    /// Zero disables the cap, which is the convention every listener shares.
+    /// A limiter that dropped the bound whenever the rate was disabled would
+    /// pass the test above and still grow an unbounded map on the deployments
+    /// most likely to be flooded.
+    #[test]
+    fn a_disabled_rate_still_carries_the_peer_bound() {
+        assert_eq!(api_rate_limiter(&selection_with(0, 23)).caps(), (0, 23));
     }
 }

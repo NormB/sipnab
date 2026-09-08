@@ -428,4 +428,86 @@ mod tests {
             "normal output should not contain newlines"
         );
     }
+    /// The SHIPPED fail2ban filter matches the lines this module writes.
+    ///
+    /// `contrib/fail2ban/sipnab-scanner.conf` pins the field order of both
+    /// format strings above, and nothing checked it. Rename `scanner_detected`,
+    /// swap `ua=` and `method=`, or insert a field, and the jail keeps running
+    /// and bans nothing — which looks exactly like a quiet network. A filter
+    /// that silently stops matching is worse than one that fails to load.
+    ///
+    /// `src/security/recommend.rs` already proves this property for the
+    /// GENERATED failregex. The shipped file is the copy an operator actually
+    /// installs, and it had no such test.
+    ///
+    /// `<HOST>` is fail2ban's own template; substituting a permissive address
+    /// pattern tests the LITERAL structure around it, which is the half that
+    /// drifts when a log line changes.
+    #[test]
+    fn the_shipped_filter_matches_the_lines_this_module_writes() {
+        let conf = include_str!("../../contrib/fail2ban/sipnab-scanner.conf");
+        let patterns: Vec<String> = conf
+            .lines()
+            .skip_while(|l| !l.starts_with("failregex ="))
+            .take_while(|l| !l.starts_with("ignoreregex"))
+            .map(|l| l.trim_start_matches("failregex =").trim())
+            .filter(|l| !l.is_empty())
+            .map(|l| l.replace("<HOST>", "(?:[0-9a-fA-F:.]+)"))
+            .collect();
+        assert_eq!(
+            patterns.len(),
+            2,
+            "the shipped filter should carry one pattern per event this \
+             module emits; found {patterns:?}"
+        );
+
+        let scanner =
+            format_scanner_event("198.51.100.7", Some("friendly-scanner"), Some("OPTIONS"));
+        let flood = format_reg_flood_event("198.51.100.9", 42);
+
+        for (label, line) in [("scanner", &scanner), ("reg_flood", &flood)] {
+            let matched = patterns.iter().any(|p| {
+                regex::Regex::new(p)
+                    .unwrap_or_else(|e| panic!("shipped failregex does not compile: {p}: {e}"))
+                    .is_match(line)
+            });
+            assert!(
+                matched,
+                "no pattern in the shipped filter matches the {label} line \
+                 sipnab writes.\npatterns: {patterns:#?}\nline: {line}"
+            );
+        }
+    }
+
+    /// The shipped patterns are not catch-alls wearing a rule name.
+    ///
+    /// The half the match test cannot see: `^.*$` would match both lines above
+    /// and every other line in the log, so a jail built on it would ban on any
+    /// syslog traffic at all.
+    #[test]
+    fn the_shipped_filter_does_not_match_an_unrelated_line() {
+        let conf = include_str!("../../contrib/fail2ban/sipnab-scanner.conf");
+        let patterns: Vec<String> = conf
+            .lines()
+            .skip_while(|l| !l.starts_with("failregex ="))
+            .take_while(|l| !l.starts_with("ignoreregex"))
+            .map(|l| l.trim_start_matches("failregex =").trim())
+            .filter(|l| !l.is_empty())
+            .map(|l| l.replace("<HOST>", "(?:[0-9a-fA-F:.]+)"))
+            .collect();
+
+        for decoy in [
+            "2026-09-07 12:00:00 sipnab[1]: capture started on eth0",
+            "2026-09-07 12:00:00 sshd[1]: Accepted password for root from 198.51.100.7",
+            "2026-09-07 12:00:00 sipnab[1]: scanner_detected src=198.51.100.7",
+        ] {
+            for p in &patterns {
+                assert!(
+                    !regex::Regex::new(p).expect("compiles").is_match(decoy),
+                    "the shipped filter matches a line it must not, so a jail \
+                     on it bans the wrong host.\npattern: {p}\nline: {decoy}"
+                );
+            }
+        }
+    }
 }

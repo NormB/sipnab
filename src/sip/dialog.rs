@@ -57,11 +57,41 @@ pub enum DialogState {
     Transferring,
 }
 
-impl std::fmt::Display for DialogState {
-    /// Write the state's canonical name (e.g. "InCall") to `f`; matches the
-    /// spellings the filter DSL compares against.
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
+impl DialogState {
+    /// Every variant, for exhaustive iteration.
+    ///
+    /// Adding a variant without adding it here fails
+    /// `every_state_is_listed_in_all`, which walks this list against the
+    /// compiler's own exhaustiveness check.
+    pub const ALL: [Self; 13] = [
+        Self::Trying,
+        Self::Ringing,
+        Self::InCall,
+        Self::Completed,
+        Self::Canceled,
+        Self::Failed,
+        Self::Redirected,
+        Self::Registered,
+        Self::Expired,
+        Self::Pending,
+        Self::Active,
+        Self::Terminated,
+        Self::Transferring,
+    ];
+
+    /// The state's canonical name (e.g. `"InCall"`).
+    ///
+    /// THE table. It used to be five: this one, the filter DSL's
+    /// `state_to_str`, the report writer's `state_str`, an inline match in the
+    /// TUI statistics view, and the call list's `state_display_labeled`.
+    ///
+    /// Adding a variant was compiler-caught in all five. CHANGING A SPELLING
+    /// was caught in none — and `Redirected` was asserted in none of them, so
+    /// renaming it in the DSL alone would have left
+    /// `--filter "state == 'Redirected'"` silently returning zero rows.
+    #[must_use]
+    pub const fn as_str(&self) -> &'static str {
+        match self {
             Self::Trying => "Trying",
             Self::Ringing => "Ringing",
             Self::InCall => "InCall",
@@ -75,7 +105,14 @@ impl std::fmt::Display for DialogState {
             Self::Active => "Active",
             Self::Terminated => "Terminated",
             Self::Transferring => "Transferring",
-        })
+        }
+    }
+}
+
+impl std::fmt::Display for DialogState {
+    /// Write the state's canonical name (e.g. "InCall") to `f`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
     }
 }
 
@@ -1696,6 +1733,79 @@ mod tests {
             SipMethod::Invite,
             "the INVITE's own method must be recorded, not inherited from an \
              earlier malformed message"
+        );
+    }
+    /// Every surface spells a state the same way, for every variant.
+    ///
+    /// There were five tables: `Display`, the filter DSL's `state_to_str`, the
+    /// report writer's `state_str`, an inline match in the TUI statistics
+    /// view, and the call list's `state_display_labeled`. Adding a variant was
+    /// compiler-caught in all five. CHANGING A SPELLING was caught in none,
+    /// and `Redirected` was asserted in none of them — so renaming it in the
+    /// DSL alone would have left `--filter "state == 'Redirected'"` silently
+    /// returning zero rows against a capture full of 3xx.
+    ///
+    /// Drives every variant through `ALL`, so a new state is covered the day
+    /// it is added rather than the day someone remembers to extend a list.
+    #[test]
+    fn every_surface_spells_every_state_the_same_way() {
+        for state in DialogState::ALL {
+            let canonical = state.as_str();
+            assert!(
+                !canonical.is_empty(),
+                "{state:?} has no name, so every surface would print nothing"
+            );
+            assert_eq!(
+                state.to_string(),
+                canonical,
+                "Display disagrees with as_str for {state:?}"
+            );
+            assert_eq!(
+                crate::sip::dsl::state_to_str_for_test(&state),
+                canonical,
+                "the filter DSL compares against a different spelling for \
+                 {state:?}, so a filter naming it would match nothing"
+            );
+        }
+    }
+
+    /// `ALL` really is all of them.
+    ///
+    /// The list above is hand-written, so it can fall behind the enum. The
+    /// compiler's exhaustiveness check on `as_str` is the only thing that
+    /// knows the true set: matching every variant here and looking each up in
+    /// `ALL` fails to compile when a variant is added and fails at runtime
+    /// when `ALL` forgets one.
+    #[test]
+    fn every_state_is_listed_in_all() {
+        let named: Vec<&'static str> = DialogState::ALL.iter().map(|s| s.as_str()).collect();
+        for state in [
+            DialogState::Trying,
+            DialogState::Ringing,
+            DialogState::InCall,
+            DialogState::Completed,
+            DialogState::Canceled,
+            DialogState::Failed,
+            DialogState::Redirected,
+            DialogState::Registered,
+            DialogState::Expired,
+            DialogState::Pending,
+            DialogState::Active,
+            DialogState::Terminated,
+            DialogState::Transferring,
+        ] {
+            assert!(
+                named.contains(&state.as_str()),
+                "{state:?} is not in DialogState::ALL, so every gate that \
+                 iterates ALL silently skips it"
+            );
+        }
+        assert_eq!(
+            named.len(),
+            13,
+            "ALL holds {} entries; a duplicate or a missing variant makes \
+             every ALL-driven gate cover the wrong set",
+            named.len()
         );
     }
 }

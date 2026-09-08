@@ -131,23 +131,26 @@ series. The `api` feature serves `/metrics` on the REST API's port. The
 counter always prints, at `0` where the server behind it never fills the value,
 so a panel aimed at the wrong target renders a flat line rather than an error.
 
-Pick the target that carries the series your rule reads:
+**Both targets publish the same series.** Scrape either one. A rule tuned
+against `--api` holds against `--metrics`, and a dashboard needs only one of
+them.
 
-| Series | `--api` `/metrics` | standalone `--metrics` |
-|---|---|---|
-| `sipnab_dialogs_active`, `sipnab_calls_active` | flat `0` | the real counts |
-| `sipnab_pdd_seconds`, `sipnab_mos`, `sipnab_jitter_ms`, `sipnab_loss_percent` | the real distributions | `_count 0`, `_sum 0`, empty buckets |
-| `sipnab_rtp_streams_total{status}` | `established` and `orphaned` | family absent entirely |
-| `sipnab_capture_queue_depth_packets`, `sipnab_capture_backpressure_blocks_total` | flat `0` | the real counts |
-| `sipnab_rtp_streams_active` | streams a dialog claims, at any age | streams whose last packet arrived inside 30 seconds |
-| `sipnab_dialogs_total{state}` | state values lowercased | state values as-cased |
+That is new as of 0.5.158. The two doors each assembled the scrape themselves,
+and the six differences that produced are worth naming, because a reader who
+tuned a rule against the old behavior needs to know what moved:
 
-Every other series in the table above reads the same on both targets, because
-both load it from the same process-wide counters.
+| Series | What changed |
+|---|---|
+| `sipnab_dialogs_total{state}` | The standalone server published `Completed`, the REST door `completed`. Both now publish lowercase, which is what the dashboards in `contrib/` query — that panel read empty against `--metrics`, which looks exactly like an idle switch. |
+| `sipnab_rtp_streams_active` | Two populations under one name: streams a dialog claims, or streams whose last packet arrived inside 30 seconds. Both now count streams a dialog claims, matching the `established` label on the counter beside it. |
+| `sipnab_rtp_streams_total{status}` | The standalone server never filled it, and an empty family drops out rather than reading zero, so a panel built on it stayed blank. Both fill it now. |
+| `sipnab_dialogs_active`, `sipnab_calls_active` | The REST door published a flat `0`. Both read the store's own accessors now. |
+| `sipnab_pdd_seconds`, `sipnab_mos`, `sipnab_jitter_ms`, `sipnab_loss_percent` | The standalone server published empty buckets. Both fill them now. |
+| `sipnab_capture_queue_depth_packets`, `sipnab_capture_backpressure_blocks_total` | The REST door published a flat `0` — "the queue is clear" on a box whose queue was full. Both read the capture meter now. |
 
-**Neither target carries every series.** A dashboard that wants the
-concurrent-call figure AND a quality distribution needs both scrape targets.
-Both describe one process, so their capture counters agree.
+`both_scrape_doors_publish_identical_exposition` compares the formatted text
+the two produce for one capture, so a future difference fails the build rather
+than reaching a dashboard.
 
 
 ### Prometheus scrape config

@@ -1,10 +1,15 @@
 # sipnab configuration — starter example
 #
 # Copy to one of the locations sipnab searches (first match wins):
-#   ./sipnab.toml
 #   ~/.config/sipnab/sipnab.toml
 #   ~/.sipnabrc
+#   /etc/sipnab/sipnab.toml
 # or pass explicitly:  sipnab -f /path/to/this/file
+#
+# There is no working-directory search: `./sipnab.toml` is NOT read. This
+# comment used to list it first and omit /etc, so a reader following it copied
+# the file where sipnab would never look and got silence -- the loader is
+# lenient and says nothing about a config it did not find.
 #
 # Every key is optional; CLI flags override config values.
 # Full reference: docs/config-reference.md

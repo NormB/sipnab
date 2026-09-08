@@ -18,13 +18,51 @@ groups:
         annotations:
           summary: "Low RTP MOS quality detected"
 
+      # Post-dial delay, in two tiers, both from ITU-T E.721 (05/99) Table 2,
+      # post-selection delay (en bloc sending). The p95 of the observed
+      # distribution is compared against E.721's own 95% column.
+      #
+      # This alert used to fire at 5.0 s. That is E.721's TOLL normal-load
+      # MEAN target -- a toll route sitting at 5 s is meeting the standard, so
+      # the rule paged on conformant traffic.
       - alert: SipnabHighPDD
-        expr: histogram_quantile(0.95, rate(sipnab_pdd_seconds_bucket[5m])) > 5.0
+        expr: histogram_quantile(0.95, rate(sipnab_pdd_seconds_bucket[5m])) > 6.0
         for: 5m
         labels:
           severity: warning
         annotations:
-          summary: "High post-dial delay (p95 > 5s)"
+          summary: "Post-dial delay above the local-service target (p95 > 6s)"
+          description: >-
+            6.0 s is E.721 Table 2's LOCAL connection, normal load, 95%
+            target. Twilio's Voice Insights documentation independently names
+            PDD above 6 s in the US as "something that could be escalated to
+            the carrier". Expected on international routes, whose own target
+            is 11 s -- see SipnabCriticalPDD.
+
+      # 11.0 s is E.721 Table 2's INTERNATIONAL connection, normal load, 95%
+      # target: the most permissive per-call figure the recommendation
+      # publishes short of a high-load allowance. It is the same number
+      # `SignalingThresholds::BUILT_IN.post_dial_delay_sec` uses, and
+      # `the_shipped_alert_pdd_threshold_matches_the_code` fails the build if
+      # the two ever disagree -- an operator must not be paged by the shipped
+      # rules for a call sipnab's own diagnosis calls healthy.
+      #
+      # E.721 NOTE 1: every value except the normal-load means is provisional.
+      # NOTE 6: the targets are design objectives, and section 3.2 states them
+      # as a traffic-weighted average per route, not a per-call limit -- which
+      # is why this reads a p95 over a window rather than alerting per call.
+      - alert: SipnabCriticalPDD
+        expr: histogram_quantile(0.95, rate(sipnab_pdd_seconds_bucket[5m])) > 11.0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Post-dial delay past every E.721 normal-load target (p95 > 11s)"
+          description: >-
+            Past ITU-T E.721's international normal-load 95% target. Check
+            end-to-end signaling before trusting this: FCC 13-18 note 37
+            observes that PDD's significance depends on signaling integrity,
+            and false local ringback yields an excellent PDD on a broken call.
 
       - alert: SipnabScannerDetected
         expr: rate(sipnab_security_alerts_total{type="scanner"}[5m]) > 0

@@ -34,7 +34,6 @@
 //! Requests are rate-limited to 100 per second per source IP. Excess
 //! requests return 503 Service Unavailable.
 
-use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::Instant;
@@ -248,6 +247,30 @@ pub struct ApiState {
     pub tfps: crate::security::tfps::TfpsLocator,
 }
 
+/// Resolve a caller's `?limit=` to a row count.
+///
+/// `None` and `Some(0)` both mean "the default page", which is the reading the
+/// MCP door has always given a zero (`mcp::shape::resolve_limit`) and the
+/// reading `GET /v1/tfps/labels` in this same file already gave it. The other
+/// two list routes treated `0` as a literal zero and returned an EMPTY page —
+/// so one product answered a `limit=0` three different ways depending on which
+/// endpoint received it.
+///
+/// Empty is the worse of the two readings on its own terms: a caller who sends
+/// `limit=0` by accident (an unset variable interpolated into a URL) gets a
+/// successful response with no rows, which reads as "there is nothing here"
+/// rather than as a mistake.
+///
+/// # Arguments
+/// * `requested` — the `?limit=` the caller sent.
+/// * `cap` — this server's `max_rows` ceiling.
+fn resolve_page_limit(requested: Option<usize>, cap: usize) -> usize {
+    match requested {
+        None | Some(0) => DEFAULT_PAGE_ROWS.min(cap),
+        Some(n) => n.min(cap),
+    }
+}
+
 /// Rows a list-style response returns when the caller names no `limit`.
 ///
 /// A page size, not a ceiling: it is what `?limit=` defaults to, and any
@@ -256,78 +279,86 @@ const DEFAULT_PAGE_ROWS: usize = 50;
 
 // ── Rate limiter ────────────────────────────────────────────────────
 
-/// Simple per-IP sliding-window rate limiter.
+/// Per-IP request limiter for the REST surface.
 ///
-/// Tracks request counts per source IP within a one-second window.
-/// Resets the window when the current second changes.
+/// A thin adapter over the shared [`crate::rate_limit::FixedWindowLimiter`],
+/// not a limiter of its own. This door used to carry a private implementation,
+/// and `rate_limit.rs` exists precisely because the rule had already been
+/// written twice — its module doc says so: "Written twice, the two copies
+/// drift... the deployment that reads the same knob on two surfaces gets two
+/// behaviors."
+///
+/// It got two behaviors. `[limits] max_tracked_peers` reached MCP and HEP and
+/// stopped here, so the bucket map had no configured bound against a
+/// spoofed-source flood, and the private version anchored a window per IP
+/// where the shared one resets a single window for every peer.
 pub struct RateLimiter {
-    /// Map of source IP to (window start, count).
-    buckets: HashMap<IpAddr, (Instant, u32)>,
-    /// Maximum requests per second per IP; `0` disables the cap.
-    max_rps: u32,
-    /// Monotonic call counter for periodic cleanup.
-    call_count: u64,
+    /// The shared limiter, keyed by source address. No global ceiling: the
+    /// REST surface has only ever capped per peer, and `0` there disables it.
+    inner: crate::rate_limit::FixedWindowLimiter<IpAddr>,
 }
 
 impl RateLimiter {
-    /// Create a new rate limiter with the given per-IP max requests/second.
+    /// Build a limiter capping each peer at `max_rps` requests per second and
+    /// tracking at most `max_tracked_peers` of them.
     ///
-    /// `0` DISABLES the cap rather than refusing every request. That is the
-    /// reading `--mcp-rate-limit-per-peer`, `--hep-rate-limit-per-peer` and
-    /// `--hep-rate-limit` all give a zero, and this became reachable the
-    /// moment the figure stopped being a hard-coded 100 — an operator who has
-    /// learned the convention on one listener must not be locked out of the
-    /// REST API by using it on another.
-    pub fn new(max_rps: u32) -> Self {
+    /// `0` for `max_rps` DISABLES the cap rather than refusing every request.
+    /// That is the reading `--mcp-rate-limit-per-peer`,
+    /// `--hep-rate-limit-per-peer` and `--hep-rate-limit` all give a zero, and
+    /// an operator who has learned the convention on one listener must not be
+    /// locked out of the REST API by using it on another.
+    ///
+    /// # Arguments
+    /// * `max_rps` — per-peer ceiling; `0` disables.
+    /// * `max_tracked_peers` — how many distinct peers the map may hold.
+    #[must_use]
+    pub fn new(max_rps: u32, max_tracked_peers: usize) -> Self {
         Self {
-            buckets: HashMap::new(),
-            max_rps,
-            call_count: 0,
+            inner: crate::rate_limit::FixedWindowLimiter::new(
+                0,
+                u64::from(max_rps),
+                max_tracked_peers,
+            ),
         }
     }
 
-    /// Check whether a request from `ip` is allowed. Returns `true` if under
-    /// limit, and always `true` when the cap is `0` (disabled).
-    ///
-    /// Periodically cleans up stale entries (every 100th call) to prevent
-    /// unbounded memory growth from unique source IPs.
-    ///
-    /// # Arguments
-    ///
-    /// * `ip` — Source IP whose one-second window is checked.
+    /// Check whether a request from `ip` is allowed right now.
     ///
     /// # Side effects
-    ///
-    /// Mutates the limiter: bumps the monotonic call counter, resets the
-    /// per-IP window when >1 s has elapsed, increments the per-IP request
-    /// count (even when the request ends up rejected), and every 100th call
-    /// evicts buckets older than 2 s. NONE of that happens when the cap is
-    /// `0`: a disabled limiter is a pure `true`, so it never grows a bucket
-    /// map for addresses it will not meter.
+    /// Counts the request against the current window.
     pub fn check(&mut self, ip: IpAddr) -> bool {
-        // Disabled: return before touching the map, so an uncapped server does
-        // not carry a bucket per source address it will never consult.
-        if self.max_rps == 0 {
-            return true;
-        }
-        let now = Instant::now();
-        self.call_count += 1;
+        self.check_at(ip, Instant::now())
+    }
 
-        // Periodic cleanup: remove entries older than 2 seconds
-        if self.call_count.is_multiple_of(100) {
-            self.buckets
-                .retain(|_, (start, _)| now.duration_since(*start).as_secs() < 2);
-        }
+    /// How many distinct peers this limiter will track, and the per-peer cap.
+    ///
+    /// Read by `the_api_door_receives_both_rate_limit_knobs`, which is the
+    /// only way to prove the CLI values REACH this door. Testing the limiter
+    /// directly proves the limiter works and says nothing about whether
+    /// `start_servers` hands it the configured numbers -- and that wiring is
+    /// exactly what was missing: `max_tracked_peers` reached MCP and stopped
+    /// here.
+    #[must_use]
+    pub fn caps(&self) -> (u64, usize) {
+        (self.inner.per_peer_max(), self.inner.max_tracked_peers())
+    }
 
-        let entry = self.buckets.entry(ip).or_insert((now, 0));
+    /// How many peers the bucket map is holding right now.
+    ///
+    /// For asserting the memory bound directly rather than through process
+    /// heap, which every other allocation in a test binary perturbs.
+    #[must_use]
+    pub fn tracked_peers(&self) -> usize {
+        self.inner.tracked_peers()
+    }
 
-        // Reset window if more than 1 second has passed
-        if now.duration_since(entry.0).as_secs() >= 1 {
-            *entry = (now, 0);
-        }
-
-        entry.1 += 1;
-        entry.1 <= self.max_rps
+    /// The same decision at a caller-supplied instant.
+    ///
+    /// Separate so the window and the peer bound can be driven in a test
+    /// without sleeping: a limiter tested only through `check()` can only be
+    /// checked for the behavior that fits inside one real second.
+    pub fn check_at(&mut self, ip: IpAddr, now: Instant) -> bool {
+        self.inner.check(ip, now).is_ok()
     }
 }
 
@@ -899,10 +930,7 @@ async fn list_dialogs(
     guard(&state, &headers, addr.ip())?;
 
     let offset = params.offset.unwrap_or(0);
-    let limit = params
-        .limit
-        .unwrap_or(DEFAULT_PAGE_ROWS)
-        .min(state.max_rows);
+    let limit = resolve_page_limit(params.limit, state.max_rows);
 
     let state_filter = params.state.as_deref();
     // NOTE: Regex is compiled per-request. Under the 100 RPS rate limit this
@@ -1677,10 +1705,7 @@ async fn list_streams(
     guard(&state, &headers, addr.ip())?;
 
     let offset = params.offset.unwrap_or(0);
-    let limit = params
-        .limit
-        .unwrap_or(DEFAULT_PAGE_ROWS)
-        .min(state.max_rows);
+    let limit = resolve_page_limit(params.limit, state.max_rows);
     let orphaned_filter = params.orphaned;
     let mos_threshold = params.mos_below;
 
@@ -2275,73 +2300,27 @@ async fn get_metrics(
     // a rule over an unseen response class reads zero rather than no-data.
     let mut metrics = PrometheusMetrics::for_scrape();
 
+    // The capture meter, same as the standalone server. Without it these two
+    // read a flat `0` -- "the queue is clear" on a box whose queue is full --
+    // which is what this door published until `ApiState` started carrying the
+    // meter.
+    if let Some(meter) = state.capture_meter.as_ref() {
+        metrics.capture_queue_depth_packets = meter.in_flight() as u64;
+        metrics.capture_backpressure_blocks_total = meter.backpressure_blocks();
+    }
+
     // Populate from dialog store. The stream store is read alongside it (in
     // that order, matching every other handler) because the per-dialog media
     // diagnosis needs both.
+    //
+    // One assembler, shared with the standalone `--metrics` server. They used
+    // to be two, and they disagreed about the dialog-state label's case and
+    // about what `rtp_streams_active` counts.
     let ds = state.dialog_store.read();
     let ss = state.stream_store.read();
-    let capture_media = CaptureMedia::of_store(&ss);
-    for d in ds.iter() {
-        let state_str = d.state().to_string().to_lowercase();
-        *metrics.dialogs_total.entry(state_str).or_insert(0) += 1;
-
-        // PDD histogram
-        if let Some(pdd_ms) = d.timing.pdd_ms() {
-            metrics.pdd_histogram.push(pdd_ms as f64 / 1000.0);
-        }
-
-        // Count SIP messages by dialog method (matching the standalone
-        // metrics server): the metric is named messages_total, so it counts
-        // messages, not dialogs — `+= 1` here undercounted every multi-message
-        // dialog and disagreed with the /metrics server's value.
-        *metrics
-            .messages_total
-            .entry(d.method.to_string())
-            .or_insert(0) += d.messages.len() as u64;
-
-        for msg in &d.messages {
-            if let Some(code) = msg.status_code {
-                metrics.record_response(code);
-            }
-        }
-
-        let dialog_streams: Vec<&crate::rtp::stream::RtpStream> =
-            ss.streams_for(&d.call_id).collect();
-        let media = MediaContext::for_dialog(d, capture_media);
-        metrics.record_media_diagnosis(&diagnose_media(&dialog_streams, &media));
-    }
-    drop(ds);
-
-    // Populate from stream store
-    let mut established = 0u64;
-    let mut orphaned = 0u64;
-    // Hoisted: the scrape's MOS histogram must describe the same scores the
-    // `/v1/streams` rows carry, so it reads the same evidence rather than a
-    // per-stream reconstruction of it.
-    let delay = quality::MosDelay::from_capture(&ss);
-    for s in ss.iter() {
-        if s.orphaned() {
-            orphaned += 1;
-        } else {
-            established += 1;
-        }
-        metrics.mos_histogram.push(approximate_mos(s, delay));
-        metrics.jitter_histogram.push(s.jitter);
-        let total = s.packet_count + s.lost_packets;
-        if total > 0 {
-            metrics
-                .loss_histogram
-                .push((s.lost_packets as f64 / total as f64) * 100.0);
-        }
-    }
-    metrics.rtp_streams_active = established;
-    metrics
-        .rtp_streams_total
-        .insert("established".to_string(), established);
-    metrics
-        .rtp_streams_total
-        .insert("orphaned".to_string(), orphaned);
+    prometheus::populate_from_stores(&mut metrics, &ds, &ss);
     drop(ss);
+    drop(ds);
 
     let body = prometheus::format_metrics(&metrics);
 
@@ -3376,7 +3355,7 @@ mod tests {
             verifier: Arc::new(crate::auth::TokenVerifier::new(
                 crate::auth::VerifierConfig::default(),
             )),
-            rate_limiter: Arc::new(Mutex::new(RateLimiter::new(100))),
+            rate_limiter: Arc::new(Mutex::new(RateLimiter::new(100, 1024))),
             max_inline_media_bytes: None,
             max_rows: crate::cli::Cli::DEFAULT_API_MAX_ROWS as usize,
             // No capture context: these fixtures build a server around bare
@@ -3408,7 +3387,7 @@ mod tests {
                     ..Default::default()
                 },
             )),
-            rate_limiter: Arc::new(Mutex::new(RateLimiter::new(100))),
+            rate_limiter: Arc::new(Mutex::new(RateLimiter::new(100, 1024))),
             max_inline_media_bytes: None,
             max_rows: crate::cli::Cli::DEFAULT_API_MAX_ROWS as usize,
             // No capture context: these fixtures build a server around bare
@@ -3872,7 +3851,7 @@ mod tests {
                     ..Default::default()
                 },
             )),
-            rate_limiter: Arc::new(Mutex::new(RateLimiter::new(100))),
+            rate_limiter: Arc::new(Mutex::new(RateLimiter::new(100, 1024))),
             max_inline_media_bytes: None,
             max_rows: crate::cli::Cli::DEFAULT_API_MAX_ROWS as usize,
             // No capture context: these fixtures build a server around bare
@@ -4017,7 +3996,7 @@ mod tests {
     /// the way sipnab taught them must not lock themselves out of the API.
     #[test]
     fn a_zero_cap_disables_the_limiter_rather_than_refusing_everything() {
-        let mut limiter = RateLimiter::new(0);
+        let mut limiter = RateLimiter::new(0, 1024);
         let ip = IpAddr::V4(std::net::Ipv4Addr::LOCALHOST);
         for i in 0..10_000 {
             assert!(
@@ -4062,10 +4041,91 @@ mod tests {
         assert_eq!(json["limit"], 2, "and the response must report it");
     }
 
+    /// `limit=0` means the default page, the same as it does on MCP.
+    ///
+    /// One product answered a `limit=0` three ways: `mcp::shape::resolve_limit`
+    /// read it as the default, `GET /v1/tfps/labels` in this file read it as
+    /// the default, and the dialog and stream list routes returned an EMPTY
+    /// page. A caller who interpolates an unset variable into a URL got a
+    /// successful response with no rows, which reads as "there is nothing
+    /// here" rather than as a mistake.
+    #[test]
+    fn a_zero_limit_is_the_default_page_not_an_empty_one() {
+        assert_eq!(
+            resolve_page_limit(Some(0), 1000),
+            DEFAULT_PAGE_ROWS,
+            "zero is the default page, as on the MCP door"
+        );
+        assert_eq!(
+            resolve_page_limit(None, 1000),
+            DEFAULT_PAGE_ROWS,
+            "and so is an absent limit"
+        );
+    }
+
+    /// The server's ceiling still wins over anything the caller asks for.
+    #[test]
+    fn the_row_cap_bounds_every_reading_of_limit() {
+        assert_eq!(resolve_page_limit(Some(10_000), 25), 25, "an explicit ask");
+        assert_eq!(
+            resolve_page_limit(Some(0), 5),
+            5,
+            "and the default, on a server whose cap is below it"
+        );
+        assert_eq!(resolve_page_limit(Some(7), 25), 7, "an ask under the cap");
+    }
+
+    /// REST honors `max_tracked_peers`, like every other listener.
+    ///
+    /// It used to carry its own limiter, so `[limits] max_tracked_peers` was
+    /// inert here: the knob an operator sets to bound the bucket map against a
+    /// spoofed-source flood reached MCP and HEP and stopped at the REST door.
+    /// `rate_limit.rs` exists because this rule was written twice before, and
+    /// says so in its own module doc.
+    #[test]
+    fn the_rest_limiter_bounds_its_peer_map() {
+        let mut limiter = RateLimiter::new(1_000_000, 2);
+        let t0 = std::time::Instant::now();
+        // Two peers fit. The third is refused rather than tracked, which is
+        // the fail-closed half: letting an untracked newcomer through is
+        // exactly the flood the cap exists to resist.
+        for n in 0..2u8 {
+            let ip = IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, n));
+            assert!(limiter.check_at(ip, t0), "peer {n} is inside the bound");
+        }
+        assert!(
+            !limiter.check_at(IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 9)), t0),
+            "a peer past max_tracked_peers must be refused, not admitted \
+             untracked"
+        );
+    }
+
+    /// One window for every peer, as on the other listeners.
+    ///
+    /// The private limiter anchored a window per IP, so a peer's second
+    /// started whenever its first request happened to land. The shared one
+    /// resets a single window, which is what `--mcp-rate-limit-per-peer` and
+    /// `--hep-rate-limit-per-peer` have always meant.
+    #[test]
+    fn the_rest_limiter_shares_one_window_with_the_other_listeners() {
+        let mut limiter = RateLimiter::new(2, 64);
+        let t0 = std::time::Instant::now();
+        let ip = IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 1));
+        assert!(limiter.check_at(ip, t0));
+        assert!(limiter.check_at(ip, t0));
+        assert!(!limiter.check_at(ip, t0), "the third exceeds a cap of 2");
+
+        let next = t0 + std::time::Duration::from_millis(1_100);
+        assert!(
+            limiter.check_at(ip, next),
+            "the window resets and the peer is served again"
+        );
+    }
+
     /// A limiter with max 5 allows exactly 5 requests, then rejects the 6th.
     #[test]
     fn rate_limiter_allows_under_limit() {
-        let mut limiter = RateLimiter::new(5);
+        let mut limiter = RateLimiter::new(5, 1024);
         let ip = IpAddr::V4(std::net::Ipv4Addr::LOCALHOST);
 
         for _ in 0..5 {
@@ -4647,7 +4707,7 @@ mod tests {
             verifier: Arc::new(crate::auth::TokenVerifier::new(
                 crate::auth::VerifierConfig::default(),
             )),
-            rate_limiter: Arc::new(Mutex::new(RateLimiter::new(1))),
+            rate_limiter: Arc::new(Mutex::new(RateLimiter::new(1, 1024))),
             max_inline_media_bytes: None,
             max_rows: crate::cli::Cli::DEFAULT_API_MAX_ROWS as usize,
             // No capture context: these fixtures build a server around bare
@@ -4689,7 +4749,7 @@ mod tests {
     fn guard_rate_limits_failed_auth_flood() {
         let mut state = make_state_with_key("correct-secret");
         // Tiny per-IP budget so the flood trips the limiter quickly.
-        state.rate_limiter = Arc::new(Mutex::new(RateLimiter::new(3)));
+        state.rate_limiter = Arc::new(Mutex::new(RateLimiter::new(3, 1024)));
 
         let ip: IpAddr = "10.0.0.1".parse().unwrap();
         let mut headers = HeaderMap::new();
@@ -5576,7 +5636,7 @@ mod tests {
     /// Each source IP gets its own rate-limit bucket.
     #[test]
     fn rate_limiter_separate_ips_independent() {
-        let mut limiter = RateLimiter::new(1);
+        let mut limiter = RateLimiter::new(1, 1024);
         let ip_a = IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 1));
         let ip_b = IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 2));
         assert!(limiter.check(ip_a));

@@ -317,7 +317,7 @@ operator discount a suspicious attribution instead of trusting it.
 [`docs/design/packet-provenance.md`](https://github.com/NormB/sipnab/blob/main/docs/design/packet-provenance.md) shipped in five stages. `FrameRef`
 ([`src/capture/packet.rs:377`](https://github.com/NormB/sipnab/blob/main/src/capture/packet.rs#L377)) resolves a fact to the bytes behind it, and
 `SipMessage::frame` ([`src/sip/message.rs:84`](https://github.com/NormB/sipnab/blob/main/src/sip/message.rs#L84)), `SipDialog`
-([`src/sip/dialog.rs:87`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs#L87)), whose `first_frame` field sits at line 148, and `RtpStream` ([`src/rtp/stream.rs:290`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream.rs#L290)) carries the same field at line 323
+([`src/sip/dialog.rs:124`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs#L124)), whose `first_frame` field sits at line 148, and `RtpStream` ([`src/rtp/stream.rs:290`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream.rs#L290)) carries the same field at line 323
 carry it downstream.
 
 The gap that matters here: `Packet::frame_ref` ([`src/capture/packet.rs:502`](https://github.com/NormB/sipnab/blob/main/src/capture/packet.rs#L502))

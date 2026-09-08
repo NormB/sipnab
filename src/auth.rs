@@ -274,12 +274,38 @@ pub struct VerifierConfig {
     pub audience: String,
 }
 
+/// Is a surface carrying no credential source at all?
+///
+/// The single answer behind both `is_unconfigured` methods. It used to be two
+/// bodies over parallel fields: `VerifierConfig`'s gates the MCP non-loopback
+/// bind refusal, and `TokenVerifier`'s gates the REST bind refusal, the MCP
+/// auth layer, and the per-request bypass in `guard()`, which returns `Ok(())`
+/// for every request when this is true.
+///
+/// A third credential source added to one copy and not the other would allow
+/// the public bind while every request still short-circuited — unauthenticated
+/// REST and MCP on a non-loopback interface. This file already says, of token
+/// verification, that "two parallel implementations ... is exactly the kind of
+/// divergence that turns into a bypass"; the same sentence applied here and
+/// nobody had noticed.
+///
+/// # Arguments
+/// * `signing_keys` — HMAC signing keys.
+/// * `static_keys` — static shared secrets.
+///
+/// # Returns
+/// `true` when neither holds anything, so the surface must behave as it did
+/// before auth existed: loopback allowed, non-loopback refused.
+fn no_credentials_configured(signing_keys: &[Vec<u8>], static_keys: &[String]) -> bool {
+    signing_keys.is_empty() && static_keys.is_empty()
+}
+
 impl VerifierConfig {
     /// `true` if no signing keys AND no static secrets are configured — i.e.
     /// auth is effectively unconfigured and the surface should behave as it did
     /// before this feature existed (loopback allowed, non-loopback refused).
     pub fn is_unconfigured(&self) -> bool {
-        self.signing_keys.is_empty() && self.static_keys.is_empty()
+        no_credentials_configured(&self.signing_keys, &self.static_keys)
     }
 }
 
@@ -353,7 +379,7 @@ impl TokenVerifier {
 
     /// `true` if neither signing keys nor static secrets are configured.
     pub fn is_unconfigured(&self) -> bool {
-        self.signing_keys.is_empty() && self.static_keys.is_empty()
+        no_credentials_configured(&self.signing_keys, &self.static_keys)
     }
 
     /// Verify a presented Authorization value (the part after `Bearer `),
@@ -1264,5 +1290,74 @@ mod tests {
             None,
             "an mcp token must yield no claims on the api surface"
         );
+    }
+    /// The two `is_unconfigured` answers agree for every credential shape.
+    ///
+    /// They were separate bodies computing the same predicate over parallel
+    /// fields. `VerifierConfig`'s gates the MCP non-loopback bind refusal;
+    /// `TokenVerifier`'s gates the REST bind refusal, the MCP auth layer, and
+    /// the per-request bypass in `guard()` — which returns `Ok(())` for every
+    /// request when it answers true.
+    ///
+    /// So a third credential source added to one and not the other allows the
+    /// public bind while every request still short-circuits: unauthenticated
+    /// REST and MCP on a non-loopback interface. Driven over all four states
+    /// rather than asserting the two functions are spelled alike, because what
+    /// matters is that they never disagree.
+    #[test]
+    fn both_unconfigured_answers_agree_for_every_credential_shape() {
+        for (label, signing, statics) in [
+            ("neither", vec![], vec![]),
+            ("signing only", vec![b"k".to_vec()], vec![]),
+            ("static only", vec![], vec!["s".to_string()]),
+            ("both", vec![b"k".to_vec()], vec!["s".to_string()]),
+        ] {
+            let cfg = VerifierConfig {
+                signing_keys: signing,
+                static_keys: statics,
+                revoked_file: None,
+                audience: AUDIENCE_API.to_string(),
+            };
+            let from_config = cfg.is_unconfigured();
+            let from_verifier = TokenVerifier::new(cfg).is_unconfigured();
+            assert_eq!(
+                from_config, from_verifier,
+                "{label}: the bind refusal and the per-request bypass must \
+                 answer the same question the same way"
+            );
+        }
+    }
+
+    /// Only the empty shape is unconfigured.
+    ///
+    /// The half the agreement test cannot see: two functions that both always
+    /// answered `true` would agree perfectly and open every surface.
+    #[test]
+    fn a_configured_verifier_is_not_unconfigured() {
+        let empty = VerifierConfig {
+            signing_keys: vec![],
+            static_keys: vec![],
+            revoked_file: None,
+            audience: AUDIENCE_API.to_string(),
+        };
+        assert!(empty.is_unconfigured(), "no credentials means unconfigured");
+
+        for (label, signing, statics) in [
+            ("signing only", vec![b"k".to_vec()], vec![]),
+            ("static only", vec![], vec!["s".to_string()]),
+        ] {
+            let cfg = VerifierConfig {
+                signing_keys: signing,
+                static_keys: statics,
+                revoked_file: None,
+                audience: AUDIENCE_API.to_string(),
+            };
+            assert!(
+                !cfg.is_unconfigured(),
+                "{label} is a credential source; treating it as unconfigured \
+                 would bypass auth on every request"
+            );
+            assert!(!TokenVerifier::new(cfg).is_unconfigured(), "{label}");
+        }
     }
 }

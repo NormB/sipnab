@@ -310,13 +310,7 @@ impl StreamSummary {
     pub fn with_round_trip(mut self, rtt: Option<(f64, crate::rtp::rtcp::RttSource)>) -> Self {
         if let Some((ms, source)) = rtt {
             self.round_trip_ms = Some(ms);
-            self.round_trip_source = Some(
-                match source {
-                    crate::rtp::rtcp::RttSource::XrVoipMetrics => "xr_voip_metrics",
-                    crate::rtp::rtcp::RttSource::SenderReportEcho => "sender_report_echo",
-                }
-                .to_string(),
-            );
+            self.round_trip_source = Some(source.as_wire_str().to_string());
         }
         self
     }
@@ -360,7 +354,7 @@ impl StreamSummary {
             // Resolved once and destructured three ways, so the boolean, the
             // label and the note cannot describe three different groundings of
             // one stream. The vocabulary is the enum's, not this module's.
-            mos_grounded: grounding != crate::rtp::quality::MosGrounding::Unpublished,
+            mos_grounded: grounding.is_grounded(),
             mos_grounding: grounding.as_str().to_string(),
             mos_note: grounding.note().map(ToString::to_string),
             // From the stream's own record of where it began. There is no
