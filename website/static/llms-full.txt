@@ -16399,6 +16399,56 @@ remedies, so a non-zero figure names its own flag:
 Both are zero on a live capture, where BPF filtered before the pipeline saw
 anything and there is nothing to under-report.
 
+#### `ami_cleartext` — a manager password on the wire
+
+Asterisk's Manager Interface speaks a line protocol on TCP/5038, and a login is
+four lines of plain text: `Action: login`, `Username:`, `Secret:`. AMI can
+originate calls, read configuration and run shell commands, so the credential
+is worth strictly more than the SIP digest `--digest-leak` already reports.
+
+**Reported here because this is where the misleading zero was.**
+`unanalysed_sip_messages: 0` was the complete answer for a capture full of AMI,
+and the zero is honest — AMI is not SIP, so there was no unparsed SIP message
+to count. Every detector sipnab had ran on parsed SIP messages, and this
+traffic never became one.
+
+| Field | Type | Description |
+|---|---|---|
+| `observation` | object | `banner` (the server greeted a client) or `cleartext-login` |
+| `observation.username` | string? | The account named, bounded to `MAX_AMI_VALUE_CHARS` (64). Echoed on purpose: an operator can act on a finding that names the exposed account, and cannot act on one saying "an account" |
+| `observation.secret_present` | bool | Whether a `Secret:` line was there. **A boolean, never the value** |
+| `src` / `dst` / `dst_port` | string / string / u16 | Who, to whom, on what port |
+| `default_port` | bool | Whether `dst_port` is 5038 |
+| `count` | u64 | Payloads carrying this observation between this pair |
+
+**The secret is never recorded.** sipnab writes findings to logs, exports
+them in containers and hands them to an agent's context, so the `Secret:` line
+becomes the fact that a credential crossed the wire and nothing more.
+
+**Not a decoder.** It matches a banner and a login line and records where they
+were. No session tracking, no response following, nothing else the protocol
+carries.
+
+**The port is an observation, not a filter.** An interface moved off 5038 is
+still reported, with `default_port: false` — a deployment that moved the
+service is the one most likely to think nobody can find it, and a rule keyed on
+the default would agree.
+
+**No arming needed**, unlike the detectors behind
+[`security_findings`](#security_findings). It costs two literal prefix tests on
+payloads that have already failed the SIP check, so there is no cost to gate
+against. A login with an `AuthType: MD5` challenge and no `Secret:` line
+reports `secret_present: false`, so it never counts as a cleartext password.
+
+Sightings aggregate per address pair, so one session reconnecting in a loop is
+one row with a count. The account is deliberately outside that key: this path
+runs before authentication, so the field is attacker-chosen.
+
+**Always present, and empty when there is nothing to report.** sipnab omits
+every other optional block on this surface because it may never have run the
+check at all. It runs this one on every capture, so `[]` means "looked, found
+none" — a stronger answer than a missing key.
+
 #### What the capture DECLINED — `caveats`
 
 `capture_quality` above counts what the capture **lost**. `caveats` counts what

@@ -826,7 +826,11 @@ fn wiki_intra_docs_links_resolve() {
     // diagnose_registration for the half of the answer that lives there rather
     // than restating it. Attributed per file against HEAD: docs/mcp-tools.md
     // 201 -> 202, and no other page the extractor reads moved.
-    const EXPECTED_WIKI_LINKS: usize = 702;
+    // 702 -> 703 by the `ami_cleartext` section, which links security_findings
+    // to say what it is NOT -- that tool reads the alert engine and needs
+    // arming, and this needs neither -- rather than re-arguing the difference.
+    // Attributed per file against HEAD: docs/mcp-tools.md 202 -> 203.
+    const EXPECTED_WIKI_LINKS: usize = 703;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe 6d in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

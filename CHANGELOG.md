@@ -29,6 +29,38 @@ entry that carries them.
 
 ### Added
 
+- **A manager password in the clear, on a port sipnab read and never
+  parsed.** Asterisk's Manager Interface speaks a line protocol on TCP/5038,
+  and a login is four lines of plain text: `Action: login`, `Username:`,
+  `Secret:`. sipnab already ships `--digest-leak` for a SIP digest weak enough
+  to grind offline; a manager password on the wire is the same finding class
+  with strictly worse consequences, because AMI can originate calls, read
+  configuration and run shell commands.
+
+  `capture_status` reported `unanalysed_sip_messages: 0` on a capture full of
+  it, and that zero was honest — AMI is not SIP, so there was no unparsed SIP
+  message to count. Every detector sipnab had ran on parsed SIP messages, and
+  this traffic never became one. The finding is now reported on
+  `capture_status`, which is where the misleading zero was.
+
+  **It never records the secret.** The `Secret:` line becomes a boolean,
+  because a finding is written to logs, exported in containers and read into an
+  agent's context. The username is echoed, bounded, because a finding naming
+  the exposed account can be acted on and one saying "an account" cannot.
+
+  **It costs effectively nothing.** Two byte-level prefix tests run before
+  anything allocates. The first version decoded every payload first, and since
+  this runs on every non-SIP TCP payload — a corpus full of HTTP is exactly
+  that — the corpus gate was killed by its own wedge detector twice before the
+  fix. Measured after: 106.73s against a 105.89s baseline with the hook
+  removed, under 1%.
+
+  Not a decoder: it matches a banner and a login line and records where they
+  were. The port is an observation rather than a filter, so an interface moved
+  off 5038 is still reported. Sightings aggregate per address pair, with the
+  account deliberately outside the key — this path runs before authentication,
+  so the field is attacker-chosen.
+
 - **A private `Contact` nobody rewrote is now a finding, and one that WAS
   rewritten is not.** A phone behind NAT registers its own private address; the
   registrar must notice the packet came from a public address the header does

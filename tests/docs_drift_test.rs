@@ -3357,7 +3357,11 @@ fn no_documentation_table_repeats_a_row() {
     // written table, two pages. Attributed per file against HEAD --
     // docs/mcp-tools.md 92 -> 93 and website/content/docs/mcp-tools.md
     // 92 -> 93, and no other changed page moved at all.
-    const EXPECTED_TABLES: usize = 836;
+    // 836 -> 838 by the `ami_cleartext` field table under `capture_status` in
+    // docs/mcp-tools.md and its site mirror: one written table, two pages.
+    // Attributed per file against HEAD -- docs/mcp-tools.md 93 -> 94 and
+    // website/content/docs/mcp-tools.md 93 -> 94, nothing else moved.
+    const EXPECTED_TABLES: usize = 838;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

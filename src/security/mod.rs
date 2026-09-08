@@ -8,6 +8,7 @@
 //! vulnerabilities, registration floods, and a rule-based alerting engine.
 
 pub mod alerting;
+pub mod ami;
 // Names `output::render_absent`, the fail2ban formatter's quoting rule for the
 // detail a finding carries; `output` exists only in native builds, and so does
 // the batch loop this serves.

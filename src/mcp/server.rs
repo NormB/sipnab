@@ -2179,6 +2179,29 @@ pub struct CaptureStatusResponse {
     /// Zero on live capture, where BPF filtered before the pipeline saw
     /// anything and there is nothing to under-report.
     pub unanalysed_sip_messages: u64,
+    /// Cleartext Asterisk Manager Interface credentials seen on the wire.
+    ///
+    /// Reported HERE, on the tool whose `unanalysed_sip_messages: 0` was the
+    /// complete answer for a capture full of this. That zero was honest — AMI
+    /// is not SIP, so there was no unparsed SIP message to count — and it was
+    /// also the whole reason nobody noticed: every detector sipnab had ran on
+    /// parsed SIP messages, and this traffic never became one.
+    ///
+    /// Never carries the secret. The `Secret:` line is recorded as the fact
+    /// that a credential crossed the wire, because a finding is written to
+    /// logs, exported in containers and read into an agent's context.
+    ///
+    /// Needs no arming, unlike the detectors behind `security_findings`. It
+    /// costs two literal prefix tests on payloads that have already failed the
+    /// SIP check, so there is no cost to gate and no false positive to trade
+    /// against.
+    ///
+    /// Always present, empty when nothing was seen — and that emptiness is a
+    /// real answer rather than an absence. Every other optional block on this
+    /// surface is omitted because it MIGHT not have been checked; this one is
+    /// checked on every capture, so `[]` means "looked, found none" and a
+    /// missing key would say the weaker thing.
+    pub ami_cleartext: Vec<crate::security::ami::AmiFinding>,
     /// The busiest ports carrying that unanalyzed SIP, up to five.
     ///
     /// Actionable rather than merely alarming: these are the values to pass to
@@ -5691,6 +5714,10 @@ impl SipnabMcp {
                 unsaved: live && writing_to.is_none(),
                 capture_identity: state.identity.etag(ds.generation(), ss.generation()),
                 unanalysed_sip_messages: skipped.messages,
+                // Read from the recorder, the way `icmp_media_findings` is
+                // read by the dialog report: the packet path notices and the
+                // surface reports, with no shared state threaded between them.
+                ami_cleartext: crate::security::ami::findings(),
                 unanalysed_busiest_ports: skipped
                     .ports
                     .iter()

@@ -2011,6 +2011,19 @@ pub fn classify_packet(
         // reportable instead of silent; see `portrange_skip_report`.
         record_portrange_skip(pp.src_port, pp.dst_port, effective_payload, range);
     }
+    // A payload that is not SIP is where the Asterisk Manager Interface has
+    // always been: `capture_status` reports `unanalysed_sip_messages: 0` on a
+    // capture full of AMI, and that number is honest — AMI never becomes a SIP
+    // message, so there was no unparsed SIP to count. Every detector sipnab
+    // had ran on parsed messages, and this traffic never became one.
+    //
+    // Recorded here rather than returned, following `record_portrange_skip`
+    // above: noticing during classification and reporting later needs no new
+    // `PacketAction` variant and no signature change in the four callers.
+    if !sip_looks_like_sip && effective_transport == crate::net::TransportProto::Tcp {
+        crate::security::ami::record(effective_payload, pp.src_addr, pp.dst_addr, pp.dst_port);
+    }
+
     if sip_port_ok && sip_looks_like_sip {
         match sip::parser::parse_sip_bytes(
             effective_payload,
@@ -2504,6 +2517,49 @@ mod quiet_bad_parse_tests {
             input_origin: crate::capture::parse::InputOrigin::Wire,
             hep: None,
         }
+    }
+
+    /// A cleartext AMI login on TCP, which is what the wire really carries.
+    ///
+    /// TCP because AMI is a TCP line protocol, and the recorder is deliberately
+    /// only on the TCP arm: a UDP payload that happens to start with these
+    /// bytes is not a manager interface.
+    fn ami_login_packet() -> ParsedPacket {
+        let mut p = packet(b"Action: login\r\nUsername: admin\r\nSecret: hunter2\r\n\r\n");
+        p.transport = TransportProto::Tcp;
+        p.ip_protocol = 6;
+        p.dst_port = 5038;
+        p
+    }
+
+    /// The packet path really records AMI, on traffic that never becomes SIP.
+    ///
+    /// The wiring test. `security::ami` covers the matcher; this proves the
+    /// hook is on the path the traffic actually takes — the branch where a
+    /// payload has already failed the SIP check, which is where AMI has always
+    /// been and where nothing was looking.
+    #[test]
+    fn a_cleartext_ami_login_is_recorded_from_the_packet_path() {
+        crate::security::ami::reset_for_test();
+        let before = crate::security::ami::findings().len();
+        assert_eq!(before, 0, "the recorder starts clean");
+
+        let pp = ami_login_packet();
+        let mut heur = rtp::heuristic::RtpHeuristic::new();
+        let opts = PipelineOptions::default();
+        let mut decrypt = MediaDecrypt::default();
+        let _ = classify_packet(&pp, &mut heur, &opts, &mut decrypt);
+
+        let found = crate::security::ami::findings();
+        assert_eq!(found.len(), 1, "the login was recorded: {found:?}");
+        assert_eq!(found[0].dst_port, 5038);
+        // The secret must not survive the journey.
+        let rendered = serde_json::to_string(&found).expect("serializes");
+        assert!(
+            !rendered.contains("hunter2"),
+            "the secret reached a finding: {rendered}"
+        );
+        crate::security::ami::reset_for_test();
     }
 
     /// `is_sip_message()` accepts the `SIP/2.0 ` response prefix, but the

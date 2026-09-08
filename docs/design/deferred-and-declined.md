@@ -278,10 +278,10 @@ registry has grown since, and the count is pinned by
 `mcp_tool_table_lists_every_registered_tool` rather than by this sentence.
 The argument below does not depend on the number. Four
 of them touch something other than the stores: `export_capture`
-([`server.rs:7195`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L7195)) writes a pcap, `export_audio`
-([`server.rs:7248`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L7248)) writes a WAV, `list_captures`
-([`server.rs:7145`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L7145)) reads a directory, and
-`shutdown_server` ([`server.rs:7728`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L7728)) ends the process.
+([`server.rs:7236`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L7236)) writes a pcap, `export_audio`
+([`server.rs:7289`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L7289)) writes a WAV, `list_captures`
+([`server.rs:7167`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L7167)) reads a directory, and
+`shutdown_server` ([`server.rs:7769`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L7769)) ends the process.
 
 **None of them mutates a store.** `shutdown_server` reads `dialog_store` and
 `stream_store` for its report, optionally writes a file, and then calls
@@ -361,7 +361,7 @@ and it is not incidental — it is the tool working:
 - `DialogSummary.from_user` / `to_user`
   ([`model.rs:53-57`](https://github.com/NormB/sipnab/blob/main/src/output/model.rs#L53-L57)) are copied straight off the
   From/To URIs.
-- `get_message` ([`server.rs:4817`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L4817)) returns the parsed
+- `get_message` ([`server.rs:4855`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L4855)) returns the parsed
   message through `message_to_json_value`. Until 0.5.159 the phrasing here was
   *"headers and body included"*, and measured against 0.5.130 that was false:
   the projection had a closed field list and no headers map, so a `Diversion`
@@ -815,7 +815,7 @@ decision was taken, not as it stands now:
 The opt-in machinery and the path confinement are already solved and should be
 reused rather than redesigned: the `shutdown_server` flag, off-by-default field,
 builder and first-statement refusal
-([`server.rs:7728`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L7728)), and `--mcp-file-root` with
+([`server.rs:7769`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L7769)), and `--mcp-file-root` with
 `resolve_in_root` ([`server.rs:827`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L827)).
 
 **What shipped**, against those three:

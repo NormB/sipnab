@@ -44,7 +44,7 @@ Tiers:
 
 ## Status
 
-**36 open, 472 done** across 36 sections.
+**35 open, 473 done** across 36 sections.
 Regenerate with `python3 scripts/backlog-status.py --apply`.
 
 | Section | Open | Done | Progress |
@@ -64,7 +64,7 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
 | RV | 0 | 8 | `##########` |
 | RP | 3 | 1 | `##........` |
 | HX | 1 | 2 | `#######...` |
-| AS | 1 | 6 | `#########.` |
+| AS | 0 | 7 | `##########` |
 | DOC | 0 | 16 | `##########` |
 | RDX | 0 | 2 | `##########` |
 | FLT | 0 | 1 | `##########` |
@@ -2567,7 +2567,7 @@ output path.
     2026-08-06, verified against the tree).** Shipped: `FrameRef`
     ([`src/capture/packet.rs:377`](https://github.com/NormB/sipnab/blob/main/src/capture/packet.rs#L377)) and `capture::resolve::resolve`
     ([`src/capture/resolve.rs:191`](https://github.com/NormB/sipnab/blob/main/src/capture/resolve.rs#L191)); the `show_evidence` MCP tool
-    (`#[tool(` at [`src/mcp/server.rs:6953`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L6953), handler at `:3866`), confined to
+    (`#[tool(` at [`src/mcp/server.rs:6994`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L6994), handler at `:3866`), confined to
     the file root and honest about
     itself with three states — `verified` / `unverified` / `unresolvable` —
     rather than resolving a foreign ref against the wrong file; and
@@ -3193,7 +3193,7 @@ implementation.
   `value_parser = ["full", "metrics", "read"]`) rather than the
   `--mcp-token-scope` proposed above, with the help text drawing the
   audience line ("REST API tokens only" / "MCP tokens only"). Enforcement is
-  `scope_of` ([`src/mcp/server.rs:8262`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L8262), the `mcp-http` arm), reading the scope out of the
+  `scope_of` ([`src/mcp/server.rs:8284`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L8284), the `mcp-http` arm), reading the scope out of the
   `McpAuth::BearerVerified` admission record, and `scope_refusal` (`:4872`),
   which is called from the hand-written `call_tool` (`:4951`). The
   no-second-list requirement held literally: `scope_refusal` decides from the
@@ -5516,7 +5516,7 @@ behind a Kamailio proxy. On one 100 MB slice sipnab found 507 dialogs, of which
   `is_unroutable_publicly` adding loopback for the caller that wants it — so
   neither answer changed and a third copy was not written.
 
-- [ ] **AS6 — cleartext AMI credentials as a security finding.**
+- [x] **AS6 (done 2026-09-08) — cleartext AMI credentials as a security finding.**
   `Asterisk Call Manager/9.0.0` on TCP/5038 between two hosts, with
   `Action: login` followed by `Username:` and `Secret:` in the clear, plus
   cleartext realtime SQL against `ps_endpoints`. `capture_status` reports
@@ -5529,6 +5529,53 @@ behind a Kamailio proxy. On one 100 MB slice sipnab found 507 dialogs, of which
   a new tool and emphatically **not** an AMI decoder. Match the banner and the
   `Action: login` line, record src/dst/port/frame_ref, and **never store or
   echo the secret**.
+
+  **Done:** [`src/security/ami.rs`](https://github.com/NormB/sipnab/blob/main/src/security/ami.rs) matches the two shapes and nothing else — no
+  session tracking, no response following, no decoder. The `Secret:` line is
+  recorded as a BOOLEAN, because a finding is written to logs, exported in
+  containers and read into an agent's context, and the value is the one thing
+  it must not carry. `a_login_reports_the_account_and_never_the_secret`
+  serializes the finding and asserts the value is absent from the rendering.
+
+  **Reported on `capture_status`, not `security_findings`.** The entry asked
+  for the latter and the former is the right home: `capture_status` is the tool
+  whose `unanalysed_sip_messages: 0` was the complete answer for a capture full
+  of this, and that zero was HONEST — AMI is not SIP, so there was no unparsed
+  SIP message to count. Putting the finding where the misleading zero was
+  answers the complaint at the point it was made. `security_findings` reads the
+  alert engine, which the packet path has no handle on and which needs arming;
+  this needs none, because it costs two literal prefix tests on payloads that
+  have already failed the SIP check.
+
+  **The hook is on the not-SIP branch**, which is where this traffic has always
+  been. It follows `record_portrange_skip`: notice during classification,
+  report later, no new `PacketAction` variant and no signature change in four
+  callers. TCP only — a UDP payload that happens to start with these bytes is
+  not a manager interface.
+
+  **The port is an observation, not a filter.** A manager interface moved off
+  5038 is still reported, with `default_port: false`. A rule keyed on the
+  default would agree with the deployment that believes it is hidden.
+
+  **Two byte-level tests before anything allocates, and that is not a
+  micro-optimization.** The first version decoded every payload with
+  `String::from_utf8_lossy` before looking at it. This hook runs on every
+  non-SIP TCP payload, the private corpus is full of HTTP, and the corpus gate
+  went from finishing to being killed by its own 1800-second wedge detector —
+  twice — on traffic that could never match. Measured after the fix:
+  `silent_sip_loss_corpus_test` runs in 106.73s with the hook and 105.89s with
+  it removed, so the residual cost is under 1%.
+
+  **The aggregation is a pure function over a caller's map**, with the
+  process-wide one a thin wrapper. Two tests sharing that global reset it
+  around each other's counting and one of them went red; tests now own their
+  map and touch no process state. Only the pipeline wiring test uses the
+  global, and it is the single one that does.
+
+  **Sightings aggregate by address pair, and the account is not in the key.**
+  One session reconnecting in a loop is one row with a count. Keying on the
+  username would let a sender grow the map without limit, on a path that runs
+  before authentication.
 
 **Rejected, with the measurement that rejected them** — this list is as useful
 as the one above:
@@ -5603,7 +5650,7 @@ promises an absence is acted on; a missing feature is merely absent.
 
 - [x] **DOC4 (done 2026-08-30) — [`docs/mcp-deploy.md:248`](https://github.com/NormB/sipnab/blob/main/docs/mcp-deploy.md#L248) opens the remote-access section by
   promising no tool mutates the stores.** `open_capture` calls `ds.clear()` and
-  `ss.clear()` ([`src/mcp/server.rs:7323`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L7323)). The code already knows: a note at
+  `ss.clear()` ([`src/mcp/server.rs:7364`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L7364)). The code already knows: a note at
   `:8377` records that the wire `instructions` string was corrected for exactly
   this. The page was not. [`SECURITY.md:35`](https://github.com/NormB/sipnab/blob/main/SECURITY.md#L35) scopes reports to "any MCP tool that
   mutates dialog/stream/alert state", so a good-faith reporter is told the scope
