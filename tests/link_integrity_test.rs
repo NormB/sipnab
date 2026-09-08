@@ -816,7 +816,13 @@ fn wiki_intra_docs_links_resolve() {
     // reference, so the REST page does not carry a second copy of it). No
     // other page the extractor reads moved at all, which is what rules out a
     // link accidentally created somewhere else in the same commit.
-    const EXPECTED_WIKI_LINKS: usize = 699;
+    // 699 -> 701 by the `stack` section under `describe_endpoint`, which links
+    // top_talkers for the one-row-at-100%-share finding it exists to answer,
+    // and find_correlated for the identifier_match discipline it follows,
+    // rather than restating either. Attributed per file against HEAD:
+    // docs/mcp-tools.md 199 -> 201, and no other page the extractor reads
+    // moved at all.
+    const EXPECTED_WIKI_LINKS: usize = 701;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe 6d in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

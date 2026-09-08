@@ -27,6 +27,7 @@ pub mod sdp;
 pub mod sdp_timeline;
 pub mod session_id;
 pub mod siprec;
+pub mod stack_fingerprint;
 #[cfg(feature = "tls")]
 pub mod stir_shaken;
 pub mod termination;

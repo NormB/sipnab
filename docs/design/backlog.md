@@ -44,7 +44,7 @@ Tiers:
 
 ## Status
 
-**38 open, 470 done** across 36 sections.
+**37 open, 471 done** across 36 sections.
 Regenerate with `python3 scripts/backlog-status.py --apply`.
 
 | Section | Open | Done | Progress |
@@ -64,7 +64,7 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
 | RV | 0 | 8 | `##########` |
 | RP | 3 | 1 | `##........` |
 | HX | 1 | 2 | `#######...` |
-| AS | 3 | 4 | `######....` |
+| AS | 2 | 5 | `#######...` |
 | DOC | 0 | 16 | `##########` |
 | RDX | 0 | 2 | `##########` |
 | FLT | 0 | 1 | `##########` |
@@ -5340,7 +5340,7 @@ behind a Kamailio proxy. On one 100 MB slice sipnab found 507 dialogs, of which
   that a threat-model section leaned on it for a release in which it was
   untrue.
 
-- [ ] **AS2 — report the signaling-stack fingerprint on `describe_endpoint`.**
+- [x] **AS2 (done 2026-09-08) — report the signaling-stack fingerprint on `describe_endpoint`.**
   `top_talkers by=ua` reports a single row, `Asterisk PBX 20.15.2`, at
   `share_pct: 100.0` across 507 dialogs — while `tshark` finds **18 distinct
   source IPs** behind that one banner. One label, eighteen machines.
@@ -5363,6 +5363,29 @@ behind a Kamailio proxy. On one 100 MB slice sipnab found 507 dialogs, of which
   **Do:** report the *observation*, not the vendor conclusion:
   `{branch_cookie, tag_shape, callid_has_host, inference, confidence}`. Same
   discipline `find_correlated` already applies with `identifier_match`.
+
+  **Done:** [`src/sip/stack_fingerprint.rs`](https://github.com/NormB/sipnab/blob/main/src/sip/stack_fingerprint.rs), reported as a `stack` block on
+  `describe_endpoint`, with `requests_read` as the denominator and `mixed` for
+  an address whose own requests disagree — which is what a shared address or a
+  relaying proxy looks like, and the case the 18-addresses finding was.
+
+  **Two corrections to this entry, both measured against the corpus on
+  2026-09-08 before anything was written.** The branch suffix is not 8 hex: it
+  is 8, 9 **and** 10, and a rule pinned to one length would have missed most of
+  the population. And the magic cookie cannot be a signal — it is mandatory for
+  every compliant sender under [RFC 3261 §8.1.1.7](https://www.rfc-editor.org/rfc/rfc3261#section-8.1.1.7), so counting it handed a free
+  point to whichever candidate wanted no vendor extension, and an unrecognized
+  stack read as `chan_sip` on the strength of it. The branch signal is the
+  vendor extension, or where there is none, the remainder's shape.
+
+  **A closed list of vendor extensions, not a character class.** The extension
+  cannot be recovered by shape: in `z9hG4bKPjabc` the `abc` is as alphabetic as
+  the `Pj` and as hexadecimal as the transaction part it belongs to. Taking the
+  leading alphabetic run produced a different "cookie" for every request.
+
+  **Requests only.** A response echoes the request's branch, tag and Call-ID
+  verbatim, so reading one fingerprints the caller as though it were the
+  answerer.
 
   **Verify before shipping the `inference` field:** that `chan_sip` genuinely
   constructs From-tags as `as%08lx`. 155/155 were measured on the wire; nobody

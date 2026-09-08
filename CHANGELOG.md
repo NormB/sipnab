@@ -8,6 +8,49 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Fixed
+
+- **Two more doc blocks had been cut in half, in a tree no gate read.** The
+  doc-split rules ran over `src/` and nothing else. `tests/` holds 5,014 doc
+  blocks — where the reasoning for every gate is written down, so a split there
+  destroys exactly the explanation somebody needs when that gate fails — and
+  two were sitting in it:
+  `tool_descriptions_do_not_instruct_the_model_to_trust_content` was
+  documented, in full, as `/// what it gets back.`, and
+  `every_flag_has_at_least_two_examples` had lost its first line the same way.
+  Five instances of one defect now, across two trees. The scan was always the
+  cheap part; not pointing it at everything was the whole gap.
+
+- **Six items shipped in 0.5.159 with their backlog checkboxes never flipped**,
+  so the backlog reported released work as open for a release. Verified against
+  the tree rather than against the release notes.
+
+### Added
+
+- **`describe_endpoint` reports which signaling stack built an endpoint's
+  requests.** A `User-Agent` banner names a product and one product ships more
+  than one stack: `top_talkers by=ua` reports `Asterisk PBX 20.15.2` as a
+  single row at 100% share across 507 dialogs, and `tshark` finds 18 distinct
+  source addresses behind it, running two stacks that need different
+  configuration, different NAT handling and different re-INVITE handling.
+
+  The new `stack` block reports the OBSERVATION — `branch_cookie`,
+  `branch_shape`, `tag_shape`, `callid_has_host` — with `inference` and
+  `confidence` derived from it, and `requests_read` as the denominator. The
+  inference names a LIBRARY, never a product: `z9hG4bKPj` is pjproject's, and
+  pjproject ships inside Asterisk's `res_pjsip`, Grandstream UCM and FreePBX
+  alike. `mixed` says when one address's own requests disagree, which is what a
+  shared address or a relaying proxy looks like.
+
+  Read from requests only. A response echoes the request's branch, tag and
+  Call-ID verbatim, so reading one would fingerprint the caller as though it
+  were the answerer.
+
+  Measured rather than assumed: the branch suffix is 8, 9 **and** 10 hex digits
+  in the corpus, so a rule pinned to one length would have missed most of them.
+
 ## [0.5.159] - 2026-09-08
 
 ### Added

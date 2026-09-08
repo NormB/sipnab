@@ -3347,7 +3347,12 @@ fn no_documentation_table_repeats_a_row() {
     // docs/mcp-tools.md 90 -> 91 and website/content/docs/mcp-tools.md
     // 90 -> 91, and no other changed page's count moved at all, which is what
     // rules out a table split somewhere else in the same commit.
-    const EXPECTED_TABLES: usize = 832;
+    // 832 -> 834 by the `stack` field table under `describe_endpoint` in
+    // docs/mcp-tools.md and its site mirror: one written table, two pages.
+    // Attributed per file against HEAD before the number moved --
+    // docs/mcp-tools.md 91 -> 92 and website/content/docs/mcp-tools.md
+    // 91 -> 92, and no other changed page moved at all.
+    const EXPECTED_TABLES: usize = 834;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

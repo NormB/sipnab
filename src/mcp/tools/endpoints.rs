@@ -179,6 +179,15 @@ pub struct DescribeEndpointResponse {
     pub registration: EndpointRegistration,
     /// Banners the endpoint sent, most frequent first.
     pub user_agents: Vec<EndpointBanner>,
+    /// Which signaling stack built this endpoint's requests, read off their
+    /// own syntax rather than off the banner beside it.
+    ///
+    /// A banner names a product and one product ships more than one stack.
+    /// `Asterisk PBX 20.15.2` at 100% share across 507 dialogs was eighteen
+    /// source addresses running two stacks, and which one an endpoint runs
+    /// decides the whole debugging path — different configuration, different
+    /// NAT handling, different re-INVITE behavior.
+    pub stack: crate::sip::stack_fingerprint::StackFingerprint,
     /// Media attributed to the endpoint.
     pub streams: EndpointStreams,
     /// Security findings filed against it.
@@ -345,6 +354,7 @@ impl SipnabMcp {
             let mut messages_sent = 0usize;
             let mut messages_received = 0usize;
             let mut banners: BTreeMap<(String, String), usize> = BTreeMap::new();
+            let mut stack = crate::sip::stack_fingerprint::FingerprintAccumulator::default();
 
             let mut invites = 0usize;
             let mut with_final_status = 0usize;
@@ -370,6 +380,18 @@ impl SipnabMcp {
                         messages_sent += 1;
                         if let Some((header, value)) = banner_of(m) {
                             *banners.entry((header, value)).or_insert(0) += 1;
+                        }
+                        // REQUESTS only. A response echoes the request's
+                        // branch, `From` tag and Call-ID verbatim, so reading
+                        // one would fingerprint the party that SENT the
+                        // request as if it were the party that answered --
+                        // and on any dialog the two are different stacks.
+                        if m.is_request {
+                            stack.observe(
+                                m.top_via_branch().unwrap_or_default(),
+                                m.from_tag().unwrap_or_default(),
+                                m.call_id().unwrap_or_default(),
+                            );
                         }
                     }
                     if selector.received(m) {
@@ -478,6 +500,7 @@ impl SipnabMcp {
                     problem_call_ids: reg_problem_ids,
                 },
                 user_agents,
+                stack: stack.finish(),
                 streams,
                 findings: self.endpoint_findings(&selector, limit),
                 truncated: total_dialogs > recent_dialogs.len(),
@@ -1312,6 +1335,131 @@ mod tests {
             .await
             .expect("the call succeeds"),
         )
+    }
+
+    /// An INVITE whose syntax carries a chosen stack's shapes.
+    fn invite_with_stack(
+        call_id: &str,
+        branch: &str,
+        from_tag: &str,
+        src: IpAddr,
+        dst: IpAddr,
+        ts: chrono::DateTime<chrono::Utc>,
+    ) -> crate::sip::SipMessage {
+        let raw = build_sip(
+            "INVITE sip:bob@example.com SIP/2.0",
+            &[
+                &format!("Via: SIP/2.0/UDP 10.0.0.1:5060;branch={branch}"),
+                &format!("From: <sip:alice@example.com>;tag={from_tag}"),
+                "To: <sip:bob@example.com>",
+                &format!("Call-ID: {call_id}"),
+                "CSeq: 1 INVITE",
+                // The identical banner both populations carry. It is the whole
+                // reason the fingerprint exists.
+                "User-Agent: Asterisk PBX 20.15.2",
+                "Content-Length: 0",
+            ],
+            b"",
+        );
+        parse_between(&raw, src, dst, ts)
+    }
+
+    /// Two endpoints behind one banner report different stacks.
+    ///
+    /// The wiring test for `sip::stack_fingerprint`: the module's own tests
+    /// cover the classification, and this proves the fingerprint reaches the
+    /// tool at all — and that it answers the question the banner cannot.
+    /// Both endpoints below send `Asterisk PBX 20.15.2`, which is what
+    /// `top_talkers by=ua` sees as one row at 100% share.
+    #[tokio::test]
+    async fn describe_endpoint_tells_two_stacks_apart_behind_one_banner() {
+        let srv = server_with(vec![
+            invite_with_stack(
+                "pj@test",
+                "z9hG4bKPj5f2c9e1a3b4d",
+                "5f2c9e1a-3b4d-4e5f-8a9b-0c1d2e3f4a5b",
+                ip(1),
+                ip(9),
+                base_ts(),
+            ),
+            invite_with_stack(
+                "cs@test.example",
+                "z9hG4bK1a2b3c4d",
+                "as1a2b3c4d",
+                ip(2),
+                ip(9),
+                base_ts() + chrono::Duration::seconds(5),
+            ),
+        ]);
+
+        let pj = by_ip(&srv, "10.0.0.1").await;
+        assert_eq!(pj["stack"]["inference"], "pjproject");
+        assert_eq!(pj["stack"]["branch_cookie"], "z9hG4bKPj");
+        assert_eq!(pj["stack"]["tag_shape"], "uuid");
+        assert_eq!(
+            pj["stack"]["requests_read"], 1,
+            "the denominator is reported"
+        );
+        assert_eq!(pj["stack"]["mixed"], false);
+
+        let cs = by_ip(&srv, "10.0.0.2").await;
+        assert_eq!(cs["stack"]["inference"], "chan_sip");
+        assert_eq!(cs["stack"]["branch_cookie"], "z9hG4bK");
+        assert_eq!(cs["stack"]["tag_shape"], "as-hex");
+
+        // The banner said the same thing about both, which is the defect.
+        assert_eq!(
+            pj["user_agents"][0]["value"], cs["user_agents"][0]["value"],
+            "both endpoints must carry the identical banner, or this fixture \
+             is not the case the fingerprint was written for"
+        );
+    }
+
+    /// The fingerprint is taken from requests, never from responses.
+    ///
+    /// A response echoes the request's branch, `From` tag and Call-ID
+    /// verbatim, so reading one fingerprints the party that SENT the request
+    /// as though it were the party that answered — and on any dialog those are
+    /// two different stacks. The proxy below answers pjproject-shaped requests
+    /// and originates none of its own.
+    #[tokio::test]
+    async fn the_stack_fingerprint_is_taken_from_requests_only() {
+        let srv = server_with(vec![
+            invite_with_stack(
+                "pj@test",
+                "z9hG4bKPj5f2c9e1a3b4d",
+                "5f2c9e1a-3b4d-4e5f-8a9b-0c1d2e3f4a5b",
+                ip(1),
+                ip(9),
+                base_ts(),
+            ),
+            response(
+                "pj@test",
+                200,
+                "OK",
+                "INVITE",
+                ip(9),
+                ip(1),
+                base_ts() + chrono::Duration::seconds(1),
+            ),
+        ]);
+
+        let answerer = by_ip(&srv, "10.0.0.9").await;
+        assert_eq!(
+            answerer["stack"]["requests_read"], 0,
+            "the answering party sent no requests, so there is nothing to \
+             fingerprint -- and the caller's shapes, echoed back in the \
+             response, must not be attributed to it"
+        );
+        assert!(
+            answerer["stack"]["inference"].is_null(),
+            "nothing was read, so nothing may be inferred: {}",
+            answerer["stack"]
+        );
+        // And the caller, who really did send one, is fingerprinted.
+        let caller = by_ip(&srv, "10.0.0.1").await;
+        assert_eq!(caller["stack"]["requests_read"], 1);
+        assert_eq!(caller["stack"]["inference"], "pjproject");
     }
 
     /// The endpoint's own traffic is counted and nobody else's is.

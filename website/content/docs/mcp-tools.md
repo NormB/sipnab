@@ -1807,6 +1807,11 @@ The example runs against
     "auth_loops": 0, "problem_call_ids": []
   },
   "user_agents": [],
+  "stack": {
+    "branch_cookie": "z9hG4bK", "branch_shape": "hex",
+    "tag_shape": "other", "callid_has_host": true,
+    "confidence": 0, "requests_read": 5, "mixed": false
+  },
   "streams": {
     "count": 2, "orphaned": 0, "packets": 839, "lost_packets": 0,
     "max_jitter_ms": 0.0061987502747274615,
@@ -1821,6 +1826,44 @@ The example runs against
   "truncated": true
 }
 ```
+
+#### `stack` — which library built these requests
+
+A banner names a PRODUCT and one product ships more than one stack.
+[`top_talkers`](#top-talkers) `by=ua` reports `Asterisk PBX 20.15.2` as a single
+row at `share_pct: 100.0` across 507 dialogs, and `tshark` finds **18 distinct
+source addresses** behind that one label — running two different stacks, which
+need different configuration, different NAT handling and different re-INVITE
+handling. The banner cannot tell them apart. The syntax can.
+
+| Field | Type | Description |
+|---|---|---|
+| `branch_cookie` | string? | The `Via` branch's cookie: the mandatory `z9hG4bK` ([RFC 3261 §8.1.1.7](https://www.rfc-editor.org/rfc/rfc3261#section-8.1.1.7)) plus any vendor extension before the per-transaction part. Echoed from the wire, bounded to `MAX_FINGERPRINT_CHARS` (32) |
+| `branch_shape` | string? | What follows the cookie: `uuid`, `as-hex`, `hex` or `other` |
+| `tag_shape` | string? | The same vocabulary, for the `From` tag |
+| `callid_has_host` | bool? | Whether the `Call-ID` carries an `@host` part |
+| `inference` | string? | The library the observations point at — `pjproject` or `chan_sip`. Absent when they point nowhere |
+| `confidence` | u8 | How many of the three observations agree with `inference`, out of three. `0` when sipnab inferred nothing |
+| `requests_read` | usize | The denominator. A fingerprint from one request and one from four hundred are different claims |
+| `mixed` | bool | True when this endpoint's own requests disagreed. A shared address, or a proxy relaying for others, carries both populations |
+
+**It names a library, never a product.** `z9hG4bKPj` is pjproject's, and
+pjproject ships inside Asterisk's `res_pjsip`, Grandstream UCM and FreePBX
+alike — so naming a vendor from the shape would be a guess wearing the shape of
+a measurement. The same discipline [`find_correlated`](#find-correlated) applies
+with `identifier_match`.
+
+**Two observations are the floor for an inference.** The magic cookie alone is
+mandatory for every compliant sender, so it distinguishes nothing, and
+`callid_has_host` alone splits the world roughly in half. One agreeing
+observation infers nothing, and an unrecognized stack reports its shapes with no
+`inference` at all. sipnab does not force it into the nearest label.
+
+**Read from requests only.** A response echoes the request's branch, `From` tag
+and `Call-ID` verbatim, so reading one would fingerprint the party that SENT the
+request as though it were the party that answered — and on any dialog those are
+two different stacks. An endpoint that only answers reports `requests_read: 0`
+and infers nothing.
 
 **`limit` bounds the page and never the counts.** `dialogs`, `by_method`,
 `by_state`, `calls` and `streams` describe every match, and only
@@ -2439,9 +2482,9 @@ why it ended is the last thing said. `Reason` on a `BYE` or a `CANCEL` counts,
 which is the case this exists for: a call that clears normally has no failure
 response to hang a cause on.
 
-Where one message carries both protocols, sipnab picks the non-`SIP` one.
-`SIP;cause=` restates `final_status_code`, which is already its own field.
-`Q.850;cause=` is the gateway's cause, and the fact nothing else recovers.
+Where one message carries both protocols, sipnab picks the non-`SIP` one,
+because a `SIP` cause restates `final_status_code` and that is already its own
+field. A `Q.850` cause is the gateway's, and the fact nothing else recovers.
 
 The same block appears on [`get_dialog_report`](#get-dialog-report) and on
 `GET /v1/dialogs/{call_id}/report`, from one assembler.
