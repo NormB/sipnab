@@ -822,7 +822,11 @@ fn wiki_intra_docs_links_resolve() {
     // rather than restating either. Attributed per file against HEAD:
     // docs/mcp-tools.md 199 -> 201, and no other page the extractor reads
     // moved at all.
-    const EXPECTED_WIKI_LINKS: usize = 701;
+    // 701 -> 702 by the `contact_rewrite` section, which links
+    // diagnose_registration for the half of the answer that lives there rather
+    // than restating it. Attributed per file against HEAD: docs/mcp-tools.md
+    // 201 -> 202, and no other page the extractor reads moved.
+    const EXPECTED_WIKI_LINKS: usize = 702;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe 6d in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

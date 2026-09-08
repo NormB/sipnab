@@ -179,6 +179,15 @@ pub struct DescribeEndpointResponse {
     pub registration: EndpointRegistration,
     /// Banners the endpoint sent, most frequent first.
     pub user_agents: Vec<EndpointBanner>,
+    /// Whether a private `Contact` this endpoint registered was rewritten, or
+    /// left later requests undeliverable.
+    ///
+    /// Absent when the endpoint sent no REGISTER. The FINDING lives here
+    /// rather than on `diagnose_registration` because settling it needs what
+    /// happened across the endpoint's other dialogs, and one dialog cannot
+    /// see that.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub contact_rewrite: Option<crate::sip::contact_rewrite::ContactRewriteFinding>,
     /// Which signaling stack built this endpoint's requests, read off their
     /// own syntax rather than off the banner beside it.
     ///
@@ -355,6 +364,20 @@ impl SipnabMcp {
             let mut messages_received = 0usize;
             let mut banners: BTreeMap<(String, String), usize> = BTreeMap::new();
             let mut stack = crate::sip::stack_fingerprint::FingerprintAccumulator::default();
+            // The REGISTER observation, and every later request's destination,
+            // collected in one pass so the corroboration below reads one
+            // capture rather than two.
+            // The observation, the address it arrived from, and the AoR it
+            // registered. The AoR is the tie the corroboration needs: a
+            // request misrouted to the private `Contact` carries NO address
+            // belonging to this endpoint -- that is what being misrouted
+            // means -- so nothing addressed-based can find it. What it does
+            // carry is the registered user in its request URI and `To`.
+            let mut contact_observation: Option<(
+                crate::sip::contact_rewrite::ContactObservation,
+                std::net::IpAddr,
+                Option<String>,
+            )> = None;
 
             let mut invites = 0usize;
             let mut with_final_status = 0usize;
@@ -392,6 +415,23 @@ impl SipnabMcp {
                                 m.from_tag().unwrap_or_default(),
                                 m.call_id().unwrap_or_default(),
                             );
+                            // The FIRST REGISTER this endpoint sent. A later
+                            // one may carry a rewritten Contact the endpoint
+                            // learned from a 200 OK, and reading that would
+                            // report the cure as the disease.
+                            if m.method == Some(crate::sip::method::SipMethod::Register)
+                                && contact_observation.is_none()
+                            {
+                                contact_observation = Some((
+                                    crate::sip::contact_rewrite::observe(
+                                        m.contact()
+                                            .and_then(crate::sip::contact_rewrite::contact_host),
+                                        m.src_addr,
+                                    ),
+                                    m.src_addr,
+                                    m.to_user(),
+                                ));
+                            }
                         }
                     }
                     if selector.received(m) {
@@ -453,6 +493,50 @@ impl SipnabMcp {
                 dialogs.iter().map(|d| d.call_id.as_str()).collect();
             let streams = self.endpoint_streams(&selector, &matched_call_ids);
 
+            // The conjunction. `rewrite_required` is the observation and is
+            // true for three quarters of a healthy estate; what settles it is
+            // which address the rest of the estate then used.
+            let contact_rewrite = contact_observation.map(|(o, registered_from, aor)| {
+                let contact_addr = o
+                    .contact_host
+                    .as_deref()
+                    .and_then(crate::sip::contact_rewrite::host_address);
+                let mut to_contact = 0usize;
+                let mut to_source = 0usize;
+                // A second pass, over EVERY dialog rather than this endpoint's.
+                // Only reached when a REGISTER was seen, which is the rare
+                // case, and it is the only pass that can see a request the
+                // registrar addressed somewhere this endpoint never was.
+                if let Some(aor) = aor.as_deref() {
+                    for d in ds.iter() {
+                        for m in &d.messages {
+                            if !m.is_request
+                                || m.method == Some(crate::sip::method::SipMethod::Register)
+                            {
+                                continue;
+                            }
+                            // RFC 3261 section 19.1.4 makes the user part
+                            // case-sensitive, so `Alice` and `alice` are two
+                            // URIs and folding them would attribute one
+                            // endpoint's traffic to another.
+                            if m.to_user().as_deref() != Some(aor) {
+                                continue;
+                            }
+                            if Some(m.dst_addr) == contact_addr {
+                                to_contact += 1;
+                            } else if m.dst_addr == registered_from {
+                                to_source += 1;
+                            }
+                            // Anything else went to a third address -- a proxy,
+                            // another leg -- and says nothing about whether the
+                            // registrar rewrote. Counting it as `to_source`
+                            // would report a rewrite nothing observed.
+                        }
+                    }
+                }
+                crate::sip::contact_rewrite::corroborate(o, to_contact, to_source)
+            });
+
             let mut user_agents: Vec<EndpointBanner> = banners
                 .into_iter()
                 .map(|((header, value), count)| EndpointBanner {
@@ -501,6 +585,7 @@ impl SipnabMcp {
                 },
                 user_agents,
                 stack: stack.finish(),
+                contact_rewrite,
                 streams,
                 findings: self.endpoint_findings(&selector, limit),
                 truncated: total_dialogs > recent_dialogs.len(),
@@ -1362,6 +1447,153 @@ mod tests {
             b"",
         );
         parse_between(&raw, src, dst, ts)
+    }
+
+    /// An INVITE addressed TO `to_user` — an inbound call to a registered AoR.
+    ///
+    /// The `invite` helper above sets the FROM user and always addresses
+    /// `bob`, which is the wrong direction for a registration question: what
+    /// settles whether a registrar rewrote is where requests aimed AT the
+    /// registered user were sent.
+    fn invite_to(
+        call_id: &str,
+        to_user: &str,
+        src: IpAddr,
+        dst: IpAddr,
+        ts: chrono::DateTime<chrono::Utc>,
+    ) -> crate::sip::SipMessage {
+        let raw = build_sip(
+            &format!("INVITE sip:{to_user}@example.com SIP/2.0"),
+            &[
+                "Via: SIP/2.0/UDP 10.0.0.9:5060;branch=z9hG4bKin",
+                "From: <sip:carol@example.com>;tag=t9",
+                &format!("To: <sip:{to_user}@example.com>"),
+                &format!("Call-ID: {call_id}"),
+                "CSeq: 1 INVITE",
+                "Content-Length: 0",
+            ],
+            b"",
+        );
+        parse_between(&raw, src, dst, ts)
+    }
+
+    /// A public address for the endpoint, so a NAT rewrite is really required.
+    ///
+    /// RFC 5737 documentation space. `ip(n)` yields `10.0.0.n`, which is
+    /// private -- and a private source needs nothing rewritten, so a fixture
+    /// built on it cannot exercise this rule at all.
+    fn public() -> IpAddr {
+        "203.0.113.5".parse().expect("documentation address")
+    }
+
+    /// A REGISTER carrying a chosen `Contact`, from a chosen source.
+    fn register_with_contact(
+        call_id: &str,
+        contact: &str,
+        src: IpAddr,
+        dst: IpAddr,
+        ts: chrono::DateTime<chrono::Utc>,
+    ) -> crate::sip::SipMessage {
+        let raw = build_sip(
+            "REGISTER sip:example.com SIP/2.0",
+            &[
+                "Via: SIP/2.0/UDP 10.0.0.1:5060;branch=z9hG4bKreg",
+                "From: <sip:alice@example.com>;tag=t1",
+                "To: <sip:alice@example.com>",
+                &format!("Call-ID: {call_id}"),
+                "CSeq: 1 REGISTER",
+                &format!("Contact: {contact}"),
+                "Content-Length: 0",
+            ],
+            b"",
+        );
+        parse_between(&raw, src, dst, ts)
+    }
+
+    /// A private `Contact` alone is not a fault, and the corroboration says so.
+    ///
+    /// The falsifier this feature was written around. 74.6% of REGISTER
+    /// contacts in the private corpus carry a private host, measured
+    /// 2026-09-08, and that estate works — so a rule firing on the observation
+    /// would report three quarters of it as broken. What separates the working
+    /// case from the broken one is which address the rest of the estate then
+    /// used.
+    #[tokio::test]
+    async fn a_rewritten_private_contact_is_reported_and_is_not_a_finding() {
+        let srv = server_with(vec![
+            register_with_contact(
+                "reg@test",
+                "<sip:alice@192.168.1.50:5060>",
+                public(),
+                ip(9),
+                base_ts(),
+            ),
+            // The registrar rewrote: the later INVITE goes to the address the
+            // REGISTER arrived from, not to the header's private host.
+            invite_to(
+                "call@test",
+                "alice",
+                ip(9),
+                public(),
+                base_ts() + chrono::Duration::seconds(30),
+            ),
+        ]);
+
+        let e = by_ip(&srv, "203.0.113.5").await;
+        let cr = &e["contact_rewrite"];
+        assert_eq!(cr["observation"]["contact_host_private"], true);
+        assert_eq!(
+            cr["observation"]["rewrite_required"], true,
+            "the observation is reported -- it is what a NAT rewrite is needed \
+             for, and withholding it would hide the shape entirely"
+        );
+        assert_eq!(cr["verdict"], "rewritten");
+        assert_eq!(
+            cr["is_finding"], false,
+            "a rewrite that happened is not a fault, however private the \
+             Contact was"
+        );
+    }
+
+    /// A private `Contact` nobody rewrote is the finding.
+    #[tokio::test]
+    async fn a_private_contact_later_requests_still_use_is_a_finding() {
+        let srv = server_with(vec![
+            register_with_contact(
+                "reg@test",
+                "<sip:alice@192.168.1.50:5060>",
+                public(),
+                ip(9),
+                base_ts(),
+            ),
+            // The proxy addressed the later INVITE to the header's private
+            // host. Nobody on the public internet routes to it, so the phone
+            // never rings.
+            invite_to(
+                "call@test",
+                "alice",
+                ip(9),
+                "192.168.1.50".parse().expect("private contact address"),
+                base_ts() + chrono::Duration::seconds(30),
+            ),
+        ]);
+
+        let e = by_ip(&srv, "203.0.113.5").await;
+        let cr = &e["contact_rewrite"];
+        assert_eq!(cr["verdict"], "not-rewritten");
+        assert_eq!(cr["is_finding"], true);
+        assert_eq!(cr["requests_to_contact"], 1);
+    }
+
+    /// An endpoint that never registered carries no block at all.
+    #[tokio::test]
+    async fn an_endpoint_that_never_registered_reports_no_contact_rewrite() {
+        let e = by_ip(&two_call_capture(), "10.0.0.1").await;
+        assert!(
+            e.get("contact_rewrite").is_none(),
+            "absent, not null: there is no REGISTER to have observed, and a \
+             null would read as an observation that found nothing"
+        );
     }
 
     /// Two endpoints behind one banner report different stacks.

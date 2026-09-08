@@ -213,6 +213,45 @@ impl CidrRange {
     }
 }
 
+/// Whether an address is one the public internet does not route to.
+///
+/// RFC 1918 space, IPv4 link-local, IPv6 unique-local (`fc00::/7`) and IPv6
+/// link-local (`fe80::/10`). Loopback is deliberately NOT here — see
+/// [`is_unroutable_publicly`], which adds it — because the two callers that
+/// existed before this function disagreed about loopback on purpose and
+/// unifying them would have changed one of their answers.
+///
+/// **Carrier-grade NAT space (`100.64.0.0/10`) is deliberately excluded.** It
+/// is routable within the carrier that assigned it, and a large share of
+/// working mobile traffic arrives from it, so treating it as private would
+/// fire on calls that are fine.
+///
+/// One rule in one place: this was written twice, in `rtp::diagnosis` and in
+/// `security::recommend`, and a third copy was about to be written for the
+/// registration contact check.
+#[must_use]
+pub fn is_private_address(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => v4.is_private() || v4.is_link_local(),
+        // `is_unique_local` and `is_unicast_link_local` are still unstable on
+        // the pinned toolchain, so the two prefixes are matched directly.
+        IpAddr::V6(v6) => {
+            let seg = v6.segments()[0];
+            (seg & 0xfe00) == 0xfc00 || (seg & 0xffc0) == 0xfe80
+        }
+    }
+}
+
+/// [`is_private_address`], plus loopback.
+///
+/// The reading the media diagnosis wants: an address that cannot be reached
+/// from outside the host at all is as undeliverable as one that cannot be
+/// reached from outside the site.
+#[must_use]
+pub fn is_unroutable_publicly(ip: IpAddr) -> bool {
+    is_private_address(ip) || ip.is_loopback()
+}
+
 /// Format an endpoint so it can be read back as an address.
 ///
 /// `{ip}:{port}` is ambiguous for IPv6: an endpoint renders as

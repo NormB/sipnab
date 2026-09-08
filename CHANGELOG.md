@@ -29,6 +29,36 @@ entry that carries them.
 
 ### Added
 
+- **A private `Contact` nobody rewrote is now a finding, and one that WAS
+  rewritten is not.** A phone behind NAT registers its own private address; the
+  registrar must notice the packet came from a public address the header does
+  not name and route later requests there instead. When it does not, every
+  inbound call goes to an unroutable host and the phone never rings.
+
+  `diagnose_registration` reports the observation and `describe_endpoint`
+  reports the corroborated finding — `observation`, `verdict`,
+  `requests_to_contact`, `requests_to_source` and `is_finding`.
+
+  **The observation cannot be the finding.** Measured against the private
+  corpus: 1,660 of 2,226 REGISTER contacts carry a private host — 74.6% — and
+  that estate works. Firing on the shape alone would report three quarters of a
+  healthy fleet. Any request to the private host is a finding rather than a
+  majority of them, because 99 deliverable requests do not make the hundredth
+  deliverable; and silence is `no-later-requests`, never `rewritten`, so a
+  capture that ended before the first inbound call is not a clean bill of
+  health.
+
+  **The tie is the registered AoR, not the address.** A request the registrar
+  sent to the private `Contact` carries no address belonging to the endpoint —
+  that is exactly what going to the wrong host means — so the first
+  implementation, which matched on the endpoint's own address, found nothing on
+  the very case it exists for.
+
+  One private-address rule now serves all three callers:
+  `rtp::diagnosis` and `security::recommend` had their own copies, differing
+  only on loopback, and both delegate to `crate::net::is_private_address`
+  without either answer changing.
+
 - **`describe_endpoint` reports which signaling stack built an endpoint's
   requests.** A `User-Agent` banner names a product and one product ships more
   than one stack: `top_talkers by=ua` reports `Asterisk PBX 20.15.2` as a

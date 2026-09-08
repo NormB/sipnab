@@ -3352,7 +3352,12 @@ fn no_documentation_table_repeats_a_row() {
     // Attributed per file against HEAD before the number moved --
     // docs/mcp-tools.md 91 -> 92 and website/content/docs/mcp-tools.md
     // 91 -> 92, and no other changed page moved at all.
-    const EXPECTED_TABLES: usize = 834;
+    // 834 -> 836 by the `contact_rewrite` field table under
+    // `describe_endpoint` in docs/mcp-tools.md and its site mirror: one
+    // written table, two pages. Attributed per file against HEAD --
+    // docs/mcp-tools.md 92 -> 93 and website/content/docs/mcp-tools.md
+    // 92 -> 93, and no other changed page moved at all.
+    const EXPECTED_TABLES: usize = 836;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

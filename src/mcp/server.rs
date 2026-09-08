@@ -6576,6 +6576,24 @@ impl SipnabMcp {
             }
 
             let diag = crate::sip::diagnosis::diagnose_signaling(&dialog.messages);
+            // The OBSERVATION, never the finding. A private `Contact` from a
+            // public source is the shape a NAT rewrite is required for, and it
+            // is also what 74.6% of REGISTER contacts in a working estate look
+            // like -- so what settles it is whether later requests went to the
+            // source or to the header, and one dialog cannot see that.
+            // `describe_endpoint` crosses dialogs per address and reports the
+            // corroborated finding.
+            let contact_rewrite = dialog
+                .messages
+                .iter()
+                .find(|m| m.is_request && m.method == Some(crate::sip::method::SipMethod::Register))
+                .map(|m| {
+                    crate::sip::contact_rewrite::observe(
+                        m.contact()
+                            .and_then(crate::sip::contact_rewrite::contact_host),
+                        m.src_addr,
+                    )
+                });
             serde_json::json!({
                 "schema_version": 1,
                 "call_id": dialog.call_id,
@@ -6583,6 +6601,7 @@ impl SipnabMcp {
                 "registration_failure": diag.registration_failure,
                 "auth_loop": diag.auth_loop,
                 "final_status_code": dialog.final_status_code(),
+                "contact_rewrite": contact_rewrite,
                 "hints": diag.hints,
             })
         };

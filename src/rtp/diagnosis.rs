@@ -686,15 +686,7 @@ pub enum MediaOrigin {
 /// call from a large share of mobile networks — a warning that cries wolf on
 /// working calls is one operators learn to skip.
 fn is_unroutable_publicly(addr: IpAddr) -> bool {
-    match addr {
-        IpAddr::V4(v4) => v4.is_private() || v4.is_link_local() || v4.is_loopback(),
-        IpAddr::V6(v6) => {
-            // `is_unique_local` and `is_unicast_link_local` are unstable, so the
-            // prefixes are tested directly: fc00::/7 and fe80::/10.
-            let seg = v6.segments();
-            v6.is_loopback() || (seg[0] & 0xfe00) == 0xfc00 || (seg[0] & 0xffc0) == 0xfe80
-        }
-    }
+    crate::net::is_unroutable_publicly(addr)
 }
 
 /// Judge one stream's source address against the dialog's advertised set.

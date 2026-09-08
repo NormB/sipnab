@@ -44,7 +44,7 @@ Tiers:
 
 ## Status
 
-**37 open, 471 done** across 36 sections.
+**36 open, 472 done** across 36 sections.
 Regenerate with `python3 scripts/backlog-status.py --apply`.
 
 | Section | Open | Done | Progress |
@@ -64,7 +64,7 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
 | RV | 0 | 8 | `##########` |
 | RP | 3 | 1 | `##........` |
 | HX | 1 | 2 | `#######...` |
-| AS | 2 | 5 | `#######...` |
+| AS | 1 | 6 | `#########.` |
 | DOC | 0 | 16 | `##########` |
 | RDX | 0 | 2 | `##########` |
 | FLT | 0 | 1 | `##########` |
@@ -3193,7 +3193,7 @@ implementation.
   `value_parser = ["full", "metrics", "read"]`) rather than the
   `--mcp-token-scope` proposed above, with the help text drawing the
   audience line ("REST API tokens only" / "MCP tokens only"). Enforcement is
-  `scope_of` ([`src/mcp/server.rs:8228`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L8228), the `mcp-http` arm), reading the scope out of the
+  `scope_of` ([`src/mcp/server.rs:8262`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L8262), the `mcp-http` arm), reading the scope out of the
   `McpAuth::BearerVerified` admission record, and `scope_refusal` (`:4872`),
   which is called from the hand-written `call_tool` (`:4951`). The
   no-second-list requirement held literally: `scope_refusal` decides from the
@@ -5467,7 +5467,7 @@ behind a Kamailio proxy. On one 100 MB slice sipnab found 507 dialogs, of which
   `total_matched` is. A breakdown of the page would describe the page, which is
   the question nobody asked.
 
-- [ ] **AS5 — contact-rewrite finding on `diagnose_registration`, gated on a
+- [x] **AS5 (done 2026-09-08) — contact-rewrite finding on `diagnose_registration`, gated on a
   conjunction.** 75% and 79% of REGISTERs in two captures carry a private
   Contact from a public source, and sipnab says nothing.
 
@@ -5482,6 +5482,39 @@ behind a Kamailio proxy. On one 100 MB slice sipnab found 507 dialogs, of which
   — which already crosses dialogs per IP — with whether later requests to that
   endpoint went to the public source or the private Contact, and fire the
   *finding* only on the conjunction.
+
+  **Done:** [`src/sip/contact_rewrite.rs`](https://github.com/NormB/sipnab/blob/main/src/sip/contact_rewrite.rs). `diagnose_registration` reports the
+  observation and `describe_endpoint` reports the corroborated finding, which
+  is where the cross-dialog view lives.
+
+  **Re-measured before writing anything.** 1,660 of 2,226 REGISTER contacts in
+  the private corpus carry a private host — 74.6%, close to the 75% this entry
+  recorded — and OPTIONS in the same capture set go to public destinations
+  9,385 times and to PRIVATE ones 6,119 times. The entry's "all 89 dead-qualify
+  OPTIONS are public" was about one capture and one subset; it is not what the
+  whole set looks like, and it is not restated here as though it were. The
+  conclusion survives either way: a private `Contact` is what a working estate
+  mostly looks like, so the observation cannot be the finding.
+
+  **The address is not the tie, and that is the crux.** The first
+  implementation counted requests matching the endpoint's own address — and a
+  request misrouted to the private `Contact` carries no address belonging to
+  the endpoint, which is precisely what being misrouted means. It found
+  nothing, on the exact case it exists for. The tie is the registered AoR: the
+  user part in the request URI and `To`, matched case-sensitively per
+  [RFC 3261 §19.1.4](https://www.rfc-editor.org/rfc/rfc3261#section-19.1.4).
+
+  **Three properties the mutations pin.** Firing on `rewrite_required` alone
+  reports three quarters of a healthy estate. A majority vote hides a partial
+  failure behind a working one — 99 deliverable requests do not make the
+  hundredth deliverable. And silence is not success: a capture that ended
+  before the first inbound call reports `no-later-requests`, never `rewritten`.
+
+  **One private-address rule, not three.** The predicate existed twice already,
+  in `rtp::diagnosis` and `security::recommend`, differing only on loopback.
+  Both now delegate to `crate::net::is_private_address`, with
+  `is_unroutable_publicly` adding loopback for the caller that wants it — so
+  neither answer changed and a third copy was not written.
 
 - [ ] **AS6 — cleartext AMI credentials as a security finding.**
   `Asterisk Call Manager/9.0.0` on TCP/5038 between two hosts, with

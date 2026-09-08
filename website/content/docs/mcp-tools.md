@@ -1827,6 +1827,51 @@ The example runs against
 }
 ```
 
+#### `contact_rewrite` — was the private Contact rewritten
+
+A phone behind NAT puts its own private address in the `Contact` of a REGISTER.
+The registrar must notice that the packet arrived from a public address the
+header does not name, and route later requests to where it came from. When it
+does, everything works. When it does not, every inbound call goes to an
+unroutable host and the phone never rings.
+
+**The observation is not the finding.** Measured against the private corpus on
+2026-09-08, 1,660 of 2,226 REGISTER contacts carry a private host — 74.6% — and
+that estate works. A rule firing on the observation alone would report three
+quarters of a healthy fleet.
+
+| Field | Type | Description |
+|---|---|---|
+| `observation.contact_host` | string? | The host the `Contact` named, as written. Absent for `Contact: *`, which [RFC 3261 §10.2.2](https://www.rfc-editor.org/rfc/rfc3261#section-10.2.2) defines as every binding and which names no host |
+| `observation.contact_host_private` | bool? | Whether that host is one the public internet does not route to. Absent when the `Contact` names a domain: a name resolves somewhere the capture cannot see, and judging it either way would be a guess |
+| `observation.source_public` | bool | Whether the REGISTER arrived from a public address |
+| `observation.rewrite_required` | bool | The two together — the shape that calls for a NAT rewrite |
+| `verdict` | string | `rewritten`, `not-rewritten` or `no-later-requests` |
+| `requests_to_contact` | usize | Later requests addressed to the private `Contact` host |
+| `requests_to_source` | usize | Later requests addressed to where the REGISTER came from |
+| `is_finding` | bool | The conjunction: the shape called for a rewrite and no rewrite happened. **This is the field to alert on** |
+
+**Any request to the private host is a finding, not a majority of them.** A
+proxy that sends some requests to the source and some to the header still sends
+some nobody receives, and 99 deliverable requests do not make the hundredth
+deliverable.
+
+**Silence is not success.** A capture that ended before the first inbound call
+reports `no-later-requests`, which is distinct from `rewritten` on purpose:
+reading it as success is how a capture that stopped too early becomes a clean
+bill of health.
+
+**Corroborated against the registered AoR, not the address.** A request the
+registrar sent to the private `Contact` carries no address belonging to the
+endpoint — that is exactly what going to the wrong host means — so nothing
+address-based can find it. The tie is the user part in the request URI and
+`To`, matched case-sensitively per
+[RFC 3261 §19.1.4](https://www.rfc-editor.org/rfc/rfc3261#section-19.1.4).
+
+[`diagnose_registration`](#diagnose-registration) reports the observation for a
+single call. The corroborated finding lives here, because settling it needs
+what happened across the endpoint's other dialogs.
+
 #### `stack` — which library built these requests
 
 A banner names a PRODUCT and one product ships more than one stack.

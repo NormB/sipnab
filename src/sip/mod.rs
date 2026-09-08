@@ -11,6 +11,7 @@
 //! [`FilterExpr`](dsl::FilterExpr).
 
 pub mod charging_vector;
+pub mod contact_rewrite;
 pub mod diagnosis;
 pub mod dialog;
 pub(crate) mod dialog_state_machine;

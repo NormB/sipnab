@@ -239,16 +239,7 @@ fn address_caveats(ip: IpAddr) -> String {
 /// it: it is routable within the carrier that assigned it, and a large share of
 /// working mobile traffic arrives from it.
 fn is_private(ip: IpAddr) -> bool {
-    match ip {
-        IpAddr::V4(v4) => v4.is_private() || v4.is_link_local(),
-        // `is_unique_local` and `is_unicast_link_local` are still unstable on
-        // the pinned toolchain, so the two prefixes are matched directly:
-        // fc00::/7 and fe80::/10.
-        IpAddr::V6(v6) => {
-            let seg = v6.segments()[0];
-            (seg & 0xfe00) == 0xfc00 || (seg & 0xffc0) == 0xfe80
-        }
-    }
+    crate::net::is_private_address(ip)
 }
 
 /// Split the rules this source tripped into those that can be written into a
