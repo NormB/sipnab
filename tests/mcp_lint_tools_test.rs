@@ -81,7 +81,7 @@ fn skipped_ids(payload: &serde_json::Value) -> Vec<String> {
 /// signaling and the RTP together can report it, and until this test existed
 /// nothing proved the MCP surface reached that rule.
 #[test]
-fn lint_dialog_reports_a_defect_that_lives_between_signalling_and_media() {
+fn lint_dialog_reports_a_defect_that_lives_between_signaling_and_media() {
     let payload = ok_payload(&call_tool_with_args(
         B2BUA,
         &[],
@@ -428,7 +428,7 @@ fn explain_rule_resolves_an_identifier_to_its_real_citation() {
 /// holding an identifier it cannot resolve, which is where a hallucinated
 /// citation comes from.
 #[test]
-fn every_catalogued_rule_is_explainable() {
+fn every_cataloged_rule_is_explainable() {
     let mut session = McpSession::start(OPTIONS_PING, &[]);
     // Read out of the library so a rule added later has to appear here too.
     let ids: Vec<&'static str> = sipnab::sip::lint::RULES.iter().map(|r| r.id).collect();

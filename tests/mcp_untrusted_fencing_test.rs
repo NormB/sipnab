@@ -98,7 +98,7 @@ fn every_message_json_field_is_classified_as_fenced_or_verbatim() {
         "MessageJson",
         MESSAGE_FENCED_FIELDS,
         MESSAGE_VERBATIM_FIELDS,
-        15,
+        16,
     );
 }
 

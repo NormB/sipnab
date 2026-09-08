@@ -1363,7 +1363,7 @@ fn startup_failures_after_the_capture_thread_starts_exit_cleanly() {
 /// while the operator believed they were scoping them, which is the failure
 /// worth catching: it is silent, and it fails open.
 #[test]
-fn token_scope_flag_mints_a_scope_the_verifier_honours() {
+fn token_scope_flag_mints_a_scope_the_verifier_honors() {
     let dir = tempfile::tempdir().expect("tempdir");
     let key_path = dir.path().join("api.key");
     let key = b"scope-flag-signing-key-0123456789";

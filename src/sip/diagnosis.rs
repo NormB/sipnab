@@ -2203,7 +2203,7 @@ mod tests {
     }
 
     #[test]
-    fn cancel_before_a_final_response_is_cancelled() {
+    fn cancel_before_a_final_response_is_canceled() {
         let d = diagnose_signaling(&[
             msg_at(&invite("z9hG4bK1", 1), 0),
             msg_at(&response(180, "Ringing", ""), 1),

@@ -160,24 +160,6 @@ impl CidrRange {
     ///
     /// A range written in the mapped form itself stays IPv6 and keeps matching
     /// as one, so an operator who deliberately wrote `::ffff:0:0/96` gets what
-    /// The range's own network address — the first address it contains.
-    ///
-    /// Exposed so a test can assert the parse and the match agree without
-    /// reaching into the bit layout: if the mask used to BUILD the network and
-    /// the mask used to MATCH against it ever disagree, a range stops
-    /// containing its own network address, and that is the shape the disagreement
-    /// takes.
-    #[must_use]
-    pub fn network_addr(&self) -> IpAddr {
-        if self.is_v4 {
-            IpAddr::V4(std::net::Ipv4Addr::from(
-                ((self.network >> 96) & 0xFFFF_FFFF) as u32,
-            ))
-        } else {
-            IpAddr::V6(std::net::Ipv6Addr::from(self.network))
-        }
-    }
-
     /// they asked for.
     pub fn contains(&self, addr: IpAddr) -> bool {
         let ip_bits = match addr {
@@ -210,6 +192,47 @@ impl CidrRange {
         };
 
         (ip_bits & mask) == self.network
+    }
+
+    /// The range's own network address — the first address it contains.
+    ///
+    /// Exposed so a test can assert the parse and the match agree without
+    /// reaching into the bit layout: if the mask used to BUILD the network and
+    /// the mask used to MATCH against it ever disagree, a range stops
+    /// containing its own network address, and that is the shape the
+    /// disagreement takes.
+    #[must_use]
+    pub fn network_addr(&self) -> IpAddr {
+        if self.is_v4 {
+            IpAddr::V4(std::net::Ipv4Addr::from(
+                ((self.network >> 96) & 0xFFFF_FFFF) as u32,
+            ))
+        } else {
+            IpAddr::V6(std::net::Ipv6Addr::from(self.network))
+        }
+    }
+}
+
+/// Format an endpoint so it can be read back as an address.
+///
+/// `{ip}:{port}` is ambiguous for IPv6: an endpoint renders as
+/// `2001:db8::1:5060`, which no parser can split back into an address and a
+/// port, and which a reader cannot tell from an address that simply ends in
+/// `:5060`. RFC 3986 section 3.2.2 gives the bracketed form for exactly this
+/// reason, and `SocketAddr`'s own `Display` uses it.
+///
+/// This string is the participant IDENTITY in an exported sequence diagram,
+/// so an ambiguous one is not only unreadable — two distinct endpoints can
+/// render alike and merge into one lifeline.
+///
+/// # Arguments
+/// * `ip` — the endpoint address.
+/// * `port` — its port.
+#[must_use]
+pub fn endpoint_label(ip: std::net::IpAddr, port: u16) -> String {
+    match ip {
+        std::net::IpAddr::V4(v4) => format!("{v4}:{port}"),
+        std::net::IpAddr::V6(v6) => format!("[{v6}]:{port}"),
     }
 }
 
@@ -245,5 +268,64 @@ mod tests {
         assert_eq!(TransportProto::Sctp.ip_proto_number(), 132);
         assert_eq!(TransportProto::Tls.ip_proto_number(), 6);
         assert_eq!(TransportProto::Ws.ip_proto_number(), 6);
+    }
+    /// An IPv6 endpoint is bracketed, so it can be read back.
+    ///
+    /// MER5. `{ip}:{port}` renders `2001:db8::1` on port 5060 as
+    /// `2001:db8::1:5060`, which no parser can split and which a reader cannot
+    /// tell from an address ending in `:5060`. In an exported diagram this
+    /// string is the participant IDENTITY, so an ambiguous one can merge two
+    /// distinct endpoints onto one lifeline.
+    #[test]
+    fn an_ipv6_endpoint_is_bracketed() {
+        let v6: std::net::IpAddr = "2001:db8::1".parse().expect("literal");
+        assert_eq!(endpoint_label(v6, 5060), "[2001:db8::1]:5060");
+    }
+
+    /// The bracketed form round-trips through `SocketAddr`.
+    ///
+    /// The property that makes it unambiguous, asserted rather than asserted
+    /// about: if the standard library can parse it back, so can a reader.
+    #[test]
+    fn every_endpoint_label_parses_back_to_itself() {
+        for (ip, port) in [
+            ("198.51.100.7", 5060u16),
+            ("2001:db8::1", 5060),
+            ("2001:db8:0:0:0:0:0:1", 5061),
+            ("::1", 1),
+            ("::ffff:198.51.100.7", 5060),
+        ] {
+            let addr: std::net::IpAddr = ip.parse().expect("literal");
+            let label = endpoint_label(addr, port);
+            let parsed: std::net::SocketAddr = label
+                .parse()
+                .unwrap_or_else(|e| panic!("{label} does not parse back: {e}"));
+            assert_eq!(parsed.ip(), addr, "{label}");
+            assert_eq!(parsed.port(), port, "{label}");
+        }
+    }
+
+    /// IPv4 is not bracketed, because it never needed to be.
+    #[test]
+    fn an_ipv4_endpoint_is_not_bracketed() {
+        let v4: std::net::IpAddr = "198.51.100.7".parse().expect("literal");
+        assert_eq!(endpoint_label(v4, 5060), "198.51.100.7:5060");
+    }
+
+    /// Two IPv6 endpoints that differ only in their zero-run stay distinct.
+    ///
+    /// The collision this prevents: the old id derivation mapped both `:` and
+    /// `.` to `_`, so two spellings of one address — and two DIFFERENT
+    /// addresses — could land on the same identifier and merge into one
+    /// lifeline. `Display` canonicalizes the spelling, and brackets keep the
+    /// port from blurring into the address.
+    #[test]
+    fn distinct_ipv6_endpoints_do_not_collide() {
+        let a: std::net::IpAddr = "2001:db8::1".parse().expect("literal");
+        let b: std::net::IpAddr = "2001:db8::2".parse().expect("literal");
+        assert_ne!(endpoint_label(a, 5060), endpoint_label(b, 5060));
+        // Same address, two spellings: one label, so they are ONE lifeline.
+        let spelled: std::net::IpAddr = "2001:0db8:0000::0001".parse().expect("literal");
+        assert_eq!(endpoint_label(a, 5060), endpoint_label(spelled, 5060));
     }
 }

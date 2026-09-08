@@ -73,7 +73,13 @@ skip = */target/*,*/.git/*,*.lock,website/public/*,*/website/public/*,*/js/*,*.m
 #                contain a whole British word for exactly the same reason.
 # FO is the Faroe Islands' ISO 3166-1 alpha-2 code, a row in the ported
 # calling-code table in src/security/destination.rs -- data, not prose.
-ignore-words-list = ratatui,unparseable,statics,ans,hel,nd,caf,requestor,Sourc,medias,nam,sme,thirdparty,yse,FO
+#   parm         RFC 3261 section 20.42's own token name. The `Via` grammar is
+#                `via-parm = sent-protocol LWS sent-by *( SEMI via-params )`,
+#                and the redactor quotes that production while explaining
+#                which part of it carries a host. codespell wants "param";
+#                spelling the RFC's token differently from the RFC would make
+#                the quotation unfindable in the document it cites.
+ignore-words-list = ratatui,unparseable,statics,ans,hel,nd,caf,requestor,Sourc,medias,nam,sme,thirdparty,yse,FO,parm
 #
 # Deliberately NOT ignored: "cappable", which codespell wanted to make "capable".
 # It appeared in "both are small, and both are cappable", where the meaning is

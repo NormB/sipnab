@@ -178,6 +178,125 @@ fn a_worktree_is_kept_for_uncommitted_or_unmerged_work_and_dropped_for_neither()
     );
 }
 
+/// The worktrees this gate may report, out of `git worktree list --porcelain`.
+///
+/// Two are excluded, and only one of them was before:
+///
+/// * **The checkout the test is running in.** Its own uncommitted work is the
+///   change under review.
+/// * **The MAIN checkout**, which `git worktree list --porcelain` always
+///   prints first. `git worktree remove` REFUSES it — "is a main working
+///   tree" — so reporting it hands the reader an instruction that cannot be
+///   followed, and this gate found itself doing exactly that the first time it
+///   ran from inside a linked worktree with a clean main checkout. A gate
+///   demanding output its own fixer will never produce is unfixable by design.
+///
+/// Identified by POSITION rather than by comparing against a path, because
+/// every path-shaped answer is wrong somewhere: `CARGO_MANIFEST_DIR` names the
+/// running checkout, not the main one, and `--git-common-dir` is relative
+/// under some invocations and absolute under others.
+fn reportable_worktrees(listing: &str, running_in: &Path) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut seen_main = false;
+    for line in listing.lines() {
+        let Some(path) = line.strip_prefix("worktree ") else {
+            continue;
+        };
+        if !seen_main {
+            seen_main = true;
+            continue; // the main checkout, which git refuses to remove
+        }
+        if Path::new(path) == running_in {
+            continue; // the checkout we are running in
+        }
+        out.push(path.to_string());
+    }
+    out
+}
+
+/// The main checkout is never reported, and a clean linked one still is.
+///
+/// **First of two tests owed** for the run in which this gate reported the
+/// main checkout. Driven on a synthetic listing in both directions, because
+/// the exclusion and the rule fail differently: an exclusion that is too wide
+/// makes the gate report nothing ever, and one that is too narrow sends a
+/// reader to a command that refuses.
+#[test]
+fn the_main_checkout_is_never_reported_and_a_linked_one_still_is() {
+    let listing = "\
+worktree /srv/checkouts/sipnab
+HEAD 1111111111111111111111111111111111111111
+branch refs/heads/main
+
+worktree /srv/checkouts/sipnab-feature
+HEAD 2222222222222222222222222222222222222222
+branch refs/heads/feature
+
+worktree /srv/checkouts/sipnab-running
+HEAD 3333333333333333333333333333333333333333
+branch refs/heads/running
+";
+    let running = Path::new("/srv/checkouts/sipnab-running");
+    let got = reportable_worktrees(listing, running);
+    assert_eq!(
+        got,
+        vec!["/srv/checkouts/sipnab-feature".to_string()],
+        "only the linked worktree that is neither main nor the running one is \
+         reportable"
+    );
+
+    // The main checkout stays excluded even when the test runs inside it,
+    // which is the ordinary case and must not start reporting a second
+    // worktree by accident.
+    let got = reportable_worktrees(listing, Path::new("/srv/checkouts/sipnab"));
+    assert_eq!(
+        got,
+        vec![
+            "/srv/checkouts/sipnab-feature".to_string(),
+            "/srv/checkouts/sipnab-running".to_string(),
+        ]
+    );
+}
+
+/// **Second of two.** The exclusion cannot swallow the rule.
+///
+/// A listing with only the main checkout in it yields nothing to report, and a
+/// listing with none at all yields nothing either — but the gate above asserts
+/// `abandoned.is_empty()`, so "nothing to report" and "the parse broke" look
+/// identical from the outside. This pins that the parser really is reading the
+/// listing rather than returning an empty vector whatever it is given.
+#[test]
+fn the_worktree_parser_reads_the_listing_it_is_given() {
+    assert!(
+        reportable_worktrees("", Path::new("/nowhere")).is_empty(),
+        "an empty listing has nothing to report"
+    );
+    assert!(
+        reportable_worktrees(
+            "worktree /only/main
+",
+            Path::new("/nowhere")
+        )
+        .is_empty(),
+        "a lone main checkout has nothing to report"
+    );
+    let many = (0..5)
+        .map(|i| {
+            format!(
+                "worktree /w{i}
+HEAD 0
+
+"
+            )
+        })
+        .collect::<String>();
+    assert_eq!(
+        reportable_worktrees(&many, Path::new("/nowhere")).len(),
+        4,
+        "five worktrees, one of them main, leaves four reportable"
+    );
+}
+
 #[test]
 fn no_worktree_is_abandoned_with_nothing_worth_keeping() {
     let out = Command::new("git")
@@ -188,13 +307,8 @@ fn no_worktree_is_abandoned_with_nothing_worth_keeping() {
     let listing = String::from_utf8_lossy(&out.stdout);
 
     let mut abandoned = Vec::new();
-    for line in listing.lines() {
-        let Some(path) = line.strip_prefix("worktree ") else {
-            continue;
-        };
-        if Path::new(path) == repo() {
-            continue; // the checkout we are running in
-        }
+    for path in reportable_worktrees(&listing, &repo()) {
+        let path = path.as_str();
         let dirty_lines = worktree_git(path)
             .args(["status", "--porcelain"])
             .output()

@@ -696,7 +696,7 @@ fn call_answered_without_an_sdp_answer_is_not_no_media() {
 /// capture's vantage point rather than the call, and selects every answered
 /// call in the file.
 #[test]
-fn signalling_only_capture_reports_no_no_media() {
+fn signaling_only_capture_reports_no_no_media() {
     let mut ds = DialogStore::new(64, false);
     for n in 0..3 {
         let call_id = format!("sig-only-{n}@example.net");

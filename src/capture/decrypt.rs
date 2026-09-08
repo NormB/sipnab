@@ -3321,7 +3321,7 @@ mod tests {
     /// the setter is not simply inert.
     #[cfg(feature = "tls")]
     #[test]
-    fn a_zero_lockon_window_is_refused_while_a_real_one_is_honoured() {
+    fn a_zero_lockon_window_is_refused_while_a_real_one_is_honored() {
         let client: IpAddr = "10.0.0.1".parse().unwrap();
         let server: IpAddr = "10.0.0.2".parse().unwrap();
         let sip = b"OPTIONS sip:t@example.com SIP/2.0\r\nCSeq: 1 OPTIONS\r\n\r\n";

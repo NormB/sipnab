@@ -16,34 +16,91 @@
     "is_request"
   ],
   "properties": {
-    "schema_version": { "const": 1 },
-    "timestamp": { "type": "string", "format": "date-time" },
-    "src": { "type": "string" },
-    "src_port": { "type": "integer", "minimum": 0, "maximum": 65535 },
-    "dst": { "type": "string" },
-    "dst_port": { "type": "integer", "minimum": 0, "maximum": 65535 },
-    "transport": { "type": "string" },
-    "is_request": { "type": "boolean" },
-    "method": { "type": "string" },
-    "status_code": { "type": "integer", "minimum": 100, "maximum": 699 },
-    "reason": { "type": "string" },
-    "call_id": { "type": "string" },
-    "from": { "type": "string" },
-    "to": { "type": "string" },
-    "contact": { "type": "string" },
-    "ua": { "type": "string" },
-    "sdp": { "type": "string" },
+    "schema_version": {
+      "const": 1
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "src": {
+      "type": "string"
+    },
+    "src_port": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 65535
+    },
+    "dst": {
+      "type": "string"
+    },
+    "dst_port": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 65535
+    },
+    "transport": {
+      "type": "string"
+    },
+    "is_request": {
+      "type": "boolean"
+    },
+    "method": {
+      "type": "string"
+    },
+    "status_code": {
+      "type": "integer",
+      "minimum": 100,
+      "maximum": 699
+    },
+    "reason": {
+      "type": "string"
+    },
+    "call_id": {
+      "type": "string"
+    },
+    "from": {
+      "type": "string"
+    },
+    "to": {
+      "type": "string"
+    },
+    "contact": {
+      "type": "string"
+    },
+    "ua": {
+      "type": "string"
+    },
+    "sdp": {
+      "type": "string"
+    },
     "cseq": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["number", "method"],
+      "required": [
+        "number",
+        "method"
+      ],
       "properties": {
-        "number": { "type": "integer", "minimum": 0, "maximum": 4294967295 },
-        "method": { "type": "string" }
+        "number": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295
+        },
+        "method": {
+          "type": "string"
+        }
       }
     },
-    "response_context": { "type": "string" },
-    "malformed": { "type": "array", "items": { "type": "string" } },
+    "response_context": {
+      "type": "string"
+    },
+    "malformed": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
     "frame": {
       "type": "string",
       "description": "Pointer to the frame this message was parsed from, as `<source>#<ordinal>@<digest>` — feed it to `sipnab --show-frame` to retrieve the bytes, which either returns the frame or refuses because the capture changed. The per-message analogue of the dialog `frame`. Optional, and absent rather than null when the message has no frame (live capture). Not in `required` for that reason: an absent key means unknown, and a present one is always a real pointer.",
@@ -57,8 +114,19 @@
     },
     "input_origin": {
       "type": "string",
-      "enum": ["wire", "hep", "uprobe"],
+      "enum": [
+        "wire",
+        "hep",
+        "uprobe"
+      ],
       "description": "Which capture source delivered this message. The per-message analogue of the dialog `input_origin`, and what keeps `frame` honest: a uprobe read carries a pointer of the same shape as a capture offset — `uprobe:opensips/954#3` beside `capture.pcap#4212` — and only one of the two can ever be followed to bytes. `wire` was read from an observed IP header; `hep` was asserted by a remote HEP sender; `uprobe` was lifted out of a process's TLS library and was never on a wire, so it has no addressing and no resolvable frame. Optional, and absent rather than null when the message came from no captured packet, because `wire` there would be a claim sipnab never observed."
+    },
+    "extension_headers": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Every header this projection does not already carry as a field of its own, in wire form (`\"Name: value\"`) and in wire order, one entry per header line. The named fields are a closed list and every vendor-, carrier- and SBC-specific fact lives outside it — `X-Asterisk-*`, `Reason`, `Diversion`, `P-Asserted-Identity`, `Remote-Party-ID`, `Require`, `RSeq` — so without this there was no route to one of them short of re-reading the original capture a frame at a time. Six names never appear here because they are fields already: `Call-ID`, `From`, `To`, `Contact`, `User-Agent`, `CSeq`. Nothing else is filtered, so `Via` and `Content-Length` are in the list. Duplicates and order are preserved, because `Via` is a stack whose order is the route the request took. On the MCP surface each entry is fenced whole, name included: for an extension header the name is the sender's choice as much as the value is. Optional, and absent rather than empty when every header the message carried is already a field."
     }
   }
 }

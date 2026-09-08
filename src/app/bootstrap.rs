@@ -1781,7 +1781,6 @@ pub fn run_startup_commands(cli: &Cli) -> Option<i32> {
     None
 }
 
-/// Handle `--mint-token`: mint a signed bearer token, print it, and return
 /// Follow one frame pointer and print the frame, or refuse and say why.
 ///
 /// The refusals are the reason this exists. Returning the bytes at an ordinal
@@ -1887,6 +1886,7 @@ fn show_frame(pointer: &str) -> i32 {
     }
 }
 
+/// Handle `--mint-token`: mint a signed bearer token, print it, and return
 /// the exit code — or `None` when the flag is absent. The body is
 /// feature-swapped so the caller contains no `cfg`.
 ///

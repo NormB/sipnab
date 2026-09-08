@@ -45,6 +45,7 @@ fn documented_config_samples_parse_and_validate() {
         blocks.len()
     );
 
+    let mut expanded = 0usize;
     for (line, body) in &blocks {
         let where_ = format!("docs/config-reference.md:{line}");
 
@@ -56,14 +57,17 @@ fn documented_config_samples_parse_and_validate() {
         f.write_all(body.as_bytes()).expect("write");
         drop(f);
 
-        let path_str = path.to_str().expect("temp path is utf-8");
-        let loaded = sipnab::config::Config::load(Some(path_str), false).unwrap_or_else(|e| {
-            panic!(
-                "config sample at {where_} failed to load (parse/validate):\n{body}\nerror: {e}"
-            );
-        });
+        let loaded =
+            sipnab::config::Config::load_file_with_env(&path, &sample_env).unwrap_or_else(|e| {
+                panic!(
+                    "config sample at {where_} failed to load (parse/validate):\n{body}\nerror: {e}"
+                );
+            });
+        if body.contains("${") {
+            expanded += 1;
+        }
         // The limits section carries its own semantic validation.
-        loaded.config.limits.validate().unwrap_or_else(|e| {
+        loaded.limits.validate().unwrap_or_else(|e| {
             panic!("config sample at {where_} limits failed validation:\n{body}\nerror: {e}");
         });
 
@@ -84,6 +88,78 @@ fn documented_config_samples_parse_and_validate() {
              binary warns and ignores them.\n{body}"
         );
     }
+    assert!(
+        expanded > 0,
+        "no documented sample names a `${{NAME}}`, so the environment this \
+         gate supplies is doing nothing and the expansion path is unproven"
+    );
+}
+
+/// The environment a documented sample is written for.
+///
+/// A sample that names `${SUDO_USER}` is correct for the `sudo` invocation it
+/// documents and refuses to load anywhere else — an unset variable is an
+/// error by design, because an empty expansion inside a path names a real
+/// directory that is not the one intended. So the gate supplies the context
+/// rather than the sample avoiding one.
+///
+/// Written as a lookup rather than `std::env::set_var`, which would put the
+/// value into shared process state that every other test in this binary sees.
+fn sample_env(name: &str) -> Option<String> {
+    match name {
+        "SUDO_USER" => Some("norm".to_string()),
+        _ => None,
+    }
+}
+
+/// The documented samples really do exercise the expander.
+///
+/// **First of two tests owed** for the sample gate this change turned red.
+/// `expanded > 0` above proves a sample carries a `${NAME}`; this proves the
+/// expansion CHANGES the loaded value, so the gate cannot pass on a sample
+/// whose variable was quietly left as literal text.
+#[test]
+fn a_documented_sample_that_names_a_variable_is_actually_expanded() {
+    let sample = toml_blocks(CONFIG_REFERENCE)
+        .into_iter()
+        .find(|(_, body)| body.contains("${"))
+        .expect("a documented sample names a variable");
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("sample.toml");
+    std::fs::write(&path, sample.1.as_bytes()).expect("write");
+
+    let loaded = sipnab::config::Config::load_file_with_env(&path, &sample_env)
+        .expect("the supplied environment covers this sample");
+    let dumped = format!("{loaded:?}");
+    assert!(
+        !dumped.contains("${"),
+        "a variable survived unexpanded into the loaded config: {dumped}"
+    );
+    assert!(
+        dumped.contains("norm"),
+        "the supplied value did not reach the loaded config: {dumped}"
+    );
+}
+
+/// The default loader still reads the real environment.
+///
+/// **Second of two.** `load_file_with_env` exists so this gate can supply a
+/// context, and that seam makes it possible for `load_file` — the one every
+/// sipnab startup uses — to be wired to something that is not the environment
+/// at all, with every other test here still green. `HOME` is read, never
+/// written, so this stays safe to run beside anything else.
+#[test]
+fn the_default_loader_reads_the_real_environment() {
+    let Ok(home) = std::env::var("HOME") else {
+        return;
+    };
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("sample.toml");
+    std::fs::write(&path, b"[capture]\ndevice = \"${HOME}\"\n").expect("write");
+
+    let loaded = sipnab::config::Config::load(Some(path.to_str().expect("utf-8 path")), false);
+    let loaded = loaded.expect("HOME is set");
+    assert_eq!(loaded.config.capture.device.as_deref(), Some(home.as_str()));
 }
 
 /// The gate distinguishes a recognized key from an unrecognized one.

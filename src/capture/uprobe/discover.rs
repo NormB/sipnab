@@ -386,7 +386,7 @@ aaaab1200000-aaaab1290000 r-xp 00000000 fd:01 6311876 /usr/lib/aarch64-linux-gnu
 
     /// The requirement, stated as a test: a host running both gets both.
     #[test]
-    fn a_host_running_both_flavours_yields_both() {
+    fn a_host_running_both_flavors_yields_both() {
         let mut found = BTreeMap::new();
         absorb(&mut found, 100, OPENSSL_MAPS);
         absorb(&mut found, 101, WOLFSSL_MAPS);
@@ -450,7 +450,7 @@ aaaab1200000-aaaab1290000 r-xp 00000000 fd:01 6311876 /usr/lib/aarch64-linux-gnu
     /// Two builds of one flavor coexist here (GnuTLS 30.37.1 and 30.40.3 were
     /// both mapped). Their symbol offsets differ, so they are two targets.
     #[test]
-    fn two_builds_of_one_flavour_are_two_targets() {
+    fn two_builds_of_one_flavor_are_two_targets() {
         let a = "a-b r-xp 0 fd:01 111 /usr/lib/libssl.so.3\n";
         let b = "a-b r-xp 0 fd:01 222 /usr/lib/libssl.so.1.1\n";
         let mut found = BTreeMap::new();
@@ -574,7 +574,7 @@ aaaab1200000-aaaab1290000 r-xp 00000000 fd:01 6311876 /usr/lib/aarch64-linux-gnu
 
     /// The default is both, because a host running both must capture both.
     #[test]
-    fn planning_with_no_flavour_filter_probes_every_library_found() {
+    fn planning_with_no_flavor_filter_probes_every_library_found() {
         let tmp = tempfile::tempdir().expect("temp dir");
         let libs = vec![
             reachable(&tmp, 11, "/usr/lib/libssl.so.3", Flavor::OpenSsl),
@@ -590,7 +590,7 @@ aaaab1200000-aaaab1290000 r-xp 00000000 fd:01 6311876 /usr/lib/aarch64-linux-gnu
     }
 
     #[test]
-    fn planning_narrows_to_the_flavour_asked_for() {
+    fn planning_narrows_to_the_flavor_asked_for() {
         let tmp = tempfile::tempdir().expect("temp dir");
         let libs = vec![
             reachable(&tmp, 11, "/usr/lib/libssl.so.3", Flavor::OpenSsl),
@@ -667,7 +667,7 @@ aaaab1200000-aaaab1290000 r-xp 00000000 fd:01 6311876 /usr/lib/aarch64-linux-gnu
     }
 
     #[test]
-    fn a_flavour_name_is_parsed_or_refused() {
+    fn a_flavor_name_is_parsed_or_refused() {
         assert_eq!(parse_flavor("OpenSSL"), Ok(Flavor::OpenSsl));
         assert_eq!(parse_flavor("wolfssl"), Ok(Flavor::WolfSsl));
         assert!(parse_flavor("gnutls").is_err());

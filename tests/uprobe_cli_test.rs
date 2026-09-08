@@ -222,7 +222,7 @@ fn uprobe_flavor_parses_both_and_is_repeatable() {
 /// write function has a different signature, so a probe built for the OpenSSL
 /// shape would read the wrong register.
 #[test]
-fn a_flavour_sipnab_does_not_probe_is_rejected_at_parse_time() {
+fn a_flavor_sipnab_does_not_probe_is_rejected_at_parse_time() {
     let err = Cli::try_parse_from(["sipnab", "--uprobe-list", "--uprobe-flavor", "gnutls"])
         .expect_err("clap must reject an unsupported flavor");
     let msg = err.to_string();
@@ -288,7 +288,7 @@ fn a_capture_that_would_attach_to_nothing_is_refused() {
 
 /// Flavor narrowing applies to the plan, not just to the listing.
 #[test]
-fn narrowing_by_flavour_changes_what_would_be_probed() {
+fn narrowing_by_flavor_changes_what_would_be_probed() {
     let planned = plan_targets(
         &["/usr/lib/libwolfssl.so.42".to_string()],
         None,

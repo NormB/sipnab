@@ -9,7 +9,6 @@
 //! result to disk is the caller's job.
 
 use super::{FormattedMessage, Participant};
-use crate::mermaid::escape_mermaid_label;
 
 /// Generate a fully self-contained HTML page holding a Mermaid sequence diagram.
 ///
@@ -78,8 +77,8 @@ pub fn export_mermaid_html(participants: &[Participant], messages: &[FormattedMe
 
 /// Generate raw Mermaid sequenceDiagram source from participants and messages.
 ///
-/// Each participant becomes a `participant <id> as <label>` line (id from
-/// `sanitize_id`); each message becomes an arrow line, `->>` for requests
+/// Each participant becomes a `participant <id> as <label>` line (positional
+/// id); each message becomes an arrow line, `->>` for requests
 /// and `-->>` for responses, labeled with the message label. Synthetic
 /// spacer and RTP-bar rows, rows with empty labels, and rows whose column
 /// indices fall outside `participants` are skipped.
@@ -91,43 +90,84 @@ pub fn export_mermaid_html(participants: &[Participant], messages: &[FormattedMe
 /// # Returns
 /// The Mermaid source text (always starting with `sequenceDiagram`).
 pub fn export_mermaid(participants: &[Participant], messages: &[FormattedMessage]) -> String {
-    let mut out = String::from("sequenceDiagram\n");
-
-    for p in participants {
-        let id = sanitize_id(&p.addr);
-        out.push_str(&format!(
-            "    participant {} as {}\n",
-            id,
-            escape_mermaid_label(&p.label)
-        ));
-    }
-    out.push('\n');
-
-    for msg in messages {
-        if msg.is_spacer || msg.is_rtp_bar {
-            continue;
-        }
-        if msg.label.is_empty() {
-            continue;
-        }
-        if msg.src_col >= participants.len() || msg.dst_col >= participants.len() {
-            continue;
-        }
-        let src = sanitize_id(&participants[msg.src_col].addr);
-        let dst = sanitize_id(&participants[msg.dst_col].addr);
-        let arrow = if msg.is_response { "-->>" } else { "->>" };
-        let label = escape_mermaid_label(&msg.label);
-
-        out.push_str(&format!("    {}{}{}: {}\n", src, arrow, dst, label));
-    }
-
-    out
+    // Through `crate::mermaid::sequence_diagram`, not built here. This copy
+    // had no message cap and mangled the address into the participant id;
+    // the shared generator caps at `mermaid::MAX_MESSAGES` and uses positional
+    // ids, so no capture-derived text reaches an identifier.
+    //
+    // The endpoint IDENTITY is `addr`; the display label is resolved below,
+    // so `--name-mode` name resolution survives the export.
+    let rows: Vec<crate::mermaid::DiagramRow> = messages
+        .iter()
+        .filter(|m| !m.is_spacer && !m.is_rtp_bar && !m.label.is_empty())
+        .filter(|m| m.src_col < participants.len() && m.dst_col < participants.len())
+        .map(|m| crate::mermaid::DiagramRow {
+            from: participants[m.src_col].addr.clone(),
+            to: participants[m.dst_col].addr.clone(),
+            label: m.label.clone(),
+            is_request: !m.is_response,
+            note: annotation(m),
+        })
+        .collect();
+    // Identity is the address; the LABEL is whatever the resolver produced,
+    // so `--name-mode` still reaches an exported diagram.
+    let label_for = |endpoint: &str| {
+        participants
+            .iter()
+            .find(|p| p.addr == endpoint)
+            .map_or_else(|| endpoint.to_string(), |p| p.label.clone())
+    };
+    crate::mermaid::sequence_diagram_rows(&rows, &label_for, crate::mermaid::MAX_MESSAGES)
 }
 
-/// Sanitize an address string into a valid Mermaid participant ID by
-/// replacing `:` and `.` with `_` (e.g. `10.0.0.1:5060` → `10_0_0_1_5060`).
-fn sanitize_id(s: &str) -> String {
-    s.replace([':', '.'], "_")
+/// Everything the ladder computed about one message, as one note line.
+///
+/// MER2. The export read `label` and nothing else, so a diagram of a problem
+/// call carried seven bare arrows while the ladder beside it showed the
+/// timestamp offset, the post-dial delay, the codecs and a diagnosis. Those
+/// annotations are the reason to export a ladder rather than a packet list.
+///
+/// Joined with a middle dot rather than newlines: a Mermaid `Note` is one
+/// statement, and an unescaped newline inside one would end it early — the
+/// escaper would neutralize that, but a note broken across lines reads as
+/// several notes to no purpose.
+///
+/// # Returns
+/// `None` when the ladder knew nothing worth carrying, so no `Note` is drawn
+/// at all — an empty note box is noise that pushes the arrows apart.
+fn annotation(msg: &FormattedMessage) -> Option<String> {
+    let mut parts: Vec<String> = Vec::new();
+    if !msg.timestamp.trim().is_empty() {
+        parts.push(msg.timestamp.trim().to_string());
+    }
+    if let Some(pdd) = &msg.pdd_note
+        && !pdd.trim().is_empty()
+    {
+        parts.push(pdd.trim().to_string());
+    }
+    if let Some(badge) = &msg.sdp_badge
+        && !badge.trim().is_empty()
+    {
+        parts.push(badge.trim().to_string());
+    }
+    if msg.is_retransmission {
+        parts.push("retransmission".to_string());
+    }
+    if msg.folded_count > 0 {
+        parts.push(format!("+{} folded", msg.folded_count));
+    }
+    // The ladder's own extra lines: SIPREC session and mode, stream ownership,
+    // codec lists. Style is a terminal concern and is dropped.
+    for (line, _) in &msg.extra_lines {
+        if !line.trim().is_empty() {
+            parts.push(line.trim().to_string());
+        }
+    }
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join(" · "))
+    }
 }
 
 /// Minimal HTML text-context escaping (`&`, `<`, `>`) for embedding generated
@@ -298,9 +338,16 @@ mod tests {
         ];
         let out = export_mermaid(&participants, &messages);
         assert!(out.contains("sequenceDiagram"));
-        assert!(out.contains("participant 10_0_0_1_5060 as alice"));
-        assert!(out.contains("10_0_0_1_5060->>10_0_0_2_5060: INVITE"));
-        assert!(out.contains("10_0_0_2_5060-->>10_0_0_1_5060: 200 OK"));
+        // Positional ids: the address is carried in the LABEL only, so no
+        // capture-derived text reaches an identifier.
+        assert!(out.contains("participant p0 as alice"), "{out}");
+        assert!(out.contains("participant p1 as bob"), "{out}");
+        assert!(out.contains("p0->>p1: INVITE"), "{out}");
+        assert!(out.contains("p1-->>p0: 200 OK"), "{out}");
+        assert!(
+            !out.contains("10_0_0_1_5060"),
+            "the mangled address must not appear as an identifier: {out}"
+        );
     }
 
     /// Spacer rows are omitted: only real messages become arrow lines.
@@ -386,15 +433,327 @@ mod tests {
             test_msg(1, 0, "200 OK", true),
         ];
         let out = export_mermaid(&participants, &messages);
-        assert!(out.contains("participant 10_0_0_1_5060 as alice"));
-        assert!(out.contains("participant 10_0_0_2_5060 as proxy"));
-        assert!(out.contains("participant 10_0_0_3_5060 as bob"));
+        // Every endpoint gets a declared lifeline, in ladder order, with the
+        // resolved name as its label and a positional id.
+        assert!(out.contains("participant p0 as alice"), "{out}");
+        assert!(out.contains("participant p1 as proxy"), "{out}");
+        assert!(out.contains("participant p2 as bob"), "{out}");
         // 2 requests use ->>, 2 responses use -->>
         let arrow_count = out.matches("->>").count();
         assert_eq!(
             arrow_count, 4,
             "expected 4 arrows (->>/-->>), got {arrow_count}"
         );
+    }
+
+    /// The export carries what the ladder computed, not just the arrows.
+    ///
+    /// MER2. A diagram of a problem call used to be seven bare arrows while
+    /// the ladder beside it showed the timing, the post-dial delay, the codecs
+    /// and a diagnosis. The annotations are the reason to export a ladder
+    /// rather than a packet list.
+    #[test]
+    fn the_export_carries_the_ladders_annotations() {
+        let participants = vec![
+            Participant {
+                addr: "198.51.100.1:5060".to_string(),
+                label: "alice".to_string(),
+            },
+            Participant {
+                addr: "198.51.100.2:5060".to_string(),
+                label: "bob".to_string(),
+            },
+        ];
+        let mut msg = test_msg(0, 1, "INVITE", false);
+        msg.timestamp = "+0.847s".to_string();
+        msg.pdd_note = Some("PDD 847ms".to_string());
+        msg.sdp_badge = Some("+G.722".to_string());
+        msg.extra_lines = vec![("Codecs: PCMU, PCMA".to_string(), Style::default())];
+
+        let out = export_mermaid(&participants, &[msg]);
+        for expected in ["+0.847s", "PDD 847ms", "+G.722", "Codecs: PCMU, PCMA"] {
+            assert!(
+                out.contains(expected),
+                "the export dropped {expected:?}, which the ladder computed: \
+                 {out}"
+            );
+        }
+        assert!(
+            out.contains("Note right of p1"),
+            "the annotation must attach to the arrow's destination: {out}"
+        );
+    }
+
+    /// A message the ladder knew nothing about draws no note.
+    ///
+    /// An empty note box is noise: it pushes the arrows apart and says
+    /// nothing. The absence has to be a decision, not an accident of the
+    /// fields happening to be blank.
+    #[test]
+    fn a_message_with_nothing_to_say_draws_no_note() {
+        let participants = vec![
+            Participant {
+                addr: "198.51.100.1:5060".to_string(),
+                label: "alice".to_string(),
+            },
+            Participant {
+                addr: "198.51.100.2:5060".to_string(),
+                label: "bob".to_string(),
+            },
+        ];
+        let mut msg = test_msg(0, 1, "INVITE", false);
+        msg.timestamp = String::new();
+        msg.pdd_note = None;
+        msg.sdp_badge = None;
+        msg.extra_lines = Vec::new();
+        msg.is_retransmission = false;
+        msg.folded_count = 0;
+
+        let out = export_mermaid(&participants, &[msg]);
+        assert!(
+            !out.contains("Note right of"),
+            "an empty annotation must draw no note at all: {out}"
+        );
+        assert!(out.contains("p0->>p1: INVITE"), "{out}");
+    }
+
+    /// A retransmission and a fold are both said out loud.
+    ///
+    /// Both are facts about the capture that the arrow alone cannot show: two
+    /// identical arrows and one folded row look the same in a picture.
+    #[test]
+    fn a_retransmission_and_a_fold_are_annotated() {
+        let participants = vec![
+            Participant {
+                addr: "198.51.100.1:5060".to_string(),
+                label: "alice".to_string(),
+            },
+            Participant {
+                addr: "198.51.100.2:5060".to_string(),
+                label: "bob".to_string(),
+            },
+        ];
+        let mut msg = test_msg(0, 1, "INVITE", false);
+        msg.timestamp = String::new();
+        msg.is_retransmission = true;
+        msg.folded_count = 3;
+        let out = export_mermaid(&participants, &[msg]);
+        assert!(out.contains("retransmission"), "{out}");
+        assert!(out.contains("+3 folded"), "{out}");
+    }
+
+    /// An annotation cannot end the note statement early.
+    ///
+    /// The fields joined here are capture-derived — a reason phrase reaches
+    /// `extra_lines`, and a sender writes it. A newline or a `#` inside one
+    /// would otherwise end the `Note` and turn the rest into Mermaid source.
+    #[test]
+    fn an_annotation_cannot_break_out_of_its_note() {
+        let participants = vec![
+            Participant {
+                addr: "198.51.100.1:5060".to_string(),
+                label: "alice".to_string(),
+            },
+            Participant {
+                addr: "198.51.100.2:5060".to_string(),
+                label: "bob".to_string(),
+            },
+        ];
+        let mut msg = test_msg(0, 1, "INVITE", false);
+        msg.timestamp = String::new();
+        msg.extra_lines = vec![(
+            "evil#\nparticipant pX as injected".to_string(),
+            Style::default(),
+        )];
+        let out = export_mermaid(&participants, &[msg]);
+        // The text may appear INSIDE the note — that is the annotation doing
+        // its job. What must not happen is it becoming a STATEMENT, which in
+        // Mermaid means starting a line of its own.
+        for line in out.lines() {
+            let t = line.trim_start();
+            assert!(
+                !t.starts_with("participant pX"),
+                "a capture-derived annotation became a statement: {out}"
+            );
+        }
+        assert_eq!(
+            out.lines()
+                .filter(|l| l.trim_start().starts_with("Note right of"))
+                .count(),
+            1,
+            "the annotation must stay ONE note: an unescaped newline would \
+             have split it: {out}"
+        );
+        assert!(
+            !out.contains("evil#\n"),
+            "the raw `#` and newline must not survive into the source: {out}"
+        );
+    }
+
+    /// No annotation can open a Mermaid block of any kind.
+    ///
+    /// Owed. The first version of the injection test asserted the injected
+    /// TEXT was absent, which is the wrong property — text inside a note is
+    /// the note working. The property is that a note cannot become a
+    /// statement, and this drives the several statement keywords a sender
+    /// might reach for rather than the one that happened to be tried.
+    #[test]
+    fn no_annotation_can_open_a_block() {
+        let participants = vec![
+            Participant {
+                addr: "198.51.100.1:5060".to_string(),
+                label: "alice".to_string(),
+            },
+            Participant {
+                addr: "198.51.100.2:5060".to_string(),
+                label: "bob".to_string(),
+            },
+        ];
+        for injected in [
+            "x\nparticipant pZ as z",
+            "x\nNote over p0,p1: forged",
+            "x\nalt injected branch",
+            "x\nloop forever",
+            "x\np0->>p1: forged arrow",
+        ] {
+            let mut msg = test_msg(0, 1, "INVITE", false);
+            msg.timestamp = String::new();
+            msg.extra_lines = vec![(injected.to_string(), Style::default())];
+            let out = export_mermaid(&participants, &[msg]);
+
+            let statements = out
+                .lines()
+                .filter(|l| {
+                    let t = l.trim_start();
+                    t.starts_with("participant ")
+                        || t.starts_with("Note ")
+                        || t.starts_with("alt ")
+                        || t.starts_with("loop ")
+                        || t.contains("->>")
+                })
+                .count();
+            assert_eq!(
+                statements, 4,
+                "{injected:?} added a statement: two participants, one arrow \
+                 and one note is the whole diagram.\n{out}"
+            );
+        }
+    }
+
+    /// The export is capped, because the renderer refuses a long one outright.
+    ///
+    /// Owed for breaking `mermaid_basic` and `mermaid_three_participants`.
+    /// This export had NO cap, and it is one of the two that reach the
+    /// vendored renderer — past `maxEdges: 500` it draws nothing at all, so a
+    /// long SUBSCRIBE/NOTIFY dialog exported as a blank panel.
+    #[test]
+    fn the_export_caps_its_message_count() {
+        let participants = vec![
+            Participant {
+                addr: "198.51.100.1:5060".to_string(),
+                label: "alice".to_string(),
+            },
+            Participant {
+                addr: "198.51.100.2:5060".to_string(),
+                label: "bob".to_string(),
+            },
+        ];
+        let over = crate::mermaid::MAX_MESSAGES + 50;
+        let messages: Vec<FormattedMessage> = (0..over)
+            .map(|_| test_msg(0, 1, "OPTIONS", false))
+            .collect();
+        let out = export_mermaid(&participants, &messages);
+
+        let arrows = out.lines().filter(|l| l.contains("->>")).count();
+        assert_eq!(
+            arrows,
+            crate::mermaid::MAX_MESSAGES,
+            "the export must stop at the cap, not draw every message"
+        );
+        assert!(
+            arrows < crate::mermaid::RENDERER_MAX_EDGES,
+            "and stay under the renderer's own ceiling"
+        );
+    }
+
+    /// A truncated export says so, inside the diagram.
+    ///
+    /// Owed. A picture that quietly omits half the call is worse than one that
+    /// admits it: the reader draws conclusions from what is missing.
+    #[test]
+    fn a_truncated_export_admits_it_in_the_diagram() {
+        let participants = vec![
+            Participant {
+                addr: "198.51.100.1:5060".to_string(),
+                label: "alice".to_string(),
+            },
+            Participant {
+                addr: "198.51.100.2:5060".to_string(),
+                label: "bob".to_string(),
+            },
+        ];
+        let over = crate::mermaid::MAX_MESSAGES + 7;
+        let messages: Vec<FormattedMessage> = (0..over)
+            .map(|_| test_msg(0, 1, "OPTIONS", false))
+            .collect();
+        let out = export_mermaid(&participants, &messages);
+        assert!(
+            out.contains("message cap") && out.contains(&over.to_string()),
+            "the note must name how many were withheld: {out}"
+        );
+    }
+
+    /// Name resolution survives the export.
+    ///
+    /// Owed. Routing this through the address-only generator would have
+    /// dropped `--name-mode` resolution from every exported diagram — the
+    /// label is what the resolver produced, and it is the only place a name
+    /// appears.
+    #[test]
+    fn the_resolved_name_is_the_label_not_the_address() {
+        let participants = vec![
+            Participant {
+                addr: "198.51.100.1:5060".to_string(),
+                label: "sbc-edge-1".to_string(),
+            },
+            Participant {
+                addr: "198.51.100.2:5060".to_string(),
+                label: "carrier-gw".to_string(),
+            },
+        ];
+        let out = export_mermaid(&participants, &[test_msg(0, 1, "INVITE", false)]);
+        assert!(out.contains("as sbc-edge-1"), "{out}");
+        assert!(out.contains("as carrier-gw"), "{out}");
+    }
+
+    /// No capture-derived text reaches a participant identifier.
+    ///
+    /// Owed. The identifier is positional; an address mangled into one can
+    /// collide (two IPv6 addresses differing only where `:` was replaced), and
+    /// an id is not a place to put text a sender chose.
+    #[test]
+    fn an_identifier_never_carries_capture_text() {
+        let participants = vec![
+            Participant {
+                addr: "[2001:db8::1]:5060".to_string(),
+                label: "v6-a".to_string(),
+            },
+            Participant {
+                addr: "[2001:db8:0:0::1]:5060".to_string(),
+                label: "v6-b".to_string(),
+            },
+        ];
+        let out = export_mermaid(&participants, &[test_msg(0, 1, "INVITE", false)]);
+        for line in out
+            .lines()
+            .filter(|l| l.trim_start().starts_with("participant "))
+        {
+            let id = line.split_whitespace().nth(1).unwrap_or("");
+            assert!(
+                id.starts_with('p') && id[1..].chars().all(|c| c.is_ascii_digit()),
+                "identifier {id:?} is not positional: {line}"
+            );
+        }
     }
 
     /// A fold-header row exports its (fold-annotated) label verbatim.
@@ -419,11 +778,5 @@ mod tests {
             out.contains("INVITE (auth retry)"),
             "mermaid output should contain fold label: {out}"
         );
-    }
-
-    /// `sanitize_id` maps dots and colons in an ip:port to underscores.
-    #[test]
-    fn sanitize_addresses() {
-        assert_eq!(sanitize_id("10.0.0.1:5060"), "10_0_0_1_5060");
     }
 }

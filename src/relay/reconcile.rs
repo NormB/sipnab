@@ -773,7 +773,7 @@ impl<R: ReadOnlyRelay> Reconciler<R> {
 /// The startup snapshot, flattened into the shape the capture path registers.
 /// A struct rather than a tuple because it travels through config into four
 /// separate stream stores, and `(addr, port, call_id)` read at the far end is
-/// three unlabelled fields whose order is a guess.
+/// three unlabeled fields whose order is a guess.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RelayLink {
     /// The relay's own address for this socket.

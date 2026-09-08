@@ -116,6 +116,13 @@ Mermaid, for your ticket or wiki), Markdown, WAV, SIPp XML, RTP JSON -- and
 `Enter` writes the file. `Shift+Tab` or `Up` / `Down` cycle the same list. With
 nothing selected, it saves everything.
 
+**The diagram carries at most `MAX_MESSAGES` (200) arrows.** The renderer sipnab
+ships refuses a diagram past `RENDERER_MAX_EDGES` (500) outright — it draws
+nothing at all rather than degrading — so a long dialog would otherwise export
+as a blank panel with no error. Past the cap the diagram says so in a note
+inside itself, naming how many messages the call actually had: a picture that
+quietly omits half a call is worse than one that admits it.
+
 ## Where to go next
 
 - `F1` (or `?`) opens context help in any view -- the fastest way to see what a

@@ -98,6 +98,104 @@
         "uprobe"
       ],
       "description": "Which capture source delivered the message that OPENED this dialog. First, never latest: one process can capture from an interface and a HEP mirror at once, and with no BPF filter excluding the mirrored signaling ports the same message arrives from both, so a field reassigned per message would report whichever spoke last. Absent rather than null when the opening message came from no captured packet."
+    },
+    "termination": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_header",
+        "frame_ref"
+      ],
+      "properties": {
+        "cause_code": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 65535,
+          "description": "The cause number, on the scale `protocol` names. Absent rather than zero when the message named a protocol and no cause, because 0 is itself a real Q.850 cause and a reader could not tell a default from a measurement."
+        },
+        "cause_text": {
+          "type": "string",
+          "maxLength": 200,
+          "description": "The human-readable cause, control characters stripped and bounded to `MAX_CAUSE_TEXT_CHARS` (200) characters. Written by whoever sent the message."
+        },
+        "protocol": {
+          "type": "string",
+          "description": "Which scale `cause_code` is on — RFC 3326's `protocol`, `Q.850` or `SIP` in practice, kept as the sender spelled it. A code without this is not interpretable: 16 is normal clearing in Q.850 and is not a SIP status code at all."
+        },
+        "source_header": {
+          "type": "string",
+          "description": "Which header carried the cause: `Reason` (RFC 3326) or `X-Asterisk-HangupCauseCode`. What a vendor header asserts and what RFC 3326 asserts are not the same claim, and a reader deciding how far to trust the number needs to know which."
+        },
+        "frame_ref": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Index into the dialog's message list of the message that carried the cause."
+        }
+      },
+      "description": "Why the call ended, when anything on the wire said so. Read from the LAST message naming a cause — `Reason` on a `BYE` or a `CANCEL` counts, which is the case this exists for: a call that clears normally has no failure response to hang a cause on. NOT a diagnosis: a `BYE` carrying `Reason: Q.850;cause=16` is a healthy call clearing normally, so this sits beside the verdict rather than among the fault detections. Optional, and absent rather than null when nothing named a cause."
+    },
+    "siprec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "participants",
+        "streams"
+      ],
+      "properties": {
+        "session_id": {
+          "type": "string",
+          "description": "Recording session identifier from the SIPREC metadata XML. Optional, and absent rather than null when the metadata named none."
+        },
+        "participants": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "participant_id": {
+                "type": "string",
+                "description": "Participant identifier from the metadata XML."
+              },
+              "aor": {
+                "type": "string",
+                "description": "Address-of-record (SIP URI) of the participant."
+              },
+              "name": {
+                "type": "string",
+                "description": "Display name of the participant, as the metadata wrote it."
+              }
+            }
+          },
+          "description": "Participants the recording metadata describes. Present and possibly empty, never absent, on a recorded call."
+        },
+        "streams": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "stream_id": {
+                "type": "string",
+                "description": "Stream identifier from the metadata XML."
+              },
+              "label": {
+                "type": "string",
+                "description": "SDP label associating the stream with an `m=` line. The load-bearing field: SIPREC describes what was recorded, and the label is the only route from a recorded stream back to both its media description and the participant who owns it."
+              },
+              "participant_id": {
+                "type": "string",
+                "description": "The participant this stream belongs to."
+              }
+            }
+          },
+          "description": "Media streams the recording metadata describes. Present and possibly empty, never absent, on a recorded call."
+        },
+        "mode": {
+          "type": "string",
+          "description": "Recording mode from the metadata, e.g. `complete`. Optional, and absent rather than null when the metadata named none."
+        }
+      },
+      "description": "Recording metadata, when this call carried SIPREC (RFC 7866). Omitted, never null, on a call that is not recorded. Declared here because `additionalProperties` is false: it has been emitted since 0.5.x and was never in this schema, so every consumer validating sipnab's output rejected the report of a recorded call outright."
     }
   },
   "$defs": {
@@ -491,14 +589,14 @@
           "description": "Which capture source this stream's MEDIA arrived over. Absent rather than null when the stream came from no captured packet."
         },
         "dialog_assertion": {
-      "type": "string",
-      "enum": [
-        "signaled",
-        "media-relay"
-      ],
-      "description": "WHO asserted the SDP media endpoint that named this stream's dialog: `signaled` (a negotiating party describing its own address) or `media-relay` (an rtpengine relay describing a port it allocated, learned from its `ng` control plane). A different question from `dialog_origin`, which says which capture SOURCE delivered the assertion. A relay's address is authoritative -- it cannot be wrong about which port it opened -- but it names the leg's MIDPOINT rather than either party's endpoint, so the two answers describe different pictures of where the media went. Emitted whenever it is known, `signaled` included: suppressing the common case would make absence mean both 'a party said so' and 'nobody recorded who said so'. Absent therefore means only the latter."
-    },
-    "dialog_origin": {
+          "type": "string",
+          "enum": [
+            "signaled",
+            "media-relay"
+          ],
+          "description": "WHO asserted the SDP media endpoint that named this stream's dialog: `signaled` (a negotiating party describing its own address) or `media-relay` (an rtpengine relay describing a port it allocated, learned from its `ng` control plane). A different question from `dialog_origin`, which says which capture SOURCE delivered the assertion. A relay's address is authoritative -- it cannot be wrong about which port it opened -- but it names the leg's MIDPOINT rather than either party's endpoint, so the two answers describe different pictures of where the media went. Emitted whenever it is known, `signaled` included: suppressing the common case would make absence mean both 'a party said so' and 'nobody recorded who said so'. Absent therefore means only the latter."
+        },
+        "dialog_origin": {
           "type": "string",
           "enum": [
             "wire",

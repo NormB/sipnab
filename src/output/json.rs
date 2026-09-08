@@ -78,6 +78,32 @@ struct MessageJson<'a> {
     /// content-length mismatch, control bytes, …). A well-formed message omits it.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     malformed: Vec<String>,
+    /// Every header this projection does NOT already carry, in wire form
+    /// (`"Name: value"`) and in wire order.
+    ///
+    /// The fields above are a closed list, and every vendor-, carrier- and
+    /// SBC-specific fact lives outside it: `X-Asterisk-*`, `Reason`,
+    /// `Diversion`, `P-Asserted-Identity`, `Remote-Party-ID`, `Require`,
+    /// `RSeq`. The parser has always retained them — an unrecognized header
+    /// name round-trips unchanged — so this was a projection gap, not a
+    /// parsing one, and the only route to one of these values was re-reading
+    /// the original capture a frame at a time.
+    ///
+    /// **One string per header, not a name/value pair.** For an extension
+    /// header the NAME is sender-authored text too, and the wire form keeps
+    /// it inside the same value the untrusted-text fencing wraps rather than
+    /// beside it in a field that would need its own rule.
+    ///
+    /// **Duplicates and order are preserved.** `Via` is a stack whose order
+    /// is the route the request took; collapsing or reordering it destroys
+    /// the only record of the path.
+    ///
+    /// No new ceiling: the parser already refuses a message with more than
+    /// [`crate::sip::parser::DEFAULT_MAX_HEADERS_PER_MESSAGE`] headers or a
+    /// line longer than [`crate::sip::parser::DEFAULT_MAX_HEADER_LINE_LEN`],
+    /// so what reaches here is already bounded by the operator's own limits.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    extension_headers: Vec<String>,
     /// Pointer to the frame this message was parsed from, as
     /// `<source>#<ordinal>@<digest>` — feed it to `sipnab --show-frame` to
     /// retrieve the exact bytes, which either returns the frame or refuses
@@ -495,6 +521,20 @@ struct DialogJson {
     /// definitions of one thing waiting to disagree.
     #[serde(skip_serializing_if = "Option::is_none")]
     signaling_diagnosis: Option<SignalingDiagnosis>,
+    /// Why the call ended, when anything on the wire said so.
+    ///
+    /// Not a diagnosis and deliberately not inside `signaling_diagnosis`: a
+    /// `BYE` carrying `Reason: Q.850;cause=16` is a healthy call clearing
+    /// normally, and putting the cause among the fault detections would make
+    /// every completed call render as a finding — the mistake AS4 fixed for
+    /// keepalives.
+    ///
+    /// Serialized directly rather than projected into a `*Json` twin, for the
+    /// reason `signaling_diagnosis` above is.
+    ///
+    /// Omitted, never null, on a call that never named a cause.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    termination: Option<crate::sip::termination::Termination>,
     /// Recording metadata, when this call carried SIPREC (RFC 7866).
     ///
     /// Serialized directly rather than projected into a `*Json` twin, for the
@@ -552,6 +592,16 @@ struct DialogJson {
 
 // ── Public API ──────────────────────────────────────────────────────
 
+/// Header names [`MessageJson`] already carries as their own fields.
+///
+/// The one place the exclusion is written down. Matched case-insensitively,
+/// because RFC 3261 §7.3.1 makes header names case-insensitive and a sender
+/// that writes `call-id` must not get a second copy of it.
+///
+/// Compact forms are not listed: the parser expands every registered one to
+/// its long name before the header reaches here, so `f:` is already `From`.
+const PROJECTED_HEADERS: &[&str] = &["Call-ID", "From", "To", "Contact", "User-Agent", "CSeq"];
+
 /// Build the borrowed `MessageJson` projection of a SIP message — the
 /// single source of truth for the NDJSON, writer, and `Value` variants.
 fn build_message_json(msg: &SipMessage) -> MessageJson<'_> {
@@ -597,6 +647,16 @@ fn build_message_json(msg: &SipMessage) -> MessageJson<'_> {
         cseq,
         response_context,
         malformed: msg.malformations(),
+        extension_headers: msg
+            .headers
+            .iter()
+            .filter(|h| {
+                !PROJECTED_HEADERS
+                    .iter()
+                    .any(|p| h.name.eq_ignore_ascii_case(p))
+            })
+            .map(|h| format!("{}: {}", h.name, h.value))
+            .collect(),
         frame: msg.frame.as_ref().map(ToString::to_string),
         dscp: msg.dscp,
         input_origin: msg
@@ -805,6 +865,9 @@ pub fn dialog_to_json(
         siprec: dialog.siprec_metadata.clone(),
         signaling_diagnosis: Some(crate::sip::diagnosis::diagnose_signaling(&dialog.messages))
             .filter(|d| !d.is_empty()),
+        // Computed here for the reason `signaling_diagnosis` is: it is a
+        // property of the messages every caller already passes.
+        termination: crate::sip::termination::detect_termination(&dialog.messages),
         // Read from the run's resolved set for the same reason
         // `signaling_diagnosis` is computed here rather than passed in: it is a
         // property of the capture this dialog came from, and threading it
@@ -1303,6 +1366,151 @@ mod tests {
                 "writer variant must be byte-identical"
             );
         }
+    }
+
+    /// A message with a header the projection does not carry.
+    fn make_message_with(extra: &[&str]) -> SipMessage {
+        let mut headers = vec![
+            "Via: SIP/2.0/UDP 198.51.100.1:5060;branch=z9hG4bKone",
+            "From: \"Alice\" <sip:1001@example.com>;tag=t1",
+            "To: <sip:1002@example.com>",
+            "Call-ID: ext-hdr-test@example.com",
+            "CSeq: 1 INVITE",
+            "User-Agent: TestUA/1.0",
+            "Contact: <sip:1001@198.51.100.1>",
+            "Content-Length: 0",
+        ];
+        headers.extend_from_slice(extra);
+        let raw = build_sip("INVITE sip:bob@example.com SIP/2.0", &headers, b"");
+        parse_sip(
+            &raw,
+            ts(),
+            localhost(),
+            localhost(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("should parse")
+    }
+
+    fn extension_headers_of(msg: &SipMessage) -> Vec<String> {
+        message_to_json_value(msg)
+            .get("extension_headers")
+            .and_then(|v| v.as_array().cloned())
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|v| v.as_str().map(str::to_string))
+            .collect()
+    }
+
+    /// Every vendor-, carrier- and SBC-specific fact lives outside the closed
+    /// field list, and until this there was no route to one of them short of
+    /// re-reading the original capture a frame at a time.
+    #[test]
+    fn a_message_carries_the_headers_the_projection_leaves_out() {
+        let msg = make_message_with(&[
+            "P-Asserted-Identity: <sip:+15551234567@carrier.example>",
+            "Diversion: <sip:1003@example.com>;reason=user-busy",
+            "X-Asterisk-HangupCauseCode: 17",
+        ]);
+        let got = extension_headers_of(&msg);
+        for expected in [
+            "P-Asserted-Identity: <sip:+15551234567@carrier.example>",
+            "Diversion: <sip:1003@example.com>;reason=user-busy",
+            "X-Asterisk-HangupCauseCode: 17",
+        ] {
+            assert!(
+                got.iter().any(|h| h == expected),
+                "expected {expected:?} among {got:?}"
+            );
+        }
+    }
+
+    /// Nothing the projection already carries is repeated here.
+    ///
+    /// Driven from ONE fixture in both directions, because the two halves fail
+    /// differently and only together say the list is right: a header the
+    /// projection gained without an exclusion appears twice, and an exclusion
+    /// for a header the projection does not carry makes the value vanish from
+    /// the answer entirely.
+    #[test]
+    fn no_projected_header_is_repeated_in_the_extension_list() {
+        let msg = make_message_with(&[]);
+        let value = message_to_json_value(&msg);
+        let extensions = extension_headers_of(&msg);
+        for (header, field) in [
+            ("Call-ID", "call_id"),
+            ("From", "from"),
+            ("To", "to"),
+            ("Contact", "contact"),
+            ("User-Agent", "ua"),
+            ("CSeq", "cseq"),
+        ] {
+            assert!(
+                value.get(field).is_some(),
+                "{field} is a projected field and must be present"
+            );
+            let prefix = format!("{header}: ");
+            assert!(
+                !extensions.iter().any(|h| h.starts_with(&prefix)),
+                "{header} is already projected as `{field}` and must not be \
+                 repeated; got {extensions:?}"
+            );
+        }
+    }
+
+    /// Duplicates and order are preserved. `Via` is a stack: the order is the
+    /// route the request took, and collapsing three lines into one entry (or
+    /// reordering them) destroys the only record of the path.
+    #[test]
+    fn duplicate_headers_keep_their_order_and_multiplicity() {
+        let msg = make_message_with(&[
+            "Via: SIP/2.0/UDP 198.51.100.2:5060;branch=z9hG4bKtwo",
+            "Via: SIP/2.0/UDP 198.51.100.3:5060;branch=z9hG4bKthree",
+        ]);
+        let vias: Vec<String> = extension_headers_of(&msg)
+            .into_iter()
+            .filter(|h| h.starts_with("Via: "))
+            .collect();
+        assert_eq!(vias.len(), 3, "three Via lines, three entries: {vias:?}");
+        assert!(vias[0].contains("z9hG4bKone"), "{vias:?}");
+        assert!(vias[1].contains("z9hG4bKtwo"), "{vias:?}");
+        assert!(vias[2].contains("z9hG4bKthree"), "{vias:?}");
+    }
+
+    /// A message whose every header is projected omits the key entirely,
+    /// rather than carrying an empty array — the rule every optional field on
+    /// this shape follows.
+    #[test]
+    fn a_message_with_nothing_left_over_omits_the_extension_list() {
+        let raw = build_sip(
+            "INVITE sip:bob@example.com SIP/2.0",
+            &[
+                "From: \"Alice\" <sip:1001@example.com>;tag=t1",
+                "To: <sip:1002@example.com>",
+                "Call-ID: nothing-left@example.com",
+                "CSeq: 1 INVITE",
+            ],
+            b"",
+        );
+        let msg = parse_sip(
+            &raw,
+            ts(),
+            localhost(),
+            localhost(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("should parse");
+        assert!(
+            message_to_json_value(&msg)
+                .get("extension_headers")
+                .is_none(),
+            "expected the key to be absent, got {:?}",
+            message_to_json_value(&msg).get("extension_headers")
+        );
     }
 
     /// The per-message half of packet provenance: a message carrying a
@@ -1881,6 +2089,72 @@ mod tests {
             parsed.get("siprec").is_none(),
             "an ordinary call must omit siprec entirely, got {:?}",
             parsed.get("siprec")
+        );
+    }
+
+    /// A normally-cleared call carries its termination cause.
+    ///
+    /// The wiring test for `sip::termination`. The module's own tests cover
+    /// the parsing; this proves the block reaches the report at all — which is
+    /// the half that was missing, because `Reason` was already parsed and was
+    /// read in exactly one place that a `BYE` never reaches.
+    #[test]
+    fn dialog_json_carries_the_termination_cause_from_a_bye() {
+        let msg = make_invite();
+        let mut dialog = crate::sip::dialog::SipDialog::new(&msg).expect("should create dialog");
+        let raw = "BYE sip:b@example.com SIP/2.0\r\n\
+                   Via: SIP/2.0/UDP 10.0.0.1:5060;branch=z9hG4bK9\r\n\
+                   From: <sip:a@example.com>;tag=1\r\n\
+                   To: <sip:b@example.com>;tag=2\r\n\
+                   Call-ID: test-call-id@example.com\r\n\
+                   CSeq: 2 BYE\r\n\
+                   Reason: Q.850;cause=38;text=\"Network out of order\"\r\n\
+                   Content-Length: 0\r\n\r\n";
+        let bye = crate::sip::parser::parse_sip(
+            raw.as_bytes(),
+            msg.timestamp,
+            msg.src_addr,
+            msg.dst_addr,
+            5060,
+            5060,
+            crate::net::TransportProto::Udp,
+        )
+        .expect("fixture parses");
+        dialog.messages.push(bye);
+
+        let stream = make_stream();
+        let streams: Vec<&RtpStream> = vec![&stream];
+        let json_str = dialog_to_json(&dialog, &streams, &MediaDiagnosis::default());
+        let parsed: serde_json::Value =
+            serde_json::from_str(&json_str).expect("should be valid JSON");
+
+        let t = &parsed["termination"];
+        assert!(t.is_object(), "expected termination, got {json_str}");
+        assert_eq!(t["cause_code"], 38);
+        assert_eq!(t["cause_text"], "Network out of order");
+        assert_eq!(t["protocol"], "Q.850");
+        assert_eq!(t["source_header"], "Reason");
+        // frame_ref points into dialog.messages: the BYE is index 1.
+        assert_eq!(t["frame_ref"], 1);
+    }
+
+    /// A call that never said why it ended omits the block entirely, rather
+    /// than carrying a null a reader has to interpret. Same rule as `siprec`
+    /// and `icmp_media` above, and it keeps a clean dialog's JSON the size it
+    /// was before this existed.
+    #[test]
+    fn dialog_json_omits_termination_when_nothing_named_a_cause() {
+        let msg = make_invite();
+        let dialog = crate::sip::dialog::SipDialog::new(&msg).expect("should create dialog");
+        let stream = make_stream();
+        let streams: Vec<&RtpStream> = vec![&stream];
+        let json_str = dialog_to_json(&dialog, &streams, &MediaDiagnosis::default());
+        let parsed: serde_json::Value =
+            serde_json::from_str(&json_str).expect("should be valid JSON");
+        assert!(
+            parsed.get("termination").is_none(),
+            "a call with no stated cause must omit termination, got {:?}",
+            parsed.get("termination")
         );
     }
 

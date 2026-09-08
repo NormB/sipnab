@@ -157,23 +157,26 @@ the default binary does not change at all.
 
 ## ABI
 
-Deliberately tiny — four exports, no imports. Small enough that a plugin can be
+Deliberately tiny — three exports, no imports. Small enough that a plugin can be
 written in any language targeting WASM without a binding generator.
 
 ```
 ;; The plugin exports:
 (func (export "sipnab_plugin_abi_version") (result i32))
 (func (export "sipnab_alloc")   (param i32) (result i32))
-(func (export "sipnab_dealloc") (param i32 i32))
 (func (export "sipnab_analyze") (param i32 i32) (result i64))
 ```
 
 - `sipnab_plugin_abi_version` returns `1`. The host refuses anything else, so a
   plugin built against a future ABI fails loudly at load rather than subtly at
   runtime.
-- `sipnab_alloc`/`sipnab_dealloc` let the host place the input inside the
-  plugin's own linear memory. The host never writes outside what the plugin
-  handed it.
+- `sipnab_alloc` lets the host place the input inside the plugin's own linear
+  memory. The host never writes outside what the plugin handed it. There is no
+  matching deallocator: the host instantiates the module per dialog and drops
+  the store when `sipnab_analyze` returns, so the whole linear memory goes with
+  it and there is nothing to reclaim. This page and [`docs/plugins.md`](https://github.com/NormB/sipnab/blob/main/docs/plugins.md) both
+  required one for several releases while [`src/plugin/mod.rs`](https://github.com/NormB/sipnab/blob/main/src/plugin/mod.rs) never resolved
+  it, so a plugin without it loaded and ran.
 - `sipnab_analyze` receives `(ptr, len)` of UTF-8 JSON and returns a packed
   `(ptr << 32) | len` pointing at UTF-8 JSON output. Packing into one `i64`
   keeps the ABI to plain scalars, so no multi-value proposal and no memory64
@@ -259,7 +262,6 @@ pub extern "C" fn sipnab_plugin_abi_version() -> i32 { 1 }
 pub extern "C" fn sipnab_alloc(len: i32) -> i32 { /* host writes input here */ }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn sipnab_dealloc(ptr: i32, len: i32) { /* … */ }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sipnab_analyze(ptr: i32, len: i32) -> i64 {

@@ -1006,3 +1006,84 @@ fn the_runtime_schema_names_every_field_the_route_sends() {
          checking almost nothing"
     );
 }
+
+/// The published document declares every field the shared call-report schema
+/// does.
+///
+/// **First of two tests owed** for the staleness gate 0.5.159 turned red, and
+/// it closes the gap that gate cannot see. `the_published_document_is_not_stale`
+/// compares the artifact against what generation produces RIGHT NOW, so a
+/// generator that silently stopped carrying a field produces an artifact that
+/// matches itself perfectly and the gate stays green. This compares the
+/// artifact against the OTHER copy of the same fact — `tests/schemas/
+/// call_report.schema.json`, which `--call-report --json` is validated
+/// against — so the two ends of one contract have to agree.
+///
+/// `siprec` is why this is worth having: it was in the Rust projection and in
+/// neither of the other two for several releases.
+#[test]
+fn the_published_call_report_component_declares_what_the_shared_schema_does() {
+    let artifact: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(repo().join(ARTIFACT)).expect("read"))
+            .expect("the artifact is JSON");
+    let shared: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(repo().join("tests/schemas/call_report.schema.json"))
+            .expect("read"),
+    )
+    .expect("the schema is JSON");
+
+    let published: std::collections::BTreeSet<String> =
+        artifact["components"]["schemas"]["CallReport"]["properties"]
+            .as_object()
+            .expect("the artifact declares a CallReport")
+            .keys()
+            .cloned()
+            .collect();
+    let declared: std::collections::BTreeSet<String> = shared["properties"]
+        .as_object()
+        .expect("the shared schema declares properties")
+        .keys()
+        .cloned()
+        .collect();
+
+    assert!(
+        declared.len() >= 10,
+        "only {} field(s) parsed out of the shared schema; this gate would \
+         pass vacuously",
+        declared.len()
+    );
+    let missing: Vec<&String> = declared.difference(&published).collect();
+    let extra: Vec<&String> = published.difference(&declared).collect();
+    assert!(
+        missing.is_empty() && extra.is_empty(),
+        "the published OpenAPI and the shared call-report schema disagree.\n  \
+         only in the shared schema: {missing:?}\n  only in the published \
+         document: {extra:?}\nA consumer reads one of the two and is wrong \
+         about the other."
+    );
+}
+
+/// **Second of two.** The staleness gate compares by default; it blesses only
+/// when told to.
+///
+/// A blessing gate that blesses unconditionally can never fail, and the
+/// symptom is exactly the one this repository has paid for before: a check
+/// that reports success while the thing it names is broken. Driven on the
+/// artifact itself — with the switch unset, generation must equal what is on
+/// disk, which is the comparison the gate claims to make.
+#[test]
+fn the_staleness_gate_compares_rather_than_blesses_by_default() {
+    assert!(
+        std::env::var_os("SIPNAB_BLESS_OPENAPI").is_none(),
+        "SIPNAB_BLESS_OPENAPI is set in this run, so the drift gate rewrote \
+         the artifact instead of checking it. It is a regeneration switch, not \
+         something to leave on in CI or a shell"
+    );
+    let on_disk = std::fs::read_to_string(repo().join(ARTIFACT)).expect("read the artifact");
+    assert_eq!(
+        generate(),
+        on_disk,
+        "generation and the checked-in artifact differ with the bless switch \
+         unset, which is the state the drift gate exists to refuse"
+    );
+}

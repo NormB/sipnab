@@ -977,8 +977,70 @@ impl<'a> Redactor<'a> {
             "path" | "route" | "record-route" | "service-route" => {
                 HeaderAction::Replace(self.name_addr(value))
             }
+            // `Via` is on every message and was on none of these lists. It is
+            // NOT a name-addr — RFC 3261 §20.42 gives it `sent-protocol SP
+            // sent-by *( SEMI via-param )` — so it fell through to `Keep`, and
+            // the free-text sweep behind that finds addresses and numbers and
+            // walks straight past a hostname. A container redacted for
+            // publication carried the operator's whole proxy chain by name.
+            "via" => HeaderAction::Replace(self.via(value)),
             _ => HeaderAction::Keep,
         }
+    }
+
+    /// Rewrite the `sent-by` host of one `Via` header field.
+    ///
+    /// [RFC 3261 §20.42](https://www.rfc-editor.org/rfc/rfc3261#section-20.42): `Via = ( "Via" / "v" ) HCOLON via-parm
+    /// *(COMMA via-parm)`, where `via-parm = sent-protocol LWS sent-by
+    /// *( SEMI via-params )` and `sent-by = host [ COLON port ]`.
+    ///
+    /// The `branch` parameter is KEPT. It is the transaction identifier a
+    /// reader follows a request and its responses by, RFC 3261 §8.1.1.7
+    /// requires it to be globally unique and to begin `z9hG4bK`, and
+    /// tokenizing it would delete the transaction correlation from the export
+    /// to hide nothing — the value is a magic cookie and a random suffix.
+    ///
+    /// `received` and `maddr` DO carry a host, so both go through
+    /// [`Self::host`] like the `sent-by` does.
+    #[must_use]
+    pub fn via(&self, value: &str) -> String {
+        value
+            .split(',')
+            .map(|parm| {
+                let parm = parm.trim();
+                let Some((proto, rest)) = parm.split_once(char::is_whitespace) else {
+                    // No `sent-by` at all: not a via-parm this can rewrite,
+                    // and inventing a host would be worse than leaving it.
+                    return parm.to_string();
+                };
+                let rest = rest.trim_start();
+                let (sent_by, params) = match rest.find(';') {
+                    Some(i) => (&rest[..i], &rest[i..]),
+                    None => (rest, ""),
+                };
+                let params = params
+                    .split(';')
+                    .filter(|p| !p.is_empty())
+                    .map(|p| match p.split_once('=') {
+                        Some((name, v))
+                            if matches!(
+                                name.trim().to_ascii_lowercase().as_str(),
+                                "received" | "maddr"
+                            ) =>
+                        {
+                            format!("{name}={}", self.host(v.trim()))
+                        }
+                        _ => p.to_string(),
+                    })
+                    .fold(String::new(), |mut acc, p| {
+                        acc.push(';');
+                        acc.push_str(&p);
+                        acc
+                    });
+                format!("{proto} {}{params}", self.host(sent_by.trim()))
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
     }
 
     /// Rewrite the identifying lines of an SDP body.

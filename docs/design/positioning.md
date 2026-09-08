@@ -74,7 +74,7 @@ report for an unknown SSRC records nothing, which `rtcp_unknown_ssrc_is_noop`
 ([`stream_store.rs:3431`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L3431)) pins. So a
 viewer fed by HEP alone decodes every RTCP report and can show no quality figure
 for any of them. Received RTCP reaches the MOS delay term (`MosDelay::resolve`,
-[`quality.rs:571`](https://github.com/NormB/sipnab/blob/main/src/rtp/quality.rs#L571)) only when the same
+[`quality.rs:605`](https://github.com/NormB/sipnab/blob/main/src/rtp/quality.rs#L605)) only when the same
 process also sees the media, which is the `-L` plus `-d` arrangement of cookbook
 recipe 6d. This was established 2026-09-02 by reading the path, not by running
 it end to end; the end-to-end run is still owed.

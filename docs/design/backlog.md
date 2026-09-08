@@ -44,7 +44,7 @@ Tiers:
 
 ## Status
 
-**48 open, 460 done** across 36 sections.
+**44 open, 464 done** across 36 sections.
 Regenerate with `python3 scripts/backlog-status.py --apply`.
 
 | Section | Open | Done | Progress |
@@ -64,7 +64,7 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
 | RV | 0 | 8 | `##########` |
 | RP | 3 | 1 | `##........` |
 | HX | 1 | 2 | `#######...` |
-| AS | 5 | 2 | `###.......` |
+| AS | 3 | 4 | `######....` |
 | DOC | 0 | 16 | `##########` |
 | RDX | 0 | 2 | `##########` |
 | FLT | 0 | 1 | `##########` |
@@ -76,10 +76,10 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
 | GTP | 2 | 1 | `###.......` |
 | MER | 3 | 2 | `####......` |
 | LIVE | 6 | 0 | `..........` |
-| P5 | 7 | 13 | `######....` |
+| P5 | 6 | 14 | `#######...` |
 | Shipped (audit-period features, kept for context) | 0 | 6 | `##########` |
 | DUP | 0 | 8 | `##########` |
-| OBS-FOLLOWUP | 2 | 2 | `#####.....` |
+| OBS-FOLLOWUP | 1 | 3 | `########..` |
 
 <!-- /BACKLOG-STATUS -->
 
@@ -2562,7 +2562,7 @@ output path.
     2026-08-06, verified against the tree).** Shipped: `FrameRef`
     ([`src/capture/packet.rs:377`](https://github.com/NormB/sipnab/blob/main/src/capture/packet.rs#L377)) and `capture::resolve::resolve`
     ([`src/capture/resolve.rs:191`](https://github.com/NormB/sipnab/blob/main/src/capture/resolve.rs#L191)); the `show_evidence` MCP tool
-    (`#[tool(` at [`src/mcp/server.rs:6918`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L6918), handler at `:3866`), confined to
+    (`#[tool(` at [`src/mcp/server.rs:6953`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L6953), handler at `:3866`), confined to
     the file root and honest about
     itself with three states — `verified` / `unverified` / `unresolvable` —
     rather than resolving a foreign ref against the wrong file; and
@@ -5280,7 +5280,7 @@ behind a Kamailio proxy. On one 100 MB slice sipnab found 507 dialogs, of which
   **Do:** add the state, and decide what a re-register after it does — a phone
   that unregisters and comes back is one binding history, not two.
 
-- [ ] **AS1 — expose extension headers on `get_dialog` / `get_message`.**
+- [x] **AS1 (done 2026-09-08) — expose extension headers on `get_dialog` / `get_message`.**
   `build_message_json` has a closed field list (timestamp, addresses, method,
   status, call_id, from, to, contact, ua, sdp, cseq, frame, dscp, …). Every
   vendor-, carrier- and SBC-specific fact lives outside it: `X-Asterisk-*`,
@@ -5302,6 +5302,38 @@ behind a Kamailio proxy. On one 100 MB slice sipnab found 507 dialogs, of which
   `get_message` returns the parsed message *"headers and body included"*.
   Measured against 0.5.130 that is false — there is no headers map — and a
   threat-model section leans on it.
+
+  **Done:** `extension_headers` on the per-message projection, so every
+  surface that renders a message gains it at once — `get_message`,
+  `get_dialog`, `--json` and `-N --json`.
+
+  **One string per header in wire form, not a name/value pair.** For an
+  extension header the NAME is the sender's choice as much as the value is,
+  and the wire form keeps it inside the same value the fencing wraps rather
+  than beside it in a field needing its own rule. It also made the existing
+  array-fencing path cover the field unchanged.
+
+  **Duplicates and order preserved.** `Via` is a stack whose order is the
+  route the request took; collapsing or reordering it destroys the only record
+  of the path.
+
+  **The exclusion list is six names and nothing else.** `Call-ID`, `From`,
+  `To`, `Contact`, `User-Agent`, `CSeq` — matched case-insensitively, because
+  [RFC 3261 §7.3.1](https://www.rfc-editor.org/rfc/rfc3261#section-7.3.1) makes header names case-insensitive and a sender writing
+  `call-id` must not get a second copy. `Via` and `Content-Length` ARE in the
+  list: filtering them would be a curated second list waiting to drift from
+  the projection, and the parser's own ceilings (200 headers, 8 KiB per line)
+  already bound the field, so no new ceiling was added.
+
+  `no_projected_header_is_repeated_in_the_extension_list` drives both
+  directions from one fixture, which is what makes it a gate rather than a
+  restatement: a field the projection gains without an exclusion appears
+  twice, and an exclusion for a header the projection does not carry makes the
+  value vanish from the answer entirely.
+
+  The false claim is corrected in place rather than deleted, and now records
+  that a threat-model section leaned on it for a release in which it was
+  untrue.
 
 - [ ] **AS2 — report the signaling-stack fingerprint on `describe_endpoint`.**
   `top_talkers by=ua` reports a single row, `Asterisk PBX 20.15.2`, at
@@ -5331,7 +5363,7 @@ behind a Kamailio proxy. On one 100 MB slice sipnab found 507 dialogs, of which
   constructs From-tags as `as%08lx`. 155/155 were measured on the wire; nobody
   has read `chan_sip.c`.
 
-- [ ] **AS3 — termination cause as a first-class field.** `triage_call` returns
+- [x] **AS3 (done 2026-09-08) — termination cause as a first-class field.** `triage_call` returns
   `verdict: "none"` on a call whose BYE carries
   `X-Asterisk-HangupCauseCode: 38 / Network out of order`. `Reason` is read in
   exactly one place and only on the final failure response, so a `Reason:` or
@@ -5347,6 +5379,40 @@ behind a Kamailio proxy. On one 100 MB slice sipnab found 507 dialogs, of which
   as one extra header name. **The generic half is the feature; the vendor half
   is one string.** That is how to be Asterisk-aware without becoming
   Asterisk-specific.
+
+  **Done:** [`src/sip/termination.rs`](https://github.com/NormB/sipnab/blob/main/src/sip/termination.rs) parses RFC 3326 and reads the cause from
+  the LAST message that names one — `BYE` and `CANCEL` included, which is the
+  case this exists for: a normally-cleared call has no failure response to
+  hang a cause on, and that is exactly why the old reader found nothing.
+
+  **`termination` is a fact, not a detection.** It sits beside `verdict`
+  rather than inside `signaling_diagnosis`, and never moves the verdict. A
+  `BYE` carrying `Reason: Q.850;cause=16` is a healthy call clearing normally,
+  and putting the cause among the fault detections would make every completed
+  call render as a finding — the mistake AS4 fixed for keepalives.
+
+  **`protocol` is carried, which the original sketch did not ask for.** RFC
+  3326 §2 admits `SIP` and `Q.850`, and a `cause_code` without its scale is
+  not interpretable: `16` is normal clearing in Q.850 and is not a SIP status
+  code at all. Where one message carries both, the non-`SIP` value wins —
+  `SIP;cause=` restates `final_status_code`, which is already its own field on
+  every surface, so reporting it would spend the one block on the half a
+  reader already has.
+
+  **The vendor half is two header names, not one.** Measured against the
+  private corpus on 2026-09-08: Asterisk writes the number in
+  `X-Asterisk-HangupCauseCode` and the text in `X-Asterisk-HangupCause`, 469
+  frames across five distinct causes, and every `BYE` carrying them carries no
+  `Reason` at all — so on those calls this is the only cause available, and
+  `triage_call` reported nothing for all of them. `source_header` names which
+  header asserted the value, because what a vendor header asserts and what RFC
+  3326 asserts are not the same claim.
+
+  One assembler, four surfaces: `triage_call`, `get_dialog_report`,
+  `GET /v1/dialogs/{call_id}/report` and `--call-report` in all three formats.
+  The text and Markdown renderings share one `summary()` so they cannot
+  disagree, and the Markdown one escapes `|` because `cause_text` is written
+  by the far end and an unescaped pipe splits the row.
 
 - [x] **AS4 (done 2026-09-06) — make the keepalive plane visible in `find_problems`.** 98 of 110
   problem rows on a real capture are OPTIONS, and 89 of those trip the alias
@@ -5476,7 +5542,7 @@ promises an absence is acted on; a missing feature is merely absent.
 
 - [x] **DOC4 (done 2026-08-30) — [`docs/mcp-deploy.md:248`](https://github.com/NormB/sipnab/blob/main/docs/mcp-deploy.md#L248) opens the remote-access section by
   promising no tool mutates the stores.** `open_capture` calls `ds.clear()` and
-  `ss.clear()` ([`src/mcp/server.rs:7288`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L7288)). The code already knows: a note at
+  `ss.clear()` ([`src/mcp/server.rs:7323`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L7323)). The code already knows: a note at
   `:8377` records that the wire `instructions` string was corrected for exactly
   this. The page was not. [`SECURITY.md:35`](https://github.com/NormB/sipnab/blob/main/SECURITY.md#L35) scopes reports to "any MCP tool that
   mutates dialog/stream/alert state", so a good-faith reporter is told the scope
@@ -5756,12 +5822,12 @@ to them. Measured 2026-09-01: **45 identifiers** carry `-our`, `-ogue` or a
 doubled `-lled` inside a token, invisible to both gates.
 
 - [ ] **SPELL1 — the `-our`, `-ogue` and doubled-`-lled` classes inside
-  identifiers.** `every_documented_limits_key_changes_observable_behaviour`,
-  `a_healthy_dialog_gets_no_signalling_section`,
-  `both_session_id_rules_are_catalogued_and_resolvable_by_identifier`,
-  `a_zero_lockon_window_is_refused_while_a_real_one_is_honoured`. Fixing them
+  identifiers.** `every_documented_limits_key_changes_observable_behavior`,
+  `a_healthy_dialog_gets_no_signaling_section`,
+  `both_session_id_rules_are_cataloged_and_resolvable_by_identifier`,
+  `a_zero_lockon_window_is_refused_while_a_real_one_is_honored`. Fixing them
   is a rename, which is cheap; the care is in the two that are not internal.
-  `cancelled_count` in [`src/output/api.rs`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs)
+  `canceled_count` in [`src/output/api.rs`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs)
   is a published key and must be treated as the `unanalysed_*` family was — a
   wire contract with a deprecation window, not a sweep. `aria-labeledby` in
   the templates is the HTML spec's own attribute and must never be touched;
@@ -6431,9 +6497,9 @@ them away.
 
 <!-- Added 2026-08-03. Analysis: docs/design/process-isolation-and-hot-path-cost.md -->
 
-- [ ] **CFG1 — Config values do not expand environment variables.** `config.rs`
+- [x] **CFG1 (done 2026-09-08) — Config values do not expand environment variables.** `config.rs`
   reads `SIPNAB_CONFIG` and `HOME` from the environment
-  ([`config.rs:1660`](https://github.com/NormB/sipnab/blob/main/src/config.rs#L1660), [`:1928`](https://github.com/NormB/sipnab/blob/main/src/config.rs#L1928)) but never expands `${VAR}` **inside a
+  ([`config.rs:1865`](https://github.com/NormB/sipnab/blob/main/src/config.rs#L1865), [`:2184`](https://github.com/NormB/sipnab/blob/main/src/config.rs#L2184)) but never expands `${VAR}` **inside a
   config value**, so a path cannot be written relative to whoever is running.
   Prior art: the terminal viewer PR 539 (open,
   unmerged), whose motivating case is `set savepath /home/${SUDO_USER}` — after
@@ -6442,6 +6508,29 @@ them away.
   links. **Do:** expand `${VAR}` in string-valued settings at load time, decide
   explicitly what an unset variable does (empty or refuse — refuse is safer for
   a path), and cover the escape for a literal `$`.
+
+  **Done:** `expand_env_vars` implements the rule and `expand_env_in_value`
+  walks the parsed TOML document applying it to every string at any depth,
+  between `warn_unknown_keys` and deserialization. Walking the tree rather
+  than a list of known path-valued keys means the set of settings is not
+  written down a second place, where it would be wrong the first time a
+  setting was added.
+
+  **An unset variable refuses.** Empty is the dangerous answer for the setting
+  this exists for: `/home/${SUDO_USER}/sipnab` with nothing set is
+  `/home//sipnab`, a real and writable directory that is not the one intended.
+  The refusal names the file, the dotted key path and the variable.
+
+  **`$$` is the escape and collapses everywhere**, not only in front of a
+  brace — a rule with an exception is a rule nobody applies from memory. A
+  bare `$NAME` stays literal, so braces are the entire syntax. An expansion is
+  never rescanned, so an operator's environment cannot reach a variable the
+  config never named and a self-referential pair cannot fail to terminate.
+
+  The lookup is an argument, not a `std::env::var` call inside the walker, so
+  both halves of every rule are driven from tests that never write the process
+  environment. `the_real_environment_is_the_one_a_config_file_sees` is what
+  keeps that seam from being wired to a stub.
 
 - [ ] **G5 — No seccomp and no Landlock, on a process whose whole job is
   parsing hostile input.** [`src/privilege.rs`](https://github.com/NormB/sipnab/blob/main/src/privilege.rs) does real work — `setgid`,
@@ -7153,13 +7242,32 @@ and the capture meter — are fixed in 0.5.156; these are the rest.
   further lifeline is auto-created by Mermaid with the mangled id as its
   visible label.
 
-- [ ] **RTF4 — `estimate_r_with_delay` guards two of its three inputs.**
+- [x] **RTF4 (done 2026-09-08) — `estimate_r_with_delay` guards two of its three inputs.**
   `one_way_delay_ms` and `jitter_ms` are checked for finite and non-negative;
   `loss_pct` is not, and G.107's `Ie_eff` has a pole at `-10.0`. Every in-crate
   caller derives it from `lost/(recv+lost)`, so this is not reachable from
   inside sipnab — but the function is `pub`, and `estimate_mos` is re-exported
   at the crate root, where a `NaN` propagates through `clamp` to a `NaN` MOS
   against a documented `[1.0, 4.5]`.
+
+  **Done:** `sanitized_loss_pct` decides the admissible range for `Ppl` once,
+  and both E-models read it — the narrowband `estimate_r_with_delay` and the
+  wideband `ie_eff_wb`/`amr_wb_mos`, which had the same defect by a different
+  route: its `loss_pct <= 0.0` guard is false for a NaN, so a NaN reached
+  Eq (7-15) and left as a NaN MOS.
+
+  **The pole does not announce itself.** At `Ppl = -10` exactly the term goes
+  to negative infinity, `93.2 - (-inf)` goes to positive infinity, and the
+  existing `clamp(0.0, 100.0)` hands back a perfect 100.0 — finite, on the
+  scale, and the best score the function can return. The first version of the
+  test asserted only `is_finite()` and passed against the unfixed code. What is
+  pinned instead is the observable defect: a nonsense loss figure must not
+  outscore a clean stream.
+
+  The wideband pole is at `Ppl = -Bpl`, so bounding the loss closes it from one
+  side only; `every_publishable_bpl_is_positive` closes the other, driving all
+  nine modes through both listening contexts and pinning that G.113 Table IV.4
+  publishes exactly three.
 
 ## Standing decisions
 

@@ -92,6 +92,16 @@ or broken input rather than silently accepting it: missing mandatory headers
 larger than the body actually present (truncated/lying length), and control/NUL
 bytes in a header. Example: `"malformed": ["missing mandatory header: Call-ID"]`.
 
+`extension_headers` is every header the fields above do not already carry, in
+wire form (`"Name: value"`) and in wire order, one entry per header line.
+`Call-ID`, `From`, `To`, `Contact`, `User-Agent` and `CSeq` never appear —
+those are fields of their own — and sipnab drops nothing else, so `Via`,
+`Max-Forwards` and `Content-Length` join the vendor-specific headers this
+exists for. The list keeps duplicates and wire order: three `Via` lines are
+three entries in the order they arrived. A message whose
+every header is already a field omits the key rather than sending an empty
+array.
+
 `input_origin` names the capture source that delivered the message — `wire`,
 `hep` or `uprobe` — and it is what keeps `frame` honest. A uprobe read carries a
 pointer of the same shape as a capture offset (`uprobe:opensips/954#3` beside

@@ -867,7 +867,7 @@ mod tests {
 
     /// A canceled INVITE shows state Canceled with code 487.
     #[test]
-    fn cancelled_dialog_shows_487() {
+    fn canceled_dialog_shows_487() {
         // INVITE canceled before answer -> State Canceled, Code 487.
         let dialog = make_dialog(
             "cxl@example.com",

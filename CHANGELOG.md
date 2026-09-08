@@ -8,6 +8,152 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [0.5.159] - 2026-09-08
+
+### Added
+
+- **Why a call ended, as a field.** `triage_call`, `get_dialog_report`,
+  `GET /v1/dialogs/{call_id}/report` and `--call-report` now carry a
+  `termination` block: `cause_code`, `cause_text`, `protocol`, `source_header`
+  and `frame_ref`. "The call ended" and "the call ended because the far end was
+  out of order" are different answers, and only the second closes a ticket.
+
+  RFC 3326 `Reason` was already parsed and was read in exactly one place — the
+  final failure response — which a normally-cleared call never reaches. A
+  `Reason` on a `BYE` or a `CANCEL` now counts, read from the last message that
+  names a cause. `protocol` is carried because a cause code without its scale is
+  not interpretable: 16 is normal clearing in Q.850 and is not a SIP status code
+  at all. Where a message carries both, the non-`SIP` value wins — `SIP;cause=`
+  restates `final_status_code`, which is already its own field.
+
+  Asterisk's `X-Asterisk-HangupCauseCode` and `X-Asterisk-HangupCause` are read
+  as one cause, and `source_header` says which header asserted the value. **The
+  generic half is the feature; the vendor half is two header names.**
+
+  `termination` is a fact, not a fault: it sits beside `verdict` and never
+  moves it. A call that cleared normally reports `verdict: "none"` and a cause
+  at the same time, and both are true.
+
+- **Every header the per-message projection left behind.** `get_message`,
+  `get_dialog`, `--json` and `-N --json` now carry `extension_headers`: every
+  header outside the closed field list, in wire form (`"Name: value"`) and in
+  wire order.
+
+  The projection had `from`, `to`, `contact`, `ua`, `cseq`, `call_id` and
+  nothing else, so every vendor-, carrier- and SBC-specific fact — `X-Asterisk-*`,
+  `Reason`, `Diversion`, `P-Asserted-Identity`, `Remote-Party-ID`, `Require`,
+  `RSeq` — reached no surface at all. The parser had always retained them; this
+  was a projection gap, not a parsing one.
+
+  Duplicates and order are preserved, because `Via` is a stack whose order is
+  the route the request took. Each entry is fenced whole, name included: for an
+  extension header the name is as much the sender's choice as the value.
+  `deferred-and-declined.md` said `get_message` returned "headers and body
+  included" and that was false when written; it now says so, and says which
+  release made it true.
+
+- **`${NAME}` in config values.** Any string in `sipnab.toml` may name an
+  environment variable, expanded when the file is read. The case it exists for
+  is `sudo`: after `sudo -i` a file written by the run lands in root's
+  directory rather than in the directory of whoever ran the command, and
+  `${SUDO_USER}` is the only thing that can say which one that is.
+
+  An unset variable is an **error**, not an empty expansion:
+  `/home/${SUDO_USER}/sipnab` with nothing set becomes `/home//sipnab`, a real
+  and writable directory that is not the one anybody meant. `$$` is a literal
+  `$` everywhere rather than only before a brace, a bare `$NAME` stays literal,
+  and what a variable expands to is never rescanned.
+
+### Fixed
+
+- **Four tests read the wrong repository under `git commit`.** The
+  staged-inputs gate's fixtures scrub `GIT_DIR` and `GIT_INDEX_FILE` from the
+  child `git` they drive — and not from the child `python3` that runs the
+  script under test, which shells out to a git of its own and handed the
+  variables straight on. Under a real commit those four tests reported on the
+  repository being committed to rather than on their fixture. They passed
+  whenever the hook was run by hand, which is where the variables are unset, so
+  the failure only ever appeared at the moment of committing. One list now
+  serves both children, and a test compares the two as sets.
+
+- **Three doc blocks were split by an item inserted between them and what they
+  documented.** `CidrRange::contains` shipped in 0.5.158 documented, in full,
+  as `they asked for.` — the four paragraphs explaining the IPv4-mapped rule
+  had been left on `network_addr`, which was inserted into the middle of them.
+  `run_mint_token` and `ACCUSED_FINDING_SCAN_CAP` carried the same defect.
+  Nothing failed: each block still compiled and still sat on an item.
+
+  A new gate reads where a block BEGINS rather than what it contains, because
+  that is the half a split leaves evidence in — the second item always inherits
+  a fragment, and a fragment opens with a pronoun, article or preposition. It
+  found all three on its first run.
+
+- **A recorded call's report failed schema validation outright.**
+  `call_report.schema.json` says `additionalProperties: false` and had never
+  declared `siprec`, which `--call-report --json` and
+  `GET /v1/dialogs/{call_id}/report` have emitted for every SIPREC call since
+  the field shipped. A consumer validating sipnab's output rejected the whole
+  report. Found by a new census comparing the Rust projection's fields against
+  the published schema in both directions — the existing schema tests validate
+  sample output, so a field no fixture carries could stay undeclared
+  indefinitely, and a schema entry for a field the code stopped emitting could
+  sit there forever telling a consumer to expect something that never arrives.
+
+- **A redacted vCon published the operator's proxy chain by name.**
+  `Path`, `Route`, `Record-Route` and `Service-Route` were all on the
+  redactor's host-bearing list. `Via` — the one header every SIP message
+  carries — was not, because RFC 3261 §20.42 gives it `sent-protocol SP
+  sent-by`, not a name-addr, so it did not fit beside them and fell through to
+  the free-text sweep, which finds addresses and numbers and walks straight
+  past a hostname. Its `received` and `maddr` parameters go through the same
+  rule now. `branch` is kept: it is the transaction handle a reader follows,
+  and tokenizing it would cost the correlation and hide nothing.
+
+  The existing leak test could not have caught this — its fixture carries
+  eleven identifying headers and no `Via`.
+
+- **A credential written as a wire line walked through the export filter.**
+  `strip_credentials` removed JSON object entries whose KEY was
+  `Authorization`, which is the shape the vCon header map has. It now also
+  filters a string that IS a header line, keyed on the name before the colon,
+  so the publication boundary holds for the shape a field arrives in rather
+  than the shape it had when the filter was written.
+
+- **The E-model's loss term had an unguarded pole.** `estimate_r_with_delay`
+  checked `jitter_ms` and `one_way_delay_ms` for finite and non-negative and
+  did not check `loss_pct`, whose G.107 Appendix I term divides by
+  `Ppl + 10`. At `Ppl = -10` exactly the term went to negative infinity, the
+  subtraction went to positive infinity, and the existing clamp handed back a
+  perfect **100.0** — finite, on the scale, and the best score the function can
+  return. A NaN reached the MOS against a documented `[1.0, 4.5]`.
+
+  The wideband model had the same defect by another route: `ie_eff_wb` guards
+  `loss_pct <= 0.0`, which is false for a NaN. One admissible range now serves
+  both.
+
+- **Two more Mermaid generators, neither capped.** `src/wasm.rs` and the TUI
+  call-flow export each built a `sequenceDiagram` themselves rather than
+  through `src/mermaid.rs`. The browser one mattered: the vendored renderer
+  refuses a diagram over `maxEdges: 500` outright, so a long SUBSCRIBE/NOTIFY
+  dialog rendered as nothing at all. Both now go through one generator, which
+  caps, declares every participant, and carries the annotations the ladder had
+  already computed — timestamps, PDD, SDP direction, retransmission and folded
+  counts — as `Note` lines. IPv6 participants are bracketed, so two endpoints
+  differing only in port can no longer merge into one lifeline.
+
+- **The WASM plugin ABI documented four exports where the host resolves
+  three.** `sipnab_dealloc` was never called. The docs now name what the host
+  actually looks up, and a test compares the two sets rather than checking that
+  each name appears somewhere.
+
+### Changed
+
+- **41 British spellings inside identifiers, across 44 files.** The US-English
+  gate reads prose; identifiers were invisible to it and had drifted.
+  `--uprobe-flavour` survives as a deliberate alias — it is a released flag —
+  and so does the `flavours` MCP wire key, because clap errors loudly on an
+  unknown flag while serde ignores an unknown key in silence.
+
 ## [0.5.158] - 2026-09-08
 
 ### Fixed

@@ -342,3 +342,271 @@ fn every_capture_origin_is_a_value_both_schemas_accept() {
         );
     }
 }
+
+// ── The schema and the struct are one fact written twice ────────────────
+//
+// Eight tests owed for the four schema gates 0.5.159 turned red. Every one of
+// those four failed the same way: a field was added to a Rust projection and
+// the published schema's `additionalProperties: false` refused the output.
+//
+// That is the gate working, and it is also the gate arriving LATE. It fires
+// only when a sample happens to carry the new field — so a field the fixtures
+// never exercise can be missing from the schema indefinitely, and a schema
+// entry for a field the code stopped emitting can sit there forever telling a
+// consumer to expect something that will never arrive. The rules below compare
+// the two declarations directly, in both directions.
+
+/// The serde field names of one struct, read out of the source.
+///
+/// Reading the source rather than serializing an instance, because a field
+/// that is `skip_serializing_if` absent on every fixture is exactly the field
+/// this is looking for — serializing one would find only the fields the
+/// fixture happened to populate, which is the weakness being paid for.
+fn struct_fields(file: &str, name: &str) -> Vec<String> {
+    let src = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(file))
+        .unwrap_or_else(|e| panic!("read {file}: {e}"));
+    let decl = format!("struct {name}");
+    let start = src
+        .find(&decl)
+        .unwrap_or_else(|| panic!("{file} declares no `{decl}`"));
+    let body = &src[start..];
+    let end = body
+        .find("\n}")
+        .unwrap_or_else(|| panic!("`{decl}` has no closing brace"));
+    let body = &body[..end];
+
+    let field = regex::Regex::new(r"(?m)^\s{4}(?:pub\s+)?([a-z_][a-z0-9_]*)\s*:").expect("pattern");
+    let renamed = regex::Regex::new(r#"rename\s*=\s*"([^"]+)""#).expect("rename pattern");
+    let mut out = Vec::new();
+    for line in body.lines() {
+        if let Some(c) = renamed.captures(line) {
+            out.push(c[1].to_string());
+            continue;
+        }
+        if let Some(c) = field.captures(line) {
+            out.push(c[1].to_string());
+        }
+    }
+    assert!(
+        out.len() >= 5,
+        "only {} field(s) parsed out of `{decl}` in {file}; the pattern has \
+         stopped matching and every census below would pass vacuously",
+        out.len()
+    );
+    out
+}
+
+/// The `properties` keys of one schema.
+fn schema_properties(schema: &str) -> Vec<String> {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/schemas")
+        .join(schema);
+    let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {schema}: {e}"));
+    let doc: Value = serde_json::from_str(&text).expect("schema is JSON");
+    doc["properties"]
+        .as_object()
+        .unwrap_or_else(|| panic!("{schema} declares no properties object"))
+        .keys()
+        .cloned()
+        .collect()
+}
+
+/// The two sides of one census, as `(in code only, in schema only)`.
+fn census(fields: &[String], properties: &[String]) -> (Vec<String>, Vec<String>) {
+    let code: std::collections::BTreeSet<&String> = fields.iter().collect();
+    let schema: std::collections::BTreeSet<&String> = properties.iter().collect();
+    (
+        code.difference(&schema).map(|s| (*s).clone()).collect(),
+        schema.difference(&code).map(|s| (*s).clone()).collect(),
+    )
+}
+
+/// **First of eight.** Every field of the per-message projection is declared
+/// in `message.schema.json`.
+///
+/// `extension_headers` is why this exists: it was added to `MessageJson`, the
+/// schema said `additionalProperties: false`, and the first thing to notice
+/// was a fixture that happened to carry it.
+#[test]
+fn every_message_json_field_is_declared_in_the_message_schema() {
+    let (missing, _) = census(
+        &struct_fields("src/output/json.rs", "MessageJson"),
+        &schema_properties("message.schema.json"),
+    );
+    assert!(
+        missing.is_empty(),
+        "message.schema.json declares no {missing:?}. The schema says \
+         `additionalProperties: false`, so every consumer validating sipnab's \
+         output rejects a message carrying one of these."
+    );
+}
+
+/// **Second of eight.** The same, for the per-dialog report.
+#[test]
+fn every_dialog_json_field_is_declared_in_the_call_report_schema() {
+    let (missing, _) = census(
+        &struct_fields("src/output/json.rs", "DialogJson"),
+        &schema_properties("call_report.schema.json"),
+    );
+    assert!(
+        missing.is_empty(),
+        "call_report.schema.json declares no {missing:?}, and it refuses \
+         additional properties."
+    );
+}
+
+/// **Third of eight.** No schema promises a field the code cannot emit.
+///
+/// The other direction, and the one no runtime validation can ever catch: a
+/// consumer reads the schema, writes code expecting the key, and the key never
+/// arrives. Nothing fails anywhere.
+#[test]
+fn no_schema_promises_a_field_the_code_does_not_emit() {
+    for (file, name, schema) in [
+        ("src/output/json.rs", "MessageJson", "message.schema.json"),
+        (
+            "src/output/json.rs",
+            "DialogJson",
+            "call_report.schema.json",
+        ),
+    ] {
+        let (_, phantom) = census(&struct_fields(file, name), &schema_properties(schema));
+        assert!(
+            phantom.is_empty(),
+            "{schema} promises {phantom:?}, which `{name}` cannot emit. A \
+             consumer written against the schema waits for a key that never \
+             arrives, and no validation run anywhere would notice."
+        );
+    }
+}
+
+/// **Fourth of eight.** The census can fail, in both directions.
+#[test]
+fn the_schema_census_fires_on_a_disagreement() {
+    let code: Vec<String> = ["a", "b", "c"].iter().map(|s| (*s).to_string()).collect();
+    let schema: Vec<String> = ["b", "c", "d"].iter().map(|s| (*s).to_string()).collect();
+    let (missing, phantom) = census(&code, &schema);
+    assert_eq!(
+        missing,
+        vec!["a".to_string()],
+        "a code-only field is missing"
+    );
+    assert_eq!(
+        phantom,
+        vec!["d".to_string()],
+        "a schema-only field is a phantom"
+    );
+
+    let (none, also_none) = census(&code, &code);
+    assert!(
+        none.is_empty() && also_none.is_empty(),
+        "agreement is silent"
+    );
+}
+
+/// **Fifth of eight.** Both schemas refuse an undeclared field.
+///
+/// That refusal is what turned these four gates red, and it is a feature: a
+/// key sipnab has never documented reaching a consumer is how a debugging
+/// field becomes an accidental contract. Pinned so nobody relaxes it to make a
+/// census like the ones above go away.
+#[test]
+fn both_schemas_refuse_an_undeclared_field() {
+    for schema in ["message.schema.json", "call_report.schema.json"] {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/schemas")
+            .join(schema);
+        let doc: Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).expect("read")).expect("json");
+        assert_eq!(
+            doc["additionalProperties"],
+            Value::Bool(false),
+            "{schema} accepts undeclared properties, so a field that reaches a \
+             consumer without ever being documented validates cleanly"
+        );
+    }
+}
+
+/// **Sixth of eight.** A real termination block validates.
+#[test]
+fn a_termination_block_validates_against_the_call_report_schema() {
+    let v = load_validator("call_report.schema.json");
+    let out = run_sipnab(&[
+        "-N",
+        "-I",
+        "tests/fixtures/sip_call.pcap",
+        "--call-report",
+        "test-call-1@10.0.0.1",
+        "--json",
+        "--no-cli-print",
+    ]);
+    let mut report: Value = serde_json::from_str(out.trim()).expect("call-report JSON parses");
+    report["termination"] = serde_json::json!({
+        "cause_code": 38,
+        "cause_text": "Network out of order",
+        "protocol": "Q.850",
+        "source_header": "Reason",
+        "frame_ref": 7,
+    });
+    assert_valid(&v, &report, "call_report with a termination block");
+}
+
+/// **Seventh of eight.** A termination block missing what it must carry is
+/// refused. `source_header` and `frame_ref` are always knowable — a cause was
+/// read from SOME header on SOME message — so a block without them is not a
+/// sparser answer, it is a broken one.
+#[test]
+fn a_termination_block_without_its_required_fields_is_refused() {
+    let v = load_validator("call_report.schema.json");
+    let out = run_sipnab(&[
+        "-N",
+        "-I",
+        "tests/fixtures/sip_call.pcap",
+        "--call-report",
+        "test-call-1@10.0.0.1",
+        "--json",
+        "--no-cli-print",
+    ]);
+    let base: Value = serde_json::from_str(out.trim()).expect("call-report JSON parses");
+
+    for bad in [
+        serde_json::json!({ "cause_code": 16 }),
+        serde_json::json!({ "source_header": "Reason" }),
+        serde_json::json!({ "frame_ref": 2 }),
+        serde_json::json!({ "source_header": "Reason", "frame_ref": 2, "extra": 1 }),
+    ] {
+        let mut report = base.clone();
+        report["termination"] = bad.clone();
+        assert!(
+            v.validate(&report).is_err(),
+            "the schema accepted a malformed termination block: {bad}"
+        );
+    }
+}
+
+/// **Eighth of eight.** An extension-header list validates, and a wrongly
+/// typed one does not.
+#[test]
+fn an_extension_header_list_validates_against_the_message_schema() {
+    let v = load_validator("message.schema.json");
+    let out = run_sipnab(&["-N", "-I", "tests/fixtures/sip_call.pcap", "--json"]);
+    let base: Value = serde_json::from_str(out.lines().next().expect("a message")).unwrap();
+
+    let mut good = base.clone();
+    good["extension_headers"] = serde_json::json!([
+        "Via: SIP/2.0/UDP 198.51.100.1:5060;branch=z9hG4bK1",
+        "Diversion: <sip:1003@example.com>;reason=user-busy",
+    ]);
+    assert_valid(&v, &good, "message with extension headers");
+
+    // The name/value OBJECT shape, which the vCon exporter's credential filter
+    // could not police and which this field deliberately does not use.
+    let mut bad = base;
+    bad["extension_headers"] = serde_json::json!([{ "name": "Via", "value": "x" }]);
+    assert!(
+        v.validate(&bad).is_err(),
+        "the schema accepted a name/value object list; the field is wire-form \
+         strings, and the object shape is the one a name-keyed filter cannot \
+         reach"
+    );
+}

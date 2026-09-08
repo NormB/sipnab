@@ -65,7 +65,7 @@ readonly EM_DASH="—"
 readonly SIP_PORT=5060
 readonly RTP_PORT_BASE=10000
 readonly PTIME_USEC=20000
-readonly SIGNALLING_STEP_USEC=1000
+readonly SIGNALING_STEP_USEC=1000
 readonly SIP_PER_CALL=7
 
 # One RTP frame on the wire: 14 eth + 20 ip + 8 udp + 12 rtp + 160 payload
@@ -235,7 +235,7 @@ corpus_rtp_records() { printf '%d\n' $(( $1 * $2 )); }                    # call
 # far below the media rate, and why comparing tcpreplay's achieved rate against
 # 100*C marks every row saturated and measures nothing.
 sig_span_usec() { # <calls>
-  printf '%d\n' $(( $1 * SIP_PER_CALL * SIGNALLING_STEP_USEC ))
+  printf '%d\n' $(( $1 * SIP_PER_CALL * SIGNALING_STEP_USEC ))
 }
 
 media_span_usec() { # <calls> <concurrency> <rtp-per-call>
@@ -252,7 +252,7 @@ corpus_span_usec() { # <calls> <concurrency> <rtp-per-call>
   waves_are_full "$calls" "$conc" >/dev/null || return 1
   sig=$(sig_span_usec "$calls") || return 1
   media=$(media_span_usec "$calls" "$conc" "$rtp") || return 1
-  printf '%d\n' $(( sig + media - SIGNALLING_STEP_USEC ))
+  printf '%d\n' $(( sig + media - SIGNALING_STEP_USEC ))
 }
 
 # A LOWER BOUND on the file size. Exact for RTP records; the SIP part is an

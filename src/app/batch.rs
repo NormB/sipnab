@@ -1492,6 +1492,14 @@ fn reason_list(report: &crate::capture::UndecodableReport) -> String {
     report.reason_list()
 }
 
+/// How many stored findings the end-of-capture accusation summary reads.
+///
+/// The alert engine keeps a bounded history; this reads it whole rather than
+/// a page of it, because a summary built from the newest N findings would
+/// silently drop the quietest source -- which is the one an operator is least
+/// likely to have noticed already.
+const ACCUSED_FINDING_SCAN_CAP: usize = 10_000;
+
 /// What this run could not decode, as the line a summary prints — or `None`
 /// when every frame decoded.
 ///
@@ -1502,14 +1510,6 @@ fn reason_list(report: &crate::capture::UndecodableReport) -> String {
 ///
 /// The defect in full: `tests/pcap-samples/h263-over-rtp.pcap` carries
 /// `INVITE sip:auto@localhost SIP/2.0` on UDP 5060 and, on a link type sipnab
-/// How many stored findings the end-of-capture accusation summary reads.
-///
-/// The alert engine keeps a bounded history; this reads it whole rather than
-/// a page of it, because a summary built from the newest N findings would
-/// silently drop the quietest source -- which is the one an operator is least
-/// likely to have noticed already.
-const ACCUSED_FINDING_SCAN_CAP: usize = 10_000;
-
 /// had no decoder for, produced "49 packets captured, 0 SIP messages, 0 RTP
 /// packets across 0 streams", then "No SIP traffic found.", then exit 0 —
 /// character for character what a perfect read of a capture holding no SIP

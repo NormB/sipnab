@@ -122,7 +122,7 @@ fn the_unreachable_count_matches_the_entries_it_summarizes() {
 /// Every entry must carry the symbol its flavor exports. A wrong pairing here
 /// would have an agent report a probe target that cannot resolve.
 #[test]
-fn every_entry_pairs_its_flavour_with_the_symbol_that_flavour_exports() {
+fn every_entry_pairs_its_flavor_with_the_symbol_that_flavor_exports() {
     let r = tls_libraries_response();
     // A `for` over an empty vec asserts nothing and reports `ok`, and off Linux
     // the vec is ALWAYS empty -- `tls_libraries_response()` scans `/proc/*/maps`

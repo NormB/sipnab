@@ -333,7 +333,7 @@ fn successful_privilege_drop_still_processes_capture() {
 /// real ids satisfies `getuid()` and leaves the process root in every way that
 /// matters. The same goes for the supplementary groups: a process that is
 /// `nobody` by uid and still in the invoking user's groups has not been
-/// confined, it has been relabelled.
+/// confined, it has been relabeled.
 #[test]
 fn privileges_are_actually_dropped_and_cannot_be_regained() {
     root_child_passes(

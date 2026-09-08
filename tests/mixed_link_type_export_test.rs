@@ -187,7 +187,7 @@ fn plain_pcap_refuses_a_mixed_link_type_input_set() {
 
 /// The same input set written as pcapng is faithful: one interface per link
 /// type, each declaring its own, and every packet block naming the interface
-/// it came from. Nothing is dropped and nothing is mislabelled.
+/// it came from. Nothing is dropped and nothing is mislabeled.
 #[test]
 fn pcapng_gives_each_link_type_its_own_interface() {
     let dir = tmp_dir("pcapng");

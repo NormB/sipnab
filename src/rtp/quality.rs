@@ -114,6 +114,39 @@ pub const DEFAULT_ONE_WAY_DELAY_MS: f64 = 100.0;
 /// shows the resulting MOS must consult [`mos_grounding`] and say so.
 pub const PLACEHOLDER_UNKNOWN_CODEC_IE: f64 = 5.0;
 
+/// A packet-loss percentage the E-model's loss term can be evaluated at.
+///
+/// G.107 Appendix I writes the effective impairment as `Ie_eff = Ie + (95 -
+/// Ie) * Ppl / (Ppl/BurstR + Bpl)`. The denominator has a zero, and every
+/// caller of that equation in this crate reaches it the same way, so the
+/// admissible range for `Ppl` is decided once here rather than at each site.
+///
+/// Two properties, both of them observable in the score:
+///
+/// * **Non-finite becomes no loss.** A NaN propagates through the whole
+///   equation and out of the clamp — `f64::clamp` returns NaN for a NaN input
+///   — so an unchecked figure does not merely mis-score a stream, it puts a
+///   NaN on a REST field. `jitter_ms` and `one_way_delay_ms` are already
+///   sanitized this way; loss was the input that was not.
+/// * **Bounded to `0.0..=100.0`.** Below zero is not a smaller impairment but
+///   a negative one, which SUBTRACTS from `Ie_eff` and scores a nonsense
+///   input above a clean stream; at the pole itself the term goes to negative
+///   infinity, `R0 - (-inf)` goes to positive infinity, and the clamp hands
+///   back a perfect 100.0. Above 100 the input has stopped being a percentage
+///   of packets, and total loss is the worst a stream can be.
+///
+/// Clamping rather than returning an error is the same choice the delay term
+/// makes, and for the same reason: this number is shown to an operator as a
+/// measurement, and bounding a bad input is better than laundering it into a
+/// confident-looking score.
+pub(crate) fn sanitized_loss_pct(loss_pct: f64) -> f64 {
+    if loss_pct.is_finite() {
+        loss_pct.clamp(0.0, 100.0)
+    } else {
+        0.0
+    }
+}
+
 /// Largest equipment impairment factor the E-model can carry.
 ///
 /// Not a policy figure. G.107 Appendix I computes `Ie_eff = Ie + (95 - Ie) *
@@ -256,7 +289,8 @@ pub fn estimate_r_with_delay(
     // Effective equipment impairment with packet loss (Ie-eff)
     // From G.107 Appendix I: Ie_eff = Ie + (95 - Ie) * Ppl / (Ppl / BurstR + Bpl)
     // Simplified with BurstR=1, Bpl=10 for random loss
-    let ie_eff = ie + (95.0 - ie) * loss_pct / (loss_pct + 10.0);
+    let loss = sanitized_loss_pct(loss_pct);
+    let ie_eff = ie + (95.0 - ie) * loss / (loss + 10.0);
 
     // Delay impairment (Id). The path delay is an INPUT now; jitter is added
     // on top of it. A non-finite or negative caller value is treated as the
@@ -1395,6 +1429,98 @@ mod tests {
             analysis_30ms.burst_duration_ms,
             analysis_20ms.burst_duration_ms
         );
+    }
+
+    /// The loss term has a pole, and `loss_pct` is the one input never checked.
+    ///
+    /// G.107 Appendix I gives `Ie_eff = Ie + (95 - Ie) * Ppl / (Ppl/BurstR +
+    /// Bpl)`, and sipnab fixes `BurstR = 1`, `Bpl = 10`. The denominator is
+    /// therefore `Ppl + 10`, which is zero at `Ppl = -10`. `jitter_ms` and
+    /// `one_way_delay_ms` are both sanitized before use; `loss_pct` is not, so
+    /// a caller outside this crate — the function is `pub` and `estimate_mos`
+    /// is re-exported — can drive the R-factor to a division by zero.
+    #[test]
+    fn the_loss_pole_at_minus_ten_percent_cannot_be_reached() {
+        let clean = estimate_r_with_delay(0.0, 0.0, Some("PCMU"), 0.0);
+        let r = estimate_r_with_delay(0.0, -10.0, Some("PCMU"), 0.0);
+        assert!(
+            r.is_finite(),
+            "Ppl = -10 is the pole of Ppl + 10; R came back {r}"
+        );
+        // Finite is not enough, and this is the trap the first version of this
+        // test fell into: the pole divides by zero, the term goes to negative
+        // infinity, `93.2 - (-inf)` goes to positive infinity, and the clamp
+        // turns it into a perfect 100.0 — finite, on the scale, and the best
+        // score the function can return. The observable defect is that a
+        // nonsense input outscores a clean stream, so that is what is pinned.
+        assert!(
+            r <= clean + 1e-9,
+            "Ppl = -10 scored {r}, above the clean stream's {clean}"
+        );
+    }
+
+    /// Loss is a percentage of packets lost. There is no such thing as less
+    /// than none of them, and a negative figure must not score BETTER than a
+    /// clean stream — which is exactly what the unguarded term does, because
+    /// a negative `Ppl` makes the whole loss contribution negative.
+    #[test]
+    fn negative_loss_scores_no_better_than_no_loss() {
+        let clean = estimate_r_with_delay(0.0, 0.0, Some("PCMU"), 0.0);
+        for bad in [-0.5, -5.0, -9.9, -10.1, -100.0] {
+            let r = estimate_r_with_delay(0.0, bad, Some("PCMU"), 0.0);
+            assert!(r.is_finite(), "loss {bad} produced a non-finite R ({r})");
+            assert!(
+                r <= clean + 1e-9,
+                "loss {bad} scored {r}, above the clean stream's {clean}"
+            );
+        }
+    }
+
+    /// A non-finite loss figure is treated as no loss, the way a non-finite
+    /// jitter and a non-finite delay already are. Every other input to this
+    /// function refuses to launder garbage into a confident-looking number;
+    /// loss must not be the one that does.
+    #[test]
+    fn a_non_finite_loss_is_treated_as_no_loss() {
+        let clean = estimate_r_with_delay(0.0, 0.0, Some("PCMU"), 0.0);
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let r = estimate_r_with_delay(0.0, bad, Some("PCMU"), 0.0);
+            assert!(r.is_finite(), "loss {bad} produced R = {r}");
+            assert!(
+                (r - clean).abs() < 1e-9,
+                "loss {bad} scored {r}, not the no-loss {clean}"
+            );
+        }
+    }
+
+    /// Above 100% the input is not a percentage any more. Total loss is the
+    /// worst a stream can be, so anything past it scores as total loss rather
+    /// than continuing to climb toward the `Ie = 95` asymptote.
+    #[test]
+    fn loss_beyond_total_scores_as_total_loss() {
+        let total = estimate_r_with_delay(0.0, 100.0, Some("PCMU"), 0.0);
+        for over in [100.1, 500.0, 1.0e12] {
+            let r = estimate_r_with_delay(0.0, over, Some("PCMU"), 0.0);
+            assert!(
+                (r - total).abs() < 1e-9,
+                "loss {over}% scored {r}, not the total-loss {total}"
+            );
+        }
+    }
+
+    /// The MOS wrapper inherits the guard rather than carrying its own. Both
+    /// scales come from one derivation, so a loss figure the R-factor refuses
+    /// must not reach the MOS by another door.
+    #[test]
+    fn the_mos_wrapper_inherits_the_loss_guard() {
+        for bad in [-10.0, -1.0, f64::NAN, f64::INFINITY, 1.0e9] {
+            let mos = estimate_mos(0.0, bad, Some("PCMU"));
+            assert!(mos.is_finite(), "loss {bad} produced MOS = {mos}");
+            assert!(
+                (1.0..=4.5).contains(&mos),
+                "loss {bad} left the MOS scale at {mos}"
+            );
+        }
     }
 }
 

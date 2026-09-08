@@ -1338,6 +1338,165 @@ fn man_page_version_and_license_match_cargo() {
     );
 }
 
+/// Every file a version CUT has to touch, and the pattern that finds its
+/// marker in that file.
+///
+/// **The list is the deliverable.** Cutting a release means moving the crate
+/// version in every one of these, and until this existed the set was
+/// recoverable only by grepping the tree and hoping. 0.5.159 was cut with
+/// `man/sipnab.1` left at the previous version, and it was `man_page_...`
+/// above — a bespoke test for one file — that caught it. A file added later
+/// with no bespoke test of its own would not have been caught by anything.
+///
+/// Deliberately NOT a tree-wide scan for `sipnab <semver>`. That shape is all
+/// over the docs as HISTORY — `sipnab 0.5.97 node=proxy-1` in a worked
+/// transcript, `Measured against sipnab 0.5.71` in a design note — and a gate
+/// demanding those move would be demanding output no fixer can produce. An
+/// explicit list of sites, each with the pattern that finds the CURRENT
+/// marker in it, is the rule that can actually be satisfied.
+const CUT_MARKER_SITES: &[(&str, &str)] = &[
+    ("Cargo.toml", r#"(?m)^version = "(\d+\.\d+\.\d+)""#),
+    ("website/config.toml", r#"(?m)^version = "(\d+\.\d+\.\d+)""#),
+    (
+        "man/sipnab.1",
+        r#"\.TH SIPNAB 1 "[^"]*" "sipnab (\d+\.\d+\.\d+)""#,
+    ),
+    (
+        "docs/install.md",
+        r"(?m)^sipnab (\d+\.\d+\.\d+) \(<hash>\) features:",
+    ),
+    (
+        "docs/mcp-deploy.md",
+        r"(?m)^\s*# sipnab (\d+\.\d+\.\d+) \(\.\.\.\) features:",
+    ),
+];
+
+/// Whether every cut marker in `text` is `want`, and how many were found.
+fn stale_cut_markers(text: &str, pattern: &str, want: &str) -> (Vec<String>, usize) {
+    let re = regex::Regex::new(pattern).expect("cut marker pattern");
+    let mut stale = Vec::new();
+    let mut found = 0usize;
+    for c in re.captures_iter(text) {
+        found += 1;
+        if &c[1] != want {
+            stale.push(c[1].to_string());
+        }
+    }
+    (stale, found)
+}
+
+/// Every file a cut must touch carries the crate version.
+///
+/// **First of four tests owed** for the two gates 0.5.159 turned red. It turns
+/// "which files does a cut move?" from a grep into a list, and fails the day
+/// one of them is left behind.
+#[test]
+fn every_file_a_cut_must_touch_carries_the_crate_version() {
+    let version = env!("CARGO_PKG_VERSION");
+    let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    for (file, pattern) in CUT_MARKER_SITES {
+        let text = std::fs::read_to_string(repo.join(file))
+            .unwrap_or_else(|e| panic!("{file} is on the cut list and cannot be read: {e}"));
+        let (stale, found) = stale_cut_markers(&text, pattern, version);
+        assert!(
+            found > 0,
+            "{file} is on the cut list and its marker pattern matched nothing. \
+             Either the file stopped carrying a version marker — in which case \
+             take it off the list — or the pattern rotted, in which case this \
+             gate has been checking nothing."
+        );
+        assert!(
+            stale.is_empty(),
+            "{file} still says {stale:?} where the crate says {version}. A cut \
+             moves every marker on this list together."
+        );
+    }
+}
+
+/// **Second of four.** The comparison can fail.
+///
+/// A scan reporting nothing is indistinguishable from one whose pattern never
+/// matches — the failure mode `found > 0` above guards for the real tree, and
+/// this guards the predicate itself, in both directions.
+#[test]
+fn the_cut_marker_scan_fires_on_a_stale_file() {
+    let man = "\
+.TH SIPNAB 1 \"2026-09-08\" \"sipnab 0.5.158\" \"User Commands\"\n";
+    let pattern = r#"\.TH SIPNAB 1 "[^"]*" "sipnab (\d+\.\d+\.\d+)""#;
+
+    let (stale, found) = stale_cut_markers(man, pattern, "0.5.159");
+    assert_eq!(found, 1, "the marker must be found before it can be judged");
+    assert_eq!(
+        stale,
+        vec!["0.5.158".to_string()],
+        "the miss must be reported"
+    );
+
+    let (clean, found) = stale_cut_markers(man, pattern, "0.5.158");
+    assert_eq!(found, 1);
+    assert!(clean.is_empty(), "a current marker must not be reported");
+
+    let (none, found) = stale_cut_markers("no marker here at all\n", pattern, "0.5.159");
+    assert_eq!(found, 0, "a file with no marker must report zero matches");
+    assert!(none.is_empty());
+}
+
+/// **Third of four.** No line is claimed by both rules.
+///
+/// The crate version and the published version are two different facts that
+/// are equal only between a release and the next cut, and conflating them is
+/// what `published_version` exists to prevent. A file may legitimately carry
+/// both — `website/config.toml` does — but no single PATTERN may match a line
+/// the other rule owns, or a cut and a publish would fight over it forever.
+#[test]
+fn no_cut_marker_pattern_also_matches_a_published_marker() {
+    let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let published = r#"published_version = "0.4.1""#;
+    let release_date = r#"release_date = "2026-01-01""#;
+    let download = "curl -fsSL https://sipnab.com/install.sh | SIPNAB_VERSION=0.4.1 sh";
+    let rpm = "sudo rpm -i sipnab-0.4.1-1.x86_64.rpm";
+    for (file, pattern) in CUT_MARKER_SITES {
+        let re = regex::Regex::new(pattern).expect("cut marker pattern");
+        for line in [published, release_date, download, rpm] {
+            assert!(
+                !re.is_match(line),
+                "{file}'s cut pattern matches {line:?}, which is a PUBLISHED \
+                 marker. Those move after the tag, not at the cut, and a \
+                 pattern claiming both makes one of the two moves impossible."
+            );
+        }
+        assert!(
+            repo.join(file).exists(),
+            "{file} is on the cut list and is not in the tree"
+        );
+    }
+}
+
+/// **Fourth of four.** The list covers the sites that already had bespoke
+/// gates, so those gates and this one cannot disagree about a file.
+///
+/// `man_page_version_and_license_match_cargo` and
+/// `site_version_matches_crate_version` each police one file. Naming the same
+/// files here is what makes this a superset rather than a fourth opinion: if a
+/// bespoke gate is ever deleted, the file stays covered.
+#[test]
+fn the_cut_list_covers_every_file_a_bespoke_version_gate_already_polices() {
+    let listed: Vec<&str> = CUT_MARKER_SITES.iter().map(|(f, _)| *f).collect();
+    for already_policed in ["man/sipnab.1", "website/config.toml", "Cargo.toml"] {
+        assert!(
+            listed.contains(&already_policed),
+            "{already_policed} has a gate of its own and is not on the cut \
+             list; the two would disagree the day one of them is changed"
+        );
+    }
+    assert!(
+        listed.len() >= 5,
+        "the cut list has shrunk to {} entries — a release moves more markers \
+         than that",
+        listed.len()
+    );
+}
+
 /// "Current version" strings sprinkled through the install/benchmark docs
 /// must equal the crate version — they sit outside the pre-commit gate that
 /// keeps website/config.toml in sync, so they rot on every release without
@@ -3182,7 +3341,13 @@ fn no_documentation_table_repeats_a_row() {
     // Global table's Ctrl+C row and the six rows under it, splitting one table
     // into two on each page. That read as +4, and +4 was the alarm: a table
     // broken in half renders as two tables with a heading wedged inside.
-    const EXPECTED_TABLES: usize = 830;
+    // 830 -> 832 by the `termination` field table under `triage_call` in
+    // docs/mcp-tools.md and its site mirror: one written table, two pages.
+    // Attributed per file against origin/main before the number moved --
+    // docs/mcp-tools.md 90 -> 91 and website/content/docs/mcp-tools.md
+    // 90 -> 91, and no other changed page's count moved at all, which is what
+    // rules out a table split somewhere else in the same commit.
+    const EXPECTED_TABLES: usize = 832;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")
@@ -4348,7 +4513,7 @@ fn no_parameter_doc_states_a_row_ceiling_as_a_fixed_number() {
 /// is generated.
 #[test]
 fn the_tree_spells_in_us_english() {
-    // WHOLE words, not stems. `aria-labelledby` is a standard HTML attribute
+    // WHOLE words, not stems. `aria-labeledby` is a standard HTML attribute
     // spelled that way by the spec and `analysis` is correct US English, so a
     // stem match flags both -- and a gate that cries wolf gets switched off.
     const BRITISH: &[&str] = &[
@@ -4500,13 +4665,43 @@ fn the_tree_spells_in_us_english() {
         .expect("git ls-files");
     let listing = String::from_utf8_lossy(&out.stdout);
 
-    let patterns: Vec<regex::Regex> = BRITISH
-        .iter()
-        .map(|w| {
-            regex::Regex::new(&format!(r"(?i)\b{w}\b"))
-                .unwrap_or_else(|e| panic!("bad pattern for {w}: {e}"))
-        })
-        .collect();
+    // SPELL1. Word boundaries are not enough: `_` is a word character, so
+    // `\bsignalling\b` never fires inside
+    // `a_healthy_dialog_gets_no_signalling_section`, and four test names
+    // carried British spellings while this gate reported the tree clean.
+    // Tokenizing on non-alphabetic characters splits the identifier and finds
+    // them.
+    //
+    // Two identifiers must survive that, for reasons that are not spelling:
+    //
+    // `cancelled_count` is a PUBLISHED REST key. Renaming it is a wire change
+    // and belongs in a deprecation window, the way the `unanalysed_*` family
+    // was handled — not in a spelling sweep.
+    //
+    // `aria-labeledby` is the HTML specification's own attribute name. It is
+    // not sipnab's to spell.
+    // Contracts and other people's spellings, removed from the text BEFORE
+    // tokenizing. Stripping the context is what makes an exemption survive
+    // tokenization: a token exemption cannot work once `-` and `_` are
+    // separators, because the exempt name is no longer one token.
+    //
+    //   `cancelled_count`     a published REST key. Renaming it is a wire
+    //                         change with a deprecation window, the way the
+    //                         `unanalysed_*` family was handled.
+    //   `aria-labeledby`     the HTML specification's own attribute.
+    //   `uprobe-flavour`      an accepted flag alias since 0.5.104, and the
+    //   `uprobe_flavour`      test names that exist to describe it.
+    //   `"flavours"`          the MCP wire key the same alias covers.
+    const EXEMPT_CONTEXTS: &[&str] = &[
+        "cancelled_count",
+        "aria-labelledby",
+        "labelledby",
+        "uprobe-flavour",
+        "uprobe_flavour",
+        "\"flavours\"",
+    ];
+    let british: std::collections::BTreeSet<String> =
+        BRITISH.iter().map(|w| (*w).to_string()).collect();
 
     let mut hits: Vec<String> = Vec::new();
     let mut scanned = 0usize;
@@ -4556,9 +4751,20 @@ fn the_tree_spells_in_us_english() {
             // JSON key and not the word in a sentence.
             .replace("\"flavours\"", "");
         scanned += 1;
-        for (w, re) in BRITISH.iter().zip(patterns.iter()) {
-            if re.is_match(&text) {
-                hits.push(format!("{f}: {w:?}"));
+        // Split on anything that is not a letter, so `_`, `-` and camelCase
+        // boundaries all separate words.
+        let mut scrubbed = text;
+        for ctx in EXEMPT_CONTEXTS {
+            scrubbed = scrubbed.replace(ctx, " ");
+        }
+        let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        for raw in scrubbed.split(|c: char| !c.is_ascii_alphabetic()) {
+            if raw.is_empty() {
+                continue;
+            }
+            let lower = raw.to_ascii_lowercase();
+            if british.contains(&lower) && seen.insert(lower.clone()) {
+                hits.push(format!("{f}: {lower:?}"));
             }
         }
     }

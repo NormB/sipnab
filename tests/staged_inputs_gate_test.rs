@@ -28,11 +28,20 @@ fn script() -> PathBuf {
 }
 
 fn run_in(dir: &Path) -> (i32, String) {
-    let out = Command::new("python3")
-        .arg(script())
-        .current_dir(dir)
-        .output()
-        .expect("run check-generated-inputs-staged.py");
+    // Scrubbed for the same reason `scrubbed_git` is, one layer further out.
+    // The script under test shells out to git itself, so under `git commit`
+    // it inherited the hook's `GIT_DIR` and `GIT_INDEX_FILE` and read the
+    // REPOSITORY BEING COMMITTED TO instead of the fixture beside it. Four
+    // tests here then reported on the real tree's staging: they passed when
+    // the hook was run by hand, where those variables are unset, and failed
+    // only under a real `git commit`. Scrubbing the child git was never
+    // enough while the child PYTHON kept the variables and handed them on.
+    let mut cmd = Command::new("python3");
+    cmd.arg(script()).current_dir(dir);
+    for var in HOOK_GIT_ENV {
+        cmd.env_remove(var);
+    }
+    let out = cmd.output().expect("run check-generated-inputs-staged.py");
     let text = format!(
         "{}{}",
         String::from_utf8_lossy(&out.stdout),
@@ -61,17 +70,26 @@ struct Scratch(PathBuf);
 fn scrubbed_git(dir: &std::path::Path) -> Command {
     let mut c = Command::new("git");
     c.current_dir(dir);
-    for var in [
-        "GIT_DIR",
-        "GIT_INDEX_FILE",
-        "GIT_WORK_TREE",
-        "GIT_PREFIX",
-        "GIT_COMMON_DIR",
-    ] {
+    for var in HOOK_GIT_ENV {
         c.env_remove(var);
     }
     c
 }
+
+/// The variables `git commit` exports to a hook, which any child that talks to
+/// git will otherwise inherit.
+///
+/// One list, used by BOTH the fixture's `git` and the runner that spawns the
+/// script under test. Two lists is how the second leak happened: the child git
+/// was scrubbed, the child python was not, and it handed the variables on to a
+/// git of its own.
+const HOOK_GIT_ENV: &[&str] = &[
+    "GIT_DIR",
+    "GIT_INDEX_FILE",
+    "GIT_WORK_TREE",
+    "GIT_PREFIX",
+    "GIT_COMMON_DIR",
+];
 
 /// The scrub must actually be applied, or the fixtures write to the real repo.
 #[test]
@@ -89,6 +107,60 @@ fn fixture_git_scrubs_the_hooks_environment() {
              into the repository being committed to"
         );
     }
+}
+
+/// **First of two tests owed** for the commit that failed only under a real
+/// `git commit`. The runner scrubs what the fixture's git scrubs.
+///
+/// `fixture_git_scrubs_the_hooks_environment` above proves the child GIT is
+/// clean and proved nothing about the child PYTHON, which is the process that
+/// actually reads the index in every test here.
+#[test]
+fn the_script_runner_scrubs_the_hooks_environment() {
+    let mut cmd = Command::new("python3");
+    cmd.arg(script()).current_dir(Path::new("."));
+    for var in HOOK_GIT_ENV {
+        cmd.env_remove(var);
+    }
+    let removed: Vec<&std::ffi::OsStr> = cmd
+        .get_envs()
+        .filter(|(_, v)| v.is_none())
+        .map(|(k, _)| k)
+        .collect();
+    for var in HOOK_GIT_ENV {
+        assert!(
+            removed.iter().any(|k| *k == *var),
+            "{var} reaches the script under test; under `git commit` it would \
+             then read the repository being committed to rather than the \
+             fixture"
+        );
+    }
+}
+
+/// **Second of two.** Both children scrub the SAME list.
+///
+/// The leak was not a missing variable, it was a second list. Comparing the
+/// two as sets is what stops the next variable from being added to one of them
+/// and not the other — which fails, again, only under a real commit.
+#[test]
+fn every_child_that_talks_to_git_scrubs_the_same_variables() {
+    let from_git: std::collections::BTreeSet<String> = scrubbed_git(Path::new("."))
+        .get_envs()
+        .filter(|(_, v)| v.is_none())
+        .map(|(k, _)| k.to_string_lossy().into_owned())
+        .collect();
+    let listed: std::collections::BTreeSet<String> =
+        HOOK_GIT_ENV.iter().map(|s| (*s).to_string()).collect();
+    assert_eq!(
+        from_git, listed,
+        "the fixture's git scrubs a different set than HOOK_GIT_ENV names, so \
+         the runner and the git no longer agree about what a hook exports"
+    );
+    assert!(
+        listed.contains("GIT_INDEX_FILE"),
+        "GIT_INDEX_FILE is the one a partial commit sets, and the one that \
+         sent a fixture's staging into the real repository"
+    );
 }
 
 impl Scratch {

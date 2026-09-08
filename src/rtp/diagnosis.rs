@@ -387,7 +387,7 @@ impl Default for AsymmetryThresholds {
 /// capture, the guard is the difference between 338 no-media claims and none.
 ///
 /// It is an enum rather than a `bool` so the call sites read as a statement
-/// about the capture instead of an unlabelled `true`.
+/// about the capture instead of an unlabeled `true`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CaptureMedia {
     /// The capture recorded at least one RTP stream, so an individual call

@@ -305,7 +305,7 @@ mod tests {
     }
 
     #[test]
-    fn md_type_two_with_variable_context_headers_honours_the_length_field() {
+    fn md_type_two_with_variable_context_headers_honors_the_length_field() {
         let d = frame(&[&nsh(0, false, 63, 9, 2, 2), &ipv6()]);
         assert_eq!(decap(&d, OFF), Some(Inner::Ip(OFF + 36)));
     }

@@ -142,6 +142,7 @@ darwin
 datagram
 datagrams
 deallocation
+deallocator
 decap
 decapsulate
 decapsulated

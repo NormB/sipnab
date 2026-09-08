@@ -1372,7 +1372,7 @@ No parameters. Returns:
 ```jsonc
 {
   "schema_version": 1,
-  "version": "0.5.158",
+  "version": "0.5.159",
   "features": ["api", "hep", "mcp", "native", "tls", "tui"],
   "can_decrypt": true,           // tls
   "can_hep": true,               // hep
@@ -2387,6 +2387,13 @@ returned by [`list_dialogs`](#list_dialogs). An unknown one fails with
     "no_media": false,
     "stream_count": 1,
     "hints": ["RTP flowed 10.0.2.15:27942 -> 10.0.2.20:6000 only (SSRC 0x343da99b). No reverse media flow detected."]
+  },
+  "termination": {                 // absent when nothing said why the call ended
+    "cause_code": 38,
+    "cause_text": "Network out of order",
+    "protocol": "Q.850",
+    "source_header": "Reason",
+    "frame_ref": 7
   }
 }
 ```
@@ -2402,6 +2409,37 @@ Where to go next, by verdict:
 | `media` | [`rtp_stats`](#rtp_stats), and [`check_codec_negotiation`](#check_codec_negotiation) if the call failed |
 | `both` | Signaling first — media symptoms are often downstream of a failed negotiation |
 | `none` | The call is fine. Check you have the right Call-ID |
+
+#### Why the call ended
+
+`termination` is a **fact about the call, not a fault**, so it never moves
+`verdict`. A call that cleared normally reports `verdict: "none"` and a
+`Q.850` cause of 16 at the same time, and both are true.
+
+It answers the question the verdict cannot: *"the call ended"* and *"the call
+ended because the far end was out of order"* are different answers, and only
+the second closes a ticket.
+
+| Field | Type | Description |
+|---|---|---|
+| `cause_code` | u16? | The cause number, on the scale `protocol` names. Absent when the message named a protocol and no cause — never zero for a missing value, because `0` is itself a Q.850 cause |
+| `cause_text` | string? | The human-readable cause. sipnab strips control characters and keeps the first `MAX_CAUSE_TEXT_CHARS` (200) — far past every value a gateway produces, and short enough that a crafted header cannot spend a context window |
+| `protocol` | string? | Which scale `cause_code` is on. `16` is normal clearing in Q.850 and is not a SIP status code at all, so a code without this is not interpretable |
+| `source_header` | string | Which header carried the cause: `Reason` ([RFC 3326](https://www.rfc-editor.org/rfc/rfc3326)) or `X-Asterisk-HangupCauseCode` |
+| `frame_ref` | usize | Index into the dialog's message list of the message that carried it |
+
+sipnab reads the **last** message that names a cause — a call that went through
+a challenge, a retry and a clear carries more than one, and the one that says
+why it ended is the last thing said. `Reason` on a `BYE` or a `CANCEL` counts,
+which is the case this exists for: a call that clears normally has no failure
+response to hang a cause on.
+
+Where one message carries both protocols, sipnab picks the non-`SIP` one.
+`SIP;cause=` restates `final_status_code`, which is already its own field.
+`Q.850;cause=` is the gateway's cause, and the fact nothing else recovers.
+
+The same block appears on [`get_dialog_report`](#get_dialog_report) and on
+`GET /v1/dialogs/{call_id}/report`, from one assembler.
 
 ### `get_dialog`
 
@@ -2570,6 +2608,13 @@ The example runs against [`tests/pcap-samples/sip-rtp-g711.pcap`](https://github
 }
 ```
 
+A `termination` block appears beside these fields on a call that said why it
+ended — the same object, from the same assembler, that
+[`triage_call`](#triage_call) documents above. It is absent from the example
+because this sample's `BYE` carries no `Reason` header and no vendor
+equivalent, which is the honest rendering: sipnab drops the block, and never
+sends `null`, when nothing on the wire named a cause.
+
 This report bundles what [`triage_call`](#triage_call),
 [`get_sdp_timeline`](#get_sdp_timeline) and [`rtp_stats`](#rtp_stats) answer
 separately, so one call replaces three when you already know which call to read.
@@ -2603,8 +2648,9 @@ itself without another round trip.
 Returns one message in the same shape [`get_dialog`](#get_dialog) uses for a
 `messages` row, plus the provenance note as a second content block. The
 difference is the fencing: this tool wraps `from`, `to`, `contact`, `sdp`, `ua`,
-`reason` and `malformed`, and leaves `call_id`, addresses, ports, `method`,
-`status_code`, `cseq` and timestamps verbatim so they pass into the next call.
+`reason`, `malformed` and `extension_headers`, and leaves `call_id`, addresses,
+ports, `method`, `status_code`, `cseq` and timestamps verbatim so they pass into
+the next call.
 
 ```jsonc
 // get_message { "call_id": "1-1966@10.0.2.20", "index": 0 }
@@ -2626,13 +2672,52 @@ difference is the fencing: this tool wraps `from`, `to`, `contact`, `sdp`, `ua`,
   "timestamp": "2016-11-26T14:52:59.666393+00:00",
   "frame": "tests/pcap-samples/sip-rtp-g711.pcap#0@db88659b94678546",
   "dscp": 0,
-  "input_origin": "wire"
+  "input_origin": "wire",
+  "extension_headers": [
+    "⟦untrusted-capture-data⟧Via: SIP/2.0/UDP 10.0.2.20:5060;branch=z9hG4bK-1966-1-0⟦/untrusted-capture-data⟧",
+    "⟦untrusted-capture-data⟧Max-Forwards: 70⟦/untrusted-capture-data⟧",
+    "⟦untrusted-capture-data⟧Content-Type: application/sdp⟦/untrusted-capture-data⟧",
+    "⟦untrusted-capture-data⟧Content-Length: 123⟦/untrusted-capture-data⟧"
+  ]
 }
 ```
 
 `dscp` and `input_origin` carry the meanings [`get_dialog`](#get_dialog) gives
 them. sipnab omits either key rather than sending `null` when it observed
 neither.
+
+#### `extension_headers`
+
+Every header the fields above do NOT already carry, in wire form
+(`"Name: value"`) and in wire order — one entry per header line.
+
+The named fields are a closed list, and every vendor-, carrier- and
+SBC-specific fact lives outside it: `X-Asterisk-*`, `Reason`, `Diversion`,
+`P-Asserted-Identity`, `Remote-Party-ID`, `Require`, `RSeq`. The parser has
+always retained them, so this was a projection gap rather than a parsing one.
+Before it existed the only route to one of those values was
+[`decode_evidence`](#decode_evidence), which needs a server-side
+`--mcp-file-root` opt-in, a reachable original capture, and one call per frame.
+
+Six header names never appear here, because they are already fields of their
+own: `Call-ID`, `From`, `To`, `Contact`, `User-Agent` and `CSeq`. sipnab drops
+nothing else — `Via` and `Content-Length` are in the list above because the
+sample carries them and nothing pretends otherwise.
+
+**The list keeps duplicates and wire order.** `Via` is a stack whose order is
+the route the request took, so three `Via` lines are three entries in the order
+they arrived.
+
+**Fenced whole, name included.** For an extension header the NAME is the
+sender's choice as much as the value is, so the marker pair wraps the entire
+`Name: value` string. This widens the prompt-injection surface the threat model
+already tracks — see [deferred-and-declined.md](design/deferred-and-declined.md#the-prompt-injection-chain-grounded)
+— it does not introduce a new one: the same bytes were already reachable
+through `search_messages`, which returns the raw message.
+
+No new ceiling. The parser refuses a message with more than 200 headers or a
+header line longer than 8 KiB, so what reaches this field is already bounded by
+the operator's own limits.
 
 ### `render_ladder`
 
@@ -3312,7 +3397,7 @@ packets in one:
   ],
   "findings_withheld": { "suppressed": 0, "below_severity": 0, "capped": 0 },
   "suppressions": { "file": null, "patterns": [], "findings_suppressed": 0 },
-  "rule_catalogue": "docs/sip-lint-rules.md"
+  "rule_catalog": "docs/sip-lint-rules.md"
 }
 ```
 
@@ -3436,7 +3521,7 @@ message runs, and the response reports the rest under `rules_not_evaluated`.
     { "reason": "needs the endpoint pairs RTCP arrived on. ...",
       "rule_ids": ["OBS-5761-5.1.1-RTCP-MUX-UNANSWERED"] }
   ],
-  "rule_catalogue": "docs/sip-lint-rules.md"
+  "rule_catalog": "docs/sip-lint-rules.md"
 }
 ```
 
@@ -3481,7 +3566,7 @@ server. An unknown identifier fails with `invalid_params` (-32602) **listing all
   "url": "https://www.rfc-editor.org/rfc/rfc3264#section-6.1",
   "scope": "media",
   "rulesets": ["all", "observation", "observed", "rfc3264"],
-  "rule_catalogue": "docs/sip-lint-rules.md"
+  "rule_catalog": "docs/sip-lint-rules.md"
 }
 ```
 
@@ -4873,7 +4958,7 @@ The container example runs against [`tests/pcap-samples/sip-rtp-g711.pcap`](http
       "type": "report",
       "dialog": 0,
       "vendor": "sipnab",
-      "product": "sipnab 0.5.158 (passive observer; not a recording system)",
+      "product": "sipnab 0.5.159 (passive observer; not a recording system)",
       "schema": "sipnab-dialog-diagnosis/1",
       "mediatype": "application/json",
       "encoding": "json",

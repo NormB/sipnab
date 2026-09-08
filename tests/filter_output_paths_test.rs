@@ -265,7 +265,7 @@ fn json_dialogs_numeric_filter_splits_on_the_value() {
 
 /// `--report` is generated from the same final store and was equally inert.
 #[test]
-fn report_dialog_table_honours_the_filter() {
+fn report_dialog_table_honors_the_filter() {
     let all = run_ok(&["-N", "-I", BRANCH, "--no-cli-print", "--json-dialogs"]);
     let expected = call_ids_in_state(&all, "Failed");
 

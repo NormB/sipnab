@@ -658,7 +658,7 @@ impl Linter {
         media: &ObservedMedia,
     ) -> LintOutcome {
         let mut sink = FindingSink::new(&self.config);
-        self.run_signalling(dialog, &mut sink);
+        self.run_signaling(dialog, &mut sink);
         media::lint(dialog, media, &mut sink);
         sink.finish_outcome()
     }
@@ -680,7 +680,7 @@ impl Linter {
     #[must_use]
     pub fn lint_dialog(&self, dialog: &SipDialog) -> Vec<Finding> {
         let mut sink = FindingSink::new(&self.config);
-        self.run_signalling(dialog, &mut sink);
+        self.run_signaling(dialog, &mut sink);
         sink.finish()
     }
 
@@ -696,7 +696,7 @@ impl Linter {
     #[must_use]
     pub fn lint_dialog_detailed(&self, dialog: &SipDialog) -> LintOutcome {
         let mut sink = FindingSink::new(&self.config);
-        self.run_signalling(dialog, &mut sink);
+        self.run_signaling(dialog, &mut sink);
         sink.finish_outcome()
     }
 
@@ -713,13 +713,13 @@ impl Linter {
         media: &ObservedMedia,
     ) -> Vec<Finding> {
         let mut sink = FindingSink::new(&self.config);
-        self.run_signalling(dialog, &mut sink);
+        self.run_signaling(dialog, &mut sink);
         media::lint(dialog, media, &mut sink);
         sink.finish()
     }
 
     /// The message- and dialog-scoped half, shared by both dialog entry points.
-    fn run_signalling(&self, dialog: &SipDialog, sink: &mut FindingSink<'_>) {
+    fn run_signaling(&self, dialog: &SipDialog, sink: &mut FindingSink<'_>) {
         for (index, msg) in dialog.messages.iter().enumerate() {
             message::lint(msg, index, sink);
         }

@@ -2284,6 +2284,17 @@ fn message_trace_attachment(dialog: &SipDialog, observer: usize, start: String) 
             // makes it safe to publish must never land apart.
             if let Some(map) = value.as_object_mut() {
                 map.insert("headers".to_string(), header_map(m));
+                // `extension_headers` is the SAME headers in a shape this
+                // boundary cannot police: a list of `"Name: value"` strings
+                // hides every credential behind an array index, where a
+                // filter keyed on object keys can never reach it. That is the
+                // exact failure `header_map` documents and exists to avoid,
+                // and it is why the map replaces the list here rather than
+                // sitting beside it. Nothing is lost — every entry of the
+                // list is a key of the map, which
+                // `the_header_map_carries_every_header_the_list_would_have`
+                // pins.
+                map.remove("extension_headers");
             }
             strip_credentials(&mut value);
             value
@@ -2364,12 +2375,39 @@ fn strip_credentials(value: &mut serde_json::Value) {
             }
         }
         serde_json::Value::Array(items) => {
+            // A string entry shaped like a header LINE is filtered on the
+            // name before the colon. Keying only on object keys was the whole
+            // hole: `--json` gained `extension_headers`, a list of
+            // `"Authorization: Digest ..."` strings, and every credential in
+            // it walked straight through a filter that was looking for a key
+            // named `Authorization`. This boundary must hold for the shape a
+            // field arrives in, not for the shape it had when the filter was
+            // written.
+            items.retain(|item| match item.as_str() {
+                Some(line) => !header_line_is_a_credential(line),
+                None => true,
+            });
             for nested in items {
                 strip_credentials(nested);
             }
         }
         _ => {}
     }
+}
+
+/// Whether a `"Name: value"` line names a credential-bearing header.
+///
+/// The name is everything before the first colon, trimmed and compared
+/// case-insensitively — RFC 3261 §7.3.1 makes header names case-insensitive.
+/// A string with no colon is not a header line and is left alone.
+fn header_line_is_a_credential(line: &str) -> bool {
+    let Some((name, _)) = line.split_once(':') else {
+        return false;
+    };
+    let name = name.trim();
+    CREDENTIAL_HEADERS
+        .iter()
+        .any(|banned| name.eq_ignore_ascii_case(banned))
 }
 
 /// The lone attachment on a withheld container: the caveat, nothing else.
@@ -4800,6 +4838,196 @@ mod tests {
             headers.values().all(|v| v.is_array()),
             "every header value must be an array so a consumer indexes one \
              shape and repeated headers keep every value: {headers:?}"
+        );
+    }
+
+    /// The container publishes no `extension_headers` list.
+    ///
+    /// **First of four tests owed** for the two gates 0.5.159 turned red.
+    /// `--json` gained `extension_headers` — every header outside the closed
+    /// field list, as `"Name: value"` strings — and the vCon trace inherited
+    /// it from the shared projection, carrying `Authorization` values in a
+    /// shape `strip_credentials` could not filter and `Via` hostnames the
+    /// redactor did not reach. Two gates written years apart caught it.
+    ///
+    /// The list does not belong here at all: the container already publishes
+    /// a `headers` OBJECT, which is strictly more useful and is the shape
+    /// this boundary can police.
+    #[test]
+    fn the_container_carries_no_extension_header_list() {
+        let msg = message(
+            "REGISTER sip:example.com SIP/2.0",
+            &[
+                "Via: SIP/2.0/UDP pbx.internal.example:5060;branch=z9hG4bK1",
+                "From: \"Alice\" <sip:alice@example.com>;tag=t1",
+                "To: <sip:alice@example.com>",
+                "Call-ID: vcon-extension-headers@example.com",
+                "CSeq: 2 REGISTER",
+                "Content-Length: 0",
+            ],
+        );
+        // The projection this trace is built from really does carry it, or
+        // this test proves nothing about the removal.
+        assert!(
+            crate::output::json::message_to_json_value(&msg)
+                .get("extension_headers")
+                .is_some(),
+            "the shared projection must carry the field this removes"
+        );
+
+        let dialog = SipDialog::new(&msg).expect("REGISTER opens a dialog");
+        let json = export_with(&dialog, &clean_facts())
+            .to_json()
+            .expect("serializes");
+        assert!(
+            !json.contains("extension_headers"),
+            "the wire-line list reached a published container:\n{json}"
+        );
+    }
+
+    /// Nothing is lost by removing it: the map carries every header the list
+    /// would have.
+    ///
+    /// **Second of four.** Removing a field is only safe if the container
+    /// still says everything it said. This drives both shapes from one
+    /// message and compares them as sets, so a header the map happens to miss
+    /// fails here rather than going quietly missing from every export.
+    #[test]
+    fn the_header_map_carries_every_header_the_list_would_have() {
+        let msg = message(
+            "INVITE sip:bob@example.com SIP/2.0",
+            &[
+                "Via: SIP/2.0/UDP pbx.internal.example:5060;branch=z9hG4bK1",
+                "Via: SIP/2.0/UDP edge.example:5060;branch=z9hG4bK2",
+                "Max-Forwards: 70",
+                "From: \"Alice\" <sip:alice@example.com>;tag=t1",
+                "To: <sip:bob@example.com>",
+                "Call-ID: vcon-parity@example.com",
+                "CSeq: 1 INVITE",
+                "Diversion: <sip:1003@example.com>;reason=user-busy",
+                "Content-Length: 0",
+            ],
+        );
+        let listed: Vec<String> =
+            crate::output::json::message_to_json_value(&msg)["extension_headers"]
+                .as_array()
+                .expect("the projection carries the list")
+                .iter()
+                .filter_map(|v| v.as_str())
+                .filter_map(|line| line.split_once(':').map(|(n, _)| n.to_ascii_lowercase()))
+                .collect();
+        assert!(
+            !listed.is_empty(),
+            "the fixture must carry extension headers"
+        );
+
+        let mapped = header_map(&msg);
+        let mapped = mapped.as_object().expect("the map is an object");
+        for name in &listed {
+            assert!(
+                mapped.keys().any(|k| k.to_ascii_lowercase() == *name),
+                "`{name}` is in the list and not in the map, so removing the \
+                 list would drop it from every export: {:?}",
+                mapped.keys().collect::<Vec<_>>()
+            );
+        }
+    }
+
+    /// A credential written as a wire LINE is filtered too.
+    ///
+    /// **Third of four**, and the defense that would have made the removal
+    /// unnecessary. `strip_credentials` keyed only on object keys, so a list
+    /// of `"Authorization: Digest ..."` strings walked straight through a
+    /// filter looking for a key named `Authorization`. The boundary must hold
+    /// for the shape a field arrives in, not for the shape it had when the
+    /// filter was written — the next field to arrive will not ask first.
+    #[test]
+    fn a_credential_written_as_a_wire_line_is_filtered() {
+        let mut value = serde_json::json!({
+            "lines": [
+                "Via: SIP/2.0/UDP edge.example:5060",
+                "Authorization: Digest response=\"SECRETLINE1\"",
+                "proxy-authorization: Digest response=\"SECRETLINE2\"",
+                "  WWW-Authenticate  : Digest nonce=\"SECRETLINE3\"",
+                "Contact: <sip:a@b>",
+                "not a header line at all",
+            ],
+        });
+        strip_credentials(&mut value);
+        let rendered = value.to_string();
+        for secret in ["SECRETLINE1", "SECRETLINE2", "SECRETLINE3"] {
+            assert!(
+                !rendered.contains(secret),
+                "{secret} survived the wire-line filter: {rendered}"
+            );
+        }
+        // And it removes only what it should.
+        for kept in [
+            "Via: SIP/2.0/UDP edge.example:5060",
+            "not a header line at all",
+        ] {
+            assert!(
+                rendered.contains(kept),
+                "{kept:?} is not a credential and must survive: {rendered}"
+            );
+        }
+    }
+
+    /// `Via` does not publish the operator's proxy chain.
+    ///
+    /// **Fourth of four**, and it found a defect older than the change that
+    /// prompted it. `Path`, `Route`, `Record-Route` and `Service-Route` were
+    /// all on the redactor's host-bearing list and `Via` — the one header
+    /// every SIP message carries — was not, because it is not a name-addr and
+    /// so did not fit beside them. It fell through to the free-text sweep,
+    /// which finds addresses and numbers and walks straight past a hostname.
+    ///
+    /// The existing leak test could not have caught it: its fixture carries
+    /// eleven identifying headers and no `Via`.
+    ///
+    /// **What this deliberately does not assert.** A bare hostname in a header
+    /// nothing models — `X-Vendor-Route: pbx.internal.example` — is not
+    /// findable by any pattern, and demanding it would be a gate whose fix
+    /// cannot exist. The rule here is the one a rewriter can keep: a header
+    /// whose grammar says where the host is has its host rewritten.
+    #[test]
+    fn a_via_header_does_not_publish_the_proxy_chain() {
+        let msg = message(
+            "INVITE sip:bob@example.com SIP/2.0",
+            &[
+                "Via: SIP/2.0/UDP pbx.internal.example:5060;branch=z9hG4bK1;received=10.11.12.13",
+                "Via: SIP/2.0/TCP edge.internal.example;branch=z9hG4bK2",
+                "From: \"Alice\" <sip:alice@example.com>;tag=t1",
+                "To: <sip:bob@example.com>",
+                "Call-ID: vcon-redact-via@example.com",
+                "CSeq: 1 INVITE",
+                "Content-Length: 0",
+            ],
+        );
+        let dialog = SipDialog::new(&msg).expect("INVITE opens a dialog");
+        let container = export_with(&dialog, &clean_facts());
+        let policy = crate::output::redact::RedactionPolicy::new(
+            crate::output::redact::RedactionKey::from_secret(b"vcon-unmodeled-header-test"),
+        );
+        let redactor = policy.redactor();
+        let json =
+            sealed_json(&seal(container, Some(&redactor))).expect("a sealed container serializes");
+        for leaked in [
+            "pbx.internal.example",
+            "edge.internal.example",
+            "10.11.12.13",
+        ] {
+            assert!(
+                !json.contains(leaked),
+                "`{leaked}` survived redaction of a Via header:\n{json}"
+            );
+        }
+        // The branch is KEPT: it is the transaction handle a reader follows,
+        // and tokenizing it would cost the correlation and hide nothing.
+        assert!(
+            json.contains("z9hG4bK1"),
+            "the branch parameter must survive; it identifies the \
+             transaction and carries no identity:\n{json}"
         );
     }
 

@@ -1061,7 +1061,7 @@ mod tests {
     /// one REGISTER every two seconds — three per five-second window against a
     /// threshold of ten — replayed in a tight loop.
     #[test]
-    fn behavioural_window_is_measured_in_packet_time() {
+    fn behavioral_window_is_measured_in_packet_time() {
         let mut det = ScannerDetector::new(&[]);
         let src = scanner_ip();
         let mut fired = 0usize;

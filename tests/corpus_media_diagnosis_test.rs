@@ -285,7 +285,7 @@ fn corpus_nat_mismatch_fires_and_agrees_with_the_rendered_sdp() {
 /// the capture-level guard the flag selects all of them and describes where
 /// the tap sits rather than what happened on any call.
 #[test]
-fn corpus_signalling_only_captures_report_no_no_media() {
+fn corpus_signaling_only_captures_report_no_no_media() {
     let Some(root) = corpus_root() else { return };
 
     let (mut checked, mut answered_in_them) = (0usize, 0usize);

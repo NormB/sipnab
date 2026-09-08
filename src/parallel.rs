@@ -3219,7 +3219,7 @@ mod tests {
     /// threads. A waiter nobody wakes turns a reported error into a hang.
     #[cfg(feature = "native")]
     #[test]
-    fn cancelling_the_runway_releases_a_waiting_reader() {
+    fn canceling_the_runway_releases_a_waiting_reader() {
         let runway = std::sync::Arc::new(Runway::new(4, 0));
         let waiting = std::sync::Arc::clone(&runway);
         let (tx, rx) = crossbeam_channel::bounded(1);

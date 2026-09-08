@@ -284,7 +284,7 @@ fn has_probing_evidence(facts: &SourceFacts, alert_at: DateTime<Utc>) -> bool {
 /// registered, and 94% of the traffic that convicted them was OPTIONS
 /// keepalives.
 #[test]
-fn every_behavioural_alert_is_supported_by_an_outcome_in_the_capture() {
+fn every_behavioral_alert_is_supported_by_an_outcome_in_the_capture() {
     let Some(root) = corpus_root() else {
         return;
     };

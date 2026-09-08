@@ -291,7 +291,7 @@ fn uppercase_hex_is_reported_even_though_correlation_still_succeeds() {
 /// that fires without being cataloged hands an agent an identifier it cannot
 /// resolve — which is where a hallucinated citation comes from.
 #[test]
-fn both_session_id_rules_are_catalogued_and_resolvable_by_identifier() {
+fn both_session_id_rules_are_cataloged_and_resolvable_by_identifier() {
     for rule in [SESSION_ID_MALFORMED, SESSION_ID_UPPERCASE] {
         assert!(
             RULES.iter().any(|r| r.id == rule.id),

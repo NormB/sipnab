@@ -167,7 +167,7 @@ fn a_capture_opening_on_a_bye_reports_the_call_completed() {
 ///
 /// RFC 3261 §9.1 — `CANCEL` has no meaning outside a pending INVITE.
 #[test]
-fn a_capture_opening_on_a_cancel_reports_the_call_cancelled() {
+fn a_capture_opening_on_a_cancel_reports_the_call_canceled() {
     let (state, active_dialogs, active_calls) = replay(vec![
         request(0, "CANCEL", 1),
         response(50, 487, "Request Terminated", 1, "INVITE"),

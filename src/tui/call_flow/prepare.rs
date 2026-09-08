@@ -313,7 +313,10 @@ pub fn layout(
     let participants: Vec<Participant> = endpoints
         .iter()
         .map(|&(ip, port)| {
-            let addr = format!("{ip}:{port}");
+            // Bracketed for IPv6: `2001:db8::1:5060` cannot be read back
+            // into an address and a port, and this string is the participant
+            // IDENTITY in an exported diagram.
+            let addr = crate::net::endpoint_label(ip, port);
             let display = opts.resolver.label(ip, port, opts.name_mode);
             Participant {
                 addr,

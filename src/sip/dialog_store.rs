@@ -2673,7 +2673,7 @@ mod tests {
     /// case they cannot survive by being recent, so this is the test that
     /// tells retention-by-meaning from retention-by-position.
     #[test]
-    fn compact_idle_keeps_a_cancelled_calls_outcome() {
+    fn compact_idle_keeps_a_canceled_calls_outcome() {
         let call_id = "canceled-1";
         let mut store = DialogStore::new(100, false);
         let t0 = base_ts();
@@ -2784,7 +2784,7 @@ mod tests {
     /// `keep_messages_per_idle_dialog`, but both are reachable from the
     /// function signature.
     #[test]
-    fn retained_indices_honours_a_budget_below_the_anchor_count() {
+    fn retained_indices_honors_a_budget_below_the_anchor_count() {
         let store = store_with_answered_call("degenerate-1", 40);
         let d = store.get("degenerate-1").expect("dialog exists");
         for budget in [0usize, 1, 2, 3] {

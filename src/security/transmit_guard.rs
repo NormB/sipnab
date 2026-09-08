@@ -271,7 +271,7 @@ mod tests {
 
     /// The refusal names the flag and says what happens instead.
     #[test]
-    fn refusal_message_names_the_flag_and_the_behaviour() {
+    fn refusal_message_names_the_flag_and_the_behavior() {
         let msg = offline_refusal("--kill-scanner");
         assert!(msg.contains("--kill-scanner"));
         assert!(msg.contains("offline analysis never transmits"));

@@ -61,7 +61,7 @@ SIP_PER_CALL = 7  # INVITE 100 180 200 ACK BYE 200
 # signaling gets a plausible 1 ms.
 BASE_TS_SEC = 1_700_000_000
 PTIME_USEC = 20_000  # one G.711 packet-time
-SIGNALLING_STEP_USEC = 1_000
+SIGNALING_STEP_USEC = 1_000
 
 
 # ------------------------------------------------------------ frame builders
@@ -215,7 +215,7 @@ class PcapWriter:
         )
         self.n = 0
         self._usec = 0
-        self.step = SIGNALLING_STEP_USEC
+        self.step = SIGNALING_STEP_USEC
 
     def write(self, frame):
         # Little-endian pcap: record header is host-order per the magic above.
@@ -307,7 +307,7 @@ def generate(out_path, calls, rtp_per_call, call_id_pool, stream_pairs, concurre
             state.append((c, pair, p, msgs))
 
         # Setup: INVITE / 100 / 180 / 200 / ACK, interleaved across the wave.
-        writer.step = SIGNALLING_STEP_USEC
+        writer.step = SIGNALING_STEP_USEC
         for idx in range(5):
             for _c, _pair, p, msgs in state:
                 from_a, text = msgs[idx]
@@ -336,7 +336,7 @@ def generate(out_path, calls, rtp_per_call, call_id_pool, stream_pairs, concurre
                 rtp_pkts += 2
 
         # Teardown: BYE / 200.
-        writer.step = SIGNALLING_STEP_USEC
+        writer.step = SIGNALING_STEP_USEC
         for idx in (5, 6):
             for _c, _pair, p, msgs in state:
                 from_a, text = msgs[idx]

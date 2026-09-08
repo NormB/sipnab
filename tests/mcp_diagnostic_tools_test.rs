@@ -258,7 +258,7 @@ fn triage_calls_one_way_audio_a_media_problem() {
 
 /// A failed call with no media must land on the signaling side.
 #[test]
-fn triage_calls_a_failed_call_a_signalling_problem() {
+fn triage_calls_a_failed_call_a_signaling_problem() {
     const FAIL: &str = "tests/pcap-samples/sip-auth-failure.pcapng";
     let call_id = first_call_id(FAIL);
     let v = call_tool(FAIL, "triage_call", serde_json::json!({"call_id": call_id}));

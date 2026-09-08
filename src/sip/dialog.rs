@@ -814,7 +814,7 @@ mod tests {
     /// CANCEL during Ringing moves the dialog to Canceled, and the 487
     /// confirmation keeps it there.
     #[test]
-    fn invite_cancelled() {
+    fn invite_canceled() {
         let invite = make_invite();
         let mut dialog = SipDialog::new(&invite).expect("should create dialog");
 
@@ -846,7 +846,7 @@ mod tests {
     /// call still waiting for an answer, which is a different diagnosis from
     /// the one the wire actually carried.
     #[test]
-    fn invite_487_without_a_captured_cancel_is_cancelled() {
+    fn invite_487_without_a_captured_cancel_is_canceled() {
         let invite = make_invite();
         let mut dialog = SipDialog::new(&invite).expect("should create dialog");
 

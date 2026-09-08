@@ -2594,7 +2594,7 @@ fn hep_three_peer_verdict(extra_args: &[&str]) -> String {
 /// binary, which is precisely what `dialog_limit`, `max_streams`,
 /// `max_reassembly` and `hep_rate_limit` could not do.
 #[test]
-fn every_documented_limits_key_changes_observable_behaviour() {
+fn every_documented_limits_key_changes_observable_behavior() {
     let mut expected = limits_struct_keys();
     expected.sort();
     assert!(

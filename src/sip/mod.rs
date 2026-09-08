@@ -29,6 +29,7 @@ pub mod session_id;
 pub mod siprec;
 #[cfg(feature = "tls")]
 pub mod stir_shaken;
+pub mod termination;
 pub mod timing;
 
 pub use message::{SipHeader, SipMessage};

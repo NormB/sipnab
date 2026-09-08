@@ -353,6 +353,14 @@ fn generate_text_report(
         other => format!("{other:?}"),
     };
     let _ = writeln!(out, "Result:     {result_str}");
+    // WHY it ended, when anything on the wire said so. "Completed (BYE)" is
+    // the same line for a call that cleared normally and one the far end
+    // dropped because it was out of order, and only the second closes a
+    // ticket. Omitted, not blanked: a `Cause: -` on every call is a column of
+    // dashes that trains a reader to skip the one row that is filled in.
+    if let Some(t) = crate::sip::termination::detect_termination(&dialog.messages) {
+        let _ = writeln!(out, "Cause:      {}", t.summary());
+    }
     if !dialog.tags.is_empty() {
         let _ = writeln!(out, "Tags:       {}", dialog.tags.join(", "));
     }
@@ -497,6 +505,13 @@ fn generate_markdown_report(
     );
     let _ = writeln!(out, "| To | {} |", dialog.to_user.as_deref().unwrap_or("-"));
     let _ = writeln!(out, "| State | {:?} |", dialog.state());
+    // The same line the text report renders, through the same formatter, so
+    // the two cannot disagree about whether a call named a cause. Only the
+    // table escaping differs: `cause_text` is written by the far end and an
+    // unescaped `|` would silently split this row into two columns.
+    if let Some(t) = crate::sip::termination::detect_termination(&dialog.messages) {
+        let _ = writeln!(out, "| Cause | {} |", t.summary().replace('|', "\\|"));
+    }
     if !dialog.tags.is_empty() {
         let _ = writeln!(out, "| Tags | {} |", dialog.tags.join(", "));
     }
@@ -977,8 +992,184 @@ mod tests {
         d
     }
 
+    /// A dialog cleared by a `BYE` that says why.
+    fn make_cleared_dialog(bye_headers: &[&str]) -> SipDialog {
+        let t0 = base_ts();
+        let raw_invite = build_sip(
+            "INVITE sip:1002@carrier.example SIP/2.0",
+            &[
+                "Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKinv",
+                "From: \"Alice\" <sip:1001@example.com>;tag=t1",
+                "To: <sip:1002@carrier.example>",
+                "Call-ID: cleared-call@example.com",
+                "CSeq: 1 INVITE",
+                "Content-Length: 0",
+            ],
+            b"",
+        );
+        let invite = parse_sip(
+            &raw_invite,
+            t0,
+            localhost(),
+            localhost(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("should parse");
+
+        let mut headers = vec![
+            "Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKbye",
+            "From: \"Alice\" <sip:1001@example.com>;tag=t1",
+            "To: <sip:1002@carrier.example>;tag=t2",
+            "Call-ID: cleared-call@example.com",
+            "CSeq: 2 BYE",
+        ];
+        headers.extend_from_slice(bye_headers);
+        headers.push("Content-Length: 0");
+        let raw_bye = build_sip("BYE sip:1002@carrier.example SIP/2.0", &headers, b"");
+        let bye = parse_sip(
+            &raw_bye,
+            t0,
+            localhost(),
+            localhost(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("should parse");
+
+        let mut d = SipDialog::new(&invite).expect("should create");
+        d.messages.push(bye);
+        d
+    }
+
+    /// The human report says why the call ended, not only that it did.
+    ///
+    /// `Result: Completed (BYE)` is where an operator stops reading, and it
+    /// is the same line for a call that cleared normally and one the far end
+    /// dropped because it was out of order.
     #[test]
-    fn text_report_carries_the_signalling_section_with_evidence() {
+    fn the_text_report_says_why_the_call_ended() {
+        let dialog = make_cleared_dialog(&["Reason: Q.850;cause=38;text=\"Network out of order\""]);
+        let stream = make_stream();
+        let streams: Vec<&RtpStream> = vec![&stream];
+        let report = generate_call_report(
+            &dialog,
+            &streams,
+            &MediaDiagnosis::default(),
+            ReportFormat::Text,
+        );
+        assert!(
+            report.contains("Network out of order"),
+            "the cause text belongs in the report:\n{report}"
+        );
+        assert!(
+            report.contains("Q.850") && report.contains("38"),
+            "the scale and the code are both needed to read the cause:\n{report}"
+        );
+    }
+
+    /// Markdown says the same thing as text. Two renderings of one report
+    /// that disagree about whether a call named a cause is the drift this
+    /// repository keeps removing.
+    #[test]
+    fn the_markdown_report_says_why_the_call_ended() {
+        let dialog = make_cleared_dialog(&["Reason: Q.850;cause=38;text=\"Network out of order\""]);
+        let stream = make_stream();
+        let streams: Vec<&RtpStream> = vec![&stream];
+        let report = generate_call_report(
+            &dialog,
+            &streams,
+            &MediaDiagnosis::default(),
+            ReportFormat::Markdown,
+        );
+        assert!(
+            report.contains("Network out of order"),
+            "the cause text belongs in the markdown report too:\n{report}"
+        );
+    }
+
+    /// A call that named no cause gains no line, in either rendering. A
+    /// `Cause: -` on every call is a column of dashes that trains a reader to
+    /// skip the one row that is filled in.
+    #[test]
+    fn a_call_with_no_stated_cause_gains_no_line() {
+        let dialog = make_cleared_dialog(&[]);
+        let stream = make_stream();
+        let streams: Vec<&RtpStream> = vec![&stream];
+        for format in [ReportFormat::Text, ReportFormat::Markdown] {
+            let report =
+                generate_call_report(&dialog, &streams, &MediaDiagnosis::default(), format);
+            assert!(
+                !report.contains("Cause"),
+                "{format:?} invented a cause line:\n{report}"
+            );
+        }
+    }
+
+    /// A `|` in the cause text cannot split the Markdown row.
+    ///
+    /// `cause_text` is written by the far end. An unescaped pipe would end
+    /// the Value cell early and push the rest of the sentence into a column
+    /// that does not exist, which renders as a broken table rather than as an
+    /// obvious defect.
+    #[test]
+    fn a_pipe_in_the_cause_text_cannot_break_the_markdown_table() {
+        let dialog = make_cleared_dialog(&["Reason: Q.850;cause=16;text=\"a | b | c\""]);
+        let stream = make_stream();
+        let streams: Vec<&RtpStream> = vec![&stream];
+        let report = generate_call_report(
+            &dialog,
+            &streams,
+            &MediaDiagnosis::default(),
+            ReportFormat::Markdown,
+        );
+        let row = report
+            .lines()
+            .find(|l| l.starts_with("| Cause |"))
+            .expect("the cause row is rendered");
+        assert!(
+            row.contains(r"a \| b \| c"),
+            "the pipes must be escaped, got {row:?}"
+        );
+        // Two delimiters, exactly: the ones this row's own two cells need.
+        let unescaped = row
+            .char_indices()
+            .filter(|(i, c)| *c == '|' && (*i == 0 || !row[..*i].ends_with('\\')))
+            .count();
+        assert_eq!(
+            unescaped, 3,
+            "a two-cell row has three delimiters; got {unescaped} in {row:?}"
+        );
+    }
+
+    /// The vendor pair renders like the standard header, and names where the
+    /// number came from — what Asterisk asserts and what RFC 3326 asserts are
+    /// not the same claim.
+    #[test]
+    fn the_text_report_names_the_header_a_vendor_cause_came_from() {
+        let dialog = make_cleared_dialog(&[
+            "X-Asterisk-HangupCauseCode: 17",
+            "X-Asterisk-HangupCause: User busy",
+        ]);
+        let stream = make_stream();
+        let streams: Vec<&RtpStream> = vec![&stream];
+        let report = generate_call_report(
+            &dialog,
+            &streams,
+            &MediaDiagnosis::default(),
+            ReportFormat::Text,
+        );
+        assert!(report.contains("User busy"), "{report}");
+        assert!(
+            report.contains("X-Asterisk-HangupCauseCode"),
+            "the report must say which header asserted this:\n{report}"
+        );
+    }
+
+    #[test]
+    fn text_report_carries_the_signaling_section_with_evidence() {
         let dialog = make_failed_dialog();
         let stream = make_stream();
         let streams: Vec<&RtpStream> = vec![&stream];
@@ -1007,7 +1198,7 @@ mod tests {
     }
 
     #[test]
-    fn markdown_report_carries_the_signalling_section() {
+    fn markdown_report_carries_the_signaling_section() {
         let dialog = make_failed_dialog();
         let stream = make_stream();
         let streams: Vec<&RtpStream> = vec![&stream];
@@ -1027,7 +1218,7 @@ mod tests {
     }
 
     #[test]
-    fn a_healthy_dialog_gets_no_signalling_section() {
+    fn a_healthy_dialog_gets_no_signaling_section() {
         // make_dialog_with_messages ends on a 200 OK.
         let dialog = make_dialog_with_messages();
         let stream = make_stream();

@@ -2057,7 +2057,7 @@ mod tests {
     /// string prefix the wrong tool. The address form cannot make that
     /// mistake because it compares integers.
     #[test]
-    fn a_neighbouring_address_is_not_in_the_subnet() {
+    fn a_neighboring_address_is_not_in_the_subnet() {
         assert!(!ip_in_cidr("198.51.101.7", "198.51.100.0/24"));
         assert!(!ip_in_cidr("198.51.10.7", "198.51.100.0/24"));
     }

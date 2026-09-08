@@ -47,6 +47,8 @@
 //! figures for network design, not measurements of a particular call, and
 //! operator-facing text should say so. Only G.107.1 Annex A is normative.
 
+use crate::rtp::quality::sanitized_loss_pct;
+
 /// Listening context, which G.113 tabulates separately and which changes the
 /// answer materially.
 ///
@@ -141,12 +143,23 @@ pub fn amr_wb_bpl(kbps: f64, context: ListeningContext) -> Option<f64> {
 /// Eq (7-29). It is emphatically not 129: the scale anchor and this constant
 /// are independent, and substituting one for the other is a plausible-looking
 /// error that survives casual review.
+///
+/// `loss_pct` passes through `sanitized_loss_pct` first — named rather than
+/// linked, because it is crate-private and a link from a public item to one
+/// resolves to nothing in the published docs — for the same admissible range
+/// the narrowband equation uses. A bare `loss_pct <= 0.0` test is not
+/// enough on its own: NaN compares false against everything, so it slips past
+/// the guard and leaves as a NaN `Ie,eff,WB`, a NaN R and a NaN MOS on a REST
+/// field. Bounding it also keeps `loss_pct + bpl` away from the pole at
+/// `Ppl = -Bpl`, which `every_publishable_bpl_is_positive` closes from the
+/// other side.
 #[must_use]
 pub fn ie_eff_wb(ie_wb: f64, loss_pct: f64, bpl: f64) -> f64 {
-    if loss_pct <= 0.0 {
+    let loss = sanitized_loss_pct(loss_pct);
+    if loss <= 0.0 {
         return ie_wb;
     }
-    ie_wb + (95.0 - ie_wb) * loss_pct / (loss_pct + bpl)
+    ie_wb + (95.0 - ie_wb) * loss / (loss + bpl)
 }
 
 /// Wideband R-factor from an effective impairment — G.107.1 Eq (7-1).
@@ -198,8 +211,14 @@ pub fn r_wb_to_mos(r: f64) -> f64 {
 #[must_use]
 pub fn amr_wb_mos(kbps: f64, context: ListeningContext, loss_pct: f64) -> Option<f64> {
     let ie = amr_wb_ie(kbps, context)?;
-    let ie_eff = if loss_pct > 0.0 {
-        ie_eff_wb(ie, loss_pct, amr_wb_bpl(kbps, context)?)
+    // Sanitized HERE and not only inside `ie_eff_wb`, because this is where
+    // "is there loss to score" is decided. Asking the raw figure would return
+    // `None` for an unpublished mode on the strength of a NaN or an infinity
+    // — reporting "not computable under loss" for a stream that, once the
+    // figure is bounded, has no loss to compute.
+    let loss = sanitized_loss_pct(loss_pct);
+    let ie_eff = if loss > 0.0 {
+        ie_eff_wb(ie, loss, amr_wb_bpl(kbps, context)?)
     } else {
         ie
     };
@@ -363,6 +382,100 @@ mod tests {
             "an unimpaired wideband channel must outscore an unimpaired G.711 \
              one; got {wb} vs {nb}. Equal values mean one scale is being used \
              for both"
+        );
+    }
+
+    /// The wideband loss term has the same pole as the narrowband one, at
+    /// `Ppl = -Bpl`, and the same NaN path through it.
+    ///
+    /// `ie_eff_wb` guards `loss_pct <= 0.0`, which a NaN fails — NaN compares
+    /// false against everything — so a NaN loss reaches Eq (7-15) and comes
+    /// out the far side as a NaN `Ie,eff,WB`, a NaN R and a NaN MOS. Both
+    /// scales in this crate must read a loss figure the same way; one rule,
+    /// one admissible range.
+    #[test]
+    fn a_non_finite_wideband_loss_is_treated_as_no_loss() {
+        let ie = 8.0;
+        let bpl = 4.9;
+        let clean = ie_eff_wb(ie, 0.0, bpl);
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let got = ie_eff_wb(ie, bad, bpl);
+            assert!(got.is_finite(), "loss {bad} produced Ie,eff,WB = {got}");
+            assert!(
+                (got - clean).abs() < 1e-9,
+                "loss {bad} gave {got}, not the no-loss {clean}"
+            );
+        }
+    }
+
+    /// Loss above total is still total, on the wideband scale too. Past 100%
+    /// the input is not a percentage of packets any more, and letting it keep
+    /// climbing toward the `Ie = 95` asymptote reports a stream as worse than
+    /// one that lost everything.
+    #[test]
+    fn wideband_loss_beyond_total_scores_as_total_loss() {
+        let ie = 8.0;
+        let bpl = 4.9;
+        let total = ie_eff_wb(ie, 100.0, bpl);
+        for over in [100.1, 500.0, 1.0e12] {
+            let got = ie_eff_wb(ie, over, bpl);
+            assert!(
+                (got - total).abs() < 1e-9,
+                "loss {over}% gave {got}, not the total-loss {total}"
+            );
+        }
+    }
+
+    /// A non-finite loss must not reach the MOS by the other door either.
+    ///
+    /// `amr_wb_mos` decides for itself whether loss is present, with a second
+    /// `loss_pct > 0.0` test rather than the one inside `ie_eff_wb`. An
+    /// infinity passes that test, so the guard has to be in the equation, not
+    /// in each caller's opinion of whether to call it.
+    #[test]
+    fn the_amr_wb_wrapper_inherits_the_loss_guard() {
+        // 23.85 kbit/s diotic is one of the three modes G.113 Table IV.4
+        // publishes a Bpl,wb for, so the loss branch is reachable here.
+        let clean =
+            amr_wb_mos(23.85, ListeningContext::Diotic, 0.0).expect("23.85 diotic is published");
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -1.0, -4.9] {
+            let mos = amr_wb_mos(23.85, ListeningContext::Diotic, bad)
+                .expect("the mode is published; a bad loss must not change that");
+            assert!(mos.is_finite(), "loss {bad} produced MOS = {mos}");
+            assert!(
+                (mos - clean).abs() < 1e-9,
+                "loss {bad} scored {mos}, not the no-loss {clean}"
+            );
+        }
+    }
+
+    /// The wideband pole is at `Ppl = -Bpl`, so it is only unreachable while
+    /// every `Bpl,wb` this crate can produce is positive.
+    ///
+    /// Bounding the loss figure to `0.0..=100.0` closes the pole from one
+    /// side; this closes it from the other. G.113 Table IV.4 publishes three
+    /// figures and all three are robustness factors, which are positive by
+    /// construction — but `amr_wb_bpl` is the only thing standing between the
+    /// table and a division, so the property is pinned rather than assumed.
+    #[test]
+    fn every_publishable_bpl_is_positive() {
+        let mut published = 0;
+        for kbps in AMR_WB_MODES_KBPS {
+            for context in [ListeningContext::Diotic, ListeningContext::Monotic] {
+                if let Some(bpl) = amr_wb_bpl(kbps, context) {
+                    published += 1;
+                    assert!(
+                        bpl > 0.0 && bpl.is_finite(),
+                        "Bpl,wb for {kbps} kbit/s {context:?} is {bpl}; a \
+                         non-positive value puts the pole back inside the \
+                         admissible loss range"
+                    );
+                }
+            }
+        }
+        assert_eq!(
+            published, 3,
+            "G.113 Table IV.4 publishes Bpl,wb for three modes, diotic only"
         );
     }
 }

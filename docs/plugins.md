@@ -76,13 +76,18 @@ pub extern "C" fn sipnab_plugin_abi_version() -> i32 { 1 }
 pub extern "C" fn sipnab_alloc(len: i32) -> i32 { /* host writes input here */ }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn sipnab_dealloc(ptr: i32, len: i32) { /* … */ }
-
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn sipnab_analyze(ptr: i32, len: i32) -> i64 {
     // read UTF-8 JSON at (ptr, len), return (out_ptr << 32) | out_len
 }
 ```
+
+There is no deallocator, and that is deliberate rather than an omission.
+sipnab instantiates the module once per dialog and drops the store when
+`sipnab_analyze` returns, so the plugin's entire linear memory goes with it and
+there is nothing left to reclaim. Both documents used to require a
+`sipnab_dealloc` that the host never looked up, so a plugin that omitted it
+loaded and ran anyway — a requirement nothing checks teaches an author to
+distrust the rest of the page.
 
 sipnab checks the ABI version at load rather than on first use: a plugin built
 against a later ABI would misread its input and report confident nonsense,

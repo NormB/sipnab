@@ -62,6 +62,69 @@
           "signaling_diagnosis": {
             "$ref": "#/components/schemas/CallReport_signaling_diagnosis"
           },
+          "siprec": {
+            "additionalProperties": false,
+            "description": "Recording metadata, when this call carried SIPREC (RFC 7866). Omitted, never null, on a call that is not recorded. Declared here because `additionalProperties` is false: it has been emitted since 0.5.x and was never in this schema, so every consumer validating sipnab's output rejected the report of a recorded call outright.",
+            "properties": {
+              "mode": {
+                "description": "Recording mode from the metadata, e.g. `complete`. Optional, and absent rather than null when the metadata named none.",
+                "type": "string"
+              },
+              "participants": {
+                "description": "Participants the recording metadata describes. Present and possibly empty, never absent, on a recorded call.",
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "aor": {
+                      "description": "Address-of-record (SIP URI) of the participant.",
+                      "type": "string"
+                    },
+                    "name": {
+                      "description": "Display name of the participant, as the metadata wrote it.",
+                      "type": "string"
+                    },
+                    "participant_id": {
+                      "description": "Participant identifier from the metadata XML.",
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "session_id": {
+                "description": "Recording session identifier from the SIPREC metadata XML. Optional, and absent rather than null when the metadata named none.",
+                "type": "string"
+              },
+              "streams": {
+                "description": "Media streams the recording metadata describes. Present and possibly empty, never absent, on a recorded call.",
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "label": {
+                      "description": "SDP label associating the stream with an `m=` line. The load-bearing field: SIPREC describes what was recorded, and the label is the only route from a recorded stream back to both its media description and the participant who owns it.",
+                      "type": "string"
+                    },
+                    "participant_id": {
+                      "description": "The participant this stream belongs to.",
+                      "type": "string"
+                    },
+                    "stream_id": {
+                      "description": "Stream identifier from the metadata XML.",
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "participants",
+              "streams"
+            ],
+            "type": "object"
+          },
           "state": {
             "type": "string"
           },
@@ -76,6 +139,41 @@
               "type": "string"
             },
             "type": "array"
+          },
+          "termination": {
+            "additionalProperties": false,
+            "description": "Why the call ended, when anything on the wire said so. Read from the LAST message naming a cause — `Reason` on a `BYE` or a `CANCEL` counts, which is the case this exists for: a call that clears normally has no failure response to hang a cause on. NOT a diagnosis: a `BYE` carrying `Reason: Q.850;cause=16` is a healthy call clearing normally, so this sits beside the verdict rather than among the fault detections. Optional, and absent rather than null when nothing named a cause.",
+            "properties": {
+              "cause_code": {
+                "description": "The cause number, on the scale `protocol` names. Absent rather than zero when the message named a protocol and no cause, because 0 is itself a real Q.850 cause and a reader could not tell a default from a measurement.",
+                "maximum": 65535,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "cause_text": {
+                "description": "The human-readable cause, control characters stripped and bounded to `MAX_CAUSE_TEXT_CHARS` (200) characters. Written by whoever sent the message.",
+                "maxLength": 200,
+                "type": "string"
+              },
+              "frame_ref": {
+                "description": "Index into the dialog's message list of the message that carried the cause.",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "protocol": {
+                "description": "Which scale `cause_code` is on — RFC 3326's `protocol`, `Q.850` or `SIP` in practice, kept as the sender spelled it. A code without this is not interpretable: 16 is normal clearing in Q.850 and is not a SIP status code at all.",
+                "type": "string"
+              },
+              "source_header": {
+                "description": "Which header carried the cause: `Reason` (RFC 3326) or `X-Asterisk-HangupCauseCode`. What a vendor header asserts and what RFC 3326 asserts are not the same claim, and a reader deciding how far to trust the number needs to know which.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "source_header",
+              "frame_ref"
+            ],
+            "type": "object"
           },
           "timing": {
             "$ref": "#/components/schemas/CallReport_timing"

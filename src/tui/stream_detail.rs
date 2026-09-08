@@ -1439,7 +1439,7 @@ mod tests {
     /// Asserted on the rendered cells rather than on a helper, because the
     /// defect was never in a helper: it was a loop that never called one.
     #[test]
-    fn the_jitter_sparkline_colours_a_sample_the_way_the_summary_does() {
+    fn the_jitter_sparkline_colors_a_sample_the_way_the_summary_does() {
         use crate::rtp::stream::{QualityInterval, RtpStream};
 
         let bands = crate::rtp::bands::QualityBands::default();

@@ -179,7 +179,7 @@ fn an_export_that_synthesizes_frames_says_so_where_the_model_reads() {
     let export = tool_descriptions(&src)
         .into_iter()
         .find(|(name, _)| {
-            name.contains("export") && name.contains("capture") || name == "export_signalling"
+            name.contains("export") && name.contains("capture") || name == "export_signaling"
         })
         .expect("an export tool is registered");
 

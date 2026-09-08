@@ -273,6 +273,84 @@ fn md_files_recursive(rel: &str) -> Vec<PathBuf> {
 /// docs plus internals/. design/ and research/ are internal planning
 /// material, not part of the published wiki journey (but links pointing INTO
 /// them from scanned pages are still resolved).
+/// Whether one Markdown link target is a journey this gate counts.
+///
+/// Extracted so the number `EXPECTED_WIKI_LINKS` ratchets can be read as a
+/// claim about something, rather than as whatever an inline filter happened to
+/// admit that day. Two tests owed for that ratchet drive it directly.
+///
+/// Counted: a link to a `.md` page, and a bare `#anchor` into the linking page
+/// itself. Not counted: an absolute URL, a `mailto:`, and any target that is
+/// not Markdown — an image or an asset is not a journey a reader takes through
+/// the documentation, and the wiki renders it without following it.
+fn is_counted_wiki_link(raw: &str) -> bool {
+    if raw.starts_with("http://") || raw.starts_with("https://") || raw.starts_with("mailto:") {
+        return false;
+    }
+    let path_part = raw.split_once('#').map_or(raw, |(p, _)| p);
+    path_part.is_empty() || path_part.ends_with(".md")
+}
+
+/// **First of two tests owed** for the wiki-link ratchet 0.5.159 moved.
+///
+/// A ratchet is a number, and a number means nothing without the rule that
+/// produced it. This drives that rule in both directions, so a change to the
+/// filter that quietly widened or narrowed what is counted fails here instead
+/// of turning up as an unexplained jump in the expected total.
+#[test]
+fn the_wiki_link_extractor_counts_only_markdown_journeys() {
+    for counted in [
+        "mcp-tools.md",
+        "./design/backlog.md",
+        "../internals/threading.md",
+        "rest-api.md#why-the-call-ended",
+        "#a-same-page-anchor",
+    ] {
+        assert!(
+            is_counted_wiki_link(counted),
+            "{counted:?} is a documentation journey and must be counted"
+        );
+    }
+    for skipped in [
+        "https://www.rfc-editor.org/rfc/rfc3326",
+        "http://127.0.0.1:8080/v1/dialogs",
+        "mailto:security@example.com",
+        "images/ladder.png",
+        "../static/install.sh",
+        "sipnab.1",
+    ] {
+        assert!(
+            !is_counted_wiki_link(skipped),
+            "{skipped:?} is not a Markdown journey and must not be counted"
+        );
+    }
+}
+
+/// **Second of two.** The walk the ratchet counts over found a real tree.
+///
+/// `EXPECTED_WIKI_LINKS` is asserted with `==`, and the failure message says
+/// FEWER means the regex stopped matching. It would say the same thing if the
+/// file walk returned nothing, and that is the failure this rules out: a count
+/// of zero over zero files is not a passing gate, it is a gate that has
+/// stopped running.
+#[test]
+fn the_wiki_link_scan_reads_a_plausible_tree() {
+    let files = wiki_source_files();
+    assert!(
+        files.len() >= 30,
+        "the wiki source walk found only {} page(s); this tree has far more,          so the walk is broken and every count taken over it is meaningless",
+        files.len()
+    );
+    for expected in ["docs/mcp-tools.md", "docs/rest-api.md", "docs/install.md"] {
+        assert!(
+            files
+                .iter()
+                .any(|p| p.to_string_lossy().replace('\\', "/") == expected),
+            "the walk did not reach {expected}, which is one of the pages the              ratchet's own attribution names"
+        );
+    }
+}
+
 fn wiki_source_files() -> Vec<PathBuf> {
     md_files_recursive("docs")
         .into_iter()
@@ -401,20 +479,16 @@ fn wiki_intra_docs_links_resolve() {
         let dir = file.parent().unwrap();
         for cap in link_re.captures_iter(&prose(&file)) {
             let raw = cap[1].to_string();
-            if raw.starts_with("http://")
-                || raw.starts_with("https://")
-                || raw.starts_with("mailto:")
-            {
+            // One rule, stated once: `is_counted_wiki_link` decides what this
+            // ratchet's number is a count OF, and is driven directly by
+            // `the_wiki_link_extractor_counts_only_markdown_journeys`.
+            if !is_counted_wiki_link(&raw) {
                 continue;
             }
             let (path_part, anchor) = match raw.split_once('#') {
                 Some((p, a)) => (p, Some(a.to_string())),
                 None => (raw.as_str(), None),
             };
-            // Only markdown journeys are in scope (images/assets are not).
-            if !path_part.is_empty() && !path_part.ends_with(".md") {
-                continue;
-            }
             seen += 1;
             let target_rel = if path_part.is_empty() {
                 file.clone() // same-page anchor
@@ -734,7 +808,15 @@ fn wiki_intra_docs_links_resolve() {
     // 693 -> 694 by the `runtime_stats` row in the docs/mcp-tools.md index,
     // linking its own section as every other row does. One row, one same-page
     // link, one page; the site mirror is generated and this gate reads docs/.
-    const EXPECTED_WIKI_LINKS: usize = 694;
+    // 694 -> 699 by the `termination` and `extension_headers` sections of
+    // 0.5.159. Attributed per file against origin/main before the number
+    // moved: docs/mcp-tools.md +4 (the field reference links RFC 3326,
+    // get_dialog_report, decode_evidence and the threat-model section rather
+    // than restating any of them) and docs/rest-api.md +1 (the field
+    // reference, so the REST page does not carry a second copy of it). No
+    // other page the extractor reads moved at all, which is what rules out a
+    // link accidentally created somewhere else in the same commit.
+    const EXPECTED_WIKI_LINKS: usize = 699;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe 6d in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

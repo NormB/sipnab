@@ -4002,6 +4002,13 @@ Returns `404` if the Call-ID is not found.
 
 Get a structured call diagnosis report for a dialog in JSON format. Includes transaction timing, media quality, one-way audio detection, NAT mismatch analysis, and SDP timeline.
 
+On a call that said why it ended, the report also carries a `termination`
+object — `cause_code`, `cause_text`, `protocol`, `source_header` and
+`frame_ref`. It comes from the same assembler as the MCP answer, so this route
+and `get_dialog_report` cannot report different causes for one call. The field
+reference is in [mcp-tools.md](mcp-tools.md#why-the-call-ended). sipnab omits
+the block, and never sends `null`, when nothing on the wire named a cause.
+
 **curl:**
 
 ```bash
@@ -4170,7 +4177,7 @@ per SIP message and grows with the call):
       "type": "report",
       "dialog": 0,
       "vendor": "sipnab",
-      "product": "sipnab 0.5.158 (passive observer; not a recording system)",
+      "product": "sipnab 0.5.159 (passive observer; not a recording system)",
       "schema": "sipnab-dialog-diagnosis/1",
       "mediatype": "application/json",
       "encoding": "json",
@@ -6166,7 +6173,7 @@ sipnab -D
 `--version` lists the Cargo features compiled into the binary, e.g.
 
 ```text
-sipnab 0.5.158 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf,vcon
+sipnab 0.5.159 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf,vcon
 ```
 
 This is the fastest way to confirm a build carries the feature set
@@ -7891,6 +7898,13 @@ TXT, JSON, NDJSON, CSV, **HTML** (a self-contained ladder diagram, drawn with
 Mermaid, for your ticket or wiki), Markdown, WAV, SIPp XML, RTP JSON -- and
 `Enter` writes the file. `Shift+Tab` or `Up` / `Down` cycle the same list. With
 nothing selected, it saves everything.
+
+**The diagram carries at most `MAX_MESSAGES` (200) arrows.** The renderer sipnab
+ships refuses a diagram past `RENDERER_MAX_EDGES` (500) outright — it draws
+nothing at all rather than degrading — so a long dialog would otherwise export
+as a blank panel with no error. Past the cap the diagram says so in a note
+inside itself, naming how many messages the call actually had: a picture that
+quietly omits half a call is worse than one that admits it.
 
 ## Where to go next
 
@@ -11879,6 +11893,16 @@ or broken input rather than silently accepting it: missing mandatory headers
 larger than the body actually present (truncated/lying length), and control/NUL
 bytes in a header. Example: `"malformed": ["missing mandatory header: Call-ID"]`.
 
+`extension_headers` is every header the fields above do not already carry, in
+wire form (`"Name: value"`) and in wire order, one entry per header line.
+`Call-ID`, `From`, `To`, `Contact`, `User-Agent` and `CSeq` never appear —
+those are fields of their own — and sipnab drops nothing else, so `Via`,
+`Max-Forwards` and `Content-Length` join the vendor-specific headers this
+exists for. The list keeps duplicates and wire order: three `Via` lines are
+three entries in the order they arrived. A message whose
+every header is already a field omits the key rather than sending an empty
+array.
+
 `input_origin` names the capture source that delivered the message — `wire`,
 `hep` or `uprobe` — and it is what keeps `frame` honest. A uprobe read carries a
 pointer of the same shape as a capture offset (`uprobe:opensips/954#3` beside
@@ -12363,6 +12387,40 @@ sipnab reads configuration from the first file it finds in this order:
 Use `--no-config` (`-F`) to skip all file loading. Use `--dump-config` (`-D`) to print which file sipnab loaded and the keys it set — see the note under [Full example](#full-example) for what `-D` does and does not show.
 
 Unknown keys produce a warning and go no further, so one config can span versions.
+
+## Environment variables in values
+
+Any string value may contain `${NAME}`. sipnab substitutes that environment
+variable's value when it reads the file:
+
+```toml
+[crash]
+report_dir = "/home/${SUDO_USER}/sipnab"
+```
+
+The case this exists for is `sudo`. Capture needs privileges, so sipnab is
+often run under `sudo`, and after `sudo -i` a file written by that run lands in
+root's directory rather than in the directory of whoever ran the command.
+`${SUDO_USER}` is the only thing that can say which one that is at the moment
+sipnab reads the file.
+
+Four rules, and they hold everywhere a string does:
+
+- **`${NAME}` expands.** `NAME` is an ASCII letter or `_` followed by letters,
+  digits or `_`. sipnab rejects shell's `${NAME:-default}` and `${NAME-other}`
+  outright rather than half-supporting them.
+- **An unset variable is an error.** sipnab names the setting and the variable
+  and does not start. Expanding to nothing would turn
+  `/home/${SUDO_USER}/sipnab` into `/home//sipnab`, which is a real, writable
+  directory that is not the one you meant.
+- **`$$` is a literal `$`.** Write `$${NAME}` for a literal `${NAME}`.
+- **A bare `$NAME` is literal text.** Braces are the whole syntax.
+
+What a variable expands to is data. It is never scanned again, so a value that
+itself contains `${...}` stays as it is.
+
+`--dump-config` prints values after expansion, which is what sipnab is actually
+using.
 
 ## Format
 
@@ -13437,7 +13495,7 @@ itself):
 
    ```bash
    sipnab --version
-   # sipnab 0.5.158 (...) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,vcon,bpf
+   # sipnab 0.5.159 (...) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,vcon,bpf
    ```
 
    If `mcp` is missing you have a source build without features — rebuild
@@ -14585,7 +14643,7 @@ Then confirm the build can do what you are about to ask of it:
 ```json
 {
   "schema_version": 1,
-  "version": "0.5.158",
+  "version": "0.5.159",
   "features": ["api", "audio", "hep", "mcp", "mcp-http", "metrics",
                "native", "plugins", "tls", "tui"],
   "can_decrypt": true,
@@ -15151,7 +15209,7 @@ stdin and the `sleep`s pace the handshake — so paste it as a unit:
 Expected first line of response:
 
 ```json
-{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"sipnab","version": "0.5.158"},"instructions":"sipnab MCP server — queries captured SIP dialogs ..."}}
+{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"sipnab","version": "0.5.159"},"instructions":"sipnab MCP server — queries captured SIP dialogs ..."}}
 ```
 
 ### Test the HTTP wire by hand
@@ -17358,7 +17416,7 @@ No parameters. Returns:
 ```jsonc
 {
   "schema_version": 1,
-  "version": "0.5.158",
+  "version": "0.5.159",
   "features": ["api", "hep", "mcp", "native", "tls", "tui"],
   "can_decrypt": true,           // tls
   "can_hep": true,               // hep
@@ -18373,6 +18431,13 @@ returned by [`list_dialogs`](#list_dialogs). An unknown one fails with
     "no_media": false,
     "stream_count": 1,
     "hints": ["RTP flowed 10.0.2.15:27942 -> 10.0.2.20:6000 only (SSRC 0x343da99b). No reverse media flow detected."]
+  },
+  "termination": {                 // absent when nothing said why the call ended
+    "cause_code": 38,
+    "cause_text": "Network out of order",
+    "protocol": "Q.850",
+    "source_header": "Reason",
+    "frame_ref": 7
   }
 }
 ```
@@ -18388,6 +18453,37 @@ Where to go next, by verdict:
 | `media` | [`rtp_stats`](#rtp_stats), and [`check_codec_negotiation`](#check_codec_negotiation) if the call failed |
 | `both` | Signaling first — media symptoms are often downstream of a failed negotiation |
 | `none` | The call is fine. Check you have the right Call-ID |
+
+#### Why the call ended
+
+`termination` is a **fact about the call, not a fault**, so it never moves
+`verdict`. A call that cleared normally reports `verdict: "none"` and a
+`Q.850` cause of 16 at the same time, and both are true.
+
+It answers the question the verdict cannot: *"the call ended"* and *"the call
+ended because the far end was out of order"* are different answers, and only
+the second closes a ticket.
+
+| Field | Type | Description |
+|---|---|---|
+| `cause_code` | u16? | The cause number, on the scale `protocol` names. Absent when the message named a protocol and no cause — never zero for a missing value, because `0` is itself a Q.850 cause |
+| `cause_text` | string? | The human-readable cause. sipnab strips control characters and keeps the first `MAX_CAUSE_TEXT_CHARS` (200) — far past every value a gateway produces, and short enough that a crafted header cannot spend a context window |
+| `protocol` | string? | Which scale `cause_code` is on. `16` is normal clearing in Q.850 and is not a SIP status code at all, so a code without this is not interpretable |
+| `source_header` | string | Which header carried the cause: `Reason` ([RFC 3326](https://www.rfc-editor.org/rfc/rfc3326)) or `X-Asterisk-HangupCauseCode` |
+| `frame_ref` | usize | Index into the dialog's message list of the message that carried it |
+
+sipnab reads the **last** message that names a cause — a call that went through
+a challenge, a retry and a clear carries more than one, and the one that says
+why it ended is the last thing said. `Reason` on a `BYE` or a `CANCEL` counts,
+which is the case this exists for: a call that clears normally has no failure
+response to hang a cause on.
+
+Where one message carries both protocols, sipnab picks the non-`SIP` one.
+`SIP;cause=` restates `final_status_code`, which is already its own field.
+`Q.850;cause=` is the gateway's cause, and the fact nothing else recovers.
+
+The same block appears on [`get_dialog_report`](#get_dialog_report) and on
+`GET /v1/dialogs/{call_id}/report`, from one assembler.
 
 ### `get_dialog`
 
@@ -18556,6 +18652,13 @@ The example runs against [`tests/pcap-samples/sip-rtp-g711.pcap`](https://github
 }
 ```
 
+A `termination` block appears beside these fields on a call that said why it
+ended — the same object, from the same assembler, that
+[`triage_call`](#triage_call) documents above. It is absent from the example
+because this sample's `BYE` carries no `Reason` header and no vendor
+equivalent, which is the honest rendering: sipnab drops the block, and never
+sends `null`, when nothing on the wire named a cause.
+
 This report bundles what [`triage_call`](#triage_call),
 [`get_sdp_timeline`](#get_sdp_timeline) and [`rtp_stats`](#rtp_stats) answer
 separately, so one call replaces three when you already know which call to read.
@@ -18589,8 +18692,9 @@ itself without another round trip.
 Returns one message in the same shape [`get_dialog`](#get_dialog) uses for a
 `messages` row, plus the provenance note as a second content block. The
 difference is the fencing: this tool wraps `from`, `to`, `contact`, `sdp`, `ua`,
-`reason` and `malformed`, and leaves `call_id`, addresses, ports, `method`,
-`status_code`, `cseq` and timestamps verbatim so they pass into the next call.
+`reason`, `malformed` and `extension_headers`, and leaves `call_id`, addresses,
+ports, `method`, `status_code`, `cseq` and timestamps verbatim so they pass into
+the next call.
 
 ```jsonc
 // get_message { "call_id": "1-1966@10.0.2.20", "index": 0 }
@@ -18612,13 +18716,52 @@ difference is the fencing: this tool wraps `from`, `to`, `contact`, `sdp`, `ua`,
   "timestamp": "2016-11-26T14:52:59.666393+00:00",
   "frame": "tests/pcap-samples/sip-rtp-g711.pcap#0@db88659b94678546",
   "dscp": 0,
-  "input_origin": "wire"
+  "input_origin": "wire",
+  "extension_headers": [
+    "⟦untrusted-capture-data⟧Via: SIP/2.0/UDP 10.0.2.20:5060;branch=z9hG4bK-1966-1-0⟦/untrusted-capture-data⟧",
+    "⟦untrusted-capture-data⟧Max-Forwards: 70⟦/untrusted-capture-data⟧",
+    "⟦untrusted-capture-data⟧Content-Type: application/sdp⟦/untrusted-capture-data⟧",
+    "⟦untrusted-capture-data⟧Content-Length: 123⟦/untrusted-capture-data⟧"
+  ]
 }
 ```
 
 `dscp` and `input_origin` carry the meanings [`get_dialog`](#get_dialog) gives
 them. sipnab omits either key rather than sending `null` when it observed
 neither.
+
+#### `extension_headers`
+
+Every header the fields above do NOT already carry, in wire form
+(`"Name: value"`) and in wire order — one entry per header line.
+
+The named fields are a closed list, and every vendor-, carrier- and
+SBC-specific fact lives outside it: `X-Asterisk-*`, `Reason`, `Diversion`,
+`P-Asserted-Identity`, `Remote-Party-ID`, `Require`, `RSeq`. The parser has
+always retained them, so this was a projection gap rather than a parsing one.
+Before it existed the only route to one of those values was
+[`decode_evidence`](#decode_evidence), which needs a server-side
+`--mcp-file-root` opt-in, a reachable original capture, and one call per frame.
+
+Six header names never appear here, because they are already fields of their
+own: `Call-ID`, `From`, `To`, `Contact`, `User-Agent` and `CSeq`. sipnab drops
+nothing else — `Via` and `Content-Length` are in the list above because the
+sample carries them and nothing pretends otherwise.
+
+**The list keeps duplicates and wire order.** `Via` is a stack whose order is
+the route the request took, so three `Via` lines are three entries in the order
+they arrived.
+
+**Fenced whole, name included.** For an extension header the NAME is the
+sender's choice as much as the value is, so the marker pair wraps the entire
+`Name: value` string. This widens the prompt-injection surface the threat model
+already tracks — see [deferred-and-declined.md](design/deferred-and-declined.md#the-prompt-injection-chain-grounded)
+— it does not introduce a new one: the same bytes were already reachable
+through `search_messages`, which returns the raw message.
+
+No new ceiling. The parser refuses a message with more than 200 headers or a
+header line longer than 8 KiB, so what reaches this field is already bounded by
+the operator's own limits.
 
 ### `render_ladder`
 
@@ -19298,7 +19441,7 @@ packets in one:
   ],
   "findings_withheld": { "suppressed": 0, "below_severity": 0, "capped": 0 },
   "suppressions": { "file": null, "patterns": [], "findings_suppressed": 0 },
-  "rule_catalogue": "docs/sip-lint-rules.md"
+  "rule_catalog": "docs/sip-lint-rules.md"
 }
 ```
 
@@ -19422,7 +19565,7 @@ message runs, and the response reports the rest under `rules_not_evaluated`.
     { "reason": "needs the endpoint pairs RTCP arrived on. ...",
       "rule_ids": ["OBS-5761-5.1.1-RTCP-MUX-UNANSWERED"] }
   ],
-  "rule_catalogue": "docs/sip-lint-rules.md"
+  "rule_catalog": "docs/sip-lint-rules.md"
 }
 ```
 
@@ -19467,7 +19610,7 @@ server. An unknown identifier fails with `invalid_params` (-32602) **listing all
   "url": "https://www.rfc-editor.org/rfc/rfc3264#section-6.1",
   "scope": "media",
   "rulesets": ["all", "observation", "observed", "rfc3264"],
-  "rule_catalogue": "docs/sip-lint-rules.md"
+  "rule_catalog": "docs/sip-lint-rules.md"
 }
 ```
 
@@ -20859,7 +21002,7 @@ The container example runs against [`tests/pcap-samples/sip-rtp-g711.pcap`](http
       "type": "report",
       "dialog": 0,
       "vendor": "sipnab",
-      "product": "sipnab 0.5.158 (passive observer; not a recording system)",
+      "product": "sipnab 0.5.159 (passive observer; not a recording system)",
       "schema": "sipnab-dialog-diagnosis/1",
       "mediatype": "application/json",
       "encoding": "json",
@@ -24468,7 +24611,7 @@ and a consumer parses it before indexing into it.
       "type": "report",
       "dialog": 0,
       "vendor": "sipnab",
-      "product": "sipnab 0.5.158 (passive observer; not a recording system)",
+      "product": "sipnab 0.5.159 (passive observer; not a recording system)",
       "schema": "sipnab-dialog-diagnosis/1",
       "mediatype": "application/json",
       "encoding": "json",

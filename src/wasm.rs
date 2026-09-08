@@ -284,55 +284,43 @@ impl SipnabSession {
     }
 
     /// Export as Mermaid sequence diagram for a specific dialog.
+    ///
+    /// Goes through `crate::mermaid::sequence_diagram` rather than building
+    /// the source here. This copy used to do its own, and it carried three
+    /// defects the shared one does not: no message cap, on the ONE surface
+    /// whose output reaches the vendored renderer (which refuses a diagram
+    /// past `maxEdges: 500` outright, so a long SUBSCRIBE/NOTIFY dialog
+    /// rendered as a blank panel); participant ids mangled from the address,
+    /// so capture-derived text reached an identifier; and only two
+    /// participants declared, from the FIRST message, so a call captured at a
+    /// proxy — four endpoints under one Call-ID — had every further lifeline
+    /// auto-created by Mermaid with the mangled id as its visible label.
     pub fn export_mermaid(&self, call_id: &str) -> String {
-        if let Some(dialog) = self.dialog_store.get(call_id) {
-            let mut out = String::from("sequenceDiagram\n");
-            let first_src_port = dialog.messages.first().map(|m| m.src_port).unwrap_or(0);
-            let first_dst_port = dialog.messages.first().map(|m| m.dst_port).unwrap_or(0);
-            let src_participant = format!("{}_{}", dialog.src_addr, first_src_port)
-                .replace('.', "_")
-                .replace(':', "_");
-            let dst_participant = format!("{}_{}", dialog.dst_addr, first_dst_port)
-                .replace('.', "_")
-                .replace(':', "_");
-            out.push_str(&format!(
-                "    participant {} as {}:{}\n",
-                src_participant, dialog.src_addr, first_src_port
-            ));
-            out.push_str(&format!(
-                "    participant {} as {}:{}\n",
-                dst_participant, dialog.dst_addr, first_dst_port
-            ));
-            for msg in &dialog.messages {
-                let from = format!("{}_{}", msg.src_addr, msg.src_port)
-                    .replace('.', "_")
-                    .replace(':', "_");
-                let to = format!("{}_{}", msg.dst_addr, msg.dst_port)
-                    .replace('.', "_")
-                    .replace(':', "_");
-                let arrow = if msg.is_request { "->>" } else { "-->>" };
-                // Both arms are sender-written: an unknown method parses to
-                // `Custom(String)` and a reason phrase is free text. Escaped
-                // through the one shared rule in `crate::mermaid`, because this
-                // generator having its own was how the fix reached the TUI
-                // exporter and not this file.
+        let Some(dialog) = self.dialog_store.get(call_id) else {
+            return String::new();
+        };
+        let rows: Vec<(String, String, String, bool)> = dialog
+            .messages
+            .iter()
+            .map(|msg| {
                 let label = if msg.is_request {
-                    crate::mermaid::escape_mermaid_label(
-                        msg.method.as_ref().map_or("?", |m| m.as_str()),
-                    )
+                    msg.method.as_ref().map_or("?", |m| m.as_str()).to_string()
                 } else {
-                    crate::mermaid::escape_mermaid_label(&format!(
+                    format!(
                         "{} {}",
                         msg.status_code.unwrap_or(0),
                         msg.reason.as_deref().unwrap_or("")
-                    ))
+                    )
                 };
-                out.push_str(&format!("    {}{}{}: {}\n", from, arrow, to, label));
-            }
-            out
-        } else {
-            String::new()
-        }
+                (
+                    crate::net::endpoint_label(msg.src_addr, msg.src_port),
+                    crate::net::endpoint_label(msg.dst_addr, msg.dst_port),
+                    label,
+                    msg.is_request,
+                )
+            })
+            .collect();
+        crate::mermaid::sequence_diagram(&rows, crate::mermaid::MAX_MESSAGES)
     }
 
     /// Number of SIP dialogs in the loaded capture.

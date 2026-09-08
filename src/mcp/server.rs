@@ -1949,7 +1949,7 @@ fn rule_entry_json(rule: &crate::sip::lint::RuleMeta) -> serde_json::Value {
         "url": rule.url(),
         "scope": rule.scope().as_str(),
         "rulesets": rulesets,
-        "rule_catalogue": "docs/sip-lint-rules.md",
+        "rule_catalog": "docs/sip-lint-rules.md",
     })
 }
 
@@ -6398,7 +6398,16 @@ impl SipnabMcp {
                 (false, false) => "none",
             };
 
-            serde_json::json!({
+            // Beside the verdict, not inside `signaling`. A `BYE` carrying
+            // `Reason: Q.850;cause=16` is a healthy call clearing normally,
+            // so the cause cannot live among the fault detections without
+            // making every completed call read as a finding — the mistake
+            // AS4 fixed for keepalives. It also never moves the verdict:
+            // `verdict` answers "which half of the stack", and knowing WHY a
+            // call ended does not make its ending a fault.
+            let termination = crate::sip::termination::detect_termination(&dialog.messages);
+
+            let mut payload = serde_json::json!({
                 "schema_version": 1,
                 "call_id": dialog.call_id,
                 "verdict": verdict,
@@ -6416,7 +6425,13 @@ impl SipnabMcp {
                     "stream_count": streams.len(),
                     "hints": media.hints,
                 },
-            })
+            });
+            // Omitted, never null, on a call that named no cause — the rule
+            // every optional block on this surface follows.
+            if let Some(t) = termination {
+                payload["termination"] = serde_json::to_value(t).unwrap_or(serde_json::Value::Null);
+            }
+            payload
         };
         Ok(CallToolResult::success(vec![ContentBlock::json(payload)?]))
     }
@@ -6695,7 +6710,7 @@ impl SipnabMcp {
                 "rules_not_evaluated": skipped_rules(LintRun::WholeDialog {
                     media: stream_count > 0,
                 }),
-                "rule_catalogue": "docs/sip-lint-rules.md",
+                "rule_catalog": "docs/sip-lint-rules.md",
             })
         };
         Ok(CallToolResult::success(vec![ContentBlock::json(payload)?]))
@@ -6771,7 +6786,7 @@ impl SipnabMcp {
                 "suppressions": suppression_json(suppressions.as_ref(), withheld),
                 "findings_withheld": withheld_json(withheld),
                 "rules_not_evaluated": skipped_rules(LintRun::OneMessage),
-                "rule_catalogue": "docs/sip-lint-rules.md",
+                "rule_catalog": "docs/sip-lint-rules.md",
             })
         };
         Ok(CallToolResult::success(vec![ContentBlock::json(payload)?]))
@@ -8270,7 +8285,7 @@ pub struct RuntimeStatsParams {
 /// than degrading, so this leaves headroom for the notes a diagram also
 /// carries. A capture with more messages than this gets a note inside the
 /// diagram saying so.
-const MERMAID_MAX_MESSAGES: usize = 200;
+const MERMAID_MAX_MESSAGES: usize = crate::mermaid::MAX_MESSAGES;
 
 /// JSON-RPC error code for a refused-because-busy tool call.
 const AT_CAPACITY_CODE: i32 = -32000;
@@ -11698,6 +11713,72 @@ mod tests {
                 }))
                 .await
                 .is_err()
+        );
+    }
+
+    /// A normally-cleared call reports WHY it ended.
+    ///
+    /// `verdict: "none"` is the right answer for a healthy call and stays the
+    /// right answer here — the cause is a fact about the call, not a fault.
+    /// What was missing is that "the call ended" and "the call ended because
+    /// the far end was out of order" were the same answer, and only the
+    /// second closes a ticket.
+    #[tokio::test]
+    async fn triage_call_reports_the_termination_cause() {
+        let mut ds = DialogStore::new(100, false);
+        ds.process_message(invite("term@x", base_ts()));
+        ds.process_message(ok200("term@x", base_ts()));
+        let raw = build_sip(
+            "BYE sip:bob@example.com SIP/2.0",
+            &[
+                "Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKbye",
+                "From: Alice <sip:alice@example.com>;tag=t1",
+                "To: <sip:bob@example.com>;tag=t2",
+                "Call-ID: term@x",
+                "CSeq: 2 BYE",
+                "Reason: Q.850;cause=38;text=\"Network out of order\"",
+                "Content-Length: 0",
+            ],
+            b"",
+        );
+        ds.process_message(parse_at(&raw, base_ts()));
+        let server = SipnabMcp::new(
+            Arc::new(RwLock::new(ds)),
+            Arc::new(RwLock::new(StreamStore::new(100))),
+        );
+
+        let r = server
+            .triage_call(Parameters(CallIdParams {
+                call_id: "term@x".into(),
+            }))
+            .await
+            .expect("succeeds");
+        let v: serde_json::Value = serde_json::from_str(&text_of(&r)).unwrap();
+        assert_eq!(v["termination"]["cause_code"], 38);
+        assert_eq!(v["termination"]["cause_text"], "Network out of order");
+        assert_eq!(v["termination"]["protocol"], "Q.850");
+        assert_eq!(v["termination"]["source_header"], "Reason");
+        assert_eq!(
+            v["verdict"], "none",
+            "a cleanly cleared call is not a fault, whatever cause it named"
+        );
+    }
+
+    /// A call that never said why it ended omits the block rather than
+    /// carrying a null an agent has to interpret.
+    #[tokio::test]
+    async fn triage_call_omits_termination_when_nothing_named_a_cause() {
+        let r = server_with_dialog("noterm@x")
+            .triage_call(Parameters(CallIdParams {
+                call_id: "noterm@x".into(),
+            }))
+            .await
+            .expect("succeeds");
+        let v: serde_json::Value = serde_json::from_str(&text_of(&r)).unwrap();
+        assert!(
+            v.get("termination").is_none(),
+            "expected no termination block, got {:?}",
+            v.get("termination")
         );
     }
 

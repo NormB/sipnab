@@ -278,10 +278,10 @@ registry has grown since, and the count is pinned by
 `mcp_tool_table_lists_every_registered_tool` rather than by this sentence.
 The argument below does not depend on the number. Four
 of them touch something other than the stores: `export_capture`
-([`server.rs:7160`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L7160)) writes a pcap, `export_audio`
-([`server.rs:7213`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L7213)) writes a WAV, `list_captures`
+([`server.rs:7195`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L7195)) writes a pcap, `export_audio`
+([`server.rs:7248`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L7248)) writes a WAV, `list_captures`
 ([`server.rs:7117`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L7117)) reads a directory, and
-`shutdown_server` ([`server.rs:7693`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L7693)) ends the process.
+`shutdown_server` ([`server.rs:7728`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L7728)) ends the process.
 
 **None of them mutates a store.** `shutdown_server` reads `dialog_store` and
 `stream_store` for its report, optionally writes a file, and then calls
@@ -362,7 +362,13 @@ and it is not incidental — it is the tool working:
   ([`model.rs:53-57`](https://github.com/NormB/sipnab/blob/main/src/output/model.rs#L53-L57)) are copied straight off the
   From/To URIs.
 - `get_message` ([`server.rs:4817`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L4817)) returns the parsed
-  message through `message_to_json_value`, headers and body included.
+  message through `message_to_json_value`. Until 0.5.159 the phrasing here was
+  *"headers and body included"*, and measured against 0.5.130 that was false:
+  the projection had a closed field list and no headers map, so a `Diversion`
+  or an `X-Asterisk-*` header reached no MCP surface at all. AS1 closed the
+  gap — `extension_headers` now carries every header outside that closed list,
+  in wire form — so the sentence is true today, and it is worth recording that
+  a threat-model section leaned on it for a release in which it was not.
 - `search_messages` ([`server.rs:5251`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5251)) returns
   `snippet`, built as
   `truncate_string(&String::from_utf8_lossy(&msg.raw), MAX_BODY_BYTES)` — the
@@ -809,7 +815,7 @@ decision was taken, not as it stands now:
 The opt-in machinery and the path confinement are already solved and should be
 reused rather than redesigned: the `shutdown_server` flag, off-by-default field,
 builder and first-statement refusal
-([`server.rs:7693`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L7693)), and `--mcp-file-root` with
+([`server.rs:7728`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L7728)), and `--mcp-file-root` with
 `resolve_in_root` ([`server.rs:827`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L827)).
 
 **What shipped**, against those three:

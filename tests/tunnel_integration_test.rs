@@ -163,7 +163,7 @@ fn assert_invite_through(what: &str, frame: Vec<u8>) {
 /// MPLS is the carrier core, and a capture taken on a labeled segment is
 /// often the only place the problem is visible.
 #[test]
-fn mpls_labelled_invite_reaches_the_sip_parser() {
+fn mpls_labeled_invite_reaches_the_sip_parser() {
     assert_invite_through(
         "MPLS",
         splice(&invite_frame(), 0x8847, &mpls_label(16_000, true)),

@@ -209,6 +209,119 @@ fn every_flag_alias_is_documented() {
 /// constant-time eviction.
 const UNDOCUMENTED_CEILINGS: usize = 100;
 
+/// Whether a documented ceiling's parenthesized number matches the source.
+///
+/// The two halves are written down separately — `MAX_CAUSE_TEXT_CHARS` in
+/// Rust and `` `MAX_CAUSE_TEXT_CHARS` (200) `` in a Markdown table — and only
+/// one of them is read by the ratchet above, which asks whether the NAME
+/// appears at all. A doc that names the right constant and the wrong number is
+/// worse than one that names neither: a reader takes the number.
+///
+/// Values that are expressions (`64 * 1024`, `1 << 20`) are skipped, because
+/// resolving one means evaluating Rust. The count of declarations that DID
+/// parse is returned and asserted, so the skip cannot quietly swallow the
+/// whole scan.
+fn documented_ceiling_values(src: &str, docs: &str) -> (Vec<String>, usize, usize) {
+    let decl = regex::Regex::new(
+        r"(?m)^\s*(?:pub(?:\([a-z]+\))?\s+)?const ((?:MAX|MIN|DEFAULT)_[A-Z0-9_]+)\s*:\s*(?:usize|u\d+)\s*=\s*([^;]+);",
+    )
+    .expect("declaration pattern");
+    let mut values = std::collections::BTreeMap::new();
+    for c in decl.captures_iter(src) {
+        let raw = c[2].trim().trim_end_matches("_usize");
+        let cleaned: String = raw.chars().filter(|c| *c != '_').collect();
+        // An expression (`64 * 1024`, `1 << 20`) is skipped rather than
+        // guessed at: resolving one means evaluating Rust, and a wrong guess
+        // here would report a disagreement that is not there.
+        if let Ok(v) = cleaned.parse::<u128>() {
+            values.insert(c[1].to_string(), v);
+        }
+    }
+
+    let cited = regex::Regex::new(r"`((?:MAX|MIN|DEFAULT)_[A-Z0-9_]+)`\s*\((\d[\d,_]*)\)")
+        .expect("citation pattern");
+    let mut disagreeing = Vec::new();
+    let mut checked = 0usize;
+    for c in cited.captures_iter(docs) {
+        let Some(declared) = values.get(&c[1]) else {
+            continue;
+        };
+        let written: String = c[2].chars().filter(|c| c.is_ascii_digit()).collect();
+        let Ok(written) = written.parse::<u128>() else {
+            continue;
+        };
+        checked += 1;
+        if written != *declared {
+            disagreeing.push(format!(
+                "  {} is {declared} in source and {written} in a document",
+                &c[1]
+            ));
+        }
+    }
+    (disagreeing, checked, values.len())
+}
+
+/// **First of two tests owed** for the ceiling ratchet this change turned red.
+///
+/// The ratchet asks whether a bound is NAMED in a document. This asks whether
+/// the number beside the name is the one the code enforces — the other half of
+/// a fact written twice, and the half a reader actually uses.
+#[test]
+fn a_documented_ceiling_carries_the_number_the_code_enforces() {
+    let (disagreeing, checked, declared) = documented_ceiling_values(&source(), &documentation());
+    assert!(
+        declared >= 50,
+        "only {declared} ceiling declaration(s) parsed; the pattern has \
+         stopped matching"
+    );
+    assert!(
+        checked >= 5,
+        "only {checked} document citation(s) carried a number to compare — \
+         this gate is passing vacuously"
+    );
+    assert!(
+        disagreeing.is_empty(),
+        "{} documented ceiling(s) disagree with the source. A reader takes the \
+         number:\n{}",
+        disagreeing.len(),
+        disagreeing.join("\n")
+    );
+}
+
+/// **Second of two.** The comparison above can actually fail.
+///
+/// A scan that reports nothing is indistinguishable from one whose patterns
+/// never match, and this file already carries two ratchets whose whole job is
+/// to notice that. So the predicate is driven on synthetic input in both
+/// directions.
+#[test]
+fn the_ceiling_value_comparison_fires_on_a_disagreement() {
+    let src = "pub const MAX_PROBE_ONE: usize = 200;\nconst MAX_PROBE_TWO: u32 = 1_000;\n";
+
+    let (bad, checked, declared) =
+        documented_ceiling_values(src, "keeps `MAX_PROBE_ONE` (500) of them");
+    assert_eq!(declared, 2, "both declarations must parse");
+    assert_eq!(checked, 1, "one citation carried a number");
+    assert_eq!(bad.len(), 1, "the disagreement must be reported: {bad:?}");
+    assert!(bad[0].contains("200") && bad[0].contains("500"), "{bad:?}");
+
+    let (good, checked, _) = documented_ceiling_values(
+        src,
+        "keeps `MAX_PROBE_ONE` (200) of them, and `MAX_PROBE_TWO` (1,000) of those",
+    );
+    assert_eq!(checked, 2, "both citations must be compared");
+    assert!(
+        good.is_empty(),
+        "an agreeing pair must not be reported: {good:?}"
+    );
+
+    // A name nothing declares is not this gate's business, and must not be
+    // reported as a disagreement.
+    let (unknown, checked, _) = documented_ceiling_values(src, "`MAX_NOT_DECLARED` (7)");
+    assert_eq!(checked, 0);
+    assert!(unknown.is_empty(), "{unknown:?}");
+}
+
 #[test]
 fn undocumented_numeric_ceilings_do_not_increase() {
     let re = regex::Regex::new(

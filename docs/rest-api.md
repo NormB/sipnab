@@ -707,6 +707,13 @@ Returns `404` if the Call-ID is not found.
 
 Get a structured call diagnosis report for a dialog in JSON format. Includes transaction timing, media quality, one-way audio detection, NAT mismatch analysis, and SDP timeline.
 
+On a call that said why it ended, the report also carries a `termination`
+object — `cause_code`, `cause_text`, `protocol`, `source_header` and
+`frame_ref`. It comes from the same assembler as the MCP answer, so this route
+and `get_dialog_report` cannot report different causes for one call. The field
+reference is in [mcp-tools.md](mcp-tools.md#why-the-call-ended). sipnab omits
+the block, and never sends `null`, when nothing on the wire named a cause.
+
 **curl:**
 
 ```bash
@@ -875,7 +882,7 @@ per SIP message and grows with the call):
       "type": "report",
       "dialog": 0,
       "vendor": "sipnab",
-      "product": "sipnab 0.5.158 (passive observer; not a recording system)",
+      "product": "sipnab 0.5.159 (passive observer; not a recording system)",
       "schema": "sipnab-dialog-diagnosis/1",
       "mediatype": "application/json",
       "encoding": "json",

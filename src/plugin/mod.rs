@@ -688,4 +688,90 @@ mod tests {
             "an ordinary plugin must still load"
         );
     }
+    /// The documented export set is the set the host actually resolves.
+    ///
+    /// Both plugin documents required a `sipnab_dealloc` that
+    /// `src/plugin/mod.rs` never looked up, so a plugin that omitted it loaded
+    /// and ran. A requirement nothing checks is worse than no requirement: it
+    /// teaches an author that the page is unreliable, and the next thing they
+    /// skip may be one that matters.
+    ///
+    /// Reads the loader's own `get_typed_func` calls rather than a list
+    /// written beside them, so adding an export without documenting it fails
+    /// here too.
+    #[test]
+    fn the_documented_exports_are_the_ones_the_host_resolves() {
+        let src = include_str!("mod.rs");
+        // Production only: the test module below builds fixture modules that
+        // name exports, and a scanner counting its own fixtures measures
+        // itself.
+        let production = src.split("\nmod tests {").next().unwrap_or(src);
+        let mut resolved: Vec<String> = Vec::new();
+        for (at, _) in production.match_indices("get_typed_func::") {
+            // The REMAINDER after the call, not the matched text: the export
+            // name is the first string literal that follows.
+            let rest = &production[at..];
+            if let Some(open) = rest.find('"')
+                && let Some(close) = rest[open + 1..].find('"')
+            {
+                let name = &rest[open + 1..open + 1 + close];
+                if name.starts_with("sipnab_") && !resolved.iter().any(|r| r == name) {
+                    resolved.push(name.to_string());
+                }
+            }
+        }
+        resolved.sort();
+        assert!(
+            resolved.len() >= 3,
+            "only {resolved:?} resolved — the scan stopped matching and this \
+             gate is comparing nothing"
+        );
+
+        for (page, text) in [
+            ("docs/plugins.md", include_str!("../../docs/plugins.md")),
+            (
+                "docs/design/wasm-plugin-api.md",
+                include_str!("../../docs/design/wasm-plugin-api.md"),
+            ),
+        ] {
+            // Names DECLARED on this page, by form. A `sipnab_*` token also
+            // appears in prose explaining why there is no deallocator, and in
+            // a shell line naming `sipnab_plugin_example.wasm`; neither
+            // declares anything, and a scan that read them would forbid
+            // documenting the history at all.
+            let mut declared: Vec<String> = Vec::new();
+            for line in text.lines() {
+                let name = line
+                    .split_once("fn ")
+                    .filter(|_| line.contains("extern \"C\""))
+                    .and_then(|(_, rest)| rest.split_once('('))
+                    .map(|(n, _)| n.trim().to_string())
+                    .or_else(|| {
+                        line.split_once("(export \"")
+                            .and_then(|(_, rest)| rest.split_once('"'))
+                            .map(|(n, _)| n.to_string())
+                    });
+                if let Some(name) = name
+                    && name.starts_with("sipnab_")
+                    && !declared.contains(&name)
+                {
+                    declared.push(name);
+                }
+            }
+            declared.sort();
+
+            // Compared as SETS, in both directions. An earlier version asked
+            // only whether the page CONTAINED each name, and a mutation proved
+            // that hollow: deleting `sipnab_alloc` from the declaration block
+            // left the gate green, because the name still appeared in a prose
+            // bullet three lines below.
+            assert_eq!(
+                declared, resolved,
+                "{page} declares {declared:?} as the plugin ABI; the host \
+                 resolves {resolved:?}. A name the host requires and the page \
+                 omits produces a plugin that will not load; a name the page \
+                 requires and the host ignores is a rule nothing enforces."
+            );
+        }
+    }
 }

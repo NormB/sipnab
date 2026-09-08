@@ -1379,6 +1379,190 @@ fn heading_name(text: &str) -> Option<String> {
     Some(t.trim_start_matches('#').trim().to_lowercase())
 }
 
+/// Whether a doc block's opening word can only be a stranded continuation.
+///
+/// The rule is grammatical, and deliberately narrow: **a summary never opens
+/// with a pronoun, article, conjunction or preposition.** A doc block that
+/// does is finishing a sentence some other item's block used to hold.
+///
+/// The obvious wider rule — *any* lowercase opening word — was tried first and
+/// is wrong here. It reported 78 blocks, and 76 of them were legitimate: this
+/// tree opens doc comments with bare identifiers (`expand_alias returns None
+/// for an unrecognized alias`), with tool and format names (`pcapng`,
+/// `nftables`, `ratatui`), and with the project's own lowercase name. An
+/// exemption list covering those would be a list of grandfathered sites, which
+/// is the rot this file's other gates exist to prevent. A closed list of
+/// FUNCTION words has no such problem: no identifier in this tree is named
+/// `they` or `the`, and none ever will be.
+///
+/// It does not claim to catch every split. A fragment beginning with a verb
+/// (`gets what it asked for`) is indistinguishable from a doc opening with a
+/// method name, and this reports neither. What it catches is the shape three
+/// released splits actually had.
+fn opens_like_a_stranded_continuation(first: &str) -> bool {
+    let t = first.trim();
+    // Shape-based admissions first: none of these is prose at all.
+    for lead in ["#", "*", "-", "|", "```", "[", "`", ">", "<", "!"] {
+        if t.starts_with(lead) {
+            return false;
+        }
+    }
+    let Some(word) = t.split_whitespace().next() else {
+        return false;
+    };
+    // Case is half the evidence and must be read BEFORE folding it away: "The
+    // analysis is incomplete" is a summary, "the exit code — or `None`" is the
+    // tail of one. Dropping the case first made this fire on 700 legitimate
+    // blocks, all of them starting a sentence properly.
+    if !word.starts_with(|c: char| c.is_lowercase()) {
+        return false;
+    }
+    // The whole token, not a prefix of it. `a/A — combined detail ...` opens a
+    // keybinding's doc with a key PAIR, and taking the leading letters of that
+    // yields `a`, which is an article. A function word is a word: strip the
+    // sentence punctuation that can trail one, and require what is left to be
+    // letters only.
+    let word = word.trim_end_matches([',', '.', ';', ':']);
+    if !word.chars().all(|c| c.is_ascii_alphabetic()) {
+        return false;
+    }
+    let word = word.to_string();
+    /// English function words. A documented item's summary opens with none of
+    /// them, and no Rust identifier in this tree is spelled like one.
+    const CONTINUATION_WORDS: &[&str] = &[
+        "a", "an", "the", "and", "but", "or", "nor", "so", "yet", "of", "to", "in", "on", "at",
+        "by", "for", "from", "with", "into", "onto", "than", "then", "that", "which", "who",
+        "whom", "whose", "this", "these", "those", "it", "its", "they", "them", "their", "he",
+        "she", "his", "her", "him", "we", "us", "our", "you", "your", "i", "as", "if", "when",
+        "while", "where", "because", "although", "though", "unless", "until", "after", "before",
+        "about", "against", "between", "over", "under", "through", "during", "without", "within",
+        "upon", "per", "via", "had", "has", "have", "was", "were", "been", "being", "is", "are",
+        "am", "be", "would", "could", "should", "will", "shall", "may", "might", "must", "can",
+    ];
+    CONTINUATION_WORDS.contains(&word.as_str())
+}
+
+/// No doc block opens with the tail of somebody else's sentence.
+///
+/// **Paid as one of two tests owed for a defect this file's other gates let
+/// through**, and the defect is this file's own subject in a new shape.
+///
+/// `CidrRange::network_addr` was inserted between `contains` and its doc
+/// block. Nothing failed: the block still compiled, still sat on an item, and
+/// carried no `# Errors` section for
+/// `no_doc_block_carries_a_contract_section_its_item_cannot_have` to catch. It
+/// shipped in 0.5.158 with `contains` documented as, in full:
+///
+/// ```text
+/// /// they asked for.
+/// pub fn contains(&self, addr: IpAddr) -> bool {
+/// ```
+///
+/// — while the four paragraphs explaining the IPv4-mapped rule sat on
+/// `network_addr`, whose own summary was glued to the end of the sentence
+/// `contains` lost. Every existing rule here reads what a block CONTAINS. This
+/// one reads where a block BEGINS, which is the half a split leaves evidence
+/// in: the second item always inherits a fragment, and a fragment does not
+/// start with a capital.
+#[test]
+fn no_doc_block_opens_with_the_tail_of_another_items_sentence() {
+    let mut stranded = Vec::new();
+    let mut checked = 0usize;
+    for path in rust_files("src") {
+        for (start, body) in doc_blocks_of(&path) {
+            let Some(first) = body.iter().find(|l| !l.trim().is_empty()) else {
+                continue;
+            };
+            checked += 1;
+            if opens_like_a_stranded_continuation(first) {
+                stranded.push(format!("  {}:{start}: {}", show(&path), first.trim()));
+            }
+        }
+    }
+    assert!(
+        checked > 2_000,
+        "only {checked} doc blocks were read — the scan found almost nothing \
+         and this gate is passing vacuously"
+    );
+    assert!(
+        stranded.is_empty(),
+        "{} doc block(s) open mid-sentence, which is what an item inserted \
+         between a block and the item it documents leaves behind:\n{}",
+        stranded.len(),
+        stranded.join("\n")
+    );
+}
+
+/// The scan above can actually fire.
+///
+/// **The second of the two tests owed**, and the one that keeps the first from
+/// being a green light nobody earned. A tree-wide scan that reports nothing is
+/// indistinguishable from a scan whose predicate never matches, and this
+/// repository has shipped that mistake before — a gate whose exclusion list
+/// had grown until the rule could not fire on anything.
+///
+/// So the predicate is driven directly, on the exact fragment 0.5.158
+/// shipped and on the shapes the exclusions admit. Both directions: what must
+/// fire, and what must not.
+#[test]
+fn the_stranded_continuation_scan_fires_on_the_shape_it_names() {
+    // The real fragment, from `src/net.rs` as released in 0.5.158.
+    assert!(
+        opens_like_a_stranded_continuation("they asked for."),
+        "the scan must fire on the fragment that shipped"
+    );
+    // The other two splits this scan found on its first run, both released.
+    assert!(
+        opens_like_a_stranded_continuation("had no decoder for, produced \"49 packets"),
+        "src/app/batch.rs shipped this fragment on ACCUSED_FINDING_SCAN_CAP"
+    );
+    assert!(
+        opens_like_a_stranded_continuation("the exit code — or `None` when the flag is absent."),
+        "src/app/bootstrap.rs shipped this fragment on run_mint_token"
+    );
+    for fires in [
+        "and the mask is applied again.",
+        "of the dialog, not of the page.",
+        "which the caller already holds.",
+    ] {
+        assert!(
+            opens_like_a_stranded_continuation(fires),
+            "{fires:?} is a stranded continuation and must be reported"
+        );
+    }
+    for admitted in [
+        "A range written in the mapped form stays IPv6.",
+        // Case is the whole difference from the fragments above.
+        "The analysis is incomplete because part of the input went unread.",
+        "This reads the store whole rather than a page of it.",
+        "It is the identifier an agent passes back to `--show-frame`.",
+        // Identifiers, tool names and formats: 76 of the 78 blocks the
+        // lowercase-only rule reported were one of these.
+        "expand_alias returns None for an unrecognized alias.",
+        "pcapng export reports the pcapng format label.",
+        "nftables commands dropping SIP from one address.",
+        "ratatui table widget state.",
+        // A keybinding doc opening with the key pair itself. The leading
+        // letter of `a/A` is an article and the token is not.
+        "a/A — combined detail of the selected message's transaction.",
+        "f — toggle the ladder filter.",
+        "`contains` matches an address against this range.",
+        "# Errors",
+        "* One item of a list.",
+        "- Another list marker.",
+        "[`CidrRange`]: crate::net::CidrRange",
+        "| Column | Value |",
+        "```text",
+        "sipnab reads this at startup.",
+        "cargo builds it with the `full` feature.",
+    ] {
+        assert!(
+            !opens_like_a_stranded_continuation(admitted),
+            "{admitted:?} is a legitimate opening and must not be reported"
+        );
+    }
+}
+
 /// No doc block carries a contract section its item cannot have.
 ///
 /// The narrow, certain half of instance 5. Where the second-summary rule reads

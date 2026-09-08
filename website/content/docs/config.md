@@ -42,6 +42,40 @@ Use `--no-config` (`-F`) to skip all file loading. Use `--dump-config` (`-D`) to
 
 Unknown keys produce a warning and go no further, so one config can span versions.
 
+## Environment variables in values
+
+Any string value may contain `${NAME}`. sipnab substitutes that environment
+variable's value when it reads the file:
+
+```toml
+[crash]
+report_dir = "/home/${SUDO_USER}/sipnab"
+```
+
+The case this exists for is `sudo`. Capture needs privileges, so sipnab is
+often run under `sudo`, and after `sudo -i` a file written by that run lands in
+root's directory rather than in the directory of whoever ran the command.
+`${SUDO_USER}` is the only thing that can say which one that is at the moment
+sipnab reads the file.
+
+Four rules, and they hold everywhere a string does:
+
+- **`${NAME}` expands.** `NAME` is an ASCII letter or `_` followed by letters,
+  digits or `_`. sipnab rejects shell's `${NAME:-default}` and `${NAME-other}`
+  outright rather than half-supporting them.
+- **An unset variable is an error.** sipnab names the setting and the variable
+  and does not start. Expanding to nothing would turn
+  `/home/${SUDO_USER}/sipnab` into `/home//sipnab`, which is a real, writable
+  directory that is not the one you meant.
+- **`$$` is a literal `$`.** Write `$${NAME}` for a literal `${NAME}`.
+- **A bare `$NAME` is literal text.** Braces are the whole syntax.
+
+What a variable expands to is data. It is never scanned again, so a value that
+itself contains `${...}` stays as it is.
+
+`--dump-config` prints values after expansion, which is what sipnab is actually
+using.
+
 ## Format
 
 Standard [TOML](https://toml.io/). All sections and keys are optional. Only set values you want to change from defaults.

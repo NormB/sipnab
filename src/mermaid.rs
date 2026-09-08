@@ -81,6 +81,30 @@ pub fn participant_id(index: usize) -> String {
     format!("p{index}")
 }
 
+/// Edges the vendored renderer accepts before it refuses the diagram.
+///
+/// `website/static/js/mermaid.min.js` carries `maxEdges:500` and
+/// `maxTextSize:5e4`. Past either it renders NOTHING — no partial picture, no
+/// error a reader would connect to the cause — so a diagram that walks past
+/// this is a blank panel, which is the worst way for an export to fail.
+pub const RENDERER_MAX_EDGES: usize = 500;
+
+/// Messages any sipnab-generated diagram will draw.
+///
+/// Below [`RENDERER_MAX_EDGES`] with room to spare: an arrow is one edge, but
+/// a `Note` is another, and a diagram that only just fits is one feature away
+/// from not fitting.
+pub const MAX_MESSAGES: usize = 200;
+
+// Asserted at compile time rather than in a test: both are constants, and a
+// cap that drifted past the renderer's limit would produce blank exports on
+// the one surface that actually renders them.
+const _: () = assert!(
+    MAX_MESSAGES < RENDERER_MAX_EDGES,
+    "the message cap must leave the renderer room, or the export renders as \
+     nothing at all"
+);
+
 /// A Mermaid `sequenceDiagram` for one dialog's messages.
 ///
 /// # Why this lives here
@@ -109,9 +133,54 @@ pub fn participant_id(index: usize) -> String {
 /// only in the label, so no capture-derived text reaches an identifier.
 #[must_use]
 pub fn sequence_diagram(rows: &[(String, String, String, bool)], max_messages: usize) -> String {
+    let rows: Vec<DiagramRow> = rows
+        .iter()
+        .map(|(from, to, label, is_request)| DiagramRow {
+            from: from.clone(),
+            to: to.clone(),
+            label: label.clone(),
+            is_request: *is_request,
+            note: None,
+        })
+        .collect();
+    sequence_diagram_rows(&rows, &|endpoint| endpoint.to_string(), max_messages)
+}
+
+/// One message in a sequence diagram.
+///
+/// `note` carries what the ladder computed and the export used to throw away:
+/// the timestamp offset, the post-dial delay, an SDP badge, a diagnosis. Those
+/// annotations are the reason to draw the diagram at all — seven bare arrows
+/// are a picture of the protocol, not of the call.
+#[derive(Debug, Clone)]
+pub struct DiagramRow {
+    /// Sending endpoint identity.
+    pub from: String,
+    /// Receiving endpoint identity.
+    pub to: String,
+    /// The arrow's own label — a method, or a status line.
+    pub label: String,
+    /// Requests draw a solid arrow, responses a dashed one.
+    pub is_request: bool,
+    /// What the ladder knew about this message, if anything.
+    pub note: Option<String>,
+}
+
+/// The full form: rows that may carry annotations, plus a label resolver.
+///
+/// # Arguments
+/// * `rows` — messages in capture order.
+/// * `label_for` — display name for an endpoint identity.
+/// * `max_messages` — arrows to draw before truncating.
+#[must_use]
+pub fn sequence_diagram_rows(
+    rows: &[DiagramRow],
+    label_for: &dyn Fn(&str) -> String,
+    max_messages: usize,
+) -> String {
     let mut participants: Vec<&str> = Vec::new();
-    for (from, to, _, _) in rows {
-        for endpoint in [from.as_str(), to.as_str()] {
+    for row in rows {
+        for endpoint in [row.from.as_str(), row.to.as_str()] {
             if !participants.contains(&endpoint) {
                 participants.push(endpoint);
             }
@@ -131,7 +200,7 @@ pub fn sequence_diagram(rows: &[(String, String, String, bool)], max_messages: u
             "    participant {} as {}
 ",
             participant_id(i),
-            escape_mermaid_label(p)
+            escape_mermaid_label(&label_for(p))
         ));
     }
     out.push('\n');
@@ -143,15 +212,29 @@ pub fn sequence_diagram(rows: &[(String, String, String, bool)], max_messages: u
             .map_or_else(|| "p0".to_string(), participant_id)
     };
 
-    for (from, to, label, is_request) in rows.iter().take(max_messages) {
+    for row in rows.iter().take(max_messages) {
         out.push_str(&format!(
             "    {}{}{}: {}
 ",
-            index(from),
-            if *is_request { "->>" } else { "-->>" },
-            index(to),
-            escape_mermaid_label(label)
+            index(&row.from),
+            if row.is_request { "->>" } else { "-->>" },
+            index(&row.to),
+            escape_mermaid_label(&row.label)
         ));
+        // What the ladder knew, attached to the arrow it belongs to. Without
+        // this the export is seven bare arrows: a picture of the protocol
+        // rather than of the call, and the annotations are the reason to draw
+        // it at all.
+        if let Some(note) = &row.note
+            && !note.is_empty()
+        {
+            out.push_str(&format!(
+                "    Note right of {}: {}
+",
+                index(&row.to),
+                escape_mermaid_label(note)
+            ));
+        }
     }
 
     if rows.len() > max_messages {
@@ -166,6 +249,40 @@ pub fn sequence_diagram(rows: &[(String, String, String, bool)], max_messages: u
         ));
     }
     out
+}
+
+/// The same diagram, with a caller-supplied display name per endpoint.
+///
+/// The TUI resolves an endpoint to a name (`--name-mode`, static or DNS) and
+/// shows that instead of the bare address. Routing its export through the
+/// address-only form would have silently dropped the operator's own name
+/// resolution from every exported diagram — the identity stays the address,
+/// because two endpoints can resolve to the same truncated name, and only the
+/// LABEL changes.
+///
+/// # Arguments
+///
+/// * `rows` — `(from, to, label, is_request)` per message, in capture order.
+///   `from`/`to` are identities, not display text.
+/// * `label_for` — display name for an endpoint identity.
+/// * `max_messages` — how many arrows to draw before truncating.
+#[must_use]
+pub fn sequence_diagram_with_labels(
+    rows: &[(String, String, String, bool)],
+    label_for: &dyn Fn(&str) -> String,
+    max_messages: usize,
+) -> String {
+    let rows: Vec<DiagramRow> = rows
+        .iter()
+        .map(|(from, to, label, is_request)| DiagramRow {
+            from: from.clone(),
+            to: to.clone(),
+            label: label.clone(),
+            is_request: *is_request,
+            note: None,
+        })
+        .collect();
+    sequence_diagram_rows(&rows, label_for, max_messages)
 }
 
 #[cfg(test)]
@@ -305,6 +422,75 @@ mod tests {
                 .all(|c| c.is_ascii_alphanumeric()),
             "got {}",
             participant_id(17)
+        );
+    }
+    /// The shared builder escapes every label it writes.
+    ///
+    /// The substance behind the source gate in
+    /// `tests/mermaid_one_escaper_test.rs`. Both Mermaid generators delegate
+    /// here rather than escaping themselves, so this is now the ONE place the
+    /// escaping actually happens — for the arrow labels and for the
+    /// participant names alike, both of which can be capture-derived.
+    #[test]
+    fn the_shared_builder_escapes_every_label_it_writes() {
+        // `#` starts a Mermaid entity, `;` and a newline end a statement, and
+        // `<`/`>` matter to the HTML wrapper the TUI writes around this.
+        let nasty = "BAD#;<b>\nsecond line";
+        let rows = vec![(
+            "198.51.100.1:5060".to_string(),
+            "198.51.100.2:5060".to_string(),
+            nasty.to_string(),
+            true,
+        )];
+
+        let out = sequence_diagram(&rows, MAX_MESSAGES);
+        assert!(
+            !out.contains("BAD#;"),
+            "the raw message label reached the diagram: {out}"
+        );
+        assert!(
+            out.lines().filter(|l| l.contains("->>")).count() == 1,
+            "an unescaped newline split one arrow into two statements: {out}"
+        );
+
+        // And the participant label, which a resolver can supply.
+        let labeled = sequence_diagram_with_labels(&rows, &|_| nasty.to_string(), MAX_MESSAGES);
+        assert!(
+            !labeled.contains("BAD#;"),
+            "the raw participant label reached the diagram: {labeled}"
+        );
+        assert_eq!(
+            labeled
+                .lines()
+                .filter(|l| l.trim_start().starts_with("participant "))
+                .count(),
+            2,
+            "an unescaped newline in a participant label added a statement: \
+             {labeled}"
+        );
+    }
+
+    /// A caller-supplied label changes the display name and nothing else.
+    ///
+    /// The identity stays the endpoint string: two endpoints that resolve to
+    /// the same name are still two lifelines, because collapsing them would
+    /// merge two hosts into one row of the ladder.
+    #[test]
+    fn a_shared_label_does_not_merge_two_endpoints() {
+        let rows = vec![(
+            "198.51.100.1:5060".to_string(),
+            "198.51.100.2:5060".to_string(),
+            "INVITE".to_string(),
+            true,
+        )];
+        let out = sequence_diagram_with_labels(&rows, &|_| "same-name".to_string(), MAX_MESSAGES);
+        assert_eq!(
+            out.lines()
+                .filter(|l| l.trim_start().starts_with("participant "))
+                .count(),
+            2,
+            "two endpoints sharing a resolved name are still two lifelines: \
+             {out}"
         );
     }
 }

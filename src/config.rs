@@ -775,6 +775,159 @@ impl SecurityConfig {
     }
 }
 
+/// Substitute `${NAME}` from the environment in one config string.
+///
+/// A path written in a config file often has to name whoever is running
+/// rather than whoever wrote the file. The motivating case is `sudo -i`: a
+/// saved capture belongs in the invoking user's directory, and only
+/// `${SUDO_USER}` can say which one that is at the moment the file is read.
+///
+/// `lookup` is an argument rather than a direct `std::env::var` call so both
+/// halves of every rule below can be driven from a test without touching the
+/// process environment — which is shared, and which a parallel test run would
+/// otherwise have to serialize around.
+///
+/// The syntax is deliberately small:
+///
+/// * **`${NAME}` expands.** `NAME` must be an identifier — an ASCII letter or
+///   `_` followed by letters, digits or `_`. Shell's `${A:-default}` and
+///   `${A-B}` are refused rather than half-supported.
+/// * **An unset variable refuses.** Empty is the dangerous answer here:
+///   `/home/${SUDO_USER}/captures` with nothing set becomes `/home//captures`,
+///   a real and writable directory that is not the one anybody meant.
+/// * **`$$` is a literal `$`**, everywhere and not only before a brace. A rule
+///   with an exception is a rule nobody applies correctly from memory.
+/// * **A bare `$NAME` is literal.** Braces are the entire syntax, so there is
+///   no second form and no question about where a name ends.
+/// * **An expansion is not re-expanded.** What the environment supplies is
+///   data. Rescanning it would let an operator's environment reach a variable
+///   the config never named, and a self-referential pair would not terminate.
+///
+/// # Errors
+/// A message naming the problem, for an unset variable, an unterminated
+/// `${`, or a name that is not an identifier. The caller adds the key path.
+pub fn expand_env_vars(
+    input: &str,
+    lookup: &dyn Fn(&str) -> Option<String>,
+) -> Result<String, String> {
+    // Nothing to do for the overwhelmingly common case, and this is on the
+    // path of every string in every config file.
+    if !input.contains('$') {
+        return Ok(input.to_string());
+    }
+
+    let mut out = String::with_capacity(input.len());
+    let mut chars = input.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '$' {
+            out.push(c);
+            continue;
+        }
+        match chars.peek() {
+            Some('$') => {
+                chars.next();
+                out.push('$');
+            }
+            Some('{') => {
+                chars.next();
+                let mut name = String::new();
+                let mut closed = false;
+                for c in chars.by_ref() {
+                    if c == '}' {
+                        closed = true;
+                        break;
+                    }
+                    name.push(c);
+                }
+                if !closed {
+                    return Err(format!("unterminated `${{` in {input:?}"));
+                }
+                if !is_env_identifier(&name) {
+                    return Err(format!(
+                        "`${{{name}}}` is not a variable name: expected an ASCII \
+                         letter or `_` followed by letters, digits or `_`. \
+                         Shell default-value syntax is not supported"
+                    ));
+                }
+                let Some(value) = lookup(&name) else {
+                    return Err(format!(
+                        "`${{{name}}}` is not set in the environment. An unset \
+                         variable is refused rather than expanded to nothing, \
+                         because an empty expansion inside a path names a real \
+                         directory that is not the one intended"
+                    ));
+                };
+                // Pushed verbatim. `value` is data and never rescanned.
+                out.push_str(&value);
+            }
+            // A `$` that opens nothing is a `$`.
+            _ => out.push('$'),
+        }
+    }
+    Ok(out)
+}
+
+/// Whether `name` is an environment-variable identifier this expander accepts.
+///
+/// The POSIX shell's own rule for a name, and deliberately no wider: anything
+/// outside it in a `${...}` is a typo or shell syntax sipnab does not
+/// implement, and both are better refused than looked up.
+fn is_env_identifier(name: &str) -> bool {
+    let mut chars = name.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    (first.is_ascii_alphabetic() || first == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// Expand `${NAME}` in every string of a parsed TOML document, at any depth.
+///
+/// Walks the whole tree rather than a list of known path-valued keys. A list
+/// would be a second place the set of settings is written down, and it would
+/// be wrong the first time a setting was added — the drift class this repo
+/// keeps removing. Non-strings are left exactly as they are, including their
+/// type.
+///
+/// # Errors
+/// The message from [`expand_env_vars`], prefixed with the dotted key path of
+/// the setting that refused. A config carries dozens of strings and naming
+/// only the variable would send the operator hunting for it.
+pub fn expand_env_in_value(
+    value: &mut toml::Value,
+    lookup: &dyn Fn(&str) -> Option<String>,
+) -> Result<(), String> {
+    fn walk(
+        value: &mut toml::Value,
+        path: &str,
+        lookup: &dyn Fn(&str) -> Option<String>,
+    ) -> Result<(), String> {
+        match value {
+            toml::Value::String(s) => {
+                *s = expand_env_vars(s, lookup).map_err(|e| format!("{path}: {e}"))?;
+            }
+            toml::Value::Array(items) => {
+                for (i, item) in items.iter_mut().enumerate() {
+                    walk(item, &format!("{path}[{i}]"), lookup)?;
+                }
+            }
+            toml::Value::Table(table) => {
+                for (key, item) in table.iter_mut() {
+                    let child = if path.is_empty() {
+                        key.clone()
+                    } else {
+                        format!("{path}.{key}")
+                    };
+                    walk(item, &child, lookup)?;
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+    walk(value, "", lookup)
+}
+
 /// Parse a `"START-END"` business-hours spec into whole UTC hours.
 ///
 /// A wrapping range (`"22-6"`) is legal and means the overnight window, which
@@ -1778,14 +1931,44 @@ impl Config {
     ///
     /// # Side effects
     /// Reads `path` from the filesystem; unknown keys are logged as
-    /// warnings via `parse_toml`.
+    /// warnings via `parse_toml_with_env`.
     fn load_file(path: &Path) -> Result<Config, crate::Error> {
+        Self::load_file_with_env(path, &|name| std::env::var(name).ok())
+    }
+
+    /// `load_file`, with the environment supplied rather than read.
+    ///
+    /// (`load_file` itself is private, so it is named rather than linked: an
+    /// intra-doc link from a public item to a private one resolves to nothing
+    /// in the published docs, and `-D rustdoc::private-intra-doc-links`
+    /// refuses it.)
+    ///
+    /// Public because a documented config sample is only loadable in the
+    /// environment it was written for. `docs/config-reference.md` shows
+    /// `report_dir = "/home/${SUDO_USER}/sipnab"`, which is correct for the
+    /// `sudo` invocation it documents and refuses to load anywhere else — so
+    /// the gate that proves every documented sample loads has to supply that
+    /// environment rather than inherit the test runner's.
+    ///
+    /// The alternative was for that gate to write `SUDO_USER` into the process
+    /// environment, which is shared mutable state a parallel test run cannot
+    /// safely touch.
+    ///
+    /// # Errors
+    /// `crate::Error::ConfigRead` when `path` cannot be read;
+    /// `crate::Error::ConfigParse` when its contents are not valid TOML or do
+    /// not deserialize; `crate::Error::ConfigInvalid`, naming the setting,
+    /// when a `${NAME}` cannot be expanded.
+    pub fn load_file_with_env(
+        path: &Path,
+        lookup: &dyn Fn(&str) -> Option<String>,
+    ) -> Result<Config, crate::Error> {
         let content = std::fs::read_to_string(path).map_err(|e| crate::Error::ConfigRead {
             path: path.display().to_string(),
             source: e,
         })?;
 
-        Self::parse_toml(&content, Some(path))
+        Self::parse_toml_with_env(&content, Some(path), lookup)
     }
 
     /// Parse TOML content, warn about unknown keys, and deserialize leniently.
@@ -1800,7 +1983,26 @@ impl Config {
     ///
     /// # Side effects
     /// Emits a `tracing` warning per unknown key.
-    fn parse_toml(content: &str, path: Option<&Path>) -> Result<Config, crate::Error> {
+    /// Parse TOML content, expand `${NAME}`, warn about unknown keys, and
+    /// deserialize leniently.
+    ///
+    /// The environment is an argument rather than a `std::env::var` call
+    /// inside the walker. `${NAME}` expansion is the only part of loading a
+    /// config that depends on it, and the environment is shared mutable state
+    /// a parallel test run cannot safely write — so both halves of every
+    /// expansion rule are driven from tests that touch nothing outside
+    /// themselves, and `the_default_loader_reads_the_real_environment` is what
+    /// keeps the production path from being wired to a stub.
+    ///
+    /// # Errors
+    /// `crate::Error::ConfigParse` when `content` is not valid TOML or does
+    /// not deserialize into `Config`; `crate::Error::ConfigInvalid`, naming
+    /// the setting, when a `${NAME}` cannot be expanded.
+    fn parse_toml_with_env(
+        content: &str,
+        path: Option<&Path>,
+        lookup: &dyn Fn(&str) -> Option<String>,
+    ) -> Result<Config, crate::Error> {
         let display = path
             .map(|p| p.display().to_string())
             .unwrap_or_else(|| "<inline>".to_string());
@@ -1815,6 +2017,14 @@ impl Config {
             })?;
 
         warn_unknown_keys(&value);
+
+        // Expanded BEFORE deserialization, so every string-valued setting is
+        // covered by one rule rather than by whichever fields somebody
+        // remembered to handle. Deserialization then sees the same shapes it
+        // always did.
+        let mut value = value;
+        expand_env_in_value(&mut value, lookup)
+            .map_err(|e| crate::Error::ConfigInvalid(format!("{display}: {e}")))?;
 
         // Deserialize leniently into Config from the already-parsed value
         // rather than re-parsing the string a second time.
@@ -2040,6 +2250,15 @@ pub fn write_manual_mappings_file(
 /// updates, unknown-key detection, and limits validation.
 #[cfg(test)]
 mod tests {
+    /// The process environment, for the tests that mean the real one.
+    ///
+    /// Reading it is safe to do beside any other test; only WRITING it would
+    /// be shared mutable state, which is why every test that needs a
+    /// particular value supplies its own lookup instead.
+    fn real_env(name: &str) -> Option<String> {
+        std::env::var(name).ok()
+    }
+
     use super::*;
     use std::io::Write;
 
@@ -2493,7 +2712,7 @@ filter = "/"
             "valid [crash] section must not be flagged"
         );
         // And it actually parses into the config.
-        let config = Config::parse_toml(toml_str, None).unwrap();
+        let config = Config::parse_toml_with_env(toml_str, None, &real_env).unwrap();
         assert_eq!(config.crash.reports, Some(true));
         assert_eq!(config.crash.core, Some(false));
     }
@@ -2522,7 +2741,7 @@ filter = "/"
             "valid [sip] section and [capture] promisc must not be flagged"
         );
         // And they actually parse into the config.
-        let config = Config::parse_toml(toml_str, None).unwrap();
+        let config = Config::parse_toml_with_env(toml_str, None, &real_env).unwrap();
         assert_eq!(
             config.sip.xcid_headers.as_deref(),
             Some(["X-CID".to_string()].as_slice())
@@ -2570,7 +2789,7 @@ filter = "/"
         // Unknown key within a section should parse successfully (lenient)
         // and the warn_unknown_keys function should detect it.
         let toml_str = "[capture]\ndevice = \"lo\"\nbogus = true\n";
-        let config = Config::parse_toml(toml_str, None).unwrap();
+        let config = Config::parse_toml_with_env(toml_str, None, &real_env).unwrap();
         assert_eq!(config.capture.device.as_deref(), Some("lo"));
 
         // Also verify via file-based loading
@@ -3192,6 +3411,217 @@ column_selector = "F10"
             "a working-directory search would make a config's effect depend on \
              where the operator happened to be standing"
         );
+    }
+
+    /// A path in a config file can be written relative to whoever is running.
+    ///
+    /// The motivating case is `sudo -i`: a saved capture belongs in the
+    /// invoking user's directory, not root's, and only `${SUDO_USER}` can say
+    /// which one that is at the moment the file is read.
+    #[test]
+    fn a_config_value_expands_a_set_variable() {
+        let env = |name: &str| match name {
+            "SUDO_USER" => Some("norm".to_string()),
+            _ => None,
+        };
+        assert_eq!(
+            expand_env_vars("/home/${SUDO_USER}/captures", &env).unwrap(),
+            "/home/norm/captures"
+        );
+        // More than one, and adjacent to each other, with no separator to
+        // accidentally delimit them.
+        let env2 = |name: &str| match name {
+            "A" => Some("x".to_string()),
+            "B" => Some("y".to_string()),
+            _ => None,
+        };
+        assert_eq!(expand_env_vars("${A}${B}", &env2).unwrap(), "xy");
+    }
+
+    /// An unset variable REFUSES rather than expanding to nothing.
+    ///
+    /// Empty is the dangerous answer for the setting this feature exists to
+    /// serve: `/home/${SUDO_USER}/captures` with `SUDO_USER` unset becomes
+    /// `/home//captures`, which is a real, writable, wrong directory. A
+    /// refusal names the variable and stops; an empty expansion writes the
+    /// operator's capture somewhere they will not look for it.
+    #[test]
+    fn an_unset_variable_is_refused_not_emptied() {
+        let env = |_: &str| None;
+        let err = expand_env_vars("/home/${SUDO_USER}/x", &env)
+            .expect_err("an unset variable must not expand");
+        assert!(
+            err.contains("SUDO_USER"),
+            "the refusal must name the variable, got {err:?}"
+        );
+    }
+
+    /// `$$` is the escape, and it collapses everywhere rather than only in
+    /// front of a brace. A rule with an exception is a rule nobody can apply
+    /// from memory.
+    #[test]
+    fn a_literal_dollar_is_written_twice() {
+        let env = |_: &str| Some("EXPANDED".to_string());
+        assert_eq!(expand_env_vars("$${HOME}", &env).unwrap(), "${HOME}");
+        assert_eq!(expand_env_vars("cost: $$5", &env).unwrap(), "cost: $5");
+        assert_eq!(expand_env_vars("$$$$", &env).unwrap(), "$$");
+    }
+
+    /// A lone `$` that opens nothing is data, not syntax. Shell-style bare
+    /// `$NAME` is deliberately NOT expanded: braces are the whole syntax, so
+    /// there is no second form to remember and no ambiguity about where a
+    /// name ends.
+    #[test]
+    fn a_bare_dollar_name_is_left_alone() {
+        let env = |_: &str| Some("EXPANDED".to_string());
+        assert_eq!(expand_env_vars("$HOME/x", &env).unwrap(), "$HOME/x");
+        assert_eq!(expand_env_vars("100$", &env).unwrap(), "100$");
+    }
+
+    /// An unterminated `${` is a typo, and reading it as literal text would
+    /// hide the typo in a path that then silently does not exist.
+    #[test]
+    fn an_unterminated_expansion_is_refused() {
+        let env = |_: &str| Some("EXPANDED".to_string());
+        for bad in ["${HOME", "${", "a${B"] {
+            assert!(
+                expand_env_vars(bad, &env).is_err(),
+                "{bad:?} is unterminated and must be refused"
+            );
+        }
+    }
+
+    /// An empty or non-identifier name is refused rather than looked up. A
+    /// lookup of `""` would consult the environment for a variable that
+    /// cannot exist, and `${A-B}` is shell default-value syntax that this is
+    /// deliberately not implementing — accepting it silently would be worse
+    /// than saying so.
+    #[test]
+    fn a_malformed_variable_name_is_refused() {
+        let env = |_: &str| Some("EXPANDED".to_string());
+        for bad in ["${}", "${1ABC}", "${A-B}", "${A B}", "${A:-x}"] {
+            assert!(
+                expand_env_vars(bad, &env).is_err(),
+                "{bad:?} is not an identifier and must be refused"
+            );
+        }
+    }
+
+    /// The expansion reaches every string in the document, at any depth, and
+    /// touches nothing that is not a string.
+    ///
+    /// A rule applied to the top level only would work in exactly the cases a
+    /// test author thinks of and fail on the nested tables that make up most
+    /// of this config.
+    #[test]
+    fn expansion_reaches_nested_tables_and_arrays() {
+        let env = |name: &str| match name {
+            "U" => Some("norm".to_string()),
+            _ => None,
+        };
+        let mut value: toml::Value = toml::from_str(
+            r#"
+            top = "/home/${U}"
+            port = 5060
+            enabled = true
+            list = ["${U}", "plain"]
+
+            [outer]
+            nested = "${U}"
+
+            [[outer.rows]]
+            deep = "x/${U}"
+            "#,
+        )
+        .expect("fixture parses");
+        expand_env_in_value(&mut value, &env).expect("all variables are set");
+
+        assert_eq!(value["top"].as_str(), Some("/home/norm"));
+        assert_eq!(value["list"][0].as_str(), Some("norm"));
+        assert_eq!(value["list"][1].as_str(), Some("plain"));
+        assert_eq!(value["outer"]["nested"].as_str(), Some("norm"));
+        assert_eq!(value["outer"]["rows"][0]["deep"].as_str(), Some("x/norm"));
+        // Non-strings are untouched, and still the type they were.
+        assert_eq!(value["port"].as_integer(), Some(5060));
+        assert_eq!(value["enabled"].as_bool(), Some(true));
+    }
+
+    /// The refusal says WHICH setting refused, not merely which variable.
+    ///
+    /// A config carries dozens of strings. "SUDO_USER is not set" sends the
+    /// operator hunting; "crash.report_dir: ..." does not.
+    ///
+    /// `report_dir` is a `PathBuf`, not a `String`, which also pins that the
+    /// expansion happens on the parsed document and not on fields that
+    /// happen to deserialize as strings.
+    #[test]
+    fn the_refusal_names_the_setting_it_came_from() {
+        let env = |_: &str| None;
+        let mut value: toml::Value = toml::from_str(
+            r#"
+            [crash]
+            report_dir = "/home/${SUDO_USER}/x"
+            "#,
+        )
+        .expect("fixture parses");
+        let err = expand_env_in_value(&mut value, &env).expect_err("unset");
+        assert!(
+            err.contains("crash.report_dir"),
+            "the refusal must name the key path, got {err:?}"
+        );
+        assert!(err.contains("SUDO_USER"), "and the variable, got {err:?}");
+    }
+
+    /// The expander is wired into the load path, not merely present.
+    ///
+    /// A pure function with its own tests proves the rule; only this proves
+    /// that a config file on disk goes through it.
+    #[test]
+    fn a_loaded_config_expands_a_variable_in_a_string_setting() {
+        let env = |name: &str| match name {
+            "IFACE" => Some("eth0".to_string()),
+            _ => None,
+        };
+        let cfg = Config::parse_toml_with_env("[capture]\ndevice = \"${IFACE}\"\n", None, &env)
+            .expect("the variable is set");
+        assert_eq!(cfg.capture.device.as_deref(), Some("eth0"));
+    }
+
+    /// The refusal reaches the operator as a config error naming the file,
+    /// the setting and the variable — not as a parse failure about TOML,
+    /// which the file is.
+    #[test]
+    fn a_loaded_config_refuses_an_unset_variable() {
+        let env = |_: &str| None;
+        let err = Config::parse_toml_with_env(
+            "[capture]\ndevice = \"${IFACE}\"\n",
+            Some(std::path::Path::new("/etc/sipnab/sipnab.toml")),
+            &env,
+        )
+        .expect_err("an unset variable must not load");
+        let msg = err.to_string();
+        assert!(matches!(err, crate::Error::ConfigInvalid(_)), "got {err:?}");
+        for expected in ["/etc/sipnab/sipnab.toml", "capture.device", "IFACE"] {
+            assert!(
+                msg.contains(expected),
+                "the refusal must name {expected:?}, got {msg:?}"
+            );
+        }
+    }
+
+    /// A value the environment supplies is DATA, and cannot introduce syntax.
+    ///
+    /// If `${A}` expanded to `${B}` and that were expanded in turn, an
+    /// operator's environment could reach a variable the config never named —
+    /// and a self-referential pair would not terminate at all.
+    #[test]
+    fn an_expansion_is_not_itself_expanded() {
+        let env = |name: &str| match name {
+            "A" => Some("${B}".to_string()),
+            "B" => Some("should not appear".to_string()),
+            _ => None,
+        };
+        assert_eq!(expand_env_vars("${A}", &env).unwrap(), "${B}");
     }
 }
 
