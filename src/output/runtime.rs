@@ -170,12 +170,19 @@ pub fn host_stats() -> HostStats {
         .ok()
         .map(|n| n.get() as u64);
 
-    // cgroup v2. `max` means unlimited, in which case the machine's total is
-    // the honest denominator and the basis stays "host".
-    if let Ok(limit) = std::fs::read_to_string("/sys/fs/cgroup/memory.max")
-        && let Ok(bytes) = limit.trim().parse::<u64>()
+    // The limit this process is actually subject to -- our own cgroup and every
+    // ancestor, v2 or v1. Reading `/sys/fs/cgroup/memory.max` alone found a
+    // limit only in the v2 ROOT, which has no controller files, so a systemd
+    // unit with `MemoryMax=` and every container were invisible.
+    if let Ok(proc_self) = std::fs::read_to_string("/proc/self/cgroup")
+        && let Some((limit, available)) =
+            cgroup_memory(std::path::Path::new("/sys/fs/cgroup"), &proc_self)
     {
-        out.memory_total_bytes = Some(bytes);
+        // Both from the cgroup, as one pair. Nothing to compute here, so
+        // nothing here can pair the cgroup's total with /proc/meminfo's
+        // available -- which is what it used to do.
+        out.memory_total_bytes = Some(limit);
+        out.memory_available_bytes = available;
         out.basis = "cgroup";
     }
 
@@ -394,6 +401,105 @@ pub struct Rates {
     /// real capture 98 of 110 problem rows were OPTIONS — and an undifferentiated
     /// total is the same mistake `by_method` exists to fix on the dialog page.
     pub calls_per_second_by_method: Vec<(String, f64)>,
+}
+
+/// The memory limit this process is actually subject to, and what it is using.
+///
+/// RTF2. `host_stats` used to read `/sys/fs/cgroup/memory.max` and nothing
+/// else, which finds a limit only for a process in the cgroup-v2 ROOT — and
+/// the v2 root has no controller files at all, so on an ordinary systemd host
+/// it finds nothing. A unit with `MemoryMax=`, a container, and every cgroup-v1
+/// system were all invisible: sipnab at 1.5 GiB inside a 2 GiB limit reported
+/// 1.2% of a 128 GiB machine and `significant: false` while it was about to be
+/// OOM-killed, which is the exact question the verdict exists to answer.
+///
+/// Takes the paths rather than reading fixed ones so the layout can be driven
+/// in a test. A probe that can only read the host it runs on can only be
+/// tested on a host that reproduces the bug.
+///
+/// # Arguments
+/// * `cgroup_root` — normally `/sys/fs/cgroup`.
+/// * `proc_self_cgroup` — the contents of `/proc/self/cgroup`.
+///
+/// # Returns
+/// `(limit, available)` — already paired, so the caller cannot mix this
+/// denominator with `/proc/meminfo`'s numerator. It used to return usage and
+/// leave `host_stats` to subtract, and `host_stats` kept MemAvailable instead:
+/// a container with a 1 GiB cap on a 128 GiB host reported 1 GiB total and
+/// ~100 GiB available, two numbers from two different machines printed as a
+/// pair. `None` when no limit applies: an unlimited cgroup, or no cgroup.
+fn cgroup_memory(
+    cgroup_root: &std::path::Path,
+    proc_self_cgroup: &str,
+) -> Option<(u64, Option<u64>)> {
+    // cgroup v2: the unified line is `0::<path>`, and the limit that binds is
+    // the TIGHTEST one on the path from this cgroup up to the root -- limits
+    // are hierarchical, and an ancestor's is as real as our own.
+    if let Some(rel) = proc_self_cgroup
+        .lines()
+        .find_map(|l| l.strip_prefix("0::"))
+        .map(str::trim)
+    {
+        let mut dir = cgroup_root.join(rel.trim_start_matches('/'));
+        let mut tightest: Option<u64> = None;
+        let mut current = None;
+        let mut first = true;
+        loop {
+            if let Ok(text) = std::fs::read_to_string(dir.join("memory.max"))
+                && let Some(v) = parse_cgroup_limit(&text)
+            {
+                tightest = Some(tightest.map_or(v, |t: u64| t.min(v)));
+            }
+            // Usage is read from OUR cgroup only: an ancestor's total counts
+            // every sibling too, which is not what this process is using.
+            if first {
+                current = std::fs::read_to_string(dir.join("memory.current"))
+                    .ok()
+                    .and_then(|t| t.trim().parse::<u64>().ok());
+                first = false;
+            }
+            if dir == cgroup_root || !dir.pop() {
+                break;
+            }
+        }
+        if let Some(limit) = tightest {
+            return Some((limit, current.map(|used| limit.saturating_sub(used))));
+        }
+    }
+
+    // cgroup v1, whose file is elsewhere and whose "unlimited" is a sentinel
+    // rather than a word.
+    let v1 = cgroup_root.join("memory");
+    let limit = std::fs::read_to_string(v1.join("memory.limit_in_bytes"))
+        .ok()
+        .and_then(|t| parse_v1_limit(&t))?;
+    let current = std::fs::read_to_string(v1.join("memory.usage_in_bytes"))
+        .ok()
+        .and_then(|t| t.trim().parse::<u64>().ok());
+    Some((limit, current.map(|used| limit.saturating_sub(used))))
+}
+
+/// Parse a cgroup-v2 `memory.max`. `max` means unlimited, which is not a limit.
+fn parse_cgroup_limit(contents: &str) -> Option<u64> {
+    match contents.trim() {
+        "max" => None,
+        n => n.parse().ok(),
+    }
+}
+
+/// Parse a cgroup-v1 `memory.limit_in_bytes`.
+///
+/// v1 has no `max` keyword: unlimited is a sentinel close to `u64::MAX`
+/// (`PAGE_COUNTER_MAX` scaled by the page size), which differs between kernels
+/// and page sizes. Anything past a petabyte is that sentinel rather than a
+/// limit anyone set, and reporting it as a denominator would put every
+/// percentage at zero.
+fn parse_v1_limit(contents: &str) -> Option<u64> {
+    const IMPLAUSIBLE: u64 = 1 << 50;
+    match contents.trim().parse::<u64>() {
+        Ok(v) if v < IMPLAUSIBLE => Some(v),
+        _ => None,
+    }
 }
 
 /// The longest window either surface will sample a rate across.
@@ -666,6 +772,167 @@ mod tests {
             "and the field is omitted on the wire rather than sent as null or \
              zero: {json}"
         );
+    }
+
+    /// A systemd unit's own `MemoryMax=` is found.
+    ///
+    /// RTF2, and the case that shipped broken. The v2 ROOT carries no
+    /// controller files, so reading `/sys/fs/cgroup/memory.max` finds nothing
+    /// on an ordinary systemd host — and every unit with `MemoryMax=` set was
+    /// therefore measured against the machine's total instead of its own.
+    #[test]
+    fn a_limit_on_our_own_cgroup_is_found() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        let rel = "system.slice/sipnab.service";
+        std::fs::create_dir_all(root.join(rel)).expect("mkdir");
+        std::fs::write(root.join(rel).join("memory.max"), "2147483648\n").expect("write");
+        std::fs::write(root.join(rel).join("memory.current"), "1610612736\n").expect("write");
+
+        let found = cgroup_memory(root, &format!("0::/{rel}\n"));
+        assert_eq!(
+            found,
+            Some((2_147_483_648, Some(536_870_912))),
+            "a unit's own MemoryMax and the headroom under it"
+        );
+    }
+
+    /// An ancestor's limit binds even when ours says `max`.
+    ///
+    /// cgroup limits are hierarchical: a slice capped at 1 GiB caps every unit
+    /// inside it, whatever those units declare. Reading only our own file
+    /// would report unlimited for a process that is anything but.
+    #[test]
+    fn the_tightest_ancestor_limit_wins() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("system.slice/sipnab.service")).expect("mkdir");
+        std::fs::write(root.join("system.slice/memory.max"), "1073741824\n").expect("write");
+        std::fs::write(root.join("system.slice/sipnab.service/memory.max"), "max\n")
+            .expect("write");
+
+        let found = cgroup_memory(root, "0::/system.slice/sipnab.service\n");
+        assert_eq!(
+            found.map(|(l, _)| l),
+            Some(1_073_741_824),
+            "the slice's cap binds the unit inside it"
+        );
+    }
+
+    /// `max` at every level is no limit at all, and the host total stays honest.
+    #[test]
+    fn an_unlimited_hierarchy_reports_no_limit() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("user.slice/session.scope")).expect("mkdir");
+        for p in [
+            "user.slice/memory.max",
+            "user.slice/session.scope/memory.max",
+        ] {
+            std::fs::write(root.join(p), "max\n").expect("write");
+        }
+        assert_eq!(
+            cgroup_memory(root, "0::/user.slice/session.scope\n"),
+            None,
+            "an unlimited cgroup must fall back to the machine's total, not \
+             report a limit nobody set"
+        );
+    }
+
+    /// cgroup v1 is read too, and its unlimited sentinel is not a limit.
+    #[test]
+    fn cgroup_v1_is_read_and_its_sentinel_is_not_a_limit() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("memory")).expect("mkdir");
+        std::fs::write(root.join("memory/memory.limit_in_bytes"), "536870912\n").expect("write");
+        std::fs::write(root.join("memory/memory.usage_in_bytes"), "268435456\n").expect("write");
+        // No `0::` line: a v1 system has controller-specific lines only.
+        let v1_proc = "8:memory:/sipnab\n4:cpu,cpuacct:/\n";
+        assert_eq!(
+            cgroup_memory(root, v1_proc),
+            Some((536_870_912, Some(268_435_456))),
+            "a v1 host has a real limit, and available is the headroom under it"
+        );
+
+        std::fs::write(
+            root.join("memory/memory.limit_in_bytes"),
+            "9223372036854771712\n",
+        )
+        .expect("write");
+        assert_eq!(
+            cgroup_memory(root, v1_proc),
+            None,
+            "v1's unlimited sentinel is not a denominator — reported as one it \
+             puts every percentage at zero"
+        );
+    }
+
+    /// No cgroup at all is no limit.
+    #[test]
+    fn a_host_with_no_cgroup_reports_no_limit() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        assert_eq!(cgroup_memory(dir.path(), "0::/\n"), None);
+        assert_eq!(cgroup_memory(dir.path(), ""), None);
+    }
+
+    /// The pair comes from one denominator, on every layout.
+    ///
+    /// The trap this replaces: asserting it against the running host only
+    /// exercises the branch when the host itself is capped, and a developer
+    /// machine is not — so the assertion passed while the pairing was wrong.
+    /// Driven layouts exercise it unconditionally.
+    #[test]
+    fn available_is_headroom_under_the_same_limit() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        let rel = "system.slice/sipnab.service";
+        std::fs::create_dir_all(root.join(rel)).expect("mkdir");
+
+        for (limit, used, want) in [
+            (2_147_483_648u64, 1_610_612_736u64, 536_870_912u64),
+            (1_073_741_824, 0, 1_073_741_824),
+            // Usage past the limit happens transiently under reclaim. Zero
+            // headroom, never a wrapped enormous number.
+            (1_073_741_824, 2_147_483_648, 0),
+        ] {
+            std::fs::write(root.join(rel).join("memory.max"), format!("{limit}\n")).expect("write");
+            std::fs::write(root.join(rel).join("memory.current"), format!("{used}\n"))
+                .expect("write");
+            let (got_limit, got_avail) =
+                cgroup_memory(root, &format!("0::/{rel}\n")).expect("a limit is set");
+            assert_eq!(got_limit, limit);
+            assert_eq!(
+                got_avail,
+                Some(want),
+                "available must be headroom under {limit} with {used} used"
+            );
+            assert!(
+                got_avail.expect("some") <= got_limit,
+                "available can never exceed the total it was derived from"
+            );
+        }
+    }
+
+    /// Available never exceeds total when the basis is the cgroup.
+    ///
+    /// It used to: the total came from the cgroup and `memory_available_bytes`
+    /// stayed on `/proc/meminfo`, which is not namespaced without lxcfs. A
+    /// container with a 1 GiB cap on a 128 GiB host reported 1 GiB total and
+    /// ~100 GiB available — two numbers from two different machines, printed
+    /// as a pair.
+    #[test]
+    fn available_never_exceeds_total() {
+        let h = host_stats();
+        if let (Some(total), Some(avail)) = (h.memory_total_bytes, h.memory_available_bytes) {
+            assert!(
+                avail <= total,
+                "{} available against a total of {} — the two came from \
+                 different denominators",
+                avail,
+                total
+            );
+        }
     }
 
     /// One INVITE, enough of it to open a dialog.

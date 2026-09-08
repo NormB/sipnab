@@ -414,4 +414,55 @@ mod tests {
         assert!(lim.check("a", now).is_err());
         assert_eq!(lim.refused_total(), 2, "both refusals counted");
     }
+    /// Every surface that meters a peer can actually reach this module.
+    ///
+    /// Owed for breaking `--no-default-features --features api`. The REST door
+    /// stopped carrying its own limiter and started calling this one, but the
+    /// module's `#[cfg]` still named only `hep` and `mcp` — so the full-feature
+    /// build was green while an api-only build did not compile at all. Only
+    /// the pre-push feature matrix could see it.
+    ///
+    /// A source gate, because a `#[cfg]` is not observable from inside a build
+    /// that satisfies it: the question is which features the attribute NAMES,
+    /// and that is a fact about the text.
+    #[test]
+    fn the_module_gate_names_every_surface_that_uses_it() {
+        let lib = include_str!("lib.rs");
+        let gate = lib
+            .lines()
+            .zip(lib.lines().skip(1))
+            .find(|(_, next)| next.trim() == "pub mod rate_limit;")
+            .map(|(cfg, _)| cfg.trim().to_string())
+            .expect("`pub mod rate_limit;` is declared with a cfg above it");
+
+        for feature in ["hep", "mcp", "api"] {
+            assert!(
+                gate.contains(&format!("feature = \"{feature}\"")),
+                "`{feature}` builds call into rate_limit, but the module gate \
+                 does not name it, so that build will not compile: {gate}"
+            );
+        }
+    }
+
+    /// The surfaces named above really do call it.
+    ///
+    /// Owed. The other direction: a gate listing every feature in the crate
+    /// would satisfy the test above and compile the module into builds that
+    /// have no use for it, which is the dead-counter cost the original comment
+    /// exists to avoid.
+    #[test]
+    fn every_named_surface_actually_calls_this_module() {
+        for (feature, rel, src) in [
+            ("api", "src/output/api.rs", include_str!("output/api.rs")),
+            ("hep", "src/capture/hep.rs", include_str!("capture/hep.rs")),
+            ("mcp", "src/mcp/server.rs", include_str!("mcp/server.rs")),
+        ] {
+            assert!(
+                src.contains("rate_limit::") || src.contains("FixedWindowLimiter"),
+                "the module gate names `{feature}`, but {rel} never uses the \
+                 shared limiter — either the surface regressed to its own copy \
+                 or the gate carries a feature it does not need"
+            );
+        }
+    }
 }

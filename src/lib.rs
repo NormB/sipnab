@@ -82,9 +82,15 @@ pub mod privilege;
 pub mod process_isolation;
 pub mod provenance;
 // One fixed-window limiter for every surface that meters a peer: the HEP
-// receiver's packets and the MCP server's tool calls. Compiled when either is,
-// so a build with neither carries no dead counter.
-#[cfg(any(feature = "hep", feature = "mcp"))]
+// receiver's packets, the MCP server's tool calls, and the REST API's
+// requests. Compiled when any of them is, so a build with none carries no dead
+// counter.
+//
+// `api` joined the list when the REST door stopped carrying its own limiter.
+// It was a real break rather than a tidy-up: `--no-default-features --features
+// api` stopped compiling, which the full-feature build could not show and the
+// pre-push feature matrix did.
+#[cfg(any(feature = "hep", feature = "mcp", feature = "api"))]
 pub mod rate_limit;
 // Native only, alongside `rtpengine`, which together with the MCP surface is
 // its only caller: `reconcile` holds a `TransmitPermit`, which is itself

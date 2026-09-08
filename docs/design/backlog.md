@@ -44,7 +44,7 @@ Tiers:
 
 ## Status
 
-**50 open, 458 done** across 36 sections.
+**48 open, 460 done** across 36 sections.
 Regenerate with `python3 scripts/backlog-status.py --apply`.
 
 | Section | Open | Done | Progress |
@@ -79,7 +79,7 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
 | P5 | 7 | 13 | `######....` |
 | Shipped (audit-period features, kept for context) | 0 | 6 | `##########` |
 | DUP | 0 | 8 | `##########` |
-| OBS-FOLLOWUP | 4 | 0 | `..........` |
+| OBS-FOLLOWUP | 2 | 2 | `#####.....` |
 
 <!-- /BACKLOG-STATUS -->
 
@@ -7121,7 +7121,7 @@ and the capture meter — are fixed in 0.5.156; these are the rest.
 
 ## OBS-FOLLOWUP — gaps in the runtime answer (added 2026-09-07)
 
-- [ ] **RTF1 — `in_subnet` refuses an address the HEP allowlist accepts.**
+- [x] **RTF1 (done 2026-09-07) — `in_subnet` refuses an address the HEP allowlist accepts.**
   `hep.rs` maps an IPv4-mapped IPv6 address to its v4 form before comparing
   ([RFC 4291 §2.5.5.2](https://www.rfc-editor.org/rfc/rfc4291#section-2.5.5.2) makes `::ffff:0:0/96` the representation of a v4 address,
   not a different family) and reads a bare address as a `/32` host route.
@@ -7130,7 +7130,9 @@ and the capture meter — are fixed in 0.5.156; these are the rest.
   none of — the uprobe backend hands over `IpAddr::V6` verbatim, so a proxy
   bound to `[::]` produces exactly this.
 
-- [ ] **RTF2 — the cgroup basis misses v1 and every systemd slice.**
+  **Done:** `ip_in_cidr` delegates to `CidrRange`, which moved from the `hep`-gated module into `crate::net` so both surfaces can share it. A mapped address and a bare address now read the same way on the allowlist and in the filter.
+
+- [x] **RTF2 (done 2026-09-07) — the cgroup basis misses v1 and every systemd slice.**
   `host_stats()` reads `/sys/fs/cgroup/memory.max` at the mount root. That is
   cgroup v2 only, and a v2 process in a non-root cgroup — any unit with
   `MemoryMax=` — must resolve its own path from `/proc/self/cgroup` first. Both
@@ -7138,6 +7140,8 @@ and the capture meter — are fixed in 0.5.156; these are the rest.
   limit reports 1.2% of a 128 GiB box and `significant: false` while it is
   about to be OOM-killed. Separately, `memory_available_bytes` still comes from
   `/proc/meminfo` when the basis says `cgroup`, so available can exceed total.
+
+  **Done:** The probe resolves this process's own cgroup from `/proc/self/cgroup` and walks to the root taking the tightest limit, then falls back to v1 — so a systemd unit with `MemoryMax=` and every container are visible where none were before. `memory_available_bytes` is derived from the same limit rather than left on `/proc/meminfo`, and the pairing is done where the limit is read so no caller can mix the two denominators. The layout is passed in rather than hard-coded, so every case is driven by a fake tree in a test.
 
 - [ ] **RTF3 — two more Mermaid generators, neither capped.** [`src/wasm.rs`](https://github.com/NormB/sipnab/blob/main/src/wasm.rs) and
   [`src/tui/call_flow/export.rs`](https://github.com/NormB/sipnab/blob/main/src/tui/call_flow/export.rs) each build a `sequenceDiagram` themselves

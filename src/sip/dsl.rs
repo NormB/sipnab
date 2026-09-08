@@ -1756,47 +1756,22 @@ fn eval_compare(
 /// prefix — because answering otherwise would silently widen every filter
 /// written against a dual-stack capture.
 fn ip_in_cidr(ip: &str, cidr: &str) -> bool {
-    use std::net::IpAddr;
-
-    let Some((net, len)) = cidr.split_once('/') else {
+    // The allowlist's rule, not a second one. This used to be its own
+    // implementation and it disagreed with `--hep-allow` twice: it refused an
+    // IPv4-mapped IPv6 address that the allowlist accepts (RFC 4291 §2.5.5.2
+    // makes `::ffff:0:0/96` the representation OF a v4 address, not a
+    // different family), and it refused a bare address where the allowlist
+    // reads a host route. So an agent sipnab had just admitted was invisible
+    // to a filter over the very prefix that admitted it -- and the uprobe
+    // backend produces mapped addresses as a matter of course, because it
+    // reads `sk_v6_rcv_saddr` verbatim for any AF_INET6 socket.
+    let Ok(range) = crate::net::CidrRange::parse(cidr.trim()) else {
         return false;
     };
-    let Ok(prefix) = len.trim().parse::<u32>() else {
+    let Ok(addr) = ip.trim().parse::<std::net::IpAddr>() else {
         return false;
     };
-    let (Ok(addr), Ok(network)) = (ip.trim().parse::<IpAddr>(), net.trim().parse::<IpAddr>())
-    else {
-        return false;
-    };
-
-    match (addr, network) {
-        (IpAddr::V4(a), IpAddr::V4(n)) => {
-            if prefix > 32 {
-                return false;
-            }
-            // A /0 mask cannot be written as `!0 << 32` — that shift is
-            // undefined for a u32 — so the whole-space case is explicit.
-            let mask = if prefix == 0 {
-                0
-            } else {
-                !0u32 << (32 - prefix)
-            };
-            u32::from(a) & mask == u32::from(n) & mask
-        }
-        (IpAddr::V6(a), IpAddr::V6(n)) => {
-            if prefix > 128 {
-                return false;
-            }
-            let mask = if prefix == 0 {
-                0
-            } else {
-                !0u128 << (128 - prefix)
-            };
-            u128::from(a) & mask == u128::from(n) & mask
-        }
-        // Families never cross.
-        _ => false,
-    }
+    range.contains(addr)
 }
 
 /// Compare a string field value against the filter's literal.
@@ -1958,6 +1933,75 @@ pub fn stream_mos(stream: &RtpStream, delay: MosDelay<'_>) -> f64 {
 /// diagnostic aliases, the comparators, and the MOS approximation.
 #[cfg(test)]
 mod tests {
+    /// `in_subnet` accepts an address the HEP allowlist accepts.
+    ///
+    /// RTF1. `--hep-allow 198.51.100.0/24` admits an agent whose packets
+    /// arrive as `::ffff:198.51.100.7`, because `CidrRange::contains` maps an
+    /// IPv4-mapped IPv6 address to its v4 form first — RFC 4291 §2.5.5.2 makes
+    /// `::ffff:0:0/96` the representation OF a v4 address, not a different
+    /// family. `ip_in_cidr` had its own rule and refused the same address, so
+    /// a filter over the traffic sipnab had just admitted selected none of it.
+    ///
+    /// The uprobe backend produces exactly this: it reads `sk_v6_rcv_saddr`
+    /// verbatim whenever the socket family is `AF_INET6`, so a proxy bound to
+    /// `[::]` carrying an IPv4 call yields a mapped address with no
+    /// canonicalization anywhere in between.
+    #[test]
+    fn a_v4_mapped_address_matches_a_v4_prefix() {
+        assert!(
+            ip_in_cidr("::ffff:198.51.100.7", "198.51.100.0/24"),
+            "a mapped address is the same host as its v4 form"
+        );
+        assert!(
+            !ip_in_cidr("::ffff:203.0.113.7", "198.51.100.0/24"),
+            "but a mapped address outside the prefix still does not match"
+        );
+    }
+
+    /// A bare address is a host route, as it is on the allowlist.
+    ///
+    /// `--hep-allow 198.51.100.40` means that one host without the operator having
+    /// to write `/32`. `ip_in_cidr` returned false for the same input, so the
+    /// two surfaces disagreed about what an operator had written.
+    #[test]
+    fn a_bare_address_is_a_host_route() {
+        assert!(
+            ip_in_cidr("198.51.100.40", "198.51.100.40"),
+            "the host itself"
+        );
+        assert!(
+            !ip_in_cidr("198.51.100.41", "198.51.100.40"),
+            "and only that host"
+        );
+        assert!(
+            ip_in_cidr("2001:db8::1", "2001:db8::1"),
+            "the same reading for v6"
+        );
+    }
+
+    /// A v4-mapped CIDR still matches as IPv6 when written that way.
+    ///
+    /// The half the mapping must not break: `::ffff:0:0/96` is a legitimate
+    /// IPv6 prefix, and folding every mapped address to v4 unconditionally
+    /// would stop it matching itself.
+    #[test]
+    fn a_mapped_prefix_still_matches_as_v6() {
+        assert!(
+            ip_in_cidr("::ffff:198.51.100.7", "::ffff:0:0/96"),
+            "the mapped range contains the mapped address"
+        );
+    }
+
+    /// Families still do not cross where they genuinely differ.
+    #[test]
+    fn an_unmapped_v6_address_does_not_match_a_v4_prefix() {
+        assert!(
+            !ip_in_cidr("2001:db8::1", "10.0.0.0/8"),
+            "a real IPv6 host is not inside a v4 prefix"
+        );
+        assert!(!ip_in_cidr("10.0.0.1", "2001:db8::/32"), "and the reverse");
+    }
+
     /// `in_subnet` works end to end through the parser.
     ///
     /// The unit tests above pin the arithmetic; this pins that a filter an

@@ -8,9 +8,43 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
-## [Unreleased]
+## [0.5.158] - 2026-09-08
 
 ### Fixed
+
+- **`in_subnet` refused addresses the HEP allowlist accepts.**
+  `--hep-allow 198.51.100.0/24` admits an agent whose packets arrive as
+  `::ffff:198.51.100.7` — RFC 4291 §2.5.5.2 makes `::ffff:0:0/96` the
+  representation *of* an IPv4 address rather than a different family, and the
+  allowlist maps it accordingly. The filter DSL had its own CIDR rule and
+  refused the same address, so `src.ip in_subnet '198.51.100.0/24'` selected
+  none of the traffic that prefix had just admitted. The uprobe backend
+  produces exactly this shape: it reads `sk_v6_rcv_saddr` verbatim for any
+  `AF_INET6` socket, so a proxy bound to `[::]` yields mapped addresses with no
+  canonicalization in between. The two also disagreed about a bare address —
+  `198.51.100.40` is a host route on the allowlist and matched nothing in a
+  filter.
+  `CidrRange` moved out of the `hep`-gated module into `crate::net`, and the
+  DSL uses it.
+
+- **The load-bearing verdict could not see the limit it was measuring
+  against.** `host_stats` read `/sys/fs/cgroup/memory.max` and nothing else,
+  which finds a limit only for a process in the cgroup-v2 root — and the v2
+  root carries no controller files, so on an ordinary systemd host it finds
+  nothing at all. A unit with `MemoryMax=`, every container, and every cgroup-v1
+  system were invisible: sipnab at 1.5 GiB inside a 2 GiB cap reported 1.2% of a
+  128 GiB machine and `significant: false` while it was about to be OOM-killed,
+  which is precisely the question that field exists to answer. The probe now
+  resolves this process's own cgroup and walks to the root taking the tightest
+  limit, because limits are hierarchical and a slice's cap binds every unit
+  inside it, then falls back to v1 (whose "unlimited" is a sentinel rather than
+  a keyword).
+
+  `memory_available_bytes` comes from the same limit now. It used to stay on
+  `/proc/meminfo`, which is not namespaced without lxcfs, so a container with a
+  1 GiB cap on a 128 GiB host reported 1 GiB total and ~100 GiB available — two
+  numbers from two different machines, printed as a pair. The subtraction
+  happens where the limit is read, so no caller can pair them wrongly again.
 
 - **Eight places where one rule was written twice.** Found by auditing the tree
   for the class that produced the `P-Charging-Vector` leak. Two were already
