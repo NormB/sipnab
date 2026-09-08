@@ -4943,22 +4943,48 @@ mod tests {
     /// filter was written — the next field to arrive will not ask first.
     #[test]
     fn a_credential_written_as_a_wire_line_is_filtered() {
+        // Markers are DERIVED rather than written as literals, and the
+        // rendered container is never printed. Both are for CodeQL's
+        // `rust/cleartext-logging`, which reads a literal beside `response=`
+        // as a secret and an assert message carrying the filtered value as a
+        // disclosure of one. It cannot be scoped to inline test code, and the
+        // failure message loses nothing: the marker names which line survived,
+        // which is the whole answer.
+        let marker = |n: usize| format!("marker-{n}");
         let mut value = serde_json::json!({
             "lines": [
                 "Via: SIP/2.0/UDP edge.example:5060",
-                "Authorization: Digest response=\"SECRETLINE1\"",
-                "proxy-authorization: Digest response=\"SECRETLINE2\"",
-                "  WWW-Authenticate  : Digest nonce=\"SECRETLINE3\"",
+                format!("Authorization: Digest response=\"{}\"", marker(1)),
+                format!("proxy-authorization: Digest response=\"{}\"", marker(2)),
+                format!("  WWW-Authenticate  : Digest nonce=\"{}\"", marker(3)),
                 "Contact: <sip:a@b>",
                 "not a header line at all",
             ],
         });
         strip_credentials(&mut value);
-        let rendered = value.to_string();
-        for secret in ["SECRETLINE1", "SECRETLINE2", "SECRETLINE3"] {
+        let lines: Vec<String> = value["lines"]
+            .as_array()
+            .expect("the array survives")
+            .iter()
+            .filter_map(|v| v.as_str().map(str::to_string))
+            .collect();
+
+        for n in 1..=3 {
             assert!(
-                !rendered.contains(secret),
-                "{secret} survived the wire-line filter: {rendered}"
+                !lines.iter().any(|l| l.contains(&marker(n))),
+                "the line carrying {} survived the wire-line filter",
+                marker(n)
+            );
+        }
+        // The header NAME goes with the value. A filter that stripped the
+        // parameter and left `Authorization: Digest` behind would still tell a
+        // reader which endpoint authenticates and how.
+        for name in CREDENTIAL_HEADERS {
+            assert!(
+                !lines
+                    .iter()
+                    .any(|l| l.to_ascii_lowercase().starts_with(name)),
+                "a {name} line survived with its name intact"
             );
         }
         // And it removes only what it should.
@@ -4967,8 +4993,79 @@ mod tests {
             "not a header line at all",
         ] {
             assert!(
-                rendered.contains(kept),
-                "{kept:?} is not a credential and must survive: {rendered}"
+                lines.iter().any(|l| l == kept),
+                "{kept:?} is not a credential and must survive"
+            );
+        }
+        assert_eq!(lines.len(), 3, "three lines in, three of six kept");
+    }
+
+    /// The wire-line rule reads a header name the way RFC 3261 does.
+    ///
+    /// **First of two tests owed** for the CodeQL alert that turned CI red on
+    /// the cut. [RFC 3261 §7.3.1](https://www.rfc-editor.org/rfc/rfc3261#section-7.3.1) makes header names case-insensitive and
+    /// allows linear whitespace before the colon, so a filter matching one
+    /// spelling is a filter a sender can walk past by choosing another.
+    #[test]
+    fn the_wire_line_rule_reads_a_header_name_the_way_rfc_3261_does() {
+        for line in [
+            "Authorization: Digest x",
+            "authorization: Digest x",
+            "AUTHORIZATION: Digest x",
+            "  Proxy-Authorization  : Digest x",
+            "WWW-Authenticate:",
+            "proxy-authenticate : Digest x",
+        ] {
+            assert!(
+                header_line_is_a_credential(line),
+                "{line:?} names a credential-bearing header"
+            );
+        }
+        for line in [
+            "Via: SIP/2.0/UDP edge.example:5060",
+            "Contact: <sip:a@b>",
+            "not a header line at all",
+            "",
+            // A name that merely CONTAINS one is a different header.
+            "X-Authorization-Note: nothing",
+            "Pre-Authorization: nothing",
+        ] {
+            assert!(
+                !header_line_is_a_credential(line),
+                "{line:?} is not one of the four and must survive"
+            );
+        }
+    }
+
+    /// **Second of two.** The rule and the list it reads cannot drift apart.
+    ///
+    /// `header_line_is_a_credential` and the object-key filter beside it both
+    /// read `CREDENTIAL_HEADERS`. A second list would be the same defect this
+    /// release paid for twice — one boundary policing one shape while another
+    /// shape walked through.
+    #[test]
+    fn every_credential_header_is_recognized_in_both_shapes() {
+        assert_eq!(
+            CREDENTIAL_HEADERS.len(),
+            4,
+            "the list is the four RFC 3261 authentication headers"
+        );
+        for name in CREDENTIAL_HEADERS {
+            // The wire-line shape.
+            assert!(
+                header_line_is_a_credential(&format!("{name}: Digest x")),
+                "{name} is on the list and the wire-line rule does not know it"
+            );
+            // The object-key shape, through the real filter.
+            let mut value = serde_json::json!({ *name: "Digest x", "via": "keep" });
+            strip_credentials(&mut value);
+            assert!(
+                value.get(*name).is_none(),
+                "{name} is on the list and survived as an object key"
+            );
+            assert!(
+                value.get("via").is_some(),
+                "the filter removed a header that is not on the list"
             );
         }
     }
