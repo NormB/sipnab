@@ -234,7 +234,6 @@ fn user_facing_long_flags() -> Vec<String> {
     flags
 }
 
-/// Every non-waived user-facing flag appears at least `MIN_EXAMPLES` (2) times
 /// How many runnable examples name `--flag` in `blocks`.
 ///
 /// Shared by the coverage gate and the waiver ratchet below, deliberately: if
@@ -260,6 +259,7 @@ fn example_count(blocks: &str, flag: &str) -> usize {
         .count()
 }
 
+/// Every non-waived user-facing flag appears at least `MIN_EXAMPLES` (2) times
 /// in the corpus's bash example blocks; under-demonstrated flags fail with a list.
 #[test]
 fn every_flag_has_at_least_two_examples() {

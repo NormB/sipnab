@@ -44,7 +44,7 @@ Tiers:
 
 ## Status
 
-**44 open, 464 done** across 36 sections.
+**38 open, 470 done** across 36 sections.
 Regenerate with `python3 scripts/backlog-status.py --apply`.
 
 | Section | Open | Done | Progress |
@@ -54,7 +54,7 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
 | PV | 0 | 13 | `##########` |
 | P2 | 0 | 109 | `##########` |
 | P3 | 0 | 64 | `##########` |
-| P4 | 4 | 39 | `#########.` |
+| P4 | 3 | 40 | `#########.` |
 | PA | 1 | 12 | `#########.` |
 | PB | 0 | 20 | `##########` |
 | TK | 3 | 7 | `#######...` |
@@ -68,18 +68,18 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
 | DOC | 0 | 16 | `##########` |
 | RDX | 0 | 2 | `##########` |
 | FLT | 0 | 1 | `##########` |
-| SPELL | 1 | 0 | `..........` |
+| SPELL | 0 | 1 | `##########` |
 | MCPX | 1 | 6 | `#########.` |
 | OBS | 0 | 7 | `##########` |
 | REQ | 4 | 13 | `########..` |
 | CMP | 3 | 2 | `####......` |
 | GTP | 2 | 1 | `###.......` |
-| MER | 3 | 2 | `####......` |
+| MER | 0 | 5 | `##########` |
 | LIVE | 6 | 0 | `..........` |
 | P5 | 6 | 14 | `#######...` |
 | Shipped (audit-period features, kept for context) | 0 | 6 | `##########` |
 | DUP | 0 | 8 | `##########` |
-| OBS-FOLLOWUP | 1 | 3 | `########..` |
+| OBS-FOLLOWUP | 0 | 4 | `##########` |
 
 <!-- /BACKLOG-STATUS -->
 
@@ -2447,12 +2447,17 @@ holds anything to it.
   `homepage_throughput_tiles_match_the_benchmarks_page`, so the homepage
   inherits it.
 
-- [ ] **The WASM plugin ABI documents four exports and the host resolves three
+- [x] **(done 2026-09-08) The WASM plugin ABI documents four exports and the host resolves three
   (added 2026-09-06).** [`docs/plugins.md`](https://github.com/NormB/sipnab/blob/main/docs/plugins.md) and
   [`docs/design/wasm-plugin-api.md`](wasm-plugin-api.md) both require
   `sipnab_dealloc`. Nothing in [`src/plugin/mod.rs`](https://github.com/NormB/sipnab/blob/main/src/plugin/mod.rs) ever looks it up: the host
   resolves `sipnab_plugin_abi_version`, `sipnab_alloc` and `sipnab_analyze`, and
   a plugin that omits the fourth loads and runs.
+
+  **Done in 0.5.159**, recorded late with RTF3. Both documents now name the
+  three exports the host actually resolves, and a test compares the declaration
+  forms against the `get_typed_func::` call sites as sets rather than checking
+  that each name appears somewhere.
 
   **It is not a leak.** `analyze` calls `instantiate` per dialog and drops the
   `wasmi::Store` when it returns, so the guest's whole linear memory goes with
@@ -5821,7 +5826,7 @@ The other British classes are still list-only, and the same blind spot applies
 to them. Measured 2026-09-01: **45 identifiers** carry `-our`, `-ogue` or a
 doubled `-lled` inside a token, invisible to both gates.
 
-- [ ] **SPELL1 — the `-our`, `-ogue` and doubled-`-lled` classes inside
+- [x] **SPELL1 (done 2026-09-08) — the `-our`, `-ogue` and doubled-`-lled` classes inside
   identifiers.** `every_documented_limits_key_changes_observable_behavior`,
   `a_healthy_dialog_gets_no_signaling_section`,
   `both_session_id_rules_are_cataloged_and_resolvable_by_identifier`,
@@ -5834,6 +5839,13 @@ doubled `-lled` inside a token, invisible to both gates.
   the existing gate already says so in a comment, and a token-aware rule needs
   that exemption made explicit rather than implied by a word-boundary
   accident.
+
+  **Done in 0.5.159**, recorded late with RTF3. 41 identifier-embedded British
+  spellings across 44 files. `--uprobe-flavour` survives as a deliberate alias
+  -- it is a released flag -- and so does the `"flavours"` MCP wire key, because
+  clap errors loudly on an unknown flag while serde ignores an unknown key in
+  silence, so dropping the key would quietly widen an agent's probe instead of
+  refusing it.
 
   These classes have no clean morphology — `-our` covers `four`, `hour`,
   `pour`, `contour` and `devour` as readily as the British forms — so the
@@ -6319,7 +6331,7 @@ the diagram throws away everything the ladder already knows.
   restored defect stayed green. It now matches the argument SPAN of each
   escaper call by paren balance.
 
-- [ ] **MER2 — the Mermaid export drops every annotation the ladder computed.**
+- [x] **MER2 (done 2026-09-08) — the Mermaid export drops every annotation the ladder computed.**
   Measured against [`tests/pcap-samples/sip-problem-call.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-problem-call.pcap): the on-screen
   ladder carried `+0.847s`, `Codecs: PCMU, PCMA` under both SDP-bearing
   messages, and the PDD; the export of the same rows in the same session emitted
@@ -6328,6 +6340,12 @@ the diagram throws away everything the ladder already knows.
   (including SIPREC session, mode and stream ownership), `sdp_badge`
   (`HOLD`/`UNHOLD`/`+G.722`), `is_retransmission`, `fold_label` and
   `diagnosis_note`. The annotations are the reason to draw the diagram.
+
+  **Done in 0.5.159**, recorded late with RTF3. `DiagramRow` carries a `note`
+  and `sequence_diagram_rows` emits `Note right of <dst>` per annotated row,
+  so the timestamps, PDD, SDP direction, retransmission and folded counts the
+  ladder had already computed reach the export instead of being dropped at the
+  boundary.
 
   **Do:** emit `autonumber` — the number is the index `get_message` takes, which
   is how a reader drills in — then a `Note right of <dst>` per row composed from
@@ -6340,13 +6358,18 @@ the diagram throws away everything the ladder already knows.
   bar, and SIP transactions overlap in ways that do not stack — a mismatched
   pair is a parse error rather than a wrong picture.
 
-- [ ] **MER3 — the export has no size bound and the renderer's ceiling is known.**
+- [x] **MER3 (done 2026-09-08) — the export has no size bound and the renderer's ceiling is known.**
   `save_to_mermaid_path` flattens every message of every selected dialog into
   one diagram, and from the Call List with nothing selected that is the whole
   capture. The bundle sipnab itself ships sets `maxTextSize: 5e4` and
   `maxEdges: 500`; past either, the renderer refuses the diagram outright rather
   than degrading. A 1334-dialog capture produces a file that opens in nothing,
   with no line in it saying why.
+
+  **Done in 0.5.159**, recorded late with RTF3. `RENDERER_MAX_EDGES` (500) is
+  the vendored renderer's own ceiling and `MAX_MESSAGES` (200) is the export's,
+  with a `const` assertion between them so the second can never be raised past
+  the first by editing one line.
 
   **Do:** cap participants, arrows and characters, truncating only at a dialog
   or phase boundary — a diagram ending between an INVITE and its 200 misstates
@@ -6366,11 +6389,16 @@ the diagram throws away everything the ladder already knows.
   render inside the picture, and nesting flattens them), add the transactions
   section to the markdown arm, and correct the description.
 
-- [ ] **MER5 — participant identity is ambiguous for IPv6.** The address is
+- [x] **MER5 (done 2026-09-08) — participant identity is ambiguous for IPv6.** The address is
   formatted `{ip}:{port}` with no brackets, so an IPv6 endpoint reads
   `2001:db8::1:5060` — not parseable back into an address — and the id derivation
   maps both `:` and `.` to `_`, so two distinct IPv6 endpoints can collide on
   one participant id and silently merge into one lifeline.
+
+  **Done in 0.5.159**, recorded late with RTF3. `crate::net::endpoint_label`
+  brackets an IPv6 address per [RFC 3986](https://www.rfc-editor.org/rfc/rfc3986) section 3.2.2, so `2001:db8::1` on two
+  different ports stops rendering as one ambiguous participant id and two
+  endpoints can no longer merge into a single lifeline.
 
   **Do:** bracket IPv6 in the address, and make ids positional
   (`crate::mermaid::participant_id`) with the address carried only in the label
@@ -7232,7 +7260,7 @@ and the capture meter — are fixed in 0.5.156; these are the rest.
 
   **Done:** The probe resolves this process's own cgroup from `/proc/self/cgroup` and walks to the root taking the tightest limit, then falls back to v1 — so a systemd unit with `MemoryMax=` and every container are visible where none were before. `memory_available_bytes` is derived from the same limit rather than left on `/proc/meminfo`, and the pairing is done where the limit is read so no caller can mix the two denominators. The layout is passed in rather than hard-coded, so every case is driven by a fake tree in a test.
 
-- [ ] **RTF3 — two more Mermaid generators, neither capped.** [`src/wasm.rs`](https://github.com/NormB/sipnab/blob/main/src/wasm.rs) and
+- [x] **RTF3 (done 2026-09-08) — two more Mermaid generators, neither capped.** [`src/wasm.rs`](https://github.com/NormB/sipnab/blob/main/src/wasm.rs) and
   [`src/tui/call_flow/export.rs`](https://github.com/NormB/sipnab/blob/main/src/tui/call_flow/export.rs) each build a `sequenceDiagram` themselves
   rather than through [`src/mermaid.rs`](https://github.com/NormB/sipnab/blob/main/src/mermaid.rs). The browser one is the one that
   matters: the vendored renderer refuses a diagram over `maxEdges: 500`
@@ -7241,6 +7269,16 @@ and the capture meter — are fixed in 0.5.156; these are the rest.
   message only, so at a proxy — four endpoints under one Call-ID — every
   further lifeline is auto-created by Mermaid with the mangled id as its
   visible label.
+
+  **Done in 0.5.159**, and recorded here on 2026-09-08 after the fact: the
+  code shipped and this checkbox did not move, so the backlog reported six
+  released items as open for a release. Verified against the tree rather than
+  from the release notes -- [`src/wasm.rs`](https://github.com/NormB/sipnab/blob/main/src/wasm.rs) calls
+  `crate::mermaid::sequence_diagram` with `MAX_MESSAGES`, and
+  [`src/tui/call_flow/export.rs`](https://github.com/NormB/sipnab/blob/main/src/tui/call_flow/export.rs) goes through `sequence_diagram_rows`. Neither
+  builds a `sequenceDiagram` itself any more, so the browser export is capped
+  below the vendored renderer's `maxEdges: 500` and declares every participant
+  rather than letting Mermaid auto-create lifelines with mangled ids.
 
 - [x] **RTF4 (done 2026-09-08) — `estimate_r_with_delay` guards two of its three inputs.**
   `one_way_delay_ms` and `jitter_ms` are checked for finite and non-negative;

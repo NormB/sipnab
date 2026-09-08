@@ -610,3 +610,144 @@ fn an_extension_header_list_validates_against_the_message_schema() {
          reach"
     );
 }
+
+// ── The other two schemas, and every object inside all of them ──────────
+//
+// Two more tests owed for `siprec`, which was in the Rust projection and in
+// neither the published schema nor the OpenAPI document for several releases.
+// The census written for it compared two of the four schemas; these cover the
+// rest, and then the same question one level down.
+
+/// **Seventh of ten tests owed for the five defects 0.5.159 uncovered.** The
+/// two schemas the census did not reach.
+///
+/// `dialog.schema.json` and `stream.schema.json` describe the REST list
+/// summary and the full RTP stream. Neither is validated against live output
+/// here — that lands with T3.2/T3.5 — so until this, nothing in the tree
+/// compared them to the Rust types they describe at all. A `siprec` in either
+/// would have sat undetected exactly as the first one did, and for longer:
+/// there is not even a sample to trip over it.
+#[test]
+fn every_remaining_schema_agrees_with_the_projection_it_describes() {
+    for (file, name, schema) in [
+        ("src/output/model.rs", "DialogSummary", "dialog.schema.json"),
+        ("src/output/json.rs", "StreamJson", "stream.schema.json"),
+    ] {
+        let (missing, phantom) = census(&struct_fields(file, name), &schema_properties(schema));
+        assert!(
+            missing.is_empty(),
+            "{schema} declares no {missing:?}, and `{name}` emits them. Every \
+             schema here refuses additional properties, so a consumer \
+             validating sipnab's output rejects the answer outright."
+        );
+        assert!(
+            phantom.is_empty(),
+            "{schema} promises {phantom:?}, which `{name}` cannot emit. \
+             Nothing fails at runtime for this one — a consumer simply waits \
+             for a key that never arrives."
+        );
+    }
+}
+
+/// **Eighth of ten.** Every object sipnab publishes is closed, at every depth.
+///
+/// `additionalProperties: false` at the root is what turned four gates red and
+/// caught `siprec`. It says nothing about the objects INSIDE — and `siprec` is
+/// itself a nested object with nested objects of its own, so a schema closed
+/// only at the top would have accepted any shape one level down and the census
+/// above would still pass.
+///
+/// **`vcon.schema.json` is exempt, and the exemption is paired with its
+/// evidence.** It is the vCon draft's own schema, vendored: its `$id` is
+/// `ietf.org`, not sipnab's. Tightening a publisher's schema means validating
+/// against a document nobody publishes, so a container that passed here would
+/// still be refused by every other implementation. The test asserts the file
+/// really is the publisher's, so the exemption cannot be borrowed by a schema
+/// sipnab owns.
+#[test]
+fn every_object_in_a_sipnab_schema_is_closed_at_every_depth() {
+    /// Paths of every `type: object` with `properties` that admits extras.
+    fn open_objects(node: &Value, path: &str, out: &mut Vec<String>) {
+        match node {
+            Value::Object(map) => {
+                if map.get("type") == Some(&Value::String("object".into()))
+                    && map.contains_key("properties")
+                    && map.get("additionalProperties") != Some(&Value::Bool(false))
+                {
+                    out.push(if path.is_empty() {
+                        "<root>".to_string()
+                    } else {
+                        path.to_string()
+                    });
+                }
+                for (k, v) in map {
+                    let child = if path.is_empty() {
+                        k.clone()
+                    } else {
+                        format!("{path}/{k}")
+                    };
+                    open_objects(v, &child, out);
+                }
+            }
+            Value::Array(items) => {
+                for (i, v) in items.iter().enumerate() {
+                    open_objects(v, &format!("{path}[{i}]"), out);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let dir = repo_schemas();
+    let mut checked = 0usize;
+    for entry in std::fs::read_dir(&dir)
+        .expect("read tests/schemas")
+        .flatten()
+    {
+        let path = entry.path();
+        let Some(file) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        if !file.ends_with(".schema.json") {
+            continue;
+        }
+        let doc: Value = serde_json::from_str(&std::fs::read_to_string(&path).expect("read"))
+            .expect("schema is JSON");
+
+        if file == "vcon.schema.json" {
+            // The exemption, paired with what justifies it.
+            assert_eq!(
+                doc["$id"].as_str(),
+                Some("https://ietf.org/vcon/schemas/unsigned-vcon.json"),
+                "vcon.schema.json is exempt because it is the vCon draft's own \
+                 schema, vendored unchanged. Its `$id` no longer says so, which \
+                 means either it was edited — and a vendored publisher schema \
+                 must not be — or a schema sipnab owns has taken its name and \
+                 inherited an exemption it has no claim to."
+            );
+            continue;
+        }
+
+        checked += 1;
+        let mut open = Vec::new();
+        open_objects(&doc, "", &mut open);
+        assert!(
+            open.is_empty(),
+            "{file} leaves {} object(s) open: {open:?}\nThe root being closed \
+             is what caught `siprec`; an open object one level down accepts a \
+             shape nobody documented, and the field census cannot see inside \
+             one.",
+            open.len()
+        );
+    }
+    assert_eq!(
+        checked, 4,
+        "expected sipnab's four own schemas; found {checked}. A schema added \
+         without being checked here is one whose nested objects nothing closes"
+    );
+}
+
+/// The directory holding the schemas this repository publishes.
+fn repo_schemas() -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/schemas")
+}

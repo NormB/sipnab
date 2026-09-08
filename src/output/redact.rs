@@ -2168,4 +2168,144 @@ mod tests {
         assert_eq!(a.mode(), KeyMode::Ephemeral);
         assert_ne!(a.bytes, b.bytes);
     }
+
+    // ── The header the redactor did not know was host-bearing ───────────
+    //
+    // Two tests owed for `Via`. `Path`, `Route`, `Record-Route` and
+    // `Service-Route` were all on the host-bearing list and `Via` — the one
+    // header every SIP message carries — was not, so a container redacted for
+    // publication carried the operator's whole proxy chain by name.
+
+    /// Every header name `Redactor::header` matches is really rewritten.
+    ///
+    /// **Third of ten tests owed for the five defects 0.5.159 uncovered**, and
+    /// the generalization of the `Via` fix: the defect was not a bad rule, it
+    /// was a header missing from a list nothing enumerated. This reads the
+    /// match arms out of the source and drives every name through the rule, so
+    /// a name that is listed but falls through to `Keep` fails here rather
+    /// than in a published container.
+    ///
+    /// Both directions. A name in the source that does not rewrite is a
+    /// decorative arm; and `via` must be among the names, which is the
+    /// specific omission that shipped.
+    #[test]
+    fn every_header_name_the_redactor_matches_is_really_rewritten() {
+        let src = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/output/redact.rs"),
+        )
+        .expect("read this file");
+        let body = {
+            let start = src
+                .find("pub fn header(&self, name: &str, value: &str) -> HeaderAction {")
+                .expect("`Redactor::header` is declared here");
+            let rest = &src[start..];
+            let end = rest.find("\n    }\n").expect("the function closes");
+            &rest[..end]
+        };
+
+        // The quoted names in the match arms, in source order.
+        let quoted = regex::Regex::new(r#""([a-z0-9-]+)""#).expect("pattern");
+        let names: Vec<String> = quoted
+            .captures_iter(body)
+            .map(|c| c[1].to_string())
+            .collect();
+        assert!(
+            names.len() >= 20,
+            "only {} header name(s) parsed out of `Redactor::header`; the scan \
+             has stopped matching and this census covers nothing",
+            names.len()
+        );
+        assert!(
+            names.iter().any(|n| n == "via"),
+            "`via` is not among the names `Redactor::header` matches. It is on \
+             every SIP message, it carries the proxy chain, and its absence is \
+             the defect this test was written for: {names:?}"
+        );
+
+        let policy = policy();
+        let r = policy.redactor();
+        for name in &names {
+            // A value carrying a host, in whichever grammar the header uses.
+            let value = match name.as_str() {
+                "via" => "SIP/2.0/UDP pbx.internal.example:5060;branch=z9hG4bK1",
+                "call-id" | "in-reply-to" | "replaces" => "abc123@pbx.internal.example",
+                "p-charging-vector" => "icid-value=\"pbx.internal.example-1\"",
+                "p-visited-network-id" => "pbx.internal.example",
+                _ => "<sip:alice@pbx.internal.example>",
+            };
+            let action = r.header(name, value);
+            assert!(
+                !matches!(action, HeaderAction::Keep),
+                "`{name}` is matched by `Redactor::header` and still resolves \
+                 to Keep, so listing it rewrites nothing"
+            );
+            if let HeaderAction::Replace(out) = action {
+                assert!(
+                    !out.contains("pbx.internal.example"),
+                    "`{name}` was rewritten and the internal host survived it"
+                );
+            }
+        }
+    }
+
+    /// Rewriting `Via` keeps the route it records.
+    ///
+    /// **Fourth of ten.** The host has to change and everything else has to
+    /// survive. A rewriter that dropped a hop, reordered them, or tokenized
+    /// the branch would pass a leak test — no internal name in the output —
+    /// while destroying the only record of the path the request took and the
+    /// handle a reader follows a transaction by.
+    #[test]
+    fn rewriting_via_keeps_the_route_it_records() {
+        let policy = policy();
+        let r = policy.redactor();
+        let original = "SIP/2.0/UDP pbx.internal.example:5060;branch=z9hG4bK1;received=10.11.12.13, \
+                        SIP/2.0/TCP edge.internal.example;branch=z9hG4bK2, \
+                        SIP/2.0/TLS core.internal.example:5061;branch=z9hG4bK3";
+        let out = r.via(original);
+
+        // Every host is gone, including the one in `received`.
+        for host in [
+            "pbx.internal.example",
+            "edge.internal.example",
+            "core.internal.example",
+            "10.11.12.13",
+        ] {
+            assert!(!out.contains(host), "`{host}` survived: {out}");
+        }
+
+        // Three hops in, three out, in the order they arrived. The order IS
+        // the route; reversing it reverses the path the request took.
+        let hops: Vec<&str> = out.split(',').map(str::trim).collect();
+        assert_eq!(hops.len(), 3, "three via-parms in, three out: {out}");
+        for (i, expected) in ["z9hG4bK1", "z9hG4bK2", "z9hG4bK3"].iter().enumerate() {
+            assert!(
+                hops[i].contains(expected),
+                "hop {i} should carry {expected}, got {:?}",
+                hops[i]
+            );
+        }
+
+        // The sent-protocol is not the operator's to hide and is what says
+        // which hop ran over TLS.
+        for (i, proto) in ["SIP/2.0/UDP", "SIP/2.0/TCP", "SIP/2.0/TLS"]
+            .iter()
+            .enumerate()
+        {
+            assert!(
+                hops[i].starts_with(proto),
+                "hop {i} lost its sent-protocol: {:?}",
+                hops[i]
+            );
+        }
+
+        // The port stays: it distinguishes a 5061 TLS hop from a 5060 one, and
+        // a port is not an identity.
+        assert!(hops[2].contains(":5061"), "the TLS port was lost: {out}");
+
+        // One host maps to one token, so a reader can still see that two
+        // messages went through the same proxy.
+        let again = r.via(original);
+        assert_eq!(again, out, "the same input must map to the same output");
+    }
 }

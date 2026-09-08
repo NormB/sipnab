@@ -1379,6 +1379,113 @@ fn heading_name(text: &str) -> Option<String> {
     Some(t.trim_start_matches('#').trim().to_lowercase())
 }
 
+/// English function words, shared by the two halves of the doc-split rule.
+///
+/// One list, deliberately. [`opens_like_a_stranded_continuation`] reads the
+/// SECOND item of a split and [`ends_like_a_severed_sentence`] reads the
+/// first; a word added to one copy and not the other would leave one end of
+/// every split undetected, which is the shape of the defect both rules exist
+/// to catch. No Rust identifier in this tree is spelled like one of these.
+const CONTINUATION_WORDS: &[&str] = &[
+    "a",
+    "an",
+    "the",
+    "and",
+    "but",
+    "or",
+    "nor",
+    "so",
+    "yet",
+    "of",
+    "to",
+    "in",
+    "on",
+    "at",
+    "by",
+    "for",
+    "from",
+    "with",
+    "into",
+    "onto",
+    "than",
+    "then",
+    "that",
+    "which",
+    "who",
+    "whom",
+    "whose",
+    "this",
+    "these",
+    "those",
+    "it",
+    "its",
+    "they",
+    "them",
+    "their",
+    "he",
+    "she",
+    "his",
+    "her",
+    "him",
+    "we",
+    "us",
+    "our",
+    "you",
+    "your",
+    "i",
+    "as",
+    "if",
+    "when",
+    "while",
+    "where",
+    "because",
+    "although",
+    "though",
+    "unless",
+    "until",
+    "after",
+    "before",
+    "about",
+    "against",
+    "between",
+    "over",
+    "under",
+    "through",
+    "during",
+    "without",
+    "within",
+    "upon",
+    "per",
+    "via",
+    "had",
+    "has",
+    "have",
+    "was",
+    "were",
+    "been",
+    "being",
+    "is",
+    "are",
+    "am",
+    "be",
+    "would",
+    "could",
+    "should",
+    "will",
+    "shall",
+    "may",
+    "might",
+    "must",
+    "can",
+    // Interrogative and relative pronouns. `what` is what the released split
+    // ended on -- "...gets what" -- and no other word in that line is
+    // evidence of anything.
+    "what",
+    "whatever",
+    "whichever",
+    "whoever",
+];
+
 /// Whether a doc block's opening word can only be a stranded continuation.
 ///
 /// The rule is grammatical, and deliberately narrow: **a summary never opens
@@ -1427,19 +1534,116 @@ fn opens_like_a_stranded_continuation(first: &str) -> bool {
         return false;
     }
     let word = word.to_string();
-    /// English function words. A documented item's summary opens with none of
-    /// them, and no Rust identifier in this tree is spelled like one.
-    const CONTINUATION_WORDS: &[&str] = &[
-        "a", "an", "the", "and", "but", "or", "nor", "so", "yet", "of", "to", "in", "on", "at",
-        "by", "for", "from", "with", "into", "onto", "than", "then", "that", "which", "who",
-        "whom", "whose", "this", "these", "those", "it", "its", "they", "them", "their", "he",
-        "she", "his", "her", "him", "we", "us", "our", "you", "your", "i", "as", "if", "when",
-        "while", "where", "because", "although", "though", "unless", "until", "after", "before",
-        "about", "against", "between", "over", "under", "through", "during", "without", "within",
-        "upon", "per", "via", "had", "has", "have", "was", "were", "been", "being", "is", "are",
-        "am", "be", "would", "could", "should", "will", "shall", "may", "might", "must", "can",
-    ];
     CONTINUATION_WORDS.contains(&word.as_str())
+}
+
+/// Every Rust tree this repository owns, not just `src/`.
+///
+/// The doc-split rules read `src/` and nothing else. Most of this repository's
+/// prose lives in `tests/` — 5,014 doc blocks against `src/`'s 16,070, and
+/// they are where the reasoning for every gate is written down — so a split
+/// there destroyed exactly the explanation somebody would need to fix a
+/// failing gate, and no rule looked. Two were sitting in it.
+fn every_rust_tree() -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    for root in ["src", "tests", "benches", "crates", "fuzz"] {
+        if repo().join(root).is_dir() {
+            out.extend(rust_files(root));
+        }
+    }
+    out
+}
+
+/// No doc block ANYWHERE opens with the tail of another item's sentence.
+///
+/// **First of ten tests owed for the five defects 0.5.159 uncovered.** The
+/// rule that found three splits in `src/` was never pointed at the rest of the
+/// tree; pointing it there found two more, both the identical shape:
+///
+/// * `tool_descriptions_do_not_instruct_the_model_to_trust_content` was
+///   documented, in full, as `/// what it gets back.` — its opening line had
+///   been taken by `mcp_registry_source`, inserted between the block and the
+///   test.
+/// * `every_flag_has_at_least_two_examples` had lost its first line to
+///   `example_count` the same way.
+///
+/// Five instances of one defect now, across two trees. The scan is the cheap
+/// part; not running it over everything was the whole gap.
+#[test]
+fn no_doc_block_in_any_rust_tree_opens_with_a_stranded_continuation() {
+    let mut stranded = Vec::new();
+    let mut checked = 0usize;
+    let mut trees = std::collections::BTreeSet::new();
+    for path in every_rust_tree() {
+        for (start, body) in doc_blocks_of(&path) {
+            let Some(first) = body.iter().find(|l| !l.trim().is_empty()) else {
+                continue;
+            };
+            checked += 1;
+            if let Some(root) = show(&path).split('/').next() {
+                trees.insert(root.to_string());
+            }
+            if opens_like_a_stranded_continuation(first) {
+                stranded.push(format!("  {}:{start}: {}", show(&path), first.trim()));
+            }
+        }
+    }
+    assert!(
+        checked > 20_000,
+        "only {checked} doc blocks were read across {trees:?}; the walk has \
+         narrowed and this gate is judging a fraction of the tree"
+    );
+    assert!(
+        trees.contains("tests"),
+        "the walk never reached tests/, which is where two of the five known \
+         splits were: {trees:?}"
+    );
+    assert!(
+        stranded.is_empty(),
+        "{} doc block(s) open mid-sentence:\n{}",
+        stranded.len(),
+        stranded.join("\n")
+    );
+}
+
+/// **Second of ten.** Every word on the shared list really arms the rule.
+///
+/// The list is the gate. A word deleted from it disarms detection for every
+/// split that happens to hinge on that word, and nothing else in the tree
+/// would notice — the scan would go on reporting zero, which is what it
+/// reports when it is working. So each entry is driven through the predicate
+/// as the opening word of a fragment, and the list is checked for the shape
+/// that makes an entry inert.
+#[test]
+fn every_continuation_word_arms_the_rule() {
+    assert!(
+        CONTINUATION_WORDS.len() >= 80,
+        "the list has shrunk to {} words; it covered 94 when the rule was \
+         written and a shorter one detects fewer splits",
+        CONTINUATION_WORDS.len()
+    );
+    for word in CONTINUATION_WORDS {
+        assert!(
+            opens_like_a_stranded_continuation(&format!("{word} the rest of the sentence")),
+            "`{word}` is on the list and does not arm the rule — the entry is \
+             inert and every split hinging on it goes unreported"
+        );
+        // An entry the predicate would reject on shape is worse than absent:
+        // it reads as coverage and provides none.
+        assert!(
+            word.chars().all(|c| c.is_ascii_lowercase()),
+            "`{word}` is not a lowercase ASCII word, so the predicate's own \
+             checks throw it out before the list is ever consulted"
+        );
+    }
+    // No duplicates: a repeated entry is a word somebody added twice believing
+    // it was missing, which means the list was not read before it was edited.
+    let unique: std::collections::BTreeSet<&&str> = CONTINUATION_WORDS.iter().collect();
+    assert_eq!(
+        unique.len(),
+        CONTINUATION_WORDS.len(),
+        "the continuation-word list repeats an entry"
+    );
 }
 
 /// No doc block opens with the tail of somebody else's sentence.

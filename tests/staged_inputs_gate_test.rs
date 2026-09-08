@@ -347,3 +347,165 @@ fn the_pre_commit_hook_runs_the_staged_inputs_check() {
          that would have caught four separate breakages is enforced by nothing"
     );
 }
+
+// ── The leak, as a rule over the whole test tree ────────────────────────
+//
+// Two tests owed for the four tests that read the wrong repository under
+// `git commit`. The pair already here proves THIS file's two children are
+// clean. Neither says anything about the other thirteen test files that spawn
+// `git`, and the defect was never about this file — it was about a variable
+// the hook exports that any child inherits.
+
+/// Whether a test file that runs `git` inside its own fixture handles the
+/// hook environment at all.
+///
+/// Two patterns are correct and this accepts both, because they are the same
+/// decision made two ways:
+///
+/// * **Scrub it** — `env_remove("GIT_DIR")`, what this file's fixtures do.
+///   The child then discovers the fixture the way an ordinary invocation
+///   would.
+/// * **Set it** — `.env("GIT_DIR", &fixture)`, what `corpus_push_gate_test`
+///   does when it points the gate at a throwaway gitdir on purpose.
+///
+/// Inheriting is the third option and the only wrong one: under `git commit`
+/// the child then acts on the repository being committed to, and every
+/// assertion in the test is about state it never wrote.
+fn handles_the_hook_environment(src: &str) -> bool {
+    let scrubs = src.contains(r#"env_remove("GIT_DIR")"#)
+        || src.contains(r#"env_remove(var)"#) && src.contains(r#""GIT_DIR""#);
+    let sets = src.contains(r#".env("GIT_DIR""#);
+    scrubs || sets
+}
+
+/// Whether a file builds a git repository of its own to run against.
+///
+/// The population at risk. A test that only asks the real repository
+/// questions — `git ls-files`, `git status` — wants the repository the hook
+/// points at, and inheriting is correct there.
+fn builds_its_own_repository(src: &str) -> bool {
+    let temp = src.contains("tempdir") || src.contains("temp_dir");
+    let inits = src.contains(r#""init""#);
+    temp && inits
+}
+
+/// **Ninth of ten tests owed for the five defects 0.5.159 uncovered.** Every
+/// test that runs `git` in its own fixture accounts for the hook environment.
+///
+/// The rule the defect implies, over the tree rather than over one file.
+/// Fifteen files in `tests/` spawn `git`; most of them ask the real repository
+/// a question and should. The ones that build a repository of their own are
+/// the ones a hook can hijack, and each of those has to have decided what to
+/// do about it.
+#[test]
+fn every_test_that_runs_git_in_its_own_fixture_handles_the_hook_environment() {
+    let dir = repo().join("tests");
+    let mut at_risk = Vec::new();
+    let mut careless = Vec::new();
+    let mut scanned = 0usize;
+
+    let mut stack = vec![dir];
+    while let Some(d) = stack.pop() {
+        for entry in std::fs::read_dir(&d).into_iter().flatten().flatten() {
+            let p = entry.path();
+            if p.is_dir() {
+                stack.push(p);
+                continue;
+            }
+            if p.extension().is_some_and(|e| e == "rs") {
+                let src = std::fs::read_to_string(&p).unwrap_or_default();
+                scanned += 1;
+                if !src.contains(r#"Command::new("git")"#) {
+                    continue;
+                }
+                if !builds_its_own_repository(&src) {
+                    continue;
+                }
+                let name = p
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                at_risk.push(name.clone());
+                if !handles_the_hook_environment(&src) {
+                    careless.push(name);
+                }
+            }
+        }
+    }
+
+    assert!(
+        scanned > 40,
+        "only {scanned} test file(s) were read; the walk is broken and this \
+         gate covers nothing"
+    );
+    assert!(
+        at_risk.len() >= 2,
+        "only {at_risk:?} build a git repository of their own. Two did when \
+         this was written -- this file and `corpus_push_gate_test` -- and a \
+         shorter list means the detection stopped matching rather than that \
+         the risk went away.\n\n\
+         `repo_hygiene_test` scrubs the same variables and is deliberately NOT \
+         in this population: it runs git in other WORKTREES, which are real \
+         repositories rather than fixtures. Same variable, same fix, different \
+         reason -- so counting it here would inflate the floor with a file \
+         that would still pass if the fixture rule were deleted."
+    );
+    assert!(
+        careless.is_empty(),
+        "these test files build a git repository and inherit the hook's \
+         environment into it: {careless:?}\nUnder `git commit`, GIT_DIR and \
+         GIT_INDEX_FILE point at the repository being committed to, so the \
+         child acts on that instead of the fixture — and the test passes \
+         whenever the hook is run by hand, which is where those variables are \
+         unset."
+    );
+}
+
+/// **Tenth of ten.** The rule distinguishes the three cases.
+///
+/// A scan that reported nothing would be indistinguishable from one whose
+/// substring checks stopped matching — and substring checks over source are
+/// exactly the kind that rot silently when a helper is renamed. Both
+/// predicates are driven directly, on all three shapes.
+#[test]
+fn the_hook_environment_rule_tells_the_three_cases_apart() {
+    // Scrubbing, in both the direct and the list-driven spelling this tree
+    // uses.
+    assert!(handles_the_hook_environment(r#"c.env_remove("GIT_DIR");"#));
+    assert!(handles_the_hook_environment(
+        "const HOOK_GIT_ENV: &[&str] = &[\"GIT_DIR\"];\n cmd.env_remove(var);"
+    ));
+    // Setting it on purpose.
+    assert!(handles_the_hook_environment(
+        r#"cmd.env("GIT_DIR", &gitdir);"#
+    ));
+    // Inheriting: the one wrong answer.
+    assert!(
+        !handles_the_hook_environment(r#"Command::new("git").current_dir(&fixture).output()"#),
+        "a spawn that neither scrubs nor sets must be reported"
+    );
+
+    // And the population filter: a fixture-building file is at risk, a file
+    // that only questions the real repository is not.
+    assert!(builds_its_own_repository(
+        r#"let dir = std::env::temp_dir(); git(&["init", "-q"]);"#
+    ));
+    assert!(
+        !builds_its_own_repository(r#"Command::new("git").args(["ls-files"]).current_dir(repo())"#),
+        "a read-only question to the real repository is not at risk and must \
+         not be demanded to scrub — the hook's repository is the one it wants"
+    );
+
+    // This file is itself in the at-risk population, which is what makes the
+    // scan above non-vacuous.
+    let own = std::fs::read_to_string(repo().join("tests/staged_inputs_gate_test.rs"))
+        .expect("read this file");
+    assert!(
+        builds_its_own_repository(&own),
+        "this file builds a fixture"
+    );
+    assert!(
+        handles_the_hook_environment(&own),
+        "and it must be its own first passing case"
+    );
+}

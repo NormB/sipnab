@@ -5000,6 +5000,126 @@ mod tests {
         assert_eq!(lines.len(), 3, "three lines in, three of six kept");
     }
 
+    /// A credential is removed at any depth, in either shape.
+    ///
+    /// **Fifth of ten tests owed for the five defects 0.5.159 uncovered.**
+    /// `strip_credentials` recurses, and nothing said so. The container it
+    /// actually runs against nests three deep — an attachment body holds a
+    /// `messages` array whose entries hold a `headers` object — so a filter
+    /// that policed only the top level would have passed every test written
+    /// against a flat fixture while removing nothing from a real export.
+    #[test]
+    fn a_credential_is_removed_at_any_depth_in_either_shape() {
+        let marker = |n: usize| format!("marker-{n}");
+        let mut value = serde_json::json!({
+            "attachments": [{
+                "body": {
+                    "messages": [{
+                        // The object shape, three levels down.
+                        "headers": {
+                            "Authorization": [format!("Digest response=\"{}\"", marker(1))],
+                            "Via": ["SIP/2.0/UDP edge.example:5060"],
+                        },
+                        // The wire-line shape, beside it at the same depth.
+                        "extension_headers": [
+                            format!("Proxy-Authorization: Digest response=\"{}\"", marker(2)),
+                            "Contact: <sip:a@b>",
+                        ],
+                        // And one more level, inside an array of arrays.
+                        "nested": [[
+                            format!("WWW-Authenticate: Digest nonce=\"{}\"", marker(3)),
+                        ]],
+                    }],
+                },
+            }],
+        });
+        strip_credentials(&mut value);
+        let rendered = value.to_string();
+
+        for n in 1..=3 {
+            assert!(
+                !rendered.contains(&marker(n)),
+                "the value carrying {} survived at depth",
+                marker(n)
+            );
+        }
+        // The recursion removed only what it should: a header that is not on
+        // the list survives at every one of those depths.
+        assert!(
+            rendered.contains("edge.example"),
+            "Via was removed: {rendered}"
+        );
+        assert!(
+            rendered.contains("sip:a@b"),
+            "Contact was removed: {rendered}"
+        );
+        // And the containers themselves survive: a filter that deleted the
+        // whole `headers` object rather than the offending key would also
+        // pass a "no secret present" check while destroying the trace.
+        assert!(
+            value["attachments"][0]["body"]["messages"][0]["headers"]["Via"].is_array(),
+            "the headers object was destroyed rather than filtered: {rendered}"
+        );
+    }
+
+    /// No exported container carries a credential, by either route.
+    ///
+    /// **Sixth of ten**, and the end-to-end one. The five tests around it
+    /// drive `strip_credentials` directly; this drives a real dialog through
+    /// the real exporter and searches the serialized container, because the
+    /// defect was never in the filter — it was in which shapes reached it.
+    /// A message carrying credentials in BOTH shapes at once is the case no
+    /// earlier fixture produced.
+    #[test]
+    fn no_exported_container_carries_a_credential_by_either_route() {
+        let marker = |n: usize| format!("marker-{n}");
+        let msg = message(
+            "REGISTER sip:example.com SIP/2.0",
+            &[
+                "Via: SIP/2.0/UDP edge.example:5060;branch=z9hG4bK1",
+                "From: \"Alice\" <sip:alice@example.com>;tag=t1",
+                "To: <sip:alice@example.com>",
+                "Call-ID: vcon-both-shapes@example.com",
+                "CSeq: 2 REGISTER",
+                &format!("Authorization: Digest response=\"{}\"", marker(1)),
+                &format!("Proxy-Authorization: Digest nonce=\"{}\"", marker(2)),
+                "Content-Length: 0",
+            ],
+        );
+        // The projection really does carry both shapes, or this proves nothing
+        // about the exporter.
+        let projected = crate::output::json::message_to_json_value(&msg).to_string();
+        assert!(
+            projected.contains(&marker(1)) && projected.contains(&marker(2)),
+            "the shared projection must carry the credentials this removes"
+        );
+
+        let dialog = SipDialog::new(&msg).expect("REGISTER opens a dialog");
+        let json = export_with(&dialog, &clean_facts())
+            .to_json()
+            .expect("serializes");
+
+        for n in 1..=2 {
+            assert!(
+                !json.contains(&marker(n)),
+                "the value carrying {} reached a published container",
+                marker(n)
+            );
+        }
+        for header in CREDENTIAL_HEADERS {
+            assert!(
+                !json.to_ascii_lowercase().contains(header),
+                "`{header}` appears in an exported vCon by name"
+            );
+        }
+        // The message is still in the container: a filter that dropped the
+        // whole trace would pass every assertion above.
+        assert!(
+            json.contains("vcon-both-shapes@example.com"),
+            "the dialog itself was dropped rather than filtered"
+        );
+    }
+
     /// The wire-line rule reads a header name the way RFC 3261 does.
     ///
     /// **First of two tests owed** for the CodeQL alert that turned CI red on

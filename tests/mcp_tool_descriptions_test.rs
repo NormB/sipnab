@@ -71,7 +71,6 @@ fn tool_descriptions(src: &str) -> Vec<(String, String)> {
     out
 }
 
-/// No `#[tool]` description tells the model to trust, verify, ensure or act on
 /// Every `.rs` file under `src/mcp/`, concatenated.
 ///
 /// NOT `server.rs` alone. Tool groups moved into `src/mcp/tools/*.rs` when the
@@ -113,6 +112,7 @@ fn mcp_registry_source() -> String {
         .join("\n")
 }
 
+/// No `#[tool]` description tells the model to trust, verify, ensure or act on
 /// what it gets back.
 #[test]
 fn tool_descriptions_do_not_instruct_the_model_to_trust_content() {
