@@ -12,6 +12,30 @@ entry that carries them.
 
 ### Changed
 
+- **A decision that captures must never be committed is now a gate, not a
+  note.** Five LTE captures entered the private corpus and are the reason a
+  GTPv2-C control message reported as an RTP stream with a confident `mos: 1.0`
+  was ever found. They stay private for two independent reasons — the source
+  page states no license at all, and absence of terms is "all rights reserved"
+  rather than permission; and they carry a real IMEI in a `+sip.instance` URN
+  together with an IMSI-derived subscriber identity.
+
+  That was written down and enforced by nothing. A backlog entry does not
+  survive a `git add`, and the risk is a capture landing in a fixtures
+  directory because somebody was moving fast — at which point it is in a public
+  repository's history permanently.
+
+  The gate is keyed on what a file CONTAINS, never on the five names: a
+  denylist of names passes the sixth capture, and the sixth is the one nobody
+  thought about. It walks the whole repository rather than the test tree,
+  because four captures ship from outside it and the sample the browser
+  analyzer loads reaches more people than any fixture.
+
+  It says what it does not cover, too. Two of those five hold roughly 19 MB of
+  one person's DNS queries and TLS SNI, which is as disqualifying as the IMEI
+  and has no crisp byte pattern — a fixture may legitimately carry DNS. That
+  half stays a human decision, and the gate does not pretend otherwise.
+
 - **`--retain-audio` no longer requires `--mcp`.** The constraint was right
   when it was written: the MCP `export_audio` tool was the only thing that
   could read the retained buffers back, so retaining without it would have

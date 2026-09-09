@@ -44,7 +44,7 @@ Tiers:
 
 ## Status
 
-**32 open, 476 done** across 36 sections.
+**31 open, 477 done** across 36 sections.
 Regenerate with `python3 scripts/backlog-status.py --apply`.
 
 | Section | Open | Done | Progress |
@@ -73,7 +73,7 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
 | OBS | 0 | 7 | `##########` |
 | REQ | 4 | 13 | `########..` |
 | CMP | 1 | 4 | `########..` |
-| GTP | 2 | 1 | `###.......` |
+| GTP | 1 | 2 | `#######...` |
 | MER | 0 | 5 | `##########` |
 | LIVE | 6 | 0 | `..........` |
 | P5 | 6 | 14 | `#######...` |
@@ -6461,10 +6461,10 @@ wrote for itself.
   stands up OpenSIPS; putting a GTP-U tunnel in front of it yields a PII-free,
   license-clean fixture of exactly this path, promotable under LIVE4.
 
-- [ ] **GTP3 — the LTE captures now in the corpus must never be committed.**
-  Five captures from a public community-LTE library were added to the private
-  corpus on 2026-09-06 and are the reason GTP1 was found. They stay private, for
-  two independent reasons, either sufficient:
+- [x] **GTP3 (done 2026-09-09) — the LTE captures now in the corpus must never
+  be committed.** Five captures from a public community-LTE library were added
+  to the private corpus on 2026-09-06 and are the reason GTP1 was found. They
+  stay private, for two independent reasons, either sufficient:
 
   **No license.** The page states no terms — no copyright line, no reuse
   statement, and the project's own repository ships none of these files, so its
@@ -6476,10 +6476,26 @@ wrote for itself.
   real person's DNS queries and TLS SNI. LIVE4's rule already disqualifies those
   two on their face.
 
-  **Do:** leave them under `SIPNAB_CORPUS` where the corpus gates read them and
-  nothing publishes them. If a committed equivalent is ever wanted, ask the
-  author to state a license — and even then redact before promoting, because the
-  privacy question is separate from the licensing one.
+  **Done, and it is a gate rather than a note.** The decision was written here
+  and enforced by nothing, and a backlog entry does not survive a `git add` —
+  the whole risk is a capture landing in `tests/pcap-samples/` because somebody
+  was moving fast, at which point it is in a public repository's history
+  permanently. `committed_capture_privacy_test` refuses any committed capture
+  carrying `urn:gsma:imei` or `3gppnetwork.org`, keyed on what the file
+  CONTAINS rather than on the five names: a denylist of names passes the sixth
+  capture, and the sixth is the one nobody thought about.
+
+  It walks the whole repository rather than `tests/`. Four captures ship from
+  outside it — a fuzz seed, two SIPp media files, and the sample the browser
+  analyzer loads, which is the one that reaches the most people.
+
+  **What it does not check, said out loud:** the 19 MB of DNS and TLS SNI has
+  no crisp byte pattern, since a fixture may legitimately carry DNS. That half
+  stays a human decision under LIVE4 and the gate does not pretend to cover it.
+
+  With `SIPNAB_CORPUS` set, a positive control asserts at least one corpus
+  capture still trips the scan — otherwise the patterns could stop describing
+  anything real and the gate would guard a shape nobody has seen.
 
 ## MER — annotated sequence diagrams (added 2026-09-06)
 
