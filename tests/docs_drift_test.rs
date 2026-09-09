@@ -3376,7 +3376,13 @@ fn no_documentation_table_repeats_a_row() {
     // observation half, which that tool's own section documented nowhere) and
     // the `find_in_captures` parameters (MCPX3). Attributed per file against
     // HEAD: docs/mcp-tools.md 94 -> 96 and its mirror 94 -> 96, nothing else.
-    const EXPECTED_TABLES: usize = 842;
+    // 842 -> 844 by ONE written table, mirrored: the three states of a quality
+    // interval's `verdict` under `rtp_stats` (CMP2). The third state is the
+    // reason the table exists -- `not_scorable` is not a shade of good or bad,
+    // and a reader who takes it for one counts an unscoreable call as a clean
+    // one. Attributed per file against HEAD: docs/mcp-tools.md 96 -> 97 and
+    // its mirror 96 -> 97, nothing else moved.
+    const EXPECTED_TABLES: usize = 844;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

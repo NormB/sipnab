@@ -87,12 +87,42 @@
     "quality_interval": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["timestamp", "jitter_ms", "loss_pct", "packets"],
+      "required": [
+        "timestamp",
+        "jitter_ms",
+        "loss_pct",
+        "packets",
+        "mos",
+        "r_factor",
+        "verdict",
+        "mos_grounded"
+      ],
       "properties": {
         "timestamp": { "type": "string", "format": "date-time" },
         "jitter_ms": { "type": "number" },
         "loss_pct": { "type": "number" },
-        "packets": { "type": "integer", "minimum": 0 }
+        "packets": { "type": "integer", "minimum": 0 },
+        "mos": {
+          "type": "number",
+          "minimum": 1.0,
+          "maximum": 4.5,
+          "description": "MOS for THIS interval alone, scored on the interval's own jitter and loss and on the stream's resolved one-way path delay. The stream-level figure is a mean over the whole call and hides a burst shorter than itself. Read `verdict` before comparing it: on a codec with no impairment value this is a placeholder standing in for a missing measurement, byte-identical to a grounded score."
+        },
+        "r_factor": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100,
+          "description": "The ITU-T G.107 R-factor `mos` was converted from, on the same inputs. R is the linear scale carriers write SLAs in, so the eight R-points behind a 0.15 MOS difference are a real difference where the MOS gap reads as rounding."
+        },
+        "verdict": {
+          "type": "string",
+          "enum": ["acceptable", "degraded", "not_scorable"],
+          "description": "Three states, not two. `acceptable` is R at or above 70, where ITU-T G.107's worst user-satisfaction category is still 'some users dissatisfied'; `degraded` is below it. `not_scorable` is the ONLY answer for a codec with no published or declared impairment value, and it is not a shade of good or bad: banding a placeholder would paint a guess."
+        },
+        "mos_grounded": {
+          "type": "boolean",
+          "description": "Whether `mos` and `r_factor` rest on a real impairment value. False exactly when `verdict` is `not_scorable`."
+        }
       }
     },
     "burst_gap": {

@@ -3220,9 +3220,11 @@ fn stream_json(
     s: &crate::rtp::stream::RtpStream,
     store: &crate::rtp::stream_store::StreamStore,
 ) -> serde_json::Value {
-    let line = crate::output::json::stream_to_json(s);
-    let mut v: serde_json::Value = serde_json::from_str(&line).unwrap_or(serde_json::Value::Null);
     let delay = crate::rtp::quality::MosDelay::from_capture(store);
+    // The same evidence for the headline MOS below and for the per-interval
+    // ones the renderer writes, resolved once and passed in.
+    let line = crate::output::json::stream_to_json(s, delay);
+    let mut v: serde_json::Value = serde_json::from_str(&line).unwrap_or(serde_json::Value::Null);
     // Say whether the MOS is a real estimate or a placeholder.
     //
     // An agent reading `mos: 4.2` cannot otherwise tell a grounded G.711 score
@@ -4662,7 +4664,13 @@ impl SipnabMcp {
                 &dialog_streams,
                 &AsymmetryThresholds::default(),
             );
-            let report = generate_call_report(dialog, &dialog_streams, &diag, format);
+            let report = generate_call_report(
+                dialog,
+                &dialog_streams,
+                &diag,
+                format,
+                crate::rtp::quality::MosDelay::from_capture(&ss),
+            );
             drop(ss);
             drop(ds);
             report
@@ -5002,7 +5010,13 @@ impl SipnabMcp {
                 &dialog_streams,
                 &AsymmetryThresholds::default(),
             );
-            let r = generate_call_report(dialog, &dialog_streams, &diag, format);
+            let r = generate_call_report(
+                dialog,
+                &dialog_streams,
+                &diag,
+                format,
+                crate::rtp::quality::MosDelay::from_capture(&ss),
+            );
             drop(ss);
             drop(ds);
             r

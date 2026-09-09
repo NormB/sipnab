@@ -1667,12 +1667,37 @@
           "loss_pct": {
             "type": "number"
           },
+          "mos": {
+            "description": "MOS for THIS interval alone, scored on the interval's own jitter and loss and on the stream's resolved one-way path delay. The stream-level figure is a mean over the whole call and hides a burst shorter than itself. Read `verdict` before comparing it: on a codec with no impairment value this is a placeholder standing in for a missing measurement, byte-identical to a grounded score.",
+            "maximum": 4.5,
+            "minimum": 1.0,
+            "type": "number"
+          },
+          "mos_grounded": {
+            "description": "Whether `mos` and `r_factor` rest on a real impairment value. False exactly when `verdict` is `not_scorable`.",
+            "type": "boolean"
+          },
           "packets": {
             "minimum": 0,
             "type": "integer"
           },
+          "r_factor": {
+            "description": "The ITU-T G.107 R-factor `mos` was converted from, on the same inputs. R is the linear scale carriers write SLAs in, so the eight R-points behind a 0.15 MOS difference are a real difference where the MOS gap reads as rounding.",
+            "maximum": 100,
+            "minimum": 0,
+            "type": "number"
+          },
           "timestamp": {
             "format": "date-time",
+            "type": "string"
+          },
+          "verdict": {
+            "description": "Three states, not two. `acceptable` is R at or above 70, where ITU-T G.107's worst user-satisfaction category is still 'some users dissatisfied'; `degraded` is below it. `not_scorable` is the ONLY answer for a codec with no published or declared impairment value, and it is not a shade of good or bad: banding a placeholder would paint a guess.",
+            "enum": [
+              "acceptable",
+              "degraded",
+              "not_scorable"
+            ],
             "type": "string"
           }
         },
@@ -1680,7 +1705,11 @@
           "timestamp",
           "jitter_ms",
           "loss_pct",
-          "packets"
+          "packets",
+          "mos",
+          "r_factor",
+          "verdict",
+          "mos_grounded"
         ],
         "type": "object"
       },

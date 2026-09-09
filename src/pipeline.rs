@@ -3012,8 +3012,11 @@ mod relay_control_tests {
 
         let rendered = |store: &StreamStore| -> serde_json::Value {
             let stream = store.iter().next().expect("the packet created a stream");
-            serde_json::from_str(&crate::output::json::stream_to_json(stream))
-                .expect("the renderer emits valid JSON")
+            serde_json::from_str(&crate::output::json::stream_to_json(
+                stream,
+                crate::rtp::quality::MosDelay::unknown(),
+            ))
+            .expect("the renderer emits valid JSON")
         };
 
         // The relay's own `ng` control plane naming a port it allocated.

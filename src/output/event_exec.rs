@@ -353,10 +353,15 @@ impl EventExecEngine {
         }
 
         // Build the JSON for SIPNAB_JSON env var
+        // No streams are passed here, so there is nothing for a path delay to
+        // score: the record this builds carries the dialog and its diagnosis.
+        // `unknown` says that at the call site rather than leaving a reader to
+        // work out why a store was not consulted.
         let json = super::json::dialog_to_json(
             dialog,
             &[],
             &crate::rtp::diagnosis::MediaDiagnosis::default(),
+            crate::rtp::quality::MosDelay::unknown(),
         );
 
         let env: Vec<(&'static str, String)> = vec![
@@ -446,7 +451,7 @@ impl EventExecEngine {
             return;
         }
 
-        let stream_json = super::json::stream_to_json(stream);
+        let stream_json = super::json::stream_to_json(stream, delay);
 
         let env: Vec<(&'static str, String)> = vec![
             ("SIPNAB_STREAM_JSON", stream_json),

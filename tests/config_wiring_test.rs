@@ -1043,6 +1043,11 @@ fn limit_probes() -> Vec<LimitProbe> {
             observe: probe_max_lost_sequences,
         },
         LimitProbe {
+            key: "quality_interval_secs",
+            enabled: true,
+            observe: probe_quality_interval_secs,
+        },
+        LimitProbe {
             key: "max_groups",
             enabled: true,
             observe: probe_max_groups,
@@ -1449,6 +1454,46 @@ fn first_stream_burst_count(stdout: &str) -> i64 {
     v["streams"][0]["burst_gap"]["burst_count"]
         .as_i64()
         .expect("the linked stream must carry a burst/gap analysis")
+}
+
+/// `quality_interval_secs`: thirty seconds of media, snapshotted at the
+/// shipped five-second period and then at one second.
+///
+/// Counts the snapshots the stream published rather than inspecting the
+/// setting. A period honored nowhere still parses, still validates and still
+/// prints nothing different — which is the whole class of defect this gate
+/// exists for.
+fn probe_quality_interval_secs() -> (String, String) {
+    let dir = tempfile::tempdir().unwrap();
+    let pcap = dir.path().join("half-minute.pcap");
+    // 1500 packets at 20 ms is thirty seconds of wall clock, so the shipped
+    // five-second period closes several intervals and a one-second period
+    // closes several times more. A shorter capture would leave both at one
+    // and the two observations would agree for the wrong reason.
+    pcap_build::write_pcap_at(
+        &pcap,
+        &pcap_build::sdp_call_with_lossy_rtp_at("interval-probe", 1500, 1, 20),
+        1,
+    );
+    observe_stdout(
+        &pcap,
+        "[limits]\nquality_interval_secs = 1\n",
+        &["--json-dialogs"],
+        |out| format!("snapshots={}", first_stream_interval_count(out)),
+    )
+}
+
+/// Quality snapshots the first dialog's first stream published.
+fn first_stream_interval_count(stdout: &str) -> usize {
+    let line = stdout
+        .lines()
+        .find(|l| l.starts_with('{'))
+        .expect("the probe capture must produce one dialog");
+    let v: serde_json::Value = serde_json::from_str(line).expect("valid dialog JSON");
+    v["streams"][0]["quality_intervals"]
+        .as_array()
+        .expect("the linked stream must carry a quality trend")
+        .len()
 }
 
 /// `max_groups`: eight Call-IDs grouped against a cap of two.

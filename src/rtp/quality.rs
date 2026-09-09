@@ -637,6 +637,33 @@ impl<'a> MosDelay<'a> {
         )
     }
 
+    /// Score ONE quality interval of `stream`, on the delay this evidence
+    /// resolves for the whole stream.
+    ///
+    /// [`Self::score`] answers "how good was the call"; this answers "how good
+    /// was the call at 14:02:35". They are different questions, and the
+    /// stream-level answer cannot be asked to give this one: a mean over a
+    /// six-minute call hides the failure this project has already recorded,
+    /// where 90 % loss turned out to be three bursts of half a second.
+    ///
+    /// The delay is the stream's and not the interval's, deliberately. A
+    /// five-second window carries far too little RTCP to re-resolve a path
+    /// delay, and a figure that flickered per interval would move the verdict
+    /// for a reason with nothing to do with the interval.
+    #[must_use]
+    pub fn interval_score(
+        &self,
+        stream: &crate::rtp::stream::RtpStream,
+        interval: &crate::rtp::stream::QualityInterval,
+    ) -> IntervalQuality {
+        score_interval(
+            interval.jitter_ms,
+            interval.loss_pct,
+            stream.codec.as_deref(),
+            self.one_way_ms(stream),
+        )
+    }
+
     /// The R-factor behind [`Self::score`], on the same delay basis.
     ///
     /// Carriers write thresholds and SLAs in R rather than in MOS, and R is
@@ -1660,6 +1687,148 @@ pub fn mos_is_grounded(codec: Option<&str>) -> bool {
     !matches!(mos_grounding(codec), MosGrounding::Unpublished)
 }
 
+// ── Per-interval quality ─────────────────────────────────────────────
+
+/// The R-factor at or above which the worst published user-satisfaction
+/// category is still "some users dissatisfied".
+///
+/// [ITU-T G.107](https://www.itu.int/rec/T-REC-G.107) Table 2 maps R onto six
+/// categories, and G.109 gives them names. R = 70 is where "some users
+/// dissatisfied" ends and "many users dissatisfied" begins, which is the one
+/// boundary in that table that separates a call an operator would defend from
+/// one they would not.
+///
+/// It is a published boundary rather than a tunable, deliberately. The TUI's
+/// [`QualityBands`](crate::rtp::bands::QualityBands) exists so an operator can
+/// decide which numbers get a COLOR on their own network; this decides whether
+/// an exported interval is described as acceptable, and an exported verdict
+/// that means something different per deployment is worth less than no verdict
+/// at all.
+pub const R_ACCEPTABLE: f64 = 70.0;
+
+/// What one quality interval was, in three states.
+///
+/// The third state is the reason this exists. An interval on a codec with no
+/// published impairment value scores a placeholder that is byte-identical to a
+/// grounded G.711 number, so banding it would paint a guess green or red —
+/// and a trend line of colored guesses is the most confident-looking thing
+/// this project could ship.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IntervalVerdict {
+    /// Scored on a real impairment value, at or above [`R_ACCEPTABLE`].
+    Acceptable,
+    /// Scored on a real impairment value, below [`R_ACCEPTABLE`].
+    Degraded,
+    /// Not scored: the codec has no published impairment value and none was
+    /// declared in `[media.codec_ie]`. The `mos` and `r_factor` beside this
+    /// verdict are placeholders meaning "unknown".
+    NotScorable,
+}
+
+impl IntervalVerdict {
+    /// The wire spelling every surface serializes this as.
+    ///
+    /// One vocabulary in one place, the rule
+    /// [`MosGrounding::as_str`] follows and for the same reason.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Acceptable => "acceptable",
+            Self::Degraded => "degraded",
+            Self::NotScorable => "not_scorable",
+        }
+    }
+
+    /// The verdict for one R-factor on one grounding.
+    ///
+    /// Separated from [`score_interval`] so the boundary itself can be driven
+    /// at exactly [`R_ACCEPTABLE`] — a scored interval reaches R by way of the
+    /// E-model and cannot be made to land on 70.000 on request, which is how
+    /// an inclusive boundary silently becomes an exclusive one.
+    ///
+    /// A non-finite R is [`Degraded`](Self::Degraded) rather than acceptable:
+    /// every comparison against `NaN` is false, and the safe side of that
+    /// accident is the one that does not certify a call nobody scored.
+    #[must_use]
+    pub fn of(r_factor: f64, grounding: MosGrounding) -> Self {
+        if !grounding.is_grounded() {
+            return Self::NotScorable;
+        }
+        if r_factor >= R_ACCEPTABLE {
+            Self::Acceptable
+        } else {
+            Self::Degraded
+        }
+    }
+
+    /// Whether this verdict is a judgement about the media at all.
+    ///
+    /// Anything that COUNTS degraded intervals has to consult this first, the
+    /// same way anything that filters on MOS consults
+    /// [`mos_is_grounded`]: "not scorable" is not "fine", and a trend summary
+    /// that treats it as the absence of a problem reports a healthy call on a
+    /// codec it cannot score.
+    #[must_use]
+    pub const fn is_verdict(self) -> bool {
+        !matches!(self, Self::NotScorable)
+    }
+}
+
+/// One quality interval, scored.
+///
+/// The MOS and the R are always present, because withholding them would make
+/// an ungrounded interval indistinguishable from one that was never recorded.
+/// [`grounding`](Self::grounding) and [`verdict`](Self::verdict) are what say
+/// whether they are measurements.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct IntervalQuality {
+    /// The MOS for this interval alone.
+    pub mos: f64,
+    /// The R-factor the MOS was converted from, on the same inputs.
+    pub r_factor: f64,
+    /// Whether the impairment value behind both was published, declared by the
+    /// operator, or absent.
+    pub grounding: MosGrounding,
+    /// The three-state verdict. [`IntervalVerdict::NotScorable`] whenever
+    /// `grounding` is not grounded, and never otherwise.
+    pub verdict: IntervalVerdict,
+}
+
+/// Score one interval's own numbers.
+///
+/// The pure core of [`MosDelay::interval_score`], taking the four inputs as
+/// arguments so both the grounded and the ungrounded side can be driven
+/// without a store, a stream or a capture.
+///
+/// # Arguments
+///
+/// * `jitter_ms` — jitter measured during the interval.
+/// * `loss_pct` — loss measured during the interval, not over the stream.
+/// * `codec` — the stream's codec, which is what decides grounding.
+/// * `one_way_delay_ms` — the path delay the STREAM resolved. A five-second
+///   window is far too short to re-resolve a path delay from RTCP, and a delay
+///   that flickered per interval would move the verdict for a reason that has
+///   nothing to do with the interval.
+#[must_use]
+pub fn score_interval(
+    jitter_ms: f64,
+    loss_pct: f64,
+    codec: Option<&str>,
+    one_way_delay_ms: f64,
+) -> IntervalQuality {
+    let r_factor = estimate_r_with_delay(jitter_ms, loss_pct, codec, one_way_delay_ms);
+    // Resolved once and matched, so the verdict and the grounding cannot
+    // describe two different codecs — the property
+    // `the_verdict_and_the_grounding_cannot_disagree` pins.
+    let grounding = mos_grounding(codec);
+    IntervalQuality {
+        mos: r_to_mos(r_factor),
+        r_factor,
+        grounding,
+        verdict: IntervalVerdict::of(r_factor, grounding),
+    }
+}
+
 /// Where a MOS shown beside a stream came from.
 ///
 /// [`MosGrounding`] answers a narrower question — whether *sipnab's own*
@@ -1766,5 +1935,405 @@ mod provenance_tests {
                 .contains("far end"),
             "the label must attribute the number to its source"
         );
+    }
+}
+
+/// Unit tests for the per-interval verdict.
+#[cfg(test)]
+mod interval_quality_tests {
+    use super::{IntervalVerdict, MosGrounding, R_ACCEPTABLE, mos_is_grounded, score_interval};
+
+    /// The boundary is inclusive, and the only way to prove that is to hand it
+    /// exactly the boundary. A scored interval arrives at R through the
+    /// E-model and never lands on 70.000 to order, so `>=` quietly becoming
+    /// `>` would move every interval sitting on the line into "degraded" with
+    /// nothing to notice it.
+    #[test]
+    fn the_boundary_itself_is_acceptable() {
+        assert_eq!(
+            IntervalVerdict::of(R_ACCEPTABLE, MosGrounding::Published),
+            IntervalVerdict::Acceptable,
+            "R = 70 is the top of \"some users dissatisfied\", not the bottom \
+             of \"many\""
+        );
+        // The true predecessor of 70.0, not `70.0 - f64::EPSILON`: EPSILON is
+        // the ULP at 1.0 and is four hundred times too small to change a
+        // number of this size, so subtracting it yields 70.0 again and the
+        // assertion tests the inclusive side twice. It read as a boundary
+        // test and was one line of arithmetic away from being one.
+        let just_below = f64::from_bits(R_ACCEPTABLE.to_bits() - 1);
+        assert!(just_below < R_ACCEPTABLE, "the fixture must be below 70");
+        assert_eq!(
+            IntervalVerdict::of(just_below, MosGrounding::Published),
+            IntervalVerdict::Degraded
+        );
+    }
+
+    /// Owed, for a boundary test that tested the same side twice.
+    ///
+    /// `70.0 - f64::EPSILON` is 70.0. Nothing in the assertion said so, and it
+    /// passed against code with the boundary written either way. A fixture
+    /// that does not sit where the test claims is a green light bolted to the
+    /// wrong wire, so the fixture gets its own assertion now.
+    #[test]
+    fn an_epsilon_step_does_not_move_a_number_of_this_size() {
+        assert_eq!(
+            R_ACCEPTABLE - f64::EPSILON,
+            R_ACCEPTABLE,
+            "if this ever stops being true the boundary fixture below can be \
+             simplified; until then, subtracting EPSILON from 70 is a no-op"
+        );
+        let just_below = f64::from_bits(R_ACCEPTABLE.to_bits() - 1);
+        assert!(
+            just_below < R_ACCEPTABLE && R_ACCEPTABLE - just_below < 1e-13,
+            "the predecessor must be strictly below and adjacent, not merely \
+             some smaller number that would pass on any boundary"
+        );
+    }
+
+    /// Owed, for the same slip: the pair of fixtures either side of a boundary
+    /// must land on DIFFERENT sides of it, whatever the boundary is.
+    ///
+    /// Written against the constant rather than against 70, so moving
+    /// `R_ACCEPTABLE` moves the test with it instead of leaving a stale
+    /// literal that still passes.
+    #[test]
+    fn the_boundary_fixtures_straddle_the_boundary() {
+        let below = f64::from_bits(R_ACCEPTABLE.to_bits() - 1);
+        let above = f64::from_bits(R_ACCEPTABLE.to_bits() + 1);
+        assert!(below < R_ACCEPTABLE, "the low fixture is not below");
+        assert!(above > R_ACCEPTABLE, "the high fixture is not above");
+        assert_ne!(
+            IntervalVerdict::of(below, MosGrounding::Published),
+            IntervalVerdict::of(above, MosGrounding::Published),
+            "one representable step across the boundary must change the verdict"
+        );
+    }
+
+    /// An R that is not a number certifies nothing. Every comparison against
+    /// `NaN` is false, so the arm this lands in is the one that decides
+    /// whether an arithmetic accident reads as a healthy call.
+    #[test]
+    fn a_non_finite_r_is_never_acceptable() {
+        for r in [f64::NAN, f64::NEG_INFINITY] {
+            assert_eq!(
+                IntervalVerdict::of(r, MosGrounding::Published),
+                IntervalVerdict::Degraded,
+                "R={r} must not read as an acceptable interval"
+            );
+        }
+    }
+
+    /// Grounding outranks the number. An operator-declared impairment is a
+    /// real input and bands like a published one; an absent one refuses
+    /// whatever R was computed beside it.
+    #[test]
+    fn grounding_decides_before_the_number_does() {
+        assert_eq!(
+            IntervalVerdict::of(100.0, MosGrounding::Unpublished),
+            IntervalVerdict::NotScorable,
+            "a perfect R on an unscoreable codec is still a placeholder"
+        );
+        assert_eq!(
+            IntervalVerdict::of(95.0, MosGrounding::OperatorDeclared),
+            IntervalVerdict::Acceptable,
+            "the operator's own impairment value is an input, not a caveat"
+        );
+        assert!(!IntervalVerdict::NotScorable.is_verdict());
+        assert!(IntervalVerdict::Degraded.is_verdict());
+        assert!(IntervalVerdict::Acceptable.is_verdict());
+    }
+
+    /// The whole point of scoring an interval: the stream's lifetime figures
+    /// are a mean, and the failure this project has already recorded — 90 %
+    /// loss that was three bursts of half a second — is invisible in one.
+    #[test]
+    fn a_bad_interval_is_degraded_even_when_the_stream_looks_clean() {
+        let clean = score_interval(2.0, 0.0, Some("PCMU"), 20.0);
+        let burst = score_interval(2.0, 90.0, Some("PCMU"), 20.0);
+        assert_eq!(clean.verdict, IntervalVerdict::Acceptable);
+        assert_eq!(burst.verdict, IntervalVerdict::Degraded);
+        assert!(
+            burst.mos < clean.mos,
+            "the interval that lost nine packets in ten cannot score at or \
+             above the one that lost none"
+        );
+    }
+
+    /// An ungrounded codec gets no color. The number is still published, with
+    /// its grounding beside it, exactly as the stream-level score is — what is
+    /// refused is the VERDICT, because a placeholder banded green is a
+    /// confident answer nobody measured.
+    #[test]
+    fn an_ungrounded_codec_is_never_banded() {
+        for codec in [None, Some("AMR-WB"), Some("EVS"), Some("G722")] {
+            let perfect = score_interval(0.0, 0.0, codec, 20.0);
+            assert_eq!(
+                perfect.verdict,
+                IntervalVerdict::NotScorable,
+                "{codec:?} has no impairment value, so a perfect interval on it \
+                 is still not a measurement"
+            );
+            assert!(
+                !perfect.grounding.is_grounded(),
+                "{codec:?} must report itself ungrounded beside the refusal"
+            );
+        }
+    }
+
+    /// The refusal and the grounding are one decision, not two that agree
+    /// today. A codec the scorer grounds must be bandable and a codec it does
+    /// not must not be, for every name either side knows.
+    #[test]
+    fn the_verdict_and_the_grounding_cannot_disagree() {
+        for codec in [
+            None,
+            Some("PCMU"),
+            Some("PCMA"),
+            Some("G729"),
+            Some("G.729"),
+            Some("opus"),
+            Some("Opus"),
+            Some("AMR-WB"),
+            Some("EVS"),
+            Some("telephone-event"),
+        ] {
+            let scored = score_interval(5.0, 1.0, codec, 20.0);
+            assert_eq!(
+                scored.verdict == IntervalVerdict::NotScorable,
+                !mos_is_grounded(codec),
+                "{codec:?}: the verdict and the grounding gave different answers"
+            );
+        }
+    }
+
+    /// The boundary is the published one and it is inclusive at R = 70, where
+    /// ITU-T G.107's worst category is still "some users dissatisfied".
+    #[test]
+    fn the_acceptable_boundary_is_the_published_one() {
+        // Walk loss upward on a grounded codec until the verdict turns, and
+        // check the turn happens exactly where R crosses the constant rather
+        // than at some number this test hard-codes independently.
+        let mut last_acceptable = None;
+        let mut first_degraded = None;
+        for step in 0..=2000 {
+            let loss = f64::from(step) / 100.0;
+            let scored = score_interval(0.0, loss, Some("PCMU"), 20.0);
+            match scored.verdict {
+                IntervalVerdict::Acceptable => last_acceptable = Some(scored),
+                IntervalVerdict::Degraded if first_degraded.is_none() => {
+                    first_degraded = Some(scored);
+                }
+                _ => {}
+            }
+        }
+        let last = last_acceptable.expect("a clean G.711 interval must be acceptable");
+        let first = first_degraded.expect("enough loss must eventually degrade it");
+        assert!(
+            last.r_factor >= R_ACCEPTABLE,
+            "the last acceptable interval scored R={}, below the boundary",
+            last.r_factor
+        );
+        assert!(
+            first.r_factor < R_ACCEPTABLE,
+            "the first degraded interval scored R={}, at or above the boundary",
+            first.r_factor
+        );
+    }
+
+    /// The wrapper must read the INTERVAL, not the stream it hangs off.
+    ///
+    /// This is the whole feature in one assertion. The stream below is clean
+    /// over its lifetime — no lost packets, low jitter — and one of its
+    /// intervals lost nine packets in ten. A wrapper reading `stream.jitter`
+    /// and `stream.loss_percent()` returns "acceptable" for that interval and
+    /// looks completely correct doing it, because every number it published
+    /// is a real number about a real stream.
+    #[test]
+    fn the_wrapper_scores_the_interval_and_not_the_stream() {
+        use crate::rtp::parser::RtpHeader;
+        use crate::rtp::stream::{QualityInterval, RtpStream, StreamKey};
+        use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+
+        let addr = |port| SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), port);
+        let header = RtpHeader {
+            version: 2,
+            padding: false,
+            extension: false,
+            csrc_count: 0,
+            marker: false,
+            payload_type: 0, // PCMU: grounded, so a verdict is possible at all
+            sequence: 1,
+            timestamp: 0,
+            ssrc: 0x1234_5678,
+            payload_offset: 12,
+        };
+        let key = StreamKey {
+            ssrc: 0x1234_5678,
+            src: addr(20000),
+            dst: addr(30000),
+        };
+        let mut stream = RtpStream::new(key, &header, chrono::Utc::now());
+        // A stream whose LIFETIME figures are excellent.
+        stream.jitter = 1.0;
+        stream.packet_count = 10_000;
+        stream.lost_packets = 0;
+        assert_eq!(stream.loss_percent(), 0.0, "the fixture must look clean");
+
+        let burst = QualityInterval {
+            timestamp: chrono::Utc::now(),
+            // Deliberately unequal to `stream.jitter` above. When both were
+            // 1.0 this test passed against a wrapper reading the STREAM's
+            // jitter, because the two arguments were the same number.
+            jitter_ms: 40.0,
+            loss_pct: 90.0,
+            packets: 25,
+        };
+        stream.quality_intervals.push(burst.clone());
+
+        let delay = super::MosDelay::unknown();
+        let whole_call = delay.score(&stream);
+        let scored = delay.interval_score(&stream, &burst);
+
+        assert_eq!(
+            scored.verdict,
+            IntervalVerdict::Degraded,
+            "the interval that lost nine packets in ten was reported as {:?}",
+            scored.verdict
+        );
+        assert!(
+            scored.mos < whole_call,
+            "the interval MOS ({}) must be worse than the call's ({whole_call}); \
+             equal means the interval's own numbers were never read",
+            scored.mos
+        );
+    }
+
+    /// Owed, for a mutation that survived: swapping the interval's jitter for
+    /// the stream's changed nothing, because the fixture set both to 1.0.
+    ///
+    /// Loss is held at zero on both sides here so jitter is the only thing
+    /// that can move the answer. A wrapper reading `stream.jitter` returns the
+    /// same R for a calm interval and a violently jittery one.
+    #[test]
+    fn the_wrapper_reads_the_intervals_own_jitter() {
+        use crate::rtp::stream::QualityInterval;
+
+        let mut stream = interval_fixture_stream();
+        stream.jitter = 1.0;
+        stream.packet_count = 10_000;
+        stream.lost_packets = 0;
+
+        let at = chrono::Utc::now();
+        let calm = QualityInterval {
+            timestamp: at,
+            jitter_ms: 1.0,
+            loss_pct: 0.0,
+            packets: 250,
+        };
+        let jittery = QualityInterval {
+            timestamp: at,
+            jitter_ms: 200.0,
+            loss_pct: 0.0,
+            packets: 250,
+        };
+
+        let delay = super::MosDelay::unknown();
+        let calm_r = delay.interval_score(&stream, &calm).r_factor;
+        let jittery_r = delay.interval_score(&stream, &jittery).r_factor;
+        assert!(
+            jittery_r < calm_r,
+            "200 ms of jitter scored R={jittery_r} against R={calm_r} for 1 ms; \
+             equal means the interval's jitter was never read"
+        );
+    }
+
+    /// Owed, same mutation: a trend is only a trend if the entries can differ.
+    ///
+    /// Two intervals of ONE stream, scored through one call each, must be able
+    /// to disagree. Any wrapper that reaches past its `interval` argument
+    /// returns one answer for every entry and draws a flat line through a call
+    /// that fell apart halfway.
+    #[test]
+    fn two_intervals_of_one_stream_can_disagree() {
+        use crate::rtp::stream::QualityInterval;
+
+        let mut stream = interval_fixture_stream();
+        stream.jitter = 1.0;
+        stream.packet_count = 10_000;
+        stream.lost_packets = 0;
+
+        let at = chrono::Utc::now();
+        let good = QualityInterval {
+            timestamp: at,
+            jitter_ms: 2.0,
+            loss_pct: 0.0,
+            packets: 250,
+        };
+        let bad = QualityInterval {
+            timestamp: at,
+            jitter_ms: 120.0,
+            loss_pct: 25.0,
+            packets: 40,
+        };
+        stream.quality_intervals.push(good.clone());
+        stream.quality_intervals.push(bad.clone());
+
+        let delay = super::MosDelay::unknown();
+        let verdicts: Vec<IntervalVerdict> = stream
+            .quality_intervals
+            .iter()
+            .map(|qi| delay.interval_score(&stream, qi).verdict)
+            .collect();
+        assert_eq!(
+            verdicts,
+            vec![IntervalVerdict::Acceptable, IntervalVerdict::Degraded],
+            "one stream, two intervals, two answers"
+        );
+    }
+
+    /// A PCMU stream with nothing folded into it yet.
+    ///
+    /// Shared so the three tests above cannot drift into describing three
+    /// different fixtures, which is how the jitter mutation survived: the one
+    /// test that existed set the stream and the interval to the same number.
+    fn interval_fixture_stream() -> crate::rtp::stream::RtpStream {
+        use crate::rtp::parser::RtpHeader;
+        use crate::rtp::stream::{RtpStream, StreamKey};
+        use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+
+        let addr = |port| SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), port);
+        let header = RtpHeader {
+            version: 2,
+            padding: false,
+            extension: false,
+            csrc_count: 0,
+            marker: false,
+            payload_type: 0,
+            sequence: 1,
+            timestamp: 0,
+            ssrc: 0x1234_5678,
+            payload_offset: 12,
+        };
+        RtpStream::new(
+            StreamKey {
+                ssrc: 0x1234_5678,
+                src: addr(20000),
+                dst: addr(30000),
+            },
+            &header,
+            chrono::Utc::now(),
+        )
+    }
+
+    /// The MOS and the R come from one derivation. Publishing an R that
+    /// disagrees with the MOS beside it is the defect the stream-level pair
+    /// already avoids by being computed together.
+    #[test]
+    fn the_mos_and_the_r_describe_the_same_interval() {
+        let a = score_interval(30.0, 4.0, Some("G729"), 150.0);
+        let b = score_interval(1.0, 0.0, Some("G729"), 20.0);
+        assert!(a.r_factor < b.r_factor, "the worse path must score lower R");
+        assert!(a.mos < b.mos, "and the MOS must move with it");
     }
 }

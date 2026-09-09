@@ -346,35 +346,45 @@ pub fn render_stream_detail(
             .max(1);
 
         // Sparkline: MOS trend
-        let mos_values: Vec<f64> = stream
+        //
+        // Scored through the same evidence as the headline MOS above. Scoring
+        // the trend on the assumed 100 ms while the number beside it used the
+        // measured path made one pane give two answers: a long-haul call read
+        // `MOS: 1.00` next to a flat, healthy sparkline.
+        let scored: Vec<crate::rtp::quality::IntervalQuality> = stream
             .quality_intervals
             .iter()
-            // The delay the headline MOS above was scored with. Scoring the
-            // trend on the assumed 100 ms while the number beside it used the
-            // measured path made one pane give two answers: a long-haul call
-            // read `MOS: 1.00` next to a flat, healthy sparkline.
-            .map(|qi| {
-                crate::rtp::quality::estimate_mos_with_delay(
-                    qi.jitter_ms,
-                    qi.loss_pct,
-                    stream.codec.as_deref(),
-                    one_way,
-                )
-            })
+            .map(|qi| delay.interval_score(stream, qi))
             .collect();
-        let mos_avg = mos_values.iter().sum::<f64>() / mos_values.len() as f64;
+        let mos_values: Vec<f64> = scored.iter().map(|s| s.mos).collect();
         let mut mos_spans: Vec<Span<'_>> = vec![Span::styled(
             "  MOS Trend: ",
             Style::default().fg(theme.muted),
         )];
         let mos_start = mos_values.len().saturating_sub(spark_budget);
-        for &m in &mos_values[mos_start..] {
-            let ch = mos_to_block(m);
-            let color = MosBand::of(m, quality_bands).color(theme);
+        for s in &scored[mos_start..] {
+            let ch = mos_to_block(s.mos);
+            // The same rule the headline follows, applied per glyph: a band
+            // color on a placeholder paints "unknown" green. This row used to
+            // band every interval of a stream whose own headline three lines
+            // above was already muted for exactly this reason.
+            let color = if s.verdict.is_verdict() {
+                MosBand::of(s.mos, quality_bands).color(theme)
+            } else {
+                theme.muted
+            };
             mos_spans.push(Span::styled(String::from(ch), Style::default().fg(color)));
         }
+        // An average of placeholders is a placeholder with more digits. The
+        // annotation says so rather than publishing one.
+        let mos_annotation = if grounded {
+            let mos_avg = mos_values.iter().sum::<f64>() / mos_values.len() as f64;
+            format!("  (avg: {mos_avg:.1})")
+        } else {
+            "  (not scorable)".to_string()
+        };
         mos_spans.push(Span::styled(
-            format!("  (avg: {mos_avg:.1})"),
+            mos_annotation,
             Style::default().fg(theme.muted),
         ));
         lines.push(Line::from(mos_spans));
@@ -422,12 +432,18 @@ pub fn render_stream_detail(
             let offset = first_ts
                 .map(|ft| qi.timestamp.signed_duration_since(ft).num_seconds())
                 .unwrap_or(0);
-            let qi_mos = crate::rtp::quality::estimate_mos_with_delay(
-                qi.jitter_ms,
-                qi.loss_pct,
-                stream.codec.as_deref(),
-                one_way,
-            );
+            let qi_scored = delay.interval_score(stream, qi);
+            // `n/s` for the same reason the round-trip renders `n/a`: a column
+            // that has to print SOMETHING prints the refusal, not a number
+            // that reads as a measurement.
+            let (qi_mos_text, qi_mos_style) = if qi_scored.verdict.is_verdict() {
+                (
+                    format!("{:.1}", qi_scored.mos),
+                    Style::default().fg(MosBand::of(qi_scored.mos, quality_bands).color(theme)),
+                )
+            } else {
+                ("n/s".to_string(), Style::default().fg(theme.muted))
+            };
 
             lines.push(Line::from(vec![
                 Span::raw(format!("  +{offset:<8}s ")),
@@ -440,10 +456,7 @@ pub fn render_stream_detail(
                     loss_style(qi.loss_pct, theme, quality_bands),
                 ),
                 Span::raw(format!("{:<10} ", qi.packets)),
-                Span::styled(
-                    format!("{qi_mos:.1}"),
-                    Style::default().fg(MosBand::of(qi_mos, quality_bands).color(theme)),
-                ),
+                Span::styled(qi_mos_text, qi_mos_style),
             ]));
         }
         lines.push(Line::raw(""));
@@ -1344,6 +1357,221 @@ mod tests {
             after.contains("MOS-LQ: 1.5"),
             "and the endpoint's claim is still shown, separately: {after}"
         );
+    }
+
+    /// The trend must refuse to band an interval it cannot score.
+    ///
+    /// The pane already mutes the HEADLINE MOS for a codec with no published
+    /// impairment value — and then, three lines lower, painted every interval
+    /// of the same stream on the good/poor scale. One pane, two answers about
+    /// one number, and the dishonest one is the one with more digits in it.
+    #[test]
+    fn an_ungrounded_stream_gets_no_banded_interval_trend() {
+        use crate::rtp::stream::{QualityInterval, RtpStream};
+
+        let ssrc = 0x5151_5151u32;
+        let key = StreamKey {
+            ssrc,
+            src: std::net::SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000),
+            dst: std::net::SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
+        };
+        let t0 = DateTime::from_timestamp(1_700_000_000, 0).unwrap();
+        // Payload type 99 is a dynamic type this capture never saw an rtpmap
+        // for, so the codec is unknown and no impairment value exists for it.
+        let mut stream = RtpStream::new(key.clone(), &rtp_header(ssrc, 1, 99), t0);
+        assert!(
+            !crate::rtp::quality::mos_is_grounded(stream.codec.as_deref()),
+            "the fixture must be ungrounded or this test proves nothing"
+        );
+        for i in 0..4u32 {
+            stream.quality_intervals.push(QualityInterval {
+                timestamp: t0 + TimeDelta::seconds(5 * i64::from(i)),
+                jitter_ms: 2.0,
+                loss_pct: 0.0,
+                packets: 250,
+            });
+        }
+        let mut store = StreamStore::new(16);
+        store.insert_for_test(stream);
+
+        let theme = Theme::default();
+        let backend = TestBackend::new(110, 44);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                render_stream_detail(
+                    frame,
+                    frame.area(),
+                    &key,
+                    &store,
+                    0,
+                    &StreamDetailDisplay {
+                        declared_one_way_delay_ms: None,
+                        quality_bands: &crate::rtp::bands::QualityBands::default(),
+                        theme: &theme,
+                        resolver: &crate::names::NameResolver::new(),
+                        name_mode: crate::names::NameMode::Off,
+                    },
+                );
+            })
+            .unwrap();
+
+        let buf = terminal.backend().buffer();
+        let area = buf.area;
+        let mut rows = Vec::new();
+        for y in 0..area.height {
+            let mut line = String::new();
+            for x in 0..area.width {
+                line.push_str(buf.cell((x, y)).unwrap().symbol());
+            }
+            rows.push(line);
+        }
+
+        let trend = rows
+            .iter()
+            .find(|l| l.contains("MOS Trend:"))
+            .expect("the trend row must still be drawn — a refusal is not an omission");
+        assert!(
+            trend.contains("not scorable"),
+            "the trend annotation must say why there is no average: {trend}"
+        );
+        assert!(
+            !trend.contains("avg:"),
+            "an average of placeholders is still a placeholder: {trend}"
+        );
+
+        let interval_rows: Vec<&String> = rows.iter().filter(|l| l.contains("  +")).collect();
+        assert!(
+            !interval_rows.is_empty(),
+            "the interval table must still list the intervals"
+        );
+        for row in &interval_rows {
+            assert!(
+                row.trim_end().ends_with("n/s"),
+                "an interval on an unscoreable codec must read n/s in the MOS \
+                 column rather than a number: {row}"
+            );
+        }
+    }
+
+    /// Owed, for a mutation that survived: banding every sparkline glyph
+    /// regardless of grounding changed no assertion, because the test above
+    /// reads the row's TEXT and a color is not text.
+    ///
+    /// The glyph is the thing an operator actually looks at. A muted annotation
+    /// beside a row of confident green blocks is not a refusal; it is a
+    /// footnote under a chart nobody reads footnotes under.
+    #[test]
+    fn the_ungrounded_trend_glyphs_carry_no_band_color() {
+        let (muted, others) = trend_glyph_colors(99, Theme::default().muted);
+        assert!(
+            muted > 0,
+            "no sparkline glyphs were found at all; the probe is looking in the \
+             wrong place and would pass against any color"
+        );
+        assert_eq!(
+            others,
+            0,
+            "{others} of {} trend glyphs on an unscoreable codec carry a band \
+             color",
+            muted + others
+        );
+    }
+
+    /// Owed, same mutation, and the half that keeps the one above honest.
+    ///
+    /// A test that only demands "muted" passes against a pane that mutes
+    /// EVERYTHING — which would be a different defect with the same green
+    /// light. A grounded stream's glyphs must still be banded.
+    #[test]
+    fn a_grounded_trend_still_carries_band_colors() {
+        let (muted, others) = trend_glyph_colors(0, Theme::default().muted);
+        assert!(
+            others > 0,
+            "every one of the {muted} trend glyphs on a PCMU stream rendered \
+             muted; the refusal has swallowed the ordinary case"
+        );
+    }
+
+    /// Draw a stream on payload type `pt` with four flat intervals and report
+    /// `(glyphs_in_muted, glyphs_in_any_other_color)` on the MOS trend row.
+    ///
+    /// Shared by the pair above so they cannot drift into describing two
+    /// different panes, which is how the mutation survived the first time.
+    fn trend_glyph_colors(pt: u8, muted: ratatui::style::Color) -> (usize, usize) {
+        use crate::rtp::stream::{QualityInterval, RtpStream};
+
+        let ssrc = 0x6262_6262u32;
+        let key = StreamKey {
+            ssrc,
+            src: std::net::SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000),
+            dst: std::net::SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
+        };
+        let t0 = DateTime::from_timestamp(1_700_000_000, 0).unwrap();
+        let mut stream = RtpStream::new(key.clone(), &rtp_header(ssrc, 1, pt), t0);
+        for i in 0..4u32 {
+            stream.quality_intervals.push(QualityInterval {
+                timestamp: t0 + TimeDelta::seconds(5 * i64::from(i)),
+                jitter_ms: 2.0,
+                loss_pct: 0.0,
+                packets: 250,
+            });
+        }
+        let mut store = StreamStore::new(16);
+        store.insert_for_test(stream);
+
+        let theme = Theme::default();
+        let backend = TestBackend::new(110, 44);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                render_stream_detail(
+                    frame,
+                    frame.area(),
+                    &key,
+                    &store,
+                    0,
+                    &StreamDetailDisplay {
+                        declared_one_way_delay_ms: None,
+                        quality_bands: &crate::rtp::bands::QualityBands::default(),
+                        theme: &theme,
+                        resolver: &crate::names::NameResolver::new(),
+                        name_mode: crate::names::NameMode::Off,
+                    },
+                );
+            })
+            .unwrap();
+
+        let buf = terminal.backend().buffer();
+        let area = buf.area;
+        // The MOS trend row, found by its label rather than by position, and
+        // its glyphs found by the block characters `mos_to_block` emits — the
+        // jitter row uses the same alphabet, which is why the row is located
+        // first.
+        for y in 0..area.height {
+            let mut line = String::new();
+            for x in 0..area.width {
+                line.push_str(buf.cell((x, y)).unwrap().symbol());
+            }
+            if !line.contains("MOS Trend:") {
+                continue;
+            }
+            let mut in_muted = 0;
+            let mut in_other = 0;
+            for x in 0..area.width {
+                let cell = buf.cell((x, y)).unwrap();
+                if !matches!(cell.symbol().chars().next(), Some('\u{2581}'..='\u{2588}')) {
+                    continue;
+                }
+                if cell.fg == muted {
+                    in_muted += 1;
+                } else {
+                    in_other += 1;
+                }
+            }
+            return (in_muted, in_other);
+        }
+        panic!("the MOS trend row was not drawn");
     }
 
     /// Edge case: a long quality history must not emit one sparkline glyph per

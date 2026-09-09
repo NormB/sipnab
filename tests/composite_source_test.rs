@@ -907,6 +907,7 @@ impl Mixed {
             &[],
             &sipnab::rtp::diagnosis::MediaDiagnosis::default(),
             sipnab::output::ReportFormat::Text,
+            sipnab::rtp::quality::MosDelay::unknown(),
         )
     }
 
@@ -919,6 +920,7 @@ impl Mixed {
             dialog,
             &[],
             &sipnab::rtp::diagnosis::MediaDiagnosis::default(),
+            sipnab::rtp::quality::MosDelay::unknown(),
         );
         serde_json::from_str(&raw).expect("dialog JSON parses")
     }

@@ -1674,7 +1674,7 @@ For implementers picking this up, the bridge from each MCP tool to existing func
 | `list_dialogs` | `DialogStore::iter` ([`src/sip/dialog_store.rs:992`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L992)) + `FilterExpr::matches_dialog` ([`src/sip/dsl.rs:723`](https://github.com/NormB/sipnab/blob/main/src/sip/dsl.rs#L723)) + `expand_alias` ([`src/sip/dsl.rs:510`](https://github.com/NormB/sipnab/blob/main/src/sip/dsl.rs#L510)) |
 | `get_dialog` | `DialogStore::get` ([`src/sip/dialog_store.rs:994`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L994)) + iterate `dialog.messages` + `output::json::message_to_json` |
 | `get_dialog_report` | `output::generate_call_report` ([`src/output/call_report.rs:53`](https://github.com/NormB/sipnab/blob/main/src/output/call_report.rs#L53)) with `ReportFormat::Json/Markdown/Text` |
-| `get_message` | `output::json::message_to_json` ([`src/output/json.rs:672`](https://github.com/NormB/sipnab/blob/main/src/output/json.rs#L672)) |
+| `get_message` | `output::json::message_to_json` ([`src/output/json.rs:690`](https://github.com/NormB/sipnab/blob/main/src/output/json.rs#L690)) |
 | `render_ladder` | `output::generate_call_report` with `ReportFormat::Markdown` (v0.4); rich SVG ladder deferred |
 | `rtp_stats` | `StreamStore::iter` ([`src/rtp/stream_store.rs:1546`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L1546)) + `rtp::diagnosis::diagnose_media` + `output::json::stream_to_json` |
 | `search_messages` | Same iteration the `--filter` CLI path uses; `FilterExpr` covers most of it |
@@ -1682,7 +1682,7 @@ For implementers picking this up, the bridge from each MCP tool to existing func
 | `tail_dialogs` | `DialogStore::iter` filtered by `updated_at > cursor` |
 | `security_findings` | `security::AlertEngine` history (extend with ring buffer) |
 | `snapshot_pcap` | `capture::PcapWriter` + filter on captured packets |
-| `stats` | Mirrors `GET /v1/stats` from `output::api::get_stats` ([`src/output/api.rs:2042`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L2042)) |
+| `stats` | Mirrors `GET /v1/stats` from `output::api::get_stats` ([`src/output/api.rs:2061`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L2061)) |
 
 | Phase 8 infra | Reuses |
 |---|---|
@@ -1722,7 +1722,7 @@ For implementers picking this up, the bridge from each MCP tool to existing func
 
 | Phase 8.6 expansion (★) | Wraps |
 |---|---|
-| Quality timeline 680ms intervals | Existing `QualityInterval` in [`src/rtp/stream.rs:185`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream.rs#L185) — bump interval, add `status` field |
+| Quality timeline 680ms intervals | Existing `QualityInterval` in [`src/rtp/stream.rs:283`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream.rs#L283) — bump interval, add `status` field |
 | OK/poor/uncertain trichotomy | New classification function alongside existing `estimate_mos` ([`src/rtp/quality.rs:83`](https://github.com/NormB/sipnab/blob/main/src/rtp/quality.rs#L83)) |
 | `.sipnab` project file | New module `src/project.rs`; reuses existing `output::json::dialog_to_json` for report content and `audio_export` for WAV files |
 | `--open <foo.sipnab>` | New CLI dispatch path that bypasses the capture pipeline and rehydrates `DialogStore`/`StreamStore` from `report.json` |
@@ -1731,7 +1731,7 @@ For implementers picking this up, the bridge from each MCP tool to existing func
 | Phase 8.7 surface (★) | Wraps |
 |---|---|
 | `codec_asymmetry` | Compares `RtpStream::codec` (`src/rtp/stream.rs:309 codec_from_pt`) across the two streams of a dialog |
-| `ptime_asymmetry` | Inferred from RTP inter-arrival in `RtpStream::update` ([`src/rtp/stream.rs:791`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream.rs#L791)) or SDP `a=ptime:` parsed in [`src/sip/sdp.rs`](https://github.com/NormB/sipnab/blob/main/src/sip/sdp.rs) |
+| `ptime_asymmetry` | Inferred from RTP inter-arrival in `RtpStream::update` ([`src/rtp/stream.rs:967`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream.rs#L967)) or SDP `a=ptime:` parsed in [`src/sip/sdp.rs`](https://github.com/NormB/sipnab/blob/main/src/sip/sdp.rs) |
 | `payload_asymmetry` | Compares payload types across streams; data already in `RtpStream` |
 | `duration_asymmetry` | Compares stream start/end timestamps already tracked in `RtpStream` |
 | `late_media` | Compares first RTP packet timestamp against dialog's 200 OK timestamp (already tracked in `dialog.timing`) |

@@ -1057,7 +1057,12 @@ async fn get_dialog(
         &streams,
         &AsymmetryThresholds::default(),
     );
-    let json_str = output::json::dialog_to_json(dialog, &streams, &diagnosis);
+    let json_str = output::json::dialog_to_json(
+        dialog,
+        &streams,
+        &diagnosis,
+        quality::MosDelay::from_capture(&ss),
+    );
     drop(ss);
     drop(ds);
 
@@ -1126,8 +1131,13 @@ async fn get_dialog_report(
         &streams,
         &AsymmetryThresholds::default(),
     );
-    let report =
-        output::generate_call_report(dialog, &streams, &diagnosis, output::ReportFormat::Json);
+    let report = output::generate_call_report(
+        dialog,
+        &streams,
+        &diagnosis,
+        output::ReportFormat::Json,
+        quality::MosDelay::from_capture(&ss),
+    );
     drop(ss);
     drop(ds);
 
@@ -1832,7 +1842,7 @@ async fn get_stream(
         .max_by_key(|s| s.packet_count)
         .ok_or(Problem::new(StatusCode::NOT_FOUND))?;
 
-    let json_str = output::json::stream_to_json(stream);
+    let json_str = output::json::stream_to_json(stream, quality::MosDelay::from_capture(&ss));
     drop(ss);
 
     let parsed: Value =

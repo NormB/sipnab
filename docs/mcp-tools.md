@@ -3384,8 +3384,12 @@ NAT-mismatch flags plus the asymmetry signals (`codec_asymmetry`,
         {
           "jitter_ms": 0.0063823922199494915,
           "loss_pct": 0.0,
+          "mos": 4.358100053908192,
+          "mos_grounded": true,
           "packets": 252,
-          "timestamp": "2016-11-26T14:53:04.709076+00:00"
+          "r_factor": 90.79984682258672,
+          "timestamp": "2016-11-26T14:53:04.709076+00:00",
+          "verdict": "acceptable"
         }
       ],
       "frame": "tests/pcap-samples/sip-rtp-g711.pcap#5@ae02f78d2d48b4f0",
@@ -3414,7 +3418,29 @@ signals named above appear **only when sipnab found one**, so an absent
 Per-call mode returns no `total_matched`, `truncated` or `next_cursor` — a call
 holds every stream it holds, so there is nothing to page. `quality_intervals`
 holds one entry per completed sampling window, so a short call legitimately
-returns an empty array while this eight-second one returns a single row.
+returns an empty array while this eight-second one returns a single row. The
+window is five seconds by default. `--quality-interval` narrows it, down to one
+second, without shortening the hour of call time the trend covers.
+
+Each interval carries its own **`mos`**, **`r_factor`** and **`verdict`**. The
+stream-level MOS is a mean over the whole call, and a mean hides a burst
+shorter than itself: one 90 % loss figure this project had to explain turned
+out to be three bursts of half a second. sipnab scores an interval on its own
+jitter and loss and on the STREAM's resolved path delay, so a number in the
+trend and the headline beside it rest on one basis.
+
+`verdict` has three states and the third is the point:
+
+| `verdict` | What it means |
+|---|---|
+| `acceptable` | R at or above 70, where ITU-T G.107's worst user-satisfaction category is still "some users dissatisfied". |
+| `degraded` | R below 70, where that category becomes "many users dissatisfied". |
+| `not_scorable` | The codec has no published or declared impairment value, so sipnab refuses to judge the interval. The `mos` beside it is a placeholder, and `mos_grounded` is `false`. |
+
+`not_scorable` is the only answer for an ungrounded codec, and it is not a
+shade of good or bad. Anything that COUNTS degraded intervals has to read the
+verdict first: a refusal to judge is not the absence of a problem, and reading
+it as one reports a healthy call on a codec nobody can score.
 
 Each stream carries **`mos_grounded`** and **`mos_grounding`**. `estimate_mos`
 returns the same number — 4.216 at 10 ms jitter — for AMR, AMR-WB, EVS, G.722

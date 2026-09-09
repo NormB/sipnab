@@ -1576,6 +1576,27 @@ pub struct RtpArgs {
     )]
     pub max_lost_sequences: Option<u64>,
 
+    /// Seconds between RTP quality snapshots, the resolution of the per-stream
+    /// quality trend. Config: `[limits] quality_interval_secs`.
+    ///
+    /// The shipped five seconds averages away any burst shorter than itself —
+    /// including the three half-second bursts behind one 90 % loss figure this
+    /// project has already had to explain. The trend still covers an hour of
+    /// call time whatever the period is, so a finer setting buys resolution
+    /// with memory and not with history.
+    ///
+    /// No clap `default_value`, for the reason given on
+    /// [`McpArgs::mcp_max_rows`]: a populated field cannot tell "not typed"
+    /// from "typed the default". The default lives in
+    /// [`crate::rtp::stream::DEFAULT_QUALITY_INTERVAL_SECS`].
+    #[arg(
+        help_heading = "RTP",
+        long = "quality-interval",
+        value_name = "SECONDS",
+        value_parser = clap::value_parser!(u64).range(1..=300)
+    )]
+    pub quality_interval_secs: Option<u64>,
+
     /// MOS quality threshold for alerts (1.0-5.0 scale).
     #[arg(help_heading = "RTP", long, value_name = "MOS", default_value = "3.0")]
     pub quality_threshold: f64,
@@ -3743,6 +3764,23 @@ impl Cli {
             .max_lost_sequences
             .or(config.limits.max_lost_sequences)
             .map_or(crate::rtp::stream::DEFAULT_LOST_SEQ_LOG_CAP, |v| v as usize)
+    }
+
+    /// Quality-snapshot period: `--quality-interval`, else
+    /// `[limits] quality_interval_secs`, else the shipped default. See
+    /// [`Self::dialog_limit`] for the precedence rule.
+    ///
+    /// The default is sourced from
+    /// [`crate::rtp::stream::DEFAULT_QUALITY_INTERVAL_SECS`] rather than
+    /// restated, so the shipped figure has one definition and the resolver
+    /// cannot disagree with the code it feeds.
+    #[must_use]
+    pub fn quality_interval_secs(&self, config: &crate::config::Config) -> i64 {
+        self.rtp_args
+            .quality_interval_secs
+            .or(config.limits.quality_interval_secs)
+            .and_then(|v| i64::try_from(v).ok())
+            .unwrap_or(crate::rtp::stream::DEFAULT_QUALITY_INTERVAL_SECS)
     }
 
     /// `--group-by` caps: the flags, else `[limits] max_groups` /
@@ -7219,6 +7257,17 @@ mod tests {
                 flag_number: 250,
                 shipped: crate::rtp::stream::DEFAULT_LOST_SEQ_LOG_CAP as u64,
                 resolve: |c, cfg| c.lost_sequence_log_cap(cfg) as u64,
+                requires: &[],
+            },
+            Case {
+                key: "quality_interval_secs",
+                flag: "--quality-interval",
+                set_key: |l| l.quality_interval_secs = Some(30),
+                key_value: 30,
+                flag_value: "2",
+                flag_number: 2,
+                shipped: crate::rtp::stream::DEFAULT_QUALITY_INTERVAL_SECS as u64,
+                resolve: |c, cfg| c.quality_interval_secs(cfg) as u64,
                 requires: &[],
             },
             Case {

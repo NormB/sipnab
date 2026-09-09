@@ -342,6 +342,13 @@ struct StreamJson {
 }
 
 /// JSON representation of a quality interval.
+///
+/// The three scored fields are the answer to "how good was the call at
+/// 14:02:35", which the stream-level MOS cannot give: a mean over a six-minute
+/// call hides the burst that caused the complaint. They are scored on the
+/// interval's own jitter and loss and on the STREAM's resolved path delay, so
+/// a reader comparing an interval against the headline is comparing two
+/// figures on one basis.
 #[derive(Serialize)]
 struct QualityIntervalJson {
     /// Interval start, RFC 3339.
@@ -352,6 +359,17 @@ struct QualityIntervalJson {
     loss_pct: f64,
     /// Packets received during the interval.
     packets: u64,
+    /// MOS for this interval alone. Read `verdict` before comparing it: on a
+    /// codec with no impairment value this is a placeholder meaning "unknown",
+    /// byte-identical to a grounded score.
+    mos: f64,
+    /// The R-factor `mos` was converted from, on the same inputs.
+    r_factor: f64,
+    /// `acceptable`, `degraded`, or `not_scorable` — never a color on the
+    /// first two when the codec cannot be scored.
+    verdict: &'static str,
+    /// Whether `mos` and `r_factor` rest on a real impairment value.
+    mos_grounded: bool,
 }
 
 /// What ICMP said about this capture's media, as it appears on a dialog.
@@ -746,6 +764,8 @@ pub fn message_to_json_pretty(msg: &SipMessage) -> String {
 /// * `dialog` — The dialog to serialize.
 /// * `streams` — RTP streams associated with the dialog.
 /// * `diagnosis` — Pre-computed media diagnosis to embed.
+/// * `delay` — the one-way path delay evidence every MOS on this record is
+///   scored with, including the per-interval ones.
 ///
 /// # Returns
 ///
@@ -756,8 +776,9 @@ pub fn dialog_to_ndjson(
     dialog: &SipDialog,
     streams: &[&RtpStream],
     diagnosis: &MediaDiagnosis,
+    delay: crate::rtp::quality::MosDelay<'_>,
 ) -> String {
-    let pretty = dialog_to_json(dialog, streams, diagnosis);
+    let pretty = dialog_to_json(dialog, streams, diagnosis, delay);
     let mut line = serde_json::from_str::<serde_json::Value>(&pretty)
         .and_then(|v| serde_json::to_string(&v))
         .unwrap_or(pretty);
@@ -775,6 +796,8 @@ pub fn dialog_to_ndjson(
 /// * `dialog` — The dialog to serialize.
 /// * `streams` — RTP streams associated with the dialog.
 /// * `diagnosis` — Pre-computed media diagnosis to embed.
+/// * `delay` — the one-way path delay evidence every MOS on this record is
+///   scored with, including the per-interval ones.
 ///
 /// # Returns
 ///
@@ -784,6 +807,7 @@ pub fn dialog_to_json(
     dialog: &SipDialog,
     streams: &[&RtpStream],
     diagnosis: &MediaDiagnosis,
+    delay: crate::rtp::quality::MosDelay<'_>,
 ) -> String {
     let duration_sec = if dialog.messages.len() >= 2 {
         let first = dialog.created_at;
@@ -833,7 +857,10 @@ pub fn dialog_to_json(
         hints: diagnosis.hints.clone(),
     };
 
-    let stream_jsons: Vec<StreamJson> = streams.iter().map(|s| build_stream_json(s)).collect();
+    let stream_jsons: Vec<StreamJson> = streams
+        .iter()
+        .map(|s| build_stream_json(s, delay))
+        .collect();
 
     let json = DialogJson {
         schema_version: 1,
@@ -892,8 +919,8 @@ pub fn dialog_to_json(
 /// Produces a complete pretty-printed JSON object with stream metadata,
 /// quality metrics, and quality interval history (an `{"error": ...}`
 /// object on serialization failure).
-pub fn stream_to_json(stream: &RtpStream) -> String {
-    let json = build_stream_json(stream);
+pub fn stream_to_json(stream: &RtpStream, delay: crate::rtp::quality::MosDelay<'_>) -> String {
+    let json = build_stream_json(stream, delay);
     serde_json::to_string_pretty(&json)
         .unwrap_or_else(|e| format!("{{\"error\":\"serialization failed: {e}\"}}"))
 }
@@ -971,7 +998,7 @@ fn build_icmp_media_json(
 
 /// Build the internal `StreamJson` struct from an `RtpStream`, deriving
 /// loss percentage and mapping quality intervals.
-fn build_stream_json(stream: &RtpStream) -> StreamJson {
+fn build_stream_json(stream: &RtpStream, delay: crate::rtp::quality::MosDelay<'_>) -> StreamJson {
     let total = stream.packet_count + stream.lost_packets;
     let loss_pct = if total > 0 {
         (stream.lost_packets as f64 / total as f64) * 100.0
@@ -982,11 +1009,23 @@ fn build_stream_json(stream: &RtpStream) -> StreamJson {
     let intervals: Vec<QualityIntervalJson> = stream
         .quality_intervals
         .iter()
-        .map(|qi| QualityIntervalJson {
-            timestamp: qi.timestamp.to_rfc3339(),
-            jitter_ms: qi.jitter_ms,
-            loss_pct: qi.loss_pct,
-            packets: qi.packets,
+        .map(|qi| {
+            // Scored through the same evidence the stream-level MOS is scored
+            // through. A second scoring path here would resolve the path delay
+            // differently and publish a trend that disagrees with the headline
+            // it sits under — which is the defect `MosDelay` was extracted to
+            // close on six other surfaces.
+            let scored = delay.interval_score(stream, qi);
+            QualityIntervalJson {
+                timestamp: qi.timestamp.to_rfc3339(),
+                jitter_ms: qi.jitter_ms,
+                loss_pct: qi.loss_pct,
+                packets: qi.packets,
+                mos: scored.mos,
+                r_factor: scored.r_factor,
+                verdict: scored.verdict.as_str(),
+                mos_grounded: scored.grounding.is_grounded(),
+            }
         })
         .collect();
 
@@ -1988,7 +2027,12 @@ mod tests {
         let streams: Vec<&RtpStream> = vec![&stream];
         let diagnosis = MediaDiagnosis::default();
 
-        let json_str = dialog_to_json(&dialog, &streams, &diagnosis);
+        let json_str = dialog_to_json(
+            &dialog,
+            &streams,
+            &diagnosis,
+            crate::rtp::quality::MosDelay::unknown(),
+        );
         let parsed: serde_json::Value =
             serde_json::from_str(&json_str).expect("should be valid JSON");
 
@@ -2049,9 +2093,13 @@ mod tests {
         let streams: Vec<&RtpStream> = vec![&stream];
         let diagnosis = MediaDiagnosis::default();
 
-        let parsed: serde_json::Value =
-            serde_json::from_str(&dialog_to_json(&dialog, &streams, &diagnosis))
-                .expect("should be valid JSON");
+        let parsed: serde_json::Value = serde_json::from_str(&dialog_to_json(
+            &dialog,
+            &streams,
+            &diagnosis,
+            crate::rtp::quality::MosDelay::unknown(),
+        ))
+        .expect("should be valid JSON");
 
         let sr = &parsed["siprec"];
         assert_eq!(sr["session_id"], "rs-1");
@@ -2081,9 +2129,13 @@ mod tests {
         let streams: Vec<&RtpStream> = vec![&stream];
         let diagnosis = MediaDiagnosis::default();
 
-        let parsed: serde_json::Value =
-            serde_json::from_str(&dialog_to_json(&dialog, &streams, &diagnosis))
-                .expect("should be valid JSON");
+        let parsed: serde_json::Value = serde_json::from_str(&dialog_to_json(
+            &dialog,
+            &streams,
+            &diagnosis,
+            crate::rtp::quality::MosDelay::unknown(),
+        ))
+        .expect("should be valid JSON");
 
         assert!(
             parsed.get("siprec").is_none(),
@@ -2124,7 +2176,12 @@ mod tests {
 
         let stream = make_stream();
         let streams: Vec<&RtpStream> = vec![&stream];
-        let json_str = dialog_to_json(&dialog, &streams, &MediaDiagnosis::default());
+        let json_str = dialog_to_json(
+            &dialog,
+            &streams,
+            &MediaDiagnosis::default(),
+            crate::rtp::quality::MosDelay::unknown(),
+        );
         let parsed: serde_json::Value =
             serde_json::from_str(&json_str).expect("should be valid JSON");
 
@@ -2148,7 +2205,12 @@ mod tests {
         let dialog = crate::sip::dialog::SipDialog::new(&msg).expect("should create dialog");
         let stream = make_stream();
         let streams: Vec<&RtpStream> = vec![&stream];
-        let json_str = dialog_to_json(&dialog, &streams, &MediaDiagnosis::default());
+        let json_str = dialog_to_json(
+            &dialog,
+            &streams,
+            &MediaDiagnosis::default(),
+            crate::rtp::quality::MosDelay::unknown(),
+        );
         let parsed: serde_json::Value =
             serde_json::from_str(&json_str).expect("should be valid JSON");
         assert!(
@@ -2191,7 +2253,12 @@ mod tests {
 
         let stream = make_stream();
         let streams: Vec<&RtpStream> = vec![&stream];
-        let json_str = dialog_to_json(&dialog, &streams, &MediaDiagnosis::default());
+        let json_str = dialog_to_json(
+            &dialog,
+            &streams,
+            &MediaDiagnosis::default(),
+            crate::rtp::quality::MosDelay::unknown(),
+        );
         let parsed: serde_json::Value =
             serde_json::from_str(&json_str).expect("should be valid JSON");
 
@@ -2226,7 +2293,12 @@ mod tests {
         dialog.messages.push(make_ok());
         let stream = make_stream();
         let streams: Vec<&RtpStream> = vec![&stream];
-        let line = dialog_to_ndjson(&dialog, &streams, &MediaDiagnosis::default());
+        let line = dialog_to_ndjson(
+            &dialog,
+            &streams,
+            &MediaDiagnosis::default(),
+            crate::rtp::quality::MosDelay::unknown(),
+        );
 
         assert!(line.ends_with('\n'), "must be newline-terminated");
         assert_eq!(
@@ -2239,6 +2311,7 @@ mod tests {
             &dialog,
             &streams,
             &MediaDiagnosis::default(),
+            crate::rtp::quality::MosDelay::unknown(),
         ))
         .expect("valid JSON");
         assert_eq!(compact, pretty, "same document, different whitespace");
@@ -2260,6 +2333,7 @@ mod tests {
             &dialog,
             &streams,
             &MediaDiagnosis::default(),
+            crate::rtp::quality::MosDelay::unknown(),
         ))
         .expect("valid JSON");
         // The fixture answers with a 200, so the outcome is 200 and the reason
@@ -2279,7 +2353,7 @@ mod tests {
     #[test]
     fn stream_to_json_contains_required_fields() {
         let stream = make_stream();
-        let json_str = stream_to_json(&stream);
+        let json_str = stream_to_json(&stream, crate::rtp::quality::MosDelay::unknown());
         let parsed: serde_json::Value =
             serde_json::from_str(&json_str).expect("should be valid JSON");
 
@@ -2469,18 +2543,26 @@ mod tests {
         let dialog = crate::sip::dialog::SipDialog::new(&msg).expect("dialog");
 
         crate::pipeline::reset_icmp_evidence();
-        let before: serde_json::Value =
-            serde_json::from_str(&dialog_to_json(&dialog, &[], &MediaDiagnosis::default()))
-                .expect("valid JSON");
+        let before: serde_json::Value = serde_json::from_str(&dialog_to_json(
+            &dialog,
+            &[],
+            &MediaDiagnosis::default(),
+            crate::rtp::quality::MosDelay::unknown(),
+        ))
+        .expect("valid JSON");
         assert!(
             before.get("icmp_media").is_none(),
             "a capture with no media ICMP must not grow a block: {before}"
         );
 
         crate::pipeline::publish_icmp_media_for_test(resolved_one_per_tier(&dialog.call_id));
-        let after: serde_json::Value =
-            serde_json::from_str(&dialog_to_json(&dialog, &[], &MediaDiagnosis::default()))
-                .expect("valid JSON");
+        let after: serde_json::Value = serde_json::from_str(&dialog_to_json(
+            &dialog,
+            &[],
+            &MediaDiagnosis::default(),
+            crate::rtp::quality::MosDelay::unknown(),
+        ))
+        .expect("valid JSON");
         crate::pipeline::reset_icmp_evidence();
 
         let block = after

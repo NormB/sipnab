@@ -361,7 +361,7 @@ and it is not incidental — it is the tool working:
 - `DialogSummary.from_user` / `to_user`
   ([`model.rs:53-57`](https://github.com/NormB/sipnab/blob/main/src/output/model.rs#L53-L57)) are copied straight off the
   From/To URIs.
-- `get_message` ([`server.rs:4855`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L4855)) returns the parsed
+- `get_message` ([`server.rs:4889`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L4889)) returns the parsed
   message through `message_to_json_value`. Until 0.5.159 the phrasing here was
   *"headers and body included"*, and measured against 0.5.130 that was false:
   the projection had a closed field list and no headers map, so a `Diversion`

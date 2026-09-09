@@ -4932,6 +4932,14 @@ pub fn generate_reports(
         // rescan the whole stream store per dialog.
         let selection = crate::sip::dsl::select_dialogs(filter, dialog_store, stream_store);
         let capture = crate::rtp::diagnosis::CaptureMedia::of_store(stream_store);
+        // Resolved once for the whole run: every dialog's streams are scored on
+        // the same evidence, and re-resolving per dialog would let two records
+        // of one capture disagree about the path they measured. `from_capture`
+        // for the reason the two other MOS sites in this function use it —
+        // `generate_reports` is handed the stores and not the config, so the
+        // operator's `--one-way-delay` is not reachable here and saying so is
+        // better than pretending it was consulted.
+        let delay = crate::rtp::quality::MosDelay::from_capture(stream_store);
         let mut out = String::new();
         for (dialog, dialog_streams) in &selection.dialogs {
             let media = crate::rtp::diagnosis::MediaContext::for_dialog(dialog, capture);
@@ -4942,7 +4950,7 @@ pub fn generate_reports(
                 dialog_streams,
                 &crate::rtp::diagnosis::AsymmetryThresholds::default(),
             );
-            let line = output::dialog_to_ndjson(dialog, dialog_streams, &diagnosis);
+            let line = output::dialog_to_ndjson(dialog, dialog_streams, &diagnosis, delay);
 
             #[cfg(feature = "plugins")]
             let line = apply_plugins(&plugins, dialog, &line);
@@ -5063,7 +5071,13 @@ pub fn generate_reports(
             } else {
                 ReportFormat::Text
             };
-            let report = output::generate_call_report(dialog, &dialog_streams, &diagnosis, format);
+            let report = output::generate_call_report(
+                dialog,
+                &dialog_streams,
+                &diagnosis,
+                format,
+                crate::rtp::quality::MosDelay::from_capture(stream_store),
+            );
             print!("{report}");
         } else {
             // eprintln (not tracing) so the failure is visible even with

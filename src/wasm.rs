@@ -445,7 +445,6 @@ impl SipnabSession {
         // Resolved once, above the interval loop, so the headline MOS and the
         // per-interval trend below it cannot be scored on different delays.
         let delay = crate::rtp::quality::MosDelay::from_capture(&self.stream_store);
-        let one_way = delay.one_way_ms(s);
         let mos = delay.score(s);
         let duration_secs = s
             .last_seen
@@ -457,17 +456,23 @@ impl SipnabSession {
             .quality_intervals
             .iter()
             .map(|qi| {
+                // One scorer, not a second copy of the arithmetic. This used
+                // to call `estimate_mos_with_delay` itself, which is how a
+                // browser-side trend could disagree with the same capture's
+                // trend over REST the moment either side changed.
+                let scored = delay.interval_score(s, qi);
                 serde_json::json!({
                     "timestamp": qi.timestamp.to_rfc3339(),
                     "jitter_ms": (qi.jitter_ms * 100.0).round() / 100.0,
                     "loss_pct": (qi.loss_pct * 100.0).round() / 100.0,
                     "packets": qi.packets,
-                    "mos": (crate::rtp::quality::estimate_mos_with_delay(
-                        qi.jitter_ms,
-                        qi.loss_pct,
-                        s.codec.as_deref(),
-                        one_way,
-                    ) * 100.0).round() / 100.0,
+                    "mos": (scored.mos * 100.0).round() / 100.0,
+                    "r_factor": (scored.r_factor * 10.0).round() / 10.0,
+                    // The refusal travels with the number. A browser drawing a
+                    // trend line has exactly the same reason not to color an
+                    // ungrounded interval that a terminal does.
+                    "verdict": scored.verdict.as_str(),
+                    "mos_grounded": scored.grounding.is_grounded(),
                 })
             })
             .collect();

@@ -622,6 +622,15 @@ console.log(`State: ${dialog.state}`);
 }
 ```
 
+`quality_intervals` is empty above because the window has not closed yet. On a
+call long enough to fill one, each entry carries its own `mos`, `r_factor` and
+a three-state `verdict` — `acceptable`, `degraded`, or `not_scorable` for a
+codec with no published impairment value. The stream-level MOS is a mean over
+the whole call and hides a burst shorter than the window, which is what the
+per-interval figures exist to show. The window is five seconds by default and
+`--quality-interval` narrows it without shortening the hour of call time the
+trend covers.
+
 `round_trip_ms` is the third of the three numbers that decide whether a call was
 acceptable, and the only one sipnab cannot measure for itself: a passive tap
 sees one point on the path, and a round trip is about two. Every figure here is

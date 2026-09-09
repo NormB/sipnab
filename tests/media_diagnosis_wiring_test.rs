@@ -827,6 +827,7 @@ fn the_text_call_report_carries_the_port_evidence() {
         &streams,
         &diagnosis,
         sipnab::output::ReportFormat::Text,
+        sipnab::rtp::quality::MosDelay::unknown(),
     );
 
     assert!(

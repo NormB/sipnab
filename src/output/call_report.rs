@@ -55,10 +55,11 @@ pub fn generate_call_report(
     streams: &[&RtpStream],
     diagnosis: &MediaDiagnosis,
     format: ReportFormat,
+    delay: crate::rtp::quality::MosDelay<'_>,
 ) -> String {
     match format {
         ReportFormat::Text => generate_text_report(dialog, streams, diagnosis),
-        ReportFormat::Json => super::json::dialog_to_json(dialog, streams, diagnosis),
+        ReportFormat::Json => super::json::dialog_to_json(dialog, streams, diagnosis, delay),
         ReportFormat::Markdown => generate_markdown_report(dialog, streams, diagnosis),
     }
 }
@@ -818,7 +819,13 @@ mod tests {
         let streams: Vec<&RtpStream> = vec![&stream];
         let diagnosis = MediaDiagnosis::default();
 
-        let report = generate_call_report(&dialog, &streams, &diagnosis, ReportFormat::Text);
+        let report = generate_call_report(
+            &dialog,
+            &streams,
+            &diagnosis,
+            ReportFormat::Text,
+            crate::rtp::quality::MosDelay::unknown(),
+        );
 
         assert!(report.contains("Call Report:"), "should have title");
         assert!(report.contains("Timing:"), "should have timing section");
@@ -851,7 +858,13 @@ mod tests {
 
         let mut dialog = make_dialog_with_messages();
         dialog.first_frame = None;
-        let without = generate_call_report(&dialog, &streams, &diagnosis, ReportFormat::Text);
+        let without = generate_call_report(
+            &dialog,
+            &streams,
+            &diagnosis,
+            ReportFormat::Text,
+            crate::rtp::quality::MosDelay::unknown(),
+        );
         assert!(
             !without.contains("Frame:"),
             "a dialog with no frame must emit no Frame line:\n{without}"
@@ -866,7 +879,13 @@ mod tests {
             },
             kind: crate::capture::packet::FrameSource::Wire,
         });
-        let with = generate_call_report(&dialog, &streams, &diagnosis, ReportFormat::Text);
+        let with = generate_call_report(
+            &dialog,
+            &streams,
+            &diagnosis,
+            ReportFormat::Text,
+            crate::rtp::quality::MosDelay::unknown(),
+        );
         assert!(
             with.contains("Frame:      capture.pcap#4212@0123456789abcdef"),
             "the report must carry the resolvable <source>#<ordinal>@<digest> \
@@ -882,7 +901,13 @@ mod tests {
         let streams: Vec<&RtpStream> = vec![];
         let diagnosis = MediaDiagnosis::default();
 
-        let report = generate_call_report(&dialog, &streams, &diagnosis, ReportFormat::Json);
+        let report = generate_call_report(
+            &dialog,
+            &streams,
+            &diagnosis,
+            ReportFormat::Json,
+            crate::rtp::quality::MosDelay::unknown(),
+        );
 
         let parsed: serde_json::Value =
             serde_json::from_str(&report).expect("should be valid JSON");
@@ -897,7 +922,13 @@ mod tests {
         let streams: Vec<&RtpStream> = vec![];
         let diagnosis = MediaDiagnosis::default();
 
-        let report = generate_call_report(&dialog, &streams, &diagnosis, ReportFormat::Markdown);
+        let report = generate_call_report(
+            &dialog,
+            &streams,
+            &diagnosis,
+            ReportFormat::Markdown,
+            crate::rtp::quality::MosDelay::unknown(),
+        );
 
         assert!(report.contains("# Call Report:"), "should have h1");
         assert!(report.contains("## Summary"), "should have summary section");
@@ -923,7 +954,13 @@ mod tests {
             ..Default::default()
         };
 
-        let report = generate_call_report(&dialog, &streams, &diagnosis, ReportFormat::Text);
+        let report = generate_call_report(
+            &dialog,
+            &streams,
+            &diagnosis,
+            ReportFormat::Text,
+            crate::rtp::quality::MosDelay::unknown(),
+        );
 
         assert!(
             report.contains("One-way audio detected"),
@@ -1059,6 +1096,7 @@ mod tests {
             &streams,
             &MediaDiagnosis::default(),
             ReportFormat::Text,
+            crate::rtp::quality::MosDelay::unknown(),
         );
         assert!(
             report.contains("Network out of order"),
@@ -1083,6 +1121,7 @@ mod tests {
             &streams,
             &MediaDiagnosis::default(),
             ReportFormat::Markdown,
+            crate::rtp::quality::MosDelay::unknown(),
         );
         assert!(
             report.contains("Network out of order"),
@@ -1099,8 +1138,13 @@ mod tests {
         let stream = make_stream();
         let streams: Vec<&RtpStream> = vec![&stream];
         for format in [ReportFormat::Text, ReportFormat::Markdown] {
-            let report =
-                generate_call_report(&dialog, &streams, &MediaDiagnosis::default(), format);
+            let report = generate_call_report(
+                &dialog,
+                &streams,
+                &MediaDiagnosis::default(),
+                format,
+                crate::rtp::quality::MosDelay::unknown(),
+            );
             assert!(
                 !report.contains("Cause"),
                 "{format:?} invented a cause line:\n{report}"
@@ -1124,6 +1168,7 @@ mod tests {
             &streams,
             &MediaDiagnosis::default(),
             ReportFormat::Markdown,
+            crate::rtp::quality::MosDelay::unknown(),
         );
         let row = report
             .lines()
@@ -1160,6 +1205,7 @@ mod tests {
             &streams,
             &MediaDiagnosis::default(),
             ReportFormat::Text,
+            crate::rtp::quality::MosDelay::unknown(),
         );
         assert!(report.contains("User busy"), "{report}");
         assert!(
@@ -1178,6 +1224,7 @@ mod tests {
             &streams,
             &MediaDiagnosis::default(),
             ReportFormat::Text,
+            crate::rtp::quality::MosDelay::unknown(),
         );
 
         assert!(
@@ -1207,6 +1254,7 @@ mod tests {
             &streams,
             &MediaDiagnosis::default(),
             ReportFormat::Markdown,
+            crate::rtp::quality::MosDelay::unknown(),
         );
 
         assert!(
@@ -1225,8 +1273,13 @@ mod tests {
         let streams: Vec<&RtpStream> = vec![&stream];
 
         for format in [ReportFormat::Text, ReportFormat::Markdown] {
-            let report =
-                generate_call_report(&dialog, &streams, &MediaDiagnosis::default(), format);
+            let report = generate_call_report(
+                &dialog,
+                &streams,
+                &MediaDiagnosis::default(),
+                format,
+                crate::rtp::quality::MosDelay::unknown(),
+            );
             assert!(
                 !report.contains("Signaling Issues:") && !report.contains("## Signaling"),
                 "a successful call must not get a signaling section ({format:?}):\n{report}"
@@ -1313,6 +1366,7 @@ mod tests {
             &streams,
             &MediaDiagnosis::default(),
             ReportFormat::Text,
+            crate::rtp::quality::MosDelay::unknown(),
         );
         assert!(
             report.contains("OUTCOME UNKNOWN"),
@@ -1334,6 +1388,7 @@ mod tests {
             &streams,
             &MediaDiagnosis::default(),
             ReportFormat::Markdown,
+            crate::rtp::quality::MosDelay::unknown(),
         );
         assert!(report.contains("## Signaling"), "got:\n{report}");
         assert!(report.contains("OUTCOME UNKNOWN"), "got:\n{report}");
@@ -1410,7 +1465,13 @@ mod tests {
             crate::sip::diagnosis::registration_rejection_headline(&failure, &dialog.messages);
 
         for format in [ReportFormat::Text, ReportFormat::Markdown] {
-            let report = generate_call_report(&dialog, &[], &MediaDiagnosis::default(), format);
+            let report = generate_call_report(
+                &dialog,
+                &[],
+                &MediaDiagnosis::default(),
+                format,
+                crate::rtp::quality::MosDelay::unknown(),
+            );
             assert!(
                 report.contains(&expected),
                 "{format:?} report must carry the diagnosis headline verbatim.\n\
@@ -1426,8 +1487,13 @@ mod tests {
     #[test]
     fn the_report_never_calls_a_rejected_registration_offline() {
         let dialog = make_rejected_registration_dialog();
-        let report =
-            generate_call_report(&dialog, &[], &MediaDiagnosis::default(), ReportFormat::Text);
+        let report = generate_call_report(
+            &dialog,
+            &[],
+            &MediaDiagnosis::default(),
+            ReportFormat::Text,
+            crate::rtp::quality::MosDelay::unknown(),
+        );
         assert!(
             !report.to_lowercase().contains("offline"),
             "the endpoint answered the 401 in this capture:\n{report}"

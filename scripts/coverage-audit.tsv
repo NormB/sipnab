@@ -29,6 +29,7 @@
 --no-dialog	parse-only	no_dialog_mode asserts "still emits all 7"; the option is tested by constructing PipelineOptions directly, never via the flag
 --leg-correlation-window	behavior	leg_correlation_window_test.rs strips every other correlation route so only the window can answer
 --max-lost-sequences	behavior	via config key: probe_max_lost_sequences moves the burst count 333 -> 33
+--quality-interval	behavior	via config key: probe_quality_interval_secs moves the snapshot count on a thirty-second capture
 --quality-threshold	parse-only	asserts exit 0 only; no test drives it with --on-quality-exec and observes the hook firing
 --kill-ua	behavior	FIXED THIS PASS. Was a silent no-op without --kill-scanner; now refused, and kill_ua_pattern_reaches_the_detector_that_reads_it asserts the match
 --reg-flood	behavior	reg_flood_threshold_decides_when_a_burst_is_a_flood (tests/threshold_wiring_test.rs); an inert flag fails it

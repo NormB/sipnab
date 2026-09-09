@@ -44,7 +44,7 @@ Tiers:
 
 ## Status
 
-**34 open, 474 done** across 36 sections.
+**33 open, 475 done** across 36 sections.
 Regenerate with `python3 scripts/backlog-status.py --apply`.
 
 | Section | Open | Done | Progress |
@@ -72,7 +72,7 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
 | MCPX | 0 | 7 | `##########` |
 | OBS | 0 | 7 | `##########` |
 | REQ | 4 | 13 | `########..` |
-| CMP | 3 | 2 | `####......` |
+| CMP | 2 | 3 | `######....` |
 | GTP | 2 | 1 | `###.......` |
 | MER | 0 | 5 | `##########` |
 | LIVE | 6 | 0 | `..........` |
@@ -2567,7 +2567,7 @@ output path.
     2026-08-06, verified against the tree).** Shipped: `FrameRef`
     ([`src/capture/packet.rs:377`](https://github.com/NormB/sipnab/blob/main/src/capture/packet.rs#L377)) and `capture::resolve::resolve`
     ([`src/capture/resolve.rs:191`](https://github.com/NormB/sipnab/blob/main/src/capture/resolve.rs#L191)); the `show_evidence` MCP tool
-    (`#[tool(` at [`src/mcp/server.rs:6994`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L6994), handler at `:3866`), confined to
+    (`#[tool(` at [`src/mcp/server.rs:7034`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L7034), handler at `:3866`), confined to
     the file root and honest about
     itself with three states — `verified` / `unverified` / `unresolvable` —
     rather than resolving a foreign ref against the wrong file; and
@@ -5650,7 +5650,7 @@ promises an absence is acted on; a missing feature is merely absent.
 
 - [x] **DOC4 (done 2026-08-30) — [`docs/mcp-deploy.md:248`](https://github.com/NormB/sipnab/blob/main/docs/mcp-deploy.md#L248) opens the remote-access section by
   promising no tool mutates the stores.** `open_capture` calls `ds.clear()` and
-  `ss.clear()` ([`src/mcp/server.rs:7364`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L7364)). The code already knows: a note at
+  `ss.clear()` ([`src/mcp/server.rs:7551`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L7551)). The code already knows: a note at
   `:8377` records that the wire `instructions` string was corrected for exactly
   this. The page was not. [`SECURITY.md:35`](https://github.com/NormB/sipnab/blob/main/SECURITY.md#L35) scopes reports to "any MCP tool that
   mutates dialog/stream/alert state", so a good-faith reporter is told the scope
@@ -5878,7 +5878,7 @@ class recur:
   speaks", and [`docs/mcp-tools.md`](https://github.com/NormB/sipnab/blob/main/docs/mcp-tools.md) described the two as taking one vocabulary.
   They do not: `--filter` runs `expand_alias` first
   ([`src/app/bootstrap.rs:2157`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L2157)) and `vcon_selection`
-  ([`src/app/batch.rs:5530`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L5530)) parses raw. The doc claim is corrected;
+  ([`src/app/batch.rs:5556`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L5556)) parses raw. The doc claim is corrected;
   the behavior is not, and the flag is the one that is wrong -- reusing the
   filter language is the stated design, and ten `DIAGNOSTIC_ALIASES` are part
   of that language.
@@ -6321,21 +6321,38 @@ cheap gaps its page made obvious.
   `rtp.r_factor` to the filter DSL with the never-select-ungrounded rule
   `rtp.mos` already has.
 
-- [ ] **CMP2 — the quality timeline records how the call was going, never how
-  good it was.** `QualityInterval` carries `timestamp`, `jitter_ms`, `loss_pct`
-  and `packets` — no score, no verdict — sampled every five seconds. It is
-  already surfaced on `rtp_stats`, `GET /v1/streams`, the TUI and the WASM
-  analyzer, so the plumbing exists and only the number is missing. Five seconds
-  is also the wrong resolution for a failure this project has already recorded:
-  a 90% loss figure that turned out to be three bursts of half a second vanishes
-  into a five-second mean.
+- [x] **CMP2 (done 2026-09-09) — the quality timeline records how the call was
+  going, never how good it was.** `QualityInterval` carried `timestamp`,
+  `jitter_ms`, `loss_pct` and `packets` — no score, no verdict — sampled every
+  five seconds. Five seconds is also the wrong resolution for a failure this
+  project has already recorded: a 90% loss figure that turned out to be three
+  bursts of half a second vanishes into a five-second mean.
 
-  **Do:** compute a MOS per interval through the same grounding path, so an
-  interval on an unpublished codec is refused exactly as the stream-level score
-  is; add a three-state verdict where "not scorable" is the only answer for an
-  ungrounded codec and never a color on the good/poor scale; make the interval
-  configurable, moving the retention cap with it so a shorter interval cannot
-  silently shorten the history.
+  **Done.** Each interval now carries `mos`, `r_factor`, `verdict` and
+  `mos_grounded`, scored by `MosDelay::interval_score` — the same evidence the
+  stream-level MOS uses, so a trend and the headline above it rest on one
+  basis. Two surfaces were computing their own: the browser analyzer and the
+  TUI both called `estimate_mos_with_delay` directly, and both now go through
+  the one scorer.
+
+  The verdict has three states and `not_scorable` is the only answer for a
+  codec with no published or declared impairment value. `acceptable` is
+  R at or above 70, which is ITU-T G.107's boundary between "some users
+  dissatisfied" and "many" — a published figure rather than a tunable, because
+  an exported verdict that means something different per deployment is worth
+  less than none.
+
+  **What the work found:** the stream-detail pane already muted an ungrounded
+  headline MOS, and then banded every interval of that same stream on the
+  good/poor scale three lines below. One pane, two answers about one number,
+  and the dishonest one had more digits in it.
+
+  The period is `--quality-interval` / `[limits] quality_interval_secs`, 1 to
+  300 seconds. The retention is DERIVED from it: the trend covers an hour of
+  call time whatever the period is, so a one-second setting retains 3600
+  snapshots per stream rather than 720. A fixed count would have made a finer
+  interval buy resolution WITH history — twelve minutes instead of an hour, and
+  nothing would have said so.
 
 - [x] **CMP3 (done 2026-09-06) — a subnet is not a regex.** The filter DSL's only subnet answer is
   a regex on the dotted string. That is wrong for every prefix that is not

@@ -304,7 +304,12 @@ fn the_proxy_sdp_names_which_relay_to_ask() {
     let dialog = ds.get(CALL_ID).expect("the proxy holds the dialog");
     let streams: Vec<&sipnab::rtp::stream::RtpStream> = Vec::new();
     let diagnosis = sipnab::rtp::diagnosis::MediaDiagnosis::default();
-    let json = sipnab::output::json::dialog_to_json(dialog, &streams, &diagnosis);
+    let json = sipnab::output::json::dialog_to_json(
+        dialog,
+        &streams,
+        &diagnosis,
+        sipnab::rtp::quality::MosDelay::unknown(),
+    );
     let v: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
 
     let first = &v["sdp_timeline"][0];

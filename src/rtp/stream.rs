@@ -15,14 +15,112 @@ use super::parser::RtpHeader;
 
 // ── Quality interval period ──────────────────────────────────────────
 
-/// How often to snapshot quality metrics into a `QualityInterval`.
-const QUALITY_INTERVAL_SECS: i64 = 5;
+/// How often to snapshot quality metrics into a [`QualityInterval`], unless
+/// the operator says otherwise.
+///
+/// Five seconds is the resolution sipnab shipped, and it is too coarse for at
+/// least one failure this project has already recorded: 90 % loss that turned
+/// out to be three bursts of half a second disappears into a five-second mean.
+/// Raise the resolution with `--quality-interval` or
+/// `[limits] quality_interval_secs`; see
+/// [`crate::cli::Cli::quality_interval_secs`].
+pub const DEFAULT_QUALITY_INTERVAL_SECS: i64 = 5;
 
-/// Cap on the per-stream quality trend history. One interval per
-/// `QUALITY_INTERVAL_SECS` means 720 entries cover a full hour of call
-/// time; without a cap a day-long stream would hold ~17k entries.
-/// Oldest-out when full.
-const MAX_QUALITY_INTERVALS: usize = 720;
+/// How much CALL TIME the quality trend retains, whatever the period is.
+///
+/// The retention used to be a count — 720 entries — which meant an hour only
+/// as long as nobody moved the period. The count is derived from this span
+/// now, so asking for a finer interval buys resolution instead of quietly
+/// buying it WITH history: at one second, 720 entries would have been twelve
+/// minutes, and the operator who shortened the interval to see a half-second
+/// burst would have lost the other forty-eight minutes of the call to find it
+/// in.
+pub const QUALITY_HISTORY_SPAN_SECS: i64 = 3600;
+
+/// Narrowest and widest period that is a useful quality interval.
+///
+/// One second at the bottom because the span is retained regardless, so the
+/// finest setting is also the most expensive one: 3600 entries per stream.
+/// Five minutes at the top because a period longer than that averages away
+/// the very events a trend line exists to show, and an operator asking for it
+/// wants the stream-level figure they already have.
+pub const PLAUSIBLE_QUALITY_INTERVAL_SECS: std::ops::RangeInclusive<i64> = 1..=300;
+
+/// Quality snapshots a stream retains at a period of `secs`.
+///
+/// Rounds UP, deliberately: rounding down would retain less than
+/// [`QUALITY_HISTORY_SPAN_SECS`] for every period that does not divide it,
+/// which is the silent shortening this derivation exists to prevent.
+///
+/// # Arguments
+///
+/// * `secs` — the snapshot period. Zero or negative falls back to
+///   [`DEFAULT_QUALITY_INTERVAL_SECS`] rather than dividing by zero or
+///   returning a negative count. The operator-facing refusal happens earlier,
+///   in [`crate::config::LimitsConfig::validate`]; this is the constructor
+///   path every stream takes, and a panic here would end the capture rather
+///   than the setting.
+#[must_use]
+pub fn quality_interval_cap(secs: i64) -> usize {
+    let secs = if secs > 0 {
+        secs
+    } else {
+        DEFAULT_QUALITY_INTERVAL_SECS
+    };
+    // Ceiling division on positive integers, without the float round-trip:
+    // `(a + b - 1) / b`. Both operands are positive here, so this cannot
+    // overflow for any `secs` the range above admits, and it saturates rather
+    // than wrapping for one it does not.
+    // Ceiling division of a positive span by a positive period cannot reach
+    // zero — a period wider than the whole span still yields one — so there is
+    // no clamp here. A `.max(1)` was written and removed: within the permitted
+    // range it never fired, and a guard that cannot fire is indistinguishable
+    // from one that is holding the invariant up.
+    QUALITY_HISTORY_SPAN_SECS
+        .saturating_add(secs.saturating_sub(1))
+        .saturating_div(secs) as usize
+}
+
+/// The snapshot period this process declared, in seconds.
+///
+/// Process-global and written once at startup, the same shape as
+/// [`LOST_SEQ_LOG_CAP`] and for the same reason: streams are created on four
+/// independent paths, and a value threaded to some of them is a setting
+/// honored on some surfaces and ignored on others.
+static QUALITY_INTERVAL_SECS: std::sync::atomic::AtomicI64 =
+    std::sync::atomic::AtomicI64::new(DEFAULT_QUALITY_INTERVAL_SECS);
+
+/// The snapshot period a newly created stream will use.
+#[must_use]
+pub fn quality_interval_secs() -> i64 {
+    QUALITY_INTERVAL_SECS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Declare the quality-snapshot period for this process. Call once, at
+/// startup.
+///
+/// # Arguments
+///
+/// * `secs` — seconds between snapshots. Anything outside
+///   [`PLAUSIBLE_QUALITY_INTERVAL_SECS`] is treated as the shipped default;
+///   the operator-facing refusal happens earlier, in
+///   [`crate::config::LimitsConfig::validate`].
+///
+/// # Side effects
+///
+/// Stores `secs` into a process-wide atomic (relaxed ordering). Streams
+/// created after this call carry it; ones already created keep the period
+/// they were created under, along with the retention derived from it.
+pub fn set_quality_interval_secs(secs: i64) {
+    QUALITY_INTERVAL_SECS.store(
+        if PLAUSIBLE_QUALITY_INTERVAL_SECS.contains(&secs) {
+            secs
+        } else {
+            DEFAULT_QUALITY_INTERVAL_SECS
+        },
+        std::sync::atomic::Ordering::Relaxed,
+    );
+}
 
 /// Shipped cap on the retained `lost_sequences` log (oldest-out when full).
 /// This is the only window over which loss/no-loss is known reliably, so
@@ -452,6 +550,20 @@ pub struct RtpStream {
     /// [`burst_gap_analysis`](Self::burst_gap_analysis) — can never disagree
     /// about how much of the call the log covers.
     lost_seq_cap: usize,
+
+    /// Seconds between quality snapshots, read from the process-wide
+    /// declaration when the stream was created.
+    ///
+    /// A field for the reason `lost_seq_cap` is one: the period decides when a
+    /// snapshot is taken and the retention below is derived from it, so a
+    /// stream that read the global twice could close intervals on one period
+    /// and size its history for another.
+    quality_interval_secs: i64,
+
+    /// Snapshots this stream retains, derived from `quality_interval_secs` by
+    /// [`quality_interval_cap`] at construction. Never stored independently:
+    /// the pair must always describe the same span.
+    quality_interval_cap: usize,
     /// Wall-clock arrival time of the previous packet (for jitter calc).
     prev_arrival: Option<DateTime<Utc>>,
     /// RTP timestamp of the previous packet (for jitter calc).
@@ -701,6 +813,23 @@ impl RtpStream {
         self.lost_seq_cap
     }
 
+    /// Seconds between this stream's quality snapshots.
+    ///
+    /// The period the stream was CREATED under, not the current process
+    /// declaration: a stream that re-read the declaration would report a
+    /// resolution its own history does not have.
+    #[must_use]
+    pub fn quality_interval_secs(&self) -> i64 {
+        self.quality_interval_secs
+    }
+
+    /// Quality snapshots this stream retains, derived from
+    /// [`quality_interval_secs`](Self::quality_interval_secs).
+    #[must_use]
+    pub fn quality_interval_cap(&self) -> usize {
+        self.quality_interval_cap
+    }
+
     /// Widest sequence span the burst/gap bitmap may cover for this stream.
     ///
     /// Derived from the retention rather than fixed, so the documented
@@ -722,7 +851,36 @@ impl RtpStream {
     /// A stream with `packet_count == 1`, zeroed jitter/loss counters, and
     /// the jitter/interval trackers primed with this packet so the next
     /// `update` produces the first jitter sample.
+    ///
+    /// Snapshots at the period this process declared. Use
+    /// [`with_quality_period`](Self::with_quality_period) to state the period
+    /// at the call site instead.
     pub fn new(key: StreamKey, header: &RtpHeader, timestamp: DateTime<Utc>) -> Self {
+        Self::with_quality_period(key, header, timestamp, quality_interval_secs())
+    }
+
+    /// [`new`](Self::new), with the quality-snapshot period supplied rather
+    /// than read from the process declaration.
+    ///
+    /// The declaration is a process-wide atomic because streams are created on
+    /// four independent paths and threading a setting to some of them is how a
+    /// setting comes to be honored on some surfaces only. That makes the
+    /// period untestable at any value but the default, though: a test that
+    /// moved the global would move it for every other test sharing the binary.
+    /// So the read happens once, in [`new`](Self::new), and everything below
+    /// this line takes the period as an argument.
+    ///
+    /// # Arguments
+    ///
+    /// * `quality_interval_secs` — seconds between snapshots. The retention is
+    ///   DERIVED from it here, by [`quality_interval_cap`], so the two cannot
+    ///   be set to describe different spans.
+    pub fn with_quality_period(
+        key: StreamKey,
+        header: &RtpHeader,
+        timestamp: DateTime<Utc>,
+        quality_interval_secs: i64,
+    ) -> Self {
         let codec = codec_from_pt(header.payload_type).map(String::from);
         let clock_rate = clock_rate_from_pt(header.payload_type).unwrap_or(8000);
         Self {
@@ -768,6 +926,10 @@ impl RtpStream {
             dscp_first: None,
             dscp_last: None,
             lost_seq_cap: lost_seq_log_cap(),
+            // Derived from the period, here, so the pair can never describe two
+            // different spans however the period arrived.
+            quality_interval_secs,
+            quality_interval_cap: quality_interval_cap(quality_interval_secs),
             prev_arrival: Some(timestamp),
             prev_rtp_ts: Some(header.timestamp),
             interval_start: timestamp,
@@ -892,7 +1054,7 @@ impl RtpStream {
         // Quality interval recording
         self.interval_packets += 1;
         let elapsed = timestamp.signed_duration_since(self.interval_start);
-        if elapsed >= Duration::seconds(QUALITY_INTERVAL_SECS) {
+        if elapsed >= Duration::seconds(self.quality_interval_secs) {
             self.record_quality_interval(timestamp);
         }
     }
@@ -908,7 +1070,7 @@ impl RtpStream {
     ///
     /// Appends a `QualityInterval` (current jitter, interval loss
     /// percentage, interval packet count) to `quality_intervals`, evicting
-    /// the oldest entry when at `MAX_QUALITY_INTERVALS`, then resets
+    /// the oldest entry when at this stream's retention, then resets
     /// `interval_start`, `interval_packets`, and `interval_lost`.
     fn record_quality_interval(&mut self, timestamp: DateTime<Utc>) {
         let total_in_interval = self.interval_packets + self.interval_lost;
@@ -918,7 +1080,7 @@ impl RtpStream {
             0.0
         };
 
-        if self.quality_intervals.len() >= MAX_QUALITY_INTERVALS {
+        if self.quality_intervals.len() >= self.quality_interval_cap {
             // O(1) oldest-out eviction: QualityHistory is VecDeque-backed, so
             // this is a pop_front rather than an O(n) Vec front-removal.
             self.quality_intervals.pop_front();
@@ -1182,7 +1344,7 @@ mod tests {
 
     /// Build a fixed test StreamKey (SSRC 0x12345678, 10.0.0.1:20000 →
     /// 10.0.0.2:30000).
-    fn make_key() -> StreamKey {
+    pub(super) fn make_key() -> StreamKey {
         StreamKey {
             ssrc: 0x12345678,
             src: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000),
@@ -1192,7 +1354,7 @@ mod tests {
 
     /// Build a minimal RtpHeader with the given sequence, RTP timestamp,
     /// and payload type.
-    fn make_header(seq: u16, ts: u32, pt: u8) -> RtpHeader {
+    pub(super) fn make_header(seq: u16, ts: u32, pt: u8) -> RtpHeader {
         RtpHeader {
             version: 2,
             padding: false,
@@ -1207,28 +1369,35 @@ mod tests {
         }
     }
 
-    /// Recording more than MAX_QUALITY_INTERVALS snapshots caps the trend
+    /// Recording more snapshots than the retention holds caps the trend
     /// history and evicts the oldest entries first.
     #[test]
     fn quality_intervals_are_bounded_oldest_out() {
         // A long-lived stream must not grow its trend history without
         // bound: one interval per 5 s means a day-long call is 17k
-        // entries per stream. The history is a ring capped at
-        // MAX_QUALITY_INTERVALS with the oldest entry evicted first.
+        // entries per stream. The history is a ring capped at the stream's
+        // own retention with the oldest entry evicted first.
+        //
+        // Both bounds are read from the stream rather than written here:
+        // the period and the retention move together now, and a test
+        // holding its own copy of either would keep passing while the two
+        // disagreed.
         let mut s = RtpStream::new(make_key(), &make_header(0, 0, 0), ts(0));
-        let n = MAX_QUALITY_INTERVALS + 10;
+        let period = super::quality_interval_secs();
+        let cap = super::quality_interval_cap(period);
+        let n = cap + 10;
         for i in 1..=n {
-            // one packet every QUALITY_INTERVAL_SECS closes an interval
+            // one packet every `period` seconds closes an interval
             s.update(
                 &make_header(i as u16, i as u32 * 160, 0),
-                ts(i as i64 * QUALITY_INTERVAL_SECS),
+                ts(i as i64 * period),
                 160,
             );
         }
         assert_eq!(
             s.quality_intervals.len(),
-            MAX_QUALITY_INTERVALS,
-            "history must be capped at MAX_QUALITY_INTERVALS"
+            cap,
+            "history must be capped at the stream's retention"
         );
         // oldest evicted: the first surviving interval is the 11th
         // recorded one, and order stays oldest-first.
@@ -1236,13 +1405,13 @@ mod tests {
         let last = s.quality_intervals.last().expect("non-empty");
         assert!(first.timestamp < last.timestamp, "oldest-first order");
         assert!(
-            first.timestamp >= ts(10 * QUALITY_INTERVAL_SECS),
+            first.timestamp >= ts(10 * period),
             "the ten oldest intervals were evicted"
         );
     }
 
     /// Fixed-epoch test clock: `secs` seconds past 1_700_000_000 UTC.
-    fn ts(secs: i64) -> DateTime<Utc> {
+    pub(super) fn ts(secs: i64) -> DateTime<Utc> {
         DateTime::from_timestamp(1_700_000_000 + secs, 0).expect("valid timestamp")
     }
 
@@ -1726,5 +1895,253 @@ mod tests {
             "a stream where every packet was lost is 100%: got {}",
             s.loss_percent()
         );
+    }
+}
+
+/// The quality-interval period and the retention derived from it.
+#[cfg(test)]
+mod quality_interval_period_tests {
+    use super::{
+        DEFAULT_QUALITY_INTERVAL_SECS, PLAUSIBLE_QUALITY_INTERVAL_SECS, QUALITY_HISTORY_SPAN_SECS,
+        quality_interval_cap,
+    };
+
+    /// The shipped pair is unchanged: 720 entries of five seconds is an hour,
+    /// which is what the constant used to say directly.
+    #[test]
+    fn the_shipped_interval_still_retains_an_hour() {
+        assert_eq!(quality_interval_cap(DEFAULT_QUALITY_INTERVAL_SECS), 720);
+        assert_eq!(
+            quality_interval_cap(DEFAULT_QUALITY_INTERVAL_SECS) as i64
+                * DEFAULT_QUALITY_INTERVAL_SECS,
+            QUALITY_HISTORY_SPAN_SECS
+        );
+    }
+
+    /// THE point of deriving it. A five-times finer interval against a fixed
+    /// count of 720 would have bought resolution by throwing away
+    /// fifty minutes of history, and nothing would have said so.
+    #[test]
+    fn a_finer_interval_keeps_the_span_rather_than_the_count() {
+        for secs in *PLAUSIBLE_QUALITY_INTERVAL_SECS.start()..=60 {
+            let retained = quality_interval_cap(secs) as i64 * secs;
+            assert!(
+                retained >= QUALITY_HISTORY_SPAN_SECS,
+                "an interval of {secs}s retains {retained}s, short of the \
+                 {QUALITY_HISTORY_SPAN_SECS}s span every interval must cover"
+            );
+        }
+    }
+
+    /// The other half: a coarser interval must not hoard entries it has no
+    /// use for. An hour at one entry a minute is sixty entries, not 720.
+    #[test]
+    fn a_coarser_interval_needs_fewer_entries() {
+        assert_eq!(quality_interval_cap(60), 60);
+        assert!(quality_interval_cap(60) < quality_interval_cap(5));
+    }
+
+    /// A period that does not divide the span rounds UP, because rounding down
+    /// is the silent shortening this whole derivation exists to prevent.
+    #[test]
+    fn an_interval_that_does_not_divide_the_span_rounds_up() {
+        let cap = quality_interval_cap(7);
+        assert!(
+            cap as i64 * 7 >= QUALITY_HISTORY_SPAN_SECS,
+            "7s intervals retained {}s of an {QUALITY_HISTORY_SPAN_SECS}s span",
+            cap as i64 * 7
+        );
+        assert!(
+            (cap as i64 - 1) * 7 < QUALITY_HISTORY_SPAN_SECS,
+            "and not one entry more than it needs"
+        );
+    }
+
+    /// Zero is division by zero and a negative is a period that never elapses.
+    /// Neither is reachable through the operator surface, which refuses them
+    /// earlier — but this function is what every stream constructor calls, and
+    /// a panic here would take the capture down rather than the setting.
+    #[test]
+    fn a_nonsense_period_falls_back_instead_of_dividing_by_zero() {
+        for secs in [0, -1, i64::MIN] {
+            let cap = quality_interval_cap(secs);
+            assert_eq!(
+                cap,
+                quality_interval_cap(DEFAULT_QUALITY_INTERVAL_SECS),
+                "a period of {secs}s must fall back to the shipped retention"
+            );
+        }
+    }
+
+    /// A stream carries the process declaration, not a constant.
+    ///
+    /// Read-only: this asserts what a new stream picked up rather than moving
+    /// the global, because the global is shared with every other test in this
+    /// binary and a period set here would follow them.
+    #[test]
+    fn a_new_stream_carries_the_declared_period_and_its_retention() {
+        use super::{RtpStream, StreamKey, quality_interval_secs};
+        use crate::rtp::parser::RtpHeader;
+        use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+
+        let addr = |port| SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), port);
+        let header = RtpHeader {
+            version: 2,
+            padding: false,
+            extension: false,
+            csrc_count: 0,
+            marker: false,
+            payload_type: 0,
+            sequence: 1,
+            timestamp: 0,
+            ssrc: 1,
+            payload_offset: 12,
+        };
+        let stream = RtpStream::new(
+            StreamKey {
+                ssrc: 1,
+                src: addr(20000),
+                dst: addr(30000),
+            },
+            &header,
+            chrono::Utc::now(),
+        );
+        assert_eq!(stream.quality_interval_secs, quality_interval_secs());
+        assert_eq!(
+            stream.quality_interval_cap,
+            quality_interval_cap(quality_interval_secs()),
+            "the retention must be DERIVED from the period the stream carries, \
+             not read separately"
+        );
+    }
+
+    /// Owed, for a mutation that survived: hard-coding the retention to 720
+    /// changed nothing, because the shipped period derives exactly 720.
+    ///
+    /// Every period below produces a DIFFERENT retention, so a constant of any
+    /// value fails at least one of them.
+    #[test]
+    fn the_retention_a_stream_carries_is_derived_from_its_period() {
+        for (period, expected) in [(1, 3600), (5, 720), (10, 360), (60, 60), (300, 12)] {
+            let stream = fixture_stream(period);
+            assert_eq!(
+                stream.quality_interval_cap, expected,
+                "a {period}s period must retain {expected} snapshots to cover \
+                 the {}s span",
+                QUALITY_HISTORY_SPAN_SECS
+            );
+            assert_eq!(stream.quality_interval_secs, period);
+        }
+    }
+
+    /// Owed, same mutation, from the other side: the retention must actually
+    /// BOUND the history at the derived number rather than merely be recorded
+    /// on the stream.
+    #[test]
+    fn a_wider_period_evicts_at_its_own_retention() {
+        let period = 60;
+        let cap = quality_interval_cap(period);
+        let mut s = fixture_stream(period);
+        for i in 1..=(cap + 5) {
+            s.update(
+                &super::tests::make_header(i as u16, i as u32 * 160, 0),
+                super::tests::ts(i as i64 * period),
+                160,
+            );
+        }
+        assert_eq!(
+            s.quality_intervals.len(),
+            cap,
+            "a 60s stream must cap at its own 60 snapshots, not at the 720 the \
+             shipped period derives"
+        );
+    }
+
+    /// Owed, for the second surviving mutation: closing intervals on the
+    /// DEFAULT period instead of the stream's changed nothing while every
+    /// fixture used the default.
+    ///
+    /// One minute of packets at one a second. A stream on a 60-second period
+    /// closes one interval; a stream that ignored its period and used the
+    /// shipped five seconds closes eleven.
+    #[test]
+    fn a_stream_closes_intervals_on_its_own_period() {
+        let mut wide = fixture_stream(60);
+        let mut narrow = fixture_stream(5);
+        for i in 1..=60u16 {
+            let header = super::tests::make_header(i, u32::from(i) * 160, 0);
+            let at = super::tests::ts(i64::from(i));
+            wide.update(&header, at, 160);
+            narrow.update(&header, at, 160);
+        }
+        assert_eq!(
+            wide.quality_intervals.len(),
+            1,
+            "sixty seconds at a sixty-second period is one closed interval"
+        );
+        assert!(
+            narrow.quality_intervals.len() > wide.quality_intervals.len(),
+            "the five-second stream must snapshot more often over the same \
+             sixty seconds ({} vs {})",
+            narrow.quality_intervals.len(),
+            wide.quality_intervals.len()
+        );
+    }
+
+    /// Owed, same mutation: the period a stream was built with survives a
+    /// later change to the process declaration.
+    ///
+    /// Read-only on the global, so it cannot follow other tests: it asserts
+    /// that a stream built with an EXPLICIT period ignores the declaration
+    /// entirely, which is the property that makes the three tests above
+    /// independent of whatever else this binary has set.
+    #[test]
+    fn an_explicit_period_ignores_the_process_declaration() {
+        let declared = super::quality_interval_secs();
+        let other = if declared == 300 { 60 } else { 300 };
+        let stream = fixture_stream(other);
+        assert_eq!(stream.quality_interval_secs, other);
+        assert_ne!(
+            stream.quality_interval_secs, declared,
+            "the fixture must differ from the declaration or it proves nothing"
+        );
+        assert_eq!(stream.quality_interval_cap, quality_interval_cap(other));
+    }
+
+    /// A PCMU stream on an explicit snapshot period.
+    fn fixture_stream(period: i64) -> super::RtpStream {
+        super::RtpStream::with_quality_period(
+            super::tests::make_key(),
+            &super::tests::make_header(0, 0, 0),
+            super::tests::ts(0),
+            period,
+        )
+    }
+
+    /// The permitted range refuses the two settings that break the derivation:
+    /// a period of zero, which divides the span by nothing, and one so wide
+    /// that the trend is the stream-level figure with extra steps.
+    #[test]
+    fn the_permitted_range_excludes_zero_and_the_absurd() {
+        assert!(!PLAUSIBLE_QUALITY_INTERVAL_SECS.contains(&0));
+        assert!(!PLAUSIBLE_QUALITY_INTERVAL_SECS.contains(&-1));
+        assert!(!PLAUSIBLE_QUALITY_INTERVAL_SECS.contains(&(QUALITY_HISTORY_SPAN_SECS + 1)));
+        assert!(PLAUSIBLE_QUALITY_INTERVAL_SECS.contains(&DEFAULT_QUALITY_INTERVAL_SECS));
+    }
+
+    /// The bound is a real bound: the widest permitted period still retains at
+    /// least one entry, so no legal setting produces a history that can hold
+    /// nothing.
+    #[test]
+    fn every_permitted_period_retains_at_least_one_entry() {
+        for secs in [
+            *PLAUSIBLE_QUALITY_INTERVAL_SECS.start(),
+            *PLAUSIBLE_QUALITY_INTERVAL_SECS.end(),
+        ] {
+            assert!(
+                quality_interval_cap(secs) >= 1,
+                "a period of {secs}s retained nothing"
+            );
+        }
     }
 }

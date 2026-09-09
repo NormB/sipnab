@@ -2049,6 +2049,11 @@ pub fn load_config(cli: &Cli) -> Result<LoadedConfig, PlanError> {
     // Resolved rather than read straight off the config, because each has a
     // flag that must win over the file — see the resolvers on `Cli`.
     crate::rtp::stream::set_lost_seq_log_cap(cli.lost_sequence_log_cap(&loaded.config));
+    // The quality-snapshot period reaches streams the same four ways and for
+    // the same reason. Declared beside the loss cap because both are read by
+    // `RtpStream::new`, and a period declared on one code path and not the
+    // other would give two streams of one capture different trend resolutions.
+    crate::rtp::stream::set_quality_interval_secs(cli.quality_interval_secs(&loaded.config));
     crate::capture::pcapng_meta::set_max_metadata_file_bytes(
         cli.metadata_file_byte_cap(&loaded.config),
     );

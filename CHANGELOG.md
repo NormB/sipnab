@@ -29,6 +29,48 @@ entry that carries them.
 
 ### Added
 
+- **The quality trend recorded how a call was going and never how good it
+  was.** `QualityInterval` carried a timestamp, jitter, loss and a packet
+  count. No score, no verdict — so the one view built to show a call changing
+  over time was the one view with no judgement in it, and the reader had to
+  score six minutes of five-second rows by eye.
+
+  Each interval now carries `mos`, `r_factor`, `verdict` and `mos_grounded`,
+  scored on the interval's own jitter and loss and on the stream's resolved
+  path delay. That last part is what keeps a trend and the headline above it
+  comparable: they rest on one basis, resolved once. Two surfaces had been
+  computing their own — the browser analyzer and the terminal's stream-detail
+  pane both called the E-model directly — and both now go through the one
+  scorer.
+
+  **`not_scorable` is a verdict, not a missing one.** Three states: R at or
+  above 70 is `acceptable`, which is ITU-T G.107's boundary between "some users
+  dissatisfied" and "many"; below it is `degraded`; and a codec with no
+  published or declared impairment value is `not_scorable` and gets no colour
+  at either end. The boundary is a published figure rather than a tunable —
+  the operator's own bands decide what gets a COLOUR on their network, and an
+  exported verdict that means something different per deployment is worth less
+  than no verdict.
+
+  **What the work found.** The stream-detail pane already muted an ungrounded
+  headline MOS, saying in as many words that a band colour on a placeholder is
+  the lie in its most convincing form — and then, three lines lower, banded
+  every interval of that same stream on the good/poor scale, and printed a
+  confident average underneath. One pane, two answers about one number.
+
+  **Five seconds was also the wrong resolution.** It averages away any burst
+  shorter than itself, which is the shape of the dead-air complaint an operator
+  escalates: one 90 % loss figure this project had to explain turned out to be
+  three bursts of half a second. `--quality-interval` and
+  `[limits] quality_interval_secs` take 1 to 300 seconds.
+
+  The retention moves with it. It used to be a count — 720 entries — which
+  meant an hour only while nobody moved the period; at one second those 720
+  entries would have been twelve minutes, so the operator who shortened the
+  interval to see a half-second burst would have lost the other forty-eight
+  minutes of call to find it in. The hour is the setting now and the count is
+  derived, so a finer interval costs memory and never history.
+
 - **"Which of these 40 files holds Call-ID X" can be asked now.** It could not
   be asked at all: `list_captures` narrows by time, which is a filter and not
   an answer, and the only way inside another file was `open_capture` —

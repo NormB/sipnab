@@ -181,6 +181,7 @@ static KNOWN_KEYS: LazyLock<HashMap<&'static str, &'static [&'static str]>> = La
             "lint_max_per_rule",
             "exec_queue_depth",
             "max_lost_sequences",
+            "quality_interval_secs",
             "max_groups",
             "max_grouped_messages",
             "max_metadata_file_bytes",
@@ -1325,6 +1326,14 @@ pub struct LimitsConfig {
     /// figure shows the last minute of a call an operator escalated for the
     /// whole half hour.
     pub max_lost_sequences: Option<u64>,
+    /// Seconds between RTP quality snapshots (default: 5).
+    ///
+    /// The resolution of the per-stream quality trend. Five seconds averages
+    /// away a burst shorter than itself, which is the shape of the dead-air
+    /// complaint an operator escalates. The trend still covers an hour of call
+    /// time whatever the period is, so a finer setting costs memory rather than
+    /// history: one second retains 3600 snapshots per stream instead of 720.
+    pub quality_interval_secs: Option<u64>,
     /// Distinct `--group-by` keys one run may retain (default: 100000, the
     /// same figure `dialog_limit` ships).
     pub max_groups: Option<u64>,
@@ -1517,6 +1526,22 @@ impl LimitsConfig {
                  report a lossless call)"
                     .into(),
             ));
+        }
+        // Checked as a RANGE rather than against zero. The lower bound is the
+        // one a reader expects; the upper is the one that matters, because a
+        // period wider than the retained span produces a trend of one entry
+        // and reads as a stream that was never sampled.
+        if let Some(secs) = self.quality_interval_secs {
+            let permitted = crate::rtp::stream::PLAUSIBLE_QUALITY_INTERVAL_SECS;
+            if !i64::try_from(secs).is_ok_and(|s| permitted.contains(&s)) {
+                return Err(crate::Error::ConfigInvalid(format!(
+                    "[limits] quality_interval_secs ({secs}) must be between {} \
+                     and {} (0 would snapshot on every packet; a period wider \
+                     than the retained hour leaves a trend of one entry)",
+                    permitted.start(),
+                    permitted.end(),
+                )));
+            }
         }
         if let Some(0) = self.max_groups {
             return Err(crate::Error::ConfigInvalid(
@@ -2969,6 +2994,7 @@ column_selector = "F10"
             mcp_max_wait_seconds: Some(120),
             mcp_max_findings: Some(1000),
             max_lost_sequences: Some(1000),
+            quality_interval_secs: Some(5),
             max_groups: Some(10_000),
             max_grouped_messages: Some(200_000),
             max_metadata_file_bytes: Some(2 * 1024 * 1024 * 1024),

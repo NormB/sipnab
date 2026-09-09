@@ -481,8 +481,11 @@ fn the_stream_pointer_resolves_to_the_frame_the_stream_opened_in() {
 
     let mut checked = 0;
     for s in store.iter() {
-        let emitted: serde_json::Value =
-            serde_json::from_str(&stream_to_json(s)).expect("stream JSON parses");
+        let emitted: serde_json::Value = serde_json::from_str(&stream_to_json(
+            s,
+            sipnab::rtp::quality::MosDelay::unknown(),
+        ))
+        .expect("stream JSON parses");
         let pointer = emitted["frame"]
             .as_str()
             .unwrap_or_else(|| panic!("stream JSON carried no frame: {emitted}"))
@@ -538,8 +541,11 @@ fn a_stream_with_no_frame_omits_the_key_rather_than_emitting_a_default() {
         s.first_frame.is_none(),
         "a packet with no origin must not yield a stream that claims a frame"
     );
-    let json: serde_json::Value =
-        serde_json::from_str(&stream_to_json(s)).expect("stream JSON parses");
+    let json: serde_json::Value = serde_json::from_str(&stream_to_json(
+        s,
+        sipnab::rtp::quality::MosDelay::unknown(),
+    ))
+    .expect("stream JSON parses");
     assert!(
         !json.as_object().expect("object").contains_key("frame"),
         "a stream with no frame must omit the key entirely, not emit null or a \
@@ -556,8 +562,11 @@ fn a_stream_with_no_frame_omits_the_key_rather_than_emitting_a_default() {
     // passing because the field never serializes under any circumstances.
     let from_file = stream_store_with(&path, false);
     let s = from_file.iter().next().expect("one stream");
-    let with: serde_json::Value =
-        serde_json::from_str(&stream_to_json(s)).expect("stream JSON parses");
+    let with: serde_json::Value = serde_json::from_str(&stream_to_json(
+        s,
+        sipnab::rtp::quality::MosDelay::unknown(),
+    ))
+    .expect("stream JSON parses");
     assert!(
         with.as_object().expect("object").contains_key("frame"),
         "a stream that knows its frame must emit the key; got {with}"
