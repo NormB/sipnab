@@ -8,6 +8,36 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Changed
+
+- **Advertised tool schemas use a spelling every MCP client can read.** The
+  Inspector's `--strict` lint reported 172 findings across 47 tools, in two
+  classes. Three were `serde_json::Value` fields described as nothing at all —
+  a vCon container twice and the capture caveats — which now say `type:
+  object`, the one thing always true of them. The other 169 were `type` as an
+  array, which is what `schemars` writes for an optional field: legal JSON
+  Schema, and a spelling several clients cannot read. They take `type` as a
+  single string and either drop the constraint or refuse the whole tool, and a
+  refused tool is one the agent simply does not have.
+
+  Those unions are collapsed on **input** schemas, once, where the router is
+  assembled. Not on output schemas: sipnab writes an explicit `null` for an
+  absent optional field, so collapsing there would advertise a schema its own
+  responses violate — which the existing payload-versus-schema test caught
+  within a minute of the first draft. The input side is also where the cost
+  falls, because a client validates arguments before calling.
+
+  172 findings become 83, and every one that remains is that single waived
+  class. Nothing on an input schema, nothing described as anything at all.
+
+  There is no continuous-integration job running the Inspector. The property it
+  checks is asserted offline against the live wire, with the walk driven on a
+  planted fixture so it cannot pass by matching nothing. Adding an unpinned
+  package fetched on every push, to re-derive in minutes what a test settles in
+  seconds, is the opposite of how this project treats its tools.
+
 ## [0.5.160] - 2026-09-09
 
 ### Changed

@@ -85,6 +85,12 @@ pub struct ValidateVconParams {
     /// Anything at all: one sipnab exported earlier, one another producer
     /// wrote, one a store rejected. The schema does not care where it came
     /// from, and neither does this.
+    /// Advertised as an object rather than as "anything at all". `schemars`
+    /// renders `serde_json::Value` as a schema with no validation keyword,
+    /// which the MCP Inspector's strict lint calls out as the object-literal
+    /// spelling of a bare `true` -- a client is told nothing about the shape,
+    /// including the one thing that is always true of it.
+    #[schemars(with = "Option<std::collections::BTreeMap<String, serde_json::Value>>")]
     pub container: Option<serde_json::Value>,
 }
 
@@ -157,6 +163,12 @@ pub struct ExportedContainer {
     /// the uuid.
     pub digest: String,
     /// The container itself, as an object rather than as a string to re-parse.
+    /// Advertised as an object rather than as "anything at all". `schemars`
+    /// renders `serde_json::Value` as a schema with no validation keyword,
+    /// which the MCP Inspector's strict lint calls out as the object-literal
+    /// spelling of a bare `true` -- a client is told nothing about the shape,
+    /// including the one thing that is always true of it.
+    #[schemars(with = "std::collections::BTreeMap<String, serde_json::Value>")]
     pub container: serde_json::Value,
     /// What this container does not contain.
     pub completeness: ContainerCompleteness,

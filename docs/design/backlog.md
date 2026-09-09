@@ -44,7 +44,7 @@ Tiers:
 
 ## Status
 
-**31 open, 477 done** across 36 sections.
+**30 open, 478 done** across 36 sections.
 Regenerate with `python3 scripts/backlog-status.py --apply`.
 
 | Section | Open | Done | Progress |
@@ -54,7 +54,7 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
 | PV | 0 | 13 | `##########` |
 | P2 | 0 | 109 | `##########` |
 | P3 | 0 | 64 | `##########` |
-| P4 | 3 | 40 | `#########.` |
+| P4 | 2 | 41 | `##########` |
 | PA | 1 | 12 | `#########.` |
 | PB | 0 | 20 | `##########` |
 | TK | 3 | 7 | `#######...` |
@@ -855,8 +855,8 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
   entry rested on. It is also the mechanism
   behind CT2 — a stalled reader is what overflows the ring. **Latent deadlock:**
   the ordering `stores → alerts` exists only on this path and is written down
-  nowhere; `security_findings` ([`src/mcp/server.rs:5544`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5544)) currently takes
-  nowhere; `security_findings` ([`src/mcp/server.rs:5544`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5544)) currently takes
+  nowhere; `security_findings` ([`src/mcp/server.rs:5572`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5572)) currently takes
+  nowhere; `security_findings` ([`src/mcp/server.rs:5572`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5572)) currently takes
   `alerts.read()` and no store lock, so there is no cycle *today*, and nothing
   stops the next MCP tool from creating one. **Do:** queue exec requests and
   per-message output during the locked section, drain them after the guards
@@ -1634,8 +1634,8 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
   `sipnab_capture_invalid_timestamps_total` (the field is declared at
   [`src/output/prometheus.rs:119`](https://github.com/NormB/sipnab/blob/main/src/output/prometheus.rs#L119), read from the atomic at `:149`, rendered at
   `:523`, and named in [`tests/metrics_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/metrics_test.rs) so a rename cannot silently drop
-  it); the MCP `capture_status` tool carries the field ([`src/mcp/server.rs:5659`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5659),
-  it); the MCP `capture_status` tool carries the field ([`src/mcp/server.rs:5659`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5659),
+  it); the MCP `capture_status` tool carries the field ([`src/mcp/server.rs:5687`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5687),
+  it); the MCP `capture_status` tool carries the field ([`src/mcp/server.rs:5687`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5687),
   populated at `:1356`) and reports it as a delta between two calls (`:1676`);
   and the batch summary explains it in prose
   ([`src/app/batch.rs:905-925`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L905-L925), the doc comment on `report_capture_quality`). The
@@ -2383,27 +2383,48 @@ holds anything to it.
   **The bodies stay separate, deliberately.** Merging them was started and abandoned when the files' own comments turned out to have already answered it: each `mutate` defines the byte stream its corpus was generated against, so sharing one implementation changes what the seeds produce and silently breaks that file's reproducibility. That is a regression a green test run would not show — the fuzz suite would keep passing while exercising different inputs than the recorded corpus. The backlog called this unfinished consolidation; the code refuted the backlog.
 - [x] tests/mockup_alignment_test.rs — [heuristic-limit] lifeline reference = most-pipes line; misaligned reference flags everything else. **Done (P4 test-quality wave, 2026-07-24).**
 
-- [ ] **MCP tool schemas have never been linted for portability (added 2026-09-06).**
-  The MCP Inspector CLI ships a `--strict` mode that lints a server's advertised
-  tool schemas and exits non-zero on error-severity findings. Run against
-  sipnab 0.5.149 while writing the Inspector documentation, it reported
-  **0 errors and 166 warnings across 45 tools**, and nothing in this repository
-  has ever read that output.
+- [x] **MCP tool schemas have never been linted for portability (done
+  2026-09-09).** The MCP Inspector CLI ships a `--strict` mode that lints a
+  server's advertised tool schemas and exits non-zero on error-severity
+  findings. Nothing in this repository had ever read that output.
 
-  Zero errors is the reassuring half and the warnings are the interesting half:
-  a schema no error-level rule rejects can still be one a strict client refuses
-  to render, and sipnab's whole agent surface is schemas a client renders.
+  **Re-measured first, as the entry demanded.** The recorded figure was 166
+  warnings across 45 tools on an installed 0.5.149. Against 0.5.160 it is
+  **0 errors and 172 warnings across 47 tools**, in exactly two classes:
 
-  **Do:** read the 166 before deciding anything. A gate wired on today's number
-  would ratchet in whatever those warnings are, which is how a gate comes to
-  demand output nothing will produce. Classify them first, fix or waive each
-  class with the reason written down, then wire `--strict` into the quality
-  workflow beside the OpenAPI contract test — the REST surface's equivalent, and
-  the precedent for how the MCP surface should be gated.
+  | Class | Count | What it is |
+  |---|---|---|
+  | `type` is an array | 169 | `schemars` renders `Option<T>` as `["T","null"]` |
+  | no validation keyword | 3 | `serde_json::Value`, described as nothing at all |
 
-  **The count above is quoted from one run against one installed binary**
-  (0.5.149, which serves 63 tools where the tree registers 64) and has not been
-  re-measured since. Re-run it before acting on the figure.
+  **Both fixed, one of them by half and deliberately.** The three
+  keyword-free schemas are `serde_json::Value` fields that really are JSON
+  objects — a vCon container twice and the capture caveats — and they now say
+  `type: object`, which is the one thing always true of them.
+
+  The 169 unions are collapsed on INPUT schemas only, by
+  `crate::mcp::schema::portable_router`, once where the router is assembled.
+  Not on output schemas: sipnab writes an explicit `null` for an absent
+  optional field, so collapsing there advertises a schema its own responses
+  violate. `every_declared_output_schema_matches_the_payload_it_describes`
+  proved that within a minute of the first draft, which is the difference
+  between a portability fix and a lie about the wire. The input side is also
+  where the cost falls — a client validates arguments before calling, and one
+  that refuses a tool refuses it there.
+
+  **172 -> 83, and every remaining finding is that one waived class.** Zero on
+  input schemas, zero keyword-free.
+
+  **The `--strict` CI wiring is DECLINED, and the property is gated instead.**
+  The entry asked for the Inspector in the quality workflow beside the OpenAPI
+  contract test. What that would add is an unpinned npm tool fetched on every
+  push, a network dependency, and a full server build, to re-derive a property
+  a Rust test asserts offline in three seconds against the live wire —
+  `no_input_schema_advertises_a_spelling_a_strict_client_may_refuse`, with its
+  walk driven on a planted fixture so it cannot pass by matching nothing. This
+  repository pins its tools by content hash; a lint whose rule set can change
+  under CI is the opposite of that. Re-run the Inspector by hand when its rules
+  move: [`docs/mcp.md`](https://github.com/NormB/sipnab/blob/main/docs/mcp.md) records the invocation and the measured before-and-after.
 
 - [ ] **The performance baseline is stale for the third recorded time
   (added 2026-09-06).** [`bench/baseline.json`](https://github.com/NormB/sipnab/blob/main/bench/baseline.json) records 0.5.122 at 3.25M pkt/s on
@@ -3193,7 +3214,7 @@ implementation.
   `value_parser = ["full", "metrics", "read"]`) rather than the
   `--mcp-token-scope` proposed above, with the help text drawing the
   audience line ("REST API tokens only" / "MCP tokens only"). Enforcement is
-  `scope_of` ([`src/mcp/server.rs:8459`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L8459), the `mcp-http` arm), reading the scope out of the
+  `scope_of` ([`src/mcp/server.rs:8485`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L8485), the `mcp-http` arm), reading the scope out of the
   `McpAuth::BearerVerified` admission record, and `scope_refusal` (`:4872`),
   which is called from the hand-written `call_tool` (`:4951`). The
   no-second-list requirement held literally: `scope_refusal` decides from the

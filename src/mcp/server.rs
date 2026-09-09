@@ -305,6 +305,14 @@ impl SipnabMcp {
         #[cfg(feature = "vcon")]
         let router = router + Self::vcon_router();
 
+        // Every advertised schema, made portable in one place. `schemars`
+        // renders `Option<T>` as `"type": ["T","null"]`, which several MCP
+        // clients cannot read -- they take `type` as a single string and
+        // either drop the constraint or refuse the whole tool, and a refused
+        // tool is one the agent simply does not have. See `super::schema` for
+        // what the rewrite costs and why a REQUIRED nullable is left alone.
+        let router = super::schema::portable_router(router);
+
         Self {
             dialog_store,
             stream_store,
@@ -2167,6 +2175,12 @@ pub struct CaptureStatusResponse {
     /// The same projection `GET /v1/stats` embeds
     /// ([`CaptureCaveats`](crate::output::json::CaptureCaveats)), so an agent
     /// and an HTTP client cannot be told different things.
+    /// Advertised as an object rather than as "anything at all". `schemars`
+    /// renders `serde_json::Value` as a schema with no validation keyword,
+    /// which the MCP Inspector's strict lint calls out as the object-literal
+    /// spelling of a bare `true` -- a client is told nothing about the shape,
+    /// including the one thing that is always true of it.
+    #[schemars(with = "std::collections::BTreeMap<String, serde_json::Value>")]
     pub caveats: serde_json::Value,
     /// True once a file source has been read to the end.
     pub source_exhausted: bool,

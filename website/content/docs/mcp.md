@@ -185,6 +185,34 @@ Calling a tool by hand works the same way:
 npx @modelcontextprotocol/inspector --cli sipnab --mcp -N -I capture.pcap -- --method tools/call --tool-name triage_call --tool-arg call_id=busy-3a2b1c@192.0.2.30 --format json
 ```
 
+### Linting the advertised schemas
+
+`--strict` reports schema spellings a client may not read. It exits non-zero
+only on error severity, so a clean exit and a clean report are different
+things -- read the summary line:
+
+```bash
+npx @modelcontextprotocol/inspector --cli sipnab --mcp -N -I capture.pcap -- --method tools/list --strict
+```
+
+Measured against 0.5.160: **0 errors and 83 warnings across 47 tools**, down
+from 172. Every remaining warning is one class, and sipnab waives it on purpose.
+
+`schemars` renders an optional field as `"type": ["string","null"]`. That is
+legal JSON Schema and several clients cannot read it -- they take `type` as a
+single string and either drop the constraint or refuse the whole tool. sipnab
+collapses those unions on **input** schemas, where a client validates
+arguments before calling and where a refusal costs you the tool.
+
+Output schemas keep theirs, because sipnab writes an explicit `null` for an
+absent optional field. Collapsing there would advertise a schema its own
+responses violate, which is a worse problem than the spelling.
+
+There is no CI job running this. `no_input_schema_advertises_a_spelling_a_strict_client_may_refuse` checks the
+same property offline, against the live wire, with no network and no package
+manager. Run the command above by hand when the
+Inspector's rules move.
+
 [`scripts/mcp-schema-dump.sh`](https://github.com/NormB/sipnab/blob/main/scripts/mcp-schema-dump.sh)
 wraps the `tools/list` form and accepts either a capture file or an HTTP URL:
 

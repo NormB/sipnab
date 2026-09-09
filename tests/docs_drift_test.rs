@@ -52,6 +52,11 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             "website/content/docs/internals/build-ci-release.md",
         ],
     ),
+    // The MCP Inspector's, named by the schema-lint section of the MCP page.
+    // `--strict` is a flag of `@modelcontextprotocol/inspector --cli`, not of
+    // sipnab, and documenting how to lint sipnab's advertised schemas must not
+    // turn it into one.
+    ("strict", &["docs/mcp.md", "website/content/docs/mcp.md"]),
     // `tfps_ctl`'s, named by the `[tfps] db` row because that is exactly what
     // the key becomes: sipnab passes it through as `--db PATH` on every call
     // to the toll-fraud prevention peer. It is not a sipnab flag and must not
@@ -3388,7 +3393,13 @@ fn no_documentation_table_repeats_a_row() {
     // lives only in the source is a finding nobody can argue with. Attributed
     // per file against HEAD: docs/troubleshooting.md 7 -> 8 and its mirror
     // 7 -> 8, nothing else moved.
-    const EXPECTED_TABLES: usize = 846;
+    // 846 -> 847 by ONE written table, in docs/design/backlog.md rather than a
+    // mirrored page: the two classes the MCP Inspector's strict lint reports
+    // and what each one is. A count and a sentence per class is what makes the
+    // fix-or-waive decision readable; the prose version was three paragraphs
+    // nobody could compare. Attributed per file against HEAD:
+    // docs/design/backlog.md 26 -> 27, nothing else moved.
+    const EXPECTED_TABLES: usize = 847;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

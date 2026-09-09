@@ -516,6 +516,182 @@ fn timeline_answers_with_a_self_describing_envelope() {
     );
 }
 
+/// Every place in a schema a strict client could object to.
+///
+/// A file-level function rather than one nested in the test, so the fixture
+/// below can drive the SAME code the gate runs. A scan asserting an absence
+/// and a scan that matches nothing are indistinguishable, and this repository
+/// has had to fix that shape more than once.
+///
+/// # Arguments
+///
+/// * `node` — the schema being visited.
+/// * `at` — where it sits, for a message somebody has to act on.
+/// * `optional` — whether this node is a property its parent leaves out of
+///   `required`. Only an optional property's nullable union is collapsible.
+/// * `out` — findings, appended.
+fn nullable_unions(node: &Value, at: &str, optional: bool, out: &mut Vec<String>) {
+    let Some(obj) = node.as_object() else {
+        return;
+    };
+    if let Some(types) = obj.get("type").and_then(Value::as_array)
+        && optional
+        && types.len() == 2
+        && types.iter().any(|t| t.as_str() == Some("null"))
+    {
+        out.push(format!(
+            "{at}: type is {types:?}, collapsible to one string"
+        ));
+    }
+    let required: Vec<&str> = obj
+        .get("required")
+        .and_then(Value::as_array)
+        .map(|a| a.iter().filter_map(Value::as_str).collect())
+        .unwrap_or_default();
+    if let Some(props) = obj.get("properties").and_then(Value::as_object) {
+        for (name, child) in props {
+            nullable_unions(
+                child,
+                &format!("{at}.properties.{name}"),
+                !required.contains(&name.as_str()),
+                out,
+            );
+        }
+    }
+    for key in ["$defs", "definitions"] {
+        if let Some(map) = obj.get(key).and_then(Value::as_object) {
+            for (name, child) in map {
+                nullable_unions(child, &format!("{at}.{key}.{name}"), false, out);
+            }
+        }
+    }
+    for key in ["oneOf", "anyOf", "allOf", "prefixItems"] {
+        if let Some(list) = obj.get(key).and_then(Value::as_array) {
+            for (i, child) in list.iter().enumerate() {
+                nullable_unions(child, &format!("{at}.{key}[{i}]"), false, out);
+            }
+        }
+    }
+    for key in ["items", "additionalProperties"] {
+        if let Some(child) = obj.get(key) {
+            nullable_unions(child, &format!("{at}.{key}"), false, out);
+        }
+    }
+}
+
+/// No advertised INPUT schema uses a spelling a strict client may refuse.
+///
+/// The MCP Inspector's `--strict` lint reported 172 findings across 47 tools on
+/// 0.5.160, and 169 were one shape: `schemars` renders `Option<T>` as
+/// `"type": ["T","null"]`. That is legal JSON Schema and it is also a spelling
+/// several MCP clients cannot read — they take `type` as a single string and
+/// either drop the constraint or refuse the whole tool, and a refused tool is
+/// one the agent simply does not have.
+///
+/// The rewrite lives in `crate::mcp::schema` and runs once where the router is
+/// assembled. This asserts the PROPERTY on the live wire, offline, so the gate
+/// does not depend on npx, a network, or a lint whose rule set can change
+/// under it.
+///
+/// **Input schemas only, and that is the whole design.** An output schema
+/// describes what sipnab sends, and sipnab writes an explicit `null` for an
+/// absent optional field — collapsing there would advertise a schema its own
+/// responses violate, which
+/// `every_declared_output_schema_matches_the_payload_it_describes` catches
+/// immediately. The 83 findings that remain are all on output schemas and are
+/// waived for that reason.
+#[test]
+fn no_input_schema_advertises_a_spelling_a_strict_client_may_refuse() {
+    let mut wire = Wire::start();
+    let tools = wire.tools();
+    assert!(
+        tools.len() > 40,
+        "only {} tool(s) listed; this gate would pass by examining nothing",
+        tools.len()
+    );
+
+    let mut all: Vec<String> = Vec::new();
+    for tool in &tools {
+        let name = tool["name"].as_str().unwrap_or("?");
+        nullable_unions(
+            &tool["inputSchema"],
+            &format!("{name}.inputSchema"),
+            false,
+            &mut all,
+        );
+    }
+    assert!(
+        all.is_empty(),
+        "{} input schema(s) carry a nullable type union. `schemars` writes one \
+         for every `Option<T>`, and `crate::mcp::schema::portable_router` is \
+         what collapses them — so this list means the pass stopped running, or \
+         a router was assembled without it:\n  {}",
+        all.len(),
+        all.join("\n  ")
+    );
+}
+
+/// The scan can actually find something, in every place it recurses.
+///
+/// Anti-vacuity, and not a formality: the walk crosses five container keys and
+/// a wrong key name reports a clean tree forever. One fixture plants a union
+/// at each of them, and a sixth that must NOT be reported — a required
+/// property, where the union is the only way to send the key empty.
+#[test]
+fn the_input_schema_scan_finds_a_union_wherever_one_hides() {
+    let planted = json!({
+        "type": "object",
+        "required": ["kept"],
+        "properties": {
+            "top": { "type": ["string", "null"] },
+            "kept": { "type": ["string", "null"] }
+        },
+        "$defs": {
+            "Inner": {
+                "type": "object",
+                "properties": { "buried": { "type": ["integer", "null"] } }
+            }
+        },
+        "oneOf": [
+            { "type": "object", "properties": { "branch": { "type": ["number", "null"] } } }
+        ],
+        "items": {
+            "type": "object",
+            "properties": { "each": { "type": ["boolean", "null"] } }
+        },
+        "additionalProperties": {
+            "type": "object",
+            "properties": { "extra": { "type": ["string", "null"] } }
+        }
+    });
+
+    let mut found: Vec<String> = Vec::new();
+    nullable_unions(&planted, "planted", false, &mut found);
+    let where_: Vec<&str> = found
+        .iter()
+        .map(|f| f.split(':').next().unwrap_or(""))
+        .collect();
+    for expected in [
+        "planted.properties.top",
+        "planted.$defs.Inner.properties.buried",
+        "planted.oneOf[0].properties.branch",
+        "planted.items.properties.each",
+        "planted.additionalProperties.properties.extra",
+    ] {
+        assert!(
+            where_.contains(&expected),
+            "the walk did not reach {expected}; it found {where_:?}"
+        );
+    }
+    assert!(
+        !where_.contains(&"planted.properties.kept"),
+        "a REQUIRED nullable property was reported. The union is the only way \
+         to send that key empty, and collapsing it would advertise a schema \
+         forbidding a value the tool accepts: {where_:?}"
+    );
+    assert_eq!(found.len(), 5, "one finding per planted union: {found:?}");
+}
+
 /// Every declared `outputSchema` must describe the payload the tool actually
 /// returns, and every one must have a case above.
 ///
