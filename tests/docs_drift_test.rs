@@ -3431,7 +3431,15 @@ fn no_documentation_table_repeats_a_row() {
     // was measured; absolute per-file counts are not restated here, because a
     // count taken with a different walker than this gate's would read as
     // evidence it is not.
-    const EXPECTED_TABLES: usize = 849;
+    // 849 -> 851 by ONE written table, mirrored: which of the two eCapture
+    // recipes to reach for, in the new cookbook 7i (TK5). Three rows whose
+    // whole point is the comparison -- live view, artifact to take away, real
+    // wire bytes -- which is a table or it is nothing. Attributed per file
+    // against HEAD by counting table starts: docs/examples.md +1 and its
+    // mirror website/content/docs/cookbook.md +1; the troubleshooting pages
+    // gained a symptom ROW in an existing table and moved by zero, which is
+    // what confirms the +2 is the cookbook alone.
+    const EXPECTED_TABLES: usize = 851;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

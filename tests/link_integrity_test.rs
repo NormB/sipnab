@@ -845,7 +845,15 @@ fn wiki_intra_docs_links_resolve() {
     // different fault from one that went quiet mid-call, so it points at the
     // NAT and one-way-audio sections rather than re-arguing either, and its
     // symptom-index row points back at itself.
-    const EXPECTED_WIKI_LINKS: usize = 711;
+    // 711 -> 714 by the "Encrypted SIP that does not decrypt" section in
+    // docs/troubleshooting.md (TK5): two links into the cookbook, for the FIFO
+    // recipe and for the keylog mode to fall back to when a kernel cannot run
+    // eCapture's pcap mode, plus the symptom table's row into the new section.
+    // Attributed by REVERTING each staged page to HEAD and re-running this
+    // gate rather than by a second regex: with docs/examples.md reverted the
+    // count is still 714, so it contributes none of the three, and the site
+    // mirrors are outside the extractor's walk.
+    const EXPECTED_WIKI_LINKS: usize = 714;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe 6d in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

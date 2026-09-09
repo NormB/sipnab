@@ -44,7 +44,7 @@ Tiers:
 
 ## Status
 
-**28 open, 481 done** across 36 sections.
+**27 open, 482 done** across 36 sections.
 Regenerate with `python3 scripts/backlog-status.py --apply`.
 
 | Section | Open | Done | Progress |
@@ -57,7 +57,7 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
 | P4 | 0 | 43 | `##########` |
 | PA | 1 | 12 | `#########.` |
 | PB | 0 | 20 | `##########` |
-| TK | 3 | 7 | `#######...` |
+| TK | 2 | 8 | `########..` |
 | RE | 1 | 6 | `#########.` |
 | BA | 1 | 3 | `########..` |
 | NAT | 0 | 4 | `##########` |
@@ -4039,20 +4039,66 @@ treats as critical.
   is not the same as reading the call, and no eBPF work should be reported as
   "reads SIP over TLS" until this is closed.
 
-- [ ] **TK5 — The zero-code interop path is undocumented, so nobody uses it.**
-  Two modes work against the shipped binary. `ecapture tls -m keylog
-  --keylogfile=…` into `--keylog … --keylog-watch` gives decrypted signaling
-  with real wire frames; `ecapture tls -m pcap --pcapfile=x.pcapng` writes
-  **decrypted traffic as pcapng** that `sipnab -I x.pcapng` already reads with
-  no new code at all. **Do:** a task-first section in [`examples.md`](https://github.com/NormB/sipnab/blob/main/docs/examples.md) beside the
-  existing SSLKEYLOGFILE recipe, troubleshooting entries for the failures
-  `TK1`–`TK3` used to cause silently, and an **end-to-end measurement on a real
-  TLS SIP session** — cheap to do, so the live-NIC caveat does not extend here.
-  **Mode A is DONE**, shipped as [`examples.md`](https://github.com/NormB/sipnab/blob/main/docs/examples.md) §7e "Decrypt traffic from a
-  daemon you cannot restart", and measured before it was written: a TLS 1.3
+- [x] **TK5 (done 2026-09-09) — the zero-code interop path is documented and
+  both modes are measured.** Two modes work against the shipped binary.
+  `ecapture tls -m keylog --keylogfile=…` into `--keylog … --keylog-watch`
+  gives decrypted signaling with real wire frames, and
+  `ecapture tls -m pcap -i <if> -w x.pcapng` writes one file that
+  `sipnab -I x.pcapng` reads with no new code and no flags.
+
+  **Mode A** shipped earlier as [`examples.md`](https://github.com/NormB/sipnab/blob/main/docs/examples.md) §7e "Decrypt traffic from a
+  daemon you cannot restart", measured before it was written: a TLS 1.3
   `REGISTER` over `TLS_AES_256_GCM_SHA384`, keys taken from a process with no
   `SSLKEYLOGFILE` anywhere. `--keylog-fd` (`TK4`) is the streaming variant of
   that recipe, for operators who would rather the secrets never reached a file.
+
+  **Mode B shipped 2026-09-09** as §7i "One file, taken off the host, that
+  decrypts itself", with a table saying which of the two to reach for.
+
+  **THIS ENTRY AND §7e WERE BOTH WRONG ABOUT WHAT `-m pcap` PRODUCES, and the
+  measurement is what caught it.** This entry said it "writes decrypted traffic
+  as pcapng"; §7e said "eCapture's other modes emit *plaintext*, which would
+  mean writing capture files whose packets never existed on the wire", and
+  declined it on that basis. Neither is true. `-m pcap` writes the REAL
+  encrypted frames and embeds the master secrets as a pcapng **Decryption
+  Secrets Block** — the same artifact §7e argues for, in one file, with no live
+  sipnab anywhere. sipnab read it unprompted: `TLS decryption active: 6
+  secret(s) from embedded DSB`. Wireshark reads the same file for the same
+  reason. A recipe declined on a property it does not have is the cost of not
+  running the tool.
+
+  **Measured end to end, 2026-09-09.** eCapture v2.5.2, checksum-verified
+  against the release's own `checksum-v2.5.2.txt`, keys taken by uprobe from a
+  Python 3.13 process on OpenSSL 3.5.6 that set **no** keylog of its own — the
+  script's `keylog_filename` line was removed for the run, so nothing but the
+  uprobe could explain the secrets. A complete TLS 1.3 dialog: `INVITE` split
+  across two records, `100`, `180`, `200` with SDP, `ACK`, `BYE`, `200`. sipnab
+  read the 50-packet file and reported the dialog `Completed 200` with 7
+  messages.
+
+  **`-m pcap` needs a kernel `-m keylog` does not, and that is the practical
+  limit.** It attaches a TC classifier as well as the uprobes, so it needs
+  `CONFIG_NET_CLS_BPF`. The aarch64 RT host has none — `zcat /proc/config.gz`
+  prints `# CONFIG_NET_CLS_BPF is not set` on 6.8.12-rt-tegra — and eCapture
+  fails there with `couldn't add a ingress filter to interface 1: netlink
+  receive: no such file or directory` after loading its bytecode successfully.
+  The measurement therefore ran on the x86_64 lab host, which has
+  `CONFIG_NET_CLS_BPF=m`. Both facts are in the cookbook and the
+  troubleshooting page, because an operator who plans around `-m pcap` on the
+  wrong kernel finds out during an incident.
+
+  **eCapture needs no BTF, confirmed again on the same run.** It logged the
+  fallback it loaded, `bytecode/openssl_3_0_0_kern_noncore.o`, on the kernel
+  with no `/sys/kernel/btf/vmlinux`.
+
+  **Troubleshooting entries shipped** as "Encrypted SIP that does not decrypt"
+  in [`troubleshooting.md`](https://github.com/NormB/sipnab/blob/main/docs/troubleshooting.md), indexed from the symptom table. It covers the
+  two silent `TK1`/`TK2` FIFO failures and the `TK3` rotation failure by
+  symptom rather than by version, plus the two this measurement produced: a
+  decrypted capture reporting no calls because `--portrange` still applies, and
+  the TC kernel requirement above. The `TLS decryption active:` line is the
+  one that splits "no keys" from "keys, no calls", and the section is built
+  around it.
 
   **A correction, recorded because it was asserted here first and was wrong.**
   This entry previously claimed ecapture could not run on the aarch64 host, reasoning

@@ -608,11 +608,15 @@ Then point sipnab at that file, exactly as in 7a:
 sudo sipnab -N -d eth0 --keylog /tmp/sip.keylog --keylog-watch
 ```
 
-`-m keylog` is the mode that matters. eCapture's other modes emit *plaintext*,
-which would mean writing capture files whose packets never existed on the wire.
-Taking the keys instead keeps the real encrypted bytes on the wire and the real
-secrets beside them, so `--pcap-export-mode encrypted+dsb` (7c) still produces
-an artifact Wireshark verifies independently.
+`-m keylog` is the mode for a LIVE capture, because it hands sipnab keys while
+sipnab reads the wire itself. eCapture's `-m text` emits plaintext, which is a
+different artifact: bytes that never existed on the wire in that form.
+
+**`-m pcap` is neither, and an earlier version of this page had it wrong.** It
+writes the real encrypted frames and embeds the secrets in the file as a
+pcapng Decryption Secrets Block, so it produces exactly the artifact this
+section argues for -- with no live sipnab at all. That is 7i, and it is the
+easier recipe of the two when you can work from a file.
 
 **Measured, not assumed** (2026-08-14): a TLS 1.3 `REGISTER` over
 `TLS_AES_256_GCM_SHA384`, keys taken from a running process with no
@@ -797,6 +801,82 @@ this backend, and a silent downgrade would hand you a capture with none.
   `--uprobe-symbol` if it differs.
 
 ---
+
+### 7i. One file, taken off the host, that decrypts itself
+
+7e and 7f keep sipnab running beside the daemon. This recipe does not run
+sipnab on the SIP host at all. eCapture writes one file there, you copy it
+somewhere else, and sipnab reads it with no keylog, no flags and no
+configuration -- because the secrets are inside the file.
+
+On the SIP host, as root:
+
+```bash
+ecapture tls -m pcap -i eth0 -w /tmp/sip-tls.pcapng tcp port 5061
+```
+
+Stop it with Ctrl-C when you have the calls you need, copy the file off, and
+read it anywhere:
+
+```bash
+sipnab -N -I sip-tls.pcapng --portrange 1-65535 --report
+```
+
+That is the whole recipe. There is no `--keylog`, because
+`-m pcap` puts the master secrets in the file as a **pcapng Decryption Secrets
+Block**, and sipnab reads a DSB automatically. Wireshark reads the same file
+for the same reason.
+
+**Measured end to end, not assumed** (2026-09-09). eCapture v2.5.2, keys taken
+by uprobe from a Python 3.13 process running OpenSSL 3.5.6 that had **no**
+`SSLKEYLOGFILE` and set no keylog of its own, over a TLS 1.3
+`TLS_AES_256_GCM_SHA384` session carrying a complete SIP dialog -- `INVITE`
+split across two records, `100`, `180`, `200` with SDP, `ACK`, `BYE`, `200`.
+sipnab read the resulting 50-packet file and reported:
+
+```text
+TLS decryption active: 6 secret(s) from embedded DSB in sip-tls.pcapng
+Call-ID                       From   To     State       Code  Msgs
+tls-split-invite-1@127.0.0.1  uac    echo   Completed   200   7
+```
+
+**Which recipe to reach for:**
+
+| You want | Use |
+|---|---|
+| A live view, decrypted as calls happen | 7e or 7f -- sipnab runs beside the daemon |
+| One artifact to take away, open later, or hand to somebody | **7i** -- nothing runs on the host afterwards |
+| The real wire bytes, verifiable independently | Either. Both keep the encrypted frames; neither writes plaintext |
+
+**Pitfalls, each one measured:**
+
+- **`-m pcap` needs more from the kernel than `-m keylog` does**, and this is
+  the one that stops most people. It attaches a TC classifier to the interface as
+  well as the uprobes, so the kernel needs `CONFIG_NET_CLS_BPF`. On a kernel
+  without it, eCapture starts, loads its bytecode, and then fails with
+  `couldn't add a ingress filter to interface 1: netlink receive: no such file
+  or directory`. Measured on Linux 6.8.12-rt-tegra, where
+  `zcat /proc/config.gz | grep NET_CLS_BPF` prints
+  `# CONFIG_NET_CLS_BPF is not set`. Check that before you plan around this
+  recipe. `-m keylog` (7e) needs only the uprobes and runs on that same
+  kernel.
+- **`-i` takes a real interface, and it is not optional.** `-m pcap` captures through
+  the interface, not through the process, so `-i lo` for loopback traffic and
+  the SIP-facing NIC otherwise.
+- **The port range is yours to widen.** sipnab decrypted the file above and
+  still reported no calls on the first run, because the lab used port 15061
+  and the default `--portrange` is 5060-5061. It said so rather than staying
+  silent -- `SIP outside --portrange 5060-5061 is being skipped` names the
+  busiest port it saw.
+- **eCapture needs no BTF.** On a kernel with none it falls back to its own
+  non-CO-RE bytecode and logs the file it loaded
+  (`bytecode/openssl_3_0_0_kern_noncore.o`). A missing `/sys/kernel/btf/vmlinux`
+  is not a reason to skip this.
+- **The file is key material.** A DSB decrypts every session in it, so the
+  pcapng is as sensitive as the keylog in 7e, and more portable. Treat it that
+  way when you copy it off the host.
+- Same as 7e: eCapture is a separate Apache-2.0 program that sipnab neither
+  bundles nor links, and it captures only handshakes it was running for.
 
 ---
 

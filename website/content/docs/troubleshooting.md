@@ -27,6 +27,7 @@ the cause from there.
 | "The phones keep dropping off" / no inbound calls arrive | [Registration failures](#registration-failures) |
 | "Something is hammering the PBX" / probes across unknown extensions | [SIP scanner detection](#sip-scanner-detection) |
 | "No SIP traffic found" on a link you know carries calls | [A live capture that sees nothing](#a-live-capture-that-sees-nothing) |
+| SIP is over TLS and the calls never appear | [Encrypted SIP that does not decrypt](#encrypted-sip-that-does-not-decrypt) |
 | Nothing yet -- you have a capture and a complaint | [Start here](#start-here-one-pass-over-everything) |
 
 Whatever the symptom, three things decide whether the answer is in the capture
@@ -812,6 +813,118 @@ repository's PPPoE-over-Ethernet sample the plain filter matches 0 of 32 frames
 and the generated one matches all 32. Wrap the same SIP in a Linux cooked
 header and the numbers hold: 11 encapsulations, 11 matched, on Ethernet,
 cooked v1 and cooked v2 alike.
+
+## Encrypted SIP that does not decrypt
+
+The calls are on port 5061 and sipnab reports nothing, or reports fewer
+messages than the phone did. Decryption has several independent ways to
+produce that one symptom, and one log line separates most of them.
+
+**Command:**
+
+```bash
+SIPNAB_LOG=info sipnab -N -I capture.pcapng --portrange 1-65535 --report
+```
+
+**What to look for.** One line decides where to go next:
+
+```text
+TLS decryption active: 6 secret(s) from embedded DSB in capture.pcapng
+```
+
+Its **presence** means keys reached sipnab and were usable. Its **absence**
+means they did not, whatever else the run printed.
+
+### Keys arrived and there are still no calls
+
+Widen the port range. This is the most common ending, because decryption and
+port filtering are separate steps and the second still applies afterwards.
+sipnab says so rather than staying silent:
+
+```text
+SIP outside --portrange 5060-5061 is being skipped: 1 message(s) so far,
+in no count, no dialog, and no output. Busiest port(s): 15061 (1).
+```
+
+Re-run with `--portrange 1-65535`. A lab or a carrier trunk on a non-standard
+TLS port produces exactly this.
+
+### No `TLS decryption active` line at all
+
+Three causes, in the order they are cheapest to rule out.
+
+**The binary has no `tls` feature.** It is a build-time feature, not a runtime
+flag, and a build without it ignores the whole subject:
+
+```bash
+sipnab --version
+```
+
+`tls` must appear in the feature list it prints. Absent, no flag helps --
+rebuild with `--features tls` or install a build that has it.
+
+**The keylog covers different sessions.** Keys only exist for handshakes the
+producer was running for. A keylog started after the `INVITE` cannot decrypt
+that call, and neither can one from a different host. Compare the line count
+against the number of TLS sessions in the capture before you blame the file.
+
+**The producer is a pipe and nothing is reading it yet.** See below.
+
+### A FIFO keylog, and capture appears to hang
+
+`--keylog` accepts a named pipe, which is the point of 7f in the
+[cookbook](@/docs/cookbook.md) -- the keys never touch a disk. Two failure modes used
+to live here and both were silent, which is why this page keeps them even
+though the current code no longer has them:
+
+- **Capture stalled outright.** Opening a FIFO read-only blocks until a writer
+  appears, and that open sat in the same sweep loop that drives dialog expiry
+  and output flushing. The whole capture stopped, rather than the keylog
+  degrading. Reproduce the underlying behavior with `mkfifo kl.fifo && timeout
+  2 cat kl.fifo`, which exits 124.
+- **Zero keys, no complaint.** The freshness check compared file sizes, and a
+  FIFO stats as zero length however much data waits in it (`stat -c %s kl.fifo`
+  returns `0`). Every pipe-based producer therefore loaded nothing while
+  reporting nothing wrong -- indistinguishable from a capture with no
+  encrypted traffic in it.
+
+[`src/capture/keylog_source.rs`](https://github.com/NormB/sipnab/blob/main/src/capture/keylog_source.rs) closes both: a FIFO opens non-blocking, and
+stream mode never consults the file's length. If you are seeing either symptom,
+you are on a build that predates the fix -- check `sipnab --version` against
+the current release before debugging your pipe.
+
+### Keys loaded at first, then stopped
+
+The producer rotated or truncated the file. A reader that resumes from a
+remembered byte offset either gives up permanently once the file shrinks, or
+seeks into the middle of a line in new content.
+
+Current builds resume by file identity and offset, reset on a shrink or an
+inode change, and emit one `warn` naming the cause and the path when they do --
+so look for that warning first. If there is no warning and no new keys, the
+producer is not writing where you think it is.
+
+### eCapture refuses to start in `-m pcap` mode
+
+```text
+couldn't add a ingress filter to interface 1: netlink receive: no such file
+or directory
+```
+
+That is the kernel, not eCapture. `-m pcap` attaches a TC classifier to the
+interface as well as its uprobes, so it needs `CONFIG_NET_CLS_BPF`:
+
+```bash
+zcat /proc/config.gz | grep NET_CLS_BPF
+```
+
+`# CONFIG_NET_CLS_BPF is not set` means this mode cannot run on that kernel --
+measured on Linux 6.8.12-rt-tegra. Use `-m keylog` instead
+([cookbook 7e](@/docs/cookbook.md)), which needs only the uprobes and runs there.
+
+A missing `/sys/kernel/btf/vmlinux` is **not** a reason to expect failure.
+eCapture falls back to its own non-CO-RE bytecode and logs which file it
+loaded.
 
 ## Still stuck?
 
