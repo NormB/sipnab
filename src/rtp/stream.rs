@@ -517,6 +517,28 @@ pub struct RtpStream {
     /// [`burst_gap_analysis`](Self::burst_gap_analysis) when the stream is too
     /// short or too damaged to measure its own cadence.
     pub sdp_ptime_ms: Option<u32>,
+    /// How this stream's AMR or AMR-WB payloads are packed, from the SDP
+    /// `a=fmtp` for its payload type.
+    ///
+    /// `None` means no media description reached this stream, or the
+    /// negotiation switched interleaving on — see
+    /// [`crate::rtp::amr::packing_for`]. Either way the payload headers go
+    /// unread, because the two packings put the frame type in different bits
+    /// and reading one as the other yields a plausible mode rather than an
+    /// error.
+    pub amr_packing: Option<crate::rtp::amr::Packing>,
+    /// Bit `i` set once a frame of RFC 4867 frame type `i` was observed in
+    /// this stream's payloads.
+    ///
+    /// SPEECH frame types only. A comfort-noise descriptor, a reserved value
+    /// and a lost frame each name no bitrate, so recording one would put a
+    /// mode on a frame that carried no speech.
+    ///
+    /// A bitmask rather than a count or a last-seen value, because the
+    /// question this answers is whether the sender stayed in ONE mode: AMR's
+    /// whole design is that it switches under congestion, and the nine AMR-WB
+    /// modes span a full MOS point.
+    pub amr_frame_types_seen: u16,
     /// DSCP of the FIRST packet of this stream
     /// ([RFC 2474](https://www.rfc-editor.org/rfc/rfc2474)), 0 to 63.
     ///
@@ -577,6 +599,56 @@ pub struct RtpStream {
 }
 
 impl RtpStream {
+    /// How many DISTINCT AMR speech modes this stream's payloads carried.
+    ///
+    /// Zero when nothing was read — no AMR codec, no packing from the SDP, or
+    /// only comfort noise. That is not the same as "one mode", and the two
+    /// must not be collapsed: a stream nobody could read and a stream that
+    /// held one mode throughout are opposite confidences.
+    #[must_use]
+    pub const fn amr_modes_observed(&self) -> u32 {
+        self.amr_frame_types_seen.count_ones()
+    }
+
+    /// The single AMR or AMR-WB mode, in kbit/s, that every readable frame of
+    /// this stream was coded at.
+    ///
+    /// `None` when the sender switched mode, and `None` when nothing was read
+    /// at all. A caller that needs to tell those apart asks
+    /// [`amr_modes_observed`](Self::amr_modes_observed) — this is the value
+    /// the wideband E-model can be handed, and it exists only when the stream
+    /// pins one.
+    #[must_use]
+    pub fn amr_mode_kbps(&self) -> Option<f64> {
+        if self.amr_frame_types_seen.count_ones() != 1 {
+            return None;
+        }
+        let ft = u8::try_from(self.amr_frame_types_seen.trailing_zeros()).ok()?;
+        crate::rtp::amr::amr_flavor(self.codec.as_deref())?.mode_kbps(ft)
+    }
+
+    /// Fold one RTP payload's first frame type into
+    /// [`amr_frame_types_seen`](Self::amr_frame_types_seen).
+    ///
+    /// A no-op unless the SDP pinned this stream's packing AND its codec is
+    /// one of the two AMR families — which is the first check, so a stream
+    /// that is not AMR pays one load and one branch per packet on the hot
+    /// path.
+    pub(crate) fn record_amr_frame(&mut self, payload: &[u8]) {
+        let Some(packing) = self.amr_packing else {
+            return;
+        };
+        let Some(flavor) = crate::rtp::amr::amr_flavor(self.codec.as_deref()) else {
+            return;
+        };
+        let Some(ft) = crate::rtp::amr::amr_frame_type(payload, packing) else {
+            return;
+        };
+        if flavor.is_speech_frame_type(ft) {
+            self.amr_frame_types_seen |= 1u16 << ft;
+        }
+    }
+
     /// Returns `true` when no dialog claims this stream.
     ///
     /// **Derived, never stored.** This was a `bool` field a periodic sweep set
@@ -920,6 +992,8 @@ impl RtpStream {
             payload_buffer: std::collections::VecDeque::new(),
             payload_frames_dropped: 0,
             sdp_ptime_ms: None,
+            amr_packing: None,
+            amr_frame_types_seen: 0,
             // Same reason as `first_frame`: an RTP header carries no IP
             // header. `StreamStore::process_rtp` holds the `ParsedPacket` and
             // stamps both immediately after construction.

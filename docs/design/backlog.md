@@ -44,7 +44,7 @@ Tiers:
 
 ## Status
 
-**28 open, 480 done** across 36 sections.
+**28 open, 481 done** across 36 sections.
 Regenerate with `python3 scripts/backlog-status.py --apply`.
 
 | Section | Open | Done | Progress |
@@ -72,7 +72,7 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
 | MCPX | 0 | 7 | `##########` |
 | OBS | 0 | 7 | `##########` |
 | REQ | 4 | 13 | `########..` |
-| CMP | 1 | 4 | `########..` |
+| CMP | 1 | 5 | `########..` |
 | GTP | 1 | 2 | `#######...` |
 | MER | 0 | 5 | `##########` |
 | LIVE | 6 | 0 | `..........` |
@@ -6464,19 +6464,64 @@ cheap gaps its page made obvious.
   the suite stayed green, because no fixture retained audio. A schema case that
   does now exists.
 
-- [ ] **CMP5 — decide the VoLTE codec question rather than drifting into it.**
-  Audio export admits `PCMU`, `PCMA` and `opus`, so it refuses on every VoLTE
-  stream, and any future PCM work is dead on mobile traffic before it starts.
-  The blocker is not engineering — reference decoders exist — it is patent and
-  license exposure on an MIT-OR-Apache-2.0 project, which is the ground PF_RING
-  was declined on.
+- [x] **CMP5 (done 2026-09-09) — the VoLTE codec question is decided rather
+  than drifted into.** Audio export admits `PCMU`, `PCMA` and `opus`, so it
+  refuses on every VoLTE stream. The blocker was never engineering — reference
+  decoders exist — and it turned out not to be the source license either.
 
-  **Do:** write the decision up the way the other declines were written, naming
-  the licenses and pools for AMR-NB, AMR-WB and EVS and what each means for the
-  `.deb`, the image and the static tarballs, which differ. **Do the unencumbered
-  half first regardless:** parsing the AMR/AMR-WB payload header for the frame
-  mode needs no decoder and no license, and it is what pins an `Ie,WB` that
-  otherwise spans a full MOS point.
+  **Written up as [`deferred-and-declined.md`](deferred-and-declined.md) §7**,
+  and the surprise is worth carrying here. `opencore-amr` implements the TS
+  26.073 and TS 26.173 DECODERS under Apache-2.0, and Debian ships it in
+  `main` — so two distributions' own review has already settled the copyright
+  half in sipnab's favor. What declines it is redistribution under a patent
+  pool: VoiceAge administers AMR/AMR-WB at a $10,000 annual minimum plus
+  $0.99-$0.50 per channel, Via Licensing Alliance runs EVS at $0.60 per unit,
+  and sipnab ships three separate distributions (`.deb`, image, tarballs) with
+  no units to count. Same shape as the PF_RING decline. It reopens ONLY as a
+  build-from-source link against a decoder the operator already installed.
+
+  **Whether the AMR patents have EXPIRED was not established**, and the
+  decision deliberately does not rest on it. The codecs date from 1999 and
+  2001 so expiry is plausible; nothing checked says, and a plausible guess in
+  a licensing decision is worse than an admitted gap.
+
+  **The unencumbered half is DONE and wired.** [`src/rtp/amr.rs`](https://github.com/NormB/sipnab/blob/main/src/rtp/amr.rs) reads the RFC
+  4867 payload header for the frame mode — both packings, no decoder, no
+  license — and `amr_mode_kbps` / `amr_modes_observed` reach REST and MCP
+  through `StreamSummary`. That is the input
+  [`emodel_wb`](https://github.com/NormB/sipnab/blob/main/src/rtp/emodel_wb.rs) has needed since it was written: it scores all nine
+  AMR-WB modes and the codec name does not say which is in use. See CMP6 for
+  the half that remains.
+
+- [ ] **CMP6 — score AMR-WB on the wideband scale, on every surface (added
+  2026-09-09).** [`emodel_wb`](https://github.com/NormB/sipnab/blob/main/src/rtp/emodel_wb.rs) has carried the G.113 tables, the G.107.1
+  equations and `amr_wb_mos` since it was written, and **nothing in `src/`
+  calls any of it** — the only caller is a docs test. CMP5 supplied the
+  missing input; the scoring is still not wired, so an AMR-WB stream continues
+  to report the narrowband placeholder with `mos_grounding: unpublished`.
+
+  **Why it is its own entry rather than part of CMP5.** The wideband score
+  cannot go in the existing `mos` field: `MOS_CQEW` and `MOS_CQE` anchor at
+  129 and 93.2, so putting one in the other's field is a 35.8-point scale
+  error, and averaging or thresholding them together is exactly the mistake
+  `emodel_wb`'s own module doc opens by forbidding. It needs a new field, a
+  new grounding value, and the same field on REST, MCP, the CLI report, the
+  TUI and the vCon export — the surface-parity rule, which is the actual size
+  of this item.
+
+  **The listening context is an input with no default**, and that is the
+  design decision this entry has to make rather than inherit. G.113 Tables
+  IV.1 and IV.3 differ by 15 R-points at 6.6 kbit/s — about 0.59 MOS — so
+  sipnab cannot pick one silently. A capture says nothing about whether the
+  far end held a handset or a speakerphone, so the honest options are an
+  operator declaration beside `[media.codec_ie]` or reporting both. Decide it
+  in the entry, not in the code.
+
+  **And under loss it is often not computable at all**, which is a finding
+  rather than a gap: `Bpl,wb` is published for three modes, diotic only. An
+  AMR-WB stream with loss on a handset has no defensible wideband score, and
+  the surface must be able to say that instead of falling back to the
+  narrowband placeholder without saying so.
 
   **Declined outright: a perceptual MOS.** It needs a subjectively-labeled
   corpus that does not exist here, cannot be reproduced from the pcap by a

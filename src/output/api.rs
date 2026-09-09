@@ -2554,6 +2554,21 @@ pub mod schema {
         pub input_origin: Option<String>,
         /// Capture source that delivered the owning dialog.
         pub dialog_origin: Option<String>,
+        /// WHO asserted the SDP media endpoint that named the dialog:
+        /// `signaled` or `media-relay`.
+        ///
+        /// Missing from this document until 0.5.161 while the response
+        /// carried it, because nothing compares this schema against the model
+        /// it describes — see the backlog's DUP section.
+        pub dialog_assertion: Option<String>,
+        /// The single AMR or AMR-WB mode, kbit/s, that every readable frame of
+        /// this stream was coded at. Absent when the sender switched mode, and
+        /// absent when the payloads could not be read at all.
+        pub amr_mode_kbps: Option<f64>,
+        /// How many DISTINCT AMR speech modes the payloads carried. Absent,
+        /// never zero, when none were read — so a present value always means
+        /// sipnab read the wire.
+        pub amr_modes_observed: Option<u32>,
     }
 
     /// One opening method and how many dialogs in the filtered set it opened.

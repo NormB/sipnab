@@ -1,4 +1,4 @@
-# Deferred and declined: four feature decisions, and five technologies
+# Deferred and declined: five feature decisions, and five technologies
 
 **Status:** §§1–4 decided 2026-08-01; §2 and §4 approved to move forward
 2026-08-02. §1 and §3 remain unscheduled. Verified against `main` at 1998303.
@@ -1049,6 +1049,87 @@ having no decryptor to check against.
 
 ---
 
+
+---
+
+## 7. Decoding AMR, AMR-WB and EVS — **declined for the shipped artifacts, 2026-09-09**
+
+Audio export turns a captured stream into a WAV file, and it admits `PCMU`,
+`PCMA` and `opus`. Every VoLTE stream is AMR or AMR-WB, and 5G voice adds EVS,
+so export refuses on the traffic a mobile operator most wants to hear. `CMP5`
+in [`backlog.md`](backlog.md) asked for the question to be decided rather than
+drifted into, which is what this section does.
+
+### The source license is not the blocker, and that was the surprise
+
+The reflex answer is "the reference code is 3GPP's and we cannot ship it".
+Checked rather than assumed, and it is wrong for the two AMR families:
+
+- **`opencore-amr`** implements the 3GPP TS 26.073 narrowband and TS 26.173
+  wideband **decoders** under **Apache-2.0**, derived from the OpenCORE
+  framework in the Android project. Apache-2.0 is one of the two licenses
+  sipnab is already offered under.
+- **Debian ships it in `main`** — `pool/main/o/opencore-amr/` — and Ubuntu
+  noble in `universe`. Both components require DFSG-free / free-software
+  licensing, so two distributions' own review has already reached the same
+  conclusion about the copyright half.
+
+So a decoder could be linked without a license incompatibility. The blocker is
+somewhere else.
+
+### The blocker is patents, and Debian's judgment does not cover them
+
+Debian's inclusion of a package in `main` is a copyright decision. It is not a
+patent clearance, and the project says so. What is established about the patent
+half, from the administrators' own material:
+
+- **AMR, AMR-WB and AMR-WB+** are licensed through a pool administered by
+  **VoiceAge**, formed by Ericsson, France Telecom/Orange, Nokia and VoiceAge.
+  The published AMR-NB terms are a **$10,000 minimum annual royalty**,
+  per-channel fees falling from **$0.99 to $0.50** with volume, and a **$2
+  million annual cap**.
+- **EVS** is licensed through a pool **MPEG LA** created and **Via Licensing
+  Alliance** now runs, at a published **$0.60 per unit**.
+
+**What is NOT established, and this section does not pretend otherwise:**
+whether the essential patents on AMR-NB and AMR-WB have expired. Those codecs
+were standardized in 1999 and 2001, so expiry is plausible and it is also
+exactly the kind of thing that is wrong when guessed. Nobody has checked, no
+source consulted here says, and **the decision below does not rest on it** —
+which is the point of saying so rather than leaving a reader to assume the
+question was settled.
+
+### The decisive fact: three artifacts, three distributions
+
+sipnab ships a `.deb`, a Docker image and static tarballs. Every one of those
+is a distribution of a binary, and a bundled decoder puts whoever publishes
+them in the licensee's seat on all three at once — under a per-unit or
+per-channel rate on a project that has no units, no channels and no revenue to
+count them against. That is the same shape that declined PF_RING in §5c: not a
+technical objection, a redistribution one.
+
+**Declined:** no AMR, AMR-WB or EVS decoder in any shipped artifact.
+
+**Reopens on one named condition, and only that one:** a build-from-source,
+non-default feature that links a decoder the OPERATOR already installed, so
+the operator distributes nothing and decides their own exposure. That is a
+different question from bundling and it has not been asked yet. It is not
+"reopen when someone wants VoLTE audio" — everyone wants VoLTE audio.
+
+### Done regardless: the half that needs no decoder
+
+Reading the **mode** out of the RFC 4867 payload header needs no decoder, no
+reference code and no license, and it is the input the wideband E-model has
+been missing since it was written: `crate::rtp::emodel_wb` can score all nine
+AMR-WB modes, and the codec name does not say which one is in use. That shipped
+on 2026-09-09 as `crate::rtp::amr`, and `amr_mode_kbps` /
+`amr_modes_observed` carry it on REST and MCP.
+
+**Also declined, and recorded in `CMP5` rather than here:** a perceptual MOS.
+It needs a subjectively-labeled corpus that does not exist here and would ship
+as a versioned model artifact beside the binary — the objection that already
+closed the ML anomaly entry.
+
 ---
 
 ## Conditions, in one place
@@ -1065,6 +1146,7 @@ having no decryptor to check against.
 | §5d AF_XDP | Reopens only if the kernel grows a tee (`clone_redirect` in `xdp_func_proto`) **and** an egress path. Both, not either |
 | §5e XDP as a capture filter | Does not reopen. It is on the wrong side of the tap; no permission change affects that |
 | §6 Native TLS secret extraction (`TK6`) | **Reversed 2026-08-15 — approved and being built.** The offset cost is accepted; offsets derive from OpenSSL's Apache-2.0 sources, never from GPL prior art |
+| §7 AMR / AMR-WB / EVS decoding | Reopens ONLY as a build-from-source, non-default link against a decoder the operator installed. Bundling into the `.deb`, the image or the tarballs does not reopen |
 
 The two feature decisions still open, §1 and §3, do not move on "someone asked
 again"; they move on the facts named above. The §5 technologies do not move on

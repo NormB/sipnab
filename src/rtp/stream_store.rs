@@ -82,6 +82,16 @@ struct SdpEndpoint {
     /// Which capture source delivered the message that advertised it, and
     /// when. See [`SdpProvenance`].
     provenance: SdpProvenance,
+    /// The media description's `a=fmtp` lines, when one reached this endpoint.
+    ///
+    /// `None` and an empty `Vec` are different answers and the distinction is
+    /// load-bearing. `None` means no media description was ever supplied for
+    /// this endpoint, so nothing is known about packing; an empty `Vec` means
+    /// a description arrived and carried no format parameters, which RFC 4867
+    /// §8.1 settles as the bandwidth-efficient default. Collapsing the two
+    /// would let an endpoint learned from a relay's control plane assert a
+    /// packing nobody negotiated.
+    media_formats: Option<Vec<String>>,
 }
 
 /// WHO asserted a media endpoint — as opposed to how the assertion reached
@@ -669,6 +679,10 @@ impl StreamStore {
 
         if let Some(stream) = self.streams.get_mut(&key) {
             stream.update(rtp, timestamp, payload_len);
+            // What mode the sender actually used, which no SDP can answer:
+            // AMR switches per frame under congestion, and the nine AMR-WB
+            // modes span a full MOS point.
+            stream.record_amr_frame(rtp.payload(&parsed.payload));
             // Latest marking, so a mid-stream re-marking becomes visible
             // against `dscp_first`. Guarded on `is_some` rather than assigned
             // unconditionally: a stream that mixes observed frames with
@@ -738,6 +752,8 @@ impl StreamStore {
             // Resolve codec/clock/dialog from any SDP already seen for this
             // endpoint, before any packet feeds the jitter estimate (SNB-0007).
             self.resolve_from_sdp(&mut stream);
+            // After the resolve, which is what supplies the packing.
+            stream.record_amr_frame(rtp.payload(&parsed.payload));
             // RE4's second trigger fires HERE, at creation, and only when
             // nothing explained the stream. Recording it at creation is what
             // makes "on an unexplained stream" an event rather than a periodic
@@ -1157,6 +1173,9 @@ impl StreamStore {
             media.ptime,
             provenance,
         );
+        // After the link, so the codec this depends on is already resolved on
+        // every stream the endpoint index reached.
+        self.remember_media_formats(media_addr, media_port, &media.fmtp);
     }
 
     /// Associate every RTP stream on `media_addr:media_port` to `call_id` and,
@@ -1369,6 +1388,7 @@ impl StreamStore {
                         rtpmap: rtpmap.to_vec(),
                         ptime,
                         provenance,
+                        media_formats: None,
                     },
                 );
             }
@@ -1419,6 +1439,43 @@ impl StreamStore {
                 stream.codec = Some(encoding.clone());
                 stream.clock_rate = *clock_rate;
             }
+            // After the codec, because the packing is only meaningful once we
+            // know this is AMR — and only from an endpoint that actually
+            // carried a media description.
+            if stream.amr_packing.is_none()
+                && crate::rtp::amr::amr_flavor(stream.codec.as_deref()).is_some()
+                && let Some(fmtp) = endpoint.media_formats.as_deref()
+            {
+                stream.amr_packing = crate::rtp::amr::packing_for(fmtp, stream.payload_type);
+            }
+        }
+    }
+
+    /// Record a media description's `a=fmtp` lines against an endpoint, and
+    /// give every AMR stream already on it the packing they select.
+    ///
+    /// A separate entry point rather than another argument on
+    /// [`link_endpoint_from`](Self::link_endpoint_from), for the reason
+    /// [`link_endpoint_with_ptime`](Self::link_endpoint_with_ptime) is
+    /// separate from it: the post-capture re-link sweep and the tests that
+    /// build an rtpmap by hand have no media description, and every one of
+    /// them would otherwise grow a trailing argument it has no answer for.
+    pub fn remember_media_formats(&mut self, addr: IpAddr, port: u16, fmtp: &[String]) {
+        if let Some(endpoint) = self.sdp_endpoints.get_mut(&(addr, port)) {
+            endpoint.media_formats = Some(fmtp.to_vec());
+        }
+        let Some(keys) = self.endpoint_index.get(&(addr, port)) else {
+            return;
+        };
+        let keys = keys.clone();
+        for key in &keys {
+            let Some(stream) = self.streams.get_mut(key) else {
+                continue;
+            };
+            if crate::rtp::amr::amr_flavor(stream.codec.as_deref()).is_none() {
+                continue;
+            }
+            stream.amr_packing = crate::rtp::amr::packing_for(fmtp, stream.payload_type);
         }
     }
 
@@ -2158,6 +2215,285 @@ a=rtpmap:96 H264/90000\r\n";
             ssrc,
             payload_offset: 12,
         }
+    }
+
+    /// A parsed packet carrying an explicit RTP payload after the 12-byte
+    /// header, so a test can put a real AMR table-of-contents on the wire.
+    fn make_parsed_with_payload(src_port: u16, dst_port: u16, amr: &[u8]) -> ParsedPacket {
+        let mut payload = vec![0u8; 12];
+        payload.extend_from_slice(amr);
+        ParsedPacket {
+            payload: payload.into(),
+            ..make_parsed(src_port, dst_port, 0)
+        }
+    }
+
+    /// An octet-aligned AMR payload whose first frame carries `ft`.
+    ///
+    /// Built here from RFC 4867 §4.4.2's layout rather than reused from
+    /// `crate::rtp::amr`'s own tests, so a wrong layout in the reader cannot
+    /// be canceled out by the same wrong layout in its fixture.
+    fn amr_octet_aligned_payload(ft: u8) -> Vec<u8> {
+        vec![0xF0, ((ft & 0x0F) << 3) | 0x04, 0x00, 0x00, 0x00, 0x00]
+    }
+
+    /// One audio media description, parsed from real SDP text.
+    fn sdp_media(rtpmap: &str, fmtp: Option<&str>) -> crate::sip::sdp::SdpMedia {
+        let mut sdp = format!(
+            "v=0\r\no=- 1 1 IN IP4 10.0.0.2\r\ns=-\r\nc=IN IP4 10.0.0.2\r\nt=0 0\r\n\
+             m=audio 30000 RTP/AVP 96\r\na=rtpmap:{rtpmap}\r\n"
+        );
+        if let Some(f) = fmtp {
+            sdp.push_str(&format!("a=fmtp:{f}\r\n"));
+        }
+        crate::sip::sdp::parse_sdp(sdp.as_bytes())
+            .expect("test SDP parses")
+            .media
+            .remove(0)
+    }
+
+    /// Link the endpoint 10.0.0.2:30000 to a dialog with the given media.
+    fn link_media(store: &mut StreamStore, media: &crate::sip::sdp::SdpMedia) {
+        store.link_to_dialog_with_sdp_from(
+            IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)),
+            30000,
+            "amr-call-1",
+            media,
+            SdpProvenance::unknown(),
+        );
+    }
+
+    /// Feed `n` AMR packets carrying frame type `ft`.
+    fn feed_amr(store: &mut StreamStore, ssrc: u32, fts: &[u8]) {
+        for (i, ft) in fts.iter().enumerate() {
+            let seq = u16::try_from(i).expect("few packets");
+            let parsed = make_parsed_with_payload(20000, 30000, &amr_octet_aligned_payload(*ft));
+            let rtp = rtp_pkt(ssrc, seq, 96, u32::from(seq) * 320);
+            store.process_rtp(&parsed, &rtp, ts(i64::from(seq)));
+        }
+    }
+
+    fn only_stream(store: &StreamStore, ssrc: u32) -> &crate::rtp::stream::RtpStream {
+        store
+            .get(&StreamKey {
+                ssrc,
+                src: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000),
+                dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
+            })
+            .expect("stream exists")
+    }
+
+    /// An AMR-WB stream whose SDP pinned the packing records the mode its
+    /// payloads actually carried.
+    ///
+    /// This is what the wideband E-model has been waiting for since it was
+    /// written: `crate::rtp::emodel_wb` can score all nine modes and needs the
+    /// mode, which the codec name does not carry.
+    #[test]
+    fn an_amr_wb_stream_records_the_mode_its_payloads_carried() {
+        let mut store = StreamStore::new(100);
+        link_media(
+            &mut store,
+            &sdp_media("96 AMR-WB/16000", Some("96 octet-align=1")),
+        );
+        feed_amr(&mut store, 0xA1, &[2, 2, 2]);
+
+        let stream = only_stream(&store, 0xA1);
+        assert_eq!(stream.codec.as_deref(), Some("AMR-WB"));
+        assert_eq!(stream.amr_modes_observed(), 1);
+        assert_eq!(stream.amr_mode_kbps(), Some(12.65));
+    }
+
+    /// The stream's very FIRST packet is read, not only the ones after it.
+    ///
+    /// Creation and update are two branches of `process_rtp` and each records
+    /// separately. With three packets the update branch alone satisfies the
+    /// assertion, so removing the recording at creation changed nothing —
+    /// this is the one-packet case that tells them apart.
+    #[test]
+    fn the_first_packet_of_a_stream_is_read() {
+        let mut store = StreamStore::new(100);
+        link_media(
+            &mut store,
+            &sdp_media("96 AMR-WB/16000", Some("96 octet-align=1")),
+        );
+        feed_amr(&mut store, 0xAA, &[4]);
+
+        assert_eq!(only_stream(&store, 0xAA).amr_mode_kbps(), Some(15.85));
+    }
+
+    /// The SDP may arrive AFTER the first RTP packet, which is the ordering a
+    /// live capture produces, and the mode must still be read from the
+    /// packets that follow.
+    #[test]
+    fn the_mode_is_read_when_the_sdp_arrives_after_the_rtp() {
+        let mut store = StreamStore::new(100);
+        feed_amr(&mut store, 0xA2, &[2]);
+        link_media(
+            &mut store,
+            &sdp_media("96 AMR-WB/16000", Some("96 octet-align=1")),
+        );
+        feed_amr(&mut store, 0xA2, &[2, 2]);
+
+        let stream = only_stream(&store, 0xA2);
+        assert_eq!(stream.amr_mode_kbps(), Some(12.65));
+    }
+
+    /// A sender that switched mode pins nothing, and says so as a count
+    /// rather than by returning one of the modes it used.
+    #[test]
+    fn a_stream_that_switched_modes_pins_no_single_mode() {
+        let mut store = StreamStore::new(100);
+        link_media(
+            &mut store,
+            &sdp_media("96 AMR-WB/16000", Some("96 octet-align=1")),
+        );
+        feed_amr(&mut store, 0xA3, &[2, 5, 2, 8]);
+
+        let stream = only_stream(&store, 0xA3);
+        assert_eq!(stream.amr_modes_observed(), 3);
+        assert_eq!(stream.amr_mode_kbps(), None);
+    }
+
+    /// Comfort noise is not a mode, and a stream carrying only comfort noise
+    /// reports nothing observed rather than the slowest mode.
+    #[test]
+    fn comfort_noise_alone_records_no_mode() {
+        let mut store = StreamStore::new(100);
+        link_media(
+            &mut store,
+            &sdp_media("96 AMR-WB/16000", Some("96 octet-align=1")),
+        );
+        feed_amr(&mut store, 0xA4, &[9, 9, 15]);
+
+        let stream = only_stream(&store, 0xA4);
+        assert_eq!(stream.amr_modes_observed(), 0);
+        assert_eq!(stream.amr_mode_kbps(), None);
+    }
+
+    /// Without a media description the packing is unknown, and a guess would
+    /// produce a plausible wrong mode rather than an error.
+    #[test]
+    fn without_the_sdp_no_mode_is_read() {
+        let mut store = StreamStore::new(100);
+        feed_amr(&mut store, 0xA5, &[2, 2, 2]);
+
+        let stream = only_stream(&store, 0xA5);
+        assert_eq!(stream.amr_packing, None);
+        assert_eq!(stream.amr_modes_observed(), 0);
+    }
+
+    /// Interleaving moves every offset in the payload, so the reader is kept
+    /// away from it entirely.
+    #[test]
+    fn an_interleaved_stream_is_not_read() {
+        let mut store = StreamStore::new(100);
+        link_media(
+            &mut store,
+            &sdp_media("96 AMR-WB/16000", Some("96 octet-align=1; interleaving=2")),
+        );
+        feed_amr(&mut store, 0xA6, &[2, 2, 2]);
+
+        let stream = only_stream(&store, 0xA6);
+        assert_eq!(stream.amr_packing, None);
+        assert_eq!(stream.amr_modes_observed(), 0);
+    }
+
+    /// A stream that is not AMR at all records nothing, whatever its payload
+    /// bytes happen to look like.
+    #[test]
+    fn a_non_amr_stream_records_no_mode() {
+        let mut store = StreamStore::new(100);
+        link_media(&mut store, &sdp_media("96 opus/48000/2", None));
+        feed_amr(&mut store, 0xA7, &[2, 2, 2]);
+
+        let stream = only_stream(&store, 0xA7);
+        assert_eq!(stream.codec.as_deref(), Some("opus"));
+        assert_eq!(stream.amr_modes_observed(), 0);
+        assert_eq!(stream.amr_mode_kbps(), None);
+        // And it carries no packing either. `amr_packing` says how THIS
+        // stream's AMR payloads are packed; on a stream that has none, a
+        // recorded value would be a fact about a codec it does not use, and
+        // the only thing keeping the recorder off it would be a second check
+        // somewhere else.
+        assert_eq!(stream.amr_packing, None);
+    }
+
+    /// A non-AMR stream that already existed when its SDP arrived learns no
+    /// packing either.
+    ///
+    /// The ordering matters and is the whole point of this test. With the SDP
+    /// first, the stream is created afterwards and picks its packing up in
+    /// `resolve_from_sdp`, whose own codec check masks the one in
+    /// `remember_media_formats` — so removing the second check broke nothing
+    /// that any test could see.
+    #[test]
+    fn a_non_amr_stream_learns_no_packing_when_the_sdp_follows_the_rtp() {
+        let mut store = StreamStore::new(100);
+        feed_amr(&mut store, 0xAB, &[2]);
+        link_media(&mut store, &sdp_media("96 opus/48000/2", None));
+        feed_amr(&mut store, 0xAB, &[2]);
+
+        let stream = only_stream(&store, 0xAB);
+        assert_eq!(stream.codec.as_deref(), Some("opus"));
+        assert_eq!(stream.amr_packing, None);
+        assert_eq!(stream.amr_modes_observed(), 0);
+    }
+
+    /// An endpoint learned WITHOUT a media description pins no packing, even
+    /// for a stream whose codec is AMR-WB.
+    ///
+    /// `link_endpoint` is the rtpmap-only path — the post-capture re-link
+    /// sweep and the relay control plane both reach it — and an endpoint that
+    /// arrived that way has never carried an `a=fmtp`. RFC 4867's
+    /// bandwidth-efficient default settles what an SDP that stayed SILENT
+    /// means; it says nothing about an SDP nobody saw, and reading the second
+    /// as the first would let a relay's port allocation assert a packing no
+    /// party negotiated.
+    #[test]
+    fn an_endpoint_with_no_media_description_pins_no_packing() {
+        let mut store = StreamStore::new(100);
+        store.link_endpoint(
+            IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)),
+            30000,
+            "amr-call-2",
+            &[(96, "AMR-WB".to_string(), 16000)],
+        );
+        feed_amr(&mut store, 0xAC, &[2, 2]);
+
+        let stream = only_stream(&store, 0xAC);
+        assert_eq!(stream.codec.as_deref(), Some("AMR-WB"));
+        assert_eq!(stream.amr_packing, None);
+        assert_eq!(stream.amr_modes_observed(), 0);
+    }
+
+    /// Narrowband AMR is read too, against its own eight-mode table.
+    ///
+    /// G.113 publishes no impairment for it, so this pins a BITRATE and not a
+    /// score — but the bitrate is the fact an operator asks for when a call
+    /// sounds thin, and the two tables must not be crossed: narrowband frame
+    /// type 8 is comfort noise where wideband frame type 8 is 23.85 kbit/s.
+    #[test]
+    fn narrowband_amr_is_read_against_its_own_table() {
+        let mut store = StreamStore::new(100);
+        link_media(
+            &mut store,
+            &sdp_media("96 AMR/8000", Some("96 octet-align=1")),
+        );
+        feed_amr(&mut store, 0xA8, &[7, 7]);
+        assert_eq!(only_stream(&store, 0xA8).amr_mode_kbps(), Some(12.2));
+
+        let mut store = StreamStore::new(100);
+        link_media(
+            &mut store,
+            &sdp_media("96 AMR/8000", Some("96 octet-align=1")),
+        );
+        feed_amr(&mut store, 0xA9, &[8, 8]);
+        assert_eq!(
+            only_stream(&store, 0xA9).amr_modes_observed(),
+            0,
+            "narrowband frame type 8 is comfort noise, not 23.85 kbit/s"
+        );
     }
 
     /// Fixed-epoch test clock: `secs` seconds past 1_700_000_000 UTC.

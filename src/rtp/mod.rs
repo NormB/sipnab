@@ -20,8 +20,10 @@
 //! - `heuristic` — RTP detection without SDP signaling
 //! - `diagnosis` — Media path issue detection (one-way audio, NAT, no media)
 //! - `amplitude` — What the decoded samples did: dead air and hard clipping
+//! - `amr` — The AMR/AMR-WB payload header, read for the frame mode
 
 pub mod amplitude;
+pub mod amr;
 pub mod audio_export;
 pub mod bands;
 pub mod diagnosis;

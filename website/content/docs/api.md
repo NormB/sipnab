@@ -1439,6 +1439,34 @@ sipnab keeps `published` and `operator_declared` apart because the remedies
 differ: a published score that looks wrong means suspecting sipnab's vantage
 point, a declared one means suspecting a file on your own disk.
 
+#### AMR and AMR-WB: which mode the sender used
+
+AMR chooses a bitrate per frame and changes it under congestion. The codec name
+does not say which one, and the nine AMR-WB modes are about a full MOS point
+apart, so "AMR-WB" on its own leaves the score ambiguous. sipnab reads the mode
+out of the RTP payload header and reports what it found:
+
+| Key | Type | Meaning |
+|-----|------|---------|
+| `amr_mode_kbps` | number | The one mode every readable frame used, in kbit/s. Absent when the sender switched mode during the stream |
+| `amr_modes_observed` | number | How many distinct speech modes the payloads carried. Absent, never zero, when sipnab read no mode at all |
+
+Read the two together. Both absent means sipnab could not read the payloads.
+An `amr_modes_observed` above 1 with no `amr_mode_kbps` means it read them and
+the sender moved.
+
+Three things stop sipnab reading a mode, and each is a real answer rather than
+a gap. The codec is not AMR or AMR-WB. No SDP for the stream reached this
+process, so the packing is unknown -- RFC 4867 defines two, and they put the
+frame type in different bits, so guessing gives a plausible wrong mode rather
+than an error. Or the session negotiated `interleaving`, which moves every
+offset in the payload.
+
+Comfort noise carries no mode and sipnab does not count it. A stream in
+discontinuous transmission that sends nothing but silence descriptors reports
+no modes observed, which is the honest answer: the sender described no
+speech.
+
 Act on `mos_grounded` before acting on `mos`. Otherwise a dashboard that sorts
 by MOS and shows the worst ten fills with streams nobody ever scored.
 

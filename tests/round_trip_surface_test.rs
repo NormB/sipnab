@@ -72,6 +72,8 @@ fn unmeasured() -> serde_json::Value {
         // filled in with `signaled` -- that is a claim, and it is the exact
         // claim this field exists to keep apart from a relay's.
         dialog_assertion: None,
+        amr_mode_kbps: None,
+        amr_modes_observed: None,
     };
     serde_json::to_value(s).expect("serialize")
 }
@@ -141,6 +143,8 @@ fn a_measured_round_trip_carries_its_provenance() {
         // filled in with `signaled` -- that is a claim, and it is the exact
         // claim this field exists to keep apart from a relay's.
         dialog_assertion: None,
+        amr_mode_kbps: None,
+        amr_modes_observed: None,
     };
 
     let xr = serde_json::to_value(
@@ -199,6 +203,8 @@ fn a_measured_zero_is_reported_rather_than_hidden() {
         // filled in with `signaled` -- that is a claim, and it is the exact
         // claim this field exists to keep apart from a relay's.
         dialog_assertion: None,
+        amr_mode_kbps: None,
+        amr_modes_observed: None,
     }
     .with_round_trip(Some((0.0, RttSource::XrVoipMetrics)));
 

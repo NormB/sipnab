@@ -295,6 +295,26 @@ pub struct StreamSummary {
     /// recorded who said so", collapsing the one distinction this field is for.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dialog_assertion: Option<String>,
+    /// The single AMR or AMR-WB mode, in kbit/s, that every readable frame of
+    /// this stream was coded at.
+    ///
+    /// Absent unless the SDP pinned the packing AND the sender stayed in one
+    /// mode for the whole stream. AMR's design is to switch mode per frame
+    /// under congestion, so a stream that pins one is a fact worth stating and
+    /// a stream that does not is not a missing measurement.
+    ///
+    /// Read this beside [`Self::amr_modes_observed`]: absent-with-two-modes
+    /// and absent-with-none are opposite confidences, and only the second
+    /// means sipnab could not read the payloads.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub amr_mode_kbps: Option<f64>,
+    /// How many DISTINCT AMR speech modes this stream's payloads carried.
+    ///
+    /// Absent when none were read at all — no AMR codec, no media description
+    /// to settle the packing, or nothing but comfort noise. Never zero, so a
+    /// present value always means sipnab read the wire.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub amr_modes_observed: Option<u32>,
 }
 
 impl StreamSummary {
@@ -380,6 +400,11 @@ impl StreamSummary {
             // spelling is the enum's, so REST, MCP and the call report cannot
             // name a relay assertion three ways.
             dialog_assertion: s.dialog_assertion.map(|a| a.as_str().to_string()),
+            amr_mode_kbps: s.amr_mode_kbps(),
+            // `None` rather than `Some(0)`: a present count always means the
+            // payloads were read, so a reader never has to decide whether a
+            // zero is "no modes" or "not an AMR stream".
+            amr_modes_observed: (s.amr_modes_observed() > 0).then(|| s.amr_modes_observed()),
         }
     }
 }

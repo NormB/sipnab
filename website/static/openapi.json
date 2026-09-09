@@ -2600,6 +2600,23 @@
       "StreamSummary": {
         "description": "One row of `GET /v1/streams`.",
         "properties": {
+          "amr_mode_kbps": {
+            "description": "The single AMR or AMR-WB mode, kbit/s, that every readable frame of\nthis stream was coded at. Absent when the sender switched mode, and\nabsent when the payloads could not be read at all.",
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "amr_modes_observed": {
+            "description": "How many DISTINCT AMR speech modes the payloads carried. Absent,\nnever zero, when none were read — so a present value always means\nsipnab read the wire.",
+            "format": "int32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
           "associated_dialog": {
             "description": "Call-ID of the dialog that does claim it.",
             "type": [
@@ -2609,6 +2626,13 @@
           },
           "codec": {
             "description": "Payload codec, when one was identified.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "dialog_assertion": {
+            "description": "WHO asserted the SDP media endpoint that named the dialog:\n`signaled` or `media-relay`.\n\nMissing from this document until 0.5.161 while the response\ncarried it, because nothing compares this schema against the model\nit describes — see the backlog's DUP section.",
             "type": [
               "string",
               "null"

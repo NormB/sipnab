@@ -3419,7 +3419,19 @@ fn no_documentation_table_repeats_a_row() {
     // fix-or-waive decision readable; the prose version was three paragraphs
     // nobody could compare. Attributed per file against HEAD:
     // docs/design/backlog.md 26 -> 27, nothing else moved.
-    const EXPECTED_TABLES: usize = 847;
+    // 847 -> 849 by ONE written table, mirrored: the two AMR mode keys a
+    // stream carries and what each means, under a new "AMR and AMR-WB: which
+    // mode the sender used" section in the REST reference (CMP5). Two keys
+    // whose readings interact -- both absent means the payloads could not be
+    // read, one absent with the other above 1 means the sender switched mode
+    // -- are a table rather than a paragraph for exactly that reason.
+    // Attributed per file against HEAD by counting table starts in each
+    // changed page: docs/rest-api.md +1 and its mirror
+    // website/content/docs/api.md +1, nothing else moved. The delta is what
+    // was measured; absolute per-file counts are not restated here, because a
+    // count taken with a different walker than this gate's would read as
+    // evidence it is not.
+    const EXPECTED_TABLES: usize = 849;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")
