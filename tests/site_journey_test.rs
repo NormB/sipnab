@@ -5971,6 +5971,16 @@ fn the_analyze_page_accepts_every_capture_the_cli_reads() {
         if !path.is_file() {
             continue;
         }
+        // The directory holds one file that is not a capture: PROVENANCE.md,
+        // the record of where each fixture came from and what it pins. Skipped
+        // by EXTENSION rather than by name, for the same reason the NetMon
+        // samples below are skipped by magic: a second markdown file — a
+        // README beside the manifest, say — must not silently fail a gate
+        // about capture formats. A `.md` in a capture directory is never a
+        // capture, and `checked` below still refuses a walk that collapsed.
+        if path.extension().is_some_and(|e| e == "md") {
+            continue;
+        }
         let mut head = [0u8; 4];
         {
             use std::io::Read;

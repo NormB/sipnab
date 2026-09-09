@@ -3129,7 +3129,12 @@ fn no_documentation_table_repeats_a_row() {
     // the-parser-that-worked-and-the-feature-that-was-dead.md and
     // two-tests-that-only-failed-on-macos.md. Two files, and this gate
     // counts TRACKED markdown, so a run before `git add` cannot see them.
-    const EXPECTED_MARKDOWN_FILES: usize = 207;
+    // 207 -> 208 by tests/pcap-samples/PROVENANCE.md, the record of where each
+    // committed capture fixture came from and what it pins (LIVE2). ONE file:
+    // it lives beside the fixtures rather than under docs/, so it has no
+    // website mirror. Attributed against the staged diff -- `--diff-filter=A`
+    // lists exactly one new `.md` path, and it is that one.
+    const EXPECTED_MARKDOWN_FILES: usize = 208;
     /// How many tables this gate expects to walk.
     ///
     /// Named rather than written twice. The count and the failure message

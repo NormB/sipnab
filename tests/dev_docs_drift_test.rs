@@ -656,7 +656,14 @@ fn linked_code_targets_exist() {
     // `REQUEST_TIMEOUT`. Attributed by counting every page under
     // `docs/internals/` against HEAD: invariants.md moved 52 -> 54 and no
     // other page changed.
-    const EXPECTED_CODE_LINKS: usize = 420;
+    // 420 -> 421: one, in `docs/internals/testing.md`, where the capture
+    // fixture row gained the promotion path (LIVE2) and links
+    // `harness/scripts/capture.sh`. The row names `promote.sh` and
+    // `PROVENANCE.md` too, and neither is linked: the extractor demands a link
+    // for a TRACKED FILE named in a code span, and both of those are named in
+    // prose. Attributed by counting every page under `docs/internals/` against
+    // HEAD: testing.md moved by one and no other page changed.
+    const EXPECTED_CODE_LINKS: usize = 421;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \

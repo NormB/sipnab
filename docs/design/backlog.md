@@ -44,7 +44,7 @@ Tiers:
 
 ## Status
 
-**27 open, 482 done** across 36 sections.
+**25 open, 484 done** across 36 sections.
 Regenerate with `python3 scripts/backlog-status.py --apply`.
 
 | Section | Open | Done | Progress |
@@ -75,7 +75,7 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
 | CMP | 1 | 5 | `########..` |
 | GTP | 1 | 2 | `#######...` |
 | MER | 0 | 5 | `##########` |
-| LIVE | 6 | 0 | `..........` |
+| LIVE | 4 | 2 | `###.......` |
 | P5 | 6 | 14 | `#######...` |
 | Shipped (audit-period features, kept for context) | 0 | 6 | `##########` |
 | DUP | 0 | 8 | `##########` |
@@ -4419,7 +4419,7 @@ neither visible to `--features full`:**
    that has either.
 2. `TK6`'s `ebpf` feature sits **outside `full`**, and
    `no_test_hides_behind_a_feature_outside_full`
-   ([`tests/site_journey_test.rs:6662`](https://github.com/NormB/sipnab/blob/main/tests/site_journey_test.rs#L6662)) fails on any `#[test]` or
+   ([`tests/site_journey_test.rs:6683`](https://github.com/NormB/sipnab/blob/main/tests/site_journey_test.rs#L6683)) fails on any `#[test]` or
    `mod tests` gated on such a feature. So the offset table and version parsing
    are **ungated** pure logic and only the aya attachment is gated. This is
    architecture, not style.
@@ -6780,18 +6780,43 @@ them away.
   "Live-tested" and "fixture-only" are different confidence levels, and a reader
   who cannot tell them apart will trust the second as though it were the first.
 
-- [ ] **LIVE2 — the harness writes captures to `harness/captures/` and
-  [`harness/.gitignore`](https://github.com/NormB/sipnab/blob/main/harness/.gitignore) discards every one of them.**
-  `captures/*.pcap` is ignored; only `.gitkeep` is tracked. So each harness run
-  reproduces traffic that no test will ever see again, and the fixture shortage
-  HX1 describes persists on a machine that is generating the cure and deleting
-  it.
+- [x] **LIVE2 (done 2026-09-09) — the harness has a promotion path, and it
+  produced its first fixture.** `captures/*.pcap` was ignored with only
+  `.gitkeep` tracked, so each harness run reproduced traffic no test would ever
+  see again while the fixture shortage HX1 describes persisted on the machine
+  generating the cure.
 
-  **Do:** promote selected harness runs into `tests/pcap-samples/` as named,
-  documented fixtures — the scenario that produced them, the anchor and
-  direction in force, and the finding they are meant to pin. Not all of them:
-  an unexplained capture in a fixture directory is a liability, because the next
-  person to change a parser cannot tell whether its assertion is load-bearing.
+  **Two scripts, and the first one refuses to run without `--pins`.**
+  [`harness/scripts/capture.sh`](https://github.com/NormB/sipnab/blob/main/harness/scripts/capture.sh) captures with `tcpdump` inside the
+  namespace — not with `sipnab -O`, because a fixture written by the program
+  under test cannot contradict it — and writes a provenance record beside the
+  capture: the anchor read off the RUNNING container rather than from `.env`,
+  the filter, the packet count, the sha256, and what the capture is meant to
+  pin. [`harness/scripts/promote.sh`](https://github.com/NormB/sipnab/blob/main/harness/scripts/promote.sh) moves it into `tests/pcap-samples/`
+  and writes its entry in `PROVENANCE.md`, refusing any capture with no record
+  and re-checking the bytes against the sha256 that record names.
+
+  **First fixture: `opensips-direct-media-proxy-view.pcap`.** A real OpenSIPS
+  3.6.7 call placed by SIPp with `MEDIA_ANCHOR=none`, captured at the proxy: a
+  complete dialog, `Completed 200`, 90 seconds, 13 messages, and **zero RTP
+  streams**, because the media went endpoint to endpoint and never came near
+  that capture point. That is the control HX2 names, and the zero is the
+  assertion — the SDP offers PCMA, so a reconstruction trusting the offer
+  rather than the wire would report a stream with a codec, a direction and a
+  MOS, all invented.
+
+  **Two gates, because a record is not an assertion.**
+  `every_committed_capture_fixture_says_where_it_came_from` requires every
+  fixture to carry a manifest entry with all six labels, or to sit on the
+  enumerated pre-manifest list of the 36 that predate the rule — and the two
+  sets are disjoint, so a fixture is described in exactly one place. Four
+  mutations, all caught. [`tests/harness_fixture_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/harness_fixture_test.rs) then asserts what the
+  entry CLAIMS, which is the half a manifest cannot do.
+
+  **The 36 stay on a list rather than getting invented entries.** Most are
+  third-party captures whose provenance nobody in this repository can now
+  establish, and describing them from memory would be worse than admitting the
+  gap. The list only shrinks.
 
 - [ ] **LIVE3 — the uprobe/BPF path cannot be exercised by the test suite at all.**
   [`src/capture/uprobe/bpf.rs`](https://github.com/NormB/sipnab/blob/main/src/capture/uprobe/bpf.rs) loads an eBPF program, which needs privileges the
@@ -6807,19 +6832,29 @@ them away.
   unreachable reads as reassurance it has not earned. This is the same rule as
   the "test the CONVERSION when the wire is unreachable" note under P4.
 
-- [ ] **LIVE4 — a live capture is only useful once, unless it enters the corpus.**
-  Every live validation run under LIVE1 produces exactly the artifact the
-  project is short of. Decide per capture, at the time it is taken, which of
-  three homes it gets: a committed fixture under `tests/pcap-samples/` (lab
-  traffic only, PII-free, with the finding it pins written down), the private
-  corpus reached through `SIPNAB_CORPUS` (real traffic, never committed, gated
-  by the existing corpus tests), or deletion.
+- [x] **LIVE4 (done 2026-09-09) — the three homes are a workflow rather than a
+  rule nobody could follow.** Every capture gets one of three: a committed
+  fixture under `tests/pcap-samples/` (lab traffic only, PII-free, with the
+  finding it pins written down), the private corpus reached through
+  `SIPNAB_CORPUS`, or deletion. **The default is deletion**, and two of the
+  three need no tooling — the corpus is a directory outside this tree and
+  deletion is `rm`. What needed tooling was the first, and LIVE2 built it.
 
-  **The default must be deletion, not "decide later".** A capture with no
-  recorded provenance cannot be safely promoted afterwards, because nobody can
-  later establish whether it contains real subscriber identifiers — and a
-  capture that sits undecided is one `git add -A` away from being the wrong
-  answer permanently.
+  **The rule was tested against reality the day it was written, and reality
+  won.** Five captures sat in `harness/captures/` from 26 and 27 August:
+  `ctl.pcap`, `full.pcap`, `h.pcap`, `piece1.pcap` at 38 MB, and `relay.pcap`.
+  Nobody could establish which scenario produced any of them or which media
+  anchor was in force, so under this entry's own rule they were not
+  promotable. They were deleted rather than kept as "decide later", which is
+  what the rule says and what it costs.
+
+  **Deciding is now impossible to skip rather than merely expected.**
+  `capture.sh` refuses to run without `--pins`, and `promote.sh` refuses a
+  capture with no record. The record is written at capture time from the
+  running stack rather than later from memory, which is the whole difference:
+  the anchor and the scenario are knowable while the stack is up and gone a
+  fortnight later. [`harness/.gitignore`](https://github.com/NormB/sipnab/blob/main/harness/.gitignore) carries the reasoning where a reader
+  meets it.
 
 - [ ] **LIVE5 — vCon export is validated against a running backend, not only
   against the schema.** The PV entries already record cases where sipnab's

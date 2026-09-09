@@ -2,6 +2,20 @@
 .env
 secrets/mcp.signing-key
 secrets/mcp.token
+# Captures stay untracked HERE and that is deliberate, not an oversight. LIVE4
+# in docs/design/backlog.md gives every capture one of three homes, decided
+# when it is taken: a committed fixture under tests/pcap-samples/, the private
+# corpus reached through SIPNAB_CORPUS, or deletion -- and deletion is the
+# default. A capture that sits undecided in a tracked directory is one
+# `git add -A` away from being the wrong answer permanently.
+#
+# Promotion is a deliberate act with a record attached:
+#   harness/scripts/capture.sh --name <slug> --pins "<what it pins>"
+#   harness/scripts/promote.sh --name <slug>
+# The first refuses to run without --pins, because deciding what a capture is
+# FOR is cheap while the stack is up and impossible a fortnight later. Five
+# undocumented captures sat here for two weeks and had to be deleted rather
+# than promoted, for exactly that reason.
 captures/*.pcap
 captures/*.pcapng
 captures/*.json

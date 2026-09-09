@@ -246,6 +246,48 @@ network:
 docker compose run --rm --entrypoint sipnab sipnab -N -I /captures/opensips-1.pcap --report
 ```
 
+### Keeping one, as a committed fixture
+
+Everything in `captures/` is untracked, and that is the design rather than an
+oversight. Every capture gets one of three homes, decided when it is taken: a
+committed fixture under `tests/pcap-samples/`, the private corpus reached
+through `SIPNAB_CORPUS`, or deletion — and **deletion is the default**. A
+capture that sits undecided is one `git add -A` away from being the wrong
+answer permanently.
+
+Two scripts make the first of those three a deliberate act with a record
+attached:
+
+```bash
+# Run all of these, in order.
+harness/scripts/capture.sh --name direct-media-view \
+    --pins "what this capture is meant to pin" --seconds 60
+harness/scripts/promote.sh --name direct-media-view
+```
+
+`capture.sh` **refuses to run without `--pins`**. Deciding what a capture is
+for is cheap while the stack is still up and impossible a fortnight later:
+five undocumented captures sat in `captures/` for two weeks and had to be
+deleted rather than promoted, because nobody could establish which scenario
+produced them or which media anchor was in force. It records the anchor by
+reading it off the running container rather than from `.env`, since the two
+drift the moment anyone runs `make up ANCHOR=x`.
+
+It captures with `tcpdump` inside the namespace, not with `sipnab -O`. A
+fixture written by the program under test cannot contradict it.
+
+`promote.sh` copies the capture into `tests/pcap-samples/` and writes its entry
+in `PROVENANCE.md` there. It refuses a capture with no provenance sidecar, and
+re-checks the file against the sha256 the record names.
+
+The stack must be placing calls. `UAC_IDLE` defaults to `1`, so a capture taken
+against an idle harness is empty — `capture.sh` refuses that too rather than
+leaving a file that looks like a capture:
+
+```bash
+docker exec sipp-uac sh -c 'cd /harness/scenarios && sipp -sf uac_pcap_g711a.xml     172.28.0.10:5060 -i 172.28.0.21 -mi 172.28.0.21 -nostdin -m 1 -r 1 -l 1'
+```
+
 ## Configuration
 
 Copy `.env.example` to `.env` and adjust (subnet, IPs, published ports,

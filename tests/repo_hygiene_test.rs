@@ -994,3 +994,181 @@ fn every_fixture_is_confined_to_the_cargo_temp_dir() {
         );
     }
 }
+
+/// Every capture fixture says where it came from.
+///
+/// The harness has always produced captures and always thrown them away:
+/// `harness/.gitignore` discards `captures/*.pcap` and only `.gitkeep` is
+/// tracked, so each run reproduced traffic no test would ever see again while
+/// the project went short of fixtures. That is `LIVE2` in
+/// `docs/design/backlog.md`.
+///
+/// The reason it could not simply keep them is `LIVE4`: a capture with no
+/// recorded provenance cannot be safely promoted afterwards, because nobody
+/// can later establish which scenario produced it, which media anchor was in
+/// force, or whether it carries anything that must not be committed. Five
+/// undocumented captures sat in `harness/captures/` for two weeks and had to
+/// be deleted rather than promoted, for exactly that reason.
+///
+/// So promotion now goes through `harness/scripts/promote.sh`, which writes an
+/// entry here, and this gate is what makes the entry non-optional.
+///
+/// **The pre-manifest list is a ratchet that only shrinks.** The 36 fixtures
+/// below predate this rule and most are third-party captures whose provenance
+/// nobody in this repository can now establish -- inventing one would be worse
+/// than admitting the gap. A fixture moves off that list by gaining a real
+/// manifest entry, and the two sets are disjoint so a name cannot be in both.
+#[test]
+fn every_committed_capture_fixture_says_where_it_came_from() {
+    // Fixtures that predate PROVENANCE.md. Do not add to this list: a new
+    // fixture arrives through promote.sh, which writes the manifest entry.
+    const PRE_MANIFEST: &[&str] = &[
+        "Asterisk_ZFONE_XLITE.pcap",
+        "b2bua-asterisk.pcapng",
+        "c07-sip-r2.cap",
+        "codec-negotiation.pcap",
+        "DTMFsipinfo.pcap",
+        "h263-over-rtp.pcap",
+        "http-example.cap",
+        "invite-opus-bye.pcap",
+        "linux-sll2-pppoe.pcap",
+        "linux-sll-pppoe.pcap",
+        "loopback-dlt-loop.pcap",
+        "metasploit-sip-invite-spoof.pcap",
+        "options-keepalive-reused-cseq.pcap",
+        "register-invite-reinvite-bye.pcap",
+        "rtp-protocol.pcap",
+        "rtsp-interleaved-tcp.cap",
+        "rtsp-packets.cap",
+        "sip-488-codec-reject.pcapng",
+        "sip-auth-failure.pcapng",
+        "SIP_CALL_RTP_G711",
+        "SIP_DTMF2.cap",
+        "sip-lint-findings.pcap",
+        "sip-over-tcp.pcap",
+        "sipp-branch-scenario.pcapng",
+        "sip-problem-call.pcap",
+        "sip-proxy.pcap",
+        "siprec-opensips-invite.pcap",
+        "sip-register.pcap",
+        "sip-routing-error.pcapng",
+        "sip-rtp-g711.pcap",
+        "sip-rtp-g722.pcap",
+        "sip-rtp-g729a.pcap",
+        "sip-rtp-opus-hybrid.pcap",
+        "sip-sdp-example.pcap",
+        "speech_8k_ulaw.pcap",
+        "voicecmd_combined.pcap",
+    ];
+    // Every label promote.sh writes. A manifest entry missing one of these is
+    // the shape the whole rule exists to prevent: a fixture that LOOKS
+    // documented and cannot answer which anchor was in force.
+    const REQUIRED_LABELS: &[&str] = &[
+        "**Taken:**",
+        "**Media anchor:**",
+        "**Filter:**",
+        "**Packets:**",
+        "**SHA-256:**",
+        "**Pins:**",
+    ];
+
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let dir = root.join("tests/pcap-samples");
+    let manifest_path = root.join("tests/pcap-samples/PROVENANCE.md");
+    let manifest = std::fs::read_to_string(&manifest_path)
+        .unwrap_or_else(|e| panic!("read tests/pcap-samples/PROVENANCE.md: {e}"));
+
+    // Sections, in order, as `### <file name>` followed by its body.
+    let mut sections: Vec<(String, String)> = Vec::new();
+    let mut current: Option<(String, String)> = None;
+    for line in manifest.lines() {
+        if let Some(name) = line.strip_prefix("### ") {
+            if let Some(done) = current.take() {
+                sections.push(done);
+            }
+            current = Some((name.trim().to_string(), String::new()));
+        } else if let Some((_, body)) = current.as_mut() {
+            body.push_str(line);
+            body.push('\n');
+        }
+    }
+    if let Some(done) = current.take() {
+        sections.push(done);
+    }
+
+    let documented: std::collections::BTreeSet<&str> =
+        sections.iter().map(|(n, _)| n.as_str()).collect();
+
+    // 1. Every entry names a file that is really there.
+    for (name, _) in &sections {
+        assert!(
+            dir.join(name).is_file(),
+            "PROVENANCE.md documents {name}, which is not in tests/pcap-samples/. \
+             An entry for a fixture nobody can open is worse than no entry."
+        );
+    }
+
+    // 2. Every entry carries every label.
+    for (name, body) in &sections {
+        for label in REQUIRED_LABELS {
+            assert!(
+                body.contains(label),
+                "PROVENANCE.md's entry for {name} has no {label} line. \
+                 promote.sh writes all {} of them; an entry missing one was \
+                 written by hand and cannot answer what it claims to.",
+                REQUIRED_LABELS.len()
+            );
+        }
+    }
+
+    // 3. The two sets are disjoint, so a fixture is described in exactly one
+    //    place. A name in both would let the pre-manifest list keep a fixture
+    //    exempt while its entry rotted.
+    for name in PRE_MANIFEST {
+        assert!(
+            !documented.contains(name),
+            "{name} is on the pre-manifest list AND has a PROVENANCE.md entry. \
+             Take it off the list -- the entry is the better answer, and two \
+             records of one fixture is how they come apart."
+        );
+    }
+
+    // 4. Nothing is undocumented.
+    let mut orphans: Vec<String> = Vec::new();
+    let mut present = 0usize;
+    for entry in std::fs::read_dir(&dir).expect("read tests/pcap-samples") {
+        let entry = entry.expect("dir entry");
+        if !entry.file_type().expect("file type").is_file() {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name == "PROVENANCE.md" {
+            continue;
+        }
+        present += 1;
+        if !documented.contains(name.as_str()) && !PRE_MANIFEST.contains(&name.as_str()) {
+            orphans.push(name);
+        }
+    }
+    orphans.sort();
+    assert!(
+        orphans.is_empty(),
+        "these capture fixtures say nothing about where they came from:\n  {}\n\
+         Promote captures with harness/scripts/promote.sh, which writes the \
+         entry. A fixture nobody can attribute cannot be trusted by the next \
+         person to change a parser, because they cannot tell whether its \
+         assertion is load-bearing.",
+        orphans.join("\n  ")
+    );
+
+    // The count is a floor, not a fact about the directory: it exists so that
+    // a read_dir that stopped matching reports as a failure rather than as an
+    // empty, passing sweep.
+    assert!(
+        present >= PRE_MANIFEST.len(),
+        "found only {present} fixtures against {} on the pre-manifest list. \
+         Fixtures do not get deleted casually, so this is far more likely to \
+         be the directory walk breaking than the tree shrinking.",
+        PRE_MANIFEST.len()
+    );
+}
