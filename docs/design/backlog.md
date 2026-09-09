@@ -1477,43 +1477,57 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
 
 ## P2 — robustness, observability & efficiency
 
-- [ ] **The eBPF uprobe program is REJECTED BY THE VERIFIER on Linux 6.12, so
-  the `bpf` backend does not work on the four release artifacts that ship it
-  (added 2026-09-09).** Found by doing what LIVE3 asks: running the
+- [ ] **The RELEASED eBPF object is rejected by the verifier; one built from
+  the same commit attaches. The source is not the problem (added 2026-09-09,
+  corrected the same day).** Found by doing what LIVE3 asks: running the
   load-and-attach half on a real privileged host.
 
-  **Measured.** The published `sipnab-0.5.161-x86_64-unknown-linux-gnu` binary,
-  checksum-verified, on Debian 13 with kernel `6.12.105+deb13-amd64` and
-  `/sys/kernel/btf/vmlinux` present. `--uprobe-list` works and finds two live
-  `libssl.so.3` inodes. `--uprobe-tls --uprobe-backend bpf` then fails with
-  `verifier rejected the uprobe: the BPF_PROG_LOAD syscall returned Permission
-  denied (os error 13)`, and the verifier's own line is
-  `R2 unbounded memory access, use 'var &= const' or 'if (var < const)'` at
-  `call bpf_probe_read_user`.
+  **The A/B, back to back on one host.** Debian 13, kernel
+  `6.12.105+deb13-amd64`, BTF present, the same two live `libssl.so.3` inodes,
+  minutes apart:
 
-  **It fails loudly, which is the one good thing here.** The error names the
-  libraries, the symbol and the verifier's words, so an operator is not left
-  with a capture that silently holds nothing. The capability is still absent.
+  | Binary | Result |
+  |---|---|
+  | published `sipnab-0.5.161-x86_64-unknown-linux-gnu`, checksum-verified | `verifier rejected the uprobe: BPF_PROG_LOAD returned Permission denied` |
+  | built on that host from `7e0980f2` | `BPF capture attached to 2 libraries ... plus tcp_sendmsg` |
 
-  **Where it is.** [`bpf/src/main.rs`](https://github.com/NormB/sipnab/blob/main/bpf/src/main.rs), at
-  `bpf_probe_read_user_buf(buf, &mut rec.data[..copy])`. The source DOES bound
-  the length -- `let copy = if len > MAX_PAYLOAD { MAX_PAYLOAD } else { len }`
-  -- and the verifier still sees the read length as `0..=0x7fffffff`, which is
-  `len` and not `copy`. The bound is written and does not survive to the
-  instruction, so the branch is being optimized into a form the verifier cannot
-  follow. `MAX_PAYLOAD` is 2048, a power of two, so the verifier's own
-  suggestion applies directly.
+  The verifier's own line on the rejected one is `R2 unbounded memory access,
+  use 'var &= const' or 'if (var < const)'` at `call bpf_probe_read_user`.
 
-  **Do NOT ship a fix that has not been LOADED.** The reason this reached four
-  release artifacts is that nothing ever ran the program on a kernel. A mask
-  that looks right and is never verified is the same defect again. The fix
-  needs a host that can both build the object and load it: `bpf-linker` is
-  absent on the aarch64 development host, and the x86_64 lab VM that can load
-  it does not build it today.
+  **So the bound in [`bpf/src/main.rs`](https://github.com/NormB/sipnab/blob/main/bpf/src/main.rs) is fine.** The first version of this
+  entry blamed it -- `let copy = if len > MAX_PAYLOAD { MAX_PAYLOAD } else
+  { len }` looked like a bound the optimizer had eaten. It is not: the same
+  source, compiled on the target host, produces an object the verifier
+  accepts. A source fix would have been a fix for nothing, which is why the
+  entry said not to ship one unloaded.
 
-  **How many kernels does this cover?** Unknown, and worth establishing before
-  the fix -- this is one kernel version on one distribution, and whether the
-  rejection is new behavior or has always been there is not established either.
+  **What differs is the BUILD, and the cause is NOT established.** Candidates,
+  none of them confirmed: the release job installs bpf-linker **0.11.0** as a
+  prebuilt tarball while the lab host has **0.9.13**; the nightly differs; and
+  the aarch64 leg cross-compiles inside `rust:1-bookworm` while x86_64 does
+  not. One measurement that is suggestive rather than decisive: the object
+  built on the lab host is **131,952 bytes**, and `release.yml`'s own comment
+  records the CI-built object at **126,248 bytes**. Different sizes, same
+  source.
+
+  **An attempt to pin it on the linker version did not work, and the reason is
+  worth recording.** Installing the release job's exact bpf-linker 0.11.0
+  tarball (checksum-verified) and rebuilding -- including after a full `cargo
+  clean` -- produced a **byte-identical** object to the 0.9.13 build. Two
+  different linkers do not produce identical output, so the build script is
+  not taking its linker from `PATH` the way that experiment assumed. Whatever
+  it does use, that is the thing to establish next.
+
+  **Do:** get the CI-built object itself -- from the release run's artifacts,
+  or by reproducing the release job's container -- and compare it against one
+  built on a host where it loads. `--uprobe-list` works on the released binary,
+  so only the program load fails; the loader and the symbol resolution are
+  fine.
+
+  **It fails loudly, which is the one good thing.** The error names both
+  libraries, the symbol and the verifier's words, so an operator gets a refusal
+  rather than a capture that silently holds nothing. The capability is still
+  absent on every artifact that ships it.
 
 - [x] **TLSHOLD — two of the three late-decrypt counters never reach the
   operator, so an eviction and a key that never came look identical.** The

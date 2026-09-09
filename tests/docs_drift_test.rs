@@ -3451,7 +3451,14 @@ fn no_documentation_table_repeats_a_row() {
     // combinations exist. Attributed per file against HEAD by counting table
     // starts: docs/rest-api.md 17 -> 18 and its mirror
     // website/content/docs/api.md 17 -> 18, nothing else moved.
-    const EXPECTED_TABLES: usize = 853;
+    // 853 -> 854 by ONE written table, NOT mirrored: the eBPF A/B in
+    // docs/design/backlog.md -- the released binary against one built on the
+    // host, and what each did. Two rows whose whole content is the contrast,
+    // which is a table or it is a sentence nobody can scan. A design doc has
+    // no website mirror, which is why this is +1 and not +2. Attributed per
+    // file against HEAD by counting table starts: docs/design/backlog.md
+    // 29 -> 30, nothing else moved.
+    const EXPECTED_TABLES: usize = 854;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")
