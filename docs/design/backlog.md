@@ -44,7 +44,7 @@ Tiers:
 
 ## Status
 
-**26 open, 485 done** across 36 sections.
+**27 open, 485 done** across 36 sections.
 Regenerate with `python3 scripts/backlog-status.py --apply`.
 
 | Section | Open | Done | Progress |
@@ -52,7 +52,7 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
 | P0 | 0 | 21 | `##########` |
 | P1 | 0 | 70 | `##########` |
 | PV | 0 | 13 | `##########` |
-| P2 | 0 | 109 | `##########` |
+| P2 | 1 | 109 | `##########` |
 | P3 | 0 | 64 | `##########` |
 | P4 | 1 | 44 | `##########` |
 | PA | 1 | 12 | `#########.` |
@@ -1476,6 +1476,44 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
   bridge exists at all.
 
 ## P2 — robustness, observability & efficiency
+
+- [ ] **The eBPF uprobe program is REJECTED BY THE VERIFIER on Linux 6.12, so
+  the `bpf` backend does not work on the four release artifacts that ship it
+  (added 2026-09-09).** Found by doing what LIVE3 asks: running the
+  load-and-attach half on a real privileged host.
+
+  **Measured.** The published `sipnab-0.5.161-x86_64-unknown-linux-gnu` binary,
+  checksum-verified, on Debian 13 with kernel `6.12.105+deb13-amd64` and
+  `/sys/kernel/btf/vmlinux` present. `--uprobe-list` works and finds two live
+  `libssl.so.3` inodes. `--uprobe-tls --uprobe-backend bpf` then fails with
+  `verifier rejected the uprobe: the BPF_PROG_LOAD syscall returned Permission
+  denied (os error 13)`, and the verifier's own line is
+  `R2 unbounded memory access, use 'var &= const' or 'if (var < const)'` at
+  `call bpf_probe_read_user`.
+
+  **It fails loudly, which is the one good thing here.** The error names the
+  libraries, the symbol and the verifier's words, so an operator is not left
+  with a capture that silently holds nothing. The capability is still absent.
+
+  **Where it is.** [`bpf/src/main.rs`](https://github.com/NormB/sipnab/blob/main/bpf/src/main.rs), at
+  `bpf_probe_read_user_buf(buf, &mut rec.data[..copy])`. The source DOES bound
+  the length -- `let copy = if len > MAX_PAYLOAD { MAX_PAYLOAD } else { len }`
+  -- and the verifier still sees the read length as `0..=0x7fffffff`, which is
+  `len` and not `copy`. The bound is written and does not survive to the
+  instruction, so the branch is being optimized into a form the verifier cannot
+  follow. `MAX_PAYLOAD` is 2048, a power of two, so the verifier's own
+  suggestion applies directly.
+
+  **Do NOT ship a fix that has not been LOADED.** The reason this reached four
+  release artifacts is that nothing ever ran the program on a kernel. A mask
+  that looks right and is never verified is the same defect again. The fix
+  needs a host that can both build the object and load it: `bpf-linker` is
+  absent on the aarch64 development host, and the x86_64 lab VM that can load
+  it does not build it today.
+
+  **How many kernels does this cover?** Unknown, and worth establishing before
+  the fix -- this is one kernel version on one distribution, and whether the
+  rejection is new behavior or has always been there is not established either.
 
 - [x] **TLSHOLD — two of the three late-decrypt counters never reach the
   operator, so an eviction and a key that never came look identical.** The
@@ -6862,12 +6900,26 @@ them away.
   establish, and describing them from memory would be worse than admitting the
   gap. The list only shrinks.
 
-- [ ] **LIVE3 — the uprobe/BPF path cannot be exercised by the test suite at all.**
+- [ ] **LIVE3 — the uprobe/BPF path cannot be exercised by the test suite, and
+  the first time anybody ran it by hand it FAILED.**
   [`src/capture/uprobe/bpf.rs`](https://github.com/NormB/sipnab/blob/main/src/capture/uprobe/bpf.rs) loads an eBPF program, which needs privileges the
   suite does not have and must not acquire. Building the object is covered;
   loading, attaching and reading from it are not, and those are where the
   failures live — a verifier rejection, a BTF mismatch, a probe that attaches to
   the wrong symbol version.
+
+  **Run on 2026-09-09, on the x86_64 lab VM, and it was a verifier rejection.**
+  The first of the three failures this entry predicted, on the first attempt,
+  against a published release artifact. The defect has its own entry under P2.
+  That is the whole argument for this item: the suite is green, the object
+  builds, the feature ships on four artifacts, and it does not load.
+
+  **What the run needs, established rather than assumed.** A host with BTF and
+  the privilege to load; the lab VM has both. The binary must carry the `bpf`
+  feature, which is on the four `*-linux-gnu` release artifacts and NOT on
+  musl -- the copy already installed on that VM was a build without it, and
+  `--uprobe-backend bpf` would have refused by name rather than proving
+  anything.
 
   **Do:** run the load-and-attach half on the privileged VM that already builds
   the object, as a job that is allowed to be manual and out-of-band, and record
