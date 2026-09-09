@@ -38,6 +38,7 @@ ordinary update.
 | [`reconcile_orphans`](#reconcile-orphans) | `limit?` | Why each RTP stream with no dialog lacks one: a relay named the endpoint but no signaling arrived, SDP named it but no dialog claims it, or nothing named it at all |
 | [`get_capture_report`](#get-capture-report) | `format?` | Whole-capture analysis: findings, orphaned media, STUN/ICMP evidence, what the caps shed |
 | [`list_captures`](#list-captures) | -- | Capture files in `--mcp-file-root`, with sizes |
+| [`find_in_captures`](#find-in-captures) | `filter`, `max_files?`, `deadline_ms?` | Which capture files hold dialogs matching a filter, without opening any of them |
 | [`list_dialogs`](#list-dialogs) | `filter?`, `limit?`, `cursor?` | A page of dialog summaries, with the total behind it |
 | [`timeline`](#timeline) | `bucket_seconds?` | Call volume per fixed-width interval, so a gap or a spike is visible without reading every dialog |
 | [`top_talkers`](#top-talkers) | `by`, `limit?`, `filter?`, `prefix_digits?` | The busiest IPs, user agents or dialled prefixes, ranked, each share stated against the population behind it |
@@ -897,6 +898,73 @@ capture that never received one, or a file it could not open — so treat `null`
 as "unknown", not as "empty". sipnab reports neither a dialog count nor a
 last-packet time here, because both need the whole file parsed and a listing
 that costs a full read of every capture in the root is a listing nobody runs.
+
+### `find_in_captures`
+
+**Which of these files holds the call**, asked without giving up the one you
+are working in.
+
+[`list_captures`](#list-captures) narrows forty rotated files to the two that
+could hold a call, by time. That is a filter, not an answer. The question an
+operator actually has — "which of these holds Call-ID X" — had no tool at all:
+the only way inside another file is [`open_capture`](#open-capture), documented
+**Destructive**, which replaces every dialog and stream and mints a new
+`capture_identity` that voids every cursor you hold.
+
+This sweeps instead: a scratch store per file, the filter applied, **the loaded
+capture untouched**.
+
+| Name | Type | Legal values | If omitted |
+|---|---|---|---|
+| `filter` | string | A [filter DSL](@/docs/filter-dsl.md) expression, the same vocabulary every other filtering tool takes. Unparseable fails with `invalid_params` before the sweep opens anything | Required |
+| `max_files` | u32? | Files to open before stopping. Clamped to `DEFAULT_MAX_FILES` (20); `0` means the default | 20 |
+| `deadline_ms` | u64? | Wall-clock the sweep may spend. Clamped to `DEFAULT_DEADLINE_MS` (30000); `0` means the default | 30000 |
+
+```jsonc
+// find_in_captures { "filter": "call_id == \"1-1966@10.0.2.20\"" }
+{
+  "schema_version": 1,
+  "sweep": {
+    "matches": [
+      { "filename": "rotated-03.pcap", "dialogs_matched": 1,
+        "first_call_id": "1-1966@10.0.2.20" }
+    ],
+    "files_examined": 12,
+    "files_total": 12,
+    "unreadable": [],
+    "complete": true
+  }
+}
+```
+
+#### Read `complete` before believing an empty result
+
+A sweep runs under bounds, and one that reports no matches has **not**
+shown the call is absent — only that it did not find it in what it managed to
+read. `complete` is true in exactly one case: every candidate examined, and
+every one of them readable.
+
+It is false when the sweep stopped early — `stopped_because` says
+`max-files` or `deadline` — and false when the sweep could not open some
+file. `unreadable` names each of those, with its reason, and **never skips one
+silently**: the file nobody could look in is exactly the one that might hold
+the call. A reason comes from the OS and from libpcap, so sipnab strips control
+characters and keeps the first `MAX_REASON_CHARS` (200).
+
+**A match does not excuse an incomplete sweep either.** On a rotated spool a
+call that spans a rotation is in two files, so finding it in one says nothing
+about the other.
+
+#### Why two bounds and not one
+
+`max_files` makes the cost predictable. `deadline_ms` is the one that matters:
+a file's cost is its size, which the caller cannot see, so twenty small files
+and twenty 2 GB files are the same `max_files` and a very different wait. The
+sweep tests the deadline **before** each file rather than after: a deadline
+tested only afterwards is one the last file can overrun by its whole read.
+
+**There is no cancel.** A tool call has no channel to interrupt it, so the
+sweep bounds itself and always returns with an account of what it covered.
 
 ### `list_dialogs`
 
@@ -3062,6 +3130,12 @@ against
     "requested_expiry_sec": null,
     "granted_expiry_sec": null
   },
+  "contact_rewrite": {
+    "contact_host": "203.0.113.1:42952",
+    "contact_host_private": false,
+    "source_public": true,
+    "rewrite_required": false
+  },
   "hints": [
     "Call failed: 403 Forbidden.",
     "Registration rejected: 403 Forbidden. The endpoint answered an authentication challenge and the registrar refused the credentials it offered, so the fault is in the account, its password or its permission to register — none of which is a reachability problem."
@@ -3072,6 +3146,35 @@ against
 `final_status_code` is `null` here even though the registrar answered 403,
 because the dialog never reached a state that records one. Read
 `registration_failure.code` for the status that decided the verdict.
+
+#### `contact_rewrite` — the observation, not the finding
+
+A phone behind NAT registers its own private address, and the registrar must
+notice the packet came from a public address the header does not name and route
+later requests there instead. When it does not, every inbound call goes to an
+unroutable host and the phone never rings.
+
+`rewrite_required` is the conjunction that shape needs:
+`contact_host_private && source_public`. The sample above reports `false` — a
+public `Contact` from a public source needs nothing rewritten, which is the
+honest reading and not a fault ruled out.
+
+| Field | Type | Description |
+|---|---|---|
+| `contact_host` | string? | The host the `Contact` named, as written. Absent for `Contact: *`, which [RFC 3261 §10.2.2](https://www.rfc-editor.org/rfc/rfc3261#section-10.2.2) defines as every binding and which names no host |
+| `contact_host_private` | bool? | Whether that host is one the public internet does not route to. Absent when the `Contact` names a domain, which resolves somewhere the capture cannot see |
+| `source_public` | bool | Whether the REGISTER arrived from a public address |
+| `rewrite_required` | bool | The two together |
+
+**This is deliberately not a finding.** 1,660 of 2,226 REGISTER contacts in the
+private corpus carry a private host — 74.6%, measured 2026-09-08 — and that
+estate works. What separates the working case from the broken one is which
+address later requests actually used, and one dialog cannot see that. Ask
+[`describe_endpoint`](#describe-endpoint), which crosses an endpoint's dialogs
+and reports `verdict` and `is_finding`.
+
+The block is absent when the dialog carries no `REGISTER` — the same
+`applicable: false` case the top of this section describes.
 
 ### `siprec_metadata`
 

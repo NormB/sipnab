@@ -718,6 +718,7 @@ fn stdio_mcp_full_tool_set_and_remaining_tools() {
         "export_audio",
         "export_capture",
         "find_correlated",
+        "find_in_captures",
         "find_problems",
         "generate_fail2ban_rule",
         "generate_repro",
@@ -773,7 +774,7 @@ fn stdio_mcp_full_tool_set_and_remaining_tools() {
     }
     expected.sort();
     assert_eq!(names, expected, "MCP tool set drifted");
-    let want = if cfg!(feature = "vcon") { 65 } else { 63 };
+    let want = if cfg!(feature = "vcon") { 66 } else { 64 };
     assert_eq!(names.len(), want, "expected exactly {want} MCP tools");
 
     // find_problems with default kinds (['problems']) → JSON array, no error.

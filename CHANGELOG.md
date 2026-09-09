@@ -29,6 +29,31 @@ entry that carries them.
 
 ### Added
 
+- **"Which of these 40 files holds Call-ID X" can be asked now.** It could not
+  be asked at all: `list_captures` narrows by time, which is a filter and not
+  an answer, and the only way inside another file was `open_capture` —
+  documented **Destructive**, replacing every dialog and stream and minting a
+  new `capture_identity` that voids every cursor the caller holds.
+
+  `find_in_captures` sweeps instead: a scratch store per file, the filter
+  applied, the loaded capture untouched.
+
+  **Read `complete` before believing an empty result.** A sweep runs under
+  bounds, and one reporting no matches has not shown the call is absent — only
+  that it did not find it in what it managed to read. `complete` is true in
+  exactly one case: every candidate examined and every one readable. A file the
+  sweep could not open is named in `unreadable` with its reason and is never
+  skipped silently, because the file nobody could look in is exactly the one
+  that might hold the call. A match does not excuse a truncation either: on a
+  rotated spool, a call that spans a rotation is in two files.
+
+  Two bounds, because they fail differently. `max_files` makes the cost
+  predictable; `deadline_ms` is the one that matters, since a file's cost is
+  its size and the caller cannot see it. The deadline is tested before each
+  file — tested after, the last file overruns it by its whole read. There is no
+  cancel: a tool call has no channel to interrupt it, so the sweep bounds
+  itself and always returns with an account of what it covered.
+
 - **A manager password in the clear, on a port sipnab read and never
   parsed.** Asterisk's Manager Interface speaks a line protocol on TCP/5038,
   and a login is four lines of plain text: `Action: login`, `Username:`,

@@ -287,6 +287,23 @@ fn schema_probes(call_id: &str) -> Vec<(&'static str, Value)> {
             json!({"summary": "outputSchema conformance probe"}),
         ),
         ("explain_attribution", json!({"call_id": call_id})),
+        // A filter that matches nothing, deliberately. An EMPTY sweep is the
+        // shape the schema most needs to describe correctly: it is what a
+        // caller reads `complete` against, and a response that omitted the
+        // flag would leave "did not find it" and "did not look" identical.
+        // A filter that matches nothing, and one file, deliberately. An EMPTY
+        // sweep is the shape the schema most needs to describe correctly: it
+        // is what a caller reads `complete` against, and a response omitting
+        // that flag would leave "did not find it" and "did not look"
+        // indistinguishable. `max_files: 1` keeps the probe from reading a
+        // whole sample directory to prove a shape.
+        (
+            "find_in_captures",
+            json!({
+                "filter": "call_id == \"outputschema-probe@example.invalid\"",
+                "max_files": 1
+            }),
+        ),
         // No `limit`, so the response is the untruncated shape: `truncated`
         // false and `relay_was_consulted` computed over every orphan rather
         // than over a page.
@@ -416,7 +433,11 @@ fn a_rendered_document_carries_no_structured_content() {
 /// no idea how much of the capture they covered.
 #[test]
 fn no_tool_answers_with_a_top_level_array() {
-    let mut wire = Wire::start();
+    // The same file root the schema probe needs, for the same reason: this
+    // drives the same probe list, and a file tool that refuses returns an
+    // error rather than the payload whose shape is under test.
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/pcap-samples");
+    let mut wire = Wire::start_with(&["--mcp-file-root", &root.display().to_string()]);
     let call_id = wire.a_call_id();
 
     // Driven, not asserted from source: a shape is a property of the wire.
@@ -504,7 +525,13 @@ fn timeline_answers_with_a_self_describing_envelope() {
 fn every_declared_output_schema_matches_the_payload_it_describes() {
     let fake = fake_tfps_ctl();
     let ctl = fake.path().join("tfps_ctl").display().to_string();
-    let mut wire = Wire::start_with(&["--tfps-ctl", &ctl]);
+    // A file root, so the file-tool group answers instead of refusing. Without
+    // one `find_in_captures` returns invalid_params and the probe would have
+    // to be exempted -- which would leave the schema of the tool most in need
+    // of a precise one checked by nothing.
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/pcap-samples");
+    let root = root.display().to_string();
+    let mut wire = Wire::start_with(&["--tfps-ctl", &ctl, "--mcp-file-root", &root]);
     let call_id = wire.a_call_id();
     let probes = schema_probes(&call_id);
 

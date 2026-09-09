@@ -76,7 +76,7 @@ For the tools themselves — and for the error codes and response bounds — see
 - **No prompt-injection cooperation.** Tool descriptions never
   instruct the LLM to "trust" or "act on" returned content; they
   describe what the tool returns and stop there.
-- **Every tool declares what it does.** All 65 carry MCP annotations, so a host
+- **Every tool declares what it does.** All 66 carry MCP annotations, so a host
   can decide what to call without asking. Fifty-two are `readOnlyHint: true`.
   [What the write verbs do](#what-the-write-verbs-do) names the twelve that
   are not. Every tool but three sets `openWorldHint` to `false`, because
@@ -362,7 +362,7 @@ sipnab negotiates the 2025-06-18 and 2025-11-25 revisions, where
 
 ## What the write verbs do
 
-Fifty-three of the 65 tools are `readOnlyHint: true`. These twelve are not, and
+Fifty-four of the 66 tools are `readOnlyHint: true`. These twelve are not, and
 each declares what kind of change it makes so a host can decide which need
 confirmation:
 

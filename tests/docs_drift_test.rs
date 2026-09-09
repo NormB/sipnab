@@ -2615,9 +2615,14 @@ fn mcp_tool_table_lists_every_registered_tool() {
     // unreachable over MCP, and the process and host figures did not exist at
     // all. Read-only, so the split moves 52-of-64 to 53-of-65 and the twelve
     // write-capable tools are unchanged.
+    // 65 -> 66 by `find_in_captures` (MCPX3), which answers "which of these 40
+    // rotated files holds Call-ID X" — a question that had no tool at all,
+    // because the only way inside another file was `open_capture`, which
+    // replaces every dialog and stream. Read-only, so the split moves
+    // 53-of-65 to 54-of-66 and the twelve write-capable tools are unchanged.
     assert_eq!(
         registered.len(),
-        65,
+        66,
         "found only {} #[tool(name = ...)] entries under src/mcp/ — the \
          attribute shape changed and this test is no longer reading the \
          registry: {registered:?}",
@@ -3361,7 +3366,17 @@ fn no_documentation_table_repeats_a_row() {
     // docs/mcp-tools.md and its site mirror: one written table, two pages.
     // Attributed per file against HEAD -- docs/mcp-tools.md 93 -> 94 and
     // website/content/docs/mcp-tools.md 93 -> 94, nothing else moved.
-    const EXPECTED_TABLES: usize = 838;
+    // 838 -> 840 by the `contact_rewrite` field table under
+    // `diagnose_registration` -- the observation lives on that tool and its
+    // section documented none of it. One written table, two pages. Attributed
+    // per file against HEAD: docs/mcp-tools.md 94 -> 95 and its mirror 94 ->
+    // 95, nothing else moved.
+    // 840 -> 842 by two written tables in docs/mcp-tools.md, each mirrored:
+    // the `contact_rewrite` fields under `diagnose_registration` (AS5's
+    // observation half, which that tool's own section documented nowhere) and
+    // the `find_in_captures` parameters (MCPX3). Attributed per file against
+    // HEAD: docs/mcp-tools.md 94 -> 96 and its mirror 94 -> 96, nothing else.
+    const EXPECTED_TABLES: usize = 842;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

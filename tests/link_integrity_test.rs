@@ -830,7 +830,16 @@ fn wiki_intra_docs_links_resolve() {
     // to say what it is NOT -- that tool reads the alert engine and needs
     // arming, and this needs neither -- rather than re-arguing the difference.
     // Attributed per file against HEAD: docs/mcp-tools.md 202 -> 203.
-    const EXPECTED_WIKI_LINKS: usize = 703;
+    // 703 -> 704 by the `contact_rewrite` section on `diagnose_registration`,
+    // which links describe_endpoint for the corroborated half rather than
+    // restating it. Attributed per file: docs/mcp-tools.md 203 -> 204.
+    // 704 -> 708 by the `find_in_captures` section (MCPX3), which links
+    // list_captures for the half that narrows by time, open_capture for the
+    // destructive alternative it exists to avoid, and the filter DSL for the
+    // vocabulary it shares, rather than restating any of them -- plus its row
+    // in the tool index. Attributed per file against HEAD: docs/mcp-tools.md
+    // 203 -> 208, and no other page the extractor reads moved.
+    const EXPECTED_WIKI_LINKS: usize = 708;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe 6d in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

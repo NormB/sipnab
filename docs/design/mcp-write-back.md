@@ -85,7 +85,7 @@ raw material and none of the interpretation. This is a real dead end, and it is
 the strongest argument on this page.
 
 **The read surface is rich enough that the asymmetry is conspicuous.** There are
-65 tools ([`server.rs`](../../src/mcp/server.rs), `#[tool(` at `:938` through
+66 tools ([`server.rs`](../../src/mcp/server.rs), `#[tool(` at `:938` through
 `:2260`), and several of them do genuine analysis rather than projection:
 `triage_call` (`:1927`), `check_codec_negotiation` (`:1999`),
 `diagnose_registration` (`:2085`), `compare_dialogs` (`:1722`). An agent that
@@ -146,7 +146,7 @@ concrete rather than theoretical:
   populated at `:91-92`) are copied off the From/To URIs.
 - `get_message` ([`server.rs:4855`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L4855)) returns headers and
   body.
-- `search_messages` ([`server.rs:5251`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5251)) returns a
+- `search_messages` ([`server.rs:5289`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5289)) returns a
   `snippet` built at [`:1391`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1391) from
   `truncate_string(&String::from_utf8_lossy(&msg.raw), …)` — raw bytes off the
   wire, unmodified.

@@ -1732,6 +1732,27 @@ pub struct CallIdParams {
     pub call_id: String,
 }
 
+/// Parameters for `find_in_captures`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+pub struct FindInCapturesParams {
+    /// Filter DSL expression, the same vocabulary every other filtering tool
+    /// takes — `call_id == "abc@example.com"`, `state == failed`.
+    pub filter: String,
+    /// Files to open before stopping. Clamped to
+    /// [`crate::mcp::sweep::DEFAULT_MAX_FILES`]; `0` means the default.
+    #[serde(default)]
+    pub max_files: Option<u32>,
+    /// Wall-clock the sweep may spend, in milliseconds. Clamped to
+    /// [`crate::mcp::sweep::DEFAULT_DEADLINE_MS`]; `0` means the default.
+    ///
+    /// The bound that matters: a file's cost is its size, which the caller
+    /// cannot see, so twenty small files and twenty 2 GB files are the same
+    /// `max_files` and a very different wait.
+    #[serde(default)]
+    pub deadline_ms: Option<u64>,
+}
+
 /// Parameters for `get_sdp_timeline`.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
@@ -7218,6 +7239,153 @@ impl SipnabMcp {
         )?]))
     }
 
+    /// Which of the capture files holds a call, without opening any of them.
+    #[tool(
+        name = "find_in_captures",
+        description = "Sweeps the capture files in --mcp-file-root for dialogs \
+                       matching a filter and names the files that hold them, \
+                       WITHOUT touching the loaded capture. Answers 'which of \
+                       these 40 rotated files holds Call-ID X', which \
+                       open_capture cannot: that tool replaces every dialog and \
+                       stream and voids every cursor. Bounded by max_files and \
+                       deadline_ms, and the response carries files_examined, \
+                       files_total, an unreadable list and a complete flag. \
+                       READ complete BEFORE BELIEVING AN EMPTY RESULT: a sweep \
+                       that stopped early, or that could not open a file, has \
+                       not shown the call is absent.",
+        output_schema = schema_for_output::<crate::mcp::sweep::FindInCapturesResponse>(),
+        annotations(read_only_hint = true, open_world_hint = false)
+    )]
+    pub async fn find_in_captures(
+        &self,
+        Parameters(params): Parameters<FindInCapturesParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let root = self.file_root.as_ref().ok_or_else(|| {
+            rmcp::ErrorData::invalid_params(
+                "file tools are disabled: start sipnab with --mcp-file-root <DIR>".to_string(),
+                None,
+            )
+        })?;
+        let expr = crate::sip::dsl::FilterExpr::parse(&params.filter)
+            .map_err(|e| rmcp::ErrorData::invalid_params(format!("filter: {e}"), None))?;
+
+        let max_files = match params.max_files {
+            Some(0) | None => crate::mcp::sweep::DEFAULT_MAX_FILES,
+            Some(n) => (n as usize).min(crate::mcp::sweep::DEFAULT_MAX_FILES),
+        };
+        let deadline_ms = match params.deadline_ms {
+            Some(0) | None => crate::mcp::sweep::DEFAULT_DEADLINE_MS,
+            Some(n) => n.min(crate::mcp::sweep::DEFAULT_DEADLINE_MS),
+        };
+
+        let mut candidates: Vec<std::path::PathBuf> = std::fs::read_dir(root)
+            .map_err(|e| {
+                rmcp::ErrorData::internal_error(
+                    format!("cannot read {}: {e}", root.display()),
+                    None,
+                )
+            })?
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| {
+                p.is_file()
+                    && p.extension().and_then(|e| e.to_str()).is_some_and(|e| {
+                        e.eq_ignore_ascii_case("pcap") || e.eq_ignore_ascii_case("pcapng")
+                    })
+            })
+            .collect();
+        candidates.sort();
+        let files_total = candidates.len();
+
+        let started = std::time::Instant::now();
+        let mut matches = Vec::new();
+        let mut unreadable = Vec::new();
+        let mut examined = 0usize;
+        let mut stopped = None;
+
+        for path in candidates {
+            if examined >= max_files {
+                stopped = Some(crate::mcp::sweep::StoppedBecause::MaxFiles);
+                break;
+            }
+            // Checked BEFORE each file rather than after: a deadline tested
+            // only afterwards is a deadline the last file can overrun by its
+            // whole read, and the last file is the 2 GB one often enough.
+            if started.elapsed().as_millis() as u64 >= deadline_ms {
+                stopped = Some(crate::mcp::sweep::StoppedBecause::Deadline);
+                break;
+            }
+            let filename = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or_default()
+                .to_string();
+
+            // A scratch pair per file. The active stores are never touched:
+            // that is the whole difference between this and `open_capture`,
+            // and it is what lets a caller keep every cursor it holds.
+            let scratch_dialogs = std::sync::Arc::new(parking_lot::RwLock::new(
+                crate::sip::dialog_store::DialogStore::new(self.row_cap, false),
+            ));
+            let scratch_streams = std::sync::Arc::new(parking_lot::RwLock::new(
+                crate::rtp::stream_store::StreamStore::new(self.row_cap),
+            ));
+            let progress = std::sync::atomic::AtomicU64::new(0);
+
+            if let Err((_, e)) = crate::mcp::load::read_into_stores(
+                &path,
+                &scratch_dialogs,
+                &scratch_streams,
+                &progress,
+            ) {
+                unreadable.push(crate::mcp::sweep::unreadable_file(&filename, &e));
+                continue;
+            }
+            examined += 1;
+
+            let ds = scratch_dialogs.read();
+            let ss = scratch_streams.read();
+            let capture = crate::rtp::diagnosis::CaptureMedia::of_store(&ss);
+            // Built from the SCRATCH store, so a MOS filter reads this
+            // file's own RTCP rather than the loaded capture's -- the whole
+            // point being that the two are never mixed.
+            let delay = crate::rtp::quality::MosDelay::from_capture(&ss);
+            let mut hits = 0usize;
+            let mut first_call_id = None;
+            for d in ds.iter() {
+                let streams: Vec<&crate::rtp::stream::RtpStream> =
+                    ss.streams_for(&d.call_id).collect();
+                if expr.matches_dialog(d, &streams, capture, delay) {
+                    hits += 1;
+                    if first_call_id.is_none() {
+                        first_call_id = Some(d.call_id.clone());
+                    }
+                }
+            }
+            if hits > 0 {
+                matches.push(crate::mcp::sweep::FileMatch {
+                    filename,
+                    dialogs_matched: hits,
+                    // A Call-ID is attacker-chosen text, and it is also the
+                    // handle the caller feeds straight to `open_capture` --
+                    // the same trade `MESSAGE_VERBATIM_FIELDS` records for
+                    // `call_id`, so it travels verbatim and the response-level
+                    // provenance note covers it.
+                    first_call_id,
+                });
+            }
+        }
+
+        let outcome =
+            crate::mcp::sweep::outcome(matches, examined, files_total, unreadable, stopped);
+        Ok(CallToolResult::success(vec![ContentBlock::json(
+            crate::mcp::sweep::FindInCapturesResponse {
+                schema_version: 1,
+                sweep: outcome,
+            },
+        )?]))
+    }
+
     /// Write the retained packets to a capture file.
     #[tool(
         name = "export_capture",
@@ -9332,6 +9500,208 @@ mod tests {
     /// destroy a capture staged in the root for `open_capture`, which is the
     /// documented workflow.
     ///
+    /// A capture root holding real files, plus whatever junk the test wants.
+    fn sweep_root(tag: &str, files: &[(&str, &str)], junk: &[(&str, &[u8])]) -> std::path::PathBuf {
+        let root = std::env::temp_dir().join(format!("sipnab-sweep-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("mkdir root");
+        for (name, source) in files {
+            let from = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(source);
+            std::fs::copy(&from, root.join(name))
+                .unwrap_or_else(|e| panic!("copy {source} -> {name}: {e}"));
+        }
+        for (name, bytes) in junk {
+            std::fs::write(root.join(name), bytes).expect("write junk");
+        }
+        root
+    }
+
+    /// The sweep names the file holding the call, and leaves the loaded
+    /// capture exactly as it was.
+    ///
+    /// That second half is the whole reason this tool exists. `open_capture`
+    /// is documented Destructive — it replaces every dialog and stream and
+    /// mints a new `capture_identity` that voids every cursor — so asking
+    /// "which of these files holds Call-ID X" cost the caller the capture it
+    /// was already working in.
+    #[tokio::test]
+    async fn find_in_captures_names_the_file_without_touching_the_loaded_capture() {
+        let root = sweep_root(
+            "hit",
+            &[
+                ("a-empty.pcap", "tests/fixtures/sip_call.pcap"),
+                ("b-target.pcap", "tests/pcap-samples/sip-rtp-g711.pcap"),
+            ],
+            &[],
+        );
+        let srv = server_with_dialog("loaded@test").with_file_root(&root);
+
+        let before_len = srv.dialog_store.read().len();
+        // The store GENERATIONS, which is what `capture_identity` is derived
+        // from and what every held cursor keys on. Asserting on them is
+        // stricter than asserting on the identity string: a generation that
+        // moved has already invalidated the cursors even if the etag happened
+        // to render the same.
+        let before_gen = (
+            srv.dialog_store.read().generation(),
+            srv.stream_store.read().generation(),
+        );
+
+        let r = srv
+            .find_in_captures(Parameters(FindInCapturesParams {
+                filter: "call_id == \"1-1966@10.0.2.20\"".to_string(),
+                ..Default::default()
+            }))
+            .await
+            .expect("the sweep succeeds");
+        let v: serde_json::Value = serde_json::from_str(&text_of(&r)).expect("payload is JSON");
+        let sweep = &v["sweep"];
+
+        assert_eq!(
+            sweep["matches"].as_array().map(Vec::len),
+            Some(1),
+            "exactly one file holds that Call-ID: {sweep}"
+        );
+        assert_eq!(sweep["matches"][0]["filename"], "b-target.pcap");
+        assert_eq!(sweep["matches"][0]["first_call_id"], "1-1966@10.0.2.20");
+        assert_eq!(sweep["complete"], true, "both files were read: {sweep}");
+
+        // The loaded capture is untouched — same dialogs, same identity, so
+        // every cursor the caller holds is still valid.
+        assert_eq!(
+            srv.dialog_store.read().len(),
+            before_len,
+            "the sweep replaced the loaded capture's dialogs"
+        );
+        assert_eq!(
+            (
+                srv.dialog_store.read().generation(),
+                srv.stream_store.read().generation()
+            ),
+            before_gen,
+            "a store generation moved, which rotates capture_identity and \
+             voids every cursor the caller holds"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A file the sweep cannot read is NAMED, and makes the sweep incomplete.
+    ///
+    /// The CT1 defect in a new place: a sweep that silently skipped the file
+    /// it could not open would report "no matches" for a call that is sitting
+    /// in it. The one file nobody looked in is exactly the one that matters.
+    #[tokio::test]
+    async fn an_unreadable_capture_is_named_and_makes_the_sweep_incomplete() {
+        let root = sweep_root(
+            "unreadable",
+            &[("good.pcap", "tests/pcap-samples/sip-rtp-g711.pcap")],
+            &[("broken.pcap", b"not a capture at all")],
+        );
+        let srv = server_with_dialog("loaded@test").with_file_root(&root);
+
+        let r = srv
+            .find_in_captures(Parameters(FindInCapturesParams {
+                filter: "call_id == \"nothing@example.com\"".to_string(),
+                ..Default::default()
+            }))
+            .await
+            .expect("the sweep succeeds even when a file does not");
+        let v: serde_json::Value = serde_json::from_str(&text_of(&r)).expect("payload is JSON");
+        let sweep = &v["sweep"];
+
+        assert!(
+            sweep["matches"].as_array().is_some_and(Vec::is_empty),
+            "nothing matched: {sweep}"
+        );
+        assert_eq!(
+            sweep["complete"], false,
+            "a file went unread, so an empty result cannot mean the call is \
+             absent: {sweep}"
+        );
+        let unreadable = sweep["unreadable"].as_array().expect("an unreadable list");
+        assert_eq!(unreadable.len(), 1, "{sweep}");
+        assert_eq!(unreadable[0]["filename"], "broken.pcap");
+        assert!(
+            unreadable[0]["reason"]
+                .as_str()
+                .is_some_and(|r| !r.is_empty()),
+            "a file is never listed as unreadable without saying why: {sweep}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A file limit stops the sweep and says so.
+    #[tokio::test]
+    async fn a_file_limit_stops_the_sweep_and_marks_it_incomplete() {
+        let root = sweep_root(
+            "capped",
+            &[
+                ("a.pcap", "tests/fixtures/sip_call.pcap"),
+                ("b.pcap", "tests/pcap-samples/sip-rtp-g711.pcap"),
+            ],
+            &[],
+        );
+        let srv = server_with_dialog("loaded@test").with_file_root(&root);
+
+        let r = srv
+            .find_in_captures(Parameters(FindInCapturesParams {
+                filter: "call_id == \"1-1966@10.0.2.20\"".to_string(),
+                max_files: Some(1),
+                ..Default::default()
+            }))
+            .await
+            .expect("the sweep succeeds");
+        let v: serde_json::Value = serde_json::from_str(&text_of(&r)).expect("payload is JSON");
+        let sweep = &v["sweep"];
+
+        assert_eq!(sweep["files_examined"], 1);
+        assert_eq!(sweep["files_total"], 2);
+        assert_eq!(sweep["stopped_because"], "max-files");
+        assert_eq!(
+            sweep["complete"], false,
+            "one of two files was read: absence is not established"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A malformed filter is refused before any file is opened.
+    ///
+    /// Reading a spool to discover the expression was never valid is a cost
+    /// the caller pays for nothing.
+    #[tokio::test]
+    async fn a_malformed_filter_is_refused_before_the_sweep_starts() {
+        let root = sweep_root("badfilter", &[], &[]);
+        let srv = server_with_dialog("loaded@test").with_file_root(&root);
+        let err = srv
+            .find_in_captures(Parameters(FindInCapturesParams {
+                filter: "state ==".to_string(),
+                ..Default::default()
+            }))
+            .await
+            .expect_err("an unparseable filter is invalid_params");
+        assert!(
+            format!("{err:?}").contains("filter"),
+            "the refusal must name the parameter: {err:?}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Without `--mcp-file-root` the tool says so rather than sweeping nothing.
+    #[tokio::test]
+    async fn find_in_captures_without_a_file_root_says_so() {
+        let err = server_with_dialog("loaded@test")
+            .find_in_captures(Parameters(FindInCapturesParams {
+                filter: "state == failed".to_string(),
+                ..Default::default()
+            }))
+            .await
+            .expect_err("file tools are disabled without a root");
+        assert!(
+            format!("{err:?}").contains("--mcp-file-root"),
+            "the refusal must name the flag that enables it: {err:?}"
+        );
+    }
+
     /// The assertion is on the BYTES, not just the refusal: a guard that
     /// refuses after opening the file with truncation has already destroyed it,
     /// and would pass a test that only checked for an error.

@@ -44,7 +44,7 @@ Tiers:
 
 ## Status
 
-**35 open, 473 done** across 36 sections.
+**34 open, 474 done** across 36 sections.
 Regenerate with `python3 scripts/backlog-status.py --apply`.
 
 | Section | Open | Done | Progress |
@@ -69,7 +69,7 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
 | RDX | 0 | 2 | `##########` |
 | FLT | 0 | 1 | `##########` |
 | SPELL | 0 | 1 | `##########` |
-| MCPX | 1 | 6 | `#########.` |
+| MCPX | 0 | 7 | `##########` |
 | OBS | 0 | 7 | `##########` |
 | REQ | 4 | 13 | `########..` |
 | CMP | 3 | 2 | `####......` |
@@ -855,8 +855,8 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
   entry rested on. It is also the mechanism
   behind CT2 — a stalled reader is what overflows the ring. **Latent deadlock:**
   the ordering `stores → alerts` exists only on this path and is written down
-  nowhere; `security_findings` ([`src/mcp/server.rs:5506`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5506)) currently takes
-  nowhere; `security_findings` ([`src/mcp/server.rs:5506`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5506)) currently takes
+  nowhere; `security_findings` ([`src/mcp/server.rs:5544`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5544)) currently takes
+  nowhere; `security_findings` ([`src/mcp/server.rs:5544`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5544)) currently takes
   `alerts.read()` and no store lock, so there is no cycle *today*, and nothing
   stops the next MCP tool from creating one. **Do:** queue exec requests and
   per-message output during the locked section, drain them after the guards
@@ -1634,8 +1634,8 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
   `sipnab_capture_invalid_timestamps_total` (the field is declared at
   [`src/output/prometheus.rs:119`](https://github.com/NormB/sipnab/blob/main/src/output/prometheus.rs#L119), read from the atomic at `:149`, rendered at
   `:523`, and named in [`tests/metrics_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/metrics_test.rs) so a rename cannot silently drop
-  it); the MCP `capture_status` tool carries the field ([`src/mcp/server.rs:5621`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5621),
-  it); the MCP `capture_status` tool carries the field ([`src/mcp/server.rs:5621`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5621),
+  it); the MCP `capture_status` tool carries the field ([`src/mcp/server.rs:5659`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5659),
+  it); the MCP `capture_status` tool carries the field ([`src/mcp/server.rs:5659`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5659),
   populated at `:1356`) and reports it as a delta between two calls (`:1676`);
   and the batch summary explains it in prose
   ([`src/app/batch.rs:905-925`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L905-L925), the doc comment on `report_capture_quality`). The
@@ -2571,12 +2571,12 @@ output path.
     the file root and honest about
     itself with three states — `verified` / `unverified` / `unresolvable` —
     rather than resolving a foreign ref against the wrong file; and
-    `findings_with_refs` ([`src/mcp/server.rs:1795`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1795)), which attaches `frame_ref`
+    `findings_with_refs` ([`src/mcp/server.rs:1822`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1822)), which attaches `frame_ref`
     (`#[tool(` at [`src/mcp/server.rs:4528`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L4528), handler at `:3866`), confined to
     the file root and honest about
     itself with three states — `verified` / `unverified` / `unresolvable` —
     rather than resolving a foreign ref against the wrong file; and
-    `findings_with_refs` ([`src/mcp/server.rs:1795`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1795)), which attaches `frame_ref`
+    `findings_with_refs` ([`src/mcp/server.rs:1822`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1822)), which attaches `frame_ref`
     to `lint_dialog`
     findings and OMITS the key when no pointer exists, because `""` and
     frame 0 both read as real pointers. Capture identity binding
@@ -3193,7 +3193,7 @@ implementation.
   `value_parser = ["full", "metrics", "read"]`) rather than the
   `--mcp-token-scope` proposed above, with the help text drawing the
   audience line ("REST API tokens only" / "MCP tokens only"). Enforcement is
-  `scope_of` ([`src/mcp/server.rs:8284`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L8284), the `mcp-http` arm), reading the scope out of the
+  `scope_of` ([`src/mcp/server.rs:8459`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L8459), the `mcp-http` arm), reading the scope out of the
   `McpAuth::BearerVerified` admission record, and `scope_refusal` (`:4872`),
   which is called from the hand-written `call_tool` (`:4951`). The
   no-second-list requirement held literally: `scope_refusal` decides from the
@@ -6003,7 +6003,7 @@ ones that fit an analysis tool.
   constraint, and without a cap this becomes a query engine and then a
   dashboard, which is the thing sipnab exists not to be.
 
-- [ ] **MCPX3 — there is no way to look in a second capture without destroying
+- [x] **MCPX3 (done 2026-09-08) — there is no way to look in a second capture without destroying
   the first.** `list_captures` returns `{filename, bytes}` and nothing else.
   The only way inside another file is `open_capture`, which is documented
   "**Destructive.** Replaces every dialog and stream" and mints a new
@@ -6032,6 +6032,40 @@ ones that fit an analysis tool.
   reports for a file it could not open. Those are why this half did not ship
   alongside the other: half a sweep that silently skips an unreadable file is
   the CT1 defect again, in a new place.
+
+  **Done:** `find_in_captures`, with a scratch dialog/stream pair per file so
+  the loaded capture is never touched — the test asserts on the store
+  GENERATIONS rather than on the identity string, because a generation that
+  moved has already voided every cursor whether or not the etag rendered the
+  same.
+
+  **The three decisions this entry said had to come first.**
+
+  *What bounds the sweep:* both `max_files` and a wall-clock `deadline_ms`,
+  because they fail differently. A file count makes the cost predictable; the
+  deadline is the one that matters, since a file's cost is its size and the
+  caller cannot see it — twenty small files and twenty 2 GB files are the same
+  `max_files`. The deadline is tested BEFORE each file: tested after, the last
+  file overruns it by its whole read.
+
+  *Whether it can be canceled:* no. A tool call has no channel to interrupt it,
+  so the sweep bounds itself and always returns with an account of what it
+  covered. Pretending otherwise would be a control an agent cannot reach.
+
+  *What it reports for a file it could not open:* the filename and the reason,
+  in `unreadable`, never a silent skip — and `complete` goes false. That is the
+  CT1 shape this entry warned about, and it is why `complete` is the
+  conjunction of all three conditions rather than a count comparison: a match
+  does not excuse a truncation either, since on a rotated spool a call that
+  spans a rotation is in two files.
+
+  **A mutation survived the first version of that guard.** The unit test for
+  "an unreadable file makes the sweep incomplete" passed `files_examined: 2,
+  files_total: 3`, so the count clause had already decided it and deleting
+  `unreadable.is_empty()` changed nothing — the test asserted the right outcome
+  through the wrong clause. Two tests were owed and paid: one isolating the
+  clause with the counts agreeing, and one driving all eight combinations and
+  pinning that exactly one may report a complete sweep.
 
 - [x] **MCPX4 — exports are unreachable from the deployment shape that needs
   them most.** `export_capture` and `export_audio` return a server-local

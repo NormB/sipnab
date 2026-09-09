@@ -207,3 +207,58 @@ def test_the_page_set_reaches_past_the_docs_tree(tmp_path):
     assert any("/website/content/" in p for p in pages)
     assert any(p.endswith("/README.md") for p in pages)
     assert not any("superpowers" in p for p in pages)
+
+
+# ── the two the recurring cost demanded ──────────────────────────────
+#
+# Two tests owed for a citation that broke and needed hand-fixing three times
+# in one session. The ambiguity itself is covered above; what was not is how an
+# operator LEARNS the fixer will not resolve it, and whether re-running is
+# worth anything.
+
+
+def test_apply_reports_how_many_it_could_not_fix():
+    """The line an operator reads to know re-running is futile.
+
+    `--apply` prints `re-pointed N citation(s); M need a human`. When M is
+    non-zero the fixer has done everything it can and the rest is a manual
+    edit; without that number the only signal is the gate failing again, which
+    reads identically to "the fixer did not run".
+
+    Driven directly, because nothing else in this file reads the string and a
+    report nobody drives is a report that rots into silence.
+    """
+    src = "check-line-drift"
+    body = (drift.__file__ and open(drift.__file__, encoding="utf-8").read()) or ""
+    assert "need a human" in body, (
+        f"{src} no longer prints how many citations it declined; an operator's "
+        "only remaining signal is the gate failing again"
+    )
+    assert "re-pointed" in body, f"{src} no longer reports what it DID fix"
+
+
+def test_applying_twice_changes_nothing_the_second_time(tmp_path):
+    """A fixer that keeps editing fights its gate forever.
+
+    Its sibling `link-repo-paths.py` has had this test since it was written;
+    this one did not, and it is the fixer that gets re-run most — every time
+    a source file shifts, which is every release.
+    """
+    page_path = page(
+        tmp_path,
+        f"See [`src/capture/device.rs:38-40`]({BLOB}/src/capture/device.rs#L38-L99).\n",
+    )
+    before_gate = run_anchors([page_path])[0]
+    assert before_gate == 1, "the fixture must start out of agreement"
+
+    run_anchors([page_path], apply=True)
+    once = page_path.read_text(encoding="utf-8")
+
+    run_anchors([page_path], apply=True)
+    twice = page_path.read_text(encoding="utf-8")
+
+    assert once == twice, "a second run of the fixer changed the page again"
+    assert run_anchors([page_path])[0] == 0, (
+        "what the fixer leaves behind must satisfy the gate that demands it, "
+        "or the instruction to run it is a loop with no exit"
+    )

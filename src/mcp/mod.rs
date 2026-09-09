@@ -65,6 +65,7 @@ pub mod shape;
 pub mod since;
 pub mod structured;
 pub mod subscribe;
+pub mod sweep;
 pub mod tls_capture;
 pub mod tools;
 pub mod transport;

@@ -51,7 +51,7 @@ was driving all of them.
 |---|---|---|---|---|---|
 | CLI flags | 261 | 132 | 50 | 78 | 1 |
 | HTTP routes | 18 | 18 | -- | 0 | 0 |
-| MCP tools | 65 | 65 | -- | 0 | 0 |
+| MCP tools | 66 | 66 | -- | 0 | 0 |
 
 **Flags with no occurrence at all:** `--syslog`
 
