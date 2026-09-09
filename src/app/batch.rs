@@ -1048,7 +1048,13 @@ pub fn run_cores_file(
 /// The TUI keeps its own retention decision in `tui_mode.rs`, which is why its
 /// F2 WAV export always worked against the same decoder.
 pub(crate) fn audio_retention_wanted(cli: &Cli) -> bool {
-    cli.mcp_args.mcp && cli.mcp_args.retain_audio
+    // `--retain-audio` alone, not `--mcp && --retain-audio`. The conjunction
+    // was right while the MCP server was the only thing that could read the
+    // buffers back; the amplitude measurement in the media diagnosis reads
+    // them now, on `--call-report` and `--json-dialogs`, and an operator who
+    // asked for audio retention on a plain batch run would otherwise have got
+    // silence with no explanation.
+    cli.mcp_args.retain_audio
 }
 
 /// Arm the store's retention from that decision, and report what was decided.
@@ -9205,16 +9211,22 @@ mod tests {
         );
     }
 
-    /// Retention requires a reader AND the operator's consent — both, not
-    /// either.
+    /// Retention follows the operator's consent, and NOTHING else.
     ///
-    /// The history is two defects in opposite directions. First retention was
-    /// hardcoded off, so `export_audio` decoded an always-empty buffer and
-    /// failed for every call in every capture. Then the fix armed it for
-    /// EVERY `--mcp` run, holding call audio in memory whether or not
-    /// anything would ever export it — a privacy decision made on the
-    /// operator's behalf. Each single-conjunct predicate looks reasonable
-    /// alone, which is why all four combinations are pinned.
+    /// The history is three defects, and they point in different directions.
+    /// First retention was hardcoded off, so `export_audio` decoded an
+    /// always-empty buffer and failed for every call in every capture. Then
+    /// the fix armed it for EVERY `--mcp` run, holding call audio in memory
+    /// whether or not anything would ever export it — a privacy decision made
+    /// on the operator's behalf. Then the fix for THAT required `--mcp`
+    /// alongside the opt-in, which was right while the MCP server was the only
+    /// consumer and became wrong the moment the amplitude measurement started
+    /// reading the same buffers on `--call-report` and `--json-dialogs`.
+    ///
+    /// So all four combinations are still pinned, and the rule they pin is now
+    /// the single conjunct: `--retain-audio`, whatever else the run is doing.
+    /// The privacy half is unchanged and is the one that matters — enabling a
+    /// server is still not consent to hold call audio.
     #[test]
     fn audio_payload_is_retained_exactly_when_asked_and_readable() {
         let mut cli = base_cli();
@@ -9223,7 +9235,7 @@ mod tests {
         cli.mcp_args.retain_audio = false;
         assert!(
             !audio_retention_wanted(&cli),
-            "a plain batch run has no reader, so it must not pay the clone"
+            "a run that did not ask for audio must not pay the clone"
         );
 
         cli.mcp_args.mcp = true;
@@ -9237,10 +9249,10 @@ mod tests {
         cli.mcp_args.mcp = false;
         cli.mcp_args.retain_audio = true;
         assert!(
-            !audio_retention_wanted(&cli),
-            "clap refuses this combination at parse time (--retain-audio \
-             requires --mcp), but the predicate must hold on its own: \
-             retaining with no reader spends memory nothing can read back"
+            audio_retention_wanted(&cli),
+            "a plain batch run has a reader now: the amplitude measurement in \
+             the media diagnosis, which is the one finding that needs the \
+             samples and reaches every surface a diagnosis reaches"
         );
 
         cli.mcp_args.mcp = true;
@@ -9251,20 +9263,32 @@ mod tests {
         );
     }
 
-    /// `--retain-audio` without `--mcp` is refused at parse time, not
-    /// silently accepted and ignored.
+    /// `--retain-audio` stands on its own.
     ///
-    /// A flag that parses and does nothing is the `--alert` defect (#35) in
-    /// new clothes; the clap `requires` makes the combination
-    /// unrepresentable, and this pins that it stays declared.
+    /// It used to carry a clap `requires = "mcp"`, and the reasoning was
+    /// sound: a flag that parses and does nothing is the `--alert` defect (#35)
+    /// in new clothes, and the MCP server was the only thing that could read
+    /// the buffers back. The amplitude measurement reads them now on a plain
+    /// batch run, so the constraint would keep the one finding that needs
+    /// samples behind a server nobody analyzing a pcap wants to start.
+    ///
+    /// Both halves are asserted: that it parses, and that the run it produces
+    /// actually retains. Parsing alone would be the `--alert` defect again.
     #[test]
-    fn retain_audio_without_mcp_is_a_parse_error() {
+    fn retain_audio_stands_alone_now_that_a_batch_run_reads_it() {
         use clap::Parser as _;
-        let err = Cli::try_parse_from(["sipnab", "-N", "--retain-audio"]);
+        let cli = Cli::try_parse_from([
+            "sipnab",
+            "-N",
+            "-I",
+            "tests/pcap-samples/sip-rtp-g711.pcap",
+            "--retain-audio",
+        ])
+        .expect("--retain-audio must parse without --mcp");
         assert!(
-            err.is_err(),
-            "--retain-audio without --mcp must be refused at parse time; \
-             accepting it silently retains nothing and says nothing"
+            audio_retention_wanted(&cli),
+            "it parsed and then retained nothing, which is a flag that does \
+             nothing wearing a different hat"
         );
     }
 

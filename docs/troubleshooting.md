@@ -14,6 +14,7 @@ the cause from there.
 | "It hangs up after 30 seconds" / after exactly 15 or 30 minutes | [Dropped calls](#dropped-calls-call-answers-then-disconnects-mid-conversation) |
 | "Calls to that one carrier fail immediately" / 488 | [488 Not Acceptable Here](#488-not-acceptable-here-codec-mismatch) |
 | "They can hear me but I can't hear them" | [One-way audio](#one-way-audio) |
+| "Dead air" / "the line went quiet" but the call stayed up | [Dead air and clipping](#dead-air-and-clipping) |
 | "It sounds choppy / robotic / underwater" | [Poor call quality](#poor-call-quality) |
 | Every call in the capture looks lossy at once | [Poor call quality](#poor-call-quality), then [Tuning capture](tuning-capture.md) -- the loss may be sipnab's, not the network's |
 | "There's a long pause before it rings" | [Slow call setup](#slow-call-setup-post-dial-delay) |
@@ -312,6 +313,55 @@ A quote that matches nothing is still counted and still printed -- the endpoint 
 4. If NAT is clean: verify symmetric RTP, check for SIP ALG on intermediate firewalls (disable it), and confirm both endpoints negotiate a common codec.
 
 ---
+
+## Dead air and clipping
+
+The hardest silent call to find is the one where nothing is wrong with the
+packets. A gateway sending full-rate frames of digital silence puts every
+packet on the wire, in sequence, at the right rate, in both directions. Loss is
+zero, jitter is zero, the MOS is 4.36 and grounded, and no other check on this
+page fires. Counting comfort-noise frames does not find it either: those frames
+say "I am sending silence", and this gateway is not saying anything.
+
+So sipnab measures the audio itself. It needs the samples, which means
+`--retain-audio`:
+
+```bash
+sipnab -N -I capture.pcap --retain-audio --call-report <call-id> --json
+```
+
+The `diagnosis.amplitude` object appears only on a run that kept the samples.
+**Absent means not measured, never "clean"** -- there is nothing to look at on a run
+without `--retain-audio`, and reading absence as a pass is how a silent call
+gets signed off.
+
+Two measurements, each with the threshold that produced it beside the number:
+
+| Finding | What it measures | Threshold |
+|---|---|---|
+| `dead_air` | Windows whose RMS sits below a floor relative to the codec's own full scale, for at least `MIN_DEAD_AIR_MS` (1,000) milliseconds in a row | -60 dBFS, measured over 100 ms windows |
+| `clipping` | Runs of at least `MIN_CLIP_RUN` (3) consecutive samples at 99% of the codec's full scale or beyond | The codec's ceiling, not the container's |
+
+Both are **amplitude measurements and neither is a quality score.** They say
+what the samples did. Converting that into a MOS would need a corpus of
+listener scores that does not exist here and that you could not reproduce from
+the pcap to check.
+
+The clipping threshold is the codec's own ceiling on purpose. G.711 decodes
+into a 16-bit container it never fills -- mu-law tops out at 32,124 and A-law
+at 32,256 -- so a test written against 32,767 never fires on the two codecs
+most telephony runs on.
+
+**Reading the result.** Dead air with a start time near the answer points at
+the media path: check [NAT traversal issues](#nat-traversal-issues) and
+[One-way audio](#one-way-audio) first, because a call that never carried audio
+is a different fault from one that stopped. Dead air starting mid-call, with
+packets still flowing both ways, is the gateway or the far-end mixer. Clipping
+is a gain stage: something upstream is driving the encoder into its ceiling,
+and no network change fixes it.
+
+`sipnab_diagnosis_total{kind="dead_air"}` and `{kind="clipping"}` count calls
+where the measurement fired. Neither ticks on a run that kept no audio.
 
 ## Poor call quality
 

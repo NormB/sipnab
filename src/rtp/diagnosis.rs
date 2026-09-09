@@ -275,6 +275,22 @@ pub struct MediaDiagnosis {
     /// capture-level lapsed-allocation finding, narrowed to THIS call's media.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub media_relay: Option<crate::stun::RelayPath>,
+    /// What the decoded audio DID, when the run retained any.
+    ///
+    /// `None` means NOT MEASURED, and a reader must not take it for a clean
+    /// call: without `--retain-audio` there are no samples to look at. That is
+    /// why this is one optional field rather than two booleans — a
+    /// `dead_air: false` on a call nobody decoded reads as "checked, and
+    /// fine", which is the same shape of wrong answer as a MOS on a codec with
+    /// no published impairment value.
+    ///
+    /// Every other flag on this struct is about the media PATH: whether it
+    /// flowed, which way, and to where. This one is about what was on it. A
+    /// gateway sending full-rate frames of digital silence satisfies every
+    /// other check here — the packets arrive, in sequence, both ways, at the
+    /// right rate — and the call is silent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub amplitude: Option<crate::rtp::amplitude::AmplitudeFindings>,
     /// Human-readable diagnostic hints.
     pub hints: Vec<String>,
 
@@ -928,6 +944,40 @@ pub fn diagnose_media(dialog_streams: &[&RtpStream], media: &MediaContext) -> Me
              the wrong address."
                 .to_string(),
         );
+    }
+
+    // What was ON the media, as opposed to whether there was any. Costs
+    // nothing on a run without `--retain-audio`: every payload buffer is empty
+    // and `findings_for` returns `None` after looking at the lengths.
+    diag.amplitude = crate::rtp::amplitude::findings_for(dialog_streams);
+    if let Some(a) = &diag.amplitude {
+        if a.dead_air {
+            let longest = a
+                .streams
+                .iter()
+                .map(|s| s.report.longest_dead_air_ms())
+                .max()
+                .unwrap_or(0);
+            diag.hints.push(format!(
+                "Decoded audio sat below {:.0} dBFS for {:.1}s at a stretch. \
+                 Comfort-noise counting cannot see this: a gateway sending \
+                 full-rate frames of digital silence produces perfect packet \
+                 statistics and a silent call. This is an amplitude \
+                 measurement, not a quality score.",
+                crate::rtp::amplitude::DEAD_AIR_FLOOR_DBFS,
+                longest as f64 / 1000.0,
+            ));
+        }
+        if a.clipping {
+            diag.hints.push(
+                "Decoded audio ran at the codec's own full scale for runs of \
+                 three samples or more, which is a waveform with its top cut \
+                 off. A gain stage upstream is driving the encoder into its \
+                 ceiling. This is an amplitude measurement, not a quality \
+                 score."
+                    .to_string(),
+            );
+        }
     }
 
     diag

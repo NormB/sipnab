@@ -839,7 +839,13 @@ fn wiki_intra_docs_links_resolve() {
     // vocabulary it shares, rather than restating any of them -- plus its row
     // in the tool index. Attributed per file against HEAD: docs/mcp-tools.md
     // 203 -> 208, and no other page the extractor reads moved.
-    const EXPECTED_WIKI_LINKS: usize = 708;
+    // 708 -> 711 by the "Dead air and clipping" section in
+    // docs/troubleshooting.md (CMP4). Three links, all of them the section
+    // saying where the answer is NOT: a call that never carried audio is a
+    // different fault from one that went quiet mid-call, so it points at the
+    // NAT and one-way-audio sections rather than re-arguing either, and its
+    // symptom-index row points back at itself.
+    const EXPECTED_WIKI_LINKS: usize = 711;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe 6d in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

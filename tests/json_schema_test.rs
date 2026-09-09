@@ -155,6 +155,30 @@ fn call_report_schema_validates_output() {
         "fixture must actually carry a diagnosis or this case proves nothing"
     );
     assert_valid(&v, &inst, "call_report (diagnosed failure)");
+
+    // A report with RETAINED AUDIO, which is the only shape that carries the
+    // amplitude measurement. The three cases above all run without
+    // `--retain-audio`, so the object is absent from every one of them and the
+    // schema could have declared nothing about it and still passed -- which is
+    // the same hole `signaling_diagnosis` fell through, one paragraph up.
+    let out = run_sipnab(&[
+        "-N",
+        "-I",
+        "tests/pcap-samples/sip-rtp-g711.pcap",
+        "--retain-audio",
+        "--call-report",
+        "1-1966@10.0.2.20",
+        "--json",
+        "--no-cli-print",
+    ]);
+    let inst: Value = serde_json::from_str(out.trim()).expect("retained-audio report parses");
+    assert!(
+        inst["diagnosis"].get("amplitude").is_some(),
+        "the fixture retained no audio, so this case proves nothing about the \
+         one field it exists to reach: {}",
+        inst["diagnosis"]
+    );
+    assert_valid(&v, &inst, "call_report (retained audio)");
 }
 
 /// `--json-dialogs` emits the same per-dialog document the call report does,

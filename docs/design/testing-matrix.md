@@ -275,7 +275,7 @@ behind them.
 | `--mcp-file-root` |  | `DIR` | MCP (Model Context Protocol) | e2e | `tests/mcp_completeness_test.rs`, `tests/mcp_completion_test.rs` +4 |  |  |
 | `--mcp-sampling-budget` |  | `PER_HOUR` | MCP (Model Context Protocol) | referenced | `src/mcp/sampling.rs`, `tests/mcp_sampling_wiring_test.rs` |  |  |
 | `--mcp-allow-shutdown` |  |  | MCP (Model Context Protocol) | e2e | `tests/mcp_diagnostic_tools_test.rs`, `tests/mcp_elicitation_test.rs` |  |  |
-| `--retain-audio` |  |  | MCP (Model Context Protocol) | e2e | `tests/cli_flag_behavior_test.rs` |  |  |
+| `--retain-audio` |  |  | MCP (Model Context Protocol) | e2e | `tests/cli_flag_behavior_test.rs`, `tests/json_schema_test.rs` |  |  |
 | `--mcp-allow-open-capture` |  |  | MCP (Model Context Protocol) | e2e | `tests/mcp_completeness_test.rs`, `tests/mcp_completion_test.rs` +2 | **behavior** | the real binary runs WITH the flag; refusal without it, 1 dialog -> 1334 with it |
 | `--mcp-allow-relay-query` |  |  | MCP (Model Context Protocol) | e2e | `tests/mcp_protocol_features_test.rs` |  |  |
 | `--mcp-allow-tls-capture` |  |  | MCP (Model Context Protocol) | referenced | `src/mcp/server.rs`, `tests/mcp_completeness_test.rs` +1 | **behavior** | default-deny and opt-in effect asserted; the one-line CLI hop is untested |

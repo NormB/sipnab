@@ -44,7 +44,7 @@ Tiers:
 
 ## Status
 
-**33 open, 475 done** across 36 sections.
+**32 open, 476 done** across 36 sections.
 Regenerate with `python3 scripts/backlog-status.py --apply`.
 
 | Section | Open | Done | Progress |
@@ -72,7 +72,7 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
 | MCPX | 0 | 7 | `##########` |
 | OBS | 0 | 7 | `##########` |
 | REQ | 4 | 13 | `########..` |
-| CMP | 2 | 3 | `######....` |
+| CMP | 1 | 4 | `########..` |
 | GTP | 2 | 1 | `###.......` |
 | MER | 0 | 5 | `##########` |
 | LIVE | 6 | 0 | `..........` |
@@ -6367,19 +6367,43 @@ cheap gaps its page made obvious.
   dimension name, so the answer states its own granularity; replace the regex
   recipe rather than leaving two ways that disagree at the edges.
 
-- [ ] **CMP4 — silence in the packets is not silence in the audio.** The only
-  quiet-call signal is Comfort Noise frame counting. A gateway sending full-rate
-  frames of digital silence — the ordinary shape of a dead-air complaint —
-  produces perfect packet statistics, a grounded MOS of 4.36, and no finding.
-  `--retain-audio` already decodes the payload to PCM for WAV export, so the
-  samples are in hand and nothing looks at them.
+- [x] **CMP4 (done 2026-09-09) — silence in the packets is not silence in the
+  audio.** The only quiet-call signal was Comfort Noise frame counting. A
+  gateway sending full-rate frames of digital silence — the ordinary shape of a
+  dead-air complaint — produces perfect packet statistics, a grounded MOS of
+  4.36, and no finding: those frames say "I am sending silence", and this
+  gateway is not saying anything.
 
-  **Do:** on that existing PCM, report two measurements with their thresholds
-  stated in the output — dead-air spans below a named RMS floor, and hard-clip
-  runs at full scale — as diagnosis flags beside `one_way` and `no_media`.
-  **Name it an amplitude measurement and keep it out of anything called a MOS**,
-  or it becomes the ungrounded confident number this project refuses everywhere
-  else.
+  **Done.** `crate::rtp::amplitude` measures the PCM `--retain-audio` already
+  decodes, and `diagnosis.amplitude` carries the result to every surface a
+  media diagnosis reaches. Two measurements, each with the thresholds that
+  produced it as FIELDS rather than as documentation: dead-air spans below a
+  -60 dBFS floor over 100 ms windows for at least a second, and hard-clip runs
+  of three or more consecutive samples at 99% of full scale. Both are named
+  amplitude measurements and neither is converted into anything called a MOS.
+
+  **The pinned-value trap, avoided by measuring it.** G.711 decodes into a
+  16-bit container it never fills — mu-law tops out at 32124 and A-law at
+  32256 — so a clip test written against `i16::MAX` never fires on the two
+  codecs most telephony runs on. The ceiling comes from the decode tables
+  themselves.
+
+  **Absence is not a pass.** `diagnosis.amplitude` is absent when no audio was
+  retained, and that is one optional field rather than two booleans on purpose:
+  `dead_air: false` on a call nobody decoded reads as "checked, and fine".
+
+  **What the work found:** `--retain-audio` carried `requires = "mcp"`, with
+  the documented reason that the MCP server was the only batch-mode consumer.
+  That stopped being true here, and the constraint would have kept the one
+  finding that needs samples behind a server nobody analyzing a pcap wants to
+  start. Lifted, with the `--alert` objection answered by asserting the EFFECT
+  — the run must produce the measurement, not merely accept the argument.
+
+  The call report schema had the `siprec` shape again: `additionalProperties:
+  false` on `diagnosis` and no mention of the new field, so every
+  `--retain-audio` report would have failed validation for any consumer while
+  the suite stayed green, because no fixture retained audio. A schema case that
+  does now exists.
 
 - [ ] **CMP5 — decide the VoLTE codec question rather than drifting into it.**
   Audio export admits `PCMU`, `PCMA` and `opus`, so it refuses on every VoLTE

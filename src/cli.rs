@@ -2800,26 +2800,32 @@ pub struct McpArgs {
     )]
     pub mcp_allow_shutdown: bool,
 
-    /// Retain RTP audio payload in memory so the `export_audio` MCP tool can
-    /// decode it.
+    /// Retain RTP audio payload in memory, so the audio itself can be looked
+    /// at.
+    ///
+    /// Two consumers read the buffers back: the `export_audio` MCP tool, which
+    /// decodes them to a WAV, and the amplitude measurement in the media
+    /// diagnosis, which reports dead-air spans and hard-clip runs on every
+    /// surface a diagnosis reaches. Without this flag both say retention was
+    /// off for the run — a capture setting, not a finding that the call was
+    /// silent.
     ///
     /// Off by default: call audio is content, not signaling, and holding it
     /// should be a decision an operator makes rather than a side effect of
-    /// enabling an MCP server. Without this flag `export_audio` refuses and
-    /// its refusal says retention was off for the run — a capture setting,
-    /// not a finding that the call was silent.
+    /// running a capture.
     ///
     /// Costs a per-packet payload clone and buffers up to `[limits]
     /// max_audio_frames` frames (default 1500) per stream across at most
-    /// `--max-streams` streams. Requires --mcp, because the MCP server is the
-    /// only batch-mode consumer that can read the buffers back — retaining
-    /// without it would spend the memory on audio nothing in the run can
-    /// reach.
-    #[arg(
-        help_heading = "MCP (Model Context Protocol)",
-        long = "retain-audio",
-        requires = "mcp"
-    )]
+    /// `--max-streams` streams.
+    ///
+    /// It used to require `--mcp`, because the MCP server was the only
+    /// batch-mode consumer and retaining without it would have spent the
+    /// memory on audio nothing in the run could reach. That stopped being true
+    /// when the amplitude measurement landed: `--call-report` and
+    /// `--json-dialogs` read it now, and the constraint would have kept the
+    /// one finding that needs samples behind a server nobody analyzing a pcap
+    /// wants to start.
+    #[arg(help_heading = "MCP (Model Context Protocol)", long = "retain-audio")]
     pub retain_audio: bool,
 
     /// Allow the `open_capture` MCP tool to load a different capture.

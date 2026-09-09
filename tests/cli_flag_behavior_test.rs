@@ -1776,26 +1776,58 @@ fn cores_still_produces_the_whole_capture_views() {
     );
 }
 
-/// `--retain-audio` without `--mcp` is refused at the real CLI boundary.
+/// `--retain-audio` works without `--mcp`, and the audit reaches the reader.
 ///
-/// The flag arms an in-memory buffer only the MCP `export_audio` tool can
-/// read back, so without `--mcp` it would retain call audio nothing in the
-/// run can reach. A flag that parses and silently does nothing is the
-/// `--alert` defect class; clap's `requires = "mcp"` makes the combination
-/// unrepresentable, and this pins the refusal as the process's actual
-/// behavior — exit non-zero, and an error that names the missing flag so
-/// the operator learns the remedy rather than just the rejection.
+/// This test used to assert the opposite, and the reasoning was sound at the
+/// time: the flag armed an in-memory buffer only the MCP `export_audio` tool
+/// could read back, so without `--mcp` it would have retained call audio
+/// nothing in the run could reach — the `--alert` defect class, a flag that
+/// parses and silently does nothing.
+///
+/// The amplitude measurement in the media diagnosis reads the same buffers
+/// now, on `--call-report` and `--json-dialogs`, so the constraint would keep
+/// the one finding that needs samples behind a server nobody analyzing a pcap
+/// wants to start. The `--alert` objection is answered by ASSERTING THE
+/// EFFECT rather than by refusing the flag: the run must produce the
+/// measurement, not merely accept the argument.
 #[test]
-fn retain_audio_without_mcp_is_refused_with_the_remedy_named() {
-    let (_stdout, stderr, code) = run_support::run(&["-N", "--retain-audio"], Some("off"));
-    assert_ne!(
+fn retain_audio_without_mcp_produces_the_amplitude_measurement() {
+    let (stdout, stderr, code) = run_support::run(
+        &[
+            "-N",
+            "-I",
+            "tests/pcap-samples/sip-rtp-g711.pcap",
+            "--retain-audio",
+            "--json-dialogs",
+            "--no-cli-print",
+        ],
+        Some("off"),
+    );
+    assert_eq!(
         code,
         Some(0),
-        "--retain-audio without --mcp must be a hard CLI error, not a silent no-op"
+        "--retain-audio without --mcp must no longer be refused: {stderr}"
     );
+    let line = stdout
+        .lines()
+        .find(|l| l.starts_with('{') && l.contains("\"amplitude\""))
+        .unwrap_or_else(|| {
+            panic!(
+                "no dialog carried an amplitude object, so the flag parsed and \
+                 did nothing — which is the defect the old refusal existed to \
+                 prevent.\nstdout: {stdout}"
+            )
+        });
+    let v: serde_json::Value = serde_json::from_str(line).expect("dialog JSON parses");
+    let amplitude = &v["diagnosis"]["amplitude"];
     assert!(
-        stderr.contains("--mcp"),
-        "the refusal must name --mcp so the operator learns the remedy: {stderr}"
+        amplitude["streams_measured"].as_u64().unwrap_or(0) >= 1,
+        "the object is there but nothing was measured: {amplitude}"
+    );
+    // The threshold travels with the finding, on this surface too.
+    assert!(
+        amplitude["streams"][0]["report"]["floor_dbfs"].is_number(),
+        "the floor that decided the finding is missing: {amplitude}"
     );
 }
 

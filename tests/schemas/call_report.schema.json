@@ -482,12 +482,136 @@
             }
           }
         },
+        "amplitude": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "What the decoded audio DID, present ONLY when the run retained audio (--retain-audio). Absent means NOT MEASURED and never 'clean': without samples there is nothing to look at, and a consumer reading absence as a pass signs off a silent call. These are amplitude measurements and not a quality score -- a gateway sending full-rate frames of digital silence produces perfect packet statistics, a grounded MOS of 4.36, and a call nobody can hear.",
+          "required": [
+            "streams_measured",
+            "dead_air",
+            "clipping",
+            "streams"
+          ],
+          "properties": {
+            "streams_measured": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "Streams whose audio was decoded. At least one, because the object is absent when none were."
+            },
+            "dead_air": {
+              "type": "boolean",
+              "description": "Any measured stream sat below the floor for longer than the reported minimum."
+            },
+            "clipping": {
+              "type": "boolean",
+              "description": "Any measured stream ran at its codec's own full scale for longer than the reported minimum run."
+            },
+            "streams": {
+              "type": "array",
+              "minItems": 1,
+              "items": { "$ref": "#/$defs/stream_amplitude" }
+            }
+          }
+        },
         "hints": {
           "type": "array",
           "items": {
             "type": "string"
           }
         }
+      }
+    },
+    "stream_amplitude": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "One stream's amplitude measurement, with every threshold that produced it. The thresholds are fields and not documentation: a finding whose threshold lives only in the source is a finding nobody can argue with.",
+      "required": [
+        "ssrc",
+        "src",
+        "dst",
+        "codec",
+        "report"
+      ],
+      "properties": {
+        "ssrc": { "type": "string" },
+        "src": { "type": "string" },
+        "dst": { "type": "string" },
+        "codec": { "type": "string" },
+        "report": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "sample_rate",
+            "duration_ms",
+            "full_scale",
+            "floor_dbfs",
+            "window_ms",
+            "min_dead_air_ms",
+            "clip_threshold",
+            "min_clip_run",
+            "dead_air",
+            "dead_air_ms",
+            "clipping",
+            "clipped_samples"
+          ],
+          "properties": {
+            "sample_rate": { "type": "integer", "minimum": 1 },
+            "duration_ms": { "type": "integer", "minimum": 0 },
+            "full_scale": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "The largest magnitude this stream's decoder can produce. NOT 32767 for G.711: mu-law tops out at 32124 and A-law at 32256, so a clip test written against the container's maximum never fires on either."
+            },
+            "floor_dbfs": {
+              "type": "number",
+              "description": "RMS below this, relative to full_scale, counts as silence."
+            },
+            "window_ms": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "The window the RMS was measured over."
+            },
+            "min_dead_air_ms": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "The shortest run of silent windows reported. Normal conversation is roughly half silence, so a shorter minimum would report every healthy call."
+            },
+            "clip_threshold": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "The absolute sample magnitude a clip was counted at, derived from full_scale."
+            },
+            "min_clip_run": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "The shortest run of consecutive clipped samples counted. One sample at the ceiling is a loud sample; a run is a waveform with its top cut off."
+            },
+            "dead_air": {
+              "type": "array",
+              "items": { "$ref": "#/$defs/amplitude_span" }
+            },
+            "dead_air_ms": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Total dead air, which is not the longest span."
+            },
+            "clipping": {
+              "type": "array",
+              "items": { "$ref": "#/$defs/amplitude_span" }
+            },
+            "clipped_samples": { "type": "integer", "minimum": 0 }
+          }
+        }
+      }
+    },
+    "amplitude_span": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["start_ms", "duration_ms"],
+      "description": "A stretch of audio located within the decoded stream. 'This call had dead air' and 'this call went silent forty seconds in' are different findings.",
+      "properties": {
+        "start_ms": { "type": "integer", "minimum": 0 },
+        "duration_ms": { "type": "integer", "minimum": 0 }
       }
     },
     "stream": {

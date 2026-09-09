@@ -689,6 +689,35 @@ fn is_opus_codec(codec: &str) -> bool {
     codec.eq_ignore_ascii_case("opus")
 }
 
+/// The decoded samples of one stream, for a caller that wants the audio rather
+/// than a file.
+///
+/// The same decode the WAV export runs, exposed because
+/// [`crate::rtp::amplitude`] measures what the samples DID and there is no
+/// reason for a second decoder to exist beside this one.
+///
+/// # Arguments
+///
+/// * `stream` — the stream to decode. Its `payload_buffer` is empty unless the
+///   run asked for `--retain-audio`.
+///
+/// # Returns
+///
+/// `(samples, sample_rate)`, or `None` when nothing was retained or the codec
+/// has no decoder here. `None` means NOT DECODED and never "silence".
+#[must_use]
+pub fn stream_pcm(stream: &RtpStream) -> Option<(Vec<i16>, u32)> {
+    if stream.payload_buffer.is_empty() {
+        return None;
+    }
+    let (pcm, rate, _, _) = decode_stream_pcm(stream).ok()?;
+    if pcm.is_empty() {
+        None
+    } else {
+        Some((pcm, rate))
+    }
+}
+
 /// Decode all captured payloads in a stream to PCM i16 samples.
 ///
 /// Returns `(samples, sample_rate, codec_label)`.

@@ -10,6 +10,22 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Changed
+
+- **`--retain-audio` no longer requires `--mcp`.** The constraint was right
+  when it was written: the MCP `export_audio` tool was the only thing that
+  could read the retained buffers back, so retaining without it would have
+  spent the memory on audio nothing in the run could reach — a flag that parses
+  and does nothing. The amplitude measurement above reads the same buffers on
+  `--call-report` and `--json-dialogs`, so the constraint would have kept the
+  one finding that needs samples behind a server nobody analyzing a pcap wants
+  to start.
+
+  The objection it answered is answered a different way now: the test asserts
+  the EFFECT. A plain batch run with the flag must produce the measurement, not
+  merely accept the argument. Retention is still opt-in and still never armed
+  by `--mcp` alone — enabling a server is not consent to hold call audio.
+
 ### Fixed
 
 - **A vulnerability that was accepted in writing came back wearing a different
@@ -53,6 +69,40 @@ entry that carries them.
   the tree rather than against the release notes.
 
 ### Added
+
+- **A gateway sending full-rate frames of digital silence passed every check
+  sipnab had.** The packets arrive, in sequence, in both directions, at the
+  right rate. Loss is zero, jitter is zero, the MOS is 4.36 and grounded, and
+  nothing in the report says the call was silent. Counting comfort-noise frames
+  does not find it either: those frames say "I am sending silence", and this
+  gateway is not saying anything. Everything sipnab looked at was the envelope.
+
+  `--retain-audio` already decoded the payload to PCM for WAV export, so the
+  samples were in hand and nothing looked at them. Now `diagnosis.amplitude`
+  reports two measurements on those samples, on every surface a media diagnosis
+  reaches: dead-air spans below a -60 dBFS floor, measured over 100 ms windows
+  and reported at a second or longer, and hard-clip runs of three or more
+  consecutive samples at 99% of the codec's full scale.
+
+  **Every threshold is a field, not a sentence in the source.** A finding whose
+  threshold lives only in the code is a finding nobody can argue with, so the
+  floor, the window, the minimum span, the clip threshold and the minimum run
+  all travel in the payload beside the numbers they produced.
+
+  **These are amplitude measurements and neither is a quality score.** They say
+  what the samples did. A perceptual score would need a subjectively-labeled
+  corpus that does not exist here and that a reader could not reproduce from
+  the pcap to check.
+
+  **The clip threshold is the codec's ceiling, not the container's.** G.711
+  decodes into a 16-bit word it never fills — mu-law tops out at 32,124 and
+  A-law at 32,256 — so a test written against 32,767 never fires on the two
+  codecs most telephony runs on. The ceiling is read off the decode tables.
+
+  **Absent means not measured.** `diagnosis.amplitude` is one optional object
+  rather than two booleans, deliberately: `dead_air: false` on a call nobody
+  decoded reads as "checked, and fine", which is the same shape of wrong answer
+  as a MOS on a codec with no published impairment value.
 
 - **The quality trend recorded how a call was going and never how good it
   was.** `QualityInterval` carried a timestamp, jitter, loss and a packet

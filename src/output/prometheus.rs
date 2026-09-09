@@ -662,6 +662,11 @@ impl PrometheusMetrics {
             // `sipnab_nat_lapsed_turn_allocations`, and counting it a second
             // time here would double a single problem.
             media_relay: _,
+            // Counted below, but through `amplitude` rather than as a flag:
+            // absent means the run kept no audio, and a series that treated
+            // "not measured" as "not found" would publish a healthy fleet made
+            // entirely of calls nobody decoded.
+            amplitude,
         } = diagnosis;
         for (raised, kind) in [
             (one_way_audio, "one_way_audio"),
@@ -676,6 +681,19 @@ impl PrometheusMetrics {
                 *self.diagnosis_total.entry(kind.to_string()).or_insert(0) += 1;
             }
         }
+        // The two amplitude findings, and only when there was audio to look at.
+        // These count calls where the samples were DECODED and the measurement
+        // fired. On a run without `--retain-audio` nothing here ever ticks,
+        // which is correct: the series says "calls found silent", not "calls
+        // that were fine".
+        if let Some(a) = amplitude {
+            for (raised, kind) in [(a.dead_air, "dead_air"), (a.clipping, "clipping")] {
+                if raised {
+                    *self.diagnosis_total.entry(kind.to_string()).or_insert(0) += 1;
+                }
+            }
+        }
+
         // The escalation, as its own series rather than as a second metric
         // name: `private_media_address` says an unroutable `c=` line was
         // offered where it cannot work, and this subset says STUN is on record

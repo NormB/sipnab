@@ -19,7 +19,9 @@
 //! - `stream_store` — Indexed collection of streams with lifecycle management
 //! - `heuristic` — RTP detection without SDP signaling
 //! - `diagnosis` — Media path issue detection (one-way audio, NAT, no media)
+//! - `amplitude` — What the decoded samples did: dead air and hard clipping
 
+pub mod amplitude;
 pub mod audio_export;
 pub mod bands;
 pub mod diagnosis;

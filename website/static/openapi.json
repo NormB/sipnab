@@ -200,9 +200,61 @@
         "title": "sipnab call report / full dialog (DialogJson)",
         "type": "object"
       },
+      "CallReport_amplitude_span": {
+        "additionalProperties": false,
+        "description": "A stretch of audio located within the decoded stream. 'This call had dead air' and 'this call went silent forty seconds in' are different findings.",
+        "properties": {
+          "duration_ms": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "start_ms": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "start_ms",
+          "duration_ms"
+        ],
+        "type": "object"
+      },
       "CallReport_diagnosis": {
         "additionalProperties": false,
         "properties": {
+          "amplitude": {
+            "additionalProperties": false,
+            "description": "What the decoded audio DID, present ONLY when the run retained audio (--retain-audio). Absent means NOT MEASURED and never 'clean': without samples there is nothing to look at, and a consumer reading absence as a pass signs off a silent call. These are amplitude measurements and not a quality score -- a gateway sending full-rate frames of digital silence produces perfect packet statistics, a grounded MOS of 4.36, and a call nobody can hear.",
+            "properties": {
+              "clipping": {
+                "description": "Any measured stream ran at its codec's own full scale for longer than the reported minimum run.",
+                "type": "boolean"
+              },
+              "dead_air": {
+                "description": "Any measured stream sat below the floor for longer than the reported minimum.",
+                "type": "boolean"
+              },
+              "streams": {
+                "items": {
+                  "$ref": "#/components/schemas/CallReport_stream_amplitude"
+                },
+                "minItems": 1,
+                "type": "array"
+              },
+              "streams_measured": {
+                "description": "Streams whose audio was decoded. At least one, because the object is absent when none were.",
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "streams_measured",
+              "dead_air",
+              "clipping",
+              "streams"
+            ],
+            "type": "object"
+          },
           "hints": {
             "items": {
               "type": "string"
@@ -1039,6 +1091,110 @@
           "first_seen",
           "last_seen",
           "quality_intervals"
+        ],
+        "type": "object"
+      },
+      "CallReport_stream_amplitude": {
+        "additionalProperties": false,
+        "description": "One stream's amplitude measurement, with every threshold that produced it. The thresholds are fields and not documentation: a finding whose threshold lives only in the source is a finding nobody can argue with.",
+        "properties": {
+          "codec": {
+            "type": "string"
+          },
+          "dst": {
+            "type": "string"
+          },
+          "report": {
+            "additionalProperties": false,
+            "properties": {
+              "clip_threshold": {
+                "description": "The absolute sample magnitude a clip was counted at, derived from full_scale.",
+                "minimum": 1,
+                "type": "integer"
+              },
+              "clipped_samples": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "clipping": {
+                "items": {
+                  "$ref": "#/components/schemas/CallReport_amplitude_span"
+                },
+                "type": "array"
+              },
+              "dead_air": {
+                "items": {
+                  "$ref": "#/components/schemas/CallReport_amplitude_span"
+                },
+                "type": "array"
+              },
+              "dead_air_ms": {
+                "description": "Total dead air, which is not the longest span.",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "duration_ms": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "floor_dbfs": {
+                "description": "RMS below this, relative to full_scale, counts as silence.",
+                "type": "number"
+              },
+              "full_scale": {
+                "description": "The largest magnitude this stream's decoder can produce. NOT 32767 for G.711: mu-law tops out at 32124 and A-law at 32256, so a clip test written against the container's maximum never fires on either.",
+                "minimum": 1,
+                "type": "integer"
+              },
+              "min_clip_run": {
+                "description": "The shortest run of consecutive clipped samples counted. One sample at the ceiling is a loud sample; a run is a waveform with its top cut off.",
+                "minimum": 1,
+                "type": "integer"
+              },
+              "min_dead_air_ms": {
+                "description": "The shortest run of silent windows reported. Normal conversation is roughly half silence, so a shorter minimum would report every healthy call.",
+                "minimum": 1,
+                "type": "integer"
+              },
+              "sample_rate": {
+                "minimum": 1,
+                "type": "integer"
+              },
+              "window_ms": {
+                "description": "The window the RMS was measured over.",
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "sample_rate",
+              "duration_ms",
+              "full_scale",
+              "floor_dbfs",
+              "window_ms",
+              "min_dead_air_ms",
+              "clip_threshold",
+              "min_clip_run",
+              "dead_air",
+              "dead_air_ms",
+              "clipping",
+              "clipped_samples"
+            ],
+            "type": "object"
+          },
+          "src": {
+            "type": "string"
+          },
+          "ssrc": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "ssrc",
+          "src",
+          "dst",
+          "codec",
+          "report"
         ],
         "type": "object"
       },

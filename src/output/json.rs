@@ -220,6 +220,15 @@ struct DiagnosisJson {
     /// consumer written before this existed sees no change.
     #[serde(skip_serializing_if = "Option::is_none")]
     media_relay: Option<crate::stun::RelayPath>,
+    /// What the decoded audio DID, when the run kept any (`--retain-audio`).
+    ///
+    /// Absent means NOT MEASURED and never "clean": on a run that kept no
+    /// samples there is nothing to look at, and a consumer that reads absence
+    /// as a pass signs off a silent call. Every threshold behind the two
+    /// findings travels inside the object, so a reader can disagree with the
+    /// threshold rather than taking the finding on faith.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    amplitude: Option<crate::rtp::amplitude::AmplitudeFindings>,
     /// Human-readable findings.
     hints: Vec<String>,
 }
@@ -854,6 +863,7 @@ pub fn dialog_to_json(
         private_media_address: diagnosis.private_media_address,
         stun_sdp_mismatch: diagnosis.stun_sdp_mismatch.clone(),
         media_relay: diagnosis.media_relay.clone(),
+        amplitude: diagnosis.amplitude.clone(),
         hints: diagnosis.hints.clone(),
     };
 
@@ -1342,6 +1352,94 @@ mod tests {
     }
 
     /// Build a fresh single-packet PCMU RTP stream with SSRC 0x12345678.
+    /// The amplitude finding reaches the wire.
+    ///
+    /// Two halves of one fact: `MediaDiagnosis` carries the measurement and
+    /// `DiagnosisJson` is what a REST or MCP reader actually gets. They are
+    /// separate structs, and a field added to one and not the other is a
+    /// finding that exists and reaches nobody -- which is exactly how the
+    /// `Via` header came to be missing from the vCon redactor's host lists.
+    #[test]
+    fn a_dead_air_finding_reaches_the_serialized_dialog() {
+        let msg = make_invite();
+        let dialog = crate::sip::dialog::SipDialog::new(&msg).expect("dialog");
+        let mut stream = make_stream();
+        // Thirty seconds of mu-law 0xFF, which decodes to 0. Full-rate frames
+        // of digital silence: every packet present, in sequence, at the right
+        // rate, and the call is silent.
+        for i in 0..1500u32 {
+            stream
+                .payload_buffer
+                .push_back((i * 160, vec![0xFFu8; 160]));
+        }
+        let streams: Vec<&RtpStream> = vec![&stream];
+
+        let diagnosis = crate::rtp::diagnosis::diagnose_media(
+            &streams,
+            &crate::rtp::diagnosis::MediaContext::default(),
+        );
+        let amplitude = diagnosis
+            .amplitude
+            .as_ref()
+            .expect("audio was retained, so it must have been measured");
+        assert!(amplitude.dead_air, "thirty seconds of zeros read as audio");
+
+        let v: serde_json::Value = serde_json::from_str(&dialog_to_json(
+            &dialog,
+            &streams,
+            &diagnosis,
+            crate::rtp::quality::MosDelay::unknown(),
+        ))
+        .expect("valid JSON");
+        assert_eq!(
+            v["diagnosis"]["amplitude"]["dead_air"],
+            serde_json::Value::Bool(true),
+            "the finding did not reach the wire: {}",
+            v["diagnosis"]
+        );
+        // The threshold travels with it, or the reader cannot argue with it.
+        assert_eq!(
+            v["diagnosis"]["amplitude"]["streams"][0]["report"]["floor_dbfs"],
+            serde_json::json!(crate::rtp::amplitude::DEAD_AIR_FLOOR_DBFS),
+            "the floor that produced the finding is not in the payload"
+        );
+    }
+
+    /// A run that kept no audio publishes NO amplitude object.
+    ///
+    /// The paired half. `dead_air: false` on a call nobody decoded reads as
+    /// "checked, and fine", so absence is the only honest answer -- and a
+    /// consumer written before this existed sees no change.
+    #[test]
+    fn a_run_without_retained_audio_publishes_no_amplitude_object() {
+        let msg = make_invite();
+        let dialog = crate::sip::dialog::SipDialog::new(&msg).expect("dialog");
+        let stream = make_stream();
+        assert!(
+            stream.payload_buffer.is_empty(),
+            "the fixture must have kept no audio"
+        );
+        let streams: Vec<&RtpStream> = vec![&stream];
+        let diagnosis = crate::rtp::diagnosis::diagnose_media(
+            &streams,
+            &crate::rtp::diagnosis::MediaContext::default(),
+        );
+        assert!(diagnosis.amplitude.is_none());
+
+        let v: serde_json::Value = serde_json::from_str(&dialog_to_json(
+            &dialog,
+            &streams,
+            &diagnosis,
+            crate::rtp::quality::MosDelay::unknown(),
+        ))
+        .expect("valid JSON");
+        assert!(
+            v["diagnosis"].get("amplitude").is_none(),
+            "an unmeasured call published an amplitude object: {}",
+            v["diagnosis"]
+        );
+    }
+
     fn make_stream() -> RtpStream {
         let key = StreamKey {
             ssrc: 0x12345678,

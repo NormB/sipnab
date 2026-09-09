@@ -3382,7 +3382,13 @@ fn no_documentation_table_repeats_a_row() {
     // and a reader who takes it for one counts an unscoreable call as a clean
     // one. Attributed per file against HEAD: docs/mcp-tools.md 96 -> 97 and
     // its mirror 96 -> 97, nothing else moved.
-    const EXPECTED_TABLES: usize = 844;
+    // 844 -> 846 by ONE written table, mirrored: the two amplitude findings and
+    // the threshold behind each, under a new "Dead air and clipping" section
+    // (CMP4). The thresholds are in the table because a finding whose threshold
+    // lives only in the source is a finding nobody can argue with. Attributed
+    // per file against HEAD: docs/troubleshooting.md 7 -> 8 and its mirror
+    // 7 -> 8, nothing else moved.
+    const EXPECTED_TABLES: usize = 846;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

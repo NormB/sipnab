@@ -3230,7 +3230,7 @@ Metric names emitted by [`src/output/prometheus.rs`](https://github.com/NormB/si
 | `sipnab_capture_quality_degraded` | gauge | `1` when any of the three *loss* counters above exceeds zero, `0` otherwise. Undecodable frames are deliberately **not** folded in: ARP makes them non-zero on nearly every capture, so a flag including them would always be `1` and carry no information — use `sipnab_capture_undecoded_fraction` with a threshold instead. The one series to put on a dashboard or an alert rule to know whether the rest of the scrape describes the whole capture. `0` means nothing **surfaced** as wrong, not that the capture provably saw every packet: loss upstream of the capture point — an oversubscribed SPAN port, a tap mirroring one direction, a filter that excluded the traffic — is invisible to all three counters. |
 | `sipnab_capture_queue_depth_packets` | gauge | Packets currently queued between the capture reader and the processing thread (standalone `--metrics` server). |
 | `sipnab_capture_backpressure_blocks_total` | counter | Times the capture reader blocked on a full queue (standalone `--metrics` server). |
-| `sipnab_diagnosis_total{type}` | counter | Tracked dialogs whose media diagnosis raises each finding. A dialog with two findings counts under both. **Five label values, in two groups an alert rule has to keep apart.** `one_way_audio`, `nat_mismatch` and `no_media` appear on every scrape, at `0` where nothing raises them, so a rule watching for the first one reads zero rather than no-data. `private_media_address` — the SDP `c=` line offered an address the far end cannot route back to — and `private_media_address_confirmed` — the subset where STUN evidence also shows nothing rewrote that address — appear only once a dialog raises them, so both series stay absent until the first one does. The ratio of the second to the first is how much of the fleet's warning the capture confirms. Both servers run the diagnosis during the scrape, so scrape cost grows with the number of tracked dialogs (capped by `-l`/`--limit`). |
+| `sipnab_diagnosis_total{type}` | counter | Tracked dialogs whose media diagnosis raises each finding. A dialog with two findings counts under both. **Seven label values, in three groups an alert rule has to keep apart.** `one_way_audio`, `nat_mismatch` and `no_media` appear on every scrape, at `0` where nothing raises them, so a rule watching for the first one reads zero rather than no-data. `private_media_address` — the SDP `c=` line offered an address the far end cannot route back to — and `private_media_address_confirmed` — the subset where STUN evidence also shows nothing rewrote that address — appear only once a dialog raises them, so both series stay absent until the first one does. The ratio of the second to the first is how much of the fleet's warning the capture confirms. `dead_air` and `clipping` are the third group: they are amplitude measurements on the decoded audio, so they tick only on a run started with `--retain-audio` and stay absent otherwise. Absent means the run kept no samples, never that the calls were fine — an alert rule that treats a missing `dead_air` series as a healthy fleet is reading a capture setting as a finding. Both servers run the diagnosis during the scrape, so scrape cost grows with the number of tracked dialogs (capped by `-l`/`--limit`). |
 | `sipnab_security_alerts_total{type}` | counter | Security alerts by the detector that fired: `scanner`, `fraud`, `digest`, `reg_flood`. Only types that have fired appear, so the family is absent before the first alert. A rule name can come from packet data, so sipnab caps the family at 128 distinct names and folds everything past the cap into `type="other"` — the total stays right even where the breakdown cannot. |
 | `sipnab_mcp_tool_calls_total{tool,outcome}` | counter | MCP tool calls, by the tool asked for and how the call ended: `ok`, `tool_error` (the tool answered and said the answer is an error), or `refused` (the rate limit, the concurrency cap, a scope check, unknown arguments, or a name no tool answers to). The name comes from the CLIENT, so a name no tool answers to still counts — probing is what this series is for — and sipnab caps the distinct names, folding everything past the cap into `tool="other"` so a peer looping over invented names cannot grow the series set. Absent until the first tool call, like `sipnab_security_alerts_total`. sipnab counts at the same point it writes the `mcp_audit` log line, so the two always agree. |
 | `sipnab_mcp_tool_duration_seconds{tool}` | histogram | How long each MCP tool takes to answer, in seconds, from the same instant the audit line's `elapsed_ms` measures. Fixed boundaries at 1/5/10/25/50/100/250/500ms and 1/2.5/5/10s — unlike the four capture histograms these have no operator threshold to derive from, because they measure sipnab answering rather than the calls it observed. Emits `_bucket{tool,le}`, `_count{tool}`, `_sum{tool}`. |
@@ -6994,6 +6994,7 @@ the cause from there.
 | "It hangs up after 30 seconds" / after exactly 15 or 30 minutes | [Dropped calls](#dropped-calls-call-answers-then-disconnects-mid-conversation) |
 | "Calls to that one carrier fail immediately" / 488 | [488 Not Acceptable Here](#488-not-acceptable-here-codec-mismatch) |
 | "They can hear me but I can't hear them" | [One-way audio](#one-way-audio) |
+| "Dead air" / "the line went quiet" but the call stayed up | [Dead air and clipping](#dead-air-and-clipping) |
 | "It sounds choppy / robotic / underwater" | [Poor call quality](#poor-call-quality) |
 | Every call in the capture looks lossy at once | [Poor call quality](#poor-call-quality), then [Tuning capture](tuning-capture.md) -- the loss may be sipnab's, not the network's |
 | "There's a long pause before it rings" | [Slow call setup](#slow-call-setup-post-dial-delay) |
@@ -7292,6 +7293,55 @@ A quote that matches nothing is still counted and still printed -- the endpoint 
 4. If NAT is clean: verify symmetric RTP, check for SIP ALG on intermediate firewalls (disable it), and confirm both endpoints negotiate a common codec.
 
 ---
+
+## Dead air and clipping
+
+The hardest silent call to find is the one where nothing is wrong with the
+packets. A gateway sending full-rate frames of digital silence puts every
+packet on the wire, in sequence, at the right rate, in both directions. Loss is
+zero, jitter is zero, the MOS is 4.36 and grounded, and no other check on this
+page fires. Counting comfort-noise frames does not find it either: those frames
+say "I am sending silence", and this gateway is not saying anything.
+
+So sipnab measures the audio itself. It needs the samples, which means
+`--retain-audio`:
+
+```bash
+sipnab -N -I capture.pcap --retain-audio --call-report <call-id> --json
+```
+
+The `diagnosis.amplitude` object appears only on a run that kept the samples.
+**Absent means not measured, never "clean"** -- there is nothing to look at on a run
+without `--retain-audio`, and reading absence as a pass is how a silent call
+gets signed off.
+
+Two measurements, each with the threshold that produced it beside the number:
+
+| Finding | What it measures | Threshold |
+|---|---|---|
+| `dead_air` | Windows whose RMS sits below a floor relative to the codec's own full scale, for at least `MIN_DEAD_AIR_MS` (1,000) milliseconds in a row | -60 dBFS, measured over 100 ms windows |
+| `clipping` | Runs of at least `MIN_CLIP_RUN` (3) consecutive samples at 99% of the codec's full scale or beyond | The codec's ceiling, not the container's |
+
+Both are **amplitude measurements and neither is a quality score.** They say
+what the samples did. Converting that into a MOS would need a corpus of
+listener scores that does not exist here and that you could not reproduce from
+the pcap to check.
+
+The clipping threshold is the codec's own ceiling on purpose. G.711 decodes
+into a 16-bit container it never fills -- mu-law tops out at 32,124 and A-law
+at 32,256 -- so a test written against 32,767 never fires on the two codecs
+most telephony runs on.
+
+**Reading the result.** Dead air with a start time near the answer points at
+the media path: check [NAT traversal issues](#nat-traversal-issues) and
+[One-way audio](#one-way-audio) first, because a call that never carried audio
+is a different fault from one that stopped. Dead air starting mid-call, with
+packets still flowing both ways, is the gateway or the far-end mixer. Clipping
+is a gain stage: something upstream is driving the encoder into its ceiling,
+and no network change fixes it.
+
+`sipnab_diagnosis_total{kind="dead_air"}` and `{kind="clipping"}` count calls
+where the measurement fired. Neither ticks on a run that kept no audio.
 
 ## Poor call quality
 
@@ -9947,7 +9997,7 @@ it. See [MCP Server](mcp.md) for the full guide. [Network Listeners](#network-li
 | `--mcp-allow-relay-query` | -- | off | Permit the `query_relay` MCP tool to ask the configured relay what calls it holds right now. Off by default because this tool **transmits**: every other MCP tool answers from bytes sipnab already has, and this one puts a packet on the network at the address `--rtpengine-control` names. That address comes from the flag and from nowhere else, never from a tool argument — an agent that could name the destination would turn the MCP surface into a way to send packets to a host of its own choosing. Without `--rtpengine-control`, or on a run reading a file, the tool refuses and names which of the two is missing. Feature: `mcp` |
 | `--mcp-allow-tls-capture` | -- | off | Let an agent install kernel uprobes and read TLS plaintext ([`start_tls_capture`](mcp-tools.md#start_tls_capture), `stop_tls_capture`). **The most consequential opt-in on this surface**: it lets an agent read the plaintext of TLS sessions belonging to processes it does not own, needs the server to still be root, and creates kernel state that outlives a crash. `list_tls_libraries` stays available without it, so an agent can always report what a capture WOULD see. Feature: `mcp` |
 | `--mcp-allow-save-findings` | -- | off | Permit the `save_findings` MCP tool to record an agent's conclusion. The only write verb on sipnab's network surface, and off by default. A finding goes to sipnab's log and nowhere else: no tool reads it back, it appears in no query result, and no analysis consumes it, so it cannot return as evidence in a later answer. Clipped at 500 characters of summary and bounded at 1000 findings per process, both reported rather than silent. Feature: `mcp` |
-| `--retain-audio` | -- | off | Retain RTP audio payload in memory so the `export_audio` MCP tool can decode it. Off by default: call audio is content, not signaling, and holding it is an operator decision rather than a side effect of enabling MCP. Requires `--mcp` — the MCP server is the only batch-mode reader of these buffers. Costs a per-packet payload clone, bounded by `[limits] max_audio_frames` per stream across `--max-streams` streams. Without it `export_audio` refuses and names this flag — a refusal describes what the run kept, never whether the call carried audio. `--cores` honors this flag: the parallel workers used to discard payload regardless, so a run could accept the flag and keep nothing. Feature: `mcp` |
+| `--retain-audio` | -- | off | Retain RTP audio payload in memory, so sipnab can look at the audio itself. Two things read it back: the `export_audio` MCP tool, which decodes a WAV, and the amplitude measurement in the media diagnosis, which reports dead-air spans and hard-clip runs on `--call-report` and `--json-dialogs`. Off by default: call audio is content, not signaling, and holding it is an operator decision rather than a side effect of running a capture. It used to require `--mcp`, back when the MCP server was the only reader; that would now keep the one finding that needs samples behind a server nobody analyzing a pcap wants to start. Costs a per-packet payload clone, bounded by `[limits] max_audio_frames` per stream across `--max-streams` streams. Without it `export_audio` refuses and names this flag, and the amplitude object is absent — both describe what the run kept, never whether the call carried audio. `--cores` honors this flag: the parallel workers used to discard payload regardless, so a run could accept the flag and keep nothing |
 
 ## TLS / decryption
 
@@ -9982,6 +10032,7 @@ it. See [MCP Server](mcp.md) for the full guide. [Network Listeners](#network-li
 - `sudo sipnab -N -d eth0 --mcp --mcp-transport http --mcp-allow-save-findings` — a live triage session whose findings survive in the journal after the agent disconnects, without granting it any other write
 - `sipnab -N -I capture.pcap --mcp --mcp-file-root /var/spool/sipnab-exports --retain-audio` — hold call audio in memory so an agent can `export_audio` a WAV of a problem call
 - `sudo sipnab -N -d eth0 "portrange 5060-5061 or portrange 10000-20000" --mcp --retain-audio --mcp-file-root /var/spool/sipnab-exports` — live capture with media in scope AND retained; without `--retain-audio` the same run measures quality but keeps no payload to export
+- `sipnab -N -I dead-air.pcap --retain-audio --call-report <call-id> --json` — no MCP server involved: retain the samples so the media diagnosis can measure them, and read `diagnosis.amplitude` for dead-air spans and clip runs with the thresholds that produced them
 - `sudo sipnab -N -d eth0 --mcp --mcp-transport http --mcp-bind 127.0.0.1:8731 --mcp-max-concurrent 8` — a network-facing MCP server that runs at most eight tool calls at once and refuses the ninth with a retry-shortly error rather than queueing it
 - `sipnab -N -I capture.pcap --mcp --mcp-max-concurrent 0` — a stdio replay for one trusted agent with no concurrency cap (`0` = unlimited)
 - `sipnab -N -I capture.pcap --mcp --mcp-tools core` — a small-context agent: eight tools instead of the whole surface, so the schema block sipnab sends it before it asks anything is a fraction of the size
