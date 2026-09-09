@@ -8,6 +8,37 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Added
+
+- **The harness stops throwing its captures away.** Every run produced traffic
+  no test would ever see again: `harness/captures/*.pcap` is ignored and only
+  `.gitkeep` is tracked. What stopped it being kept is that a capture with no
+  recorded provenance cannot be safely promoted afterwards — nobody can later
+  establish which scenario produced it or which media anchor was in force.
+
+  `harness/scripts/capture.sh` records that at the time of capture and
+  **refuses to run without `--pins`**, because deciding what a capture is for
+  is cheap while the stack is up and impossible a fortnight later. It reads the
+  anchor off the running container rather than from `.env`, since those drift
+  the moment anyone runs `make up ANCHOR=x`, and it captures with `tcpdump`
+  rather than `sipnab -O`: a fixture written by the program under test cannot
+  contradict it. `harness/scripts/promote.sh` moves a capture into
+  `tests/pcap-samples/`, writes its entry in `PROVENANCE.md` and re-checks the
+  bytes against the sha256 the record names.
+
+  The first fixture is `opensips-direct-media-proxy-view.pcap`: a real OpenSIPS
+  3.6.7 call with no media anchor, captured at the proxy — a complete dialog
+  and **zero RTP streams**, because the media went endpoint to endpoint. The
+  zero is the assertion rather than an absence of one, since the SDP offers
+  PCMA and a reconstruction trusting the offer rather than the wire would
+  report a stream with a codec, a direction and a MOS that nothing measured.
+
+  Two gates hold it up: one requires every committed fixture to carry a
+  manifest entry or sit on the enumerated list of the 36 that predate the rule,
+  and one asserts what the entry claims.
+
 ## [0.5.161] - 2026-09-09
 
 ### Added
