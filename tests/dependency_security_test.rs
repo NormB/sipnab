@@ -4,24 +4,35 @@
 //! acceptance must not outlive the problem it accepts.
 //!
 //! Adding `@lhci/cli` for the Lighthouse gate pulled three vulnerable packages
-//! into `e2e/`: `tmp`, `uuid` and `extract-zip`. Two had published fixes and
-//! are pinned through npm `overrides`. The third has none — `extract-zip`'s
-//! newest published version IS the vulnerable one — so it is accepted, in
-//! writing, with the reasoning and an expiry condition.
+//! into `e2e/`: `tmp`, `uuid` and `extract-zip`. All three are now pinned out
+//! through npm `overrides`, and the lockfile is where that is checked.
+//!
+//! `extract-zip` was the hard one, and it is why this file used to carry an
+//! ACCEPTANCE table. Its newest published release IS the vulnerable one — no
+//! upgrade closes it — so the first CVE was accepted in writing. A second
+//! advisory then landed on the same version, code scanning opened an alert,
+//! and CI went red on main: an acceptance is written against the problem
+//! known on the day, and the next one arrives without asking.
+//!
+//! The package is gone instead. It reached the tree through
+//! `@lhci/cli -> lighthouse -> puppeteer-core -> @puppeteer/browsers`, and
+//! `@puppeteer/browsers` 3.0.2 replaced it with `tar-fs`. An override to that
+//! major removes `extract-zip` from the lockfile entirely, and Lighthouse
+//! still collects: every symbol `puppeteer-core` imports from that package is
+//! present in 3.x, and a real collection run was made against the override
+//! before it was committed.
+//!
+//! The acceptance mechanism went with it, on the instruction its own test
+//! carried: an acceptance table with nothing in it is an untested mechanism,
+//! and this file would rather have none than one nothing drives. If an
+//! unfixable advisory lands again, it comes back with its tests.
 //!
 //! The failure this file guards against is not the vulnerability. It is the
-//! two ways a dependency fix quietly stops working:
-//!
-//! - **An override that did not take.** `overrides` is advisory until npm
-//!   resolves it; an entry naming a package the tree does not have, or one npm
-//!   declined, leaves the vulnerable version installed while `package.json`
-//!   says otherwise. Nothing fails, and the lockfile is the only place the
-//!   truth exists.
-//! - **An acceptance nobody revisits.** "No fix available" is true on the day
-//!   it is written. `ACCEPTED_WITHOUT_FIX` therefore records the exact version
-//!   checked, and this file fails the moment the tree moves off it — so a
-//!   bump forces the question to be asked again rather than inheriting a
-//!   verdict from a version that no longer ships.
+//! way a dependency fix quietly stops working: **an override that did not
+//! take.** `overrides` is advisory until npm resolves it; an entry naming a
+//! package the tree does not have, or one npm declined, leaves the vulnerable
+//! version installed while `package.json` says otherwise. Nothing fails, and
+//! the lockfile is the only place the truth exists.
 
 #![cfg(feature = "full")]
 
@@ -102,25 +113,6 @@ fn overrides() -> Vec<(String, String)> {
         .collect()
 }
 
-/// A vulnerability accepted because no fixed version exists, with the reason
-/// and the exact version that was checked.
-///
-/// `(package, version_checked, reason)`. Both other rules below read this: an
-/// entry must name a package the lockfile actually has, and the lockfile must
-/// still be on the version the reason was written against.
-const ACCEPTED_WITHOUT_FIX: &[(&str, &str, &str)] = &[(
-    "extract-zip",
-    "2.0.1",
-    "CVE-2026-56876, unvalidated symlink path traversal. There is no fixed \
-     version: 2.0.1 is the NEWEST published release, so no upgrade closes it. \
-     It arrives dev-only, through @lhci/cli -> lighthouse -> puppeteer-core \
-     -> @puppeteer/browsers, whose sole use is extracting a Chrome download \
-     fetched over HTTPS from Google's CDN onto an ephemeral CI runner. \
-     Exploiting it requires controlling that archive. Accepted rather than \
-     dropping the Lighthouse gate; revisit if a fix publishes or if the \
-     dependency is ever reached with an attacker-supplied zip.",
-)];
-
 /// Versions a published advisory says are fixed, and the version the tree must
 /// therefore be at or past.
 ///
@@ -135,6 +127,14 @@ const MUST_BE_PATCHED: &[(&str, &str)] = &[
     // CVE-2026-41907: missing buffer bounds check in v3/v5/v6 when `buf` is
     // provided. First patched in 11.1.1.
     ("uuid", "11.1.1"),
+    // Not a flaw in this package: it is the last hop that could choose. Every
+    // release at or below 2.13.2 unpacks a browser download with
+    // `extract-zip`, which has two symlink advisories and no fixed version at
+    // all. 3.0.2 replaced it with `tar-fs`, so the floor is a floor on the
+    // dependency it drags in rather than on a defect of its own — which is why
+    // `the_lockfile_no_longer_contains_extract_zip` below states the real
+    // property instead of trusting this number to imply it.
+    ("@puppeteer/browsers", "3.0.2"),
 ];
 
 /// Compare two dotted versions numerically.
@@ -285,68 +285,44 @@ fn no_override_names_a_package_the_tree_no_longer_has() {
     }
 }
 
-// ── acceptances must expire ─────────────────────────────────────────
+// ── the package that had no fix is simply gone ──────────────────────
 
-/// Every acceptance states a real reason.
+/// `extract-zip` is not in the lockfile.
+///
+/// The property, stated directly. The `@puppeteer/browsers` floor above is the
+/// MECHANISM that keeps it true, and a floor is exactly the kind of thing that
+/// keeps passing while the property it was chosen for stops holding — another
+/// dependency could pull `extract-zip` in tomorrow through a path that has
+/// nothing to do with Puppeteer, and every version check here would still be
+/// green.
 #[test]
-fn every_accepted_vulnerability_states_why() {
+fn the_lockfile_no_longer_contains_extract_zip() {
+    let found = versions_of("extract-zip");
     assert!(
-        !ACCEPTED_WITHOUT_FIX.is_empty(),
-        "the acceptance table is empty; delete the mechanism rather than \
-         leaving an untested one in place"
+        found.is_empty(),
+        "extract-zip {found:?} is back in e2e/package-lock.json. It has TWO \
+         symlink advisories and no fixed version — 2.0.1 is the newest release \
+         published — so an upgrade is not available and code scanning opens an \
+         alert on it, which turns main red. Find what pulled it in and pin that \
+         package past the release that dropped it."
     );
-    for (pkg, version, reason) in ACCEPTED_WITHOUT_FIX {
-        assert!(
-            reason.trim().len() >= 60,
-            "{pkg} {version} is accepted with no real reason. An acceptance \
-             without one is a silenced alert."
-        );
-        assert!(
-            reason.contains("no fixed version") || reason.contains("no fix"),
-            "{pkg}'s reason must say why an upgrade is not the answer, since \
-             upgrading is the first thing a reader will try"
-        );
-    }
 }
 
-/// An acceptance is bound to the exact version it was written against.
+/// Nothing in the tree still ASKS for `extract-zip`.
 ///
-/// The expiry condition. "No fix available" was true on the day it was
-/// checked; if the tree moves to a different version, the reasoning was
-/// written about something that no longer ships and has to be redone.
+/// The paired half of the test above, and the one that fails first. A package
+/// can declare a dependency that npm has not installed yet — a fresh
+/// `npm install` on a runner would resolve it and put the vulnerable version
+/// back, while the lockfile this repository committed still looks clean.
 #[test]
-fn an_acceptance_expires_when_the_tree_moves_off_the_version_it_names() {
-    for (pkg, version, _) in ACCEPTED_WITHOUT_FIX {
-        let found = versions_of(pkg);
-        assert!(
-            !found.is_empty(),
-            "{pkg} is accepted but absent from the lockfile; the dependency \
-             was dropped and the acceptance should go with it"
-        );
-        for v in &found {
-            assert_eq!(
-                v, version,
-                "{pkg} is now {v} and the acceptance was written against \
-                 {version}. Re-check whether a fix has published — the \
-                 reasoning does not carry over to a version it never saw."
-            );
-        }
-    }
-}
-
-/// An accepted package must not also claim to be patched.
-///
-/// The two tables answer the same question and must not disagree; an entry in
-/// both would let whichever ran first decide.
-#[test]
-fn no_package_is_both_accepted_and_claimed_patched() {
-    for (pkg, _, _) in ACCEPTED_WITHOUT_FIX {
-        assert!(
-            !MUST_BE_PATCHED.iter().any(|(p, _)| p == pkg),
-            "{pkg} appears in both ACCEPTED_WITHOUT_FIX and MUST_BE_PATCHED; \
-             it is either fixed or it is not"
-        );
-    }
+fn no_package_in_the_lockfile_still_depends_on_extract_zip() {
+    let lock = read("e2e/package-lock.json");
+    assert!(
+        !lock.contains("\"extract-zip\""),
+        "e2e/package-lock.json still names extract-zip, so some package \
+         declares it even if none resolved to it. The next install would \
+         bring it back."
+    );
 }
 
 /// The version comparator orders releases numerically, not as text.

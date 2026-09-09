@@ -12,6 +12,31 @@ entry that carries them.
 
 ### Fixed
 
+- **A vulnerability that was accepted in writing came back wearing a different
+  number, and turned main red.** `extract-zip` reached the Lighthouse tooling
+  four levels down — `@lhci/cli` to `lighthouse` to `puppeteer-core` to
+  `@puppeteer/browsers` — and its newest published release IS the vulnerable
+  one, so there was no upgrade to take. The first advisory was accepted
+  deliberately, with the reasoning and an expiry condition written down. Then a
+  second symlink advisory landed on that same version, code scanning opened an
+  alert, and the CI gate that refuses open alerts failed on main.
+
+  That is what an acceptance cannot cover: it is written against the problem
+  known on the day, and the next one arrives without asking.
+
+  The package is gone instead of accepted again. `@puppeteer/browsers` 3.0.2
+  replaced `extract-zip` with `tar-fs`, so an npm `override` to that major
+  removes it from the lockfile entirely. Lighthouse still collects: every
+  symbol `puppeteer-core` imports from that package exists in 3.x, and a real
+  collection run was made against the override before it was committed.
+
+  The acceptance MECHANISM went with it, on the instruction its own test
+  carried — an acceptance table with nothing in it is an untested mechanism.
+  Two tests replace it, and they state the property rather than the pin: one
+  fails if `extract-zip` is installed, and one fails if any package still
+  merely NAMES it, because a declared-but-unresolved dependency is one
+  `npm install` away from being an installed one.
+
 - **Two more doc blocks had been cut in half, in a tree no gate read.** The
   doc-split rules ran over `src/` and nothing else. `tests/` holds 5,014 doc
   blocks — where the reasoning for every gate is written down, so a split there
