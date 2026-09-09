@@ -74,6 +74,9 @@ fn unmeasured() -> serde_json::Value {
         dialog_assertion: None,
         amr_mode_kbps: None,
         amr_modes_observed: None,
+        mos_wideband: None,
+        mos_wideband_context: None,
+        mos_wideband_unavailable: None,
     };
     serde_json::to_value(s).expect("serialize")
 }
@@ -145,6 +148,9 @@ fn a_measured_round_trip_carries_its_provenance() {
         dialog_assertion: None,
         amr_mode_kbps: None,
         amr_modes_observed: None,
+        mos_wideband: None,
+        mos_wideband_context: None,
+        mos_wideband_unavailable: None,
     };
 
     let xr = serde_json::to_value(
@@ -205,6 +211,9 @@ fn a_measured_zero_is_reported_rather_than_hidden() {
         dialog_assertion: None,
         amr_mode_kbps: None,
         amr_modes_observed: None,
+        mos_wideband: None,
+        mos_wideband_context: None,
+        mos_wideband_unavailable: None,
     }
     .with_round_trip(Some((0.0, RttSource::XrVoipMetrics)));
 

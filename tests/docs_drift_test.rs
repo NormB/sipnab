@@ -3444,7 +3444,14 @@ fn no_documentation_table_repeats_a_row() {
     // mirror website/content/docs/cookbook.md +1; the troubleshooting pages
     // gained a symptom ROW in an existing table and moved by zero, which is
     // what confirms the +2 is the cookbook alone.
-    const EXPECTED_TABLES: usize = 851;
+    // 851 -> 853 by ONE written table, mirrored: the three wideband MOS keys
+    // an AMR-WB stream carries, in the REST reference (CMP6). A table because
+    // the three interact -- a score with the listening context it was read in,
+    // or a reason instead of a score -- and a reader has to see which
+    // combinations exist. Attributed per file against HEAD by counting table
+    // starts: docs/rest-api.md 17 -> 18 and its mirror
+    // website/content/docs/api.md 17 -> 18, nothing else moved.
+    const EXPECTED_TABLES: usize = 853;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

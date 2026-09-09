@@ -70,7 +70,10 @@ static KNOWN_KEYS: LazyLock<HashMap<&'static str, &'static [&'static str]>> = La
     // [media] describes the PATH being observed, which is neither a capture
     // setting nor a display one. Today it holds the one figure a passive tap
     // cannot measure for itself.
-    m.insert("media", ["one_way_delay_ms", "codec_ie"].as_slice());
+    m.insert(
+        "media",
+        ["one_way_delay_ms", "codec_ie", "listening_context"].as_slice(),
+    );
     m.insert(
         "crash",
         ["reports", "backtrace", "report_dir", "core"].as_slice(),
@@ -1126,6 +1129,18 @@ pub struct MediaConfig {
     /// scalar of its parent, and `Config::dump` writes this struct out
     /// verbatim.
     pub codec_ie: Option<BTreeMap<String, f64>>,
+    /// Listening context for wideband (AMR-WB) scores: `monotic` or `diotic`.
+    ///
+    /// ITU-T G.113 tabulates the wideband impairment separately for a handset
+    /// or monaural headset (Table IV.1) and for a stereo headset or
+    /// speakerphone (Table IV.3), and at 6.6 kbit/s they differ by 15
+    /// R-points -- about 0.59 MOS. A capture cannot tell which one the far end
+    /// was using, so this is the operator's to declare.
+    ///
+    /// Absent means `monotic`, because a capture of mobile voice is a capture
+    /// of handsets. The choice is never silent: every wideband score carries
+    /// the context it was read in.
+    pub listening_context: Option<String>,
 }
 
 impl MediaConfig {

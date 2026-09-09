@@ -820,7 +820,7 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
   reconstruction path is offline-only. Cheap, and it removes a silent
   expectation mismatch on exactly the busy-server workload where someone would
   reach for it. **Done:** `cores_ignored_warning`
-  ([`src/app/bootstrap.rs:2849`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L2849)) returns the message and the reason —
+  ([`src/app/bootstrap.rs:2874`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L2874)) returns the message and the reason —
   `--multi-device` opens one capture per interface, or the run captures live
   rather than reading a saved file — and `bootstrap.rs:492` warns with it.
   Warned rather than refused, because the run is correct, just single-threaded,
@@ -1660,7 +1660,7 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
   truncation breaks `--retain-audio`/WAV export and Opus decode (they need RTP
   payload, not just headers), and it degrades `-O` pcap re-emit to truncated
   frames. **Two of three "Do:" items are done, and this line claimed neither
-  until 2026-08-06.** `snaplen_truncation_warning` ([`src/app/bootstrap.rs:3056`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L3056),
+  until 2026-08-06.** `snaplen_truncation_warning` ([`src/app/bootstrap.rs:3081`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L3081),
   tagged `(CT3)`) warns when a truncating snaplen feeds `-O`; a matching
   `snaplen_audio_retention_warning` now warns when it feeds `--retain-audio`
   instead, since that path is retained *audio*, not a re-emitted pcap, and
@@ -6582,35 +6582,36 @@ cheap gaps its page made obvious.
   AMR-WB modes and the codec name does not say which is in use. See CMP6 for
   the half that remains.
 
-- [ ] **CMP6 — score AMR-WB on the wideband scale, on every surface (added
-  2026-09-09).** [`emodel_wb`](https://github.com/NormB/sipnab/blob/main/src/rtp/emodel_wb.rs) has carried the G.113 tables, the G.107.1
-  equations and `amr_wb_mos` since it was written, and **nothing in `src/`
-  calls any of it** — the only caller is a docs test. CMP5 supplied the
-  missing input; the scoring is still not wired, so an AMR-WB stream continues
-  to report the narrowband placeholder with `mos_grounding: unpublished`.
+- [ ] **CMP6 — score AMR-WB on the wideband scale. PARTIAL 2026-09-09: the
+  model, the declaration and the REST/MCP surfaces shipped; three surfaces did
+  not.**
 
-  **Why it is its own entry rather than part of CMP5.** The wideband score
-  cannot go in the existing `mos` field: `MOS_CQEW` and `MOS_CQE` anchor at
-  129 and 93.2, so putting one in the other's field is a 35.8-point scale
-  error, and averaging or thresholding them together is exactly the mistake
-  `emodel_wb`'s own module doc opens by forbidding. It needs a new field, a
-  new grounding value, and the same field on REST, MCP, the CLI report, the
-  TUI and the vCon export — the surface-parity rule, which is the actual size
-  of this item.
+  **Shipped.** `score_amr_wb` returns a `WidebandScore` carrying the MOS, the
+  R-factor, the `Ie,WB` it read, the listening context and the mode — or a
+  NAMED reason it could not: `UnpublishedMode` when G.113 publishes nothing for
+  that mode in that context, `LossNotComputable` when the mode is published and
+  the stream lost packets and no `Bpl,wb` exists. Those are opposite
+  confidences and collapsing them into an absent field would leave a reader
+  guessing which they had. `StreamSummary` carries `mos_wideband`,
+  `mos_wideband_context` and `mos_wideband_unavailable`, so `GET /v1/streams`
+  and every MCP stream surface publish them, and [`docs/rest-api.md`](https://github.com/NormB/sipnab/blob/main/docs/rest-api.md) says at
+  length that the two MOS figures are different scales.
 
-  **The listening context is an input with no default**, and that is the
-  design decision this entry has to make rather than inherit. G.113 Tables
-  IV.1 and IV.3 differ by 15 R-points at 6.6 kbit/s — about 0.59 MOS — so
-  sipnab cannot pick one silently. A capture says nothing about whether the
-  far end held a handset or a speakerphone, so the honest options are an
-  operator declaration beside `[media.codec_ie]` or reporting both. Decide it
-  in the entry, not in the code.
+  **The listening context is DECLARED, not defaulted silently.** `[media]
+  listening_context` sets it process-wide, the way the codec impairment table
+  is set and for the same reason: no surface is threaded a config, and a
+  context honored on some of them would be two doors publishing different MOS
+  for one stream. Absent means monotic, because a capture of mobile voice is a
+  capture of handsets — and the choice is never silent, since every score
+  carries the context it was read in. An unrecognized spelling is refused
+  rather than read as the default.
 
-  **And under loss it is often not computable at all**, which is a finding
-  rather than a gap: `Bpl,wb` is published for three modes, diotic only. An
-  AMR-WB stream with loss on a handset has no defensible wideband score, and
-  the surface must be able to say that instead of falling back to the
-  narrowband placeholder without saying so.
+  **Still open, and it is the surface-parity half.** The CLI report, the TUI's
+  stream detail and the vCon export do not carry the wideband figure. They do
+  not project through `StreamSummary`, which is why REST and MCP came free and
+  these did not. Until they do, an operator reading the TUI sees the narrowband
+  placeholder for an AMR-WB stream while the REST response beside it carries a
+  real score.
 
   **Declined outright: a perceptual MOS.** It needs a subjectively-labeled
   corpus that does not exist here, cannot be reproduced from the pcap by a

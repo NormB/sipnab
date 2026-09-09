@@ -1434,6 +1434,39 @@ sipnab keeps `published` and `operator_declared` apart because the remedies
 differ: a published score that looks wrong means suspecting sipnab's vantage
 point, a declared one means suspecting a file on your own disk.
 
+#### AMR-WB gets a second MOS, on its own scale
+
+`mos` is the narrowband E-model, and it cannot score a wideband codec. Feeding
+it a wideband impairment is not an approximation but a 35.8-point scale error,
+because the two models anchor at different points. So an AMR-WB stream whose
+mode sipnab could read gets a second figure instead:
+
+| Key | Type | Meaning |
+|-----|------|---------|
+| `mos_wideband` | number | `MOS_CQEW` on the ITU-T G.107.1 wideband scale |
+| `mos_wideband_context` | string | `monotic` (handset or monaural headset) or `diotic` (stereo headset or speakerphone) |
+| `mos_wideband_unavailable` | string | Why there is no wideband score: `unpublished_mode` or `loss_not_computable` |
+
+**Do not compare `mos_wideband` with `mos`.** They are different scales.
+Averaging them, plotting them on one axis, or applying one threshold to both
+produces a number that means nothing.
+
+The listening context travels with the figure because ITU-T G.113 tabulates
+the two separately, and at the slowest mode they differ by about 0.59 MOS. A
+capture cannot tell which the far end used, so `[media] listening_context`
+declares it and the default is `monotic`.
+
+Two things stop a score existing, and they are different answers. G.113
+publishes no impairment for that mode in that context, which is a gap in the
+tables: three of the nine modes have no diotic value at all. Or the stream lost
+packets and G.113 publishes no robustness factor for its mode, which makes this
+one stream impossible to score rather than the tables silent. **AMR-WB under
+loss on a handset is not computable from published data**, and sipnab says so
+rather than substituting the figure from the other listening context.
+
+A stream that is not AMR-WB carries none of these keys, including no reason. A
+call nobody tried to score on the wideband scale is not a call that failed to.
+
 #### AMR and AMR-WB: which mode the sender used
 
 AMR chooses a bitrate per frame and changes it under congestion. The codec name

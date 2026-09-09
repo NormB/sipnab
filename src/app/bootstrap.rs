@@ -2071,6 +2071,20 @@ pub fn load_config(cli: &Cli) -> Result<LoadedConfig, PlanError> {
     // exporter and the TUI all reach, and none of them is threaded a config. A
     // declaration honored on some of those would be two surfaces reporting
     // different MOS for one stream.
+    // The listening context, for the same reason and by the same route: a
+    // wideband score reached over REST and over MCP must be the same number,
+    // and neither surface is threaded a config. An unrecognized spelling is
+    // left at the default rather than guessed -- the value is named in every
+    // score, so a reader sees which one is in force.
+    if let Some(ctx) = loaded
+        .config
+        .media
+        .listening_context
+        .as_deref()
+        .and_then(crate::rtp::emodel_wb::ListeningContext::parse)
+    {
+        crate::rtp::emodel_wb::set_listening_context(ctx);
+    }
     crate::rtp::quality::set_codec_ie_table(
         loaded
             .config

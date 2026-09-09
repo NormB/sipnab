@@ -315,6 +315,44 @@ pub struct StreamSummary {
     /// present value always means sipnab read the wire.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub amr_modes_observed: Option<u32>,
+    /// `MOS_CQEW` for an AMR-WB stream, on the ITU-T G.107.1 WIDEBAND scale.
+    ///
+    /// **Not comparable with [`Self::mos`].** That is the narrowband G.107
+    /// model, anchored at 93.2; this one anchors at 129. A figure from each is
+    /// two different scales, and averaging them, plotting them on one axis, or
+    /// meeting one threshold with both is a 35.8-point error.
+    ///
+    /// Present only when the stream is AMR-WB, its payload headers pinned one
+    /// mode, and G.113 publishes a value for that mode in the listening
+    /// context in force. When it is absent for an AMR-WB stream,
+    /// [`Self::mos_wideband_unavailable`] says which of those failed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mos_wideband: Option<f64>,
+    /// The listening context [`Self::mos_wideband`] was read in: `monotic` (a
+    /// handset or monaural headset) or `diotic` (a stereo headset or
+    /// speakerphone).
+    ///
+    /// Carried with the number rather than assumed, because G.113 tabulates
+    /// the two separately and at 6.6 kbit/s they differ by about 0.59 MOS. A
+    /// capture cannot tell which the far end used; `[media]
+    /// listening_context` declares it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mos_wideband_context: Option<String>,
+    /// Why an AMR-WB stream has no wideband score.
+    ///
+    /// `unpublished_mode` -- G.113 publishes no impairment for that mode in
+    /// this context; three of the nine modes have no diotic value at all.
+    /// `loss_not_computable` -- the mode is published, the stream lost
+    /// packets, and the robustness factor is published for three modes,
+    /// diotic only. **AMR-WB under loss on a handset is not computable** from
+    /// published data, and saying so is the answer rather than substituting
+    /// the diotic figure.
+    ///
+    /// Absent when a score is present, and absent when the stream is not
+    /// AMR-WB at all -- a stream nobody attempted to score wideband is not a
+    /// stream that failed to score.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mos_wideband_unavailable: Option<String>,
 }
 
 impl StreamSummary {
@@ -359,6 +397,27 @@ impl StreamSummary {
     pub fn of(s: &RtpStream, delay: crate::rtp::quality::MosDelay<'_>) -> Self {
         let loss_pct = s.loss_percent();
         let grounding = crate::rtp::quality::mos_grounding(s.codec.as_deref());
+        // Wideband is attempted only for AMR-WB with a pinned mode. A stream
+        // nobody attempted to score is not a stream that failed to score, so
+        // `None` here leaves all three wideband fields absent rather than
+        // publishing a reason for a G.711 call.
+        let wideband = matches!(
+            crate::rtp::amr::amr_flavor(s.codec.as_deref()),
+            Some(crate::rtp::amr::AmrFlavor::WideBand)
+        )
+        .then(|| s.amr_mode_kbps())
+        .flatten()
+        .map(|kbps| {
+            crate::rtp::emodel_wb::score_amr_wb(
+                kbps,
+                crate::rtp::emodel_wb::declared_listening_context(),
+                loss_pct,
+            )
+        });
+        let wideband = match wideband {
+            Some(r) => r.map(Some).map_err(Some),
+            None => Ok(None),
+        };
         Self {
             ssrc: format!("0x{:08x}", s.key.ssrc),
             codec: s.codec.clone(),
@@ -405,6 +464,150 @@ impl StreamSummary {
             // payloads were read, so a reader never has to decide whether a
             // zero is "no modes" or "not an AMR stream".
             amr_modes_observed: (s.amr_modes_observed() > 0).then(|| s.amr_modes_observed()),
+            mos_wideband: wideband.as_ref().ok().and_then(|w| w.map(|w| w.mos)),
+            mos_wideband_context: wideband
+                .as_ref()
+                .ok()
+                .and_then(|w| w.map(|w| w.context.as_str().to_string())),
+            mos_wideband_unavailable: wideband.as_ref().err().and_then(Option::as_ref).map(|e| {
+                match e {
+                    crate::rtp::emodel_wb::WidebandUnavailable::UnpublishedMode => {
+                        "unpublished_mode"
+                    }
+                    crate::rtp::emodel_wb::WidebandUnavailable::LossNotComputable => {
+                        "loss_not_computable"
+                    }
+                }
+                .to_string()
+            }),
         }
+    }
+}
+
+#[cfg(test)]
+/// The wideband fields on `StreamSummary`.
+///
+/// Every test here is serialized on `listening_context`, and one of them
+/// writes it. That declaration is process-wide for the same reason the codec
+/// impairment table is -- no surface is threaded a config -- so two of these
+/// running concurrently read each other's context and the score changes
+/// underneath the assertion. The first draft of this module did exactly that
+/// and passed serially while failing in parallel, hours after the same shape
+/// was fixed in the Prometheus doors.
+mod wideband_tests {
+    use super::*;
+    use crate::rtp::parser::RtpHeader;
+    use crate::rtp::stream::{RtpStream, StreamKey};
+    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+
+    /// An AMR-WB stream whose payloads pinned exactly `ft`, with `lost`
+    /// packets against `received`.
+    fn amr_wb_stream(ft: u8, received: u64, lost: u64) -> RtpStream {
+        let key = StreamKey {
+            ssrc: 0x1234,
+            src: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000),
+            dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
+        };
+        let hdr = RtpHeader {
+            version: 2,
+            padding: false,
+            extension: false,
+            csrc_count: 0,
+            marker: false,
+            payload_type: 96,
+            sequence: 1,
+            timestamp: 0,
+            ssrc: 0x1234,
+            payload_offset: 12,
+        };
+        let mut s = RtpStream::new(key, &hdr, chrono::Utc::now());
+        s.codec = Some("AMR-WB".to_string());
+        s.amr_frame_types_seen = 1u16 << ft;
+        s.packet_count = received;
+        s.lost_packets = lost;
+        s
+    }
+
+    /// A published mode with no loss gets a wideband score, and the score says
+    /// which listening context it was read in.
+    #[test]
+    #[serial_test::serial(listening_context)]
+    fn a_published_mode_reaches_the_surface_with_its_context() {
+        // Frame type 2 is 12.65 kbit/s, published in both contexts.
+        let s = amr_wb_stream(2, 100, 0);
+        let out = StreamSummary::of(&s, crate::rtp::quality::MosDelay::unknown());
+        let mos = out.mos_wideband.expect("12.65 is published");
+        assert!((3.0..=4.5).contains(&mos), "MOS_CQEW out of range: {mos}");
+        assert_eq!(out.mos_wideband_context.as_deref(), Some("monotic"));
+        assert_eq!(out.mos_wideband_unavailable, None);
+        // And it is NOT the narrowband number, which is the whole point of
+        // publishing it in its own field.
+        assert!(
+            (out.mos - mos).abs() > f64::EPSILON,
+            "the two scales must not coincide by accident: {} and {mos}",
+            out.mos
+        );
+    }
+
+    /// A mode G.113 does not publish in the context in force says so by name.
+    #[test]
+    #[serial_test::serial(listening_context)]
+    fn an_unpublished_mode_names_itself_rather_than_going_quiet() {
+        crate::rtp::emodel_wb::set_listening_context(
+            crate::rtp::emodel_wb::ListeningContext::Diotic,
+        );
+        // Frame type 6 is 19.85 kbit/s: monotic only.
+        let s = amr_wb_stream(6, 100, 0);
+        let out = StreamSummary::of(&s, crate::rtp::quality::MosDelay::unknown());
+        assert_eq!(out.mos_wideband, None);
+        assert_eq!(
+            out.mos_wideband_unavailable.as_deref(),
+            Some("unpublished_mode")
+        );
+        crate::rtp::emodel_wb::set_listening_context(
+            crate::rtp::emodel_wb::ListeningContext::Monotic,
+        );
+    }
+
+    /// Loss on a mode with no published robustness factor is reported as not
+    /// computable, which is a different answer from an unpublished mode.
+    #[test]
+    #[serial_test::serial(listening_context)]
+    fn loss_without_a_robustness_factor_is_reported_as_not_computable() {
+        // Frame type 0 is 6.6 kbit/s: an Ie,WB in both contexts, a Bpl,wb in
+        // neither, so it scores clean and refuses under loss.
+        let clean = StreamSummary::of(
+            &amr_wb_stream(0, 100, 0),
+            crate::rtp::quality::MosDelay::unknown(),
+        );
+        assert!(clean.mos_wideband.is_some(), "6.6 scores with no loss");
+
+        let lossy = StreamSummary::of(
+            &amr_wb_stream(0, 100, 5),
+            crate::rtp::quality::MosDelay::unknown(),
+        );
+        assert_eq!(lossy.mos_wideband, None);
+        assert_eq!(
+            lossy.mos_wideband_unavailable.as_deref(),
+            Some("loss_not_computable"),
+            "and NOT unpublished_mode -- the tables are not silent here, this \
+             stream is the thing that cannot be scored"
+        );
+    }
+
+    /// A stream nobody attempted to score wideband carries no wideband fields
+    /// at all, including no reason.
+    ///
+    /// The negative. Without it every G.711 call on the wire would grow a
+    /// field explaining why it has no AMR-WB score.
+    #[test]
+    #[serial_test::serial(listening_context)]
+    fn a_narrowband_stream_carries_no_wideband_fields() {
+        let mut s = amr_wb_stream(2, 100, 0);
+        s.codec = Some("PCMU".to_string());
+        let out = StreamSummary::of(&s, crate::rtp::quality::MosDelay::unknown());
+        assert_eq!(out.mos_wideband, None);
+        assert_eq!(out.mos_wideband_context, None);
+        assert_eq!(out.mos_wideband_unavailable, None);
     }
 }

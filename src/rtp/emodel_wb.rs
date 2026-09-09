@@ -63,6 +63,74 @@ pub enum ListeningContext {
     Diotic,
 }
 
+/// The listening context every wideband score in this process is read in.
+///
+/// **A process-wide declaration, for the reason the codec impairment table is
+/// one**: `score_amr_wb` is reached by the REST API, the MCP surface, the CLI
+/// report and the TUI, and none of them is threaded a config. A context
+/// honored on some of those would be two surfaces publishing different MOS for
+/// one stream.
+static LISTENING_CONTEXT: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+/// Declare the listening context for this process.
+///
+/// Called once during bootstrap from `[media] listening_context`.
+pub fn set_listening_context(context: ListeningContext) {
+    LISTENING_CONTEXT.store(
+        match context {
+            ListeningContext::Monotic => 0,
+            ListeningContext::Diotic => 1,
+        },
+        std::sync::atomic::Ordering::Relaxed,
+    );
+}
+
+/// The declared listening context, defaulting to monotic.
+///
+/// **A default, where this module's own tables take an explicit argument, and
+/// the difference is deliberate.** `amr_wb_ie` refuses to assume because at
+/// 6.6 kbit/s the two tables differ by 15 R-points and a silent assumption
+/// would be a larger error than most of the impairments being modeled. What
+/// makes a default acceptable HERE is that it is not silent: every score
+/// carries the context it was read in, on every surface, so a reader who
+/// disagrees can see what to change.
+///
+/// Monotic, because a capture of mobile voice is a capture of handsets. An
+/// operator whose estate is speakerphones or stereo headsets says so in
+/// `[media] listening_context`.
+#[must_use]
+pub fn declared_listening_context() -> ListeningContext {
+    if LISTENING_CONTEXT.load(std::sync::atomic::Ordering::Relaxed) == 1 {
+        ListeningContext::Diotic
+    } else {
+        ListeningContext::Monotic
+    }
+}
+
+impl ListeningContext {
+    /// The wire spelling every surface serializes this as.
+    ///
+    /// One vocabulary in one place, the rule `MosGrounding::as_str` follows.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Monotic => "monotic",
+            Self::Diotic => "diotic",
+        }
+    }
+
+    /// Parse the spelling a config file uses. `None` for anything else, so a
+    /// typo is refused rather than silently read as the default.
+    #[must_use]
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "monotic" => Some(Self::Monotic),
+            "diotic" => Some(Self::Diotic),
+            _ => None,
+        }
+    }
+}
+
 /// The nine AMR-WB modes, in kbit/s, indexed by RFC 4867 mode number.
 ///
 /// The ordering is normative: `mode-set=2` in an SDP `a=fmtp` line means
@@ -225,6 +293,78 @@ pub fn amr_wb_mos(kbps: f64, context: ListeningContext, loss_pct: f64) -> Option
     Some(r_wb_to_mos(r_wb(ie_eff)))
 }
 
+/// Why a wideband score is not available for a stream.
+///
+/// A REASON rather than an absent value, because the two cases are opposite
+/// confidences and a caller has to be able to say which it has. "G.113
+/// publishes nothing for this mode in this context" is a gap in the tables;
+/// "the mode is published but this stream lost packets and no `Bpl,wb` exists
+/// for it" is a stream sipnab genuinely cannot score, and reporting either as
+/// a missing field would leave an operator guessing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WidebandUnavailable {
+    /// G.113 publishes no `Ie,WB` for this mode in this listening context.
+    /// Three of the nine modes have no diotic value at all.
+    UnpublishedMode,
+    /// The mode is published and the stream lost packets, and G.113 Table IV.4
+    /// publishes `Bpl,wb` for three modes, diotic only, uniform loss only.
+    /// **AMR-WB under loss on a handset is not computable** from published
+    /// data. That is a finding, not a gap to fill with the diotic figure.
+    LossNotComputable,
+}
+
+/// A wideband score, with everything a reader needs to know it is not a
+/// narrowband one.
+///
+/// The scale travels with the number on purpose. `MOS_CQEW` anchors at 129 and
+/// `MOS_CQE` at 93.2, so a figure here and one from
+/// [`crate::rtp::quality::estimate_mos`] are not comparable, must not be
+/// averaged, and must not meet one threshold.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct WidebandScore {
+    /// `MOS_CQEW` on the G.107.1 scale.
+    pub mos: f64,
+    /// The wideband R-factor it was converted from.
+    pub r_factor: f64,
+    /// The equipment impairment G.113 publishes for this mode and context.
+    pub ie_wb: f64,
+    /// Which listening context the tables were read in.
+    pub context: ListeningContext,
+    /// The mode, in kbit/s, the payload headers reported.
+    pub mode_kbps: f64,
+}
+
+/// Score an AMR-WB stream on the wideband scale.
+///
+/// The mode comes from the RTP payload header ([`crate::rtp::amr`]), because
+/// the codec name does not carry it and the nine modes span a full MOS point.
+pub fn score_amr_wb(
+    mode_kbps: f64,
+    context: ListeningContext,
+    loss_pct: f64,
+) -> Result<WidebandScore, WidebandUnavailable> {
+    let ie_wb = amr_wb_ie(mode_kbps, context).ok_or(WidebandUnavailable::UnpublishedMode)?;
+    // Sanitized before the "is there loss" decision, for the reason
+    // `amr_wb_mos` states: asking the raw figure would refuse a stream on the
+    // strength of a NaN, reporting "not computable under loss" for a stream
+    // that has no loss to compute once the value is bounded.
+    let loss = sanitized_loss_pct(loss_pct);
+    let ie_eff = if loss > 0.0 {
+        let bpl = amr_wb_bpl(mode_kbps, context).ok_or(WidebandUnavailable::LossNotComputable)?;
+        ie_eff_wb(ie_wb, loss, bpl)
+    } else {
+        ie_wb
+    };
+    let r_factor = r_wb(ie_eff);
+    Ok(WidebandScore {
+        mos: r_wb_to_mos(r_factor),
+        r_factor,
+        ie_wb,
+        context,
+        mode_kbps,
+    })
+}
+
 /// The single AMR-WB mode an SDP `a=fmtp` line pins, if it pins exactly one.
 ///
 /// RFC 4867 §8.1 defines `mode-set` as a comma-separated list of permitted
@@ -293,6 +433,88 @@ mod tests {
         assert!(close(mos, 3.4062), "got {mos}");
     }
 
+    /// The process-wide declaration round-trips, and every score reads it.
+    ///
+    /// Serialized because it WRITES the declaration: two tests reading it
+    /// concurrently see each other's value and the score moves underneath
+    /// the assertion. The surface tests in `crate::output::model` learned
+    /// that the expensive way.
+    #[test]
+    #[serial_test::serial(listening_context)]
+    fn the_declared_context_round_trips() {
+        set_listening_context(ListeningContext::Diotic);
+        assert_eq!(declared_listening_context(), ListeningContext::Diotic);
+        set_listening_context(ListeningContext::Monotic);
+        assert_eq!(declared_listening_context(), ListeningContext::Monotic);
+    }
+
+    /// A spelling the config does not define is refused rather than read as
+    /// the default.
+    ///
+    /// The negative half. `parse` returning `Monotic` for a typo would leave
+    /// an operator who wrote `diotic ` -- or `binaural` -- with handset
+    /// figures and nothing saying so, which is the silent assumption this
+    /// module opens by refusing.
+    #[test]
+    fn an_unrecognized_context_is_refused_rather_than_defaulted() {
+        assert_eq!(
+            ListeningContext::parse("monotic"),
+            Some(ListeningContext::Monotic)
+        );
+        assert_eq!(
+            ListeningContext::parse("  DIOTIC "),
+            Some(ListeningContext::Diotic)
+        );
+        assert_eq!(ListeningContext::parse("binaural"), None);
+        assert_eq!(ListeningContext::parse(""), None);
+    }
+    /// A published mode with no loss scores, and the score carries its scale.
+    #[test]
+    fn a_published_mode_scores_and_says_what_it_read() {
+        let s = score_amr_wb(12.65, ListeningContext::Monotic, 0.0)
+            .expect("12.65 monotic is published");
+        assert!(close(s.mos, 4.3371), "got {}", s.mos);
+        assert!(
+            (s.ie_wb - 13.0).abs() < f64::EPSILON,
+            "Ie,WB is Table IV.1's"
+        );
+        assert!(close(s.r_factor, r_wb(13.0)));
+        assert_eq!(s.context, ListeningContext::Monotic);
+        assert!((s.mode_kbps - 12.65).abs() < f64::EPSILON);
+    }
+
+    /// A mode G.113 does not publish in that context is refused BY NAME.
+    ///
+    /// 19.85 has a monotic value and no diotic one. Interpolating it from its
+    /// neighbors is not defensible in a series that is not even monotonic.
+    #[test]
+    fn a_mode_with_no_published_value_is_refused_by_name() {
+        assert!(score_amr_wb(19.85, ListeningContext::Monotic, 0.0).is_ok());
+        assert_eq!(
+            score_amr_wb(19.85, ListeningContext::Diotic, 0.0),
+            Err(WidebandUnavailable::UnpublishedMode)
+        );
+    }
+
+    /// Under loss, a mode with no published `Bpl,wb` is not computable, and
+    /// that is a different answer from an unpublished mode.
+    ///
+    /// 6.6 monotic has an `Ie,WB` and no `Bpl,wb` -- Table IV.4 is diotic only
+    /// -- so it scores clean and refuses under loss. The two errors must not
+    /// collapse into one: the first says the tables are silent, the second
+    /// says this particular stream cannot be scored.
+    #[test]
+    fn loss_without_a_published_robustness_factor_is_its_own_answer() {
+        assert!(score_amr_wb(6.6, ListeningContext::Monotic, 0.0).is_ok());
+        assert_eq!(
+            score_amr_wb(6.6, ListeningContext::Monotic, 2.0),
+            Err(WidebandUnavailable::LossNotComputable)
+        );
+        // And the one mode that IS computable under loss still is.
+        let s =
+            score_amr_wb(12.65, ListeningContext::Diotic, 2.0).expect("Table IV.4 publishes it");
+        assert!(close(s.mos, 3.4062), "got {}", s.mos);
+    }
     /// The spread across modes is the whole reason a single placeholder was
     /// wrong. If this collapses, the table has stopped being consulted.
     #[test]
