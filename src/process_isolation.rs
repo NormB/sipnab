@@ -1068,6 +1068,355 @@ pub fn spawn_scanner_kill_worker(
     })
 }
 
+// ── The wire between two processes ───────────────────────────────────
+
+/// Framing for [`KillRequest`] and [`KillResponse`] across a pipe.
+///
+/// The `Serialize`/`Deserialize` derives on those two types have been in this
+/// file since D16 was specified and nothing has ever used them: the worker is
+/// a thread, so a request crosses a crossbeam channel as a Rust value and is
+/// never encoded at all. They were the only thing that came of an IPC design
+/// nobody built.
+///
+/// This is that wire, and it is deliberately the smallest one that works. Four
+/// bytes of big-endian length, then that many bytes of JSON. No handshake, no
+/// version negotiation, no framing library: both ends are the same binary at
+/// the same commit, spawned by each other, so a version mismatch is not a
+/// state either side can reach.
+///
+/// **The length prefix is checked before anything is allocated.** A reader that
+/// trusts a length field allocates whatever the writer says, and the writer of
+/// this pipe is the sipnab that spawned the reader — but so is a debugger, a
+/// misdirected file descriptor, and whatever a future refactor connects. A
+/// bound costs one comparison and removes the whole class.
+///
+/// # Nothing speaks this yet, and the reason is worth reading first
+///
+/// The worker is still a thread. Writing the wire first was the cheap half;
+/// what stopped the fork is [`TransmitPermit`](crate::security::transmit_guard::TransmitPermit),
+/// a zero-sized proof token whose entire value is that no other module can
+/// construct one — "offline never transmits" is a property of the type system
+/// rather than of a check somebody remembered to write.
+///
+/// A token cannot cross a pipe. A child that re-derived it from an argument
+/// would be deciding its own permission, and a compile-time guard would become
+/// a string comparison in a process anything on the box can start. The answer
+/// is not to send it: the child's capability IS the inherited raw socket
+/// descriptor, which only the privileged parent could open and which that
+/// parent only opens on a source that grants a permit. So the child refuses
+/// everything without the descriptor, and "no permit" and "no descriptor"
+/// become one refusal. PI2 in the backlog carries the rest.
+pub mod wire {
+    use std::io::{self, Read, Write};
+
+    use serde::Serialize;
+    use serde::de::DeserializeOwned;
+
+    /// Largest frame either side writes or accepts.
+    ///
+    /// A kill response carries a SIP message, bounded by the largest UDP
+    /// payload an IPv4 datagram can hold — about 64 KiB. `serde_json` renders
+    /// a byte vector as an array of decimal numbers, so the worst case is
+    /// roughly four times that. One mebibyte is comfortably above it and far
+    /// below anything worth allocating on a bad length field.
+    pub const MAX_FRAME_BYTES: usize = 1 << 20;
+
+    /// Write one message as a length-prefixed JSON frame.
+    ///
+    /// # Arguments
+    ///
+    /// * `to` — the pipe half this end owns.
+    /// * `msg` — the message to send.
+    ///
+    /// # Errors
+    ///
+    /// The underlying write's error, or `InvalidData` when the encoded message
+    /// exceeds [`MAX_FRAME_BYTES`] — refused here rather than written, so the
+    /// reader never meets a frame it is required to reject.
+    pub fn write_frame<W: Write, T: Serialize>(to: &mut W, msg: &T) -> io::Result<()> {
+        // `InvalidData`, not `Other`: a message that will not encode is a fact
+        // about the message, and a caller has to be able to tell it from the
+        // pipe having broken underneath.
+        let body =
+            serde_json::to_vec(msg).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        if body.len() > MAX_FRAME_BYTES {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "message encodes to {} bytes, over the {MAX_FRAME_BYTES}-byte frame limit",
+                    body.len()
+                ),
+            ));
+        }
+        // One write for the pair. Two writes can interleave with another
+        // writer's, and a length that arrives without its body is a reader
+        // blocked forever on bytes nobody will send.
+        let mut frame = Vec::with_capacity(4 + body.len());
+        frame.extend_from_slice(&u32::try_from(body.len()).unwrap_or(u32::MAX).to_be_bytes());
+        frame.extend_from_slice(&body);
+        to.write_all(&frame)?;
+        to.flush()
+    }
+
+    /// Read one length-prefixed JSON frame.
+    ///
+    /// # Arguments
+    ///
+    /// * `from` — the pipe half this end owns.
+    ///
+    /// # Returns
+    ///
+    /// `Ok(None)` at a CLEAN end of stream — the peer closed between frames,
+    /// which is how a shutdown looks and is not an error. `Ok(Some(msg))` for
+    /// a complete frame.
+    ///
+    /// # Errors
+    ///
+    /// `UnexpectedEof` when the stream ends inside a frame, which is a peer
+    /// that died mid-write and must not read as an orderly close.
+    /// `InvalidData` for a length over [`MAX_FRAME_BYTES`] or a body that is
+    /// not the expected message.
+    pub fn read_frame<R: Read, T: DeserializeOwned>(from: &mut R) -> io::Result<Option<T>> {
+        let mut len = [0u8; 4];
+        match read_exact_or_eof(from, &mut len)? {
+            // Nothing at all: the peer closed between frames.
+            0 => return Ok(None),
+            4 => {}
+            n => {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    format!("stream ended after {n} of 4 length bytes"),
+                ));
+            }
+        }
+        let want = u32::from_be_bytes(len) as usize;
+        // Checked BEFORE the allocation, which is the whole reason the bound
+        // exists. `with_capacity(want)` on an unchecked length is a reader
+        // that lets its writer decide how much memory it uses.
+        if want > MAX_FRAME_BYTES {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("frame claims {want} bytes, over the {MAX_FRAME_BYTES}-byte limit"),
+            ));
+        }
+        let mut body = vec![0u8; want];
+        let got = read_exact_or_eof(from, &mut body)?;
+        if got != want {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                format!("stream ended after {got} of {want} body bytes"),
+            ));
+        }
+        // Same reasoning as the writer: a body that is not this message is
+        // invalid data, and a reader that reports it as `Other` gives its
+        // caller no way to distinguish a corrupt frame from a dead pipe.
+        serde_json::from_slice(&body)
+            .map(Some)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+    }
+
+    /// Fill `buf`, returning how many bytes arrived before end of stream.
+    ///
+    /// `Read::read_exact` cannot express "nothing arrived, which is fine" and
+    /// "half a frame arrived, which is not" as different answers — both are
+    /// `UnexpectedEof`. Between frames those are the difference between a
+    /// clean shutdown and a dead peer.
+    fn read_exact_or_eof<R: Read>(from: &mut R, buf: &mut [u8]) -> io::Result<usize> {
+        let mut filled = 0;
+        while filled < buf.len() {
+            match from.read(&mut buf[filled..]) {
+                Ok(0) => break,
+                Ok(n) => filled += n,
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(filled)
+    }
+}
+
+#[cfg(test)]
+mod wire_tests {
+    use std::io::Cursor;
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+
+    use super::wire::{MAX_FRAME_BYTES, read_frame, write_frame};
+    use super::{KillRequest, KillResponse};
+
+    /// A request with every field populated, so a round trip proves the whole
+    /// message rather than the discriminant.
+    fn a_request(payload: Vec<u8>) -> KillRequest {
+        KillRequest::SendResponse {
+            dst_addr: IpAddr::V4(Ipv4Addr::new(192, 0, 2, 9)),
+            dst_port: 5060,
+            src_addr: IpAddr::V6(Ipv6Addr::LOCALHOST),
+            src_port: 5061,
+            response_bytes: payload,
+        }
+    }
+
+    /// Both directions of the protocol survive the wire.
+    #[test]
+    fn a_request_and_a_response_round_trip() {
+        let mut pipe = Vec::new();
+        let sent = a_request(b"SIP/2.0 403 Forbidden\r\n\r\n".to_vec());
+        write_frame(&mut pipe, &sent).expect("write");
+        let back: KillRequest = read_frame(&mut Cursor::new(&pipe))
+            .expect("read")
+            .expect("a frame was written");
+        assert_eq!(format!("{back:?}"), format!("{sent:?}"));
+
+        let mut pipe = Vec::new();
+        let sent = KillResponse::Rejected {
+            reason: "broadcast destination".to_string(),
+        };
+        write_frame(&mut pipe, &sent).expect("write");
+        let back: KillResponse = read_frame(&mut Cursor::new(&pipe))
+            .expect("read")
+            .expect("a frame was written");
+        assert_eq!(back, sent);
+    }
+
+    /// Frames are read in order, one call each. A reader that consumed the
+    /// whole pipe would lose every message after the first.
+    #[test]
+    fn frames_are_read_one_at_a_time_and_in_order() {
+        let mut pipe = Vec::new();
+        for reason in ["first", "second", "third"] {
+            write_frame(
+                &mut pipe,
+                &KillResponse::Rejected {
+                    reason: reason.to_string(),
+                },
+            )
+            .expect("write");
+        }
+        let mut cursor = Cursor::new(&pipe);
+        let mut seen = Vec::new();
+        while let Some(msg) = read_frame::<_, KillResponse>(&mut cursor).expect("read") {
+            match msg {
+                KillResponse::Rejected { reason } => seen.push(reason),
+                other => panic!("unexpected {other:?}"),
+            }
+        }
+        assert_eq!(seen, vec!["first", "second", "third"]);
+    }
+
+    /// A peer that closed BETWEEN frames is a shutdown, not a fault.
+    #[test]
+    fn a_clean_close_reads_as_no_message() {
+        let empty: Vec<u8> = Vec::new();
+        let got: Option<KillResponse> =
+            read_frame(&mut Cursor::new(&empty)).expect("a clean close is not an error");
+        assert!(got.is_none());
+    }
+
+    /// A peer that died mid-frame is a fault, and must not read as a shutdown.
+    ///
+    /// Both halves of a frame are truncated, because the length prefix and the
+    /// body end in different code paths and only one of them was written
+    /// first.
+    #[test]
+    fn a_truncated_frame_is_an_error_and_not_a_close() {
+        let mut whole = Vec::new();
+        write_frame(&mut whole, &a_request(vec![0u8; 64])).expect("write");
+
+        for cut in [1usize, 2, 3, 5, whole.len() - 1] {
+            let err = read_frame::<_, KillRequest>(&mut Cursor::new(&whole[..cut]))
+                .expect_err("a partial frame must not read as a clean close");
+            assert_eq!(
+                err.kind(),
+                std::io::ErrorKind::UnexpectedEof,
+                "cut at {cut}: {err}"
+            );
+        }
+    }
+
+    /// An absurd length prefix is refused before anything is allocated.
+    ///
+    /// THE reason the bound exists. A reader that trusts the field allocates
+    /// whatever the writer says: four bytes of `0xFF` are four gibibytes.
+    #[test]
+    fn an_oversized_length_is_refused_without_allocating() {
+        // Length prefix only. If the reader allocated first and then read, it
+        // would ask for 4 GiB before discovering there is no body at all.
+        let hostile = u32::MAX.to_be_bytes().to_vec();
+        let err = read_frame::<_, KillRequest>(&mut Cursor::new(&hostile))
+            .expect_err("4 GiB must be refused");
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+        assert!(
+            err.to_string().contains(&MAX_FRAME_BYTES.to_string()),
+            "the refusal must name the limit it applied: {err}"
+        );
+
+        // And one byte over the limit, which is the boundary rather than the
+        // absurdity.
+        let over = u32::try_from(MAX_FRAME_BYTES + 1).expect("fits");
+        let err = read_frame::<_, KillRequest>(&mut Cursor::new(&over.to_be_bytes().to_vec()))
+            .expect_err("one byte over the limit must be refused");
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+    }
+
+    /// A well-framed body that is not the expected message is a fault.
+    #[test]
+    fn a_well_framed_body_that_is_not_the_message_is_refused() {
+        let body = b"{\"not\":\"a kill request\"}";
+        let mut pipe = u32::try_from(body.len())
+            .expect("fits")
+            .to_be_bytes()
+            .to_vec();
+        pipe.extend_from_slice(body);
+        let err = read_frame::<_, KillRequest>(&mut Cursor::new(&pipe))
+            .expect_err("the frame is well formed and its contents are not");
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+    }
+
+    /// The largest message the sender can legitimately produce fits.
+    ///
+    /// A kill response carries a SIP message, bounded by the largest payload
+    /// an IPv4 UDP datagram can hold. `serde_json` writes a byte vector as
+    /// decimal numbers, so this is the case the frame limit was sized for --
+    /// and the one a limit chosen by eye would have cut in half.
+    #[test]
+    fn the_largest_legitimate_payload_still_fits_a_frame() {
+        let widest = u16::MAX as usize - 20 - 8;
+        let mut pipe = Vec::new();
+        write_frame(&mut pipe, &a_request(vec![0xFFu8; widest]))
+            .expect("the widest legal SIP payload must fit one frame");
+        assert!(
+            pipe.len() > widest,
+            "the encoding cannot be smaller than the bytes it carries"
+        );
+        let back: KillRequest = read_frame(&mut Cursor::new(&pipe))
+            .expect("read")
+            .expect("a frame was written");
+        match back {
+            KillRequest::SendResponse { response_bytes, .. } => {
+                assert_eq!(response_bytes.len(), widest);
+                assert!(response_bytes.iter().all(|b| *b == 0xFF));
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    /// A message too large to frame is refused by the WRITER.
+    ///
+    /// The paired half of the reader's limit. Written, it would produce a
+    /// frame the reader is required to reject -- a message that leaves one
+    /// process and can never enter the other, discovered at the far end.
+    #[test]
+    fn a_message_over_the_limit_is_refused_before_it_is_written() {
+        let mut pipe = Vec::new();
+        let err = write_frame(&mut pipe, &a_request(vec![0u8; MAX_FRAME_BYTES]))
+            .expect_err("a byte vector this wide cannot encode inside one frame");
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+        assert!(
+            pipe.is_empty(),
+            "the refusal must write nothing, or the reader meets half a frame"
+        );
+    }
+}
+
 // ── Tests ────────────────────────────────────────────────────────────
 
 #[cfg(test)]

@@ -6916,6 +6916,32 @@ them away.
   shared `Arc<RwLock<..>>` stores every surface reads are the product, and
   turning those reads into IPC is a new wire protocol, not a refactor.
 
+  **The wire exists now (2026-09-09).** `process_isolation::wire` frames
+  `KillRequest`/`KillResponse` as a four-byte big-endian length and that many
+  bytes of JSON, with the length checked BEFORE anything is allocated — a
+  reader that trusts the field lets its writer decide how much memory it uses.
+  Eight tests, mutation-checked: the frame limit, the truncation cases either
+  side of the length prefix, a well-framed body that is not the message, the
+  widest legal SIP payload, and a writer that refuses an over-limit message
+  rather than emitting a frame the reader is required to reject.
+
+  **The blocker is the transmit permit, and the entry above did not see it.**
+  [`TransmitPermit`](https://github.com/NormB/sipnab/blob/main/src/security/transmit_guard.rs)
+  is a zero-sized proof token whose entire value is that no other module can
+  construct one: "offline never transmits" is a property of the type system
+  rather than of a check somebody remembered to write. A token cannot cross a
+  pipe. A child that re-derived it from an argument would be deciding its own
+  permission, and the compile-time guard would become a string comparison in a
+  process anything on the box can start.
+
+  **The answer, for whoever picks this up:** do not send the permit and do not
+  re-derive it. The child's capability IS the inherited raw socket descriptor,
+  which only the privileged parent could open and which the parent only opens
+  on a source that grants a permit. So the child must refuse everything when
+  the descriptor is absent, and "no permit" and "no descriptor" become the same
+  refusal. That is defensible, and it is a different design from the one this
+  entry described — write it down before writing the fork.
+
 - [x] **Packet loss map** — visual representation of RTP loss patterns. **Done:** new `StreamLossMap` view (key `L` from Stream Detail / Quality Dashboard) rendering a sequence-space density strip from `RtpStream.lost_sequences` — bursty loss shows as a dark cluster, diffuse as scattered specks — with a summary header (loss %, burst count/pattern from `burst_gap_analysis`) and sequence axis. Pure wraparound-aware `build_loss_map` binning core in [`src/rtp/loss_map.rs`](https://github.com/NormB/sipnab/blob/main/src/rtp/loss_map.rs) (9 unit tests); spec at docs/superpowers/specs/2026-07-24-packet-loss-map-design.md.
 - [x] **OpenSSF Best Practices Badge** — **Done 2026-08-06.** Registered as
   project **13931**, `badge_level: passing`, `badge_percentage_0: 100`. The
