@@ -12,6 +12,33 @@ entry that carries them.
 
 ### Changed
 
+- **The published binary-size ceiling moves from 15 MB to 16 MB, and the
+  mitigation that was supposed to warn about it did not.** The release build
+  refused this version's x86_64-musl binary at 15,747,848 bytes, 19,208 over
+  the 15 MB the homepage advertises. Measured from the shipped stripped
+  binaries: 15,612,680 at 0.5.157, 15,608,584 at 0.5.158, 15,629,064 at
+  0.5.159, and 15,747,848 here. So 0.5.159 shipped with 99,576 bytes of
+  headroom, one ordinary release from tipping, and nothing said so.
+
+  The same gate failed a release at 0.5.139, and the mitigation chosen then was
+  the ceiling's own comment, recording the measurement behind every ceiling
+  MOVE so that "the remaining headroom is readable without building anything".
+  It was not readable. Nothing required the record to be refreshed between
+  moves, so it still described 0.5.138 while three releases went past.
+
+  Two tests replace that. One demands a measurement line for the release
+  currently published, so a release cannot be cut without re-measuring. One
+  fails while the margin is thin, so the ceiling is raised at the release that
+  gets close rather than at the tag that publishes nothing. Both read
+  measurement LINES rather than grepping the block, because the first draft did
+  grep it and passed against a record with every measurement deleted — the
+  version was named in a sentence and the byte counts were in the prose.
+
+  Shrinking was considered and rejected for the reason it was rejected at
+  0.5.139: the release profile already runs link-time optimization, a single
+  codegen unit, symbol stripping and abort-on-panic, and the only lever left
+  trades the throughput the benchmarks page publishes.
+
 - **A decision that captures must never be committed is now a gate, not a
   note.** Five LTE captures entered the private corpus and are the reason a
   GTPv2-C control message reported as an RTP stream with a confident `mos: 1.0`

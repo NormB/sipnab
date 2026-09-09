@@ -82,15 +82,21 @@ const RELEASE_ONLY_GATES: &[(&str, &str)] = &[
     ),
     (
         "Enforce published binary size (musl targets)",
-        "KNOWN GAP, accepted deliberately: this measures a fact that any commit \
-         could measure, and on 2026-08-31 it failed a release for 35,016 bytes \
-         that `main` had been green about. Moving it earlier costs a full \
-         cross-compiled release build per commit, which is the most expensive \
-         thing in the release and would be paid on every push to catch a \
-         boundary crossed roughly once a hundred releases. The mitigation is \
-         the ceiling's own comment in `website/config.toml`, which now records \
-         the measured size behind every move, so the remaining headroom is \
-         readable without building anything.",
+        "KNOWN GAP, accepted deliberately and now cost a SECOND release: it \
+         failed 0.5.139 for 35,016 bytes and 0.5.160 for 19,208, both against \
+         a green `main`. Moving it earlier still costs a full cross-compiled \
+         release build per commit, which is the most expensive thing in the \
+         release and would be paid on every push to catch a boundary crossed \
+         roughly once a hundred releases. What changed is the mitigation. It \
+         used to be the ceiling's comment in `website/config.toml` recording \
+         the size behind every MOVE, and that could not report headroom \
+         between moves: it still described 0.5.138 while three releases went \
+         past, so 0.5.159 shipped with 99,576 bytes left and nothing said so. \
+         The comment now records every published release and two tests act on \
+         it -- one demands a line for the current `published_version`, so a \
+         release cannot be cut without re-measuring, and one fails while the \
+         margin is thin, so the ceiling is raised at the release that gets \
+         close rather than at the tag that fails.",
     ),
     (
         "Verify the attestation we just created",
@@ -198,6 +204,226 @@ fn the_binary_ceiling_records_the_measurement_behind_it() {
         "the ceiling's comment names too few figures ({digits} digits) to be \
          recording real measurements: {block}"
     );
+}
+
+/// One line of the ceiling's measurement record: a version and a byte count.
+#[derive(Debug, PartialEq, Eq)]
+struct Measurement {
+    version: String,
+    bytes: i64,
+}
+
+/// The measurement LINES of a comment block, and nothing else in it.
+///
+/// Structured rather than grepped, because grepping is what made the first
+/// draft of these tests vacuous: the block names `0.5.159` in a sentence and
+/// carries six-figure byte counts in its own prose, so a test that asked "is
+/// this version mentioned" and "are there three big numbers" passed against a
+/// record with every measurement deleted.
+///
+/// A measurement line is `# <version>  <n,nnn,nnn> bytes` and nothing else is.
+fn measurements(block: &str) -> Vec<Measurement> {
+    let re = regex::Regex::new(r"(?m)^#\s+(\d+\.\d+\.\d+)\s+([0-9]{1,3}(?:,[0-9]{3})+)\s+bytes\b")
+        .expect("pattern");
+    re.captures_iter(block)
+        .filter_map(|c| {
+            Some(Measurement {
+                version: c[1].to_string(),
+                bytes: c[2].replace(',', "").parse().ok()?,
+            })
+        })
+        .collect()
+}
+
+/// Owed, first of two, for a release the size gate failed a second time.
+///
+/// The 0.5.139 mitigation was a comment recording the measurement behind every
+/// ceiling MOVE, and its stated purpose was that "the remaining headroom is
+/// readable without building anything". It was not. Nothing required the
+/// record to be refreshed between moves, so it described 0.5.138 while three
+/// releases went past; 0.5.159 shipped with 99,576 bytes of headroom and
+/// nobody could see that without downloading tarballs.
+///
+/// This demands a measurement LINE for the release currently published. A
+/// release cannot be cut without moving `published_version`, and moving it
+/// without re-measuring now fails here — which is the only thing that makes a
+/// hand-kept record self-refreshing.
+#[test]
+fn the_binary_ceiling_records_every_published_release() {
+    let src = ceiling_config();
+    let published = regex::Regex::new(r#"(?m)^published_version = "([^"]+)""#)
+        .unwrap()
+        .captures(&src)
+        .expect("website/config.toml has no published_version")[1]
+        .to_string();
+    let found = measurements(&ceiling_comment(&src));
+    assert!(
+        found.iter().any(|m| m.version == published),
+        "the ceiling's record has no measurement line for {published}, the \
+         release this tree currently advertises. Measure the shipped \
+         x86_64-musl binary and add one — a version named in a sentence is not \
+         a measurement. Recorded: {:?}",
+        found.iter().map(|m| &m.version).collect::<Vec<_>>()
+    );
+}
+
+/// Owed, second of two, and the half that acts on the record.
+///
+/// A refreshed record nobody reads is the 0.5.139 mitigation again. This one
+/// fails while the margin is thin, so the ceiling is a decision taken at the
+/// release that gets close rather than a surprise at the tag that fails.
+///
+/// The floor is 256 KiB, which is two ordinary releases at the growth this
+/// project actually shows: 0.5.159 added 20,480 bytes and 0.5.160 added
+/// 118,784. It is not a target — it is the point past which "one more release"
+/// stops being a safe assumption.
+#[test]
+fn the_binary_ceiling_keeps_a_readable_margin() {
+    let src = ceiling_config();
+    let found = measurements(&ceiling_comment(&src));
+    assert!(
+        found.len() >= 3,
+        "the ceiling's record carries {} measurement line(s); with fewer than \
+         three there is no trend to read a margin from",
+        found.len()
+    );
+    let (margin, largest, ceiling) = margin_of(&src, &found);
+    assert!(
+        margin > 0,
+        "the record's largest measured binary is {largest} bytes, over the \
+         {ceiling} MB ceiling. The release build will refuse this."
+    );
+    assert!(
+        margin >= THIN_MARGIN,
+        "only {margin} bytes of headroom under the {ceiling} MB ceiling, and \
+         two ordinary releases of this project are about {THIN_MARGIN}. Raise \
+         binary_size_ceiling_mb now, with the measurement, rather than \
+         discovering it when a tag has already published nothing."
+    );
+}
+
+/// Two ordinary releases of headroom, in bytes.
+const THIN_MARGIN: i64 = 256 * 1024;
+
+/// `(margin, largest_recorded, ceiling_mb)` for a config and its record.
+///
+/// Measured against the LARGEST recorded binary rather than the most recent
+/// one: 0.5.158 was smaller than 0.5.157, so "the last line" is not reliably
+/// the worst case.
+fn margin_of(src: &str, found: &[Measurement]) -> (i64, i64, i64) {
+    let ceiling: i64 = regex::Regex::new(r#"(?m)^binary_size_ceiling_mb = "([0-9]+)""#)
+        .unwrap()
+        .captures(src)
+        .expect("no binary_size_ceiling_mb")[1]
+        .parse()
+        .expect("the ceiling is a number");
+    let largest = found.iter().map(|m| m.bytes).max().unwrap_or(0);
+    (ceiling * 1024 * 1024 - largest, largest, ceiling)
+}
+
+/// Owed, for a mutation that survived: deleting the measurement line for the
+/// published release changed nothing, because the block names that version in
+/// a sentence too.
+#[test]
+fn a_version_named_in_prose_is_not_a_measurement() {
+    let prose = "\
+# 15 -> 16 at 0.5.160, and the same shape again.\n\
+# So 0.5.159 shipped one ordinary release away from tipping, over by 19,208.\n\
+# The 118,784 bytes are a 66th MCP tool.\n";
+    assert_eq!(
+        measurements(prose),
+        Vec::new(),
+        "a version and a byte count in the same paragraph are not a \
+         measurement line, and reading them as one is what let a record with \
+         every measurement deleted pass"
+    );
+}
+
+/// Owed, same mutation: the parser finds the real lines and reads both fields.
+///
+/// The paired half. A parser that matches nothing satisfies the test above
+/// and every assertion built on it, which is the failure mode this whole file
+/// is about.
+#[test]
+fn the_parser_reads_the_record_this_tree_carries() {
+    let found = measurements(&ceiling_comment(&ceiling_config()));
+    assert!(
+        found.len() >= 3,
+        "the parser found {} measurement line(s) in a record that has several",
+        found.len()
+    );
+    for m in &found {
+        assert!(
+            m.bytes > 1_000_000,
+            "{} parsed as {} bytes, which is not a binary size",
+            m.version,
+            m.bytes
+        );
+    }
+}
+
+/// Owed, for the second survivor: cutting the record to one line still passed,
+/// because six-figure byte counts elsewhere in the prose met the count.
+#[test]
+fn a_thin_margin_is_refused_however_the_record_is_worded() {
+    let src = "\
+# 0.5.001  15,000,000 bytes\n\
+# 0.5.002  16,700,000 bytes\n\
+# 0.5.003  15,100,000 bytes\n\
+binary_size_ceiling_mb = \"16\"\n";
+    let found = measurements(src);
+    assert_eq!(found.len(), 3, "the fixture must parse as three lines");
+    let (margin, largest, _) = margin_of(src, &found);
+    assert_eq!(
+        largest, 16_700_000,
+        "the margin must be measured against the LARGEST recorded binary, not \
+         the last line — a release can be smaller than the one before it"
+    );
+    assert!(
+        margin < THIN_MARGIN,
+        "a record whose worst binary sits {margin} bytes under the ceiling \
+         must read as thin"
+    );
+}
+
+/// Owed, same survivor: a comfortable record reads as comfortable.
+///
+/// Without this the refusal above passes against a rule that refuses
+/// everything, which is a different way of proving nothing.
+#[test]
+fn a_comfortable_margin_is_accepted() {
+    let src = "\
+# 0.5.001  10,000,000 bytes\n\
+# 0.5.002  10,100,000 bytes\n\
+# 0.5.003  10,050,000 bytes\n\
+binary_size_ceiling_mb = \"16\"\n";
+    let found = measurements(src);
+    assert_eq!(found.len(), 3);
+    let (margin, _, _) = margin_of(src, &found);
+    assert!(
+        margin >= THIN_MARGIN,
+        "6.7 MB of headroom read as thin, so the floor refuses everything"
+    );
+}
+
+/// `website/config.toml`, read once for the tests above.
+fn ceiling_config() -> String {
+    let p = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("website/config.toml");
+    std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()))
+}
+
+/// The contiguous comment block immediately above the ceiling key.
+fn ceiling_comment(src: &str) -> String {
+    let key = src
+        .find("\nbinary_size_ceiling_mb = ")
+        .expect("website/config.toml has no binary_size_ceiling_mb");
+    let mut lines: Vec<&str> = src[..key]
+        .lines()
+        .rev()
+        .take_while(|l| l.trim_start().starts_with('#'))
+        .collect();
+    lines.reverse();
+    lines.join("\n")
 }
 
 /// The scanners read a real workflow.

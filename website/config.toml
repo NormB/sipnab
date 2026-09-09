@@ -103,11 +103,37 @@ macos_floor_intel = "10.12"
 # 0.5.138 had only 79,672 bytes of headroom, so this was the release that
 # tipped rather than the one that grew unusually.
 #
-# Shrinking was considered and rejected: `[profile.release]` already runs `lto`,
-# `codegen-units = 1`, `strip` and `panic = "abort"`, and the only lever left is
-# `opt-level = "z"`, which trades the throughput the benchmarks page publishes.
-# Raising a claim that is no longer true beats keeping a claim that is.
-binary_size_ceiling_mb = "15"
+# 15 -> 16 at 0.5.160, and the same shape again. Measured x86_64-musl, every
+# figure from the shipped stripped binary inside the published tarball except
+# the last, which is the release job's own `stat` of the artifact it refused:
+#
+#   0.5.157  15,612,680 bytes
+#   0.5.158  15,608,584 bytes   (-4,096)
+#   0.5.159  15,629,064 bytes   (+20,480, leaving 99,576 bytes of headroom)
+#   0.5.160  15,747,848 bytes   (+118,784, over the 15 MB ceiling by 19,208)
+#
+# So 0.5.159 shipped one ordinary release away from tipping and nothing said
+# so. The 118,784 bytes are `find_in_captures` -- a 66th MCP tool with derived
+# input and output schemas -- plus the amplitude measurement, the per-interval
+# quality types, and the config and CLI plumbing for `--quality-interval`.
+# 16 MB leaves 1,029,368 bytes of headroom.
+#
+# The 0.5.139 mitigation was this comment: "the remaining headroom is readable
+# without building anything". It was not. Nothing required the record to be
+# refreshed between ceiling moves, so it still described 0.5.138 while three
+# releases went past, and the headroom was readable only by someone who
+# downloaded three tarballs. `the_binary_ceiling_records_every_published_release`
+# and `the_binary_ceiling_keeps_a_readable_margin` in
+# tests/release_gate_visibility_test.rs enforce the refresh and act on the
+# margin, so the raise now happens at the release that gets close rather than
+# at the tag that fails.
+#
+# Shrinking was considered and rejected again, for the reason it was rejected
+# at 0.5.139: `[profile.release]` already runs `lto`, `codegen-units = 1`,
+# `strip` and `panic = "abort"`, and the only lever left is `opt-level = "z"`,
+# which trades the throughput the benchmarks page publishes. Raising a claim
+# that is no longer true beats keeping a claim that is.
+binary_size_ceiling_mb = "16"
 github_url = "https://github.com/NormB/sipnab"
 # `owner/repo`, for the places a bare slug is what the command wants rather than
 # a URL: `gh attestation verify --repo`, the releases API path. These were

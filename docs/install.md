@@ -496,7 +496,7 @@ panic = "abort"
 debug = "line-tables-only"
 ```
 
-Target binary size (musl, stripped): <= 15 MB. Enforced against the real artifact by the "Enforce published binary size" step in release.yml.
+Target binary size (musl, stripped): <= 16 MB. Enforced against the real artifact by the "Enforce published binary size" step in release.yml.
 
 ## Cross-compilation
 
