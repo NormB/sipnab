@@ -5565,6 +5565,82 @@ mod tests {
         );
     }
 
+    /// The three PEM labels `pem_private_key` accepts, spelled exactly.
+    ///
+    /// # The defect this exists for
+    ///
+    /// On 2026-09-09 a blanket rename of a test fixture constant -- `KEY` to
+    /// `key()` -- was applied to this file with a regex that did not stop at
+    /// string boundaries. It rewrote the PEM labels in PRODUCTION code:
+    /// `"PRIVATE KEY"` became `"PRIVATE key()"`, and so did the error message
+    /// naming all three. Every TLS key in the tree stopped loading.
+    ///
+    /// Three TLS tests caught it, and all three caught it INCIDENTALLY: they
+    /// happen to load a key on their way to asserting something else, so the
+    /// failure arrived as "a world-readable key was accepted" rather than as
+    /// "the label table is wrong". Nothing pinned the labels themselves.
+    #[test]
+    fn every_pem_private_key_label_is_accepted() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        // A body that base64-decodes; `pem_private_key` returns at the first
+        // block whose LABEL matches, and does not parse the DER.
+        let body = "AAECAwQFBgcICQoLDA0ODw==";
+        for label in ["PRIVATE KEY", "RSA PRIVATE KEY", "EC PRIVATE KEY"] {
+            let path = dir.path().join(format!("{}.key", label.replace(' ', "-")));
+            std::fs::write(
+                &path,
+                format!("-----BEGIN {label}-----\n{body}\n-----END {label}-----\n"),
+            )
+            .expect("write key");
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
+                    .expect("chmod 600");
+            }
+            assert!(
+                pem_private_key(&path).is_ok(),
+                "{label} must load; a rename that lands inside this string \
+                 stops every TLS key in the tree from loading"
+            );
+        }
+    }
+
+    /// A label that is none of the three is refused, and the refusal names all
+    /// three.
+    ///
+    /// The negative half. Without it the table could be widened to accept
+    /// anything and the positive test above would still pass -- and the error
+    /// text is the other string the rename corrupted, so it is asserted rather
+    /// than assumed.
+    #[test]
+    fn an_unknown_pem_label_is_refused_by_a_message_naming_all_three() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("certificate.pem");
+        std::fs::write(
+            &path,
+            "-----BEGIN CERTIFICATE-----\nAAECAwQFBgcICQoLDA0ODw==\n-----END CERTIFICATE-----\n",
+        )
+        .expect("write pem");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
+                .expect("chmod 600");
+        }
+        let err = pem_private_key(&path)
+            .err()
+            .map(|e| format!("{e:#}"))
+            .unwrap_or_default();
+        for label in ["PRIVATE KEY", "RSA PRIVATE KEY", "EC PRIVATE KEY"] {
+            assert!(
+                err.contains(label),
+                "the refusal must name {label} so an operator knows what to \
+                 convert to; got: {err}"
+            );
+        }
+    }
+
     /// Tests for the HMAC datagram build/verify cycle: format, version,
     /// timestamp window, MAC binding over the whole datagram, and replay
     /// protection.
@@ -5573,7 +5649,14 @@ mod tests {
         use super::super::*;
 
         /// Shared HMAC key used by every test in this module.
-        const KEY: &[u8] = b"shared-hmac-key";
+        ///
+        /// Minted at runtime: a literal here is scanned like production code
+        /// and is an open `rust/hard-coded-cryptographic-value` alert. These
+        /// tests assert that the right key verifies and a different one does
+        /// not, which per-label material satisfies exactly.
+        fn key() -> &'static [u8] {
+            crate::test_material::key_bytes("hep-hmac-shared")
+        }
         /// Fixed 16-byte nonce used across tests (uniqueness not needed here).
         const NONCE: [u8; 16] = [7u8; 16];
         /// Fixed "current time" (epoch seconds) the tests verify against.
@@ -5601,7 +5684,7 @@ mod tests {
                 chrono::Utc::now(),
                 HepProtocol::Sip,
                 1,
-                KEY,
+                key(),
                 ts,
                 nonce,
                 payload,
@@ -5631,7 +5714,7 @@ mod tests {
             let mut cache = HmacNonceCache::new();
             assert_eq!(
                 verify_hmac_datagram(
-                    KEY,
+                    key(),
                     &pkt,
                     (start, end),
                     NOW,
@@ -5651,7 +5734,7 @@ mod tests {
             let mut cache = HmacNonceCache::new();
             assert_eq!(
                 verify_hmac_datagram(
-                    KEY,
+                    key(),
                     &pkt,
                     (start, end - 1),
                     NOW,
@@ -5665,7 +5748,7 @@ mod tests {
             bumped[start] = 99;
             assert_eq!(
                 verify_hmac_datagram(
-                    KEY,
+                    key(),
                     &bumped,
                     (start, end),
                     NOW,
@@ -5690,7 +5773,7 @@ mod tests {
             let mut cache = HmacNonceCache::new();
             assert_eq!(
                 verify_hmac_datagram(
-                    KEY,
+                    key(),
                     &downgraded,
                     (start, end),
                     NOW,
@@ -5710,14 +5793,14 @@ mod tests {
             let stale = signed(payload, NOW - 100, &NONCE);
             let sp = span(&stale);
             assert_eq!(
-                verify_hmac_datagram(KEY, &stale, sp, NOW, 30, &mut cache),
+                verify_hmac_datagram(key(), &stale, sp, NOW, 30, &mut cache),
                 Err(HmacAuthError::TimestampOutOfWindow),
                 "100s in the past is outside a 30s window"
             );
             let future = signed(payload, NOW + 100, &NONCE);
             let fp = span(&future);
             assert_eq!(
-                verify_hmac_datagram(KEY, &future, fp, NOW, 30, &mut cache),
+                verify_hmac_datagram(key(), &future, fp, NOW, 30, &mut cache),
                 Err(HmacAuthError::TimestampOutOfWindow),
                 "100s in the future is outside a 30s window"
             );
@@ -5737,7 +5820,7 @@ mod tests {
             tampered[last] ^= 0xff;
             assert_eq!(
                 verify_hmac_datagram(
-                    KEY,
+                    key(),
                     &tampered,
                     (start, end),
                     NOW,
@@ -5749,7 +5832,7 @@ mod tests {
             );
             assert_eq!(
                 verify_hmac_datagram(
-                    b"different-key",
+                    crate::test_material::key_bytes("hep-hmac-different"),
                     &pkt,
                     (start, end),
                     NOW,
@@ -5782,12 +5865,26 @@ mod tests {
             let b = signed(b"INVITE sip:b SIP/2.0\r\n", NOW, &[2u8; 16]);
             let mut cache = HmacNonceCache::new();
             assert_eq!(
-                verify_hmac_datagram(KEY, &a, span(&a), NOW, DEFAULT_HMAC_WINDOW_SECS, &mut cache),
+                verify_hmac_datagram(
+                    key(),
+                    &a,
+                    span(&a),
+                    NOW,
+                    DEFAULT_HMAC_WINDOW_SECS,
+                    &mut cache
+                ),
                 Ok(()),
                 "the first packet must verify"
             );
             assert_eq!(
-                verify_hmac_datagram(KEY, &b, span(&b), NOW, DEFAULT_HMAC_WINDOW_SECS, &mut cache),
+                verify_hmac_datagram(
+                    key(),
+                    &b,
+                    span(&b),
+                    NOW,
+                    DEFAULT_HMAC_WINDOW_SECS,
+                    &mut cache
+                ),
                 Ok(()),
                 "a second packet carrying a DIFFERENT nonce must also verify. \
                  If this fails, the verifier is not reading the nonce out of \
@@ -5803,12 +5900,12 @@ mod tests {
             let sp = span(&pkt);
             let mut cache = HmacNonceCache::new();
             assert_eq!(
-                verify_hmac_datagram(KEY, &pkt, sp, NOW, DEFAULT_HMAC_WINDOW_SECS, &mut cache),
+                verify_hmac_datagram(key(), &pkt, sp, NOW, DEFAULT_HMAC_WINDOW_SECS, &mut cache),
                 Ok(()),
                 "first use accepted"
             );
             assert_eq!(
-                verify_hmac_datagram(KEY, &pkt, sp, NOW, DEFAULT_HMAC_WINDOW_SECS, &mut cache),
+                verify_hmac_datagram(key(), &pkt, sp, NOW, DEFAULT_HMAC_WINDOW_SECS, &mut cache),
                 Err(HmacAuthError::Replay),
                 "identical replay rejected"
             );
@@ -5829,7 +5926,7 @@ mod tests {
             let sp = parsed.auth_span.expect("an auth chunk was emitted");
             let mut cache = HmacNonceCache::new();
             assert_eq!(
-                verify_hmac_datagram(KEY, &pkt, sp, NOW, DEFAULT_HMAC_WINDOW_SECS, &mut cache),
+                verify_hmac_datagram(key(), &pkt, sp, NOW, DEFAULT_HMAC_WINDOW_SECS, &mut cache),
                 Ok(())
             );
         }
@@ -5869,12 +5966,12 @@ mod tests {
             let sp = span(&pkt);
             let mut cache = HmacNonceCache::new();
             assert_eq!(
-                verify_hmac_datagram(KEY, &pkt, sp, NOW, 30, &mut cache),
+                verify_hmac_datagram(key(), &pkt, sp, NOW, 30, &mut cache),
                 Ok(()),
                 "accepted at its own timestamp"
             );
             assert_eq!(
-                verify_hmac_datagram(KEY, &pkt, sp, NOW + 3600, 30, &mut cache),
+                verify_hmac_datagram(key(), &pkt, sp, NOW + 3600, 30, &mut cache),
                 Err(HmacAuthError::TimestampOutOfWindow),
                 "an hour later the window refuses it before the cache is asked"
             );
@@ -5891,14 +5988,21 @@ mod tests {
                 chrono::Utc::now(),
                 HepProtocol::Sip,
                 1,
-                b"wrong-key",
+                crate::test_material::key_bytes("hep-hmac-wrong"),
                 NOW,
                 &NONCE,
                 payload,
             );
             let fp = span(&forged);
             assert_eq!(
-                verify_hmac_datagram(KEY, &forged, fp, NOW, DEFAULT_HMAC_WINDOW_SECS, &mut cache),
+                verify_hmac_datagram(
+                    key(),
+                    &forged,
+                    fp,
+                    NOW,
+                    DEFAULT_HMAC_WINDOW_SECS,
+                    &mut cache
+                ),
                 Err(HmacAuthError::BadMac),
                 "forged token rejected"
             );
@@ -5906,7 +6010,7 @@ mod tests {
             let ap = span(&authentic);
             assert_eq!(
                 verify_hmac_datagram(
-                    KEY,
+                    key(),
                     &authentic,
                     ap,
                     NOW,

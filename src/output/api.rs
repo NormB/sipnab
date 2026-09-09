@@ -3900,7 +3900,7 @@ mod tests {
     /// A signed token with a future expiry authenticates and gets 200.
     #[tokio::test]
     async fn auth_valid_signed_token_returns_200() {
-        let key = b"router-signing-key";
+        let key = crate::test_material::key_bytes("rest-router-signing");
         let state = make_state_with_signing_key(key);
         populate_dialogs(&state);
         let app = build_router(state);
@@ -3921,7 +3921,7 @@ mod tests {
     /// A signed token whose expiry is in the past is rejected with 401.
     #[tokio::test]
     async fn auth_expired_signed_token_returns_401() {
-        let key = b"router-signing-key";
+        let key = crate::test_material::key_bytes("rest-router-signing");
         let state = make_state_with_signing_key(key);
         let app = build_router(state);
         // exp already in the past — deterministic, no sleeping.
@@ -3941,12 +3941,12 @@ mod tests {
     /// A token signed with the wrong key is rejected with 401.
     #[tokio::test]
     async fn auth_forged_signed_token_returns_401() {
-        let key = b"router-signing-key";
+        let key = crate::test_material::key_bytes("rest-router-signing");
         let state = make_state_with_signing_key(key);
         let app = build_router(state);
         // Signed by a different key.
         let token = crate::auth::mint(
-            b"other-key",
+            crate::test_material::key_bytes("rest-router-other"),
             "id1",
             chrono::Utc::now().timestamp() + 3600,
             crate::auth::AUDIENCE_API,

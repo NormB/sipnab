@@ -601,7 +601,13 @@ mod http {
         use tower::ServiceExt;
 
         /// Test signing key shared between minting and the router's verifier.
-        const KEY: &[u8] = b"transport-test-signing-key-0123";
+        ///
+        /// Minted at runtime rather than pasted -- see
+        /// `crate::test_material` for why a literal here is a security alert
+        /// on the default branch.
+        fn key() -> &'static [u8] {
+            crate::test_material::key_bytes("mcp-transport-signing")
+        }
 
         /// Echo the stamped admission record, so tests assert on what a
         /// downstream consumer would actually see.
@@ -692,12 +698,12 @@ mod http {
         #[tokio::test]
         async fn a_read_scoped_token_is_admitted_and_stamped_with_its_scope_and_id() {
             let app = router(VerifierConfig {
-                signing_keys: vec![KEY.to_vec()],
+                signing_keys: vec![key().to_vec()],
                 audience: crate::auth::AUDIENCE_MCP.to_string(),
                 ..Default::default()
             });
             let token = crate::auth::mint(
-                KEY,
+                key(),
                 "agent",
                 chrono::Utc::now().timestamp() + 3600,
                 crate::auth::AUDIENCE_MCP,
@@ -717,13 +723,13 @@ mod http {
         #[tokio::test]
         async fn full_tokens_and_static_secrets_stamp_full() {
             let app = router(VerifierConfig {
-                signing_keys: vec![KEY.to_vec()],
+                signing_keys: vec![key().to_vec()],
                 static_keys: vec!["legacy-static".to_string()],
                 audience: crate::auth::AUDIENCE_MCP.to_string(),
                 ..Default::default()
             });
             let token = crate::auth::mint(
-                KEY,
+                key(),
                 "ops",
                 chrono::Utc::now().timestamp() + 3600,
                 crate::auth::AUDIENCE_MCP,
@@ -754,7 +760,7 @@ mod http {
         #[tokio::test]
         async fn missing_or_invalid_tokens_are_rejected_before_the_stamp() {
             let app = router(VerifierConfig {
-                signing_keys: vec![KEY.to_vec()],
+                signing_keys: vec![key().to_vec()],
                 audience: crate::auth::AUDIENCE_MCP.to_string(),
                 ..Default::default()
             });
@@ -786,7 +792,7 @@ mod http {
         /// A verifier config that requires a token, for the challenge tests.
         fn guarded() -> VerifierConfig {
             VerifierConfig {
-                signing_keys: vec![KEY.to_vec()],
+                signing_keys: vec![key().to_vec()],
                 audience: crate::auth::AUDIENCE_MCP.to_string(),
                 ..Default::default()
             }
@@ -952,21 +958,21 @@ mod http {
             let app = router(guarded());
             let now = chrono::Utc::now().timestamp();
             let expired = crate::auth::mint(
-                KEY,
+                key(),
                 "old",
                 now - 1,
                 crate::auth::AUDIENCE_MCP,
                 crate::auth::SCOPE_FULL,
             );
             let wrong_audience = crate::auth::mint(
-                KEY,
+                key(),
                 "api-side",
                 now + 3600,
                 crate::auth::AUDIENCE_API,
                 crate::auth::SCOPE_FULL,
             );
             let forged = crate::auth::mint(
-                b"a-completely-different-signing-key",
+                crate::test_material::key_bytes("mcp-transport-forged"),
                 "forged",
                 now + 3600,
                 crate::auth::AUDIENCE_MCP,
@@ -1018,7 +1024,7 @@ mod http {
                 Some(ProtectedResource::parse("https://sipnab.example.com/mcp").expect("parse")),
             );
             let token = crate::auth::mint(
-                KEY,
+                key(),
                 "agent",
                 chrono::Utc::now().timestamp() + 3600,
                 crate::auth::AUDIENCE_MCP,

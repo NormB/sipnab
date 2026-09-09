@@ -62,6 +62,8 @@ pub mod net;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod pipeline;
 pub mod stun;
+#[cfg(test)]
+pub mod test_material;
 
 #[cfg(feature = "plugins")]
 pub mod plugin;

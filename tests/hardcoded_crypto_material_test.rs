@@ -84,18 +84,60 @@ fn offending_lines_in(src: &str, seeds: bool) -> Vec<(usize, String)> {
         if l.starts_with("//") || l.contains(EXCEPTION) {
             continue;
         }
+        // Both spellings of a string literal. A BYTE string is the one this
+        // matcher missed: ten `rust/hard-coded-cryptographic-value` alerts
+        // reached CI on 2026-09-09 written as `b"..."`, and every one of them
+        // walked past a scan that only knew `"`. A gate that reads one
+        // spelling of the thing it watches reports green on every other.
+        let quoted = ["\"", "b\""];
         let material = MATERIAL.iter().filter(|m| **m != "key").any(|m| {
-            l.contains(&format!("{m} = \""))
-                || l.contains(&format!("{m}: \""))
-                || l.contains(&format!("let {m} = \""))
+            quoted.iter().any(|q| {
+                l.contains(&format!("{m} = {q}"))
+                    || l.contains(&format!("{m}: {q}"))
+                    || l.contains(&format!("let {m} = {q}"))
+            })
         });
-        let key_assigned = l.contains("let key = \"") || l.starts_with("key = \"");
+        let key_assigned = quoted
+            .iter()
+            .any(|q| l.contains(&format!("let key = {q}")) || l.starts_with(&format!("key = {q}")));
+        // A `const`/`static` DECLARATION whose name is material AND whose value
+        // is a BYTE string. The other half of the same miss: `const KEY:
+        // &[u8] = b"..."` is neither an assignment nor a call argument, and
+        // the names are upper-case, so nothing above sees it.
+        //
+        // The byte string is what separates cryptographic material from a
+        // lookup key, and it is not a guess: accepting any string literal here
+        // reported `const TRUNCATED_KEY: &str = "truncated"` in
+        // `src/mcp/completeness.rs`, a JSON field name. CodeQL flags neither,
+        // and a gate that predicts CodeQL has to agree with it in BOTH
+        // directions -- a false red is how a gate stops being read.
+        let declared = declared_material_name(l) && l.contains("= b\"");
         let nonce_arg = l.contains("\"n-") && l.contains('(');
-        if material || key_assigned || nonce_arg {
+        if material || key_assigned || declared || nonce_arg {
             out.push((n + 1, l.to_string()));
         }
     }
     out
+}
+
+/// `const NAME: ... =` or `static NAME: ... =` where `NAME` carries a material
+/// token, in either case.
+///
+/// Tokens, not substrings: `MONKEY` must not match `key`, and `KEY_A` must.
+fn declared_material_name(l: &str) -> bool {
+    let rest = l
+        .trim_start_matches("pub ")
+        .trim_start_matches("pub(crate) ");
+    let Some(rest) = rest
+        .strip_prefix("const ")
+        .or_else(|| rest.strip_prefix("static "))
+    else {
+        return false;
+    };
+    let name = rest.split(':').next().unwrap_or("").trim();
+    name.to_ascii_lowercase()
+        .split('_')
+        .any(|tok| MATERIAL.contains(&tok))
 }
 
 /// The 1-based line on which `part` begins inside `whole`, for absolute numbers.
@@ -190,6 +232,43 @@ fn the_matcher_reports_each_literal_material_shape() {
     let src = "let nonce = \"abc\";\nlet a = Auth { secret: \"x\" };\nchallenge(\"a\", 1, \"b\", \"n-shared\");\n";
     let hits: Vec<usize> = offending_lines(src).into_iter().map(|(n, _)| n).collect();
     assert_eq!(hits, [1, 2, 3]);
+}
+
+/// The two shapes that walked past this matcher into CI.
+///
+/// Ten `rust/hard-coded-cryptographic-value` alerts opened on 2026-09-09, all
+/// of them one of these: a BYTE-string literal, which the matcher only knew as
+/// `"`, and a `const` DECLARATION, which is neither an assignment nor a call
+/// argument. This test is the shape of the miss, not of the fix.
+#[test]
+fn the_matcher_reports_byte_strings_and_const_declarations() {
+    let src = concat!(
+        "const KEY_A: &[u8] = b\"signing-key-alpha\";\n",
+        "static SIGNING_KEY: &[u8] = b\"x\";\n",
+        "let key = b\"router-signing-key\";\n",
+        "let nonce = b\"abc\";\n",
+    );
+    let hits: Vec<usize> = offending_lines(src).into_iter().map(|(n, _)| n).collect();
+    assert_eq!(hits, [1, 2, 3, 4], "every one of these reached CI");
+}
+
+/// A declaration whose name merely CONTAINS a material word, or whose value is
+/// a plain string rather than bytes, is not material.
+#[test]
+fn a_declaration_that_is_not_material_is_not_reported() {
+    let src = concat!(
+        "const KEY_ORDER: &[&str] = &[\"a\"];\n",
+        "const MONKEY: &str = \"m\";\n",
+        "const TIMEOUT: u64 = 5;\n",
+        // A JSON field name, real, from src/mcp/completeness.rs -- and
+        // reported by the first draft of the declaration rule.
+        "const TRUNCATED_KEY: &str = \"truncated\";\n",
+    );
+    assert!(
+        offending_lines(src).is_empty(),
+        "{:?}",
+        offending_lines(src)
+    );
 }
 
 /// A literal that is not material -- a Via branch, a display name -- is not reported.

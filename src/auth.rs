@@ -548,9 +548,19 @@ mod tests {
     use super::*;
 
     /// First test signing key.
-    const KEY_A: &[u8] = b"signing-key-alpha-0123456789";
+    ///
+    /// Minted at runtime rather than pasted: a `mod tests` inside `src/` is
+    /// scanned like production code, and a literal here is an open
+    /// `rust/hard-coded-cryptographic-value` alert on the default branch. No
+    /// test asserts on these BYTES -- only that one key verifies and another
+    /// does not -- so per-label material satisfies every one of them.
+    fn key_a() -> &'static [u8] {
+        crate::test_material::key_bytes("auth-signing-a")
+    }
     /// Second test signing key (for rotation/wrong-key cases).
-    const KEY_B: &[u8] = b"signing-key-beta-9876543210";
+    fn key_b() -> &'static [u8] {
+        crate::test_material::key_bytes("auth-signing-b")
+    }
 
     /// Build a `TokenVerifier` from a config (test-readability wrapper).
     /// Defaults the audience to the API surface so existing cases, which mint
@@ -590,7 +600,7 @@ mod tests {
     fn mint_escapes_hostile_id_in_payload() {
         let hostile = "id\"with\\meta\tand\u{0001}control";
         let exp = 4_000_000_000i64;
-        let token = mint(KEY_A, hostile, exp, AUDIENCE_API, SCOPE_FULL);
+        let token = mint(key_a(), hostile, exp, AUDIENCE_API, SCOPE_FULL);
 
         // The payload segment must be valid, escaped JSON decoding back to id.
         let payload_b64 = token.split('.').nth(1).expect("payload segment");
@@ -603,7 +613,7 @@ mod tests {
 
         // And the whole token must verify against the signing key.
         let v = verifier(VerifierConfig {
-            signing_keys: vec![KEY_A.to_vec()],
+            signing_keys: vec![key_a().to_vec()],
             ..Default::default()
         });
         assert!(
@@ -660,7 +670,7 @@ mod tests {
     /// expected compact `{"id":...,"exp":...}` JSON.
     #[test]
     fn minted_token_has_expected_shape() {
-        let token = mint(KEY_A, "abc", 9999999999, AUDIENCE_API, SCOPE_FULL);
+        let token = mint(key_a(), "abc", 9999999999, AUDIENCE_API, SCOPE_FULL);
         let parts: Vec<&str> = token.split('.').collect();
         assert_eq!(parts.len(), 3, "token should have 3 dot-parts: {token}");
         assert_eq!(parts[0], "s2");
@@ -676,10 +686,10 @@ mod tests {
     #[test]
     fn valid_token_accepted() {
         let v = verifier(VerifierConfig {
-            signing_keys: vec![KEY_A.to_vec()],
+            signing_keys: vec![key_a().to_vec()],
             ..Default::default()
         });
-        let token = mint(KEY_A, "id1", 1_000, AUDIENCE_API, SCOPE_FULL);
+        let token = mint(key_a(), "id1", 1_000, AUDIENCE_API, SCOPE_FULL);
         assert!(
             v.verify(&token, 999, SCOPE_FULL),
             "unexpired token should verify"
@@ -692,10 +702,10 @@ mod tests {
     #[test]
     fn expired_token_rejected() {
         let v = verifier(VerifierConfig {
-            signing_keys: vec![KEY_A.to_vec()],
+            signing_keys: vec![key_a().to_vec()],
             ..Default::default()
         });
-        let token = mint(KEY_A, "id1", 1_000, AUDIENCE_API, SCOPE_FULL);
+        let token = mint(key_a(), "id1", 1_000, AUDIENCE_API, SCOPE_FULL);
         // now == exp → reject (exp must be strictly greater than now).
         assert!(
             !v.verify(&token, 1_000, SCOPE_FULL),
@@ -714,10 +724,10 @@ mod tests {
     #[test]
     fn tampered_payload_rejected() {
         let v = verifier(VerifierConfig {
-            signing_keys: vec![KEY_A.to_vec()],
+            signing_keys: vec![key_a().to_vec()],
             ..Default::default()
         });
-        let token = mint(KEY_A, "id1", 1_000_000, AUDIENCE_API, SCOPE_FULL);
+        let token = mint(key_a(), "id1", 1_000_000, AUDIENCE_API, SCOPE_FULL);
         let mut parts: Vec<String> = token.split('.').map(String::from).collect();
         // Flip a byte in the payload b64. Pick a char and replace with another.
         let payload = parts[1].clone();
@@ -738,11 +748,11 @@ mod tests {
     #[test]
     fn forged_wrong_key_signature_rejected() {
         let v = verifier(VerifierConfig {
-            signing_keys: vec![KEY_A.to_vec()],
+            signing_keys: vec![key_a().to_vec()],
             ..Default::default()
         });
         // Token signed with a DIFFERENT key.
-        let forged = mint(KEY_B, "id1", 1_000_000, AUDIENCE_API, SCOPE_FULL);
+        let forged = mint(key_b(), "id1", 1_000_000, AUDIENCE_API, SCOPE_FULL);
         assert!(
             !v.verify(&forged, 1, SCOPE_FULL),
             "token signed with a non-configured key must reject"
@@ -753,7 +763,7 @@ mod tests {
     #[test]
     fn garbage_token_rejected_no_panic() {
         let v = verifier(VerifierConfig {
-            signing_keys: vec![KEY_A.to_vec()],
+            signing_keys: vec![key_a().to_vec()],
             ..Default::default()
         });
         for junk in [
@@ -780,11 +790,11 @@ mod tests {
     #[test]
     fn rotation_accepts_either_key() {
         let v = verifier(VerifierConfig {
-            signing_keys: vec![KEY_A.to_vec(), KEY_B.to_vec()],
+            signing_keys: vec![key_a().to_vec(), key_b().to_vec()],
             ..Default::default()
         });
-        let token_a = mint(KEY_A, "ida", 1_000_000, AUDIENCE_API, SCOPE_FULL);
-        let token_b = mint(KEY_B, "idb", 1_000_000, AUDIENCE_API, SCOPE_FULL);
+        let token_a = mint(key_a(), "ida", 1_000_000, AUDIENCE_API, SCOPE_FULL);
+        let token_b = mint(key_b(), "idb", 1_000_000, AUDIENCE_API, SCOPE_FULL);
         assert!(
             v.verify(&token_a, 1, SCOPE_FULL),
             "token signed by first key accepted"
@@ -798,12 +808,12 @@ mod tests {
     /// `mint` signs with the first key, so a verifier lacking it rejects.
     #[test]
     fn mint_uses_first_key() {
-        // A verifier that only knows KEY_B should reject a token minted by the
+        // A verifier that only knows key_b() should reject a token minted by the
         // "first key" of a {A,B} config (which is A).
-        let mint_cfg_first = KEY_A;
+        let mint_cfg_first = key_a();
         let token = mint(mint_cfg_first, "x", 1_000_000, AUDIENCE_API, SCOPE_FULL);
         let v_b_only = verifier(VerifierConfig {
-            signing_keys: vec![KEY_B.to_vec()],
+            signing_keys: vec![key_b().to_vec()],
             ..Default::default()
         });
         assert!(!v_b_only.verify(&token, 1, SCOPE_FULL));
@@ -820,18 +830,18 @@ mod tests {
         std::fs::write(&path, "# comment\n\nrevoked-id-1\n").expect("write");
 
         let v = verifier(VerifierConfig {
-            signing_keys: vec![KEY_A.to_vec()],
+            signing_keys: vec![key_a().to_vec()],
             revoked_file: Some(path.clone()),
             ..Default::default()
         });
 
         // A token with a revoked id is rejected even though the signature is
         // valid and it is unexpired.
-        let revoked = mint(KEY_A, "revoked-id-1", 1_000_000, AUDIENCE_API, SCOPE_FULL);
+        let revoked = mint(key_a(), "revoked-id-1", 1_000_000, AUDIENCE_API, SCOPE_FULL);
         assert!(!v.verify(&revoked, 1, SCOPE_FULL), "revoked id must reject");
 
         // A fresh token with a different id is accepted.
-        let fresh = mint(KEY_A, "fresh-id", 1_000_000, AUDIENCE_API, SCOPE_FULL);
+        let fresh = mint(key_a(), "fresh-id", 1_000_000, AUDIENCE_API, SCOPE_FULL);
         assert!(
             v.verify(&fresh, 1, SCOPE_FULL),
             "non-revoked id must accept"
@@ -843,7 +853,7 @@ mod tests {
         // two writes.
         std::thread::sleep(std::time::Duration::from_millis(10));
         std::fs::write(&path, "# nothing revoked now\n").expect("rewrite");
-        let after = mint(KEY_A, "revoked-id-1", 1_000_000, AUDIENCE_API, SCOPE_FULL);
+        let after = mint(key_a(), "revoked-id-1", 1_000_000, AUDIENCE_API, SCOPE_FULL);
         assert!(
             v.verify(&after, 1, SCOPE_FULL),
             "after removing from denylist, id should be accepted (reload)"
@@ -909,11 +919,11 @@ mod tests {
     #[test]
     fn signing_and_static_both_configured() {
         let v = verifier(VerifierConfig {
-            signing_keys: vec![KEY_A.to_vec()],
+            signing_keys: vec![key_a().to_vec()],
             static_keys: vec!["legacy".to_string()],
             ..Default::default()
         });
-        let token = mint(KEY_A, "id", 1_000_000, AUDIENCE_API, SCOPE_FULL);
+        let token = mint(key_a(), "id", 1_000_000, AUDIENCE_API, SCOPE_FULL);
         assert!(v.verify(&token, 1, SCOPE_FULL), "signed token accepts");
         assert!(v.verify("legacy", 1, SCOPE_FULL), "static secret accepts");
         assert!(!v.verify("nope", 1, SCOPE_FULL), "unknown rejects");
@@ -934,7 +944,7 @@ mod tests {
     /// misconfiguration audience binding exists to defuse.
     #[test]
     fn api_token_is_rejected_by_the_mcp_surface() {
-        let shared = KEY_A;
+        let shared = key_a();
         let api_token = mint(shared, "id1", 1_000_000, AUDIENCE_API, SCOPE_FULL);
 
         let api_v = verifier(VerifierConfig {
@@ -961,7 +971,7 @@ mod tests {
     /// And symmetrically, so neither direction is special-cased.
     #[test]
     fn mcp_token_is_rejected_by_the_api_surface() {
-        let shared = KEY_A;
+        let shared = key_a();
         let mcp_token = mint(shared, "id1", 1_000_000, AUDIENCE_MCP, SCOPE_FULL);
 
         let api_v = verifier(VerifierConfig {
@@ -984,7 +994,7 @@ mod tests {
     /// downgrade invalidates the signature.
     #[test]
     fn s2_token_cannot_be_downgraded_to_s1() {
-        let token = mint(KEY_A, "id1", 1_000_000, AUDIENCE_API, SCOPE_FULL);
+        let token = mint(key_a(), "id1", 1_000_000, AUDIENCE_API, SCOPE_FULL);
         assert!(
             token.starts_with("s2."),
             "mint must produce s2, got {token}"
@@ -992,7 +1002,7 @@ mod tests {
 
         let downgraded = format!("s1.{}", token.trim_start_matches("s2."));
         let mcp_v = verifier(VerifierConfig {
-            signing_keys: vec![KEY_A.to_vec()],
+            signing_keys: vec![key_a().to_vec()],
             audience: AUDIENCE_MCP.to_string(),
             ..Default::default()
         });
@@ -1011,12 +1021,12 @@ mod tests {
         let payload = r#"{"id":"legacy-1","exp":1000000}"#;
         let payload_b64 = URL_SAFE_NO_PAD.encode(payload.as_bytes());
         let signing_input = format!("s1.{payload_b64}");
-        let sig = hmac_sha256(KEY_A, signing_input.as_bytes());
+        let sig = hmac_sha256(key_a(), signing_input.as_bytes());
         let token = format!("{signing_input}.{}", URL_SAFE_NO_PAD.encode(sig));
 
         for aud in [AUDIENCE_API, AUDIENCE_MCP] {
             let v = verifier(VerifierConfig {
-                signing_keys: vec![KEY_A.to_vec()],
+                signing_keys: vec![key_a().to_vec()],
                 audience: aud.to_string(),
                 ..Default::default()
             });
@@ -1035,11 +1045,11 @@ mod tests {
         let payload = r#"{"id":"legacy-2","exp":1000000}"#;
         let payload_b64 = URL_SAFE_NO_PAD.encode(payload.as_bytes());
         let signing_input = format!("s1.{payload_b64}");
-        let sig = hmac_sha256(KEY_A, signing_input.as_bytes());
+        let sig = hmac_sha256(key_a(), signing_input.as_bytes());
         let token = format!("{signing_input}.{}", URL_SAFE_NO_PAD.encode(sig));
 
         let v = verifier(VerifierConfig {
-            signing_keys: vec![KEY_A.to_vec()],
+            signing_keys: vec![key_a().to_vec()],
             static_keys: vec![],
             audience: AUDIENCE_API.to_string(),
             ..Default::default()
@@ -1051,10 +1061,10 @@ mod tests {
     /// accepting any of them — fail closed on a misconfigured verifier.
     #[test]
     fn empty_audience_rejects_every_s2_token() {
-        let token = mint(KEY_A, "id1", 1_000_000, AUDIENCE_API, SCOPE_FULL);
+        let token = mint(key_a(), "id1", 1_000_000, AUDIENCE_API, SCOPE_FULL);
         // Bypass the test `verifier()` helper, which fills in a default.
         let v = TokenVerifier::new(VerifierConfig {
-            signing_keys: vec![KEY_A.to_vec()],
+            signing_keys: vec![key_a().to_vec()],
             audience: String::new(),
             ..Default::default()
         });
@@ -1069,9 +1079,9 @@ mod tests {
     /// TLS-decrypting capture tool, is the call content.
     #[test]
     fn a_metrics_token_is_refused_where_full_access_is_required() {
-        let token = mint(KEY_A, "scrape", 2_000, AUDIENCE_API, SCOPE_METRICS);
+        let token = mint(key_a(), "scrape", 2_000, AUDIENCE_API, SCOPE_METRICS);
         let v = verifier(VerifierConfig {
-            signing_keys: vec![KEY_A.to_vec()],
+            signing_keys: vec![key_a().to_vec()],
             ..Default::default()
         });
 
@@ -1093,9 +1103,9 @@ mod tests {
     /// default requirement for any route that does not say otherwise.
     #[test]
     fn a_full_token_satisfies_both_requirements() {
-        let token = mint(KEY_A, "ops", 2_000, AUDIENCE_API, SCOPE_FULL);
+        let token = mint(key_a(), "ops", 2_000, AUDIENCE_API, SCOPE_FULL);
         let v = verifier(VerifierConfig {
-            signing_keys: vec![KEY_A.to_vec()],
+            signing_keys: vec![key_a().to_vec()],
             ..Default::default()
         });
 
@@ -1119,11 +1129,11 @@ mod tests {
         let payload = r#"{"id":"legacy","exp":2000,"aud":"api"}"#;
         let payload_b64 = URL_SAFE_NO_PAD.encode(payload.as_bytes());
         let signing_input = format!("{VERSION}.{payload_b64}");
-        let sig = hmac_sha256(KEY_A, signing_input.as_bytes());
+        let sig = hmac_sha256(key_a(), signing_input.as_bytes());
         let token = format!("{signing_input}.{}", URL_SAFE_NO_PAD.encode(sig));
 
         let v = verifier(VerifierConfig {
-            signing_keys: vec![KEY_A.to_vec()],
+            signing_keys: vec![key_a().to_vec()],
             ..Default::default()
         });
 
@@ -1139,7 +1149,7 @@ mod tests {
     /// their own credential by rewriting one field.
     #[test]
     fn a_scope_cannot_be_widened_by_editing_the_payload() {
-        let token = mint(KEY_A, "scrape", 2_000, AUDIENCE_API, SCOPE_METRICS);
+        let token = mint(key_a(), "scrape", 2_000, AUDIENCE_API, SCOPE_METRICS);
         let mut parts = token.split('.');
         let version = parts.next().expect("version");
         let payload_b64 = parts.next().expect("payload");
@@ -1158,7 +1168,7 @@ mod tests {
         );
 
         let v = verifier(VerifierConfig {
-            signing_keys: vec![KEY_A.to_vec()],
+            signing_keys: vec![key_a().to_vec()],
             ..Default::default()
         });
         assert!(
@@ -1174,9 +1184,9 @@ mod tests {
     /// per-tool.
     #[test]
     fn a_read_token_round_trips_through_verify_claims() {
-        let token = mint(KEY_A, "agent", 2_000, AUDIENCE_API, SCOPE_READ);
+        let token = mint(key_a(), "agent", 2_000, AUDIENCE_API, SCOPE_READ);
         let v = verifier(VerifierConfig {
-            signing_keys: vec![KEY_A.to_vec()],
+            signing_keys: vec![key_a().to_vec()],
             ..Default::default()
         });
         assert_eq!(
@@ -1194,9 +1204,9 @@ mod tests {
     #[test]
     fn a_scopeless_token_comes_back_as_full() {
         // `mint` omits the claim for `full`, so this payload has no `scope`.
-        let token = mint(KEY_A, "ops", 2_000, AUDIENCE_API, SCOPE_FULL);
+        let token = mint(key_a(), "ops", 2_000, AUDIENCE_API, SCOPE_FULL);
         let v = verifier(VerifierConfig {
-            signing_keys: vec![KEY_A.to_vec()],
+            signing_keys: vec![key_a().to_vec()],
             ..Default::default()
         });
         assert_eq!(
@@ -1238,9 +1248,9 @@ mod tests {
     /// empty.
     #[test]
     fn verify_claims_carries_the_token_id_and_a_static_secret_has_none() {
-        let token = mint(KEY_A, "ci-runner-1", 2_000, AUDIENCE_API, SCOPE_READ);
+        let token = mint(key_a(), "ci-runner-1", 2_000, AUDIENCE_API, SCOPE_READ);
         let v = verifier(VerifierConfig {
-            signing_keys: vec![KEY_A.to_vec()],
+            signing_keys: vec![key_a().to_vec()],
             static_keys: vec!["legacy-secret".to_string()],
             ..Default::default()
         });
@@ -1273,18 +1283,24 @@ mod tests {
         std::fs::write(&path, "revoked-claims-id\n").expect("write");
 
         let v = verifier(VerifierConfig {
-            signing_keys: vec![KEY_A.to_vec()],
+            signing_keys: vec![key_a().to_vec()],
             revoked_file: Some(path),
             ..Default::default()
         });
 
-        let expired = mint(KEY_A, "id1", 1_000, AUDIENCE_API, SCOPE_READ);
+        let expired = mint(key_a(), "id1", 1_000, AUDIENCE_API, SCOPE_READ);
         assert_eq!(v.verify_claims(&expired, 1_000), None, "exp == now rejects");
 
-        let revoked = mint(KEY_A, "revoked-claims-id", 2_000, AUDIENCE_API, SCOPE_READ);
+        let revoked = mint(
+            key_a(),
+            "revoked-claims-id",
+            2_000,
+            AUDIENCE_API,
+            SCOPE_READ,
+        );
         assert_eq!(v.verify_claims(&revoked, 1_000), None, "revoked id rejects");
 
-        let wrong_aud = mint(KEY_A, "id2", 2_000, AUDIENCE_MCP, SCOPE_READ);
+        let wrong_aud = mint(key_a(), "id2", 2_000, AUDIENCE_MCP, SCOPE_READ);
         assert_eq!(
             v.verify_claims(&wrong_aud, 1_000),
             None,
