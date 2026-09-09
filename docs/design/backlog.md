@@ -44,7 +44,7 @@ Tiers:
 
 ## Status
 
-**25 open, 484 done** across 36 sections.
+**26 open, 484 done** across 36 sections.
 Regenerate with `python3 scripts/backlog-status.py --apply`.
 
 | Section | Open | Done | Progress |
@@ -54,7 +54,7 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
 | PV | 0 | 13 | `##########` |
 | P2 | 0 | 109 | `##########` |
 | P3 | 0 | 64 | `##########` |
-| P4 | 0 | 43 | `##########` |
+| P4 | 1 | 43 | `##########` |
 | PA | 1 | 12 | `#########.` |
 | PB | 0 | 20 | `##########` |
 | TK | 2 | 8 | `########..` |
@@ -2278,6 +2278,32 @@ holds anything to it.
   between a red commit and twenty-three published artifacts.
 
 ## P4 — test quality
+
+- [ ] **`both_scrape_doors_publish_identical_exposition` is flaky, and it fails
+  in the direction that reads as a real defect (added 2026-09-09).** It failed
+  once during the 0.5.161 release run and passed on every re-run since,
+  including an immediate one. The two scrapes disagreed because the second saw
+  two frames the first did not: `sipnab_capture_packets_total` 92 against 94,
+  and `sipnab_capture_undecodable_frames_total{reason="unsupported_link_type_147"}`
+  present in one exposition and absent from the other.
+
+  **It is shared process-global state, not a metrics bug.** The counters this
+  test compares are process-wide, and `cargo test` runs the lib tests
+  concurrently in one process, so any other test decoding a DLT_USER0 (147)
+  capture between the two scrapes moves them. The failure message is a
+  ~10 KB diff of two expositions, which is exactly the kind of red that gets
+  read as "the two doors disagree" — the thing this gate exists to catch —
+  when the doors are fine and the CAPTURE moved underneath them.
+
+  **Do:** take the two scrapes from ONE snapshot rather than two live reads, or
+  serialize this test against every other test that touches the capture
+  counters the way the API-key tests already serialize on `serial_test`. Do not
+  fix it by loosening the comparison: the assertion is right, and it is the
+  input that is not held still.
+
+  Caught during a release, on a suite that had gone green five times in a row
+  in the preceding hour — which is what a flake looks like and why it is worth
+  an entry rather than a re-run.
 
 - [x] **Unlabeled code fences carry a copy button no gate reads** (2026-07-28).
   `shell_fence_is_one_clipboard_payload` reads fences whose info string names a

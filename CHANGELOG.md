@@ -8,7 +8,7 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
-## [Unreleased]
+## [0.5.161] - 2026-09-09
 
 ### Added
 
@@ -38,10 +38,6 @@ entry that carries them.
   Two gates hold it up: one requires every committed fixture to carry a
   manifest entry or sit on the enumerated list of the 36 that predate the rule,
   and one asserts what the entry claims.
-
-## [0.5.161] - 2026-09-09
-
-### Added
 
 - **sipnab reads which AMR mode a sender actually used, off the RTP payload
   header.** `crate::rtp::emodel_wb` has been able to score AMR-WB on the
