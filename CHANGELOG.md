@@ -8,9 +8,93 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
-## [Unreleased]
+## [0.5.161] - 2026-09-09
+
+### Added
+
+- **sipnab reads which AMR mode a sender actually used, off the RTP payload
+  header.** `crate::rtp::emodel_wb` has been able to score AMR-WB on the
+  wideband E-model since it was written — the G.113 tables for all nine modes,
+  the G.107.1 equations, an SDP `mode-set` reader — and nothing in the source
+  had ever called any of it, because it needs an input the codec name does not
+  carry. The nine modes span `Ie,WB` 1 to 41, about 4.49 down to 3.51 MOS, so
+  "AMR-WB" alone leaves a full MOS point of ambiguity, and a `mode-set` pins
+  nothing unless it names exactly one mode, which real VoLTE signaling rarely
+  does.
+
+  The new `crate::rtp::amr` reads RFC 4867's payload header in both packings.
+  The frame type straddles an octet boundary in the bandwidth-efficient one and
+  sits in a table-of-contents octet in the octet-aligned one, so the packing is
+  an explicit argument with **no default**: reading one as the other returns a
+  plausible mode rather than an error. Interleaving is refused outright,
+  because its `ILL`/`ILP` field moves every offset. Comfort noise carries no
+  mode and is never recorded as one — AMR-WB frame type 9 is a silence
+  descriptor, and narrowband frame type 8 is one too, at the index that means
+  23.85 kbit/s on the wideband table.
+
+  `GET /v1/streams` and the MCP stream surfaces carry two new keys.
+  `amr_mode_kbps` exists only when every readable frame used the same mode;
+  `amr_modes_observed` says how many distinct modes the payloads carried, and
+  is absent rather than zero when nothing was read. Both absent means sipnab
+  could not read the payloads; a count above one with no mode means it read
+  them and the sender moved. An endpoint learned with no media description pins
+  no packing at all: RFC 4867 settles what an SDP that stayed *silent* means
+  and says nothing about an SDP nobody saw.
+
+- **A recipe for reading a capture eCapture wrote, with no sipnab
+  configuration at all** — cookbook 7i. `ecapture tls -m pcap` writes the real
+  encrypted frames and embeds the master secrets as a pcapng Decryption
+  Secrets Block, so `sipnab -I file.pcapng` decrypts it with no `--keylog` and
+  no flags. Measured end to end against a complete TLS 1.3 dialog whose
+  process set no keylog of its own.
+
+- **A troubleshooting section for encrypted SIP that does not decrypt**, which
+  the page had none of. It is built around the one line that separates the
+  cases, `TLS decryption active:`, and covers the two silent keylog-pipe
+  failures by symptom rather than by version — a build that predates their fix
+  reports nothing at all.
+
+- **The IPC wire D16 specified**, and the reason the fork stops there. Four
+  bytes of big-endian length then that many bytes of JSON, with the length
+  checked before anything is allocated and a clean end of stream told apart
+  from a truncated frame. Nothing speaks it yet, and both the code and the
+  backlog say so: `TransmitPermit` is a zero-sized proof token that cannot
+  cross a pipe, so a forked scanner-kill child takes its capability from the
+  inherited raw socket instead, and that is a different design from the one
+  `PI2` described.
 
 ### Changed
+
+- **The benchmarks page and the throughput gate now measure one binary, and a
+  test says so.** `bench/baseline.json` recorded 0.5.122 at 3.25M packets per
+  second on four cores while the page published 3.23M for the same release.
+  Neither was a transcription slip: one gate required the page to name a
+  *released artifact*, and the baseline file required *a local release build of
+  the recorded commit*, because the nightly gate has to catch a regression the
+  day it lands. Two honest measurements of two different programs, 0.6% apart,
+  inside the page's own noise floor.
+
+  Re-measured on 0.5.160 on the documented host: 1.05M, 2.63M, **3.56M** and
+  3.13M at one, two, four and eight cores, published as the lowest of three
+  replicates rather than the median, so a reader who re-runs the harness meets
+  or beats the figure. Four cores is the peak and **eight is slower**, in every
+  replicate; the page previously said the opposite, from a session whose table
+  it never published. The four-core figure reproduces the backlog's own
+  independently recorded 3.56M to the digit.
+
+  Every replicate, every peak resident set and the whole carrier-scale sweep
+  are committed in `bench/baseline.json`, and figures that resolved to no
+  record were deleted rather than carried forward. A single test binds the
+  committed figure to the published cell of both hand-maintained copies of the
+  page and to the homepage tile, which now derives its expected value instead
+  of restating it.
+
+- **`ecapture tls -m pcap` no longer described as emitting plaintext.**
+  Cookbook 7e declined it on the grounds that it would write "capture files
+  whose packets never existed on the wire", and the backlog said it "writes
+  decrypted traffic as pcapng". Running it settled both: it writes the real
+  encrypted frames with the secrets embedded, which is the artifact 7e argues
+  for.
 
 - **Advertised tool schemas use a spelling every MCP client can read.** The
   Inspector's `--strict` lint reported 172 findings across 47 tools, in two
@@ -37,6 +121,13 @@ entry that carries them.
   planted fixture so it cannot pass by matching nothing. Adding an unpinned
   package fetched on every push, to re-derive in minutes what a test settles in
   seconds, is the opposite of how this project treats its tools.
+
+### Fixed
+
+- **The OpenAPI document described a stream field the response had been
+  carrying.** `dialog_assertion` was missing from the schema mirror in
+  `src/output/api.rs` while `GET /v1/streams` served it, because nothing
+  compares that struct against the model it describes.
 
 ## [0.5.160] - 2026-09-09
 
