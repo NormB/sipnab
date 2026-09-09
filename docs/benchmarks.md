@@ -4,62 +4,65 @@ How fast sipnab is, measured honestly — and what that speed is for. The number
 is not a race against the local capture tools. It is the headroom that decides
 how much of an estate one binary can take at once, and therefore whether you
 stand up a collector tier at all. **Every table on this page names the session
-that measured it.** The multi-core tables come from one session on 2026-08-21.
-The version A/B further down is 2026-08-10, and its continuation 2026-08-17,
-each carrying a control of its own.
+that measured it.** The multi-core and carrier-scale tables come from one
+session on 2026-09-09. The version A/B further down is 2026-08-10, and its
+continuation 2026-08-17, each carrying a control of its own.
 
 Every number here is reproducible, and has been a checked claim rather than an
 asserted one since 0.5.47 — the release that put the corpus generator and the
 timing harness in [`bench/`](../bench/), so you can regenerate the corpus and
 re-run every table below. 0.5.47 dates the recipe, not this run.
 
-> **Measured against 0.5.122, on 2026-08-21.** The multi-core tables below are
-> that measurement. No number here stands in for a release it did not measure,
-> and none carries forward from a run nobody repeated.
+> **Measured against 0.5.160, on 2026-09-09.** The multi-core and
+> carrier-scale tables below are that measurement. No number here stands in
+> for a release it did not measure, and none carries forward from a run nobody
+> repeated.
 >
-> **These figures predate the 2026-08-28 change that stopped hashing every
-> frame.** PERF1 in [`docs/design/backlog.md`](https://github.com/NormB/sipnab/blob/main/docs/design/backlog.md) closed a week after this session
-> and records its own measurement on the same harness and corpus — 2.70M at two
-> cores against 2.10M, and 3.56M at four against 3.21M. Nothing on this page
-> carries a re-measurement since 2026-08-21, so every table here describes
-> 0.5.122 and not the current release.
+> **[`bench/baseline.json`](../bench/baseline.json) commits every figure in
+> those two tables** — all three replicates per core count, the peak resident
+> set of each, and the whole carrier-scale sweep. The published figure is the LOWEST replicate rather than the median,
+> so a reader who re-runs the harness meets or beats it instead of falling
+> short of it, and the throughput gate's floor cannot sit above a number this
+> host actually produces.
 >
-> **0.5.118 through 0.5.121 ran 27% slower than 0.5.117, and 0.5.122
-> repairs it.** The cause was [`is_merged`](https://github.com/NormB/sipnab/blob/main/src/capture/merged.rs),
+> **A raise here and a raise in that file are one event, and a test now says
+> so.** They came apart three times while the rule lived in a comment that
+> asked a reader to remember it. The last separation published 3.23M for 0.5.122 while the
+> committed baseline held 3.25M with replicates 3.25/3.29/3.29M — a figure the
+> recorded run never produced, 0.6% adrift, inside this page's own noise floor,
+> which is exactly why no reader caught it.
+> `benchmarks_pages_headline_matches_the_committed_baseline` binds the
+> baseline to both hand-maintained copies of this page and to the homepage
+> tile.
+>
+> **0.5.118 through 0.5.121 ran materially slower than 0.5.117, and 0.5.122
+> repaired it.** The cause was [`is_merged`](https://github.com/NormB/sipnab/blob/main/src/capture/merged.rs),
 > the probe that decides whether a capture is a merged pcapng. It read the
 > ENTIRE file into memory and then rejected it on the first four bytes, so
 > every offline run over an ordinary pcap loaded the whole capture, threw it
 > away, and only then started work. Three call sites run it before the reader
-> touches a packet. On this 128 MB corpus that cost 0.06 s of a 0.16 s run —
-> four-core reconstruction fell from 3.29M packets per second to 2.40M, and
-> resident memory rose from 96 MiB to 143 MiB.
->
-> The figures this page carried for 0.5.108 were never wrong: the released
-> 0.5.108 artifact re-measures at 3.30M on the same host today. What was wrong
-> was that the page kept asserting them while the shipped tool no longer met
-> them. Every release from 0.5.108 to 0.5.117 measures ~3.26M, and 0.5.118 is
-> the first that does not.
+> touches a packet.
 >
 > [`bench/regression-gate.sh`](../bench/regression-gate.sh) exists to catch
-> exactly this and did not, because its baseline still recorded 0.5.104's
-> 2.28M. A drop to 2.40M is 105% of that, so the gate passed while the tool
-> lost a quarter of its throughput — the failure its own baseline file warns
-> about in writing: a stale baseline "silently widens the band it
-> advertises". The baseline records this
-> measurement, so the same regression trips it.
+> exactly that and did not, because its baseline still recorded 0.5.104's
+> figure — the drop read as 105% of a baseline four releases stale, so the gate
+> passed while the tool lost a quarter of its throughput. That is the failure
+> its own baseline file warns about in writing: a stale baseline "silently
+> widens the band it advertises". This page's numbers and that file's are now
+> re-measured together or not at all.
 
 The generator reproduces the documented corpus composition exactly:
 535,000 packets, 35,000 SIP messages, 500,000 RTP, 93.5% RTP, 100 Call-IDs,
 200 streams.
 
-**Measured on the released 0.5.122 artifact, checksum-verified, 2026-08-21, on
-an idle host**, against the released 0.5.108 and 0.5.117 artifacts as controls
-and a local release build of the fix. Every artifact figure below is a
-published binary whose checksum verifies. The 0.5.122 column is a local
-release build, marked as one, because at the time of measuring the fix had not shipped.
-The regression, its boundary and its repair therefore come from one afternoon
-and one corpus rather than from a remembered number. Nothing here is comparable to the
-pre-0.5.47 figures, which came from an unpublished corpus nobody can rebuild.
+**Measured on a local release build of 0.5.160 (`4641f323`), 2026-09-09, on an
+idle host** — `vmstat` idle at 98% with no toolchain build running, the gate
+[`bench/baseline.json`](../bench/baseline.json) records as its condition for a
+measurement to count. A local build rather than a published artifact,
+deliberately: the throughput gate has to catch a regression the day it lands,
+not once it has shipped, so the number this page publishes is the number that
+gate measures. Nothing here is comparable to the pre-0.5.47 figures, which came
+from an unpublished corpus nobody can rebuild.
 
 ## What the throughput is for
 
@@ -75,7 +78,7 @@ exists to skip.
 
 Put the figures next to the load. A proxy running 100 calls per second at
 roughly ten SIP messages per call emits about 1,000 signaling packets per
-second. The tables below measure 1.13M packets per second on one core and 3.23M
+second. The tables below measure 1.05M packets per second on one core and 3.56M
 on four, on a corpus that is 93.5% RTP — media a signaling-only HEP feed never
 carries at all. Three orders of magnitude separate that proxy from a single
 core's budget.
@@ -99,29 +102,39 @@ discover:
   G.711 PCMU at 20 ms, 93.5% RTP by packet count.
 - **Method:** offline pcap reconstruction (`-I file`), median-of-5 after one
   discarded warmup. `pkts/s = packets ÷ wall-clock seconds`, startup included.
-- **Version:** sipnab 0.5.122 (release artifact), with the released 0.5.108,
-  0.5.117 and 0.5.121 artifacts as controls.
-  **Date:** 2026-08-21.
+- **Version:** sipnab 0.5.160, local release build `4641f323`.
+  **Date:** 2026-09-09.
+- **Published figure:** the LOWEST of three replicates, per core count.
+  [`bench/baseline.json`](../bench/baseline.json) commits every replicate, so
+  each cell below resolves to a recorded run rather than to a remembered one.
 
 ## Multi-core offline reconstruction
 
 `--cores N` shards by host-pair across worker threads. On the 535k-packet
 fixed-state corpus (100 Call-IDs, 200 streams):
 
-The middle column is what shipped for ten releases. The right-hand column is
-the same corpus once `is_merged` stopped reading it. Each is median-of-5 after a
-discarded warmup, on the same idle host:
+Each row is median-of-5 after a discarded warmup, three replicates, on one
+idle host. The published column is the lowest replicate. The spread column
+carries all three, so a reader sees the noise rather than taking the word for
+it.
 
-| cores | 0.5.117 | 0.5.121 | 0.5.122 |      |
-|------:|--------:|--------:|--------:|-----:|
-| 1 | 1.15M | 1.02M | 1.13M | — |
-| 2 | 2.19M | 1.78M | 2.17M | — |
-| 4 | 3.29M | 2.40M | **3.23M** | **+35%** |
-| 8 | 3.31M | 2.46M | **3.24M** | **+32%** |
+| cores | pkts/s | replicates | peak RSS |
+|------:|-------:|-----------:|---------:|
+| 1 | 1.05M | 1.07 / 1.06 / 1.05M | 168.2 MiB |
+| 2 | 2.63M | 2.63 / 2.64 / 2.64M | 100.5 MiB |
+| 4 | **3.56M** | 3.62 / 3.61 / 3.56M | 97.5 MiB |
+| 8 | 3.13M | 3.14 / 3.13 / 3.15M | 101.2 MiB |
 
-The percentage is the repair, not a gain: 0.5.122 returns to where 0.5.117 was.
-Resident memory returns with it, 143 MiB back to 99 MiB at four cores, because
-the capture is no longer loaded twice — once to reject it, once to read it.
+**Four cores is the peak, and eight is slower** — in every replicate, not in
+one bad run. The single-core row is the outlier in memory as well as in speed:
+`--cores 1` and a run with no `--cores` use the single-threaded reader, which
+goes through libpcap and holds more of the capture at once. Only `--cores 2`
+and above reach the mapped reader.
+
+The 4-core cell is the figure [`bench/baseline.json`](../bench/baseline.json)
+commits and [`bench/regression-gate.sh`](../bench/regression-gate.sh) measures
+against nightly. It is the same number in both places because a test refuses
+any commit where it is not.
 
 **0.5.108 raised the multi-core ceiling by removing a read.** The `--cores`
 path is one serial thread reading, copying and host-pair-peeking every packet
@@ -130,20 +143,21 @@ into libpcap's buffer *and* a copy out of it. 0.5.108 maps the capture file
 instead, so it parses records in place out of page cache and copies only the
 frame.
 
-That moves where the curve stops. Reading through libpcap flattens the curve
-past two cores and sags it past four, which is the shape that makes `--cores 4`
-a ceiling. With the capture mapped, eight cores is marginally the best figure on
-the table rather than a regression, and **`--cores 4` is the point where most of
-the gain has arrived, not a ceiling that penalizes you for passing it.**
-
-One and two cores do not move, which follows from the design rather than
-disappointing it: `--cores 1` and a run with no `--cores` use the
+That moves where the curve stops, and the mechanism is why one and two cores
+do not move with it: `--cores 1` and a run with no `--cores` use the
 single-threaded reader, which still goes through libpcap. Only `--cores 2` and
 above reach the mapped reader, and nothing needs unblocking until enough
-workers pile up behind it. The single-core row is therefore a control here — two
-artifacts doing the identical thing — and its ~1% spread is this harness's
-noise floor, against which the four- and eight-core gaps are 39 and 53 times
-larger.
+workers pile up behind it.
+
+**The A/B that measured this is not on this page**, and this page drops the
+sentences that used to quote its spread and its per-core gaps rather than
+carrying them forward. They described a 2026-08-17 session whose table was never
+published here, so a reader had no way to check them — which is the same
+defect as a stale number, wearing the shape of a measurement it cannot
+produce. What survives is the mechanism, which the code and
+[`docs/internals/zero-copy-payloads.md`](https://github.com/NormB/sipnab/blob/main/docs/internals/zero-copy-payloads.md)
+record, and the table above, which measures where the curve actually stops on
+the current release: four cores is the peak and eight is slower.
 
 The obvious version of that change is a regression, which is worth stating on a
 page about honest measurement: handing each frame out as a refcounted slice of
@@ -181,8 +195,9 @@ captures where provenance matters most. But it computed the digest on the
 **serial reader**, the one stage the whole `--cores` design waits on — a single
 thread reads, copies and host-pair-peeks every packet while N workers sit idle.
 This page had already named that stage as the plateau past two cores. Hashing
-there charged it ~240 bytes of dependent FNV multiplies per packet — 129 MB
-hashed one byte at a time on this corpus.
+there charged it ~240 bytes of dependent FNV multiplies per packet, which over
+this corpus is arithmetic rather than a measurement: 535,000 packets × ~240
+bytes ≈ 128 MB hashed one byte at a time.
 
 **What 0.5.89 did.** The workers compute the digest. The reader still assigns
 the ordinal, the one fact only it can know. Same input, same FNV-1a, same
@@ -207,11 +222,13 @@ memory, which a diagnostic that scattered them into an arena could not show.
 build these tables measure hashes every frame, when only a *retained* pointer
 needs a digest — a dialog's `first_frame`, a stream's `first_frame`, a
 finding's `frame_ref` — about 35,000 of 535,000 frames on this corpus. PERF1 in
-[`docs/design/backlog.md`](https://github.com/NormB/sipnab/blob/main/docs/design/backlog.md) closed that on 2026-08-28, seven days after the
-2026-08-21 session, and records the measurement it closed on: two release
-builds off one tree differing only in this change, same harness and corpus,
-2.70M at two cores against 2.10M and 3.56M at four against 3.21M. No table on
-this page reflects it.
+[`docs/design/backlog.md`](https://github.com/NormB/sipnab/blob/main/docs/design/backlog.md) closed that on 2026-08-28, and records the
+measurement it closed on: two release builds off one tree differing only in
+this change, same harness and corpus, 2.70M at two cores against 2.10M and
+3.56M at four against 3.21M. **The multi-core table at the top of this page
+now reflects it**, and independently reproduces its four-core figure to the
+digit: 3.56M, measured twelve days later on 0.5.160 on the same host and
+corpus.
 
 **What stays open.** A diagnostic build with the digest removed entirely
 measures 2.05M at two cores against 0.5.83's 2.33M, so roughly 12% of the
@@ -254,10 +271,14 @@ and a per-push wall-clock gate would be flaky in the direction that gets a gate
 muted. It does not catch slow erosion — a drift inside the floor passes.
 That is a deliberate trade, argued in [`bench/baseline.json`](https://github.com/NormB/sipnab/blob/main/bench/baseline.json).
 
-The same A/B settles what the pre-0.5.47 tables mean. 0.5.18 measured 1.06M
-single-core against the 1.20M this page once published for it — same binary,
-same host, different corpus. The gap between old and new tables is the corpus,
-not a regression.
+The same A/B settles what the pre-0.5.47 tables mean: they measure an
+unpublished corpus nobody can rebuild, so nothing below them compares to them
+and this page does not restate them. This paragraph used to carry a
+single-core figure for 0.5.18 against a figure "this page once published",
+and neither resolved to a committed record — the older of the two to a corpus
+that no longer exists, the newer to a session with no table. The claim they
+supported still holds and is the useful part: the gap between the old tables
+and these is the corpus, not a regression.
 
 ## What the throughput includes
 
@@ -283,25 +304,29 @@ volume. Measured at `--cores 4`:
 
 | calls | pkts | dialogs | streams | pkts/s | peak RSS |
 |------:|-----:|--------:|--------:|-------:|---------:|
-| 500 | 53.5k | 500 | 1,000 | 2.17M | 27.9 MiB |
-| 2,000 | 214k | 2,000 | 4,000 | 2.80M | 70.4 MiB |
-| 8,000 | 856k | 8,000 | 16,000 | 3.05M | 220.9 MiB |
-| 20,000 | 2.14M | 20,000 | 40,000 | 3.09M | 498.1 MiB |
+| 500 | 53.5k | 500 | 1,000 | 2.19M | 29.5 MiB |
+| 2,000 | 214k | 2,000 | 4,000 | 2.80M | 69.2 MiB |
+| 8,000 | 856k | 8,000 | 16,000 | 3.28M | 226.7 MiB |
+| 20,000 | 2.14M | 20,000 | 40,000 | 3.26M | 495.0 MiB |
+
+[`bench/baseline.json`](../bench/baseline.json) commits every row under
+`carrier_scale_sweep`, from the same 2026-09-09 session and the same host as
+the table above.
 
 **Honest read:** throughput is flat from 8k calls up — reconstruction cost is
 per-packet, not per-dialog, and 40k concurrent streams do not degrade it. The
 smaller corpora post lower figures because startup is inside the clock and a
-53.5k-packet read is over in ~25 ms. Memory grows close to linearly with
+53.5k-packet read is over in ~24 ms. Memory grows close to linearly with
 tracked state, about 25 KiB per call (dialog + two RTP streams + jitter/loss
-accounting), reaching 498 MiB at 20k calls. That linearity is the useful
+accounting), reaching 495 MiB at 20k calls. That linearity is the useful
 property: it is predictable, so capacity planning is arithmetic rather than
 guesswork.
 
-The mapped reader shows up here too — every row posts a higher figure than the
-same sweep measured on 0.5.104, 2.14M to 3.09M at 20k calls — while peak
-memory moved by under 3%. The mapping does not stay resident: the read
-hands pages back to the kernel as it passes them, so a capture larger than RAM
-costs the same working set as a small one.
+The mapping does not stay resident: the read hands pages back to the kernel as
+it passes them, so a capture larger than RAM costs the same working set as a
+small one. This paragraph used to compare each row against the same sweep on
+0.5.104 — a table that has never appeared on this page, so no reader could
+resolve the comparison, and this page drops it rather than repeating it.
 
 ## Reproduce
 

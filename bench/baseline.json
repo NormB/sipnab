@@ -1,6 +1,7 @@
 {
  "_comment": [
-  "Throughput baseline for bench/regression-gate.sh. Raising this is a",
+  "Throughput baseline for bench/regression-gate.sh, and the committed record",
+  "every figure on docs/benchmarks.md resolves to. Raising this is a",
   "deliberate act in a commit, the same as the documentation ratchets in",
   "tests/docs_drift_test.rs. Do NOT lower it to make a red run pass: that",
   "records a regression as the new normal, which is precisely how the 0.5.84",
@@ -15,38 +16,94 @@
   "artifact -- the gate has to catch a regression the day it lands, not once",
   "it has shipped.",
   "",
-  "WHY THIS RAISE IS LARGE, AND WHAT IT COST TO LEARN. The previous entry",
+  "WHAT THE PUBLISHED FIGURE IS. The LOWEST of the three replicates, for",
+  "every core count, on the page as well as here. Publishing the lowest is",
+  "what makes the two numbers the same number: a floor derived from it cannot",
+  "sit above a figure this host actually produces, and a reader who re-runs",
+  "the harness meets or beats the published value rather than falling short",
+  "of a median. Before 2026-09-09 the page and this file each picked their own",
+  "figure, and that is how they came apart the third time -- the page",
+  "headlined 3.23M for 0.5.122 while this file recorded 3.25M with replicates",
+  "3.25/3.29/3.29M, so the published number was one the recorded run never",
+  "produced.",
+  "",
+  "WHY THE RAISES HAVE BEEN LARGE, AND WHAT IT COST TO LEARN. An entry once",
   "recorded 0.5.104's 2.28M and was never raised when 0.5.108 lifted the real",
-  "figure to 3.30M by mapping the capture file. docs/benchmarks.md was updated",
-  "to 3.25M that day; this file was not. So when 0.5.118 introduced a defect",
-  "that cost 27% -- is_merged read the ENTIRE capture into memory before",
-  "rejecting it on the first four bytes -- the tool fell to 2.40M, which is",
-  "105% of a baseline recorded four releases earlier. The gate passed. It",
-  "passed on every release from 0.5.118 to 0.5.121 while the shipped binary",
-  "was a quarter slower than the page advertising it.",
+  "figure by mapping the capture file. docs/benchmarks.md was updated that",
+  "day; this file was not. So when 0.5.118 introduced a defect that cost 27%",
+  "-- is_merged read the ENTIRE capture into memory before rejecting it on",
+  "the first four bytes -- the tool fell to 2.40M, which is 105% of a",
+  "baseline recorded four releases earlier. The gate passed. It passed on",
+  "every release from 0.5.118 to 0.5.121 while the shipped binary was a",
+  "quarter slower than the page advertising it.",
   "",
   "That is this file's own warning, come true a second time, and it is left",
   "in the paragraph below because it was already written down and still did",
   "not prevent this. The lesson is narrower than 'keep it fresh': a raise in",
   "docs/benchmarks.md and a raise here are the SAME event, and doing one",
   "without the other converts a 20% gate into a 31% one silently. Whoever",
-  "re-measures that page re-measures this file in the same commit."
+  "re-measures that page re-measures this file in the same commit.",
+  "",
+  "AND THAT SENTENCE IS NOW ENFORCED RATHER THAN ASKED FOR. It was a",
+  "convention written in a comment for three separations running.",
+  "benchmarks_pages_headline_matches_the_committed_baseline in",
+  "tests/site_journey_test.rs binds this file to BOTH hand-maintained copies",
+  "of the benchmarks page and to the homepage tile, so moving any one of them",
+  "alone is a red test rather than a discovery six releases later."
  ],
- "cores_4_pkts_per_s": 3250000,
+ "cores_4_pkts_per_s": 3560000,
  "measured": {
-  "version": "0.5.122-dev",
-  "date": "2026-08-21",
-  "commit": "2f4522f1",
+  "version": "0.5.160",
+  "date": "2026-09-09",
+  "commit": "4641f323",
   "host": "NVIDIA Jetson Thor devboard (aarch64), 14 cores, PREEMPT_RT, idle",
   "corpus": "bench/carrier.py --calls 5000 (535000 packets, 93.5% RTP)",
   "method": "median-of-5 after one discarded warmup, three replicates",
   "idle_gate": "vmstat id >= 96% and no toolchain build process; 90% would permit 1.4 busy cores on a 14-core host",
   "replicates_pkts_per_s": [
-   3250000,
-   3290000,
-   3290000
+   3620000,
+   3610000,
+   3560000
   ],
-  "_note": "Baseline set to the LOWEST replicate, not the median, so the floor derived from it cannot sit above a figure this host actually produces."
+  "cores_replicates_pkts_per_s": {
+   "1": [1070000, 1060000, 1050000],
+   "2": [2630000, 2640000, 2640000],
+   "4": [3620000, 3610000, 3560000],
+   "8": [3140000, 3130000, 3150000]
+  },
+  "cores_published_pkts_per_s": {
+   "1": 1050000,
+   "2": 2630000,
+   "4": 3560000,
+   "8": 3130000
+  },
+  "peak_rss_mib_replicates": {
+   "1": [168.2, 168.2, 168.2],
+   "2": [101.9, 100.8, 100.5],
+   "4": [98.0, 97.5, 98.3],
+   "8": [101.2, 104.5, 103.2]
+  },
+  "_note": "Baseline and every published figure are the LOWEST replicate, not the median, so the floor derived from them cannot sit above a figure this host actually produces.",
+  "_eight_cores": "Eight cores is SLOWER than four on this host and this corpus, in all three replicates. That is the shape of the curve here, not a bad run, and the page says so rather than quoting the peak and leaving the shoulder off."
+ },
+ "carrier_scale_sweep": {
+  "_comment": [
+   "The other table on docs/benchmarks.md, recorded here for the same reason:",
+   "a figure with no committed record is a figure nobody can check. Growing",
+   "state rather than fixed state -- unique Call-IDs and unique RTP endpoints",
+   "per call (--call-ids 0 --stream-pairs 0), measured at --cores 4.",
+   "",
+   "One measurement each, median-of-5 after a discarded warmup, from the same",
+   "session and host as the multi-core table above."
+  ],
+  "generator": "bench/carrier.py --calls N --call-ids 0 --stream-pairs 0",
+  "cores": 4,
+  "rows": [
+   { "calls": 500, "packets": 53500, "dialogs": 500, "streams": 1000, "pkts_per_s": 2190000, "peak_rss_mib": 29.5 },
+   { "calls": 2000, "packets": 214000, "dialogs": 2000, "streams": 4000, "pkts_per_s": 2800000, "peak_rss_mib": 69.2 },
+   { "calls": 8000, "packets": 856000, "dialogs": 8000, "streams": 16000, "pkts_per_s": 3280000, "peak_rss_mib": 226.7 },
+   { "calls": 20000, "packets": 2140000, "dialogs": 20000, "streams": 40000, "pkts_per_s": 3260000, "peak_rss_mib": 495.0 }
+  ]
  },
  "floor_pct": 80,
  "_floor_rationale": [
@@ -55,15 +112,17 @@
   "of both. A tighter band on a runner that also serves CI would be flaky in",
   "the direction that gets a gate muted, and a muted gate catches nothing.",
   "",
-  "The floor is 2.60M. Checked against the numbers that matter here: the",
-  "0.5.118 regression measured 2.40M, which is 74% and trips it -- the whole",
-  "point of the raise. 0.5.117's 3.29M is 101% and does not.",
+  "The floor is 2.85M. Checked against the numbers that matter here: the",
+  "0.5.118 regression measured 2.40M, which is 67% and trips it -- the whole",
+  "point of keeping the baseline current. 0.5.122's 3.25M is 91% and does",
+  "not, which is correct: 0.5.122 was not a regression, it was an older tool.",
   "",
-  "Note what the raise fixed, twice now. While this file baselined 0.5.89's",
-  "1.89M, the floor sat at 1.51M against a tool running at 2.28M -- a 34% drop",
-  "would have passed a gate whose stated band is 20%. While it baselined",
-  "0.5.104's 2.28M, a tool running at 3.30M could lose 27% and pass. A stale",
-  "baseline does not merely under-report; it silently widens the band it",
-  "advertises."
+  "Note what the raise fixed, three times now. While this file baselined",
+  "0.5.89's 1.89M, the floor sat at 1.51M against a tool running at 2.28M --",
+  "a 34% drop would have passed a gate whose stated band is 20%. While it",
+  "baselined 0.5.104's 2.28M, a tool running at 3.30M could lose 27% and",
+  "pass. While it baselined 0.5.122's 3.25M, a tool running at 3.56M could",
+  "lose 27% and pass. A stale baseline does not merely under-report; it",
+  "silently widens the band it advertises."
  ]
 }

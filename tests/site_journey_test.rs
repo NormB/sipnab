@@ -1742,10 +1742,14 @@ fn homepage_throughput_tiles_match_the_benchmarks_page() {
     let idx = read("website/templates/index.html");
     let bench = read("website/content/docs/benchmarks.md");
 
-    let measured = regex::Regex::new(r"released (\d+\.\d+\.\d+) artifact, checksum-verified")
-        .unwrap()
-        .captures(&bench)
-        .expect("benchmarks page states no measured release")[1]
+    // The version comes from the committed baseline too, for the same reason
+    // the figure does. It used to be scraped out of the page's prose with a
+    // regex for "released N artifact, checksum-verified" — which tied the gate
+    // to one sentence's wording, and said nothing about whether that sentence
+    // agreed with the run the throughput gate measures against.
+    let measured = baseline()["measured"]["version"]
+        .as_str()
+        .expect("bench/baseline.json has no measured.version")
         .to_string();
 
     // Each tile: (data-count value, the string that must appear in a table row).
@@ -1792,7 +1796,14 @@ fn homepage_throughput_tiles_match_the_benchmarks_page() {
     // One tile now, where there were two. Written as a binding rather than a
     // one-element loop because clippy::single_element_loop rejects the latter;
     // if a second throughput tile ever returns, restore the loop.
-    let (count, suffix) = ("3.23", "M pkts/s");
+    // DERIVED from bench/baseline.json rather than restated here. This used to
+    // be the literal "3.23", which is how the tile, the page and the committed
+    // baseline came apart a third time: the baseline recorded 3,250,000 and
+    // nothing compared the two. `benchmarks_pages_headline_matches_the_committed_baseline`
+    // binds the same file to both benchmarks pages, so the tile, both pages and
+    // the gate's floor now move in one commit or not at all.
+    let derived = baseline_four_core_figure();
+    let (count, suffix) = (derived.trim_end_matches('M'), "M pkts/s");
     let tile = format!(r#"data-count="{count}" data-suffix="{suffix}""#);
     assert!(
         idx.contains(&tile),
@@ -9174,4 +9185,105 @@ fn the_published_ladder_shows_a_settled_capture() {
          separate runs of the server, so they only agree when both read the \
          whole capture."
     );
+}
+
+/// The committed throughput baseline and the pages that publish it are ONE
+/// measurement, and this gate is what makes them one event.
+///
+/// `bench/baseline.json` says so in its own `_comment` -- "a raise in
+/// docs/benchmarks.md and a raise here are the SAME event" -- and they came
+/// apart three times anyway, because a convention written in a comment is
+/// enforced by whoever remembers to read it. The third separation is the one
+/// this gate was written for: the pages' headline four-core figure read 3.23M
+/// while the baseline recorded 3,250,000 with replicates 3.25/3.29/3.29M, so
+/// the published figure was a number the recorded run never produced. The gap
+/// was 0.6%, inside the page's own noise floor, which is exactly why it
+/// survived every reader.
+///
+/// What this binds, so that moving any one of them alone fails:
+///
+/// - `cores_4_pkts_per_s` in the baseline,
+/// - the four-core cell in a table row of `docs/benchmarks.md`,
+/// - the same cell in the hand-maintained site copy,
+/// - `measured.date` in the baseline against the date both pages name.
+///
+/// BOTH copies, because `DOCS_TO_SITE` in `scripts/build-site-internals.py`
+/// names `benchmarks.md` as its one deliberate exception: neither page is
+/// generated from the other, so the figure is written twice by hand. That is
+/// the defect class the backlog's DUP section exists for.
+///
+/// The homepage tile is bound to the same figure by
+/// `homepage_throughput_tiles_match_the_benchmarks_page`, which derives its
+/// expected value from this file rather than restating it.
+#[test]
+fn benchmarks_pages_headline_matches_the_committed_baseline() {
+    let base = baseline();
+    let figure = baseline_four_core_figure();
+    let date = base["measured"]["date"]
+        .as_str()
+        .expect("bench/baseline.json has no measured.date");
+
+    for path in ["docs/benchmarks.md", "website/content/docs/benchmarks.md"] {
+        let page = read(path);
+
+        // In a TABLE ROW for four cores, not anywhere in the file -- the same
+        // distinction `homepage_throughput_tiles_match_the_benchmarks_page`
+        // had to learn, where a re-measured figure quoted in prose satisfied a
+        // whole-file substring while the table disagreed.
+        let rows: Vec<&str> = page
+            .lines()
+            .map(str::trim_start)
+            .filter(|l| l.starts_with("| 4 |"))
+            .collect();
+        assert!(
+            !rows.is_empty(),
+            "{path} has no four-core table row at all, so the figure \
+             bench/baseline.json gates on is published nowhere"
+        );
+        // The PUBLISHED CELL, not anywhere in the row. The current table
+        // prints the replicate spread beside the published figure, so the
+        // lowest replicate appears twice in its own row -- and a `contains`
+        // over the whole row passed a mutation that changed the headline cell
+        // to 3.57M while the spread column still read 3.56M. That is the
+        // shape of a gate that cannot fail: it was reading the wrong half of
+        // the line it was pointed at.
+        let published_cell = |row: &str| -> String {
+            row.split('|')
+                .nth(2)
+                .unwrap_or_default()
+                .trim()
+                .trim_matches('*')
+                .to_string()
+        };
+        assert!(
+            rows.iter().any(|l| published_cell(l) == figure),
+            "bench/baseline.json records {figure} at four cores and no \
+             four-core row on {path} publishes it in its first figure column. \
+             Rows found: {rows:?}. A raise in the baseline and a raise on the \
+             page are the SAME event; they have already come apart three times."
+        );
+        assert!(
+            page.contains(date),
+            "bench/baseline.json says its figure was measured on {date} and \
+             {path} never names that date. A page describing a different \
+             session than the gate is how the two separated before."
+        );
+    }
+}
+
+/// `bench/baseline.json`, parsed.
+fn baseline() -> serde_json::Value {
+    serde_json::from_str(&read("bench/baseline.json")).expect("bench/baseline.json is not JSON")
+}
+
+/// The committed four-core baseline, rendered the way the benchmarks pages and
+/// the homepage tile write it: two decimals and an `M`.
+///
+/// DERIVED rather than restated, so there is one place to change when the
+/// figure is re-measured.
+fn baseline_four_core_figure() -> String {
+    let pkts = baseline()["cores_4_pkts_per_s"]
+        .as_f64()
+        .expect("bench/baseline.json has no numeric cores_4_pkts_per_s");
+    format!("{:.2}M", pkts / 1_000_000.0)
 }

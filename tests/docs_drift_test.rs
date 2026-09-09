@@ -2050,22 +2050,43 @@ fn fuzz_lockfile_pins_the_current_crate_version() {
     );
 }
 
-/// Both benchmark pages must name the same measured release and date, and that
-/// release must actually exist.
+/// Both benchmark pages must name the same measured build and date, that build
+/// must be one that exists, and it must be the build `bench/baseline.json`
+/// records.
 ///
 /// This replaces the old `current release X.Y.Z` marker, which required the
 /// pages to name the crate version and so re-stamped them as current at every
 /// release without anything being re-measured. What matters is not that the
-/// page names today's version — it is that both trees agree on which artifact
-/// produced the numbers, and that it is a real published one.
+/// page names today's version — it is that both trees agree on which build
+/// produced the numbers.
+///
+/// **The attribution is a LOCAL RELEASE BUILD, not a published artifact, and
+/// that changed on 2026-09-09 for a reason worth recording.** This gate used
+/// to demand the phrase "released X.Y.Z artifact, checksum-verified" while
+/// `bench/baseline.json` demanded the opposite in its own comment — "Measured
+/// on a LOCAL release build of the recorded commit, not on a release artifact",
+/// because the nightly throughput gate has to catch a regression the day it
+/// lands rather than once it has shipped. Two gates asking for two different
+/// binaries is how the page came to publish 3.23M while the baseline recorded
+/// 3.25M: both were honest, and they were measuring different programs. One
+/// binary now, named in one place.
 #[test]
 fn benchmark_pages_agree_on_what_was_measured() {
     let re = regex::Regex::new(
-        r"released (\d+\.\d+\.\d+) artifact, checksum-verified, (\d{4}-\d{2}-\d{2})",
+        r"local release build of (\d+\.\d+\.\d+) \(`([0-9a-f]+)`\), (\d{4}-\d{2}-\d{2})",
     )
     .unwrap();
 
-    let mut seen: Option<(String, String)> = None;
+    let baseline: serde_json::Value = serde_json::from_str(include_str!("../bench/baseline.json"))
+        .expect("bench/baseline.json is not JSON");
+    let recorded = |k: &str| -> String {
+        baseline["measured"][k]
+            .as_str()
+            .unwrap_or_else(|| panic!("bench/baseline.json has no measured.{k}"))
+            .to_string()
+    };
+    let want = (recorded("version"), recorded("commit"), recorded("date"));
+
     for (path, text) in [
         ("docs/benchmarks.md", include_str!("../docs/benchmarks.md")),
         (
@@ -2075,30 +2096,29 @@ fn benchmark_pages_agree_on_what_was_measured() {
     ] {
         let cap = re.captures(text).unwrap_or_else(|| {
             panic!(
-                "{path}: no 'released X.Y.Z artifact, checksum-verified, YYYY-MM-DD' \
-                 statement. Every number on this page comes from one artifact on one \
+                "{path}: no 'local release build of X.Y.Z (`hash`), YYYY-MM-DD' \
+                 statement. Every number on this page comes from one build on one \
                  day; if the page will not say which, the numbers are unattributable."
             )
         });
-        let found = (cap[1].to_string(), cap[2].to_string());
-        match &seen {
-            None => seen = Some(found),
-            Some(first) => assert_eq!(
-                first, &found,
-                "the two benchmark pages disagree about what was measured \
-                 ({first:?} vs {found:?}) — a re-benchmark must update both trees"
-            ),
-        }
+        let found = (cap[1].to_string(), cap[2].to_string(), cap[3].to_string());
+        assert_eq!(
+            found, want,
+            "{path} says its tables were measured on {found:?} and \
+             bench/baseline.json records {want:?}. The page and the throughput \
+             gate must describe the same run — they came apart three times while \
+             that was a convention rather than a test."
+        );
     }
 
-    // You cannot have measured a release that does not exist yet.
-    let (measured, _) = seen.expect("at least one benchmarks page");
+    // You cannot have measured a version that does not exist yet.
     let crate_version = env!("CARGO_PKG_VERSION");
     let parse = |v: &str| -> Vec<u32> { v.split('.').map(|p| p.parse().unwrap()).collect() };
     assert!(
-        parse(&measured) <= parse(crate_version),
-        "benchmarks claim to be measured on {measured}, which is newer than the \
-         crate version {crate_version}"
+        parse(&want.0) <= parse(crate_version),
+        "benchmarks claim to be measured on {}, which is newer than the \
+         crate version {crate_version}",
+        want.0
     );
 }
 
@@ -4353,6 +4373,12 @@ fn the_benchmarks_page_names_one_measured_release_throughout() {
                     || l.contains("Measured against")
                     || l.contains("Measured on the released")
                     || l.contains("Taken on the released")
+                    // The 2026-09-09 attribution: a local release build, not a
+                    // published artifact. See
+                    // `benchmark_pages_agree_on_what_was_measured` for why the
+                    // subject of the measurement changed.
+                    || l.contains("Measured on a local release build")
+                    || l.contains("Taken on a local release build")
                     || l.contains("**Version:** sipnab")
             })
             .filter_map(|l| ver.captures(l).map(|c| c[1].to_string()))

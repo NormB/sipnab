@@ -44,7 +44,7 @@ Tiers:
 
 ## Status
 
-**30 open, 478 done** across 36 sections.
+**28 open, 480 done** across 36 sections.
 Regenerate with `python3 scripts/backlog-status.py --apply`.
 
 | Section | Open | Done | Progress |
@@ -54,7 +54,7 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
 | PV | 0 | 13 | `##########` |
 | P2 | 0 | 109 | `##########` |
 | P3 | 0 | 64 | `##########` |
-| P4 | 2 | 41 | `##########` |
+| P4 | 0 | 43 | `##########` |
 | PA | 1 | 12 | `#########.` |
 | PB | 0 | 20 | `##########` |
 | TK | 3 | 7 | `#######...` |
@@ -2426,24 +2426,62 @@ holds anything to it.
   under CI is the opposite of that. Re-run the Inspector by hand when its rules
   move: [`docs/mcp.md`](https://github.com/NormB/sipnab/blob/main/docs/mcp.md) records the invocation and the measured before-and-after.
 
-- [ ] **The performance baseline is stale for the third recorded time
-  (added 2026-09-06).** [`bench/baseline.json`](https://github.com/NormB/sipnab/blob/main/bench/baseline.json) records 0.5.122 at 3.25M pkt/s on
-  four cores with an 80% floor of 2.60M. PERF1 in this file measured the tool
-  at **3.56M** on the same four cores after the retained-frame-digest change
-  landed on 2026-08-28. A 27% regression from today's real throughput would
-  still clear that floor, so the gate is watching a number the tool passed
-  weeks ago.
+- [x] **(done 2026-09-09) The performance baseline was stale for the third
+  recorded time (added 2026-09-06).** [`bench/baseline.json`](https://github.com/NormB/sipnab/blob/main/bench/baseline.json) recorded 0.5.122 at
+  3.25M pkt/s on four cores with an 80% floor of 2.60M. PERF1 in this file
+  measured the tool at **3.56M** on the same four cores after the
+  retained-frame-digest change landed on 2026-08-28. A 27% regression from the
+  real throughput would still have cleared that floor, so the gate was watching
+  a number the tool passed weeks earlier.
 
-  [`bench/baseline.json`](https://github.com/NormB/sipnab/blob/main/bench/baseline.json)'s own `_comment` says a raise on the benchmarks page and
-  a raise in that file are the SAME event. They have come apart three times.
+  **Re-measured on 0.5.160 (`4641f323`), 2026-09-09**, on the documented host
+  at 98% idle, three replicates of median-of-5 after a discarded warmup:
+  1.05M / 2.63M / **3.56M** / 3.13M at one, two, four and eight cores, published
+  as the LOWEST replicate of each. The four-core figure reproduces PERF1's
+  3.56M to the digit, twelve days and one release later, which is the strongest
+  thing that can be said for either measurement. Four cores is the peak and
+  **eight is slower**, in all three replicates — the page said the opposite and
+  now says this.
 
-  **Do:** re-measure on the documented host and method, raise both together, and
-  then make them one event rather than a convention — a baseline that can be
-  raised without the page, or a page raised without the baseline, will separate
-  again for the same reason it already has.
+  **Made one event rather than a convention.**
+  `benchmarks_pages_headline_matches_the_committed_baseline` binds
+  `cores_4_pkts_per_s`, the published cell of the four-core row on BOTH
+  hand-maintained copies of the benchmarks page, the measured date, and the
+  homepage tile, which now DERIVES its expected figure from the baseline
+  instead of restating it. Five mutations, all caught.
 
-- [ ] **[`docs/benchmarks.md`](https://github.com/NormB/sipnab/blob/main/docs/benchmarks.md) carries figures with no recoverable provenance
-  (added 2026-09-06).** A documentation sweep traced every number on the page.
+  **One of them was not caught at first, and it is the useful part.** The gate
+  originally asked whether the four-core ROW contained the figure. The row also
+  prints the replicate spread, in which the lowest replicate appears a second
+  time — so changing the published cell from 3.56M to 3.57M left the row still
+  containing "3.56M" and the gate still green. It was reading the wrong half of
+  the line it was pointed at, which is indistinguishable from working until a
+  mutation says otherwise. It compares the published CELL now.
+
+- [x] **(done 2026-09-09) [`docs/benchmarks.md`](https://github.com/NormB/sipnab/blob/main/docs/benchmarks.md) carried figures with no recoverable provenance
+  (added 2026-09-06).**
+
+  **Done in the same commit as the entry above, because they were one defect.**
+  Every figure in the multi-core and carrier-scale tables is now committed in
+  [`bench/baseline.json`](https://github.com/NormB/sipnab/blob/main/bench/baseline.json) — all three replicates per core count, the peak
+  resident set of each, and the whole sweep — and each claim that resolved to
+  nothing was deleted rather than carried forward: the 0.5.108 spread and its
+  "39 and 53 times larger" gaps, the absent 0.5.104 sweep comparison, the
+  0.5.18-against-1.20M paragraph, and the memory figures that named no run. The
+  two that were arithmetic over committed numbers are kept and now say so.
+
+  **THE CAUSE, which this entry guessed at and did not have.** The 3.23M that
+  matched none of the three replicates was not a transcription slip. Two gates
+  demanded two different binaries: `benchmark_pages_agree_on_what_was_measured`
+  required the page to name a "released X.Y.Z artifact, checksum-verified",
+  while [`bench/baseline.json`](https://github.com/NormB/sipnab/blob/main/bench/baseline.json)'s own comment required "a LOCAL release build of
+  the recorded commit, not a release artifact", because the nightly gate has to
+  catch a regression the day it lands. Both numbers were honest and they were
+  measuring different programs. The page attribution is a local release build
+  now, in both copies, and that gate checks it against the baseline's version,
+  commit and date rather than against a sentence's wording.
+
+  ORIGINAL: A documentation sweep traced every number on the page.
   Most resolve to [`bench/baseline.json`](https://github.com/NormB/sipnab/blob/main/bench/baseline.json), [`bench/carrier.py`](https://github.com/NormB/sipnab/blob/main/bench/carrier.py) defaults, PERF1's
   tables or arithmetic over those. These do not resolve to anything:
   the 0.5.108 "~1% spread ... 39 and 53 times larger" comparison (its table is
