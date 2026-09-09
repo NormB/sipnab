@@ -8,6 +8,41 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Changed
+
+- **The toolchain moves to Rust 1.98.1, and three hand-rolled routines become
+  standard-library calls.** `[T]::subslice_range` is now the whole body of the
+  mapped reader's `offset_within_mapping`, which had cast two pointers to
+  `usize` and compared the integers: correct in practice, and it threw the
+  pointers' provenance away to be correct. `str::substr_range` replaced pointer
+  arithmetic in the filter parser whose own comment records the bug it caused
+  on multibyte input, and it refuses a string that is not part of this one
+  where the arithmetic produced a plausible index. `str::strip_circumfix`
+  replaced a prefix strip fed into a suffix strip in the termination parser.
+
+  The bump is not a drop-in. Clippy gained `chunks_exact_to_as_chunks` in 1.98,
+  which is fatal under this project's warnings-as-errors, and three call sites
+  moved to `as_chunks::<2>()` — the internet checksum reads its word as
+  `from_be_bytes(*pair)` rather than two indexed loads. Behavior is unchanged
+  in every case: both forms drop a trailing odd byte.
+
+### Added
+
+- **`scripts/check-file.sh` runs the per-file gates in about a second**, on the
+  files you just wrote: vale, codespell, the British-spelling sweep, rustfmt,
+  and a parse for shell and Python. The commit hook is the entry check on a
+  commit, not the mechanism for discovering a misspelling, and eight round
+  trips through it in one session went to defects of that class.
+
+  Every decision in it is borrowed rather than restated. vale and codespell
+  come from `scripts/prose-gates.sh`, the same runners the hooks call,
+  including the version pin that decides whether a vale run is evidence about
+  CI at all; those runners gained an optional path argument for it. The
+  forbidden-word list and its exemptions are parsed out of the gate that owns
+  them, so a word added there is caught here without a second edit.
+
 ## [0.5.161] - 2026-09-09
 
 ### Added

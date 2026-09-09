@@ -29076,7 +29076,7 @@ push-and-wait feedback loop. [`scripts/check-feature-matrix.py`](../../scripts/c
 thirteen locally, reading both the combo list and `RUSTFLAGS` out of
 [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml) so the two cannot drift.
 
-[`pre-push`](../../.githooks/pre-push) adds ten hard gates that `cargo test`
+[`pre-push`](../../.githooks/pre-push) adds eleven hard gates that `cargo test`
 does not cover: `cargo fmt --check`, `cargo clippy --workspace --all-features --all-targets
 -D warnings`, `cargo doc` with `RUSTDOCFLAGS=-D warnings`, `cd fuzz &&
 cargo check`, a check of the reduced feature combinations `tls`, `api` and
@@ -29188,7 +29188,7 @@ because a hand-kept list cannot catch a *new* corpus binary, which is the one
 thing this gate exists for. The first draft did hand-keep the list, and it went
 stale inside an hour, when a twelfth binary landed mid-review.
 
-**When it runs.** Last, after the ten hard gates. Each of those fails in
+**When it runs.** Last, after the eleven hard gates. Each of those fails in
 seconds, and spending a minute on the corpus only to hear that the tree does not
 compile wastes the minute. The gate then reaches one of five states — a run, or
 one of the four reasons not to run — and each prints its own line:

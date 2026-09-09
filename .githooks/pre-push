@@ -146,6 +146,35 @@ if [ -d fuzz ]; then
 	fi
 fi
 
+# -- Hard gate: the release-delivery tests ------------------------------------
+# These compare the TREE against the last tag -- whether code changed since it,
+# whether the changelog declares that, whether a security-relevant file moved
+# in silence. `.githooks/pre-commit` runs the whole suite and still cannot
+# answer any of it, because at pre-commit time the commit being judged does not
+# exist yet: HEAD is still the tag, nothing sits past it, and all three pass
+# vacuously. Then the commit lands, the push goes out, and CI is the first
+# thing that can see it.
+#
+# That is not hypothetical. It turned main red on 2026-09-09, minutes after a
+# release, on a commit whose pre-commit run had been green -- because the run
+# happened one commit too early to have an opinion.
+#
+# HERE is the first moment the question is answerable, so it is asked here.
+printf '  cargo test --features full --test release_delivery_test ... '
+if cargo test --features full --test release_delivery_test >/dev/null 2>&1; then
+	printf '%bOK%b\n' "$GREEN" "$NC"
+else
+	printf '%bFAIL%b\n' "$RED" "$NC"
+	printf '\n'
+	printf '%bPush blocked: work sits past the last tag and the tree does not say so.%b\n' "$RED" "$NC"
+	printf 'Reproduce with:\n'
+	printf '    cargo test --features full --test release_delivery_test\n'
+	printf 'Usually the fix is an [Unreleased] section in CHANGELOG.md naming what changed.\n'
+	printf '\n'
+	printf 'Emergency bypass (discouraged): SKIP_FMT_HOOK=1 git push\n'
+	exit 1
+fi
+
 # -- Hard gate: reduced feature combinations ----------------------------------
 # Everything above this point builds with --all-features, and that is exactly
 # the blind spot: `#[cfg]`-gating rot is invisible to it. ci.yml's features job

@@ -460,7 +460,34 @@ fn collect_metrics(
     // `for_scrape`, never `default`: the two scalar counters and the alert
     // family are fed by the capture path, not by these stores, and a
     // `default()` here published a literal `0` for a live capture.
-    let mut metrics = PrometheusMetrics::for_scrape();
+    collect_metrics_onto(
+        PrometheusMetrics::for_scrape(),
+        dialog_store,
+        stream_store,
+        capture_meter,
+    )
+}
+
+/// [`collect_metrics`], onto a base the caller already read.
+///
+/// Split out so a caller can take ONE `for_scrape()` snapshot and drive both
+/// scrape doors from it. `for_scrape()` reads process-global capture tallies,
+/// and a test comparing the two doors called it twice: any other test decoding
+/// a frame in between moved the counters, and the doors "disagreed" about a
+/// capture that had changed underneath them rather than about the rule under
+/// test. That failure reached CI on 2026-09-09, and its message was a ten
+/// kilobyte diff of two expositions -- which reads exactly like the defect this
+/// comparison exists to catch.
+///
+/// Production still calls `for_scrape()` once per scrape, which is the same
+/// thing it always did.
+fn collect_metrics_onto(
+    base: PrometheusMetrics,
+    dialog_store: &Arc<RwLock<DialogStore>>,
+    stream_store: &Arc<RwLock<StreamStore>>,
+    capture_meter: Option<&crate::capture::channel::CaptureMeter>,
+) -> PrometheusMetrics {
+    let mut metrics = base;
 
     if let Some(meter) = capture_meter {
         metrics.capture_queue_depth_packets = meter.in_flight() as u64;
@@ -906,17 +933,26 @@ mod tests {
     /// Compares the FORMATTED text, not the struct: the exposition is what a
     /// scrape target actually receives, and a difference that survives
     /// formatting is a difference an operator sees.
+    ///
+    /// ONE `for_scrape()` snapshot feeds both doors. Reading it twice made this
+    /// test race every other test that decodes a frame, because those counters
+    /// are process-global -- see `collect_metrics_onto`.
     #[test]
     fn both_scrape_doors_publish_identical_exposition() {
         let ds = populated_dialog_store();
         let ss = populated_stream_store();
+        let base = crate::output::prometheus::PrometheusMetrics::for_scrape();
 
         // This door.
-        let standalone =
-            crate::output::prometheus::format_metrics(&collect_metrics(&ds, &ss, None));
+        let standalone = crate::output::prometheus::format_metrics(&collect_metrics_onto(
+            base.clone(),
+            &ds,
+            &ss,
+            None,
+        ));
 
         // The REST door, assembled the way `get_metrics` assembles it.
-        let mut via_api = crate::output::prometheus::PrometheusMetrics::for_scrape();
+        let mut via_api = base;
         {
             let d = ds.read();
             let s = ss.read();
@@ -938,6 +974,65 @@ mod tests {
             !standalone.contains("state=\"Completed\"") && !standalone.contains("state=\"Trying\""),
             "dialog-state labels are lowercase, which is what the shipped \
              dashboards query: {standalone}"
+        );
+    }
+
+    /// The two doors still agree when the capture tally MOVES between them.
+    ///
+    /// This is the CI failure of 2026-09-09 made deterministic. The counters
+    /// `for_scrape()` reads are process-global, `cargo test` runs the library
+    /// tests concurrently in one process, and
+    /// `for_scrape_reads_the_process_tally` decodes seven frames of an
+    /// unsupported link type as its whole point. When that landed between the
+    /// two doors' snapshots, they published different
+    /// `capture_undecodable_frames` families and the comparison failed with a
+    /// ten kilobyte diff -- reading exactly like the drift it exists to catch,
+    /// on a run where nothing had drifted.
+    ///
+    /// Interfering ON PURPOSE is what makes the fix checkable. Against a
+    /// version that calls `for_scrape()` once per door this fails every time
+    /// rather than once in a hundred runs.
+    #[test]
+    fn the_two_doors_agree_across_a_moving_capture_tally() {
+        let ds = populated_dialog_store();
+        let ss = populated_stream_store();
+        let base = crate::output::prometheus::PrometheusMetrics::for_scrape();
+
+        let standalone = crate::output::prometheus::format_metrics(&collect_metrics_onto(
+            base.clone(),
+            &ds,
+            &ss,
+            None,
+        ));
+
+        // The interference, in the open: seven frames of a link type nothing
+        // decodes, exactly as the other test produces them.
+        let mut proc = crate::capture::PacketProcessor::new();
+        for _ in 0..7 {
+            let data = vec![0u8; 64];
+            let n = data.len();
+            proc.process(&crate::capture::Packet::new(
+                chrono::Utc::now(),
+                data,
+                n,
+                n,
+                None,
+                147,
+            ));
+        }
+
+        let mut via_api = base;
+        {
+            let d = ds.read();
+            let s = ss.read();
+            crate::output::prometheus::populate_from_stores(&mut via_api, &d, &s);
+        }
+        let rest = crate::output::prometheus::format_metrics(&via_api);
+
+        assert_eq!(
+            standalone, rest,
+            "the two doors describe one snapshot, so a capture that moves \
+             between them must not make them disagree"
         );
     }
 

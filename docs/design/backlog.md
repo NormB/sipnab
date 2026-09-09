@@ -44,7 +44,7 @@ Tiers:
 
 ## Status
 
-**26 open, 484 done** across 36 sections.
+**26 open, 485 done** across 36 sections.
 Regenerate with `python3 scripts/backlog-status.py --apply`.
 
 | Section | Open | Done | Progress |
@@ -54,7 +54,7 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
 | PV | 0 | 13 | `##########` |
 | P2 | 0 | 109 | `##########` |
 | P3 | 0 | 64 | `##########` |
-| P4 | 1 | 43 | `##########` |
+| P4 | 1 | 44 | `##########` |
 | PA | 1 | 12 | `#########.` |
 | PB | 0 | 20 | `##########` |
 | TK | 2 | 8 | `########..` |
@@ -2279,31 +2279,48 @@ holds anything to it.
 
 ## P4 — test quality
 
-- [ ] **`both_scrape_doors_publish_identical_exposition` is flaky, and it fails
-  in the direction that reads as a real defect (added 2026-09-09).** It failed
-  once during the 0.5.161 release run and passed on every re-run since,
-  including an immediate one. The two scrapes disagreed because the second saw
-  two frames the first did not: `sipnab_capture_packets_total` 92 against 94,
-  and `sipnab_capture_undecodable_frames_total{reason="unsupported_link_type_147"}`
-  present in one exposition and absent from the other.
+- [x] **(done 2026-09-09) `both_scrape_doors_publish_identical_exposition` was
+  flaky, and it failed in the direction that reads as a real defect.** It
+  failed once locally during the 0.5.161 release run, passed on every re-run,
+  and then **turned main red in CI hours later** — which is what promoted it
+  from a note to a fix.
 
-  **It is shared process-global state, not a metrics bug.** The counters this
-  test compares are process-wide, and `cargo test` runs the lib tests
-  concurrently in one process, so any other test decoding a DLT_USER0 (147)
-  capture between the two scrapes moves them. The failure message is a
-  ~10 KB diff of two expositions, which is exactly the kind of red that gets
-  read as "the two doors disagree" — the thing this gate exists to catch —
-  when the doors are fine and the CAPTURE moved underneath them.
+  **It was shared process-global state, not a metrics bug.** Both scrape doors
+  call `PrometheusMetrics::for_scrape()`, which reads process-wide capture
+  tallies, and the test called it TWICE. `cargo test` runs the library tests
+  concurrently in one process, and `for_scrape_reads_the_process_tally` decodes
+  seven frames of an unsupported link type as its whole purpose — so when that
+  landed between the two snapshots the doors published different
+  `capture_undecodable_frames` families. The failure message is a
+  ten-kilobyte diff of two expositions, which reads exactly like the drift the
+  comparison exists to catch, on a run where nothing had drifted.
 
-  **Do:** take the two scrapes from ONE snapshot rather than two live reads, or
-  serialize this test against every other test that touches the capture
-  counters the way the API-key tests already serialize on `serial_test`. Do not
-  fix it by loosening the comparison: the assertion is right, and it is the
-  input that is not held still.
+  **Fixed with a seam rather than a mute.** `collect_metrics_onto` takes a base
+  the caller already read, so one `for_scrape()` snapshot feeds both doors;
+  production still reads it once per scrape, as it always did. The assertion is
+  untouched — it was right, and it was the input that would not hold still.
 
-  Caught during a release, on a suite that had gone green five times in a row
-  in the preceding hour — which is what a flake looks like and why it is worth
-  an entry rather than a re-run.
+  **The race is a test now rather than a hazard.**
+  `the_two_doors_agree_across_a_moving_capture_tally` moves the tally between
+  the two builds ON PURPOSE. Against the two-snapshot shape it fails every time
+  instead of once in a hundred runs, which a mutation confirmed both ways.
+
+- [ ] **`release_delivery_test` cannot be answered by pre-commit, and nothing
+  else asked it before the push (added 2026-09-09).** Three of its gates
+  compare the tree against the last tag: whether code changed since it, whether
+  the changelog declares that, whether a security-relevant file moved in
+  silence. At pre-commit time the commit being judged **does not exist yet** —
+  HEAD is still the tag, nothing sits past it, and all three pass vacuously.
+
+  Minutes after publishing 0.5.161 a commit landed with `src/` changes and no
+  `[Unreleased]` section, its pre-commit run green, and CI was the first thing
+  that could see it. `main` went red on both runners.
+
+  **Half done:** [`.githooks/pre-push`](https://github.com/NormB/sipnab/blob/main/.githooks/pre-push) now runs that one test file, which
+  is the first moment the question is answerable. **Still open:** the same
+  blindness applies to every gate whose subject is "the commit" rather than
+  "the tree", and nobody has enumerated those. A gate that passes vacuously at
+  the moment it is asked is indistinguishable from one that passed.
 
 - [x] **Unlabeled code fences carry a copy button no gate reads** (2026-07-28).
   `shell_fence_is_one_clipboard_payload` reads fences whose info string names a

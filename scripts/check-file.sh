@@ -191,9 +191,21 @@ for f in "$@"; do
 
 	# 5. Shell and Python parse, which is free and catches a heredoc that ate
 	#    its own delimiter.
+	# By EXTENSION or by SHEBANG. The hooks are shell and named `pre-commit`
+	# and `pre-push`, so an extension-only rule checks the scripts in
+	# `scripts/` and skips the two files most likely to break a push.
+	_kind=""
 	case "$f" in
-		*.sh) bash -n "$f" && echo "  parse       ${GREEN}OK${NC}" || { echo "  parse       ${RED}FAIL${NC}"; rc=1; } ;;
-		*.py) python3 -c "import ast,sys; ast.parse(open(sys.argv[1]).read())" "$f" &&
+		*.sh) _kind=sh ;;
+		*.py) _kind=py ;;
+		*) case "$(head -c 64 "$f" 2>/dev/null | head -1)" in
+			'#!'*sh) _kind=sh ;;
+			'#!'*python*) _kind=py ;;
+		esac ;;
+	esac
+	case "$_kind" in
+		sh) bash -n "$f" && echo "  parse       ${GREEN}OK${NC}" || { echo "  parse       ${RED}FAIL${NC}"; rc=1; } ;;
+		py) python3 -c "import ast,sys; ast.parse(open(sys.argv[1]).read())" "$f" &&
 			echo "  parse       ${GREEN}OK${NC}" || { echo "  parse       ${RED}FAIL${NC}"; rc=1; } ;;
 	esac
 done
