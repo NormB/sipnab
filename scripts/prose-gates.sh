@@ -29,6 +29,14 @@
 # unset. Both looked like success.
 #
 # Callers own $PROSE_OUTPUT's lifetime: read it, then delete it.
+#
+# SCOPE. Each runner takes an optional argument: a space-separated path list to
+# check INSTEAD of the shared config list. The hooks pass nothing and get the
+# whole tree; scripts/check-file.sh passes one file, so a writer can run the
+# same decision -- same binary, same version pin, same failure semantics -- in
+# a second rather than at the end of a multi-minute hook. That is the whole
+# point of the argument: an author who has to wait minutes to learn about a
+# misspelling learns about it from the gate instead of before it.
 
 #: Where the last run's output went. Set on return 0 and 1.
 PROSE_OUTPUT=''
@@ -102,8 +110,9 @@ prose_vale_run() {
 	fi
 
 	PROSE_OUTPUT="/tmp/.sipnab-prose-vale.$$"
+	_targets="${1:-$(prose_paths .config/vale-paths.txt)}"
 	# shellcheck disable=SC2086
-	if "$_vale" $(prose_paths .config/vale-paths.txt) >"$PROSE_OUTPUT" 2>&1; then
+	if "$_vale" $_targets >"$PROSE_OUTPUT" 2>&1; then
 		return 0
 	fi
 	return 1
@@ -131,8 +140,9 @@ prose_codespell_run() {
 	fi
 
 	PROSE_OUTPUT="/tmp/.sipnab-prose-cs.$$"
+	_targets="${1:-$(prose_paths .config/codespell-paths.txt)}"
 	# shellcheck disable=SC2086
-	if $_cs $(prose_paths .config/codespell-paths.txt) --skip ./.git >"$PROSE_OUTPUT" 2>&1; then
+	if $_cs $_targets --skip ./.git >"$PROSE_OUTPUT" 2>&1; then
 		return 0
 	fi
 	return 1

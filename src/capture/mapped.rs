@@ -388,15 +388,16 @@ impl MappedPcap {
     /// The parser is free to return an owned `Cow`, and a caller must never
     /// turn that into an out-of-range index, so containment is checked rather
     /// than assumed.
+    ///
+    /// `subslice_range` is the standard library's name for exactly this, and
+    /// it replaced a hand-rolled version that cast both pointers to `usize`
+    /// and compared the integers. That arithmetic was correct in practice and
+    /// it threw the pointers' provenance away to do it; the library API keeps
+    /// it, and answers the same question with the same `None` for a slice that
+    /// points somewhere else. Stabilized in Rust 1.98, which is what this
+    /// crate's `rust-version` moved for.
     fn offset_within_mapping(&self, data: &[u8]) -> Option<usize> {
-        let base = self.whole.as_ptr() as usize;
-        let end = base + self.whole.len();
-        let sub = data.as_ptr() as usize;
-        if sub >= base && sub.saturating_add(data.len()) <= end {
-            Some(sub - base)
-        } else {
-            None
-        }
+        self.whole.subslice_range(data).map(|range| range.start)
     }
 }
 

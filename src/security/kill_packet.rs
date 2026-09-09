@@ -144,11 +144,15 @@ pub fn build_ipv6_udp(src: SocketAddrV6, dst: SocketAddrV6, payload: &[u8]) -> O
 /// words, with a trailing odd byte padded with a zero low byte.
 fn checksum16(data: &[u8]) -> u16 {
     let mut sum: u32 = 0;
-    let mut chunks = data.chunks_exact(2);
-    for c in &mut chunks {
-        sum += u16::from_be_bytes([c[0], c[1]]) as u32;
+    // `as_chunks::<2>()` hands back `&[[u8; 2]]` and the remainder together,
+    // so the word read is `from_be_bytes(*pair)` rather than two indexed
+    // loads, and the odd trailing byte is the second half of the same
+    // destructuring. Clippy's `chunks_exact_to_as_chunks`, new in Rust 1.98.
+    let (pairs, rest) = data.as_chunks::<2>();
+    for pair in pairs {
+        sum += u32::from(u16::from_be_bytes(*pair));
     }
-    if let [last] = chunks.remainder() {
+    if let [last] = rest {
         sum += (*last as u32) << 8;
     }
     while (sum >> 16) != 0 {

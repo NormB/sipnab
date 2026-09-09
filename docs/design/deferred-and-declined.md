@@ -1118,7 +1118,7 @@ different question from bundling and it has not been asked yet. It is not
 
 ### Done regardless: the half that needs no decoder
 
-Reading the **mode** out of the RFC 4867 payload header needs no decoder, no
+Reading the **mode** out of the [RFC 4867](https://www.rfc-editor.org/rfc/rfc4867) payload header needs no decoder, no
 reference code and no license, and it is the input the wideband E-model has
 been missing since it was written: `crate::rtp::emodel_wb` can score all nine
 AMR-WB modes, and the codec name does not say which one is in use. That shipped

@@ -1452,7 +1452,7 @@ the sender moved.
 
 Three things stop sipnab reading a mode, and each is a real answer rather than
 a gap. The codec is not AMR or AMR-WB. No SDP for the stream reached this
-process, so the packing is unknown -- RFC 4867 defines two, and they put the
+process, so the packing is unknown -- [RFC 4867](https://www.rfc-editor.org/rfc/rfc4867) defines two, and they put the
 frame type in different bits, so guessing gives a plausible wrong mode rather
 than an error. Or the session negotiated `interleaving`, which moves every
 offset in the payload.

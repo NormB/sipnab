@@ -12,7 +12,7 @@
 # tag bump there would contradict the toolchain gate — so bump its digest by
 # hand when you move the pinned toolchain. A stale builder digest is the
 # tolerable half of that trade: the builder is not shipped, only its output is.
-FROM rust:1.97-slim-trixie@sha256:5c6f46a6e4472ab1ca7ba7d494e6677f2f219ebc02f32025d3986f057635ec9c AS builder
+FROM rust:1.98-slim-trixie@sha256:bce1476d4be4d78b83705bc5f428b86d640eeeea33e9dadafbc037b5703a53bf AS builder
 RUN apt-get update && apt-get install -y libpcap-dev libasound2-dev pkg-config && rm -rf /var/lib/apt/lists/*
 WORKDIR /build
 COPY . .

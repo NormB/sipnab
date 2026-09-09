@@ -460,8 +460,15 @@ fn decode_hex(hex: &str) -> Result<Vec<u8>> {
         }
     }
 
+    // `as_chunks::<2>()` rather than `chunks_exact(2)`: clippy's
+    // `chunks_exact_to_as_chunks`, new in Rust 1.98, and the array form is
+    // what lets `nibble` index a `[u8; 2]` without a bounds check. Both drop a
+    // trailing odd byte, so an odd-length hex string decodes exactly as
+    // before.
     bytes
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .enumerate()
         .map(|(idx, pair)| {
             let hi = nibble(pair[0], idx * 2)?;

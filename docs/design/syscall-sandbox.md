@@ -610,7 +610,7 @@ either.
   `MIT, Apache-2.0, BSD-2-Clause, BSD-3-Clause, ISC, Unicode-3.0,
   Unicode-DFS-2016, Zlib, GPL-3.0, GPL-3.0-only, OpenSSL`. `seccompiler`
   (Apache-2.0) and `landlock` (Apache-2.0 / BSD-3) pass that list.
-  **Unverified:** their MSRV against `rust-version = "1.97"`, their transitive
+  **Unverified:** their MSRV against `rust-version = "1.98"`, their transitive
   crate count, and their binary-size cost — all three are the kind of number
   [`wasm-plugin-api.md`](wasm-plugin-api.md) measured rather than argued, and
   none of them has been measured here.

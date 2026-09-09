@@ -3,7 +3,7 @@ members = [".", "crates/sipnab-audio", "crates/sipnab-plugin-example", "crates/s
 # `fuzz/` is a standalone cargo-fuzz package (its own build via `cargo fuzz`);
 # it depends on this crate by path and must NOT be pulled into the workspace.
 # `bpf/` is the kernel half of the BPF capture backend: a `bpfel-unknown-none`
-# package needing nightly and `bpf-linker`, where sipnab pins stable 1.97.1.
+# package needing nightly and `bpf-linker`, where sipnab pins stable 1.98.1.
 # Excluded so a stock `cargo build` never demands that toolchain.
 exclude = ["fuzz", "bpf"]
 resolver = "2"
@@ -32,7 +32,7 @@ workspace = true
 name = "sipnab"
 version = "0.5.161"
 edition = "2024"
-rust-version = "1.97"
+rust-version = "1.98"
 authors = ["Norm Brandinger"]
 description = "SIP & RTP capture, analysis, and security tool"
 license = "MIT OR Apache-2.0"
@@ -152,7 +152,7 @@ tokio = { version = "1", features = ["full"], optional = true }
 # hand-written; this is the machine-readable contract the website's Scalar page
 # renders, and `tests/openapi_contract_test.rs` fails the build when the two
 # disagree with the router. MSRV 1.75, comfortably under this crate's pinned
-# 1.97 — and no fork: the published crate is used as-is.
+# 1.98 — and no fork: the published crate is used as-is.
 #
 # Default features kept: the only one is `macros`, which is the whole point --
 # `#[utoipa::path]` and `#[derive(OpenApi)]` live there.
@@ -265,7 +265,7 @@ plugins = ["native", "dep:wasmi"]
 # The eBPF capture backend: the only one that can report the peer a TLS
 # session went out to. NON-DEFAULT and deliberately outside `full`, because
 # building it needs a nightly toolchain and `bpf-linker` for the kernel half,
-# where this crate pins stable 1.97.1 — and running it needs a kernel with
+# where this crate pins stable 1.98.1 — and running it needs a kernel with
 # CONFIG_DEBUG_INFO_BTF. A contributor without either must still be able to
 # build sipnab, and CI's pinned jobs must be unaffected.
 bpf = ["native", "dep:aya", "sipnab-bpf-types/pod"]

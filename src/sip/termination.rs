@@ -155,7 +155,11 @@ fn split_outside_quotes(input: &str, sep: char) -> Vec<&str> {
 
 /// Strip one layer of `quoted-string` quoting, and its `\` escapes.
 fn unquote(raw: &str) -> String {
-    let Some(inner) = raw.strip_prefix('"').and_then(|s| s.strip_suffix('"')) else {
+    // One call, not a prefix strip fed into a suffix strip: `strip_circumfix`
+    // (Rust 1.98) fails when EITHER end is missing, which is the rule this
+    // wanted, and it cannot succeed on a lone `"` the way a naive chain of two
+    // strips on a one-character string can.
+    let Some(inner) = raw.strip_circumfix('"', '"') else {
         return raw.to_string();
     };
     let mut out = String::with_capacity(inner.len());

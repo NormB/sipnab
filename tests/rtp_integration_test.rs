@@ -1807,10 +1807,11 @@ fn end_to_end_pcap_to_wav_export() {
     let data_offset = 44usize; // Standard WAV header size
     let pcm_data = &wav_data[data_offset..];
     let non_zero_samples = pcm_data
-        .chunks_exact(2)
-        .filter(|chunk| {
-            let sample = i16::from_le_bytes([chunk[0], chunk[1]]);
-            sample.unsigned_abs() > 100 // threshold above noise floor
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .filter(|sample| {
+            i16::from_le_bytes(**sample).unsigned_abs() > 100 // above the noise floor
         })
         .count();
 

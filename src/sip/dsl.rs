@@ -1275,12 +1275,16 @@ fn render_parse_error(expr: &str, pos: usize, problem: &str) -> String {
     let offending_raw = after_pos.split_whitespace().next().unwrap_or("");
     // split_whitespace may skip leading characters the parser does not
     // treat as whitespace (e.g. vertical tab), so the token need not start
-    // at `pos`: derive its true end from the subslice address — a naive
-    // `pos + len` slice landed mid-character on multibyte input.
-    let token_end = if offending_raw.is_empty() {
-        pos
-    } else {
-        pos + (offending_raw.as_ptr() as usize - after_pos.as_ptr() as usize) + offending_raw.len()
+    // at `pos`: derive its true end from where the subslice actually sits — a
+    // naive `pos + len` slice landed mid-character on multibyte input.
+    //
+    // `substr_range` (Rust 1.98) is the standard library's answer, and it
+    // replaced pointer arithmetic doing the same subtraction by hand. It also
+    // returns `None` for a string that is not part of this one, where the
+    // arithmetic would have produced a plausible index.
+    let token_end = match after_pos.substr_range(offending_raw) {
+        Some(range) if !offending_raw.is_empty() => pos + range.end,
+        _ => pos,
     };
     let rest_after = expr[token_end..].trim_start();
     let looks_like_field = !offending_raw.is_empty()

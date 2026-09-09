@@ -48,7 +48,7 @@ version = "0.5.161"
 # Bumped after a release finishes publishing, not while cutting it.
 # `site_advertises_only_a_released_version` requires a matching `v<x.y.z>` tag,
 # so advertising something unreleased fails the suite rather than the visitor.
-published_version = "0.5.160"
+published_version = "0.5.161"
 # Release date of `published_version` above -- NOT of `version`, further up.
 # `download.html` renders this beside `published_version` in a single sentence,
 # so the date belongs to the release a reader can actually download.
@@ -111,12 +111,16 @@ macos_floor_intel = "10.12"
 #   0.5.158  15,608,584 bytes   (-4,096)
 #   0.5.159  15,629,064 bytes   (+20,480, leaving 99,576 bytes of headroom)
 #   0.5.160  15,747,848 bytes   (+118,784, over the 15 MB ceiling by 19,208)
+#   0.5.161  15,772,424 bytes   (+24,576, leaving 1,004,792 bytes of headroom)
 #
 # So 0.5.159 shipped one ordinary release away from tipping and nothing said
 # so. The 118,784 bytes are `find_in_captures` -- a 66th MCP tool with derived
 # input and output schemas -- plus the amplitude measurement, the per-interval
 # quality types, and the config and CLI plumbing for `--quality-interval`.
-# 16 MB leaves 1,029,368 bytes of headroom.
+# 16 MB left 1,029,368 bytes of headroom at 0.5.160 and 1,004,792 at 0.5.161.
+# That figure is measured from the shipped tarball each release, checksum
+# verified against the `.sha256` beside it, which is what makes it a
+# measurement rather than an estimate carried forward.
 #
 # The 0.5.139 mitigation was this comment: "the remaining headroom is readable
 # without building anything". It was not. Nothing required the record to be

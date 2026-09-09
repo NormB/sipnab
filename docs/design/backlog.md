@@ -4164,7 +4164,7 @@ buf={0x49,0x4e,0x56,0x49,0x54,0x45,0x20,0x73,0x69,0x70,0x3a,0x62,0x40,...} len=5
 
 That is the plaintext `INVITE` out of `SSL_write` with **no `aya`, no
 `bpf-linker`, no nightly toolchain, and no BTF**. It matters for three reasons.
-sipnab pins Rust 1.97.1 stable in CI and the BPF program side of `aya` needs
+sipnab pins Rust 1.98.1 stable in CI and the BPF program side of `aya` needs
 nightly plus `bpf-linker`, so this removes the entire build-system argument
 against `TK6`/`TK7`. It works on kernels with **no BTF**, which includes
 the aarch64 host, so development and testing are not confined to one host. And the only

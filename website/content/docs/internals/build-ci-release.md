@@ -633,14 +633,14 @@ the caller's `~/.cargo/bin`.
 
 ## The toolchain
 
-**Rust 1.97.1**, pinned across seven files and enforced in none of them
+**Rust 1.98.1**, pinned across seven files and enforced in none of them
 locally:
 
 | Location | Form |
 |---|---|
-| `ci.yml` (3 jobs), `quality.yml` (3 jobs), `release.yml` | `dtolnay/rust-toolchain@<sha> # 1.97.1` |
-| `Cargo.toml`, [`crates/sipnab-audio/Cargo.toml`](https://github.com/NormB/sipnab/blob/main/crates/sipnab-audio/Cargo.toml) | `rust-version = "1.97"` (MSRV) |
-| `Dockerfile`, [`harness/sipnab/Dockerfile`](https://github.com/NormB/sipnab/blob/main/harness/sipnab/Dockerfile) | `FROM rust:1.97-slim-trixie@sha256:<digest>` |
+| `ci.yml` (3 jobs), `quality.yml` (3 jobs), `release.yml` | `dtolnay/rust-toolchain@<sha> # 1.98.1` |
+| `Cargo.toml`, [`crates/sipnab-audio/Cargo.toml`](https://github.com/NormB/sipnab/blob/main/crates/sipnab-audio/Cargo.toml) | `rust-version = "1.98"` (MSRV) |
+| `Dockerfile`, [`harness/sipnab/Dockerfile`](https://github.com/NormB/sipnab/blob/main/harness/sipnab/Dockerfile) | `FROM rust:1.98-slim-trixie@sha256:<digest>` |
 
 A commit SHA pins the action, so the **version lives in the trailing
 comment** — which makes that comment load-bearing rather than decorative.
