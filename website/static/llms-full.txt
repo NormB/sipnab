@@ -29113,10 +29113,19 @@ thirteen locally, reading both the combo list and `RUSTFLAGS` out of
 [`pre-push`](../../.githooks/pre-push) adds eleven hard gates that `cargo test`
 does not cover: `cargo fmt --check`, `cargo clippy --workspace --all-features --all-targets
 -D warnings`, `cargo doc` with `RUSTDOCFLAGS=-D warnings`, `cd fuzz &&
-cargo check`, a check of the reduced feature combinations `tls`, `api` and
-`wasm`, the full thirteen-combination matrix with CI's flags, a non-Linux
-compile of the whole tree, a `zola build` of the website, and the two prose
-linters — Vale and codespell. Rustdoc lints and the
+cargo check`, the release-delivery tests, a check of the reduced feature
+combinations `tls`, `api` and `wasm`, the full thirteen-combination matrix with
+CI's flags, a non-Linux compile of the whole tree, a `zola build` of the
+website, and the two prose linters — Vale and codespell.
+
+The release-delivery tests are here for a reason the others are not: nothing
+earlier can answer them. They compare the tree against the newest tag, and at
+pre-commit time the commit under judgement does not exist yet, so every one of
+them reports "nothing past the tag" and passes without looking. The hook also
+sets `SIPNAB_RELEASE_GATES_STRICT=1`, which turns "git could not tell me" from
+a skip into a failure. Skipping is right in a shallow clone and wrong here,
+where git has everything it needs, and a gate that still cannot answer has a
+bug rather than a limitation. Rustdoc lints and the
 separate fuzz workspace compile independently of the test build, and no cargo
 command reads prose at all, so these are exactly the failures that otherwise
 appear ten minutes later in CI.

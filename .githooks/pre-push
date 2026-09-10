@@ -160,8 +160,15 @@ fi
 # happened one commit too early to have an opinion.
 #
 # HERE is the first moment the question is answerable, so it is asked here.
+#
+# And asked strictly. Those gates answer "cannot tell" when git cannot report
+# --- a shallow clone, a checkout with no tags --- and skipping is right there.
+# None of that holds at push time: git is present, the tags are fetched, and a
+# gate that still cannot answer is broken rather than limited. The variable
+# turns that skip into a failure, so the one run with everything it needs
+# cannot pass by declining to look.
 printf '  cargo test --features full --test release_delivery_test ... '
-if cargo test --features full --test release_delivery_test >/dev/null 2>&1; then
+if SIPNAB_RELEASE_GATES_STRICT=1 cargo test --features full --test release_delivery_test >/dev/null 2>&1; then
 	printf '%bOK%b\n' "$GREEN" "$NC"
 else
 	printf '%bFAIL%b\n' "$RED" "$NC"

@@ -82,6 +82,57 @@ fn tags() -> Vec<(u32, u32, u32)> {
     v
 }
 
+/// What a release gate should do when it cannot establish its own input.
+///
+/// These gates compare the tree against the newest tag, and git cannot always
+/// answer: a shallow clone has no history to count, a fresh checkout has no
+/// tags. Skipping is right there — refusing to judge is honest, and failing
+/// would make the suite unrunnable in environments that are merely limited.
+///
+/// It is exactly wrong at push time. There git is present, the tags are
+/// fetched, and the commit under judgement exists; a gate that still cannot
+/// answer is broken rather than limited, and skipping hides that behind the
+/// same green as a real pass. `.githooks/pre-push` sets
+/// `SIPNAB_RELEASE_GATES_STRICT=1` to say which situation this is.
+#[derive(Debug, PartialEq, Eq)]
+enum CannotTell {
+    /// Say so on stderr and decline to judge.
+    Skip,
+    /// Fail, naming what could not be established.
+    Fail,
+}
+
+/// Pure, so both arms can be driven. The environment is an argument rather
+/// than a read, because a test that has to set a process-global variable to
+/// exercise a branch poisons every test running beside it.
+fn cannot_tell_verdict(strict: bool) -> CannotTell {
+    if strict {
+        CannotTell::Fail
+    } else {
+        CannotTell::Skip
+    }
+}
+
+/// Whether this run is the one that has everything it needs.
+fn strict_release_gates() -> bool {
+    std::env::var("SIPNAB_RELEASE_GATES_STRICT").is_ok_and(|v| v == "1")
+}
+
+/// Report a gate that cannot establish its input, and panic under strict mode.
+///
+/// Returns on the skip path so the caller can `return` immediately after.
+fn cannot_tell(what: &str) {
+    match cannot_tell_verdict(strict_release_gates()) {
+        CannotTell::Skip => eprintln!("SKIP: {what}"),
+        CannotTell::Fail => panic!(
+            "{what}. At push time git has everything it needs, so this is a \
+             broken gate rather than a limited checkout — and a gate that \
+             declines to look is indistinguishable from one that passed. \
+             (Set by SIPNAB_RELEASE_GATES_STRICT=1 in .githooks/pre-push.)"
+        ),
+    }
+}
+
 /// The newest release tag, or `None` in a checkout that has none.
 fn newest_tag() -> Option<(u32, u32, u32)> {
     tags().last().copied()
@@ -212,7 +263,7 @@ fn code_changed_since_the_last_tag_is_declared_in_the_changelog() {
     let Some(unreleased_code) = has_unreleased_code() else {
         // Cannot tell — say so rather than passing. A shallow clone is the
         // usual cause and is a legitimate reason not to judge.
-        eprintln!("SKIP: git could not report changes since the newest tag");
+        cannot_tell("git could not report changes since the newest tag");
         return;
     };
     if !unreleased_code {
@@ -293,7 +344,7 @@ fn an_unreleased_section_exists_only_when_something_is_unreleased() {
 fn unreleased_commits_do_not_accumulate_without_a_release() {
     const MAX_UNRELEASED_COMMITS: u32 = 25;
     let Some(n) = commits_since_newest_tag() else {
-        eprintln!("SKIP: git could not count commits since the newest tag");
+        cannot_tell("git could not count commits since the newest tag");
         return;
     };
     assert!(
@@ -406,7 +457,7 @@ fn the_site_never_advertises_a_version_ahead_of_the_crate() {
 fn the_advertised_version_has_a_tag_in_this_repository() {
     let t = tags();
     if t.is_empty() {
-        eprintln!("SKIP: no tags in this checkout");
+        cannot_tell("no tags in this checkout");
         return;
     }
     assert!(
@@ -791,7 +842,7 @@ fn the_advertisement_exemption_stays_narrow() {
 #[test]
 fn the_advertisement_exemption_requires_the_site_to_name_the_newest_tag() {
     let Some(tag) = newest_tag() else {
-        eprintln!("SKIP: no tags in this checkout");
+        cannot_tell("no tags in this checkout");
         return;
     };
     let ads: Vec<String> = vec!["website/config.toml".into(), "docs/install.md".into()];
@@ -821,4 +872,24 @@ fn the_advertisement_exemption_requires_the_site_to_name_the_newest_tag() {
         "an empty changeset advertises nothing; returning true here would \
          exempt the case where git reported nothing at all"
     );
+}
+
+/// A limited checkout may decline to judge.
+///
+/// A shallow clone and a tagless checkout are legitimate: the gate has no
+/// input, and inventing one would be worse than saying so.
+#[test]
+fn a_gate_that_cannot_tell_skips_when_git_may_be_limited() {
+    assert_eq!(cannot_tell_verdict(false), CannotTell::Skip);
+}
+
+/// The push-time run may not.
+///
+/// This is the arm the whole split exists for. `pre-push` is the first moment
+/// the commit under judgement exists AND the last before it reaches everyone
+/// else; a gate that skips there passes for the same reason it would have
+/// passed at pre-commit, and nothing downstream can tell the two apart.
+#[test]
+fn a_gate_that_cannot_tell_fails_at_push_time() {
+    assert_eq!(cannot_tell_verdict(true), CannotTell::Fail);
 }

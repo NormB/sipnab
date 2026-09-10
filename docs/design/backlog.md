@@ -44,7 +44,7 @@ Tiers:
 
 ## Status
 
-**25 open, 487 done** across 36 sections.
+**24 open, 488 done** across 36 sections.
 Regenerate with `python3 scripts/backlog-status.py --apply`.
 
 | Section | Open | Done | Progress |
@@ -54,7 +54,7 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
 | PV | 0 | 13 | `##########` |
 | P2 | 0 | 110 | `##########` |
 | P3 | 0 | 64 | `##########` |
-| P4 | 1 | 44 | `##########` |
+| P4 | 0 | 45 | `##########` |
 | PA | 1 | 12 | `#########.` |
 | PB | 0 | 20 | `##########` |
 | TK | 2 | 8 | `########..` |
@@ -2350,8 +2350,8 @@ holds anything to it.
   the two builds ON PURPOSE. Against the two-snapshot shape it fails every time
   instead of once in a hundred runs, which a mutation confirmed both ways.
 
-- [ ] **`release_delivery_test` cannot be answered by pre-commit, and nothing
-  else asked it before the push (added 2026-09-09).** Three of its gates
+- [x] **`release_delivery_test` cannot be answered by pre-commit, and nothing
+  else asked it before the push (added 2026-09-09, done 2026-09-10).** Three of its gates
   compare the tree against the last tag: whether code changed since it, whether
   the changelog declares that, whether a security-relevant file moved in
   silence. At pre-commit time the commit being judged **does not exist yet** —
@@ -2361,11 +2361,28 @@ holds anything to it.
   `[Unreleased]` section, its pre-commit run green, and CI was the first thing
   that could see it. `main` went red on both runners.
 
-  **Half done:** [`.githooks/pre-push`](https://github.com/NormB/sipnab/blob/main/.githooks/pre-push) now runs that one test file, which
-  is the first moment the question is answerable. **Still open:** the same
-  blindness applies to every gate whose subject is "the commit" rather than
-  "the tree", and nobody has enumerated those. A gate that passes vacuously at
-  the moment it is asked is indistinguishable from one that passed.
+  **Done, in the two halves the entry named.**
+  [`.githooks/pre-push`](https://github.com/NormB/sipnab/blob/main/.githooks/pre-push) already ran that one test file, which is the
+  first moment the question is answerable.
+
+  The enumeration is now a gate rather than a list.
+  [`tests/commit_subject_gate_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/commit_subject_gate_test.rs) finds the tests whose subject is the
+  commit by SIGNAL --- `rev-list`, `describe --tags`, `..HEAD`, `@{upstream}`,
+  `merge-base` --- and requires each to be named in `pre-push`. A file may be
+  exempted only with a reason, and the one exemption is `repo_hygiene_test.rs`,
+  which counts commits in OTHER worktrees: its answer does not change when this
+  commit comes into being. `git ls-files`, `git status` and `git diff --cached`
+  are deliberately not signals; they describe the tree and the index, which is
+  what pre-commit is for.
+
+  **And the vacuity itself is now visible.** Those gates answer "cannot tell"
+  when git cannot report, and skipping is right in a shallow clone. It is
+  exactly wrong at push time, where git is present, the tags are fetched and
+  the commit exists --- there a gate that cannot answer is broken rather than
+  limited, and it skips behind the same green as a real pass. `pre-push` sets
+  `SIPNAB_RELEASE_GATES_STRICT=1`, which turns every one of those skips into a
+  failure naming what could not be established. Proven both ways with a `git`
+  that exits non-zero on `PATH`: lenient skips, strict fails all four sites.
 
 - [x] **Unlabeled code fences carry a copy button no gate reads** (2026-07-28).
   `shell_fence_is_one_clipboard_payload` reads fences whose info string names a
