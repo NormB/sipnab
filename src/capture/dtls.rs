@@ -69,13 +69,61 @@ impl SrtpProfile {
     }
 }
 
+/// Octets in a DTLSPlaintext header, ahead of the fragment.
+///
+/// RFC 6347 section 4.1: `type(1) version(2) epoch(2) sequence_number(6)
+/// length(2)`.
+const DTLS_HEADER_LEN: usize = 13;
+
+/// The widest a DTLS record's length field may legally be.
+///
+/// RFC 6347 section 4.1 defines the field as *"Identical to the length field in
+/// a TLS 1.2 record"*, and RFC 5246 section 6.2.3 states the widest legal case
+/// as a MUST: TLSCiphertext's *"length MUST NOT exceed 2^14 + 2048"* — the
+/// plaintext limit of 2^14 plus the room a cipher may add. Plaintext and
+/// compressed records are bounded tighter still, so nothing legal declares
+/// more and refusing more can never refuse a real record.
+const MAX_RECORD_LEN: usize = (1 << 14) + 2048;
+
 /// Whether a UDP payload looks like a DTLS record (RFC 6347): a known content
-/// type and a DTLS version (0xFEFF = 1.0, 0xFEFD = 1.2).
+/// type, a DTLS version (0xFEFF = 1.0, 0xFEFD = 1.2), and a length field that
+/// is legal and frames inside the datagram.
+///
+/// # Why this errs toward refusing
+///
+/// A `true` here is destructive. `classify_packet` consumes the datagram and
+/// returns `None`, so a false positive removes a packet from the analysis
+/// entirely — the same silent loss the ICMP and ChannelData work exists to
+/// prevent, reached from a different direction.
+///
+/// A false negative is inert. Every content type DTLS uses (20 through 23)
+/// carries `00` in the two bits RTP requires to be `10`, so a datagram this
+/// refuses cannot be read as media by anything downstream; it is simply not
+/// classified. The two errors are not symmetric, and that is what makes the
+/// two length rules below worth spending.
+///
+/// Both are stated by the RFCs and neither was checked. Measured against the
+/// real capture corpus — 3,962,333 UDP datagrams, 93 of them accepted here —
+/// neither refuses a single one, so the cost is nothing and the gain is
+/// collision resistance against protocols the corpus does not contain.
 pub fn is_dtls(payload: &[u8]) -> bool {
-    payload.len() >= 13
-        && matches!(payload[0], 20..=23)
-        && payload[1] == 0xFE
-        && (payload[2] == 0xFF || payload[2] == 0xFD)
+    if payload.len() < DTLS_HEADER_LEN {
+        return false;
+    }
+    if !matches!(payload[0], 20..=23) {
+        return false;
+    }
+    if payload[1] != 0xFE || (payload[2] != 0xFF && payload[2] != 0xFD) {
+        return false;
+    }
+    let declared = usize::from(u16::from_be_bytes([payload[11], payload[12]]));
+    if declared > MAX_RECORD_LEN {
+        return false;
+    }
+    // RFC 6347 section 4.1.1: "Each DTLS record MUST fit within a single
+    // datagram." Stated without qualification, and the first record is the one
+    // this function is deciding about.
+    DTLS_HEADER_LEN + declared <= payload.len()
 }
 
 /// Yield `(handshake_type, message_body)` for each handshake message across the
@@ -389,6 +437,107 @@ mod tests {
         assert!(!is_dtls(&[0u8; 4])); // too short
         // TLS (not DTLS) record version 0x0303.
         assert!(!is_dtls(&[22, 0x03, 0x03, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]));
+    }
+
+    /// A record claiming more bytes than the datagram holds is not DTLS.
+    ///
+    /// RFC 6347 section 4.1.1 states it without qualification: *"Each DTLS
+    /// record MUST fit within a single datagram."* The detector never checked,
+    /// so any datagram whose first three bytes happened to read as a content
+    /// type and a DTLS version was consumed whatever its length field claimed.
+    #[test]
+    fn a_record_longer_than_the_datagram_is_not_dtls() {
+        let mut rec = dtls_handshake_record(1, &client_hello_body(&[0u8; 32]));
+        assert!(
+            is_dtls(&rec),
+            "the fixture must be DTLS before it is broken"
+        );
+        let real = u16::from_be_bytes([rec[11], rec[12]]);
+        let lie = (real + 1).to_be_bytes();
+        rec[11] = lie[0];
+        rec[12] = lie[1];
+        assert!(
+            !is_dtls(&rec),
+            "a record claiming one byte more than the datagram holds cannot fit \
+             within it, which RFC 6347 4.1.1 forbids"
+        );
+    }
+
+    /// A record that exactly fills the datagram still is.
+    ///
+    /// The positive control, and the reason the rule is `<=` rather than `<`.
+    /// Off by one it would refuse every unpadded record — which is most of
+    /// them — while the negative above went on passing.
+    #[test]
+    fn a_record_that_exactly_fills_the_datagram_is_dtls() {
+        let rec = dtls_handshake_record(1, &client_hello_body(&[0u8; 32]));
+        let declared = usize::from(u16::from_be_bytes([rec[11], rec[12]]));
+        assert_eq!(
+            DTLS_HEADER_LEN + declared,
+            rec.len(),
+            "the fixture must fill its datagram exactly, or it is testing \
+             something else"
+        );
+        assert!(is_dtls(&rec));
+    }
+
+    /// A length past what any TLS record may declare is not DTLS.
+    ///
+    /// RFC 6347 section 4.1 defines the field as *"Identical to the length
+    /// field in a TLS 1.2 record"*, and RFC 5246 section 6.2.3 gives the widest
+    /// legal case: TLSCiphertext's *"length MUST NOT exceed 2^14 + 2048"*. No
+    /// legal record of any kind declares more, so refusing more can never
+    /// refuse a real one.
+    #[test]
+    fn a_length_past_the_tls_ceiling_is_not_dtls() {
+        // A datagram big enough that only the ceiling can refuse it.
+        let mut big = vec![22u8, 0xFE, 0xFD];
+        big.extend_from_slice(&[0, 0]); // epoch
+        big.extend_from_slice(&[0, 0, 0, 0, 0, 0]); // sequence number
+        big.extend_from_slice(&u16::try_from(MAX_RECORD_LEN).expect("fits").to_be_bytes());
+        big.resize(DTLS_HEADER_LEN + MAX_RECORD_LEN, 0);
+        assert!(
+            is_dtls(&big),
+            "a record declaring exactly 2^14 + 2048 is legal and must be \
+             recognized"
+        );
+
+        let over = u16::try_from(MAX_RECORD_LEN + 1)
+            .expect("fits")
+            .to_be_bytes();
+        big[11] = over[0];
+        big[12] = over[1];
+        big.push(0);
+        assert!(
+            !is_dtls(&big),
+            "one byte past the ceiling is a length no TLS record may declare"
+        );
+    }
+
+    /// Refusing a datagram here cannot turn it into a media stream.
+    ///
+    /// The argument for tightening rather than loosening. A false positive
+    /// here is destructive: `classify_packet` consumes the datagram and
+    /// returns `None`, so the packet leaves the analysis entirely. A false
+    /// negative is inert, because every content type DTLS uses has `00` in the
+    /// two bits RTP requires to be `10` — so a datagram this detector refuses
+    /// has nowhere else to go.
+    #[test]
+    fn a_datagram_this_detector_refuses_can_never_be_read_as_rtp() {
+        for content_type in 20u8..=23 {
+            let mut d = vec![content_type, 0xFE, 0xFD];
+            d.resize(64, 0);
+            assert_eq!(
+                (d[0] >> 6) & 0x03,
+                0,
+                "content type {content_type} does not carry RTP's version bits"
+            );
+            assert!(
+                !crate::rtp::is_rtp_packet(&d),
+                "content type {content_type} was accepted as RTP, so refusing it \
+                 here would lose the packet to a stream that does not exist"
+            );
+        }
     }
 
     /// ClientHello/ServerHello randoms and the ServerHello `use_srtp` profile

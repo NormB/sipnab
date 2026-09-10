@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Why the RTCP decoder does not require the sub-packet lengths to chain,
-//! measured against real traffic rather than argued.
+//! Wire rules weighed against real traffic rather than argued: what RFC 3550
+//! Appendix A.2's remaining condition would cost the RTCP decoder, and what
+//! the two DTLS length rules cost the DTLS detector.
 //!
 //! # The condition that is deliberately not implemented
 //!
@@ -48,6 +49,7 @@
 
 use std::path::{Path, PathBuf};
 
+use sipnab::capture::dtls::is_dtls;
 use sipnab::capture::pcap_reader::{PcapReader, decompress_capture};
 use sipnab::capture::{Packet, parse::parse_packet};
 use sipnab::rtp::rtcp::looks_like_rtcp;
@@ -124,7 +126,22 @@ struct Counts {
     ragged_tail: u64,
     /// Anything that is neither, described by shape and never by content.
     unexplained: Vec<String>,
+    /// Payloads `is_dtls` accepts.
+    dtls: u64,
+    /// Accepted DTLS whose first record does NOT frame inside the datagram.
+    dtls_overruns: u64,
+    /// Accepted DTLS whose length exceeds what any TLS record may declare.
+    dtls_over_ceiling: u64,
 }
+
+/// The widest a TLS or DTLS record's length field may legally be.
+///
+/// RFC 5246 section 6.2.3, which RFC 6347 section 4.1's length field defers to:
+/// TLSCiphertext's *"length MUST NOT exceed 2^14 + 2048"*. Written out here
+/// rather than imported because this file measures what a rule COSTS, and a
+/// measurement that shares the rule's constant cannot notice the constant
+/// moving.
+const TLS_RECORD_CEILING: usize = (1 << 14) + 2048;
 
 /// Advance `off` by one sub-packet, or report that it cannot.
 fn data_step(data: &[u8], off: &mut usize) -> bool {
@@ -164,6 +181,17 @@ fn read(path: &Path) -> Option<Counts> {
             continue;
         }
         counts.datagrams += 1;
+        if is_dtls(&parsed.payload) {
+            counts.dtls += 1;
+            let declared =
+                usize::from(u16::from_be_bytes([parsed.payload[11], parsed.payload[12]]));
+            if 13 + declared > parsed.payload.len() {
+                counts.dtls_overruns += 1;
+            }
+            if declared > TLS_RECORD_CEILING {
+                counts.dtls_over_ceiling += 1;
+            }
+        }
         if !looks_like_rtcp(&parsed.payload) {
             continue;
         }
@@ -217,6 +245,9 @@ fn the_corpus_holds_rtcp_whose_lengths_cannot_chain() {
         totals.encrypted_remainder += counts.encrypted_remainder;
         totals.ragged_tail += counts.ragged_tail;
         totals.unexplained.extend(counts.unexplained);
+        totals.dtls += counts.dtls;
+        totals.dtls_overruns += counts.dtls_overruns;
+        totals.dtls_over_ceiling += counts.dtls_over_ceiling;
         if counts.unchained > 0 {
             files_with_unchained += 1;
         }
@@ -269,6 +300,62 @@ fn the_corpus_holds_rtcp_whose_lengths_cannot_chain() {
         totals.encrypted_remainder + totals.ragged_tail,
         totals.unchained,
         "the two shapes do not account for every unchained datagram"
+    );
+}
+
+/// The DTLS length rules refuse nothing the corpus holds.
+///
+/// `is_dtls` applies both since 2026-09-10, and the argument for applying them
+/// rests on this: they are free. A `true` from that detector makes the pipeline
+/// consume the datagram, so a rule that refused real DTLS would delete packets
+/// rather than misfile them. This asserts the corpus can speak to the question
+/// at all, and then that neither rule has anything to say about it.
+///
+/// It reads the rules as the RFCs state them rather than importing the
+/// module's constant, so a change to that constant shows up here as a
+/// disagreement instead of moving both sides at once.
+#[test]
+fn the_dtls_length_rules_refuse_nothing_the_corpus_holds() {
+    let Some(root) = corpus_root() else { return };
+
+    let mut files = 0usize;
+    let mut totals = Counts::default();
+    for path in captures(&root) {
+        let Some(counts) = read(&path) else { continue };
+        files += 1;
+        totals.dtls += counts.dtls;
+        totals.dtls_overruns += counts.dtls_overruns;
+        totals.dtls_over_ceiling += counts.dtls_over_ceiling;
+    }
+
+    eprintln!(
+        "corpus: {files} captures, {} datagrams accepted as DTLS, {} whose first \
+         record overruns the datagram, {} past the TLS record ceiling",
+        totals.dtls, totals.dtls_overruns, totals.dtls_over_ceiling
+    );
+
+    assert!(
+        files > 0,
+        "no capture under SIPNAB_CORPUS could be read, so this test proves nothing"
+    );
+    assert!(
+        totals.dtls > 0,
+        "the corpus at SIPNAB_CORPUS holds no DTLS at all, so it cannot say what \
+         these rules cost — point it at a corpus that does"
+    );
+    assert_eq!(
+        totals.dtls_overruns, 0,
+        "{} real DTLS datagram(s) declare a record that does not fit inside \
+         them. RFC 6347 4.1.1 forbids that, so either the capture is truncated \
+         or the rule is wrong — and `is_dtls` deletes what it refuses, so the \
+         answer has to be known rather than assumed",
+        totals.dtls_overruns
+    );
+    assert_eq!(
+        totals.dtls_over_ceiling, 0,
+        "{} real DTLS datagram(s) declare more than 2^14 + 2048, which no TLS \
+         record may. The ceiling was landed on the strength of this being zero",
+        totals.dtls_over_ceiling
     );
 }
 

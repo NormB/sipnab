@@ -207,7 +207,16 @@ fn every_flag_alias_is_documented() {
 /// open transactions, and the alert engine's cooldown and exec-budget maps --
 /// named in `docs/internals/invariants.md` section 4 when they moved to
 /// constant-time eviction.
-const UNDOCUMENTED_CEILINGS: usize = 100;
+///
+/// 100 -> 99 on 2026-09-10, and it took a detour worth recording. Two new
+/// bounds landed the same day -- `MAX_ALLOWLIST` with the seccomp program
+/// builder and `MAX_RECORD_LEN` with the DTLS length rules -- which would have
+/// carried this to 101. Raising the number was the wrong move and this gate
+/// says why: a bound nothing documents is one a caller meets as an unexplained
+/// refusal. Both are named in `docs/design/` now, so the count went DOWN by one
+/// instead of up by one. Attributed by counting: 146 ceiling constants
+/// declared, 99 of them named in no document.
+const UNDOCUMENTED_CEILINGS: usize = 99;
 
 /// Whether a documented ceiling's parenthesized number matches the source.
 ///

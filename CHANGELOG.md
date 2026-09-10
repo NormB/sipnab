@@ -35,6 +35,20 @@ entry that carries them.
 
 ### Fixed
 
+- **The DTLS detector spent neither length rule the RFCs give it, on a decision
+  that deletes the packet.** `is_dtls` checked a content type and a version and
+  nothing else, so a datagram whose first three bytes happened to read that way
+  was accepted whatever its length field claimed. Both remaining rules are
+  stated: RFC 6347 says each record must fit within a single datagram, and its
+  length field is the TLS 1.2 one, which RFC 5246 bounds at 2^14 + 2048.
+
+  The two errors here are not symmetric, which is the argument for tightening.
+  A wrong yes makes the pipeline consume the datagram, so the packet leaves the
+  analysis entirely. A wrong no is inert: every content type DTLS uses carries
+  the wrong version bits for RTP, so a refused datagram has nowhere else to go.
+  Measured against 3,962,333 real UDP datagrams first — 93 accepted as DTLS,
+  and neither rule refuses one of them.
+
 - **The RTCP padding rule shipped in 0.5.164 never reached the capture path,
   and its release note said otherwise.** That note read: "one more bit of
   separation on the classifier that decides RTP against RTCP for every datagram

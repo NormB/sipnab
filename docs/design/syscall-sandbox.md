@@ -655,7 +655,11 @@ triple.
    someone on a platform the maintainer does not have. **Done 2026-09-10** as
    `--seccomp log`, spelled without the `=` to match every other value flag.
    It installs a filter whose only action is `SECCOMP_RET_LOG` and whose
-   allowlist is empty, so every call is recorded and every call is allowed.
+   allowlist is empty, so every call is recorded and every call is allowed. A
+   classic-BPF jump offset is one byte, so the program shape step 4 will reuse
+   holds at most `MAX_ALLOWLIST` (254) syscall numbers; one more is refused
+   rather than encoded, because a truncated offset emits a jump to a real
+   instruction and simply the wrong one.
 4. **The derived filter last**, per target triple, enforce mode, with §7's four
    gates.
 

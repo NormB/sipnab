@@ -44,7 +44,7 @@ Tiers:
 
 ## Status
 
-**24 open, 495 done** across 36 sections.
+**24 open, 496 done** across 36 sections.
 Regenerate with `python3 scripts/backlog-status.py --apply`.
 
 | Section | Open | Done | Progress |
@@ -73,7 +73,7 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
 | OBS | 0 | 7 | `##########` |
 | REQ | 4 | 13 | `########..` |
 | CMP | 1 | 5 | `########..` |
-| GTP | 1 | 9 | `#########.` |
+| GTP | 1 | 10 | `#########.` |
 | MER | 0 | 5 | `##########` |
 | LIVE | 3 | 3 | `#####.....` |
 | P5 | 6 | 14 | `#######...` |
@@ -6938,6 +6938,36 @@ wrote for itself.
   guard SURVIVED a mutation — it compared the first sub-packet's length against
   the datagram instead of walking, so a trailer that chained perfectly passed
   it. It walks now.
+
+- [x] **CONF5b (done 2026-09-10) — the DTLS detector spent neither length
+  rule the RFCs give it, on a decision that DELETES the packet.** Eighth
+  finding of the conformance audit, from reading [RFC 6347](https://www.rfc-editor.org/rfc/rfc6347) against
+  [`src/capture/dtls.rs`](https://github.com/NormB/sipnab/blob/main/src/capture/dtls.rs).
+
+  `is_dtls` checked a content type and a version and nothing else. Both
+  remaining rules are stated: section 4.1.1 says *"Each DTLS record MUST fit
+  within a single datagram"*, and section 4.1's length field is *"Identical to
+  the length field in a TLS 1.2 record"*, which [RFC 5246](https://www.rfc-editor.org/rfc/rfc5246) section 6.2.3 bounds
+  as a MUST at 2^14 + 2048 — `MAX_RECORD_LEN` in the module. A datagram whose
+  first three bytes happened to read as a content type and a DTLS version was
+  accepted whatever its length claimed.
+
+  **This detector's two errors are not symmetric, which is the whole argument.**
+  A `true` makes `classify_packet` consume the datagram and return `None`, so a
+  false positive removes a packet from the analysis entirely. A false negative
+  is inert: every content type DTLS uses carries `00` in the two bits RTP
+  requires to be `10`, so a refused datagram has nowhere else to go. Tightening
+  is free in the direction that matters and costly only in the direction that
+  does not.
+
+  **Measured before landing, and it costs nothing.** 3,962,333 UDP datagrams in
+  the real corpus, 93 accepted here, and neither rule refuses one of them. So
+  the gain is collision resistance against protocols the corpus does not hold
+  rather than a misclassification fixed today, and the entry says so instead of
+  claiming a save it cannot show.
+
+  Four tests, each mutation-proven in both directions: deleting either rule
+  fails a negative, and moving either boundary by one fails a positive.
 
 - [x] **CONF2 (done 2026-09-10) — the LLMNR detector left five more
   RFC-mandated zero bits on the table.** Second finding of the conformance
