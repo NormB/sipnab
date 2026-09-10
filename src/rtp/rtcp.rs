@@ -70,13 +70,15 @@ pub fn is_rtcp_packet_type(pt: u8) -> bool {
 
 /// Whether a UDP payload is RTCP, judged by content alone.
 ///
-/// Three conditions, all from RFC 3550 Section 6.1 / RFC 5761 Section 4:
-/// version 2, a packet-type byte in the RTCP range (see
-/// [`is_rtcp_packet_type`]), and a length field that frames the first
-/// sub-packet inside the datagram. The length check is what keeps an RTP
-/// packet whose marker+payload-type byte happens to land in 192-223 from being
-/// swallowed — its sequence number would have to equal the datagram's word
-/// count minus one.
+/// Four conditions, all from RFC 3550 Section 6.1 / Appendix A.2 / RFC 5761
+/// Section 4: version 2, a packet-type byte in the RTCP range (see
+/// [`is_rtcp_packet_type`]), a length field that frames the first sub-packet
+/// inside the datagram, and no padding bit on a first sub-packet that does not
+/// fill it. The length check is what keeps an RTP packet whose
+/// marker+payload-type byte happens to land in 192-223 from being swallowed —
+/// its sequence number would have to equal the datagram's word count minus
+/// one. The padding check adds one more bit for the same purpose, since
+/// padding may only appear on the last packet of a compound.
 ///
 /// Deliberately independent of the destination port. Port parity says where
 /// RTCP is *conventionally* found (RTP+1), never what a datagram *is*, and a
@@ -114,7 +116,34 @@ pub fn looks_like_rtcp(data: &[u8]) -> bool {
     // The header length counts 32-bit words minus one, so the first
     // sub-packet occupies `(len + 1) * 4` bytes and must fit.
     let word_len = ((data[2] as usize) << 8) | data[3] as usize;
-    word_len != 0 && (word_len + 1) * 4 <= data.len()
+    if word_len == 0 {
+        return false;
+    }
+    let first_len = (word_len + 1) * 4;
+    if first_len > data.len() {
+        return false;
+    }
+    // RFC 3550 §6.1: "padding MUST only be added to the last individual
+    // packet, and if padding is added to that packet, the padding bit MUST be
+    // set only on that packet." So a first sub-packet that does not fill the
+    // datagram cannot carry P — something follows it, which makes it not the
+    // last. Appendix A.2 lists this check and names its purpose: detecting
+    // "packets from some early implementations that incorrectly set the
+    // padding bit on the first individual packet".
+    //
+    // Conditional, not absolute. A lone packet that fills the datagram IS the
+    // last one and may pad, which RFC 3550 permits outright; a rule reading
+    // "P is never set on byte zero" would reject those.
+    //
+    // The cost is stated rather than hidden: an early implementation that
+    // violates that MUST stops being recognized here. That is the trade RFC
+    // 3550 recommends, and it is the direction this decoder already leans —
+    // refusing to claim a datagram beats claiming the wrong one, which is what
+    // it did when GTPv2-C came back as an RTP stream.
+    if data[0] & 0x20 != 0 && first_len != data.len() {
+        return false;
+    }
+    true
 }
 
 // ── Public types ─────────────────────────────────────────────────────
@@ -1536,6 +1565,49 @@ mod tests {
         assert!(!looks_like_rtcp(&[0x80, 200, 0, 6, 0, 0, 0, 1]));
         // Header-only (length field 0) carries nothing.
         assert!(!looks_like_rtcp(&[0x80, 203, 0, 0, 0, 0, 0, 0]));
+    }
+
+    /// RFC 3550 section 6.1: *"padding MUST only be added to the last
+    /// individual packet, and if padding is added to that packet, the padding
+    /// bit MUST be set only on that packet."*
+    ///
+    /// So a first sub-packet that does NOT fill the datagram cannot carry the
+    /// padding bit: something follows it, which makes it not the last. RFC
+    /// 3550 Appendix A.2 lists exactly this check and says what it is for ---
+    /// detecting *"packets from some early implementations that incorrectly
+    /// set the padding bit on the first individual packet"*.
+    ///
+    /// One bit, on a classifier that decides RTP against RTCP for every
+    /// datagram on a media port.
+    #[test]
+    fn a_padded_first_packet_of_a_compound_is_not_rtcp() {
+        let mut compound = build_sr(0x10, 0, 0, 50, 8000);
+        compound.extend_from_slice(&build_rr_with_report(0x20, 0x10, 10, 100));
+        assert!(looks_like_rtcp(&compound), "the fixture must be RTCP first");
+
+        compound[0] |= 0x20; // P on the first packet of a compound
+        assert!(
+            !looks_like_rtcp(&compound),
+            "the first packet does not fill the datagram, so something follows \
+             it and its padding bit is a MUST violation"
+        );
+    }
+
+    /// A single packet that fills the datagram IS the last one, so it may pad.
+    ///
+    /// The positive control, and the reason the rule is conditional rather
+    /// than "P is never set on byte zero". A rule written that way would
+    /// reject every padded single-packet datagram --- which RFC 3550 permits
+    /// explicitly --- while the negative test above went on passing.
+    #[test]
+    fn a_padded_single_packet_that_fills_the_datagram_is_still_rtcp() {
+        let mut only = build_rr_with_report(1, 2, 0, 0);
+        assert!(looks_like_rtcp(&only), "the fixture must be RTCP first");
+        only[0] |= 0x20; // P on the only packet, which is also the last
+        assert!(
+            looks_like_rtcp(&only),
+            "a lone packet is the last packet, and RFC 3550 lets the last one pad"
+        );
     }
 
     /// An XR arriving as the FIRST sub-packet of a datagram parses into its

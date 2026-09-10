@@ -12,6 +12,13 @@ entry that carries them.
 
 ### Fixed
 
+- **The RTCP classifier ignored the padding rule RFC 3550 states as a MUST.**
+  Padding may only appear on the last packet of a compound, so a first
+  sub-packet that does not fill the datagram cannot carry the padding bit. That
+  is one more bit of separation on the classifier that decides RTP against RTCP
+  for every datagram on a media port. A lone packet that fills the datagram is
+  the last one and may still pad.
+
 - **The LLMNR detector left five RFC-mandated zero bits unspent.** LLMNR is bare
   DNS with no magic cookie, so a port number is the only strong evidence a
   datagram is a name lookup rather than something that landed on 5355 by

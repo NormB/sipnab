@@ -44,7 +44,7 @@ Tiers:
 
 ## Status
 
-**24 open, 490 done** across 36 sections.
+**25 open, 491 done** across 36 sections.
 Regenerate with `python3 scripts/backlog-status.py --apply`.
 
 | Section | Open | Done | Progress |
@@ -73,7 +73,7 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
 | OBS | 0 | 7 | `##########` |
 | REQ | 4 | 13 | `########..` |
 | CMP | 1 | 5 | `########..` |
-| GTP | 1 | 4 | `########..` |
+| GTP | 2 | 5 | `#######...` |
 | MER | 0 | 5 | `##########` |
 | LIVE | 3 | 3 | `#####.....` |
 | P5 | 6 | 14 | `#######...` |
@@ -6762,9 +6762,59 @@ the first four", so the whole-datagram check passes. That is fixed. What the
 episode exposed is that sipnab's mobile-core coverage rests on fixtures sipnab
 wrote for itself.
 
+- [x] **CONF3 (done 2026-09-10) — `looks_like_rtcp` ignored the one padding
+  rule RFC 3550 states as a MUST.** Third finding of the conformance audit,
+  from reading [RFC 3550 §6.1](https://www.rfc-editor.org/rfc/rfc3550#section-6.1) and Appendix A.2 against [`src/rtp/rtcp.rs`](https://github.com/NormB/sipnab/blob/main/src/rtp/rtcp.rs).
+
+  §6.1: *"padding MUST only be added to the last individual packet, and if
+  padding is added to that packet, the padding bit MUST be set only on that
+  packet."* So a first sub-packet that does not fill the datagram cannot carry
+  P --- something follows it, which makes it not the last. Appendix A.2 lists
+  the check and names its purpose: detecting *"packets from some early
+  implementations that incorrectly set the padding bit on the first individual
+  packet"*.
+
+  **Conditional, not absolute, and the positive control is what enforces
+  that.** A lone packet filling the datagram IS the last one and may pad, which
+  the RFC permits outright. A rule reading "P is never set on byte zero" would
+  reject every padded single-packet datagram while the negative test went on
+  passing. Mutation-proven three ways: deleting it, widening it to
+  unconditional, and moving the mask one bit each fail.
+
+  **The cost is recorded rather than hidden.** An early implementation that
+  violates the MUST stops being recognized here. That is the trade RFC 3550
+  recommends and the direction this decoder already leans: refusing to claim a
+  datagram beats claiming the wrong one, which is what it did when GTPv2-C came
+  back as an RTP stream.
+
+- [ ] **CONF4 — the RTCP compound is never checked for filling the datagram,
+  and the reason not to is truncation.** Found 2026-09-10 alongside CONF3, and
+  left open deliberately.
+
+  RFC 3550 Appendix A.2's recommended validity routine has one more condition
+  than `looks_like_rtcp` implements: *"The length fields of the individual RTCP
+  packets must total to the overall length of the compound packet as
+  received."* sipnab checks only that the FIRST sub-packet fits. Walking the
+  chain and requiring it to land exactly on the datagram length would be a far
+  stronger discriminator --- every sub-packet's word count would have to line
+  up, not just the first.
+
+  **Why it was not done.** A.2 is written for a receiver holding whole
+  datagrams. A capture tool routinely holds snaplen-truncated ones, and this
+  file already says so elsewhere: trust the buffer, not the header. An exact
+  fill rule would stop recognizing truncated RTCP, which then goes to the RTP
+  path — a false negative on the classifier that decides media against control,
+  which is worse than the false positive it removes.
+
+  **What would make it safe** is a rule that tolerates an overrun only on the
+  LAST sub-packet, since that is what truncation produces, while requiring
+  every earlier one to line up exactly. That is a real design with a real
+  false-negative surface, and it belongs to whoever is willing to measure it
+  against the corpus rather than to whoever noticed the gap.
+
 - [x] **CONF2 (done 2026-09-10) — the LLMNR detector left five more
   RFC-mandated zero bits on the table.** Second finding of the conformance
-  audit, from reading RFC 4795 section 2.1.1 against [`src/llmnr/mod.rs`](https://github.com/NormB/sipnab/blob/main/src/llmnr/mod.rs).
+  audit, from reading [RFC 4795](https://www.rfc-editor.org/rfc/rfc4795) section 2.1.1 against [`src/llmnr/mod.rs`](https://github.com/NormB/sipnab/blob/main/src/llmnr/mod.rs).
 
   LLMNR has no magic cookie --- the format is bare DNS --- so a port number is
   the only strong evidence, and every structural bit that must be zero is worth
@@ -6783,7 +6833,7 @@ wrote for itself.
   fails too, which is the shape a bit-mask edit would actually take.
 
 - [x] **CONF1 (done 2026-09-10) — the STUN decoder spent none of the two bits
-  RFC 8489 hands it for telling STUN from everything else.** First finding of
+  [RFC 8489](https://www.rfc-editor.org/rfc/rfc8489) hands it for telling STUN from everything else.** First finding of
   the standing conformance audit, from reading RFC 8489 section 5 against
   [`src/stun.rs`](https://github.com/NormB/sipnab/blob/main/src/stun.rs).
 
