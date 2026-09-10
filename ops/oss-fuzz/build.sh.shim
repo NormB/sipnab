@@ -1,0 +1,8 @@
+#!/bin/bash -eu
+# SPDX-License-Identifier: MIT OR Apache-2.0
+#
+# This is the file that goes in google/oss-fuzz as projects/sipnab/build.sh.
+# It is deliberately a shim: the build lives in the sipnab repository, where
+# the targets, the corpus and the flags are, and where a change to any of them
+# is reviewed against the code that caused it.
+exec "$SRC/sipnab/.clusterfuzzlite/build.sh"

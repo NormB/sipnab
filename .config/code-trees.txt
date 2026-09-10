@@ -23,6 +23,7 @@
 # repository's actual tracked top-level directories, so adding a directory
 # the one tree where the gate demands the opposite. A gate and its fixer must
 .cargo
+.clusterfuzzlite
 .config
 .githooks
 .github

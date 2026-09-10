@@ -167,6 +167,7 @@ fn the_full_workflow_set_is_accounted_for() {
     const KNOWN: &[&str] = &[
         "bench.yml",
         "ci.yml",
+        "clusterfuzzlite.yml",
         "codeql.yml",
         "docker.yml",
         "fuzz.yml",

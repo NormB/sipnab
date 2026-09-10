@@ -8,6 +8,27 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Added
+
+- **Continuous fuzzing with a corpus that survives between runs.**
+  ClusterFuzzLite builds the eighteen fuzz targets in the OSS-Fuzz Rust builder
+  image and runs them on a schedule: batch fuzzing daily, corpus pruning daily,
+  a coverage report weekly. The existing weekly `cargo-fuzz` run starts from the
+  tracked seeds every time, so everything libFuzzer learns is discarded; this
+  keeps it. Pull-request fuzzing and continuous builds are deliberately absent
+  --- without the second, the first reports pre-existing crashes as though the
+  change introduced them.
+
+  The build was proven in the real image before being trusted, and five defects
+  surfaced only there: a builder image whose Rust is a year older than this
+  crate's `rust-version`, a `rustup default` silently overridden by the image's
+  own `RUSTUP_TOOLCHAIN`, a toolchain profile missing the standard library
+  source OSS-Fuzz copies out of it, a `.dockerignore` that excluded the seed
+  corpora, and a runner image without libpcap that rejected all eighteen
+  targets from a build which had exited zero. Each is now a gate.
+
 ## [0.5.162] - 2026-09-10
 
 ### Fixed

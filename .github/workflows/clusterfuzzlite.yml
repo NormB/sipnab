@@ -1,0 +1,123 @@
+name: ClusterFuzzLite
+
+# Continuous fuzzing with an accumulating corpus.
+#
+# `fuzz.yml` already runs every target for five minutes on Mondays, from the
+# seeds tracked in `fuzz/corpus/`. That run starts from zero every week: it
+# throws away everything libFuzzer learned. This workflow is the other half —
+# batch fuzzing keeps the corpus between runs, pruning stops it growing into
+# inputs that cover nothing new, and the coverage job says which code the
+# corpus actually reaches. A fuzzer with no coverage report is a claim, not a
+# measurement.
+#
+# # What is deliberately absent
+#
+# Pull-request fuzzing (`mode: code-change`) and continuous builds are the
+# other two modes upstream documents. Neither is here. PR fuzzing without
+# continuous builds reports pre-existing crashes as though the pull request
+# introduced them, and continuous builds mean a full containerized build of
+# eighteen Rust targets on every push to main. Work lands on main here rather
+# than through pull requests, so the pair would cost a build per commit to
+# guard a path almost nothing takes.
+#
+# # Where the corpus lives
+#
+# No storage repo is configured, so corpora, coverage reports and crash
+# reproducers arrive as GitHub Actions artifacts on each run. That costs
+# nothing and needs no credential. The upgrade — a separate repository plus a
+# `PERSONAL_ACCESS_TOKEN` secret — buys a browsable coverage report and a
+# corpus that outlives artifact retention. It is a decision about credentials,
+# not about fuzzing, so it is not made here.
+
+on:
+  schedule:
+    # Daily. Batch fuzzing is the run that grows the corpus.
+    - cron: "23 2 * * *"
+    # Daily, three hours after batch, so it prunes what batch just produced.
+    - cron: "23 5 * * *"
+    # Weekly. Coverage is a report, not a search; daily would say the same
+    # thing seven times.
+    - cron: "23 6 * * 0"
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Which task to run"
+        required: true
+        default: batch
+        type: choice
+        options: [batch, prune, coverage]
+
+permissions:
+  contents: read
+
+jobs:
+  batch:
+    name: Batch fuzzing
+    if: github.event.schedule == '23 2 * * *' || inputs.mode == 'batch'
+    runs-on: ubuntu-latest
+    # The ClusterFuzzLite actions are Docker actions built for amd64; the
+    # arm64 runners this repository uses elsewhere cannot run them.
+    #
+    # Bounds a wedged job. Build plus an hour of fuzzing, with headroom for a
+    # cold Docker layer cache.
+    timeout-minutes: 150
+    steps:
+      - name: Build fuzzers
+        id: build
+        uses: google/clusterfuzzlite/actions/build_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1 # v1
+        with:
+          language: rust
+          sanitizer: address
+      - name: Run fuzzers
+        id: run
+        uses: google/clusterfuzzlite/actions/run_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1 # v1
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          fuzz-seconds: 3600
+          mode: 'batch'
+          sanitizer: address
+          # Eighteen targets share the budget. Without this they share it
+          # serially on one core while three sit idle.
+          parallel-fuzzing: true
+
+  prune:
+    name: Corpus pruning
+    if: github.event.schedule == '23 5 * * *' || inputs.mode == 'prune'
+    runs-on: ubuntu-latest
+    # Pruning replays the corpus rather than searching, so it is bounded by
+    # the corpus size and the build, not by a fuzzing budget.
+    timeout-minutes: 90
+    steps:
+      - name: Build fuzzers
+        id: build
+        uses: google/clusterfuzzlite/actions/build_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1 # v1
+        with:
+          language: rust
+      - name: Run fuzzers
+        id: run
+        uses: google/clusterfuzzlite/actions/run_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1 # v1
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          fuzz-seconds: 600
+          mode: 'prune'
+
+  coverage:
+    name: Coverage report
+    if: github.event.schedule == '23 6 * * 0' || inputs.mode == 'coverage'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Build fuzzers
+        id: build
+        uses: google/clusterfuzzlite/actions/build_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1 # v1
+        with:
+          language: rust
+          sanitizer: coverage
+      - name: Run fuzzers
+        id: run
+        uses: google/clusterfuzzlite/actions/run_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1 # v1
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          fuzz-seconds: 600
+          mode: 'coverage'
+          sanitizer: 'coverage'

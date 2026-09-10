@@ -60,7 +60,7 @@ The implications that surprise people: **`tls` and `audio` do not pull in
 `--features full` therefore says nothing about whether `--features tls` alone
 compiles, which is exactly why CI has a feature matrix.
 
-## The thirteen workflows
+## The fourteen workflows
 
 | Workflow | Trigger | What it does |
 |---|---|---|
@@ -68,6 +68,7 @@ compiles, which is exactly why CI has a feature matrix.
 | `quality.yml` | push to main, PR | Coverage (`cargo-llvm-cov`), clippy SARIF upload, and the prose gates below. Not required by `ci-success`. |
 | `codeql.yml` | push to main, PR, weekly cron (Tuesdays 02:34 UTC) | GitHub's static analysis. |
 | `fuzz.yml` | weekly cron (Mondays 05:17 UTC) + manual | Coverage-guided `cargo-fuzz` runs; crash reproducers upload as artifacts. |
+| `clusterfuzzlite.yml` | daily (batch 02:23 UTC, pruning 05:23 UTC), weekly (coverage Sundays 06:23 UTC) + manual | Continuous fuzzing with a corpus that survives between runs, which `fuzz.yml` cannot do: batch fuzzing grows it, pruning keeps it minimal, and the coverage job reports which code it reaches. Builds in the OSS-Fuzz Rust builder image from `.clusterfuzzlite/`, which compiles the targets the way ClusterFuzzLite runs them. No pull-request fuzzing: without continuous builds on every push it would report pre-existing crashes as though the change introduced them. |
 | `docker.yml` | push to main, `v*` tags | Builds and pushes the image to GHCR with sigstore provenance. |
 | `pages.yml` | push to main (path-filtered) | Builds and deploys the Zola website. |
 | `scorecard.yml` | push to main, weekly cron (Mondays 07:20 UTC), branch-protection change | OpenSSF Scorecard posture analysis → Security tab. Report-only. |

@@ -35,6 +35,11 @@ layers:
   pcap-reader, dtls, tcp-reassembly, siprec, rtpengine-ng, stun, llmnr. Run
   weekly (and on demand)
   via [`.github/workflows/fuzz.yml`](https://github.com/NormB/sipnab/blob/main/.github/workflows/fuzz.yml); crash reproducers upload as artifacts.
+- **Continuous fuzzing**: the same targets run under ClusterFuzzLite from
+  [`.clusterfuzzlite/`](https://github.com/NormB/sipnab/tree/main/.clusterfuzzlite) — batch fuzzing and corpus pruning daily, a
+  coverage report weekly. The difference from the weekly run above is the
+  corpus: it persists between runs instead of restarting from the tracked
+  seeds, so what libFuzzer learns accumulates instead of starting over.
 - **Always-on smoke fuzz**: [`tests/smoke_fuzz_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/smoke_fuzz_test.rs) runs in
   `cargo test` (no nightly needed) — ~40k random + structurally mutated
   inputs per entry point under `catch_unwind`, covering the same parser

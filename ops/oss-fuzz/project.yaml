@@ -1,0 +1,21 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+#
+# Submitted to google/oss-fuzz as projects/sipnab/project.yaml.
+#
+# `primary_contact` and `auto_ccs` receive crash reports, which are private for
+# 90 days before disclosure. Fill these in before submitting: OSS-Fuzz requires
+# a reachable address, and an unreachable one means findings nobody reads.
+homepage: "https://sipnab.com"
+main_repo: "https://github.com/NormB/sipnab"
+language: rust
+primary_contact: "n.brandinger@gmail.com"
+
+# libFuzzer only. The Rust builder image does not support the other engines,
+# and claiming one that cannot run is a project that reports nothing.
+fuzzing_engines:
+  - libfuzzer
+
+# Address only, matching what the Rust toolchain in the builder supports.
+# MemorySanitizer needs an instrumented libstd, which this image does not ship.
+sanitizers:
+  - address

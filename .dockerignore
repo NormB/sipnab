@@ -4,3 +4,12 @@ target/
 *.pcap
 fuzz/corpus/
 fuzz/artifacts/
+
+# Except the fuzz seeds. `.clusterfuzzlite/Dockerfile` copies this checkout
+# into the OSS-Fuzz builder image, and the build script packs
+# `fuzz/corpus/<target>/` into the seed archives libFuzzer starts from. The
+# exclusions above are right for the release image and silent here: the loop
+# finds no directory, packs nothing, and reports success. Last match wins, so
+# these must stay at the bottom.
+!fuzz/corpus/
+!fuzz/corpus/**
