@@ -1634,6 +1634,28 @@ pub struct SecurityArgs {
     #[arg(help_heading = "Security", long, value_name = "MODE", value_enum)]
     pub sandbox: Option<SandboxModeArg>,
 
+    /// Record every system call this process makes, and allow every one.
+    ///
+    /// `off` (the default) changes nothing. `log` installs a seccomp filter
+    /// whose only action is `SECCOMP_RET_LOG`: the kernel writes one audit
+    /// record per call and lets the call through. Nothing is denied, so
+    /// nothing is protected — this is the instrument that derives an allowlist
+    /// from evidence, not a control.
+    ///
+    /// Where the records land depends on the host, so check before concluding
+    /// nothing happened: `auditctl -s` prints a connected audit daemon's pid,
+    /// and then the records are in `ausearch -m SECCOMP`. A pid of 0 means no
+    /// daemon, and they are in `dmesg | grep 'type=1326'`. Each carries
+    /// `syscall=<nr>` and `code=0x7ffc0000`.
+    ///
+    /// Point it at a bounded offline run and turn it off afterwards: a live
+    /// capture emits one record per received packet and will flood the log.
+    ///
+    /// It cannot end a run. `SECCOMP_RET_LOG` allows; the killing action a
+    /// derived allowlist would use is deliberately not implemented yet.
+    #[arg(help_heading = "Security", long, value_name = "MODE", value_enum)]
+    pub seccomp: Option<SeccompModeArg>,
+
     /// Add a User-Agent pattern to the scanner detector.
     ///
     /// A PATTERN, not a switch: it tells the scanner detector one more thing
@@ -3546,6 +3568,26 @@ pub enum SandboxModeArg {
     BestEffort,
     /// Install it or refuse to capture.
     Required,
+}
+
+/// How much syscall recording a run wants.
+///
+/// Deliberately separate from [`SandboxModeArg`]. They are different controls
+/// with different failure modes — one denies opens, the other denies nothing
+/// at all — and folding them into one flag would let an operator believe that
+/// asking for a sandbox had asked for a syscall filter too.
+///
+/// There is no enforcing variant, and its absence is the design rather than an
+/// omission: `docs/design/syscall-sandbox.md` §8 puts the derived filter last
+/// because a mis-derived allowlist kills the process on a capture box during
+/// the incident the capture was started for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, clap::ValueEnum)]
+pub enum SeccompModeArg {
+    /// No filter. The default, and the only mode fit for a live capture.
+    #[default]
+    Off,
+    /// Record every call and allow every call.
+    Log,
 }
 
 /// From/To column display mode selectable on the command line.

@@ -49,7 +49,7 @@ was driving all of them.
 
 | Surface | Rows | `e2e` | `parsed` | `referenced` | `none` |
 |---|---|---|---|---|---|
-| CLI flags | 263 | 132 | 50 | 80 | 1 |
+| CLI flags | 264 | 134 | 50 | 79 | 1 |
 | HTTP routes | 18 | 18 | -- | 0 | 0 |
 | MCP tools | 66 | 66 | -- | 0 | 0 |
 
@@ -57,7 +57,7 @@ was driving all of them.
 
 ## What a person found that the detector could not
 
-The generator understates. Of the 80 flags it could only call
+The generator understates. Of the 79 flags it could only call
 `referenced`, a read of the tests found 65 with a real behavior test --
 evidence that arrives through a config-file equivalent sharing the flag's
 resolver, through a golden file, or through a library-level test, none of
@@ -86,7 +86,7 @@ behind them.
 | `--help` | `-h` |  | Options | e2e | `tests/cli_test.rs` |  |  |
 | `--version` | `-V` |  | Options | e2e | `tests/branch_protection_drift_test.rs`, `tests/cli_test.rs` +4 |  |  |
 | `--device` | `-d` | `IFACE` | Capture | e2e | `tests/cli_flag_behavior_test.rs`, `tests/hep_test.rs` +1 |  |  |
-| `--input` | `-I` |  | Capture | e2e | `tests/analyze_test.rs`, `tests/cli_flag_behavior_test.rs` +54 |  |  |
+| `--input` | `-I` |  | Capture | e2e | `tests/analyze_test.rs`, `tests/cli_flag_behavior_test.rs` +56 |  |  |
 | `--recursive` |  |  | Capture | e2e | `tests/input_set_accounting_test.rs`, `tests/multi_input_test.rs` |  |  |
 | `--input-name` |  | `GLOB` | Capture | e2e | `tests/multi_input_test.rs` |  |  |
 | `--output` | `-O` | `FILE` | Capture | e2e | `tests/cli_flag_behavior_test.rs`, `tests/filter_output_paths_test.rs` +5 |  |  |
@@ -111,7 +111,7 @@ behind them.
 | `--split-keep` |  | `N` | Capture | e2e | `tests/cli_flag_behavior_test.rs` |  |  |
 | `--replay` |  |  | Capture | e2e | `tests/mcp_stdio_shutdown_test.rs` |  |  |
 | `--pcapng` |  |  | Capture | e2e | `tests/cli_flag_behavior_test.rs`, `tests/integration_test.rs` +2 |  |  |
-| `--no-tui` | `-N` |  | Mode | e2e | `tests/analyze_test.rs`, `tests/cli_flag_behavior_test.rs` +53 |  |  |
+| `--no-tui` | `-N` |  | Mode | e2e | `tests/analyze_test.rs`, `tests/cli_flag_behavior_test.rs` +55 |  |  |
 | `--calls-only` | `-c` |  | Mode | e2e | `src/output/event_exec.rs`, `src/security/alerting.rs` +7 |  |  |
 | `--telephone-event` | `-t` |  | Mode | e2e | `tests/dtmf_retransmission_test.rs`, `tests/tui_e2e_test.rs` |  |  |
 | `--dtmf-cleartext` |  |  | Mode | referenced | `tests/dtmf_masking_test.rs` | **behavior** | dtmf_cleartext_emits_the_digit_value_at_debug_level (tests/dtmf_masking_test.rs), with an anti-vacuity guard |
@@ -197,7 +197,8 @@ behind them.
 | `--quality-interval` |  | `SECONDS` | RTP | referenced | `src/cli.rs` | **behavior** | via config key: probe_quality_interval_secs moves the snapshot count on a thirty-second capture |
 | `--quality-threshold` |  | `MOS` | RTP | referenced | `tests/cli_options_test.rs` | **parse-only** | asserts exit 0 only; no test drives it with --on-quality-exec and observes the hook firing |
 | `--kill-scanner` |  |  | Security | e2e | `tests/cli_flag_behavior_test.rs`, `tests/cli_test.rs` +1 |  |  |
-| `--sandbox` |  | `MODE` | Security | referenced | `src/sandbox.rs` |  |  |
+| `--sandbox` |  | `MODE` | Security | e2e | `tests/sandbox_test.rs` |  |  |
+| `--seccomp` |  | `MODE` | Security | e2e | `tests/seccomp_child_test.rs` |  |  |
 | `--kill-ua` |  | `PATTERN` | Security | referenced | `src/app/batch.rs`, `src/app/bootstrap.rs` +3 | **behavior** | FIXED THIS PASS. Was a silent no-op without --kill-scanner; now refused, and kill_ua_pattern_reaches_the_detector_that_reads_it asserts the match |
 | `--kill-response` |  | `CODE` | Security | e2e | `tests/config_wiring_test.rs` |  |  |
 | `--kill-target` | `-K` |  | Security | e2e | `tests/offline_never_transmits_test.rs` |  |  |

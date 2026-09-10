@@ -248,7 +248,7 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
   silently negates most of CT2's benefit on exactly the busy servers CT2
   targets, and because it makes `-B` advice misleading until fixed.
   **Done:** immediate mode is now a decision, not a constant.
-  `immediate_mode_for(mode)` ([`src/app/bootstrap.rs:2487`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L2487)) is
+  `immediate_mode_for(mode)` ([`src/app/bootstrap.rs:2531`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L2531)) is
   `matches!(mode, RunMode::Tui)` and is the only place that answers the
   question; `bootstrap.rs:537` assigns its result to
   `CaptureConfig::immediate_mode`, and [`src/capture/live.rs:219-220`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L219-L220) passes that
@@ -820,7 +820,7 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
   reconstruction path is offline-only. Cheap, and it removes a silent
   expectation mismatch on exactly the busy-server workload where someone would
   reach for it. **Done:** `cores_ignored_warning`
-  ([`src/app/bootstrap.rs:2968`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L2968)) returns the message and the reason —
+  ([`src/app/bootstrap.rs:3012`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L3012)) returns the message and the reason —
   `--multi-device` opens one capture per interface, or the run captures live
   rather than reading a saved file — and `bootstrap.rs:492` warns with it.
   Warned rather than refused, because the run is correct, just single-threaded,
@@ -1705,7 +1705,7 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
   truncation breaks `--retain-audio`/WAV export and Opus decode (they need RTP
   payload, not just headers), and it degrades `-O` pcap re-emit to truncated
   frames. **Two of three "Do:" items are done, and this line claimed neither
-  until 2026-08-06.** `snaplen_truncation_warning` ([`src/app/bootstrap.rs:3175`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L3175),
+  until 2026-08-06.** `snaplen_truncation_warning` ([`src/app/bootstrap.rs:3219`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L3219),
   tagged `(CT3)`) warns when a truncating snaplen feeds `-O`; a matching
   `snaplen_audio_retention_warning` now warns when it feeds `--retain-audio`
   instead, since that path is retained *audio*, not a re-emitted pcap, and
@@ -7433,9 +7433,26 @@ them away.
   unsandboxed control reaches both. Mutation-proven — deleting the
   `landlock_restrict_self` call fails both denial gates.
 
-  **Still open: seccomp**, which is §8 steps 3 and 4 and stays last for the
+  **The logging half of seccomp shipped 2026-09-10** as [`src/seccomp.rs`](https://github.com/NormB/sipnab/blob/main/src/seccomp.rs)
+  behind `--seccomp log`, which is §8 step 3. It builds the classic-BPF program
+  by hand — no new dependency, no license question, the same way the Landlock
+  half calls its three syscalls directly — and installs it with
+  `SECCOMP_RET_LOG` as the only action. Every call is recorded; every call is
+  allowed. It is an instrument, not a control, and the startup line, the CLI
+  help and the status enum all refuse to imply otherwise.
+
+  **§9's open question is answered.** `SECCOMP_RET_LOG` needs no audit rule and
+  no `audit=1`, but *where* the records land forks: with no daemon they fall
+  back to the kernel ring buffer and `dmesg` prints them; with a daemon
+  connected `dmesg` shows nothing and `ausearch -m SECCOMP` has them.
+  `auditctl -s` tells the two apart. Guidance naming only `dmesg` — which the
+  first draft of this feature carried — sends half its readers to an empty
+  buffer to conclude the filter never installed.
+
+  **Still open: the derived allowlist**, §8 step 4, which stays last for the
   reason that put it there. A mis-derived allowlist kills the process on a
-  capture box during the incident the capture was started for.
+  capture box during the incident the capture was started for. Nothing shipped
+  can do that: `grep -rlE 'SECCOMP_RET_KILL|SECCOMP_RET_TRAP' src/` exits 1.
   Written up in [`docs/design/syscall-sandbox.md`](https://github.com/NormB/sipnab/blob/main/docs/design/syscall-sandbox.md), whose §0 tabulates the
   hardening listed above against what each one does **not** stop — read that
   before implementing, because the first four of the seven are skipped outright

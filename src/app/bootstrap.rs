@@ -1610,6 +1610,27 @@ pub fn launch(
         std::process::exit(1);
     }
 
+    // 19. Record what this run asks the kernel for, if asked to.
+    //
+    // After the path sandbox, and last of all, because it is an instrument
+    // rather than a control: it denies nothing, so its position cannot affect
+    // what any other step is allowed to do. Placing it here also means the
+    // records describe a CAPTURE — the syscalls a steady-state run makes —
+    // rather than the wider set a startup needs, which is the set an allowlist
+    // has to cover.
+    //
+    // A seccomp filter behaves exactly like Landlock unless told otherwise --
+    // the calling thread and its future children, not the siblings that
+    // already exist -- so `install` passes `SECCOMP_FILTER_FLAG_TSYNC`. Without
+    // it the capture thread started at step 15 would stay outside the filter
+    // and the instrument would record everything except the thread running
+    // libpcap, which is the thread it exists to characterize. Measured, not
+    // assumed: `seccomp_child_test` fails if the flag is dropped.
+    //
+    // Nothing here can end a run: the only action installed is
+    // `SECCOMP_RET_LOG`, which allows.
+    install_syscall_logging(cli);
+
     Launched {
         handle,
         rx,
@@ -1618,6 +1639,35 @@ pub fn launch(
         keylog_source,
         relay,
     }
+}
+
+/// What the run asked for, as the seccomp module models it.
+fn seccomp_mode(cli: &Cli) -> crate::seccomp::SeccompMode {
+    match cli.security_args.seccomp.unwrap_or_default() {
+        crate::cli::SeccompModeArg::Off => crate::seccomp::SeccompMode::Off,
+        crate::cli::SeccompModeArg::Log => crate::seccomp::SeccompMode::Log,
+    }
+}
+
+/// Install the logging filter and report what happened, either way.
+///
+/// Never fatal, in any mode. There is no `required` here because there is
+/// nothing to require: a filter that allows every call protects nothing, so
+/// refusing to capture without one would trade a real capture for a placebo.
+/// The refusal an operator can ask for is `--sandbox required`, which governs
+/// a control that actually denies.
+fn install_syscall_logging(cli: &Cli) -> crate::seccomp::SeccompStatus {
+    let mode = seccomp_mode(cli);
+    if mode == crate::seccomp::SeccompMode::Off {
+        return crate::seccomp::SeccompStatus::Disabled;
+    }
+    let status = crate::seccomp::install(mode);
+    let line = crate::seccomp::startup_line(&status);
+    // `warn` in BOTH arms, and that is not a copy-paste slip. A run that is
+    // logging every syscall is a run flooding the kernel log, which an
+    // operator has to be told about as loudly as a run that failed to.
+    tracing::warn!("{line}");
+    status
 }
 
 /// What the run asked for, as the sandbox module models it.

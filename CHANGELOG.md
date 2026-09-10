@@ -10,6 +10,29 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Added
+
+- **`--seccomp log` records every system call this process makes, and allows
+  every one.** The syscall sandbox's design puts the enforcing filter last
+  because a mis-derived allowlist kills the process on a capture box during the
+  incident the capture was started for. The step before it is an instrument:
+  a seccomp filter whose only action is `SECCOMP_RET_LOG`, so the allowlist can
+  be derived from evidence instead of guessed. It denies nothing and protects
+  nothing, and the flag's help, the startup line and the status type all say so
+  rather than letting "seccomp active" imply a control.
+
+  Where the records land forks by host, and the guidance names both routes
+  because naming one is worse than naming none: `auditctl -s` prints a
+  connected audit daemon's pid and the records are then in
+  `ausearch -m SECCOMP`; a pid of 0 means no daemon and they are in `dmesg`.
+  Point it at a bounded offline run — a live capture emits one record per
+  received packet.
+
+  The filter is synchronized across every thread. Seccomp covers the installing
+  thread and its future children by default, and sipnab installs after the
+  capture thread is spawned, so without that the instrument would have recorded
+  everything except the thread running libpcap.
+
 ### Fixed
 
 - **The RTCP padding rule shipped in 0.5.164 never reached the capture path,

@@ -545,6 +545,7 @@ scrollback
 Scrollbar
 scrollbar
 sd_notify
+seccomp
 sdp
 sdp_endpoints
 sdp_media

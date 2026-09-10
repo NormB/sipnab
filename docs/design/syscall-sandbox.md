@@ -1,13 +1,17 @@
 # seccomp and Landlock
 
-**Status:** LANDLOCK SHIPPED 2026-09-10; **seccomp is not implemented**. Step
-1 of §8's sequence is in [`src/sandbox.rs`](https://github.com/NormB/sipnab/blob/main/src/sandbox.rs) behind `--sandbox`, default off.
-Steps 3 and 4 — `--seccomp=log` and the derived filter — remain unbuilt, and
-§3's derivation risk is why they are still last: a mis-derived allowlist kills
-the process, which is the one failure a capture box must not have. What sipnab *does* have besides is weaker and
-is not nothing — §0 tabulates it. A reader who stops at this line will
-re-implement hardening that already ships.
-**Check:** `grep -rlE 'PR_SET_SECCOMP|SECCOMP_SET_MODE|libc::seccomp' src/` exits 1 — still no syscall filter, which is what steps 3 and 4 of §8 would add. The pattern names the CALLS rather than the word: [`src/sandbox.rs`](https://github.com/NormB/sipnab/blob/main/src/sandbox.rs) explains at length why Landlock ships first, and prose about a control is not the control.
+**Status:** LANDLOCK SHIPPED 2026-09-10; SECCOMP SHIPPED IN LOGGING MODE ONLY,
+2026-09-10; **the enforcing filter is not implemented**. Steps 1, 2 and 3 of
+§8's sequence are in [`src/sandbox.rs`](https://github.com/NormB/sipnab/blob/main/src/sandbox.rs) and [`src/seccomp.rs`](https://github.com/NormB/sipnab/blob/main/src/seccomp.rs), behind
+`--sandbox` and `--seccomp`, both default off. Step 4 — the derived allowlist
+with a denying action — remains unbuilt, and §3's derivation risk is why it is
+still last: a mis-derived allowlist kills the process, which is the one failure
+a capture box must not have. **`--seccomp log` is not a control**: it denies
+nothing, and it exists so the derivation step 4 needs can be run from evidence
+by anyone, on a platform the maintainer does not have. What sipnab *does* have
+besides is weaker and is not nothing — §0 tabulates it. A reader who stops at
+this line will re-implement hardening that already ships.
+**Check:** `grep -rlE 'SECCOMP_RET_KILL|SECCOMP_RET_TRAP' src/` exits 1 — still nothing that can refuse or end a call, which is what step 4 of §8 would add. The pattern names the DENYING ACTIONS rather than the word "seccomp", because a filter now ships and matching on the word would report an instrument as a control.
 **Check:** `grep -c 'libc::prctl\|libc::setrlimit\|libc::chroot\|libc::setuid\|libc::setgroups' src/privilege.rs` returns 7 — the calls §0 tabulates; the gate running this line proves the set is non-empty, and the 7 was counted by hand. It was 6 until `set_no_new_privs` began reading its own flag back with `PR_GET_NO_NEW_PRIVS`.
 The seccomp check was once written `grep -rn 'seccomp\|landlock\|unshare'`,
 which matched one hit — the prose "(unshared)" in the TUI, added months before
@@ -17,7 +21,7 @@ a combined pattern report the presence of one control as evidence about the
 other. The second check exists because a
 page carrying only the first reads as "sipnab has no hardening", which is a
 different and false statement.
-**Verified against:** `4651932`, working tree.
+**Verified against:** `4c31348`, working tree.
 
 The evidence that it shipped is `grep -rlE 'landlock_restrict_self' src/`,
 which names [`src/sandbox.rs`](https://github.com/NormB/sipnab/blob/main/src/sandbox.rs). It is stated here rather than in the Status
@@ -287,10 +291,24 @@ Two rules keep it from becoming the defect it is meant to prevent:
   a different glibc, a distro kernel. Making it a one-off developer script
   guarantees the musl list is guessed.
 
-**Unverified:** whether the audit subsystem is actually enabled on this kernel
-(`auditctl` being installed is not the same as `audit=1` and a running
-`auditd`), and whether `SECCOMP_RET_LOG` records reach it without an explicit
-rule. Probe before committing to this route.
+**Verified 2026-09-10, and the answer has a fork in it.** `SECCOMP_RET_LOG`
+records need no explicit audit rule and no `audit=1` on the kernel command
+line: a filter installed with that action produces one record per call
+immediately. *Where* they land is what varies, and it varies in the direction
+that misleads.
+
+- **No audit daemon** (lab VM, Debian 13, kernel 6.12, x86_64, no `auditd`):
+  the records fall back to the kernel ring buffer and `dmesg` prints them, each
+  carrying `arch=`, `syscall=<nr>` and `code=0x7ffc0000`.
+- **A daemon connected** (this development host): the kernel hands them to the
+  daemon and `dmesg` shows **nothing at all**. A reader following guidance that
+  names only `dmesg` finds an empty buffer and concludes the filter never
+  installed. It did; `ausearch -m SECCOMP` is where the records are.
+
+`auditctl -s` tells the two apart — it prints the daemon's pid, or `0` for
+none. Every operator-facing sentence about this feature has to carry both
+routes, which is why `seccomp::startup_line` names both and a test fails if it
+stops doing so.
 
 ### Route B — `perf trace`
 
@@ -634,7 +652,10 @@ triple.
    `capture_health` code, and `--require-sandbox`. Without it neither control can
    be shown to be present, and §7's gates have nothing to read.
 3. **`--seccomp=log` third**, shipped, so the derivation is reproducible by
-   someone on a platform the maintainer does not have.
+   someone on a platform the maintainer does not have. **Done 2026-09-10** as
+   `--seccomp log`, spelled without the `=` to match every other value flag.
+   It installs a filter whose only action is `SECCOMP_RET_LOG` and whose
+   allowlist is empty, so every call is recorded and every call is allowed.
 4. **The derived filter last**, per target triple, enforce mode, with §7's four
    gates.
 
