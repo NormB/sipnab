@@ -10,6 +10,15 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Fixed
+
+- **The tag prompt did not name the two obligations that only exist after
+  publishing.** Both the binary-ceiling record and the eBPF load record key on
+  `published_version`, so neither can pass before the artifacts exist --- and
+  the only thing that tells a maintainer about them is the prompt `pre-push`
+  prints when a tag goes up. It named two of the four steps. A test now holds
+  the prompt to the gates.
+
 ### Added
 
 - **The install page says which capture backends each artifact can reach.**

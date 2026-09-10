@@ -602,6 +602,14 @@ for commit in $tag_commits; do
 	printf '  offered it. Watch the release, then land the follow-up commit:\n'
 	printf '    website/config.toml  published_version + release_date\n'
 	printf '    docs/install.md      the download markers\n'
+	printf '    website/config.toml  the binary-ceiling measurement, from the\n'
+	printf '                         PUBLISHED x86_64-musl tarball\n'
+	printf '  And the one that needs a privileged host, before the site can\n'
+	printf '  advertise the release at all:\n'
+	printf '    sudo scripts/verify-bpf-load.sh <version>\n'
+	printf '    docs/internals/uprobe-capture.md  the row it prints\n'
+	printf '  Four releases shipped an eBPF object the verifier rejected on\n'
+	printf '  every kernel, because building was the only half anything covered.\n'
 	printf '  Verify from the live page, not from a green deploy:\n'
 	printf '    curl -s https://sipnab.com/download/ | grep -c <version>%b\n' "$NC"
 done

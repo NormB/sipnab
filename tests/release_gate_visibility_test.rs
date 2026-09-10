@@ -453,3 +453,65 @@ fn the_release_workflow_scan_found_a_plausible_workflow() {
          has moved and these declarations describe a workflow that is gone"
     );
 }
+
+/// The post-publish obligations are told to whoever pushes the tag.
+///
+/// Two gates now key on `published_version` and can only pass AFTER the
+/// artifacts exist: the binary-ceiling record wants a measurement of the
+/// shipped musl tarball, and the eBPF load record wants a run on a privileged
+/// host with kernel BTF. Both are correct as post-release gates — the artifact
+/// has to exist before anyone can measure or run it.
+///
+/// That makes them exactly the shape this file exists for. Neither can fire
+/// before the tag, so the only thing standing between a maintainer and a
+/// blocked follow-up commit is the prompt `pre-push` prints when a tag goes
+/// up. A gate whose requirement is announced nowhere is discovered by failing.
+#[test]
+fn the_tag_prompt_names_every_post_publish_obligation() {
+    let hook = std::fs::read_to_string(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(".githooks/pre-push"),
+    )
+    .expect("read .githooks/pre-push");
+    let prompt = hook
+        .split_once("is phase ONE")
+        .map(|(_, rest)| rest.to_string())
+        .expect(".githooks/pre-push must print a phase-two prompt when a tag is pushed");
+    let prompt = prompt
+        .split_once("\ndone")
+        .map(|(p, _)| p.to_string())
+        .unwrap_or(prompt);
+
+    // Each requirement, and the file whose gate enforces it. Named rather than
+    // derived: no rule connects a test to the sentence that should mention it,
+    // which is why the connection has to be asserted somewhere.
+    for (needle, why) in [
+        (
+            "published_version",
+            "the site goes on offering the previous release",
+        ),
+        (
+            "docs/install.md",
+            "the download instructions name a version nobody can download",
+        ),
+        (
+            "verify-bpf-load.sh",
+            "the eBPF record blocks advertising a release nobody has loaded, and \
+             the run needs a privileged host",
+        ),
+        (
+            "docs/internals/uprobe-capture.md",
+            "the load verification has nowhere to be recorded",
+        ),
+        (
+            "musl",
+            "the binary-ceiling record wants a measurement of the SHIPPED tarball",
+        ),
+    ] {
+        assert!(
+            prompt.contains(needle),
+            "the tag prompt never mentions {needle}. Without it, {why} — and \
+             the maintainer finds out when a follow-up commit is refused by a \
+             gate that runs nowhere earlier."
+        );
+    }
+}
