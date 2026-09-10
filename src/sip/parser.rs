@@ -1340,10 +1340,89 @@ Subject: first-part\r\n continued-tail";
         assert_eq!(subject.value, "first-part continued-tail");
     }
 
+    /// Every test that can move the process-global oversize counter is
+    /// serialized on one key.
+    ///
+    /// `oversize_headers_dropped` is a process statistic, which is right for
+    /// the product and hostile to a test asserting an exact count: the reset
+    /// and the read are two operations, and any test parsing an over-cap
+    /// header in parallel lands between them. On 2026-09-10 one did, and
+    /// `an_oversize_header_is_counted_and_an_ordinary_one_is_not` read 45
+    /// where it had just reset to 0.
+    ///
+    /// Serializing only the test that reads the counter would not be enough —
+    /// the races come from the tests that WRITE it. So the rule is derived
+    /// from the source: a test that names the counter or builds a header over
+    /// the cap must carry the key. Integration tests cannot race with these,
+    /// running in their own process.
+    #[test]
+    fn every_test_that_moves_the_oversize_counter_is_serialized() {
+        let src = include_str!("parser.rs");
+        // Split on the attribute so each chunk is one test function, and the
+        // key (when present) sits at its head.
+        // Each marker is counted separately, and each must match something.
+        // A single total cannot tell "one matcher died" from "all three are
+        // alive": blinding the first one left the other two matching three
+        // tests, and a `>= 3` check stayed green over a gate that had lost a
+        // third of its reach.
+        const MARKERS: [&str; 3] = [
+            "oversize_headers_dropped",
+            "DEFAULT_MAX_HEADER_LINE_LEN + ",
+            "MAX_HEADER_LINE_LEN (8KB) cap",
+        ];
+        let mut unserialized = Vec::new();
+        let mut hits = [0usize; MARKERS.len()];
+        for chunk in src.split("    #[test]\n") {
+            let body = chunk.split("\n    /// ").next().unwrap_or(chunk);
+            let mut moves_it = false;
+            for (i, marker) in MARKERS.iter().enumerate() {
+                if body.contains(marker) {
+                    moves_it = true;
+                    hits[i] += 1;
+                }
+            }
+            if !moves_it {
+                continue;
+            }
+            // This gate names every marker in its own body, so it matches all
+            // of them while moving nothing. Skipped by name rather than by a
+            // cleverer scan: the alternative is a matcher that could stop
+            // seeing a real test.
+            if body.contains("fn every_test_that_moves_the_oversize_counter_is_serialized(") {
+                for h in &mut hits {
+                    *h = h.saturating_sub(1);
+                }
+                continue;
+            }
+            if !body.starts_with("    #[serial_test::serial(oversize_headers)]") {
+                let name = body
+                    .lines()
+                    .find(|l| l.trim_start().starts_with("fn "))
+                    .unwrap_or("<unnamed>")
+                    .trim();
+                unserialized.push(name.to_string());
+            }
+        }
+        for (i, marker) in MARKERS.iter().enumerate() {
+            assert!(
+                hits[i] > 0,
+                "the marker {marker:?} matches no test in this file, so that \
+                 third of the scan is switched off and nothing would say so"
+            );
+        }
+        assert!(
+            unserialized.is_empty(),
+            "these tests move the process-global oversize counter without the \
+             serial key, so they can land between another test's reset and its \
+             read: {unserialized:?}"
+        );
+    }
+
     /// A single *unfolded* header line longer than `MAX_HEADER_LINE_LEN` is
     /// rejected (parse_error set, header dropped), not accepted whole — the
     /// cap must bound unfolded lines, not only folded continuations.
     #[test]
+    #[serial_test::serial(oversize_headers)]
     fn oversized_unfolded_header_line_rejected() {
         let big_value = "A".repeat(DEFAULT_MAX_HEADER_LINE_LEN + 100);
         let raw = format!("Subject: {big_value}\r\nCall-ID: ok@example.com\r\n\r\n");
@@ -1752,6 +1831,7 @@ Content-Length: 0\r\n\
     /// ~50KB of folded continuation lines is capped at the 8KB line limit
     /// with parse_error set (no unbounded allocation).
     #[test]
+    #[serial_test::serial(oversize_headers)]
     fn header_folding_capped_at_8kb() {
         // Construct a Via header followed by 500 continuation lines of ~100
         // bytes each, totalling ~50KB of folded content. The parser must not
@@ -1995,6 +2075,7 @@ mod oversize_header_tests {
     /// message would make every capture look lossy, which is this same defect
     /// pointed the other way.
     #[test]
+    #[serial_test::serial(oversize_headers)]
     fn an_oversize_header_is_counted_and_an_ordinary_one_is_not() {
         let ordinary = "INVITE sip:b@example.com SIP/2.0\r\nVia: SIP/2.0/UDP 192.0.2.1\r\n\
                         Call-ID: c1@192.0.2.1\r\nCSeq: 1 INVITE\r\nContent-Length: 0\r\n\r\n";

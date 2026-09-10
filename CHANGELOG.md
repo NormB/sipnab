@@ -12,6 +12,14 @@ entry that carries them.
 
 ### Fixed
 
+- **A test asserting an exact count of dropped oversize headers could read
+  another test's work.** The counter is a process statistic, which is right for
+  the product and hostile to a test that resets it and then reads it: any test
+  parsing an over-cap header in parallel lands between the two operations. One
+  did, and the test read 45 where it had just reset to zero. Every test that
+  can move that counter is serialized on one key now, and a gate derives the
+  list from the source rather than trusting anyone to remember it.
+
 - **The RTCP classifier ignored the padding rule RFC 3550 states as a MUST.**
   Padding may only appear on the last packet of a compound, so a first
   sub-packet that does not fill the datagram cannot carry the padding bit. That
