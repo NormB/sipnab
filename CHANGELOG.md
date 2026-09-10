@@ -8,9 +8,24 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
-## [Unreleased]
+## [0.5.163] - 2026-09-10
 
 ### Added
+
+- **The TUI shows the wideband MOS for AMR-WB streams.** An AMR-WB call had two
+  numbers depending on which surface you read: REST and MCP carried `MOS_CQEW`
+  on the ITU-T G.107.1 scale, and the stream-detail pane showed the narrowband
+  `MOS_CQE`, which anchors 35.8 R-points away and cannot score a wideband codec
+  at all. The pane now carries a `MOS_CQEW` row naming the scale, the mode and
+  the listening context. It has no quality band and no color on purpose: the
+  bands calibrate against the narrowband scale. A stream nobody attempted to
+  score gets no row, and one sipnab cannot score says why in words.
+
+- **`scripts/verify-bpf-load.sh`** verifies that a published artifact's eBPF
+  program loads and attaches, on a host with root and kernel BTF. It downloads
+  the release tarball, checks it against the checksum published beside it, and
+  judges the run. The suite cannot cover loading --- it needs privileges a test
+  process must never acquire --- and building was never the half that broke.
 
 - **Continuous fuzzing with a corpus that survives between runs.**
   ClusterFuzzLite builds the eighteen fuzz targets in the OSS-Fuzz Rust builder
