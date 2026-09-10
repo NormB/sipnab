@@ -9625,6 +9625,8 @@ sipnab -d eth0,eth1 --multi-device --delta-time
 > it.
 
 **Examples**
+- `sipnab -N -I capture.pcap --sandbox best-effort --report` — analyze a capture with the filesystem bounded to the input and the crash directory. On a kernel without Landlock this warns and analyzes anyway, which is the point of `best-effort`
+- `sudo sipnab -N -d eth0 -O /var/captures/live.pcap --sandbox required` — refuse to capture at all unless the ruleset installed. Use this where an unsandboxed capture is worse than none; the run exits non-zero and names the reason rather than starting
 
 - `sudo sipnab --device eth0 --output capture.pcap --portrange 5060-5080 --count 10000` — record up to 10000 packets from eth0 into a pcap, watching a widened SIP port range
 - `sudo sipnab --device eth0 --buffer 16 --buffer-budget 128 --snaplen 2048 --quiet-bad-parse` — live-capture a busy link with bigger kernel and queue buffers, a capped snapshot length, and parse-error notices silenced (the CLI matcher -x)
@@ -10034,6 +10036,7 @@ report a healthy network in the middle of an outage.
 | `-K`, `--kill-target` | `<ADDR[:PORT-RANGE]>` | -- | Targeted kill: send the kill response to any SIP request whose source matches ADDR and an optional port range (`192.0.2.1:5060-5090`, `[::1]:5060`), regardless of UA/behavioral detection. Repeatable; spawns the kill worker on its own (no `--kill-scanner` needed) |
 | `--kill-spoof` | `<MODE>` | `auto` | Source-address strategy for the kill response (Linux only; other platforms always `ephemeral`). `auto` forges the victim's ip:port via a raw socket when `CAP_NET_RAW` is available (so the reply appears to come from the targeted SIP port), falling back to an ephemeral source otherwise; `raw` requires the spoof and errors when it cannot open the raw socket; `ephemeral` never spoofs |
 | `--kill-rate-limit` | `<N>` | `10` | Scanner-kill responses per second sipnab may put on the wire. This bounds the one feature that answers an address out of the capture, and the sender of each packet sipnab answers chose the address that answer goes to, so there is no unlimited setting and sipnab rejects `0`. A per-destination cap of 3 per minute applies underneath, so raising this widens how many distinct hosts sipnab answers, never how hard it hits one. Config: `[security] kill_rate_limit` |
+| `--sandbox` | `<MODE>` | `off` | Bound which files this process may reach, using Landlock. `best-effort` installs what the kernel supports and captures either way; `required` refuses to capture when no sandbox is in force. Reads and writes outside the input set, the output directory, the keylog and the crash directory come back `EACCES`. **Sockets are not bounded**: Landlock's network rules reach TCP bind and connect only, which would miss the HEP UDP listener and the pre-drop raw socket, so this ruleset governs the filesystem alone. Nothing here can end a run — Landlock denies an open, it does not signal — and a kernel without it degrades to a warning unless `required` says otherwise |
 | `--fraud-detect` | -- | off | Enable fraud detection heuristics |
 | `--evidence-out` | `<PATH\|->` | off | Publish every security finding that names a source as JSON Lines, for a system that decides what to do with it. `-` is standard output, for a pipe; a path receives one appended line per finding, and sipnab opens it at startup, so a path it cannot write is an error before the first packet. sipnab still bans nothing. A finding carried by HEP publishes nothing without `--hep-allow-kill`, for the reason `--fail2ban` gives: the inner address is the sender's claim |
 | `--fraud-destination` | `<ISO,...>` | off | Destination countries `--fraud-detect` reports an INVITE to, as ISO 3166-1 alpha-2 codes (`DO,VG,MA`). sipnab reads numbers through the common international prefixes (`+`, `00`, `011`) and resolves them by longest calling code, so `+1 809` is `DO`, not `US`; a number with no prefix is domestic and never matches. Every fraud finding also names the resolved destination. Absent: nothing changes. Config: `[security] fraud_destination` |
@@ -28826,7 +28829,7 @@ compiles, which is exactly why CI has a feature matrix.
 see a data race: the tests exercise the capture thread, the channel, and the
 processing thread, but a test that passes and a test that raced are
 indistinguishable to `cargo test`. The borrow checker does not help here either
-— it stops at `unsafe`, and most of this crate's 92 `unsafe` blocks are libc
+— it stops at `unsafe`, and most of this crate's 100 `unsafe` blocks are libc
 FFI, concentrated in privilege dropping ([`privilege.rs`](../../src/privilege.rs)
 and [`process_isolation.rs`](../../src/process_isolation.rs)) and capture setup.
 Recount with `grep -rc 'unsafe {' src/` rather than trusting that figure — this

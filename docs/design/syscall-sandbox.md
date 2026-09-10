@@ -1,18 +1,38 @@
 # seccomp and Landlock
 
-**Status:** DESIGN. seccomp and Landlock are **not implemented**, which is G5's
-own opening evidence and is still true. What sipnab *does* have is weaker and is
-not nothing — §0 tabulates it. A reader who stops at this line will re-implement
-hardening that already ships.
-**Check:** `grep -rniE 'seccomp|landlock|\bunshare\(' src/` exits 1 — no syscall filter and no path sandbox.
+**Status:** LANDLOCK SHIPPED 2026-09-10; **seccomp is not implemented**. Step
+1 of §8's sequence is in [`src/sandbox.rs`](https://github.com/NormB/sipnab/blob/main/src/sandbox.rs) behind `--sandbox`, default off.
+Steps 3 and 4 — `--seccomp=log` and the derived filter — remain unbuilt, and
+§3's derivation risk is why they are still last: a mis-derived allowlist kills
+the process, which is the one failure a capture box must not have. What sipnab *does* have besides is weaker and
+is not nothing — §0 tabulates it. A reader who stops at this line will
+re-implement hardening that already ships.
+**Check:** `grep -rlE 'PR_SET_SECCOMP|SECCOMP_SET_MODE|libc::seccomp' src/` exits 1 — still no syscall filter, which is what steps 3 and 4 of §8 would add. The pattern names the CALLS rather than the word: [`src/sandbox.rs`](https://github.com/NormB/sipnab/blob/main/src/sandbox.rs) explains at length why Landlock ships first, and prose about a control is not the control.
 **Check:** `grep -c 'libc::prctl\|libc::setrlimit\|libc::chroot\|libc::setuid\|libc::setgroups' src/privilege.rs` returns 7 — the calls §0 tabulates; the gate running this line proves the set is non-empty, and the 7 was counted by hand. It was 6 until `set_no_new_privs` began reading its own flag back with `PR_GET_NO_NEW_PRIVS`.
-The first check's original wording was `grep -rn 'seccomp\|landlock\|unshare'`,
+The seccomp check was once written `grep -rn 'seccomp\|landlock\|unshare'`,
 which matched one hit — the prose "(unshared)" in the TUI, added months before
 this document. The verdict was right and the evidence was too broad, so the
-command narrowed and the conclusion stands. The second check exists because a
+command narrowed; it narrowed again on 2026-09-10, when Landlock shipping made
+a combined pattern report the presence of one control as evidence about the
+other. The second check exists because a
 page carrying only the first reads as "sipnab has no hardening", which is a
 different and false statement.
 **Verified against:** `4651932`, working tree.
+
+The evidence that it shipped is `grep -rlE 'landlock_restrict_self' src/`,
+which names [`src/sandbox.rs`](https://github.com/NormB/sipnab/blob/main/src/sandbox.rs). It is stated here rather than in the Status
+block above because that block's claim is about seccomp, and the gate that
+runs a doc's own evidence reads one command per block.
+
+**What shipped, and what it does not claim.** Best-effort ABI negotiation
+against `MAX_KNOWN_ABI`, which is the newest Landlock ABI this code knows how
+to use: a kernel reporting more is clamped to it rather than trusted, because
+an unknown right left out of `handled_access_fs` is a right the ruleset does
+not govern, and ungoverned is the safe direction to be wrong in. `REFER` and
+`IOCTL_DEV` are deliberately ungoverned, each for a reason in the source.
+Sockets are not bounded at any ABI. The install happens at the END of
+`bootstrap`, not where §4 proposed — see the correction below.
+
 **Backlog:** [`backlog.md`](backlog.md) **G5** (`:1719`).
 **Upstream argument:**
 [`process-isolation-and-hot-path-cost.md`](process-isolation-and-hot-path-cost.md)
@@ -416,6 +436,24 @@ syscall list is the wrong trade. Instead: seccomp permits the file syscalls,
 and **Landlock bounds where they may point** (§5). That division of labor is
 what G5 means by Landlock being *"additionally"* useful, and it is why the two
 are one piece of work rather than two.
+
+**Corrected 2026-09-10, by checking the ordering rather than reading it.** §4
+puts the install after `start_servers`, and for Landlock that is too late.
+`landlock_restrict_self` enforces on the CALLING THREAD; threads created
+afterwards inherit the domain and threads that already exist do not. The
+capture thread is spawned at `bootstrap` step 15, well before the servers
+start, so installing where §4 says would have left the thread running libpcap
+outside the sandbox — the one thread the whole page is about.
+
+The shipped install is at the end of `bootstrap`, after the privilege drop,
+which is later still. That is deliberate and the trade is stated rather than
+hidden: everything before it opens things a ruleset would have to grant —
+libpcap reads `/sys/class/net` to open a device, `chroot` needs the old root,
+the keylog is opened while privileged — so installing earlier would mean
+granting `/sys` and `/proc`, which guts the ruleset. The capture thread keeps
+the access it had; its remaining work is a read from an already-open ring, and
+every line that parses hostile bytes runs downstream of the packet channel,
+inside the domain.
 
 ## 5. Landlock: weaker, cheaper, and the one to ship first
 

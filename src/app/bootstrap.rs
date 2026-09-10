@@ -1586,6 +1586,30 @@ pub fn launch(
         }
     }
 
+    // 18. Bound which files the rest of this run can reach.
+    //
+    // HERE, and not earlier, for two reasons that pull the same way. Landlock
+    // needs no privilege, so it does not have to precede the drop. And
+    // everything before this point opens things a ruleset would have to grant:
+    // libpcap reads `/sys/class/net` to open a device, chroot needs the old
+    // root, the keylog is opened while still privileged. Installing after all
+    // of it means the ruleset names the paths a CAPTURE needs rather than the
+    // paths a startup needs.
+    //
+    // What this does NOT confine, stated because a sandbox nobody can describe
+    // is one nobody can rely on: a Landlock domain applies to the calling
+    // thread and to threads created after it. The capture thread was started
+    // at step 15 and keeps the access it had. Its remaining work is a read
+    // from an already-open ring, so the code that parses hostile bytes — every
+    // line of it downstream of the packet channel — is inside the domain, and
+    // the thread outside it does no filesystem work at all.
+    let sandbox_status = install_path_sandbox(cli, config);
+    if let Err(refusal) = crate::sandbox::requirement_verdict(sandbox_mode(cli), &sandbox_status) {
+        tracing::error!("{refusal}");
+        capture::stop_and_join(handle, rx);
+        std::process::exit(1);
+    }
+
     Launched {
         handle,
         rx,
@@ -1594,6 +1618,76 @@ pub fn launch(
         keylog_source,
         relay,
     }
+}
+
+/// What the run asked for, as the sandbox module models it.
+fn sandbox_mode(cli: &Cli) -> crate::sandbox::SandboxMode {
+    match cli.security_args.sandbox.unwrap_or_default() {
+        crate::cli::SandboxModeArg::Off => crate::sandbox::SandboxMode::Off,
+        crate::cli::SandboxModeArg::BestEffort => crate::sandbox::SandboxMode::BestEffort,
+        crate::cli::SandboxModeArg::Required => crate::sandbox::SandboxMode::Required,
+    }
+}
+
+/// Collect the paths this run needs, install the ruleset, and report either
+/// way.
+///
+/// Reporting is not optional. A sandbox that quietly did not install looks
+/// exactly like one that did, so the line goes out whenever a sandbox was
+/// asked for -- at `info` when it is in force, at `warn` when it is not,
+/// because the second is the one an operator must not scroll past.
+fn install_path_sandbox(cli: &Cli, config: &Config) -> crate::sandbox::LandlockStatus {
+    let mode = sandbox_mode(cli);
+    if mode == crate::sandbox::SandboxMode::Off {
+        return crate::sandbox::LandlockStatus::Disabled;
+    }
+    let paths = sandbox_paths(cli, config);
+    let status = crate::sandbox::install(&paths);
+    let line = crate::sandbox::startup_line(&status);
+    if status.is_enforced() {
+        tracing::info!("{line}");
+    } else {
+        tracing::warn!("{line}");
+    }
+    status
+}
+
+/// Which paths a run legitimately needs.
+///
+/// Directories rather than files wherever the run creates names later: the
+/// output writer is lazy and `--split` invents siblings, so a rule anchored on
+/// the file that exists today would deny the one written in an hour.
+fn sandbox_paths(cli: &Cli, config: &Config) -> crate::sandbox::SandboxPaths {
+    let mut paths = crate::sandbox::SandboxPaths::default();
+
+    for input in &cli.capture_args.input {
+        paths.inputs.push(std::path::PathBuf::from(input));
+    }
+    if let Some(out) = cli
+        .capture_args
+        .output
+        .as_ref()
+        .map(std::path::PathBuf::from)
+    {
+        // The DIRECTORY, because the writer opens its file later and `--split`
+        // adds siblings. A rule on the file would deny both.
+        if let Some(dir) = out.parent().filter(|d| !d.as_os_str().is_empty()) {
+            paths.output_dirs.push(dir.to_path_buf());
+        }
+    }
+    #[cfg(feature = "tls")]
+    if let Some(keylog) = cli.tls_args.keylog.as_ref() {
+        paths.read_files.push(std::path::PathBuf::from(keylog));
+    }
+    #[cfg(feature = "tls")]
+    if let Some(key) = cli.tls_args.tls_key.as_ref() {
+        paths.read_files.push(std::path::PathBuf::from(key));
+    }
+    // The same directory the panic hook writes to, resolved the one way it
+    // is resolved anywhere: a second reading of the config would be a second
+    // answer the first time a default changed.
+    paths.crash_dir = Some(crate::crash::CrashPolicy::from_config(&config.crash).report_dir);
+    paths
 }
 
 /// Initialize the tracing/log subscriber from `SIPNAB_LOG` and the CLI's

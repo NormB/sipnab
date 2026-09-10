@@ -305,6 +305,7 @@ Keylog
 keypress
 kqueue
 ladder_split_width
+Landlock
 last_seen
 len
 libasound
@@ -694,6 +695,7 @@ unrepresentable
 unrewritten
 unroutable
 unrunnable
+unsandboxed
 unstripped
 unthrottled
 untracked

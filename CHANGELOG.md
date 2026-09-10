@@ -10,6 +10,25 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Added
+
+- **`--sandbox` bounds which files a capture can reach, using Landlock.**
+  sipnab's parsers are safe Rust; libpcap is C, touches every untrusted byte
+  first, and runs in the address space holding TLS key material and bearer
+  tokens. The privilege drop stops that address space reaching other users'
+  files and does nothing about the ones this user can already read. With
+  `--sandbox best-effort` a read or write outside the input set, the output
+  directory, the keylog and the crash directory comes back `EACCES`;
+  `--sandbox required` refuses to capture when no sandbox is in force. Default
+  off, so no existing run changes.
+
+  **Sockets are not bounded**, and the startup line says so rather than letting
+  "sandboxed" imply it: Landlock's network rules reach TCP bind and connect
+  only, which would miss the HEP UDP listener and the pre-drop raw socket
+  entirely. **Nothing here can end a run** — Landlock denies an open, it does
+  not signal — and a kernel without it degrades to a warning, never a refusal,
+  unless `required` says otherwise.
+
 ### Fixed
 
 - **A test asserting an exact count of dropped oversize headers could read

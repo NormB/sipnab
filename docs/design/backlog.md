@@ -248,7 +248,7 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
   silently negates most of CT2's benefit on exactly the busy servers CT2
   targets, and because it makes `-B` advice misleading until fixed.
   **Done:** immediate mode is now a decision, not a constant.
-  `immediate_mode_for(mode)` ([`src/app/bootstrap.rs:2368`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L2368)) is
+  `immediate_mode_for(mode)` ([`src/app/bootstrap.rs:2487`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L2487)) is
   `matches!(mode, RunMode::Tui)` and is the only place that answers the
   question; `bootstrap.rs:537` assigns its result to
   `CaptureConfig::immediate_mode`, and [`src/capture/live.rs:219-220`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L219-L220) passes that
@@ -820,7 +820,7 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
   reconstruction path is offline-only. Cheap, and it removes a silent
   expectation mismatch on exactly the busy-server workload where someone would
   reach for it. **Done:** `cores_ignored_warning`
-  ([`src/app/bootstrap.rs:2874`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L2874)) returns the message and the reason —
+  ([`src/app/bootstrap.rs:2968`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L2968)) returns the message and the reason —
   `--multi-device` opens one capture per interface, or the run captures live
   rather than reading a saved file — and `bootstrap.rs:492` warns with it.
   Warned rather than refused, because the run is correct, just single-threaded,
@@ -1705,7 +1705,7 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
   truncation breaks `--retain-audio`/WAV export and Opus decode (they need RTP
   payload, not just headers), and it degrades `-O` pcap re-emit to truncated
   frames. **Two of three "Do:" items are done, and this line claimed neither
-  until 2026-08-06.** `snaplen_truncation_warning` ([`src/app/bootstrap.rs:3081`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L3081),
+  until 2026-08-06.** `snaplen_truncation_warning` ([`src/app/bootstrap.rs:3175`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L3175),
   tagged `(CT3)`) warns when a truncating snaplen feeds `-O`; a matching
   `snaplen_audio_retention_warning` now warns when it feeds `--retain-audio`
   instead, since that path is retained *audio*, not a re-emitted pcap, and
@@ -7280,6 +7280,35 @@ them away.
   Landlock would additionally bound filesystem reach for runs without
   `--chroot`. Ranked P5 only because it needs a carefully-derived allowlist and
   a per-platform fallback; the argument for it is stronger than its rank.
+
+  **The Landlock half shipped 2026-09-10** as [`src/sandbox.rs`](https://github.com/NormB/sipnab/blob/main/src/sandbox.rs) behind
+  `--sandbox`, default off, following §8's sequence: it carries none of §3's
+  derivation risk, its degradation is a weaker ruleset, and nothing in it can
+  end a run — Landlock denies an open, it does not signal. `off`,
+  `best-effort` and `required` are the three modes; `required` is the only one
+  that can refuse a capture, which is how an operator says they would rather
+  have no capture than an unsandboxed one.
+
+  **Three things were established by checking rather than by reading the
+  design.** Landlock is per-thread, so the install point §4 proposed would
+  have left the capture thread — the one running libpcap — outside the domain;
+  it installs at the end of `bootstrap` instead, and the entry above and §5
+  now say what that does and does not cover. `REFER` is deliberately
+  ungoverned, which is the STRICT choice rather than the lax one, and safe
+  because the one rename in this tree is same-directory. The syscall numbers
+  were read out of `asm-generic/unistd.h` on aarch64 and `asm/unistd_64.h` on
+  x86_64 rather than remembered.
+
+  **Proven on a kernel that has it.** This development host has no Landlock in
+  its LSM list, so its enforcement gates skip loudly and the behavioral proof
+  runs on the lab VM (Debian 13, 6.12): a path outside the ruleset comes back
+  `EACCES`, a path inside opens, a write outside is refused, and the
+  unsandboxed control reaches both. Mutation-proven — deleting the
+  `landlock_restrict_self` call fails both denial gates.
+
+  **Still open: seccomp**, which is §8 steps 3 and 4 and stays last for the
+  reason that put it there. A mis-derived allowlist kills the process on a
+  capture box during the incident the capture was started for.
   Written up in [`docs/design/syscall-sandbox.md`](https://github.com/NormB/sipnab/blob/main/docs/design/syscall-sandbox.md), whose §0 tabulates the
   hardening listed above against what each one does **not** stop — read that
   before implementing, because the first four of the seven are skipped outright

@@ -1614,6 +1614,26 @@ pub struct SecurityArgs {
     #[arg(help_heading = "Security", long)]
     pub kill_scanner: bool,
 
+    /// Bound which files this process can reach, using Landlock.
+    ///
+    /// `off` (the default) changes nothing. `best-effort` installs what the
+    /// kernel supports and captures either way. `required` refuses to capture
+    /// when no sandbox is in force, for an operator who would rather have no
+    /// capture than an unsandboxed one.
+    ///
+    /// What it bounds: reads and writes outside the input set, the output
+    /// directory, the keylog and the crash directory fail with `EACCES`.
+    /// What it does NOT bound: sockets. Landlock's network rules reach TCP
+    /// bind and connect only, which would miss the HEP UDP listener and the
+    /// pre-drop raw socket entirely, so this ruleset governs the filesystem
+    /// alone and the startup line says so.
+    ///
+    /// Nothing here can end a run: Landlock denies an open, it does not
+    /// signal. A kernel without it degrades to a reported non-installation
+    /// unless `required` says otherwise.
+    #[arg(help_heading = "Security", long, value_name = "MODE", value_enum)]
+    pub sandbox: Option<SandboxModeArg>,
+
     /// Add a User-Agent pattern to the scanner detector.
     ///
     /// A PATTERN, not a switch: it tells the scanner detector one more thing
@@ -3510,6 +3530,22 @@ pub enum KillSpoof {
     Raw,
     /// Never spoof; always send from an ephemeral UDP source.
     Ephemeral,
+}
+
+/// How much of a path sandbox a run wants.
+///
+/// One flag rather than a boolean plus `--require-sandbox`: the two would have
+/// to agree, and "required but not enabled" is a state nobody means. Maps to
+/// [`crate::sandbox::SandboxMode`], which is where the behavior lives.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, clap::ValueEnum)]
+pub enum SandboxModeArg {
+    /// No sandbox. The default, so no existing run changes behavior.
+    #[default]
+    Off,
+    /// Install what this kernel supports; capture either way.
+    BestEffort,
+    /// Install it or refuse to capture.
+    Required,
 }
 
 /// From/To column display mode selectable on the command line.

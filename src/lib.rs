@@ -61,6 +61,8 @@ pub mod names;
 pub mod net;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod pipeline;
+#[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
+pub mod sandbox;
 pub mod stun;
 #[cfg(test)]
 pub mod test_material;
