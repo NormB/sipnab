@@ -49,6 +49,7 @@
 
 use std::path::{Path, PathBuf};
 
+#[cfg(feature = "tls")]
 use sipnab::capture::dtls::is_dtls;
 use sipnab::capture::pcap_reader::{PcapReader, decompress_capture};
 use sipnab::capture::{Packet, parse::parse_packet};
@@ -127,6 +128,12 @@ struct Counts {
     /// Anything that is neither, described by shape and never by content.
     unexplained: Vec<String>,
     /// Payloads `is_dtls` accepts.
+    ///
+    /// The DTLS counters stay declared without the `tls` feature and simply
+    /// never move, which keeps one `Counts` rather than two that can drift.
+    /// Only the code that CALLS `is_dtls` is gated — the module is behind
+    /// `tls`, and gating the whole file would take the RTCP measurement out of
+    /// every build that does not carry it.
     dtls: u64,
     /// Accepted DTLS whose first record does NOT frame inside the datagram.
     dtls_overruns: u64,
@@ -141,6 +148,7 @@ struct Counts {
 /// rather than imported because this file measures what a rule COSTS, and a
 /// measurement that shares the rule's constant cannot notice the constant
 /// moving.
+#[cfg(feature = "tls")]
 const TLS_RECORD_CEILING: usize = (1 << 14) + 2048;
 
 /// Advance `off` by one sub-packet, or report that it cannot.
@@ -181,6 +189,7 @@ fn read(path: &Path) -> Option<Counts> {
             continue;
         }
         counts.datagrams += 1;
+        #[cfg(feature = "tls")]
         if is_dtls(&parsed.payload) {
             counts.dtls += 1;
             let declared =
@@ -314,6 +323,7 @@ fn the_corpus_holds_rtcp_whose_lengths_cannot_chain() {
 /// It reads the rules as the RFCs state them rather than importing the
 /// module's constant, so a change to that constant shows up here as a
 /// disagreement instead of moving both sides at once.
+#[cfg(feature = "tls")]
 #[test]
 fn the_dtls_length_rules_refuse_nothing_the_corpus_holds() {
     let Some(root) = corpus_root() else { return };
