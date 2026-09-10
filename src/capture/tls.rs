@@ -137,6 +137,23 @@ pub fn parse_tls_records_with_consumed(data: &[u8]) -> (Vec<TlsRecord>, usize) {
         if length > MAX_TLS_RECORD_LENGTH {
             break;
         }
+        // RFC 5246 §6.2.1: "Implementations MUST NOT send zero-length
+        // fragments of Handshake, Alert, or ChangeCipherSpec content types."
+        // RFC 8446 §5.1 repeats it for Handshake and says an Alert record
+        // "MUST contain exactly one message".
+        //
+        // Three types, not four, and the omission is the RFC's: "Zero-length
+        // fragments of Application data MAY be sent as they are potentially
+        // useful as a traffic analysis countermeasure." Applying the rule to
+        // all four would discard a countermeasure the specification invites.
+        //
+        // Worth refusing rather than merely recording, because this walk has
+        // to decide where one record ends and the next begins from the header
+        // alone. A shape no conformant peer emits is the only evidence
+        // available at that offset.
+        if length == 0 && matches!(content_type_byte, 20..=22) {
+            break;
+        }
 
         let payload_start = offset + TLS_RECORD_HEADER_LEN;
         let payload_end = payload_start + length as usize;
@@ -483,6 +500,94 @@ fn decode_hex(hex: &str) -> Result<Vec<u8>> {
 /// zeroization on drop.
 #[cfg(test)]
 mod tests {
+
+    /// One record header with the given type and declared length, plus a
+    /// payload of exactly that length.
+    fn record(content_type: u8, len: u16) -> Vec<u8> {
+        let mut r = vec![content_type, 0x03, 0x03];
+        r.extend_from_slice(&len.to_be_bytes());
+        r.extend(std::iter::repeat_n(0x41u8, len as usize));
+        r
+    }
+
+    /// RFC 5246 §6.2.1: *"Implementations MUST NOT send zero-length fragments
+    /// of Handshake, Alert, or ChangeCipherSpec content types."* RFC 8446 §5.1
+    /// repeats it for Handshake and says an Alert record *"MUST contain exactly
+    /// one message"*.
+    ///
+    /// A record layer walking a TCP stream has to decide where one record ends
+    /// and the next begins, and a zero-length fragment of these three types is
+    /// a shape no conformant peer emits. Accepting it spends the only evidence
+    /// available at that offset.
+    #[test]
+    fn a_zero_length_fragment_of_the_three_forbidden_types_is_not_a_record() {
+        for (name, ct) in [
+            ("change_cipher_spec", 20u8),
+            ("alert", 21),
+            ("handshake", 22),
+        ] {
+            let (records, consumed) = parse_tls_records_with_consumed(&record(ct, 0));
+            assert!(
+                records.is_empty(),
+                "a zero-length {name} fragment is forbidden by both RFCs and \
+                 must not read as a record"
+            );
+            assert_eq!(consumed, 0, "nothing was consumed from {name}");
+        }
+    }
+
+    /// And a zero-length Application Data record IS one.
+    ///
+    /// The positive control, and the reason the rule names three types rather
+    /// than applying to all four. Both RFCs allow this explicitly: *"Zero-length
+    /// fragments of Application data MAY be sent as they are potentially useful
+    /// as a traffic analysis countermeasure."* A rule written for every type
+    /// would discard a legitimate countermeasure while every assertion above
+    /// still passed.
+    #[test]
+    fn a_zero_length_application_data_record_is_still_a_record() {
+        let (records, consumed) = parse_tls_records_with_consumed(&record(23, 0));
+        assert_eq!(records.len(), 1, "the RFC permits this one");
+        assert_eq!(records[0].length, 0);
+        assert_eq!(consumed, TLS_RECORD_HEADER_LEN);
+    }
+
+    /// A non-empty record of every type still parses.
+    ///
+    /// The regression control. A rule reaching past zero — refusing a short
+    /// record rather than an empty one — would drop the ChangeCipherSpec
+    /// record, whose payload is exactly one byte, and with it every session
+    /// key change.
+    #[test]
+    fn a_non_empty_record_of_every_type_still_parses() {
+        for (ct, len) in [(20u8, 1u16), (21, 2), (22, 4), (23, 16)] {
+            let (records, _) = parse_tls_records_with_consumed(&record(ct, len));
+            assert_eq!(records.len(), 1, "type {ct} with {len} byte(s) must parse");
+            assert_eq!(records[0].length, len);
+        }
+    }
+
+    /// The walk stops at a forbidden record and keeps what came before it.
+    ///
+    /// The stop is what makes this a discriminator rather than a filter: a
+    /// parser that skipped the bad record and carried on would resynchronize
+    /// on bytes it has no reason to trust, which is how a record layer walks
+    /// off into a payload.
+    #[test]
+    fn the_walk_stops_at_a_forbidden_record_and_keeps_the_valid_prefix() {
+        let mut data = record(22, 4);
+        let prefix_len = data.len();
+        data.extend_from_slice(&record(22, 0));
+        data.extend_from_slice(&record(23, 8));
+
+        let (records, consumed) = parse_tls_records_with_consumed(&data);
+        assert_eq!(records.len(), 1, "only the record before the bad one");
+        assert_eq!(records[0].length, 4);
+        assert_eq!(
+            consumed, prefix_len,
+            "the caller must be told the walk stopped at the bad record"
+        );
+    }
     use super::*;
 
     /// A SIP message split across two TLS records must arrive whole.

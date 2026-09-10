@@ -31,6 +31,14 @@ entry that carries them.
 
 ### Fixed
 
+- **The TLS record walk accepted zero-length fragments both RFCs forbid.** A
+  zero-length Handshake, Alert or ChangeCipherSpec fragment is a shape no
+  conformant peer emits, and the walk took the declared zero at face value.
+  Application Data is deliberately exempt: both RFCs permit a zero-length
+  fragment there as a traffic-analysis countermeasure. The walk stops at a
+  forbidden record rather than skipping it, because a record layer that
+  resynchronizes on untrusted bytes walks off into a payload.
+
 - **The WebSocket detector accepted a length encoding RFC 6455 forbids.** The
   RFC requires the shortest length form that can carry a payload, and the
   detector took the extended forms at face value: a two-byte length declaring

@@ -44,7 +44,7 @@ Tiers:
 
 ## Status
 
-**25 open, 492 done** across 36 sections.
+**25 open, 493 done** across 36 sections.
 Regenerate with `python3 scripts/backlog-status.py --apply`.
 
 | Section | Open | Done | Progress |
@@ -73,7 +73,7 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
 | OBS | 0 | 7 | `##########` |
 | REQ | 4 | 13 | `########..` |
 | CMP | 1 | 5 | `########..` |
-| GTP | 2 | 6 | `########..` |
+| GTP | 2 | 7 | `########..` |
 | MER | 0 | 5 | `##########` |
 | LIVE | 3 | 3 | `#####.....` |
 | P5 | 6 | 14 | `#######...` |
@@ -6821,6 +6821,35 @@ wrote for itself.
   the encoding rule — moving the comparison off the boundary changed nothing.
   The payloads are built to their declared length now, and the same mutation
   fails two tests.
+
+- [x] **CONF6 (done 2026-09-10) — the TLS record walk accepted zero-length
+  fragments both RFCs forbid.** Fifth finding of the conformance audit, from
+  reading [RFC 5246 §6.2.1](https://www.rfc-editor.org/rfc/rfc5246#section-6.2.1) and [RFC 8446 §5.1](https://www.rfc-editor.org/rfc/rfc8446#section-5.1) against
+  [`src/capture/tls.rs`](https://github.com/NormB/sipnab/blob/main/src/capture/tls.rs).
+
+  RFC 5246 states it as a list: *"Implementations MUST NOT send zero-length
+  fragments of Handshake, Alert, or ChangeCipherSpec content types."* RFC 8446
+  repeats it for Handshake and reaches the same place for Alert from the other
+  direction — *"a record with an Alert type MUST contain exactly one
+  message"*. The walk checked the content type, the version and the maximum
+  length, and took a declared zero at face value for all four types.
+
+  **Three types, not four, and the omission is the RFC's own**: *"Zero-length
+  fragments of Application data MAY be sent as they are potentially useful as
+  a traffic analysis countermeasure."* A rule applied to every type would
+  discard a countermeasure the specification invites, and the positive control
+  is what holds that line.
+
+  **It stops the walk rather than skipping the record.** A parser that skipped
+  a malformed record and carried on would resynchronize on bytes it has no
+  reason to trust, which is how a record layer walks off into a payload. One
+  test asserts the valid prefix is kept and the consumed count names where the
+  walk stopped.
+
+  Four mutations, each restored and verified: deleting the rule fires it,
+  extending it to Application Data fires it, reaching past zero to one-byte
+  records fires it — that one would drop every ChangeCipherSpec, whose payload
+  is exactly one byte — and skipping instead of stopping fires it.
 
 - [ ] **CONF4 — the RTCP compound is never checked for filling the datagram,
   and the reason not to is truncation.** Found 2026-09-10 alongside CONF3, and
