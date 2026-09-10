@@ -6881,6 +6881,20 @@ wrote for itself.
   it, and turning the length floor into an equality — which would reject the
   padding a datagram may legally carry — fires it too.
 
+  **Six more tests, on the class rather than the instance.** A refusal is only
+  diagnostic if it names the thing that is wrong, and `is_err()` cannot see the
+  difference. So: every one of nine malformations — bad magic, a length past
+  the datagram, a length below the header, no chunks, a chunk shorter than its
+  own header, a chunk running past the packet, a repeated chunk, a missing
+  source address, a missing destination — is refused by a message that names
+  it; no two of them read alike, because a message two faults share narrows
+  nothing; a bad length never mentions an address and a genuinely missing one
+  always does; a packet that supplied a field is never told the field is
+  missing; and every refusal is a sentence rather than a bare verdict.
+
+  Mutation-proven, and the decisive one restores the original defect: with the
+  two length checks deleted, six of them fail.
+
 - [ ] **CONF4 — the RTCP compound is never checked for filling the datagram,
   and the reason not to is truncation.** Found 2026-09-10 alongside CONF3, and
   left open deliberately.

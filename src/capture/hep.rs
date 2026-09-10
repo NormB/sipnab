@@ -3618,6 +3618,235 @@ mod tests {
         d
     }
 
+    /// One well-formed chunk, for building packets that are wrong in exactly
+    /// one place.
+    fn chunk(chunk_type: u16, data: &[u8]) -> Vec<u8> {
+        let mut c = Vec::new();
+        c.extend_from_slice(&0u16.to_be_bytes());
+        c.extend_from_slice(&chunk_type.to_be_bytes());
+        c.extend_from_slice(&((CHUNK_HEADER_LEN + data.len()) as u16).to_be_bytes());
+        c.extend_from_slice(data);
+        c
+    }
+
+    /// The chunks a minimal, valid HEP v3 packet needs.
+    fn valid_chunks() -> Vec<u8> {
+        let mut c = Vec::new();
+        c.extend_from_slice(&chunk(CHUNK_SRC_IPV4, &[10, 0, 0, 1]));
+        c.extend_from_slice(&chunk(CHUNK_DST_IPV4, &[10, 0, 0, 2]));
+        c.extend_from_slice(&chunk(CHUNK_SRC_PORT, &5060u16.to_be_bytes()));
+        c.extend_from_slice(&chunk(CHUNK_DST_PORT, &5060u16.to_be_bytes()));
+        c.extend_from_slice(&chunk(CHUNK_PAYLOAD, b"OPTIONS sip:a@b SIP/2.0"));
+        c
+    }
+
+    /// Every way a packet can be malformed, with the word its refusal must
+    /// carry.
+    ///
+    /// A refusal is only diagnostic if it names the thing that is wrong. The
+    /// HEP reader refused a below-minimum total length correctly and said
+    /// "missing source address", because the length check ran after the chunk
+    /// walk — so a feed with a broken length field sent its operator to look
+    /// at the sender's addressing. The verdict was right and the sentence was
+    /// not, which is a defect a test asserting `is_err()` cannot see.
+    fn malformations() -> Vec<(&'static str, Vec<u8>, &'static str)> {
+        let mut cases: Vec<(&'static str, Vec<u8>, &'static str)> = Vec::new();
+
+        cases.push(("magic", b"NOPE\x00\x08ab".to_vec(), "magic"));
+
+        let mut over = Vec::from(*HEP3_MAGIC);
+        over.extend_from_slice(&999u16.to_be_bytes());
+        over.extend_from_slice(&valid_chunks());
+        cases.push((
+            "total length past the datagram",
+            over,
+            "exceeds packet size",
+        ));
+
+        cases.push((
+            "total length below the header",
+            hep3_with_total_len(3),
+            "shorter than the header",
+        ));
+        cases.push((
+            "no chunks at all",
+            hep3_with_total_len(HEP3_HEADER_LEN as u16),
+            "no chunks",
+        ));
+
+        let mut short_chunk = Vec::new();
+        short_chunk.extend_from_slice(&0u16.to_be_bytes());
+        short_chunk.extend_from_slice(&CHUNK_SRC_IPV4.to_be_bytes());
+        short_chunk.extend_from_slice(&3u16.to_be_bytes());
+        cases.push((
+            "chunk shorter than its own header",
+            assemble_v3(&short_chunk),
+            "smaller than header",
+        ));
+
+        let mut over_chunk = Vec::new();
+        over_chunk.extend_from_slice(&0u16.to_be_bytes());
+        over_chunk.extend_from_slice(&CHUNK_SRC_IPV4.to_be_bytes());
+        over_chunk.extend_from_slice(&64u16.to_be_bytes());
+        over_chunk.extend_from_slice(&[0u8; 4]);
+        cases.push((
+            "chunk running past the packet",
+            assemble_v3(&over_chunk),
+            "overflows",
+        ));
+
+        let mut duplicated = Vec::new();
+        duplicated.extend_from_slice(&chunk(CHUNK_SRC_IPV4, &[10, 0, 0, 1]));
+        duplicated.extend_from_slice(&chunk(CHUNK_SRC_IPV4, &[10, 0, 0, 9]));
+        cases.push((
+            "a known chunk twice",
+            assemble_v3(&duplicated),
+            "more than once",
+        ));
+
+        let mut no_src = Vec::new();
+        no_src.extend_from_slice(&chunk(CHUNK_DST_IPV4, &[10, 0, 0, 2]));
+        no_src.extend_from_slice(&chunk(CHUNK_PAYLOAD, b"x"));
+        cases.push(("no source address", assemble_v3(&no_src), "source address"));
+
+        let mut no_dst = Vec::new();
+        no_dst.extend_from_slice(&chunk(CHUNK_SRC_IPV4, &[10, 0, 0, 1]));
+        no_dst.extend_from_slice(&chunk(CHUNK_PAYLOAD, b"x"));
+        cases.push((
+            "no destination address",
+            assemble_v3(&no_dst),
+            "destination address",
+        ));
+
+        cases
+    }
+
+    /// Every malformation is refused by a message that names it.
+    #[test]
+    fn every_malformation_is_refused_by_a_message_that_names_it() {
+        for (what, data, expected) in malformations() {
+            let err = parse_hep(&data)
+                .map(|_| ())
+                .expect_err(&format!("{what} must be refused"));
+            let msg = err.to_string().to_ascii_lowercase();
+            assert!(
+                msg.contains(&expected.to_ascii_lowercase()),
+                "{what}: the refusal does not name the cause. Expected \
+                 {expected:?}, got {msg:?}"
+            );
+        }
+    }
+
+    /// And no two malformations share a refusal.
+    ///
+    /// The property that makes a message diagnostic rather than decorative: if
+    /// two different faults read the same, the message narrows nothing and an
+    /// operator is back to guessing.
+    #[test]
+    fn no_two_malformations_share_a_refusal() {
+        let mut seen: std::collections::BTreeMap<String, &'static str> =
+            std::collections::BTreeMap::new();
+        for (what, data, _) in malformations() {
+            let Err(err) = parse_hep(&data).map(|_| ()) else {
+                panic!("{what} must be refused");
+            };
+            let msg = err.to_string();
+            if let Some(first) = seen.insert(msg.clone(), what) {
+                panic!("{first} and {what} are refused identically: {msg}");
+            }
+        }
+    }
+
+    /// A bad length is never reported as a missing address, and a missing
+    /// address always is.
+    ///
+    /// The regression, asserted directly and in both directions. One arm alone
+    /// would pass over a reader that had simply stopped mentioning addresses
+    /// at all.
+    #[test]
+    fn a_bad_length_is_never_reported_as_a_missing_address() {
+        let bad_length = parse_hep(&hep3_with_total_len(3))
+            .map(|_| ())
+            .expect_err("refused");
+        assert!(
+            !bad_length
+                .to_string()
+                .to_ascii_lowercase()
+                .contains("address"),
+            "a length fault must not send the reader to the sender's \
+             addressing: {bad_length}"
+        );
+
+        let mut no_src = Vec::new();
+        no_src.extend_from_slice(&chunk(CHUNK_DST_IPV4, &[10, 0, 0, 2]));
+        no_src.extend_from_slice(&chunk(CHUNK_PAYLOAD, b"x"));
+        let missing = parse_hep(&assemble_v3(&no_src))
+            .map(|_| ())
+            .expect_err("refused");
+        assert!(
+            missing
+                .to_string()
+                .to_ascii_lowercase()
+                .contains("source address"),
+            "a genuinely missing source address must still say so: {missing}"
+        );
+    }
+
+    /// A packet that supplies a field is never told the field is missing.
+    ///
+    /// The other half of the same rule. A packet carrying a perfectly good
+    /// source address, broken only in a later chunk, must be refused for the
+    /// later chunk — naming the address would be describing a fault the
+    /// datagram does not have.
+    #[test]
+    fn a_supplied_field_is_never_named_as_the_missing_one() {
+        let mut chunks = Vec::new();
+        chunks.extend_from_slice(&chunk(CHUNK_SRC_IPV4, &[10, 0, 0, 1]));
+        chunks.extend_from_slice(&chunk(CHUNK_DST_IPV4, &[10, 0, 0, 2]));
+        // A chunk claiming far more than the packet holds.
+        chunks.extend_from_slice(&0u16.to_be_bytes());
+        chunks.extend_from_slice(&CHUNK_PAYLOAD.to_be_bytes());
+        chunks.extend_from_slice(&900u16.to_be_bytes());
+        chunks.extend_from_slice(b"short");
+
+        let err = parse_hep(&assemble_v3(&chunks))
+            .map(|_| ())
+            .expect_err("refused");
+        let msg = err.to_string().to_ascii_lowercase();
+        assert!(
+            msg.contains("overflows"),
+            "the real fault must be named: {msg}"
+        );
+        assert!(
+            !msg.contains("missing"),
+            "this packet supplied both addresses; nothing is missing: {msg}"
+        );
+    }
+
+    /// Every refusal is a sentence, not a word.
+    ///
+    /// The quality bar under all of the above. "invalid" and "error" are
+    /// verdicts an operator cannot act on, and a message that carries only one
+    /// of them names nothing however precise the check behind it was.
+    #[test]
+    fn every_refusal_says_more_than_that_something_was_wrong() {
+        for (what, data, _) in malformations() {
+            let Err(err) = parse_hep(&data).map(|_| ()) else {
+                panic!("{what} must be refused");
+            };
+            let msg = err.to_string();
+            assert!(
+                msg.split_whitespace().count() >= 4,
+                "{what}: {msg:?} is too short to send anyone anywhere"
+            );
+            let bare = ["invalid", "error", "failed", "bad packet", "parse error"];
+            assert!(
+                !bare.contains(&msg.trim().to_ascii_lowercase().as_str()),
+                "{what}: {msg:?} is a verdict without a cause"
+            );
+        }
+    }
+
     /// A total length shorter than the header it sits in is refused.
     ///
     /// The field counts the six bytes of the `"HEP3"` header itself —
