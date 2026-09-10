@@ -12,6 +12,13 @@ entry that carries them.
 
 ### Fixed
 
+- **The LLMNR detector left five RFC-mandated zero bits unspent.** LLMNR is bare
+  DNS with no magic cookie, so a port number is the only strong evidence a
+  datagram is a name lookup rather than something that landed on 5355 by
+  accident. RFC 4795 requires a query to carry RCODE zero and forbids the
+  truncation bit; neither was checked. Both are query-only, because a responder
+  sets RCODE and the RFC forbids truncation only on queries.
+
 - **The STUN decoder accepted a message length RFC 8489 says never occurs.**
   Every attribute is padded to a multiple of four, so the length field's last
   two bits are always zero --- and the RFC names that as a way to tell STUN from

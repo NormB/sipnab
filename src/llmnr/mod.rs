@@ -54,7 +54,15 @@ pub const HEADER_LEN: usize = 12;
 ///   * the opcode must be 0, the only one LLMNR defines (RFC 4795 §2.1.1);
 ///   * the Z field is reserved and must be zero (ibid.);
 ///   * a query must ask exactly one question (RFC 4795 §2.1.1: "senders MUST
-///     send LLMNR queries with QDCOUNT set to one").
+///     send LLMNR queries with QDCOUNT set to one");
+///   * a query must carry RCODE zero (ibid.: "In an LLMNR query, the sender
+///     MUST set RCODE to zero");
+///   * a query must not set TC (ibid.: "The 'TC' bit MUST NOT be set in an
+///     LLMNR query") — a query that did not fit is one nobody can answer.
+///
+/// The last three are query-only, and deliberately. A responder sets RCODE and
+/// the RFC forbids TC only on queries, so applying either to both directions
+/// would reject real answers while every negative test went on passing.
 ///
 /// Together those reject the arbitrary-bytes case while admitting every
 /// conformant message, which is the same trade the STUN cookie makes for
@@ -83,6 +91,18 @@ pub fn is_llmnr_packet(data: &[u8], src_port: u16, dst_port: u16) -> bool {
     // non-conformant responder out of the media path, which is the outcome
     // this whole module exists to produce.
     if !is_response && qdcount != 1 {
+        return false;
+    }
+    // Two more query-only rules from the same section, and the same trade.
+    // RCODE is bits 3..0: "In an LLMNR query, the sender MUST set RCODE to
+    // zero; the responder ignores the RCODE and assumes it to be zero." TC is
+    // bit 9: "The 'TC' bit MUST NOT be set in an LLMNR query" — a query that
+    // did not fit is a query nobody can answer.
+    //
+    // Five bits, on a decoder whose only other evidence is a port number.
+    // Query-only for the reason above: a responder sets RCODE, so applying
+    // either rule to both directions would reject real answers.
+    if !is_response && (flags & 0x000f != 0 || flags & 0x0200 != 0) {
         return false;
     }
     true
@@ -141,6 +161,55 @@ mod tests {
         let mut data = QUERY.to_vec();
         data[5] = 0x00; // QDCOUNT = 0
         assert!(!is_llmnr_packet(&data, 51391, PORT));
+    }
+
+    /// RFC 4795 section 2.1.1: *"In an LLMNR query, the sender MUST set RCODE
+    /// to zero"*.
+    ///
+    /// Four more bits that are zero in every conformant query, on a decoder
+    /// whose only other evidence is a port number. The responder ignores
+    /// RCODE, so this holds for queries alone --- which is where the
+    /// discrimination is needed, since a query is what a stray datagram would
+    /// be mistaken for.
+    #[test]
+    fn rejects_a_query_carrying_a_response_code() {
+        for rcode in 1u8..=15 {
+            let mut data = QUERY.to_vec();
+            data[3] = rcode;
+            assert!(
+                !is_llmnr_packet(&data, 51391, PORT),
+                "RCODE {rcode} in a query is non-conformant and spends a \
+                 discriminator this module needs"
+            );
+        }
+    }
+
+    /// RFC 4795 section 2.1.1: *"The 'TC' bit MUST NOT be set in an LLMNR
+    /// query"*.
+    ///
+    /// One more bit, and unlike RCODE this one is a positive prohibition
+    /// rather than a default: a truncated QUERY is meaningless, because a
+    /// query that did not fit is a query nobody can answer.
+    #[test]
+    fn rejects_a_truncated_query() {
+        let mut data = QUERY.to_vec();
+        data[2] |= 0x02; // TC
+        assert!(!is_llmnr_packet(&data, 51391, PORT));
+    }
+
+    /// A response may carry both, and is still admitted.
+    ///
+    /// The positive control for the two rules above. Responders set RCODE, and
+    /// the RFC forbids TC only on queries --- so a rule applied to both
+    /// directions would reject real answers, and every negative assertion
+    /// above would still pass while the module quietly stopped seeing half of
+    /// LLMNR.
+    #[test]
+    fn a_response_may_carry_a_response_code_and_the_truncation_bit() {
+        let mut data = QUERY.to_vec();
+        data[2] = 0x80 | 0x02; // QR = 1, TC = 1
+        data[3] = 0x03; // RCODE = NXDOMAIN
+        assert!(is_llmnr_packet(&data, PORT, 51391));
     }
 
     /// The defect in one assertion: this payload passes sipnab's strict RTP

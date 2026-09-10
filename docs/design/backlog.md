@@ -44,7 +44,7 @@ Tiers:
 
 ## Status
 
-**24 open, 489 done** across 36 sections.
+**24 open, 490 done** across 36 sections.
 Regenerate with `python3 scripts/backlog-status.py --apply`.
 
 | Section | Open | Done | Progress |
@@ -73,7 +73,7 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
 | OBS | 0 | 7 | `##########` |
 | REQ | 4 | 13 | `########..` |
 | CMP | 1 | 5 | `########..` |
-| GTP | 1 | 3 | `########..` |
+| GTP | 1 | 4 | `########..` |
 | MER | 0 | 5 | `##########` |
 | LIVE | 3 | 3 | `#####.....` |
 | P5 | 6 | 14 | `#######...` |
@@ -6761,6 +6761,26 @@ GTPv2-C header are the same shape, and both define Length as "the octets after
 the first four", so the whole-datagram check passes. That is fixed. What the
 episode exposed is that sipnab's mobile-core coverage rests on fixtures sipnab
 wrote for itself.
+
+- [x] **CONF2 (done 2026-09-10) — the LLMNR detector left five more
+  RFC-mandated zero bits on the table.** Second finding of the conformance
+  audit, from reading RFC 4795 section 2.1.1 against [`src/llmnr/mod.rs`](https://github.com/NormB/sipnab/blob/main/src/llmnr/mod.rs).
+
+  LLMNR has no magic cookie --- the format is bare DNS --- so a port number is
+  the only strong evidence, and every structural bit that must be zero is worth
+  spending. The module already checked the opcode, the Z field and QDCOUNT, and
+  said so with the RFC cited. Two sender-side MUSTs were missing: *"In an LLMNR
+  query, the sender MUST set RCODE to zero"* (four bits) and *"The 'TC' bit
+  MUST NOT be set in an LLMNR query"* (one more).
+
+  **Query-only, and that is the whole subtlety.** A responder sets RCODE, and
+  the RFC forbids TC only on queries. A rule applied to both directions would
+  reject real answers while every negative test went on passing --- so the
+  positive control asserts a response carrying both is still admitted.
+
+  Mutation-proven three ways: deleting the rule fails the negatives, widening
+  it to responses fails the positive control, and moving the TC mask one nibble
+  fails too, which is the shape a bit-mask edit would actually take.
 
 - [x] **CONF1 (done 2026-09-10) — the STUN decoder spent none of the two bits
   RFC 8489 hands it for telling STUN from everything else.** First finding of
