@@ -2,7 +2,8 @@
 # sipnab pre-push hook (portable POSIX sh).
 #
 # Hard gate: refuse to push code that fails any of
-#   * `cargo fmt --all -- --check`,
+#   * `cargo fmt --all -- --check`, plus the two packages the workspace
+#     excludes (`fuzz/`, `bpf/`),
 #   * `cargo clippy --workspace --all-features --all-targets -- -D warnings`,
 #   * `cargo doc --no-deps --all-features --workspace` (RUSTDOCFLAGS -D warnings),
 #   * `cd fuzz && cargo check`,
@@ -62,8 +63,13 @@ if ! command -v cargo >/dev/null 2>&1; then
 fi
 
 # -- Hard gate: rustfmt -------------------------------------------------------
+# `--all` reaches workspace members only, and `fuzz/` and `bpf/` are excluded
+# on purpose. Named explicitly, because a gate that cannot see a package
+# reports the same green as one that saw it and found nothing.
 printf '  cargo fmt --all -- --check ... '
-if cargo fmt --all -- --check; then
+if cargo fmt --all -- --check \
+	&& cargo fmt --manifest-path fuzz/Cargo.toml -- --check \
+	&& cargo fmt --manifest-path bpf/Cargo.toml -- --check; then
 	printf '%bOK%b\n' "$GREEN" "$NC"
 else
 	printf '%bFAIL%b\n' "$RED" "$NC"
@@ -71,6 +77,8 @@ else
 	printf '%bPush blocked: code is not formatted.%b\n' "$RED" "$NC"
 	printf 'Fix it with:\n'
 	printf '    cargo fmt --all\n'
+	printf '    cargo fmt --manifest-path fuzz/Cargo.toml\n'
+	printf '    cargo fmt --manifest-path bpf/Cargo.toml\n'
 	printf 'then stage, commit, and push again.\n'
 	printf '\n'
 	printf 'Emergency bypass (discouraged): SKIP_FMT_HOOK=1 git push\n'

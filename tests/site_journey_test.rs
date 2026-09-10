@@ -5499,7 +5499,13 @@ fn packaging_scripts_reference_existing_paths() {
     // repository-root, and the spec lives under e2e/. The step now says
     // `./tests/...`, which is both unambiguous to a reader and, because the
     // preceding character is a slash, not a root-relative candidate.
-    const EXPECTED_REFERENCES: usize = 82;
+    // 82 -> 84: two, both in `.github/workflows/ci.yml`, from the Format
+    // step gaining `--manifest-path fuzz/Cargo.toml` and
+    // `--manifest-path bpf/Cargo.toml`. `--all` reaches workspace members
+    // and those two packages are excluded, so a gate that did not name
+    // them never looked at them. Both paths exist, which is what this
+    // gate then verifies.
+    const EXPECTED_REFERENCES: usize = 84;
     assert_eq!(
         checked, EXPECTED_REFERENCES,
         "packaging path scan saw {checked} references, expected \

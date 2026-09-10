@@ -42,6 +42,10 @@ run() {  # run <label> <command...>
 
 echo "Running fixers..."
 run "formatting"        cargo fmt --all
+# The two packages the workspace excludes. A fixer that leaves them
+# unformatted hands the gate a failure it just told you it fixed.
+run "formatting (fuzz)" cargo fmt --manifest-path fuzz/Cargo.toml
+run "formatting (bpf)"  cargo fmt --manifest-path bpf/Cargo.toml
 run "line citations"    python3 scripts/check-line-drift.py --apply
 run "repo path links"   python3 scripts/link-repo-paths.py --apply
 run "site pages"        python3 scripts/build-site-pages.py

@@ -150,7 +150,13 @@ jobs:
         run: cargo clippy --workspace --all-features --all-targets -- -D warnings
 
       - name: Format
-        run: cargo fmt --check
+        # `--check` alone covers this workspace. `fuzz/` and `bpf/` are
+        # excluded from it deliberately, so they need naming: bpf/src/main.rs
+        # sat unformatted with every fmt gate in the repository green.
+        run: |
+          cargo fmt --check
+          cargo fmt --manifest-path fuzz/Cargo.toml -- --check
+          cargo fmt --manifest-path bpf/Cargo.toml -- --check
 
       - name: Docs
         # rustdoc-only lints (broken intra-doc links, private-item links)

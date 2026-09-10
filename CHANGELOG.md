@@ -8,6 +8,19 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Fixed
+
+- **The eBPF kernel source was never formatted, and five gates said it was.**
+  `cargo fmt --all` reaches workspace members, and `fuzz/` and `bpf/` are
+  excluded from the workspace on purpose --- so both hooks, CI, the preflight
+  script and the prepare-commit fixer all reported clean formatting for a
+  package none of them had looked at. `bpf/src/main.rs` had an unformatted
+  array the whole time. Every gate now names the excluded packages, and a test
+  derives that list from the manifests rather than trusting the gates to
+  remember it.
+
 ## [0.5.163] - 2026-09-10
 
 ### Added

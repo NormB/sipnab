@@ -62,7 +62,23 @@ emit_capped() { # emit_capped <max-lines> <log-path>   (reads stdin)
 # fix, and re-checked where it matters that it is true.
 echo -n "  Formatting... "
 set +e
-FMT_OUTPUT=$(cargo fmt --all -- --check 2>&1)
+# `--all` is every member of THIS workspace, and `fuzz/` and `bpf/` are
+# deliberately not members -- the root manifest excludes them so a stock build
+# never demands cargo-fuzz or a nightly with bpf-linker. Naming them is the
+# only way a gate reaches them: `bpf/src/main.rs` sat unformatted with five
+# fmt gates green, and the only thing that ever noticed was a per-file check
+# run by hand.
+#
+# Each status is captured rather than the last one taken, because a command
+# substitution returns only the exit of its final command -- a failing
+# `--all` followed by a clean `bpf/` would have read as a pass.
+FMT_OUTPUT=$(
+    rc=0
+    cargo fmt --all -- --check 2>&1 || rc=1
+    cargo fmt --manifest-path fuzz/Cargo.toml -- --check 2>&1 || rc=1
+    cargo fmt --manifest-path bpf/Cargo.toml -- --check 2>&1 || rc=1
+    exit $rc
+)
 FMT_RC=$?
 set -e
 if [ "$FMT_RC" -ne 0 ]; then
@@ -72,7 +88,7 @@ if [ "$FMT_RC" -ne 0 ]; then
     # The diff names the file and line; show a capped slice rather than a
     # whole reformat of a large file.
     printf '%s\n' "$FMT_OUTPUT" | emit_capped 20 "$FMT_LOG"
-    echo "  Fix: cargo fmt --all"
+    echo "  Fix: cargo fmt --all && cargo fmt --manifest-path fuzz/Cargo.toml && cargo fmt --manifest-path bpf/Cargo.toml"
     echo "  Full output: $FMT_LOG"
     exit 1
 fi

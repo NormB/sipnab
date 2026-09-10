@@ -378,9 +378,14 @@ rm -f /tmp/.sipnab-preflight-gates.$$
 #    after the suite has already passed, which is the worst possible moment.
 # ---------------------------------------------------------------------------
 step "cargo fmt"
-if cargo fmt --all -- --check >/dev/null 2>&1; then ok; else
+# `fuzz/` and `bpf/` are outside the workspace, so `--all` cannot see them.
+if cargo fmt --all -- --check >/dev/null 2>&1 \
+    && cargo fmt --manifest-path fuzz/Cargo.toml -- --check >/dev/null 2>&1 \
+    && cargo fmt --manifest-path bpf/Cargo.toml -- --check >/dev/null 2>&1; then
+    ok
+else
     bad
-    note "run: cargo fmt --all"
+    note "run: cargo fmt --all; cargo fmt --manifest-path fuzz/Cargo.toml; cargo fmt --manifest-path bpf/Cargo.toml"
 fi
 
 # >>> BEGIN summary
