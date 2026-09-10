@@ -25,7 +25,9 @@
 
 #![cfg(all(unix, feature = "native"))]
 
-use sipnab::sandbox::{self, LandlockStatus, SandboxPaths};
+#[cfg(target_os = "linux")]
+use sipnab::sandbox::SandboxPaths;
+use sipnab::sandbox::{self, LandlockStatus};
 use std::io::Write as _;
 use std::path::PathBuf;
 use std::process::Command;
@@ -102,6 +104,11 @@ fn child_paths() -> Option<(PathBuf, PathBuf)> {
 }
 
 /// Set `PR_SET_NO_NEW_PRIVS`, which Landlock requires without `CAP_SYS_ADMIN`.
+///
+/// Linux only, and gated rather than merely unused elsewhere: `libc::prctl`
+/// and `PR_SET_NO_NEW_PRIVS` do not exist in `libc` on macOS, so an ungated
+/// definition is a compile error on a platform this file otherwise supports.
+#[cfg(target_os = "linux")]
 fn set_no_new_privs() -> bool {
     // SAFETY: PR_SET_NO_NEW_PRIVS takes no pointers and cannot be unset.
     unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) == 0 }
@@ -109,9 +116,13 @@ fn set_no_new_privs() -> bool {
 
 /// Whether reading `path` failed specifically because permission was denied.
 ///
+/// Used only by the Linux child roles: nothing off Linux installs a ruleset,
+/// so nothing off Linux has a denial to classify.
+///
 /// The errno is checked, not merely the failure: a path that vanished would
 /// also fail to open, and reporting that as confinement would be a gate
 /// passing for the wrong reason.
+#[cfg(target_os = "linux")]
 fn denied(path: &std::path::Path) -> Result<bool, String> {
     match std::fs::read(path) {
         Ok(_) => Ok(false),
@@ -127,6 +138,7 @@ fn denied(path: &std::path::Path) -> Result<bool, String> {
 /// Both, because a child that could open nothing would pass the denial half
 /// for the wrong reason — a broken fixture and a working sandbox look the same
 /// from one assertion.
+#[cfg(target_os = "linux")]
 #[test]
 #[ignore = "child role: installs a Landlock domain that cannot be removed"]
 fn child_enforced_grants_inside_and_denies_outside() {
@@ -186,6 +198,7 @@ fn child_unsandboxed_reaches_both_paths() {
 /// back rather than trusting an earlier step to have set it, because that step
 /// runs in another function and a control asserted at a distance is a control
 /// assumed.
+#[cfg(target_os = "linux")]
 #[test]
 #[ignore = "child role: deliberately omits no-new-privs"]
 fn child_without_no_new_privs_is_refused_by_name() {
@@ -219,6 +232,7 @@ fn child_without_no_new_privs_is_refused_by_name() {
 /// A ruleset that governs the filesystem and grants nothing denies every file
 /// the run needs. Refusing turns a broken capture into a reported
 /// non-installation, which is the difference between an outage and a log line.
+#[cfg(target_os = "linux")]
 #[test]
 #[ignore = "child role: installs nothing and must say so"]
 fn child_with_an_empty_plan_is_refused_rather_than_confined() {
@@ -249,6 +263,7 @@ fn child_with_an_empty_plan_is_refused_rather_than_confined() {
 /// Reads and writes are separate rights, and a ruleset that granted write
 /// everywhere while bounding reads would still let a defect drop a payload on
 /// disk.
+#[cfg(target_os = "linux")]
 #[test]
 #[ignore = "child role: installs a Landlock domain that cannot be removed"]
 fn child_enforced_denies_a_write_outside_the_ruleset() {
