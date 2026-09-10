@@ -670,7 +670,11 @@ fn linked_code_targets_exist() {
     // drives the classifier into a link, which is what that gate demands.
     // Attributed by counting that file: 5 relative code links before, 7 after,
     // and no other internals page changed.
-    const EXPECTED_CODE_LINKS: usize = 423;
+    // 423 -> 424: one, again in `docs/internals/uprobe-capture.md`, where the
+    // paragraph on why this file belongs to a phase-two commit names the
+    // constant both release gates read. Attributed the same way: 7 relative
+    // code links in that file before, 8 after, no other page touched.
+    const EXPECTED_CODE_LINKS: usize = 424;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \

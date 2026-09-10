@@ -46,8 +46,8 @@ use std::path::PathBuf;
 mod release_logic;
 
 use release_logic::{
-    ADVERTISEMENT_PATHS, advertisement_path, debounce_ceiling, dependency_path, is_advertisement,
-    is_dependency_bump, parse_version,
+    ADVERTISEMENT_PATHS, LOAD_VERIFICATION_RECORD, advertisement_path, debounce_ceiling,
+    dependency_path, is_advertisement, is_dependency_bump, parse_version,
 };
 
 /// The repository root.
@@ -190,6 +190,102 @@ fn a_name_that_merely_begins_with_an_advertisement_file_is_rejected() {
             "{trap} reached is_advertisement as an advertisement"
         );
     }
+}
+
+// ── A2. the load-verification record is part of phase two ───────────
+
+/// The eBPF load record is an advertisement path.
+///
+/// Phase two of a release cannot avoid touching it. LIVE3's gate refuses to
+/// let `published_version` name a version with no recorded load verification,
+/// so the commit that moves `published_version` is the same commit that adds
+/// the row — and if the classifier does not know that, the only clean
+/// phase-two commit in the flow is unpushable.
+///
+/// That is what happened on 0.5.164: every gate passed, the artifact had been
+/// downloaded and loaded on a real kernel, and the push was refused because
+/// one gate demanded a file another gate's classifier called ordinary work.
+/// The two now read the same constant.
+#[test]
+fn the_load_verification_record_is_an_advertisement_path() {
+    assert!(
+        advertisement_path(LOAD_VERIFICATION_RECORD),
+        "{LOAD_VERIFICATION_RECORD} is required by the LIVE3 gate in phase \
+         two and rejected by the phase-two classifier, so the correct commit \
+         cannot be pushed without a bypass"
+    );
+}
+
+/// A whole phase-two changeset, exactly as the release flow produces it.
+///
+/// Named files rather than a loop over `ADVERTISEMENT_PATHS`: this is the
+/// shape the flow actually emits, and it is the shape that was refused.
+#[test]
+fn a_phase_two_changeset_carrying_the_load_record_is_an_advertisement() {
+    let changed: Vec<String> = vec![
+        "website/config.toml".into(),
+        "docs/install.md".into(),
+        "website/content/docs/install.md".into(),
+        LOAD_VERIFICATION_RECORD.into(),
+        "website/content/docs/internals/uprobe-capture.md".into(),
+        "website/static/llms-full.txt".into(),
+    ];
+    assert!(
+        is_advertisement(&changed, TAG, TAG),
+        "this is the six-file commit phase two produces once the load \
+         verification has run; refusing it leaves a bypass as the only route"
+    );
+}
+
+/// Exempting it did not create a new way past the delivery gates.
+///
+/// The record is only an advertisement while the site names the newest tag.
+/// Without this, adding the path would have handed any commit touching the
+/// uprobe record a free pass through every gate in the delivery set.
+#[test]
+fn the_load_record_alone_does_not_advertise_a_tag_the_site_omits() {
+    let behind = (TAG.0, TAG.1, TAG.2 - 1);
+    assert!(
+        !is_advertisement(&[LOAD_VERIFICATION_RECORD.to_string()], behind, TAG),
+        "recording a load verification while the site still names {behind:?} \
+         is ordinary work, not phase two of {TAG:?}"
+    );
+    let mut with_code = vec![LOAD_VERIFICATION_RECORD.to_string()];
+    with_code.push("src/capture/uprobe/bpf.rs".into());
+    assert!(
+        !is_advertisement(&with_code, TAG, TAG),
+        "code beside the record is ordinary work whatever the site says"
+    );
+}
+
+/// The gate that DEMANDS the record and the classifier that EXEMPTS it name
+/// the same file.
+///
+/// Derived, not restated: the path is read out of the LIVE3 gate's source. A
+/// second copy of the name is how this broke — one gate learned a new
+/// obligation and the other never heard about it.
+#[test]
+fn the_gate_demanding_the_record_names_the_file_the_classifier_exempts() {
+    let gate = std::fs::read_to_string(repo().join("tests/bpf_load_verification_test.rs"))
+        .expect("the LIVE3 gate is in the tree");
+    assert!(
+        gate.contains("use release_logic::LOAD_VERIFICATION_RECORD;"),
+        "tests/bpf_load_verification_test.rs no longer reads the shared \
+         constant, so the file it demands and the file this classifier \
+         exempts are free to drift apart again"
+    );
+    let quoted = format!("{LOAD_VERIFICATION_RECORD:?}");
+    assert!(
+        !gate.contains(&quoted),
+        "tests/bpf_load_verification_test.rs still spells \
+         {LOAD_VERIFICATION_RECORD} out; a second copy of the name is exactly \
+         how the two gates disagreed"
+    );
+    assert!(
+        repo().join(LOAD_VERIFICATION_RECORD).is_file(),
+        "{LOAD_VERIFICATION_RECORD} does not exist, so both gates are naming \
+         a file that cannot hold a row"
+    );
 }
 
 // ── B. directory entries versus file entries ────────────────────────

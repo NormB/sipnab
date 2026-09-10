@@ -8,6 +8,19 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Fixed
+
+- **Two release gates disagreed about which files phase two of a release
+  touches.** The eBPF load record became a required part of phase two when
+  LIVE3 landed: `published_version` cannot name a release with no recorded
+  verification. The classifier that recognizes a phase-two commit was never
+  told, so it read the record as ordinary work and the delivery gates refused
+  the one commit the flow is supposed to produce, leaving a bypass as the only
+  route. Both now read one constant, and the tests drive the states this
+  checkout cannot reach.
+
 ## [0.5.164] - 2026-09-10
 
 ### Added

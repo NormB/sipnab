@@ -35,7 +35,21 @@ pub const ADVERTISEMENT_PATHS: &[&str] = &[
     "website/content/",
     "website/static/",
     "CHANGELOG.md",
+    LOAD_VERIFICATION_RECORD,
 ];
+
+/// Where a release records that its eBPF object loaded on a real kernel.
+///
+/// One name, two consumers. `tests/bpf_load_verification_test.rs` refuses to
+/// let `published_version` name a release with no row here, which makes this
+/// file part of every phase-two commit; [`ADVERTISEMENT_PATHS`] has to agree,
+/// or the flow's own correct commit is unpushable.
+///
+/// It did not agree on 0.5.164. The verification had run, the row was written,
+/// and the push was refused because the classifier called the record ordinary
+/// work. A gate and the thing that satisfies it must derive from one rule;
+/// this constant is that rule.
+pub const LOAD_VERIFICATION_RECORD: &str = "docs/internals/uprobe-capture.md";
 
 /// Whether one path is an advertisement file.
 ///

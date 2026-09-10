@@ -28,6 +28,11 @@ use std::io::Write;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
+#[path = "support/release_logic.rs"]
+mod release_logic;
+
+use release_logic::LOAD_VERIFICATION_RECORD;
+
 fn repo() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR"))
 }
@@ -151,7 +156,7 @@ fn the_load_verification_record_names_the_published_release() {
         .captures(&read("website/config.toml"))
         .expect("website/config.toml has no published_version")[1]
         .to_string();
-    let doc = read("docs/internals/uprobe-capture.md");
+    let doc = read(LOAD_VERIFICATION_RECORD);
     let rows: Vec<&str> = doc
         .lines()
         .map(str::trim)
@@ -159,8 +164,8 @@ fn the_load_verification_record_names_the_published_release() {
         .collect();
     assert!(
         !rows.is_empty(),
-        "docs/internals/uprobe-capture.md records no load verification at all; \
-         this gate would pass whatever shipped"
+        "{LOAD_VERIFICATION_RECORD} records no load verification at all; this \
+         gate would pass whatever shipped"
     );
     assert!(
         rows.iter().any(|r| r.contains(&published)),
@@ -178,7 +183,7 @@ fn the_load_verification_record_names_the_published_release() {
 /// matrix to answer the first time.
 #[test]
 fn every_recorded_verification_names_its_artifact_and_kernel() {
-    let doc = read("docs/internals/uprobe-capture.md");
+    let doc = read(LOAD_VERIFICATION_RECORD);
     let mut rows = 0usize;
     let mut thin = Vec::new();
     for line in doc.lines().map(str::trim) {

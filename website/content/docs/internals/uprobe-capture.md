@@ -296,6 +296,14 @@ nobody has loaded fails the suite:
 | 0.5.163 | x86_64-unknown-linux-gnu | Debian 13, x86_64 | 6.12.105+deb13-amd64 | 2026-09-10 | attached, 2 libraries plus `tcp_sendmsg` |
 | 0.5.164 | x86_64-unknown-linux-gnu | Debian 13, x86_64 | 6.12.105+deb13-amd64 | 2026-09-10 | attached, 2 libraries plus `tcp_sendmsg` |
 
+That requirement makes this file part of every phase-two release commit, which
+the classifier deciding what a phase-two commit looks like has to agree with.
+It did not, on 0.5.164: the verification had run, the row sat in the commit,
+and the delivery gates refused the push because they read the record as
+ordinary work. Both sides now read `LOAD_VERIFICATION_RECORD` in
+[`tests/support/release_logic.rs`](https://github.com/NormB/sipnab/blob/main/tests/support/release_logic.rs), so nobody can hand one side a new obligation
+without the other hearing about it.
+
 Mutation-test any gate you add here. One of these tests began life believing
 the flavor list's *order* prevented misclassification. Reversing the order did
 not fail it, because `strip_prefix` already separates the two. The comment was
