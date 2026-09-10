@@ -123,16 +123,79 @@ fn every_package_outside_the_workspace_is_checked_by_every_format_gate() {
     );
 }
 
+/// What a `cargo fmt --check` run actually established.
+///
+/// Three outcomes, and the third is why this is not a boolean. A non-zero exit
+/// with an empty diff is not unformatted code — it is rustfmt failing to run,
+/// and the two look identical from the exit status alone. This test asserted
+/// the first and meant the second on 2026-09-10: CI's feature-matrix jobs
+/// install the toolchain without the rustfmt component, so `cargo fmt` exited
+/// non-zero with nothing on stdout, and both excluded packages were reported
+/// as unformatted with an empty diff underneath. Main went red over code that
+/// was correctly formatted.
+#[derive(Debug, PartialEq, Eq)]
+enum FormatCheck {
+    /// rustfmt ran and the package is clean.
+    Clean,
+    /// rustfmt ran and printed a diff.
+    Unformatted,
+    /// rustfmt could not run. Nothing was established either way.
+    CouldNotRun,
+}
+
+/// Pure, so all three arms have a test without needing a machine that lacks
+/// rustfmt.
+fn classify_format_check(ok: bool, stdout: &str, stderr: &str) -> FormatCheck {
+    if ok {
+        return FormatCheck::Clean;
+    }
+    // A real diff is the only evidence of unformatted code. Everything else
+    // failing is a broken checker wearing the same exit status.
+    if stdout.trim().is_empty() {
+        let _ = stderr;
+        return FormatCheck::CouldNotRun;
+    }
+    FormatCheck::Unformatted
+}
+
+/// A missing rustfmt is not a finding about the code.
+#[test]
+fn a_checker_that_could_not_run_is_not_a_verdict() {
+    assert_eq!(
+        classify_format_check(false, "", "error: 'cargo-fmt' is not installed"),
+        FormatCheck::CouldNotRun,
+        "an empty diff with a non-zero exit is rustfmt failing to run; calling \
+         it unformatted turns a missing component into a code defect"
+    );
+}
+
+/// A real diff still is one.
+#[test]
+fn a_diff_is_still_reported_as_unformatted() {
+    assert_eq!(
+        classify_format_check(false, "Diff in /x/src/main.rs:78:\n-a, b\n+a,\n+b", ""),
+        FormatCheck::Unformatted
+    );
+    assert_eq!(classify_format_check(true, "", ""), FormatCheck::Clean);
+}
+
 /// And the packages themselves are actually formatted.
 ///
 /// The test above proves the plumbing exists. This proves the result, which is
 /// the thing that was wrong: `bpf/src/main.rs` had an unformatted array with
 /// every gate green, because no gate was looking. Running it here means
 /// `cargo test` alone catches a regression, without waiting for a hook.
+///
+/// Where rustfmt is absent this says so and declines to judge, rather than
+/// reporting every package as unformatted. CI's Format step has rustfmt and
+/// names both packages — `every_package_outside_the_workspace_is_checked_by_every_format_gate`
+/// is what guarantees that — so the check is enforced there whatever this run
+/// could see.
 #[test]
 fn every_package_outside_the_workspace_is_formatted() {
     let members = workspace_members();
     let mut unformatted = Vec::new();
+    let mut unavailable = Vec::new();
     let mut checked = 0usize;
     for dir in package_dirs() {
         if members.contains(&dir) {
@@ -147,17 +210,27 @@ fn every_package_outside_the_workspace_is_formatted() {
             .output()
             .expect("cargo fmt");
         checked += 1;
-        if !out.status.success() {
-            unformatted.push(format!(
-                "{dir}/:\n{}",
-                String::from_utf8_lossy(&out.stdout).trim()
-            ));
+        let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+        let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+        match classify_format_check(out.status.success(), &stdout, &stderr) {
+            FormatCheck::Clean => {}
+            FormatCheck::Unformatted => {
+                unformatted.push(format!("{dir}/:\n{}", stdout.trim()));
+            }
+            FormatCheck::CouldNotRun => unavailable.push(format!("{dir}/: {}", stderr.trim())),
         }
     }
     assert!(
         checked > 0,
         "checked no packages; this gate is passing over an empty list"
     );
+    if !unavailable.is_empty() {
+        eprintln!(
+            "SKIP: rustfmt could not run here, so nothing was established about \
+             these packages:\n  {}",
+            unavailable.join("\n  ")
+        );
+    }
     assert!(
         unformatted.is_empty(),
         "these packages are outside the workspace and unformatted. \

@@ -12,6 +12,15 @@ entry that carries them.
 
 ### Fixed
 
+- **A new format gate reported "unformatted" when rustfmt was simply absent.**
+  CI's feature-matrix jobs install the toolchain without the rustfmt component,
+  so `cargo fmt --check` exited non-zero with an empty diff, and the gate read
+  that exit status as a finding about the code. Both excluded packages were
+  reported as unformatted with nothing underneath, and main went red over code
+  that was correctly formatted. The verdict is now a three-way decision --- a
+  diff is unformatted, an empty diff with a non-zero exit is a checker that
+  could not run --- and the second says so and declines to judge.
+
 - **The tag prompt did not name the two obligations that only exist after
   publishing.** Both the binary-ceiling record and the eBPF load record key on
   `published_version`, so neither can pass before the artifacts exist --- and
