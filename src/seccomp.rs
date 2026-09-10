@@ -789,6 +789,200 @@ mod tests {
         );
     }
 
+    /// Every failure this module can report says nothing is in force.
+    ///
+    /// Owed for the thread-sync message, which read "partly covered and partly
+    /// not" — a state the kernel does not produce. One wrong sentence is a
+    /// mistake; the class is a module where SOME failure path leaves an
+    /// operator believing a control is half on. So this walks every failure
+    /// string in the file rather than the one that was wrong.
+    #[test]
+    fn no_failure_path_leaves_an_operator_thinking_a_filter_is_partly_on() {
+        // Logical lines, not physical ones. A Rust string continuation ends
+        // in a backslash, and the first version of this test looked only at
+        // the line carrying the `Failed(` marker — so the mutation that put
+        // "partly covered" back on the SECOND line of the same literal
+        // survived it. A gate that reads half a sentence judges half a
+        // sentence.
+        let src = include_str!("seccomp.rs");
+        let mut logical: Vec<(usize, String)> = Vec::new();
+        let mut pending: Option<(usize, String)> = None;
+        for (i, line) in src.lines().enumerate() {
+            let joined = match pending.take() {
+                Some((start, mut acc)) => {
+                    acc.push_str(line.trim_start());
+                    (start, acc)
+                }
+                None => (i + 1, line.to_string()),
+            };
+            if joined.1.trim_end().ends_with('\\') {
+                pending = Some((
+                    joined.0,
+                    joined.1.trim_end().trim_end_matches('\\').to_string(),
+                ));
+            } else {
+                logical.push(joined);
+            }
+        }
+        let mut hedged = Vec::new();
+        for (line_no, line) in &logical {
+            if !line.contains("SeccompStatus::Failed(") && !line.contains("could not") {
+                continue;
+            }
+            for weasel in ["partly", "partially", "some of", "may still"] {
+                if line.contains(weasel) {
+                    hedged.push(format!("line {line_no}: {weasel}"));
+                }
+            }
+        }
+        assert!(
+            hedged.is_empty(),
+            "a failure path hedges about what is in force: {hedged:?}. A seccomp \
+             install either takes or does not; saying otherwise sends an \
+             operator looking for a filter that is not there"
+        );
+    }
+
+    /// A failure's operator line and its status agree.
+    ///
+    /// The second of the two owed. `startup_line` is what an operator reads and
+    /// the status is what the code branches on, and the sentence was wrong while
+    /// the status was right — so this drives every failure variant through the
+    /// line and requires the two to say the same thing.
+    #[test]
+    fn a_failure_status_and_its_operator_line_say_the_same_thing() {
+        for status in [
+            SeccompStatus::Unsupported("no kernel support".to_string()),
+            SeccompStatus::Failed("EACCES".to_string()),
+            SeccompStatus::Failed(
+                "could not synchronize thread 7 to the filter and installed nothing".to_string(),
+            ),
+        ] {
+            let line = startup_line(&status);
+            assert!(
+                line.contains("Nothing is recorded"),
+                "{status:?} renders as {line:?}, which does not tell an operator \
+                 that no syscall is being recorded"
+            );
+            assert!(
+                !line.contains("Syscall logging on"),
+                "a failure renders with the success sentence: {line}"
+            );
+        }
+        // And the success variant is the only one that reads as success, so the
+        // pair above cannot pass by the line being uniformly negative.
+        assert!(startup_line(&SeccompStatus::Logging).contains("Syscall logging on"));
+    }
+
+    /// `install` reads the filter back before reporting success.
+    ///
+    /// Owed for the mutation that SURVIVED: making `install` return `Logging`
+    /// without calling the kernel passed every behavioral gate, because an
+    /// allowing filter and no filter are indistinguishable by their effects.
+    /// Structural on purpose — the behavioral half cannot see this, which is
+    /// the whole finding.
+    #[test]
+    fn install_reads_the_filter_back_before_reporting_success() {
+        let src = include_str!("seccomp.rs");
+        let start = src
+            .find("pub fn install(mode: SeccompMode) -> SeccompStatus {")
+            .expect("the Linux install is in this file");
+        let body = &src[start..start + 2000];
+        let load = body.find("load(&prog").expect("install loads a program");
+        let readback = body
+            .find("in_filter_mode()")
+            .expect("install reads the mode back");
+        let success = body
+            .find("SeccompStatus::Logging")
+            .expect("install reports success somewhere");
+        assert!(
+            load < readback && readback < success,
+            "install reports success without reading the filter back first \
+             (load at {load}, readback at {readback}, success at {success}). An \
+             allowing filter and no filter look identical from outside, so this \
+             ordering is the only thing between them"
+        );
+    }
+
+    /// The readback answers about THIS thread, not about the process.
+    ///
+    /// The second owed for that mutation, and it matters because the value is
+    /// per-thread: `install` uses it to judge its own success, and the sibling
+    /// gates use it to judge coverage. A readback that asked a process-wide
+    /// question would answer both incorrectly.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_readback_is_false_in_a_process_that_installed_nothing() {
+        assert!(
+            !in_filter_mode(),
+            "this test process reports a seccomp filter without installing one, \
+             so the readback cannot distinguish a working install from a \
+             missing one"
+        );
+        assert_eq!(install(SeccompMode::Off), SeccompStatus::Disabled);
+        assert!(!in_filter_mode(), "asking for no filter left one in force");
+    }
+
+    /// The operator guidance names both places a record can land.
+    ///
+    /// Owed for the first draft, which named only `dmesg`. On a host with an
+    /// audit daemon connected that buffer stays empty and the records go to the
+    /// daemon, so half of all readers would find nothing and conclude the
+    /// filter never installed. Both routes and the way to tell them apart are
+    /// required in every surface an operator reads.
+    #[test]
+    fn every_operator_surface_names_both_record_routes() {
+        let surfaces: [(&str, String); 2] = [
+            ("the startup line", startup_line(&SeccompStatus::Logging)),
+            (
+                "the module documentation",
+                // Every `//!` line, not a `take_while` from the top: the
+                // first line of the file is the SPDX comment, which is `//`,
+                // and a `take_while` stopped there and compared against an
+                // EMPTY string. That version failed for the right reason by
+                // luck; it would have passed just as happily on a module with
+                // no documentation at all.
+                include_str!("seccomp.rs")
+                    .lines()
+                    .filter(|l| l.trim_start().starts_with("//!"))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            ),
+        ];
+        for (what, text) in surfaces {
+            for route in ["dmesg", "ausearch", "auditctl"] {
+                assert!(
+                    text.contains(route),
+                    "{what} never mentions {route}, so a reader on the other \
+                     kind of host is sent to an empty buffer"
+                );
+            }
+        }
+    }
+
+    /// Neither route is described as the only one.
+    ///
+    /// The second owed. Naming both and then saying "the records are in dmesg"
+    /// is the same defect with more words, so the phrasing has to make the fork
+    /// explicit — it says where they go DEPENDS on the host.
+    #[test]
+    fn the_guidance_presents_the_routes_as_a_fork_not_a_default() {
+        let line = startup_line(&SeccompStatus::Logging);
+        assert!(
+            line.contains("depends on this host"),
+            "the startup line names two routes without saying the choice \
+             depends on the host, which reads as one route with an aside: {line}"
+        );
+        let dmesg = line.find("dmesg").expect("dmesg is named");
+        let ausearch = line.find("ausearch").expect("ausearch is named");
+        let auditctl = line.find("auditctl").expect("auditctl is named");
+        assert!(
+            auditctl < ausearch && auditctl < dmesg,
+            "the line names a route before telling the reader how to find out \
+             which one applies: {line}"
+        );
+    }
+
     /// The status enum has no variant that could be read as enforcement.
     ///
     /// Structural, deliberately: the day someone adds an enforcing mode they

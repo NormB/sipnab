@@ -556,3 +556,152 @@ fn no_flag_installs_nothing_and_says_nothing() {
         "a run that asked for nothing announced a syscall filter: {stderr}"
     );
 }
+
+// ── The three owed for the hand-derived allowlist that broke CI ─────────────
+
+/// This file's own source, for the structural gates below.
+fn this_file() -> String {
+    std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/seccomp_child_test.rs"),
+    )
+    .expect("this test file is in the tree")
+}
+
+/// No child role hand-lists the syscalls a runtime needs.
+///
+/// The defect this replaces: two roles installed a DENYING filter and
+/// allow-listed, by hand, everything the Rust runtime needed in order to print
+/// a verdict. The list was derived on aarch64, was short on x86_64 glibc, and
+/// the child died before it could say anything — which is `docs/design/
+/// syscall-sandbox.md` §3.2's stated failure mode, met in CI.
+///
+/// The rule is a bound rather than a ban, because one entry is the design: the
+/// denying role allows `exit_group` and nothing else, so the child cannot need
+/// a call the author forgot on an architecture the author does not have.
+#[test]
+fn no_child_role_hand_lists_what_a_runtime_needs() {
+    let src = this_file();
+    let mut oversized = Vec::new();
+    for (i, line) in src.lines().enumerate() {
+        let Some(rest) = line.split_once("build_program(").map(|(_, r)| r) else {
+            continue;
+        };
+        // The allowlist argument is the slice literal on this line, if any.
+        let Some(list) = rest.split_once('[').and_then(|(_, r)| r.split_once(']')) else {
+            continue;
+        };
+        let entries = list.0.split(',').filter(|e| !e.trim().is_empty()).count();
+        if entries > 1 {
+            oversized.push(format!("line {}: {entries} entries", i + 1));
+        }
+    }
+    assert!(
+        oversized.is_empty(),
+        "a child role allow-lists more than one syscall: {oversized:?}. A list \
+         written by hand is right on the architecture it was written on and \
+         wrong on the other, which is the failure this file exists to avoid \
+         rather than reproduce"
+    );
+}
+
+/// The denying role reaches its exit without touching libc again.
+///
+/// Linux-gated, and not because the reasoning is platform-specific: the role it
+/// inspects is, and the search strings below name libc symbols that
+/// `platform_split_test`'s line-oriented scanner cannot tell from real uses. A
+/// scanner that cannot see quoting is the same shape as the marker extractor in
+/// `fixture_isolation_test`, and the answer is the same — do not write the
+/// pattern where a line-oriented reader will trip over it.
+///
+/// The property that makes it portable: between the `load` that puts the filter
+/// in force and the raw `exit_group` that reports the verdict, the only libc
+/// call is the one under test. Anything else would be a call the filter refuses
+/// and the author has to have predicted.
+#[cfg(target_os = "linux")]
+#[test]
+fn the_denying_role_touches_only_the_call_under_test_after_installing() {
+    let src = this_file();
+    let start = src
+        .find("fn child_denying_filter_refuses_the_call_it_left_out")
+        .expect("the denying role is in this file");
+    let body = &src[start..];
+    let after_load = body
+        .find("seccomp::load(")
+        .and_then(|i| body[i..].find('\n').map(|j| i + j))
+        .expect("the role loads a filter");
+    // The raw exit CALL, not the allowlist entry naming the same syscall —
+    // that entry sits before the load and slicing to it inverts the range.
+    let exit = after_load
+        + body[after_load..]
+            .find("libc::syscall(libc::SYS_exit_group")
+            .expect("the role exits through a raw exit_group");
+    let between = &body[after_load..exit];
+    // CALLS, not references. `libc::EPERM` is a constant and makes no syscall;
+    // counting it would make this gate fail on correct code, which is its own
+    // way of teaching people to delete a gate. libc spells functions in
+    // lowercase and constants in upper, so the case of the first character
+    // after `libc::` is the discriminator.
+    let calls: Vec<&str> = between
+        .lines()
+        .filter(|l| !l.trim_start().starts_with("//"))
+        .filter(|l| {
+            l.match_indices("libc::").any(|(i, _)| {
+                l[i + "libc::".len()..]
+                    .chars()
+                    .next()
+                    .is_some_and(char::is_lowercase)
+            })
+        })
+        .collect();
+    assert_eq!(
+        calls.len(),
+        1,
+        "the denying role makes {} libc calls between installing the filter and \
+         exiting; every one beyond the syscall under test is a call the filter \
+         refuses and the author had to predict: {calls:?}",
+        calls.len()
+    );
+    assert!(
+        calls[0].contains("SYS_getpriority"),
+        "the one call between install and exit is not the one under test: {calls:?}"
+    );
+}
+
+/// The verdict travels in the exit status, never through the runtime.
+///
+/// A `println!` needs `write`, which needs the author to have allow-listed
+/// `write` on both architectures — the exact mistake. The parent reads an exit
+/// code instead, and this pins both halves so a future edit cannot quietly put
+/// the verdict back through stdout.
+#[test]
+fn the_denying_roles_verdict_travels_in_the_exit_status() {
+    let src = this_file();
+    let start = src
+        .find("fn child_denying_filter_refuses_the_call_it_left_out")
+        .expect("the denying role is in this file");
+    let end = start
+        + src[start..]
+            .find("\n#[cfg")
+            .or_else(|| src[start..].find("\n/// "))
+            .unwrap_or(src.len() - start);
+    let body = &src[start..end];
+    assert!(
+        !body.contains("println!") && !body.contains(CHILD_COMPLETE),
+        "the denying role reports through stdout, which needs a syscall it must \
+         then allow-list on every architecture"
+    );
+    for code in [
+        "EXIT_REFUSED_AS_EXPECTED",
+        "EXIT_NOT_REFUSED",
+        "EXIT_WRONG_ERRNO",
+    ] {
+        assert!(
+            body.contains(code),
+            "the role never produces {code}, so one outcome is indistinguishable \
+             from another"
+        );
+    }
+    assert_ne!(EXIT_REFUSED_AS_EXPECTED, EXIT_NOT_REFUSED);
+    assert_ne!(EXIT_REFUSED_AS_EXPECTED, EXIT_WRONG_ERRNO);
+    assert_ne!(EXIT_NOT_REFUSED, EXIT_WRONG_ERRNO);
+}

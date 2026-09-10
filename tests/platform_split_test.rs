@@ -412,3 +412,111 @@ fn no_source_file_uses_a_linux_only_symbol_outside_a_linux_cfg() {
         problems.join("\n  ")
     );
 }
+
+// ── The three owed for breaking the macOS build on 2026-09-10 ───────────────
+
+/// Every symbol that has actually broken a non-Linux build is on the list.
+///
+/// A regression list, not a wish list. Each entry cost a red main, and the
+/// scanner's [`LINUX_ONLY`] is a hand-maintained set — exactly the kind that
+/// looks complete right up until the next item is missing from it. Pinning the
+/// ones that have already burned us means a rewrite of that array cannot
+/// quietly drop one.
+///
+/// `libc::prctl` broke it first, in `tests/sandbox_test.rs`, which had no
+/// `target_os` predicate at all. `libc::sock_filter` broke it again in a unit
+/// test comparing this crate's `SockFilter` against the kernel's — the type is
+/// classic BPF, which macOS's libc does not carry.
+#[test]
+fn the_scanner_knows_every_symbol_that_has_broken_this_build() {
+    /// `(symbol, where it broke)`, appended to and never trimmed.
+    const HAS_BROKEN_THE_BUILD: &[(&str, &str)] = &[
+        (
+            "libc::prctl",
+            "tests/sandbox_test.rs, the Landlock child roles",
+        ),
+        (
+            "libc::sock_filter",
+            "src/seccomp.rs, the instruction-layout unit test",
+        ),
+        (
+            "libc::sock_fprog",
+            "src/seccomp.rs, beside sock_filter and absent for the same reason",
+        ),
+    ];
+    for (sym, where_) in HAS_BROKEN_THE_BUILD {
+        assert!(
+            LINUX_ONLY.contains(sym),
+            "{sym} has broken a non-Linux build once already ({where_}) and is \
+             no longer in LINUX_ONLY, so it can break it again unnoticed"
+        );
+    }
+}
+
+/// The scan reaches inside `#[cfg(test)] mod tests`, which is where it broke.
+///
+/// Not a formality: the break was in a unit test, not in production code, and
+/// a scanner that skipped test modules would have agreed with the tree while
+/// macOS refused to compile it. `#[cfg(test)]` is not a platform predicate, so
+/// the outward walk must not mistake it for one.
+#[test]
+fn a_linux_only_symbol_inside_a_test_module_is_still_reported() {
+    // Built from parts, and the continuation deliberately does not START with
+    // the marker: `fixture_isolation_test` counts any trimmed line beginning
+    // `#[test]` as a real test, and a fixture laid out that way arms it. That
+    // is instance six of a defect that file exists to pin, and reproducing it
+    // here would have made this file report one more test than it has.
+    let src = format!(
+        "use libc;\n\n#[cfg(test)]\nmod tests {{\n    {}\n    fn t() {{\n{}\n    }}\n}}\n",
+        "#[test]", "        assert_eq!(std::mem::size_of::<libc::sock_filter>(), 8);"
+    );
+    let src = src.as_str();
+    let found = ungated_uses(src);
+    assert_eq!(
+        found.len(),
+        1,
+        "a Linux-only type inside `#[cfg(test)] mod tests` was not reported: {found:?}"
+    );
+    assert!(found[0].1.contains("sock_filter"), "{found:?}");
+
+    // And the same module with a real platform predicate is clean, so the gate
+    // is reporting the platform split rather than the word `mod`.
+    let gated = format!(
+        "use libc;\n\n#[cfg(all(test, target_os = \"linux\"))]\nmod tests {{\n    {}\n    \
+         fn t() {{\n{}\n    }}\n}}\n",
+        "#[test]", "        assert_eq!(std::mem::size_of::<libc::sock_filter>(), 8);"
+    );
+    let gated = gated.as_str();
+    assert!(
+        ungated_uses(gated).is_empty(),
+        "a Linux-gated test module was reported: {:?}",
+        ungated_uses(gated)
+    );
+}
+
+/// The inverted-tree script says it cannot see an ABSENT libc item.
+///
+/// The two checks are a pair and the pairing is written down, because the
+/// reason one cannot see this class is not obvious: `scripts/check-non-linux.sh`
+/// recompiles the tree with `target_os` swapped, which changes what `cfg`
+/// selects but NOT which `libc` is linked. A type that simply does not exist
+/// elsewhere still resolves there. Anyone reading that script has to be told
+/// so, or they will assume it covers what it does not.
+#[test]
+fn the_inverted_tree_check_says_it_cannot_see_an_absent_libc_item() {
+    let script = std::fs::read_to_string(repo().join("scripts/check-non-linux.sh"))
+        .expect("scripts/check-non-linux.sh is in the tree");
+    let lower = script.to_lowercase();
+    assert!(
+        lower.contains("platform_split_test"),
+        "the script does not name the check that covers what it cannot see"
+    );
+    for phrase in ["libc", "absent"] {
+        assert!(
+            lower.contains(phrase),
+            "the script's blind-spot note never says {phrase:?}, so a reader \
+             cannot tell that an item missing from another platform's libc is \
+             invisible to it"
+        );
+    }
+}

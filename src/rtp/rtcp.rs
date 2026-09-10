@@ -1619,6 +1619,113 @@ mod tests {
         );
     }
 
+    /// Whether every sub-packet length in `data` totals the datagram exactly.
+    ///
+    /// RFC 3550 Appendix A.2's remaining condition, which this decoder does not
+    /// apply. It lives here as a named function rather than inline in one
+    /// fixture guard for a reason that cost a survived mutation: a guard
+    /// written inline is a guard nobody can drive, and the inline version
+    /// compared the FIRST sub-packet's length against the datagram instead of
+    /// walking — so a trailer that chained perfectly passed it.
+    fn lengths_chain_to_the_end(data: &[u8]) -> bool {
+        let mut off = 0usize;
+        while off < data.len() {
+            if data.len() - off < 4 {
+                return false;
+            }
+            let words = (usize::from(data[off + 2]) << 8) | usize::from(data[off + 3]);
+            let sub = (words + 1) * 4;
+            if off + sub > data.len() {
+                return false;
+            }
+            off += sub;
+        }
+        off == data.len()
+    }
+
+    /// The guard walks: a trailer that chains is recognized as chaining.
+    ///
+    /// Owed for the mutation that survived. This is the exact input that
+    /// defeated the inline version — a first sub-packet that does not fill the
+    /// datagram, followed by one that completes it — and the rule must call it
+    /// chaining, or the SRTCP test is asserting nothing.
+    #[test]
+    fn the_chain_guard_sees_a_trailer_that_completes_the_datagram() {
+        let mut chaining = vec![0x80u8, 201, 0, 1, 0x11, 0x22, 0x33, 0x44];
+        chaining.extend_from_slice(&[0x80, 203, 0, 4]);
+        chaining.extend_from_slice(&[0x11; 16]);
+        assert_eq!(chaining.len(), 28);
+
+        let words = (usize::from(chaining[2]) << 8) | usize::from(chaining[3]);
+        let first = (words + 1) * 4;
+        assert!(
+            first < chaining.len(),
+            "the fixture's FIRST sub-packet must not fill the datagram, or a \
+             guard comparing only that length would pass and this test would \
+             not be about walking at all"
+        );
+        assert!(
+            lengths_chain_to_the_end(&chaining),
+            "a datagram whose sub-packets total its length exactly was not \
+             recognized as chaining, so the guard on the SRTCP fixture cannot \
+             tell the two apart"
+        );
+    }
+
+    /// And it refuses every shape the corpus says A.2 would refuse.
+    ///
+    /// The second owed. One negative case can pass by accident; these are the
+    /// three shapes the real corpus actually holds — an encrypted remainder
+    /// after the cleartext header, a ragged tail of one to three bytes, and a
+    /// first sub-packet claiming more than the datagram carries.
+    #[test]
+    fn the_chain_guard_refuses_each_shape_the_corpus_holds() {
+        let mut encrypted = vec![0x80u8, 201, 0, 1, 0, 0, 0, 1];
+        encrypted.extend_from_slice(&[0xA5; 20]);
+        assert!(!lengths_chain_to_the_end(&encrypted), "SRTCP");
+
+        let mut ragged = vec![0x80u8, 201, 0, 1, 0, 0, 0, 1];
+        ragged.extend_from_slice(&[0, 0]);
+        assert!(!lengths_chain_to_the_end(&ragged), "a two-byte tail");
+
+        let overrun = [0x80u8, 200, 0, 6, 0, 0, 0, 1];
+        assert!(
+            !lengths_chain_to_the_end(&overrun),
+            "a first sub-packet claiming more than the datagram carries"
+        );
+
+        // The positive control, so the three above cannot pass by the rule
+        // refusing everything.
+        assert!(lengths_chain_to_the_end(&[0x80, 201, 0, 1, 0, 0, 0, 1]));
+    }
+
+    /// The SRTCP fixture is built to defeat the guard that failed.
+    ///
+    /// The third owed, and the one that pins the lesson rather than the code:
+    /// the fixture must be a shape where comparing the first length against the
+    /// datagram gives the WRONG answer. If a later edit makes the first
+    /// sub-packet fill the datagram, the weak guard and the walking guard agree
+    /// again and the survived mutation becomes invisible a second time.
+    #[test]
+    fn the_srtcp_fixture_is_one_the_weak_guard_would_have_missed() {
+        let mut srtcp = vec![0x80u8, 201, 0, 1, 0x11, 0x22, 0x33, 0x44];
+        srtcp.extend_from_slice(&0x8000_0001u32.to_be_bytes());
+        srtcp.extend_from_slice(&[0xA5; 16]);
+
+        let words = (usize::from(srtcp[2]) << 8) | usize::from(srtcp[3]);
+        let first = (words + 1) * 4;
+        // What the guard that survived the mutation checked.
+        let weak_verdict = first < srtcp.len();
+        // What walking the chain says.
+        let walking_verdict = !lengths_chain_to_the_end(&srtcp);
+        assert!(
+            weak_verdict && walking_verdict,
+            "the fixture no longer distinguishes the two guards (weak says \
+             {weak_verdict}, walking says {walking_verdict}), so the mutation \
+             that once survived would survive again unnoticed"
+        );
+    }
+
     /// SRTCP is still RTCP, although its sub-packet lengths cannot chain.
     ///
     /// The regression gate for RFC 3550 Appendix A.2's remaining condition,
@@ -1654,23 +1761,8 @@ mod tests {
         // the first sub-packet's length against the datagram and passed just
         // as happily when the trailer was replaced with a BYE that chained
         // perfectly. A guard a mutation survives is not a guard.
-        let mut off = 0usize;
-        let chains = loop {
-            if srtcp.len() - off < 4 {
-                break false;
-            }
-            let words = (usize::from(srtcp[off + 2]) << 8) | usize::from(srtcp[off + 3]);
-            let sub = (words + 1) * 4;
-            if off + sub > srtcp.len() {
-                break false;
-            }
-            off += sub;
-            if off == srtcp.len() {
-                break true;
-            }
-        };
         assert!(
-            !chains,
+            !lengths_chain_to_the_end(&srtcp),
             "the fixture's sub-packet lengths total the datagram, so A.2's \
              rule would ACCEPT it and this test proves nothing about the rule \
              it exists to keep out"
