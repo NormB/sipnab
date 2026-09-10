@@ -270,7 +270,7 @@ sudo scripts/verify-bpf-load.sh
 Or a specific release:
 
 ```sh
-sudo scripts/verify-bpf-load.sh 0.5.162
+sudo scripts/verify-bpf-load.sh 0.5.163
 ```
 
 It downloads the tarball, checks it against the checksum published beside it,
@@ -288,6 +288,7 @@ nobody has loaded fails the suite:
 | Version | Artifact | Host | Kernel | Date (UTC) | Result |
 |---|---|---|---|---|---|
 | 0.5.162 | x86_64-unknown-linux-gnu | Debian 13, x86_64 | 6.12.105+deb13-amd64 | 2026-09-10 | attached, 2 libraries plus `tcp_sendmsg` |
+| 0.5.163 | x86_64-unknown-linux-gnu | Debian 13, x86_64 | 6.12.105+deb13-amd64 | 2026-09-10 | attached, 2 libraries plus `tcp_sendmsg` |
 
 Mutation-test any gate you add here. One of these tests began life believing
 the flavor list's *order* prevented misclassification. Reversing the order did
