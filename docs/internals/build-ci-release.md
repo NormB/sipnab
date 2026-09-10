@@ -78,7 +78,7 @@ compiles, which is exactly why CI has a feature matrix.
 see a data race: the tests exercise the capture thread, the channel, and the
 processing thread, but a test that passes and a test that raced are
 indistinguishable to `cargo test`. The borrow checker does not help here either
-— it stops at `unsafe`, and most of this crate's 100 `unsafe` blocks are libc
+— it stops at `unsafe`, and most of this crate's 101 `unsafe` blocks are libc
 FFI, concentrated in privilege dropping ([`privilege.rs`](../../src/privilege.rs)
 and [`process_isolation.rs`](../../src/process_isolation.rs)) and capture setup.
 Recount with `grep -rc 'unsafe {' src/` rather than trusting that figure — this

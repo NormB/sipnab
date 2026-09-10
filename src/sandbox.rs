@@ -1193,6 +1193,201 @@ mod plan_tests {
         );
     }
 
+    /// The file mask is exactly the rights a file can have.
+    ///
+    /// Both directions, because the two ways of being wrong fail oppositely.
+    /// A mask that still carries a directory right puts the `EINVAL` back and
+    /// the whole install fails. A mask missing `READ_FILE` empties every input
+    /// rule instead, and the run then cannot read its own capture — a sandbox
+    /// that installed cleanly and denied the one path it was built for.
+    #[test]
+    fn the_file_mask_is_exactly_the_rights_a_file_can_have() {
+        for right in [
+            ACCESS_FS_EXECUTE,
+            ACCESS_FS_WRITE_FILE,
+            ACCESS_FS_READ_FILE,
+            ACCESS_FS_TRUNCATE,
+            ACCESS_FS_IOCTL_DEV,
+        ] {
+            assert_ne!(
+                ACCESS_FS_FILE_APPLICABLE & right,
+                0,
+                "a right a file can hold is missing from the mask: {right:#x}"
+            );
+        }
+        for right in [
+            ACCESS_FS_READ_DIR,
+            ACCESS_FS_MAKE_DIR,
+            ACCESS_FS_MAKE_REG,
+            ACCESS_FS_REMOVE_DIR,
+            ACCESS_FS_REMOVE_FILE,
+            ACCESS_FS_REFER,
+        ] {
+            assert_eq!(
+                ACCESS_FS_FILE_APPLICABLE & right,
+                0,
+                "a directory-only right is in the file mask: {right:#x}"
+            );
+        }
+    }
+
+    /// A symlink to a directory is planned as the directory it names.
+    ///
+    /// `metadata()` follows links, which is what the kernel does when the rule
+    /// is added, so the two agree. They have to: an output directory reached
+    /// through a symlink — `/var/captures` pointing at a mounted volume is
+    /// ordinary — would otherwise be masked to the file rights and lose
+    /// `MAKE_REG`, and the writer would fail to create its first file.
+    #[test]
+    fn a_symlink_to_a_directory_is_planned_as_a_directory() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let real = dir(tmp.path(), "real-out");
+        let link = tmp.path().join("link-out");
+        std::os::unix::fs::symlink(&real, &link).expect("symlink");
+        let rules = plan_rules(
+            &SandboxPaths {
+                output_dirs: vec![link.clone()],
+                ..SandboxPaths::default()
+            },
+            3,
+        );
+        assert_eq!(
+            rule(&rules, &link).expect("planned").access,
+            write_access(3),
+            "a symlinked directory must keep the directory rights"
+        );
+    }
+
+    /// And a symlink to a file is planned as a file.
+    ///
+    /// The other direction of the same rule, and the one that reintroduces the
+    /// defect if it is wrong: a capture reached through a symlink would carry
+    /// `READ_DIR` and take the whole install down with `EINVAL`.
+    #[test]
+    fn a_symlink_to_a_file_is_planned_as_a_file() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let real = file(tmp.path(), "real.pcap");
+        let link = tmp.path().join("link.pcap");
+        std::os::unix::fs::symlink(&real, &link).expect("symlink");
+        let rules = plan_rules(
+            &SandboxPaths {
+                inputs: vec![link.clone()],
+                ..SandboxPaths::default()
+            },
+            3,
+        );
+        assert_eq!(
+            rule(&rules, &link).expect("planned").access,
+            ACCESS_FS_READ_FILE
+        );
+    }
+
+    /// A FIFO is not a directory, so it is masked like a file.
+    ///
+    /// Reachable rather than theoretical: a keylog is a path sipnab re-reads
+    /// for the life of the run, and a producer feeding one through a named
+    /// pipe is a normal arrangement. Landlock decides by "is this a
+    /// directory", not by "is this a regular file", and a plan that tested for
+    /// the second would send a directory right on a FIFO to the kernel.
+    #[test]
+    fn a_fifo_is_planned_as_a_file_rather_than_a_directory() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let fifo = tmp.path().join("keylog.fifo");
+        let Ok(cpath) = std::ffi::CString::new(fifo.as_os_str().as_encoded_bytes()) else {
+            panic!("the fixture path holds a NUL");
+        };
+        // SAFETY: `cpath` is NUL-terminated and outlives the call.
+        let rc = unsafe { libc::mkfifo(cpath.as_ptr(), 0o600) };
+        assert_eq!(rc, 0, "could not create the FIFO fixture");
+        let rules = plan_rules(
+            &SandboxPaths {
+                read_files: vec![fifo.clone()],
+                ..SandboxPaths::default()
+            },
+            3,
+        );
+        assert_eq!(
+            rule(&rules, &fifo).expect("planned").access,
+            ACCESS_FS_READ_FILE,
+            "a FIFO is not a directory and must not carry a directory right"
+        );
+    }
+
+    /// Every rule in a mixed plan grants only what its path type allows.
+    ///
+    /// The invariant rather than the instance. The three tests above pin
+    /// particular paths; this one holds for whatever the plan contains, so a
+    /// future collection added to `SandboxPaths` that forgets the mask fails
+    /// here instead of at `landlock_add_rule` on somebody's machine.
+    #[test]
+    fn every_planned_rule_grants_only_rights_its_path_type_allows() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let plan = SandboxPaths {
+            inputs: vec![file(tmp.path(), "in.pcap")],
+            output_dirs: vec![dir(tmp.path(), "out")],
+            read_files: vec![file(tmp.path(), "keylog.txt")],
+            crash_dir: Some(dir(tmp.path(), "crash")),
+            plugins: vec![file(tmp.path(), "plugin.so")],
+            resolver_files: vec![file(tmp.path(), "resolv.conf")],
+        };
+        let rules = plan_rules(&plan, 3);
+        assert_eq!(rules.len(), 6, "every fixture path should be planned");
+        for r in &rules {
+            let is_dir = r.path.metadata().expect("fixture exists").is_dir();
+            if !is_dir {
+                assert_eq!(
+                    r.access & !ACCESS_FS_FILE_APPLICABLE,
+                    0,
+                    "{} is not a directory and carries a directory right",
+                    r.path.display()
+                );
+            }
+            assert_ne!(
+                r.access,
+                0,
+                "{} would be a rule granting nothing",
+                r.path.display()
+            );
+        }
+    }
+
+    /// Masking never empties a rule the run needs.
+    ///
+    /// The positive control for all of it. A mask is only correct if what
+    /// survives is still enough: an input that keeps no right is dropped from
+    /// the plan, and the run then meets `EACCES` on the capture it was asked
+    /// to read. That failure would look exactly like a sandbox working.
+    #[test]
+    fn masking_never_empties_a_rule_the_run_needs() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let input = file(tmp.path(), "in.pcap");
+        let keylog = file(tmp.path(), "keys.log");
+        let plugin = file(tmp.path(), "audio.so");
+        let rules = plan_rules(
+            &SandboxPaths {
+                inputs: vec![input.clone()],
+                read_files: vec![keylog.clone()],
+                plugins: vec![plugin.clone()],
+                ..SandboxPaths::default()
+            },
+            3,
+        );
+        for (what, path, needed) in [
+            ("the input capture", &input, ACCESS_FS_READ_FILE),
+            ("the keylog", &keylog, ACCESS_FS_READ_FILE),
+            ("the plugin", &plugin, ACCESS_FS_EXECUTE),
+        ] {
+            let r = rule(&rules, path)
+                .unwrap_or_else(|| panic!("{what} was dropped from the plan by the mask"));
+            assert_ne!(
+                r.access & needed,
+                0,
+                "{what} kept no right it needs: {:#x}",
+                r.access
+            );
+        }
+    }
+
     /// At ABI 0 a plan grants nothing, whatever it names.
     ///
     /// The guard against building a ruleset for a kernel that cannot hold one:
