@@ -674,7 +674,11 @@ fn linked_code_targets_exist() {
     // paragraph on why this file belongs to a phase-two commit names the
     // constant both release gates read. Attributed the same way: 7 relative
     // code links in that file before, 8 after, no other page touched.
-    const EXPECTED_CODE_LINKS: usize = 424;
+    // 424 -> 425: one, in `docs/internals/invariants.md`, where invariant 3
+    // gains the paragraph on a wire rule written twice under a single
+    // classifier, linking the test that gates it. Attributed by counting that
+    // file: 55 relative code links before, 56 after, no other page touched.
+    const EXPECTED_CODE_LINKS: usize = 425;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \

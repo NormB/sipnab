@@ -44,7 +44,7 @@ Tiers:
 
 ## Status
 
-**25 open, 494 done** across 36 sections.
+**24 open, 495 done** across 36 sections.
 Regenerate with `python3 scripts/backlog-status.py --apply`.
 
 | Section | Open | Done | Progress |
@@ -73,7 +73,7 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
 | OBS | 0 | 7 | `##########` |
 | REQ | 4 | 13 | `########..` |
 | CMP | 1 | 5 | `########..` |
-| GTP | 2 | 8 | `########..` |
+| GTP | 1 | 9 | `#########.` |
 | MER | 0 | 5 | `##########` |
 | LIVE | 3 | 3 | `#####.....` |
 | P5 | 6 | 14 | `#######...` |
@@ -6895,30 +6895,49 @@ wrote for itself.
   Mutation-proven, and the decisive one restores the original defect: with the
   two length checks deleted, six of them fail.
 
-- [ ] **CONF4 — the RTCP compound is never checked for filling the datagram,
-  and the reason not to is truncation.** Found 2026-09-10 alongside CONF3, and
-  left open deliberately.
+- [x] **CONF4 (closed 2026-09-10) — the RTCP compound is not checked for
+  filling the datagram, and the measurement says it must not be.** Found
+  2026-09-10 alongside CONF3, left open for a corpus measurement, and closed by
+  one.
 
   RFC 3550 Appendix A.2's recommended validity routine has one more condition
-  than `looks_like_rtcp` implements: *"The length fields of the individual RTCP
+  than [`looks_like_rtcp`](https://github.com/NormB/sipnab/blob/main/src/rtp/rtcp.rs) implements: *"The length fields of the individual RTCP
   packets must total to the overall length of the compound packet as
-  received."* sipnab checks only that the FIRST sub-packet fits. Walking the
-  chain and requiring it to land exactly on the datagram length would be a far
-  stronger discriminator --- every sub-packet's word count would have to line
-  up, not just the first.
+  received."* sipnab checks only that the FIRST sub-packet fits.
 
-  **Why it was not done.** A.2 is written for a receiver holding whole
-  datagrams. A capture tool routinely holds snaplen-truncated ones, and this
-  file already says so elsewhere: trust the buffer, not the header. An exact
-  fill rule would stop recognizing truncated RTCP, which then goes to the RTP
-  path — a false negative on the classifier that decides media against control,
-  which is worse than the false positive it removes.
+  **The rule this entry proposed can never reject anything.** It read: tolerate
+  an overrun only on the LAST sub-packet, requiring every earlier one to line
+  up exactly. Walk that and every path returns accept — a sub-packet that
+  overruns IS the last one visible, so the tolerance swallows the rule. It was
+  not a weak discriminator, it was a no-op, and only writing it out revealed
+  that.
 
-  **What would make it safe** is a rule that tolerates an overrun only on the
-  LAST sub-packet, since that is what truncation produces, while requiring
-  every earlier one to line up exactly. That is a real design with a real
-  false-negative surface, and it belongs to whoever is willing to measure it
-  against the corpus rather than to whoever noticed the gap.
+  **What A.2's condition actually costs, measured.** 126 captures, 4,904,975
+  UDP datagrams, 11,696 accepted as RTCP today. Requiring the chain to total
+  the datagram loses 67 of them and refuses nothing else at all:
+
+  - **61 are SRTCP.** [RFC 3711](https://www.rfc-editor.org/rfc/rfc3711) leaves the first sub-packet header in the
+    clear, encrypts the rest, and appends a four-byte E-flag/index plus an
+    authentication tag. What arrives is a valid RTCP header over bytes that
+    cannot chain. All 61 sit on a port pair whose DTLS-SRTP handshake is in the
+    same capture.
+  - **6 are a ragged tail** — every sub-packet reads, one to three bytes are
+    left over.
+
+  So the condition's entire effect on this corpus is to discard encrypted call
+  control. A refused datagram does not vanish: it goes down the RTP path, where
+  a version-2 header and a payload-type byte are enough to register a stream
+  nobody sent, which is the misclassification the length check exists to
+  prevent, reached from the other side.
+
+  **Kept as a gate rather than a comment.** [`tests/corpus_rtcp_chain_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/corpus_rtcp_chain_test.rs)
+  re-measures it against real traffic and fails if the corpus stops containing
+  the shape the decision rests on;
+  `srtcp_is_still_rtcp_although_its_lengths_cannot_chain` states it without
+  needing one. Both are mutation-proven, and the unit test's first fixture
+  guard SURVIVED a mutation — it compared the first sub-packet's length against
+  the datagram instead of walking, so a trailer that chained perfectly passed
+  it. It walks now.
 
 - [x] **CONF2 (done 2026-09-10) — the LLMNR detector left five more
   RFC-mandated zero bits on the table.** Second finding of the conformance

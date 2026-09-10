@@ -12,6 +12,27 @@ entry that carries them.
 
 ### Fixed
 
+- **The RTCP padding rule shipped in 0.5.164 never reached the capture path,
+  and its release note said otherwise.** That note read: "one more bit of
+  separation on the classifier that decides RTP against RTCP for every datagram
+  on a media port". The rule landed on `rtp::rtcp::looks_like_rtcp`, which
+  nothing in the capture path calls. The classifier a captured datagram
+  actually reaches kept a private copy of the length logic and was never told,
+  so on a muxed port sipnab went on accepting compounds RFC 3550 forbids. The
+  copy is gone, the muxed verdict comes from the one function that holds the
+  content rules, and a test fails if the two ever answer differently again.
+  Operators running 0.5.164 have the classifier described in its release note
+  only from this release on.
+
+- **The RTCP decoder now says why it does not require the sub-packet lengths to
+  total the datagram.** RFC 3550 Appendix A.2 recommends that check and sipnab
+  does not apply it. Measured against 4,904,975 real UDP datagrams, applying it
+  would refuse 67 of the 11,696 accepted as RTCP: 61 are SRTCP, whose cleartext
+  header is followed by ciphertext and an authentication tag that cannot chain,
+  and 6 leave a ragged tail of one to three bytes. Nothing else is refused, so
+  the check's whole effect would be to send encrypted call control down the RTP
+  path and invent a media stream from it.
+
 - **Two release gates disagreed about which files phase two of a release
   touches.** The eBPF load record became a required part of phase two when
   LIVE3 landed: `published_version` cannot name a release with no recorded

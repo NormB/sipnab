@@ -1768,36 +1768,32 @@ pub fn is_rtcp_packet(data: &[u8], dst_port: u16) -> bool {
     if data.len() < 8 {
         return false;
     }
-    let version = (data[0] >> 6) & 0x03;
-    if version != 2 {
+    if (data[0] >> 6) & 0x03 != 2 {
         return false;
     }
-    let pt = data[1];
     if !dst_port.is_multiple_of(2) {
         // Odd port: classic separate-port RTCP (RTP+1). The whole RFC 5761
         // range, not just SR..APP — an XR (207) here is still RTCP, and
         // rejecting it hands the datagram to the RTP path, where the first
         // report-block header reads as an SSRC and invents a stream.
-        return crate::rtp::rtcp::is_rtcp_packet_type(pt);
+        //
+        // No length demand on this arm on purpose: parity has already said
+        // RTCP, and a snaplen-truncated control packet is still control.
+        return crate::rtp::rtcp::is_rtcp_packet_type(data[1]);
     }
-    // Even port: RFC 5761 mux. Require an RTCP packet-type byte and a
-    // self-consistent length field so muxed RTP is not swallowed.
-    (192..=223).contains(&pt) && rtcp_length_frames_packet(data)
-}
-
-/// Whether the first RTCP sub-packet's length field frames within `data`.
-///
-/// The RTCP header length (bytes 2-3) counts 32-bit words minus one, so the
-/// first packet occupies `(len + 1) * 4` bytes. A real RTCP packet (or the
-/// first element of a compound packet) declares at least one word beyond the
-/// header and fits inside the datagram; a misread RTP packet does not. This is
-/// the extra guard that keeps RFC 5761 demux from mistaking RTP for RTCP.
-fn rtcp_length_frames_packet(data: &[u8]) -> bool {
-    let word_len = ((data[2] as usize) << 8) | data[3] as usize;
-    if word_len == 0 {
-        return false;
-    }
-    (word_len + 1) * 4 <= data.len()
+    // Even port: RFC 5761 mux. Parity says nothing, so the datagram is judged
+    // entirely on content — by the ONE function that holds the content rules,
+    // never by a copy kept here.
+    //
+    // There was a copy here, and it cost a shipped release. `looks_like_rtcp`
+    // gained RFC 3550 section 6.1's padding rule in 0.5.164; this arm had its
+    // own length check and never heard about it. So the rule landed on a
+    // function nothing in the capture path calls, while the release note told
+    // operators it applied to "the classifier that decides RTP against RTCP
+    // for every datagram on a media port". It did not apply to that classifier
+    // at all. `the_muxed_verdict_is_the_public_classifiers_verdict` fails now
+    // if the two ever answer differently again.
+    crate::rtp::rtcp::looks_like_rtcp(data)
 }
 
 /// Try to unwrap a WebSocket frame from a TCP packet on a configured WS port.
@@ -2784,6 +2780,149 @@ mod quiet_bad_parse_tests {
         // Odd-port classic behavior is unchanged.
         assert!(is_rtcp_packet(&rr, 5001));
         assert!(is_rtcp_packet(&[0x80, 200, 0, 6, 0, 0, 0, 1], 30001));
+    }
+
+    /// A compound whose FIRST sub-packet claims padding, on a muxed port.
+    ///
+    /// RFC 3550 section 6.1 permits padding only on the last packet of a
+    /// compound, so a first sub-packet that does not fill the datagram cannot
+    /// carry the bit. `rtp::rtcp::looks_like_rtcp` has applied that rule since
+    /// 0.5.164 — and the classifier an operator's traffic actually reaches is
+    /// this one, which had its own copy of the length logic and never heard
+    /// about it. The release note said the rule was "one more bit of
+    /// separation on the classifier that decides RTP against RTCP for every
+    /// datagram on a media port". It was not on that classifier at all.
+    #[test]
+    fn the_padding_rule_reaches_the_classifier_the_pipeline_uses() {
+        // SR (28 bytes: 8 header + 20 sender info) followed by an RR, so the
+        // first sub-packet plainly does not fill the datagram.
+        let mut compound = vec![0x80u8, 200, 0, 6];
+        compound.extend_from_slice(&[0x11, 0x22, 0x33, 0x44]); // SSRC
+        compound.extend_from_slice(&[0u8; 20]); // sender info
+        compound.extend_from_slice(&[0x80, 201, 0, 1, 0x55, 0x66, 0x77, 0x88]);
+        assert!(
+            is_rtcp_packet(&compound, 5000),
+            "the fixture must be muxed RTCP before the padding bit is set"
+        );
+
+        compound[0] |= 0x20;
+        assert!(
+            !is_rtcp_packet(&compound, 5000),
+            "a padded first sub-packet of a compound violates RFC 3550 6.1, \
+             and this is the classifier that decides RTP against RTCP for \
+             every datagram on a media port"
+        );
+    }
+
+    /// The same datagram, driven through `classify` rather than the predicate.
+    ///
+    /// The predicate is where the rule lives; this is where an operator meets
+    /// it. A rule that is right in a function nothing on the capture path
+    /// calls is the defect this pair exists to catch, so one test asks the
+    /// predicate and one asks the pipeline.
+    #[test]
+    fn a_padded_compound_is_not_reported_as_rtcp_by_the_pipeline() {
+        let mut compound = vec![0x80u8, 200, 0, 6];
+        compound.extend_from_slice(&[0x11, 0x22, 0x33, 0x44]);
+        compound.extend_from_slice(&[0u8; 20]);
+        compound.extend_from_slice(&[0x80, 201, 0, 1, 0x55, 0x66, 0x77, 0x88]);
+
+        let mut pp = packet(&compound);
+        pp.dst_port = 5000;
+        pp.src_port = 5000;
+        assert!(
+            matches!(
+                classify(&pp, &PipelineOptions::default()),
+                PacketAction::Rtcp(_)
+            ),
+            "the fixture must reach the RTCP arm before the padding bit is set"
+        );
+
+        compound[0] |= 0x20;
+        let mut padded = packet(&compound);
+        padded.dst_port = 5000;
+        padded.src_port = 5000;
+        assert!(
+            !matches!(
+                classify(&padded, &PipelineOptions::default()),
+                PacketAction::Rtcp(_)
+            ),
+            "the pipeline reported a compound RFC 3550 forbids as RTCP"
+        );
+    }
+
+    /// A lone packet that fills the datagram may pad, on a muxed port too.
+    ///
+    /// The positive control. Without it, tightening the rule to "P is never
+    /// set on byte zero" would pass the test above while refusing every padded
+    /// single-packet datagram RFC 3550 permits outright.
+    #[test]
+    fn a_padded_lone_packet_is_still_muxed_rtcp() {
+        let mut only = vec![0xA0u8, 201, 0, 1, 0x55, 0x66, 0x77, 0x88];
+        assert!(
+            is_rtcp_packet(&only, 5000),
+            "a lone packet is the last packet, and RFC 3550 lets the last pad"
+        );
+        only[0] &= !0x20;
+        assert!(is_rtcp_packet(&only, 5000), "and without the bit as well");
+    }
+
+    /// The two classifiers agree about content on a muxed port.
+    ///
+    /// Not a restatement of either one: it drives both over the same fixtures
+    /// and requires the same verdict. A second private copy of the length rule
+    /// in this file is how the padding rule missed the capture path, and the
+    /// only durable fix is that there is nothing here left to drift.
+    #[test]
+    fn the_muxed_verdict_is_the_public_classifiers_verdict() {
+        let mut compound = vec![0x80u8, 200, 0, 6];
+        compound.extend_from_slice(&[0x11, 0x22, 0x33, 0x44]);
+        compound.extend_from_slice(&[0u8; 20]);
+        compound.extend_from_slice(&[0x80, 201, 0, 1, 0x55, 0x66, 0x77, 0x88]);
+        let mut padded_compound = compound.clone();
+        padded_compound[0] |= 0x20;
+
+        let fixtures: Vec<Vec<u8>> = vec![
+            vec![0x80, 201, 0, 1, 0, 0, 0, 1],
+            vec![0xA0, 201, 0, 1, 0, 0, 0, 1],
+            vec![0x80, 200, 0, 6, 0, 0, 0, 1],
+            vec![0x80, 200, 0, 0, 0, 0, 0, 0],
+            vec![0x80, 96, 0, 1, 0, 0, 0, 1],
+            vec![0x40, 201, 0, 1, 0, 0, 0, 1],
+            compound,
+            padded_compound,
+        ];
+        for f in fixtures {
+            assert_eq!(
+                is_rtcp_packet(&f, 5000),
+                crate::rtp::rtcp::looks_like_rtcp(&f),
+                "the muxed arm and rtp::rtcp::looks_like_rtcp disagree about \
+                 {f:02x?}, which means this file is deciding content on its own"
+            );
+        }
+    }
+
+    /// The classic odd-port arm did not tighten.
+    ///
+    /// It answers a different question — parity already said RTCP — and takes
+    /// the whole RFC 5761 type range with no length demand, so a truncated
+    /// classic RTCP datagram is still control traffic. Folding the two arms
+    /// together would have been the easy mistake.
+    #[test]
+    fn the_classic_odd_port_arm_still_takes_the_whole_type_range() {
+        for pt in [192u8, 200, 207, 210, 223] {
+            let d = [0x80u8, pt, 0, 6, 0, 0, 0, 1];
+            assert!(
+                is_rtcp_packet(&d, 5001),
+                "packet type {pt} on an odd port is RTCP whatever its length \
+                 field says"
+            );
+            assert!(
+                !is_rtcp_packet(&d, 5000),
+                "the same datagram on a muxed port must still be judged by \
+                 content"
+            );
+        }
     }
 
     /// By default a malformed SIP packet drops to `None` and emits the

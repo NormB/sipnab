@@ -199,6 +199,19 @@ fails to compile) plus
 **Fails as.** Silent divergence: `--cores 4` and `--cores 1` report different
 stream counts for the same file, and neither is obviously wrong.
 
+**One function is not enough on its own.** `classify_packet()` may hold the
+only decision about what a packet means, and someone can still write the wire
+rule it decides *with* twice. `pipeline::is_rtcp_packet` kept its own copy of
+RTCP's length framing. `rtp::rtcp::looks_like_rtcp` then gained RFC 3550
+section 6.1's padding rule in 0.5.164 and the copy did not, so the rule applied
+to a function nothing on the capture path calls while the release note told
+operators it applied to the classifier every media datagram reaches. A
+duplicate agrees with the original right up to the moment the original moves.
+[`rtcp_one_rule_test`](../../tests/rtcp_one_rule_test.rs) fails on a second
+site computing that arithmetic, and
+`the_muxed_verdict_is_the_public_classifiers_verdict` fails if the two ever
+answer differently.
+
 ## 4. Every attacker-keyed map has a bound and a stated eviction policy
 
 **Rule.** Any collection keyed by something a remote party controls — Call-ID,
