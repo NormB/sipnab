@@ -36,13 +36,17 @@ fn repo() -> &'static Path {
 /// and `libc::close` are deliberately absent: they exist everywhere, and a
 /// list that grew to "anything unixy" would report the whole tree and be
 /// switched off within a week.
-const LINUX_ONLY: [&str; 6] = [
+const LINUX_ONLY: [&str; 7] = [
     "libc::prctl",
     "libc::PR_SET_",
     "libc::PR_GET_",
     "libc::SYS_",
     "libc::gettid",
     "libc::memfd_create",
+    // Not libc: `std` carries a Linux-only namespace of its own, and it fails
+    // the same way. `std::os::unix` is fine everywhere and is deliberately not
+    // here; `std::os::linux` is the one that does not exist on macOS.
+    "std::os::linux::",
 ];
 
 /// Whether `line` gates on Linux.
@@ -255,6 +259,96 @@ fn a_linux_only_symbol_inside_a_linux_cfg_is_not_reported() {
         ungated_uses(negated).len(),
         1,
         "a not(linux) arm using a Linux-only symbol is the bug, not the fix"
+    );
+}
+
+/// The rule reaches past `libc`, because the failure does.
+///
+/// `std::os::linux` does not exist on macOS either, and a use of it fails
+/// exactly as `libc::prctl` did: at compile time, on a platform the developer
+/// is not on. A list that stopped at one crate would have caught the failure
+/// that happened and none of its siblings.
+///
+/// `std::os::unix` is deliberately absent: it exists on macOS, and a rule
+/// reporting it would fire on most of this tree and be switched off.
+#[test]
+fn the_rule_reaches_past_libc_to_the_linux_only_std_namespace() {
+    assert!(
+        LINUX_ONLY.contains(&"std::os::linux::"),
+        "the list stops at libc, so a Linux-only std path fails on macOS unseen"
+    );
+    assert!(
+        !LINUX_ONLY.iter().any(|s| s.contains("std::os::unix")),
+        "std::os::unix exists on macOS; listing it would report most of the tree"
+    );
+
+    let ungated = "use std::os::linux::fs::MetadataExt;\n\nfn ino() -> u64 {\n    std::os::linux::raw::ino_t::default()\n}\n";
+    assert!(
+        !ungated_uses(ungated).is_empty(),
+        "an ungated std::os::linux use must be reported"
+    );
+
+    let gated = "#[cfg(target_os = \"linux\")]\nfn ino() -> u64 {\n    std::os::linux::raw::ino_t::default()\n}\n";
+    assert!(
+        ungated_uses(gated).is_empty(),
+        "and a gated one must not: {:?}",
+        ungated_uses(gated)
+    );
+}
+
+/// The inverted-tree check still compiles TEST targets.
+///
+/// `--all-targets` is the flag that lets `scripts/check-non-linux.sh` see a
+/// `#[cfg(test)]` module or a `tests/` binary at all. Without it the script
+/// still runs, still reports OK, and inspects only the library — which is not
+/// where the break that motivated this file lived. A flag dropped for speed
+/// would restore the blind spot silently.
+#[test]
+fn the_inverted_tree_check_still_compiles_test_targets() {
+    let script = std::fs::read_to_string(repo().join("scripts/check-non-linux.sh"))
+        .expect("read scripts/check-non-linux.sh");
+    let compiles: Vec<&str> = script
+        .lines()
+        .map(str::trim)
+        // `cargo clippy --version` is an availability probe, not a compile of
+        // the inverted tree, and demanding a target selector from it would
+        // make this gate fail on a script that is correct.
+        .filter(|l| !l.starts_with('#') && l.contains("cargo clippy") && !l.contains("--version"))
+        .collect();
+    assert!(
+        !compiles.is_empty(),
+        "the script no longer compiles the inverted tree at all"
+    );
+    for line in &compiles {
+        assert!(
+            line.contains("--all-targets"),
+            "this invocation skips test targets, where the break that motivated \
+             this file lived: {line}"
+        );
+    }
+}
+
+/// And the script says what it cannot see, beside the thing that can.
+///
+/// The blind spot is not a bug in that script: inverting a predicate is the
+/// right technique for a missing arm, and it cannot be extended to code
+/// carrying no predicate at all. What would be a bug is leaving the next
+/// reader to discover it the way this one did — from a red CI run after a
+/// push. A tool with a known limit states it where somebody is standing when
+/// they rely on it.
+#[test]
+fn the_inverted_tree_check_records_the_class_it_cannot_see() {
+    let script = std::fs::read_to_string(repo().join("scripts/check-non-linux.sh"))
+        .expect("read scripts/check-non-linux.sh");
+    assert!(
+        script.contains("platform_split_test"),
+        "the script does not name the gate that covers what it cannot: a reader \
+         who trusts it alone repeats the failure it did not catch"
+    );
+    assert!(
+        script.contains("no predicate"),
+        "the script does not say WHICH class it is blind to, so the pointer \
+         above reads as a suggestion rather than as a division of work"
     );
 }
 

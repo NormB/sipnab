@@ -236,6 +236,20 @@ fi
 # `--all-targets` is not optional -- the first of the two breaks lived in a
 # `#[cfg(test)]` module, which no `--lib` check ever builds.
 #
+# WHAT THIS SCRIPT CANNOT SEE, and where that is covered instead.
+#
+# Inverting a predicate finds a missing non-Linux arm. It cannot find code
+# carrying no predicate: there is nothing to rewrite, the file compiles
+# unchanged, and a Linux-only symbol still resolves because the real
+# compilation target is Linux either way. `tests/sandbox_test.rs` shipped
+# calling `libc::prctl` with no `target_os` anywhere in it, this script
+# reported OK, and macos-latest failed to compile it after the push.
+#
+# `tests/platform_split_test.rs` covers that class by reading the source rather
+# than by inverting it. The two divide the work: this script owns "the arm is
+# missing", that gate owns "the split was never written". Neither subsumes the
+# other, and relying on this one alone is what let the break through.
+#
 # `-A unexpected_cfgs` is required and is the one honest cost of the sentinel:
 # `target_os = "sipnab_not_linux"` is not a value rustc knows, so every gated
 # item raises `unexpected cfg condition value` and -D warnings turns each into
