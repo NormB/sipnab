@@ -967,6 +967,30 @@ fn parse_hep_v3(data: &[u8]) -> Result<HepPacket> {
         "HEP v3 total_length ({total_len}) exceeds packet size ({})",
         data.len(),
     );
+    // The field counts the six bytes of the header it sits in --
+    // `build_hep_v3_bytes` computes exactly `HEP3_HEADER_LEN + chunks.len()` --
+    // so anything below six is a length the format cannot express and this
+    // tree's own writer can never emit.
+    //
+    // What this changes is the REASON, not the verdict. Such a packet was
+    // already refused: the chunk walk found nothing, and the required-chunk
+    // check below then failed on the missing source address. So an operator
+    // debugging a feed that sends a bad length was told its packets lacked a
+    // source address, and went looking at the sender's addressing rather than
+    // at its length field. A refusal that names a symptom sends the reader to
+    // the wrong place.
+    ensure!(
+        total_len >= HEP3_HEADER_LEN,
+        "HEP v3 total_length ({total_len}) is shorter than the header it counts ({})",
+        HEP3_HEADER_LEN,
+    );
+    // And six exactly is arithmetically possible while carrying nothing: no
+    // address, no timestamp, no payload. Same treatment for the same reason --
+    // it was refused already, further down, for the wrong-sounding cause.
+    ensure!(
+        total_len > HEP3_HEADER_LEN,
+        "HEP v3 packet carries no chunks, so it asserts no address, timestamp or payload",
+    );
 
     // Walk chunks
     let mut src_addr: Option<IpAddr> = None;
@@ -3585,6 +3609,116 @@ impl HepSender {
 /// HMAC), bind policy, rate limiting, and the idle watch.
 #[cfg(test)]
 mod tests {
+
+    /// A HEP v3 datagram whose declared total length is `total_len`, with no
+    /// chunks after the header.
+    fn hep3_with_total_len(total_len: u16) -> Vec<u8> {
+        let mut d = Vec::from(*b"HEP3");
+        d.extend_from_slice(&total_len.to_be_bytes());
+        d
+    }
+
+    /// A total length shorter than the header it sits in is refused.
+    ///
+    /// The field counts the six bytes of the `"HEP3"` header itself —
+    /// `build_hep_v3_bytes` computes exactly `HEP3_HEADER_LEN + chunks.len()`
+    /// — so a value below six is a length the format cannot express and this
+    /// tree's own writer can never emit.
+    ///
+    /// **This changes the reason, not the verdict**, and the distinction is
+    /// worth stating because the first version of this comment got it wrong.
+    /// Such a packet was already refused — the chunk walk found nothing and
+    /// the required-chunk check failed on the missing source address, as
+    /// `parse_hep_v3_total_len_below_header` had asserted since long before
+    /// this. What was wrong was the sentence the operator got: a feed sending
+    /// a bad length was told its packets lacked a source address, which sends
+    /// the reader to the sender's addressing instead of its length field.
+    #[test]
+    fn a_total_length_shorter_than_the_header_is_refused() {
+        for total_len in 0u16..HEP3_HEADER_LEN as u16 {
+            let err = parse_hep(&hep3_with_total_len(total_len))
+                .expect_err(&format!("total_length {total_len} cannot be true"));
+            let msg = err.to_string();
+            assert!(
+                msg.contains("total_length") || msg.contains("total length"),
+                "the refusal must name the field: {msg}"
+            );
+        }
+    }
+
+    /// And a header with no chunks at all is refused too.
+    ///
+    /// Six is arithmetically possible and carries nothing: no address, no
+    /// timestamp, no payload. Refused here for the same reason as the values
+    /// below it — it was already refused further down, and the cause it named
+    /// was not the one an operator needs.
+    #[test]
+    fn a_packet_carrying_no_chunks_is_refused() {
+        let err = parse_hep(&hep3_with_total_len(HEP3_HEADER_LEN as u16))
+            .expect_err("a chunkless HEP packet asserts nothing");
+        assert!(
+            err.to_string().contains("no chunks"),
+            "the refusal must say what is missing: {err}"
+        );
+    }
+
+    /// The writer's own output round-trips.
+    ///
+    /// The control that keeps the two halves one rule: a reader made stricter
+    /// than the writer would refuse this tree's own `--hep-send` output, and
+    /// nothing else in the suite compares them.
+    #[test]
+    fn the_writers_own_packet_still_parses() {
+        let endpoint = HepEndpoint {
+            src_addr: "10.0.0.1".parse().expect("addr"),
+            dst_addr: "10.0.0.2".parse().expect("addr"),
+            src_port: 5060,
+            dst_port: 5060,
+            transport: TransportProto::Udp,
+        };
+        let bytes = build_hep_v3_bytes(
+            &endpoint,
+            chrono::Utc::now(),
+            HepProtocol::Sip,
+            42,
+            None,
+            b"OPTIONS sip:a@b SIP/2.0\r\n\r\n",
+        );
+        let parsed = parse_hep(&bytes).expect("the writer's own packet must parse");
+        assert!(
+            !parsed.payload.is_empty(),
+            "the payload survived the round trip"
+        );
+    }
+
+    /// Trailing bytes after the declared length are still allowed.
+    ///
+    /// The regression control. `total_len <= data.len()` is deliberate — a
+    /// datagram may carry padding — and a rule that demanded equality would
+    /// refuse those. This asserts the new floor did not become a ceiling.
+    #[test]
+    fn bytes_after_the_declared_length_do_not_refuse_the_packet() {
+        let endpoint = HepEndpoint {
+            src_addr: "10.0.0.1".parse().expect("addr"),
+            dst_addr: "10.0.0.2".parse().expect("addr"),
+            src_port: 5060,
+            dst_port: 5060,
+            transport: TransportProto::Udp,
+        };
+        let mut bytes = build_hep_v3_bytes(
+            &endpoint,
+            chrono::Utc::now(),
+            HepProtocol::Sip,
+            42,
+            None,
+            b"PING",
+        );
+        bytes.extend_from_slice(&[0xAA; 16]);
+        assert!(
+            parse_hep(&bytes).is_ok(),
+            "padding after the declared length is legal and must stay so"
+        );
+    }
     use super::*;
     use std::net::{Ipv4Addr, Ipv6Addr};
 
@@ -6414,9 +6548,15 @@ mod tests {
         assert!(parse_hep(&data).is_err());
     }
 
-    /// `total_length` smaller than the 6-byte header leaves the chunk
-    /// loop with nothing to walk; the packet then lacks required address
-    /// chunks and must error on the missing source address.
+    /// `total_length` smaller than the 6-byte header is refused, and refused
+    /// for the length rather than for a downstream symptom.
+    ///
+    /// This asserted "missing source address" until 2026-09-10, and that was
+    /// the true behavior: the chunk walk had nothing to walk, so the failure
+    /// surfaced at the required-chunk check. The verdict was right and the
+    /// sentence sent an operator to the sender's addressing. `parse_hep_v3`
+    /// now names the length, and this test follows the message rather than
+    /// pinning the old one.
     #[test]
     fn parse_hep_v3_total_len_below_header() {
         let mut data = Vec::new();
@@ -6426,8 +6566,8 @@ mod tests {
         data.extend_from_slice(&[0u8, 0u8]);
         let err = parse_hep(&data).unwrap_err();
         assert!(
-            format!("{err}").contains("source address"),
-            "expected missing-source error, got: {err}"
+            format!("{err}").contains("total_length"),
+            "the refusal must name the length that cannot be true, got: {err}"
         );
     }
 

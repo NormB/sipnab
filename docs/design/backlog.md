@@ -44,7 +44,7 @@ Tiers:
 
 ## Status
 
-**25 open, 493 done** across 36 sections.
+**25 open, 494 done** across 36 sections.
 Regenerate with `python3 scripts/backlog-status.py --apply`.
 
 | Section | Open | Done | Progress |
@@ -73,7 +73,7 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
 | OBS | 0 | 7 | `##########` |
 | REQ | 4 | 13 | `########..` |
 | CMP | 1 | 5 | `########..` |
-| GTP | 2 | 7 | `########..` |
+| GTP | 2 | 8 | `########..` |
 | MER | 0 | 5 | `##########` |
 | LIVE | 3 | 3 | `#####.....` |
 | P5 | 6 | 14 | `#######...` |
@@ -6850,6 +6850,36 @@ wrote for itself.
   extending it to Application Data fires it, reaching past zero to one-byte
   records fires it — that one would drop every ChangeCipherSpec, whose payload
   is exactly one byte — and skipping instead of stopping fires it.
+
+- [x] **CONF7 (done 2026-09-10) — the HEP reader refused an impossible length
+  by naming the wrong cause.** Sixth finding of the conformance audit, and the
+  one where the first draft of the finding was itself wrong.
+
+  HEP v3's total-length field counts the six bytes of the header it sits in —
+  `build_hep_v3_bytes` computes exactly `HEP3_HEADER_LEN + chunks.len()` — so a
+  value below six is a length the format cannot express and this tree's own
+  writer can never emit. The reader compared it only against the datagram size.
+
+  **What it did NOT do is accept such a packet, and the first version of this
+  entry said it did.** `parse_hep_v3_total_len_below_header` had asserted the
+  refusal since long before: the chunk walk found nothing, and the
+  required-chunk check then failed on the missing source address. The verdict
+  was already right.
+
+  **What was wrong is the sentence an operator got.** A feed sending a bad
+  length was told its packets lacked a source address, which sends the reader
+  to the sender's addressing rather than to its length field. The reader now
+  refuses on the length, and the older test follows the message instead of
+  pinning the old one.
+
+  A chunkless packet — total length exactly six — is refused the same way and
+  for the same reason. This is a network-facing parser: `--hep-listen` accepts
+  datagrams from third parties, so the precision of a refusal is the difference
+  between an operator finding the fault and hunting the wrong half of it.
+
+  Three mutations, each restored and verified: dropping either refusal fires
+  it, and turning the length floor into an equality — which would reject the
+  padding a datagram may legally carry — fires it too.
 
 - [ ] **CONF4 — the RTCP compound is never checked for filling the datagram,
   and the reason not to is truncation.** Found 2026-09-10 alongside CONF3, and

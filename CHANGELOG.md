@@ -31,6 +31,13 @@ entry that carries them.
 
 ### Fixed
 
+- **A HEP datagram with an impossible length was refused for the wrong reason.**
+  The total-length field counts the header it sits in, so a value below six
+  cannot be true. Such packets were already refused, but the message said they
+  lacked a source address — sending an operator to the sender's addressing
+  rather than to its length field. The refusal now names the length, and a
+  packet carrying no chunks at all is refused the same way.
+
 - **The TLS record walk accepted zero-length fragments both RFCs forbid.** A
   zero-length Handshake, Alert or ChangeCipherSpec fragment is a shape no
   conformant peer emits, and the walk took the declared zero at face value.
