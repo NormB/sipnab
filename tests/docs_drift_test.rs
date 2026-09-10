@@ -3473,7 +3473,11 @@ fn no_documentation_table_repeats_a_row() {
     // 854 -> 856: two, the same table twice -- the eBPF load-verification
     // record added to `docs/internals/uprobe-capture.md` and the copy
     // `build-site-internals.py` generates under `website/content/`.
-    const EXPECTED_TABLES: usize = 856;
+    //
+    // 856 -> 858: two again, and the same shape -- the "where the wideband
+    // score appears" table in `docs/mos-and-codecs.md` and the copy
+    // `build-site-pages.py` generates beside it.
+    const EXPECTED_TABLES: usize = 858;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

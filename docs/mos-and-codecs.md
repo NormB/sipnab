@@ -193,6 +193,23 @@ pin it:
 
 Without one of those, sipnab flags the stream rather than guessing.
 
+### Where the wideband score appears
+
+| Surface | What it carries |
+|---|---|
+| `GET /v1/streams` | `mos_wideband`, `mos_wideband_context`, `mos_wideband_unavailable` |
+| MCP stream tools | the same three fields |
+| TUI stream detail | a `MOS_CQEW` row naming the scale, the mode and the listening context |
+
+The terminal row carries no quality band and no color, on purpose. The bands
+calibrate against the narrowband scale, so painting a `MOS_CQEW` with them
+would repeat the scale error this page spends a section refusing. A stream nobody
+attempted to score wideband gets no row at all, and one sipnab cannot score
+says why in words rather than showing a blank.
+
+The call report and the vCon export carry no MOS of any kind, wideband or
+narrowband, so there is nothing on them to disagree with.
+
 ## AMR narrowband — no published value
 
 ITU-T G.113 (09/2024) has **no AMR-NB row**. Not in Table I.1, not in Table

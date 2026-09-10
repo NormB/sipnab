@@ -6668,12 +6668,28 @@ cheap gaps its page made obvious.
   carries the context it was read in. An unrecognized spelling is refused
   rather than read as the default.
 
-  **Still open, and it is the surface-parity half.** The CLI report, the TUI's
-  stream detail and the vCon export do not carry the wideband figure. They do
-  not project through `StreamSummary`, which is why REST and MCP came free and
-  these did not. Until they do, an operator reading the TUI sees the narrowband
-  placeholder for an AMR-WB stream while the REST response beside it carries a
-  real score.
+  **The TUI half landed 2026-09-10, and the other two turned out to be a
+  different problem.** The stream-detail pane now carries a `MOS_CQEW` row
+  naming the scale, the mode and the listening context, deliberately unbanded:
+  `MosBand` is calibrated on the narrowband scale and painting a wideband score
+  with it would repeat the category error one line below the sentence refusing
+  it. A stream nobody attempted gets no row at all, and one sipnab cannot score
+  gets the reason in words rather than a blank.
+
+  The decision moved into `emodel_wb::verdict_for_stream`, which returns three
+  outcomes --- not attempted, scored, unavailable with the mode and context it
+  was refused for. `StreamSummary::of` had that rule inline, where only the
+  surfaces projecting through it could reach it; one copy in the model and a
+  second in the terminal is the shape that drifts.
+
+  **Still open, and the entry above was wrong about why.** Measured 2026-09-10:
+  the call report's Media Streams section prints codec, SSRC, packet count,
+  jitter and loss and **no MOS at all**, and the vCon export carries no quality
+  figures of any kind. Neither shows "the narrowband placeholder" for an AMR-WB
+  stream, because neither shows a MOS. So this is not surface parity on a
+  figure they already print — it is a decision about whether a call report and
+  a vCon should carry quality scores, which is a larger question than the scale
+  they would be on.
 
   **Declined outright: a perceptual MOS.** It needs a subjectively-labeled
   corpus that does not exist here, cannot be reproduced from the pcap by a

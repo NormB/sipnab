@@ -242,6 +242,71 @@ pub fn render_stream_detail(
         Span::styled(format!("({delay_note})"), Style::default().fg(theme.muted)),
     ]));
 
+    // The wideband row, for AMR-WB only.
+    //
+    // The MOS above is `MOS_CQE` on the narrowband G.107 scale, which anchors
+    // at 93.2. It cannot score a wideband codec, and the figure it returns for
+    // one is not an approximation but a scale error worth 35.8 R-points. REST
+    // and MCP have carried the G.107.1 score since it shipped; without this
+    // row an operator at the terminal read the narrowband number for an AMR-WB
+    // call while the API beside them carried the real one.
+    //
+    // Deliberately NOT banded or colored. `MosBand` is calibrated on the
+    // narrowband scale, and painting a `MOS_CQEW` with it would be the same
+    // category error one line down from the sentence refusing it. The number
+    // carries its scale, its mode and its listening context instead, which is
+    // what makes it readable without a band.
+    match crate::rtp::emodel_wb::verdict_for_stream(
+        stream.codec.as_deref(),
+        stream.amr_mode_kbps(),
+        loss_pct,
+        crate::rtp::emodel_wb::declared_listening_context(),
+    ) {
+        // Not an AMR-WB stream, or one whose mode nobody pinned. No row: a
+        // line saying a wideband score is unavailable for a G.711 call is true
+        // and useless, and would train the eye to skip the field on the
+        // streams that carry a finding.
+        crate::rtp::emodel_wb::WidebandVerdict::NotAttempted => {}
+        crate::rtp::emodel_wb::WidebandVerdict::Scored(w) => {
+            lines.push(Line::from(vec![
+                Span::raw("  MOS_CQEW: "),
+                Span::styled(
+                    format!("{:.2}", w.mos),
+                    Style::default().add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!(
+                        "    AMR-WB {} kbit/s, {} (G.107.1 wideband scale)",
+                        w.mode_kbps,
+                        w.context.as_str()
+                    ),
+                    Style::default().fg(theme.muted),
+                ),
+            ]));
+        }
+        crate::rtp::emodel_wb::WidebandVerdict::Unavailable {
+            reason,
+            mode_kbps,
+            context,
+        } => {
+            // A reason, never a blank. A missing number reads as a bug; the
+            // sentence says the tables end here, which is a finding about the
+            // stream rather than about sipnab.
+            lines.push(Line::from(vec![
+                Span::raw("  MOS_CQEW: "),
+                Span::styled("n/a", Style::default().fg(theme.muted)),
+                Span::styled(
+                    format!(
+                        "    AMR-WB {mode_kbps} kbit/s, {} — {}",
+                        context.as_str(),
+                        reason.note()
+                    ),
+                    Style::default().fg(theme.muted),
+                ),
+            ]));
+        }
+    }
+
     let duration_secs = stream
         .last_seen
         .signed_duration_since(stream.first_seen)

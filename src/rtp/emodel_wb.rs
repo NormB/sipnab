@@ -313,6 +313,30 @@ pub enum WidebandUnavailable {
     LossNotComputable,
 }
 
+impl WidebandUnavailable {
+    /// The wire spelling every surface publishes.
+    ///
+    /// One vocabulary, so REST, MCP, the TUI and the vCon export cannot name
+    /// the same refusal three ways. It used to live inside `StreamSummary::of`,
+    /// where only that surface could reach it.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::UnpublishedMode => "unpublished_mode",
+            Self::LossNotComputable => "loss_not_computable",
+        }
+    }
+
+    /// A short phrase for a terminal, where a wire token would read as noise.
+    #[must_use]
+    pub fn note(self) -> &'static str {
+        match self {
+            Self::UnpublishedMode => "no published Ie,WB for this mode",
+            Self::LossNotComputable => "not computable under loss",
+        }
+    }
+}
+
 /// A wideband score, with everything a reader needs to know it is not a
 /// narrowband one.
 ///
@@ -332,6 +356,76 @@ pub struct WidebandScore {
     pub context: ListeningContext,
     /// The mode, in kbit/s, the payload headers reported.
     pub mode_kbps: f64,
+}
+
+/// What a wideband score amounts to for one stream.
+///
+/// Three outcomes, not two, and the third is why this is not an `Option`. A
+/// G.711 call and an AMR-WB call whose mode nobody publishes both end up with
+/// no wideband MOS, and only the second is a finding about the stream. Reported
+/// as one absent field they are indistinguishable, and a reader is left
+/// guessing which they have.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum WidebandVerdict {
+    /// Not an AMR-WB stream, or one whose mode was never pinned. Nobody
+    /// attempted a wideband score, so there is nothing to report either way.
+    NotAttempted,
+    /// Scored, on the G.107.1 wideband scale.
+    Scored(WidebandScore),
+    /// Attempted and refused, with the reason and the inputs it was refused
+    /// for.
+    ///
+    /// The mode and context travel with the refusal because every surface
+    /// wants to say them: "no published Ie,WB" is not actionable, and "AMR-WB
+    /// 23.85 kbit/s monotic has no published Ie,WB" tells an operator which
+    /// table to look in and what to change. Carrying them here also stops each
+    /// surface re-deriving the mode it already asked about.
+    Unavailable {
+        /// Which of the two refusals this is.
+        reason: WidebandUnavailable,
+        /// The mode, in kbit/s, that was refused.
+        mode_kbps: f64,
+        /// The listening context the tables were read in.
+        context: ListeningContext,
+    },
+}
+
+/// The wideband verdict for one stream, from what the stream knows.
+///
+/// **One rule, one place.** REST, MCP, the TUI and the vCon export all need
+/// this answer, and they reach it through different types; deciding it in each
+/// would be four copies of "is this AMR-WB, and did we pin a mode", which is
+/// exactly the shape that drifts. The arguments are the two facts that decide
+/// it plus the two the score needs, so nothing here depends on `RtpStream` and
+/// every branch is drivable from a test.
+///
+/// The codec name alone is never enough: the nine AMR-WB modes span a full MOS
+/// point, so `mode_kbps` comes from the payload headers or from a single-entry
+/// `mode-set`, and its absence means not attempted rather than a default.
+#[must_use]
+pub fn verdict_for_stream(
+    codec: Option<&str>,
+    mode_kbps: Option<f64>,
+    loss_pct: f64,
+    context: ListeningContext,
+) -> WidebandVerdict {
+    if !matches!(
+        crate::rtp::amr::amr_flavor(codec),
+        Some(crate::rtp::amr::AmrFlavor::WideBand)
+    ) {
+        return WidebandVerdict::NotAttempted;
+    }
+    let Some(kbps) = mode_kbps else {
+        return WidebandVerdict::NotAttempted;
+    };
+    match score_amr_wb(kbps, context, loss_pct) {
+        Ok(score) => WidebandVerdict::Scored(score),
+        Err(reason) => WidebandVerdict::Unavailable {
+            reason,
+            mode_kbps: kbps,
+            context,
+        },
+    }
 }
 
 /// Score an AMR-WB stream on the wideband scale.
@@ -388,6 +482,105 @@ pub fn amr_wb_kbps_from_fmtp(fmtp: &str) -> Option<f64> {
     }
     let idx: usize = only.parse().ok()?;
     AMR_WB_MODES_KBPS.get(idx).copied()
+}
+
+#[cfg(test)]
+mod verdict_tests {
+    use super::*;
+
+    /// A G.711 stream is not a stream that failed to score wideband.
+    ///
+    /// The distinction is the whole reason this returns three outcomes rather
+    /// than an `Option`. "Nobody attempted it" and "it was attempted and there
+    /// is no published value" look identical as an absent field, and only one
+    /// of them is a finding about the stream.
+    #[test]
+    fn a_narrowband_codec_is_not_attempted() {
+        assert!(matches!(
+            verdict_for_stream(Some("PCMU"), None, 0.0, ListeningContext::Monotic),
+            WidebandVerdict::NotAttempted
+        ));
+    }
+
+    /// AMR-WB with no mode pinned is also not attempted.
+    ///
+    /// The nine modes span a full MOS point, so a score without one would be a
+    /// number chosen rather than read. The mode comes from the payload header
+    /// or from a single-entry `mode-set`; absent both, there is nothing to
+    /// score and nothing to report as unavailable.
+    #[test]
+    fn amr_wb_without_a_mode_is_not_attempted() {
+        assert!(matches!(
+            verdict_for_stream(Some("AMR-WB"), None, 0.0, ListeningContext::Monotic),
+            WidebandVerdict::NotAttempted
+        ));
+    }
+
+    /// A published mode with no loss scores, and says which scale it is on.
+    #[test]
+    fn a_published_mode_scores() {
+        let WidebandVerdict::Scored(score) =
+            verdict_for_stream(Some("AMR-WB"), Some(12.65), 0.0, ListeningContext::Monotic)
+        else {
+            panic!("12.65 kbit/s monotic is published");
+        };
+        assert_eq!(score.mode_kbps, 12.65);
+        assert_eq!(score.context, ListeningContext::Monotic);
+        assert!(
+            (3.0..=4.5).contains(&score.mos),
+            "MOS_CQEW out of range: {}",
+            score.mos
+        );
+    }
+
+    /// A mode with no published value in this context is refused BY NAME.
+    ///
+    /// 19.85 kbit/s is one of the three modes Table IV.3 omits. Written first
+    /// against 6.6 kbit/s, which Table IV.3 does publish (56.0) --- the test
+    /// went red for the fixture rather than for the behavior, which is the
+    /// reason to read the table instead of remembering it.
+    #[test]
+    fn an_unpublished_mode_is_refused_with_its_reason() {
+        assert!(matches!(
+            verdict_for_stream(Some("AMR-WB"), Some(19.85), 0.0, ListeningContext::Diotic),
+            WidebandVerdict::Unavailable {
+                reason: WidebandUnavailable::UnpublishedMode,
+                mode_kbps: 19.85,
+                context: ListeningContext::Diotic,
+            }
+        ));
+        // And the same mode IS published monotic, so the refusal is about the
+        // context rather than about the mode being unknown.
+        assert!(matches!(
+            verdict_for_stream(Some("AMR-WB"), Some(19.85), 0.0, ListeningContext::Monotic),
+            WidebandVerdict::Scored(_)
+        ));
+    }
+
+    /// Loss on a mode with no `Bpl,wb` is a finding, not a gap to fill.
+    #[test]
+    fn loss_without_a_published_bpl_is_refused_with_its_own_reason() {
+        assert!(matches!(
+            verdict_for_stream(Some("AMR-WB"), Some(12.65), 5.0, ListeningContext::Monotic),
+            WidebandVerdict::Unavailable {
+                reason: WidebandUnavailable::LossNotComputable,
+                ..
+            }
+        ));
+    }
+
+    /// The flavor test reads the codec name, so AMR narrowband is never
+    /// attempted on the wideband scale.
+    ///
+    /// G.113 has no AMR-NB row at all. Scoring it here with a wideband table
+    /// would be the substitution this module exists to refuse.
+    #[test]
+    fn amr_narrowband_is_never_scored_on_the_wideband_scale() {
+        assert!(matches!(
+            verdict_for_stream(Some("AMR"), Some(12.2), 0.0, ListeningContext::Monotic),
+            WidebandVerdict::NotAttempted
+        ));
+    }
 }
 
 #[cfg(test)]

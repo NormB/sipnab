@@ -401,23 +401,12 @@ impl StreamSummary {
         // nobody attempted to score is not a stream that failed to score, so
         // `None` here leaves all three wideband fields absent rather than
         // publishing a reason for a G.711 call.
-        let wideband = matches!(
-            crate::rtp::amr::amr_flavor(s.codec.as_deref()),
-            Some(crate::rtp::amr::AmrFlavor::WideBand)
-        )
-        .then(|| s.amr_mode_kbps())
-        .flatten()
-        .map(|kbps| {
-            crate::rtp::emodel_wb::score_amr_wb(
-                kbps,
-                crate::rtp::emodel_wb::declared_listening_context(),
-                loss_pct,
-            )
-        });
-        let wideband = match wideband {
-            Some(r) => r.map(Some).map_err(Some),
-            None => Ok(None),
-        };
+        let wideband = crate::rtp::emodel_wb::verdict_for_stream(
+            s.codec.as_deref(),
+            s.amr_mode_kbps(),
+            loss_pct,
+            crate::rtp::emodel_wb::declared_listening_context(),
+        );
         Self {
             ssrc: format!("0x{:08x}", s.key.ssrc),
             codec: s.codec.clone(),
@@ -464,22 +453,22 @@ impl StreamSummary {
             // payloads were read, so a reader never has to decide whether a
             // zero is "no modes" or "not an AMR stream".
             amr_modes_observed: (s.amr_modes_observed() > 0).then(|| s.amr_modes_observed()),
-            mos_wideband: wideband.as_ref().ok().and_then(|w| w.map(|w| w.mos)),
-            mos_wideband_context: wideband
-                .as_ref()
-                .ok()
-                .and_then(|w| w.map(|w| w.context.as_str().to_string())),
-            mos_wideband_unavailable: wideband.as_ref().err().and_then(Option::as_ref).map(|e| {
-                match e {
-                    crate::rtp::emodel_wb::WidebandUnavailable::UnpublishedMode => {
-                        "unpublished_mode"
-                    }
-                    crate::rtp::emodel_wb::WidebandUnavailable::LossNotComputable => {
-                        "loss_not_computable"
-                    }
+            mos_wideband: match wideband {
+                crate::rtp::emodel_wb::WidebandVerdict::Scored(w) => Some(w.mos),
+                _ => None,
+            },
+            mos_wideband_context: match wideband {
+                crate::rtp::emodel_wb::WidebandVerdict::Scored(w) => {
+                    Some(w.context.as_str().to_string())
                 }
-                .to_string()
-            }),
+                _ => None,
+            },
+            mos_wideband_unavailable: match wideband {
+                crate::rtp::emodel_wb::WidebandVerdict::Unavailable { reason, .. } => {
+                    Some(reason.as_str().to_string())
+                }
+                _ => None,
+            },
         }
     }
 }
