@@ -31,6 +31,15 @@ entry that carries them.
 
 ### Fixed
 
+- **The WebSocket detector accepted a length encoding RFC 6455 forbids.** The
+  RFC requires the shortest length form that can carry a payload, and the
+  detector took the extended forms at face value: a two-byte length declaring
+  fewer than 126 bytes read as a frame, and so did an eight-byte length
+  declaring anything two bytes could hold. That is 126 values of the 16-bit
+  space spent, on a detector whose job is telling a frame from any other TCP
+  payload starting with two plausible bytes. The detector and the unwrapper now
+  read one rule, so neither can accept what the other refuses.
+
 - **A test asserting an exact count of dropped oversize headers could read
   another test's work.** The counter is a process statistic, which is right for
   the product and hostile to a test that resets it and then reads it: any test

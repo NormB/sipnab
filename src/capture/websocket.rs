@@ -97,6 +97,33 @@ pub fn ws_ports_description() -> String {
 /// Check if data looks like a WebSocket frame (heuristic).
 ///
 /// Returns `true` if the first two bytes are consistent with a WebSocket
+/// Whether `declared` is expressible in a shorter length form than `len7`
+/// chose.
+///
+/// RFC 6455 §5.2: *"the minimal number of bytes MUST be used to encode the
+/// length, for example, the length of a 124-byte-long string can't be encoded
+/// as the sequence 126, 0, 124."* The RFC gives the example because the
+/// encoding is otherwise ambiguous, and an ambiguity a decoder accepts is
+/// discrimination it has spent — on a detector whose whole job is telling a
+/// frame from any other TCP payload starting with two plausible bytes.
+///
+/// One rule, one place: [`is_websocket_frame`] and [`unwrap_websocket_frame`]
+/// both ask it, so a caller cannot be told a frame is valid and then handed a
+/// refusal for it.
+///
+/// The 64-bit form's other rule — *"the most significant bit MUST be 0"* — is
+/// not tested separately because `MAX_FRAME_SIZE` already subsumes it: any
+/// value with that bit set is at least 2^63 and is refused as oversized. A
+/// check here would be unreachable, and an unreachable check is one nobody can
+/// show works.
+fn length_encoding_is_not_minimal(len7: u64, declared: u64) -> bool {
+    match len7 {
+        126 => declared < 126,
+        127 => declared <= u64::from(u16::MAX),
+        _ => false,
+    }
+}
+
 /// data frame: FIN bit set, reserved bits zero, opcode 1 (text) or 2
 /// (binary), and enough remaining bytes for the declared payload length.
 pub fn is_websocket_frame(data: &[u8]) -> bool {
@@ -140,6 +167,9 @@ pub fn is_websocket_frame(data: &[u8]) -> bool {
     };
 
     if payload_len > MAX_FRAME_SIZE {
+        return false;
+    }
+    if length_encoding_is_not_minimal(len7, payload_len) {
         return false;
     }
 
@@ -212,6 +242,12 @@ pub fn unwrap_websocket_frame(data: &[u8]) -> Result<Option<Vec<u8>>> {
 
     if payload_len > MAX_FRAME_SIZE {
         bail!("WebSocket frame payload too large ({payload_len} bytes, max {MAX_FRAME_SIZE})");
+    }
+    if length_encoding_is_not_minimal(len7, payload_len) {
+        bail!(
+            "WebSocket length {payload_len} is not minimally encoded: RFC 6455 \
+             §5.2 requires the shortest form that can carry it"
+        );
     }
 
     // Read masking key if present
@@ -325,6 +361,131 @@ mod tests {
         }
 
         frame
+    }
+
+    /// A frame in the extended form that a shorter form could have carried.
+    ///
+    /// `len7` chooses the encoding; `declared` is what the extension bytes
+    /// claim. A conformant sender never produces a pair a shorter form could
+    /// have expressed.
+    fn frame_with_declared_len(len7: u8, declared: u64, payload: &[u8]) -> Vec<u8> {
+        let mut frame = vec![0x81, len7];
+        match len7 {
+            126 => frame.extend_from_slice(&u16::try_from(declared).unwrap_or(0).to_be_bytes()),
+            127 => frame.extend_from_slice(&declared.to_be_bytes()),
+            _ => {}
+        }
+        frame.extend_from_slice(payload);
+        frame
+    }
+
+    /// RFC 6455 section 5.2: *"the minimal number of bytes MUST be used to
+    /// encode the length, for example, the length of a 124-byte-long string
+    /// can't be encoded as the sequence 126, 0, 124."*
+    ///
+    /// The RFC gives the example because the encoding is otherwise ambiguous,
+    /// and an ambiguity a decoder accepts is discrimination it has spent. This
+    /// one is worth 126 values of the 16-bit space, on a detector whose whole
+    /// job is telling a WebSocket frame from any other TCP payload that
+    /// happens to start with two plausible bytes.
+    #[test]
+    fn a_two_byte_length_that_a_seven_bit_field_could_carry_is_not_a_frame() {
+        for declared in [0u64, 1, 100, 124, 125] {
+            let payload = vec![b'x'; usize::try_from(declared).unwrap_or(0)];
+            let frame = frame_with_declared_len(126, declared, &payload);
+            assert!(
+                !is_websocket_frame(&frame),
+                "length {declared} fits the 7-bit field, so the 126 form is \
+                 non-conformant and must not read as a frame"
+            );
+        }
+    }
+
+    /// And the first length that genuinely needs the two-byte form does.
+    ///
+    /// The positive control. A rule written one off — rejecting 126 itself —
+    /// would refuse every frame between 126 and 65535 bytes, which is most
+    /// SIP over WebSocket, while every assertion above still passed.
+    #[test]
+    fn the_smallest_length_that_needs_two_bytes_is_a_frame() {
+        let payload = vec![b'x'; 126];
+        let frame = frame_with_declared_len(126, 126, &payload);
+        assert!(
+            is_websocket_frame(&frame),
+            "126 cannot be expressed in the 7-bit field and is the minimal encoding"
+        );
+    }
+
+    /// The same rule one form up: eight bytes for a length two would carry.
+    #[test]
+    fn an_eight_byte_length_that_two_bytes_could_carry_is_not_a_frame() {
+        // The payload is built to the DECLARED length, every time. Capping it
+        // made the 0xFFFF case pass for the wrong reason: the frame was short
+        // of what it declared, so the detector rejected it as truncated and
+        // never reached the encoding rule. Mutation found that — moving the
+        // comparison off the boundary changed nothing.
+        for declared in [0u64, 125, 126, 1000, 0xFFFF] {
+            let payload = vec![b'x'; usize::try_from(declared).unwrap_or(0)];
+            let frame = frame_with_declared_len(127, declared, &payload);
+            assert!(
+                !is_websocket_frame(&frame),
+                "length {declared} fits the two-byte form, so the 127 form is \
+                 non-conformant"
+            );
+        }
+    }
+
+    /// And the first length that genuinely needs eight bytes does.
+    ///
+    /// One value reaches it here, because `MAX_FRAME_SIZE` is 65536 and every
+    /// smaller length must use the two-byte form. That the window is one value
+    /// wide is the reason to test it: a rule written `>=` instead of `>` would
+    /// close it entirely and nothing else would notice.
+    #[test]
+    fn the_smallest_length_that_needs_eight_bytes_is_a_frame() {
+        let declared = 0x1_0000u64;
+        let payload = vec![b'x'; 0x1_0000];
+        let frame = frame_with_declared_len(127, declared, &payload);
+        assert!(
+            is_websocket_frame(&frame),
+            "65536 cannot be expressed in two bytes and is within MAX_FRAME_SIZE"
+        );
+    }
+
+    /// The detector and the unwrapper read the same rule.
+    ///
+    /// Two answers about one frame is the defect this pairing exists to stop:
+    /// a caller that trusts the detector and then unwraps would otherwise get
+    /// a payload out of a frame the detector had refused, or a refusal for one
+    /// it had accepted.
+    #[test]
+    fn the_unwrapper_refuses_exactly_what_the_detector_refuses() {
+        for (len7, declared) in [(126u8, 10u64), (126, 125), (127, 0xFFFF), (127, 0)] {
+            // Full-length payloads, for the reason the test above records: a
+            // short frame is refused as truncated and proves nothing about
+            // the rule under test.
+            let payload = vec![b'x'; usize::try_from(declared).unwrap_or(0)];
+            let frame = frame_with_declared_len(len7, declared, &payload);
+            assert!(!is_websocket_frame(&frame), "{len7}/{declared}");
+            assert!(
+                unwrap_websocket_frame(&frame).is_err(),
+                "the detector refused {len7}/{declared} and the unwrapper did not"
+            );
+        }
+    }
+
+    /// A length inside the 7-bit field is untouched by any of this.
+    ///
+    /// The regression control: the rule applies to the extended forms only,
+    /// and a version of it that reached the 7-bit field would reject every
+    /// ordinary short frame — which is most SIP signaling.
+    #[test]
+    fn a_seven_bit_length_is_unaffected() {
+        for len in [0usize, 1, 60, 125] {
+            let payload = vec![b'x'; len];
+            let frame = build_unmasked_text_frame(&payload);
+            assert!(is_websocket_frame(&frame), "a {len}-byte frame must parse");
+        }
     }
 
     /// An unmasked text frame is detected and unwraps to its exact payload.

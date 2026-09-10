@@ -44,7 +44,7 @@ Tiers:
 
 ## Status
 
-**25 open, 491 done** across 36 sections.
+**25 open, 492 done** across 36 sections.
 Regenerate with `python3 scripts/backlog-status.py --apply`.
 
 | Section | Open | Done | Progress |
@@ -73,7 +73,7 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
 | OBS | 0 | 7 | `##########` |
 | REQ | 4 | 13 | `########..` |
 | CMP | 1 | 5 | `########..` |
-| GTP | 2 | 5 | `#######...` |
+| GTP | 2 | 6 | `########..` |
 | MER | 0 | 5 | `##########` |
 | LIVE | 3 | 3 | `#####.....` |
 | P5 | 6 | 14 | `#######...` |
@@ -6786,6 +6786,41 @@ wrote for itself.
   recommends and the direction this decoder already leans: refusing to claim a
   datagram beats claiming the wrong one, which is what it did when GTPv2-C came
   back as an RTP stream.
+
+- [x] **CONF5 (done 2026-09-10) — the WebSocket detector accepted a length
+  encoding RFC 6455 forbids.** Fourth finding of the conformance audit, from
+  reading [RFC 6455 §5.2](https://www.rfc-editor.org/rfc/rfc6455#section-5.2) against [`src/capture/websocket.rs`](https://github.com/NormB/sipnab/blob/main/src/capture/websocket.rs).
+
+  The RFC states it and gives the example: *"the minimal number of bytes MUST
+  be used to encode the length, for example, the length of a 124-byte-long
+  string can't be encoded as the sequence 126, 0, 124."* The detector checked
+  the FIN bit, the reserved bits, the opcode range and the framing, and took
+  the extended lengths at face value. A `126` frame declaring fewer than 126
+  bytes read as a frame, and so did a `127` frame declaring anything a
+  two-byte field could carry.
+
+  **Worth spending on a detector whose whole job is telling a frame from any
+  other TCP payload that starts with two plausible bytes.** The 126 form alone
+  is 126 values of the 16-bit space; the RFC gives the example because the
+  encoding is otherwise ambiguous, and an ambiguity a decoder accepts is
+  discrimination it has spent.
+
+  **One rule, one place.** `is_websocket_frame` and `unwrap_websocket_frame`
+  both ask it, so a caller cannot be told a frame is valid and then handed a
+  refusal for it — one of the six tests asserts exactly that pairing.
+
+  **The 64-bit form's other rule is deliberately not checked.** *"The most
+  significant bit MUST be 0"* is already subsumed by `MAX_FRAME_SIZE`: any
+  value with that bit set is at least 2^63 and is refused as oversized. A check
+  there would be unreachable, and an unreachable check is one nobody can show
+  works.
+
+  **A test of mine passed for the wrong reason and mutation caught it.** The
+  0xFFFF boundary case built a capped payload, so the frame was short of what
+  it declared and the detector refused it as TRUNCATED without ever reaching
+  the encoding rule — moving the comparison off the boundary changed nothing.
+  The payloads are built to their declared length now, and the same mutation
+  fails two tests.
 
 - [ ] **CONF4 — the RTCP compound is never checked for filling the datagram,
   and the reason not to is truncation.** Found 2026-09-10 alongside CONF3, and
