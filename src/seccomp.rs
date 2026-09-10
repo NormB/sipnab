@@ -677,6 +677,12 @@ mod tests {
     }
 
     /// `SockFilter` is the kernel's `sock_filter`, field for field.
+    ///
+    /// Linux-gated because `libc::sock_filter` does not exist off Linux, and
+    /// an ungated reference broke the macOS build after this shipped. The
+    /// module's own types are portable; the comparison is not, and the
+    /// comparison is the point.
+    #[cfg(target_os = "linux")]
     #[test]
     fn the_instruction_matches_the_kernels_layout() {
         assert_eq!(

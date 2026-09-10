@@ -36,13 +36,21 @@ fn repo() -> &'static Path {
 /// and `libc::close` are deliberately absent: they exist everywhere, and a
 /// list that grew to "anything unixy" would report the whole tree and be
 /// switched off within a week.
-const LINUX_ONLY: [&str; 7] = [
+const LINUX_ONLY: [&str; 9] = [
     "libc::prctl",
     "libc::PR_SET_",
     "libc::PR_GET_",
     "libc::SYS_",
     "libc::gettid",
     "libc::memfd_create",
+    // The two that broke the macOS build on 2026-09-10, in a unit test
+    // comparing this crate's `SockFilter` against the kernel's. The types are
+    // classic-BPF, which macOS's libc does not carry at all. Adding them here
+    // is the cheap half of the fix; the structural half is phase 2 of
+    // `scripts/check-non-linux.sh`, which compiles against a real non-Linux
+    // libc and needs no list to maintain.
+    "libc::sock_filter",
+    "libc::sock_fprog",
     // Not libc: `std` carries a Linux-only namespace of its own, and it fails
     // the same way. `std::os::unix` is fine everywhere and is deliberately not
     // here; `std::os::linux` is the one that does not exist on macOS.

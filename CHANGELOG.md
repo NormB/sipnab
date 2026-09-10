@@ -33,7 +33,23 @@ entry that carries them.
   capture thread is spawned, so without that the instrument would have recorded
   everything except the thread running libpcap.
 
+  Its own tests carried the hazard the feature is sequenced around. Two child
+  roles installed a denying filter and allow-listed, by hand, the syscalls the
+  Rust runtime needed in order to report the verdict. That list was derived on
+  one architecture, was incomplete on the other, and broke the build. Neither
+  role has an allowlist now: one reports through a raw exit-group call with
+  nothing between it and the install, and the other asks the kernel per-thread
+  whether a filter is in force rather than trying to be denied.
+
 ### Fixed
+
+- **A unit test comparing this crate's filter instruction against the kernel's
+  broke the macOS build.** `libc::sock_filter` does not exist off Linux and the
+  comparison carried no target gate. The local check that exists for this class
+  could not see it: it compiles the tree with the target values swapped, which
+  changes what `cfg` selects but not which `libc` is linked, so a type that is
+  simply absent elsewhere still resolves. The scanner that CAN see it now knows
+  both classic-BPF types, and un-gating the test fails it.
 
 - **The DTLS detector spent neither length rule the RFCs give it, on a decision
   that deletes the packet.** `is_dtls` checked a content type and a version and

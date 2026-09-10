@@ -50,6 +50,17 @@ const CHILD_ENV: &str = "SIPNAB_SECCOMP_CHILD";
 /// Printed by a child role only after every one of its assertions has passed.
 const CHILD_COMPLETE: &str = "sipnab-seccomp-child-complete";
 
+/// Exit code from the denying child when its excluded syscall came back
+/// `EPERM`, which is the filter working.
+const EXIT_REFUSED_AS_EXPECTED: i32 = 42;
+
+/// Exit code when the excluded syscall SUCCEEDED, so no filter was in force.
+const EXIT_NOT_REFUSED: i32 = 43;
+
+/// Exit code when the call failed for some reason other than the filter's own
+/// action, which proves nothing either way.
+const EXIT_WRONG_ERRNO: i32 = 44;
+
 /// Announce a skipped gate on this process's real stderr.
 ///
 /// NOT `eprintln!`: libtest swaps the print sink per test and throws the
@@ -197,9 +208,18 @@ fn child_shipped_install_reaches_a_thread_that_already_existed() {
 /// The same builder and the same install path, with a denying fallback.
 ///
 /// The positive control, and the only thing in this file that proves a filter
-/// was ever loaded. `getpriority` is chosen because sipnab never calls it, so
-/// refusing it cannot break the child's own reporting — the call has to fail
-/// while `write` still works, or the child could not tell anyone.
+/// was ever loaded.
+///
+/// **It reports through the exit status, and that is not a stylistic choice.**
+/// The first version allow-listed the syscalls the Rust runtime needs so the
+/// child could `println!` its verdict. That list was hand-derived on aarch64,
+/// was incomplete for x86_64 glibc, and turned main red in CI — which is
+/// precisely the hazard `docs/design/syscall-sandbox.md` §3 puts the enforcing
+/// filter last to avoid, arrived at in a test rather than on a capture box.
+///
+/// So nothing between the install and the exit touches libc: the allowlist is
+/// `exit_group` alone, the verdict is the exit code, and the child cannot need
+/// a syscall the author forgot on an architecture the author does not have.
 #[cfg(target_os = "linux")]
 #[test]
 #[ignore = "child role: installs a seccomp filter that cannot be removed"]
@@ -208,114 +228,73 @@ fn child_denying_filter_refuses_the_call_it_left_out() {
         return;
     }
     let arch = seccomp::audit_arch().expect("an architecture token");
-    // Everything sipnab's own reporting needs, and deliberately not
-    // `getpriority`. Built from `libc`'s per-architecture constants rather
-    // than from numbers written here, which would be right on one target and
-    // silently wrong on the other.
-    let allow: Vec<i64> = vec![
-        libc::SYS_write,
-        libc::SYS_exit,
-        libc::SYS_exit_group,
-        libc::SYS_futex,
-        libc::SYS_mmap,
-        libc::SYS_munmap,
-        libc::SYS_brk,
-        libc::SYS_rt_sigprocmask,
-        libc::SYS_rt_sigaction,
-        libc::SYS_sigaltstack,
-        libc::SYS_madvise,
-        libc::SYS_mprotect,
-        libc::SYS_getrandom,
-        libc::SYS_close,
-        libc::SYS_read,
-    ];
     let deny = seccomp::SECCOMP_RET_ERRNO | u32::from(u16::try_from(libc::EPERM).expect("EPERM"));
-    let prog = seccomp::build_program(arch, &allow, deny).expect("the program builds");
-    seccomp::load(&prog, seccomp::SECCOMP_FILTER_FLAG_TSYNC)
-        .expect("the kernel accepts the program");
+    let prog =
+        seccomp::build_program(arch, &[libc::SYS_exit_group], deny).expect("the program builds");
+    // Deliberately WITHOUT thread sync. This filter denies almost everything,
+    // and libtest's other threads are not the subject — synchronizing it onto
+    // them would race their next syscall against this one's exit and could end
+    // the process with somebody else's failure.
+    seccomp::load(&prog, 0).expect("the kernel accepts the program");
 
     // SAFETY: `getpriority` takes two integers and touches no memory.
     let rc = unsafe { libc::syscall(libc::SYS_getpriority, 0, 0) };
-    let err = std::io::Error::last_os_error();
-    assert_eq!(
-        rc, -1,
-        "a syscall left off the allowlist returned {rc} instead of failing, so the \
-         filter is not in force and every other gate in this file proves nothing"
-    );
-    assert_eq!(
-        err.raw_os_error(),
-        Some(libc::EPERM),
-        "the refusal came back as {err}, not the EPERM the filter's action encodes"
-    );
-
-    println!("{CHILD_COMPLETE}");
+    let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
+    let verdict = if rc != -1 {
+        EXIT_NOT_REFUSED
+    } else if errno == libc::EPERM {
+        EXIT_REFUSED_AS_EXPECTED
+    } else {
+        EXIT_WRONG_ERRNO
+    };
+    // SAFETY: `exit_group` never returns and touches no memory. Called raw
+    // because every other way out of this process needs a syscall the filter
+    // refuses.
+    unsafe { libc::syscall(libc::SYS_exit_group, i64::from(verdict)) };
+    unreachable!("exit_group returned");
 }
 
 /// A sibling thread that already exists when the filter installs.
 ///
-/// The claim this exists to test is a claim about `clone` semantics, and it is
-/// the one that decides whether the instrument records anything useful at all.
-/// sipnab installs at the END of bootstrap, after the capture thread — the
-/// thread running libpcap, whose syscalls an allowlist most needs — has
-/// already been spawned. If a filter installed on the main thread does not
-/// reach a sibling that already exists, the derivation misses exactly the
-/// calls it was built for.
+/// The claim under test is about `clone` semantics, and it decides whether the
+/// instrument records anything useful. sipnab installs at the END of bootstrap,
+/// after the capture thread — the thread running libpcap, whose syscalls an
+/// allowlist most needs — has already been spawned. If a filter installed on
+/// the main thread does not reach a sibling that already exists, the derivation
+/// misses exactly the calls it was built for.
 ///
-/// Driven with a DENYING filter, because a logging filter's coverage is
-/// unobservable: the sibling's call succeeds either way. `flags` is the
-/// variable under test, so the same code proves both halves.
+/// **Driven with an ALLOWING filter and read back, not with a denial.** A
+/// denying filter needs an allowlist covering everything the runtime does next,
+/// and a hand-derived allowlist is the hazard this whole feature is sequenced
+/// around — the first version of this helper carried one, was incomplete for
+/// x86_64 glibc, and turned main red. `prctl(PR_GET_SECCOMP)` is per-thread, so
+/// the sibling can answer the question about itself while every syscall it
+/// needs still works.
 #[cfg(target_os = "linux")]
-fn sibling_thread_verdict(flags: libc::c_uint) -> Option<i32> {
+fn sibling_thread_is_filtered(flags: libc::c_uint) -> Option<bool> {
     use std::sync::Arc;
-    use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
     let installed = Arc::new(AtomicBool::new(false));
-    let observed = Arc::new(AtomicI32::new(i32::MIN));
+    let observed = Arc::new(AtomicU8::new(0xff));
     let go = Arc::clone(&installed);
     let seen = Arc::clone(&observed);
     let sibling = std::thread::spawn(move || {
         while !go.load(Ordering::Acquire) {
             std::thread::yield_now();
         }
-        // SAFETY: `getpriority` takes two integers and touches no memory.
-        let rc = unsafe { libc::syscall(libc::SYS_getpriority, 0, 0) };
-        let err = if rc == -1 {
-            std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
-        } else {
-            0
-        };
-        seen.store(err, Ordering::Release);
+        seen.store(u8::from(seccomp::in_filter_mode()), Ordering::Release);
     });
 
     let arch = seccomp::audit_arch()?;
-    // Everything the sibling and the runtime need to reach the store above,
-    // and deliberately not `getpriority`.
-    let allow: Vec<i64> = vec![
-        libc::SYS_write,
-        libc::SYS_exit,
-        libc::SYS_exit_group,
-        libc::SYS_futex,
-        libc::SYS_mmap,
-        libc::SYS_munmap,
-        libc::SYS_brk,
-        libc::SYS_madvise,
-        libc::SYS_mprotect,
-        libc::SYS_sched_yield,
-        libc::SYS_rt_sigprocmask,
-        libc::SYS_rt_sigaction,
-        libc::SYS_sigaltstack,
-        libc::SYS_getrandom,
-        libc::SYS_close,
-        libc::SYS_read,
-        libc::SYS_tgkill,
-        libc::SYS_clock_gettime,
-    ];
-    let deny = seccomp::SECCOMP_RET_ERRNO | u32::from(u16::try_from(libc::EPERM).expect("EPERM"));
-    let prog = seccomp::build_program(arch, &allow, deny).expect("the program builds");
+    // No allowlist and a logging action: nothing is denied, so nothing the
+    // sibling needs can go missing.
+    let prog =
+        seccomp::build_program(arch, &[], seccomp::SECCOMP_RET_LOG).expect("the program builds");
     seccomp::load(&prog, flags).expect("the kernel accepts the program");
     installed.store(true, Ordering::Release);
     sibling.join().expect("the sibling thread finishes");
-    Some(observed.load(Ordering::Acquire))
+    Some(observed.load(Ordering::Acquire) == 1)
 }
 
 /// With thread sync, a thread that already existed is covered.
@@ -326,21 +305,23 @@ fn child_sibling_thread_is_covered_with_thread_sync() {
     if !in_child_role() {
         return;
     }
-    let errno =
-        sibling_thread_verdict(seccomp::SECCOMP_FILTER_FLAG_TSYNC).expect("an architecture token");
-    assert_eq!(
-        errno,
-        libc::EPERM,
-        "the sibling thread's syscall was not refused, so the filter did not          reach a thread that already existed. sipnab installs after the capture          thread is spawned, so an uncovered sibling means the instrument          records nothing from the thread running libpcap"
+    let filtered = sibling_thread_is_filtered(seccomp::SECCOMP_FILTER_FLAG_TSYNC)
+        .expect("an architecture token");
+    assert!(
+        filtered,
+        "the sibling thread reports no filter, so the install did not reach a \
+         thread that already existed. sipnab installs after the capture thread \
+         is spawned, so an uncovered sibling means the instrument records \
+         nothing from the thread running libpcap"
     );
     println!("{CHILD_COMPLETE}");
 }
 
 /// Without it, that thread escapes — which is why the flag is not optional.
 ///
-/// The control, and the reason the flag is in the shipped path rather than
-/// left to a default. Without this half, the gate above would pass on a kernel
-/// that covered siblings anyway and the flag could be dropped unnoticed.
+/// The control, and the reason the flag is in the shipped path rather than left
+/// to a default. Without this half the gate above would pass on a kernel that
+/// covered siblings anyway, and the flag could be dropped unnoticed.
 #[cfg(target_os = "linux")]
 #[test]
 #[ignore = "child role: installs a seccomp filter that cannot be removed"]
@@ -348,10 +329,12 @@ fn child_sibling_thread_escapes_without_thread_sync() {
     if !in_child_role() {
         return;
     }
-    let errno = sibling_thread_verdict(0).expect("an architecture token");
-    assert_eq!(
-        errno, 0,
-        "the sibling was refused without the thread-sync flag, so this kernel          covers existing threads on its own and the pair of gates no longer          says what it claims"
+    let filtered = sibling_thread_is_filtered(0).expect("an architecture token");
+    assert!(
+        !filtered,
+        "the sibling was covered without the thread-sync flag, so this kernel \
+         covers existing threads on its own and the pair of gates no longer \
+         says what it claims"
     );
     println!("{CHILD_COMPLETE}");
 }
@@ -399,8 +382,38 @@ fn a_filter_built_this_way_is_genuinely_loaded() {
         );
         return;
     }
-    let (ok, out) = run_child("child_denying_filter_refuses_the_call_it_left_out");
-    assert!(ok, "the denying child did not complete:\n{out}");
+    let exe = std::env::current_exe().expect("this test binary");
+    let out = Command::new(exe)
+        .args([
+            "--exact",
+            "child_denying_filter_refuses_the_call_it_left_out",
+            "--ignored",
+            "--nocapture",
+        ])
+        .env(
+            CHILD_ENV,
+            "child_denying_filter_refuses_the_call_it_left_out",
+        )
+        .output()
+        .expect("spawn the denying child");
+    let code = out.status.code();
+    assert_ne!(
+        code,
+        Some(EXIT_NOT_REFUSED),
+        "the syscall left off the allowlist succeeded, so no filter was in \
+         force and every other gate in this file proves nothing"
+    );
+    assert_ne!(
+        code,
+        Some(EXIT_WRONG_ERRNO),
+        "the call failed for a reason other than the filter's own action"
+    );
+    assert_eq!(
+        code,
+        Some(EXIT_REFUSED_AS_EXPECTED),
+        "the denying child exited {code:?}; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 }
 
 /// The two children differ only in the action, and the outcomes differ.
