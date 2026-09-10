@@ -12,6 +12,14 @@ entry that carries them.
 
 ### Fixed
 
+- **The STUN decoder accepted a message length RFC 8489 says never occurs.**
+  Every attribute is padded to a multiple of four, so the length field's last
+  two bits are always zero --- and the RFC names that as a way to tell STUN from
+  other protocols. The decoder did not check it, and it shares ports with RTP
+  and has already claimed a GTPv2-C datagram as an RTP stream once. Two more
+  bits of collision resistance, taken from the specification rather than
+  invented.
+
 - **A new format gate reported "unformatted" when rustfmt was simply absent.**
   CI's feature-matrix jobs install the toolchain without the rustfmt component,
   so `cargo fmt --check` exited non-zero with an empty diff, and the gate read

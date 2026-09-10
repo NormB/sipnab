@@ -487,6 +487,21 @@ pub fn parse(payload: &[u8]) -> Option<StunMessage> {
     transaction_id.copy_from_slice(&payload[8..20]);
 
     let declared = u16::from_be_bytes([payload[2], payload[3]]) as usize;
+    // RFC 8489 section 5: every attribute is padded to a multiple of four, so
+    // the last two bits of the message length are always zero — and the RFC
+    // offers that fact as "another way to distinguish STUN packets from
+    // packets of other protocols".
+    //
+    // Spent here rather than left on the table, because this decoder shares
+    // ports with RTP and has already claimed a datagram belonging to something
+    // else: GTPv2-C was reported as an RTP stream with a confident MOS of 1.0,
+    // on a real capture, because a TURN ChannelData header and a GTPv2-C
+    // header are the same shape. Two more bits that must be zero is two more
+    // bits of collision resistance, from the specification rather than from a
+    // heuristic.
+    if !declared.is_multiple_of(4) {
+        return None;
+    }
     // Trust the buffer, not the header: a truncated capture routinely holds a
     // shorter body than the header claims, and a snaplen is the usual reason.
     let body_end = 20usize.saturating_add(declared).min(payload.len());
@@ -1114,9 +1129,13 @@ mod tests {
     #[test]
     fn a_truncated_or_lying_message_yields_no_panic() {
         let mut m = FIELD_SHAPED_REQUEST.to_vec();
-        // Claim far more body than is present.
+        // Claim far more body than is present. 0xfffc rather than 0xffff, and
+        // the difference is the point: RFC 8489 says the low two bits of the
+        // length are always zero, so `parse` refuses 0xffff before it ever
+        // reaches the truncation handling this test is about. A lie has to be
+        // a LEGAL length to exercise the buffer guard.
         m[2] = 0xff;
-        m[3] = 0xff;
+        m[3] = 0xfc;
         let msg = parse(&m).expect("header is still valid");
         assert!(msg.is_binding_request());
 
@@ -2499,6 +2518,63 @@ pub fn reset() {
     }
     STUN_SEEN.store(false, std::sync::atomic::Ordering::Release);
     ALLOCATION_SEEN.store(false, std::sync::atomic::Ordering::Release);
+}
+
+#[cfg(test)]
+mod message_length_tests {
+    use super::*;
+
+    /// A STUN message whose declared length is not a multiple of four,
+    /// otherwise well formed.
+    fn odd_length(declared: u16) -> Vec<u8> {
+        let mut m = Vec::new();
+        m.extend_from_slice(&0x0001u16.to_be_bytes()); // Binding Request
+        m.extend_from_slice(&declared.to_be_bytes());
+        m.extend_from_slice(&MAGIC_COOKIE.to_be_bytes());
+        m.extend_from_slice(&[0xAB; 12]);
+        // Enough body that the length is a claim about padding rather than a
+        // claim about bytes nobody sent.
+        m.extend_from_slice(&[0u8; 16]);
+        m
+    }
+
+    /// RFC 8489 section 5: the last two bits of the message length are always
+    /// zero, and the RFC names that as a way to tell STUN from other
+    /// protocols.
+    ///
+    /// **This decoder shares ports with RTP and has already misread another
+    /// protocol once.** GTPv2-C was reported as an RTP stream with a confident
+    /// MOS because a TURN ChannelData header and a GTPv2-C header are the same
+    /// shape. Every additional bit that must be zero is another datagram this
+    /// cannot claim, and the RFC offers these two for exactly that purpose.
+    #[test]
+    fn a_length_that_is_not_a_multiple_of_four_is_not_a_stun_message() {
+        for declared in [1u16, 2, 3, 5, 6, 7, 13, 15] {
+            assert!(
+                parse(&odd_length(declared)).is_none(),
+                "declared length {declared} has a non-zero low bit pair, which \
+                 RFC 8489 says never happens; accepting it spends a \
+                 discriminator the RFC hands us"
+            );
+        }
+    }
+
+    /// And the multiples still parse, so the check discriminates rather than
+    /// refusing.
+    ///
+    /// The positive control matters more than usual here: a guard written one
+    /// operator wrong would refuse every STUN message on the wire, and every
+    /// assertion above would still pass.
+    #[test]
+    fn a_length_that_is_a_multiple_of_four_still_parses() {
+        for declared in [0u16, 4, 8, 12, 16] {
+            let m = odd_length(declared);
+            assert!(
+                parse(&m).is_some(),
+                "declared length {declared} is a legal STUN length and must parse"
+            );
+        }
+    }
 }
 
 #[cfg(test)]

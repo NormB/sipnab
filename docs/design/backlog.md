@@ -44,7 +44,7 @@ Tiers:
 
 ## Status
 
-**24 open, 488 done** across 36 sections.
+**24 open, 489 done** across 36 sections.
 Regenerate with `python3 scripts/backlog-status.py --apply`.
 
 | Section | Open | Done | Progress |
@@ -73,7 +73,7 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
 | OBS | 0 | 7 | `##########` |
 | REQ | 4 | 13 | `########..` |
 | CMP | 1 | 5 | `########..` |
-| GTP | 1 | 2 | `#######...` |
+| GTP | 1 | 3 | `########..` |
 | MER | 0 | 5 | `##########` |
 | LIVE | 3 | 3 | `#####.....` |
 | P5 | 6 | 14 | `#######...` |
@@ -6761,6 +6761,35 @@ GTPv2-C header are the same shape, and both define Length as "the octets after
 the first four", so the whole-datagram check passes. That is fixed. What the
 episode exposed is that sipnab's mobile-core coverage rests on fixtures sipnab
 wrote for itself.
+
+- [x] **CONF1 (done 2026-09-10) — the STUN decoder spent none of the two bits
+  RFC 8489 hands it for telling STUN from everything else.** First finding of
+  the standing conformance audit, from reading RFC 8489 section 5 against
+  [`src/stun.rs`](https://github.com/NormB/sipnab/blob/main/src/stun.rs).
+
+  Every STUN attribute is padded to a multiple of four, so the message length
+  field's last two bits are always zero, and the RFC states the consequence
+  outright: *"This provides another way to distinguish STUN packets from
+  packets of other protocols."* `parse` did not check it. A datagram with the
+  right magic cookie, the right two leading zero bits and a length of, say,
+  0x0007 decoded as a Binding Request.
+
+  **Ranked as a real finding rather than pedantry because of the entry below
+  this one.** This decoder shares ports with RTP and has already claimed a
+  datagram belonging to something else --- GTPv2-C reported as an RTP stream
+  with a confident `mos: 1.0`, on a real capture. Two more bits that must be
+  zero is two more bits of collision resistance, taken from the specification
+  instead of invented as a heuristic.
+
+  **The check found something the moment it landed.** A pre-existing test built
+  its lying-length fixture as `0xffff`, which is not a multiple of four, so the
+  new guard refused it before the truncation handling that test exists to
+  exercise. The fixture is `0xfffc` now, with the reason written beside it:
+  a lie has to be a LEGAL length to reach the buffer guard.
+
+  Two tests, mutation-proven in both directions --- deleting the check fails the
+  negative one, inverting it fails sixty-one tests, which is the positive
+  control doing its job.
 
 - [x] **GTP1 (done 2026-09-06) — GTPv2-C reported as relayed media.** Found on a
   real capture: SSRC `0x02000200`, codec PCMU, `mos: 1.0`, `mos_grounded: true`,
