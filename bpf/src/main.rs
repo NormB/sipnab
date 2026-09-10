@@ -131,7 +131,26 @@ fn try_tls_write(ctx: &ProbeContext) -> Result<(), ()> {
         return Err(());
     }
     let len = num as usize;
-    let copy = if len > MAX_PAYLOAD { MAX_PAYLOAD } else { len };
+    // The read length must carry its bound AT the instruction the verifier
+    // checks, not several instructions upstream. A clamp alone does not
+    // guarantee that: rustc 1.100.0-nightly spills the clamped value to the
+    // stack and reloads it into the argument register, and the verifier does
+    // not keep the range across that round trip. It then sees `0..=0x7fffffff`
+    // and refuses the program with "R2 unbounded memory access" -- which is
+    // what shipped on four release artifacts of 0.5.161. rustc 1.99.0-nightly
+    // kept the value in a register and loaded fine, so nothing noticed.
+    //
+    // The mask below is applied immediately before the read and cannot be
+    // hoisted away from it: whatever the register allocator does, the value
+    // reaching the helper was produced by an `and` against a constant, which
+    // is the form the verifier's own error message asks for.
+    //
+    // The clamp is to MAX_PAYLOAD - 1 rather than MAX_PAYLOAD so the mask is
+    // exact. `x & 0x7ff` is 0..=2047, and a clamp to 2048 would mask the cap
+    // itself down to zero -- reading nothing on exactly the largest write,
+    // which is the one most worth having.
+    const READ_MAX: usize = MAX_PAYLOAD - 1;
+    let copy = if len > READ_MAX { READ_MAX } else { len };
 
     let slot = SCRATCH.get_ptr_mut(0).ok_or(())?;
     // SAFETY: per-CPU scratch, one entry, and this is the only writer on this
@@ -142,7 +161,11 @@ fn try_tls_write(ctx: &ProbeContext) -> Result<(), ()> {
     rec.pid = (pid_tgid >> 32) as u32;
     rec.tid = pid_tgid as u32;
     rec.len = num as u32;
-    rec.flags = if len > MAX_PAYLOAD { FLAG_TRUNCATED } else { 0 };
+    // `READ_MAX`, matching the clamp above: a write of exactly MAX_PAYLOAD is
+    // now truncated by one byte and says so, where before it was copied whole
+    // and not flagged. One byte at the cap, declared, is the price of a bound
+    // the verifier can follow.
+    rec.flags = if len > READ_MAX { FLAG_TRUNCATED } else { 0 };
     rec.family = 0;
     rec.sport = 0;
     rec.dport = 0;
@@ -153,6 +176,8 @@ fn try_tls_write(ctx: &ProbeContext) -> Result<(), ()> {
     // SAFETY: reading userspace memory the application just handed the TLS
     // library. `bpf_probe_read_user_buf` faults safely and returns an error
     // rather than trapping if the pointer is bad.
+    // The mask, here and nowhere earlier. See the comment on `READ_MAX`.
+    let copy = copy & READ_MAX;
     unsafe {
         bpf_probe_read_user_buf(buf, &mut rec.data[..copy]).map_err(|_| ())?;
     }

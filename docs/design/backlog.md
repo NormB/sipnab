@@ -44,7 +44,7 @@ Tiers:
 
 ## Status
 
-**27 open, 485 done** across 36 sections.
+**26 open, 486 done** across 36 sections.
 Regenerate with `python3 scripts/backlog-status.py --apply`.
 
 | Section | Open | Done | Progress |
@@ -52,7 +52,7 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
 | P0 | 0 | 21 | `##########` |
 | P1 | 0 | 70 | `##########` |
 | PV | 0 | 13 | `##########` |
-| P2 | 1 | 109 | `##########` |
+| P2 | 0 | 110 | `##########` |
 | P3 | 0 | 64 | `##########` |
 | P4 | 1 | 44 | `##########` |
 | PA | 1 | 12 | `#########.` |
@@ -1477,57 +1477,50 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
 
 ## P2 — robustness, observability & efficiency
 
-- [ ] **The RELEASED eBPF object is rejected by the verifier; one built from
-  the same commit attaches. The source is not the problem (added 2026-09-09,
-  corrected the same day).** Found by doing what LIVE3 asks: running the
-  load-and-attach half on a real privileged host.
+- [x] **(done 2026-09-10) The released eBPF object was rejected by the
+  verifier, and the cause was the NIGHTLY COMPILER rather than the source.**
+  Found by doing what LIVE3 asks: running the load-and-attach half on a real
+  privileged host.
 
-  **The A/B, back to back on one host.** Debian 13, kernel
-  `6.12.105+deb13-amd64`, BTF present, the same two live `libssl.so.3` inodes,
-  minutes apart:
+  **The matrix, every row measured on one host, one kernel.** Debian 13,
+  `6.12.105+deb13-amd64`, BTF present, the same two live `libssl.so.3` inodes:
 
-  | Binary | Result |
-  |---|---|
-  | published `sipnab-0.5.161-x86_64-unknown-linux-gnu`, checksum-verified | `verifier rejected the uprobe: BPF_PROG_LOAD returned Permission denied` |
-  | built on that host from `7e0980f2` | `BPF capture attached to 2 libraries ... plus tcp_sendmsg` |
+  | nightly | bpf-linker | features | object | loads |
+  |---|---|---|---|---|
+  | 1.99.0 (14 Aug) | 0.9.13 | small | 129,656 | yes |
+  | 1.99.0 (14 Aug) | 0.11.0 | small | 131,904 | yes |
+  | 1.99.0 (14 Aug) | 0.11.0 | full | 131,904 | yes |
+  | 1.100.0 (8 Sep) | 0.11.0 | full | 128,880 | **no** |
+  | released, CI-built | 0.11.0 | full | 128,816 | **no** |
 
-  The verifier's own line on the rejected one is `R2 unbounded memory access,
-  use 'var &= const' or 'if (var < const)'` at `call bpf_probe_read_user`.
+  A nightly from the day before the release reproduces the rejection with an
+  object 64 bytes off the shipped one. The linker changes the object and not
+  the outcome; the feature set produces a **byte-identical** object, because
+  the kernel crate is separate and features never reached it.
 
-  **So the bound in [`bpf/src/main.rs`](https://github.com/NormB/sipnab/blob/main/bpf/src/main.rs) is fine.** The first version of this
-  entry blamed it -- `let copy = if len > MAX_PAYLOAD { MAX_PAYLOAD } else
-  { len }` looked like a bound the optimizer had eaten. It is not: the same
-  source, compiled on the target host, produces an object the verifier
-  accepts. A source fix would have been a fix for nothing, which is why the
-  entry said not to ship one unloaded.
+  **The mechanism, read out of the disassembly of both objects.** Same source,
+  same call. The working object passes the read length in a register the
+  verifier proves is `0..=2048`; the rejected one spills it and reloads it with
+  `r2 = *(u64 *)(r10 - 0x28)`, from a slot the verifier proves only
+  `0..=0x7fffffff`. The clamp is in both. The newer register allocator moved
+  the value through the stack, and the bound did not survive the round trip.
 
-  **What differs is the BUILD, and the cause is NOT established.** Candidates,
-  none of them confirmed: the release job installs bpf-linker **0.11.0** as a
-  prebuilt tarball while the lab host has **0.9.13**; the nightly differs; and
-  the aarch64 leg cross-compiles inside `rust:1-bookworm` while x86_64 does
-  not. One measurement that is suggestive rather than decisive: the object
-  built on the lab host is **131,952 bytes**, and `release.yml`'s own comment
-  records the CI-built object at **126,248 bytes**. Different sizes, same
-  source.
+  **Fixed by putting the bound AT the instruction.** The clamp target moves to
+  `MAX_PAYLOAD - 1` and a mask against that constant is applied immediately
+  before the read, which is the form the verifier's own error message asks for
+  and which no allocator can hoist away from the call it guards. A write of
+  exactly `MAX_PAYLOAD` is now truncated by one byte and says so, where before
+  it was copied whole and unflagged -- declared in the comment beside it.
 
-  **An attempt to pin it on the linker version did not work, and the reason is
-  worth recording.** Installing the release job's exact bpf-linker 0.11.0
-  tarball (checksum-verified) and rebuilding -- including after a full `cargo
-  clean` -- produced a **byte-identical** object to the 0.9.13 build. Two
-  different linkers do not produce identical output, so the build script is
-  not taking its linker from `PATH` the way that experiment assumed. Whatever
-  it does use, that is the thing to establish next.
+  **Verified in both directions, which is the point.** On 1.100.0 the object
+  goes from rejected to attached; on 1.99.0 it stays attached. Either result
+  alone would not separate a fix from a coincidence.
 
-  **Do:** get the CI-built object itself -- from the release run's artifacts,
-  or by reproducing the release job's container -- and compare it against one
-  built on a host where it loads. `--uprobe-list` works on the released binary,
-  so only the program load fails; the loader and the symbol resolution are
-  fine.
-
-  **It fails loudly, which is the one good thing.** The error names both
-  libraries, the symbol and the verifier's words, so an operator gets a refusal
-  rather than a capture that silently holds nothing. The capability is still
-  absent on every artifact that ships it.
+  **The entry that made this findable stays open.** LIVE3 asks for the
+  load-and-attach half to run somewhere and for the result to be recorded.
+  Nothing does that yet, which is the whole reason this shipped on four
+  artifacts: the object built, the suite was green, and building is the only
+  half anything covers.
 
 - [x] **TLSHOLD — two of the three late-decrypt counters never reach the
   operator, so an eviction and a key that never came look identical.** The
