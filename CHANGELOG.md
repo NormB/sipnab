@@ -8,7 +8,48 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
-## [Unreleased]
+## [0.5.162] - 2026-09-10
+
+### Fixed
+
+- **The eBPF uprobe backend did not load on a current kernel, on every release
+  artifact that ships it.** `--uprobe-backend bpf` failed with `verifier
+  rejected the uprobe: BPF_PROG_LOAD returned Permission denied`, and the
+  verifier's own line was `R2 unbounded memory access`. It failed loudly, so an
+  operator got a refusal naming both libraries and the symbol rather than a
+  capture that silently held nothing — but the capability was absent.
+
+  **The cause was the nightly compiler, not the code.** The read length was
+  already clamped. A newer nightly spills the clamped value to the stack and
+  reloads it into the argument register, and the verifier does not keep the
+  range across that round trip: it sees `0..=0x7fffffff` and refuses. An older
+  nightly kept the value in a register and loaded fine, so nothing noticed.
+  Established by elimination on one host and one kernel — the linker version
+  changes the object and not the outcome, and the feature set produces a
+  byte-identical object, because the kernel crate is separate.
+
+  The fix puts the bound **at the instruction the verifier checks**: a mask
+  against a constant, immediately before the read, which no register allocator
+  can hoist away from the call it guards. The clamp target moves to
+  `MAX_PAYLOAD - 1` so the mask is exact — masking a value that can equal the
+  buffer size would read nothing on precisely the largest write. A write of
+  exactly `MAX_PAYLOAD` is now truncated by one byte and flagged as such, where
+  before it was copied whole and unflagged.
+
+  Verified in both directions on the two compilers reachable here: the object
+  goes from rejected to attached on the one that failed, and stays attached on
+  the one that worked. Either result alone would not separate a fix from a
+  coincidence.
+
+### Removed
+
+- **The `rust-clippy` analysis workflow.** CI already runs clippy at a stricter
+  scope — `--workspace --all-features --all-targets` with `-D warnings` — and
+  fails on any warning, so every finding that workflow could report is one the
+  existing gate has already refused. Its output went to code scanning, where
+  this project fails CI on any open alert, so a finding would have left the
+  clippy job green and failed CI in a different job over an alert in a
+  different tab.
 
 ### Changed
 
