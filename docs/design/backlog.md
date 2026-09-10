@@ -5307,6 +5307,62 @@ section stays four entries instead of becoming a mirror of RV.
   parser is new work. **This is the single fact that most changes the size of
   this item, and it is not yet known.**
 
+  **Established 2026-09-10, from `sippy/rtpproxy` at `master`, not from
+  memory.** Every claim below names where it was read.
+
+  **There is no bencode dialect, so the entry does NOT shrink.** A code search
+  across the whole repository for `bencode` returns zero hits. The `protos/`
+  directory is a false lead worth naming so nobody re-investigates it:
+  `rtpp_request.proto` describes an INTERNAL module interface --- its
+  `cmd_destination` carries a `module_classes` whose only value is
+  `CLS_MOD_CRYPTO` --- and not a second control dialect on the wire. The text
+  parser is entirely new work and the existing NG decoder covers none of it.
+
+  **The command letters**, from `src/rtpp_command_parse.c`, case-insensitive:
+  `U` update, `L` lookup, `D` delete, `P` play, `S` stop play, `R` record,
+  `C` copy, `N` norecord, `V` version (`VF` feature query), `I` info,
+  `Q` query, `X` delete all, `G` get stats.
+
+  **The media-creating pair is `U`/`L`.** `handle_command` in
+  `src/rtpp_command.c` calls `find_stream` and inverts the result for every op
+  except `UPDATE`, which is the one that may create the session. `RECORD` and
+  `COPY` create RECORDING streams, which is exactly the case the `NG` decoder's
+  `MediaCreating` comment exists for: a recording or forking stream must not be
+  attributed as an ordinary leg.
+
+  **The cookie is datagram-only.** `src/rtpp_command.c` gates it on
+  `pvt->ctx.umode != 0` with the comment *"Stream communication mode doesn't
+  use cookie"*. A UNIX-stream control socket carries none. That is consistent
+  rather than limiting for a passive observer, which can only see the datagram
+  mode anyway.
+
+  **Retransmission is a reply cache, and rtpproxy counts the duplicates
+  itself.** `rtpp_command_guard_retrans` looks the cookie up in an `rcache`; on
+  a hit it re-sends the CACHED reply verbatim, decrements `ncmds_rcvd` and
+  increments `ncmds_rcvd_ndups`. So a passive observer sees the same cookie
+  twice with byte-identical replies, which is RP4's premise confirmed rather
+  than assumed.
+
+  **The reply grammar**, from `src/rtpp_command_reply.c`: the cookie is echoed
+  first followed by a space, then one of `E<decimal>\n` for an error,
+  `<int>\n` for a numeric reply, or `<port> <address>` for the media reply that
+  `U` and `L` return. Error codes are `src/rtpp_command_ecodes.h`.
+
+  **Argument bounds are per-command and small**: `UPDATE` 5..8, `LOOKUP` 5..6,
+  `DELETE` 3..4, with `RTPC_MAX_ARGC` capping the rest. `&&` starts a
+  sub-command, capped by `MAX_SUBC_NUM`. Those are the bounds a malformed-input
+  sweep should push against.
+
+  **The one that changes the value calculation: the documented default is a
+  UNIX socket.** The user manual's only control-socket examples are
+  `unix:/var/run/rtpproxy/rtpproxy.sock` and its timeout companion, and no
+  default UDP port is documented anywhere. A passive capture cannot see a UNIX
+  socket at all. So this decoder helps only deployments that configured a UDP
+  control socket, and there is **no well-known port to key a sniffed-traffic
+  heuristic on** --- the operator has to name it. That is a design input, not a
+  blocker: a remote rtpproxy driven by Kamailio or OpenSIPS is necessarily on
+  UDP, which is the deployment shape this would serve.
+
   Inherit the hardening the NG path now has: the malformed-input sweep added
   with VAL9 runs 20,000 rounds over a 70-datagram corpus asserting RSS growth
   stays under 0.8 MB. A text protocol has its own denial-of-service shapes — an
