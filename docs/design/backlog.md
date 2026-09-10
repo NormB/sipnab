@@ -7043,8 +7043,24 @@ them away.
 
   **Do:** get one. `P-Charging-Vector` is an IMS header, and the lab already
   runs OpenSIPS — a scenario that inserts a realistic `icid-value` plus
-  `related-icid` across two hops produces exactly the missing evidence, and it
-  is PII-free lab traffic that can enter `tests/pcap-samples/` under LIVE4.
+  `related-icid` produces exactly the missing evidence, and it is PII-free lab
+  traffic that can enter `tests/pcap-samples/` under LIVE4.
+
+  **"Across two hops" understates it, established 2026-09-10.** Both strategies
+  correlate one DIALOG with another: `charging_vector_icid` wants two legs
+  carrying the same `icid-value`, and `charging_vector_related_icid` wants one
+  leg's `related-icid` naming the other's. A proxy chain, however many hops
+  long, forwards one Call-ID and produces ONE dialog — so a two-hop proxy
+  capture would carry the header and exercise neither strategy. The capture
+  needs a **B2BUA**, which is what makes two dialogs out of one call.
+  `b2b_logic.so` is present on the lab VM, so this is buildable there; it is
+  the config work that was underestimated, not the header.
+
+  **And it needs two calls, not one.** The strategies are ranked and the first
+  match wins, so a capture whose B-leg carries both the same `icid-value` AND a
+  `related-icid` exercises only the higher-ranked one. Two calls in one
+  capture — one with matching `icid-value` alone, one with `related-icid` —
+  covers both.
 
   **Until then the notice stays and stays loud.** A test suite that goes green
   over a strategy no real message has exercised is the failure that notice
@@ -7175,6 +7191,36 @@ them away.
   and the Docker image actually link ([`Dockerfile`](https://github.com/NormB/sipnab/blob/main/Dockerfile), `packaging/`), test one
   alternate backend end to end, and either document the supported device-name
   syntax in [`docs/install.md`](https://github.com/NormB/sipnab/blob/main/docs/install.md) or state plainly that it is unsupported.
+  **Step one is done, 2026-09-10, and the answer is that the release ships two
+  different capabilities.** Measured against published 0.5.162 artifacts on a
+  Debian 13 x86_64 host:
+
+  | Artifact | libpcap | netmap | Error for `--device netmap:lo` |
+  |---|---|---|---|
+  | `x86_64-unknown-linux-musl` | embedded, 1.10.6 "with TPACKET_V3 and netmap" | yes | `netmap open: cannot access netmap:lo` |
+  | `x86_64-unknown-linux-gnu` | the host's Debian 1.10.5 | no | `No such device exists` |
+
+  The two errors are the evidence: the first is libpcap's netmap module trying
+  and finding no netmap device, the second is libpcap not recognizing the
+  prefix at all. `aarch64-unknown-linux-musl` carries the same banner, and the
+  Docker image installs `libpcap0.8t64`, so it behaves like the gnu tarballs.
+  A string probe of Debian's library confirms the build: `usbmon` and
+  `bluetooth` appear, `netmap`, `dpdk` and `rpcap` do not.
+
+  **Nothing had said the two families differ**, and the device name is passed
+  through, so an operator on a `.deb` and one on a musl tarball ran the same
+  command and got different answers with no way to know why.
+  [`docs/install.md`](https://github.com/NormB/sipnab/blob/main/docs/install.md) now carries the table and the probe command, and
+  `release.yml` refuses to publish a musl artifact whose embedded libpcap lost
+  the module --- a documented capability that quietly disappears is worse than
+  one nobody claimed.
+
+  **Still open:** driving netmap end to end. That needs a host with the netmap
+  kernel module, which the lab does not have; the error above proves the
+  module is reachable, not that capture works through it. DPDK is absent from
+  both families and AF_XDP from libpcap entirely, so netmap remains the only
+  one of the three with anything left to test.
+
   **Corrected 2026-08-05:** this used to end *"Only after that is it worth
   discussing a native AF_XDP path"*, which contradicts CT13 above (AF_XDP:
   **declined** — an XSK steals traffic from the host with no tee, and libpcap

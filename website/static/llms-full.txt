@@ -5871,6 +5871,41 @@ rustc --print deployment-target --target x86_64-apple-darwin
 rustc --print deployment-target --target aarch64-apple-darwin
 ```
 
+### Which capture backends an artifact can reach
+
+libpcap selects a capture backend from the device name, and sipnab passes the
+name through: `--device netmap:eth0` reaches libpcap's netmap module when the
+libpcap behind that binary carries one. **Which artifact you installed
+decides whether it was**, and the two families differ:
+
+| Artifact family | libpcap | netmap | DPDK | AF_XDP |
+|---|---|---|---|---|
+| `*-linux-musl.tar.gz` | statically linked, 1.10.6 | yes | no | no |
+| `*-linux-gnu.tar.gz`, `.deb`, `.rpm`, Docker image | the host's, at runtime | whatever your distribution built | almost never | no |
+
+Debian and Ubuntu build libpcap without netmap, so the `.deb`, the `.rpm` and
+the Docker image answer `No such device exists` for a `netmap:` name. The
+static musl tarballs answer `netmap open: cannot access netmap:eth0` instead —
+a different error, and the difference is the whole point: the first says the
+module is absent, the second says the module tried and your kernel has no
+netmap device.
+
+Neither family reaches DPDK, and no libpcap has an AF_XDP backend at all, so
+an `xdp:` name is never a capture path.
+
+Check what your own binary carries:
+
+```bash
+strings "$(command -v sipnab)" | grep 'libpcap version'
+```
+
+An empty result means the binary links your system's libpcap rather than
+embedding one. Ask that library instead:
+
+```bash
+strings /usr/lib/*/libpcap.so.* | grep 'libpcap version'
+```
+
 ### Architecture naming
 
 `x86_64` = `amd64` (Intel/AMD) and `aarch64` = `arm64` (ARM) are the same chips

@@ -3477,7 +3477,11 @@ fn no_documentation_table_repeats_a_row() {
     // 856 -> 858: two again, and the same shape -- the "where the wideband
     // score appears" table in `docs/mos-and-codecs.md` and the copy
     // `build-site-pages.py` generates beside it.
-    const EXPECTED_TABLES: usize = 858;
+    //
+    // 858 -> 861: three. The capture-backend table in `docs/install.md` and
+    // its generated copy, plus the measurement table added to CT6 in
+    // `docs/design/backlog.md`, which has no site copy.
+    const EXPECTED_TABLES: usize = 861;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

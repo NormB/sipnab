@@ -10,6 +10,18 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Added
+
+- **The install page says which capture backends each artifact can reach.**
+  libpcap picks a backend from the device name and sipnab passes the name
+  through, so `--device netmap:eth0` works or does not depending on the libpcap
+  behind the binary --- and the two artifact families differ. The static musl
+  tarballs embed libpcap 1.10.6 with the netmap module; the gnu tarballs, the
+  packages and the Docker image link the host's, and Debian builds it without.
+  Two operators running the same command on the same release got different
+  answers and nothing said why. The release now refuses to publish a musl
+  artifact whose embedded libpcap lost the module.
+
 ### Fixed
 
 - **A metrics test could only report a port number when it failed.** Its probe

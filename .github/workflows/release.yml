@@ -570,6 +570,47 @@ jobs:
           fi
           echo "smoke test passed for ${{ matrix.target }}"
 
+      # Which capture backends this artifact can actually reach.
+      #
+      # The two artifact families differ, and nothing said so until 2026-09-10.
+      # A musl build links libpcap statically, so whatever cross-rs compiled is
+      # what ships -- currently 1.10.6 "with TPACKET_V3 and netmap". A gnu
+      # build links the host's libpcap at runtime, and Debian's is built
+      # without netmap, so the same release ships one artifact that can open
+      # `netmap:eth0` and another that answers "No such device exists".
+      #
+      # docs/install.md states that split. This gate is what keeps the
+      # statement true: if cross-rs ever ships a libpcap without netmap, the
+      # release fails here rather than publishing a documented capability the
+      # binary does not have.
+      - name: Record the capture backends this artifact carries
+        if: contains(matrix.target, '-linux-')
+        shell: bash
+        run: |
+          set -uo pipefail
+          bin="target/${{ matrix.target }}/release/sipnab"
+          banner=$(strings "$bin" | grep -m1 'libpcap version' || true)
+          case "${{ matrix.target }}" in
+            *-linux-musl)
+              if [ -z "$banner" ]; then
+                echo "::error::$bin embeds no libpcap version banner; a static musl build must carry libpcap"
+                exit 1
+              fi
+              echo "embedded: $banner"
+              if ! printf '%s' "$banner" | grep -q netmap; then
+                echo "::error::the embedded libpcap has no netmap module, and docs/install.md says the musl artifacts do. Fix the claim in docs/install.md or the toolchain that dropped it: $banner"
+                exit 1
+              fi
+              ;;
+            *)
+              # Dynamically linked: the capability belongs to the host's
+              # libpcap, not to this artifact, so there is nothing here to
+              # assert. Printed anyway, because a banner appearing in a gnu
+              # build would mean it stopped linking the system library.
+              echo "links the host's libpcap; embedded banner: ${banner:-<none, as expected>}"
+              ;;
+          esac
+
       # Regression gate for the glibc floor: a binary that links symbols newer
       # than 2.36 would fail on Debian 12 with "GLIBC_x.yz not found".
       - name: Enforce glibc floor (gnu Linux targets)
