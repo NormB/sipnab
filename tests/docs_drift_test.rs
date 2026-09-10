@@ -33,6 +33,18 @@ mod markdown;
 /// would still fail this guard instead of being silently whitelisted. The
 /// label is the first element of each `docs` tuple in `readme_long_flags_exist_in_cli`.
 const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
+    // `scripts/verify-bpf-load.sh`'s, named by the uprobe page's section on the
+    // half the suite cannot reach. `--classify` is that script's mode for
+    // judging a run's output without performing one -- the split that makes the
+    // verdict testable. It is not a sipnab flag, and documenting the manual
+    // verification must not turn it into one.
+    (
+        "classify",
+        &[
+            "docs/internals/uprobe-capture.md",
+            "website/content/docs/internals/uprobe-capture.md",
+        ],
+    ),
     // `cargo llvm-cov`'s, named by the coverage note that documents the CI
     // gate and the local rehearsal of it. `--fail-under-lines` is the floor
     // the workflow enforces and `--skip` names the two test groups the
@@ -3458,7 +3470,10 @@ fn no_documentation_table_repeats_a_row() {
     // no website mirror, which is why this is +1 and not +2. Attributed per
     // file against HEAD by counting table starts: docs/design/backlog.md
     // 29 -> 30, nothing else moved.
-    const EXPECTED_TABLES: usize = 854;
+    // 854 -> 856: two, the same table twice -- the eBPF load-verification
+    // record added to `docs/internals/uprobe-capture.md` and the copy
+    // `build-site-internals.py` generates under `website/content/`.
+    const EXPECTED_TABLES: usize = 856;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

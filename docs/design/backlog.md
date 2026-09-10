@@ -44,7 +44,7 @@ Tiers:
 
 ## Status
 
-**26 open, 486 done** across 36 sections.
+**25 open, 487 done** across 36 sections.
 Regenerate with `python3 scripts/backlog-status.py --apply`.
 
 | Section | Open | Done | Progress |
@@ -75,7 +75,7 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
 | CMP | 1 | 5 | `########..` |
 | GTP | 1 | 2 | `#######...` |
 | MER | 0 | 5 | `##########` |
-| LIVE | 4 | 2 | `###.......` |
+| LIVE | 3 | 3 | `#####.....` |
 | P5 | 6 | 14 | `#######...` |
 | Shipped (audit-period features, kept for context) | 0 | 6 | `##########` |
 | DUP | 0 | 8 | `##########` |
@@ -6907,8 +6907,8 @@ them away.
   establish, and describing them from memory would be worse than admitting the
   gap. The list only shrinks.
 
-- [ ] **LIVE3 — the uprobe/BPF path cannot be exercised by the test suite, and
-  the first time anybody ran it by hand it FAILED.**
+- [x] **LIVE3 (done 2026-09-10) — the uprobe/BPF path cannot be exercised by
+  the test suite, and the first time anybody ran it by hand it FAILED.**
   [`src/capture/uprobe/bpf.rs`](https://github.com/NormB/sipnab/blob/main/src/capture/uprobe/bpf.rs) loads an eBPF program, which needs privileges the
   suite does not have and must not acquire. Building the object is covered;
   loading, attaching and reading from it are not, and those are where the
@@ -6928,12 +6928,27 @@ them away.
   `--uprobe-backend bpf` would have refused by name rather than proving
   anything.
 
-  **Do:** run the load-and-attach half on the privileged VM that already builds
-  the object, as a job that is allowed to be manual and out-of-band, and record
-  its result somewhere a reader can find. **State the split in the docs**: an
-  unqualified coverage number over a file whose interesting half is structurally
-  unreachable reads as reassurance it has not earned. This is the same rule as
-  the "test the CONVERSION when the wire is unreachable" note under P4.
+  **Done, as three pieces rather than one habit.**
+  [`scripts/verify-bpf-load.sh`](https://github.com/NormB/sipnab/blob/main/scripts/verify-bpf-load.sh) is the manual job: it downloads a
+  PUBLISHED artifact, checks it against the checksum published beside it, runs
+  the load-and-attach on a host with BTF and root, and judges the output. A
+  local build is not what anyone installs, so it will not accept one.
+
+  The judgement is a separate mode (`--classify`) so the one part a machine
+  reads is itself testable. [`tests/bpf_load_verification_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/bpf_load_verification_test.rs) drives it with
+  the verbatim message from a real attach and the verbatim refusal from the
+  release that failed, and asserts that output saying neither is reported as no
+  verdict rather than as a pass. That distinction is what the four broken
+  releases turned on: nothing had a way to tell "did not load" from "nobody
+  looked".
+
+  The record lives in section 8 of
+  [`docs/internals/uprobe-capture.md`](https://github.com/NormB/sipnab/blob/main/docs/internals/uprobe-capture.md), beside the statement that
+  a coverage figure over `bpf.rs` describes the half the suite can reach. It is
+  self-refreshing rather than hand-kept: a gate requires a row for whatever
+  `published_version` names, so advertising a release nobody has loaded fails
+  the suite. First row is 0.5.162 on kernel 6.12.105+deb13-amd64, attached to
+  two libraries plus `tcp_sendmsg`.
 
 - [x] **LIVE4 (done 2026-09-09) — the three homes are a workflow rather than a
   rule nobody could follow.** Every capture gets one of three: a committed

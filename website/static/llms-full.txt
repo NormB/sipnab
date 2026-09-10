@@ -30996,6 +30996,50 @@ drop-guard tests run against a temporary directory rather than the kernel.
 Nothing can fake the kernel's own record layout, so `record::parse_layout` runs
 against verbatim `format` output from a 6.8 kernel.
 
+### The half the suite cannot reach
+
+Everything above runs without privilege. Loading an eBPF program does not, and
+that asymmetry is not a detail: through four releases the object built on every
+run, the suite stayed green, and the verifier rejected the program on every
+kernel that had it. Building had cover. Loading, attaching and reading had none, and those are
+where the failures live.
+
+Read any coverage figure over
+[`bpf.rs`](../../src/capture/uprobe/bpf.rs) with that in mind. The lines the
+suite executes are record decoding and planning. The load is unreachable from a
+process that must never acquire the privilege to try.
+
+A manual, out-of-band run against a PUBLISHED artifact covers it instead. Not a
+local build: a local build is not what anyone installs.
+
+Whatever the site currently advertises:
+
+```sh
+sudo scripts/verify-bpf-load.sh
+```
+
+Or a specific release:
+
+```sh
+sudo scripts/verify-bpf-load.sh 0.5.162
+```
+
+It downloads the tarball, checks it against the checksum published beside it,
+runs it, and judges the output. The judging half is a separate mode
+(`--classify`) so a test can drive it, and
+[`tests/bpf_load_verification_test.rs`](../../tests/bpf_load_verification_test.rs) does, with the real message from a real
+attach and the real refusal from the release that failed. A run that prints
+neither counts as no verdict rather than as a pass, which is the distinction
+the four broken releases turned on.
+
+Each successful run gets a row here. `the_load_verification_record_names_the_published_release`
+requires one for whatever `published_version` names, so advertising a release
+nobody has loaded fails the suite:
+
+| Version | Artifact | Host | Kernel | Date (UTC) | Result |
+|---|---|---|---|---|---|
+| 0.5.162 | x86_64-unknown-linux-gnu | Debian 13, x86_64 | 6.12.105+deb13-amd64 | 2026-09-10 | attached, 2 libraries plus `tcp_sendmsg` |
+
 Mutation-test any gate you add here. One of these tests began life believing
 the flavor list's *order* prevented misclassification. Reversing the order did
 not fail it, because `strip_prefix` already separates the two. The comment was

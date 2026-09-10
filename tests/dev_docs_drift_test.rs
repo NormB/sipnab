@@ -663,7 +663,14 @@ fn linked_code_targets_exist() {
     // for a TRACKED FILE named in a code span, and both of those are named in
     // prose. Attributed by counting every page under `docs/internals/` against
     // HEAD: testing.md moved by one and no other page changed.
-    const EXPECTED_CODE_LINKS: usize = 421;
+    // 421 -> 423: two, both in `docs/internals/uprobe-capture.md`, from the new
+    // section on the half the suite cannot reach. One links `bpf.rs` beside the
+    // sentence telling a reader what a coverage figure over it means; the other
+    // is `link-repo-paths.py --apply` turning the bare mention of the test that
+    // drives the classifier into a link, which is what that gate demands.
+    // Attributed by counting that file: 5 relative code links before, 7 after,
+    // and no other internals page changed.
+    const EXPECTED_CODE_LINKS: usize = 423;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \
