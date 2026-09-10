@@ -749,3 +749,41 @@ fn both_fuzzing_images_pin_the_same_base() {
          behind is testing a toolchain the other one is not"
     );
 }
+
+/// Nothing turns off the check that caught the broken targets.
+///
+/// Second half of the libpcap pair, and the one that matters longest. The
+/// build exited zero with all eighteen targets unable to start; the only thing
+/// that said so was OSS-Fuzz's `bad_build_check`, which the action runs by
+/// default and a single input can disable.
+///
+/// Disabling it is the obvious way to make a red fuzzing workflow green, and
+/// it works: the build goes green, the targets stay broken, and the fuzzing
+/// reports nothing found for the rest of the project's life. That outcome is
+/// indistinguishable from fuzzing that is working.
+#[test]
+fn no_workflow_disables_the_bad_build_check() {
+    let mut disabled = Vec::new();
+    for name in workflow_names() {
+        let body = workflow(&name);
+        for chunk in body.split("- name:") {
+            if !chunk.contains("clusterfuzzlite/actions/build_fuzzers") {
+                continue;
+            }
+            if chunk
+                .lines()
+                .map(str::trim)
+                .any(|l| l.starts_with("bad-build-check:") && !l.contains("true"))
+            {
+                disabled.push(name.clone());
+            }
+        }
+    }
+    assert!(
+        disabled.is_empty(),
+        "{disabled:?} turns off OSS-Fuzz's bad-build check. That check is the \
+         only thing standing between a build that exits zero and eighteen fuzz \
+         targets that cannot start — which reads as fuzzing that has found \
+         nothing."
+    );
+}
