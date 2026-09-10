@@ -12,6 +12,15 @@ entry that carries them.
 
 ### Fixed
 
+- **A metrics test could only report a port number when it failed.** Its probe
+  gave up after six seconds and asserted "nothing answered on `<addr>`", which
+  reads the same whether sipnab was slow to bind, exited at startup, or lost
+  the ephemeral port to another process. It now keeps the child's stderr, stops
+  the moment the process exits rather than burning the rest of the budget, and
+  waits thirty seconds instead of six --- a cold runner spawning a freshly
+  linked binary is slower than the old ceiling allowed. It failed exactly that
+  way on a macOS runner and the log said nothing more than the port.
+
 - **The eBPF kernel source was never formatted, and five gates said it was.**
   `cargo fmt --all` reaches workspace members, and `fuzz/` and `bpf/` are
   excluded from the workspace on purpose --- so both hooks, CI, the preflight

@@ -21,7 +21,8 @@
 #![cfg(all(feature = "metrics", feature = "native"))]
 
 use std::io::{BufRead, BufReader};
-use std::process::{Command, Stdio};
+use std::process::{Command, ExitStatus, Stdio};
+use std::time::{Duration, Instant};
 
 /// Ask the OS for a free port, then release it.
 ///
@@ -193,16 +194,35 @@ fn scrape_with(extra: &[&str]) -> String {
     ];
     args.extend(extra.iter().map(|s| (*s).to_string()));
 
+    // stderr is KEPT, not discarded. This loop used to give up after six
+    // seconds and assert "nothing answered on <addr>", which is the same
+    // message whether sipnab was slow to bind, exited immediately on a bad
+    // argument, or lost the race for an ephemeral port that `free_port` had
+    // already released. On 2026-09-10 it failed exactly that way on a macOS
+    // runner and the log said nothing more than the port number.
     let mut child = Command::new(sipnab_bin())
         .args(&args)
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .spawn()
         .expect("spawn sipnab");
 
+    // Thirty seconds, not six. A cold CI runner spawning a freshly linked
+    // binary is slower than a warm laptop by more than the old budget
+    // allowed, and the loop exits the moment the endpoint answers, so a
+    // generous ceiling costs nothing when things work.
+    let deadline = Instant::now() + Duration::from_secs(30);
     let mut body = String::new();
-    for _ in 0..60 {
-        std::thread::sleep(std::time::Duration::from_millis(100));
+    let mut died: Option<ExitStatus> = None;
+    while Instant::now() < deadline {
+        // Ask whether the process is still alive BEFORE waiting again. A dead
+        // child cannot start answering later, and burning the rest of the
+        // budget on one turns a precise failure into a timeout.
+        if let Ok(Some(status)) = child.try_wait() {
+            died = Some(status);
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
         if let Ok(mut s) = std::net::TcpStream::connect(&addr) {
             use std::io::Write;
             let _ = write!(
@@ -222,8 +242,77 @@ fn scrape_with(extra: &[&str]) -> String {
     }
     let _ = child.kill();
     let _ = child.wait();
-    assert!(!body.is_empty(), "nothing answered on {addr}");
+    let stderr = child
+        .stderr
+        .take()
+        .map(|mut e| {
+            use std::io::Read;
+            let mut buf = String::new();
+            let _ = e.read_to_string(&mut buf);
+            buf
+        })
+        .unwrap_or_default();
+    assert!(!body.is_empty(), "{}", scrape_failure(&addr, died, &stderr));
     body
+}
+
+/// Why a scrape came back empty, in words rather than a port number.
+///
+/// Pure, so the diagnosis itself has a test: the branch that matters is the
+/// one nobody sees until CI is already red, and a message that cannot
+/// distinguish "slow" from "dead" is the reason a flake stays a mystery.
+fn scrape_failure(addr: &str, died: Option<ExitStatus>, stderr: &str) -> String {
+    let cause = match died {
+        Some(status) => format!(
+            "sipnab EXITED before the endpoint answered ({status}), so this is \
+             not slowness"
+        ),
+        None => "sipnab was still running and never answered, so it is slow to \
+                 bind or bound somewhere else"
+            .to_string(),
+    };
+    let tail: String = stderr.lines().rev().take(5).collect::<Vec<_>>().join("\n");
+    format!(
+        "nothing answered on {addr}: {cause}.\nIts stderr:\n{}",
+        if tail.is_empty() {
+            "<empty>".to_string()
+        } else {
+            tail
+        }
+    )
+}
+
+/// A dead child and a slow one must not read the same.
+///
+/// The failure this replaced said only "nothing answered on 127.0.0.1:49772",
+/// which is true of a process that crashed at startup and of one that was
+/// merely slower than the budget. Those need opposite responses, and the log
+/// is the only place anyone can tell them apart.
+#[test]
+fn a_failed_scrape_says_whether_the_process_died() {
+    let alive = scrape_failure("127.0.0.1:9", None, "");
+    assert!(
+        alive.contains("still running"),
+        "a slow start must not read as a crash: {alive}"
+    );
+
+    let bin = sipnab_bin();
+    let status = Command::new(bin)
+        .arg("--this-flag-does-not-exist")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .expect("a real exit status");
+    let dead = scrape_failure("127.0.0.1:9", Some(status), "error: unexpected argument");
+    assert!(
+        dead.contains("EXITED"),
+        "a crashed process must not read as slowness: {dead}"
+    );
+    assert!(
+        dead.contains("unexpected argument"),
+        "the child's own words are the evidence; without them the log says \
+         only that something did not answer: {dead}"
+    );
 }
 
 /// The published histogram buckets are DERIVED from the thresholds this run
