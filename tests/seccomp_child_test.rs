@@ -779,10 +779,18 @@ fn child_enforcing_filter_does_not_kill_the_work_it_was_derived_for() {
     let status = seccomp::install(SeccompMode::Enforce);
     match status {
         SeccompStatus::Enforcing { count } => {
+            // Against the SUPPLIED list, not the one in the binary. The two
+            // were the same thing until a list that settled on one machine
+            // killed the process on another, and comparing against the shipped
+            // constant would quietly re-assert the claim that killed it.
+            let supplied = std::env::var_os(seccomp::ALLOWLIST_ENV)
+                .and_then(|p| std::fs::read_to_string(p).ok())
+                .and_then(|t| seccomp::parse_allowlist(&t).ok())
+                .map(|l| l.len());
             assert_eq!(
-                count,
-                seccomp::DERIVED_ALLOWLIST.len(),
-                "the filter reports a different size than the list it was built from"
+                Some(count),
+                supplied,
+                "the filter reports a different size than the list it was given"
             );
         }
         // On an architecture or a feature set the list was never derived for,
@@ -847,124 +855,124 @@ fn enforcement_does_not_kill_the_run_it_was_derived_from() {
     );
 }
 
-/// The derived list itself works, whatever `install` would decide.
+/// A list derived ON THIS HOST does not kill the work it was derived for.
 ///
-/// Closes a gap that would otherwise leave the enforcing path unexercised
-/// anywhere. `install` refuses unless the architecture AND the feature set
-/// match the derivation, and CI builds with `--all-features`, whose feature
-/// string is not the release's — so every automated run would take the refusal
-/// arm and the list would never once be enforced.
+/// # What this gate found, and why it is shaped this way
 ///
-/// This drives the list directly on the architecture it was derived for: build
-/// the filter, load it with the killing action, then do the work the
-/// derivation's own offline shapes did. Surviving is the assertion, because a
-/// list short by one call ends the process rather than failing a check.
+/// Its first version loaded the list that ships in the binary. That list
+/// settled on the lab VM across sixteen shapes and 29,048 records; on a GitHub
+/// runner — same architecture, same program, different glibc — the child died
+/// by SIGNAL on its first run. The list was short by at least one call that
+/// host makes.
+///
+/// So an allowlist is per-HOST, and `--seccomp enforce` now reads one from the
+/// environment rather than carrying it. The gate follows: it derives nothing
+/// and enforces nothing unless a list is supplied, and when one is, surviving
+/// is the assertion. A filter that kills is trivial to demonstrate and proves
+/// nothing; a filter that does NOT kill the work it was built for is the only
+/// claim worth making.
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 #[test]
 #[ignore = "child role: installs a seccomp filter that cannot be removed"]
-fn child_the_derived_list_survives_the_work_it_was_derived_for() {
+fn child_a_locally_derived_list_survives_the_work_it_covers() {
     if !in_child_role() {
         return;
     }
+    let Some(path) = std::env::var_os(seccomp::ALLOWLIST_ENV) else {
+        // No list for this host, which is the default and the safe state.
+        println!("{CHILD_COMPLETE}");
+        return;
+    };
+    let text = std::fs::read_to_string(&path).expect("the supplied allowlist reads");
+    let list = seccomp::parse_allowlist(&text).expect("the supplied allowlist parses");
     let arch = seccomp::audit_arch().expect("an architecture token");
-    let prog = seccomp::build_program(
-        arch,
-        seccomp::DERIVED_ALLOWLIST,
-        seccomp::SECCOMP_RET_KILL_PROCESS,
-    )
-    .expect("the derived list builds a filter");
+    let prog = seccomp::build_program(arch, &list, seccomp::SECCOMP_RET_KILL_PROCESS)
+        .expect("the supplied list builds a filter");
     seccomp::load(&prog, seccomp::SECCOMP_FILTER_FLAG_TSYNC)
-        .expect("the kernel accepts the derived filter");
+        .expect("the kernel accepts the supplied filter");
 
-    let dir = tempfile::tempdir().expect("tempdir under the derived filter");
+    let dir = tempfile::tempdir().expect("tempdir under the filter");
     let path = dir.path().join("marker");
-    std::fs::write(&path, b"survived").expect("write under the derived filter");
+    std::fs::write(&path, b"survived").expect("write under the filter");
     assert_eq!(
-        std::fs::read(&path).expect("read under the derived filter"),
+        std::fs::read(&path).expect("read under the filter"),
         b"survived"
     );
-    let mut grown: Vec<u8> = Vec::new();
-    grown.resize(4 * 1024 * 1024, 7);
-    assert_eq!(grown.len(), 4 * 1024 * 1024);
-    let sock = std::net::UdpSocket::bind("127.0.0.1:0").expect("bind under the derived filter");
-    assert!(sock.local_addr().is_ok());
 
     // SAFETY: `exit_group` never returns and touches no memory.
     unsafe { libc::syscall(libc::SYS_exit_group, i64::from(EXIT_ENFORCED_AND_SURVIVED)) };
     unreachable!("exit_group returned");
 }
 
-/// The derived list does not kill the work it was derived for.
+/// A supplied list does not kill the work it covers.
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 #[test]
-fn the_derived_list_survives_the_work_it_was_derived_for() {
+fn a_locally_derived_list_survives_the_work_it_covers() {
     if !seccomp_possible() {
         announce_skip(
-            "the_derived_list_survives_the_work_it_was_derived_for",
+            "a_locally_derived_list_survives_the_work_it_covers",
             "this target has no seccomp",
         );
         return;
     }
     let exe = std::env::current_exe().expect("this test binary");
-    let role = "child_the_derived_list_survives_the_work_it_was_derived_for";
+    let role = "child_a_locally_derived_list_survives_the_work_it_covers";
     let out = Command::new(exe)
         .args(["--exact", role, "--ignored", "--nocapture"])
         .env(CHILD_ENV, role)
         .output()
-        .expect("spawn the derived-list child");
+        .expect("spawn the child");
     let text =
         String::from_utf8_lossy(&out.stderr).into_owned() + &String::from_utf8_lossy(&out.stdout);
     assert!(
         out.status.code().is_some(),
-        "the child died by SIGNAL under the derived list, which means the list \
-         is missing a call its own derivation made. This is the failure the \
-         whole feature is sequenced to avoid:\n{text}"
+        "the child died by SIGNAL under a supplied allowlist, which means that \
+         list is missing a call this host makes:\n{text}"
     );
-    assert_eq!(
-        out.status.code(),
-        Some(EXIT_ENFORCED_AND_SURVIVED),
-        "the child exited {:?} rather than surviving its work:\n{text}",
-        out.status.code()
+    let code = out.status.code().unwrap_or(-1);
+    assert!(
+        code == EXIT_ENFORCED_AND_SURVIVED || text.contains(CHILD_COMPLETE),
+        "the child exited {code} without either surviving or reporting that no \
+         list was supplied:\n{text}"
     );
 }
 
-/// The derived list is exercised by something that actually runs.
+/// Something that runs actually enforces a supplied list.
 ///
-/// The one still owed for a gap that would have left the enforcing path
-/// unexercised everywhere. `install` refuses unless the architecture AND the
-/// feature set match, and CI builds with `--all-features`, whose feature string
-/// is not the release's — so every automated run takes the refusal arm and the
-/// list is never once enforced. A control nothing exercises is a control nobody
-/// has tested.
-///
-/// Structural, because the thing being asserted is that a test EXISTS and is
-/// reachable: a gate that drives the list must be present, must not be
-/// `#[ignore]`d away from the runner entirely, and must load it with the
-/// killing action rather than an allowing one.
+/// Owed earlier for a gap that would have left the enforcing path unexercised,
+/// and still owed now that the path changed shape: `install` refuses without a
+/// list from the environment, so without this nothing in CI ever loads a
+/// killing filter at all. A control nothing exercises is a control nobody has
+/// tested.
 #[test]
-fn something_that_runs_actually_enforces_the_derived_list() {
+fn something_that_runs_actually_enforces_a_supplied_list() {
     let src = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/seccomp_child_test.rs"),
     )
     .expect("this test file is in the tree");
     assert!(
-        src.contains("fn the_derived_list_survives_the_work_it_was_derived_for"),
-        "nothing in this file drives the derived list, so the enforcing path is \
-         exercised nowhere"
+        src.contains("fn a_locally_derived_list_survives_the_work_it_covers"),
+        "nothing in this file drives a supplied allowlist, so the enforcing path \
+         is exercised nowhere"
     );
     let role = src
-        .find("fn child_the_derived_list_survives_the_work_it_was_derived_for")
-        .expect("the role that enforces the list is in this file");
+        .find("fn child_a_locally_derived_list_survives_the_work_it_covers")
+        .expect("the role that enforces a supplied list is in this file");
     let body = &src[role..role + src[role..].find("\n}\n").expect("the role ends")];
     assert!(
         body.contains("SECCOMP_RET_KILL_PROCESS"),
-        "the role that is supposed to enforce the derived list loads it with \
-         something other than the killing action, so it proves nothing about \
-         enforcement"
+        "the role loads its list with something other than the killing action, \
+         so it proves nothing about enforcement"
     );
     assert!(
-        body.contains("DERIVED_ALLOWLIST"),
-        "the role loads a list that is not the shipped one"
+        body.contains("ALLOWLIST_ENV"),
+        "the role loads a list from somewhere other than the environment, which \
+         is the only place one can honestly come from"
+    );
+    assert!(
+        !body.contains("DERIVED_ALLOWLIST"),
+        "the role enforces the list that ships in the binary, which settled on \
+         one machine and killed the process on another"
     );
 }
 

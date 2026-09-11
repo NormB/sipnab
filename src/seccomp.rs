@@ -365,6 +365,13 @@ pub fn audit_arch() -> Option<u32> {
 pub const DERIVED_FEATURES: &str =
     "native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf,vcon";
 
+/// The environment variable naming a locally derived allowlist.
+///
+/// Enforcement reads its list from here and from nowhere else, because a list
+/// baked into a binary is a list derived somewhere its operator has never been.
+/// See [`DERIVED_ALLOWLIST`] for the run that proved it.
+pub const ALLOWLIST_ENV: &str = "SIPNAB_SECCOMP_ALLOWLIST";
+
 /// Syscalls an x86_64 sipnab makes after the filter installs.
 ///
 /// # Provenance, because a list with none is a guess
@@ -384,12 +391,19 @@ pub const DERIVED_FEATURES: &str =
 /// before the server shapes ran would have killed every run that turns a
 /// server on, which is why the script refuses a union that is still growing.
 ///
-/// # What it still does not cover
+/// # It is a REFERENCE. Enforcement does not use it.
 ///
-/// `SETTLED` is not `COMPLETE`. The TLS keylog, plugins and the eBPF uprobe
-/// backend were compiled in and never exercised, so a run that turns one on may
-/// make a call this list does not carry. That is what `enforce` costs and the
-/// startup line says so.
+/// This list killed a process. It settled on the lab VM across sixteen shapes
+/// and 29,048 records, and on a GitHub runner — same architecture, same
+/// program, different glibc and different environment — the first run under it
+/// died by signal. `the_derived_list_survives_the_work_it_was_derived_for`
+/// caught that in CI, which is why the gate asserts SURVIVAL rather than a
+/// denial: a filter that kills is easy to demonstrate and worthless to.
+///
+/// So an allowlist is per-HOST, not merely per-architecture and per-build.
+/// `--seccomp enforce` reads its list from [`ALLOWLIST_ENV`] and refuses
+/// without one. This constant remains the worked example the tests drive and
+/// the documentation cites, and nothing enforces it.
 #[cfg(target_arch = "x86_64")]
 pub const DERIVED_ALLOWLIST: &[i64] = &[
     0,   // read
@@ -456,6 +470,46 @@ pub fn intended_action(mode: SeccompMode) -> Option<u32> {
         SeccompMode::Log => Some(SECCOMP_RET_LOG),
         SeccompMode::Enforce => Some(SECCOMP_RET_KILL_PROCESS),
     }
+}
+
+/// Parse an allowlist file: one syscall number per line, `#` comments allowed.
+///
+/// Strict on purpose. A list is the input to something that kills, so a line
+/// that is not a number is a refusal rather than a skip — a typo that silently
+/// dropped an entry would shorten the list, and short is the direction that
+/// ends a capture.
+///
+/// # Errors
+///
+/// The offending line and why, as a sentence.
+pub fn parse_allowlist(text: &str) -> Result<Vec<i64>, String> {
+    let mut out = Vec::new();
+    for (i, raw) in text.lines().enumerate() {
+        let line = raw.split('#').next().unwrap_or("").trim();
+        if line.is_empty() {
+            continue;
+        }
+        for field in line.split_whitespace() {
+            let nr: i64 = field.parse().map_err(|_| {
+                format!(
+                    "line {}: {field:?} is not a syscall number. A list feeding a \
+                     filter that kills is parsed strictly: a dropped entry shortens \
+                     it, and short is what ends a capture",
+                    i + 1
+                )
+            })?;
+            if !(0..=i64::from(i32::MAX)).contains(&nr) {
+                return Err(format!(
+                    "line {}: {nr} is outside the range seccomp_data.nr can hold",
+                    i + 1
+                ));
+            }
+            out.push(nr);
+        }
+    }
+    out.sort_unstable();
+    out.dedup();
+    Ok(out)
 }
 
 /// Why enforcement must not install here, or `None` when it may.
@@ -566,11 +620,12 @@ pub fn startup_line(status: &SeccompStatus) -> String {
         SeccompStatus::Enforcing { count } => format!(
             "Syscall filter ENFORCING: {count} system calls are permitted and any other \
              ends this process immediately, with the number in the kernel log. The list \
-             was derived from 16 run shapes against a {DERIVED_FEATURES} build; the TLS \
-             keylog, plugins and the eBPF uprobe backend were never exercised, so a run \
-             that turns one on may be killed by a call the list does not carry. Derive \
-             your own with scripts/derive-seccomp-allowlist.sh before trusting this on a \
-             capture that matters."
+             came from {ALLOWLIST_ENV}, which is the only place it can come from — a \
+             list that settled on one machine killed the process on another of the same \
+             architecture, so a list that ships in a binary is a list derived somewhere \
+             you have never been. If yours was not produced by \
+             scripts/derive-seccomp-allowlist.sh on THIS host, against THIS build, \
+             running the features this capture uses, turn this off."
         ),
         // Mode-neutral, because these two are reached from `log` AND from
         // `enforce`. They read "Syscall logging unavailable ... Nothing is
@@ -617,16 +672,39 @@ pub fn install(mode: SeccompMode) -> SeccompStatus {
     // calls; a list from another feature set was never about this binary.
     // Enforcing either is enforcing a list about a different program, and
     // being wrong ends a capture.
+    let supplied: Vec<i64>;
     let (allow, action) = if mode == SeccompMode::Enforce {
+        let Some(path) = std::env::var_os(ALLOWLIST_ENV) else {
+            return SeccompStatus::Unsupported(format!(
+                "enforcement needs an allowlist derived ON THIS HOST, named by \
+                 {ALLOWLIST_ENV}. The list that ships in this binary settled across \
+                 sixteen shapes on one machine and killed the process on another of \
+                 the same architecture, so it is a worked example rather than a list \
+                 to enforce. Produce yours with scripts/derive-seccomp-allowlist.sh"
+            ));
+        };
+        let text = match std::fs::read_to_string(&path) {
+            Ok(t) => t,
+            Err(e) => {
+                return SeccompStatus::Failed(format!(
+                    "{ALLOWLIST_ENV} names {}, which could not be read: {e}",
+                    path.to_string_lossy()
+                ));
+            }
+        };
+        supplied = match parse_allowlist(&text) {
+            Ok(list) => list,
+            Err(e) => return SeccompStatus::Failed(e),
+        };
         if let Some(why) = enforcement_refusal(
-            DERIVED_ALLOWLIST.len(),
+            supplied.len(),
             std::env::consts::ARCH,
             &crate::cli::compiled_features().join(","),
         ) {
             return SeccompStatus::Unsupported(why);
         }
         (
-            DERIVED_ALLOWLIST,
+            supplied.as_slice(),
             intended_action(mode).unwrap_or(SECCOMP_RET_KILL_PROCESS),
         )
     } else {
@@ -636,6 +714,7 @@ pub fn install(mode: SeccompMode) -> SeccompStatus {
             intended_action(mode).unwrap_or(SECCOMP_RET_LOG),
         )
     };
+    let allow_len = allow.len();
     let prog = match build_program(arch, allow, action) {
         Ok(p) => p,
         Err(e) => return SeccompStatus::Failed(e.to_string()),
@@ -658,9 +737,7 @@ pub fn install(mode: SeccompMode) -> SeccompStatus {
         );
     }
     if mode == SeccompMode::Enforce {
-        return SeccompStatus::Enforcing {
-            count: DERIVED_ALLOWLIST.len(),
-        };
+        return SeccompStatus::Enforcing { count: allow_len };
     }
     SeccompStatus::Logging
 }
@@ -1495,6 +1572,115 @@ mod tests {
             "the enforcing status is returned without testing the mode first, \
              which is how a logging install came to report enforcement: {before}"
         );
+    }
+
+    /// Enforcement refuses when no list was supplied for this host.
+    ///
+    /// Owed for shipping a list that killed. It settled on the lab VM across
+    /// sixteen shapes and 29,048 records, and the first run under it on a
+    /// GitHub runner — same architecture, same program — died by signal. An
+    /// allowlist is per-HOST, so a list compiled into a binary is a list
+    /// derived somewhere its operator has never been, and enforcement must not
+    /// be reachable without one the operator made.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn enforcement_refuses_when_no_list_was_supplied_for_this_host() {
+        // SAFETY: reading the variable here and nothing else; the test process
+        // installs no filter either way.
+        let had = std::env::var_os(ALLOWLIST_ENV);
+        assert!(
+            had.is_none(),
+            "{ALLOWLIST_ENV} is set in this test process, so this gate is \
+             measuring somebody else's configuration"
+        );
+        let status = install(SeccompMode::Enforce);
+        match status {
+            SeccompStatus::Unsupported(why) => {
+                assert!(
+                    why.contains(ALLOWLIST_ENV),
+                    "the refusal does not name the variable that would supply a \
+                     list: {why}"
+                );
+                assert!(
+                    why.contains("killed the process"),
+                    "the refusal does not say WHY a shipped list is not used, so \
+                     it reads as a missing-configuration nag: {why}"
+                );
+            }
+            other => panic!(
+                "enforcement installed without a supplied list: {other:?}. The \
+                 list in this binary killed a process on a host it was not \
+                 derived on"
+            ),
+        }
+    }
+
+    /// The shipped list is documented as a reference and enforced by nothing.
+    ///
+    /// The second owed, structural because the constant still exists and still
+    /// looks authoritative. Nothing on the install path may read it, and its
+    /// documentation has to say why in the place someone will look.
+    #[test]
+    fn the_shipped_list_is_a_reference_that_nothing_enforces() {
+        let src = include_str!("seccomp.rs");
+        let start = src
+            .find("pub fn install(mode: SeccompMode) -> SeccompStatus {")
+            .expect("the Linux install is in this file");
+        let open = start + src[start..].find('{').expect("body");
+        let mut depth = 0i32;
+        let mut end = open;
+        for (offset, ch) in src[open..].char_indices() {
+            match ch {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = open + offset;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        assert!(
+            !src[open..=end].contains("DERIVED_ALLOWLIST"),
+            "the install path reads the list that ships in the binary. That list \
+             settled on one machine and killed the process on another of the \
+             same architecture"
+        );
+        let doc_at = src
+            .find("pub const DERIVED_ALLOWLIST")
+            .expect("the reference list is in this file");
+        let doc = &src[doc_at.saturating_sub(3000)..doc_at];
+        assert!(
+            doc.contains("killed a process") && doc.contains("REFERENCE"),
+            "the reference list does not say that it killed a process or that \
+             nothing enforces it, so the next reader will enforce it"
+        );
+    }
+
+    /// A supplied list is parsed strictly: a bad line refuses, never skips.
+    ///
+    /// The third owed. The list feeds a filter that kills, so a line that
+    /// silently failed to parse would SHORTEN it — and short is precisely the
+    /// direction that ends a capture. Comments and blanks are fine; anything
+    /// that is not a number is a refusal naming the line.
+    #[test]
+    fn a_supplied_list_is_parsed_strictly_rather_than_skipping_a_bad_line() {
+        let good = parse_allowlist("# comment\n1\n 2 \n\n3 4\n").expect("parses");
+        assert_eq!(good, vec![1, 2, 3, 4], "sorted, deduped, comments dropped");
+        assert_eq!(
+            parse_allowlist("1\n1\n2\n").expect("parses"),
+            vec![1, 2],
+            "a duplicate entry must not change the list"
+        );
+        let err = parse_allowlist("1\nopenat\n3\n").expect_err("a name is not a number");
+        assert!(
+            err.contains("line 2") && err.contains("openat"),
+            "the refusal does not name the offending line: {err}"
+        );
+        let out_of_range = parse_allowlist("1\n-5\n").expect_err("negative is refused");
+        assert!(out_of_range.contains("line 2"), "{out_of_range}");
     }
 
     /// An architecture with no derived list is refused, and says which.

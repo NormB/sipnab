@@ -3607,12 +3607,16 @@ pub enum SeccompModeArg {
     /// A call the list does not carry kills the process, with its number in
     /// the kernel log.
     ///
-    /// It refuses to install on an architecture with no derived list, and on a
-    /// binary whose feature set differs from the one the list was derived
-    /// against — both because a list from elsewhere is a list about another
-    /// program. Derive your own with
-    /// `scripts/derive-seccomp-allowlist.sh` before trusting it on a capture
-    /// that matters.
+    /// It reads its allowlist from `SIPNAB_SECCOMP_ALLOWLIST` and refuses
+    /// without one. No list ships in the binary for it to fall back on, and
+    /// that is a measurement rather than caution: the reference list settled
+    /// across sixteen run shapes and 29,048 records on one machine, and killed
+    /// the process on the first run on another of the same architecture. An
+    /// allowlist is per-HOST.
+    ///
+    /// Produce yours with `scripts/derive-seccomp-allowlist.sh`, on the host
+    /// that will run the capture, against this build, exercising the features
+    /// that capture uses.
     Enforce,
 }
 

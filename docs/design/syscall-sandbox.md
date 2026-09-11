@@ -6,12 +6,18 @@ live in [`src/sandbox.rs`](https://github.com/NormB/sipnab/blob/main/src/sandbox
 [`scripts/derive-seccomp-allowlist.sh`](https://github.com/NormB/sipnab/blob/main/scripts/derive-seccomp-allowlist.sh), behind `--sandbox` and
 `--seccomp`, all default off.
 
-**`--seccomp enforce` is the only mode that can end a run**, and it refuses to
-install on any architecture with no derived list or any build whose feature set
-differs from the one the list came from — a list from elsewhere is a list about
-another program. The shipped list is 42 syscalls for x86_64, derived from 16
-run shapes and 29,048 records. It has not seen the TLS keylog, plugins or the
-eBPF uprobe backend, and the startup line says so: `SETTLED` is not `COMPLETE`.
+**`--seccomp enforce` is the only mode that can end a run**, and it reads its
+allowlist from `SIPNAB_SECCOMP_ALLOWLIST`, refusing without one. Nothing ships
+in the binary for it to fall back on.
+
+That is the measurement, not caution. The reference list — 42 syscalls,
+16 shapes, 29,048 records, verdict `SETTLED` — was derived on the lab VM and
+then killed the process on the first run on a GitHub runner: same architecture,
+same program, different glibc and environment.
+`the_derived_list_survives_the_work_it_was_derived_for` caught it in CI, which
+is why that gate asserts SURVIVAL rather than a denial. **An allowlist is
+per-HOST**, and a list compiled into a binary is one derived somewhere its
+operator has never been.
 **`--seccomp log` is not a control** and denies nothing. What sipnab *does* have
 besides is weaker and is not nothing — §0 tabulates it.
 **Check:** `grep -c 'SECCOMP_RET_KILL_PROCESS' src/seccomp.rs` returns 7 — the killing action exists now, in one module, reached only by `--seccomp enforce`. The check moved from asserting its ABSENCE to counting its occurrences when step 4 shipped; an absence check left in place would have gone on passing by matching nothing, which is the failure this page's own history is full of.

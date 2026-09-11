@@ -18,15 +18,14 @@ entry that carries them.
   kernel log, because an `EPERM` from the output path would produce a run that
   captures happily and writes nothing.
 
-  It refuses more readily than it enforces. On an architecture with no derived
-  list, or a build whose features differ from the one the list came from, it
-  declines to install rather than enforcing a list about a different program.
-  The shipped list is 42 calls for x86_64, derived from 16 run shapes and
-  29,048 records.
+  **It reads its allowlist from `SIPNAB_SECCOMP_ALLOWLIST` and refuses without
+  one.** No list ships in the binary for it to fall back on, and that is a
+  measurement rather than caution. The reference list settled across 16 run
+  shapes and 29,048 records on one machine, and killed the process on the first
+  run on another of the same architecture. An allowlist is per-host.
 
-  It has not seen the TLS keylog, plugins or the eBPF uprobe backend. The
-  startup line says so, and says to derive your own before trusting it on a
-  capture that matters. Default off, as every mode here is.
+  Produce yours with `scripts/derive-seccomp-allowlist.sh`, on the host that
+  will run the capture. Default off, as every mode here is.
 
 - **`scripts/derive-seccomp-allowlist.sh` turns the syscall derivation from a
   judgement call into a measurement.** The syscall sandbox's last step is an
