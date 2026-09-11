@@ -30,6 +30,23 @@ entry that carries them.
 
 ### Fixed
 
+- **The certificate watcher was red every morning for a fault nobody could
+  observe.** After the 2026-09-11 outage the CDN was moved to a mode that
+  terminates TLS at the edge with its own certificate and reaches the origin
+  over plain HTTP. The origin certificate is still expired and now decides
+  nothing a visitor can see, so a daily job failing on it is a check nobody
+  reads — which is how the next real one gets missed.
+
+  The verdict is now paired with the only question that matters: can anybody
+  load the page. Serving means the CDN is not validating the origin, and that
+  is reported as a warning naming the real consequence, an unencrypted leg
+  between the CDN and the origin. Not serving with an unusable origin
+  certificate is the outage itself, and still fails. The CDN's mode is never
+  read, so there is no setting to keep in step: put it back to validating with
+  a dead origin and the site answers 526, which arrives as a failure on the
+  next run.
+
+
 - **The certificate watcher scored an unreadable day count as a healthy
   certificate.** Its guard was the shell character class `*[!0-9-]*`, which
   admits a `-` anywhere rather than only at the front, so `1-2`, `12-` and a

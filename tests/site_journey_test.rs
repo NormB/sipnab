@@ -5512,7 +5512,13 @@ fn packaging_scripts_reference_existing_paths() {
     // `scripts/verify-site-advertises.sh` — reference the site config and the
     // CNAME between them. Every one of those paths exists, which is exactly
     // what this gate then goes on to verify.
-    const EXPECTED_REFERENCES: usize = 96;
+    // 96 -> 98: two, both naming the `scripts/classify-origin-cert.sh` the
+    // certificate watcher gained so a dead origin behind a CDN that does not
+    // validate it is reported rather than failed. Attributed by counting
+    // `.github/workflows/cert-expiry.yml`: the step that runs it and the
+    // `paths:` glob that makes a change to it trigger the workflow. No other
+    // file gained a path reference.
+    const EXPECTED_REFERENCES: usize = 98;
     assert_eq!(
         checked, EXPECTED_REFERENCES,
         "packaging path scan saw {checked} references, expected \

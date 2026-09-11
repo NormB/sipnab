@@ -30,6 +30,7 @@ on:
   push:
     paths:
       - 'scripts/check-cert-expiry.sh'
+      - 'scripts/classify-origin-cert.sh'
       - 'scripts/verify-site-advertises.sh'
       - '.github/workflows/cert-expiry.yml'
       - 'website/static/CNAME'
@@ -74,13 +75,41 @@ jobs:
       - name: The edge certificate has time left
         run: sh scripts/check-cert-expiry.sh sipnab.com
 
-      - name: The origin certificate has time left
+      - name: The origin certificate, and whether anything depends on it
         # The one that actually expired. GitHub Pages' addresses are stable and
         # documented; SNI carries the hostname so the right certificate comes
         # back.
+        #
+        # Failing on it outright was the first shape of this step, and it was
+        # red every morning after the outage was fixed: the CDN moved to a mode
+        # that terminates TLS at the edge and reaches the origin over plain
+        # HTTP, so a dead origin certificate stopped deciding anything a visitor
+        # could see. A check that is red every day is one nobody reads.
+        #
+        # So the verdict is paired with the only question that matters — can
+        # anybody load the page. Serving means the CDN is not validating the
+        # origin and the certificate is not load-bearing today; that is a
+        # warning about an unencrypted leg, not a failure. Not serving with a
+        # dead origin is the 2026-09-11 outage, and fails.
         env:
           SIPNAB_ORIGIN: 185.199.108.153
-        run: sh scripts/check-cert-expiry.sh sipnab.com
+        run: |
+          set -uo pipefail
+          sh scripts/check-cert-expiry.sh sipnab.com || cert=$?
+          cert=${cert:-0}
+          status=$(curl -sS --max-time 20 -o /dev/null -w '%{http_code}' \
+            https://sipnab.com/ 2>/dev/null || printf '000')
+          verdict=$(sh scripts/classify-origin-cert.sh --classify "$cert" "$status") \
+            && rc=0 || rc=$?
+          printf '%s\n' "$verdict"
+          case $rc in
+          0) ;;
+          2) echo "::warning::The origin certificate is unusable. No visitor is affected, because the CDN terminates TLS at the edge — but the leg between the CDN and the origin is unencrypted." ;;
+          *)
+            echo "::error::The origin certificate is unusable AND the site is not serving."
+            exit 1
+            ;;
+          esac
 
       - name: The site advertises the release it claims to
         # Separate from the certificates on purpose: a healthy certificate and a

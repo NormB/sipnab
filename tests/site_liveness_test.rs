@@ -960,3 +960,116 @@ fn a_count_written_outside_the_convention_is_not_a_claim() {
         assert!(out.contains("NO CLAIM"), "{out}");
     }
 }
+
+// ── Whether the origin certificate is load-bearing at all ───────────────────
+
+/// Run the origin-certificate classifier over a verdict and a site status.
+fn origin(cert_exit: &str, site_status: &str) -> (i32, String) {
+    let out = Command::new("sh")
+        .arg(repo().join("scripts/classify-origin-cert.sh"))
+        .arg("--classify")
+        .arg(cert_exit)
+        .arg(site_status)
+        .current_dir(repo())
+        .output()
+        .expect("the classifier runs");
+    let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
+    text.push_str(&String::from_utf8_lossy(&out.stderr));
+    (out.status.code().unwrap_or(-1), text)
+}
+
+/// A healthy origin certificate is a pass, and says so plainly.
+#[test]
+fn a_healthy_origin_certificate_passes() {
+    let (code, out) = origin("0", "200");
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("OK"), "{out}");
+}
+
+/// A dead origin certificate behind a CDN that does not validate it is
+/// TOLERATED — reported, and not a failure.
+///
+/// The distinction this file exists for, applied to itself. After the
+/// 2026-09-11 outage the CDN was moved to a mode that terminates TLS at the
+/// edge and reaches the origin over plain HTTP. The origin certificate then
+/// decides nothing a visitor can see, so failing a daily job on it produces a
+/// permanently red check, and a permanently red check is one nobody reads.
+///
+/// It is not silence either. The leg between the CDN and the origin is now
+/// unencrypted and that is worth saying out loud, every day, in its own words.
+#[test]
+fn a_dead_origin_behind_a_tolerant_cdn_is_reported_not_failed() {
+    let (code, out) = origin("2", "200");
+    assert_eq!(
+        code, 2,
+        "a dead origin certificate that no visitor can be hurt by was scored \
+         {code}:\n{out}"
+    );
+    assert!(out.contains("TOLERATED"), "{out}");
+    assert!(
+        out.to_lowercase().contains("unencrypted"),
+        "the report does not say what is actually wrong — that the leg to the \
+         origin carries no TLS:\n{out}"
+    );
+}
+
+/// The same dead certificate with the site down is an outage, and fails.
+///
+/// This is the pairing that keeps the tolerance honest. The CDN mode is not
+/// readable from here, so it is inferred from the only thing that matters:
+/// whether anybody can load the page. Switch the CDN back to a validating mode
+/// with a dead origin and the site answers 526, which lands here as a failure
+/// on the very next run.
+#[test]
+fn a_dead_origin_with_a_dead_site_is_an_outage() {
+    for status in ["526", "525", "000", "503"] {
+        let (code, out) = origin("2", status);
+        assert_eq!(
+            code, 1,
+            "status {status} with a dead origin was not scored as an \
+             outage:\n{out}"
+        );
+        assert!(out.contains("OUTAGE"), "{status}:\n{out}");
+    }
+}
+
+/// An origin inside the expiry margin is reported the same way.
+///
+/// EXPIRING and EXPIRED are different verdicts from the certificate checker
+/// and both mean "renewal is not happening". Tolerating one and failing the
+/// other would make the job flip red on a date rather than on a fact.
+#[test]
+fn an_expiring_origin_is_treated_like_an_expired_one() {
+    let (expiring, out) = origin("1", "200");
+    let (expired, _) = origin("2", "200");
+    assert_eq!(expiring, expired, "{out}");
+    assert_eq!(expiring, 2, "{out}");
+}
+
+/// Three situations, three exit codes.
+#[test]
+fn every_origin_verdict_has_its_own_exit_code() {
+    let mut seen = std::collections::BTreeSet::new();
+    for (cert, status, want) in [("0", "200", 0), ("2", "526", 1), ("2", "200", 2)] {
+        let (code, out) = origin(cert, status);
+        assert_eq!(code, want, "cert={cert} status={status}:\n{out}");
+        assert!(seen.insert(code), "exit code {code} is used twice");
+    }
+    assert_eq!(seen.len(), 3, "{seen:?}");
+}
+
+/// The watcher runs the origin through the classifier rather than failing raw.
+#[test]
+fn the_watcher_judges_the_origin_rather_than_failing_on_it() {
+    let wf = watcher();
+    assert!(
+        wf.contains("classify-origin-cert.sh"),
+        "the origin step still fails on the certificate alone, which is red \
+         every day while the CDN terminates TLS at the edge"
+    );
+    assert!(
+        wf.contains("::warning::"),
+        "a tolerated origin produces no annotation, so the unencrypted leg to \
+         the origin is invisible rather than merely non-fatal"
+    );
+}
