@@ -8,6 +8,23 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Fixed
+
+- **`--seccomp log` sent operators to a log that silently drops records.** On a
+  host with no audit daemon the records fall back to the kernel ring buffer,
+  which is rate limited; the kernel reports the loss as
+  `kauditd_printk_skb: N callbacks suppressed` and nothing else does. Measured
+  while deriving sipnab's own syscall set from a twenty-second capture: 50
+  records arrived and roughly 1,700 were dropped.
+
+  Short is the dangerous direction. The artifact being derived is an allowlist
+  for an enforcing filter, and a filter missing a call ends the process making
+  it. The flag's help and the startup line now say the route drops, name the
+  string the kernel prints when it does, say what a missing record costs, and
+  name the setting that stops it.
+
 ## [0.5.165] - 2026-09-11
 
 ### Added

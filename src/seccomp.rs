@@ -37,6 +37,22 @@
 //! other route, and `auditctl -s` is how a reader tells which one they are on
 //! — it prints the daemon's pid, or `0` when there is none.
 //!
+//! # The ring buffer drops records, and a short list is the dangerous one
+//!
+//! Without a daemon the records fall back to `printk`, which is rate limited.
+//! The kernel says so — `kauditd_printk_skb: N callbacks suppressed` — and
+//! nothing else does. Measured on the lab VM while deriving sipnab's own set
+//! from a twenty-second capture: 50 records arrived and roughly 1,700 were
+//! dropped, and the surviving set was a short one.
+//!
+//! Short is the direction that kills. The artifact being derived is an
+//! allowlist, and a filter missing a call ends the process making it. So a
+//! derivation is only complete if `dmesg | grep 'callbacks suppressed'` is
+//! empty, or `kernel.printk_ratelimit=0` was set for the run. Two runs of the
+//! same shape also produced different sets, which is why
+//! `docs/design/syscall-sandbox.md` §3.1 asks for a corpus of run shapes and
+//! their union rather than one run.
+//!
 //! # The cost, stated rather than hidden
 //!
 //! There is no allowlist here, so **every** syscall is recorded. That is what
@@ -362,8 +378,13 @@ pub fn startup_line(status: &SeccompStatus) -> String {
              exists to derive an allowlist from a bounded run. Where the records go \
              depends on this host: `auditctl -s` prints a connected daemon's pid, and \
              then they are in `ausearch -m SECCOMP`; a pid of 0 means no daemon and the \
-             records are in `dmesg | grep 'type=1326'`. Turn it off afterwards — a live \
-             capture emits one record per packet and will flood the log."
+             records are in `dmesg | grep 'type=1326'`. WITHOUT A DAEMON THE KERNEL \
+             DROPS RECORDS: the ring-buffer route is rate limited, and a derivation \
+             that misses a call produces an allowlist that kills the process it was \
+             built for. Before trusting a list, check `dmesg | grep 'callbacks \
+             suppressed'` is empty, or set `kernel.printk_ratelimit=0` for the run. \
+             Turn it off afterwards — a live capture emits one record per packet and \
+             will flood the log."
             .to_string(),
         SeccompStatus::Unsupported(why) => {
             format!("Syscall logging unavailable: {why}. Nothing is recorded.")
@@ -980,6 +1001,102 @@ mod tests {
             auditctl < ausearch && auditctl < dmesg,
             "the line names a route before telling the reader how to find out \
              which one applies: {line}"
+        );
+    }
+
+    /// The guidance says the ring-buffer route drops records.
+    ///
+    /// Owed for a defect this instrument shipped with. Deriving on a host with
+    /// no audit daemon, the kernel rate limits the fallback and says so as
+    /// `kauditd_printk_skb: N callbacks suppressed`. Measured on the lab VM
+    /// while deriving sipnab's own set: 50 records arrived and about 1,700 were
+    /// dropped, and the surviving set was a short one.
+    ///
+    /// A SHORT list is the dangerous direction. It is the input to an enforcing
+    /// filter, and a filter missing a call kills the process making it — on a
+    /// capture box, during the incident the capture was started for. Guidance
+    /// that sends an operator to a log which silently drops is not a smaller
+    /// version of the right guidance; it is the mechanism of that failure.
+    #[test]
+    fn the_guidance_warns_that_the_ring_buffer_route_drops_records() {
+        let line = startup_line(&SeccompStatus::Logging);
+        assert!(
+            line.contains("DROPS RECORDS"),
+            "the startup line does not tell an operator the no-daemon route \
+             loses records: {line}"
+        );
+        assert!(
+            line.contains("callbacks suppressed"),
+            "the line never names the string the kernel prints when it drops \
+             them, so a reader cannot check whether their own run was complete: \
+             {line}"
+        );
+        assert!(
+            line.contains("printk_ratelimit"),
+            "the line names no way to stop the dropping: {line}"
+        );
+    }
+
+    /// It says WHY a short list is the dangerous direction.
+    ///
+    /// The second owed, and the one that makes the warning act. "Some records
+    /// may be missing" reads as a completeness nicety. What it actually means
+    /// is that the artifact being derived kills processes when it is short, and
+    /// an operator who does not know that has no reason to re-run.
+    #[test]
+    fn the_guidance_says_what_a_missing_record_costs() {
+        let line = startup_line(&SeccompStatus::Logging);
+        assert!(
+            line.contains("kills the process"),
+            "the line warns about dropped records without saying what a \
+             derivation built from them does: {line}"
+        );
+        let drops = line.find("DROPS RECORDS").expect("the warning is present");
+        let cost = line.find("kills the process").expect("the cost is present");
+        assert!(
+            drops < cost,
+            "the line states the consequence before the cause, which reads as \
+             two unrelated cautions: {line}"
+        );
+    }
+
+    /// Every surface an operator reads carries the warning, not just one.
+    ///
+    /// The third owed. The flag's help and the startup line are read by
+    /// different people at different times — one before the run and one during
+    /// it — and a warning on only one of them is a warning half the readers
+    /// never see. This is the same pairing the record-route guidance already
+    /// needed, and it went wrong there first.
+    #[test]
+    fn both_operator_surfaces_carry_the_dropped_record_warning() {
+        let cli = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli.rs"),
+        )
+        .expect("src/cli.rs is in the tree");
+        let start = cli
+            .find("pub seccomp: Option<SeccompModeArg>")
+            .expect("the flag is declared");
+        // Rendered, not raw. A doc comment wraps, so "kills the process" is
+        // split by a newline and three slashes in the source and matches
+        // nothing — the same physical-versus-logical-line mistake that let a
+        // mutation survive the failure-sentence gate. Strip the markers and
+        // collapse the whitespace, which is what clap shows a reader anyway.
+        let help: String = cli[start.saturating_sub(2500)..start]
+            .lines()
+            .map(|l| l.trim_start().trim_start_matches("///").trim())
+            .collect::<Vec<_>>()
+            .join(" ");
+        for phrase in ["DROPS RECORDS", "callbacks suppressed", "printk_ratelimit"] {
+            assert!(
+                help.contains(phrase),
+                "the --seccomp help never says {phrase:?}, so a reader who \
+                 checks the flag before running learns nothing about it"
+            );
+        }
+        assert!(
+            help.contains("kills the process"),
+            "the flag's help warns about dropped records without saying what \
+             they cost"
         );
     }
 
