@@ -270,7 +270,7 @@ sudo scripts/verify-bpf-load.sh
 Or a specific release:
 
 ```sh
-sudo scripts/verify-bpf-load.sh 0.5.165
+sudo scripts/verify-bpf-load.sh 0.5.166
 ```
 
 It downloads the tarball, checks it against the checksum published beside it,
@@ -291,6 +291,7 @@ nobody has loaded fails the suite:
 | 0.5.163 | x86_64-unknown-linux-gnu | Debian 13, x86_64 | 6.12.105+deb13-amd64 | 2026-09-10 | attached, 2 libraries plus `tcp_sendmsg` |
 | 0.5.164 | x86_64-unknown-linux-gnu | Debian 13, x86_64 | 6.12.105+deb13-amd64 | 2026-09-10 | attached, 2 libraries plus `tcp_sendmsg` |
 | 0.5.165 | x86_64-unknown-linux-gnu | Debian 13, x86_64 | 6.12.105+deb13-amd64 | 2026-09-11 | attached, 2 libraries plus `tcp_sendmsg` |
+| 0.5.166 | x86_64-unknown-linux-gnu | Debian 13, x86_64 | 6.12.105+deb13-amd64 | 2026-09-11 | attached, 2 libraries plus `tcp_sendmsg` |
 
 That requirement makes this file part of every phase-two release commit, which
 the classifier deciding what a phase-two commit looks like has to agree with.
