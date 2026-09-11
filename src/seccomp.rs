@@ -167,6 +167,16 @@ pub const SECCOMP_RET_ERRNO: u32 = 0x0005_0000;
 /// would record everything except the thread it exists to characterize.
 pub const SECCOMP_FILTER_FLAG_TSYNC: libc::c_uint = 1;
 
+/// `SECCOMP_RET_KILL_PROCESS`: end the whole process, with the syscall number
+/// recorded by the kernel.
+///
+/// The only action here that can end a run, reached only by `--seccomp
+/// enforce`. `docs/design/syscall-sandbox.md` §3.2 chose it over `ERRNO`
+/// because an `EPERM` from `openat` on the output path produces a run that
+/// captures happily and writes nothing, and a confident wrong answer is worse
+/// than a loud death.
+pub const SECCOMP_RET_KILL_PROCESS: u32 = 0x8000_0000;
+
 /// `SECCOMP_SET_MODE_FILTER`, the `seccomp(2)` operation.
 pub const SECCOMP_SET_MODE_FILTER: libc::c_uint = 1;
 
@@ -344,6 +354,131 @@ pub fn audit_arch() -> Option<u32> {
     }
 }
 
+// ── The derived allowlist ───────────────────────────────────────────────────
+
+/// The feature set the allowlists below were derived against.
+///
+/// A build with more features makes more syscalls, and an allowlist is only
+/// true for the build it was derived from. `--seccomp enforce` refuses on a
+/// binary whose features differ rather than enforcing a list that was never
+/// about it, because the failure mode of guessing here is a dead capture.
+pub const DERIVED_FEATURES: &str =
+    "native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf,vcon";
+
+/// Syscalls an x86_64 sipnab makes after the filter installs.
+///
+/// # Provenance, because a list with none is a guess
+///
+/// Derived 2026-09-11 by `scripts/derive-seccomp-allowlist.sh` against the
+/// published 0.5.165 `x86_64-unknown-linux-gnu` artifact, on Debian 13 (kernel
+/// 6.12, no `auditd`, `printk_ratelimit=0`). Sixteen shapes, 29,048 records,
+/// nothing suppressed, verdict `SETTLED` with three shapes in a row adding
+/// nothing.
+///
+/// # What each shape contributed, because the shape list is the real artifact
+///
+/// Seven offline shapes found 16 syscalls between them and the last six of
+/// those added nothing at all. The first LIVE shape added six more. `--api`
+/// added EIGHTEEN — socket, bind, listen, accept and the async runtime they
+/// pull in — and `--metrics` and the HEP listener one each. A list derived
+/// before the server shapes ran would have killed every run that turns a
+/// server on, which is why the script refuses a union that is still growing.
+///
+/// # What it still does not cover
+///
+/// `SETTLED` is not `COMPLETE`. The TLS keylog, plugins and the eBPF uprobe
+/// backend were compiled in and never exercised, so a run that turns one on may
+/// make a call this list does not carry. That is what `enforce` costs and the
+/// startup line says so.
+#[cfg(target_arch = "x86_64")]
+pub const DERIVED_ALLOWLIST: &[i64] = &[
+    0,   // read
+    1,   // write
+    3,   // close
+    5,   // fstat
+    7,   // poll
+    9,   // mmap
+    10,  // mprotect
+    11,  // munmap
+    14,  // rt_sigprocmask
+    15,  // rt_sigreturn
+    16,  // ioctl
+    24,  // sched_yield
+    28,  // madvise
+    39,  // getpid
+    41,  // socket
+    45,  // recvfrom
+    49,  // bind
+    50,  // listen
+    51,  // getsockname
+    53,  // socketpair
+    54,  // setsockopt
+    55,  // getsockopt
+    60,  // exit
+    72,  // fcntl
+    131, // sigaltstack
+    157, // prctl
+    186, // gettid
+    202, // futex
+    204, // sched_getaffinity
+    217, // getdents64
+    231, // exit_group
+    232, // epoll_wait
+    233, // epoll_ctl
+    257, // openat
+    273, // set_robust_list
+    288, // accept4
+    290, // eventfd2
+    291, // epoll_create1
+    318, // getrandom
+    332, // statx
+    334, // rseq
+    435, // clone3
+];
+
+/// No allowlist has been derived for this architecture.
+///
+/// Empty rather than borrowed from x86_64. The numbers are per-ABI and a list
+/// from the wrong one names a different set of calls entirely — `enforce`
+/// refuses here, and the refusal names the script that would fix it.
+#[cfg(not(target_arch = "x86_64"))]
+pub const DERIVED_ALLOWLIST: &[i64] = &[];
+
+/// Why enforcement must not install here, or `None` when it may.
+///
+/// Pure, and taking every input as an argument, for a reason a mutation
+/// taught. Both refusals lived inline inside `install`; deleting the
+/// architecture check SURVIVED, because on a host where the features also
+/// differ the second refusal fired and the test could not tell which one had.
+/// A predicate that can only be driven in one state is a predicate that is
+/// mostly untested.
+///
+/// `derived` is how many syscalls this build carries a list for — zero means
+/// none was derived for this architecture, and the numbers are per-ABI, so a
+/// list from elsewhere names different calls. `features` is what this binary
+/// actually carries, which has to equal what the list was derived against: a
+/// build with more features makes more calls, and enforcing a list about
+/// another program ends a capture.
+#[must_use]
+pub fn enforcement_refusal(derived: usize, arch: &str, features: &str) -> Option<String> {
+    if derived == 0 {
+        return Some(format!(
+            "no syscall allowlist has been derived for {arch}. Derive one with \
+             scripts/derive-seccomp-allowlist.sh and land it before enforcing; a list \
+             borrowed from another architecture names different calls"
+        ));
+    }
+    if features != DERIVED_FEATURES {
+        return Some(format!(
+            "the allowlist was derived against a build with features \
+             {DERIVED_FEATURES}, and this binary carries {features}. A build with \
+             different features makes different calls, so enforcing this list would be \
+             enforcing a list about another program"
+        ));
+    }
+    None
+}
+
 // ── What a run asked for, and what it got ───────────────────────────────────
 
 /// What `--seccomp` asked for.
@@ -354,6 +489,16 @@ pub enum SeccompMode {
     Off,
     /// Record every syscall and allow every syscall.
     Log,
+    /// Refuse every syscall outside the derived allowlist, fatally.
+    ///
+    /// The only mode that is a control, and the only one that can end a run.
+    /// `SECCOMP_RET_KILL_PROCESS` is what `docs/design/syscall-sandbox.md` §3.2
+    /// chose over `ERRNO`, and the reason is that an `EPERM` from `openat` on
+    /// the output path produces a run that captures happily and writes nothing
+    /// — a confident wrong answer, which is the failure this codebase has
+    /// already had to fix once at the capture layer. A death carries the
+    /// syscall number and is diagnosable.
+    Enforce,
 }
 
 /// What actually happened.
@@ -366,6 +511,15 @@ pub enum SeccompStatus {
     Disabled,
     /// A logging filter is loaded. Nothing is denied.
     Logging,
+    /// An enforcing filter is loaded, carrying `count` allowed syscalls.
+    ///
+    /// The one variant that means a control is in force, added when one
+    /// existed. `no_status_claims_to_deny_anything` was rewritten in the same
+    /// commit, and reading why is the point of having made it structural.
+    Enforcing {
+        /// How many syscalls the filter admits.
+        count: usize,
+    },
     /// This build cannot install one, and why.
     Unsupported(String),
     /// The kernel refused, and why.
@@ -395,11 +549,26 @@ pub fn startup_line(status: &SeccompStatus) -> String {
              Turn it off afterwards — a live capture emits one record per packet and \
              will flood the log."
             .to_string(),
+        SeccompStatus::Enforcing { count } => format!(
+            "Syscall filter ENFORCING: {count} system calls are permitted and any other \
+             ends this process immediately, with the number in the kernel log. The list \
+             was derived from 16 run shapes against a {DERIVED_FEATURES} build; the TLS \
+             keylog, plugins and the eBPF uprobe backend were never exercised, so a run \
+             that turns one on may be killed by a call the list does not carry. Derive \
+             your own with scripts/derive-seccomp-allowlist.sh before trusting this on a \
+             capture that matters."
+        ),
+        // Mode-neutral, because these two are reached from `log` AND from
+        // `enforce`. They read "Syscall logging unavailable ... Nothing is
+        // recorded" until enforcement shipped, which told an operator who asked
+        // for a CONTROL that a recorder was missing — a true sentence about
+        // the wrong thing, and the class of defect this module has already had
+        // to fix twice.
         SeccompStatus::Unsupported(why) => {
-            format!("Syscall logging unavailable: {why}. Nothing is recorded.")
+            format!("Syscall filter unavailable: {why}. No filter is in force.")
         }
         SeccompStatus::Failed(why) => {
-            format!("Syscall logging could not be installed: {why}. Nothing is recorded.")
+            format!("Syscall filter could not be installed: {why}. No filter is in force.")
         }
     }
 }
@@ -429,8 +598,25 @@ pub fn install(mode: SeccompMode) -> SeccompStatus {
             std::env::consts::ARCH
         ));
     };
-    // No allowlist: the point is to record everything.
-    let prog = match build_program(arch, &[], SECCOMP_RET_LOG) {
+    // Enforcing needs a list derived for THIS architecture and THIS build, and
+    // both refusals are hard. A list from another ABI names a different set of
+    // calls; a list from another feature set was never about this binary.
+    // Enforcing either is enforcing a list about a different program, and
+    // being wrong ends a capture.
+    let (allow, action) = if mode == SeccompMode::Enforce {
+        if let Some(why) = enforcement_refusal(
+            DERIVED_ALLOWLIST.len(),
+            std::env::consts::ARCH,
+            &crate::cli::compiled_features().join(","),
+        ) {
+            return SeccompStatus::Unsupported(why);
+        }
+        (DERIVED_ALLOWLIST, SECCOMP_RET_KILL_PROCESS)
+    } else {
+        // Logging takes no allowlist: the point is to record everything.
+        ([].as_slice(), SECCOMP_RET_LOG)
+    };
+    let prog = match build_program(arch, allow, action) {
         Ok(p) => p,
         Err(e) => return SeccompStatus::Failed(e.to_string()),
     };
@@ -450,6 +636,11 @@ pub fn install(mode: SeccompMode) -> SeccompStatus {
             "the kernel accepted the filter and then reported no filter mode;              nothing is being recorded"
                 .to_string(),
         );
+    }
+    if mode == SeccompMode::Enforce {
+        return SeccompStatus::Enforcing {
+            count: DERIVED_ALLOWLIST.len(),
+        };
     }
     SeccompStatus::Logging
 }
@@ -784,8 +975,14 @@ mod tests {
         ] {
             let line = startup_line(&status);
             assert!(
-                line.contains("Nothing is recorded"),
-                "a control that did not install must say so: {line}"
+                line.contains("No filter is in force"),
+                "a control that did not install must say so, without naming a \
+                 mode nobody asked for: {line}"
+            );
+            assert!(
+                !line.contains("logging"),
+                "a refusal reached from `enforce` calls itself a logging \
+                 failure: {line}"
             );
         }
         assert_eq!(
@@ -890,9 +1087,9 @@ mod tests {
         ] {
             let line = startup_line(&status);
             assert!(
-                line.contains("Nothing is recorded"),
+                line.contains("No filter is in force"),
                 "{status:?} renders as {line:?}, which does not tell an operator \
-                 that no syscall is being recorded"
+                 that nothing is in force"
             );
             assert!(
                 !line.contains("Syscall logging on"),
@@ -917,7 +1114,27 @@ mod tests {
         let start = src
             .find("pub fn install(mode: SeccompMode) -> SeccompStatus {")
             .expect("the Linux install is in this file");
-        let body = &src[start..start + 2000];
+        // The real body, by brace depth. A fixed-size window was here and the
+        // function outgrew it the moment enforcement landed — the readback
+        // moved past character 2000 and the gate reported it missing. A window
+        // chosen by eye is a window that expires.
+        let open = start + src[start..].find('{').expect("the function has a body");
+        let mut depth = 0i32;
+        let mut end = open;
+        for (offset, ch) in src[open..].char_indices() {
+            match ch {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = open + offset;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let body = &src[open..=end];
         let load = body.find("load(&prog").expect("install loads a program");
         let readback = body
             .find("in_filter_mode()")
@@ -1191,24 +1408,202 @@ mod tests {
         );
     }
 
-    /// The status enum has no variant that could be read as enforcement.
+    /// An architecture with no derived list is refused, and says which.
     ///
-    /// Structural, deliberately: the day someone adds an enforcing mode they
-    /// have to change this test, and changing it means reading why it is here.
+    /// Drivable on any host because the predicate takes its inputs. Inline,
+    /// this branch could not be reached on a machine whose features also
+    /// differ — and deleting it survived a mutation for exactly that reason.
     #[test]
-    fn no_status_claims_to_deny_anything() {
-        let all = [
-            SeccompStatus::Disabled,
-            SeccompStatus::Logging,
-            SeccompStatus::Unsupported(String::new()),
-            SeccompStatus::Failed(String::new()),
-        ];
-        for s in &all {
-            let name = format!("{s:?}");
+    fn enforcement_refuses_an_architecture_with_no_derived_list() {
+        let why = enforcement_refusal(0, "riscv64", DERIVED_FEATURES)
+            .expect("an empty list must be refused");
+        assert!(
+            why.contains("riscv64"),
+            "the refusal does not name the architecture it is about: {why}"
+        );
+        assert!(
+            why.contains("derive-seccomp-allowlist.sh"),
+            "the refusal names no way to obtain a list that would work: {why}"
+        );
+    }
+
+    /// A build whose features differ is refused, and says which differ.
+    ///
+    /// The second branch, driven independently of the first. A list is only
+    /// true for the build it came from: more features, more calls, and a call
+    /// the list does not carry ends the process.
+    #[test]
+    fn enforcement_refuses_a_build_the_list_was_not_derived_against() {
+        let why = enforcement_refusal(42, "x86_64", "native,tui")
+            .expect("a different feature set must be refused");
+        assert!(
+            why.contains("native,tui"),
+            "the refusal does not say what this binary carries: {why}"
+        );
+        assert!(
+            why.contains(DERIVED_FEATURES),
+            "the refusal does not say what the list was derived against: {why}"
+        );
+    }
+
+    /// The matching case is permitted, so the refusals are not blanket.
+    ///
+    /// The positive control. Without it both gates above would pass on a
+    /// predicate that refuses everything, which would make `--seccomp enforce`
+    /// a flag that never works and nobody would notice for months.
+    #[test]
+    fn enforcement_is_permitted_where_the_list_was_derived() {
+        assert_eq!(
+            enforcement_refusal(42, "x86_64", DERIVED_FEATURES),
+            None,
+            "a build the list WAS derived for was refused"
+        );
+    }
+
+    /// The refusals are ordered so the more fundamental one answers first.
+    ///
+    /// With no list at all, the features are beside the point: there is nothing
+    /// to enforce whatever they are. Reporting the feature mismatch there would
+    /// send someone to rebuild with different features when what they need is a
+    /// derivation.
+    #[test]
+    fn the_architecture_refusal_answers_before_the_feature_one() {
+        let why = enforcement_refusal(0, "aarch64", "native,tui")
+            .expect("both conditions hold, so it must refuse");
+        assert!(
+            why.contains("aarch64") && !why.contains("native,tui"),
+            "with no derived list at all, the refusal talks about features: {why}"
+        );
+    }
+
+    /// The shipped list is the one that was derived, not a copy of it.
+    ///
+    /// Pins the artifact: 42 syscalls for x86_64, sorted and without
+    /// duplicates, and none outside what `seccomp_data.nr` can hold. A list
+    /// that grew a duplicate or lost its order is a list somebody edited by
+    /// hand, which is the one way it is not allowed to change.
+    ///
+    /// Gated on Linux as well as on the architecture: `libc::SYS_*` does not
+    /// exist off Linux, and an x86_64 macOS build would fail to compile it.
+    /// That is the same split that broke the build once already, and the
+    /// scanner caught it here before it could again.
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[test]
+    fn the_derived_list_is_the_one_the_derivation_returned() {
+        assert_eq!(
+            DERIVED_ALLOWLIST.len(),
+            42,
+            "the derived list changed size without the derivation being re-run"
+        );
+        let mut sorted = DERIVED_ALLOWLIST.to_vec();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(
+            sorted.as_slice(),
+            DERIVED_ALLOWLIST,
+            "the list is unsorted or carries a duplicate, which no derivation \
+             produces and a hand edit does"
+        );
+        assert!(
+            build_program(
+                AUDIT_ARCH_X86_64,
+                DERIVED_ALLOWLIST,
+                SECCOMP_RET_KILL_PROCESS
+            )
+            .is_ok(),
+            "the shipped list cannot be encoded as a filter at all"
+        );
+        for nr in [libc::SYS_read, libc::SYS_write, libc::SYS_exit_group] {
             assert!(
-                !name.to_lowercase().contains("enforc"),
-                "{name} reads as enforcement, and nothing here denies a call"
+                DERIVED_ALLOWLIST.contains(&nr),
+                "the list omits syscall {nr}, which every run makes — a list this \
+                 short kills on the first call"
             );
         }
+    }
+
+    /// Exactly one status reads as enforcement, and it is the one that does.
+    ///
+    /// This began as "no status claims to deny anything", with a comment saying
+    /// that whoever added an enforcing mode would have to change it and would
+    /// therefore read why it existed. They did not: the variant list was
+    /// written out by hand, so `Enforcing` slipped past a gate built to catch
+    /// exactly that. A hand-written list of variants is not an enumeration of
+    /// the type.
+    ///
+    /// It reads the enum from source now. A variant whose name sounds like a
+    /// control has to BE one, and the check that decides is the action the
+    /// installer uses — `SECCOMP_RET_KILL_PROCESS` appears once in the file,
+    /// on the enforcing path.
+    #[test]
+    fn only_the_enforcing_status_reads_as_enforcement() {
+        let src = include_str!("seccomp.rs");
+        let start = src
+            .find("pub enum SeccompStatus {")
+            .expect("the status enum is in this file");
+        let body = &src[start..start + src[start..].find("\n}").expect("it ends")];
+        let variants: Vec<&str> = body
+            .lines()
+            .map(str::trim)
+            .filter(|l| {
+                l.chars().next().is_some_and(char::is_uppercase)
+                    && (l.ends_with(',') || l.ends_with('{') || l.ends_with('}'))
+            })
+            .map(|l| l.trim_end_matches([',', ' ', '{', '}']))
+            .collect();
+        assert!(
+            variants.len() >= 4,
+            "only {} variant(s) parsed out of SeccompStatus; the scan has stopped \
+             matching and would let the next one past too: {variants:?}",
+            variants.len()
+        );
+        let enforcing: Vec<&&str> = variants
+            .iter()
+            .filter(|v| v.to_lowercase().contains("enforc"))
+            .collect();
+        assert_eq!(
+            enforcing.len(),
+            1,
+            "SeccompStatus has {} variant(s) reading as enforcement: {enforcing:?}. \
+             One mode denies calls; every other name that sounds like it would \
+             mislead a reader of a run's posture",
+            enforcing.len()
+        );
+        assert!(
+            src.contains("SECCOMP_RET_KILL_PROCESS"),
+            "a status claims enforcement and no denying action exists in the file"
+        );
+    }
+
+    /// The variant scan sees a variant added by hand, which the old one did not.
+    ///
+    /// The fixture guard for the gate above, and the reason it exists: the
+    /// version this replaced compared against a list somebody typed, so adding
+    /// `Enforcing` to the enum changed nothing it could observe. This drives
+    /// the parser over a synthetic enum instead of the real one.
+    #[test]
+    fn the_variant_scan_reads_the_type_rather_than_a_typed_out_list() {
+        let src = "pub enum SeccompStatus {\n    Disabled,\n    Logging,\n    \
+                   Enforcing {\n        count: usize,\n    },\n    Failed(String),\n}\n";
+        let start = src.find("pub enum SeccompStatus {").expect("present");
+        let body = &src[start..start + src[start..].find("\n}").expect("ends")];
+        let variants: Vec<&str> = body
+            .lines()
+            .map(str::trim)
+            .filter(|l| {
+                l.chars().next().is_some_and(char::is_uppercase)
+                    && (l.ends_with(',') || l.ends_with('{') || l.ends_with('}'))
+            })
+            .map(|l| l.trim_end_matches([',', ' ', '{', '}']))
+            .collect();
+        assert!(
+            variants.iter().any(|v| v.contains("Enforcing")),
+            "the parser cannot see a struct variant, which is the shape the real \
+             one has: {variants:?}"
+        );
+        assert!(
+            variants.iter().any(|v| v.contains("Disabled")),
+            "the parser cannot see a unit variant: {variants:?}"
+        );
     }
 }

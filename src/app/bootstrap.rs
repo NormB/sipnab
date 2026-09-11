@@ -1646,6 +1646,7 @@ fn seccomp_mode(cli: &Cli) -> crate::seccomp::SeccompMode {
     match cli.security_args.seccomp.unwrap_or_default() {
         crate::cli::SeccompModeArg::Off => crate::seccomp::SeccompMode::Off,
         crate::cli::SeccompModeArg::Log => crate::seccomp::SeccompMode::Log,
+        crate::cli::SeccompModeArg::Enforce => crate::seccomp::SeccompMode::Enforce,
     }
 }
 

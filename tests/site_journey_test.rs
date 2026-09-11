@@ -6968,8 +6968,14 @@ fn an_unimplemented_claim_cites_evidence_and_the_evidence_still_holds() {
     // nothing exists yet". The floor is anti-vacuity — it catches the phrase
     // list drifting away from how the docs are actually written — so it moves
     // only with a named doc and a reason, never to make a run green.
+    //
+    // Lowered 4 -> 3 on 2026-09-11 when `syscall-sandbox.md` stopped claiming
+    // to be unbuilt, because its last step shipped: `--seccomp enforce` carries
+    // a derived allowlist and the status block now opens "ALL FOUR STEPS
+    // SHIPPED". Same direction as the move before it, and the same reason the
+    // floor tolerates it.
     assert!(
-        checked >= 4,
+        checked >= 3,
         "only {checked} design docs claim something is unbuilt — the phrase list \
          stopped matching and this gate is checking almost nothing"
     );

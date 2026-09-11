@@ -209,14 +209,33 @@ shape() {
 	printf '%s\n' "$name" >> "$WORK/order"
 }
 
+# The shapes. Every surface that opens a file, a socket or a device belongs
+# here, because an unexercised surface is a kill waiting for the operator who
+# turns it on: `live-count` added six syscalls that three offline shapes never
+# made, and a list derived one shape earlier would have killed every live
+# capture.
 FIXTURE=${SIPNAB_DERIVE_FIXTURE:-tests/pcap-samples/sip-rtp-g711.pcap}
 shape offline-report "$BIN" -N -I "$FIXTURE" --report --seccomp log
 shape offline-json "$BIN" -N -I "$FIXTURE" --json --seccomp log
 shape offline-output "$BIN" -N -I "$FIXTURE" -O "$WORK/copy.pcap" --seccomp log
+shape offline-split "$BIN" -N -I "$FIXTURE" -O "$WORK/split.pcap" --split 1 --seccomp log
+shape offline-hexdump "$BIN" -N -I "$FIXTURE" --hexdump --seccomp log
+shape offline-audio "$BIN" -N -I "$FIXTURE" --retain-audio --seccomp log
+shape offline-vcon "$BIN" -N -I "$FIXTURE" --vcon-out "$WORK/out.vcon" --seccomp log
 if [ -n "$IFACE" ]; then
 	shape live-count timeout 20 "$BIN" -N -d "$IFACE" --count 200 --seccomp log
 	shape live-report timeout 20 "$BIN" -N -d "$IFACE" --count 150 --report --seccomp log
 	shape live-sandbox timeout 20 "$BIN" -N -d "$IFACE" --count 150 --sandbox best-effort --seccomp log
+	# The server surfaces, which is where the set actually grows. `live-api`
+	# added eighteen syscalls that eleven earlier shapes never made — socket,
+	# bind, listen, accept and the runtime they pull in. A list derived
+	# without them kills every run that turns a server on.
+	shape live-api timeout 20 "$BIN" -N -d "$IFACE" --count 50 --api 127.0.0.1:29061 --seccomp log
+	shape live-metrics timeout 20 "$BIN" -N -d "$IFACE" --count 50 --metrics 127.0.0.1:29062 --seccomp log
+	shape live-hep timeout 20 "$BIN" -N -L 127.0.0.1:29060 --count 50 --seccomp log
+	shape live-mcp timeout 20 "$BIN" -N -d "$IFACE" --count 50 --mcp --mcp-transport http --mcp-bind 127.0.0.1:29063 --seccomp log
+	shape live-all timeout 20 "$BIN" -N -d "$IFACE" --count 50 --api 127.0.0.1:29064 --metrics 127.0.0.1:29065 --seccomp log
+	shape live-repeat timeout 20 "$BIN" -N -d "$IFACE" --count 50 --api 127.0.0.1:29066 --seccomp log
 fi
 
 COMBINED="$WORK/combined.log"

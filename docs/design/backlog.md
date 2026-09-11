@@ -44,7 +44,7 @@ Tiers:
 
 ## Status
 
-**24 open, 496 done** across 36 sections.
+**23 open, 497 done** across 36 sections.
 Regenerate with `python3 scripts/backlog-status.py --apply`.
 
 | Section | Open | Done | Progress |
@@ -76,7 +76,7 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
 | GTP | 1 | 10 | `#########.` |
 | MER | 0 | 5 | `##########` |
 | LIVE | 3 | 3 | `#####.....` |
-| P5 | 6 | 14 | `#######...` |
+| P5 | 5 | 15 | `########..` |
 | Shipped (audit-period features, kept for context) | 0 | 6 | `##########` |
 | DUP | 0 | 8 | `##########` |
 | OBS-FOLLOWUP | 0 | 4 | `##########` |
@@ -7418,7 +7418,7 @@ them away.
   environment. `the_real_environment_is_the_one_a_config_file_sees` is what
   keeps that seam from being wired to a stub.
 
-- [ ] **G5 — No seccomp and no Landlock, on a process whose whole job is
+- [x] **G5 (done 2026-09-11) — No seccomp and no Landlock, on a process whose whole job is
   parsing hostile input.** [`src/privilege.rs`](https://github.com/NormB/sipnab/blob/main/src/privilege.rs) does real work — `setgid`,
   `setuid`, `drop_supplementary_groups`, `PR_SET_NO_NEW_PRIVS`,
   `PR_SET_DUMPABLE=0`, `setrlimit(RLIMIT_CORE, 0)`, optional `chroot` — but
@@ -7502,8 +7502,21 @@ them away.
   `--split`, plugins and the uprobe backend were never exercised, and the one
   live shape added six syscalls no offline shape made.
 
-  **Still open: the derived allowlist**, §8 step 4, which stays last — now for
-  a measured reason rather than a feared one. A mis-derived allowlist kills the process on a
+  **The enforcing filter shipped 2026-09-11**, which closes §8 step 4 and this
+  entry. `--seccomp enforce` carries a list of 42 syscalls for x86_64, derived
+  from 16 run shapes and 29,048 records with nothing suppressed, verdict
+  `SETTLED`.
+
+  **It refuses more readily than it enforces.** No derived list for this
+  architecture, or a feature set other than the one the list came from, and it
+  declines rather than installing — a list from elsewhere names different calls,
+  and being wrong ends a capture. Both refusals live in a pure function taking
+  their inputs, because inline they could not both be driven on one host and
+  deleting the architecture check SURVIVED a mutation for exactly that reason.
+
+  **What it still has not seen:** the TLS keylog, plugins and the eBPF uprobe
+  backend were compiled in and never exercised. `SETTLED` is not `COMPLETE` and
+  the startup line says so. A mis-derived allowlist kills the process on a
   capture box during the incident the capture was started for. Nothing shipped
   can do that: `grep -rlE 'SECCOMP_RET_KILL|SECCOMP_RET_TRAP' src/` exits 1.
   Written up in [`docs/design/syscall-sandbox.md`](https://github.com/NormB/sipnab/blob/main/docs/design/syscall-sandbox.md), whose §0 tabulates the

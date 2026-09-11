@@ -1,17 +1,20 @@
 # seccomp and Landlock
 
-**Status:** LANDLOCK SHIPPED 2026-09-10; SECCOMP SHIPPED IN LOGGING MODE ONLY,
-2026-09-10; **the enforcing filter is not implemented**. Steps 1, 2 and 3 of
-§8's sequence are in [`src/sandbox.rs`](https://github.com/NormB/sipnab/blob/main/src/sandbox.rs) and [`src/seccomp.rs`](https://github.com/NormB/sipnab/blob/main/src/seccomp.rs), behind
-`--sandbox` and `--seccomp`, both default off. Step 4 — the derived allowlist
-with a denying action — remains unbuilt, and §3's derivation risk is why it is
-still last: a mis-derived allowlist kills the process, which is the one failure
-a capture box must not have. **`--seccomp log` is not a control**: it denies
-nothing, and it exists so the derivation step 4 needs can be run from evidence
-by anyone, on a platform the maintainer does not have. What sipnab *does* have
-besides is weaker and is not nothing — §0 tabulates it. A reader who stops at
-this line will re-implement hardening that already ships.
-**Check:** `grep -rlE 'SECCOMP_RET_KILL|SECCOMP_RET_TRAP' src/` exits 1 — still nothing that can refuse or end a call, which is what step 4 of §8 would add. The pattern names the DENYING ACTIONS rather than the word "seccomp", because a filter now ships and matching on the word would report an instrument as a control.
+**Status:** ALL FOUR STEPS SHIPPED. Landlock 2026-09-10; seccomp logging
+2026-09-10; the derivation procedure and the enforcing filter 2026-09-11. They
+live in [`src/sandbox.rs`](https://github.com/NormB/sipnab/blob/main/src/sandbox.rs), [`src/seccomp.rs`](https://github.com/NormB/sipnab/blob/main/src/seccomp.rs) and
+[`scripts/derive-seccomp-allowlist.sh`](https://github.com/NormB/sipnab/blob/main/scripts/derive-seccomp-allowlist.sh), behind `--sandbox` and
+`--seccomp`, all default off.
+
+**`--seccomp enforce` is the only mode that can end a run**, and it refuses to
+install on any architecture with no derived list or any build whose feature set
+differs from the one the list came from — a list from elsewhere is a list about
+another program. The shipped list is 42 syscalls for x86_64, derived from 16
+run shapes and 29,048 records. It has not seen the TLS keylog, plugins or the
+eBPF uprobe backend, and the startup line says so: `SETTLED` is not `COMPLETE`.
+**`--seccomp log` is not a control** and denies nothing. What sipnab *does* have
+besides is weaker and is not nothing — §0 tabulates it.
+**Check:** `grep -c 'SECCOMP_RET_KILL_PROCESS' src/seccomp.rs` returns 7 — the killing action exists now, in one module, reached only by `--seccomp enforce`. The check moved from asserting its ABSENCE to counting its occurrences when step 4 shipped; an absence check left in place would have gone on passing by matching nothing, which is the failure this page's own history is full of.
 **Check:** `grep -c 'libc::prctl\|libc::setrlimit\|libc::chroot\|libc::setuid\|libc::setgroups' src/privilege.rs` returns 7 — the calls §0 tabulates; the gate running this line proves the set is non-empty, and the 7 was counted by hand. It was 6 until `set_no_new_privs` began reading its own flag back with `PR_GET_NO_NEW_PRIVS`.
 The seccomp check was once written `grep -rn 'seccomp\|landlock\|unshare'`,
 which matched one hit — the prose "(unshared)" in the TUI, added months before

@@ -12,6 +12,22 @@ entry that carries them.
 
 ### Added
 
+- **`--seccomp enforce` refuses every system call outside a derived allowlist,
+  which finishes the syscall sandbox.** All four steps of its design now ship.
+  A call the list does not carry ends the process, with the number in the
+  kernel log, because an `EPERM` from the output path would produce a run that
+  captures happily and writes nothing.
+
+  It refuses more readily than it enforces. On an architecture with no derived
+  list, or a build whose features differ from the one the list came from, it
+  declines to install rather than enforcing a list about a different program.
+  The shipped list is 42 calls for x86_64, derived from 16 run shapes and
+  29,048 records.
+
+  It has not seen the TLS keylog, plugins or the eBPF uprobe backend. The
+  startup line says so, and says to derive your own before trusting it on a
+  capture that matters. Default off, as every mode here is.
+
 - **`scripts/derive-seccomp-allowlist.sh` turns the syscall derivation from a
   judgement call into a measurement.** The syscall sandbox's last step is an
   enforcing filter, and it has stayed last because a mis-derived allowlist kills

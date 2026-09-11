@@ -705,3 +705,318 @@ fn the_denying_roles_verdict_travels_in_the_exit_status() {
     assert_ne!(EXIT_REFUSED_AS_EXPECTED, EXIT_WRONG_ERRNO);
     assert_ne!(EXIT_NOT_REFUSED, EXIT_WRONG_ERRNO);
 }
+
+// ── Enforcement: the one mode that can end a run ────────────────────────────
+
+/// Exit code from the enforcing child when it survived its allowed work.
+///
+/// Gated with the roles that use it. Off Linux there are no enforcing roles, so
+/// an ungated constant is dead code and the non-Linux check fails the push —
+/// which it did, for the second time today, on the same shape: one platform
+/// decision, written in one place, is the fix rather than a second cfg.
+#[cfg(target_os = "linux")]
+const EXIT_ENFORCED_AND_SURVIVED: i32 = 50;
+
+/// Install the enforcing filter, then do the work it was derived for.
+///
+/// The property that matters most about an enforcing filter is not that it
+/// kills — anything kills — but that it does NOT kill the run it was derived
+/// from. A list short by one syscall passes every test that only checks a
+/// denial, and ends a capture on a box nobody is watching.
+///
+/// So this child enforces and then reads, writes, allocates and opens, which is
+/// what the derivation's own offline shapes did. Surviving is the assertion.
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore = "child role: installs a seccomp filter that cannot be removed"]
+fn child_enforcing_filter_does_not_kill_the_work_it_was_derived_for() {
+    if !in_child_role() {
+        return;
+    }
+    let status = seccomp::install(SeccompMode::Enforce);
+    match status {
+        SeccompStatus::Enforcing { count } => {
+            assert_eq!(
+                count,
+                seccomp::DERIVED_ALLOWLIST.len(),
+                "the filter reports a different size than the list it was built from"
+            );
+        }
+        // On an architecture or a feature set the list was never derived for,
+        // refusing IS the correct behavior and the parent checks that
+        // separately. Say so and stop rather than asserting a kill that would
+        // only prove the refusal worked.
+        other => {
+            println!("{CHILD_COMPLETE}");
+            eprintln!("enforcement refused, as it should be here: {other:?}");
+            return;
+        }
+    }
+
+    let dir = tempfile::tempdir().expect("tempdir under the enforcing filter");
+    let path = dir.path().join("marker");
+    std::fs::write(&path, b"enforced").expect("write under the enforcing filter");
+    let read = std::fs::read(&path).expect("read under the enforcing filter");
+    assert_eq!(read, b"enforced");
+    let mut grown: Vec<u8> = Vec::new();
+    grown.resize(4 * 1024 * 1024, 7);
+    assert_eq!(grown.len(), 4 * 1024 * 1024);
+
+    // SAFETY: `exit_group` never returns and touches no memory. Raw, so the
+    // verdict cannot depend on a runtime path the filter might not carry.
+    unsafe { libc::syscall(libc::SYS_exit_group, i64::from(EXIT_ENFORCED_AND_SURVIVED)) };
+    unreachable!("exit_group returned");
+}
+
+/// The enforcing filter does not kill the work it was derived for.
+#[cfg(target_os = "linux")]
+#[test]
+fn enforcement_does_not_kill_the_run_it_was_derived_from() {
+    if !seccomp_possible() {
+        announce_skip(
+            "enforcement_does_not_kill_the_run_it_was_derived_from",
+            "this target has no seccomp",
+        );
+        return;
+    }
+    let exe = std::env::current_exe().expect("this test binary");
+    let role = "child_enforcing_filter_does_not_kill_the_work_it_was_derived_for";
+    let out = Command::new(exe)
+        .args(["--exact", role, "--ignored", "--nocapture"])
+        .env(CHILD_ENV, role)
+        .output()
+        .expect("spawn the enforcing child");
+    let text =
+        String::from_utf8_lossy(&out.stderr).into_owned() + &String::from_utf8_lossy(&out.stdout);
+    // Either it enforced and survived, or it refused to enforce and said so.
+    // A signal death is the one outcome that is never acceptable: it means the
+    // list is short by at least one call the derivation's own shapes made.
+    assert!(
+        out.status.code().is_some(),
+        "the enforcing child died by signal, which means the derived allowlist \
+         is missing a call its own derivation made:\n{text}"
+    );
+    let code = out.status.code().unwrap_or(-1);
+    assert!(
+        code == EXIT_ENFORCED_AND_SURVIVED || text.contains(CHILD_COMPLETE),
+        "the enforcing child exited {code} without either surviving its work or \
+         reporting a refusal:\n{text}"
+    );
+}
+
+/// The derived list itself works, whatever `install` would decide.
+///
+/// Closes a gap that would otherwise leave the enforcing path unexercised
+/// anywhere. `install` refuses unless the architecture AND the feature set
+/// match the derivation, and CI builds with `--all-features`, whose feature
+/// string is not the release's — so every automated run would take the refusal
+/// arm and the list would never once be enforced.
+///
+/// This drives the list directly on the architecture it was derived for: build
+/// the filter, load it with the killing action, then do the work the
+/// derivation's own offline shapes did. Surviving is the assertion, because a
+/// list short by one call ends the process rather than failing a check.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[test]
+#[ignore = "child role: installs a seccomp filter that cannot be removed"]
+fn child_the_derived_list_survives_the_work_it_was_derived_for() {
+    if !in_child_role() {
+        return;
+    }
+    let arch = seccomp::audit_arch().expect("an architecture token");
+    let prog = seccomp::build_program(
+        arch,
+        seccomp::DERIVED_ALLOWLIST,
+        seccomp::SECCOMP_RET_KILL_PROCESS,
+    )
+    .expect("the derived list builds a filter");
+    seccomp::load(&prog, seccomp::SECCOMP_FILTER_FLAG_TSYNC)
+        .expect("the kernel accepts the derived filter");
+
+    let dir = tempfile::tempdir().expect("tempdir under the derived filter");
+    let path = dir.path().join("marker");
+    std::fs::write(&path, b"survived").expect("write under the derived filter");
+    assert_eq!(
+        std::fs::read(&path).expect("read under the derived filter"),
+        b"survived"
+    );
+    let mut grown: Vec<u8> = Vec::new();
+    grown.resize(4 * 1024 * 1024, 7);
+    assert_eq!(grown.len(), 4 * 1024 * 1024);
+    let sock = std::net::UdpSocket::bind("127.0.0.1:0").expect("bind under the derived filter");
+    assert!(sock.local_addr().is_ok());
+
+    // SAFETY: `exit_group` never returns and touches no memory.
+    unsafe { libc::syscall(libc::SYS_exit_group, i64::from(EXIT_ENFORCED_AND_SURVIVED)) };
+    unreachable!("exit_group returned");
+}
+
+/// The derived list does not kill the work it was derived for.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[test]
+fn the_derived_list_survives_the_work_it_was_derived_for() {
+    if !seccomp_possible() {
+        announce_skip(
+            "the_derived_list_survives_the_work_it_was_derived_for",
+            "this target has no seccomp",
+        );
+        return;
+    }
+    let exe = std::env::current_exe().expect("this test binary");
+    let role = "child_the_derived_list_survives_the_work_it_was_derived_for";
+    let out = Command::new(exe)
+        .args(["--exact", role, "--ignored", "--nocapture"])
+        .env(CHILD_ENV, role)
+        .output()
+        .expect("spawn the derived-list child");
+    let text =
+        String::from_utf8_lossy(&out.stderr).into_owned() + &String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.code().is_some(),
+        "the child died by SIGNAL under the derived list, which means the list \
+         is missing a call its own derivation made. This is the failure the \
+         whole feature is sequenced to avoid:\n{text}"
+    );
+    assert_eq!(
+        out.status.code(),
+        Some(EXIT_ENFORCED_AND_SURVIVED),
+        "the child exited {:?} rather than surviving its work:\n{text}",
+        out.status.code()
+    );
+}
+
+/// Enforcement refuses where no list was derived, rather than guessing.
+///
+/// Two refusals, and both are hard. An allowlist is per-ABI, so a list from
+/// another architecture names a different set of calls entirely. It is also
+/// per-build, because a binary with more features makes more calls. Enforcing
+/// either would be enforcing a list about a different program, and the cost of
+/// being wrong is a dead capture.
+///
+/// **In a child, and that is not caution for its own sake.** The first version
+/// ran in the test runner. `install` was building a LOGGING filter and
+/// returning `Enforcing` — the status lying about what it had done — and the
+/// runner came out of it filtered, which broke every gate that ran afterwards.
+/// A test that installs a filter to check a refusal has to assume the refusal
+/// is the thing that is broken.
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore = "child role: installs a seccomp filter that cannot be removed"]
+fn child_enforcement_refuses_a_list_not_derived_for_this_binary() {
+    if !in_child_role() {
+        return;
+    }
+    let derived_here = cfg!(target_arch = "x86_64")
+        && sipnab::cli::compiled_features().join(",") == seccomp::DERIVED_FEATURES;
+    let status = seccomp::install(SeccompMode::Enforce);
+    if derived_here {
+        assert!(
+            matches!(status, SeccompStatus::Enforcing { .. }),
+            "a build the list WAS derived for refused to enforce: {status:?}"
+        );
+    } else {
+        match &status {
+            SeccompStatus::Unsupported(why) => {
+                assert!(
+                    why.contains("derive-seccomp-allowlist.sh") || why.contains("features"),
+                    "the refusal does not say how to get a list that would work: {why}"
+                );
+                assert!(
+                    !seccomp::in_filter_mode(),
+                    "enforcement refused and installed a filter anyway, which is the \
+                     status lying about what it did"
+                );
+            }
+            other => panic!(
+                "a build the list was NOT derived for did not refuse: {other:?}. \
+                 Enforcing a borrowed list is how a capture dies"
+            ),
+        }
+    }
+    println!("{CHILD_COMPLETE}");
+}
+
+/// The refusals hold, checked from a process this file may filter.
+#[cfg(target_os = "linux")]
+#[test]
+fn enforcement_refuses_a_list_that_was_not_derived_for_this_binary() {
+    if !seccomp_possible() {
+        announce_skip(
+            "enforcement_refuses_a_list_that_was_not_derived_for_this_binary",
+            "this target has no seccomp",
+        );
+        return;
+    }
+    let (ok, out) = run_child("child_enforcement_refuses_a_list_not_derived_for_this_binary");
+    assert!(ok, "the enforcement-refusal child did not complete:\n{out}");
+}
+
+/// No gate that runs in the shared runner installs a filter.
+///
+/// The rule the failure above taught, made structural. A filter cannot be
+/// removed, so a runner that acquires one carries it through every gate that
+/// follows — which is how three unrelated tests failed at once and pointed at
+/// the wrong thing.
+///
+/// The rule is stated over ATTRIBUTES, not names: a `#[test]` without
+/// `#[ignore]` runs in the shared runner and may not install. `#[ignore]`d
+/// roles may, because a parent spawns each one in its own process. Helpers are
+/// exempt and only reachable from roles.
+///
+/// It skips its own body. The first version matched the string literals it
+/// searches for and reported itself — the same self-match that made five wait
+/// loops never fire earlier today.
+#[test]
+fn no_gate_that_runs_in_the_shared_runner_installs_a_filter() {
+    let src = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/seccomp_child_test.rs"),
+    )
+    .expect("this test file is in the tree");
+
+    const SELF: &str = "fn no_gate_that_runs_in_the_shared_runner_installs_a_filter";
+    let installs = [
+        "install(SeccompMode::Log",
+        "install(SeccompMode::Enforce",
+        "load(&prog",
+    ];
+
+    let mut offenders = Vec::new();
+    let mut attrs: Vec<String> = Vec::new();
+    let mut in_runner_gate = false;
+    let mut in_self = false;
+    let mut checked = 0usize;
+    for line in src.lines() {
+        let t = line.trim();
+        if t.starts_with("#[") || t.starts_with("#![") {
+            attrs.push(t.to_string());
+            continue;
+        }
+        if t.starts_with("fn ") || t.starts_with("pub fn ") {
+            in_self = line.starts_with(SELF);
+            let is_test = attrs.iter().any(|a| a == "#[test]");
+            let ignored = attrs.iter().any(|a| a.starts_with("#[ignore"));
+            in_runner_gate = is_test && !ignored;
+            if in_runner_gate {
+                checked += 1;
+            }
+            attrs.clear();
+            continue;
+        }
+        if t.is_empty() {
+            attrs.clear();
+        }
+        if in_runner_gate && !in_self && installs.iter().any(|i| t.contains(i)) {
+            offenders.push(t.to_string());
+        }
+    }
+    assert!(
+        checked >= 5,
+        "only {checked} runner gate(s) were examined; the attribute walk has \
+         stopped matching and would miss an install in any of them"
+    );
+    assert!(
+        offenders.is_empty(),
+        "these install a filter in the shared runner, which then carries it \
+         through every gate that follows: {offenders:?}"
+    );
+}

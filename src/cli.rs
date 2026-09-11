@@ -3601,6 +3601,19 @@ pub enum SeccompModeArg {
     Off,
     /// Record every call and allow every call.
     Log,
+    /// Refuse every call outside the derived allowlist, fatally.
+    ///
+    /// The only mode that is a control, and the only one that can end a run.
+    /// A call the list does not carry kills the process, with its number in
+    /// the kernel log.
+    ///
+    /// It refuses to install on an architecture with no derived list, and on a
+    /// binary whose feature set differs from the one the list was derived
+    /// against — both because a list from elsewhere is a list about another
+    /// program. Derive your own with
+    /// `scripts/derive-seccomp-allowlist.sh` before trusting it on a capture
+    /// that matters.
+    Enforce,
 }
 
 /// From/To column display mode selectable on the command line.
