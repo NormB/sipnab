@@ -46,12 +46,19 @@
 //! dropped, and the surviving set was a short one.
 //!
 //! Short is the direction that kills. The artifact being derived is an
-//! allowlist, and a filter missing a call ends the process making it. So a
-//! derivation is only complete if `dmesg | grep 'callbacks suppressed'` is
-//! empty, or `kernel.printk_ratelimit=0` was set for the run. Two runs of the
-//! same shape also produced different sets, which is why
-//! `docs/design/syscall-sandbox.md` §3.1 asks for a corpus of run shapes and
-//! their union rather than one run.
+//! allowlist, and a filter missing a call ends the process making it.
+//!
+//! The buffer also WRAPS, and that one announces nothing. Reading the log after
+//! a run keeps only the last few hundred records: on the lab VM it holds about
+//! 454 audit lines, and three different run shapes each came back with 453 to
+//! 455 — a number that describes the buffer rather than any run. Reading the
+//! buffer after a twenty-second capture returned 12 distinct syscalls; streaming
+//! the same shape with `dmesg --follow` returned 21. Nine missing entries is
+//! nine ways to kill the process the list was built for.
+//!
+//! So a derivation streams, and it unions a corpus of run shapes rather than
+//! trusting one — `docs/design/syscall-sandbox.md` §3.1 asks for exactly that,
+//! and two runs of the same shape here produced different sets.
 //!
 //! # The cost, stated rather than hidden
 //!
@@ -378,11 +385,13 @@ pub fn startup_line(status: &SeccompStatus) -> String {
              exists to derive an allowlist from a bounded run. Where the records go \
              depends on this host: `auditctl -s` prints a connected daemon's pid, and \
              then they are in `ausearch -m SECCOMP`; a pid of 0 means no daemon and the \
-             records are in `dmesg | grep 'type=1326'`. WITHOUT A DAEMON THE KERNEL \
-             DROPS RECORDS: the ring-buffer route is rate limited, and a derivation \
-             that misses a call produces an allowlist that kills the process it was \
-             built for. Before trusting a list, check `dmesg | grep 'callbacks \
-             suppressed'` is empty, or set `kernel.printk_ratelimit=0` for the run. \
+             records are in `dmesg`. WITHOUT A DAEMON THE KERNEL DROPS RECORDS, two \
+             ways, and a derivation that misses a call produces an allowlist that \
+             kills the process it was built for. It rate limits, saying so as \
+             `callbacks suppressed`; set `kernel.printk_ratelimit=0` for the run. And \
+             the ring buffer WRAPS, saying nothing at all — reading it afterwards \
+             keeps only the last few hundred records. STREAM them instead: run \
+             `dmesg --follow > run.log` for the duration and read that. \
              Turn it off afterwards — a live capture emits one record per packet and \
              will flood the log."
             .to_string(),
@@ -1097,6 +1106,88 @@ mod tests {
             help.contains("kills the process"),
             "the flag's help warns about dropped records without saying what \
              they cost"
+        );
+    }
+
+    /// The guidance names BOTH ways the ring buffer loses records.
+    ///
+    /// Owed for the second one, which is the quieter and therefore worse of
+    /// the two. Rate limiting announces itself; the buffer WRAPPING announces
+    /// nothing, and reading the log after a run silently keeps only the last
+    /// few hundred records. On the lab VM that buffer holds about 454 audit
+    /// lines, and three different run shapes each came back with 453 to 455 —
+    /// a number that is the buffer's size rather than any run's behavior.
+    #[test]
+    fn the_guidance_names_both_ways_the_ring_buffer_loses_records() {
+        let line = startup_line(&SeccompStatus::Logging);
+        assert!(
+            line.contains("callbacks suppressed"),
+            "the rate-limit route is unnamed: {line}"
+        );
+        assert!(
+            line.to_uppercase().contains("WRAPS"),
+            "the line warns about rate limiting and not about the buffer \
+             wrapping, which is the loss that announces nothing: {line}"
+        );
+        assert!(
+            line.contains("saying nothing"),
+            "the line does not tell a reader that the second loss is silent, \
+             so they will look for a warning that never comes: {line}"
+        );
+    }
+
+    /// And it says to stream rather than to read afterwards.
+    ///
+    /// The second owed. Naming a hazard without naming the way out leaves an
+    /// operator with a log they now distrust and no alternative — so they use
+    /// it anyway. `dmesg --follow` defeats both losses at once, which is the
+    /// only instruction here that actually produces a complete list.
+    #[test]
+    fn the_guidance_says_to_stream_the_records_not_to_read_them_after() {
+        let line = startup_line(&SeccompStatus::Logging);
+        assert!(
+            line.contains("dmesg --follow"),
+            "the line names no way to collect a complete set: {line}"
+        );
+        let wraps = line.to_uppercase().find("WRAPS").expect("the hazard");
+        let fix = line.find("dmesg --follow").expect("the remedy");
+        assert!(
+            wraps < fix,
+            "the remedy is offered before the hazard it answers, which reads as \
+             an unexplained preference: {line}"
+        );
+    }
+
+    /// The flag's help carries the measurement, not just the warning.
+    ///
+    /// The third owed, and the reason is that "some records may be lost" does
+    /// not move anyone. A number does: reading the buffer after a twenty-second
+    /// capture returned 12 distinct syscalls where streaming returned 21. Nine
+    /// missing entries in an allowlist is nine ways to kill the process it was
+    /// built for.
+    #[test]
+    fn the_flag_help_carries_what_reading_after_the_run_actually_lost() {
+        let cli = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli.rs"),
+        )
+        .expect("src/cli.rs is in the tree");
+        let start = cli
+            .find("pub seccomp: Option<SeccompModeArg>")
+            .expect("the flag is declared");
+        let help: String = cli[start.saturating_sub(3000)..start]
+            .lines()
+            .map(|l| l.trim_start().trim_start_matches("///").trim())
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(
+            help.contains("dmesg --follow"),
+            "the help names no way to collect a complete set: {help}"
+        );
+        assert!(
+            help.contains("12 distinct syscalls") && help.contains("21"),
+            "the help warns without saying what the loss measured, and a \
+             warning with no number reads as a caution rather than a defect: \
+             {help}"
         );
     }
 

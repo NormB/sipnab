@@ -1648,11 +1648,18 @@ pub struct SecurityArgs {
     /// daemon, and they are in `dmesg | grep 'type=1326'`. Each carries
     /// `syscall=<nr>` and `code=0x7ffc0000`.
     ///
-    /// The no-daemon route DROPS RECORDS. The kernel rate limits the ring
-    /// buffer and says so as `kauditd_printk_skb: N callbacks suppressed`, and
-    /// a derivation that misses a call yields an allowlist that kills the
-    /// process it was built for. Check that line is absent before trusting a
-    /// list, or set `kernel.printk_ratelimit=0` for the duration of the run.
+    /// The no-daemon route DROPS RECORDS, two ways, and a derivation that
+    /// misses a call yields an allowlist that kills the process it was built
+    /// for.
+    ///
+    /// The kernel rate limits, and announces it as
+    /// `kauditd_printk_skb: N callbacks suppressed`; set
+    /// `kernel.printk_ratelimit=0` for the run. The ring buffer also WRAPS,
+    /// and announces nothing: reading it after the run keeps only the last few
+    /// hundred records. Measured on a twenty-second capture, reading the buffer
+    /// afterwards returned 12 distinct syscalls where streaming returned 21.
+    /// Stream them — `dmesg --follow > run.log` for the duration — and read
+    /// that file.
     ///
     /// Point it at a bounded offline run and turn it off afterwards: a live
     /// capture emits one record per received packet and will flood the log.

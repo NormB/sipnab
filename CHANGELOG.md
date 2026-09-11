@@ -19,11 +19,17 @@ entry that carries them.
   while deriving sipnab's own syscall set from a twenty-second capture: 50
   records arrived and roughly 1,700 were dropped.
 
+  It loses them a second way as well, and that one announces nothing: the ring
+  buffer wraps, so reading the log after a run keeps only the last few hundred
+  records. Reading the buffer after a twenty-second capture returned 12 distinct
+  syscalls where streaming the same shape returned 21.
+
   Short is the dangerous direction. The artifact being derived is an allowlist
   for an enforcing filter, and a filter missing a call ends the process making
-  it. The flag's help and the startup line now say the route drops, name the
-  string the kernel prints when it does, say what a missing record costs, and
-  name the setting that stops it.
+  it, so nine missing entries is nine ways to kill a capture. The flag's help
+  and the startup line now name both losses, say which one is silent, carry what
+  the loss measured, and say to stream the records rather than read them
+  afterwards.
 
 ## [0.5.165] - 2026-09-11
 
