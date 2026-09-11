@@ -8,6 +8,7 @@
 
 use std::borrow::Cow;
 use std::net::IpAddr;
+use std::ops::Range;
 
 use chrono::{DateTime, Utc};
 
@@ -23,6 +24,21 @@ pub struct SipHeader {
     pub name: Cow<'static, str>,
     /// Header value with leading/trailing whitespace trimmed.
     pub value: String,
+    /// Byte range of the logical header line within [`SipMessage::raw`], from
+    /// the first byte of the name to the last byte of the value, CRLF
+    /// excluded. A folded header spans every line it was folded from, so the
+    /// range covers bytes the unfolded `value` does not reproduce verbatim.
+    ///
+    /// Recorded by the parser as it walks, which is the whole point: a range
+    /// derived by a SECOND walk of the same grammar can part company with the
+    /// parse — over a line with no colon, a non-UTF-8 line, an over-long one,
+    /// or the per-message header cap — and a range pinned one header early
+    /// still resolves, so it reads as evidence.
+    ///
+    /// `None` for a header that came from no bytes: synthesized in a test, or
+    /// built by a transform. A range invented for one of those would point at
+    /// bytes that never said it.
+    pub line_span: Option<Range<u32>>,
 }
 
 /// A parsed SIP message with metadata from the capture layer.

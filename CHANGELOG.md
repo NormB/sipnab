@@ -28,6 +28,30 @@ entry that carries them.
   replaced them yet". A count phrased any other way goes unchecked, which is
   the trade that keeps the gate from crying wolf.
 
+### Changed
+
+- **A parsed SIP header now names the bytes it came from.** `SipHeader` carries
+  `line_span`, the byte range of its own logical line, recorded by the parser as
+  it walks. `decode_evidence` reads that instead of walking the header grammar a
+  second time and pairing the two walks positionally.
+
+  The second walk was the drift this feature was guarded against, and the guard
+  was expensive: a line with no colon made the two walks disagree, and because
+  citing a neighboring header is worse than citing none, the only safe answer
+  was to drop EVERY header's range. One junk line cost a whole message its
+  provenance. One walk cannot disagree with itself, so a dropped line now costs
+  nothing.
+
+  `ranges_unavailable` survives with honest new meaning: it counts headers that
+  came from no bytes, synthesized in a test or rewritten by a transform, which
+  get no range rather than a plausible one. A folded header spans every
+  continuation line the parser unfolded into it, so the range deliberately
+  covers bytes the unfolded value does not reproduce verbatim.
+
+  **Breaking:** `SipHeader` gains a public field. Code constructing one by hand
+  passes `line_span: None`, which is the honest value for a header that came
+  from no packet.
+
 ### Fixed
 
 - **The release check read a CDN that refused it as a broken site.** The same

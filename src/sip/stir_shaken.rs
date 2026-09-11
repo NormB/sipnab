@@ -772,6 +772,8 @@ mod tests {
             headers: vec![SipHeader {
                 name: "Identity".into(),
                 value: identity_value,
+                // Synthesized by a test: no bytes to point at.
+                line_span: None,
             }],
             body: Default::default(),
             parse_error: false,

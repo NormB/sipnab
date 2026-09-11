@@ -8,6 +8,7 @@
 
 use std::borrow::Cow;
 use std::net::IpAddr;
+use std::ops::Range;
 
 use crate::error::ParseError;
 use chrono::{DateTime, Utc};
@@ -556,6 +557,10 @@ fn parse_headers_and_body(
     // real traffic, so the common case stays a borrow of `data`; only a
     // continuation line promotes it to an owned unfold buffer (`to_mut`).
     let mut current_line: Cow<'_, str> = Cow::Borrowed("");
+    // The bytes `current_line` was read from, extended over every continuation
+    // line folded into it. Carried beside the text so a header can name its
+    // own bytes without anybody walking the grammar a second time.
+    let mut current_span: Option<Range<u32>> = None;
     let mut found_body_separator = false;
 
     while pos < data.len() {
@@ -568,11 +573,12 @@ fn parse_headers_and_body(
                 if line_bytes.is_empty() {
                     // Flush any pending header
                     if !current_line.is_empty()
-                        && let Some(hdr) = parse_header_line(&current_line)
+                        && let Some(hdr) = parse_header_line(&current_line, current_span.clone())
                     {
                         push_header_capped(&mut headers, hdr, max_headers, &mut parse_error);
                     }
                     current_line = Cow::Borrowed("");
+                    current_span = None;
                     found_body_separator = true;
                     break;
                 }
@@ -594,6 +600,9 @@ fn parse_headers_and_body(
                         let buf = current_line.to_mut();
                         buf.push(' ');
                         buf.push_str(line_str.trim_start());
+                        if let Some(span) = current_span.as_mut() {
+                            span.end = u32::try_from(pos - 2).unwrap_or(span.end);
+                        }
                     } else {
                         parse_error = true;
                         note_oversize_header_dropped();
@@ -601,7 +610,7 @@ fn parse_headers_and_body(
                 } else {
                     // New header — flush the previous one
                     if !current_line.is_empty()
-                        && let Some(hdr) = parse_header_line(&current_line)
+                        && let Some(hdr) = parse_header_line(&current_line, current_span.clone())
                     {
                         push_header_capped(&mut headers, hdr, max_headers, &mut parse_error);
                     }
@@ -612,8 +621,10 @@ fn parse_headers_and_body(
                         parse_error = true;
                         note_oversize_header_dropped();
                         current_line = Cow::Borrowed("");
+                        current_span = None;
                     } else {
                         current_line = Cow::Borrowed(line_str);
+                        current_span = span_of(pos - crlf_offset - 2, pos - 2);
                     }
                 }
             }
@@ -627,13 +638,17 @@ fn parse_headers_and_body(
                             let buf = current_line.to_mut();
                             buf.push(' ');
                             buf.push_str(remainder.trim_start());
+                            if let Some(span) = current_span.as_mut() {
+                                span.end = u32::try_from(data.len()).unwrap_or(span.end);
+                            }
                         } else {
                             note_oversize_header_dropped();
                         }
                         // parse_error set below in the None→break path
                     } else {
                         if !current_line.is_empty()
-                            && let Some(hdr) = parse_header_line(&current_line)
+                            && let Some(hdr) =
+                                parse_header_line(&current_line, current_span.clone())
                         {
                             push_header_capped(&mut headers, hdr, max_headers, &mut parse_error);
                         }
@@ -643,8 +658,10 @@ fn parse_headers_and_body(
                         // for this truncated-message path.)
                         if remainder.len() < max_header_line {
                             current_line = Cow::Borrowed(remainder);
+                            current_span = span_of(pos, data.len());
                         } else {
                             note_oversize_header_dropped();
+                            current_span = None;
                         }
                     }
                 }
@@ -656,7 +673,7 @@ fn parse_headers_and_body(
 
     // Flush any remaining header
     if !current_line.is_empty()
-        && let Some(hdr) = parse_header_line(&current_line)
+        && let Some(hdr) = parse_header_line(&current_line, current_span.clone())
     {
         push_header_capped(&mut headers, hdr, max_headers, &mut parse_error);
     }
@@ -703,11 +720,26 @@ fn parse_headers_and_body(
     (headers, body, parse_error)
 }
 
+/// The byte range `start..end`, or `None` when it does not fit a `u32`.
+///
+/// A message that large cannot be addressed by a 32-bit range, and an offset
+/// that silently wrapped would point somewhere real — which is worse than
+/// pointing nowhere.
+fn span_of(start: usize, end: usize) -> Option<Range<u32>> {
+    let start = u32::try_from(start).ok()?;
+    let end = u32::try_from(end).ok()?;
+    (end > start).then_some(start..end)
+}
+
 /// Parse a single unfolded header line into a [`SipHeader`].
 ///
 /// Handles `Name: Value` and compact single-character forms. Returns `None`
 /// when the line has no colon or an empty header name.
-fn parse_header_line(line: &str) -> Option<SipHeader> {
+///
+/// `line_span` is the range the caller read `line` from, carried through
+/// rather than recomputed: the unfolded text no longer knows where it came
+/// from, and a second walk to find out is the drift this exists to remove.
+fn parse_header_line(line: &str, line_span: Option<Range<u32>>) -> Option<SipHeader> {
     let colon_pos = line.find(':')?;
     let raw_name = line[..colon_pos].trim();
     let value = line[colon_pos + 1..].trim().to_string();
@@ -718,7 +750,11 @@ fn parse_header_line(line: &str) -> Option<SipHeader> {
 
     let name = expand_compact_header(raw_name);
 
-    Some(SipHeader { name, value })
+    Some(SipHeader {
+        name,
+        value,
+        line_span,
+    })
 }
 
 /// Expand a compact header name to its canonical long form.

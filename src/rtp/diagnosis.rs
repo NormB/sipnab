@@ -2161,6 +2161,8 @@ mod tests {
         let mk_hdr = |name: &'static str, value: &str| SipHeader {
             name: Cow::Borrowed(name),
             value: value.to_string(),
+            // Built by hand for a test: it came from no packet.
+            line_span: None,
         };
         let invite = SipMessage {
             frame: None,

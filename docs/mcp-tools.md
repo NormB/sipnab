@@ -4581,21 +4581,32 @@ names. The message-relative pair locates the header inside the SIP bytes and the
 frame-relative pair locates it inside the whole frame, which is what turns
 `show_evidence`'s hexdump into a quotation.
 
-**A range this tool cannot vouch for disappears, and `ranges_unavailable` says
-why.** The SIP parser keeps no span per header, so this tool walks the raw
-message a second time to find where each logical header line sits — and a second
-walk of one grammar can part company with the first, over a line with no colon,
-a non-UTF-8 line, an over-long one, or the per-message header cap. Every located
-range therefore has to reproduce the value the parser already produced, and on
-any disagreement the WHOLE set drops:
+**The ranges come from the parse itself.** `SipHeader` carries the byte range
+of its own logical line, recorded by the parser as it walks, so a range cannot
+disagree with the header beside it. A folded header spans every continuation
+line the parser unfolded into it, so the range covers bytes the unfolded value
+does not reproduce verbatim.
+
+This replaced a second walk of the header grammar, paired with the parse
+positionally. Two walks of one grammar part company — over a line with no colon,
+a non-UTF-8 line, an over-long one, or the per-message header cap — and a range
+pinned one header early still resolves, so it reads as evidence. The old design
+handled that by dropping the WHOLE set on any disagreement, which meant one junk
+line cost every other header its range. There is one walk now, so a line the
+parser drops costs nothing.
+
+**A header that came from no bytes carries no range, and `ranges_unavailable`
+counts them.** Headers are also built by hand — synthesized in a test, or
+rewritten by a transform — and a plausible range invented for one of those would
+point at bytes that never said it:
 
 ```jsonc
-{ "sip": { "header_count": 7, "headers_returned": 7, "headers": [ /* no byte keys */ ],
-           "ranges_unavailable": "the header walk found 6 logical header line(s) where the parser produced 7 header(s), so nothing pairs them reliably. A range pinned to the wrong header still resolves, which makes it worse than no range." } }
+{ "sip": { "header_count": 7, "headers_returned": 7, "headers": [ /* one row with no byte keys */ ],
+           "ranges_unavailable": "1 header(s) carry no byte range, because they came from no bytes in this message -- synthesized, or rewritten after the parse. A plausible range for one of those would point at bytes that never said it." } }
 ```
 
-Citing a neighboring header would be worse than citing none, precisely because
-it resolves. The frame-relative pair also drops on its own when the transport
+Citing bytes that never carried the value would be worse than citing none,
+precisely because it resolves. The frame-relative pair also drops on its own when the transport
 payload does not sit at exactly one place in the frame — a decapsulated or
 reassembled payload need not be a contiguous slice at all, and two candidate
 offsets make `frame[start..end]` a coin toss. Keys stay absent rather than

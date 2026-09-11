@@ -386,7 +386,12 @@ fn sip_view(
         );
     }
 
-    let spans = matched_spans(raw, &message.headers);
+    // The ranges come from the parse itself. `SipHeader::line_span` is recorded
+    // by `parse_headers_and_body` as it walks, so a range cannot disagree with
+    // the header beside it -- there is only one walk now. What this replaced
+    // was a SECOND walk of the same grammar paired positionally, which parted
+    // company over a line with no colon and cost every other header its range.
+    let mut missing_spans = 0usize;
     let mut rows = Vec::new();
     for (index, header) in message.headers.iter().enumerate() {
         if let Some(wanted) = field
@@ -412,15 +417,19 @@ fn sip_view(
         // The index a lint finding cites, so a caller holding a finding can pair
         // the two without matching on header names.
         row.insert("index".to_string(), json!(index));
-        if let Ok(spans) = &spans
-            && let Some(span) = spans.get(index)
-        {
-            row.insert("message_byte_start".to_string(), json!(span.start));
-            row.insert("message_byte_end".to_string(), json!(span.end));
-            if let Some(offset) = payload_offset {
-                row.insert("frame_byte_start".to_string(), json!(offset + span.start));
-                row.insert("frame_byte_end".to_string(), json!(offset + span.end));
+        match &header.line_span {
+            Some(span) => {
+                let (start, end) = (span.start as usize, span.end as usize);
+                row.insert("message_byte_start".to_string(), json!(start));
+                row.insert("message_byte_end".to_string(), json!(end));
+                if let Some(offset) = payload_offset {
+                    row.insert("frame_byte_start".to_string(), json!(offset + start));
+                    row.insert("frame_byte_end".to_string(), json!(offset + end));
+                }
             }
+            // A header that came from no bytes: synthesized, or rewritten by a
+            // transform. It gets no range rather than a plausible one.
+            None => missing_spans += 1,
         }
         rows.push(Value::Object(row));
     }
@@ -428,160 +437,18 @@ fn sip_view(
     sip.insert("header_count".to_string(), json!(message.headers.len()));
     sip.insert("headers_returned".to_string(), json!(rows.len()));
     sip.insert("headers".to_string(), Value::Array(rows));
-    if let Err(why) = spans {
-        sip.insert("ranges_unavailable".to_string(), json!(why));
+    if missing_spans > 0 {
+        sip.insert(
+            "ranges_unavailable".to_string(),
+            json!(format!(
+                "{missing_spans} header(s) carry no byte range, because they \
+                 came from no bytes in this message -- synthesized, or \
+                 rewritten after the parse. A plausible range for one of those \
+                 would point at bytes that never said it."
+            )),
+        );
     }
     sip
-}
-
-/// Pair every parsed header with the bytes it came from, or refuse the set.
-///
-/// The refusal is the point. `header_line_spans` walks the same grammar
-/// `parse_headers_and_body` walks, and the two can part company — over a line
-/// with no colon, a non-UTF-8 line, an over-long one, or the per-message header
-/// cap. A positional pairing after any of those cites a NEIGHBORING header,
-/// which resolves and therefore reads as evidence; citing nothing does not.
-///
-/// # Errors
-///
-/// Returns the disagreement as prose, for the `ranges_unavailable` key, when
-/// the walk finds a different number of header lines than the parser produced
-/// headers, or when a located line does not carry the value the parser read
-/// out of it.
-fn matched_spans(
-    raw: &[u8],
-    headers: &[crate::sip::SipHeader],
-) -> Result<Vec<std::ops::Range<usize>>, String> {
-    let spans = header_line_spans(raw);
-    if spans.len() != headers.len() {
-        return Err(format!(
-            "the header walk found {} logical header line(s) where the parser \
-             produced {} header(s), so nothing pairs them reliably. A range \
-             pinned to the wrong header still resolves, which makes it worse \
-             than no range.",
-            spans.len(),
-            headers.len()
-        ));
-    }
-    for (index, (span, header)) in spans.iter().zip(headers).enumerate() {
-        let located = raw
-            .get(span.clone())
-            .and_then(unfolded_value)
-            .ok_or_else(|| {
-                format!(
-                    "the bytes located for header {index} ('{}') do not form a \
-                     header line, so the walk and the parse disagree about \
-                     where this header sits",
-                    header.name
-                )
-            })?;
-        if located != header.value {
-            return Err(format!(
-                "the bytes located for header {index} ('{}') carry a different \
-                 value than the parser read, so the walk and the parse disagree \
-                 about where this header sits",
-                header.name
-            ));
-        }
-    }
-    Ok(spans)
-}
-
-/// Byte ranges of each logical header line inside a raw SIP message.
-///
-/// "Logical" is load-bearing. [RFC 3261](https://www.rfc-editor.org/rfc/rfc3261)
-/// §7.3.1 lets a header continue on the next line when that line opens with SP
-/// or HTAB, so the range spans the continuations too and a caller quoting it
-/// quotes the whole header.
-///
-/// Ranges cover the header line and stop before its CRLF, so `raw[span]` is the
-/// header and nothing else.
-///
-/// A continuation line with no header ahead of it produces no span, where the
-/// parser folds it onto an empty buffer and may still emit a header. That
-/// divergence is deliberate and safe: it shows up as a count mismatch in
-/// [`matched_spans`], which drops the set.
-fn header_line_spans(raw: &[u8]) -> Vec<std::ops::Range<usize>> {
-    let mut spans = Vec::new();
-    // Headers start just past the first line's CRLF, exactly where the parser
-    // starts them.
-    let Some(first_crlf) = memchr::memmem::find(raw, b"\r\n") else {
-        return spans;
-    };
-    let mut pos = first_crlf + 2;
-    let mut current: Option<std::ops::Range<usize>> = None;
-
-    while pos < raw.len() {
-        let continuation = matches!(raw.get(pos), Some(b' ' | b'\t'));
-        match memchr::memmem::find(&raw[pos..], b"\r\n") {
-            Some(offset) => {
-                let end = pos + offset;
-                if end == pos {
-                    // The blank line closing the header section.
-                    break;
-                }
-                if continuation {
-                    if let Some(span) = current.as_mut() {
-                        span.end = end;
-                    }
-                } else {
-                    if let Some(span) = current.take() {
-                        spans.push(span);
-                    }
-                    current = Some(pos..end);
-                }
-                pos = end + 2;
-            }
-            None => {
-                // A truncated message, with no CRLF closing the last line. The
-                // parser reads the remainder as a header all the same.
-                if continuation {
-                    if let Some(span) = current.as_mut() {
-                        span.end = raw.len();
-                    }
-                } else {
-                    if let Some(span) = current.take() {
-                        spans.push(span);
-                    }
-                    current = Some(pos..raw.len());
-                }
-                break;
-            }
-        }
-    }
-
-    if let Some(span) = current.take() {
-        spans.push(span);
-    }
-    spans
-}
-
-/// The value a located header line carries, unfolded the way the parser unfolds
-/// it.
-///
-/// One rule expressed twice is the hazard this whole module guards against, so
-/// this reproduces `parse_headers_and_body` step for step: join the physical
-/// lines with a single space after dropping each continuation's leading
-/// whitespace, then take everything past the first colon and trim it. The
-/// result feeds [`matched_spans`], which compares it against what the parser
-/// produced and throws the ranges away on any difference — so a drift between
-/// the two shows up as missing ranges, never as wrong ones.
-///
-/// Returns `None` for a non-UTF-8 line or a line with no colon, both of which
-/// the parser also declines to turn into a header.
-fn unfolded_value(line: &[u8]) -> Option<String> {
-    let text = std::str::from_utf8(line).ok()?;
-    let mut joined = String::with_capacity(text.len());
-    for (index, part) in text.split("\r\n").enumerate() {
-        if index == 0 {
-            joined.push_str(part);
-        } else {
-            joined.push(' ');
-            joined.push_str(part.trim_start());
-        }
-    }
-    let colon = joined.find(':')?;
-    Some(joined.get(colon + 1..)?.trim().to_string())
 }
 
 /// Where `needle` sits inside `hay`, when exactly one place does.
@@ -911,10 +778,9 @@ mod tests {
 
     /// A folded header's range covers the continuation line too.
     ///
-    /// The mutation this holds: treating a continuation as a new header line
-    /// makes the walk find one more line than the parser found headers, and
-    /// `matched_spans` then refuses the whole set rather than returning a range
-    /// that stops mid-header.
+    /// The mutation this holds: stopping the span at the first CRLF cites half
+    /// a header, and half a header still resolves — which is what makes it read
+    /// as evidence.
     #[test]
     fn a_folded_header_is_one_range_covering_both_lines() {
         let raw = b"REGISTER sip:example.com SIP/2.0\r\n\
@@ -933,11 +799,12 @@ mod tests {
         )
         .expect("a valid REGISTER");
 
-        let spans = matched_spans(&message.raw, &message.headers)
-            .expect("the walk and the parse must agree on a well-formed message");
-        assert_eq!(spans.len(), 3, "three headers, folding included");
-
-        let contact = &message.raw[spans[1].clone()];
+        assert_eq!(message.headers.len(), 3, "three headers, folding included");
+        let span = message.headers[1]
+            .line_span
+            .clone()
+            .expect("a parsed header names its own bytes");
+        let contact = &message.raw[span.start as usize..span.end as usize];
         assert!(
             contact.ends_with(b";expires=180"),
             "the range must run to the end of the folded continuation, not stop \
@@ -946,13 +813,19 @@ mod tests {
         );
     }
 
-    /// When the walk and the parser disagree, no range comes back at all.
+    /// A line the parser drops costs no other header its range.
     ///
-    /// A line with no colon is dropped by the parser and counted by the walk, so
-    /// pairing them positionally would cite every later header one line early —
-    /// a range that resolves, onto the wrong bytes.
+    /// This is what threading the span through the parser bought. The ranges
+    /// used to come from a SECOND walk of the header grammar, paired with the
+    /// parse positionally, and a line with no colon parted the two: the walk
+    /// counted it, the parser dropped it, and every later range would have
+    /// cited one header early. The only safe answer then was to drop the whole
+    /// set and say so.
+    ///
+    /// There is one walk now, so the junk line simply produces no header and
+    /// the three real ones each name their own bytes.
     #[test]
-    fn a_disagreement_between_walk_and_parse_yields_no_ranges() {
+    fn a_line_the_parser_drops_costs_no_other_header_its_range() {
         let raw = b"REGISTER sip:example.com SIP/2.0\r\n\
                     Via: SIP/2.0/UDP 192.0.2.1:5060;branch=z9hG4bK1\r\n\
                     this line carries no colon\r\n\
@@ -972,42 +845,98 @@ mod tests {
         assert_eq!(
             message.headers.len(),
             3,
-            "the parser drops the colon-less line, which is what makes the \
-             counts differ"
+            "the parser drops the colon-less line"
         );
-        let refusal = matched_spans(&message.raw, &message.headers)
-            .expect_err("the walk counts four lines and must refuse to pair them");
-        assert!(
-            refusal.contains('4') && refusal.contains('3'),
-            "the refusal must name both counts so a reader can see the drift: \
-             {refusal}"
-        );
+        for header in &message.headers {
+            let span = header
+                .line_span
+                .clone()
+                .expect("every parsed header names its bytes, junk line or not");
+            let line = &message.raw[span.start as usize..span.end as usize];
+            let text = std::str::from_utf8(line).expect("utf-8");
+            let (name, value) = text.split_once(':').expect("a header line");
+            assert!(
+                name.trim().eq_ignore_ascii_case(header.name.as_ref()),
+                "the range cites {name:?} for the header the parser called {:?}",
+                header.name
+            );
+            assert_eq!(value.trim(), header.value, "for {:?}", header.name);
+        }
 
-        // And the refusal must reach the response rather than stopping here.
         let view = sip_view(&message, Some(42), None);
         assert!(
-            view.contains_key("ranges_unavailable"),
-            "the response must carry the reason: {view:?}"
+            !view.contains_key("ranges_unavailable"),
+            "nothing is unavailable any more: {view:?}"
         );
         assert!(
             view["headers"]
                 .as_array()
-                .is_some_and(|rows| rows.iter().all(|r| r.get("frame_byte_start").is_none())),
-            "and not a single header may carry a range: {view:?}"
+                .is_some_and(|rows| rows.iter().all(|r| r.get("frame_byte_start").is_some())),
+            "every header must carry a frame-relative range: {view:?}"
         );
     }
 
-    /// Matching counts are not enough: the located bytes must carry the value
-    /// the parser read out of them.
+    /// A header that came from no bytes gets no range, and the view says so.
     ///
-    /// The count guard alone passes any drift that adds one line and drops
-    /// another, and the ranges would then be off by a header while still
-    /// resolving. So every range reproduces its own value or the set goes.
+    /// Headers are also built by hand — synthesized in a test, or rewritten by
+    /// a transform. Those carry no span, and a plausible range invented for one
+    /// would point at bytes that never said it. The count of them is reported
+    /// rather than left to be inferred from a missing key.
     #[test]
-    fn a_located_line_that_carries_another_value_refuses_the_whole_set() {
+    fn a_header_that_came_from_no_bytes_is_reported_without_a_range() {
         let raw = b"REGISTER sip:example.com SIP/2.0\r\n\
                     Via: SIP/2.0/UDP 192.0.2.1:5060;branch=z9hG4bK1\r\n\
                     Contact: <sip:alice@192.0.2.1>\r\n\
+                    Content-Length: 0\r\n\r\n";
+        let mut message = crate::sip::parser::parse_sip(
+            raw,
+            chrono::DateTime::<chrono::Utc>::UNIX_EPOCH,
+            "192.0.2.1".parse().expect("ip"),
+            "192.0.2.2".parse().expect("ip"),
+            5060,
+            5060,
+            crate::net::TransportProto::Udp,
+        )
+        .expect("a valid REGISTER");
+
+        message.headers.push(crate::sip::SipHeader {
+            name: "X-Added-Later".into(),
+            value: "by a transform, not by the sender".to_string(),
+            line_span: None,
+        });
+
+        let view = sip_view(&message, Some(42), None);
+        let why = view["ranges_unavailable"]
+            .as_str()
+            .expect("the view must say a header carries no range");
+        assert!(why.contains('1'), "the reason must name how many: {why}");
+        let rows = view["headers"].as_array().expect("rows");
+        assert!(
+            rows.last()
+                .is_some_and(|r| r.get("frame_byte_start").is_none()),
+            "the synthesized header must carry no range: {rows:?}"
+        );
+        assert!(
+            rows[..rows.len() - 1]
+                .iter()
+                .all(|r| r.get("frame_byte_start").is_some()),
+            "and it must cost the real headers nothing: {rows:?}"
+        );
+    }
+
+    /// Every parsed header's range reproduces the value the parser read.
+    ///
+    /// The invariant the old two-walk design had to CHECK at runtime, which
+    /// threading the span through the parser turns into a property of the
+    /// parse. It is asserted rather than assumed, because the parser unfolds
+    /// continuation lines and a span that stopped at the first one would still
+    /// look plausible.
+    #[test]
+    fn every_range_reproduces_the_value_the_parser_read() {
+        let raw = b"REGISTER sip:example.com SIP/2.0\r\n\
+                    Via: SIP/2.0/UDP 192.0.2.1:5060;branch=z9hG4bK1\r\n\
+                    Contact: <sip:alice@192.0.2.1>\r\n\
+                    Expires: 3600\r\n\
                     Content-Length: 0\r\n\r\n";
         let message = crate::sip::parser::parse_sip(
             raw,
@@ -1020,21 +949,19 @@ mod tests {
         )
         .expect("a valid REGISTER");
 
-        let mut headers = message.headers.clone();
-        assert!(
-            matched_spans(&message.raw, &headers).is_ok(),
-            "the unmutated message must pair, or this proves nothing"
-        );
-
-        // One header's value now disagrees with the bytes at its position,
-        // which is what a one-in-one-out drift looks like from here.
-        headers[1].value = "<sip:mallory@198.51.100.1>".to_string();
-        let refusal = matched_spans(&message.raw, &headers)
-            .expect_err("a value that does not match its bytes must refuse");
-        assert!(
-            refusal.contains("Contact"),
-            "the refusal must name the header that disagreed: {refusal}"
-        );
+        assert!(!message.headers.is_empty());
+        for header in &message.headers {
+            let span = header.line_span.clone().expect("a span");
+            let text = std::str::from_utf8(&message.raw[span.start as usize..span.end as usize])
+                .expect("utf-8");
+            let (_, value) = text.split_once(':').expect("a header line");
+            assert_eq!(
+                value.trim(),
+                header.value,
+                "the bytes for {:?} carry a different value",
+                header.name
+            );
+        }
     }
 
     /// An ambiguous anchor produces no frame-relative range.
