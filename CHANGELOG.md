@@ -30,6 +30,16 @@ entry that carries them.
 
 ### Fixed
 
+- **The release check read a CDN that refused it as a broken site.** The same
+  `403` that fooled the certificate step reaches the advertisement step, where
+  it landed in the same bucket as a `500`. Those prompt opposite actions: a
+  `500` means the site is broken, a `403` from the edge means the site is fine
+  and the CDN would not talk to this client. A refusal now has its own verdict
+  and its own exit code, both checks identify themselves rather than arriving
+  anonymous, and the scheduled job warns rather than failing when it is refused
+  -- while never reporting success for a page it could not read.
+
+
 - **The certificate watcher read a CDN that refused it as the site being
   down.** On its first real run from a GitHub runner the edge answered `403` --
   bot protection, not a broken origin -- and the verdict came back as the

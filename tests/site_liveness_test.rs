@@ -1148,3 +1148,74 @@ fn the_watcher_identifies_itself_to_the_cdn() {
          as the site being down"
     );
 }
+
+/// A refused fetch is not a stale page, and not a broken one either.
+///
+/// The same 403 that fooled the origin check reaches the advertisement check
+/// too, where it landed in the HTTP bucket beside a 500. Those prompt opposite
+/// actions: a 500 means the site is broken, a 403 from the edge means the site
+/// is fine and the CDN would not talk to this client. Six verdicts became
+/// seven rather than letting one of them cover two situations.
+#[test]
+fn a_refused_fetch_is_told_apart_from_a_broken_site() {
+    for status in ["403", "429"] {
+        let (code, out) = classify(
+            "scripts/verify-site-advertises.sh",
+            &["0.5.166"],
+            Some(&response(status, "forbidden")),
+        );
+        assert_eq!(code, 6, "{status} was not reported as a refusal:\n{out}");
+        assert!(out.contains("BLOCKED"), "{status}:\n{out}");
+    }
+    let (server_error, out) = classify(
+        "scripts/verify-site-advertises.sh",
+        &["0.5.166"],
+        Some(&response("500", "x")),
+    );
+    assert_eq!(
+        server_error, 4,
+        "a server error now shares a verdict with a refusal:\n{out}"
+    );
+}
+
+/// A refusal is still never a pass.
+#[test]
+fn a_refused_fetch_is_never_scored_as_advertising_the_release() {
+    let (code, out) = classify(
+        "scripts/verify-site-advertises.sh",
+        &["0.5.166"],
+        Some(&response("403", &download_page("0.5.166"))),
+    );
+    assert_ne!(
+        code, 0,
+        "a refused fetch carrying a cached body was read as proof the site \
+         advertises the release:\n{out}"
+    );
+}
+
+/// The fetching half says who it is.
+#[test]
+fn the_advertisement_check_identifies_itself() {
+    let script = std::fs::read_to_string(repo().join("scripts/verify-site-advertises.sh"))
+        .expect("the checker is in the tree");
+    assert!(
+        script.contains("--user-agent"),
+        "the fetch arrives anonymous, which is what the CDN refused"
+    );
+}
+
+/// The watcher warns on a refusal rather than failing the job.
+#[test]
+fn the_watcher_warns_when_the_advertisement_check_is_refused() {
+    let wf = watcher();
+    assert!(
+        wf.contains(r#"if [ "$rc" = 6 ]"#),
+        "the advertisement step does not act on the refusal verdict, so a \
+         blocked check fails the job every morning"
+    );
+    assert!(
+        wf.contains("::warning::The CDN refused the advertisement check"),
+        "a refused advertisement check produces no annotation, so the release \
+         goes unverified and nothing says so"
+    );
+}

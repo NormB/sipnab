@@ -37,6 +37,7 @@
 #   3  TLS         the certificate could not be validated
 #   4  HTTP        the server answered, with an error status
 #   5  EMPTY       a success status carrying no body
+#   6  BLOCKED     the edge refused this client; the site may be fine
 #
 # `--classify` reads `<status code>` on the first line and the body after it, so
 # `site_liveness_test` drives every one of these without a network.
@@ -86,6 +87,14 @@ classify() {
 		printf 'HTTP: the CDN answered %s — it cannot reach the origin.\n' "$status"
 		printf '  The release may be perfectly published; nobody can see it.\n'
 		return 4
+		;;
+	403 | 429)
+		printf 'BLOCKED: the edge refused this client (%s).\n' "$status"
+		printf '  Bot protection, a rate limit or a firewall rule. The site is\n'
+		printf '  very likely fine for everybody else, and nothing about the\n'
+		printf '  release can be concluded from this. Let the checker through\n'
+		printf '  at the edge, or it learns nothing every morning.\n'
+		return 6
 		;;
 	2??) ;;
 	*)
@@ -146,6 +155,10 @@ fi
 # The status on the first line, the body after it, which is the shape
 # `--classify` reads. `--write-out` still prints on a transport failure, where
 # it reports 000 — which is how UNREACHABLE is told from a server that answered.
-body=$(curl -sS --max-time 20 "$URL" 2>/dev/null || true)
-status=$(curl -sS --max-time 20 -o /dev/null -w '%{http_code}' "$URL" 2>/dev/null || printf '000')
+# Named, not anonymous: a CDN's bot protection refuses an unidentified client,
+# and a refusal is indistinguishable from a broken site to anything that only
+# reads a status code.
+UA='sipnab-release-check/1.0 (+https://github.com/NormB/sipnab)'
+body=$(curl -sS --max-time 20 --user-agent "$UA" "$URL" 2>/dev/null || true)
+status=$(curl -sS --max-time 20 --user-agent "$UA" -o /dev/null -w '%{http_code}' "$URL" 2>/dev/null || printf '000')
 printf '%s\n%s' "$status" "$body" | classify "$VERSION"

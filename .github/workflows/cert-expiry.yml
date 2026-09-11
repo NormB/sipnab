@@ -122,7 +122,17 @@ jobs:
         # stale page are different problems with different fixes, and the check
         # this replaced scored both as `0`.
         run: |
-          set -euo pipefail
+          set -uo pipefail
           published=$(sed -n 's/^published_version = "\(.*\)"/\1/p' website/config.toml)
           echo "site should advertise $published"
-          sh scripts/verify-site-advertises.sh "$published"
+          sh scripts/verify-site-advertises.sh "$published" && rc=0 || rc=$?
+          # 6 is BLOCKED: the edge refused this client, so the advertisement
+          # was never read. The site is very likely fine for everyone else and
+          # nothing about the release follows from it, so this is a warning
+          # rather than a daily failure -- and never a pass, because a check
+          # that cannot see anything must not report success.
+          if [ "$rc" = 6 ]; then
+            echo "::warning::The CDN refused the advertisement check, so the published release was never verified from the live page. Let the checker through at the edge."
+            rc=0
+          fi
+          exit "$rc"
