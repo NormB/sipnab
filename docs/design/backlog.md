@@ -44,7 +44,7 @@ Tiers:
 
 ## Status
 
-**23 open, 497 done** across 36 sections.
+**23 open, 498 done** across 36 sections.
 Regenerate with `python3 scripts/backlog-status.py --apply`.
 
 | Section | Open | Done | Progress |
@@ -73,7 +73,7 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
 | OBS | 0 | 7 | `##########` |
 | REQ | 4 | 13 | `########..` |
 | CMP | 1 | 5 | `########..` |
-| GTP | 1 | 10 | `#########.` |
+| GTP | 1 | 11 | `#########.` |
 | MER | 0 | 5 | `##########` |
 | LIVE | 3 | 3 | `#####.....` |
 | P5 | 5 | 15 | `########..` |
@@ -6938,6 +6938,35 @@ wrote for itself.
   guard SURVIVED a mutation — it compared the first sub-packet's length against
   the datagram instead of walking, so a trailer that chained perfectly passed
   it. It walks now.
+
+- [x] **CONF8 (done 2026-09-11) — a media stream the peers REJECTED became a
+  media endpoint.** Ninth finding of the conformance audit, from reading
+  [RFC 3264](https://www.rfc-editor.org/rfc/rfc3264) against `pipeline::extract_sdp_links`.
+
+  Section 6 states it as a MUST: *"To reject an offered stream, the port number
+  in the corresponding stream in the answer MUST be set to zero."* Section 5.1
+  generalizes it — *"a port number of zero indicates that the media stream is
+  not wanted"* — and section 8 uses the same value to TERMINATE an existing
+  stream in a re-INVITE. All three mean one thing to a passive observer: no
+  media will arrive there.
+
+  `extract_sdp_links` registered an endpoint anyway. A call that declined video
+  carried a video endpoint, and a re-INVITE tearing a stream down registered the
+  teardown as a setup.
+
+  **The tree already knew, in two other places.** `sip::lint::dialog` and
+  `rtp::diagnosis` both test `port == 0` and read it as a rejection. The one
+  function that CREATES endpoints did not — the same shape as the RTCP padding
+  rule that reached a classifier nothing called.
+
+  **Measured, and not theoretical:** 3,233 media descriptions across the real
+  corpus, 7 of them with port zero, in four captures — one of which is a 488
+  Not Acceptable Here, the rejection case by name.
+
+  **The description is still parsed.** A rejected `m=` line is evidence that a
+  rejection happened, which the lints report; only the stream LINK is refused.
+  Three tests, mutation-proven both ways: removing the rule fails two, inverting
+  it fails all three.
 
 - [x] **CONF5b (done 2026-09-10) — the DTLS detector spent neither length
   rule the RFCs give it, on a decision that DELETES the packet.** Eighth

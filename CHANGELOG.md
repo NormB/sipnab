@@ -8,6 +8,23 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Fixed
+
+- **A media stream the peers rejected became a media endpoint.** RFC 3264 sets
+  a port of zero to reject an offered stream, to terminate an existing one, or
+  to say a stream is not wanted. All three mean no media will arrive there, and
+  sipnab registered an endpoint for it anyway — so a call that declined video
+  carried a video endpoint, and a re-INVITE tearing a stream down registered the
+  teardown as a setup.
+
+  Two other places in the tree already read a zero port as a rejection; the one
+  function that creates endpoints did not. Measured against the real corpus:
+  3,233 media descriptions, 7 of them rejected, across four captures. The
+  rejected description is still parsed, because it is the evidence that a
+  rejection happened; only the stream link is refused.
+
 ## [0.5.166] - 2026-09-11
 
 ### Added

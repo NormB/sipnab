@@ -1680,6 +1680,23 @@ pub fn extract_sdp_links(
 ) -> Vec<(std::net::IpAddr, u16, String, sip::sdp::SdpMedia)> {
     sdp.media
         .iter()
+        // RFC 3264 §6: "To reject an offered stream, the port number in the
+        // corresponding stream in the answer MUST be set to zero." §5.1
+        // generalizes it — "a port number of zero indicates that the media
+        // stream is not wanted" — and §8 uses the same value to TERMINATE an
+        // existing stream in a re-INVITE.
+        //
+        // All three say the same thing to a passive observer: no media will
+        // arrive there. Registering an endpoint anyway gave a call that
+        // declined video a video endpoint, and made a teardown look like a
+        // setup. The rest of the tree already knew — `sip::lint::dialog` and
+        // `rtp::diagnosis` both read `port == 0` as a rejection — and this was
+        // the one place that created endpoints without asking.
+        //
+        // The description itself is kept by the parser on purpose: a rejected
+        // `m=` line is evidence that a rejection happened, which the lints
+        // report. Only the STREAM LINK is refused.
+        .filter(|media| media.port != 0)
         .filter_map(|media| {
             sip::sdp::effective_address(media, sdp)
                 .and_then(|a| a.parse::<std::net::IpAddr>().ok())
@@ -2780,6 +2797,124 @@ mod quiet_bad_parse_tests {
         // Odd-port classic behavior is unchanged.
         assert!(is_rtcp_packet(&rr, 5001));
         assert!(is_rtcp_packet(&[0x80, 200, 0, 6, 0, 0, 0, 1], 30001));
+    }
+
+    /// Build an SDP body from lines, joined with CRLF.
+    ///
+    /// Not a multi-line byte literal: `cargo fmt` collapses one onto a single
+    /// line and leaves the source indentation INSIDE the string, so every line
+    /// after the first arrives with twelve leading spaces and the session
+    /// parses to nothing. The first version of the tests below failed that way
+    /// and looked exactly like the defect they were written to find.
+    fn sdp_body(lines: &[&str]) -> Vec<u8> {
+        let mut out = lines.join("\r\n");
+        out.push_str("\r\n");
+        out.into_bytes()
+    }
+
+    /// A media description with port zero is not a stream.
+    ///
+    /// RFC 3264 section 6 states it as a MUST: *"To reject an offered stream,
+    /// the port number in the corresponding stream in the answer MUST be set to
+    /// zero."* Section 5.1 generalizes it — *"a port number of zero indicates
+    /// that the media stream is not wanted"* — and section 8 uses the same
+    /// value to TERMINATE a stream in a re-INVITE.
+    ///
+    /// All three mean the same thing to a passive observer: there is no media
+    /// on that port and there never will be. `extract_sdp_links` registered one
+    /// anyway, so a call that declined video carried a video endpoint, and a
+    /// re-INVITE that tore a stream down registered the teardown as a new one.
+    ///
+    /// The rest of this codebase already knew. `sip::lint::dialog` and
+    /// `rtp::diagnosis` both test `port == 0` and read it as a rejection; the
+    /// function that creates the endpoints did not. One rule, known in two
+    /// places and applied in one.
+    #[test]
+    fn a_rejected_media_description_becomes_no_stream_link() {
+        let body = sdp_body(&[
+            "v=0",
+            "o=- 1 1 IN IP4 10.0.0.1",
+            "s=-",
+            "c=IN IP4 10.0.0.1",
+            "t=0 0",
+            "m=audio 20000 RTP/AVP 0",
+            "m=video 0 RTP/AVP 96",
+        ]);
+        let sdp = sip::sdp::parse_sdp(&body).expect("the fixture parses");
+        assert_eq!(
+            sdp.media.len(),
+            2,
+            "the fixture must offer two descriptions"
+        );
+
+        let links = extract_sdp_links(&sdp, "call-1");
+        assert_eq!(
+            links.len(),
+            1,
+            "a rejected stream produced a media endpoint: {links:?}. RFC 3264 \
+             section 6 sets the port to zero precisely to say there is none"
+        );
+        assert_eq!(links[0].1, 20000, "the surviving link is not the audio one");
+        assert!(
+            !links.iter().any(|(_, port, _, _)| *port == 0),
+            "an endpoint was registered on port zero, which no media can use"
+        );
+    }
+
+    /// An accepted stream still becomes one, so the rule is not a blanket.
+    ///
+    /// The positive control. Without it the gate above passes on a function
+    /// that returns nothing at all, which would lose every stream in the tool
+    /// and look like a very clean test suite.
+    #[test]
+    fn an_accepted_media_description_still_becomes_a_stream_link() {
+        let body = sdp_body(&[
+            "v=0",
+            "o=- 1 1 IN IP4 10.0.0.1",
+            "s=-",
+            "c=IN IP4 10.0.0.1",
+            "t=0 0",
+            "m=audio 20000 RTP/AVP 0",
+            "m=video 20002 RTP/AVP 96",
+        ]);
+        let sdp = sip::sdp::parse_sdp(&body).expect("the fixture parses");
+        let links = extract_sdp_links(&sdp, "call-2");
+        assert_eq!(
+            links.len(),
+            2,
+            "two accepted streams did not both produce endpoints: {links:?}"
+        );
+        let ports: Vec<u16> = links.iter().map(|(_, p, _, _)| *p).collect();
+        assert_eq!(ports, vec![20000, 20002]);
+    }
+
+    /// The rejected description is still PARSED, only not turned into a stream.
+    ///
+    /// The distinction that keeps this a link-level rule rather than a parser
+    /// one. A rejected `m=` line is real SDP and carries information an
+    /// operator wants — which codec was offered, that video was declined at
+    /// all — so dropping it in the parser would lose the evidence that the
+    /// rejection happened. `sip::lint::dialog` reads exactly that.
+    #[test]
+    fn a_rejected_media_description_survives_parsing() {
+        let body = sdp_body(&[
+            "v=0",
+            "o=- 1 1 IN IP4 10.0.0.1",
+            "s=-",
+            "c=IN IP4 10.0.0.1",
+            "t=0 0",
+            "m=video 0 RTP/AVP 96",
+        ]);
+        let sdp = sip::sdp::parse_sdp(&body).expect("the fixture parses");
+        assert_eq!(
+            sdp.media.len(),
+            1,
+            "the rejected description was dropped by the parser, which loses the \
+             evidence that a rejection happened at all"
+        );
+        assert_eq!(sdp.media[0].port, 0);
+        assert_eq!(sdp.media[0].media_type, "video");
+        assert!(extract_sdp_links(&sdp, "call-3").is_empty());
     }
 
     /// A compound whose FIRST sub-packet claims padding, on a muxed port.
