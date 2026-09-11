@@ -6788,7 +6788,7 @@ wrote for itself.
   back as an RTP stream.
 
 - [x] **CONF5 (done 2026-09-10) — the WebSocket detector accepted a length
-  encoding RFC 6455 forbids.** Fourth finding of the conformance audit, from
+  encoding [RFC 6455](https://www.rfc-editor.org/rfc/rfc6455) forbids.** Fourth finding of the conformance audit, from
   reading [RFC 6455 §5.2](https://www.rfc-editor.org/rfc/rfc6455#section-5.2) against [`src/capture/websocket.rs`](https://github.com/NormB/sipnab/blob/main/src/capture/websocket.rs).
 
   The RFC states it and gives the example: *"the minimal number of bytes MUST
@@ -7479,8 +7479,31 @@ them away.
   first draft of this feature carried — sends half its readers to an empty
   buffer to conclude the filter never installed.
 
-  **Still open: the derived allowlist**, §8 step 4, which stays last for the
-  reason that put it there. A mis-derived allowlist kills the process on a
+  **The derivation procedure shipped 2026-09-11** as
+  [`scripts/derive-seccomp-allowlist.sh`](https://github.com/NormB/sipnab/blob/main/scripts/derive-seccomp-allowlist.sh), which is §3's procedure made
+  executable. Its `--classify` half is a filter over text and is driven by
+  [`seccomp_derivation_test`](https://github.com/NormB/sipnab/blob/main/tests/seccomp_derivation_test.rs) with logs this host cannot produce.
+
+  It refuses more often than it answers, which is the point. A log the kernel
+  suppressed records in, a log with no records at all, and a union still
+  growing at the last shape are all refused; the success verdict is `SETTLED`,
+  never `COMPLETE`.
+
+  **Using it found two defects in the instrument it depends on**, both in the
+  guidance `--seccomp log` shipped with. The kernel drops records under load
+  and says so; it also drops them by age, silently, because the ring buffer
+  wraps — reading the log after a twenty-second capture returned 12 distinct
+  syscalls where streaming returned 21. Nine missing entries is nine ways to
+  kill the process the list was built for.
+
+  **The first real derivation, on 2026-09-11:** six shapes, 10,124 records, no
+  loss, a union of 22 syscalls, verdict `SETTLED`. It is one architecture, one
+  feature set and one set of shapes — HEP, MCP, the REST API, the keylog, audio,
+  `--split`, plugins and the uprobe backend were never exercised, and the one
+  live shape added six syscalls no offline shape made.
+
+  **Still open: the derived allowlist**, §8 step 4, which stays last — now for
+  a measured reason rather than a feared one. A mis-derived allowlist kills the process on a
   capture box during the incident the capture was started for. Nothing shipped
   can do that: `grep -rlE 'SECCOMP_RET_KILL|SECCOMP_RET_TRAP' src/` exits 1.
   Written up in [`docs/design/syscall-sandbox.md`](https://github.com/NormB/sipnab/blob/main/docs/design/syscall-sandbox.md), whose §0 tabulates the

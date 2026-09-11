@@ -340,6 +340,47 @@ visible in sipnab's source:
 So the allowlist is per `(libc, architecture)`, derived, and pinned per target —
 not one list.
 
+### What the procedure actually returned, 2026-09-11
+
+Run against the published 0.5.165 `x86_64-unknown-linux-gnu` artifact on the
+lab VM (Debian 13, kernel 6.12, no `auditd`), six shapes, 10,124 records, no
+suppression. Verdict `SETTLED`:
+
+```
+offline-report   added: 157 0 1 332 257 3 131 11 14 28 60 39 16 5 217 231
+offline-json     added: nothing
+offline-output   added: nothing
+live-count       added: 24 202 7 55 15 54
+live-report      added: nothing
+live-sandbox     added: nothing
+union (22): 0 1 3 5 7 11 14 15 16 24 28 39 54 55 60 131 157 202 217 231 257 332
+```
+
+**Three things that number does not mean.** It is one architecture, one feature
+set, and one set of shapes. HEP, MCP, the REST API, the TLS keylog, audio
+playback, `--split`, plugins and the eBPF uprobe backend were not exercised at
+all, and `live-count` shows what an unexercised surface does: six syscalls no
+offline shape ever made, arriving in one shape. A filter built before that
+shape would have killed every live capture.
+
+**So step 4 is still open, and now for a measured reason rather than a feared
+one.** What blocks it is not that deriving is risky in the abstract; it is that
+this union has not seen the features an operator will turn on, and the script
+says `SETTLED`, never `COMPLETE`, for exactly that reason.
+
+### The procedure is executable
+
+[`scripts/derive-seccomp-allowlist.sh`](https://github.com/NormB/sipnab/blob/main/scripts/derive-seccomp-allowlist.sh) performs it. `--classify` is the
+half that judges a streamed log and is driven by
+[`seccomp_derivation_test`](https://github.com/NormB/sipnab/blob/main/tests/seccomp_derivation_test.rs); the other half needs root, an
+interface and a kernel log.
+
+It refuses more often than it answers, and that is the point. It refuses a log
+the kernel suppressed records in, a log with no records at all, and — the one
+that blocked step 4 — a union still growing at the last shape. Its success
+verdict is `SETTLED`, never `COMPLETE`, because two quiet shapes mean these
+shapes stopped finding calls, not that no shape would.
+
 ### The procedure
 
 1. **Write the candidate set from §2's table**, from the code surface, not from

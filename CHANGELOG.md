@@ -10,6 +10,24 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Added
+
+- **`scripts/derive-seccomp-allowlist.sh` turns the syscall derivation from a
+  judgement call into a measurement.** The syscall sandbox's last step is an
+  enforcing filter, and it has stayed last because a mis-derived allowlist kills
+  the process on a capture box. This runs the shapes, streams the kernel
+  records, and returns a verdict rather than a list.
+
+  It refuses more often than it answers. A log the kernel dropped records in, a
+  log with no records at all, and a union still growing at the last shape are
+  all refused. Its success verdict is `SETTLED`, never `COMPLETE`, because two
+  quiet shapes mean those shapes stopped finding calls, not that no shape would.
+
+  The first real run: six shapes, 10,124 records, no loss, a union of 22
+  syscalls. One live shape added six calls no offline shape made, which is what
+  an unexercised surface looks like and why the enforcing filter is still not
+  here.
+
 ### Fixed
 
 - **`--seccomp log` sent operators to a log that silently drops records.** On a
