@@ -12,6 +12,28 @@ entry that carries them.
 
 ### Fixed
 
+- **The published site's certificate expired, and nothing was watching the
+  date.** On 2026-09-11 the origin certificate expired at 14:10 UTC, the CDN
+  refused an origin it could not validate under a strict SSL mode, and every
+  visitor got a 526.
+
+  The renewal had been failing silently: `website/static/CNAME` named
+  `www.sipnab.com` while GitHub Pages was configured for the apex the site is
+  built for, so every deploy re-set the custom domain and each change dropped
+  the certificate. The two now have to agree, checked where they cannot drift.
+
+  A scheduled job watches both certificates daily. Both, because the public name
+  resolves to the CDN: a watcher pointed at it reads the EDGE certificate, which
+  was healthy with 85 days left all through the outage. The one that expired
+  belongs to the origin.
+
+- **The release flow's "verify from the live page" step could not tell a down
+  site from a stale one.** It was `curl | grep -c`, which prints `0` for a page
+  advertising the wrong version and `0` for DNS failure, a refused connection,
+  an expired certificate, an empty body and a 503. I ran it during the outage,
+  got nothing, and read it as a deploy that had not landed. It is now a checker
+  that names which of the six situations is happening, with an exit code each.
+
 - **A media stream the peers rejected became a media endpoint.** RFC 3264 sets
   a port of zero to reject an offered stream, to terminate an existing one, or
   to say a stream is not wanted. All three mean no media will arrive there, and

@@ -611,7 +611,11 @@ for commit in $tag_commits; do
 	printf '  Four releases shipped an eBPF object the verifier rejected on\n'
 	printf '  every kernel, because building was the only half anything covered.\n'
 	printf '  Verify from the live page, not from a green deploy:\n'
-	printf '    curl -s https://sipnab.com/download/ | grep -c <version>%b\n' "$NC"
+	printf '    sh scripts/verify-site-advertises.sh <version>\n'
+	printf '  NOT `curl | grep -c`. That printed 0 for a stale page AND for a\n'
+	printf '  site that was down, and on 2026-09-11 it printed 0 for half an\n'
+	printf '  hour of outage while somebody read it as a deploy that had not\n'
+	printf '  landed. The checker names which of the two it is.%%b\n' "$NC"
 done
 
 # -- Conditional gate: the real capture corpus --------------------------------

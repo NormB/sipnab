@@ -1,0 +1,93 @@
+# Watch the published site's certificates, on a schedule, before they expire.
+#
+# On 2026-09-11 the ORIGIN certificate for sipnab.com expired at 14:10 UTC. The
+# CDN was in a strict SSL mode, refused an origin it could not validate, and
+# returned 526 to every visitor. Nothing warned, because nothing was watching a
+# date.
+#
+# The renewal had been failing silently for weeks: the published CNAME named
+# `www.sipnab.com` while GitHub Pages was configured for the apex, so every
+# deploy flipped the custom domain and each flip dropped the certificate. A
+# certificate that is never renewed looks perfectly healthy until the minute it
+# does not, which is why "is the site up" is the wrong question to automate.
+#
+# TWO certificates, and watching one of them is worse than useless. The public
+# name resolves to the CDN, so a check pointed at it reads the EDGE certificate
+# — a different CA, a later date, and entirely healthy all through the outage.
+# The one that expired belongs to the ORIGIN. This job checks both and says
+# which is which.
+name: Certificate expiry
+
+on:
+  schedule:
+    # 07:10 UTC daily. Early enough that a weekday warning is seen the same
+    # morning, and offset off the hour because every scheduler on the planet
+    # fires at :00 and GitHub delays the crowd.
+    - cron: '10 7 * * *'
+  workflow_dispatch:
+  # On changes to the check itself, so a broken watcher is caught by the thing
+  # it is watching rather than at 07:10 the next morning.
+  push:
+    paths:
+      - 'scripts/check-cert-expiry.sh'
+      - 'scripts/verify-site-advertises.sh'
+      - '.github/workflows/cert-expiry.yml'
+      - 'website/static/CNAME'
+      - 'website/config.toml'
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  expiry:
+    name: Certificates have time left
+    runs-on: ubuntu-latest
+    # Four network round trips and a file comparison. A bound at all is the
+    # point: a job that hangs on an unreachable host would sit for six hours
+    # and report nothing, which is the same silence this whole workflow exists
+    # to break.
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: The CNAME matches the site it is built for
+        # The mismatch that broke renewal, checked where it cannot drift back.
+        # `base_url` is what the site is generated for and CNAME is what Pages
+        # is told; when they disagree, every deploy changes the custom domain
+        # and the certificate is dropped each time.
+        run: |
+          set -euo pipefail
+          cname=$(tr -d '[:space:]' < website/static/CNAME)
+          base=$(sed -n 's|^base_url = "https://\([^/"]*\).*|\1|p' website/config.toml)
+          echo "CNAME=$cname base_url host=$base"
+          if [ "$cname" != "$base" ]; then
+            echo "::error::website/static/CNAME says '$cname' and base_url says '$base'."
+            echo "::error::Every deploy then re-sets the Pages custom domain, and each"
+            echo "::error::change drops the HTTPS certificate. That is how the origin"
+            echo "::error::certificate came to expire unrenewed on 2026-09-11."
+            exit 1
+          fi
+
+      - name: The edge certificate has time left
+        run: sh scripts/check-cert-expiry.sh sipnab.com
+
+      - name: The origin certificate has time left
+        # The one that actually expired. GitHub Pages' addresses are stable and
+        # documented; SNI carries the hostname so the right certificate comes
+        # back.
+        env:
+          SIPNAB_ORIGIN: 185.199.108.153
+        run: sh scripts/check-cert-expiry.sh sipnab.com
+
+      - name: The site advertises the release it claims to
+        # Separate from the certificates on purpose: a healthy certificate and a
+        # stale page are different problems with different fixes, and the check
+        # this replaced scored both as `0`.
+        run: |
+          set -euo pipefail
+          published=$(sed -n 's/^published_version = "\(.*\)"/\1/p' website/config.toml)
+          echo "site should advertise $published"
+          sh scripts/verify-site-advertises.sh "$published"

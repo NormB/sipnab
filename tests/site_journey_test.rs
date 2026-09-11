@@ -5505,7 +5505,14 @@ fn packaging_scripts_reference_existing_paths() {
     // and those two packages are excluded, so a gate that did not name
     // them never looked at them. Both paths exist, which is what this
     // gate then verifies.
-    const EXPECTED_REFERENCES: usize = 84;
+    // 84 -> 96: twelve, all from the certificate watcher added after the
+    // 2026-09-11 outage. `.github/workflows/cert-expiry.yml` names five paths
+    // in its `push:` trigger and reads four of them in its steps, and the two
+    // new scripts it drives — `scripts/check-cert-expiry.sh` and
+    // `scripts/verify-site-advertises.sh` — reference the site config and the
+    // CNAME between them. Every one of those paths exists, which is exactly
+    // what this gate then goes on to verify.
+    const EXPECTED_REFERENCES: usize = 96;
     assert_eq!(
         checked, EXPECTED_REFERENCES,
         "packaging path scan saw {checked} references, expected \
