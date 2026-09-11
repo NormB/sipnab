@@ -4256,7 +4256,7 @@ fn process_parsed_packet(
             }
         }
         crate::pipeline::PacketAction::Rtcp(rtcp_packets) => {
-            stream_store.process_rtcp(&rtcp_packets, pp.timestamp);
+            stream_store.process_rtcp(&rtcp_packets, pp.timestamp, pp.frame);
         }
         crate::pipeline::PacketAction::Rtp {
             hdr: rtp_hdr,

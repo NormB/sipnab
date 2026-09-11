@@ -177,7 +177,7 @@ fn bench_stream_store(c: &mut Criterion) {
                 delay_since_sr: 0,
             }],
         })];
-        b.iter(|| store.process_rtcp(&rtcp, chrono::Utc::now()));
+        b.iter(|| store.process_rtcp(&rtcp, chrono::Utc::now(), None));
     });
 
     group.finish();

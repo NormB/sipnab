@@ -101,7 +101,7 @@ fn replay(paths: &[PathBuf], apply_rtcp: bool) -> Vec<(StreamKey, Observed, Cloc
             }
             PacketAction::Rtcp(pkts) => {
                 if apply_rtcp {
-                    streams.process_rtcp(&pkts, pp.timestamp);
+                    streams.process_rtcp(&pkts, pp.timestamp, pp.frame);
                 }
             }
             PacketAction::Rtp { hdr, .. } => streams.process_rtp(&pp, &hdr, pp.timestamp),
@@ -375,7 +375,7 @@ fn corpus_xr_voip_metrics_are_retained_not_discarded() {
                         }
                     }
                 }
-                streams.process_rtcp(&pkts, pp.timestamp);
+                streams.process_rtcp(&pkts, pp.timestamp, pp.frame);
             }
             PacketAction::Rtp { hdr, .. } => streams.process_rtp(&pp, &hdr, pp.timestamp),
             PacketAction::None => {}

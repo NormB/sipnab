@@ -30,6 +30,23 @@ entry that carries them.
 
 ### Changed
 
+- **An RTCP reception report and an XR VoIP Metrics block now name the frame
+  they arrived in.** RTCP is where a remote endpoint's CLAIM enters sipnab's
+  numbers, so it is the place a reader most needs to get back to the bytes, and
+  the frame used to stop at the pipeline boundary: `process_rtcp` took the
+  parsed packets and a timestamp and nothing that could be followed.
+
+  Both halves of a pointer are kept, because an ordinal with no source does not
+  say which file it counts within. It also carries the source's own answer about
+  whether those bytes can be read again: a capture file gets a digest and
+  `verifiable: true`, a device or a HEP listener gets neither, because those
+  bytes are gone the instant they are read and a checkable-looking pointer into
+  them would manufacture confidence.
+
+  **Breaking:** `StreamStore::process_rtcp` takes a third argument, and
+  `RemoteReceptionReport` and `RemoteVoipMetrics` each gain a public field.
+
+
 - **A parsed SIP header now names the bytes it came from.** `SipHeader` carries
   `line_span`, the byte range of its own logical line, recorded by the parser as
   it walks. `decode_evidence` reads that instead of walking the header grammar a

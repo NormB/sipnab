@@ -399,7 +399,7 @@ fn reconstruct(
             }
         }
         PacketAction::Rtcp(pkts) => {
-            ss.process_rtcp(&pkts, pp.timestamp);
+            ss.process_rtcp(&pkts, pp.timestamp, pp.frame);
         }
         PacketAction::Rtp { hdr, .. } => {
             // No SRTP context in the sharded path, so there is never a

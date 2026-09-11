@@ -5576,6 +5576,7 @@ mod tests {
                     }],
                 })],
                 seen_at,
+                None,
             );
         }
 

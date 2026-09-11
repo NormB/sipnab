@@ -1103,7 +1103,7 @@ mod tests {
                 delay_since_sr: 0,
             }],
         });
-        store.process_rtcp(&[rr], chrono::Utc::now());
+        store.process_rtcp(&[rr], chrono::Utc::now(), None);
 
         let key = StreamKey {
             ssrc,
@@ -1256,7 +1256,7 @@ mod tests {
                 delay_since_sr: 0,
             }],
         });
-        store.process_rtcp(&[rr], chrono::Utc::now());
+        store.process_rtcp(&[rr], chrono::Utc::now(), None);
         let key = StreamKey {
             ssrc,
             src: std::net::SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000),
@@ -1303,6 +1303,7 @@ mod tests {
                 })],
             })],
             chrono::Utc::now(),
+            None,
         );
     }
 

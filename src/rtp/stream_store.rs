@@ -370,6 +370,28 @@ pub struct RemoteReceptionReport {
     /// unusable on delay alone. Reporting "no measurement" as 0 ms turns the
     /// one unanswered question into a passing grade.
     pub round_trip_ms: Option<f64>,
+    /// The frame this report arrived in, when the source could name one.
+    ///
+    /// RTCP is where a remote endpoint's CLAIM enters sipnab's numbers, so it
+    /// is the place a reader most needs to get back to the bytes. Both halves
+    /// are kept, because an ordinal with no source does not say which file it
+    /// counts within, and a source with no ordinal names no frame.
+    ///
+    /// It also carries the SOURCE's own answer about whether those bytes can
+    /// be read again: a capture file can be reopened and gets a digest, a
+    /// device or a HEP listener cannot and gets `verifiable: false`. A pointer
+    /// that looked checkable into bytes nobody can fetch would manufacture
+    /// confidence, which is the one thing provenance must not do.
+    ///
+    /// A [`FrameLocator`](crate::capture::packet::FrameLocator) rather than an
+    /// owned [`FrameRef`](crate::capture::packet::FrameRef): the source name is
+    /// interned, so this stays `Copy` and costs no refcount per report. Call
+    /// [`FrameLocator::to_frame_ref`](crate::capture::packet::FrameLocator::to_frame_ref)
+    /// where a pointer is actually rendered.
+    ///
+    /// `None` when the packet reached the store naming no frame — a synthetic
+    /// packet, or a source that cannot number its frames.
+    pub origin: Option<crate::capture::packet::FrameLocator>,
     /// How many report blocks about this stream have been folded in. The other
     /// fields hold the most recent; this says whether that is one sample or a
     /// long-running exchange.
@@ -424,6 +446,9 @@ pub struct RemoteVoipMetrics {
     /// [`Self::metrics`] holds the most recent; this says whether that is a
     /// single sample or a long-running report.
     pub reports_seen: u64,
+    /// The frame this block arrived in, on the same terms as
+    /// [`RemoteReceptionReport::origin`].
+    pub origin: Option<crate::capture::packet::FrameLocator>,
 }
 
 /// Per-stream facts that are about the *provenance* of a stream's numbers
@@ -826,10 +851,15 @@ impl StreamStore {
     /// index, readable via [`Self::remote_voip_metrics`]. Other RTCP packet
     /// types and unknown SSRCs are ignored. Does not bump the generation — no
     /// stream's identity, dialog or codec changes.
-    pub fn process_rtcp(&mut self, packets: &[RtcpPacket], observed_at: DateTime<Utc>) {
+    pub fn process_rtcp(
+        &mut self,
+        packets: &[RtcpPacket],
+        observed_at: DateTime<Utc>,
+        origin: Option<crate::capture::packet::FrameLocator>,
+    ) {
         for pkt in packets {
             if let RtcpPacket::ExtendedReport(xr) = pkt {
-                self.record_extended_report(xr);
+                self.record_extended_report(xr, origin);
                 continue;
             }
             let reports: &[ReceptionReport] = match pkt {
@@ -875,6 +905,7 @@ impl StreamStore {
                         report.delay_since_sr,
                     );
                     entry.remote = Some(RemoteReceptionReport {
+                        origin,
                         reporter_ssrc,
                         fraction_lost: report.fraction_lost,
                         cumulative_lost: report.cumulative_lost,
@@ -906,7 +937,11 @@ impl StreamStore {
     /// under more than one 5-tuple, and picking an arbitrary one of them is a
     /// misattribution. Unknown SSRCs are ignored. Does not bump the
     /// generation: no stream's identity, dialog or codec changes.
-    fn record_extended_report(&mut self, xr: &ExtendedReport) {
+    fn record_extended_report(
+        &mut self,
+        xr: &ExtendedReport,
+        origin: Option<crate::capture::packet::FrameLocator>,
+    ) {
         for block in &xr.blocks {
             let XrBlock::VoipMetrics(metrics) = block else {
                 continue;
@@ -925,6 +960,7 @@ impl StreamStore {
                     .map_or(0, |m| m.reports_seen)
                     .saturating_add(1);
                 entry.voip_metrics = Some(RemoteVoipMetrics {
+                    origin,
                     reporter_ssrc: xr.ssrc,
                     metrics: *metrics,
                     reports_seen,
@@ -3086,6 +3122,238 @@ a=rtpmap:96 H264/90000\r\n";
         );
     }
 
+    /// A reception report names the frame it arrived in.
+    ///
+    /// RTCP is where a remote endpoint's CLAIM enters sipnab's numbers, which
+    /// makes it the place a reader most needs to get back to the bytes. Until
+    /// now the frame stopped at the pipeline boundary: `process_rtcp` took the
+    /// parsed packets and a timestamp and nothing that could be followed.
+    #[test]
+    fn a_reception_report_names_the_frame_it_arrived_in() {
+        use crate::capture::packet::{FrameLocator, FrameOrigin};
+        use crate::rtp::rtcp::{ReceiverReport, ReceptionReport};
+
+        let mut store = StreamStore::new(100);
+        let parsed = make_parsed(20000, 30000, 160);
+        store.process_rtp(&parsed, &make_rtp_header(0xABCD, 1), ts(0));
+
+        let key = StreamKey {
+            ssrc: 0xABCD,
+            src: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000),
+            dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
+        };
+        store.process_rtcp(
+            &[RtcpPacket::ReceiverReport(ReceiverReport {
+                ssrc: 0x1111,
+                reports: vec![ReceptionReport {
+                    ssrc: 0xABCD,
+                    fraction_lost: 25,
+                    cumulative_lost: 10,
+                    highest_seq: 500,
+                    jitter: 42,
+                    last_sr: 0,
+                    delay_since_sr: 0,
+                }],
+            })],
+            chrono::Utc::now(),
+            Some(FrameLocator {
+                source: "capture.pcap",
+                origin: FrameOrigin {
+                    ordinal: 4_212,
+                    digest: Some(0xDEAD_BEEF),
+                    verifiable: true,
+                },
+            }),
+        );
+
+        let origin = store
+            .remote_report(&key)
+            .expect("the report was filed")
+            .origin
+            .expect("and it names its frame");
+        assert_eq!(
+            origin.source, "capture.pcap",
+            "both halves, or it names no frame"
+        );
+        assert_eq!(origin.origin.ordinal, 4_212);
+        assert_eq!(origin.origin.digest, Some(0xDEAD_BEEF));
+        assert!(origin.origin.verifiable, "a capture file can be read again");
+    }
+
+    /// A report from a source nobody can re-read says so.
+    ///
+    /// A live device and a HEP listener hand over bytes that are gone the
+    /// instant they are read. The ordinal still names the frame within the run;
+    /// nothing can verify it afterwards, and a digest here would attest to
+    /// bytes nobody can fetch. The report carries the source's own answer
+    /// rather than implying a resolver could check it.
+    #[test]
+    fn a_report_from_an_unreadable_source_does_not_claim_to_be_verifiable() {
+        use crate::capture::packet::{FrameLocator, FrameOrigin};
+        use crate::rtp::rtcp::{ReceiverReport, ReceptionReport};
+
+        let mut store = StreamStore::new(100);
+        let parsed = make_parsed(20000, 30000, 160);
+        store.process_rtp(&parsed, &make_rtp_header(0xBEEF, 1), ts(0));
+
+        let key = StreamKey {
+            ssrc: 0xBEEF,
+            src: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000),
+            dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
+        };
+        store.process_rtcp(
+            &[RtcpPacket::ReceiverReport(ReceiverReport {
+                ssrc: 0x1111,
+                reports: vec![ReceptionReport {
+                    ssrc: 0xBEEF,
+                    fraction_lost: 0,
+                    cumulative_lost: 0,
+                    highest_seq: 1,
+                    jitter: 0,
+                    last_sr: 0,
+                    delay_since_sr: 0,
+                }],
+            })],
+            chrono::Utc::now(),
+            Some(FrameLocator {
+                source: "eth9",
+                origin: FrameOrigin {
+                    ordinal: 7,
+                    digest: None,
+                    verifiable: false,
+                },
+            }),
+        );
+
+        let origin = store
+            .remote_report(&key)
+            .expect("filed")
+            .origin
+            .expect("a live frame still has an ordinal");
+        assert_eq!(origin.origin.ordinal, 7);
+        assert!(
+            origin.origin.digest.is_none() && !origin.origin.verifiable,
+            "a pointer into bytes nobody can re-read must not look checkable"
+        );
+    }
+
+    /// A report about a stream nobody is tracking files no pointer.
+    ///
+    /// The failure mode a provenance pointer must never have: an RTCP packet
+    /// naming an SSRC this store has never seen leaves nothing behind, so no
+    /// later reader can be handed a frame for a fact that was never recorded.
+    #[test]
+    fn a_report_for_an_unknown_stream_files_no_pointer() {
+        use crate::capture::packet::{FrameLocator, FrameOrigin};
+        use crate::rtp::rtcp::{ReceiverReport, ReceptionReport};
+
+        let mut store = StreamStore::new(100);
+        let parsed = make_parsed(20000, 30000, 160);
+        store.process_rtp(&parsed, &make_rtp_header(0x0001, 1), ts(0));
+
+        store.process_rtcp(
+            &[RtcpPacket::ReceiverReport(ReceiverReport {
+                ssrc: 0x1111,
+                reports: vec![ReceptionReport {
+                    ssrc: 0xFFFF_FFFF, // no such stream
+                    fraction_lost: 99,
+                    cumulative_lost: 99,
+                    highest_seq: 99,
+                    jitter: 99,
+                    last_sr: 0,
+                    delay_since_sr: 0,
+                }],
+            })],
+            chrono::Utc::now(),
+            Some(FrameLocator {
+                source: "capture.pcap",
+                origin: FrameOrigin {
+                    ordinal: 99,
+                    digest: Some(1),
+                    verifiable: true,
+                },
+            }),
+        );
+
+        let key = StreamKey {
+            ssrc: 0x0001,
+            src: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000),
+            dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
+        };
+        assert!(
+            store.remote_report(&key).is_none(),
+            "a report about another SSRC must not attach its frame to this              stream, which would hand a reader bytes that say nothing about it"
+        );
+    }
+
+    /// An XR VoIP Metrics block names its frame too.
+    ///
+    /// The other half of the same boundary. XR is where a remote endpoint
+    /// asserts a MOS, which is the single number an operator is most likely to
+    /// quote onward, so it is the one that most needs to be traceable to the
+    /// packet that carried it.
+    #[test]
+    fn an_xr_voip_metrics_block_names_the_frame_it_arrived_in() {
+        use crate::capture::packet::{FrameLocator, FrameOrigin};
+        use crate::rtp::rtcp::{ExtendedReport, VoipMetrics, XrBlock};
+
+        let mut store = StreamStore::new(100);
+        let parsed = make_parsed(20000, 30000, 160);
+        store.process_rtp(&parsed, &make_rtp_header(0x5151, 1), ts(0));
+
+        let key = StreamKey {
+            ssrc: 0x5151,
+            src: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000),
+            dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
+        };
+        let metrics = VoipMetrics {
+            ssrc: 0x5151,
+            loss_rate: 10,
+            discard_rate: 0,
+            burst_density: 0,
+            gap_density: 0,
+            burst_duration: 0,
+            gap_duration: 0,
+            round_trip_delay: 40,
+            end_system_delay: 0,
+            signal_level: 0,
+            noise_level: 127,
+            rerl: 0,
+            gmin: 16,
+            r_factor: 90,
+            ext_r_factor: 127,
+            mos_lq: 40,
+            mos_cq: 40,
+            rx_config: 0,
+            jb_nominal: 0,
+            jb_maximum: 0,
+            jb_abs_max: 0,
+        };
+        store.process_rtcp(
+            &[RtcpPacket::ExtendedReport(ExtendedReport {
+                ssrc: 0x2222,
+                blocks: vec![XrBlock::VoipMetrics(metrics)],
+            })],
+            chrono::Utc::now(),
+            Some(FrameLocator {
+                source: "capture.pcap",
+                origin: FrameOrigin {
+                    ordinal: 31,
+                    digest: Some(0xFEED),
+                    verifiable: true,
+                },
+            }),
+        );
+
+        let origin = store
+            .remote_voip_metrics(&key)
+            .expect("the XR block was filed")
+            .origin
+            .expect("and it names its frame");
+        assert_eq!(origin.origin.ordinal, 31);
+        assert_eq!(origin.origin.digest, Some(0xFEED));
+    }
+
     /// An RR block is recorded beside the stream, never over it.
     ///
     /// The measurement and the assertion stay separately addressable: the
@@ -3122,6 +3390,7 @@ a=rtpmap:96 H264/90000\r\n";
                 }],
             })],
             chrono::Utc::now(),
+            None,
         );
 
         let stream = store.get(&key).expect("stream should exist");
@@ -3204,6 +3473,7 @@ a=rtpmap:96 H264/90000\r\n";
                 blocks: vec![XrBlock::VoipMetrics(hostile_metrics(0xABCD))],
             })],
             chrono::Utc::now(),
+            None,
         );
 
         let xr = store
@@ -3248,6 +3518,7 @@ a=rtpmap:96 H264/90000\r\n";
                 blocks: vec![XrBlock::VoipMetrics(hostile_metrics(0xBEEF))],
             })],
             chrono::Utc::now(),
+            None,
         );
 
         let stream = store.get(&key).expect("stream should exist");
@@ -3281,6 +3552,7 @@ a=rtpmap:96 H264/90000\r\n";
                     blocks: vec![XrBlock::VoipMetrics(m)],
                 })],
                 chrono::Utc::now(),
+                None,
             );
         }
 
@@ -3302,6 +3574,7 @@ a=rtpmap:96 H264/90000\r\n";
                 blocks: vec![XrBlock::VoipMetrics(hostile_metrics(0x9999))],
             })],
             chrono::Utc::now(),
+            None,
         );
 
         assert!(
@@ -3326,6 +3599,7 @@ a=rtpmap:96 H264/90000\r\n";
                 ],
             })],
             chrono::Utc::now(),
+            None,
         );
 
         assert!(store.remote_voip_metrics(&key).is_none());
@@ -3374,6 +3648,7 @@ a=rtpmap:96 H264/90000\r\n";
                 }],
             })],
             chrono::Utc::now(),
+            None,
         );
 
         assert_eq!(
@@ -3399,7 +3674,7 @@ a=rtpmap:96 H264/90000\r\n";
         store.process_rtp(&p1, &rtp, ts(0));
         store.process_rtp(&p2, &rtp, ts(1));
 
-        store.process_rtcp(&rr_for(0xCAFE, 77), chrono::Utc::now());
+        store.process_rtcp(&rr_for(0xCAFE, 77), chrono::Utc::now(), None);
 
         let first = StreamKey {
             ssrc: 0xCAFE,
@@ -3441,8 +3716,8 @@ a=rtpmap:96 H264/90000\r\n";
             src: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000),
             dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
         };
-        store.process_rtcp(&rr_for(0xCAFE, 8), chrono::Utc::now());
-        store.process_rtcp(&rr_for(0xCAFE, 16), chrono::Utc::now());
+        store.process_rtcp(&rr_for(0xCAFE, 8), chrono::Utc::now(), None);
+        store.process_rtcp(&rr_for(0xCAFE, 16), chrono::Utc::now(), None);
         let r = store.remote_report(&key).expect("recorded");
         assert_eq!(r.jitter_timestamp_units, 16, "latest report wins");
         assert_eq!(r.reports_seen, 2);
@@ -3467,7 +3742,7 @@ a=rtpmap:96 H264/90000\r\n";
             Some(ClockGrounding::Assumed),
             "a dynamic PT with no rtpmap has no knowable clock rate"
         );
-        store.process_rtcp(&rr_for(0xB0B0, 77), chrono::Utc::now());
+        store.process_rtcp(&rr_for(0xB0B0, 77), chrono::Utc::now(), None);
         let r = store.remote_report(&key).expect("recorded");
         assert_eq!(r.jitter_timestamp_units, 77, "the wire value is kept");
         assert_eq!(
@@ -3483,7 +3758,7 @@ a=rtpmap:96 H264/90000\r\n";
         let mut store = StreamStore::new(2);
         let p1 = make_parsed(20000, 30000, 160);
         store.process_rtp(&p1, &make_rtp_header(0xCAFE, 1), ts(0));
-        store.process_rtcp(&rr_for(0xCAFE, 77), chrono::Utc::now());
+        store.process_rtcp(&rr_for(0xCAFE, 77), chrono::Utc::now(), None);
         let key = StreamKey {
             ssrc: 0xCAFE,
             src: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000),
@@ -3746,7 +4021,7 @@ a=rtpmap:96 H264/90000\r\n";
         store.process_rtp(&p3, &make_rtp_header(0xBEEF, 1), ts(2));
         assert_eq!(store.len(), 2);
 
-        store.process_rtcp(&rr_for(0xCAFE, 55), chrono::Utc::now());
+        store.process_rtcp(&rr_for(0xCAFE, 55), chrono::Utc::now(), None);
 
         let survivor = StreamKey {
             ssrc: 0xCAFE,
@@ -3768,7 +4043,7 @@ a=rtpmap:96 H264/90000\r\n";
         let p = make_parsed(20000, 30000, 160);
         store.process_rtp(&p, &make_rtp_header(0xCAFE, 1), ts(0));
         store.clear();
-        store.process_rtcp(&rr_for(0xCAFE, 11), chrono::Utc::now()); // must not panic
+        store.process_rtcp(&rr_for(0xCAFE, 11), chrono::Utc::now(), None); // must not panic
         assert!(store.is_empty());
     }
 
@@ -3779,7 +4054,7 @@ a=rtpmap:96 H264/90000\r\n";
         let mut store = StreamStore::new(100);
         let p = make_parsed(20000, 30000, 160);
         store.process_rtp(&p, &make_rtp_header(0xCAFE, 1), ts(0));
-        store.process_rtcp(&rr_for(0xD00D, 99), chrono::Utc::now());
+        store.process_rtcp(&rr_for(0xD00D, 99), chrono::Utc::now(), None);
         let key = StreamKey {
             ssrc: 0xCAFE,
             src: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000),
@@ -4109,6 +4384,7 @@ a=rtpmap:96 H264/90000\r\n";
                 }],
             })],
             seen_at,
+            None,
         );
 
         let (ms, source) = store.round_trip(&key).expect("an SR echo is a round trip");
@@ -4134,7 +4410,7 @@ a=rtpmap:96 H264/90000\r\n";
         // An RR whose reporter has seen no SR (last_sr = 0, the RFC 3550
         // sentinel) is still no measurement — it is the most common shape on
         // the wire and the easiest one to accidentally read as 0 ms.
-        store.process_rtcp(&rr_for(0xCAFE, 77), ts(5));
+        store.process_rtcp(&rr_for(0xCAFE, 77), ts(5), None);
         assert_eq!(
             store.round_trip(&key),
             None,
@@ -4175,6 +4451,7 @@ a=rtpmap:96 H264/90000\r\n";
                 }],
             })],
             seen_at,
+            None,
         );
         let (echo_ms, echo_src) = store.round_trip(&key).expect("echo present");
         assert_eq!(echo_src, RttSource::SenderReportEcho);
@@ -4188,6 +4465,7 @@ a=rtpmap:96 H264/90000\r\n";
                 blocks: vec![XrBlock::VoipMetrics(metrics)],
             })],
             seen_at,
+            None,
         );
 
         let (ms, source) = store.round_trip(&key).expect("xr present");

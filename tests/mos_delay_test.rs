@@ -351,6 +351,7 @@ fn store_with_rr(ssrc: u32, sr_age_ms: Option<i64>, reporter_held_ms: i64) -> St
             }],
         })],
         seen_at,
+        None,
     );
     store
 }
