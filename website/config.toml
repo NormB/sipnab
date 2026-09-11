@@ -48,7 +48,7 @@ version = "0.5.165"
 # Bumped after a release finishes publishing, not while cutting it.
 # `site_advertises_only_a_released_version` requires a matching `v<x.y.z>` tag,
 # so advertising something unreleased fails the suite rather than the visitor.
-published_version = "0.5.164"
+published_version = "0.5.165"
 # Release date of `published_version` above -- NOT of `version`, further up.
 # `download.html` renders this beside `published_version` in a single sentence,
 # so the date belongs to the release a reader can actually download.
@@ -57,7 +57,7 @@ published_version = "0.5.164"
 # untagged version is the conflation the published_version split exists to
 # prevent. `site_release_date_matches_changelog` reads `published_version` and
 # enforces this.
-release_date = "2026-09-10"
+release_date = "2026-09-11"
 # Minimum glibc of the released -gnu binaries and .debs. This is NOT a free
 # choice: it is whatever the "Enforce glibc floor" step in release.yml admits,
 # and it must equal SIPNAB_GLIBC_FLOOR in static/install.sh, which decides
@@ -115,6 +115,7 @@ macos_floor_intel = "10.12"
 #   0.5.162  15,776,520 bytes   (+4,096, leaving 1,000,696 bytes of headroom)
 #   0.5.163  15,776,520 bytes   (unchanged, leaving 1,000,696 bytes of headroom)
 #   0.5.164  15,801,160 bytes   (+24,640, leaving 976,056 bytes of headroom)
+#   0.5.165  15,809,416 bytes   (+8,256, leaving 967,800 bytes of headroom)
 #
 # So 0.5.159 shipped one ordinary release away from tipping and nothing said
 # so. The 118,784 bytes are `find_in_captures` -- a 66th MCP tool with derived
@@ -122,8 +123,9 @@ macos_floor_intel = "10.12"
 # quality types, and the config and CLI plumbing for `--quality-interval`.
 # 16 MB left 1,029,368 bytes of headroom at 0.5.160, 1,004,792 at 0.5.161,
 # 1,000,696 at both 0.5.162 and 0.5.163, which measured byte-for-byte
-# identical, and 976,056 at 0.5.164 -- the Landlock sandbox and six parser
-# rules cost 24,640 bytes between them.
+# identical, 976,056 at 0.5.164 -- the Landlock sandbox and six parser rules
+# cost 24,640 bytes between them -- and 967,800 at 0.5.165, where the seccomp
+# program builder and two DTLS length rules cost 8,256.
 # That figure is measured from the shipped tarball each release, checksum
 # verified against the `.sha256` beside it, which is what makes it a
 # measurement rather than an estimate carried forward.
