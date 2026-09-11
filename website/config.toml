@@ -48,7 +48,7 @@ version = "0.5.167"
 # Bumped after a release finishes publishing, not while cutting it.
 # `site_advertises_only_a_released_version` requires a matching `v<x.y.z>` tag,
 # so advertising something unreleased fails the suite rather than the visitor.
-published_version = "0.5.166"
+published_version = "0.5.167"
 # Release date of `published_version` above -- NOT of `version`, further up.
 # `download.html` renders this beside `published_version` in a single sentence,
 # so the date belongs to the release a reader can actually download.
@@ -117,6 +117,7 @@ macos_floor_intel = "10.12"
 #   0.5.164  15,801,160 bytes   (+24,640, leaving 976,056 bytes of headroom)
 #   0.5.165  15,809,416 bytes   (+8,256, leaving 967,800 bytes of headroom)
 #   0.5.166  15,821,704 bytes   (+12,288, leaving 955,512 bytes of headroom)
+#   0.5.167  15,817,608 bytes   (-4,096, leaving 959,608 bytes of headroom)
 #
 # So 0.5.159 shipped one ordinary release away from tipping and nothing said
 # so. The 118,784 bytes are `find_in_captures` -- a 66th MCP tool with derived
@@ -126,8 +127,13 @@ macos_floor_intel = "10.12"
 # 1,000,696 at both 0.5.162 and 0.5.163, which measured byte-for-byte
 # identical, 976,056 at 0.5.164 -- the Landlock sandbox and six parser rules
 # cost 24,640 bytes between them -- 967,800 at 0.5.165, where the seccomp
-# program builder and two DTLS length rules cost 8,256 -- and 955,512 at
-# 0.5.166, where the enforcing filter and its allowlist parser cost 12,288.
+# program builder and two DTLS length rules cost 8,256 -- 955,512 at
+# 0.5.166, where the enforcing filter and its allowlist parser cost 12,288, and
+# 959,608 at 0.5.167 -- the first release in this run to come back SMALLER, by
+# 4,096 bytes, with both halves of packet-level provenance in it. A byte range
+# per header and a frame locator per RTCP report are paid per message and per
+# report at runtime rather than in the binary, and deleting the second walk of
+# the header grammar gave back more text than the fields cost.
 # That figure is measured from the shipped tarball each release, checksum
 # verified against the `.sha256` beside it, which is what makes it a
 # measurement rather than an estimate carried forward.
