@@ -1073,3 +1073,78 @@ fn the_watcher_judges_the_origin_rather_than_failing_on_it() {
          the origin is invisible rather than merely non-fatal"
     );
 }
+
+/// A CDN that refuses the checker has not told us the site is down.
+///
+/// Found on the first real run: from a GitHub runner the edge answered 403,
+/// bot protection rather than a broken origin, and the classifier scored it as
+/// the outage. It is the same mistake as the bare grep — one answer standing
+/// for several situations — made by the thing built to stop making it.
+///
+/// A refusal says the edge is healthy and declined to talk to US. Nothing
+/// about the origin follows from it, in either direction, so it is neither a
+/// pass nor a failure.
+#[test]
+fn a_cdn_that_refuses_the_checker_is_not_an_outage() {
+    for status in ["403", "429"] {
+        let (code, out) = origin("2", status);
+        assert_eq!(
+            code, 3,
+            "{status} from the edge was read as the site being down:\n{out}"
+        );
+        assert!(out.contains("BLOCKED"), "{status}:\n{out}");
+        assert!(
+            !out.contains("OUTAGE"),
+            "a refused checker is being reported as an outage:\n{out}"
+        );
+    }
+}
+
+/// A refusal is not silently a pass either.
+///
+/// The other half, and the one that matters more: if BLOCKED were folded into
+/// OK, the watcher would go quiet the moment the CDN started refusing it, which
+/// is exactly when it has stopped watching anything at all.
+#[test]
+fn a_refused_checker_is_never_scored_as_healthy() {
+    let (blocked, out) = origin("2", "403");
+    let (ok, _) = origin("0", "200");
+    assert_ne!(
+        blocked, ok,
+        "a checker that was refused reports the same verdict as a healthy \
+         origin, so the watcher goes quiet exactly when it stops working:\n{out}"
+    );
+}
+
+/// Four situations, four exit codes.
+#[test]
+fn a_blocked_check_has_its_own_exit_code() {
+    let mut seen = std::collections::BTreeSet::new();
+    for (cert, status, want) in [
+        ("0", "200", 0),
+        ("2", "526", 1),
+        ("2", "200", 2),
+        ("2", "403", 3),
+    ] {
+        let (code, out) = origin(cert, status);
+        assert_eq!(code, want, "cert={cert} status={status}:\n{out}");
+        assert!(seen.insert(code), "exit code {code} is used twice");
+    }
+    assert_eq!(seen.len(), 4, "{seen:?}");
+}
+
+/// The watcher identifies itself rather than arriving as an anonymous bot.
+///
+/// The 403 came from bot protection, and the first thing to try is simply not
+/// looking like a scraper. A named agent also tells whoever reads the CDN logs
+/// who this is.
+#[test]
+fn the_watcher_identifies_itself_to_the_cdn() {
+    let wf = watcher();
+    assert!(
+        wf.contains("--user-agent") || wf.contains("-A "),
+        "the site check sends no user agent, so the CDN sees an anonymous \
+         client and may refuse it — which is how the first run scored a 403 \
+         as the site being down"
+    );
+}

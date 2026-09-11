@@ -30,6 +30,19 @@ entry that carries them.
 
 ### Fixed
 
+- **The certificate watcher read a CDN that refused it as the site being
+  down.** On its first real run from a GitHub runner the edge answered `403` --
+  bot protection, not a broken origin -- and the verdict came back as the
+  outage. That is one answer standing for several situations, which is the
+  exact mistake this check was built to stop making.
+
+  A refusal now has its own verdict and its own exit code. The edge is healthy
+  and declined to talk to this client, so nothing about the origin follows from
+  it in either direction: neither a pass, which would make the watcher go quiet
+  the moment it stopped being able to see anything, nor a failure. The check
+  also identifies itself now rather than arriving as an anonymous client.
+
+
 - **The certificate watcher was red every morning for a fault nobody could
   observe.** After the 2026-09-11 outage the CDN was moved to a mode that
   terminates TLS at the edge with its own certificate and reaches the origin

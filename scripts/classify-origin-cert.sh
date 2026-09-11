@@ -33,6 +33,8 @@
 #   0  OK         the origin certificate has time left
 #   1  OUTAGE     the certificate is unusable AND the site is not serving
 #   2  TOLERATED  unusable, but the site serves — the CDN is not validating it
+#   3  BLOCKED    the edge refused the checker, so nothing about the origin
+#                 follows from it in either direction
 
 set -eu
 
@@ -53,6 +55,25 @@ classify() {
 		printf 'OK: the origin certificate has time left.\n'
 		return 0
 	fi
+
+	# The edge answered, and said no to US. Bot protection, a rate limit, a
+	# WAF rule -- the site may be perfectly healthy for everyone else. Found
+	# on this check's first real run, where a GitHub runner got 403 and the
+	# verdict came back as the outage: one answer standing for several
+	# situations, which is the exact mistake this file was built to stop.
+	#
+	# It is not a pass either. Folding it into OK would make the watcher go
+	# quiet the moment it stopped being able to see anything.
+	case "$status" in
+	403 | 429)
+		printf 'BLOCKED: the edge refused the check itself (%s).\n' "$status"
+		printf '  Bot protection, a rate limit or a firewall rule. The edge is\n'
+		printf '  healthy and declined to talk to this client, so nothing about\n'
+		printf '  the origin certificate follows from it in either direction.\n'
+		printf '  Let the checker identify itself, or allow it at the edge.\n'
+		return 3
+		;;
+	esac
 
 	case "$status" in
 	2??)
