@@ -678,7 +678,12 @@ fn linked_code_targets_exist() {
     // gains the paragraph on a wire rule written twice under a single
     // classifier, linking the test that gates it. Attributed by counting that
     // file: 55 relative code links before, 56 after, no other page touched.
-    const EXPECTED_CODE_LINKS: usize = 425;
+    // 425 -> 427: two, in `docs/internals/build-ci-release.md`, where the
+    // release section gains the paragraph on confirming from the live page and
+    // links the two checkers the 2026-09-11 outage produced. Attributed by
+    // counting that file: 45 relative code links before, 47 after, and no
+    // other internals page changed.
+    const EXPECTED_CODE_LINKS: usize = 427;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \

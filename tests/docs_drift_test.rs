@@ -5089,6 +5089,7 @@ fn documented_pre_push_gate_count_matches_the_hook() {
         // a CI run.
         11 => "eleven",
         12 => "twelve",
+        13 => "thirteen",
         n => panic!("no spelling for {n} gates; add one rather than dropping the check"),
     };
 
@@ -5105,7 +5106,9 @@ fn documented_pre_push_gate_count_matches_the_hook() {
     ] {
         // Each of these names a count of pre-push gates somewhere. Any OTHER
         // spelled number next to "hard gate" is the drift this catches.
-        for wrong in ["four", "five", "six", "seven", "eight", "nine", "ten"] {
+        for wrong in [
+            "four", "five", "six", "seven", "eight", "nine", "ten", "eleven",
+        ] {
             if wrong == spelled {
                 continue;
             }
@@ -6016,6 +6019,7 @@ fn the_gate_count_spelling_table_covers_one_more_than_today() {
         (10, "ten"),
         (11, "eleven"),
         (12, "twelve"),
+        (13, "thirteen"),
     ];
     let want = spellings
         .iter()

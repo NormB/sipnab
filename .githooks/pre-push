@@ -458,6 +458,47 @@ else
 	fi
 fi
 
+# -- Hard gate: a test count in a commit message is derived, not typed --------
+# Messages here end with a sentence of the form "Seventeen tests,
+# mutation-proven: ...". On 2026-09-11 one of them said "Sixteen tests" about a
+# commit that added seventeen, and nothing caught it -- a number spelled as a
+# word does not look like data, it reads as prose, and prose is not checked.
+#
+# It is also the one claim about a change a reader cannot verify without the
+# diff in front of them, which is exactly the kind that should not be typed
+# from memory. So it is compared against the diff here, at the last moment the
+# message can still be amended.
+#
+# Messages that name no count are the normal case and pass untouched.
+if UPSTREAM=$(git rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null); then
+	CLAIM_BAD=""
+	for commit in $(git rev-list --no-merges "$UPSTREAM..HEAD" 2>/dev/null || true); do
+		DIFF=$(git show --format='' -U0 "$commit" -- '*.rs' 2>/dev/null || true)
+		ADDED=$(printf '%s\n' "$DIFF" | grep -c '^+.*#\[test\]' || true)
+		REMOVED=$(printf '%s\n' "$DIFF" | grep -c '^-.*#\[test\]' || true)
+		NET=$((ADDED - REMOVED))
+		CLAIM_OUT=$(git log -1 --format=%B "$commit" \
+			| sh "$(dirname "$0")/../scripts/check-test-claim.sh" --classify "$NET" 2>&1) \
+			&& CLAIM_RC=0 || CLAIM_RC=$?
+		case $CLAIM_RC in
+		0 | 2) ;;
+		*)
+			SHORT=$(printf '%s' "$commit" | cut -c1-7)
+			printf '%b  %s: %s%b\n' "$RED" "$SHORT" "$CLAIM_OUT" "$NC"
+			CLAIM_BAD="$CLAIM_BAD $SHORT"
+			;;
+		esac
+	done
+	if [ -n "$CLAIM_BAD" ]; then
+		printf '%bA commit message names a test count its own diff does not support:%b\n' \
+			"$RED" "$NC"
+		printf '    %s\n' "$CLAIM_BAD"
+		printf '  Amend the message, or add the tests it promises.\n'
+		exit 1
+	fi
+	printf '%b  commit test counts match their diffs%b\n' "$GREEN" "$NC"
+fi
+
 # -- Hard gate: a v* tag must point at a commit whose CI is green -------------
 # `docs/internals/build-ci-release.md` used to open with "a release is a pushed
 # v* tag" and say nothing about checking first -- so the entire safeguard was

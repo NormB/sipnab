@@ -10,7 +10,36 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Added
+
+- **A test count in a commit message is now derived rather than typed.**
+  Messages here end with a sentence of the form "Seventeen tests,
+  mutation-proven: ...". One of them said "Sixteen" about a commit that added
+  seventeen, and nothing caught it: a number spelled as a word does not look
+  like data, it reads as prose, and prose is not checked. `pre-push` now counts
+  the tests each outgoing commit adds and compares that against the count its
+  message claims, at the last moment the message can still be amended.
+
+  The claim is the summary sentence — `<N> tests, mutation-proven` — and
+  nothing else. A message may legitimately count subsets along the way, and
+  both looser rules tried first read one of those instead: "the first number
+  next to the word tests" picks up "the ten tests the outage bought", and "any
+  count that begins a line" picks up "Two tests were removed and nothing
+  replaced them yet". A count phrased any other way goes unchecked, which is
+  the trade that keeps the gate from crying wolf.
+
 ### Fixed
+
+- **The certificate watcher scored an unreadable day count as a healthy
+  certificate.** Its guard was the shell character class `*[!0-9-]*`, which
+  admits a `-` anywhere rather than only at the front, so `1-2`, `12-` and a
+  bare `-` walked past it. `[` then refused them with "Illegal number", and
+  because a failing command in an `if` condition is exempt from `set -e`, both
+  comparisons fell through to the last line of the function: OK, exit 0. The
+  one input the check exists to refuse came out as its healthiest verdict, with
+  the diagnosis on stderr where no exit code carries it. A mistyped margin
+  reached the same comparison and had the same effect, turning the threshold
+  off without saying so.
 
 - **The published site's certificate expired, and nothing was watching the
   date.** On 2026-09-11 the origin certificate expired at 14:10 UTC, the CDN

@@ -415,7 +415,7 @@ push-and-wait feedback loop. [`scripts/check-feature-matrix.py`](../../scripts/c
 thirteen locally, reading both the combo list and `RUSTFLAGS` out of
 [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml) so the two cannot drift.
 
-[`pre-push`](../../.githooks/pre-push) adds eleven hard gates that `cargo test`
+[`pre-push`](../../.githooks/pre-push) adds twelve hard gates that `cargo test`
 does not cover: `cargo fmt --check`, `cargo clippy --workspace --all-features --all-targets
 -D warnings`, `cargo doc` with `RUSTDOCFLAGS=-D warnings`, `cd fuzz &&
 cargo check`, the release-delivery tests, a check of the reduced feature
@@ -536,7 +536,7 @@ because a hand-kept list cannot catch a *new* corpus binary, which is the one
 thing this gate exists for. The first draft did hand-keep the list, and it went
 stale inside an hour, when a twelfth binary landed mid-review.
 
-**When it runs.** Last, after the eleven hard gates. Each of those fails in
+**When it runs.** Last, after the twelve hard gates. Each of those fails in
 seconds, and spending a minute on the corpus only to hear that the tree does not
 compile wastes the minute. The gate then reaches one of five states — a run, or
 one of the four reasons not to run — and each prints its own line:
@@ -695,6 +695,29 @@ beside each tarball, a combined `SHA256SUMS.txt`, two SBOMs, a provenance
 attestation, a GHCR image, and a Homebrew formula — twenty-three release assets in
 all. The order is therefore: land the release commit, wait for CI, then tag the
 commit that passed.
+
+**The site says whether a release landed, and one command says why it has
+not.** A green deploy is not the same fact: on 2026-09-11 the origin
+certificate expired, the CDN refused an origin it could not validate, and every
+visitor got a 526 while the deploy stayed green. The step for this used to be
+
+```text
+curl -s https://sipnab.com/download/ | grep -c <version>
+```
+
+which prints `0` for a page advertising the wrong version and `0` for DNS
+failure, a refused connection, an expired certificate, an empty body and a 503 —
+five situations and one answer, only one of them about the release. Run
+
+```sh
+sh scripts/verify-site-advertises.sh <version>
+```
+
+instead. It names which of the six is happening and gives each its own exit
+code, because "land the advertisement commit" and "go and change a CDN setting"
+are different jobs. [`scripts/check-cert-expiry.sh`](../../scripts/check-cert-expiry.sh) answers the other half, and
+[`.github/workflows/cert-expiry.yml`](../../.github/workflows/cert-expiry.yml) runs both daily so neither waits for
+somebody to notice a release.
 
 **`main` declares a pull-request rule and a required check, and an owner push
 bypasses both.** Branch protection on `refs/heads/main` asks for a pull request

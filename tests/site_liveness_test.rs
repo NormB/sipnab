@@ -414,3 +414,549 @@ fn the_published_cname_matches_the_base_url() {
          unrenewed"
     );
 }
+
+// ── A number that is not a number ───────────────────────────────────────────
+
+/// Garbage in the day count is UNKNOWN, never a pass.
+///
+/// Found by probing the classifier the day it shipped. The guard was a shell
+/// character class, `*[!0-9-]*`, which admits a `-` ANYWHERE rather than only
+/// at the front — so `1-2`, `12-` and a bare `-` all walked past it. `[` then
+/// refused them with "Illegal number", and because a failing test inside an
+/// `if` condition is exempt from `set -e`, both comparisons fell through to
+/// the last line of the function, which prints OK and returns 0.
+///
+/// So the one input the script exists to refuse — a certificate it could not
+/// read — came out as the healthiest verdict it has, with the diagnosis on
+/// stderr where no exit code carries it.
+#[test]
+fn a_day_count_that_is_not_a_number_is_never_scored_as_healthy() {
+    for bad in ["1-2", "12-", "-", "--5", "3-4-5"] {
+        let (code, out) = classify("scripts/check-cert-expiry.sh", &[bad], None);
+        assert_eq!(
+            code, 3,
+            "{bad:?} was scored {code} rather than UNKNOWN. An unreadable \
+             certificate must never come out as a pass:\n{out}"
+        );
+        assert!(out.contains("UNKNOWN"), "{bad:?}:\n{out}");
+    }
+}
+
+/// The shell's own error is not allowed to be the diagnosis.
+///
+/// "Illegal number" on stderr with exit 0 is the worst shape a check can have:
+/// a human reading a terminal sees a problem and a caller reading `$?` sees
+/// success. CI reads `$?`.
+#[test]
+fn a_shell_error_never_stands_in_for_a_verdict() {
+    let (code, out) = classify("scripts/check-cert-expiry.sh", &["1-2"], None);
+    assert_ne!(code, 0, "a shell diagnostic came back as success:\n{out}");
+    assert!(
+        !out.contains("Illegal number") && !out.to_lowercase().contains("not found"),
+        "the script leaked a shell diagnostic instead of naming its own \
+         verdict:\n{out}"
+    );
+}
+
+/// A mistyped margin is refused rather than quietly ignored.
+///
+/// The margin is the second argument, so it is an operator's typo away from
+/// being unusable — and it reaches the same `[` comparison. A watcher whose
+/// threshold silently stopped working would report OK on the day the
+/// certificate expired, which is the failure this whole file exists for.
+#[test]
+fn a_malformed_margin_is_refused_rather_than_ignored() {
+    for bad in ["21x", "", "two"] {
+        let (code, out) = classify("scripts/check-cert-expiry.sh", &["30", bad], None);
+        assert_eq!(
+            code, 3,
+            "a margin of {bad:?} was accepted and the check still reported \
+             {code}:\n{out}"
+        );
+        assert!(out.contains("UNKNOWN"), "{bad:?}:\n{out}");
+    }
+}
+
+// ── The watcher itself, and the ten the outage bought ───────────────────────
+
+/// Run a script for real, with an environment, returning `(exit code, output)`.
+fn run(script: &str, args: &[&str], env: &[(&str, &str)]) -> (i32, String) {
+    let mut cmd = Command::new("sh");
+    cmd.arg(repo().join(script))
+        .args(args)
+        .current_dir(repo())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    for (k, v) in env {
+        cmd.env(k, v);
+    }
+    let out = cmd.output().expect("the script runs");
+    let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
+    text.push_str(&String::from_utf8_lossy(&out.stderr));
+    (out.status.code().unwrap_or(-1), text)
+}
+
+/// The workflow file, read once per test that needs it.
+fn watcher() -> String {
+    std::fs::read_to_string(repo().join(".github/workflows/cert-expiry.yml"))
+        .expect("the scheduled workflow is in the tree")
+}
+
+/// The watcher bounds its own runtime.
+///
+/// Four network round trips, and a job that hangs on an unreachable host would
+/// sit until GitHub's six-hour default and report nothing. Silence is the
+/// failure mode this workflow exists to break, so it may not produce silence
+/// of its own.
+#[test]
+fn the_watcher_bounds_its_own_runtime() {
+    let wf = watcher();
+    let minutes = wf
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("timeout-minutes:"))
+        .map(|v| v.trim().parse::<u32>().expect("a number of minutes"))
+        .expect("the watcher sets no timeout, so a hang runs for six hours");
+    assert!(
+        minutes > 0 && minutes <= 30,
+        "a {minutes}-minute bound on four round trips is not a bound"
+    );
+}
+
+/// BOTH certificates, and only one of them with an origin.
+///
+/// Watching the public name alone is worse than not watching: it reads the
+/// EDGE certificate, which was healthy with 85 days left all through the
+/// outage. Watching only the origin loses the edge. The workflow runs the
+/// check twice and exactly one run carries `SIPNAB_ORIGIN`.
+#[test]
+fn the_watcher_reads_both_certificates() {
+    let wf = watcher();
+    let runs = wf
+        .lines()
+        .filter(|l| l.contains("sh scripts/check-cert-expiry.sh"))
+        .count();
+    assert_eq!(
+        runs, 2,
+        "the watcher runs the certificate check {runs} time(s); it needs one \
+         for the edge and one for the origin"
+    );
+    let origins = wf.matches("SIPNAB_ORIGIN:").count();
+    assert_eq!(
+        origins, 1,
+        "{origins} of the runs name an origin. Exactly one must: with none it \
+         reads the edge twice, with two it never reads the edge at all"
+    );
+}
+
+/// The origin it checks is a GitHub Pages address.
+///
+/// Pointing this at the CDN, or at a stale address, restores the very blind
+/// spot the second check exists to cover — and it would stay green, because
+/// SNI means some certificate always comes back.
+#[test]
+fn the_origin_the_watcher_checks_is_a_pages_address() {
+    let wf = watcher();
+    let addr = wf
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("SIPNAB_ORIGIN:"))
+        .map(|v| v.trim().to_string())
+        .expect("the watcher names no origin address");
+    const PAGES: [&str; 4] = [
+        "185.199.108.153",
+        "185.199.109.153",
+        "185.199.110.153",
+        "185.199.111.153",
+    ];
+    assert!(
+        PAGES.contains(&addr.as_str()),
+        "{addr} is not one of GitHub Pages' addresses, so the 'origin' check \
+         is reading somebody else's certificate: {PAGES:?}"
+    );
+}
+
+/// An origin that does not answer is UNKNOWN, not a pass.
+///
+/// The fetching half, driven against a port with nothing behind it. A watcher
+/// that scored an unreachable origin as healthy would go green at the exact
+/// moment the origin disappeared.
+#[test]
+fn an_origin_that_does_not_answer_is_never_a_pass() {
+    let (code, out) = run(
+        "scripts/check-cert-expiry.sh",
+        &["sipnab.com"],
+        &[("SIPNAB_ORIGIN", "127.0.0.1")],
+    );
+    assert_eq!(code, 3, "an unreachable origin was scored {code}:\n{out}");
+    assert!(out.contains("UNKNOWN"), "{out}");
+}
+
+/// The watcher also asks whether the site is serving the release.
+///
+/// A healthy certificate and a stale page are different problems with
+/// different fixes, and the check this replaced scored both as `0`. Watching
+/// only the dates would have caught the outage a fortnight early and still
+/// never noticed a deploy that did not land.
+#[test]
+fn the_watcher_also_confirms_the_site_advertises_the_release() {
+    let wf = watcher();
+    assert!(
+        wf.contains("verify-site-advertises.sh"),
+        "the daily job reads certificates and never fetches the page"
+    );
+    assert!(
+        wf.contains("published_version"),
+        "the job does not read which release the site is supposed to be \
+         serving, so it cannot tell whether it is"
+    );
+}
+
+/// The watcher runs when the thing it depends on changes.
+///
+/// The CNAME and `base_url` are the pair whose disagreement broke renewal.
+/// Catching that pair on the commit that changes it is the difference between
+/// a failed push and thirty silent days.
+#[test]
+fn the_watcher_runs_when_the_domain_configuration_changes() {
+    let wf = watcher();
+    for path in [
+        "website/static/CNAME",
+        "website/config.toml",
+        "scripts/check-cert-expiry.sh",
+    ] {
+        assert!(
+            wf.contains(path),
+            "a change to {path} does not run the watcher, so a broken watcher \
+             or a re-broken domain is found at 07:10 the next morning"
+        );
+    }
+}
+
+/// A redirect is not a healthy page.
+///
+/// `2??` passes and everything else is judged. A 301 to a parked domain, or a
+/// CDN redirect loop, answers with a status and no download page — and the
+/// bare grep counted it as "the version is not there".
+#[test]
+fn a_redirect_is_not_read_as_a_missing_version() {
+    let (code, out) = classify(
+        "scripts/verify-site-advertises.sh",
+        &["0.5.166"],
+        Some(&response("301", "<html>moved</html>")),
+    );
+    assert_eq!(code, 4, "a 301 was scored {code}:\n{out}");
+    assert!(
+        !out.contains("STALE"),
+        "a redirect is not a stale page:\n{out}"
+    );
+}
+
+/// A CDN that cannot reach the origin is not a server error.
+///
+/// 521, 522 and 523 say the edge is healthy and the thing behind it is not,
+/// which sends an operator somewhere completely different from a 500. The
+/// wording has to carry that, because the exit code alone cannot.
+#[test]
+fn a_cdn_origin_failure_is_not_confused_with_a_server_error() {
+    for status in ["521", "522", "523"] {
+        let (code, out) = classify(
+            "scripts/verify-site-advertises.sh",
+            &["0.5.166"],
+            Some(&response(status, "x")),
+        );
+        assert_eq!(code, 4, "{status}:\n{out}");
+        assert!(
+            out.contains("origin"),
+            "{status} does not say the origin is the unreachable half:\n{out}"
+        );
+    }
+    let (code, out) = classify(
+        "scripts/verify-site-advertises.sh",
+        &["0.5.166"],
+        Some(&response("500", "x")),
+    );
+    assert_eq!(code, 4, "{out}");
+    assert!(
+        !out.contains("origin"),
+        "an ordinary server error is being described as an origin problem, \
+         which sends the reader to the wrong system:\n{out}"
+    );
+}
+
+/// Zero is reached by exactly one road.
+///
+/// The property underneath every verdict here: the check may only say "yes"
+/// when it actually saw the version on a page that looked like the download
+/// page. Every other status, and every other body, is some flavor of no.
+#[test]
+fn the_checker_exits_zero_only_when_it_found_the_version() {
+    let mut zeros = 0;
+    for status in ["000", "200", "204", "301", "404", "500", "521", "526"] {
+        for body in [
+            "",
+            "x",
+            &download_page("0.5.165"),
+            &download_page("0.5.166"),
+        ] {
+            let (code, _) = classify(
+                "scripts/verify-site-advertises.sh",
+                &["0.5.166"],
+                Some(&response(status, body)),
+            );
+            let found = status.starts_with('2') && body.contains("0.5.166");
+            if code == 0 {
+                zeros += 1;
+            }
+            assert_eq!(
+                code == 0,
+                found,
+                "status {status} with body {body:?} exited {code}"
+            );
+        }
+    }
+    assert_eq!(
+        zeros, 2,
+        "the only healthy cases are the two success statuses carrying the \
+         download page with the version on it"
+    );
+}
+
+/// The CNAME is a bare hostname.
+///
+/// GitHub Pages reads the file literally. A scheme, a path or a second line
+/// makes it a domain that does not exist, the custom domain is dropped, and
+/// the certificate goes with it — the same ending as the mismatch, by a
+/// different route.
+#[test]
+fn the_published_cname_is_a_bare_hostname() {
+    let raw = std::fs::read_to_string(repo().join("website/static/CNAME"))
+        .expect("the CNAME is in the tree");
+    let lines: Vec<_> = raw.lines().filter(|l| !l.trim().is_empty()).collect();
+    assert_eq!(lines.len(), 1, "a CNAME file holds one name: {lines:?}");
+    let name = lines[0].trim();
+    assert_eq!(name, lines[0], "the name carries surrounding whitespace");
+    for bad in ["://", "/", " ", ":"] {
+        assert!(
+            !name.contains(bad),
+            "the CNAME is {name:?}, which is not a bare hostname"
+        );
+    }
+    assert!(
+        name.contains('.') && !name.starts_with('.') && !name.ends_with('.'),
+        "the CNAME is {name:?}"
+    );
+}
+
+/// The documented release procedure names the checker.
+///
+/// The pre-push prompt was updated and the document was not, which is how the
+/// bare grep survived in the first place: it lived in the place a person reads
+/// at release time rather than in a script anybody ran.
+#[test]
+fn the_documented_release_procedure_names_the_checker() {
+    let doc = std::fs::read_to_string(repo().join("docs/internals/build-ci-release.md"))
+        .expect("the release document is in the tree");
+    assert!(
+        doc.contains("verify-site-advertises.sh"),
+        "the release procedure never tells the reader how to confirm the site \
+         is serving the release, so 'released' stays a green deploy"
+    );
+    // The old command still appears, as the thing being replaced. That is the
+    // point of the paragraph. What may not happen is it appearing in a fence a
+    // reader would copy: `text` is a quotation, `sh` is an instruction.
+    let mut fence = String::new();
+    let mut prescribed: Vec<&str> = Vec::new();
+    for line in doc.lines() {
+        if let Some(rest) = line.trim_start().strip_prefix("```") {
+            fence = if fence.is_empty() {
+                rest.trim().to_string()
+            } else {
+                String::new()
+            };
+            continue;
+        }
+        let runnable = matches!(fence.as_str(), "sh" | "bash" | "shell" | "console");
+        if runnable && line.contains("grep -c") && line.contains("sipnab.com") {
+            prescribed.push(line);
+        }
+    }
+    assert!(
+        prescribed.is_empty(),
+        "the document offers a bare grep in a fence a reader will copy and \
+         run: {prescribed:?}"
+    );
+}
+
+// ── A count in a commit message is a claim, and claims get checked ──────────
+
+/// Run the claim checker over a message.
+fn claim(message: &str, actual: &str) -> (i32, String) {
+    let mut child = Command::new("sh")
+        .arg(repo().join("scripts/check-test-claim.sh"))
+        .arg("--classify")
+        .arg(actual)
+        .current_dir(repo())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn the claim checker");
+    child
+        .stdin
+        .as_mut()
+        .expect("stdin")
+        .write_all(message.as_bytes())
+        .expect("write");
+    let out = child.wait_with_output().expect("the checker finishes");
+    let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
+    text.push_str(&String::from_utf8_lossy(&out.stderr));
+    (out.status.code().unwrap_or(-1), text)
+}
+
+/// A count spelled as a word is still a number.
+///
+/// The defect this is for: a commit message here said "Sixteen tests" about a
+/// commit that added seventeen. A spelled number does not look like data — it
+/// reads as prose, and prose is not checked. It is the one claim about a
+/// change a reader cannot verify without the diff in front of them.
+#[test]
+fn a_count_spelled_as_a_word_is_checked_like_a_number() {
+    let message = "Watch the certificate\n\nSeventeen tests, mutation-proven.\n";
+    let (agrees, out) = claim(message, "17");
+    assert_eq!(agrees, 0, "a correct spelled count was rejected:\n{out}");
+
+    let wrong = "Watch the certificate\n\nSixteen tests, mutation-proven.\n";
+    let (disagrees, out) = claim(wrong, "17");
+    assert_eq!(
+        disagrees, 1,
+        "the exact defect walked past the check:\n{out}"
+    );
+    assert!(out.contains("DISAGREES"), "{out}");
+}
+
+/// Digits and words are read the same way, hyphens included.
+#[test]
+fn a_numeral_and_a_compound_word_agree_with_each_other() {
+    for (text, actual) in [
+        ("17 tests, mutation-proven.", "17"),
+        ("Seventeen tests, mutation-proven.", "17"),
+        ("Twenty-one tests, mutation-proven.", "21"),
+        ("Ninety-nine tests, mutation-proven.", "99"),
+        ("One test, mutation-proven.", "1"),
+    ] {
+        let (code, out) = claim(text, actual);
+        assert_eq!(code, 0, "{text:?} against {actual}:\n{out}");
+    }
+}
+
+/// Prose that merely mentions tests is not a claim.
+///
+/// A gate that fired on "these tests" or "8287 automated tests" would be wrong
+/// far more often than right, and a gate that cries wolf gets switched off. It
+/// reports NO CLAIM, which is a third state with its own exit code rather than
+/// a pass wearing a disguise.
+#[test]
+fn prose_that_merely_mentions_tests_is_not_a_claim() {
+    for text in [
+        "A change with 8287 automated tests, and all tests are green.",
+        "These tests cover the parser.",
+        "No tests were harmed.",
+        "Refuse a stream link for a media description the peers rejected.",
+    ] {
+        let (code, out) = claim(text, "4");
+        assert_eq!(code, 2, "{text:?} was read as a claim:\n{out}");
+        assert!(out.contains("NO CLAIM"), "{out}");
+    }
+}
+
+/// The push gate checks every commit it is about to send.
+///
+/// The script on its own is a script nobody runs. This is the coupling that
+/// makes the claim a gate, checked at the last moment a message can still be
+/// amended.
+#[test]
+fn the_push_gate_checks_each_message_against_its_diff() {
+    let hook = std::fs::read_to_string(repo().join(".githooks/pre-push"))
+        .expect(".githooks/pre-push is in the tree");
+    assert!(
+        hook.contains("check-test-claim.sh"),
+        "nothing runs the claim checker, so a count in a commit message is \
+         still whatever somebody typed"
+    );
+    // The hook counts the attribute with a grep, so the pattern is escaped
+    // there. Matching the escaped form is matching the thing that runs.
+    assert!(
+        hook.contains(r"#\[test\]"),
+        "the hook never counts the tests a commit adds, so it has nothing to \
+         compare the claim against"
+    );
+}
+
+/// The claim is the summary count, not one counted along the way.
+///
+/// The defect this is for, found by the gate on the commit that introduced it:
+/// the message claimed eighteen and the checker read ten, out of a sentence
+/// three lines above that counted a subset. A message may legitimately count
+/// parts of itself, so "the first number next to the word tests" is not the
+/// claim — the summary sentence is.
+#[test]
+fn the_claim_is_the_summary_count_not_one_counted_along_the_way() {
+    let message = "Refuse a day count that is not a number\n\n\
+         Two defects, and the ten tests the outage itself bought.\n\n\
+         Eighteen tests, mutation-proven: restoring the old class fails two.\n";
+    let (code, out) = claim(message, "18");
+    assert_eq!(
+        code, 0,
+        "a subset counted in the body was read as the claim:\n{out}"
+    );
+    let (wrong, out) = claim(message, "10");
+    assert_eq!(
+        wrong, 1,
+        "the checker agreed with the subset rather than the summary:\n{out}"
+    );
+
+    // And when a message carries two summary sentences — an amended one
+    // usually does — the later is the one that describes the commit.
+    let amended = "x\n\nTwo tests, mutation-proven: a.\n\n\
+         Nine tests, mutation-proven: b.\n";
+    let (code, out) = claim(amended, "9");
+    assert_eq!(code, 0, "the earlier summary won over the later:\n{out}");
+}
+
+/// The summary sentence is found wherever the wrapping put it.
+///
+/// The marker is `, mutation-proven`, not the position: a wrapped message puts
+/// the count mid-line and an unwrapped one begins a line with it. Anchoring on
+/// the line start instead was tried and reads "Two tests were removed..." as a
+/// claim, which is the shape the third test here pins down.
+#[test]
+fn the_summary_sentence_is_found_wherever_wrapping_put_it() {
+    let wrapped = "Refuse a stream link\n\n\
+         and the endpoint is refused. Three tests, mutation-proven both ways:\n\
+         removing the rule fails two.\n";
+    let (code, out) = claim(wrapped, "3");
+    assert_eq!(code, 0, "a wrapped summary sentence was missed:\n{out}");
+
+    let line_initial = "Watch the certificate\n\n\
+         Seventeen tests, mutation-proven: dropping the guard fails one.\n";
+    let (code, out) = claim(line_initial, "17");
+    assert_eq!(code, 0, "a line-initial count was missed:\n{out}");
+}
+
+/// A count written outside the convention goes unchecked, deliberately.
+///
+/// The honest half of the trade. Narrowing to the summary sentence is what
+/// keeps "8287 automated tests" and "these tests" from firing, and the cost is
+/// that a count phrased some other way is not checked at all. NO CLAIM is its
+/// own exit code rather than a pass wearing a disguise.
+#[test]
+fn a_count_written_outside_the_convention_is_not_a_claim() {
+    for text in [
+        "The commit adds four tests to the parser.",
+        "Covered by 8287 automated tests.",
+        "Two tests were removed and nothing replaced them yet, see below.",
+    ] {
+        let (code, out) = claim(text, "99");
+        assert_eq!(code, 2, "{text:?} was read as a claim:\n{out}");
+        assert!(out.contains("NO CLAIM"), "{out}");
+    }
+}

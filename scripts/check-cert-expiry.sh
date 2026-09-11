@@ -41,15 +41,46 @@ set -eu
 
 DEFAULT_WARN_DAYS=21
 
+# Is this a whole number, sign and all, and nothing else?
+#
+# The guard this replaces was the character class `*[!0-9-]*`, which admits a
+# `-` ANYWHERE rather than only at the front -- so `1-2`, `12-` and a bare `-`
+# walked past it. `[` then refused them with "Illegal number", and because a
+# failing command in an `if` condition is exempt from `set -e`, both
+# comparisons fell through to the last line of the function: OK, exit 0. The
+# one input this script exists to refuse came out as its healthiest verdict,
+# with the diagnosis on stderr where no exit code carries it.
+#
+# Stripping ONE leading `-` and requiring digits after it is the whole rule.
+is_whole_number() {
+	case ${1#-} in
+	'' | *[!0-9]*) return 1 ;;
+	esac
+	return 0
+}
+
 classify() {
 	days=$1
-	warn=${2:-$DEFAULT_WARN_DAYS}
+	# `${2-...}`, not `${2:-...}`: an ABSENT margin takes the default, an
+	# explicitly empty one is a typo and is refused below. Collapsing the two
+	# is how a mistyped threshold becomes an invisible working one.
+	warn=${2-$DEFAULT_WARN_DAYS}
 
-	case "$days" in
-	'' | *[!0-9-]*)
+	if ! is_whole_number "$days"; then
 		printf 'UNKNOWN: %s is not a number of days.\n' "${days:-<empty>}"
 		printf '  The certificate could not be read. That is not the same as a\n'
 		printf '  healthy one and must never be scored as a pass.\n'
+		return 3
+	fi
+
+	# A margin decides every verdict this script gives, so one that cannot be
+	# read is a watcher that is not watching. Refused rather than defaulted,
+	# because a silently-defaulted margin looks exactly like a working one.
+	case $warn in
+	'' | *[!0-9]*)
+		printf 'UNKNOWN: a margin of %s is not a number of days.\n' "${warn:-<empty>}"
+		printf '  The threshold was unreadable, so nothing here was compared\n'
+		printf '  against anything. That is not a pass.\n'
 		return 3
 		;;
 	esac
@@ -80,12 +111,12 @@ if [ "${1:-}" = "--classify" ]; then
 		printf 'usage: %s --classify <days> [warn-days]\n' "$0" >&2
 		exit 64
 	}
-	classify "$2" "${3:-$DEFAULT_WARN_DAYS}"
+	classify "$2" "${3-$DEFAULT_WARN_DAYS}"
 	exit $?
 fi
 
 HOST=${1:-sipnab.com}
-WARN=${2:-$DEFAULT_WARN_DAYS}
+WARN=${2-$DEFAULT_WARN_DAYS}
 
 # WHICH certificate, and this is the whole trap. Connecting to the hostname
 # reaches the CDN and reads the EDGE certificate, which was perfectly healthy
