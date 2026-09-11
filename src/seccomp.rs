@@ -444,6 +444,20 @@ pub const DERIVED_ALLOWLIST: &[i64] = &[
 #[cfg(not(target_arch = "x86_64"))]
 pub const DERIVED_ALLOWLIST: &[i64] = &[];
 
+/// The seccomp action a mode installs, or `None` for a mode that installs none.
+///
+/// One place, because a status that disagrees with the action a filter carries
+/// is a status that lies. `install` built a logging filter and returned
+/// `Enforcing` while the two were decided separately.
+#[must_use]
+pub fn intended_action(mode: SeccompMode) -> Option<u32> {
+    match mode {
+        SeccompMode::Off => None,
+        SeccompMode::Log => Some(SECCOMP_RET_LOG),
+        SeccompMode::Enforce => Some(SECCOMP_RET_KILL_PROCESS),
+    }
+}
+
 /// Why enforcement must not install here, or `None` when it may.
 ///
 /// Pure, and taking every input as an argument, for a reason a mutation
@@ -611,10 +625,16 @@ pub fn install(mode: SeccompMode) -> SeccompStatus {
         ) {
             return SeccompStatus::Unsupported(why);
         }
-        (DERIVED_ALLOWLIST, SECCOMP_RET_KILL_PROCESS)
+        (
+            DERIVED_ALLOWLIST,
+            intended_action(mode).unwrap_or(SECCOMP_RET_KILL_PROCESS),
+        )
     } else {
         // Logging takes no allowlist: the point is to record everything.
-        ([].as_slice(), SECCOMP_RET_LOG)
+        (
+            [].as_slice(),
+            intended_action(mode).unwrap_or(SECCOMP_RET_LOG),
+        )
     };
     let prog = match build_program(arch, allow, action) {
         Ok(p) => p,
@@ -1004,7 +1024,11 @@ mod tests {
         let start = src
             .find("could not synchronize thread")
             .expect("the thread-sync failure message is still here");
-        let msg = &src[start..start + 200];
+        // To the end of the string literal, not a fixed count of characters.
+        // This read `start + 200` until `no_structural_gate_here_slices_a_window_chosen_by_eye`
+        // found it — the same expiring window that broke the readback gate one
+        // commit earlier, sitting three tests away and unnoticed.
+        let msg = &src[start..start + src[start..].find("\"\n").unwrap_or(0).max(1)];
         assert!(
             msg.contains("installed nothing"),
             "the thread-sync failure message must say nothing was installed: {msg}"
@@ -1408,6 +1432,71 @@ mod tests {
         );
     }
 
+    /// The action a mode installs, named once so a status cannot contradict it.
+    ///
+    /// Owed for a defect that shipped for about a minute: `install` built a
+    /// LOGGING filter and returned `Enforcing`. Every behavioral gate passed,
+    /// because an allowing filter and an enforcing one are told apart only by a
+    /// call that gets refused — and nothing in the runner made one.
+    #[test]
+    fn each_mode_names_exactly_one_action() {
+        assert_eq!(intended_action(SeccompMode::Log), Some(SECCOMP_RET_LOG));
+        assert_eq!(
+            intended_action(SeccompMode::Enforce),
+            Some(SECCOMP_RET_KILL_PROCESS)
+        );
+        assert_eq!(intended_action(SeccompMode::Off), None);
+        assert_ne!(
+            SECCOMP_RET_LOG, SECCOMP_RET_KILL_PROCESS,
+            "the two actions are equal, so no test anywhere can tell a recorder \
+             from a control"
+        );
+    }
+
+    /// The program a mode builds carries that mode's action.
+    ///
+    /// The second owed, and the one that would have caught it. It checks the
+    /// artifact rather than the report: build what each mode builds, and read
+    /// the fallback out of the instruction the kernel will actually run.
+    #[test]
+    fn the_program_each_mode_builds_carries_that_modes_action() {
+        for mode in [SeccompMode::Log, SeccompMode::Enforce] {
+            let Some(action) = intended_action(mode) else {
+                panic!("{mode:?} names no action");
+            };
+            let allow: &[i64] = if mode == SeccompMode::Enforce {
+                &[1, 2, 3]
+            } else {
+                &[]
+            };
+            let prog = build_program(AUDIT_ARCH_X86_64, allow, action).expect("builds");
+            assert_eq!(
+                prog[prog.len() - 2].k,
+                action,
+                "{mode:?} built a program whose fallback is not its own action"
+            );
+        }
+    }
+
+    /// A status claiming enforcement is only reachable from the enforcing mode.
+    ///
+    /// The third owed, structural because the wrong pairing compiled fine and
+    /// ran fine. `Enforcing` must be returned under a test of the mode, not
+    /// unconditionally at the end of a shared path.
+    #[test]
+    fn the_enforcing_status_is_returned_only_under_a_test_of_the_mode() {
+        let src = include_str!("seccomp.rs");
+        let at = src
+            .find("return SeccompStatus::Enforcing")
+            .expect("install returns the enforcing status somewhere");
+        let before = &src[at.saturating_sub(200)..at];
+        assert!(
+            before.contains("mode == SeccompMode::Enforce"),
+            "the enforcing status is returned without testing the mode first, \
+             which is how a logging install came to report enforcement: {before}"
+        );
+    }
+
     /// An architecture with no derived list is refused, and says which.
     ///
     /// Drivable on any host because the predicate takes its inputs. Inline,
@@ -1520,6 +1609,219 @@ mod tests {
                  short kills on the first call"
             );
         }
+    }
+
+    /// The variant scan sees a variant appended after the ones it knows.
+    ///
+    /// The one still owed for a gate that passed untouched when `Enforcing`
+    /// appeared. Its predecessor compared against a typed-out list, so a new
+    /// variant changed nothing it could observe. This drives the parser over an
+    /// enum carrying a variant the real one does not have, which is the only
+    /// way to know it would see the next one.
+    #[test]
+    fn the_variant_scan_would_see_the_next_variant_too() {
+        let src = "pub enum SeccompStatus {\n    Disabled,\n    Logging,\n    \
+                   Enforcing {\n        count: usize,\n    },\n    \
+                   Quarantining,\n    Failed(String),\n}\n";
+        let start = src.find("pub enum SeccompStatus {").expect("present");
+        let body = &src[start..start + src[start..].find("\n}").expect("ends")];
+        let variants: Vec<&str> = body
+            .lines()
+            .map(str::trim)
+            .filter(|l| {
+                l.chars().next().is_some_and(char::is_uppercase)
+                    && (l.ends_with(',') || l.ends_with('{') || l.ends_with('}'))
+            })
+            .map(|l| l.trim_end_matches([',', ' ', '{', '}']))
+            .collect();
+        assert!(
+            variants.iter().any(|v| v.contains("Quarantining")),
+            "a variant the parser has never seen was not found, so the scan is \
+             recognizing names rather than enumerating the type: {variants:?}"
+        );
+        assert_eq!(
+            variants.len(),
+            5,
+            "the parser miscounted a five-variant enum: {variants:?}"
+        );
+    }
+
+    /// No structural gate here slices a fixed-size window out of the source.
+    ///
+    /// Owed for one that did. `install_reads_the_filter_back_before_reporting_success`
+    /// read `&src[start..start + 2000]`, and the function outgrew it the moment
+    /// enforcement landed — the readback moved past character 2000 and the gate
+    /// reported it missing. A window chosen by eye expires, silently, and the
+    /// failure looks like the code being wrong rather than the test.
+    #[test]
+    fn no_structural_gate_here_slices_a_window_chosen_by_eye() {
+        // CODE, not commentary. A comment describing this pattern is not an
+        // instance of it, and the doc comment above this very function is
+        // written in terms of it — which is how the first two versions
+        // reported themselves. Excluding a window around the function was the
+        // obvious fix and the wrong one: it missed the doc comment, because a
+        // window drawn by hand is the thing being outlawed here.
+        let src = include_str!("seccomp.rs");
+        let re = regex::Regex::new(r"start \+ [0-9]{2,}\]").expect("pattern");
+        let hits: Vec<String> = src
+            .lines()
+            .filter(|l| {
+                let t = l.trim_start();
+                !t.starts_with("//") && !t.starts_with("///")
+            })
+            .flat_map(|l| re.find_iter(l).map(|m| m.as_str().to_string()))
+            .collect();
+        assert!(
+            hits.is_empty(),
+            "these slice a fixed number of characters out of the source, which \
+             expires the moment the thing they read grows: {hits:?}. Walk the \
+             braces instead"
+        );
+    }
+
+    /// The brace walk returns a whole function, not a prefix of one.
+    ///
+    /// The replacement, driven on synthetic source so its edges are testable.
+    /// Nested braces are the case a naive scan gets wrong, and a function whose
+    /// body contains a block is every function here.
+    #[test]
+    fn the_brace_walk_returns_the_whole_function() {
+        let src = "fn a() {\n    if x {\n        y();\n    }\n    z();\n}\nfn b() {}\n";
+        let start = src.find("fn a()").expect("present");
+        let open = start + src[start..].find('{').expect("body");
+        let mut depth = 0i32;
+        let mut end = open;
+        for (offset, ch) in src[open..].char_indices() {
+            match ch {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = open + offset;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let body = &src[open..=end];
+        assert!(body.contains("z();"), "the walk stopped early: {body}");
+        assert!(
+            !body.contains("fn b"),
+            "the walk ran past the function it was reading: {body}"
+        );
+    }
+
+    /// And it stops at the function's own close, not the file's.
+    ///
+    /// The other edge. A walk that never decrements returns everything to the
+    /// end of the file and every `contains` check on it passes — a gate that
+    /// agrees with any source.
+    #[test]
+    fn the_brace_walk_stops_at_the_functions_own_close() {
+        let src = "fn a() {\n    let s = 1;\n}\nfn poison() { unreachable!() }\n";
+        let start = src.find("fn a()").expect("present");
+        let open = start + src[start..].find('{').expect("body");
+        let mut depth = 0i32;
+        let mut end = open;
+        for (offset, ch) in src[open..].char_indices() {
+            match ch {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = open + offset;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        assert!(
+            !src[open..=end].contains("poison"),
+            "the walk swallowed the next function, so any gate using it would \
+             pass on text from somewhere else"
+        );
+    }
+
+    /// A status two modes can reach names neither of them.
+    ///
+    /// Owed for `Unsupported` and `Failed`, which read "Syscall LOGGING
+    /// unavailable" for months and then, the moment enforcement shipped, told
+    /// an operator who had asked for a control that a recorder was missing. A
+    /// true sentence about the wrong thing.
+    ///
+    /// The rule is structural because the wrong sentence compiles: a variant
+    /// both modes reach must render without naming either.
+    #[test]
+    fn a_status_both_modes_reach_names_neither_mode() {
+        for status in [
+            SeccompStatus::Unsupported("a reason".to_string()),
+            SeccompStatus::Failed("a reason".to_string()),
+        ] {
+            let line = startup_line(&status).to_lowercase();
+            for mode_word in ["logging", "enforc", "recorded"] {
+                assert!(
+                    !line.contains(mode_word),
+                    "{status:?} renders as {line:?}, which names {mode_word:?} — a \
+                     mode the operator may not have asked for"
+                );
+            }
+        }
+    }
+
+    /// A refusal reached from enforce reads as a filter failure.
+    ///
+    /// The second owed, from the other side: the line must still say something
+    /// useful once the mode words are gone. "No filter is in force" is true for
+    /// both modes and is the fact an operator needs.
+    #[test]
+    fn a_refusal_says_no_filter_is_in_force_whichever_mode_asked() {
+        for status in [
+            SeccompStatus::Unsupported("no derived list".to_string()),
+            SeccompStatus::Failed("EACCES".to_string()),
+        ] {
+            let line = startup_line(&status);
+            assert!(
+                line.contains("No filter is in force"),
+                "{status:?} renders as {line:?} and never says that nothing is \
+                 protecting or recording anything"
+            );
+            assert!(
+                line.contains("a reason")
+                    || line.contains("no derived list")
+                    || line.contains("EACCES"),
+                "the line drops the reason it was given: {line}"
+            );
+        }
+    }
+
+    /// Only the two mode-specific statuses name a mode.
+    ///
+    /// The third owed, and the pairing that makes the rule above safe. Strip
+    /// mode words from everything and the success lines stop saying what is
+    /// running; this pins which statuses are allowed to name one.
+    #[test]
+    fn the_mode_specific_statuses_are_the_only_ones_naming_a_mode() {
+        let logging = startup_line(&SeccompStatus::Logging).to_lowercase();
+        assert!(
+            logging.contains("logging"),
+            "the logging line stopped saying which mode is running: {logging}"
+        );
+        let enforcing = startup_line(&SeccompStatus::Enforcing { count: 42 }).to_lowercase();
+        assert!(
+            enforcing.contains("enforcing"),
+            "the enforcing line stopped saying which mode is running: {enforcing}"
+        );
+        assert!(
+            !enforcing.contains("logging") && !logging.contains("enforcing"),
+            "the two mode lines name each other's mode"
+        );
+        let off = startup_line(&SeccompStatus::Disabled).to_lowercase();
+        assert!(
+            !off.contains("enforc"),
+            "the off line mentions enforcement: {off}"
+        );
     }
 
     /// Exactly one status reads as enforcement, and it is the one that does.

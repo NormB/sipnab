@@ -323,3 +323,185 @@ fn the_design_document_and_the_script_name_each_other() {
          explains why it works that way"
     );
 }
+
+// ── Three owed for shape markers clobbered by a shared stream ───────────────
+
+/// The collector gives each shape its own stream.
+///
+/// Owed for a defect that made a still-growing set look settled — the one
+/// verdict this script exists to refuse. The first version appended
+/// `== SHAPE name` markers to the same file `dmesg --follow` was writing.
+/// `dmesg` holds that file at its own offset and overwrote them, so every
+/// shape's calls landed in the first shape, every later shape "added nothing",
+/// and two quiet shapes appeared out of nowhere.
+///
+/// Structural because the behavior needs root and a kernel log: one writer per
+/// file is the property, and two writers on one file is the defect.
+#[test]
+fn the_collector_gives_each_shape_its_own_stream() {
+    let src = std::fs::read_to_string(script()).expect("the script is in the tree");
+    assert!(
+        src.contains("dmesg --follow > \"$WORK/$name.log\""),
+        "the collector does not stream each shape to its own file"
+    );
+    assert!(
+        !src.contains(">> \"$STREAM\""),
+        "something still appends to a file `dmesg --follow` is writing; that \
+         text is overwritten and the shapes merge"
+    );
+    let combine = src
+        .find("== SHAPE %s")
+        .expect("the markers are written somewhere");
+    let after = &src[combine..];
+    assert!(
+        after.contains("$COMBINED") || after.contains("COMBINED"),
+        "the markers are not written into a combined log assembled after the \
+         streams are closed"
+    );
+}
+
+/// The judge attributes calls to the shape that made them.
+///
+/// The second owed, and the property the clobbering destroyed. Three shapes
+/// each making a different call must be reported as three shapes, each adding
+/// its own — not as one shape that added everything and two that added nothing.
+#[test]
+fn the_judge_attributes_each_call_to_the_shape_that_made_it() {
+    let (code, out) = classify(&log(&[("first", &[1]), ("second", &[2]), ("third", &[3])]));
+    assert_eq!(code, 1, "a set growing at every shape was accepted:\n{out}");
+    for (shape, nr) in [("first", 1), ("second", 2), ("third", 3)] {
+        assert!(
+            out.contains(&format!("{shape} ")) && out.contains(&format!("added: {nr}")),
+            "shape {shape} is not reported as the one that added {nr}:\n{out}"
+        );
+    }
+}
+
+/// A merged log is refused rather than read as a settled one.
+///
+/// The third owed, and the exact shape the defect produced: everything in the
+/// first shape, nothing in the rest. That LOOKS like convergence and is the
+/// most dangerous thing this judge can be handed, so the reported attribution
+/// has to make it visible — one shape carrying every call is the signature.
+#[test]
+fn a_log_where_every_call_landed_in_one_shape_is_visible_as_such() {
+    let (code, out) = classify(&log(&[
+        ("first", &[1, 2, 3, 4]),
+        ("second", &[]),
+        ("third", &[]),
+    ]));
+    assert_eq!(
+        code, 0,
+        "the fixture must be the settled-looking shape:\n{out}"
+    );
+    assert!(
+        out.contains("first") && out.contains("added: 1 2 3 4"),
+        "the judge does not show that one shape carried every call, which is \
+         what a merged log looks like:\n{out}"
+    );
+    assert!(
+        out.contains("second") && out.contains("third"),
+        "the shapes that added nothing are not listed, so a reader cannot see \
+         that they contributed no records at all:\n{out}"
+    );
+}
+
+// ── Three owed for a restructure that moved a change above its trap ─────────
+
+/// The collector cleans its workspace on every exit path.
+///
+/// Owed alongside the rate limit. The workspace is a `mktemp -d` full of
+/// streamed kernel logs, and a derivation that is interrupted must leave
+/// nothing behind — this repository's standing rule, and the reason the trap
+/// covers signals rather than sitting on the happy path's last line.
+#[test]
+fn the_collector_cleans_its_workspace_on_every_exit_path() {
+    let src = std::fs::read_to_string(script()).expect("the script is in the tree");
+    let trap = src
+        .lines()
+        .find(|l| l.trim_start().starts_with("trap "))
+        .unwrap_or_default();
+    assert!(
+        trap.contains("rm -rf") && trap.contains("WORK"),
+        "the workspace is not removed on exit: {trap}"
+    );
+    for signal in ["EXIT", "INT", "TERM"] {
+        assert!(
+            trap.contains(signal),
+            "the cleanup does not cover {signal}: {trap}"
+        );
+    }
+}
+
+/// Everything the collector changes outside itself is undone by that trap.
+///
+/// The second owed, stated as a rule rather than a list: enumerate what the
+/// script alters on the host, and require the trap to name each one. A
+/// restructure added the workspace and moved the `sysctl` above the trap in the
+/// same edit, so a rule that only knew about the rate limit would have caught
+/// half of it.
+#[test]
+fn everything_the_collector_changes_is_named_in_its_trap() {
+    let src = std::fs::read_to_string(script()).expect("the script is in the tree");
+    let code: String = src
+        .lines()
+        .filter(|l| !l.trim_start().starts_with('#'))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let trap = code
+        .lines()
+        .find(|l| l.trim_start().starts_with("trap "))
+        .unwrap_or_default();
+    let mut changes = Vec::new();
+    if code.contains("sysctl -q kernel.printk_ratelimit=0") {
+        changes.push("printk_ratelimit");
+    }
+    if code.contains("mktemp -d") {
+        changes.push("WORK");
+    }
+    assert!(
+        changes.len() >= 2,
+        "only {} host change(s) found; the scan has stopped matching and the \
+         trap could be missing anything: {changes:?}",
+        changes.len()
+    );
+    for change in changes {
+        assert!(
+            trap.contains(change),
+            "the collector changes {change} and the trap does not undo it: {trap}"
+        );
+    }
+}
+
+/// Nothing the collector changes happens before the trap is armed.
+///
+/// The third owed, and the one the restructure broke: a signal arriving between
+/// a change and its trap leaves the change in place. Every alteration has to
+/// come after the trap, and the rule is checked over all of them rather than
+/// over the one that failed.
+#[test]
+fn no_change_happens_before_the_trap_is_armed() {
+    let src = std::fs::read_to_string(script()).expect("the script is in the tree");
+    let code: String = src
+        .lines()
+        .filter(|l| !l.trim_start().starts_with('#'))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let trap_at = code.find("trap ").expect("the collector installs a trap");
+    for change in ["sysctl -q kernel.printk_ratelimit=0", "mktemp -d"] {
+        let at = code
+            .find(change)
+            .unwrap_or_else(|| panic!("the collector no longer does {change}"));
+        // `mktemp -d` may precede the trap: the trap needs its name. Creating a
+        // temporary directory is not a change to the HOST, and the shell has to
+        // know the path before it can promise to remove it.
+        if change == "mktemp -d" {
+            continue;
+        }
+        assert!(
+            trap_at < at,
+            "{change} happens at {at}, before the trap at {trap_at}; a signal in \
+             between leaves it applied"
+        );
+    }
+}

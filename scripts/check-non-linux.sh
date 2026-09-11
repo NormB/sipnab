@@ -14,6 +14,18 @@
 #   82eb8ff  error: unused variable: `fanout_group`, under -D warnings
 #            -- `#[cfg(all(unix, target_os = "linux"))]` on the call site gated
 #            the USE of a parameter but not its BINDING.
+#   2026-09-11 error: constant `EXIT_ENFORCED_AND_SURVIVED` is never used
+#            -- a constant that only Linux-gated roles read, declared with no
+#            predicate of its own. Twice in one day, with `in_child_role` the
+#            other.
+#
+# THE SHAPE, because every failure above is the same one and reads as an
+# unrelated compile error: ONE PLATFORM SPLIT WRITTEN TWICE. An item exists
+# unconditionally and is used only under a `target_os` predicate, so off Linux
+# it becomes DEAD CODE -- an unused constant, an unused variable, an unresolved
+# name. The fix is never a second cfg to paper over the first; it is to give
+# the item the same predicate as the code that uses it, so the split lives in
+# one place.
 #
 # Neither is reachable from any Linux build, at any feature combination. The
 # gates in `.githooks/pre-push` all compile the SAME arm of the split, so all of

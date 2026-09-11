@@ -520,3 +520,69 @@ fn the_inverted_tree_check_says_it_cannot_see_an_absent_libc_item() {
         );
     }
 }
+
+// ── Three owed for a constant that broke the non-Linux build ────────────────
+
+/// The non-Linux check is run before every push, not only in CI.
+///
+/// Owed for `EXIT_ENFORCED_AND_SURVIVED`, a constant used only by Linux-gated
+/// roles and declared unconditionally. Off Linux it is dead code, and dead code
+/// is an error in this tree. It was the second break of that exact shape in a
+/// day, and both were caught by this check — which is only worth anything if
+/// the check actually runs before the push rather than after it in CI.
+#[test]
+fn the_non_linux_check_runs_before_every_push() {
+    let hook = std::fs::read_to_string(repo().join(".githooks/pre-push"))
+        .expect(".githooks/pre-push is in the tree");
+    assert!(
+        hook.contains("check-non-linux.sh"),
+        "the push gate does not run the non-Linux check, so a platform split \
+         written twice reaches CI before anything says so"
+    );
+    let unconditional = hook
+        .lines()
+        .any(|l| l.contains("check-non-linux.sh") && !l.trim_start().starts_with('#'));
+    assert!(
+        unconditional,
+        "the non-Linux check appears only in a comment in the push gate"
+    );
+}
+
+/// Dead code off Linux is an error there, not a warning.
+///
+/// The property that turns an unused constant into a failed build. A warning
+/// would have let `EXIT_ENFORCED_AND_SURVIVED` through, and the break would
+/// have surfaced as a red main instead of a refused push.
+#[test]
+fn the_non_linux_check_treats_dead_code_as_an_error() {
+    let script = std::fs::read_to_string(repo().join("scripts/check-non-linux.sh"))
+        .expect("the script is in the tree");
+    assert!(
+        script.contains("-D warnings") || script.contains("RUSTFLAGS"),
+        "the non-Linux check does not promote warnings to errors, so an item \
+         that is merely unused off Linux passes it"
+    );
+}
+
+/// The class this check exists for is written down where a reader will find it.
+///
+/// Two breaks in one day, both "an item used only by Linux-gated code, declared
+/// unconditionally". The check's own notes have to name that shape, or the next
+/// person reads a failure about an unused constant and deletes the constant
+/// rather than gating it.
+#[test]
+fn the_non_linux_check_names_the_shape_that_keeps_breaking() {
+    let script = std::fs::read_to_string(repo().join("scripts/check-non-linux.sh"))
+        .expect("the script is in the tree");
+    let lower = script.to_lowercase();
+    assert!(
+        lower.contains("written twice") || lower.contains("one platform split"),
+        "the script never names the defect class it catches, so its failures \
+         read as unrelated compile errors"
+    );
+    assert!(
+        lower.contains("dead code") || lower.contains("never used") || lower.contains("unused"),
+        "the script does not mention that an item unused off Linux is the shape \
+         it most often reports"
+    );
+}

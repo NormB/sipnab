@@ -559,6 +559,49 @@ fn no_flag_installs_nothing_and_says_nothing() {
 
 // ── The three owed for the hand-derived allowlist that broke CI ─────────────
 
+/// `src` with the contents of every string literal blanked, line structure kept.
+///
+/// Structural gates here search for code, and code inside a string literal is a
+/// description of code. Two gates in this file are written entirely in such
+/// literals — they drive a scan over synthetic source — and a scanner that
+/// cannot tell them apart reports them.
+///
+/// Whole-file, not per-line, and that is the correction rather than the design.
+/// A per-line version saw only the tail of a literal that opened on an earlier
+/// line and read it as code: the same physical-versus-logical-line mistake that
+/// let a mutation survive the failure-sentence gate and made a doc-comment
+/// search match nothing.
+fn strip_string_literals(src: &str) -> String {
+    let mut out = String::with_capacity(src.len());
+    let mut in_string = false;
+    let mut escaped = false;
+    for ch in src.chars() {
+        if ch == '\n' {
+            out.push(ch);
+            escaped = false;
+            continue;
+        }
+        if escaped {
+            escaped = false;
+            out.push(' ');
+            continue;
+        }
+        match ch {
+            '\\' if in_string => {
+                escaped = true;
+                out.push(' ');
+            }
+            '"' => {
+                in_string = !in_string;
+                out.push(' ');
+            }
+            _ if in_string => out.push(' '),
+            _ => out.push(ch),
+        }
+    }
+    out
+}
+
 /// This file's own source, for the structural gates below.
 fn this_file() -> String {
     std::fs::read_to_string(
@@ -885,6 +928,46 @@ fn the_derived_list_survives_the_work_it_was_derived_for() {
     );
 }
 
+/// The derived list is exercised by something that actually runs.
+///
+/// The one still owed for a gap that would have left the enforcing path
+/// unexercised everywhere. `install` refuses unless the architecture AND the
+/// feature set match, and CI builds with `--all-features`, whose feature string
+/// is not the release's — so every automated run takes the refusal arm and the
+/// list is never once enforced. A control nothing exercises is a control nobody
+/// has tested.
+///
+/// Structural, because the thing being asserted is that a test EXISTS and is
+/// reachable: a gate that drives the list must be present, must not be
+/// `#[ignore]`d away from the runner entirely, and must load it with the
+/// killing action rather than an allowing one.
+#[test]
+fn something_that_runs_actually_enforces_the_derived_list() {
+    let src = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/seccomp_child_test.rs"),
+    )
+    .expect("this test file is in the tree");
+    assert!(
+        src.contains("fn the_derived_list_survives_the_work_it_was_derived_for"),
+        "nothing in this file drives the derived list, so the enforcing path is \
+         exercised nowhere"
+    );
+    let role = src
+        .find("fn child_the_derived_list_survives_the_work_it_was_derived_for")
+        .expect("the role that enforces the list is in this file");
+    let body = &src[role..role + src[role..].find("\n}\n").expect("the role ends")];
+    assert!(
+        body.contains("SECCOMP_RET_KILL_PROCESS"),
+        "the role that is supposed to enforce the derived list loads it with \
+         something other than the killing action, so it proves nothing about \
+         enforcement"
+    );
+    assert!(
+        body.contains("DERIVED_ALLOWLIST"),
+        "the role loads a list that is not the shipped one"
+    );
+}
+
 /// Enforcement refuses where no list was derived, rather than guessing.
 ///
 /// Two refusals, and both are hard. An allowlist is per-ABI, so a list from
@@ -980,12 +1063,13 @@ fn no_gate_that_runs_in_the_shared_runner_installs_a_filter() {
         "load(&prog",
     ];
 
+    let code = strip_string_literals(&src);
     let mut offenders = Vec::new();
     let mut attrs: Vec<String> = Vec::new();
     let mut in_runner_gate = false;
     let mut in_self = false;
     let mut checked = 0usize;
-    for line in src.lines() {
+    for (line, blanked) in src.lines().zip(code.lines()) {
         let t = line.trim();
         if t.starts_with("#[") || t.starts_with("#![") {
             attrs.push(t.to_string());
@@ -1005,7 +1089,12 @@ fn no_gate_that_runs_in_the_shared_runner_installs_a_filter() {
         if t.is_empty() {
             attrs.clear();
         }
-        if in_runner_gate && !in_self && installs.iter().any(|i| t.contains(i)) {
+        // Against the blanked copy. A fixture that DESCRIBES an install, in
+        // quotes, is not one — and the two gates that drive this scan over
+        // synthetic source are written entirely in such literals. Searching raw
+        // text reported them, which is a scanner failing to tell the map from
+        // the territory.
+        if in_runner_gate && !in_self && installs.iter().any(|i| blanked.contains(i)) {
             offenders.push(t.to_string());
         }
     }
@@ -1018,5 +1107,195 @@ fn no_gate_that_runs_in_the_shared_runner_installs_a_filter() {
         offenders.is_empty(),
         "these install a filter in the shared runner, which then carries it \
          through every gate that follows: {offenders:?}"
+    );
+}
+
+// ── Three owed for a source scanner that matched its own body ───────────────
+
+/// Every source-scanning gate in this file excludes itself.
+///
+/// Owed for `no_gate_that_runs_in_the_shared_runner_installs_a_filter`, whose
+/// first version searched for the strings it is written in terms of and
+/// reported itself. That is the same self-match that made five wait loops never
+/// fire earlier the same day, and the same one the derivation gate hit from the
+/// other direction — a scanner cannot be outside the thing it scans.
+///
+/// The rule is checkable: a test that reads this file has to say how it skips
+/// its own text, and there are only two honest ways — a name it excludes, or a
+/// filter that keeps code and drops comments.
+#[test]
+fn every_gate_that_reads_this_file_excludes_its_own_text() {
+    let src = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/seccomp_child_test.rs"),
+    )
+    .expect("this test file is in the tree");
+    let mut unguarded = Vec::new();
+    let literal = regex::Regex::new(r#"(?:contains|find)\("([^"]{4,})"\)"#).expect("pattern");
+    for (i, line) in src.lines().enumerate() {
+        if !line.starts_with("fn ") {
+            continue;
+        }
+        let name = line
+            .trim_start_matches("fn ")
+            .split('(')
+            .next()
+            .unwrap_or("");
+        let start = src.find(line).unwrap_or(0);
+        let body = &src[start..start + src[start..].find("\n}\n").unwrap_or(0).max(1)];
+        // Only gates that read THIS file can match themselves. A helper that
+        // merely returns the text is not a gate, so this looks at `#[test]`s.
+        if !body.contains("tests/seccomp_child_test.rs") || !src[..start].ends_with("#[test]\n") {
+            continue;
+        }
+        // And only when a self-match is actually possible: a gate searching for
+        // a literal that appears nowhere else in its own body cannot report
+        // itself, and demanding a guard from it would be a gate crying wolf.
+        let can_self_match = literal.captures_iter(body).any(|c| {
+            let needle = &c[1];
+            body.matches(needle).count() > 1
+        });
+        if !can_self_match {
+            continue;
+        }
+        let guarded = body.contains("SELF")
+            || body.contains("strip_string_literals")
+            || body.contains("starts_with(\"//\")")
+            || body.contains("in_self");
+        if !guarded {
+            unguarded.push(format!("line {}: {name}", i + 1));
+        }
+    }
+    assert!(
+        unguarded.is_empty(),
+        "these read this file and say nothing about skipping their own text, so \
+         the strings they search for will match themselves: {unguarded:?}"
+    );
+}
+
+/// The runner-gate scan sees an install added to a runner gate.
+///
+/// The second owed, and the fixture guard the first version never had: the scan
+/// is an attribute walk over text, and a walk that stopped matching would
+/// report nothing and agree with any file. Driven on synthetic source carrying
+/// exactly the violation.
+#[test]
+fn the_runner_gate_scan_sees_an_install_in_a_plain_test() {
+    let src = "#[test]\nfn a_runner_gate() {\n    seccomp::install(SeccompMode::Log);\n}\n";
+    let mut offenders = Vec::new();
+    let mut attrs: Vec<String> = Vec::new();
+    let mut in_runner_gate = false;
+    for line in src.lines() {
+        let t = line.trim();
+        if t.starts_with("#[") {
+            attrs.push(t.to_string());
+            continue;
+        }
+        if t.starts_with("fn ") {
+            in_runner_gate = attrs.iter().any(|a| a == "#[test]")
+                && !attrs.iter().any(|a| a.starts_with("#[ignore"));
+            attrs.clear();
+            continue;
+        }
+        if in_runner_gate && t.contains("install(SeccompMode::Log") {
+            offenders.push(t.to_string());
+        }
+    }
+    assert_eq!(
+        offenders.len(),
+        1,
+        "the attribute walk did not see an install in a plain `#[test]`: {offenders:?}"
+    );
+}
+
+/// And it leaves an install inside an ignored role alone.
+///
+/// The third owed, the other half of the pair. A scan that flagged roles too
+/// would flag every child in this file, and the only way to make it green would
+/// be to delete it — which is how a gate that cries wolf ends.
+#[test]
+fn the_runner_gate_scan_leaves_an_ignored_role_alone() {
+    let src = "#[test]\n#[ignore = \"child role\"]\nfn child_role() {\n    \
+               seccomp::install(SeccompMode::Log);\n}\n";
+    let mut offenders = Vec::new();
+    let mut attrs: Vec<String> = Vec::new();
+    let mut in_runner_gate = false;
+    for line in src.lines() {
+        let t = line.trim();
+        if t.starts_with("#[") {
+            attrs.push(t.to_string());
+            continue;
+        }
+        if t.starts_with("fn ") {
+            in_runner_gate = attrs.iter().any(|a| a == "#[test]")
+                && !attrs.iter().any(|a| a.starts_with("#[ignore"));
+            attrs.clear();
+            continue;
+        }
+        if in_runner_gate && t.contains("install(SeccompMode::Log") {
+            offenders.push(t.to_string());
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "an install inside an `#[ignore]`d child role was reported, which would \
+         flag every role in this file: {offenders:?}"
+    );
+}
+
+// ── Two owed for the filter a refusal check left in the shared runner ───────
+
+/// The runner-gate scan examines every gate, not a handful.
+///
+/// The anti-vacuity half. The scan is an attribute walk over text, and a walk
+/// that stops matching examines nothing while reporting nothing — which is
+/// indistinguishable from a clean file. The floor is a count of gates it
+/// actually entered, so a rewrite that broke the walk fails loudly instead of
+/// going quiet.
+#[test]
+fn the_runner_gate_scan_examines_every_gate_in_this_file() {
+    let src = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/seccomp_child_test.rs"),
+    )
+    .expect("this test file is in the tree");
+    let declared = src.lines().filter(|l| *l == "#[test]").count();
+    let ignored = src
+        .lines()
+        .filter(|l| l.trim_start().starts_with("#[ignore"))
+        .count();
+    let runner_gates = declared - ignored;
+    assert!(
+        runner_gates >= 10,
+        "only {runner_gates} gate(s) run in the shared runner, which cannot be \
+         true of this file — the attribute count has stopped matching"
+    );
+    assert!(
+        ignored >= 5,
+        "only {ignored} child role(s) found; the roles are what may install, and \
+         a scan that cannot see them would report every one as a violation"
+    );
+}
+
+/// A filter left in the runner is visible to the next gate that looks.
+///
+/// The behavioral half, and the thing that actually went wrong: the refusal
+/// check installed a filter and three unrelated gates failed afterwards,
+/// pointing at the wrong cause. This asserts the runner is clean at the moment
+/// it matters — a gate that finds itself already filtered is reading somebody
+/// else's state, and it says so rather than measuring it.
+#[cfg(target_os = "linux")]
+#[test]
+fn the_shared_runner_carries_no_filter_from_an_earlier_gate() {
+    if !seccomp_possible() {
+        announce_skip(
+            "the_shared_runner_carries_no_filter_from_an_earlier_gate",
+            "this target has no seccomp",
+        );
+        return;
+    }
+    assert!(
+        !seccomp::in_filter_mode(),
+        "the test runner is already under a seccomp filter, so some gate in this \
+         binary installed one instead of spawning a child. Every measurement \
+         taken after that point is about the wrong process"
     );
 }
