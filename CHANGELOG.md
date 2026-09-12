@@ -63,7 +63,15 @@ entry that carries them.
   skips the rest under four named reasons -- a capture device, root, a server
   that does not exit, a shell program. A command matching no reason fails the
   test rather than slipping through, and the gate prints its own coverage.
-  Every one of the 232 passes today.
+  Coverage is **323 of 352**. The device and root examples run with a device
+  name that cannot exist substituted for the one the page names, so their flags
+  are still parsed in full while capture fails harmlessly at open. The server
+  examples run under one shared wall-clock bound, because clap refuses in
+  milliseconds and a process still alive after it necessarily parsed its
+  arguments. The 29 that never run are 17 shell programs and 12 commands that
+  would exec something of their own or attach to the kernel -- a documentation
+  gate must not POST to the endpoint an example names, or load probes into the
+  machine building sipnab. Every one of the 323 passes today.
 
 ### Fixed
 

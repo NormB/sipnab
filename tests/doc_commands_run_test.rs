@@ -59,30 +59,45 @@ const FIXTURE: &str = "tests/pcap-samples/Asterisk_ZFONE_XLITE.pcap";
 /// that only ever hits the not-found path exercises less than it looks like.
 const FIXTURE_CALL_ID: &str = "ZDYzOWVlNjEwM2NjZTBjNzliNmM1ZTNiOGZjNWFhN2E.";
 
-/// Why an invocation is not executed here.
+/// What this test does with one documented invocation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-enum Skip {
-    /// Names a capture device. This process has no interface to open, and
-    /// opening one would be capturing traffic on whatever host runs the suite.
-    NeedsDevice,
-    /// Starts with `sudo`. A test suite must never escalate.
-    NeedsRoot,
-    /// Starts a listener or a server. It would not exit, and the port it wants
-    /// may belong to something else on the machine running this.
-    Serves,
-    /// The example is a shell program rather than one invocation -- a loop, or
-    /// a command substitution feeding the next argument. Running it would be
-    /// testing the shell.
+enum Plan {
+    /// Runs against a capture that ships with the repository.
+    Reads,
+    /// Runs, with a device name that cannot exist substituted for the one the
+    /// page names. The arguments are still parsed in full, and capture then
+    /// fails at open with "No such device exists" -- which is not a usage
+    /// error, so a typo in a live-capture example is still caught. `sudo` is
+    /// stripped: a test suite must never escalate, and sudo is not what makes
+    /// the flags valid.
+    ReadsFakeDevice,
+    /// Runs under a wall-clock bound and is killed if it is still alive.
+    /// Servers do not exit; clap refuses in milliseconds. A process still
+    /// running after the bound necessarily got past argument parsing.
+    Bounded,
+    /// Not run: the example is a shell program rather than one invocation -- a
+    /// loop, or a command substitution feeding the next argument. Running it
+    /// would be testing the shell.
     ShellProgram,
+    /// Not run: it would execute a command of its own (`--on-dialog-exec`,
+    /// `--on-quality-exec`) or attach to the kernel (`--uprobe-tls`). A
+    /// documentation gate must not run `curl` at a stranger's endpoint or load
+    /// probes into the machine running the suite.
+    SideEffects,
 }
 
-impl Skip {
+impl Plan {
+    const fn is_run(self) -> bool {
+        matches!(self, Self::Reads | Self::ReadsFakeDevice | Self::Bounded)
+    }
+
     const fn why(self) -> &'static str {
         match self {
-            Self::NeedsDevice => "names a capture device",
-            Self::NeedsRoot => "requires root",
-            Self::Serves => "starts a server that does not exit",
+            Self::Reads => "runs against a fixture",
+            Self::ReadsFakeDevice => "runs with a device name that cannot exist",
+            Self::Bounded => "runs under a wall-clock bound",
             Self::ShellProgram => "is a shell program, not one invocation",
+            Self::SideEffects => "would exec a command or attach to the kernel",
         }
     }
 }
@@ -157,34 +172,39 @@ fn documented_invocations() -> Vec<Invocation> {
     out
 }
 
-/// The bucket an invocation belongs to, or `None` when it runs here.
-fn classify(cmd: &str) -> Option<Skip> {
-    if cmd.starts_with("sudo ") {
-        return Some(Skip::NeedsRoot);
+/// What to do with one documented invocation.
+///
+/// Ordered by what MUST win. A command that both names a device and installs an
+/// exec hook is not run, because the hook is the dangerous half.
+fn classify(cmd: &str) -> Plan {
+    // Never run, whatever else it says.
+    let side_effects =
+        regex::Regex::new(r"(^|\s)(--on-[a-z-]+-exec|--uprobe-tls|--uprobe-backend)(\s|=|$)")
+            .expect("regex");
+    if side_effects.is_match(cmd) {
+        return Plan::SideEffects;
     }
-    let device = regex::Regex::new(r"(^|\s)(-d|--device)(\s|=)").expect("regex");
-    if device.is_match(cmd) {
-        return Some(Skip::NeedsDevice);
+    // `$(…)`, `$VAR`, or a line that opens a loop: the shell is doing the work.
+    let shell_var = regex::Regex::new(r"\$[A-Za-z_(]").expect("regex");
+    if shell_var.is_match(cmd) || cmd.contains("; do") || cmd.contains("; then") {
+        return Plan::ShellProgram;
     }
     let serves =
         regex::Regex::new(r"(^|\s)(--api|--mcp|--metrics-only|-L|--hep-listen|--watch)(\s|=|$)")
             .expect("regex");
     if serves.is_match(cmd) {
-        return Some(Skip::Serves);
+        return Plan::Bounded;
     }
-    // `$(…)`, `$VAR`, or a line that opens a loop: the shell is doing the work.
-    if cmd.contains("$(")
-        || regex::Regex::new(r"\$[A-Za-z_]")
-            .expect("regex")
-            .is_match(cmd)
-    {
-        return Some(Skip::ShellProgram);
+    let device = regex::Regex::new(r"(^|\s)(-d|--device)(\s|=)").expect("regex");
+    if device.is_match(cmd) || cmd.starts_with("sudo ") {
+        return Plan::ReadsFakeDevice;
     }
-    if cmd.contains("; do") || cmd.contains("; then") {
-        return Some(Skip::ShellProgram);
-    }
-    None
+    Plan::Reads
 }
+
+/// A device name no host has. Long and self-describing so that if it ever DOES
+/// appear in somebody's `ip link` output, the reason is obvious.
+const FAKE_DEVICE: &str = "sipnab-doc-gate-no-such-device";
 
 /// Drop a trailing shell redirection: it is the shell's argument, not sipnab's.
 ///
@@ -258,6 +278,10 @@ struct Prepared {
 
 /// Build the argv actually run, with every substitution this test declares.
 fn prepare(cmd: &str, sandbox: &Path, n: usize) -> Option<Prepared> {
+    // `sudo` is the shell's word, not sipnab's argument, and this suite must
+    // never escalate. Dropping it leaves the flags, which are what is under
+    // test.
+    let cmd = cmd.strip_prefix("sudo ").unwrap_or(cmd);
     // A pipeline's later stages are jq's business, not sipnab's.
     let head = cmd.split(" | ").next().unwrap_or(cmd).trim();
     let head = head.trim_end_matches(';');
@@ -292,9 +316,15 @@ fn prepare(cmd: &str, sandbox: &Path, n: usize) -> Option<Prepared> {
             argv[i] = sandbox.join(format!("out-{n}")).display().to_string();
         } else if prev == "--call-report" || prev == "--export-vcon" {
             argv[i] = FIXTURE_CALL_ID.to_owned();
+        } else if prev == "-d" || prev == "--device" {
+            // The page's interface, replaced by one that cannot exist. Opening
+            // the real one would capture traffic on whoever runs this suite,
+            // and the flags parse identically either way.
+            argv[i] = FAKE_DEVICE.to_owned();
         }
     }
-    if !argv.iter().any(|a| a == "-I" || a == "--input") {
+    let names_device = argv.iter().any(|a| a == "-d" || a == "--device");
+    if !names_device && !argv.iter().any(|a| a == "-I" || a == "--input") {
         argv.push("-I".to_owned());
         argv.push(fixture);
     }
@@ -363,7 +393,7 @@ fn usage_error(stderr: &str) -> Option<String> {
         .map(|l| l.trim().to_owned())
 }
 
-/// Every documented command runs, or is one of three named exceptions.
+/// Every documented command runs, or is one of two named exceptions.
 #[test]
 fn every_documented_command_runs_or_says_why_not() {
     let all = documented_invocations();
@@ -381,14 +411,18 @@ fn every_documented_command_runs_or_says_why_not() {
     ));
     std::fs::create_dir_all(&sandbox).expect("a sandbox directory");
 
-    let mut skipped: BTreeMap<Skip, usize> = BTreeMap::new();
+    let mut tally: BTreeMap<Plan, usize> = BTreeMap::new();
     let mut unsplittable = Vec::new();
     let mut failures = Vec::new();
+    // Servers are spawned together and judged after ONE wait, so 24 of them
+    // cost one bound rather than 24.
+    let mut pending: Vec<(Invocation, std::process::Child)> = Vec::new();
     let mut ran = 0_usize;
 
     for (n, inv) in all.iter().enumerate() {
-        if let Some(skip) = classify(&inv.text) {
-            *skipped.entry(skip).or_default() += 1;
+        let plan = classify(&inv.text);
+        *tally.entry(plan).or_default() += 1;
+        if !plan.is_run() {
             continue;
         }
         let Some(Prepared { argv, env }) = prepare(&inv.text, &sandbox, n) else {
@@ -400,10 +434,43 @@ fn every_documented_command_runs_or_says_why_not() {
         for (k, v) in env {
             c.env(k, v);
         }
-        let out = c.output().expect("the binary under test is runnable");
         ran += 1;
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        if let Some(err) = usage_error(&stderr) {
+        if plan == Plan::Bounded {
+            c.stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped());
+            match c.spawn() {
+                Ok(child) => pending.push((inv.clone(), child)),
+                Err(e) => failures.push(format!("{}:{} could not spawn: {e}", inv.page, inv.line)),
+            }
+            continue;
+        }
+        let out = c.output().expect("the binary under test is runnable");
+        if let Some(err) = usage_error(&String::from_utf8_lossy(&out.stderr)) {
+            failures.push(format!(
+                "{}:{}\n    {}\n    -> {}",
+                inv.page, inv.line, inv.text, err
+            ));
+        }
+    }
+
+    // One bound for every server. clap refuses in milliseconds, so a process
+    // still alive here necessarily parsed its arguments.
+    if !pending.is_empty() {
+        std::thread::sleep(std::time::Duration::from_millis(1500));
+    }
+    for (inv, mut child) in pending {
+        let still_running = matches!(child.try_wait(), Ok(None));
+        if still_running {
+            let _ = child.kill();
+        }
+        let out = child
+            .wait_with_output()
+            .expect("a spawned child is waitable");
+        if still_running {
+            continue; // Got past parsing, which is all this can prove.
+        }
+        if let Some(err) = usage_error(&String::from_utf8_lossy(&out.stderr)) {
             failures.push(format!(
                 "{}:{}\n    {}\n    -> {}",
                 inv.page, inv.line, inv.text, err
@@ -416,13 +483,13 @@ fn every_documented_command_runs_or_says_why_not() {
 
     // Reported, not merely asserted. A reader of a green run should be able to
     // see how much of the documentation it actually executed, because the
-    // difference between "232 ran" and "3 ran, 229 skipped" is the difference
+    // difference between "343 ran" and "3 ran, 349 skipped" is the difference
     // between a gate and a decoration.
     println!(
-        "documented sipnab invocations: {} total, {ran} executed, {} skipped {:?}",
+        "documented sipnab invocations: {} total, {ran} executed, {} not run — {:?}",
         all.len(),
         all.len() - ran,
-        skipped
+        tally
     );
 
     assert!(
@@ -444,45 +511,75 @@ fn every_documented_command_runs_or_says_why_not() {
         failures.join("\n\n")
     );
     assert!(
-        ran >= 200,
-        "only {ran} of {} documented invocation(s) actually ran; the rest were \
-         skipped as {skipped:?}. A classifier that quietly widened would make \
-         this gate cover almost nothing.",
+        ran * 10 >= all.len() * 9,
+        "only {ran} of {} documented invocation(s) ran — under nine in ten. A \
+         classifier that quietly widened would make this gate cover almost \
+         nothing. Tally: {tally:?}",
         all.len()
     );
 }
 
-/// Every skipped command is skipped for one of three stated reasons.
+/// Nothing is left un-run without a stated reason.
 ///
 /// The bucket names are the whole point: "skipped" without a reason is where a
 /// gate goes to stop working.
 #[test]
-fn nothing_is_skipped_without_a_reason() {
+fn nothing_is_left_unrun_without_a_reason() {
     let all = documented_invocations();
-    let mut counted = 0;
+    let mut unrun = 0;
     for inv in &all {
-        if let Some(skip) = classify(&inv.text) {
-            assert!(
-                !skip.why().is_empty(),
-                "{}:{} is skipped with no reason",
-                inv.page,
-                inv.line
-            );
-            counted += 1;
+        let plan = classify(&inv.text);
+        assert!(
+            !plan.why().is_empty(),
+            "{}:{} has no stated plan",
+            inv.page,
+            inv.line
+        );
+        if !plan.is_run() {
+            unrun += 1;
         }
     }
     assert!(
-        counted > 0,
-        "no documented command was classified as unrunnable, which cannot be \
-         right: the docs show live capture and server modes"
+        unrun > 0,
+        "every documented command was classified as runnable, which cannot be \
+         right: the docs show exec hooks and uprobe capture, and this suite \
+         must run neither"
     );
     assert!(
-        counted * 2 < all.len(),
-        "{counted} of {} documented invocations are skipped — more than half. \
-         The classifier has widened and this suite is mostly not running \
-         anything.",
+        unrun * 10 < all.len(),
+        "{unrun} of {} documented invocations are not run — more than one in \
+         ten. The classifier has widened.",
         all.len()
     );
+}
+
+/// The two never-run buckets are the two that would do something to the host.
+///
+/// Not a style rule. A gate that ran `--on-quality-exec 'curl -X POST
+/// http://hook/quality'` would POST to a stranger's endpoint on every test run,
+/// and one that ran `--uprobe-tls` would load probes into whatever machine is
+/// building sipnab.
+#[test]
+fn the_never_run_buckets_are_the_dangerous_ones() {
+    for cmd in [
+        "sipnab -N -d eth0 --on-dialog-exec '/usr/local/bin/call-logger'",
+        "sipnab -N -I trunk.pcap --on-quality-exec 'curl -m 30 -X POST http://hook/quality'",
+        "sipnab -N --uprobe-tls",
+        "sipnab -N --uprobe-tls --uprobe-backend bpf --portrange 0-65535",
+    ] {
+        assert_eq!(
+            classify(cmd),
+            Plan::SideEffects,
+            "{cmd:?} would be RUN by this gate"
+        );
+    }
+    // And the ordinary ones are not swept up with them.
+    assert_eq!(classify("sipnab -N -I capture.pcap --json"), Plan::Reads);
+    assert_eq!(
+        classify("sudo sipnab -d eth0 --portrange 5060-5061"),
+        Plan::ReadsFakeDevice
+    );
+    assert_eq!(classify("sipnab --api 127.0.0.1:8080"), Plan::Bounded);
 }
 
 /// The usage-error detector fires on a real refusal and not on ordinary output.

@@ -50,21 +50,27 @@ const KNOWN_UNTESTED: &[&str] = &[
     "syslog", // requires a syslog daemon to observe alerts
     // ── Need crafted fixtures / hard-to-trigger events ──────────────────────
     "telephone-event", // DTMF RTP display — needs a DTMF pcap + RTP-output check
-    "on-quality-exec", // fires on an RTP quality drop — needs a degraded fixture
-    "alert-exec",      // fires on a security alert — needs a scanner/fraud trigger
-                       // `replay` was here for "no offline output to assert". There is one, and it
-                       // is the sharpest assertion in the suite: replaying a capture at its
-                       // original timing is the only way to make an offline read take seconds
-                       // instead of milliseconds, which is exactly what
-                       // capture_clock_test::offline_report_is_identical_fast_and_slow needs to
-                       // prove the report does not depend on read speed.
-                       //
-                       // `split` was here for needing "a large enough capture" to observe a
-                       // rotation. Its most consequential behavior needs no rotation at all:
-                       // `--split` widens the set of paths a run may write from `-O out.pcap` to
-                       // the whole `out_00001.pcap` family, so it can destroy an input the plain
-                       // `-O` check would have cleared. See
-                       // output_never_overwrites_input_test::split_rotation_onto_an_input_is_refused.
+    // `on-quality-exec` left this list on 2026-09-12, and the reference that
+    // retired it is NARROWER than behavior coverage, so it is named here rather
+    // than left to be assumed. `doc_commands_run_test` asserts that a
+    // documented command carrying the flag is never EXECUTED by the
+    // documentation gate: running it would POST to the stranger's endpoint the
+    // example names. Nothing yet fires it on a real quality drop, which still
+    // needs a degraded fixture.
+    "alert-exec", // fires on a security alert — needs a scanner/fraud trigger
+                  // `replay` was here for "no offline output to assert". There is one, and it
+                  // is the sharpest assertion in the suite: replaying a capture at its
+                  // original timing is the only way to make an offline read take seconds
+                  // instead of milliseconds, which is exactly what
+                  // capture_clock_test::offline_report_is_identical_fast_and_slow needs to
+                  // prove the report does not depend on read speed.
+                  //
+                  // `split` was here for needing "a large enough capture" to observe a
+                  // rotation. Its most consequential behavior needs no rotation at all:
+                  // `--split` widens the set of paths a run may write from `-O out.pcap` to
+                  // the whole `out_00001.pcap` family, so it can destroy an input the plain
+                  // `-O` check would have cleared. See
+                  // output_never_overwrites_input_test::split_rotation_onto_an_input_is_refused.
 ];
 
 /// All long flags (and long aliases) the CLI accepts, via clap.
