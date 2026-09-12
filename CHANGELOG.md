@@ -10,6 +10,38 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Six homepage claims were wrong, and are now derived rather than typed.**
+  An audit of the live page found: the MCP row said 32 tools, 27 read-only and
+  five that write, while the server registers 66, 54 and twelve -- and a stat
+  tile four sections up already said 66, because a gate derived that one and
+  nobody derived the sentence. The eBPF row said released binaries do not carry
+  the `bpf` feature; the released Linux gnu tarballs and the `.deb` and `.rpm`
+  packages have carried it since it was added to that matrix. The hero promised
+  "One static musl binary, zero dependencies" while the installer hands most
+  Linux hosts the glibc build and tells them it needs libpcap, and hands macOS a
+  Mach-O binary that is not musl at all. The filter row said 33 fields and seven
+  operators against 32 fields and eight. The TUI demo told a reader to press
+  `o` to open a capture; the binding is `O`, so the key the page named did
+  nothing. The rows for WASM plugins and vCon export advertised capabilities the
+  static musl binary the hero pointed at does not carry.
+
+- **`in_subnet` was documented for the first time.** It parses, it matches
+  addresses against a CIDR block using the same rule as `--hep-allow`, and
+  `docs/filter-dsl.md` had never mentioned it -- which for an operator is the
+  same as not having shipped it.
+
+### Added
+
+- **`tests/homepage_claim_truth_test.rs`: eighteen gates over what the homepage
+  says in PROSE.** Each derives its expected value from the thing it describes
+  -- the tool registry, the release workflow's feature computation, the
+  installer's own selection logic, the filter parser's enums, the TUI key
+  bindings, the CLI definition -- rather than from a second copy of it. Every
+  one was watched failing against the live page before the page was corrected,
+  and every one was mutation-proven afterwards.
+
 ### Changed
 
 - **RP1 and RP3 are closed in the backlog with what the relay taught, not a

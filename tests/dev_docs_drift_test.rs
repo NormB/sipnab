@@ -683,7 +683,13 @@ fn linked_code_targets_exist() {
     // links the two checkers the 2026-09-11 outage produced. Attributed by
     // counting that file: 45 relative code links before, 47 after, and no
     // other internals page changed.
-    const EXPECTED_CODE_LINKS: usize = 427;
+    // 427 -> 428: one, in `docs/internals/testing.md`, where the table gains a
+    // row for `homepage_claim_truth_test`. That file exists because six
+    // homepage claims were wrong at once on 2026-09-12 and the page carried
+    // two different MCP tool counts, one gated and one not. Attributed by
+    // counting every page under `docs/internals/` against HEAD: testing.md
+    // moved 94 -> 95 and no other page changed.
+    const EXPECTED_CODE_LINKS: usize = 428;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \
