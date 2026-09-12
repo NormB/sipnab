@@ -53,6 +53,26 @@ entry that carries them.
   end-to-end script now asks the running stack which relay is anchoring instead
   of assuming 8081.
 
+- **The homepage claimed memory safety the build does not enforce.** "Memory-safe
+  by construction" sat beside 88 `unsafe` blocks and no `forbid(unsafe_code)`.
+  The row now states the count, says every block is FFI at the OS boundary, and
+  says the build rejects one that does not carry its own soundness argument --
+  which is true, enforced by `undocumented_unsafe_blocks` plus clippy at
+  `-D warnings`, and a stronger claim than the one it replaces. Three gates hold
+  it: the count against the tree, the absence of any unqualified safety claim
+  while `unsafe` exists, and the lint actually being set to a level.
+
+- **A cold read of the whole homepage fixed five more places that assume
+  context.** The hero ended on a packaging detail. "No install required" named
+  no antecedent, so it read as if it applied to the page rather than to one
+  button. Six demo panels are reachable by a direct click and none said which
+  interface they were showing, so a reader who clicked "Detail Pane" after five
+  agent demos had no signal the context had changed to a terminal. The eBPF row
+  had grown into the longest cell on the page. And the page never said what
+  sipnab deliberately is NOT, which is the first thing somebody evaluating a
+  tool needs: it is run, not operated, and if you want dashboards and months of
+  history you want Homer.
+
 - **The demo wall on the homepage opens mid-thought, and now does not.** The
   section had no lede at all, so the first panel a visitor reads began "One
   capture, read end to end:" with nothing establishing what they were looking

@@ -1102,6 +1102,15 @@ input:focus-visible,
   margin: 0 auto;
 }
 
+.comparison-sub {
+  max-width: 700px;
+  margin: 1rem auto 0;
+  text-align: center;
+  color: $text-dim;
+  font-size: 0.95rem;
+  line-height: 1.65;
+}
+
 .demos-sub {
   max-width: 640px;
   margin: 1rem auto 0;

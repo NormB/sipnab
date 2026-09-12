@@ -785,3 +785,166 @@ fn every_capability_row_links_to_a_page_that_exists() {
          website/content — the row is advertising a page that 404s"
     );
 }
+
+// ── G. The safety claim ──────────────────────────────────────────────
+
+/// `unsafe {` blocks in `src/`, excluding `#[cfg(test)]` modules.
+///
+/// The same rule `tests/unsafe_census_test.rs` applies, because a second count
+/// of one fact is how `docs/fault-model.md` and
+/// `docs/internals/build-ci-release.md` came to publish 16 and 49 for the same
+/// tree. This walk is deliberately the simpler one: it only has to agree with
+/// the census on the number the page prints, and the census test fails loudly
+/// if the two ever diverge from the documentation.
+fn non_test_unsafe_blocks() -> usize {
+    fn walk(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for e in entries.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                walk(&p, out);
+            } else if p.extension().is_some_and(|x| x == "rs") {
+                out.push(p);
+            }
+        }
+    }
+    let mut files = Vec::new();
+    walk(&repo().join("src"), &mut files);
+    assert!(files.len() >= 20, "only {} file(s) under src/", files.len());
+    let mut total = 0;
+    for f in &files {
+        let Ok(text) = std::fs::read_to_string(f) else {
+            continue;
+        };
+        let mut depth: i64 = 0;
+        let mut in_test = false;
+        let mut opened = false;
+        for line in text.lines() {
+            if !in_test && line.trim_start().starts_with("#[cfg(test)]") {
+                in_test = true;
+                depth = 0;
+                opened = false;
+                continue;
+            }
+            if in_test {
+                depth += line.matches('{').count() as i64;
+                if depth > 0 {
+                    opened = true;
+                }
+                depth -= line.matches('}').count() as i64;
+                if opened && depth <= 0 {
+                    in_test = false;
+                }
+                continue;
+            }
+            total += line.matches("unsafe {").count();
+        }
+    }
+    total
+}
+
+/// The homepage's `unsafe` count is the count the tree holds.
+#[test]
+fn homepage_unsafe_count_matches_the_tree() {
+    let blocks = non_test_unsafe_blocks();
+    assert!(
+        blocks >= 20,
+        "the unsafe walk found only {blocks} block(s) — it stopped matching, so \
+         it would certify any number the page prints"
+    );
+    let page = homepage();
+    let re = regex::Regex::new(r"(\d+) <code>unsafe</code> blocks").expect("regex");
+    let stated: Vec<usize> = re
+        .captures_iter(&page)
+        .filter_map(|c| c[1].parse().ok())
+        .collect();
+    assert_eq!(
+        stated.len(),
+        1,
+        "expected exactly one \"N <code>unsafe</code> blocks\" claim on the \
+         homepage, found {}: {stated:?}",
+        stated.len()
+    );
+    assert_eq!(
+        stated[0], blocks,
+        "the homepage says {} unsafe blocks; src/ holds {blocks} outside \
+         #[cfg(test)]",
+        stated[0]
+    );
+}
+
+/// The page must not claim unqualified memory safety while `unsafe` exists.
+///
+/// It said "Memory-safe by construction" for as long as the row existed, beside
+/// 88 `unsafe` blocks and no `#![forbid(unsafe_code)]` anywhere. "By
+/// construction" names a property the build enforces, and nothing enforced it.
+/// The honest sentence is also the stronger one: every block must state its own
+/// soundness argument or the build fails.
+#[test]
+fn homepage_does_not_claim_memory_safety_the_build_does_not_enforce() {
+    let forbids = read("src/lib.rs").contains("forbid(unsafe_code)");
+    let blocks = non_test_unsafe_blocks();
+    if forbids || blocks == 0 {
+        panic!(
+            "src/ now forbids unsafe or contains none ({blocks} blocks) — the \
+             unqualified claim would be TRUE, so rewrite this gate against what \
+             the tree now guarantees rather than deleting it"
+        );
+    }
+    let page = homepage().to_lowercase();
+    for overclaim in [
+        "memory-safe by construction",
+        "memory safe by construction",
+        "no unsafe code",
+        "zero unsafe",
+    ] {
+        assert!(
+            !page.contains(overclaim),
+            "the homepage claims {overclaim:?} while src/ holds {blocks} \
+             `unsafe` blocks and nothing forbids them"
+        );
+    }
+}
+
+/// The page says the build rejects an undocumented `unsafe` block. It must.
+///
+/// This is the half of the claim that is not a count, and it is only true
+/// because two separate settings agree: the lint is enabled in `Cargo.toml`,
+/// and clippy is run with `-D warnings`. Either one alone makes the sentence
+/// false.
+#[test]
+fn the_soundness_argument_claim_is_actually_enforced() {
+    let page = homepage();
+    if !page.contains("soundness argument") {
+        return; // The page no longer makes the claim; nothing to hold it to.
+    }
+    // The ASSIGNMENT, not the substring. Renaming the lint to
+    // `undocumented_unsafe_blocks_x` left this gate green, because the real
+    // name is a prefix of the broken one -- a guard that passes on exactly the
+    // edit it exists to catch.
+    let manifest = read("Cargo.toml");
+    let enabled = manifest.lines().any(|l| {
+        let t = l.trim();
+        t.starts_with("undocumented_unsafe_blocks")
+            && t["undocumented_unsafe_blocks".len()..]
+                .trim_start()
+                .starts_with('=')
+            && (t.contains("\"warn\"") || t.contains("\"deny\"") || t.contains("\"forbid\""))
+    });
+    assert!(
+        enabled,
+        "the homepage says the build rejects an `unsafe` block with no \
+         soundness argument, but Cargo.toml sets no lint level for \
+         `undocumented_unsafe_blocks`"
+    );
+    for gate in [".githooks/pre-commit", ".github/workflows/ci.yml"] {
+        assert!(
+            read(gate).contains("-D warnings"),
+            "the homepage says the build REJECTS an undocumented `unsafe` \
+             block, but {gate} does not run clippy with `-D warnings`, so the \
+             lint is a warning nobody fails on"
+        );
+    }
+}
