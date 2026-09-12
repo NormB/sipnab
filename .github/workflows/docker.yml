@@ -92,7 +92,12 @@ jobs:
           # 0.5.168 failed on a HIGH in an image running 13.6 while the same
           # layer built fresh was 13.7 and clean. The expensive Rust build
           # stays cached; only the package upgrade re-runs.
-          no-cache-filter: runtime
+          #
+          # `no-cache-filters`, PLURAL. The singular spelling is not an input:
+          # the action WARNS and carries on, so the first attempt at this fix
+          # changed nothing and the scan failed again on the same stale layer.
+          # A warning in a log nobody reads is how a no-op looks like a fix.
+          no-cache-filters: runtime
 
       # The DB is ~60 MB pulled from mirror.gcr.io, and on 2026-08-20 that
       # download stalled and took the whole Docker job with it -- the image had
@@ -188,7 +193,12 @@ jobs:
           # 0.5.168 failed on a HIGH in an image running 13.6 while the same
           # layer built fresh was 13.7 and clean. The expensive Rust build
           # stays cached; only the package upgrade re-runs.
-          no-cache-filter: runtime
+          #
+          # `no-cache-filters`, PLURAL. The singular spelling is not an input:
+          # the action WARNS and carries on, so the first attempt at this fix
+          # changed nothing and the scan failed again on the same stale layer.
+          # A warning in a log nobody reads is how a no-op looks like a fix.
+          no-cache-filters: runtime
 
       # Sigstore provenance for the image, stored in ghcr next to it so
       #   gh attestation verify oci://ghcr.io/normb/sipnab:<tag> --repo NormB/sipnab
