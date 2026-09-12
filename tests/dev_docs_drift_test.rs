@@ -689,7 +689,12 @@ fn linked_code_targets_exist() {
     // two different MCP tool counts, one gated and one not. Attributed by
     // counting every page under `docs/internals/` against HEAD: testing.md
     // moved 94 -> 95 and no other page changed.
-    const EXPECTED_CODE_LINKS: usize = 428;
+    // 428 -> 429: one, in `docs/internals/testing.md`, where the table gains a
+    // row for `doc_commands_run_test` -- the gate that RUNS the documented
+    // commands rather than only checking that the flags they name exist.
+    // Attributed by counting every page under `docs/internals/` against HEAD:
+    // testing.md moved 95 -> 96 and no other page changed.
+    const EXPECTED_CODE_LINKS: usize = 429;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \

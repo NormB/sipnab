@@ -493,28 +493,15 @@ fn hep_send_stamps_tcp_sip_as_ip_protocol_6() {
 
 // ── -d and -L in one process (SRC1) ────────────────────────────────────
 
-/// Whether this process can open a live capture device.
+/// Whether the binary under test can open a live capture device here.
 ///
-/// Read from `/proc/self/status` so the assertion below is specific to the
-/// environment rather than accepting either outcome. `None` when it cannot be
-/// determined (non-Linux / no `/proc`).
+/// Delegates to `support::capture_probe`, which ASKS THE BINARY. This file
+/// used to carry its own copy reading `/proc/self/status`, and so did
+/// `integration_test.rs`: both measured the test runner's capabilities, and a
+/// sipnab carrying `cap_net_raw+ep` gains the capability at exec whatever the
+/// runner holds. The two copies agreed with each other and both were wrong.
 fn can_live_capture() -> Option<bool> {
-    // CAP_NET_RAW is capability bit 13 in the Linux capability bitmask.
-    const CAP_NET_RAW: u64 = 1 << 13;
-    let status = std::fs::read_to_string("/proc/self/status").ok()?;
-    let euid: u32 = status
-        .lines()
-        .find_map(|l| l.strip_prefix("Uid:"))
-        .and_then(|rest| rest.split_whitespace().nth(1))
-        .and_then(|s| s.parse().ok())?;
-    if euid == 0 {
-        return Some(true);
-    }
-    let cap_eff: u64 = status
-        .lines()
-        .find_map(|l| l.strip_prefix("CapEff:"))
-        .and_then(|hex| u64::from_str_radix(hex.trim(), 16).ok())?;
-    Some(cap_eff & CAP_NET_RAW != 0)
+    support::capture_probe::can_live_capture(env!("CARGO_BIN_EXE_sipnab"))
 }
 
 /// **`-d` with `-L` runs both, and the process says so.**

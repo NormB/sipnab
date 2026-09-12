@@ -21,6 +21,13 @@ use regex::Regex;
 /// JSON-Schema validation helpers (T1.3).
 pub mod schema;
 
+/// Whether the binary under test can open a live capture device here.
+///
+/// ONE implementation. Two files each carried their own, both read the test
+/// runner's capabilities rather than the binary's, and both answered
+/// "unprivileged" against a sipnab that captures happily.
+pub mod capture_probe;
+
 /// Determinism contract (spec §4d): fixed virtual-terminal dimensions.
 pub const FIXED_COLS: u16 = 120;
 pub const FIXED_ROWS: u16 = 40;

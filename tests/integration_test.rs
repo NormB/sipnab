@@ -6,6 +6,9 @@
 //! verifying that SIP messages are detected, parsed, tracked into dialogs,
 //! and output in the requested format.
 
+#[path = "support/mod.rs"]
+mod support;
+
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -254,40 +257,15 @@ fn hexdump_shows_hex_output() {
 
 // ── Auto-detect device (no explicit source) ─────────────────────────
 
-/// Whether this process can open a live capture device.
+/// Whether the binary under test can open a live capture device here.
 ///
-/// On Linux, opening the default `any` device via pcap/AF_PACKET requires
-/// either root or the `CAP_NET_RAW` capability in the effective set. Both are
-/// read from `/proc/self/status` (effective UID and effective capability
-/// bitmask) so the probe needs no extra crates and mirrors exactly what the
-/// binary needs to succeed — letting the exit-code assertion below be specific
-/// to the environment rather than accepting either code.
-///
-/// # Returns
-/// `Some(true)` if a live capture can be opened, `Some(false)` if it cannot,
-/// or `None` when the capability can't be determined (non-Linux / no `/proc`),
-/// in which case the caller falls back to an explicit skip.
+/// Delegates to `support::capture_probe`, which ASKS THE BINARY. This file
+/// used to carry its own copy reading `/proc/self/status`, and so did
+/// `integration_test.rs`: both measured the test runner's capabilities, and a
+/// sipnab carrying `cap_net_raw+ep` gains the capability at exec whatever the
+/// runner holds. The two copies agreed with each other and both were wrong.
 fn can_live_capture() -> Option<bool> {
-    // CAP_NET_RAW is capability bit 13 in the Linux capability bitmask.
-    const CAP_NET_RAW: u64 = 1 << 13;
-
-    let status = std::fs::read_to_string("/proc/self/status").ok()?;
-
-    // Effective UID is the second field of the `Uid:` line (real eff saved fs).
-    let euid: u32 = status
-        .lines()
-        .find_map(|l| l.strip_prefix("Uid:"))
-        .and_then(|rest| rest.split_whitespace().nth(1))
-        .and_then(|s| s.parse().ok())?;
-    if euid == 0 {
-        return Some(true); // root holds all capabilities.
-    }
-
-    let cap_eff: u64 = status
-        .lines()
-        .find_map(|l| l.strip_prefix("CapEff:"))
-        .and_then(|hex| u64::from_str_radix(hex.trim(), 16).ok())?;
-    Some(cap_eff & CAP_NET_RAW != 0)
+    support::capture_probe::can_live_capture(env!("CARGO_BIN_EXE_sipnab"))
 }
 
 /// With no source, sipnab auto-detects a device instead of printing the old

@@ -53,6 +53,29 @@ entry that carries them.
   end-to-end script now asks the running stack which relay is anchoring instead
   of assuming 8081.
 
+### Added
+
+- **Every documented sipnab command is now RUN, or says why it cannot be.**
+  Three gates watched the documented commands and none of them executed one: a
+  command could name only real flags, in a combination sipnab refuses, and stay
+  green. `doc_commands_run_test` extracts all 352 invocations from `docs/`,
+  executes 232 of them against a capture that ships with the repository, and
+  skips the rest under four named reasons -- a capture device, root, a server
+  that does not exit, a shell program. A command matching no reason fails the
+  test rather than slipping through, and the gate prints its own coverage.
+  Every one of the 232 passes today.
+
+### Fixed
+
+- **The live-capture probe measured the wrong process.** `hep_test` and
+  `integration_test` each carried a copy of `can_live_capture()` reading
+  `/proc/self/status` for `CAP_NET_RAW` -- the TEST RUNNER's capabilities. A
+  sipnab carrying `setcap cap_net_raw+ep` gains the capability at `exec`
+  whatever the runner holds, so both copies answered "unprivileged" while the
+  child opened `lo` and captured. Two copies of one rule agreed with each other,
+  which is why neither was suspected. There is one implementation now and it
+  asks the binary.
+
 - **The homepage claimed memory safety the build does not enforce.** "Memory-safe
   by construction" sat beside 88 `unsafe` blocks and no `forbid(unsafe_code)`.
   The row now states the count, says every block is FFI at the OS boundary, and
