@@ -88,7 +88,7 @@ jobs:
       # always(): a scan that found something must still publish what it found.
       - name: Upload results
         if: always()
-        uses: github/codeql-action/upload-sarif@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4
+        uses: github/codeql-action/upload-sarif@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4
         with:
           sarif_file: osv.sarif
           category: osv-scanner

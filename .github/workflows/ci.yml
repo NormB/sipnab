@@ -525,12 +525,12 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@ce678459e9fc7500d337468f904b95f1b5c10b5e # 1.98.1
       - name: Install cargo-audit
-        uses: taiki-e/install-action@e67fa11c4b9316fa714ddf0abed07a0c3143b95b # v2
+        uses: taiki-e/install-action@c3ec0de9ae7f1019cea21aa96aa0a895b9552063 # v2
         with:
           tool: cargo-audit
 
       - name: Install cargo-deny
-        uses: taiki-e/install-action@e67fa11c4b9316fa714ddf0abed07a0c3143b95b # v2
+        uses: taiki-e/install-action@c3ec0de9ae7f1019cea21aa96aa0a895b9552063 # v2
         with:
           tool: cargo-deny
 
