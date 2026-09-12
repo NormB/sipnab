@@ -44,7 +44,7 @@ Tiers:
 
 ## Status
 
-**42 open, 501 done** across 38 sections.
+**41 open, 502 done** across 38 sections.
 Regenerate with `python3 scripts/backlog-status.py --apply`.
 
 | Section | Open | Done | Progress |
@@ -63,7 +63,7 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
 | NAT | 0 | 4 | `##########` |
 | RV | 0 | 8 | `##########` |
 | RP | 1 | 3 | `########..` |
-| ST | 17 | 0 | `..........` |
+| ST | 16 | 1 | `#.........` |
 | PAR | 5 | 0 | `..........` |
 | HX | 1 | 2 | `#######...` |
 | AS | 0 | 7 | `##########` |
@@ -5558,7 +5558,46 @@ apart in the first place (see PAR).
   two ways. Written against the relays in the harness, with observed replies
   quoted rather than recalled.
 
-- [ ] **ST-S2 — SPEC: what each relay actually reports.** Gates ST2 and ST3.
+- [x] **ST-S2 — SPEC: what each relay actually reports.** Gates ST2 and ST3.
+  **Written 2026-09-12: [`relay-statistics-inventory.md`](relay-statistics-inventory.md).**
+
+  Taken from three running relays, not from manuals: rtpengine 12.5.1.31-1 and
+  rtpproxy 2.1.1-r3 in the harness, and rtpproxy 3.2.0.630f75e on a separate
+  lab host.
+
+  **ST3's open question is ANSWERED and the fields are in scope.** `Q`'s five
+  positional fields are `ttl npkts_ina npkts_ino nrelayed ndropped`, from the
+  relay's own two format strings — the positional `%d %lu %lu %lu %lu` and the
+  named `ttl=%d npkts_ina=%lu …` that `Qv` prints. Corroborated independently by
+  arithmetic on a live call: `nrelayed` is exactly `npkts_ina + npkts_ino` in
+  both samples taken.
+
+  Four findings the implementation must carry:
+
+  1. **The binary's string table is not the schema.** Twelve names across the
+     two rtpproxy builds are in the table and refused by `G`. Ask the relay.
+  2. **A key set is version-specific.** `rtpa_nlost` is a global statistic on
+     3.2.0 and refused on 2.1.1, where it survives only as a per-session
+     counter. It is the one an operator asking about loss wants.
+  3. **The tag a capture sees is not the tag rtpproxy holds.** OpenSIPS appends
+     a `;1` viabranch suffix and the session is keyed on the suffixed form.
+     rtpengine does the opposite and keys tags verbatim, so one correlation rule
+     cannot serve both.
+  4. **Refusals are distinct and must stay distinct.** `E68` unknown statistic,
+     `E62` unknown per-session counter, `E50` no such session, `E19` unknown
+     modifier, `E1` too many arguments. Collapsing them tells an operator their
+     call is missing when the truth is that a name was misspelled.
+
+  Also recorded: rtpengine delivers whole numbers as bencode integers AND as
+  strings (`uptime` is `"134"`), three of its seven statistics sections are
+  lists, several per-call keys contain spaces, and `currentstatistics` and
+  `totalstatistics` count sessions at different moments so adding them is
+  wrong.
+
+  **Gap this exposed:** the harness runs rtpproxy 2.1.1 while this project has
+  been reasoning about 3.2.0. Tests driven only by the harness never exercise
+  the version-difference path, which is the one most likely to break in the
+  field. Named in the spec so the choice gets made rather than defaulted.
 
   An inventory taken from the running rtpengine and rtpproxy, not from their
   manuals: every key each emits, its type, its units, whether it is cumulative

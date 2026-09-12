@@ -44,6 +44,23 @@ entry that carries them.
 
 ### Changed
 
+- **rtpengine and rtpproxy can now run side by side in the harness.** Both
+  published host ports 8081 and 8732, so `docker compose up rtpengine` beside a
+  running rtpproxy failed with `port is already allocated` and only one relay
+  could ever run. Separating their media ranges bought nothing while that held.
+  rtpproxy's sidecar doors move to 8082 and 8733; only the HOST side moves, so
+  both sidecars stay the same image binding the same ports inside. The
+  end-to-end script now asks the running stack which relay is anchoring instead
+  of assuming 8081.
+
+- **ST-S2 is written: `docs/design/relay-statistics-inventory.md`.** An
+  inventory of what rtpengine and rtpproxy actually report, taken from three
+  running relays rather than from their manuals. It answers ST3's open
+  question -- rtpproxy's five `Q` fields are `ttl npkts_ina npkts_ino nrelayed
+  ndropped`, from the relay's own format strings and corroborated by arithmetic
+  on a live call -- and records four traps the implementation must carry,
+  including a counter that exists on rtpproxy 3.2.0 and not on 2.1.1.
+
 - **RP1 and RP3 are closed in the backlog with what the relay taught, not a
   tick.** Both shipped in 0.5.168; the entries record the three defects a live
   rtpproxy found that reading its source had not, and the seam violation the

@@ -11,7 +11,19 @@ HERE="$(cd "$(dirname "$0")/.." && pwd)"
 CALLS="${CALLS:-3}"
 SCENARIO="${SCENARIO:-uac_pcap_g711a.xml}"
 PROXY_API="${PROXY_API:-http://127.0.0.1:8080}"
-RELAY_API="${RELAY_API:-http://127.0.0.1:8081}"
+# The relay door depends on WHICH relay is anchoring, because the two publish
+# different host ports so they can run side by side. Asked of the running
+# stack rather than assumed: a hardcoded 8081 reported "relay silent" against a
+# perfectly healthy rtpproxy run, which reads as a capture bug rather than as
+# a script talking to the wrong door.
+RUNNING_ANCHOR="$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' \
+  opensips-1 2>/dev/null | sed -n 's/^MEDIA_ANCHOR=//p' | head -1)"
+case "$RUNNING_ANCHOR" in
+  rtpproxy) RELAY_PORT_DEFAULT=8082 ;;
+  *)        RELAY_PORT_DEFAULT=8081 ;;
+esac
+RELAY_API="${RELAY_API:-http://127.0.0.1:$RELAY_PORT_DEFAULT}"
+echo "== anchor: ${RUNNING_ANCHOR:-unknown}, relay door: $RELAY_API"
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 OUT="${OUT:-$HERE/results/e2e-$STAMP.md}"
 

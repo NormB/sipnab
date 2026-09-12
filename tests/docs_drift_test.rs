@@ -3152,7 +3152,13 @@ fn no_documentation_table_repeats_a_row() {
     // is the inverse of the docs-page walk in link_integrity_test that sees
     // only the first. Attributed against the staged diff -- `--diff-filter=A`
     // lists exactly those two new `.md` paths.
-    const EXPECTED_MARKDOWN_FILES: usize = 210;
+    // 210 -> 211 by docs/design/relay-statistics-inventory.md (ST-S2), the
+    // inventory of what rtpengine and rtpproxy actually report, taken from three
+    // running relays. ONE file: `docs/design/` has no website mirror, unlike
+    // `docs/internals/`, so this adds the source and no generated copy.
+    // Attributed against the staged diff -- `--diff-filter=A` lists exactly one
+    // new `.md` path, and it is that one.
+    const EXPECTED_MARKDOWN_FILES: usize = 211;
     /// How many tables this gate expects to walk.
     ///
     /// Named rather than written twice. The count and the failure message
@@ -3490,7 +3496,12 @@ fn no_documentation_table_repeats_a_row() {
     // 861 -> 863 by the two tables on the relay control-decoding page and its
     // website mirror (RP1): one table, counted once per copy, the same way the
     // markdown-file count above sees both.
-    const EXPECTED_TABLES: usize = 863;
+    // 863 -> 867 by the four tables in docs/design/relay-statistics-inventory.md
+    // (ST-S2): the relays and versions observed, rtpproxy's global counters
+    // across two versions, rtpproxy's refusal codes, and rtpengine's statistics
+    // sections. Counted once each and not twice -- `docs/design/` has no website
+    // mirror, unlike `docs/internals/`.
+    const EXPECTED_TABLES: usize = 867;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

@@ -117,8 +117,8 @@ services:
       # These moved here with rtpengine. They were published on opensips-1 while
       # the two shared a namespace; a namespace split moves the ports with the
       # process that binds them, and leaving them behind publishes nothing.
-      - "${HARNESS_BIND:-127.0.0.1}:${RELAY_MCP_PORT:-8732}:8732/tcp"        # sipnab-relay MCP HTTP
-      - "${HARNESS_BIND:-127.0.0.1}:${RELAY_API_PORT:-8081}:8081/tcp"        # sipnab-relay REST
+      - "${HARNESS_BIND:-127.0.0.1}:${RTPENGINE_MCP_PORT:-8732}:8732/tcp"    # sipnab-relay MCP HTTP
+      - "${HARNESS_BIND:-127.0.0.1}:${RTPENGINE_API_PORT:-8081}:8081/tcp"    # sipnab-relay REST
       - "${HARNESS_BIND:-127.0.0.1}:${RTP_MIN:-30000}-${RTP_MAX:-30050}:30000-30050/udp"  # media
     networks:
       sipnet:
@@ -243,10 +243,16 @@ services:
     restart: unless-stopped
     profiles: ["rtpproxy"]
     ports:
-      # The same host ports rtpengine publishes. Only one anchor profile runs
-      # at a time, so this is a swap and not a second set of doors to learn.
-      - "${HARNESS_BIND:-127.0.0.1}:${RELAY_MCP_PORT:-8732}:8732/tcp"        # sipnab-relay MCP HTTP
-      - "${HARNESS_BIND:-127.0.0.1}:${RELAY_API_PORT:-8081}:8081/tcp"        # sipnab-relay REST
+      # Its OWN host ports, one above rtpengine's. These were the SAME host
+      # ports rtpengine publishes, on the reasoning that only one anchor runs at
+      # a time so a swap should not be a new set of doors. That made running
+      # both at once impossible -- `docker compose up rtpengine` beside a
+      # running rtpproxy fails with `Bind for 127.0.0.1:8081 failed: port is
+      # already allocated` -- which defeats the point of giving the two disjoint
+      # media ranges. Only the HOST side moves: both sidecars are the same image
+      # binding the same ports inside.
+      - "${HARNESS_BIND:-127.0.0.1}:${RTPPROXY_MCP_PORT:-8733}:8732/tcp"     # sipnab-relay MCP HTTP
+      - "${HARNESS_BIND:-127.0.0.1}:${RTPPROXY_API_PORT:-8082}:8081/tcp"     # sipnab-relay REST
       - "${HARNESS_BIND:-127.0.0.1}:${RTPPROXY_RTP_MIN:-31000}-${RTPPROXY_RTP_MAX:-31050}:31000-31050/udp"  # media
     networks:
       sipnet:
