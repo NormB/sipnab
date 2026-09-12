@@ -132,6 +132,15 @@ PAGES: list[tuple[str, str, int, str, str]] = [
         "the Call-ID arrives over HEP, and how a paired capture proves it.",
     ),
     (
+        "relay-control-decoding.md",
+        "relay-control-decoding.md",
+        14,
+        "Relay Control Decoding",
+        "Reading rtpengine's ng and rtpproxy's text control planes behind one "
+        "seam: why direction decides, what neither protocol carries, and the "
+        "bounds a sniffed datagram meets.",
+    ),
+    (
         "uprobe-capture.md",
         "uprobe-capture.md",
         11,

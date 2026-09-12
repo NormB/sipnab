@@ -12,6 +12,27 @@ entry that carries them.
 
 ### Added
 
+- **sipnab decodes the rtpproxy control protocol (RP1).** Text, not bencode — a
+  search of the whole rtpproxy tree for `bencode` returns nothing, so the
+  existing NG decoder covered none of this. All thirteen command letters, the
+  per-command argument bounds and modifier rules, and the four reply shapes.
+
+  Commands and replies are separated by DIRECTION, and the parser also refuses
+  a reply on content. Both, because either alone has been wrong: a live relay's
+  `I` reply is five lines beginning `<cookie> sessions created: 0`, and
+  `sessions` starts with the stop-play letter, so a content-blind reading made
+  it a confident `S` command carrying fourteen arguments.
+
+  `R` and `C` create RECORDING streams and are kept apart from ordinary media at
+  the type level, because attributing one as a leg invents a participant the
+  call never had. They are deliberately excluded from the unattributed-media
+  tally, which RE5's recording spool owns.
+
+  There is no default UDP port to key a heuristic on: rtpproxy documents a UNIX
+  control socket, which a passive capture cannot see at all. An operator names
+  the port or there is nothing to decode.
+
+
 - **A provenance pointer can name bytes within a frame.** `FrameRef` carries an
   optional range and renders it as `+start-end` after the digest, and
   `parse_pointer` reads it back. The two landed together on purpose: a suffix

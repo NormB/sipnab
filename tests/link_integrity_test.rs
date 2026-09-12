@@ -2024,7 +2024,11 @@ fn every_docs_page_is_linked_from_the_index() {
     // with `git diff --diff-filter=A HEAD -- 'docs/*.md'` before the number
     // moved.
     // 50 -> 51: docs/real-world-captures.md, one new page.
-    const EXPECTED_DOCS_PAGES: usize = 51;
+    // 51 -> 52: docs/internals/relay-control-decoding.md, the page RP1's two
+    // numeric ceilings needed so a caller meeting one has something to read.
+    // Attributed with `git status --short docs/` before the number moved: one
+    // added file, no others.
+    const EXPECTED_DOCS_PAGES: usize = 52;
     // Links are extracted from PROSE, not from the file's bytes. A raw
     // `contains("](backers.md")` counted a link that had been wrapped in an
     // HTML comment: the substring was still there, the page was reachable from

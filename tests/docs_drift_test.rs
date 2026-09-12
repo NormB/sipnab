@@ -3146,7 +3146,13 @@ fn no_documentation_table_repeats_a_row() {
     // it lives beside the fixtures rather than under docs/, so it has no
     // website mirror. Attributed against the staged diff -- `--diff-filter=A`
     // lists exactly one new `.md` path, and it is that one.
-    const EXPECTED_MARKDOWN_FILES: usize = 208;
+    // 208 -> 210 by the relay control-decoding page and its website mirror
+    // (RP1). TWO and not one: this sweep counts both the `docs/internals/`
+    // source and the generated `website/content/docs/internals/` copy, which
+    // is the inverse of the docs-page walk in link_integrity_test that sees
+    // only the first. Attributed against the staged diff -- `--diff-filter=A`
+    // lists exactly those two new `.md` paths.
+    const EXPECTED_MARKDOWN_FILES: usize = 210;
     /// How many tables this gate expects to walk.
     ///
     /// Named rather than written twice. The count and the failure message
@@ -3481,7 +3487,10 @@ fn no_documentation_table_repeats_a_row() {
     // 858 -> 861: three. The capture-backend table in `docs/install.md` and
     // its generated copy, plus the measurement table added to CT6 in
     // `docs/design/backlog.md`, which has no site copy.
-    const EXPECTED_TABLES: usize = 861;
+    // 861 -> 863 by the two tables on the relay control-decoding page and its
+    // website mirror (RP1): one table, counted once per copy, the same way the
+    // markdown-file count above sees both.
+    const EXPECTED_TABLES: usize = 863;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

@@ -29,6 +29,7 @@
 //! than an oversight at a call site.
 
 pub mod reconcile;
+pub mod rtpproxy;
 pub mod types;
 
 use std::sync::atomic::{AtomicU64, Ordering};

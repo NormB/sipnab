@@ -86,6 +86,7 @@ PAGES: dict[str, str] = {
     "internals/zero-copy-payloads.md": "Internals-Zero-Copy-Payloads",
     "internals/uprobe-capture.md": "Internals-Uprobe-Capture",
     "internals/rtpengine-control-plane.md": "Internals-Rtpengine-Control-Plane",
+    "internals/relay-control-decoding.md": "Internals-Relay-Control-Decoding",
     "internals/vcon.md": "Internals-vCon-Exporter",
 }
 
@@ -124,6 +125,7 @@ GROUPS: list[tuple[str, list[str]]] = [
                                  "internals/zero-copy-payloads.md",
                                  "internals/uprobe-capture.md",
                                  "internals/rtpengine-control-plane.md",
+                                 "internals/relay-control-decoding.md",
                                  "internals/vcon.md"]),
 ]
 

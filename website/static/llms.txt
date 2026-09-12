@@ -50,5 +50,6 @@ This file indexes the documentation as plain text. `llms-full.txt` beside it car
 - [TUI Testing](https://sipnab.com/docs/internals/tui-testing/): Snapshot, state and interaction testing for the terminal UI.
 - [Profiling](https://sipnab.com/docs/internals/profiling/): Where sipnab's time actually goes, and how to find out on this hardware without guessing.
 - [The rtpengine Control Plane](https://sipnab.com/docs/internals/rtpengine-control-plane/): Naming media captured on a standalone relay: the ng wire format, why the Call-ID arrives over HEP, and how a paired capture proves it.
+- [Relay Control Decoding](https://sipnab.com/docs/internals/relay-control-decoding/): Reading rtpengine's ng and rtpproxy's text control planes behind one seam: why direction decides, what neither protocol carries, and the bounds a sniffed datagram meets.
 - [Uprobe TLS Capture](https://sipnab.com/docs/internals/uprobe-capture/): Reading SIP plaintext out of a process's TLS library with kernel uprobes, and why each step refuses rather than guesses.
 - [The vCon Exporter](https://sipnab.com/docs/internals/vcon/): Where each vCon section comes from, the completeness caveat carried in two surfaces from one value, and the deterministic uuid.
