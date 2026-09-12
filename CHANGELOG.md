@@ -8,6 +8,32 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Added
+
+- **`--mcp-evidence-ring <MIB>` lets a pointer into a LIVE capture be
+  followed.** A capture file can seek back and hand over the real bytes. A live
+  device or a HEP listener cannot -- sipnab holds parsed messages and not
+  frames, which is why the export path re-synthesizes them and why such a
+  pointer was refused rather than answered with something plausible. The ring
+  retains recent raw frames so that refusal becomes an answer for the window an
+  operator paid for, and stays a refusal outside it.
+
+  It never turns a miss into a maybe. A pointer it cannot answer says WHICH
+  kind of miss it was -- the frame was real and has been evicted, the ring has
+  not reached that ordinal, or nothing is kept for that source -- because those
+  prompt three different actions and only one of them is "use a bigger ring". A
+  frame it does answer is labelled `retained` rather than resolved: those bytes
+  came from a buffer this process kept, and no second reader can confirm them,
+  which is a weaker claim than a file seek.
+
+  Off unless asked, because this is memory spent on a running capture. Only
+  sources that cannot be re-read are retained -- holding a capture file's bytes
+  buys nothing a second read would not give free. A source the ring has never
+  seen is left to the file path untouched, since "I hold nothing for this" is
+  not the same claim as "this cannot be followed".
+
 ## [0.5.167] - 2026-09-11
 
 ### Added

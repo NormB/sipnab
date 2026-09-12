@@ -49,7 +49,7 @@ was driving all of them.
 
 | Surface | Rows | `e2e` | `parsed` | `referenced` | `none` |
 |---|---|---|---|---|---|
-| CLI flags | 264 | 134 | 50 | 79 | 1 |
+| CLI flags | 265 | 134 | 51 | 79 | 1 |
 | HTTP routes | 18 | 18 | -- | 0 | 0 |
 | MCP tools | 66 | 66 | -- | 0 | 0 |
 
@@ -275,6 +275,7 @@ behind them.
 | `--mcp-allowed-host` |  | `HOST` | MCP (Model Context Protocol) | e2e | `tests/mcp_token_test.rs` |  |  |
 | `--mcp-resource-url` |  | `URL` | MCP (Model Context Protocol) | referenced | `src/mcp/transport.rs`, `tests/mcp_http_test.rs` |  |  |
 | `--mcp-file-root` |  | `DIR` | MCP (Model Context Protocol) | e2e | `tests/mcp_completeness_test.rs`, `tests/mcp_completion_test.rs` +4 |  |  |
+| `--mcp-evidence-ring` |  | `MIB` | MCP (Model Context Protocol) | parsed | `src/cli.rs` |  |  |
 | `--mcp-sampling-budget` |  | `PER_HOUR` | MCP (Model Context Protocol) | referenced | `src/mcp/sampling.rs`, `tests/mcp_sampling_wiring_test.rs` |  |  |
 | `--mcp-allow-shutdown` |  |  | MCP (Model Context Protocol) | e2e | `tests/mcp_diagnostic_tools_test.rs`, `tests/mcp_elicitation_test.rs` |  |  |
 | `--retain-audio` |  |  | MCP (Model Context Protocol) | e2e | `tests/cli_flag_behavior_test.rs`, `tests/json_schema_test.rs` |  |  |

@@ -175,6 +175,74 @@ fn unresolvable(pointer: &str, reason: String) -> Value {
     })
 }
 
+/// Answer a live-source pointer from the evidence ring, when there is one.
+///
+/// Returns `None` only when no ring is configured — the caller then gives the
+/// standing refusal, which is the honest answer for a run that kept nothing.
+///
+/// With a ring, every outcome is an ANSWER, including the misses. A frame that
+/// was real and has been evicted, an ordinal the ring has not reached, and a
+/// source nothing is kept for are three different facts that prompt three
+/// different actions, and only one of them is "use a bigger ring". Collapsing
+/// them into a single "cannot be followed" is the shape of check this file
+/// exists to argue against.
+fn live_frame(server: &SipnabMcp, parsed: &crate::capture::packet::FrameRef) -> Option<Value> {
+    use crate::capture::evidence_ring::Lookup;
+
+    let ring = server.evidence_ring.as_ref()?;
+    let source = parsed.source.as_ref();
+    let ordinal = parsed.origin.ordinal;
+    let lookup = ring.read().lookup(source, ordinal);
+    Some(match lookup {
+        Lookup::Retained(bytes) => {
+            let mut view = Map::new();
+            view.insert("pointer".to_string(), json!(parsed.to_string()));
+            view.insert("source".to_string(), json!(source));
+            view.insert("frame".to_string(), json!(ordinal));
+            view.insert("frame_bytes".to_string(), json!(bytes.len()));
+            // A live frame is gone the instant it was read, so nothing can be
+            // re-read to check it. The pointer resolved out of a buffer this
+            // process kept, which is a weaker claim than a file seek and is
+            // labeled as one rather than left to be assumed.
+            view.insert("resolvable".to_string(), json!("retained"));
+            view.insert(
+                "note".to_string(),
+                json!(
+                    "Answered from the evidence ring, not from a re-read. The \
+                     source cannot be read again, so these bytes are what this \
+                     process retained rather than something a second reader \
+                     could confirm."
+                ),
+            );
+            view.insert("hexdump".to_string(), json!(crate::output::hexdump(&bytes)));
+            Value::Object(view)
+        }
+        Lookup::Evicted { oldest } => unresolvable(
+            &parsed.to_string(),
+            format!(
+                "frame {ordinal} was retained and the ring has moved past it; \
+                 the oldest frame still held for '{source}' is {oldest}. The \
+                 pointer is good -- the window is too small, or the question \
+                 came too late."
+            ),
+        ),
+        Lookup::NotSeen { newest } => unresolvable(
+            &parsed.to_string(),
+            format!(
+                "the ring has not reached frame {ordinal} on '{source}'; the \
+                 newest it has seen is {newest}. Nothing was lost: either this \
+                 pointer is from another run, or that frame has not arrived."
+            ),
+        ),
+        // The ring has never seen this source, so it has nothing to say about
+        // it -- and the name may well be a capture file, which the caller can
+        // still resolve properly. Answering here would turn "I hold nothing
+        // for this" into "this cannot be followed", which is a claim the ring
+        // is not entitled to make.
+        Lookup::NotRetained => return None,
+    })
+}
+
 /// Follow one pointer, confine it, resolve it and decode what comes back.
 ///
 /// The order of the refusals below matches `show_evidence`, and the ordering is
@@ -199,6 +267,16 @@ fn decode_one(server: &SipnabMcp, pointer: &str, field: Option<&str>) -> Value {
         return unresolvable(pointer, reason);
     }
 
+    // The ring answers for sources it has SEEN, before any file logic runs. A
+    // live source name has a `file_name()` like any other string -- `eth0`
+    // parses as a relative path -- so keying this on the path shape sent every
+    // live pointer down the file-root check to be refused for the wrong
+    // reason. A source the ring has never seen falls through, because it may
+    // well be a capture file.
+    if let Some(value) = live_frame(server, &parsed) {
+        return value;
+    }
+
     let leaf = std::path::Path::new(parsed.source.as_ref())
         .file_name()
         .map(|s| s.to_string_lossy().into_owned());
@@ -208,7 +286,9 @@ fn decode_one(server: &SipnabMcp, pointer: &str, field: Option<&str>) -> Value {
             format!(
                 "'{}' does not name a capture file. A pointer from live capture \
                  or from a HEP listener cannot be followed: sipnab holds parsed \
-                 messages, not frames, so there is nothing to seek to.",
+                 messages, not frames, so there is nothing to seek to. \
+                 `--mcp-evidence-ring <MIB>` retains recent frames so pointers \
+                 inside that window can be.",
                 parsed.source
             ),
         );
@@ -488,6 +568,134 @@ mod tests {
             Arc::new(RwLock::new(StreamStore::new(16))),
         )
         .with_file_root(root)
+    }
+
+    /// A server holding a ring with one frame already in it.
+    fn server_with_ring(budget: usize, frames: &[(&'static str, u64, &[u8])]) -> SipnabMcp {
+        let ring = crate::capture::evidence_ring::EvidenceRing::with_capacity_bytes(budget);
+        let ring = Arc::new(RwLock::new(ring));
+        {
+            let mut w = ring.write();
+            for (source, ordinal, bytes) in frames {
+                w.insert(source, *ordinal, bytes::Bytes::copy_from_slice(bytes));
+            }
+        }
+        SipnabMcp::new(
+            Arc::new(RwLock::new(DialogStore::new(16, false))),
+            Arc::new(RwLock::new(StreamStore::new(16))),
+        )
+        .with_evidence_ring(Some(ring))
+    }
+
+    /// Without a ring, a live pointer is refused rather than half-answered.
+    ///
+    /// The standing answer, and it must stay standing: a run that kept nothing
+    /// cannot answer. What matters here is that the refusal does not borrow the
+    /// ring's vocabulary -- no "evicted", no "has not reached" -- because those
+    /// describe a ring that looked, and no ring looked.
+    ///
+    /// It does not name the flag either, and that is a real limit rather than
+    /// an oversight: `eth0` and `capture.pcap` are both just strings at this
+    /// point, so a hint about live capture would be printed for a mistyped
+    /// filename just as readily.
+    #[test]
+    fn a_live_pointer_without_a_ring_is_refused_without_the_rings_vocabulary() {
+        let server = server_rooted(std::path::Path::new("/nonexistent"));
+        let value = decode_one(&server, "eth0#7", None);
+        assert_eq!(
+            value.get("status").and_then(Value::as_str),
+            Some("unresolvable"),
+            "a run with no ring must not answer a live pointer: {value}"
+        );
+        let reason = value["reason"].as_str().unwrap_or_default();
+        assert!(
+            !reason.contains("moved past") && !reason.contains("has not reached"),
+            "the refusal claims a ring looked when none did: {reason}"
+        );
+    }
+
+    /// A retained live frame comes back, labeled for what it is.
+    ///
+    /// Not "resolved". A live frame is gone the instant it was read, so these
+    /// bytes are what this process kept and no second reader can confirm them.
+    /// That is a weaker claim than a file seek and the response says so rather
+    /// than leaving a reader to assume they are the same thing.
+    #[test]
+    fn a_retained_live_frame_is_answered_and_labeled_retained() {
+        let server = server_with_ring(4096, &[("eth0", 7, b"\x45\x00 a frame")]);
+        let value = decode_one(&server, "eth0#7", None);
+        assert_eq!(
+            value.get("resolvable").and_then(Value::as_str),
+            Some("retained"),
+            "a ring answer must not claim to be a re-read: {value}"
+        );
+        assert_eq!(value.get("frame").and_then(Value::as_u64), Some(7));
+        assert!(
+            value
+                .get("note")
+                .and_then(Value::as_str)
+                .is_some_and(|n| n.contains("cannot be read again")),
+            "the weaker claim is not stated: {value}"
+        );
+    }
+
+    /// An evicted frame says so, and says how far it missed by.
+    ///
+    /// The verdict an operator acts on. "Evicted" means the pointer was good
+    /// and the window is too small, which is a different instruction from every
+    /// other miss this can produce.
+    #[test]
+    fn an_evicted_live_frame_says_the_window_was_too_small() {
+        let frames: Vec<(&'static str, u64, &[u8])> = (0..20u64)
+            .map(|o| ("eth0", o, &b"0123456789012345678901234567890123456789"[..]))
+            .collect();
+        let server = server_with_ring(200, &frames);
+        let value = decode_one(&server, "eth0#0", None);
+        let reason = value["reason"].as_str().unwrap_or_default();
+        assert!(
+            reason.contains("moved past it") && reason.contains("oldest"),
+            "an evicted frame must say the pointer was good: {reason}"
+        );
+    }
+
+    /// An ordinal the ring has not reached is a different answer entirely.
+    ///
+    /// Reporting this as evicted would tell an operator to spend memory on a
+    /// frame that never existed.
+    #[test]
+    fn an_unreached_ordinal_is_not_reported_as_evicted() {
+        let server = server_with_ring(4096, &[("eth0", 3, b"frame")]);
+        let value = decode_one(&server, "eth0#900", None);
+        let reason = value["reason"].as_str().unwrap_or_default();
+        assert!(
+            reason.contains("has not reached") && reason.contains("Nothing was lost"),
+            "an unreached ordinal was described as a loss: {reason}"
+        );
+        assert!(
+            !reason.contains("moved past"),
+            "and it must not borrow the eviction story: {reason}"
+        );
+    }
+
+    /// A source the ring never saw is left to the file path, not claimed.
+    ///
+    /// The ring holds nothing for it, and "I hold nothing for this" is not the
+    /// same claim as "this cannot be followed" -- the name may well be a
+    /// capture file. Answering here would take a question the ring is not
+    /// entitled to answer.
+    #[test]
+    fn a_source_the_ring_never_saw_is_left_to_the_file_path() {
+        let server = server_with_ring(4096, &[("eth0", 3, b"frame")]);
+        let value = decode_one(&server, "eth9#3", None);
+        let reason = value["reason"].as_str().unwrap_or_default();
+        assert!(
+            !reason.contains("moved past") && !reason.contains("has not reached"),
+            "the ring answered for a source it never saw: {reason}"
+        );
+        assert!(
+            reason.contains("file root") || reason.contains("file tools"),
+            "and the file path must have had its turn: {reason}"
+        );
     }
 
     /// A private directory named for the test using it.

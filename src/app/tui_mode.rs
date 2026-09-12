@@ -534,6 +534,11 @@ pub fn run_tui_mode(
         &stream_store,
         None,
         crate::app::servers::Selection {
+            // The TUI does not fill a ring today: its capture loop is a
+            // different path, and handing the server an empty ring would make
+            // every live pointer answer "nothing retained" where "no ring" is
+            // the truth.
+            evidence_ring: None,
             mcp_row_cap: cli.mcp_row_cap(&config),
             mcp_body_cap: cli.mcp_body_cap(&config),
             mcp_wait_seconds: cli.mcp_wait_cap(&config),

@@ -2742,16 +2742,16 @@ output path.
     2026-08-06, verified against the tree).** Shipped: `FrameRef`
     ([`src/capture/packet.rs:377`](https://github.com/NormB/sipnab/blob/main/src/capture/packet.rs#L377)) and `capture::resolve::resolve`
     ([`src/capture/resolve.rs:191`](https://github.com/NormB/sipnab/blob/main/src/capture/resolve.rs#L191)); the `show_evidence` MCP tool
-    (`#[tool(` at [`src/mcp/server.rs:7034`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L7034), handler at `:3866`), confined to
+    (`#[tool(` at [`src/mcp/server.rs:7071`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L7071), handler at `:3866`), confined to
     the file root and honest about
     itself with three states — `verified` / `unverified` / `unresolvable` —
     rather than resolving a foreign ref against the wrong file; and
-    `findings_with_refs` ([`src/mcp/server.rs:1822`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1822)), which attaches `frame_ref`
+    `findings_with_refs` ([`src/mcp/server.rs:1853`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1853)), which attaches `frame_ref`
     (`#[tool(` at [`src/mcp/server.rs:4528`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L4528), handler at `:3866`), confined to
     the file root and honest about
     itself with three states — `verified` / `unverified` / `unresolvable` —
     rather than resolving a foreign ref against the wrong file; and
-    `findings_with_refs` ([`src/mcp/server.rs:1822`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1822)), which attaches `frame_ref`
+    `findings_with_refs` ([`src/mcp/server.rs:1853`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1853)), which attaches `frame_ref`
     to `lint_dialog`
     findings and OMITS the key when no pointer exists, because `""` and
     frame 0 both read as real pointers. Capture identity binding
@@ -2903,7 +2903,7 @@ output path.
     `SUPPRESSION_FILENAME` ([`src/sip/lint/mod.rs:70`](https://github.com/NormB/sipnab/blob/main/src/sip/lint/mod.rs#L70)),
     `SuppressionFile::load` (`:103`) and `SuppressionFile::discover` (`:120`)
     exist, and the MCP lint tools consume them through `resolve_suppressions`
-    ([`src/mcp/server.rs:965`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L965)), which takes an explicit filename or walks up from
+    ([`src/mcp/server.rs:996`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L996)), which takes an explicit filename or walks up from
     the capture's directory to a project root. **What is still missing is the
     suppression half of the CLI, and the evidence this line cited for that is
     now false too. Corrected 2026-08-06:** it read *"`grep -n lint src/cli.rs`
@@ -3368,7 +3368,7 @@ implementation.
   `value_parser = ["full", "metrics", "read"]`) rather than the
   `--mcp-token-scope` proposed above, with the help text drawing the
   audience line ("REST API tokens only" / "MCP tokens only"). Enforcement is
-  `scope_of` ([`src/mcp/server.rs:8485`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L8485), the `mcp-http` arm), reading the scope out of the
+  `scope_of` ([`src/mcp/server.rs:8508`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L8508), the `mcp-http` arm), reading the scope out of the
   `McpAuth::BearerVerified` admission record, and `scope_refusal` (`:4872`),
   which is called from the hand-written `call_tool` (`:4951`). The
   no-second-list requirement held literally: `scope_refusal` decides from the
@@ -5927,7 +5927,7 @@ promises an absence is acted on; a missing feature is merely absent.
 
 - [x] **DOC4 (done 2026-08-30) — [`docs/mcp-deploy.md:248`](https://github.com/NormB/sipnab/blob/main/docs/mcp-deploy.md#L248) opens the remote-access section by
   promising no tool mutates the stores.** `open_capture` calls `ds.clear()` and
-  `ss.clear()` ([`src/mcp/server.rs:7551`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L7551)). The code already knows: a note at
+  `ss.clear()` ([`src/mcp/server.rs:7588`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L7588)). The code already knows: a note at
   `:8377` records that the wire `instructions` string was corrected for exactly
   this. The page was not. [`SECURITY.md:35`](https://github.com/NormB/sipnab/blob/main/SECURITY.md#L35) scopes reports to "any MCP tool that
   mutates dialog/stream/alert state", so a good-faith reporter is told the scope
@@ -6155,7 +6155,7 @@ class recur:
   speaks", and [`docs/mcp-tools.md`](https://github.com/NormB/sipnab/blob/main/docs/mcp-tools.md) described the two as taking one vocabulary.
   They do not: `--filter` runs `expand_alias` first
   ([`src/app/bootstrap.rs:2157`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L2157)) and `vcon_selection`
-  ([`src/app/batch.rs:5556`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L5556)) parses raw. The doc claim is corrected;
+  ([`src/app/batch.rs:5602`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L5602)) parses raw. The doc claim is corrected;
   the behavior is not, and the flag is the one that is wrong -- reusing the
   filter language is the stated design, and ten `DIAGNOSTIC_ALIASES` are part
   of that language.

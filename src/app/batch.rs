@@ -2249,6 +2249,12 @@ pub struct BatchRunner {
     hep_sender: Option<crate::capture::hep::HepSender>,
     /// IP/TCP reassembly and parse front-end for raw captured packets.
     processor: capture::PacketProcessor,
+    /// Recent raw frames, when `--mcp-evidence-ring` asked for them.
+    ///
+    /// The SAME object the MCP server reads, so a pointer resolves to the
+    /// bytes the capture loop actually read rather than to a copy made for the
+    /// surface that answers it.
+    evidence_ring: Option<Arc<RwLock<crate::capture::evidence_ring::EvidenceRing>>>,
     /// Dialog store; shared with the companion servers via the lock.
     dialog_store: Arc<RwLock<DialogStore>>,
     /// RTP stream store; shared with the companion servers via the lock.
@@ -2417,6 +2423,21 @@ impl BatchRunner {
             capture::PacketProcessor::with_max_sessions(cli.max_reassembly_limit(config))
                 .with_reassembly(!cli.capture_args.no_reassembly)
                 .with_parse_limit(cli.capture_args.limitlen);
+        // The ring both halves share: the capture loop writes recent frames
+        // into it and the MCP resolver reads them back. One object, so a
+        // pointer resolves to the bytes that were read rather than to a copy
+        // made for the surface that answers.
+        //
+        // `None` unless an operator asked. This is memory spent on a running
+        // capture, and spending it silently is not a default anybody chose.
+        let evidence_ring = cli.mcp_args.mcp_evidence_ring.map(|mib| {
+            std::sync::Arc::new(parking_lot::RwLock::new(
+                crate::capture::evidence_ring::EvidenceRing::with_capacity_bytes(
+                    mib.saturating_mul(1024 * 1024),
+                ),
+            ))
+        });
+
         let dialog_store: Arc<RwLock<DialogStore>> = Arc::new(RwLock::new(
             {
                 let mut ds = DialogStore::new(cli.dialog_limit(config), cli.rotate_enabled());
@@ -2879,6 +2900,7 @@ impl BatchRunner {
             &stream_store,
             Some(&engines.alerts),
             crate::app::servers::Selection {
+                evidence_ring: evidence_ring.clone(),
                 mcp_row_cap: cli.mcp_row_cap(config),
                 mcp_body_cap: cli.mcp_body_cap(config),
                 mcp_wait_seconds: cli.mcp_wait_cap(config),
@@ -2942,6 +2964,7 @@ impl BatchRunner {
             #[cfg(feature = "hep")]
             hep_sender,
             processor,
+            evidence_ring: evidence_ring.clone(),
             dialog_store,
             stream_store,
             rtp_heuristic,
@@ -3010,6 +3033,7 @@ impl BatchRunner {
             #[cfg(feature = "hep")]
             hep_sender,
             mut processor,
+            evidence_ring,
             dialog_store,
             stream_store,
             mut rtp_heuristic,
@@ -3286,6 +3310,22 @@ impl BatchRunner {
             }
 
             total_count += 1;
+
+            // Retain the raw frame when an operator asked for a window into
+            // live capture. Only for sources that cannot be re-read: a capture
+            // file can be seeked, so spending memory to hold its bytes buys
+            // nothing a second read would not give for free.
+            if let Some(ring) = evidence_ring.as_ref()
+                && let Some(origin) = packet.origin
+                && !origin.verifiable
+                && let Some(source) = packet.interface.as_ref()
+            {
+                ring.write().insert(
+                    crate::capture::packet::intern_source(source),
+                    origin.ordinal,
+                    packet.data.clone(),
+                );
+            }
 
             // Parse and reassemble the packet
             let parsed_packets = processor.process(&packet);

@@ -2812,6 +2812,35 @@ pub struct McpArgs {
     )]
     pub mcp_file_root: Option<String>,
 
+    /// Mebibytes of raw frames to retain so a LIVE pointer can be followed.
+    ///
+    /// Off unless set, and off is the honest default: this is memory an
+    /// operator spends on a running capture, and spending it silently is not a
+    /// default anybody asked for.
+    ///
+    /// A capture file can seek back and hand over the real bytes. A live device
+    /// or a HEP listener cannot -- sipnab holds parsed messages and not frames,
+    /// which is why the export path re-synthesizes them and why a pointer into
+    /// one is refused rather than answered with something plausible. This
+    /// retains recent frames so that refusal becomes an answer for the window
+    /// an operator paid for, and stays a refusal outside it.
+    ///
+    /// The ring never turns a miss into a maybe. A pointer it cannot answer
+    /// says WHICH kind of miss it was -- the frame was real and has been
+    /// evicted, the ring has not reached that ordinal, or nothing is kept for
+    /// that source -- because those prompt three different actions and only one
+    /// of them is "use a bigger ring".
+    ///
+    /// Mebibytes rather than a size string, matching `--vcon-max-inline-media`:
+    /// one unit convention in this CLI is worth more than two spellings of the
+    /// same number.
+    #[arg(
+        help_heading = "MCP (Model Context Protocol)",
+        long = "mcp-evidence-ring",
+        value_name = "MIB"
+    )]
+    pub mcp_evidence_ring: Option<usize>,
+
     /// Requests per hour sipnab may ask the CLIENT's model to narrate.
     ///
     /// Off unless set, and off is the honest default: client support for the
@@ -6008,6 +6037,34 @@ mod tests {
     /// worse than no flag. Asserting it parses without the batch predicate is
     /// what stops that being re-added by symmetry with its neighbors.
     #[cfg(feature = "vcon")]
+    #[test]
+    fn the_evidence_ring_is_off_unless_asked_and_counts_in_mib() {
+        let cli = Cli::try_parse_from(["sipnab", "-I", "x.pcap", "--mcp-evidence-ring", "256"])
+            .expect("the ring is not tied to any other flag");
+        assert_eq!(
+            cli.mcp_args.mcp_evidence_ring,
+            Some(256),
+            "the flag carries MiB, matching --vcon-max-inline-media; the \
+             conversion to bytes happens once, where the ring is built"
+        );
+
+        let unset = Cli::try_parse_from(["sipnab", "-I", "x.pcap"]).expect("parses");
+        assert_eq!(
+            unset.mcp_args.mcp_evidence_ring, None,
+            "off unless asked. This is memory spent on a running capture, and \
+             a default that spends it is a default nobody chose"
+        );
+
+        let zero = Cli::try_parse_from(["sipnab", "-I", "x.pcap", "--mcp-evidence-ring", "0"])
+            .expect("zero is a setting, not an error");
+        assert_eq!(
+            zero.mcp_args.mcp_evidence_ring,
+            Some(0),
+            "0 retains nothing while leaving the ring wired, which is how an \
+             operator turns retention off without changing anything else"
+        );
+    }
+
     #[test]
     fn the_inline_media_budget_flag_stands_alone_and_counts_in_mib() {
         let cli = Cli::try_parse_from(["sipnab", "-I", "x.pcap", "--vcon-max-inline-media", "64"])

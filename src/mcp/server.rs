@@ -61,6 +61,14 @@ pub struct SipnabMcp {
     pub capture_interfaces: Vec<String>,
     /// When this server started, for the uptime `runtime_stats` reports.
     pub started_at: std::time::Instant,
+    /// Recent raw frames, when `--mcp-evidence-ring` asked for them.
+    ///
+    /// `None` means a pointer into a live source is refused, which is the
+    /// honest answer without a ring: sipnab holds parsed messages and not
+    /// frames, so there is nothing to seek to. With a ring, a pointer inside
+    /// the retained window is answered with the real bytes, and one outside it
+    /// still says which kind of miss it was rather than becoming a maybe.
+    pub evidence_ring: Option<Arc<RwLock<crate::capture::evidence_ring::EvidenceRing>>>,
     /// The capture queue's meter, when this run owns a capture.
     ///
     /// `None` on a run with no capture path, and the queue-depth and
@@ -318,6 +326,7 @@ impl SipnabMcp {
             stream_store,
             alert_engine: None,
             capture_interfaces: Vec::new(),
+            evidence_ring: None,
             capture_meter: None,
             started_at: std::time::Instant::now(),
             armed_detections: Vec::new(),
@@ -363,6 +372,20 @@ impl SipnabMcp {
     #[must_use]
     pub fn with_capture_interfaces(mut self, interfaces: Vec<String>) -> Self {
         self.capture_interfaces = interfaces;
+        self
+    }
+
+    /// Hand this server the ring of recent frames a live pointer resolves in.
+    ///
+    /// The ring is SHARED with the capture owner that fills it, so the bytes a
+    /// pointer resolves to are the bytes that were read rather than a copy
+    /// made for this surface.
+    #[must_use]
+    pub fn with_evidence_ring(
+        mut self,
+        ring: Option<Arc<RwLock<crate::capture::evidence_ring::EvidenceRing>>>,
+    ) -> Self {
+        self.evidence_ring = ring;
         self
     }
 

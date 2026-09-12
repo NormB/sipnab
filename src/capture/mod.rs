@@ -17,6 +17,7 @@ pub mod decrypt;
 pub mod device;
 #[cfg(feature = "tls")]
 pub mod dtls;
+pub mod evidence_ring;
 #[cfg(feature = "native")]
 pub mod fanout;
 #[cfg(feature = "native")]

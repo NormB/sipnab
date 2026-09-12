@@ -26,6 +26,11 @@ use crate::sip::dialog_store::DialogStore;
 /// variable number of detectors.
 #[derive(Debug, Clone)]
 pub struct Selection {
+    /// Recent raw frames a live pointer can resolve in, when
+    /// `--mcp-evidence-ring` asked for them. `None` leaves a live pointer
+    /// refused, which is the honest answer for a run that kept nothing.
+    pub evidence_ring:
+        Option<std::sync::Arc<parking_lot::RwLock<crate::capture::evidence_ring::EvidenceRing>>>,
     /// Ceiling on rows in one list-style MCP response.
     ///
     /// Resolved by the caller with `cli.mcp_row_cap(config)`, because config is
@@ -512,6 +517,9 @@ pub fn start_servers(
                 // `GET /v1/runtime` read the same NICs.
                 .with_capture_interfaces(cli.capture_args.device.clone().into_iter().collect())
                 .with_capture_meter(capture_meter.clone())
+                // The SAME ring the capture loop fills, so a live pointer
+                // resolves to bytes that were read rather than to a copy.
+                .with_evidence_ring(selection.evidence_ring.clone())
                 .with_protected_inputs(protected_inputs.clone())
                 .with_max_concurrent(cli.mcp_args.mcp_max_concurrent as usize)
                 // Clap has already refused any spelling but `core` and
@@ -816,6 +824,7 @@ mod tests {
     /// built from a default or from a constant cannot match by accident.
     fn selection_with(rate: u32, peers: usize) -> Selection {
         Selection {
+            evidence_ring: None,
             mcp_row_cap: 1,
             mcp_body_cap: 1,
             mcp_wait_seconds: 1,
