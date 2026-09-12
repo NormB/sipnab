@@ -53,6 +53,21 @@ entry that carries them.
   end-to-end script now asks the running stack which relay is anchoring instead
   of assuming 8081.
 
+- **The demo wall on the homepage opens mid-thought, and now does not.** The
+  section had no lede at all, so the first panel a visitor reads began "One
+  capture, read end to end:" with nothing establishing what they were looking
+  at, what produced it, or that the output is real. The section now says what
+  every block is before showing one, and the first panel names the two commands
+  it is showing before reporting what they found.
+
+- **ST-S4 is written: `docs/design/relay-statistics-failures.md`.** Thirteen
+  failure conditions, each produced against a running relay and each naming the
+  behavior on all four surfaces. Three of them constrain the design: rtpproxy
+  has no partial answer, so one bad name in a bulk request loses the whole
+  request; a restart zeroes every rtpproxy counter with nothing in any reply
+  saying so; and a reused cookie replays a stale reply on BOTH relays, which
+  returns a wrong answer that looks perfectly valid.
+
 - **ST-S3 is written: `docs/design/relay-statistics-surfaces.md`.** Five
   capabilities across all four surfaces in one document, because writing them
   separately is what produced the drift. The word "statistics" was already

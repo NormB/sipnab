@@ -46,6 +46,7 @@
     <header class="section-head">
       <p class="section-kicker">Demos</p>
       <h2>See It In Action</h2>
+      <p class="demos-sub">Every block below is real output from sipnab, run against a capture that ships with it &mdash; not a mock-up. The first five answer a question an engineer actually has; the rest show the interface each answer came from. <a href="{{ get_url(path='@/analyze/_index.md') }}">Try it on your own capture</a>, in the browser, with nothing to install.</p>
     </header>
     <div class="demo-tabs" role="tablist" aria-label="Demo videos">
       <button class="demo-tab active" role="tab" aria-selected="true" id="demo-tab-0" aria-controls="demo-panel-0">Show me the whole call</button>
@@ -93,7 +94,7 @@
            compares these blocks against website/data/mcp-examples/. Edit the
            tool, then regenerate. -->
       <div class="demo-panel active" data-demo="0" role="tabpanel" id="demo-panel-0" aria-labelledby="demo-tab-0">
-        <p class="demo-desc">One capture, read end to end: a phone registers, the PBX probes it with an OPTIONS, two subscriptions come and go, and then a call is placed, answered and hung up with a BYE. The ladder puts the media beside the signaling, so the <strong>64.3% packet loss on one direction of the audio</strong> — arriving in three bursts rather than spread evenly, which sounds far worse — sits next to the transactions it belongs to.</p>
+        <p class="demo-desc"><strong>Ask what a capture holds, then ask about one call in it.</strong> The first command lists every dialog: a phone registering, the PBX probing it with an OPTIONS, two subscriptions, and one call placed, answered and hung up. The second draws that call's ladder. Because the ladder puts media beside signaling, the <strong>64.3% packet loss on one direction of the audio</strong> sits next to the transactions it belongs to &mdash; and that loss arrived in three bursts rather than spread evenly, which sounds far worse to the person on the call.</p>
         <pre class="demo-cmd"><code>demos/mcp-stdio.sh tests/pcap-samples/Asterisk_ZFONE_XLITE.pcap list_dialogs \
   | jq -c '.dialogs[] | {method, state, msg_count, duration_sec}'</code></pre>
         <pre class="demo-json"><code><!-- mcp-example:lifecycle BEGIN -->

@@ -44,7 +44,7 @@ Tiers:
 
 ## Status
 
-**39 open, 504 done** across 38 sections.
+**38 open, 505 done** across 38 sections.
 Regenerate with `python3 scripts/backlog-status.py --apply`.
 
 | Section | Open | Done | Progress |
@@ -63,7 +63,7 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
 | NAT | 0 | 4 | `##########` |
 | RV | 0 | 8 | `##########` |
 | RP | 1 | 3 | `########..` |
-| ST | 14 | 3 | `##........` |
+| ST | 13 | 4 | `##........` |
 | PAR | 5 | 0 | `..........` |
 | HX | 1 | 2 | `#######...` |
 | AS | 0 | 7 | `##########` |
@@ -5666,8 +5666,34 @@ apart in the first place (see PAR).
   with a reason is a decision, an omission without one is the debt PAR exists
   for.
 
-- [ ] **ST-S4 — SPEC: the failure and edge-case catalog.** Gates ST9 and the
-  50-test minimum on every surface.
+- [x] **ST-S4 — SPEC: the failure and edge-case catalog.** Gates ST9 and the
+  50-test minimum on every surface. **Written 2026-09-12:
+  [`relay-statistics-failures.md`](relay-statistics-failures.md).**
+
+  Thirteen conditions, each naming the behavior on all four surfaces, and each
+  produced against a running relay rather than imagined. Five classifications,
+  one of which did not exist before: `suspect`, for an answer that arrived and
+  cannot be trusted — the failure mode this subsystem is most likely to ship,
+  and folding it into `ok` is how it would ship.
+
+  Three findings that constrain the design rather than decorate it:
+
+  - **rtpproxy has no partial answer.** `G a b` with one unknown name returns
+    `E68` for the WHOLE request and does not say which name was wrong. Asking
+    for all 28 statistics loses all 28 if one is wrong, so sipnab must only ask
+    for names it has established are answerable.
+  - **A restart zeroes every rtpproxy counter and nothing says so.** Measured
+    either side of a restart: 9000 packets became 0. rtpproxy publishes no
+    uptime and no start time, so a relay that has handled nothing is
+    indistinguishable from one that restarted a second ago. rtpengine publishes
+    `uptime` and is therefore detectable.
+  - **A reused cookie replays a stale reply on BOTH relays.** `V` after `I` on
+    one cookie returns the `I` reply; `statistics` after `ping` returns `pong`.
+    A wrong answer that looks perfectly valid. This was hit during ST-S2.
+
+  The catalog yields 28 failure-path tests on the CLI and 27 on each other
+  surface — counted, not asserted, and deliberately below the 50 minimum
+  because this is the failure half. The success half comes from ST-S3.
 
   Enumerated before implementation so each surface's tests are drawn from one
   list rather than from whatever its author thought of: relay unreachable,

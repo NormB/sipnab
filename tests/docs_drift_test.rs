@@ -3166,7 +3166,10 @@ fn no_documentation_table_repeats_a_row() {
     // 212 -> 213 by docs/design/relay-statistics-surfaces.md (ST-S3), the
     // contract binding all four surfaces to one vocabulary. ONE file; no
     // website mirror, as with the two design pages above.
-    const EXPECTED_MARKDOWN_FILES: usize = 213;
+    // 213 -> 214 by docs/design/relay-statistics-failures.md (ST-S4), the
+    // thirteen-condition catalog every surface's failure tests are drawn from.
+    // ONE file; `docs/design/` has no website mirror.
+    const EXPECTED_MARKDOWN_FILES: usize = 214;
     /// How many tables this gate expects to walk.
     ///
     /// Named rather than written twice. The count and the failure message
@@ -3516,7 +3519,11 @@ fn no_documentation_table_repeats_a_row() {
     // (ST-S3): what the word "statistics" already means on each surface, the
     // five capabilities, and one spelling table per capability. Counted once
     // each, no website mirror.
-    const EXPECTED_TABLES: usize = 876;
+    // 876 -> 880 by the four tables in docs/design/relay-statistics-failures.md
+    // (ST-S4): the five classifications, the refusal codes of both relays, the
+    // counters either side of a restart, and the three states a statistic can
+    // be in. Counted once each, no website mirror.
+    const EXPECTED_TABLES: usize = 880;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")
