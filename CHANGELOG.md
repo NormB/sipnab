@@ -53,6 +53,16 @@ entry that carries them.
   end-to-end script now asks the running stack which relay is anchoring instead
   of assuming 8081.
 
+- **ST-S3 is written: `docs/design/relay-statistics-surfaces.md`.** Five
+  capabilities across all four surfaces in one document, because writing them
+  separately is what produced the drift. The word "statistics" was already
+  taken three times and every existing use is about sipnab rather than about a
+  relay, so the capability is spelled `relay-stats` everywhere and nothing
+  shipped is renamed. Polling is CLI-only, and that omission carries its reason:
+  over REST or MCP the caller who starts a poll is not the one who owns the
+  host. Writing the contract first caught two keybinding collisions before they
+  shipped.
+
 - **ST-S1 is written: `docs/design/relay-statistics-vocabulary.md`.** Three
   tiers -- `relay_reported`, `sipnab_measured`, `endpoint_reported` -- carried
   with every statistic and rendered on every surface. Cross-tier arithmetic is

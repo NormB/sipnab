@@ -44,7 +44,7 @@ Tiers:
 
 ## Status
 
-**40 open, 503 done** across 38 sections.
+**39 open, 504 done** across 38 sections.
 Regenerate with `python3 scripts/backlog-status.py --apply`.
 
 | Section | Open | Done | Progress |
@@ -63,7 +63,7 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
 | NAT | 0 | 4 | `##########` |
 | RV | 0 | 8 | `##########` |
 | RP | 1 | 3 | `########..` |
-| ST | 15 | 2 | `#.........` |
+| ST | 14 | 3 | `##........` |
 | PAR | 5 | 0 | `..........` |
 | HX | 1 | 2 | `#######...` |
 | AS | 0 | 7 | `##########` |
@@ -5633,7 +5633,30 @@ apart in the first place (see PAR).
   mean. Answer it from the source in this spec, or record that it is unanswered
   and exclude those fields from scope.
 
-- [ ] **ST-S3 — SPEC: the surface contract.** Gates ST5, ST6, ST7 and ST8.
+- [x] **ST-S3 — SPEC: the surface contract.** Gates ST5, ST6, ST7 and ST8.
+  **Written 2026-09-12:
+  [`relay-statistics-surfaces.md`](relay-statistics-surfaces.md).**
+
+  Five capabilities, all four surfaces, one table each: global statistics,
+  per-call statistics, which statistics this relay knows, compare relay against
+  capture, and poll on an interval.
+
+  - **The word "statistics" was already taken three times** — the TUI's
+    `Statistics` view, `GET /v1/stats`, `runtime_stats`, `capture_health` and
+    `/metrics` are all about sipnab, none about a relay. The capability is
+    spelled `relay-stats` / `relay_stats` everywhere so a fifth meaning does not
+    sit beside four others under one word. Nothing shipped is renamed.
+  - **C3 exists because the key set is version-specific.** Without "what can I
+    ask for", every caller discovers `rtpa_nlost`'s absence through a failed
+    request.
+  - **ONE omission, with its reason: polling is CLI-only.** A poll is a standing
+    instruction to transmit, and over REST or MCP the caller who starts one is
+    not the one who owns the host, with nothing in either protocol making "this
+    keeps transmitting after you disconnect" visible.
+  - **Two keybinding collisions were caught by writing this first.** `R` is
+    `ToggleSplit` and `c` is `CycleColorMode`; the relay view takes `S` — the
+    shifted form of the `s` that opens the capture's own statistics, so lower
+    case asks what sipnab saw and upper case asks what the relay says.
 
   One document covering all four surfaces together, because writing them
   separately is what produced the drift. Must state, per capability: the CLI
