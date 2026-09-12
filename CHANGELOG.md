@@ -12,6 +12,26 @@ entry that carries them.
 
 ### Added
 
+- **A provenance pointer can name bytes within a frame.** `FrameRef` carries an
+  optional range and renders it as `+start-end` after the digest, and
+  `parse_pointer` reads it back. The two landed together on purpose: a suffix
+  the parser cannot read would be a fabricated pointer, one that resolves in a
+  reader's head and nowhere else.
+
+  A malformed range REFUSES the whole pointer rather than dropping to the whole
+  frame. Dropping it would turn a citation of one header into a citation of the
+  message, which still resolves and answers a different question than the one
+  asked.
+
+  Lint findings use it: a finding narrows its own citation to the bytes it
+  observed, when that text sits in exactly one place in the message. Exactly one
+  place, or none — a second match makes the anchor a coin toss, and a finding
+  pointed at the wrong `Via` still resolves, which is what would make it read as
+  evidence. Findings that cannot be narrowed keep the whole-message pointer they
+  always had, and every pointer form minted before this renders and parses
+  unchanged.
+
+
 - **`--mcp-evidence-ring <MIB>` lets a pointer into a LIVE capture be
   followed.** A capture file can seek back and hand over the real bytes. A live
   device or a HEP listener cannot -- sipnab holds parsed messages and not

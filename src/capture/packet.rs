@@ -201,6 +201,30 @@ impl FrameCounter {
     }
 }
 
+/// Where `needle` sits inside `hay`, when exactly one place does.
+///
+/// One place, or none at all. A second match makes the anchor ambiguous, and an
+/// ambiguous byte range is the manufactured confidence this mechanism exists to
+/// prevent: a reader quoting `frame[start..end]` would be quoting bytes chosen
+/// by a coin toss.
+///
+/// Lives here rather than beside either caller, because two of them now want
+/// this rule -- anchoring a transport payload inside its frame, and narrowing a
+/// lint finding's pointer to the text it observed -- and two copies of one rule
+/// agree today and drift silently.
+#[must_use]
+pub fn unique_offset(hay: &[u8], needle: &[u8]) -> Option<usize> {
+    if needle.is_empty() {
+        return None;
+    }
+    let mut hits = memchr::memmem::find_iter(hay, needle);
+    let first = hits.next()?;
+    if hits.next().is_some() {
+        return None;
+    }
+    Some(first)
+}
+
 /// FNV-1a over a frame's bytes.
 ///
 /// Deliberately not `DefaultHasher`: its output is explicitly not guaranteed
@@ -253,6 +277,8 @@ impl FrameLocator {
             source: source_arc(self.source),
             origin: self.origin,
             kind: FrameSource::from_source_name(self.source),
+            // A pointer minted for a frame means the WHOLE frame.
+            bytes: None,
         }
     }
 }
@@ -384,6 +410,19 @@ pub struct FrameRef {
     ///
     /// Not derived from `source`: see [`FrameSource`].
     pub kind: FrameSource,
+    /// Bytes WITHIN the frame this pointer means, when it means some of them.
+    ///
+    /// A lint finding cites a message; the malformed thing is usually one
+    /// header, and a reader handed a whole INVITE still has to go and find it.
+    /// This is what turns "this message is wrong" into "these bytes are
+    /// wrong", and it became possible when the parser started recording a span
+    /// per header.
+    ///
+    /// `None` means the WHOLE frame, which is what every pointer minted before
+    /// this meant and still means. A range is never invented for a pointer
+    /// that did not carry one: narrowing a citation on a guess would answer a
+    /// different question than the one asked, confidently.
+    pub bytes: Option<std::ops::Range<u32>>,
 }
 
 impl FrameRef {
@@ -411,6 +450,10 @@ impl FrameRef {
                 comm: Arc::from(comm),
                 pid,
             },
+            // Plaintext read out of a process; the read is the unit, and a
+            // byte range within it would name an offset into a buffer no
+            // reader can fetch.
+            bytes: None,
         }
     }
 
@@ -437,6 +480,13 @@ impl std::fmt::Display for FrameRef {
         write!(f, "{}#{}", self.source, self.origin.ordinal)?;
         if let Some(d) = self.origin.digest {
             write!(f, "@{d:016x}")?;
+        }
+        // After the digest, so the frame's identity reads first and the range
+        // narrows it. `+` rather than another `@`: the tail after the last `#`
+        // belongs to this format, but keeping the two suffixes distinct means
+        // a reader never has to count separators to know which is which.
+        if let Some(range) = &self.bytes {
+            write!(f, "+{}-{}", range.start, range.end)?;
         }
         Ok(())
     }
@@ -520,6 +570,9 @@ impl Packet {
             kind: FrameSource::from_source_name(&source),
             source,
             origin,
+            // A packet's own pointer means the whole frame. Narrowing it is
+            // something a CALLER does, holding a span it read from the parse.
+            bytes: None,
         })
     }
 

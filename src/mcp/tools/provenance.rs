@@ -315,6 +315,11 @@ fn decode_one(server: &SipnabMcp, pointer: &str, field: Option<&str>) -> Value {
         source: path.display().to_string().into(),
         origin: parsed.origin,
         kind: parsed.kind.clone(),
+        // The range the caller asked for is carried through confinement
+        // untouched. Confining rewrites WHERE to look, never WHAT was asked
+        // for, and silently widening a citation to the whole frame here would
+        // answer a different question than the one the pointer posed.
+        bytes: parsed.bytes.clone(),
     };
     let resolution = match crate::capture::resolve::resolve(&confined) {
         Ok(r) => r,
@@ -531,23 +536,7 @@ fn sip_view(
     sip
 }
 
-/// Where `needle` sits inside `hay`, when exactly one place does.
-///
-/// One place, or none at all. A second match makes the anchor ambiguous, and an
-/// ambiguous frame offset is the manufactured confidence this mechanism exists
-/// to prevent: a reader quoting `frame[start..end]` would be quoting bytes
-/// chosen by a coin toss.
-fn unique_offset(hay: &[u8], needle: &[u8]) -> Option<usize> {
-    if needle.is_empty() {
-        return None;
-    }
-    let mut hits = memchr::memmem::find_iter(hay, needle);
-    let first = hits.next()?;
-    if hits.next().is_some() {
-        return None;
-    }
-    Some(first)
-}
+use crate::capture::packet::unique_offset;
 
 // ── Tests ────────────────────────────────────────────────────────────
 

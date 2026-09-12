@@ -50,6 +50,9 @@ fn a_frame_ref_needs_both_halves_or_it_is_not_offered() {
     assert_eq!(
         r,
         FrameRef {
+            // Whole frame: these fixtures predate byte ranges and mean the
+            // same thing they always did.
+            bytes: None,
             source: Arc::from("capture.pcap"),
             origin: FrameOrigin {
                 verifiable: false,
@@ -87,6 +90,9 @@ fn a_frame_ref_needs_both_halves_or_it_is_not_offered() {
 #[test]
 fn a_frame_ref_renders_as_source_hash_ordinal() {
     let r = FrameRef {
+        // Whole frame: these fixtures predate byte ranges and mean the
+        // same thing they always did.
+        bytes: None,
         source: Arc::from("/captures/tg.pcap0"),
         origin: FrameOrigin {
             verifiable: false,

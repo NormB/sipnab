@@ -166,6 +166,23 @@ pub fn parse_pointer(text: &str) -> Result<FrameRef, ResolveError> {
     // Split on the LAST `#` above, so a path containing `#` keeps it; the tail
     // is ours, and an optional `@<digest>` lives there rather than in the
     // source, where a path could legitimately contain `@`.
+    // The optional byte range comes off first, because it sits last. A range
+    // that cannot be read REFUSES the whole pointer rather than dropping to
+    // the whole frame: dropping it would answer a different question than the
+    // one asked, and answer it confidently, which is the one outcome this
+    // mechanism exists to prevent.
+    let (tail, bytes) = match tail.split_once('+') {
+        Some((head, range)) => {
+            let (start, end) = range.split_once('-').ok_or_else(malformed)?;
+            let start: u32 = start.parse().map_err(|_| malformed())?;
+            let end: u32 = end.parse().map_err(|_| malformed())?;
+            if end <= start {
+                return Err(malformed());
+            }
+            (head, Some(start..end))
+        }
+        None => (tail, None),
+    };
     let (ordinal, digest) = match tail.split_once('@') {
         Some((o, d)) => {
             let parsed = u64::from_str_radix(d, 16).map_err(|_| malformed())?;
@@ -176,6 +193,7 @@ pub fn parse_pointer(text: &str) -> Result<FrameRef, ResolveError> {
     let ordinal: u64 = ordinal.parse().map_err(|_| malformed())?;
     Ok(FrameRef {
         source: std::sync::Arc::from(source),
+        bytes,
         origin: super::packet::FrameOrigin {
             ordinal,
             digest,
@@ -289,6 +307,8 @@ mod uprobe_origin_tests {
     #[test]
     fn a_wire_pointer_is_untouched_by_the_new_kind() {
         let wire = FrameRef {
+            // Whole frame.
+            bytes: None,
             source: std::sync::Arc::from("capture.pcap"),
             origin: FrameOrigin {
                 verifiable: false,

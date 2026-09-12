@@ -783,6 +783,8 @@ fn decode_ng_one(server: &SipnabMcp, pointer: &str) -> NgDecode {
 
     // Resolve against the CONFINED path, never the one the pointer carried.
     let confined = crate::capture::packet::FrameRef {
+        // Confinement rewrites where to look, never what was asked for.
+        bytes: parsed.bytes.clone(),
         source: path.display().to_string().into(),
         origin: parsed.origin,
         kind: parsed.kind.clone(),

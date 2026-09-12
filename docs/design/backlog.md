@@ -44,7 +44,7 @@ Tiers:
 
 ## Status
 
-**23 open, 498 done** across 36 sections.
+**22 open, 499 done** across 36 sections.
 Regenerate with `python3 scripts/backlog-status.py --apply`.
 
 | Section | Open | Done | Progress |
@@ -55,7 +55,7 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
 | P2 | 0 | 110 | `##########` |
 | P3 | 0 | 64 | `##########` |
 | P4 | 0 | 45 | `##########` |
-| PA | 1 | 12 | `#########.` |
+| PA | 0 | 13 | `##########` |
 | PB | 0 | 20 | `##########` |
 | TK | 2 | 8 | `########..` |
 | RE | 1 | 6 | `#########.` |
@@ -855,8 +855,8 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
   entry rested on. It is also the mechanism
   behind CT2 — a stalled reader is what overflows the ring. **Latent deadlock:**
   the ordering `stores → alerts` exists only on this path and is written down
-  nowhere; `security_findings` ([`src/mcp/server.rs:5572`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5572)) currently takes
-  nowhere; `security_findings` ([`src/mcp/server.rs:5572`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5572)) currently takes
+  nowhere; `security_findings` ([`src/mcp/server.rs:5614`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5614)) currently takes
+  nowhere; `security_findings` ([`src/mcp/server.rs:5614`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5614)) currently takes
   `alerts.read()` and no store lock, so there is no cycle *today*, and nothing
   stops the next MCP tool from creating one. **Do:** queue exec requests and
   per-message output during the locked section, drain them after the guards
@@ -1679,8 +1679,8 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
   `sipnab_capture_invalid_timestamps_total` (the field is declared at
   [`src/output/prometheus.rs:119`](https://github.com/NormB/sipnab/blob/main/src/output/prometheus.rs#L119), read from the atomic at `:149`, rendered at
   `:523`, and named in [`tests/metrics_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/metrics_test.rs) so a rename cannot silently drop
-  it); the MCP `capture_status` tool carries the field ([`src/mcp/server.rs:5687`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5687),
-  it); the MCP `capture_status` tool carries the field ([`src/mcp/server.rs:5687`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5687),
+  it); the MCP `capture_status` tool carries the field ([`src/mcp/server.rs:5729`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5729),
+  it); the MCP `capture_status` tool carries the field ([`src/mcp/server.rs:5729`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5729),
   populated at `:1356`) and reports it as a delta between two calls (`:1676`);
   and the batch summary explains it in prose
   ([`src/app/batch.rs:905-925`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L905-L925), the doc comment on `report_capture_quality`). The
@@ -2655,8 +2655,7 @@ aggregation tool of any kind exists; ASR, NER and ACD appear nowhere in the
 tree; `redact` appears only in `Debug` impls for key material, never on an
 output path.
 
-- [ ] **PA1 — Packet-level provenance. PARTIAL 2026-08-28: field granularity
-  shipped, the parser and RTCP halves did not.**
+- [x] **PA1 — Packet-level provenance. DONE 2026-09-11.**
 
   **Shipped.** `decode_evidence` follows a pointer through the same
   `parse_pointer` / `resolve_in_root` / `resolve` chain as `show_evidence` and
@@ -2688,11 +2687,38 @@ output path.
   continuation line the parser unfolded into it, so the range deliberately
   covers bytes the unfolded value does not reproduce verbatim.
 
-  **Still open, each verified absent rather than assumed.** RTCP
-  and XR pointers (a signature change across five call sites in `src/rtp/`).
-  `--mcp-evidence-ring` for live sources. The `c:|f:|b:|t:` composite encoding,
-  and per-call ref opt-out -- minting a `b:` suffix the single `parse_pointer`
-  cannot read would be a fabricated pointer.
+  **RTCP and XR pointers: DONE 2026-09-11.** `process_rtcp` and
+  `record_extended_report` take the frame the datagram arrived in, and both
+  `RemoteReceptionReport` and `RemoteVoipMetrics` keep it. A `FrameLocator`
+  rather than a bare `FrameOrigin`: an ordinal with no source names no frame.
+
+  **`--mcp-evidence-ring <MIB>`: DONE 2026-09-11.** A bounded ring of raw
+  frames, filled only from sources nothing can read twice. Its three misses are
+  three different answers -- the ring dropped that frame, the ring has not
+  reached that ordinal, the ring keeps nothing for that source -- because only
+  one of them means "use a bigger ring". A frame it answers carries the label
+  `retained`, not resolved.
+
+  **Byte ranges in a pointer: DONE 2026-09-11.** `FrameRef` carries an optional
+  range and renders it as `+start-end` after the digest; `parse_pointer` reads
+  it back, which is the constraint this entry named -- a suffix the parser
+  cannot read would be a fabricated pointer. A malformed range REFUSES the
+  pointer rather than dropping to the whole frame, because a widened citation
+  answers a different question than the one asked and answers it confidently.
+  Lint findings narrow their own citation to the bytes they observed when that
+  text sits in exactly one place, sharing the unique-match rule with the
+  transport-payload anchor rather than copying it.
+
+  **The rest of the composite encoding, and the per-call opt-out: NOT BUILT,
+  and the reasons are worth more than the work.** `c:` would refuse a pointer
+  from a different RUN of the same file, but the digest already refuses a
+  CHANGED file and the remaining gap is narrow. `t:` duplicates the timestamp
+  of the frame it points at. And the opt-out was justified by "refs inflate
+  every response" -- they do not. A pointer is emitted in exactly one place, on
+  lint findings, and the key is omitted entirely when a message carries none.
+  That plan assumed `_ref` on every fact; what shipped instead put pointers
+  where a reader can act on them. Building an opt-out for a cost nothing
+  incurred would be work in the wrong direction.
 
   ORIGINAL: Packet-level provenance (`_ref` + `show_evidence`). Every fact
   sipnab emits carries a resolvable pointer to the bytes behind it:
@@ -3368,7 +3394,7 @@ implementation.
   `value_parser = ["full", "metrics", "read"]`) rather than the
   `--mcp-token-scope` proposed above, with the help text drawing the
   audience line ("REST API tokens only" / "MCP tokens only"). Enforcement is
-  `scope_of` ([`src/mcp/server.rs:8508`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L8508), the `mcp-http` arm), reading the scope out of the
+  `scope_of` ([`src/mcp/server.rs:8528`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L8528), the `mcp-http` arm), reading the scope out of the
   `McpAuth::BearerVerified` admission record, and `scope_refusal` (`:4872`),
   which is called from the hand-written `call_tool` (`:4951`). The
   no-second-list requirement held literally: `scope_refusal` decides from the

@@ -1873,12 +1873,31 @@ fn findings_with_refs(
                 {
                     *observed = serde_json::Value::String(super::shape::fence_field(text));
                 }
-                if let Some(reference) =
-                    messages.get(f.message_index).and_then(|m| m.frame.as_ref())
+                if let Some(message) = messages.get(f.message_index)
+                    && let Some(reference) = message.frame.as_ref()
                 {
+                    let mut pointer = reference.clone();
+                    // Narrow the citation to the bytes the finding OBSERVED,
+                    // when those bytes sit in exactly one place. `observed` is
+                    // the one field defined as wire text, so it is the only
+                    // one that can be looked for in the frame at all.
+                    //
+                    // Exactly one place, or none: a second match makes the
+                    // anchor a coin toss, and a finding pointed at the wrong
+                    // Via still resolves, which is what would make it read as
+                    // evidence. A finding that cannot be narrowed keeps the
+                    // whole-message pointer it always had.
+                    if let Some(start) =
+                        crate::capture::packet::unique_offset(&message.raw, f.observed.as_bytes())
+                        && let Ok(start) = u32::try_from(start)
+                        && let Ok(len) = u32::try_from(f.observed.len())
+                        && len > 0
+                    {
+                        pointer.bytes = Some(start..start.saturating_add(len));
+                    }
                     obj.insert(
                         "frame_ref".to_string(),
-                        serde_json::Value::String(reference.to_string()),
+                        serde_json::Value::String(pointer.to_string()),
                     );
                 }
             }
@@ -7166,6 +7185,7 @@ impl SipnabMcp {
                                 // Resolve against the CONFINED path, never the
                                 // one the pointer carried.
                                 let confined = crate::capture::packet::FrameRef {
+                                    bytes: None,
                                     source: path.display().to_string().into(),
                                     origin: pointer.origin,
                                     // Confining rewrites the PATH, never what
@@ -9910,6 +9930,8 @@ mod tests {
         let ts = chrono::Utc::now();
         let mut msg = parse_at(&raw, ts);
         msg.frame = Some(FrameRef {
+            // Whole frame.
+            bytes: None,
             source: "calls.pcap".into(),
             origin: FrameOrigin {
                 verifiable: false,
@@ -9996,6 +10018,8 @@ mod tests {
         };
         let mut stream = RtpStream::new(key, &header, chrono::Utc::now());
         stream.first_frame = Some(FrameRef {
+            // Whole frame.
+            bytes: None,
             source: "calls.pcap".into(),
             origin: FrameOrigin {
                 verifiable: false,
@@ -13698,6 +13722,8 @@ mod tests {
         let framed = |cseq: u32, ordinal: u64, digest: u64| {
             let mut msg = parse_at(&pre_3261(cseq), base_ts());
             msg.frame = Some(FrameRef {
+                // Whole frame.
+                bytes: None,
                 source: "calls.pcap".into(),
                 origin: FrameOrigin {
                     verifiable: false,
