@@ -8,6 +8,15 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Changed
+
+- **RP1 and RP3 are closed in the backlog with what the relay taught, not a
+  tick.** Both shipped in 0.5.168; the entries record the three defects a live
+  rtpproxy found that reading its source had not, and the seam violation the
+  gate caught. Documentation only -- no code changed.
+
 ## [0.5.168] - 2026-09-12
 
 ### Added
