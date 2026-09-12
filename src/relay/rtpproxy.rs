@@ -131,7 +131,19 @@ pub fn creates(verb: char) -> Option<Stream> {
 /// `RTPP_QUERY_NSTATS` and the `get_stats` count are runtime values in
 /// rtpproxy, so `Q` and `G` take the parser's own ceiling here. Both are
 /// bounded, which is the property that matters; neither is `usize::MAX`.
-fn command_rules(verb: char) -> Option<(usize, usize, bool)> {
+fn command_rules(verb: char, modifiers: &str) -> Option<(usize, usize, bool)> {
+    // `VF` is its own command, not `V` carrying a modifier. rtpproxy's parser
+    // consumes the `F` and then sets `has_cmods = 0` for what remains, so the
+    // feature query takes exactly two arguments and bare `V` takes one. A
+    // table that treated `V` as modifier-free for both refused `VF 20040107`
+    // outright -- which a real relay answers -- and that is how this was found.
+    if verb == 'V' {
+        return Some(match modifiers {
+            m if m.eq_ignore_ascii_case("F") => (2, 2, true),
+            "" => (1, 1, false),
+            _ => return None,
+        });
+    }
     Some(match verb {
         'U' => (5, 8, true),
         'L' => (5, 6, true),
@@ -143,8 +155,6 @@ fn command_rules(verb: char) -> Option<(usize, usize, bool)> {
         // `Sessions` -- the first word of the `I` reply -- on its face.
         'S' => (3, 4, false),
         'N' => (3, 4, true),
-        // `V` alone, or `VF <n>`; neither takes further modifiers.
-        'V' => (1, 2, false),
         'I' => (1, 1, true),
         'Q' => (3, RTPC_MAX_ARGC, true),
         'X' => (1, 1, false),
@@ -212,7 +222,7 @@ pub fn decode_command(payload: &[u8]) -> Option<RtpproxyControl> {
         .collect();
 
     // Counted as rtpproxy counts: the verb token plus its arguments.
-    let (low, high, modifiers_allowed) = command_rules(verb)?;
+    let (low, high, modifiers_allowed) = command_rules(verb, &modifiers)?;
     if !modifiers_allowed && !modifiers.is_empty() {
         return None;
     }
@@ -356,4 +366,96 @@ impl super::ControlDecoder for RtpproxyDecoder {
             on_believed_mirror_port: None,
         })
     }
+}
+
+/// What a reply MEANS, once paired with the command it answers.
+///
+/// The number alone says nothing. rtpproxy answers a delete with `0` for
+/// success, a feature query with `0` for absent, and a delete-all with `0` for
+/// success again -- three readings of one byte, observed from a real relay in
+/// a single session. A decoder handing back `Number(0)` leaves a reader to
+/// remember which question was asked, which is the kind of interpretation that
+/// gets done wrong once and then trusted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Meaning {
+    /// The command did what it asked.
+    Succeeded,
+    /// The command failed, with the relay's own code.
+    Failed(u32),
+    /// The relay allocated media for this call.
+    Allocated {
+        /// Port it opened.
+        port: u16,
+        /// Address it opened the port on.
+        address: String,
+    },
+    /// The queried feature is present.
+    FeaturePresent,
+    /// The queried feature is absent. NOT a failure: the relay answered.
+    FeatureAbsent,
+    /// The control protocol version the relay speaks.
+    ProtocolVersion(i64),
+    /// A number this reply's command gives no reading for.
+    ///
+    /// Reported rather than guessed. A verb whose numeric answer has no
+    /// documented meaning gets the number back unchanged, which is honest
+    /// about the limit instead of inventing a schema.
+    Uninterpreted(i64),
+    /// Free text the relay returned, kept whole.
+    Report(String),
+}
+
+/// Read a reply in the light of the command it answers.
+///
+/// `None` when the two do not pair. The cookie is the only thing joining them,
+/// and interpreting a reply against a command it did not answer produces a
+/// confident statement about the wrong call -- worse than declining, because
+/// it resolves.
+#[must_use]
+pub fn interpret(command: &RtpproxyControl, reply: &RtpproxyControl) -> Option<Meaning> {
+    let (
+        RtpproxyControl::Command {
+            cookie,
+            verb,
+            modifiers,
+            ..
+        },
+        RtpproxyControl::Reply {
+            cookie: echoed,
+            reply,
+        },
+    ) = (command, reply)
+    else {
+        return None;
+    };
+    if cookie != echoed {
+        return None;
+    }
+
+    Some(match reply {
+        Reply::Error(code) => Meaning::Failed(*code),
+        Reply::Media { port, address } => Meaning::Allocated {
+            port: *port,
+            address: address.clone(),
+        },
+        Reply::Text(body) => Meaning::Report(body.clone()),
+        Reply::Number(n) => match verb {
+            // `VF` is a yes/no about one feature. `V` alone is the version, and
+            // the two are told apart by the modifier rather than by the number,
+            // because both answer with a bare integer.
+            'V' if modifiers.eq_ignore_ascii_case("F") => {
+                if *n == 0 {
+                    Meaning::FeatureAbsent
+                } else {
+                    Meaning::FeaturePresent
+                }
+            }
+            'V' => Meaning::ProtocolVersion(*n),
+            // Teardown answers zero for success. A non-zero number here is not
+            // a documented shape, so it is handed back rather than read as a
+            // failure the relay did not report.
+            'D' | 'X' if *n == 0 => Meaning::Succeeded,
+            _ => Meaning::Uninterpreted(*n),
+        },
+    })
 }

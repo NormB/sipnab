@@ -954,6 +954,7 @@ mod tests {
 
         let relay = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2));
         let snapshot = RelaySnapshot {
+            implementation: crate::relay::RelayImplementation::Rtpengine,
             links: vec![RelayLink {
                 address: relay,
                 port: 30000,
@@ -970,7 +971,10 @@ mod tests {
             .expect("the snapshot must be registered on this mode's store");
         assert_eq!(
             provenance.asserted_by,
-            EndpointAssertion::MediaRelay,
+            EndpointAssertion::media_relay(
+                crate::relay::RelayImplementation::Rtpengine,
+                crate::relay::ControlDelivery::Encapsulated
+            ),
             "the relay asserted this allocation; no party's SDP did"
         );
         assert_eq!(

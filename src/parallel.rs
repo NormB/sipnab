@@ -388,11 +388,17 @@ fn reconstruct(
                 }
             }
         }
-        PacketAction::RelayControl { sdp_links } => {
+        PacketAction::RelayControl {
+            sdp_links,
+            implementation,
+            delivery,
+        } => {
             if !cfg.no_dialog && !sdp_links.is_empty() {
                 crate::pipeline::apply_relay_control_links(
                     ss,
                     &sdp_links,
+                    implementation,
+                    delivery,
                     pp.input_origin,
                     pp.timestamp,
                 );

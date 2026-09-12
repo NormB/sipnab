@@ -29,6 +29,18 @@ pub enum ReadOnlyCommand {
         /// How many Call-IDs to ask for.
         limit: u32,
     },
+    /// The relay's own counters: what it has handled, dropped and is holding.
+    ///
+    /// Relay-WIDE, and deliberately not a `Query` with a special call-id. A
+    /// call-scoped query and a box-wide statistic answer different questions,
+    /// and overloading one on the other would make "no such call" and "no
+    /// statistics" the same refusal.
+    ///
+    /// Carries no arguments. `query_relay` already refuses an agent-supplied
+    /// destination -- an agent that could name the target would turn the MCP
+    /// surface into a way to send packets to a host of its choosing -- and a
+    /// statistics command with a host field would reopen exactly that.
+    Statistics,
     /// One call's tags and streams.
     Query {
         /// The Call-ID to ask about.
@@ -58,6 +70,13 @@ pub enum ControlReply {
     Calls(Enumeration),
     /// A `query` answer: one call, as the relay holds it.
     Call(CallView),
+    /// A `statistics` answer: the relay's own counters, as it reported them.
+    ///
+    /// Name/value pairs kept as the relay wrote them rather than mapped onto a
+    /// schema of sipnab's own. The two relays count different things under
+    /// different names, and inventing a common shape would assert an
+    /// equivalence neither of them promised.
+    Statistics(Vec<(String, String)>),
     /// The relay refused, with its own words.
     Refused {
         /// What the relay said.

@@ -44,7 +44,7 @@ Tiers:
 
 ## Status
 
-**22 open, 499 done** across 36 sections.
+**44 open, 499 done** across 38 sections.
 Regenerate with `python3 scripts/backlog-status.py --apply`.
 
 | Section | Open | Done | Progress |
@@ -63,6 +63,8 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
 | NAT | 0 | 4 | `##########` |
 | RV | 0 | 8 | `##########` |
 | RP | 3 | 1 | `##........` |
+| ST | 17 | 0 | `..........` |
+| PAR | 5 | 0 | `..........` |
 | HX | 1 | 2 | `#######...` |
 | AS | 0 | 7 | `##########` |
 | DOC | 0 | 16 | `##########` |
@@ -5482,6 +5484,229 @@ section stays four entries instead of becoming a mirror of RV.
   one 401 plus a Timer G ladder. The relay control channel deserves the same
   treatment, and this belongs as a field on the RV3/RV4 output rather than as
   its own tool.
+
+## ST — statistics on every surface (added 2026-09-12)
+
+**Norm, 2026-09-12:** every statistic rtpengine or rtpproxy can report is in
+scope, plus statistics sipnab derives itself, plus statistics carried in RTCP
+reports. Every surface must expose them: CLI, REST, MCP and the TUI. **50 tests
+per surface is a hard minimum**, developed test-first, covering success paths,
+failure paths and edge cases. "your coding skills require tests so that proof of
+correct operation is assured."
+
+**Write every item down before implementing any of them.** A program this size
+delivered piecemeal produces a partial solution that is worse than none, because
+each surface then disagrees with the others about what a number means.
+
+**Specifications come first, and they are items in their own right.** Nothing
+below ST-S4 gets implemented until the spec it depends on is written and
+reviewed. A surface built before its spec is a surface whose shape was decided
+by whichever call site was written first, which is how the four surfaces drifted
+apart in the first place (see PAR).
+
+- [ ] **ST-S1 — SPEC: the statistics vocabulary.** Gates ST1 and everything
+  after it.
+
+  Must state: the three provenance tiers and their names; what each tier can
+  and cannot be asked; which aggregates are legal across tiers and which are
+  forbidden; how a missing value differs from a zero one on the wire and in
+  prose; and the rendering rule every surface follows so one number never reads
+  two ways. Written against the relays in the harness, with observed replies
+  quoted rather than recalled.
+
+- [ ] **ST-S2 — SPEC: what each relay actually reports.** Gates ST2 and ST3.
+
+  An inventory taken from the running rtpengine and rtpproxy, not from their
+  manuals: every key each emits, its type, its units, whether it is cumulative
+  or instantaneous, and whether it survives a relay restart. Record the version
+  each was observed on, because the key sets differ between versions and a
+  schema frozen to one is the pinned-value defect again.
+
+  Includes the open question ST3 names: what rtpproxy's `Q` positional fields
+  mean. Answer it from the source in this spec, or record that it is unanswered
+  and exclude those fields from scope.
+
+- [ ] **ST-S3 — SPEC: the surface contract.** Gates ST5, ST6, ST7 and ST8.
+
+  One document covering all four surfaces together, because writing them
+  separately is what produced the drift. Must state, per capability: the CLI
+  spelling, the REST route and payload, the MCP tool name and schema, the TUI
+  affordance, and the ONE vocabulary all four render. Where a surface
+  deliberately omits something, the spec says so and says why — an omission
+  with a reason is a decision, an omission without one is the debt PAR exists
+  for.
+
+- [ ] **ST-S4 — SPEC: the failure and edge-case catalog.** Gates ST9 and the
+  50-test minimum on every surface.
+
+  Enumerated before implementation so each surface's tests are drawn from one
+  list rather than from whatever its author thought of: relay unreachable,
+  relay refuses, partial answer, no relay configured, no capture running,
+  counter reset by a restart, value overflow, key present in one version and
+  absent in another, permit absent, timer firing while a poll is outstanding,
+  and zero versus absent. Each entry names the expected behavior on all four
+  surfaces, so they cannot disagree about what a failure looks like.
+
+- [ ] **ST-S5 — SPEC: what the documentation and the site must teach.** Gates
+  ST-D1 and ST-D2.
+
+  **Norm, 2026-09-12:** "the documentation and web site must be improved to
+  highlight these capabilities and show the operator how to use them. the
+  cookbook and examples must be improved specifically."
+
+  A capability an operator cannot find is a capability that does not exist for
+  them. This spec says, per statistic: the question an operator is actually
+  asking, the command or click that answers it on each surface, and what the
+  answer does NOT tell them — the tier rule from ST-S1 in prose an operator
+  reads rather than as a type name.
+
+- [ ] **ST-D1 — the cookbook gains statistics recipes.** Task-first, in the
+  shape the docs guide already demands: the question first, the command second,
+  the caveat third. At minimum, one recipe per question an operator brings to a
+  relay — is it dropping packets, is it holding sessions nobody released, does
+  its view of this call match mine, and is what it reports about loss the same
+  thing my capture measured. That last one is the tier rule in practice, and it
+  is the recipe most likely to be got wrong without it.
+
+- [ ] **ST-D2 — the site shows them, not just the reference.** The homepage and
+  the docs navigation surface statistics as a capability rather than leaving
+  them to be discovered in a flag table. Includes runnable examples on the
+  relevant pages, held by the existing two-examples-per-flag gate, and the
+  demos that page already carries for other capabilities.
+
+  **Every example must run against the harness before it ships.** The
+  release-verification lesson applies to documentation too: an example nobody
+  executed is a claim, and a copied command that fails is worse than no example
+  because the reader blames themselves.
+
+- [ ] **PAR-S1 — SPEC: what parity means here.** Gates every PAR item.
+
+  "All surfaces in sync" needs a definition before it can be gated. Must
+  distinguish capabilities that belong everywhere from those that are genuinely
+  audience-specific — an agent wants `find_correlated`, a human at a terminal
+  may not — and state the test a reviewer applies to decide. Without this,
+  PAR2's gate either demands a REST route per MCP tool or demands nothing.
+
+- [ ] **ST1 — three kinds of statistic, one vocabulary, never blended.**
+
+  This is the item the rest depend on, and getting it wrong makes every later
+  number untrustworthy. Three sources, and they are not interchangeable:
+
+  1. **Relay-derived** — what rtpengine or rtpproxy reports about ITSELF. A
+     claim from a box that may be wrong, restarted, or lying. rtpproxy answers
+     `G` and `I`; rtpengine answers `statistics`.
+  2. **sipnab-derived** — measured from packets sipnab actually saw. Bounded by
+     what reached the capture point, which is not the same as what happened.
+  3. **RTCP-derived** — what a remote endpoint asserted in an SR, RR or XR.
+     Already modeled by `RemoteReceptionReport` and `RemoteVoipMetrics`, which
+     keep it beside sipnab's own numbers rather than in them.
+
+  The tree already refuses to blend two of these: `EndpointAssertion` separates
+  `relay_asserted` from `observed`, and `process_rtcp` files a remote claim in a
+  side table rather than into the measurement. A statistics surface that summed
+  a relay's packet count with sipnab's own would produce a number describing
+  nothing, and it would look authoritative.
+
+  **Do:** one enum naming the three, carried with every statistic, rendered on
+  every surface. No aggregate that spans two of them without saying so.
+
+- [ ] **ST2 — every statistic rtpengine will report.** `statistics` returns a
+  deep dictionary whose keys differ between versions. Flattening it into a
+  schema of sipnab's own would freeze one version's vocabulary into a type,
+  which is the pinned-value defect this repository has paid for before. Return
+  the relay's own names; let a caller ask for the one it wants.
+
+  **Verify against the rtpengine in the harness before implementing**, not from
+  memory. Record which keys that version actually emits.
+
+- [ ] **ST3 — every statistic rtpproxy will report.** Two commands, and they
+  answer differently: `I` returns free multi-line text
+  (`sessions created: N`, `active sessions`, `active streams`,
+  `packets received`, `packets transmitted`), `G` returns per-statistic values.
+  Observed 2026-09-12 on 3.2.0.
+
+  `Q` also carries per-call counters and answered `54 0 0 0 0` for a real call
+  — five fields whose meaning is positional and undocumented here. **Establish
+  what those positions are from the source before reporting them**; a decoder
+  that labeled them by guess would be inventing a schema.
+
+- [ ] **ST4 — an operator may ask for polling; nothing polls by default.**
+
+  **Norm, 2026-09-12:** "the polling a relay on a timer should be an operator
+  specified ability."
+
+  So an interval flag, absent by default. The rule is not that polling is
+  forbidden, it is that nothing transmits unless somebody configured it: every
+  other answer sipnab gives comes from bytes it already holds, and this one puts
+  a packet on the network. An operator naming an interval IS the request.
+
+  Needs: a bound on what a timer may spend, a statement in the output when a
+  number came from a poll rather than from a question, and a refusal to poll a
+  relay the run was never given.
+
+- [ ] **ST5 — REST endpoints for all three tiers.** 50 tests minimum. Failure
+  paths included: relay unreachable, relay refused, partial answer, no relay
+  configured, statistics requested on a run with no capture. Edge cases:
+  counters that reset when a relay restarts, values that overflow their type,
+  a key present in one relay version and absent in the next.
+
+- [ ] **ST6 — an MCP tool for all three tiers.** 50 tests minimum. It must be
+  ONE tool, not one per relay: a parallel `query_rtpproxy` beside `query_relay`
+  doubles the agent surface for no gain, which RP2's acceptance test 1 already
+  forbids. The tool transmits, so it stays behind the existing permit.
+
+- [ ] **ST7 — CLI flags for all three tiers.** 50 tests minimum. Includes the
+  output shapes: a human-readable form and a machine-readable one that agree,
+  since a number that differs between `--json` and the table is a defect nobody
+  notices until it is quoted.
+
+- [ ] **ST8 — the TUI exposes them too.** 50 tests minimum, driven through the
+  PTY harness the E2E tests already use. See PAR — the TUI is the surface
+  furthest behind, and statistics must not widen that gap.
+
+- [ ] **ST9 — failure and edge cases are first-class, not an afterthought.**
+
+  Named here so they cannot be quietly dropped from each surface's 50: a relay
+  that answers slowly, one that answers with a key sipnab cannot parse, one that
+  restarts mid-run and resets every counter, a permit that is absent, a timer
+  that fires while a previous poll is still outstanding, and a statistic whose
+  value is legitimately zero versus one that is missing. Zero and absent are
+  different answers and must never render the same.
+
+## PAR — surface parity debt (added 2026-09-12)
+
+**Norm, 2026-09-12:** "the gui and cli have been falling behind in terms of
+exposing the recent features / implementations... all surfaces are to be kept in
+sync in terms of function and capability."
+
+**Measured 2026-09-12, not estimated:** 79 MCP tools, 17 REST routes, 265 CLI
+flags, 16 TUI views. The asymmetry is real and it is structural: new capability
+has been landing on the MCP surface first because that is where the agent work
+was, and the other three have been catching up by hand or not at all.
+
+- [ ] **PAR1 — record which capabilities exist on which surface.** A table,
+  generated rather than written, so it cannot drift. The existing coverage
+  matrix already enumerates flags, routes and tools separately; what is missing
+  is the JOIN that says a capability is reachable three ways and not four.
+
+- [ ] **PAR2 — a gate that fails when a capability lands on one surface only.**
+  Without it this debt returns the moment attention moves. The mechanism this
+  repo already uses is a source scan with an anti-vacuity floor, and it must
+  name the surfaces a capability is missing from rather than only that it is
+  incomplete.
+
+- [ ] **PAR3 — close the REST gap.** 17 routes against 79 tools is the widest
+  one. Establish first which of the 79 are genuinely agent-shaped and which
+  belong on every surface; a REST route per MCP tool is not automatically right.
+
+- [ ] **PAR4 — close the TUI gap.** The surface with the least recent
+  attention. Same question first: which capabilities a human at a terminal
+  actually wants, rather than mirroring the agent surface into panels nobody
+  opens.
+
+- [ ] **PAR5 — close the CLI gap.** 265 flags is not evidence of parity; it is
+  evidence of many flags. The join in PAR1 is what will say which capabilities
+  have no CLI path at all.
 
 ## HX — harness topology: a PBX, both directions, swappable media anchor (added 2026-08-28)
 

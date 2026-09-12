@@ -104,6 +104,7 @@ pub mod rate_limit;
 // against in the first place.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod relay;
+pub mod relay_vocab;
 pub mod rtp;
 // Native only, exactly as `pipeline` is: this module hands `ng`-derived SDP to
 // `pipeline::extract_sdp_links`, so it cannot compile where that does not. It

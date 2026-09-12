@@ -89,6 +89,7 @@ impl ReadOnlyCommand {
         match self {
             Self::List { .. } => "list",
             Self::Query { .. } => "query",
+            Self::Statistics => "statistics",
         }
     }
 }
@@ -97,6 +98,8 @@ impl fmt::Display for ReadOnlyCommand {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::List { limit } => write!(f, "list(limit={limit})"),
+            // No arguments, so nothing here can carry a caller's data.
+            Self::Statistics => write!(f, "statistics"),
             // The Call-ID is a caller's identifier and can be personal data;
             // it is on the wire either way, but a Display impl ends up in logs
             // that outlive the capture.
@@ -156,6 +159,11 @@ impl ControlRequest {
                 (b"command".as_slice(), Value::Bytes(b"query")),
                 (b"call-id".as_slice(), Value::Bytes(call_id.as_bytes())),
             ]),
+            // One key and no arguments. Nothing here is caller-supplied, so
+            // there is no field an agent could aim at a host of its choosing.
+            ReadOnlyCommand::Statistics => {
+                encode_dict(vec![(b"command".as_slice(), Value::Bytes(b"statistics"))])
+            }
         };
         let mut out = Vec::with_capacity(self.cookie.len() + 1 + body.len());
         out.extend_from_slice(self.cookie.as_bytes());
@@ -300,6 +308,74 @@ fn ssrcs_from(v: Option<&Value<'_>>, out: &mut Vec<u32>) {
 /// # Errors
 ///
 /// When the reply is not bencode or carries no `result`. A reply the relay
+/// Walk a bencode value into flat `name = value` pairs.
+///
+/// Dotted names, so a nested counter keeps the path that gives it meaning:
+/// `totals.rtp.packets` says something `packets` alone does not. Byte strings
+/// that are not UTF-8 are rendered as their length rather than dropped --
+/// a counter sipnab cannot read is still a counter the relay reported, and
+/// silently omitting it would make the answer look complete.
+fn flatten_bencode(
+    prefix: &str,
+    value: &crate::rtpengine::bencode::Value<'_>,
+    out: &mut Vec<(String, String)>,
+) {
+    use crate::rtpengine::bencode::Value;
+    let join = |k: &str| {
+        if prefix.is_empty() {
+            k.to_string()
+        } else {
+            format!("{prefix}.{k}")
+        }
+    };
+    match value {
+        Value::Int(n) => out.push((prefix.to_string(), n.to_string())),
+        Value::Bytes(b) => out.push((
+            prefix.to_string(),
+            std::str::from_utf8(b)
+                .map_or_else(|_| format!("<{} bytes>", b.len()), ToString::to_string),
+        )),
+        Value::List(items) => {
+            for (i, item) in items.iter().enumerate() {
+                flatten_bencode(&join(&i.to_string()), item, out);
+            }
+        }
+        Value::Dict(entries) => {
+            for (k, v) in entries {
+                let key = String::from_utf8_lossy(k).into_owned();
+                flatten_bencode(&join(&key), v, out);
+            }
+        }
+    }
+}
+
+/// Read a `statistics` answer into name/value pairs.
+///
+/// Kept as the relay wrote them. rtpengine reports a deep dictionary whose
+/// keys differ between versions, and flattening it into a schema of sipnab's
+/// own would freeze one version's vocabulary into a type -- the pinned-value
+/// defect this repository has paid for before. A caller that wants a specific
+/// counter looks it up by the name the relay used.
+///
+/// # Errors
+///
+/// When the body is not a dictionary at all.
+pub fn parse_statistics_reply(body: &[u8]) -> anyhow::Result<ControlReply> {
+    // The body is `<cookie> <bencode>`, the same framing every ng reply uses.
+    let Some(sep) = body.iter().position(|&b| b == b' ') else {
+        anyhow::bail!("statistics reply has no cookie separator");
+    };
+    let decoded = crate::rtpengine::bencode::decode(&body[sep + 1..])
+        .map_err(|e| anyhow::anyhow!("statistics reply is not bencode: {e}"))?;
+    let mut pairs: Vec<(String, String)> = Vec::new();
+    flatten_bencode("", &decoded, &mut pairs);
+    if pairs.is_empty() {
+        anyhow::bail!("statistics reply carried no counters");
+    }
+    pairs.sort();
+    Ok(ControlReply::Statistics(pairs))
+}
+
 /// refused is not an error: see [`ControlReply::Refused`].
 pub fn parse_query_reply(body: &[u8], call_id: &str) -> anyhow::Result<ControlReply> {
     use anyhow::{Context, bail};
@@ -571,6 +647,22 @@ impl ControlClient {
         parse_query_reply(&body, call_id)
     }
 
+    /// Ask the relay for its own counters.
+    ///
+    /// Sent only when something asked. This is the one class of answer sipnab
+    /// cannot derive from the capture -- what the relay itself has handled and
+    /// dropped -- so an API caller or an agent needing it has no other source,
+    /// and a run with no such question sends nothing.
+    ///
+    /// # Errors
+    ///
+    /// When the relay will not answer, or answers something unparseable.
+    pub fn statistics(&self, _permit: &TransmitPermit) -> anyhow::Result<ControlReply> {
+        let request = ControlRequest::new(ReadOnlyCommand::Statistics, self.next_seed());
+        let body = self.round_trip(&request)?;
+        parse_statistics_reply(&body)
+    }
+
     /// Whether this command's ANSWER is too big for a datagram to carry.
     ///
     /// The transport is chosen by the size of the answer being asked for, and
@@ -812,15 +904,17 @@ mod tests {
             ReadOnlyCommand::Query {
                 call_id: "x".to_string(),
             },
+            ReadOnlyCommand::Statistics,
         ] {
             let verb = match &cmd {
                 ReadOnlyCommand::List { .. } => "list",
                 ReadOnlyCommand::Query { .. } => "query",
+                ReadOnlyCommand::Statistics => "statistics",
             };
             assert_eq!(cmd.verb(), verb);
             assert!(
-                matches!(verb, "list" | "query"),
-                "a verb that is not list or query reached the wire: {verb}"
+                matches!(verb, "list" | "query" | "statistics"),
+                "a verb outside the read-only set reached the wire: {verb}"
             );
 
             // And the encoded form must not contain a mutating verb either --
@@ -1851,6 +1945,13 @@ impl crate::relay::reconcile::ReadOnlyRelay for ControlClient {
         call_id: &str,
     ) -> anyhow::Result<ControlReply> {
         Self::query(self, permit, call_id)
+    }
+
+    fn statistics(
+        &self,
+        permit: &crate::security::transmit_guard::TransmitPermit,
+    ) -> anyhow::Result<ControlReply> {
+        Self::statistics(self, permit)
     }
 
     fn describe(&self) -> String {

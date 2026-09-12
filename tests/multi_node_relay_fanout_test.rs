@@ -190,7 +190,12 @@ fn relay_sees_the_media(node: &Node, call_id: &str, relay: Ipv4Addr, port: u16, 
             port,
             call_id,
             &relay_media(port),
-            sipnab::rtp::stream_store::SdpProvenance::relay_asserted(InputOrigin::Hep, ts),
+            sipnab::rtp::stream_store::SdpProvenance::relay_asserted(
+                sipnab::relay::RelayImplementation::Rtpengine,
+                sipnab::relay::ControlDelivery::BareDatagram,
+                InputOrigin::Hep,
+                ts,
+            ),
         );
     }
     let (pp, rtp) = media(relay, port, ssrc);

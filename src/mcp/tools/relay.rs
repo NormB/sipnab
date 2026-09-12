@@ -14,8 +14,8 @@
 //! destination port, and the SOURCE is still not authenticated -- a residual
 //! `a_mirror_from_any_source_is_still_believed_on_the_hep_port` pins on
 //! purpose. So "the relay told us" and "something claiming to be the relay told
-//! us" are both `EndpointAssertion::MediaRelay` in the store, and only the
-//! delivery path separates them.
+//! us" are both a media-relay assertion in the store, and only the delivery
+//! path separates them.
 //!
 //! # Where the authentication answer comes from
 //!
@@ -208,7 +208,7 @@ impl OrphanReason {
 pub fn orphan_reason(named: Option<crate::rtp::stream_store::EndpointAssertion>) -> OrphanReason {
     use crate::rtp::stream_store::EndpointAssertion;
     match named {
-        Some(EndpointAssertion::MediaRelay) => OrphanReason::RelayAssertedButNoDialog,
+        Some(EndpointAssertion::MediaRelay { .. }) => OrphanReason::RelayAssertedButNoDialog,
         Some(EndpointAssertion::Signaled) => OrphanReason::SignaledButNoDialog,
         None => OrphanReason::NeverNamed,
     }
@@ -394,7 +394,7 @@ impl SipnabMcp {
                 });
                 let reason = orphan_reason(named.map(|(_, asserted)| asserted));
                 let (endpoint, asserted) = match named {
-                    Some((a, crate::rtp::stream_store::EndpointAssertion::MediaRelay)) => {
+                    Some((a, crate::rtp::stream_store::EndpointAssertion::MediaRelay { .. })) => {
                         (Some(a.to_string()), Some("media-relay".to_string()))
                     }
                     Some((a, crate::rtp::stream_store::EndpointAssertion::Signaled)) => {
@@ -581,8 +581,7 @@ pub fn classify(
     origin: Option<crate::capture::parse::InputOrigin>,
     configured: DeliveryTrust,
 ) -> DeliveryTrust {
-    use crate::rtp::stream_store::EndpointAssertion;
-    if asserted != EndpointAssertion::MediaRelay {
+    if asserted.implementation().is_none() {
         return DeliveryTrust::NotRelayAsserted;
     }
     match origin {
@@ -1002,6 +1001,12 @@ pub struct RelayAnswer {
     pub delivery_trust: DeliveryTrust,
     /// The one-line reading of `delivery_trust`.
     pub delivery_note: String,
+    /// The relay's own counters, when statistics were asked for.
+    ///
+    /// Name/value pairs as the relay wrote them. `None` on every other answer,
+    /// and on a run where nothing asked -- which is most of them.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub statistics: Option<Vec<(String, String)>>,
     /// Version of this response shape.
     pub schema_version: u32,
 }
@@ -1015,6 +1020,8 @@ impl RelayAnswer {
     ) -> Self {
         use crate::relay::types::ControlReply;
         let base = |outcome: &str| Self {
+            // Absent unless statistics were what was asked for.
+            statistics: None,
             asked: asked.to_string(),
             relay_address: addr.to_string(),
             outcome: outcome.to_string(),
@@ -1034,6 +1041,14 @@ impl RelayAnswer {
                 call_ids: Some(e.call_ids.clone()),
                 truncated: Some(e.truncated),
                 ..base("calls")
+            },
+            // Counters, as the relay named them. Not mapped onto a schema of
+            // sipnab's own: the two relays count different things under
+            // different names, and asserting an equivalence neither promised
+            // would be inventing one.
+            ControlReply::Statistics(pairs) => Self {
+                statistics: Some(pairs.clone()),
+                ..base("statistics")
             },
             ControlReply::Call(view) => Self {
                 call_id: Some(view.call_id.clone()),
@@ -1528,7 +1543,13 @@ mod query_relay_view_tests {
         use crate::rtp::stream_store::EndpointAssertion;
 
         assert_eq!(
-            orphan_reason(Some(EndpointAssertion::MediaRelay)),
+            // Whichever relay: this test is about the orphan reason, and
+            // naming one here would make a rule about attributions look like
+            // a rule about one vendor.
+            orphan_reason(Some(EndpointAssertion::media_relay(
+                crate::relay::RelayImplementation::default(),
+                crate::relay::ControlDelivery::BareDatagram,
+            ))),
             OrphanReason::RelayAssertedButNoDialog,
             "a relay named the endpoint, so the signaling is what is missing"
         );

@@ -12,6 +12,36 @@ entry that carries them.
 
 ### Added
 
+- **An endpoint attribution now names WHICH relay asserted it, and how the
+  claim arrived (RP3).** "A relay said so" stops being a complete answer the
+  moment an estate runs two of them: rtpengine's control plane is encapsulated
+  and can carry authentication, rtpproxy's is a bare datagram carrying no
+  credential at all. Both facts travel with the assertion, because together
+  they decide what it is worth.
+
+- **A reply is read in the light of the command it answers.** rtpproxy answers
+  a delete with `0` for success, a feature query with `0` for absent, and a
+  delete-all with `0` for success again -- three readings of one byte, observed
+  from a live relay in a single session. Handing a caller `Number(0)` leaves
+  them to remember which question was asked. A reply whose cookie does not
+  match the command is never interpreted at all, and a verb with no documented
+  numeric reading returns the number unchanged rather than an invented schema.
+
+### Fixed
+
+- **`VF` was refused as a malformed `V`.** rtpproxy's parser consumes the `F`
+  as part of the verb and then treats what remains as modifier-free, so the
+  feature query takes exactly two arguments while bare `V` takes one. The
+  decoder's table had one rule for both and rejected `VF 20040107` outright,
+  which a real relay answers. Found by asking one.
+
+- **The harness ran both media anchors on the same RTP port range.** rtpengine
+  and rtpproxy both held 30000-30050, disjoint only because a Makefile target
+  stops them running together -- a rule enforced somewhere other than the
+  numbers. rtpproxy now has 31000-31050, and a test fails if the gap between
+  the ranges falls below a hundred ports.
+
+
 - **sipnab decodes the rtpproxy control protocol (RP1).** Text, not bencode — a
   search of the whole rtpproxy tree for `bencode` returns nothing, so the
   existing NG decoder covered none of this. All thirteen command letters, the

@@ -720,7 +720,7 @@ impl RtpStream {
     pub fn dialog_bound_from_relay(&self) -> bool {
         matches!(
             self.dialog_assertion,
-            Some(crate::rtp::stream_store::EndpointAssertion::MediaRelay)
+            Some(crate::rtp::stream_store::EndpointAssertion::MediaRelay { .. })
         )
     }
 

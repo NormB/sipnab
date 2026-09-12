@@ -856,7 +856,7 @@ pub fn reset_icmp_evidence() {
 //     counted as unattributed and its endpoint is still tallied, so the report
 //     distinguishes "no evidence" from "evidence sipnab could not place".
 //   * **What the payload is and what it matched are different facts.** A quote
-//     can be recognisably RTP and match no stream (media this capture does not
+//     can be recognizably RTP and match no stream (media this capture does not
 //     hold), or match a stream with no payload left to read (the RFC 792
 //     minimum). Collapsing them into one "is media" flag would lose which of
 //     the two a reader is looking at.
@@ -1714,16 +1714,29 @@ pub fn extract_sdp_links(
 /// the others. One definition means the drift is not available to be made.
 ///
 /// The provenance is [`rtp::stream_store::SdpProvenance::relay_asserted`] and
-/// not `observed`: this endpoint is rtpengine describing a port it allocated
+/// not `observed`: this endpoint is a relay describing a port it allocated
 /// itself, which is authoritative about the socket and says nothing about
 /// either party's own address (RE3).
+///
+/// `implementation` and `delivery` travel with it because they decide what the
+/// claim is worth (RP3). Two relays with different trust properties produce two
+/// different claims, and a bare datagram read off the wire is authenticated by
+/// nothing whoever sent it -- so the caller states both rather than letting a
+/// consumer assume the estate runs only one relay, reachable only one way.
 pub fn apply_relay_control_links(
     ss: &mut rtp::stream_store::StreamStore,
     sdp_links: &[(std::net::IpAddr, u16, String, sip::sdp::SdpMedia)],
+    implementation: crate::relay::RelayImplementation,
+    delivery: crate::relay::ControlDelivery,
     input_origin: crate::capture::parse::InputOrigin,
     timestamp: chrono::DateTime<chrono::Utc>,
 ) {
-    let provenance = rtp::stream_store::SdpProvenance::relay_asserted(input_origin, timestamp);
+    let provenance = rtp::stream_store::SdpProvenance::relay_asserted(
+        implementation,
+        delivery,
+        input_origin,
+        timestamp,
+    );
     for (ip, port, call_id, media) in sdp_links {
         ss.link_to_dialog_with_sdp_from(*ip, *port, call_id, media, provenance);
     }
@@ -1755,7 +1768,11 @@ pub fn apply_relay_snapshot(
         // Never asked. Not an empty relay -- see `Unattributed`.
         return;
     };
-    let provenance = rtp::stream_store::SdpProvenance::relay_queried(taken_at);
+    // sipnab opened this connection itself and knows which relay answered, so
+    // the snapshot carries the implementation rather than leaving a consumer
+    // to infer it from the port it happened to be asked on.
+    let provenance =
+        rtp::stream_store::SdpProvenance::relay_queried(snapshot.implementation, taken_at);
     for link in &snapshot.links {
         ss.link_endpoint_from(
             link.address,
@@ -1941,6 +1958,16 @@ pub enum PacketAction {
     RelayControl {
         /// `(media_ip, media_port, call_id, media)` links to apply to streams.
         sdp_links: Vec<(std::net::IpAddr, u16, String, sip::sdp::SdpMedia)>,
+        /// Which relay said it, stated by the DECODER that read the message.
+        ///
+        /// Carried here so no consuming layer has to name a vendor to apply an
+        /// attribution. The decoder is the only thing that knows -- it just
+        /// parsed that relay's wire format -- and a consumer picking a name
+        /// would be guessing, which is what made the second relay a second
+        /// code path the first time.
+        implementation: crate::relay::RelayImplementation,
+        /// How the message reached the capture, on the same terms.
+        delivery: crate::relay::ControlDelivery,
     },
     /// Parsed RTCP compound-packet reports, to feed to `process_rtcp`.
     Rtcp(Vec<rtp::rtcp::RtcpPacket>),
@@ -2202,7 +2229,13 @@ pub fn classify_packet(
     {
         let sdp_links =
             crate::rtpengine::sdp_links_from_ng(&pp.payload, hep.correlation_id.as_deref());
-        return PacketAction::RelayControl { sdp_links };
+        return PacketAction::RelayControl {
+            sdp_links,
+            // `ng` over HEP, read off the wire: the decoder names its own
+            // relay and the datagram carried no credential.
+            implementation: crate::relay::RelayImplementation::Rtpengine,
+            delivery: crate::relay::ControlDelivery::BareDatagram,
+        };
     }
 
     // The second arm is the SNIFFED one: a HEP datagram read off the wire,
@@ -2225,7 +2258,13 @@ pub fn classify_packet(
         // `ng` is control traffic; that it named no endpoint this time (a
         // `delete`, a `ping`, a reply to one, or a refusal by the port gate)
         // is not a reason to reconsider it as media.
-        return PacketAction::RelayControl { sdp_links };
+        return PacketAction::RelayControl {
+            sdp_links,
+            // `ng` over HEP, read off the wire: the decoder names its own
+            // relay and the datagram carried no credential.
+            implementation: crate::relay::RelayImplementation::Rtpengine,
+            delivery: crate::relay::ControlDelivery::BareDatagram,
+        };
     }
 
     // RTP/RTCP detection
@@ -2399,7 +2438,11 @@ pub fn process_packet(
                 }
             }
         }
-        PacketAction::RelayControl { sdp_links } => {
+        PacketAction::RelayControl {
+            sdp_links,
+            implementation,
+            delivery,
+        } => {
             // Same gate the SIP arm uses: `--no-dialog` opts out of call
             // association, and a relay-derived association is still one.
             if opts.no_dialog {
@@ -2409,6 +2452,8 @@ pub fn process_packet(
                 apply_relay_control_links(
                     &mut stream_store.write(),
                     &sdp_links,
+                    implementation,
+                    delivery,
                     pp.input_origin,
                     pp.timestamp,
                 );
@@ -3141,6 +3186,7 @@ mod relay_control_tests {
         super::apply_relay_snapshot(
             &mut store,
             &RelaySnapshot {
+                implementation: crate::relay::RelayImplementation::Rtpengine,
                 links: vec![RelayLink {
                     address: relay,
                     port: 30000,
@@ -3198,7 +3244,10 @@ mod relay_control_tests {
         );
         assert_eq!(
             attributed[0].dialog_assertion,
-            Some(EndpointAssertion::MediaRelay),
+            Some(EndpointAssertion::media_relay(
+                crate::relay::RelayImplementation::Rtpengine,
+                crate::relay::ControlDelivery::Encapsulated,
+            )),
             "the relay asserted this, not a party's SDP"
         );
         assert_eq!(
@@ -3300,7 +3349,14 @@ mod relay_control_tests {
         assert_eq!(links.len(), 1, "fixture must yield exactly one endpoint");
 
         let mut relay_store = StreamStore::new(1000);
-        super::apply_relay_control_links(&mut relay_store, &links, InputOrigin::Hep, ts);
+        super::apply_relay_control_links(
+            &mut relay_store,
+            &links,
+            crate::relay::RelayImplementation::Rtpengine,
+            crate::relay::ControlDelivery::BareDatagram,
+            InputOrigin::Hep,
+            ts,
+        );
         relay_store.process_rtp(&media(links[0].1), &rtp, ts);
         let relay_json = rendered(&relay_store);
 
@@ -3353,7 +3409,14 @@ mod relay_control_tests {
 
         let mut store = StreamStore::new(1000);
         let ts = chrono::Utc::now();
-        super::apply_relay_control_links(&mut store, &links, InputOrigin::Hep, ts);
+        super::apply_relay_control_links(
+            &mut store,
+            &links,
+            crate::relay::RelayImplementation::Rtpengine,
+            crate::relay::ControlDelivery::BareDatagram,
+            InputOrigin::Hep,
+            ts,
+        );
 
         let (ip, port, ..) = &links[0];
         let provenance = store
@@ -3361,7 +3424,12 @@ mod relay_control_tests {
             .expect("the endpoint must be registered");
         assert_eq!(
             provenance.asserted_by,
-            EndpointAssertion::MediaRelay,
+            EndpointAssertion::media_relay(
+                crate::relay::RelayImplementation::Rtpengine,
+                // SNIFFED off the wire, so nothing vouched for it. The
+                // snapshot path is the encapsulated one; this is not it.
+                crate::relay::ControlDelivery::BareDatagram
+            ),
             "an ng endpoint is the relay's assertion about its own allocation"
         );
         assert_eq!(

@@ -75,14 +75,17 @@ pub trait ControlDecoder: Send + Sync {
     fn decode(&self, payload: &[u8], dst_port: u16) -> Option<DecodedControl>;
 }
 
-/// How a control message reached the capture.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ControlDelivery {
-    /// Wrapped in a transport that can carry authentication.
-    Encapsulated,
-    /// A bare datagram, read off the wire and authenticated by nothing.
-    BareDatagram,
-}
+/// Relay vocabulary, re-exported from where every build can see it.
+///
+/// These two live in [`crate::relay_vocab`] rather than here because an
+/// endpoint assertion carries both, and assertions live in a module the wasm
+/// build compiles while this one is native-only -- a browser analyzer has no
+/// control plane to reconcile against. They are words with no transport,
+/// parser or socket behind them, which is what makes the split honest rather
+/// than a workaround.
+///
+/// Re-exported so every path that named them before still does.
+pub use crate::relay_vocab::{ControlDelivery, RelayImplementation};
 
 /// One decoded control message, described without naming who speaks it.
 ///

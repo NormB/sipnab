@@ -247,7 +247,7 @@ services:
       # at a time, so this is a swap and not a second set of doors to learn.
       - "${HARNESS_BIND:-127.0.0.1}:${RELAY_MCP_PORT:-8732}:8732/tcp"        # sipnab-relay MCP HTTP
       - "${HARNESS_BIND:-127.0.0.1}:${RELAY_API_PORT:-8081}:8081/tcp"        # sipnab-relay REST
-      - "${HARNESS_BIND:-127.0.0.1}:${RTP_MIN:-30000}-${RTP_MAX:-30050}:30000-30050/udp"  # media
+      - "${HARNESS_BIND:-127.0.0.1}:${RTPPROXY_RTP_MIN:-31000}-${RTPPROXY_RTP_MAX:-31050}:31000-31050/udp"  # media
     networks:
       sipnet:
         ipv4_address: ${RTPPROXY_IP:-172.28.0.12}
@@ -260,8 +260,8 @@ services:
       RTPPROXY_IF: ${RTPPROXY_IP:-172.28.0.12}
       # Must agree with opensips-1's RTPPROXY_SOCK above.
       RTPPROXY_CTL_BIND: ${RTPPROXY_IP:-172.28.0.12}:22223
-      RTP_MIN: ${RTP_MIN:-30000}
-      RTP_MAX: ${RTP_MAX:-30050}
+      RTP_MIN: ${RTPPROXY_RTP_MIN:-31000}
+      RTP_MAX: ${RTPPROXY_RTP_MAX:-31050}
 
   sipnab-relay-rtpproxy:
     image: sipnab-harness/sipnab:local

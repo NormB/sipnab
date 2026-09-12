@@ -474,11 +474,18 @@ fn run_pcap_load(
                     }
                 }
             }
-            crate::pipeline::PacketAction::RelayControl { sdp_links } => {
+            crate::pipeline::PacketAction::RelayControl {
+                sdp_links,
+                implementation,
+                delivery,
+            } => {
                 if !sdp_links.is_empty() {
                     crate::pipeline::apply_relay_control_links(
                         &mut stream_store.write(),
                         &sdp_links,
+                        // Read off the wire: unauthenticated, and the relay this run watches.
+                        implementation,
+                        delivery,
                         parsed.input_origin,
                         parsed.timestamp,
                     );

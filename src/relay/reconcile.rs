@@ -84,6 +84,19 @@ pub trait ReadOnlyRelay {
     /// When the relay cannot be reached or its answer does not parse.
     fn query(&self, permit: &TransmitPermit, call_id: &str) -> anyhow::Result<ControlReply>;
 
+    /// Ask the relay for its own counters.
+    ///
+    /// Behind the same [`TransmitPermit`] as the other two, for the same
+    /// reason: this puts a packet on the network, and every other thing sipnab
+    /// reports comes from bytes it already holds. An API caller or an agent
+    /// asking a question that needs counters can have them; a run nobody asked
+    /// anything of sends nothing.
+    ///
+    /// # Errors
+    ///
+    /// When the relay cannot be reached, or answers something this cannot read.
+    fn statistics(&self, permit: &TransmitPermit) -> anyhow::Result<ControlReply>;
+
     /// Where this relay is, for messages an operator reads.
     fn describe(&self) -> String;
 }
@@ -398,6 +411,9 @@ impl<R: ReadOnlyRelay> Reconciler<R> {
     #[must_use]
     pub fn snapshot(&self, taken_at: chrono::DateTime<chrono::Utc>) -> RelaySnapshot {
         RelaySnapshot {
+            // The query path speaks only to rtpengine; a second relay with a
+            // read-only control surface would set this itself.
+            implementation: crate::relay::RelayImplementation::Rtpengine,
             links: self
                 .links()
                 .map(|(address, port, call_id)| RelayLink {
@@ -431,6 +447,9 @@ impl<R: ReadOnlyRelay> Reconciler<R> {
             })
             .collect();
         RelaySnapshot {
+            // The query path speaks only to rtpengine; a second relay with a
+            // read-only control surface would set this itself.
+            implementation: crate::relay::RelayImplementation::Rtpengine,
             taken_at: (!links.is_empty()).then_some(taken_at),
             links,
         }
@@ -856,6 +875,12 @@ pub struct RelaySnapshot {
     pub links: Vec<RelayLink>,
     /// When the relay answered. `None` when it was never asked.
     pub taken_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// Which relay answered.
+    ///
+    /// sipnab opened this connection itself, so it knows -- and a consumer
+    /// reading a media anchor needs it, because the two relays have different
+    /// trust properties (RP3).
+    pub implementation: crate::relay::RelayImplementation,
 }
 
 #[cfg(test)]
@@ -986,6 +1011,15 @@ mod tests {
         fn describe(&self) -> String {
             "203.0.113.7:22222".to_owned()
         }
+        fn statistics(
+            &self,
+            _permit: &crate::security::transmit_guard::TransmitPermit,
+        ) -> anyhow::Result<crate::relay::types::ControlReply> {
+            // A double, and no test asks it for counters. Refusing is what a
+            // relay without statistics support would do, so this is the honest
+            // stand-in rather than a fabricated answer.
+            anyhow::bail!("this double answers no statistics")
+        }
     }
 
     /// A relay holding one call: two legs, and one side that only subscribes.
@@ -1036,6 +1070,15 @@ mod tests {
 
         fn describe(&self) -> String {
             "203.0.113.7:22222".to_owned()
+        }
+        fn statistics(
+            &self,
+            _permit: &crate::security::transmit_guard::TransmitPermit,
+        ) -> anyhow::Result<crate::relay::types::ControlReply> {
+            // A double, and no test asks it for counters. Refusing is what a
+            // relay without statistics support would do, so this is the honest
+            // stand-in rather than a fabricated answer.
+            anyhow::bail!("this double answers no statistics")
         }
     }
 
@@ -1491,6 +1534,15 @@ mod tests {
         fn describe(&self) -> String {
             format!("{RELAY_IP}:2223")
         }
+        fn statistics(
+            &self,
+            _permit: &crate::security::transmit_guard::TransmitPermit,
+        ) -> anyhow::Result<crate::relay::types::ControlReply> {
+            // A double, and no test asks it for counters. Refusing is what a
+            // relay without statistics support would do, so this is the honest
+            // stand-in rather than a fabricated answer.
+            anyhow::bail!("this double answers no statistics")
+        }
     }
 
     /// A relay port handed to a NEW call is handed on to the store again.
@@ -1832,6 +1884,15 @@ mod tests {
 
         fn describe(&self) -> String {
             format!("{RELAY_IP}:22222")
+        }
+        fn statistics(
+            &self,
+            _permit: &crate::security::transmit_guard::TransmitPermit,
+        ) -> anyhow::Result<crate::relay::types::ControlReply> {
+            // A double, and no test asks it for counters. Refusing is what a
+            // relay without statistics support would do, so this is the honest
+            // stand-in rather than a fabricated answer.
+            anyhow::bail!("this double answers no statistics")
         }
     }
 

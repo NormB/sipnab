@@ -75,7 +75,7 @@ fn classify(packet: &Packet) -> PacketAction {
 #[test]
 fn an_ng_request_delivered_over_hep_names_its_media_endpoint() {
     let action = classify(&delivered_by_the_listener(offer_body(), None));
-    let PacketAction::RelayControl { sdp_links } = action else {
+    let PacketAction::RelayControl { sdp_links, .. } = action else {
         panic!("an ng offer over --hep-listen must be claimed as relay control");
     };
     assert_eq!(
@@ -98,7 +98,7 @@ fn an_ng_reply_is_attributed_by_the_hep_correlation_id() {
         offer_reply_body(),
         Some("km-670bd208@sipnab"),
     ));
-    let PacketAction::RelayControl { sdp_links } = action else {
+    let PacketAction::RelayControl { sdp_links, .. } = action else {
         panic!("an ng reply over --hep-listen must be claimed as relay control");
     };
     assert_eq!(sdp_links.len(), 1, "the reply rewrites one endpoint");
@@ -121,7 +121,7 @@ fn an_ng_reply_is_attributed_by_the_hep_correlation_id() {
 #[test]
 fn an_ng_reply_without_a_correlation_id_attributes_nothing() {
     let action = classify(&delivered_by_the_listener(offer_reply_body(), None));
-    let PacketAction::RelayControl { sdp_links } = action else {
+    let PacketAction::RelayControl { sdp_links, .. } = action else {
         panic!("the datagram is still relay control");
     };
     assert!(
@@ -180,7 +180,7 @@ fn a_body_sipnab_cannot_parse_is_still_control_when_the_relay_says_so() {
     let packet = delivered_by_the_listener(undecodable, Some("km-670bd208@sipnab"));
 
     let action = classify(&packet);
-    let PacketAction::RelayControl { sdp_links } = action else {
+    let PacketAction::RelayControl { sdp_links, .. } = action else {
         panic!(
             "rtpengine declared this ng; an undecodable body is not a reason \
              to reconsider it as media"

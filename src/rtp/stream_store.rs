@@ -117,18 +117,79 @@ pub enum EndpointAssertion {
     /// source of endpoints has to say it is something else.
     #[default]
     Signaled,
-    /// A media relay describing its OWN allocation, from rtpengine's `ng`
-    /// control plane.
+    /// A media relay describing its OWN allocation.
     ///
     /// Stronger than a signaled endpoint in one way and weaker in another. The
     /// relay cannot be wrong about which port it opened, so the address is
     /// authoritative. But it is a statement about the relay's socket, not
     /// about either party's, so it names the leg's midpoint rather than its
     /// far end.
-    MediaRelay,
+    ///
+    /// Carries WHICH relay said so and HOW the claim arrived, because those
+    /// decide what it is worth. An estate running two relays gets two claims
+    /// with different trust properties, and a bare datagram read off the wire
+    /// is authenticated by nothing whoever sent it.
+    MediaRelay {
+        /// The relay that made the claim.
+        implementation: crate::relay_vocab::RelayImplementation,
+        /// The path the claim arrived over.
+        delivery: crate::relay_vocab::ControlDelivery,
+    },
 }
 
 impl EndpointAssertion {
+    /// A relay's claim about its own allocation, naming the relay and the path.
+    ///
+    /// A constructor rather than a bare variant literal, so a caller cannot
+    /// reach one without saying both facts. That is the same reason
+    /// [`SdpProvenance::relay_asserted`] exists instead of a boolean on
+    /// `observed`.
+    #[must_use]
+    pub fn media_relay(
+        implementation: crate::relay_vocab::RelayImplementation,
+        delivery: crate::relay_vocab::ControlDelivery,
+    ) -> Self {
+        Self::MediaRelay {
+            implementation,
+            delivery,
+        }
+    }
+
+    /// Which relay asserted this, or `None` for a signaled endpoint.
+    #[must_use]
+    pub fn implementation(self) -> Option<crate::relay_vocab::RelayImplementation> {
+        match self {
+            Self::Signaled => None,
+            Self::MediaRelay { implementation, .. } => Some(implementation),
+        }
+    }
+
+    /// How the claim arrived, or `None` for a signaled endpoint.
+    ///
+    /// SDP is not a control plane, so there is no path to describe -- which is
+    /// a different answer from "it arrived unauthenticated".
+    #[must_use]
+    pub fn delivery(self) -> Option<crate::relay_vocab::ControlDelivery> {
+        match self {
+            Self::Signaled => None,
+            Self::MediaRelay { delivery, .. } => Some(delivery),
+        }
+    }
+
+    /// Whether anything vouched for this claim.
+    ///
+    /// `false` for a bare datagram, and that is the answer VAL8 established: a
+    /// sniffed assertion is authenticated by nothing. Signaled endpoints are
+    /// `false` too, for a different reason -- SDP is a party's own assertion,
+    /// not a vouched one.
+    #[must_use]
+    pub fn is_authenticated(self) -> bool {
+        matches!(
+            self.delivery(),
+            Some(crate::relay_vocab::ControlDelivery::Encapsulated)
+        )
+    }
+
     /// The name this assertion is written under on every output surface.
     ///
     /// One spelling in one place, for the same reason
@@ -137,7 +198,7 @@ impl EndpointAssertion {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Signaled => "signaled",
-            Self::MediaRelay => "media-relay",
+            Self::MediaRelay { .. } => "media-relay",
         }
     }
 }
@@ -213,11 +274,19 @@ impl SdpProvenance {
     /// was not. So the origin is absent, and a binding made from it withholds
     /// the cross-source claim rather than inventing one.
     #[must_use]
-    pub fn relay_queried(observed_at: DateTime<Utc>) -> Self {
+    pub fn relay_queried(
+        implementation: crate::relay_vocab::RelayImplementation,
+        observed_at: DateTime<Utc>,
+    ) -> Self {
         Self {
             origin: None,
             observed_at: Some(observed_at),
-            asserted_by: EndpointAssertion::MediaRelay,
+            // sipnab opened this connection itself, so the answer came back
+            // over a path it chose rather than one it read off the wire.
+            asserted_by: EndpointAssertion::media_relay(
+                implementation,
+                crate::relay_vocab::ControlDelivery::Encapsulated,
+            ),
         }
     }
 
@@ -229,13 +298,15 @@ impl SdpProvenance {
     /// think about.
     #[must_use]
     pub fn relay_asserted(
+        implementation: crate::relay_vocab::RelayImplementation,
+        delivery: crate::relay_vocab::ControlDelivery,
         origin: crate::capture::parse::InputOrigin,
         observed_at: DateTime<Utc>,
     ) -> Self {
         Self {
             origin: Some(origin),
             observed_at: Some(observed_at),
-            asserted_by: EndpointAssertion::MediaRelay,
+            asserted_by: EndpointAssertion::media_relay(implementation, delivery),
         }
     }
 }
@@ -1939,7 +2010,12 @@ mod tests {
         let t = chrono::Utc::now();
         let origin = crate::capture::parse::InputOrigin::Hep;
         let signaled = SdpProvenance::observed(origin, t);
-        let relay = SdpProvenance::relay_asserted(origin, t);
+        let relay = SdpProvenance::relay_asserted(
+            crate::relay_vocab::RelayImplementation::Rtpengine,
+            crate::relay_vocab::ControlDelivery::BareDatagram,
+            origin,
+            t,
+        );
 
         assert_eq!(
             signaled.origin, relay.origin,
@@ -1947,7 +2023,13 @@ mod tests {
         );
         assert_ne!(signaled, relay, "but they are not the same claim");
         assert_eq!(signaled.asserted_by, EndpointAssertion::Signaled);
-        assert_eq!(relay.asserted_by, EndpointAssertion::MediaRelay);
+        assert_eq!(
+            relay.asserted_by,
+            EndpointAssertion::media_relay(
+                crate::relay_vocab::RelayImplementation::Rtpengine,
+                crate::relay_vocab::ControlDelivery::BareDatagram
+            )
+        );
         assert_eq!(
             SdpProvenance::unknown().asserted_by,
             EndpointAssertion::Signaled,

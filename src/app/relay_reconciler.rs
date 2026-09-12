@@ -157,6 +157,15 @@ mod tests {
         fn describe(&self) -> String {
             "10.0.0.2:22222".to_owned()
         }
+        fn statistics(
+            &self,
+            _permit: &crate::security::transmit_guard::TransmitPermit,
+        ) -> anyhow::Result<crate::relay::types::ControlReply> {
+            // A double, and no test asks it for counters. Refusing is what a
+            // relay without statistics support would do, so this is the honest
+            // stand-in rather than a fabricated answer.
+            anyhow::bail!("this double answers no statistics")
+        }
     }
 
     fn permit() -> TransmitPermit {
@@ -186,7 +195,10 @@ mod tests {
             .expect("the relay's answer must reach the store");
         assert_eq!(
             provenance.asserted_by,
-            crate::rtp::stream_store::EndpointAssertion::MediaRelay
+            crate::rtp::stream_store::EndpointAssertion::media_relay(
+                crate::relay::RelayImplementation::Rtpengine,
+                crate::relay::ControlDelivery::Encapsulated
+            )
         );
         assert_eq!(
             provenance.origin, None,
