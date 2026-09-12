@@ -75,6 +75,17 @@ entry that carries them.
 
 ### Fixed
 
+- **The new capture probe then broke macOS CI, and the cause was the same
+  mistake one layer down.** It opened with a `/sys/class/net/<device>`
+  existence check -- a Linux-only path. On macOS it is absent, so the probe
+  returned "cannot tell" without ever running anything, on a machine where the
+  answer was perfectly knowable. A probe whose whole argument is "ask the binary
+  rather than model the rules" must not open with a platform assumption of its
+  own. The check is gone, the loopback name comes from a mapping that takes the
+  OS as an argument so every branch is testable from any machine, and the
+  stderr interpretation is a pure function driven by recorded output from both
+  platforms -- including the exact macOS lines from the run that went red.
+
 - **The live-capture probe measured the wrong process.** `hep_test` and
   `integration_test` each carried a copy of `can_live_capture()` reading
   `/proc/self/status` for `CAP_NET_RAW` -- the TEST RUNNER's capabilities. A

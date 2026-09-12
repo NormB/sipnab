@@ -30,9 +30,28 @@
 use std::process::Command;
 use std::sync::OnceLock;
 
-/// The interface probed. Loopback exists on every host this suite runs on and
-/// carries nothing an unrelated process would mind being read.
-const PROBE_DEVICE: &str = "lo";
+/// The loopback interface name a given operating system uses.
+///
+/// Takes the OS as an argument rather than reading `cfg!`, so a test on one
+/// platform can check the mapping for every platform. A `cfg!` chain can only
+/// ever be exercised on the machine that compiled it, which is how the
+/// Linux-only assumption in this module survived to CI in the first place.
+#[must_use]
+pub const fn loopback_for(os: &str) -> &'static str {
+    // `const fn` cannot match on a &str, so compare bytes.
+    match os.as_bytes() {
+        b"macos" | b"ios" | b"freebsd" | b"openbsd" | b"netbsd" | b"dragonfly" => "lo0",
+        _ => "lo",
+    }
+}
+
+/// The loopback interface, by the name THIS platform gives it.
+///
+/// Loopback exists on every host this suite runs on and carries nothing an
+/// unrelated process would mind being read.
+fn probe_device_name() -> &'static str {
+    loopback_for(std::env::consts::OS)
+}
 
 static ANSWER: OnceLock<Option<bool>> = OnceLock::new();
 
@@ -50,19 +69,19 @@ pub fn can_live_capture(binary: &str) -> Option<bool> {
 /// The measurement itself, unmemoized. Public so a test can prove the memo
 /// returns what a fresh probe would.
 pub fn probe(binary: &str) -> Option<bool> {
-    // No loopback, no question worth answering.
-    if !std::path::Path::new("/sys/class/net")
-        .join(PROBE_DEVICE)
-        .exists()
-    {
-        return None;
-    }
+    // No pre-check. An earlier version asked `/sys/class/net/<dev>` whether the
+    // interface existed, which is a Linux-only path: on macOS it is absent, the
+    // probe returned "cannot tell" without ever running anything, and CI went
+    // red on a machine where the answer was perfectly knowable. A probe whose
+    // whole argument is "ask the binary rather than model the rules" must not
+    // open with a platform assumption of its own.
+    let device = probe_device_name();
     let out = Command::new(binary)
         .args([
             "-N",
             "-q",
             "-d",
-            PROBE_DEVICE,
+            device,
             "--duration",
             "1s",
             "--no-cli-print",
@@ -70,12 +89,23 @@ pub fn probe(binary: &str) -> Option<bool> {
         .env("SIPNAB_LOG", "info")
         .output()
         .ok()?;
-    let stderr = String::from_utf8_lossy(&out.stderr);
+    interpret(&String::from_utf8_lossy(&out.stderr), device)
+}
+
+/// Read one capture attempt's stderr.
+///
+/// Separated from the spawn so it can be driven with recorded output from a
+/// platform this test run is not on. The interpretation is where the platform
+/// differences live -- Linux refuses with "Operation not permitted", macOS with
+/// "(cannot open BPF device) /dev/bpf0: Permission denied" -- and a rule that
+/// can only be exercised on the machine that wrote it is a rule nobody checks.
+#[must_use]
+pub fn interpret(stderr: &str, device: &str) -> Option<bool> {
     // The line the capture path prints once the handle is live. Matching the
     // OPEN rather than the exit code: a bounded run can exit 0 having captured
     // nothing, and a run refused for permission exits non-zero for a reason
     // that is not always distinguishable from any other startup failure.
-    if stderr.contains(&format!("Capturing on '{PROBE_DEVICE}'")) {
+    if stderr.contains(&format!("Capturing on '{device}'")) {
         return Some(true);
     }
     let refused = stderr.contains("Operation not permitted")
@@ -91,6 +121,6 @@ pub fn probe(binary: &str) -> Option<bool> {
 
 /// The device this probe uses, so a caller's own capture names the same one.
 #[must_use]
-pub const fn probe_device() -> &'static str {
-    PROBE_DEVICE
+pub fn probe_device() -> &'static str {
+    probe_device_name()
 }
