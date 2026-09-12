@@ -3158,7 +3158,12 @@ fn no_documentation_table_repeats_a_row() {
     // `docs/internals/`, so this adds the source and no generated copy.
     // Attributed against the staged diff -- `--diff-filter=A` lists exactly one
     // new `.md` path, and it is that one.
-    const EXPECTED_MARKDOWN_FILES: usize = 211;
+    // 211 -> 212 by docs/design/relay-statistics-vocabulary.md (ST-S1), the
+    // three-tier vocabulary every statistic is published under. ONE file, for
+    // the same reason as the line above: `docs/design/` has no website mirror.
+    // Attributed against the staged diff -- `--diff-filter=A` lists exactly one
+    // new `.md` path, and it is that one.
+    const EXPECTED_MARKDOWN_FILES: usize = 212;
     /// How many tables this gate expects to walk.
     ///
     /// Named rather than written twice. The count and the failure message
@@ -3501,7 +3506,10 @@ fn no_documentation_table_repeats_a_row() {
     // across two versions, rtpproxy's refusal codes, and rtpengine's statistics
     // sections. Counted once each and not twice -- `docs/design/` has no website
     // mirror, unlike `docs/internals/`.
-    const EXPECTED_TABLES: usize = 867;
+    // 867 -> 869 by the two tables in docs/design/relay-statistics-vocabulary.md
+    // (ST-S1): which same-tier aggregates are legal, and the three states a
+    // statistic can be in on the wire. Counted once each, no website mirror.
+    const EXPECTED_TABLES: usize = 869;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

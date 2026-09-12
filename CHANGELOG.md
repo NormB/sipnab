@@ -53,6 +53,16 @@ entry that carries them.
   end-to-end script now asks the running stack which relay is anchoring instead
   of assuming 8081.
 
+- **ST-S1 is written: `docs/design/relay-statistics-vocabulary.md`.** Three
+  tiers -- `relay_reported`, `sipnab_measured`, `endpoint_reported` -- carried
+  with every statistic and rendered on every surface. Cross-tier arithmetic is
+  forbidden without exception, because a relay's packet count minus sipnab's is
+  not "packets sipnab missed": the two count different sockets over different
+  windows with different start times. Missing, zero and refused are three
+  states rather than two, and a refusal carries the relay's own code, because
+  "no such statistic in this build" and "no session with those tags" are
+  different answers and only one is about the operator's call.
+
 - **ST-S2 is written: `docs/design/relay-statistics-inventory.md`.** An
   inventory of what rtpengine and rtpproxy actually report, taken from three
   running relays rather than from their manuals. It answers ST3's open

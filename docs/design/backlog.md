@@ -44,7 +44,7 @@ Tiers:
 
 ## Status
 
-**41 open, 502 done** across 38 sections.
+**40 open, 503 done** across 38 sections.
 Regenerate with `python3 scripts/backlog-status.py --apply`.
 
 | Section | Open | Done | Progress |
@@ -63,7 +63,7 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
 | NAT | 0 | 4 | `##########` |
 | RV | 0 | 8 | `##########` |
 | RP | 1 | 3 | `########..` |
-| ST | 16 | 1 | `#.........` |
+| ST | 15 | 2 | `#.........` |
 | PAR | 5 | 0 | `..........` |
 | HX | 1 | 2 | `#######...` |
 | AS | 0 | 7 | `##########` |
@@ -5548,8 +5548,32 @@ reviewed. A surface built before its spec is a surface whose shape was decided
 by whichever call site was written first, which is how the four surfaces drifted
 apart in the first place (see PAR).
 
-- [ ] **ST-S1 — SPEC: the statistics vocabulary.** Gates ST1 and everything
-  after it.
+- [x] **ST-S1 — SPEC: the statistics vocabulary.** Gates ST1 and everything
+  after it. **Written 2026-09-12:
+  [`relay-statistics-vocabulary.md`](relay-statistics-vocabulary.md).**
+
+  Three tiers, named on the wire as `relay_reported`, `sipnab_measured` and
+  `endpoint_reported` — the third keeping the name the tree already publishes
+  rather than gaining a synonym.
+
+  Decided, with the reasoning in the spec:
+
+  - **Cross-tier arithmetic is forbidden without exception.** A table says which
+    same-tier aggregates are legal; two that look legal are not, including
+    summing rtpengine's `currentstatistics` and `totalstatistics` session
+    counts, which count at different moments.
+  - **Missing, zero, and refused are three states, not two.** Absent on the
+    wire for the first two, and a refusal carries the statistic's name and the
+    relay's code beside it — because `E68` (no such statistic in this build) and
+    `E50` (no session with those tags) are different answers to an operator and
+    only one is about their call.
+  - **Five elements every surface renders:** the relay's own name unaltered, the
+    value uncoerced, the tier, when it was obtained, and — where a name invites
+    a wrong reading — what it is not.
+  - The tier vocabulary uses underscores. `EndpointAssertion`'s hyphenated
+    `media-relay` is NOT renamed: it answers a different question, and tidying a
+    shipped wire value costs every consumer a migration for no gain to them.
+    Recorded so the next reader knows the hyphen is inherited.
 
   Must state: the three provenance tiers and their names; what each tier can
   and cannot be asked; which aggregates are legal across tiers and which are
