@@ -86,6 +86,13 @@ jobs:
           tags: sipnab:smoke
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          # The runtime stage upgrades Debian packages, and a CACHED upgrade
+          # layer is the same packages forever. That turns the scan below into
+          # a test of whatever Debian shipped the day the cache was filled:
+          # 0.5.168 failed on a HIGH in an image running 13.6 while the same
+          # layer built fresh was 13.7 and clean. The expensive Rust build
+          # stays cached; only the package upgrade re-runs.
+          no-cache-filter: runtime
 
       # The DB is ~60 MB pulled from mirror.gcr.io, and on 2026-08-20 that
       # download stalled and took the whole Docker job with it -- the image had
@@ -175,6 +182,13 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          # The runtime stage upgrades Debian packages, and a CACHED upgrade
+          # layer is the same packages forever. That turns the scan below into
+          # a test of whatever Debian shipped the day the cache was filled:
+          # 0.5.168 failed on a HIGH in an image running 13.6 while the same
+          # layer built fresh was 13.7 and clean. The expensive Rust build
+          # stays cached; only the package upgrade re-runs.
+          no-cache-filter: runtime
 
       # Sigstore provenance for the image, stored in ghcr next to it so
       #   gh attestation verify oci://ghcr.io/normb/sipnab:<tag> --repo NormB/sipnab

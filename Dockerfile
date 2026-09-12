@@ -19,7 +19,7 @@ COPY . .
 RUN cargo build --release --features full
 RUN strip target/release/sipnab
 
-FROM debian:trixie-slim@sha256:d7e12182ce18b85b93007c1dedf31f2d29e01ccf3182cc4017c709b6259bc132
+FROM debian:trixie-slim@sha256:d7e12182ce18b85b93007c1dedf31f2d29e01ccf3182cc4017c709b6259bc132 AS runtime
 # trixie renamed these runtime libs in the 64-bit time_t transition
 # (libpcap0.8 -> libpcap0.8t64, libasound2 -> libasound2t64).
 # `upgrade` before `install`, in the same layer: the base image is pinned by
@@ -31,6 +31,12 @@ FROM debian:trixie-slim@sha256:d7e12182ce18b85b93007c1dedf31f2d29e01ccf3182cc401
 # the build only for vulnerabilities Debian has ALREADY fixed, which is exactly
 # the set an upgrade resolves. Bumping the base digest would not have helped
 # here: it was already the newest published one.
+#
+# This stage is NAMED so the build can refuse to cache it. A cached upgrade
+# layer is the same packages forever, which turns the vulnerability scan into a
+# test of whatever Debian shipped the day the cache was filled -- it passed for
+# weeks and then failed on 0.5.168 with the image two point releases behind.
+# See `no-cache-filter` in `.github/workflows/docker.yml`.
 RUN apt-get update && apt-get upgrade -y \
  && apt-get install -y libpcap0.8t64 libasound2t64 \
  && rm -rf /var/lib/apt/lists/*
