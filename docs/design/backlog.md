@@ -44,7 +44,7 @@ Tiers:
 
 ## Status
 
-**44 open, 499 done** across 38 sections.
+**42 open, 501 done** across 38 sections.
 Regenerate with `python3 scripts/backlog-status.py --apply`.
 
 | Section | Open | Done | Progress |
@@ -62,7 +62,7 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
 | BA | 1 | 3 | `########..` |
 | NAT | 0 | 4 | `##########` |
 | RV | 0 | 8 | `##########` |
-| RP | 3 | 1 | `##........` |
+| RP | 1 | 3 | `########..` |
 | ST | 17 | 0 | `..........` |
 | PAR | 5 | 0 | `..........` |
 | HX | 1 | 2 | `#######...` |
@@ -5325,8 +5325,33 @@ RV3 and RV4 in the section above are written against `EndpointAssertion` and
 properly those three tools serve rtpproxy the day the decoder lands, and this
 section stays four entries instead of becoming a mirror of RV.
 
-- [ ] **RP1 — decode the rtpproxy control protocol.** Prerequisite for
-  everything else in this section.
+- [x] **RP1 — decode the rtpproxy control protocol. DONE 0.5.168.**
+
+  Shipped as the relay seam's first implementation: all thirteen command
+  letters with the per-command argument bounds and modifier rules, four reply
+  shapes, and a reading of each reply in the light of the command it answers --
+  the relay says `0` for a successful delete, `0` for an absent feature and `0`
+  for a successful delete-all.
+
+  **Verified against a live relay, which found three defects source-reading had
+  not.** Real commands carry modifiers on every call (`Uc8,101`), so a decoder
+  demanding a bare verb letter fails on the first call. `VF` is its own command
+  rather than `V` with a modifier -- the parser consumes the `F` and then
+  treats what remains as modifier-free. And the `I` reply is five lines
+  beginning `<cookie> sessions created: 0`, whose first word starts with the
+  stop-play letter; a content-blind reading made it a confident `S` command
+  carrying fourteen arguments.
+
+  Commands and replies are separated by DIRECTION and refused independently on
+  content. Both, because either alone was wrong once.
+
+  rtpproxy now runs beside rtpengine in the lab and in the harness, on
+  non-overlapping RTP ranges -- see
+  [[reference_lab_rtpproxy_beside_rtpengine]]. The harness had both on
+  30000-30050, disjoint only because a Makefile target stopped them running
+  together.
+
+  Prerequisite for everything else in this section, now met.
 
   **Verify the wire format against rtpproxy's own documentation and source
   before implementing — do not take the following from memory, including
@@ -5457,7 +5482,26 @@ section stays four entries instead of becoming a mirror of RV.
   expensive to move later, and the first implementation is always the one that
   defines the interface by accident.
 
-- [ ] **RP3 — attribution must name WHICH relay asserted an endpoint.** This
+- [x] **RP3 — attribution names WHICH relay asserted an endpoint. DONE
+  0.5.168.**
+
+  `EndpointAssertion::MediaRelay` carries the implementation and the delivery
+  path, because together they decide what the claim is worth: rtpengine's
+  control plane is encapsulated and can carry authentication, rtpproxy's is a
+  bare datagram carrying no credential at all. VAL8's port gate is keyed on an
+  rtpengine-shaped port, so its meaning for an rtpproxy deployment was
+  undefined rather than safe.
+
+  The DECODER states which relay it read, not the layer applying the result.
+  The seam gate caught the first shape, where a vendor name had scattered
+  through `src/mcp/` and `src/tui/` -- which is exactly what makes a second
+  relay a second code path.
+
+  A portable-vocabulary split came out of it: an assertion lives in a module the
+  wasm build compiles while the relay machinery is native-only, so the two enums
+  moved somewhere both builds see and the seam re-exports them.
+
+  SUPERSEDED CONTEXT (kept, because the reasoning still holds): This
   extends RV1 rather than repeating it, and it is not cosmetic: the two relays
   have different trust properties and different failure modes, so "a relay said
   so" is not a complete answer once more than one kind of relay exists in an
