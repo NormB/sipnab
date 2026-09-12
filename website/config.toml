@@ -48,7 +48,7 @@ version = "0.5.168"
 # Bumped after a release finishes publishing, not while cutting it.
 # `site_advertises_only_a_released_version` requires a matching `v<x.y.z>` tag,
 # so advertising something unreleased fails the suite rather than the visitor.
-published_version = "0.5.167"
+published_version = "0.5.168"
 # Release date of `published_version` above -- NOT of `version`, further up.
 # `download.html` renders this beside `published_version` in a single sentence,
 # so the date belongs to the release a reader can actually download.
@@ -57,7 +57,7 @@ published_version = "0.5.167"
 # untagged version is the conflation the published_version split exists to
 # prevent. `site_release_date_matches_changelog` reads `published_version` and
 # enforces this.
-release_date = "2026-09-11"
+release_date = "2026-09-12"
 # Minimum glibc of the released -gnu binaries and .debs. This is NOT a free
 # choice: it is whatever the "Enforce glibc floor" step in release.yml admits,
 # and it must equal SIPNAB_GLIBC_FLOOR in static/install.sh, which decides
@@ -118,6 +118,7 @@ macos_floor_intel = "10.12"
 #   0.5.165  15,809,416 bytes   (+8,256, leaving 967,800 bytes of headroom)
 #   0.5.166  15,821,704 bytes   (+12,288, leaving 955,512 bytes of headroom)
 #   0.5.167  15,817,608 bytes   (-4,096, leaving 959,608 bytes of headroom)
+#   0.5.168  15,862,664 bytes   (+45,056, leaving 914,552 bytes of headroom)
 #
 # So 0.5.159 shipped one ordinary release away from tipping and nothing said
 # so. The 118,784 bytes are `find_in_captures` -- a 66th MCP tool with derived
@@ -133,7 +134,10 @@ macos_floor_intel = "10.12"
 # 4,096 bytes, with both halves of packet-level provenance in it. A byte range
 # per header and a frame locator per RTCP report are paid per message and per
 # report at runtime rather than in the binary, and deleting the second walk of
-# the header grammar gave back more text than the fields cost.
+# the header grammar gave back more text than the fields cost -- and 914,552 at
+# 0.5.168, where the rtpproxy control decoder, the relay statistics command and
+# the attribution fields cost 45,056 between them. A text protocol parser is
+# cheap; what it buys is a second relay sipnab can read at all.
 # That figure is measured from the shipped tarball each release, checksum
 # verified against the `.sha256` beside it, which is what makes it a
 # measurement rather than an estimate carried forward.
