@@ -44,7 +44,7 @@ Tiers:
 
 ## Status
 
-**36 open, 507 done** across 38 sections.
+**33 open, 510 done** across 38 sections.
 Regenerate with `python3 scripts/backlog-status.py --apply`.
 
 | Section | Open | Done | Progress |
@@ -63,7 +63,7 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
 | NAT | 0 | 4 | `##########` |
 | RV | 0 | 8 | `##########` |
 | RP | 1 | 3 | `########..` |
-| ST | 11 | 6 | `####......` |
+| ST | 8 | 9 | `#####.....` |
 | PAR | 5 | 0 | `..........` |
 | HX | 1 | 2 | `#######...` |
 | AS | 0 | 7 | `##########` |
@@ -5769,7 +5769,12 @@ apart in the first place (see PAR).
   may not — and state the test a reviewer applies to decide. Without this,
   PAR2's gate either demands a REST route per MCP tool or demands nothing.
 
-- [ ] **ST1 — three kinds of statistic, one vocabulary, never blended.**
+- [x] **ST1 — three kinds of statistic, one vocabulary, never blended.**
+  **Done: [`src/stats_vocab.rs`](https://github.com/NormB/sipnab/blob/main/src/stats_vocab.rs).** `StatisticTier` (relay_reported / sipnab_measured /
+  endpoint_reported), `blends_tiers` forbidding cross-tier arithmetic, and a
+  three-state `StatisticValue` (counted / not-asked / refused). Also here: the
+  ST-S1 wire rule `resolve_for_wire` and the ST-S4 `StatisticsOutcome`
+  classification. Mutation-proven.
 
   This is the item the rest depend on, and getting it wrong makes every later
   number untrustworthy. Three sources, and they are not interchangeable:
@@ -5792,7 +5797,11 @@ apart in the first place (see PAR).
   **Do:** one enum naming the three, carried with every statistic, rendered on
   every surface. No aggregate that spans two of them without saying so.
 
-- [ ] **ST2 — every statistic rtpengine will report.** `statistics` returns a
+- [x] **ST2 — every statistic rtpengine will report.** **Done: `relay_reported`
+  tiers the `statistics` reply's pairs, verified against a real 251-counter
+  fixture from the harness rtpengine 12.5.1.** The live-fetch defect it exposed
+  (a double cookie-strip in `parse_statistics_reply`) is fixed with regressions.
+  `statistics` returns a
   deep dictionary whose keys differ between versions. Flattening it into a
   schema of sipnab's own would freeze one version's vocabulary into a type,
   which is the pinned-value defect this repository has paid for before. Return
@@ -5801,7 +5810,10 @@ apart in the first place (see PAR).
   **Verify against the rtpengine in the harness before implementing**, not from
   memory. Record which keys that version actually emits.
 
-- [ ] **ST3 — every statistic rtpproxy will report.** Two commands, and they
+- [x] **ST3 — every statistic rtpproxy will report.** **Done: `info_statistics`
+  reads `I`'s label lines, `query_statistics` names `Q`'s five positional fields
+  from the binary's own format string, both tiered through the same
+  `relay_reported`.** Two commands, and they
   answer differently: `I` returns free multi-line text
   (`sessions created: N`, `active sessions`, `active streams`,
   `packets received`, `packets transmitted`), `G` returns per-statistic values.
@@ -5837,7 +5849,10 @@ apart in the first place (see PAR).
   doubles the agent surface for no gain, which RP2's acceptance test 1 already
   forbids. The tool transmits, so it stays behind the existing permit.
 
-- [ ] **ST7 — CLI flags for all three tiers.** 50 tests minimum. Includes the
+- [ ] **ST7 — CLI flags for all three tiers.** IN PROGRESS: C1 landed
+  (`--relay-stats`, global counters, verified live against the harness); C2
+  per-call, C3 list-names, C4 compare, C5 poll and the 50-test minimum remain.
+  50 tests minimum. Includes the
   output shapes: a human-readable form and a machine-readable one that agree,
   since a number that differs between `--json` and the table is a defect nobody
   notices until it is quoted.
