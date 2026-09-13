@@ -12,6 +12,17 @@ entry that carries them.
 
 ### Added
 
+- **ST2 is implemented: a relay's own statistics, tiered and kept by name.**
+  `relay_reported` turns the `(name, value)` pairs rtpengine's `statistics`
+  already yields into `TieredStatistic`s -- every one `relay_reported` and
+  `Counted`, the name unaltered -- and `lookup` answers by the relay's own
+  name, with an absent name reading as `NotAsked` rather than a zero or the
+  first value that happened to be there. Driven against a real 251-counter
+  reply captured from the harness rtpengine (12.5.1.31-1) and committed as a
+  fixture, so the chain from bencode to tiered reading is proven without a
+  running relay, including that `uptime` -- a bencode string that is really an
+  integer -- survives as its digits uncoerced.
+
 - **ST1 is implemented: the statistics vocabulary, `src/stats_vocab.rs`.** The
   foundation the rest of the relay-statistics work depends on, built before any
   statistic is fetched because getting it wrong makes every later number

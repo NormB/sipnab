@@ -134,3 +134,55 @@ impl StatisticValue {
         matches!(self, Self::Counted(_))
     }
 }
+
+/// One statistic with its tier attached -- the unit every surface renders
+/// (ST-S3) and the form the tier rule (ST-S1) travels in.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TieredStatistic {
+    /// The source's own name, unaltered. `npkts_relayed`, not `packets_relayed`
+    /// and not `Packets Relayed`: the key set is version-specific and
+    /// translating it invents a vocabulary to maintain against every release.
+    pub name: String,
+    /// The value, in the three-state model.
+    pub value: StatisticValue,
+    /// Which of the three kinds of claim this is.
+    pub tier: StatisticTier,
+}
+
+/// Tier a relay's OWN reported pairs (ST2).
+///
+/// Every pair a relay reports about itself is `relay_reported`, and every one
+/// it reports is, by definition, a counted value -- the relay does not send a
+/// key it is refusing. So each `(name, value)` becomes a `Counted` reading at
+/// the `RelayReported` tier, the name kept exactly as the relay wrote it.
+///
+/// Takes plain pairs rather than a `ControlReply` so it stays portable: the
+/// native caller destructures `ControlReply::Statistics(pairs)` and hands the
+/// slice here. rtpengine's `statistics` and rtpproxy's `I`/`G` both reduce to
+/// name/value pairs, so one adapter serves both.
+#[must_use]
+pub fn relay_reported(pairs: &[(String, String)]) -> Vec<TieredStatistic> {
+    pairs
+        .iter()
+        .map(|(name, value)| TieredStatistic {
+            name: name.clone(),
+            value: StatisticValue::Counted(value.clone()),
+            tier: StatisticTier::RelayReported,
+        })
+        .collect()
+}
+
+/// Look one statistic up by the source's own name.
+///
+/// Absent from the set is `NotAsked`, not a refusal: for a relay whose reply
+/// carries everything it has (rtpengine's `statistics`), a name that is not
+/// there is one this version does not report, and no error accompanied it. A
+/// refusal -- an error code the relay returned -- is a different state that the
+/// fetch path records as [`StatisticValue::Refused`], never synthesized here.
+#[must_use]
+pub fn lookup(stats: &[TieredStatistic], name: &str) -> StatisticValue {
+    stats
+        .iter()
+        .find(|s| s.name == name)
+        .map_or(StatisticValue::NotAsked, |s| s.value.clone())
+}
