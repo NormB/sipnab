@@ -9962,6 +9962,7 @@ Shortcut flags that expand to predefined filter DSL expressions. See [filter-dsl
 - `sipnab -N -I capture.pcap --relay-compare 1-7@203.0.113.9 --rtpengine-control 127.0.0.1:22222` — refused on a file run: comparing asks the relay for its side, and asking transmits, so it prints `not_permitted` rather than reaching an address the capture named
 - `sudo sipnab -N -d eth0 --rtpengine-control 127.0.0.1:22222 --relay-stats-interval 30` — capture live and ask the relay for its own counters every thirty seconds, each reading marked `polled` with the interval so it reads as a timer's output rather than a one-shot answer. Stop it with Ctrl-C; nothing keeps transmitting after the process ends
 - `sipnab -N -I capture.pcap --relay-stats-interval 30 --rtpengine-control 127.0.0.1:22222` — refused on a file run like every relay-stats form: polling asks the relay, and asking transmits, so it prints `not_permitted` rather than reaching an address the capture named
+- `sudo sipnab -N -d eth0 --rtpengine-control 127.0.0.1:22222 --relay-stats --json` — the same relay counters as one JSON object instead of the table, each value carrying its tier and refusals listed separately with the relay's code; both forms read the same data, so `--json` and the table cannot disagree about a number
 
 
 ## Diagnosis thresholds

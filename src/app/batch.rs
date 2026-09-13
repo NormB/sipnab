@@ -691,9 +691,16 @@ fn spawn_relay_stats_poller(
     Option<std::sync::mpsc::Sender<()>>,
     Option<std::thread::JoinHandle<()>>,
 ) {
-    use crate::output::relay_statistics::{FetchOrigin, format_relay_statistics};
+    use crate::output::relay_statistics::{
+        FetchOrigin, format_relay_statistics, format_relay_statistics_json, maybe_pretty,
+    };
     use crate::rtpengine::control::{ControlClient, DEFAULT_CONTROL_TIMEOUT};
     use crate::stats_vocab::{relay_reported, resolve_for_wire};
+
+    // Captured before the closure moves: each polled reading honors --json the
+    // same way the one-shot forms do.
+    let json = cli.output_args.json;
+    let json_pretty = cli.output_args.json_pretty;
 
     let Some(secs) = cli.rtp_args.relay_stats_interval else {
         return (None, None); // Nothing polls by default.
@@ -732,15 +739,21 @@ fn spawn_relay_stats_poller(
     let poll = move || match client.statistics(&permit) {
         Ok(crate::relay::types::ControlReply::Statistics(pairs)) => {
             let wire = resolve_for_wire(&relay_reported(&pairs));
-            print!(
-                "{}",
-                format_relay_statistics(
-                    &wire,
-                    &label,
-                    chrono::Utc::now(),
-                    FetchOrigin::Polled { every_secs: secs },
-                )
-            );
+            let origin = FetchOrigin::Polled { every_secs: secs };
+            if json || json_pretty {
+                println!(
+                    "{}",
+                    maybe_pretty(
+                        format_relay_statistics_json(&wire, &label, chrono::Utc::now(), origin),
+                        json_pretty
+                    )
+                );
+            } else {
+                print!(
+                    "{}",
+                    format_relay_statistics(&wire, &label, chrono::Utc::now(), origin)
+                );
+            }
         }
         Ok(other) => tracing::error!("{err_label} answered {other:?}, not statistics"),
         Err(e) => {

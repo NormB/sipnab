@@ -12,6 +12,16 @@ entry that carries them.
 
 ### Added
 
+- **Relay statistics render as JSON under `--json` (ST7).** Every relay-stats
+  form (`--relay-stats`, `--relay-stats-call`, `--relay-stats-list`,
+  `--relay-compare`, and the `--relay-stats-interval` poll) emits a single JSON
+  object under `--json` (pretty under `--json-pretty`) carrying the same
+  figures the table shows -- built from the same wire data, so a number cannot
+  differ between the two forms. Each value keeps its tier, a refusal stays in
+  its own list with the relay's code, and a comparison names both tiers with a
+  word verdict and never a summed figure. This completes the CLI
+  relay-statistics surface (ST7): all five capabilities, both output shapes.
+
 - **`--relay-stats-interval <SECONDS>` polls a relay's statistics on a timer
   (ST7/C5, ST4).** Nothing polls by default; naming an interval is the request,
   because a poll puts a packet on the network where every other answer comes

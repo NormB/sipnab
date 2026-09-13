@@ -1202,6 +1202,11 @@ fn report_relay_statistics(cli: &Cli, source: Option<&CaptureSource>) {
         ),
         _ => (client.statistics(&permit), format!("rtpengine at {addr}")),
     };
+    use crate::output::relay_statistics as fmt;
+    // ST7: a machine-readable form that AGREES with the table, chosen the same
+    // way the per-message path chooses -- pretty first, else compact, else text.
+    let json = cli.output_args.json;
+    let json_pretty = cli.output_args.json_pretty;
     match fetched {
         Ok(crate::relay::types::ControlReply::Statistics(pairs)) => {
             let tiered = crate::stats_vocab::relay_reported(&pairs);
@@ -1209,26 +1214,47 @@ fn report_relay_statistics(cli: &Cli, source: Option<&CaptureSource>) {
                 // C3: the names the relay knows, listed (rtpengine enumerates
                 // them in the reply), never their values.
                 let names = crate::stats_vocab::known_names(&tiered);
-                print!(
-                    "{}",
-                    crate::output::relay_statistics::format_relay_stat_names(
-                        &names,
-                        crate::stats_vocab::NameSource::Listed,
-                        &label,
-                        obtained_at
-                    )
-                );
+                let src = crate::stats_vocab::NameSource::Listed;
+                if json || json_pretty {
+                    println!(
+                        "{}",
+                        fmt::maybe_pretty(
+                            fmt::format_relay_stat_names_json(&names, src, &label, obtained_at),
+                            json_pretty
+                        )
+                    );
+                } else {
+                    print!(
+                        "{}",
+                        fmt::format_relay_stat_names(&names, src, &label, obtained_at)
+                    );
+                }
             } else {
                 let wire = crate::stats_vocab::resolve_for_wire(&tiered);
-                print!(
-                    "{}",
-                    crate::output::relay_statistics::format_relay_statistics(
-                        &wire,
-                        &label,
-                        obtained_at,
-                        crate::output::relay_statistics::FetchOrigin::Asked,
-                    )
-                );
+                if json || json_pretty {
+                    println!(
+                        "{}",
+                        fmt::maybe_pretty(
+                            fmt::format_relay_statistics_json(
+                                &wire,
+                                &label,
+                                obtained_at,
+                                fmt::FetchOrigin::Asked,
+                            ),
+                            json_pretty
+                        )
+                    );
+                } else {
+                    print!(
+                        "{}",
+                        fmt::format_relay_statistics(
+                            &wire,
+                            &label,
+                            obtained_at,
+                            fmt::FetchOrigin::Asked,
+                        )
+                    );
+                }
             }
         }
         Ok(other) => {
@@ -1334,15 +1360,28 @@ pub fn report_relay_comparison(
                 _ => None,
             };
             match ready_comparison(relay_side, sipnab_side) {
-                CompareOutcome::Compared(comparison) => print!(
-                    "{}",
-                    crate::output::relay_statistics::format_relay_comparison(
-                        &comparison,
-                        call_id,
-                        &label,
-                        obtained_at
-                    )
-                ),
+                CompareOutcome::Compared(comparison) => {
+                    use crate::output::relay_statistics as fmt;
+                    if cli.output_args.json || cli.output_args.json_pretty {
+                        println!(
+                            "{}",
+                            fmt::maybe_pretty(
+                                fmt::format_relay_comparison_json(
+                                    &comparison,
+                                    call_id,
+                                    &label,
+                                    obtained_at,
+                                ),
+                                cli.output_args.json_pretty
+                            )
+                        );
+                    } else {
+                        print!(
+                            "{}",
+                            fmt::format_relay_comparison(&comparison, call_id, &label, obtained_at)
+                        );
+                    }
+                }
                 CompareOutcome::SipnabHasNoRtp { relay_value } => {
                     // The call IS on the relay, but sipnab captured no media for
                     // it. Most often the capture filter: sipnab's default is

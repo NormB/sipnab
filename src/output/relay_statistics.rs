@@ -16,6 +16,7 @@
 //! the honest fallback, tested.
 
 use chrono::{DateTime, Utc};
+use serde_json::{Value, json};
 
 use crate::stats_vocab::{NameSource, StatisticTier, TierComparison, WireStatistics};
 
@@ -178,4 +179,111 @@ pub fn format_relay_comparison(
     ));
     out.push_str(&format!("  note: {}\n", comparison.note));
     out
+}
+
+// ── The machine-readable forms (ST7) ─────────────────────────────────────────
+//
+// One JSON object per report, carrying the SAME figures the text renders. The
+// shape is written explicitly rather than derived from the wire structs so it
+// is a contract in its own right, matching ST-S3, and so a struct-field rename
+// cannot silently change the wire form. Because both forms read the same wire
+// data, `--json` and the table cannot disagree about a number.
+
+/// Pretty-print a compact relay-stats JSON string when `--json-pretty` asked,
+/// mirroring the per-message path (pretty first, else compact). Infallible: the
+/// input came from one of the emitters below, so a parse failure returns it
+/// unchanged rather than losing the report.
+#[must_use]
+pub fn maybe_pretty(compact: String, pretty: bool) -> String {
+    if !pretty {
+        return compact;
+    }
+    serde_json::from_str::<Value>(&compact)
+        .ok()
+        .and_then(|v| serde_json::to_string_pretty(&v).ok())
+        .unwrap_or(compact)
+}
+
+/// Render resolved relay statistics as a single JSON object (ST7).
+#[must_use]
+pub fn format_relay_statistics_json(
+    wire: &WireStatistics,
+    relay_label: &str,
+    obtained_at: DateTime<Utc>,
+    origin: FetchOrigin,
+) -> String {
+    let stamp = obtained_at.format("%Y-%m-%dT%H:%M:%SZ").to_string();
+    let statistics: Vec<Value> = wire
+        .present
+        .iter()
+        .map(|v| json!({ "name": v.name, "value": v.value, "tier": v.tier.as_wire_str() }))
+        .collect();
+    let refusals: Vec<Value> = wire
+        .refusals
+        .iter()
+        .map(|r| json!({ "name": r.name, "code": r.code }))
+        .collect();
+    let mut obj = json!({
+        "relay": relay_label,
+        "obtained_at": stamp,
+        "origin": match origin {
+            FetchOrigin::Asked => "asked",
+            FetchOrigin::Polled { .. } => "polled",
+        },
+        "statistics": statistics,
+        "refusals": refusals,
+    });
+    if let FetchOrigin::Polled { every_secs } = origin {
+        obj["interval_secs"] = json!(every_secs);
+    }
+    obj.to_string()
+}
+
+/// Render the names a relay knows as a single JSON object (ST7 / C3).
+#[must_use]
+pub fn format_relay_stat_names_json(
+    names: &[String],
+    source: NameSource,
+    relay_label: &str,
+    obtained_at: DateTime<Utc>,
+) -> String {
+    let stamp = obtained_at.format("%Y-%m-%dT%H:%M:%SZ").to_string();
+    json!({
+        "relay": relay_label,
+        "obtained_at": stamp,
+        "source": match source {
+            NameSource::Listed => "listed",
+            NameSource::Probed => "probed",
+        },
+        "names": names,
+    })
+    .to_string()
+}
+
+/// Render a relay-vs-capture comparison as a single JSON object (ST7 / C4).
+///
+/// Both figures under `packets`, each tier its own key, a word `verdict`, and
+/// the `note` -- never a summed or differenced field, so the cross-tier
+/// arithmetic ST-S1 forbids stays out of the machine form as well as the table.
+#[must_use]
+pub fn format_relay_comparison_json(
+    comparison: &TierComparison,
+    call_id: &str,
+    relay_label: &str,
+    obtained_at: DateTime<Utc>,
+) -> String {
+    let stamp = obtained_at.format("%Y-%m-%dT%H:%M:%SZ").to_string();
+    let relay_name = comparison.relay.name.as_deref().unwrap_or("RTP packets");
+    json!({
+        "relay": relay_label,
+        "call_id": call_id,
+        "obtained_at": stamp,
+        "packets": {
+            "relay_reported": { "value": comparison.relay.value, "name": relay_name },
+            "sipnab_measured": { "value": comparison.sipnab.value },
+            "verdict": comparison.verdict.as_wire_str(),
+            "note": comparison.note,
+        }
+    })
+    .to_string()
 }

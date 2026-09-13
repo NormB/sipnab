@@ -44,7 +44,7 @@ Tiers:
 
 ## Status
 
-**33 open, 510 done** across 38 sections.
+**32 open, 511 done** across 38 sections.
 Regenerate with `python3 scripts/backlog-status.py --apply`.
 
 | Section | Open | Done | Progress |
@@ -63,7 +63,7 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
 | NAT | 0 | 4 | `##########` |
 | RV | 0 | 8 | `##########` |
 | RP | 1 | 3 | `########..` |
-| ST | 8 | 9 | `#####.....` |
+| ST | 7 | 10 | `######....` |
 | PAR | 5 | 0 | `..........` |
 | HX | 1 | 2 | `#######...` |
 | AS | 0 | 7 | `##########` |
@@ -250,7 +250,7 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
   silently negates most of CT2's benefit on exactly the busy servers CT2
   targets, and because it makes `-B` advice misleading until fixed.
   **Done:** immediate mode is now a decision, not a constant.
-  `immediate_mode_for(mode)` ([`src/app/bootstrap.rs:2832`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L2832)) is
+  `immediate_mode_for(mode)` ([`src/app/bootstrap.rs:2872`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L2872)) is
   `matches!(mode, RunMode::Tui)` and is the only place that answers the
   question; `bootstrap.rs:537` assigns its result to
   `CaptureConfig::immediate_mode`, and [`src/capture/live.rs:219-220`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L219-L220) passes that
@@ -822,7 +822,7 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
   reconstruction path is offline-only. Cheap, and it removes a silent
   expectation mismatch on exactly the busy-server workload where someone would
   reach for it. **Done:** `cores_ignored_warning`
-  ([`src/app/bootstrap.rs:3175`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L3175)) returns the message and the reason —
+  ([`src/app/bootstrap.rs:3353`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L3353)) returns the message and the reason —
   `--multi-device` opens one capture per interface, or the run captures live
   rather than reading a saved file — and `bootstrap.rs:492` warns with it.
   Warned rather than refused, because the run is correct, just single-threaded,
@@ -1707,7 +1707,7 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
   truncation breaks `--retain-audio`/WAV export and Opus decode (they need RTP
   payload, not just headers), and it degrades `-O` pcap re-emit to truncated
   frames. **Two of three "Do:" items are done, and this line claimed neither
-  until 2026-08-06.** `snaplen_truncation_warning` ([`src/app/bootstrap.rs:3520`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L3520),
+  until 2026-08-06.** `snaplen_truncation_warning` ([`src/app/bootstrap.rs:3560`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L3560),
   tagged `(CT3)`) warns when a truncating snaplen feeds `-O`; a matching
   `snaplen_audio_retention_warning` now warns when it feeds `--retain-audio`
   instead, since that path is retained *audio*, not a re-emitted pcap, and
@@ -5849,18 +5849,18 @@ apart in the first place (see PAR).
   doubles the agent surface for no gain, which RP2's acceptance test 1 already
   forbids. The tool transmits, so it stays behind the existing permit.
 
-- [ ] **ST7 — CLI flags for all three tiers.** IN PROGRESS: all five
-  capabilities landed and verified live against the harness — C1
-  (`--relay-stats`), C2 (`--relay-stats-call`), C3 (`--relay-stats-list`), C4
-  (`--relay-compare`, which keeps zero and absent distinct per ST9 and whose
-  note names the relay-hairpin double count its live run surfaced), and C5
+- [x] **ST7 — CLI flags for all three tiers. DONE.** All five capabilities
+  landed and verified live against the harness — C1 (`--relay-stats`), C2
+  (`--relay-stats-call`), C3 (`--relay-stats-list`), C4 (`--relay-compare`,
+  which keeps zero and absent distinct per ST9 and whose note names the
+  relay-hairpin double count its live run surfaced), and C5
   (`--relay-stats-interval`, a poll on its own thread whose interval is the
   spend bound and where an overlapping poll cannot occur). C1–C4 shipped in
-  0.5.169. The 50-test minimum is met on the CLI surface. **Remaining for the
-  tick: the machine-readable (`--json`) output shape** — the CLI renders a
-  table today; a JSON form that agrees with it, per the line below, is the last
-  ST7 piece.
-  50 tests minimum. Includes the
+  0.5.169. Both output shapes are present and AGREE: the table, and a
+  `--json`/`--json-pretty` form built from the same wire data (so a number
+  cannot differ between them), verified live (251 counters, `relay_reported`,
+  as JSON). Well past the 50-test minimum on the CLI surface (80+).
+  Includes the
   output shapes: a human-readable form and a machine-readable one that agree,
   since a number that differs between `--json` and the table is a defect nobody
   notices until it is quoted.
