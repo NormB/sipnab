@@ -12,6 +12,15 @@ entry that carries them.
 
 ### Added
 
+- **The five failure classifications (ST-S4) are implemented as a vocabulary.**
+  `StatisticsOutcome` names the ways an ask for relay statistics does not yield
+  a trustworthy value -- `not_configured`, `not_permitted`, `unreachable`,
+  `refused`, `suspect` -- kept distinct because each sends an operator
+  somewhere different, and `responsibility()` says where: the operator's
+  invocation, the network or relay, the request, or the answer. `suspect` is
+  the state ST-S4 added, for an answer that is present and wrong. Four tests,
+  mutation-proven, one holding the names to the ST-S4 catalog so neither drifts.
+
 - **ST3 is implemented: the statistics rtpproxy reports, in the same tier
   vocabulary.** `info_statistics` reads an `I` reply's five `label: value`
   lines into the relay's own labels, kept verbatim -- `active streams` has no

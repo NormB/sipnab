@@ -186,3 +186,87 @@ pub fn lookup(stats: &[TieredStatistic], name: &str) -> StatisticValue {
         .find(|s| s.name == name)
         .map_or(StatisticValue::NotAsked, |s| s.value.clone())
 }
+
+/// Who owns the problem when statistics could not be cleanly obtained.
+///
+/// The "whose problem" column of ST-S4's classification table, because it is
+/// what tells an operator where to look. A `not_permitted` run is the
+/// operator's own invocation; an `unreachable` relay is the network or the box;
+/// a `refused` statistic is the request; a `suspect` answer is the answer
+/// itself. A surface that reported the classification without this would make
+/// an operator debug the relay for a mistake in their own command line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Responsibility {
+    /// The operator's own invocation: no relay named, or no permit to transmit.
+    Invocation,
+    /// The network or the relay: asked, nothing came back.
+    RelayOrNetwork,
+    /// The request: the relay answered, and the answer was a refusal.
+    Request,
+    /// The answer: something arrived that cannot be trusted.
+    Answer,
+}
+
+/// What happened when a relay statistic was asked for and NOT cleanly obtained
+/// (ST-S4).
+///
+/// The five classifications every surface reports identically. A clean success
+/// is not here -- it is the statistics themselves; this enum is only the ways
+/// an ask does not yield a trustworthy value, and they are kept distinct
+/// because each sends an operator somewhere different.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum StatisticsOutcome {
+    /// sipnab was never given a relay to ask.
+    NotConfigured,
+    /// No transmit permit for this run -- a file-backed run, say, which must
+    /// never be able to transmit to an address it read out of a capture.
+    NotPermitted,
+    /// Asked, and nothing came back. Indistinguishable, over UDP, from a down
+    /// relay, a filtered port or a lost reply, so it must not claim any of them.
+    Unreachable,
+    /// Asked, and the relay said no, with the code it gave. The code travels in
+    /// [`StatisticValue::Refused`]; this names the class.
+    Refused,
+    /// An answer arrived and something about it cannot be trusted -- a cookie
+    /// that does not match, a counter that stepped backwards. The one that did
+    /// not exist before ST-S4, because an answer that is present and wrong is
+    /// the failure most likely to ship folded into "ok".
+    Suspect,
+}
+
+impl StatisticsOutcome {
+    /// Every classification, for a test that must cover them all.
+    #[must_use]
+    pub const fn all() -> [Self; 5] {
+        [
+            Self::NotConfigured,
+            Self::NotPermitted,
+            Self::Unreachable,
+            Self::Refused,
+            Self::Suspect,
+        ]
+    }
+
+    /// The wire name, spelled once, matching ST-S4's table.
+    #[must_use]
+    pub const fn as_wire_str(self) -> &'static str {
+        match self {
+            Self::NotConfigured => "not_configured",
+            Self::NotPermitted => "not_permitted",
+            Self::Unreachable => "unreachable",
+            Self::Refused => "refused",
+            Self::Suspect => "suspect",
+        }
+    }
+
+    /// Whose problem this is, so a surface can point the operator at it.
+    #[must_use]
+    pub const fn responsibility(self) -> Responsibility {
+        match self {
+            Self::NotConfigured | Self::NotPermitted => Responsibility::Invocation,
+            Self::Unreachable => Responsibility::RelayOrNetwork,
+            Self::Refused => Responsibility::Request,
+            Self::Suspect => Responsibility::Answer,
+        }
+    }
+}
