@@ -12,6 +12,18 @@ entry that carries them.
 
 ### Added
 
+- **ST1 is implemented: the statistics vocabulary, `src/stats_vocab.rs`.** The
+  foundation the rest of the relay-statistics work depends on, built before any
+  statistic is fetched because getting it wrong makes every later number
+  untrustworthy. Three tiers named once -- `relay_reported`, `sipnab_measured`,
+  `endpoint_reported` -- with `blends_tiers` encoding the cross-tier prohibition
+  as code, and a three-state `StatisticValue` (counted, not-asked, refused) so
+  a counted zero, an unasked key and a refusal with the relay's own code stay
+  three distinct facts. Portable like `relay_vocab`, since two of the three
+  tiers are not relay concepts and the wasm analyzer reports measured figures
+  with no control plane in sight. Six tests, each mutation-proven, one of them
+  holding the code's wire names to the ST-S1 spec so neither can drift.
+
 - **The last two gating specs are written: ST-S5 and PAR-S1.** ST-S5
   (`relay-statistics-documentation.md`) says what the docs and site must teach
   about relay statistics -- per capability, the operator's real question, the

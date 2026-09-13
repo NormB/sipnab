@@ -106,6 +106,7 @@ pub mod rate_limit;
 pub mod relay;
 pub mod relay_vocab;
 pub mod rtp;
+pub mod stats_vocab;
 // Native only, exactly as `pipeline` is: this module hands `ng`-derived SDP to
 // `pipeline::extract_sdp_links`, so it cannot compile where that does not. It
 // would also have nothing to do there — an `ng` control plane reaches sipnab
