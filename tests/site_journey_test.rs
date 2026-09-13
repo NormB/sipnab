@@ -9323,3 +9323,181 @@ fn baseline_four_core_figure() -> String {
         .expect("bench/baseline.json has no numeric cores_4_pkts_per_s");
     format!("{:.2}M", pkts / 1_000_000.0)
 }
+
+// ---------------------------------------------------------------------------
+// Links inside dimmed prose. WCAG 1.4.1 (Use of Color): a link sitting inside a
+// sentence must be told apart from the words around it by something other than
+// color, unless the two colors differ by at least 3:1.
+//
+// The homepage met this once, for one table column, with an underline and a
+// comment and no gate. Two new subtitle paragraphs reintroduced the same pair
+// -- `$link` on `$text-dim`, 1.79:1 -- and CI's axe job went red on
+// 2026-09-12. A fix that lives only in a comment fixes one selector; these
+// gates fix the class.
+// ---------------------------------------------------------------------------
+
+/// One SCSS color variable's hex value, e.g. `$text-dim: #8a93a3;`.
+fn scss_color(scss: &str, var: &str) -> String {
+    let re = regex::Regex::new(&format!(
+        r"(?m)^\${}\s*:\s*(#[0-9a-fA-F]{{6}})\s*;",
+        regex::escape(var)
+    ))
+    .expect("regex");
+    re.captures(scss)
+        .map(|c| c[1].to_lowercase())
+        .unwrap_or_else(|| panic!("style.scss defines no six-digit `${var}`"))
+}
+
+/// The WCAG 2 contrast ratio between two `#rrggbb` colors.
+fn wcag_contrast(a: &str, b: &str) -> f64 {
+    fn channel(hex: &str, at: usize) -> f64 {
+        let c = f64::from(u8::from_str_radix(&hex[at..at + 2], 16).expect("hex channel")) / 255.0;
+        if c <= 0.039_28 {
+            c / 12.92
+        } else {
+            ((c + 0.055) / 1.055).powf(2.4)
+        }
+    }
+    fn luminance(hex: &str) -> f64 {
+        let h = hex.trim_start_matches('#');
+        0.2126 * channel(h, 0) + 0.7152 * channel(h, 2) + 0.0722 * channel(h, 4)
+    }
+    let (la, lb) = (luminance(a), luminance(b));
+    let (hi, lo) = if la >= lb { (la, lb) } else { (lb, la) };
+    (hi + 0.05) / (lo + 0.05)
+}
+
+/// A rule's whole body, nested rules INCLUDED -- the counterpart to
+/// [`scss_own_declarations`], for a check that is about a nested child.
+fn scss_block(scss: &str, selector: &str) -> String {
+    let at = scss
+        .find(selector)
+        .unwrap_or_else(|| panic!("style.scss has no `{selector}` rule"));
+    let open = scss[at..]
+        .find('{')
+        .map(|n| at + n + 1)
+        .unwrap_or_else(|| panic!("`{selector}` has no rule body"));
+    let mut depth = 1usize;
+    for (i, c) in scss[open..].char_indices() {
+        match c {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return scss[open..open + i].to_owned();
+                }
+            }
+            _ => {}
+        }
+    }
+    panic!("`{selector}` rule is unterminated");
+}
+
+/// Homepage paragraphs whose class dims the text AND which carry a link inside
+/// the prose: `(class, links)`.
+fn dimmed_paragraphs_with_links() -> Vec<(String, usize)> {
+    let scss = read("website/sass/style.scss");
+    let page = read("website/templates/index.html");
+    let page = regex::Regex::new(r"(?s)\{#.*?#\}")
+        .expect("regex")
+        .replace_all(&page, "")
+        .into_owned();
+    let para = regex::Regex::new(r#"(?s)<p class="([a-z0-9-]+)">(.*?)</p>"#).expect("regex");
+    let mut out = Vec::new();
+    for c in para.captures_iter(&page) {
+        let (class, body) = (c[1].to_owned(), &c[2]);
+        let links = body.matches("<a ").count();
+        if links == 0 {
+            continue;
+        }
+        let selector = format!(".{class}");
+        if !scss.contains(&selector) {
+            continue;
+        }
+        if scss_own_declarations(&scss, &selector).contains("color: $text-dim") {
+            out.push((class, links));
+        }
+    }
+    out
+}
+
+/// The contrast calculation reproduces what axe measured, before anything is
+/// built on it.
+///
+/// An instrument that cannot say 21:1 for black on white, or reproduce axe's
+/// 1.79:1 for the exact pair it reported, is not measuring contrast.
+#[test]
+fn the_contrast_calculation_reproduces_what_axe_measured() {
+    let black_white = wcag_contrast("#000000", "#ffffff");
+    assert!(
+        (black_white - 21.0).abs() < 0.001,
+        "black on white is 21:1 by definition; this computes {black_white}"
+    );
+    // axe run 34721159100: "link text: #73d0ff, surrounding text: #8a93a3",
+    // 1.79:1. axe truncates to two places; the exact figure is 1.796.
+    let axe_pair = wcag_contrast("#73d0ff", "#8a93a3");
+    assert!(
+        (axe_pair - 1.79).abs() < 0.02,
+        "axe measured 1.79:1 for #73d0ff on #8a93a3; this computes {axe_pair:.3}"
+    );
+    let scss = read("website/sass/style.scss");
+    let live = wcag_contrast(&scss_color(&scss, "link"), &scss_color(&scss, "text-dim"));
+    assert!(
+        (live - axe_pair).abs() < 0.001,
+        "$link on $text-dim in style.scss computes {live:.3}, not the pair axe \
+         reported -- the palette moved, and the gates below were written \
+         against the old one"
+    );
+}
+
+/// Every dimmed paragraph that carries a link gives the link a non-color cue.
+///
+/// Required only while `$link` against `$text-dim` stays under 3:1. If the
+/// palette ever clears it, the underline becomes optional and this passes
+/// without it -- which is the rule, not a loophole.
+#[test]
+fn every_dimmed_paragraph_on_the_homepage_marks_its_links_without_color() {
+    let scss = read("website/sass/style.scss");
+    let ratio = wcag_contrast(&scss_color(&scss, "link"), &scss_color(&scss, "text-dim"));
+    if ratio >= 3.0 {
+        return;
+    }
+    // Compiled once, not once per paragraph: clippy's `regex_creation_in_loops`.
+    let nested_link = regex::Regex::new(r"(?s)(^|[\s;{])a\s*\{([^}]*)\}").expect("regex");
+    let mut unmarked = Vec::new();
+    for (class, links) in dimmed_paragraphs_with_links() {
+        let block = scss_block(&scss, &format!(".{class}"));
+        let marked = nested_link
+            .captures_iter(&block)
+            .any(|c| c[2].contains("text-decoration: underline") || c[2].contains("border-bottom"));
+        if !marked {
+            unmarked.push(format!(".{class} ({links} link(s))"));
+        }
+    }
+    assert!(
+        unmarked.is_empty(),
+        "these homepage paragraphs dim their text to $text-dim and carry a \
+         link styled only by color, at {ratio:.2}:1 against the prose around \
+         it -- under WCAG 1.4.1's 3:1. axe reports each as link-in-text-block, \
+         serious. Give the link an underline inside the class's own rule: \
+         {unmarked:?}"
+    );
+}
+
+/// The scan finds the paragraphs that turned CI red.
+///
+/// A scan that stopped matching would certify every paragraph on the page.
+#[test]
+fn the_dimmed_paragraph_scan_finds_the_ones_axe_reported() {
+    let found: Vec<String> = dimmed_paragraphs_with_links()
+        .into_iter()
+        .map(|(c, _)| c)
+        .collect();
+    for class in ["demos-sub", "comparison-sub"] {
+        assert!(
+            found.iter().any(|c| c == class),
+            "the scan no longer sees `.{class}`, one of the two paragraphs axe \
+             reported on 2026-09-12. Found: {found:?}"
+        );
+    }
+}

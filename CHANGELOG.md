@@ -12,6 +12,23 @@ entry that carries them.
 
 ### Fixed
 
+- **The homepage's section ledes failed a WCAG contrast check, and the
+  documentation gate acted on the host.** The two new ledes styled their inline
+  links with `$link` on `$text-dim`, 1.79:1, under the 3:1 WCAG 1.4.1 wants for
+  a link told apart by color alone; axe reported both, serious, and the
+  Accessibility job went red. All three section ledes now share one rule that
+  underlines their links, and `site_journey_test` gates the class: a dimmed
+  paragraph that carries a color-only link fails. Separately,
+  `doc_commands_run_test` had three defects of its own -- it passed a trailing
+  `# comment` to sipnab as arguments, it mistook `--capture-profile <PROFILE>`
+  for a path flag because "PROFILE" contains "FILE", and it classified
+  `--setup-caps` as runnable, so on a host with passwordless sudo it ran
+  `sudo setcap` on the binary four times. The gate now strips shell comments,
+  matches value-name tokens exactly, runs every command inside a per-command
+  sandbox directory, keeps binds on loopback and sends off the network, and
+  never runs a command that escalates privilege or opens a GUI.
+
+
 - **Six homepage claims were wrong, and are now derived rather than typed.**
   An audit of the live page found: the MCP row said 32 tools, 27 read-only and
   five that write, while the server registers 66, 54 and twelve -- and a stat

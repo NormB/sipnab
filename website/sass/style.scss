@@ -1102,32 +1102,32 @@ input:focus-visible,
   margin: 0 auto;
 }
 
+// The lede under a section heading. One rule for all three rather than three
+// copies: two of these were pasted from `.metrics-sub`, which had no links, so
+// the copies inherited its silence about them.
+.metrics-sub,
+.demos-sub,
 .comparison-sub {
-  max-width: 700px;
-  margin: 1rem auto 0;
-  text-align: center;
-  color: $text-dim;
-  font-size: 0.95rem;
-  line-height: 1.65;
-}
-
-.demos-sub {
   max-width: 640px;
   margin: 1rem auto 0;
   text-align: center;
   color: $text-dim;
   font-size: 0.95rem;
   line-height: 1.65;
+
+  // WCAG 1.4.1, the same failure the comparison table's td:last-child rule
+  // below records: $link against $text-dim is 1.79:1, under the 3:1 a link
+  // needs to be told apart from the prose around it by color alone. axe
+  // reported both new ledes' links as link-in-text-block, serious, on
+  // 2026-09-12. `site_journey_test` now gates the class: every
+  // dimmed paragraph that carries a link must mark it without color.
+  a {
+    text-decoration: underline;
+    text-underline-offset: 0.2em;
+  }
 }
 
-.metrics-sub {
-  max-width: 640px;
-  margin: 1rem auto 0;
-  text-align: center;
-  color: $text-dim;
-  font-size: 0.95rem;
-  line-height: 1.65;
-}
+.comparison-sub { max-width: 700px; }
 
 .metrics-grid {
   display: grid;
