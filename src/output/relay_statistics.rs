@@ -17,7 +17,7 @@
 
 use chrono::{DateTime, Utc};
 
-use crate::stats_vocab::{StatisticTier, WireStatistics};
+use crate::stats_vocab::{NameSource, StatisticTier, WireStatistics};
 
 /// The width the name column is padded to, so values line up.
 const NAME_WIDTH: usize = 44;
@@ -80,6 +80,38 @@ pub fn format_relay_statistics(
         for r in &wire.refusals {
             out.push_str(&format!("  {:<NAME_WIDTH$} {}\n", r.name, r.code));
         }
+    }
+    out
+}
+
+/// Render the names a relay knows as a text block (ST7 / C3).
+///
+/// This answers "what can I even ask for?", so it carries NAMES and no values:
+/// a value here would make it a different capability wearing C3's flag. The
+/// header names the relay, when it was asked, how many names there are, and --
+/// the part C3 exists to make honest -- HOW the set was determined, because a
+/// list a relay enumerated and a set probed by what did not refuse are not the
+/// same claim.
+#[must_use]
+pub fn format_relay_stat_names(
+    names: &[String],
+    source: NameSource,
+    relay_label: &str,
+    obtained_at: DateTime<Utc>,
+) -> String {
+    let stamp = obtained_at.format("%Y-%m-%dT%H:%M:%SZ");
+    let mut out = format!(
+        "Statistics {relay_label} knows ({} name{}, asked {stamp}) — {}\n",
+        names.len(),
+        if names.len() == 1 { "" } else { "s" },
+        source.how_determined()
+    );
+    if names.is_empty() {
+        out.push_str("  (the relay named nothing it knows)\n");
+        return out;
+    }
+    for name in names {
+        out.push_str(&format!("  {name}\n"));
     }
     out
 }

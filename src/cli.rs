@@ -1578,6 +1578,18 @@ pub struct RtpArgs {
     )]
     pub relay_stats_call: Option<String>,
 
+    /// List which statistics the relay named by `--rtpengine-control` knows,
+    /// rather than their values (ST7/C3).
+    ///
+    /// The key set is version-specific, so "what can I ask for?" is a real
+    /// question: without it a caller learns a name is absent only by asking for
+    /// it and failing. The answer is obtained by ASKING, never from a table
+    /// built into sipnab -- for rtpengine the keys of a `statistics` reply, and
+    /// the output says the set was listed. Same live-source gate as
+    /// `--relay-stats`, because listing asks the relay and asking transmits.
+    #[arg(help_heading = "RTP", long = "relay-stats-list")]
+    pub relay_stats_list: bool,
+
     /// Maximum number of RTP streams to track simultaneously.
     #[arg(help_heading = "RTP", long, value_name = "N")]
     pub max_streams: Option<u64>,

@@ -822,7 +822,7 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
   reconstruction path is offline-only. Cheap, and it removes a silent
   expectation mismatch on exactly the busy-server workload where someone would
   reach for it. **Done:** `cores_ignored_warning`
-  ([`src/app/bootstrap.rs:3145`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L3145)) returns the message and the reason —
+  ([`src/app/bootstrap.rs:3175`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L3175)) returns the message and the reason —
   `--multi-device` opens one capture per interface, or the run captures live
   rather than reading a saved file — and `bootstrap.rs:492` warns with it.
   Warned rather than refused, because the run is correct, just single-threaded,
@@ -1707,7 +1707,7 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
   truncation breaks `--retain-audio`/WAV export and Opus decode (they need RTP
   payload, not just headers), and it degrades `-O` pcap re-emit to truncated
   frames. **Two of three "Do:" items are done, and this line claimed neither
-  until 2026-08-06.** `snaplen_truncation_warning` ([`src/app/bootstrap.rs:3352`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L3352),
+  until 2026-08-06.** `snaplen_truncation_warning` ([`src/app/bootstrap.rs:3382`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L3382),
   tagged `(CT3)`) warns when a truncating snaplen feeds `-O`; a matching
   `snaplen_audio_retention_warning` now warns when it feeds `--retain-audio`
   instead, since that path is retained *audio*, not a re-emitted pcap, and
@@ -5850,8 +5850,9 @@ apart in the first place (see PAR).
   forbids. The tool transmits, so it stays behind the existing permit.
 
 - [ ] **ST7 — CLI flags for all three tiers.** IN PROGRESS: C1 landed
-  (`--relay-stats`, global counters, verified live against the harness); C2
-  per-call, C3 list-names, C4 compare, C5 poll and the 50-test minimum remain.
+  (`--relay-stats`, global counters), C2 (`--relay-stats-call`, per-call) and C3
+  (`--relay-stats-list`, the names a relay knows) landed, each verified live
+  against the harness. C4 compare, C5 poll, and the 50-test minimum remain.
   50 tests minimum. Includes the
   output shapes: a human-readable form and a machine-readable one that agree,
   since a number that differs between `--json` and the table is a defect nobody

@@ -12,6 +12,16 @@ entry that carries them.
 
 ### Added
 
+- **`--relay-stats-list` lists which statistics a relay knows (ST7/C3).**
+  The key set is version-specific, so "what can I ask for?" is a real question:
+  without it a caller learns a name is absent only by asking for it and failing.
+  The answer is obtained by asking the relay, never from a table built into
+  sipnab -- for rtpengine the keys of a `statistics` reply -- and the header
+  says how the set was determined, so a list the relay enumerated is never
+  mistaken for a set probed by what did not refuse. Names only, no values: a
+  value would make it a different capability. Verified live against the harness
+  (251 names, no values leaked). Same live-source gate as `--relay-stats`.
+
 - **`--relay-stats-call <CALL-ID>` adds per-call relay statistics (ST7/C2).**
   The relay's own counters for one call -- per-stream and per-SSRC packet and
   byte counts, RTP and RTCP totals -- fetched with `query`, flattened and

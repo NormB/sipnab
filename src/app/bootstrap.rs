@@ -1145,7 +1145,9 @@ fn report_relay_statistics(cli: &Cli, source: Option<&CaptureSource>) {
     use crate::security::transmit_guard::TransmitPermit;
 
     let permit = source.and_then(TransmitPermit::for_source);
-    let asked = cli.rtp_args.relay_stats || cli.rtp_args.relay_stats_call.is_some();
+    let asked = cli.rtp_args.relay_stats
+        || cli.rtp_args.relay_stats_call.is_some()
+        || cli.rtp_args.relay_stats_list;
     let action = relay_stats_action(
         asked,
         cli.rtp_args.rtpengine_control.as_deref(),
@@ -1187,28 +1189,46 @@ fn report_relay_statistics(cli: &Cli, source: Option<&CaptureSource>) {
     };
     let client = ControlClient::new(socket, DEFAULT_CONTROL_TIMEOUT);
     let obtained_at = chrono::Utc::now();
-    // Per-call when a Call-ID was named, relay-wide otherwise. Both are the
-    // relay's own counters and render identically; only the fetch and the
-    // label differ.
-    let (fetched, label) = match cli.rtp_args.relay_stats_call.as_deref() {
-        Some(call_id) => (
+    // Three renderings over two fetches. C3 (list) and C1 (relay-wide values)
+    // both read the relay-wide `statistics` reply; C2 (per-call) reads one
+    // call. List is a MODE over the relay-wide reply, so it takes precedence
+    // over a Call-ID: naming a call and asking for the name list at once is
+    // answered as the name list, since the call's key set is the relay's.
+    let listing = cli.rtp_args.relay_stats_list;
+    let (fetched, label) = match (listing, cli.rtp_args.relay_stats_call.as_deref()) {
+        (false, Some(call_id)) => (
             client.call_statistics(&permit, call_id),
             format!("rtpengine at {addr}, call {call_id}"),
         ),
-        None => (client.statistics(&permit), format!("rtpengine at {addr}")),
+        _ => (client.statistics(&permit), format!("rtpengine at {addr}")),
     };
     match fetched {
         Ok(crate::relay::types::ControlReply::Statistics(pairs)) => {
             let tiered = crate::stats_vocab::relay_reported(&pairs);
-            let wire = crate::stats_vocab::resolve_for_wire(&tiered);
-            print!(
-                "{}",
-                crate::output::relay_statistics::format_relay_statistics(
-                    &wire,
-                    &label,
-                    obtained_at
-                )
-            );
+            if listing {
+                // C3: the names the relay knows, listed (rtpengine enumerates
+                // them in the reply), never their values.
+                let names = crate::stats_vocab::known_names(&tiered);
+                print!(
+                    "{}",
+                    crate::output::relay_statistics::format_relay_stat_names(
+                        &names,
+                        crate::stats_vocab::NameSource::Listed,
+                        &label,
+                        obtained_at
+                    )
+                );
+            } else {
+                let wire = crate::stats_vocab::resolve_for_wire(&tiered);
+                print!(
+                    "{}",
+                    crate::output::relay_statistics::format_relay_statistics(
+                        &wire,
+                        &label,
+                        obtained_at
+                    )
+                );
+            }
         }
         Ok(other) => {
             tracing::error!("relay at {addr} answered {other:?}, not statistics");

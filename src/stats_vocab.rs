@@ -187,6 +187,61 @@ pub fn lookup(stats: &[TieredStatistic], name: &str) -> StatisticValue {
         .map_or(StatisticValue::NotAsked, |s| s.value.clone())
 }
 
+/// The names a relay knows -- the answer to C3's "what can I even ask for?".
+///
+/// A name is known when the relay produced a value for it, which in this model
+/// is exactly [`StatisticValue::is_present_on_the_wire`]: `Counted`, including a
+/// counted zero. `NotAsked` is excluded because a name sipnab never asked about
+/// is no evidence of what the relay has; `Refused` is excluded because
+/// rtpproxy's `E68` means the relay does NOT have that name -- which is the
+/// whole reason a probe answers C3 for a relay with no list command.
+///
+/// The set is sorted and deduplicated, so two relays' lists compare directly
+/// and a caller reads a stable order regardless of the reply's order.
+#[must_use]
+pub fn known_names(stats: &[TieredStatistic]) -> Vec<String> {
+    let mut names: Vec<String> = stats
+        .iter()
+        .filter(|s| s.value.is_present_on_the_wire())
+        .map(|s| s.name.clone())
+        .collect();
+    names.sort();
+    names.dedup();
+    names
+}
+
+/// How a relay's set of known statistic names was established (C3).
+///
+/// The two are not the same claim, and the reply must not let them read as one.
+/// rtpengine returns the whole set in a `statistics` reply, so the names are
+/// `Listed` -- an enumeration. rtpproxy has no list command, so the set is
+/// `Probed`: the names that did not return `E68` when asked. A name refused
+/// today because the relay is momentarily busy is not the same as one this
+/// build does not have, and a probed list is a weaker claim that says so.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum NameSource {
+    /// The relay enumerated them: rtpengine's `statistics` reply IS the list.
+    Listed,
+    /// Inferred by asking: the names that did not refuse (rtpproxy, no list
+    /// command).
+    Probed,
+}
+
+impl NameSource {
+    /// One sentence stating how this list was determined, in an operator's
+    /// words, so a probed set is never mistaken for a definitive enumeration.
+    #[must_use]
+    pub const fn how_determined(self) -> &'static str {
+        match self {
+            Self::Listed => "the relay listed these in a statistics reply",
+            Self::Probed => {
+                "these are the names that did not refuse when asked; a name refused \
+                 today because the relay is busy is not the same as one this build lacks"
+            }
+        }
+    }
+}
+
 /// Who owns the problem when statistics could not be cleanly obtained.
 ///
 /// The "whose problem" column of ST-S4's classification table, because it is

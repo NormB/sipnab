@@ -112,3 +112,40 @@ fn a_per_call_ask_is_gated_like_the_global_one() {
         RelayStatsAction::NotPermitted
     );
 }
+
+/// `--relay-stats-list` parses and sets its flag; off by default (ST7/C3).
+#[test]
+fn the_relay_stats_list_flag_parses() {
+    use clap::Parser;
+    let on =
+        sipnab::cli::Cli::try_parse_from(["sipnab", "-N", "-I", "x.pcap", "--relay-stats-list"])
+            .expect("--relay-stats-list parses");
+    assert!(
+        on.rtp_args.relay_stats_list,
+        "--relay-stats-list sets the flag"
+    );
+
+    let off = sipnab::cli::Cli::try_parse_from(["sipnab", "-N", "-I", "x.pcap"]).expect("bare");
+    assert!(!off.rtp_args.relay_stats_list, "off unless given");
+}
+
+/// A list ask is gated exactly like the global one: listing asks the relay, and
+/// asking transmits, so it needs a relay named and a permit in hand.
+#[test]
+fn a_list_ask_is_gated_like_the_global_one() {
+    assert_eq!(
+        relay_stats_action(true, Some("10.0.0.2:22222"), true),
+        RelayStatsAction::Fetch("10.0.0.2:22222".to_owned()),
+        "asked, a relay named, a permit: fetch"
+    );
+    assert_eq!(
+        relay_stats_action(true, None, true),
+        RelayStatsAction::NotConfigured,
+        "listing with no relay named is not_configured"
+    );
+    assert_eq!(
+        relay_stats_action(true, Some("10.0.0.2:22222"), false),
+        RelayStatsAction::NotPermitted,
+        "listing on a file-backed run may not transmit"
+    );
+}
