@@ -12,6 +12,15 @@ entry that carries them.
 
 ### Added
 
+- **ST-S1's three-state wire rule is single-sourced in `resolve_for_wire`.**
+  Every surface must render tiered statistics the same way -- a counted value
+  occupies a key (a counted zero included), a refusal is listed separately with
+  the relay's own code, and a not-asked statistic is omitted entirely, never a
+  zero. Rather than have four surfaces each reimplement that partition (and one
+  of them eventually render a not-asked key as zero), `resolve_for_wire`
+  partitions `TieredStatistic`s into `present` values and `refusals` once. Four
+  tests, mutation-proven, including that `E68` and `E50` both survive distinct.
+
 - **The five failure classifications (ST-S4) are implemented as a vocabulary.**
   `StatisticsOutcome` names the ways an ask for relay statistics does not yield
   a trustworthy value -- `not_configured`, `not_permitted`, `unreachable`,
