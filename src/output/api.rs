@@ -3717,9 +3717,18 @@ mod tests {
             .await,
         )
         .expect("valid JSON");
-        assert_eq!(
-            parsed["caveats"]["media_creating_commands"], before,
-            "the count must be present and complete on an ordinary response: {}",
+        // `>= before`, not `== before`: the tally is process-global and only
+        // grows (no test resets it), so a concurrent note between reading
+        // `before` and the handler reading it again can only raise it. An
+        // `==` here raced exactly that and turned a sibling test's CI run red.
+        // The second half below proves the key is WIRED, not a literal zero.
+        let at_rest = parsed["caveats"]["media_creating_commands"]
+            .as_u64()
+            .expect("declined work is a number on every response");
+        assert!(
+            at_rest >= before,
+            "the count must be present on an ordinary response and cannot have \
+             dropped below {before}: {}",
             parsed["caveats"]
         );
 

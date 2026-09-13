@@ -37,6 +37,18 @@ entry that carries them.
 
 ### Fixed
 
+- **A shared-global statistics tally was tested racily, and it turned CI red.**
+  `recording_commands_do_not_inflate_the_media_tally` read the process-global
+  media-creating counter before and after decoding, but that counter is shared
+  by every test in the binary, so a concurrent test decoding an ordinary-media
+  command moved it between the two reads -- green locally, red in CI under
+  different parallelism. It now asserts the classification `creates(verb)` that
+  gates the counter, not the counter itself. Three lib tests had the same
+  latent race: `ng.rs` reset the global and expected exactly 1 (poisoning every
+  other reader), and `api.rs` asserted an absolute value. Both are monotonic
+  deltas now, and the test-only `reset_media_creating_count` -- the poison
+  source -- is removed.
+
 - **The homepage's section ledes failed a WCAG contrast check, and the
   documentation gate acted on the host.** The two new ledes styled their inline
   links with `$link` on `$text-dim`, 1.79:1, under the 3:1 WCAG 1.4.1 wants for

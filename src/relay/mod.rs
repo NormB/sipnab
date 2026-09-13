@@ -54,12 +54,6 @@ pub fn media_creating_commands_seen() -> u64 {
     MEDIA_CREATING_SEEN.load(Ordering::Relaxed)
 }
 
-/// Reset the counter. Test-only: the tally is process-global.
-#[cfg(test)]
-pub fn reset_media_creating_count() {
-    MEDIA_CREATING_SEEN.store(0, Ordering::Relaxed);
-}
-
 /// Decodes a captured datagram as a relay control message.
 ///
 /// Declared here and implemented BELOW, which is the direction the seam

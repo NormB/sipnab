@@ -306,7 +306,12 @@ mod tests {
     /// RE5: recording and forking commands are counted, never attributed.
     #[test]
     fn a_media_creating_command_is_counted_and_not_attributed() {
-        crate::relay::reset_media_creating_count();
+        // A DELTA, not a reset-and-expect-1. The tally is process-global and
+        // shared with every test in this binary; resetting it poisoned the
+        // other tests that read it, and `== 1` raced any concurrent note.
+        // Reading before/after and asserting growth proves the recording
+        // command was counted without touching what other tests see.
+        let before = crate::relay::media_creating_commands_seen();
         let sdp = "v=0\r\nc=IN IP4 10.0.0.40\r\nm=audio 39000 RTP/AVP 0";
         let raw = format!(
             "ck d7:command15:start recording7:call-id4:cid13:sdp{}:{sdp}e",
@@ -317,9 +322,8 @@ mod tests {
             links.is_empty(),
             "a recording stream is not one of the call's two legs"
         );
-        assert_eq!(
-            crate::relay::media_creating_commands_seen(),
-            1,
+        assert!(
+            crate::relay::media_creating_commands_seen() > before,
             "but the run must be able to SAY it saw one"
         );
     }
