@@ -1563,6 +1563,21 @@ pub struct RtpArgs {
     #[arg(help_heading = "RTP", long = "relay-stats")]
     pub relay_stats: bool,
 
+    /// Ask the relay named by `--rtpengine-control` for its own counters about
+    /// ONE call, by Call-ID (ST7/C2).
+    ///
+    /// The relay's per-call view -- per-stream and per-SSRC packet and byte
+    /// counts, RTP and RTCP totals -- as the relay counts them, `relay_reported`.
+    /// A relay that is not holding the call answers in its own words (rtpengine:
+    /// `Unknown call-id`); sipnab reports that rather than inventing "no such
+    /// call". Same live-source gate as `--relay-stats`.
+    #[arg(
+        help_heading = "RTP",
+        long = "relay-stats-call",
+        value_name = "CALL-ID"
+    )]
+    pub relay_stats_call: Option<String>,
+
     /// Maximum number of RTP streams to track simultaneously.
     #[arg(help_heading = "RTP", long, value_name = "N")]
     pub max_streams: Option<u64>,

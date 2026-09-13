@@ -1145,8 +1145,9 @@ fn report_relay_statistics(cli: &Cli, source: Option<&CaptureSource>) {
     use crate::security::transmit_guard::TransmitPermit;
 
     let permit = source.and_then(TransmitPermit::for_source);
+    let asked = cli.rtp_args.relay_stats || cli.rtp_args.relay_stats_call.is_some();
     let action = relay_stats_action(
-        cli.rtp_args.relay_stats,
+        asked,
         cli.rtp_args.rtpengine_control.as_deref(),
         permit.is_some(),
     );
@@ -1186,11 +1187,20 @@ fn report_relay_statistics(cli: &Cli, source: Option<&CaptureSource>) {
     };
     let client = ControlClient::new(socket, DEFAULT_CONTROL_TIMEOUT);
     let obtained_at = chrono::Utc::now();
-    match client.statistics(&permit) {
+    // Per-call when a Call-ID was named, relay-wide otherwise. Both are the
+    // relay's own counters and render identically; only the fetch and the
+    // label differ.
+    let (fetched, label) = match cli.rtp_args.relay_stats_call.as_deref() {
+        Some(call_id) => (
+            client.call_statistics(&permit, call_id),
+            format!("rtpengine at {addr}, call {call_id}"),
+        ),
+        None => (client.statistics(&permit), format!("rtpengine at {addr}")),
+    };
+    match fetched {
         Ok(crate::relay::types::ControlReply::Statistics(pairs)) => {
             let tiered = crate::stats_vocab::relay_reported(&pairs);
             let wire = crate::stats_vocab::resolve_for_wire(&tiered);
-            let label = format!("rtpengine at {addr}");
             print!(
                 "{}",
                 crate::output::relay_statistics::format_relay_statistics(
@@ -1208,8 +1218,8 @@ fn report_relay_statistics(cli: &Cli, source: Option<&CaptureSource>) {
             // from a down relay, a filtered port or a lost reply, so it claims
             // none of them.
             tracing::error!(
-                "relay at {addr} did not answer --relay-stats ({e}); asked, \
-                 nothing came back."
+                "relay at {addr} did not answer the statistics request ({e}); \
+                 asked, nothing came back."
             );
         }
     }

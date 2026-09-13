@@ -717,6 +717,7 @@ Shortcut flags that expand to predefined filter DSL expressions. See [filter-dsl
 | `--quality-threshold` | `<MOS>` | `3.0` | MOS quality threshold for alerts (1.0-5.0 scale) |
 | `--rtpengine-control` | `<ADDR>` | -- | Ask an rtpengine relay which calls it currently has up, so a capture that started mid-call can still name the dialog behind a stream. **Off unless you give an address**, and the address is never inferred from captured traffic. Only rtpengine's read-only `list` and `query` are reachable from this path — there is no value in the code that means `delete` or `start recording`, so sipnab cannot change a relay's behavior through it. **Not a poller**: it asks at startup, before the capture opens, and again only when a stream turns up that nothing explains — never on a timer. sipnab asks about each relay-side socket at most once for the run, under a per-run ceiling on control transactions that does not grow with the traffic. **Refused on `-I <file>`**: a live relay would answer about calls that are up TODAY, which are not the calls in the capture. Feature: `native` |
 | `--relay-stats` | -- | -- | Ask the relay named by `--rtpengine-control` for its OWN statistics -- packets relayed, sessions, its own loss and jitter -- and print them. They are `relay_reported`: a claim from the box, not a measurement sipnab made, and the header says so. **Same live source `--rtpengine-control` needs**, because asking transmits; on `-I <file>` it prints why it declines to ask rather than asking, and with no `--rtpengine-control` it says to name one. Feature: `native` |
+| `--relay-stats-call` | `<CALL-ID>` | -- | Ask the relay named by `--rtpengine-control` for its own counters about ONE call, by Call-ID: per-stream and per-SSRC packet and byte counts, RTP and RTCP totals, as the relay counts them (`relay_reported`). A relay not holding the call answers in its own words, which sipnab reports rather than inventing a not-found. Same live-source gate as `--relay-stats`. Feature: `native` |
 
 **Examples**
 
@@ -731,6 +732,8 @@ Shortcut flags that expand to predefined filter DSL expressions. See [filter-dsl
 - `sipnab -N -I capture.pcap --rtpengine-control 127.0.0.1:22222` — refused, and says so: reading a file, sipnab never transmits, and the relay's answer would describe today's calls rather than the capture's
 - `sudo sipnab -N -d eth0 --rtpengine-control 127.0.0.1:22222 --relay-stats` — capture live and print the relay's own counters at startup: packets relayed, sessions held, its own loss. The header marks them `relay_reported`, because the relay reports on itself rather than sipnab measuring the wire
 - `sipnab -N -I capture.pcap --relay-stats --rtpengine-control 127.0.0.1:22222` — refused, and says why: asking a relay transmits, and a file-backed run may not, so it prints `not_permitted` rather than talking to an address a capture named
+- `sudo sipnab -N -d eth0 --rtpengine-control 127.0.0.1:22222 --relay-stats-call 1-7@203.0.113.9` — the relay's own packet and byte counts for one call, by Call-ID, `relay_reported`; a header names the call and the moment asked
+- `sipnab -N -I capture.pcap --relay-stats-call 1-7@203.0.113.9 --rtpengine-control 127.0.0.1:22222` — refused on a file run for the same reason the relay-wide form is: asking transmits, so it prints `not_permitted`
 
 
 ## Diagnosis thresholds

@@ -187,3 +187,60 @@ fn a_framed_reply_stripped_as_the_transport_does_then_parses_and_tiers() {
         "all relay_reported"
     );
 }
+
+// ── ST7/C2: the per-call query reply is tiered the same way ────────────────
+
+const QUERY_FIXTURE: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/tests/fixtures/relay/rtpengine-query-12.5.1.bencode"
+);
+
+/// The per-call `query` reply -- captured live for one call -- flattens and
+/// tiers exactly as the relay-wide `statistics` does, through the same path.
+///
+/// `ControlClient::call_statistics` sends `query` and hands the reply to the
+/// same flattener and tierer C1 uses, so this proves that path against a real
+/// per-call reply: every counter `relay_reported`, and the `totals` the relay
+/// keeps per call present and distinct for RTP and RTCP.
+#[test]
+fn a_per_call_query_reply_tiers_as_relay_reported() {
+    let datagram = std::fs::read(QUERY_FIXTURE).expect("the query fixture is readable");
+    let space = datagram
+        .iter()
+        .position(|b| *b == b' ')
+        .expect("the query fixture has a cookie separator");
+    let pairs =
+        match parse_statistics_reply(&datagram[space + 1..]).expect("the query reply parses") {
+            ControlReply::Statistics(pairs) => pairs,
+            other => panic!("the query reply did not flatten to statistics: {other:?}"),
+        };
+    let tiered = relay_reported(&pairs);
+    assert!(
+        tiered.len() >= 100,
+        "a two-party call flattens to ~144 leaves; got {}",
+        tiered.len()
+    );
+    assert!(
+        tiered
+            .iter()
+            .all(|s| s.tier == StatisticTier::RelayReported),
+        "every per-call counter is the relay's own claim"
+    );
+    // The per-call totals the relay keeps, present and kept apart by transport.
+    match lookup(&tiered, "totals.RTP.packets") {
+        StatisticValue::Counted(v) => assert!(v.chars().all(|c| c.is_ascii_digit())),
+        other => panic!("totals.RTP.packets should be a counted figure, got {other:?}"),
+    }
+    assert!(
+        matches!(
+            lookup(&tiered, "totals.RTCP.packets"),
+            StatisticValue::Counted(_)
+        ),
+        "RTCP totals are their own keys, not folded into RTP"
+    );
+    assert_ne!(
+        lookup(&tiered, "totals.RTP.packets"),
+        lookup(&tiered, "totals.RTP.no_such_field"),
+        "a real per-call key and a fake one must not resolve alike"
+    );
+}

@@ -73,3 +73,42 @@ fn the_relay_stats_flag_parses() {
         sipnab::cli::Cli::try_parse_from(["sipnab", "-N", "-I", "x.pcap"]).expect("bare parse");
     assert!(!off.rtp_args.relay_stats, "the flag is off unless given");
 }
+
+/// `--relay-stats-call <CALL-ID>` parses and carries the id; off by default.
+#[test]
+fn the_relay_stats_call_flag_parses_and_carries_the_id() {
+    use clap::Parser;
+    let on = sipnab::cli::Cli::try_parse_from([
+        "sipnab",
+        "-N",
+        "-I",
+        "x.pcap",
+        "--relay-stats-call",
+        "1-7@10.0.0.1",
+    ])
+    .expect("--relay-stats-call parses");
+    assert_eq!(
+        on.rtp_args.relay_stats_call.as_deref(),
+        Some("1-7@10.0.0.1"),
+        "the Call-ID is carried verbatim"
+    );
+    let off = sipnab::cli::Cli::try_parse_from(["sipnab", "-N", "-I", "x.pcap"]).expect("bare");
+    assert!(off.rtp_args.relay_stats_call.is_none(), "off unless given");
+}
+
+/// A per-call ask with a relay and a permit is a fetch, same as the global one:
+/// naming a call does not change whether the run may transmit.
+#[test]
+fn a_per_call_ask_is_gated_like_the_global_one() {
+    // The precondition is the same function; what changes is only WHICH fetch
+    // the report path then runs. Asked with a relay and a permit -> fetch.
+    assert_eq!(
+        relay_stats_action(true, Some("127.0.0.1:22222"), true),
+        RelayStatsAction::Fetch("127.0.0.1:22222".to_owned())
+    );
+    // Asked (per-call) with no permit -> not_permitted, whatever the call.
+    assert_eq!(
+        relay_stats_action(true, Some("127.0.0.1:22222"), false),
+        RelayStatsAction::NotPermitted
+    );
+}

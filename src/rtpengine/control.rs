@@ -660,6 +660,49 @@ impl ControlClient {
     /// # Errors
     ///
     /// When the relay will not answer, or answers something unparseable.
+    /// Ask the relay for its own PER-CALL counters (ST7/C2).
+    ///
+    /// The same `query` a caller uses for attribution, read differently: the
+    /// reply's whole dict is flattened into name/value pairs -- per-stream and
+    /// per-SSRC packet and byte counts, the `totals` split by RTP and RTCP --
+    /// rather than into the tags-and-streams `CallView`. Both are the relay's
+    /// own claim about one call, so both are `relay_reported`; this path is the
+    /// counters, `query` is the topology.
+    ///
+    /// # Errors
+    ///
+    /// When the socket cannot be opened, the exchange fails or times out, or
+    /// the reply does not parse.
+    pub fn call_statistics(
+        &self,
+        _permit: &TransmitPermit,
+        call_id: &str,
+    ) -> anyhow::Result<ControlReply> {
+        let request = ControlRequest::new(
+            ReadOnlyCommand::Query {
+                call_id: call_id.to_owned(),
+            },
+            self.next_seed(),
+        );
+        let body = self.round_trip(&request)?;
+        // The reply is a bencode dict, framed exactly as `statistics`; the same
+        // flattener reads it. A relay that does not hold the call answers
+        // `result: error` / `error-reason: Unknown call-id`, which flattens to
+        // those two pairs rather than to counters -- the caller sees the
+        // relay's own words, not an invented "no such call".
+        parse_statistics_reply(&body)
+    }
+
+    /// Ask the relay for its own counters.
+    ///
+    /// Sent only when something asked. This is the one class of answer sipnab
+    /// cannot derive from the capture -- what the relay itself has handled and
+    /// dropped -- so an API caller or an agent needing it has no other source,
+    /// and a run with no such question sends nothing.
+    ///
+    /// # Errors
+    ///
+    /// When the relay will not answer, or answers something unparseable.
     pub fn statistics(&self, _permit: &TransmitPermit) -> anyhow::Result<ControlReply> {
         let request = ControlRequest::new(ReadOnlyCommand::Statistics, self.next_seed());
         let body = self.round_trip(&request)?;

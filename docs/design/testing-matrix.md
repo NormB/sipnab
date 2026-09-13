@@ -49,7 +49,7 @@ was driving all of them.
 
 | Surface | Rows | `e2e` | `parsed` | `referenced` | `none` |
 |---|---|---|---|---|---|
-| CLI flags | 266 | 139 | 47 | 79 | 1 |
+| CLI flags | 267 | 139 | 49 | 78 | 1 |
 | HTTP routes | 18 | 18 | -- | 0 | 0 |
 | MCP tools | 66 | 66 | -- | 0 | 0 |
 
@@ -57,7 +57,7 @@ was driving all of them.
 
 ## What a person found that the detector could not
 
-The generator understates. Of the 79 flags it could only call
+The generator understates. Of the 78 flags it could only call
 `referenced`, a read of the tests found 65 with a real behavior test --
 evidence that arrives through a config-file equivalent sharing the flag's
 resolver, through a golden file, or through a library-level test, none of
@@ -192,7 +192,8 @@ behind them.
 | `--leg-correlation-window` |  | `MS` | Dialog | referenced | `tests/leg_correlation_window_test.rs` | **behavior** | leg_correlation_window_test.rs strips every other correlation route so only the window can answer |
 | `--active-idle-window` |  | `SECS` | Dialog | e2e | `tests/config_wiring_test.rs` |  |  |
 | `--rtpengine-control` |  | `ADDR` | RTP | e2e | `tests/doc_commands_run_test.rs`, `tests/mcp_protocol_features_test.rs` +1 |  |  |
-| `--relay-stats` |  |  | RTP | referenced | `src/app/bootstrap.rs` |  |  |
+| `--relay-stats` |  |  | RTP | parsed | `tests/relay_stats_cli_test.rs` |  |  |
+| `--relay-stats-call` |  |  | RTP | parsed | `tests/relay_stats_cli_test.rs` |  |  |
 | `--max-streams` |  | `N` | RTP | e2e | `tests/config_wiring_test.rs` |  |  |
 | `--max-lost-sequences` |  | `N` | RTP | referenced | `src/cli.rs` | **behavior** | via config key: probe_max_lost_sequences moves the burst count 333 -> 33 |
 | `--quality-interval` |  | `SECONDS` | RTP | referenced | `src/cli.rs` | **behavior** | via config key: probe_quality_interval_secs moves the snapshot count on a thirty-second capture |

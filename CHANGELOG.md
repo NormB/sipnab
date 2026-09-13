@@ -12,6 +12,15 @@ entry that carries them.
 
 ### Added
 
+- **`--relay-stats-call <CALL-ID>` adds per-call relay statistics (ST7/C2).**
+  The relay's own counters for one call -- per-stream and per-SSRC packet and
+  byte counts, RTP and RTCP totals -- fetched with `query`, flattened and
+  tiered through the same `relay_reported` path the relay-wide form uses, and
+  printed under a header naming the call. A relay not holding the call answers
+  in its own words rather than an invented not-found. Verified live against the
+  harness (138 per-call keys) and pinned by a regression test over a captured
+  per-call reply. Same live-source gate as `--relay-stats`.
+
 - **The CLI can ask a relay for its own statistics: `--relay-stats` (ST7/C1).**
   Given `--rtpengine-control <addr>` and a live source, it fetches the relay's
   `statistics`, tiers every counter `relay_reported`, and prints them under a
