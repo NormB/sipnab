@@ -217,3 +217,112 @@ fn the_code_and_the_catalog_name_the_same_five_outcomes() {
         );
     }
 }
+
+// ── ST-S1 wire resolution: the three-state rule, single-sourced ──────────
+
+use sipnab::stats_vocab::{TieredStatistic, resolve_for_wire};
+
+fn counted(name: &str, v: &str) -> TieredStatistic {
+    TieredStatistic {
+        name: name.to_string(),
+        value: StatisticValue::Counted(v.to_string()),
+        tier: StatisticTier::RelayReported,
+    }
+}
+fn not_asked(name: &str) -> TieredStatistic {
+    TieredStatistic {
+        name: name.to_string(),
+        value: StatisticValue::NotAsked,
+        tier: StatisticTier::RelayReported,
+    }
+}
+fn refused(name: &str, code: &str) -> TieredStatistic {
+    TieredStatistic {
+        name: name.to_string(),
+        value: StatisticValue::Refused(code.to_string()),
+        tier: StatisticTier::RelayReported,
+    }
+}
+
+/// A counted value occupies a key; a counted zero occupies a key too.
+#[test]
+fn a_counted_value_including_zero_is_present_on_the_wire() {
+    let wire = resolve_for_wire(&[
+        counted("npkts_relayed", "9000"),
+        counted("npkts_discard", "0"),
+    ]);
+    assert_eq!(
+        wire.present.len(),
+        2,
+        "both counted values, zero included, are present"
+    );
+    assert!(wire.refusals.is_empty());
+    let discard = wire
+        .present
+        .iter()
+        .find(|v| v.name == "npkts_discard")
+        .expect("present");
+    assert_eq!(
+        discard.value, "0",
+        "a counted zero keeps its value, not omitted"
+    );
+    assert_eq!(discard.tier, StatisticTier::RelayReported);
+}
+
+/// A not-asked statistic is omitted from BOTH lists -- never a zero.
+#[test]
+fn a_not_asked_statistic_is_omitted_not_zeroed() {
+    let wire = resolve_for_wire(&[counted("a", "1"), not_asked("rtpa_nlost")]);
+    assert!(
+        wire.present.iter().all(|v| v.name != "rtpa_nlost"),
+        "a not-asked statistic must not appear as a value: {:?}",
+        wire.present
+    );
+    assert!(
+        wire.refusals.iter().all(|r| r.name != "rtpa_nlost"),
+        "a not-asked statistic is not a refusal either"
+    );
+    assert_eq!(wire.present.len(), 1, "only the counted one occupies a key");
+}
+
+/// A refusal is listed with its code, never as a value.
+#[test]
+fn a_refusal_is_listed_with_its_code_not_as_a_value() {
+    let wire = resolve_for_wire(&[counted("a", "1"), refused("rtpa_nlost", "E68")]);
+    assert!(
+        wire.present.iter().all(|v| v.name != "rtpa_nlost"),
+        "a refusal must not occupy a value key"
+    );
+    assert_eq!(wire.refusals.len(), 1, "the refusal is listed");
+    assert_eq!(wire.refusals[0].name, "rtpa_nlost");
+    assert_eq!(
+        wire.refusals[0].code, "E68",
+        "the relay's own code must travel"
+    );
+}
+
+/// The three states partition cleanly: present + refusals, not-asked in
+/// neither, and a refusal code is never confused with another.
+#[test]
+fn the_three_states_partition_without_collapsing() {
+    let wire = resolve_for_wire(&[
+        counted("counted_zero", "0"),
+        not_asked("absent"),
+        refused("refused_68", "E68"),
+        refused("refused_50", "E50"),
+    ]);
+    assert_eq!(wire.present.len(), 1, "one counted");
+    assert_eq!(wire.refusals.len(), 2, "two refusals");
+    let codes: BTreeSet<&str> = wire.refusals.iter().map(|r| r.code.as_str()).collect();
+    assert_eq!(
+        codes,
+        BTreeSet::from(["E68", "E50"]),
+        "E68 and E50 must both survive, distinct"
+    );
+    // `absent` is in neither list -- the omit-not-zero rule.
+    assert!(
+        wire.present.iter().all(|v| v.name != "absent")
+            && wire.refusals.iter().all(|r| r.name != "absent"),
+        "the not-asked statistic must be omitted from the wire entirely"
+    );
+}

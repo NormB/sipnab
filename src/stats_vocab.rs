@@ -270,3 +270,68 @@ impl StatisticsOutcome {
         }
     }
 }
+
+/// One statistic resolved to a wire VALUE: it occupied a key, and this is what
+/// a surface renders for it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WireValue {
+    /// The source's own name, unaltered.
+    pub name: String,
+    /// The counted value, as the source gave it.
+    pub value: String,
+    /// Which of the three kinds of claim this is.
+    pub tier: StatisticTier,
+}
+
+/// One statistic the source was asked for and REFUSED, with the code it gave.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WireRefusal {
+    /// The statistic's name, so a reader knows which ask was refused.
+    pub name: String,
+    /// The source's own refusal code -- `E68` and `E50` must not be collapsed.
+    pub code: String,
+}
+
+/// Tiered statistics resolved for the wire (ST-S1's three-state rule).
+///
+/// Every surface applies the same rule, so it is single-sourced here rather
+/// than reimplemented four times: a counted value occupies a key (including a
+/// counted zero); a refusal is listed separately with its code, never as a
+/// value; a not-asked statistic is absent from both -- omitted, never rendered
+/// as a zero.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct WireStatistics {
+    /// The statistics that occupy a value key.
+    pub present: Vec<WireValue>,
+    /// The statistics asked for and refused.
+    pub refusals: Vec<WireRefusal>,
+}
+
+/// Partition tiered statistics into present values and refusals, omitting the
+/// not-asked (ST-S1).
+///
+/// This is the rule every surface follows. A consumer that iterated the
+/// statistics itself and rendered each would be the fourth copy of the
+/// three-state logic, and the one most likely to render a not-asked key as a
+/// zero -- the exact failure ST-S1 forbids.
+#[must_use]
+pub fn resolve_for_wire(stats: &[TieredStatistic]) -> WireStatistics {
+    let mut present = Vec::new();
+    let mut refusals = Vec::new();
+    for s in stats {
+        match &s.value {
+            StatisticValue::Counted(v) => present.push(WireValue {
+                name: s.name.clone(),
+                value: v.clone(),
+                tier: s.tier,
+            }),
+            StatisticValue::Refused(code) => refusals.push(WireRefusal {
+                name: s.name.clone(),
+                code: code.clone(),
+            }),
+            // NotAsked occupies neither: omitted, never a zero.
+            StatisticValue::NotAsked => {}
+        }
+    }
+    WireStatistics { present, refusals }
+}
