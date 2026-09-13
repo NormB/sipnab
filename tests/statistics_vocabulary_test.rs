@@ -139,3 +139,81 @@ fn the_code_and_the_spec_name_the_same_three_tiers() {
         );
     }
 }
+
+// ── ST-S4: the five failure classifications ──────────────────────────────
+
+use sipnab::stats_vocab::{Responsibility, StatisticsOutcome};
+
+/// The five classifications carry the snake_case wire names ST-S4 assigns, all
+/// distinct.
+#[test]
+fn the_five_outcomes_carry_the_wire_names_the_catalog_assigns() {
+    use StatisticsOutcome::*;
+    assert_eq!(NotConfigured.as_wire_str(), "not_configured");
+    assert_eq!(NotPermitted.as_wire_str(), "not_permitted");
+    assert_eq!(Unreachable.as_wire_str(), "unreachable");
+    assert_eq!(Refused.as_wire_str(), "refused");
+    assert_eq!(Suspect.as_wire_str(), "suspect");
+    let names: BTreeSet<&str> = StatisticsOutcome::all()
+        .iter()
+        .map(|o| o.as_wire_str())
+        .collect();
+    assert_eq!(
+        names.len(),
+        5,
+        "five outcomes, five distinct names: {names:?}"
+    );
+}
+
+/// The outcome wire names are snake_case, not hyphenated, like the tiers.
+#[test]
+fn the_outcome_wire_names_are_snake_case() {
+    for o in StatisticsOutcome::all() {
+        let name = o.as_wire_str();
+        assert!(!name.contains('-'), "{name:?} is hyphenated");
+        assert!(
+            name.chars().all(|c| c.is_ascii_lowercase() || c == '_'),
+            "{name:?} is not snake_case"
+        );
+    }
+}
+
+/// Each classification points at whose problem it is, per ST-S4's table.
+#[test]
+fn each_outcome_points_at_whose_problem_it_is() {
+    use StatisticsOutcome::*;
+    assert_eq!(NotConfigured.responsibility(), Responsibility::Invocation);
+    assert_eq!(NotPermitted.responsibility(), Responsibility::Invocation);
+    assert_eq!(Unreachable.responsibility(), Responsibility::RelayOrNetwork);
+    assert_eq!(Refused.responsibility(), Responsibility::Request);
+    assert_eq!(Suspect.responsibility(), Responsibility::Answer);
+    // Not vacuous: the five map to more than one responsibility, so a surface
+    // cannot satisfy this by blaming one thing for everything.
+    let kinds: BTreeSet<Responsibility> = StatisticsOutcome::all()
+        .iter()
+        .map(|o| o.responsibility())
+        .collect();
+    assert_eq!(
+        kinds.len(),
+        4,
+        "the five outcomes span four responsibilities"
+    );
+}
+
+/// The code and the ST-S4 spec name the same five classifications.
+#[test]
+fn the_code_and_the_catalog_name_the_same_five_outcomes() {
+    let spec = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/docs/design/relay-statistics-failures.md"
+    ))
+    .expect("the ST-S4 catalog is readable");
+    for o in StatisticsOutcome::all() {
+        let name = o.as_wire_str();
+        assert!(
+            spec.contains(&format!("`{name}`")),
+            "the code produces the outcome `{name}`, which the ST-S4 catalog \
+             never names as a classification -- one of the two drifted"
+        );
+    }
+}
