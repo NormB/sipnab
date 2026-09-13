@@ -37,10 +37,14 @@ const KNOWN_UNTESTED: &[&str] = &[
     // or your environment (root / syslogd / live NIC), not a sandbox test.
 
     // ── Crypto: need a TLS/SRTP/DTLS pcap + matching keys (M5/T5.1 fixtures) ──
-    "keylog-watch",     // live keylog tailing — needs the same + a running source
-    "dtls-keylog",      // DTLS-SRTP key extraction — needs a DTLS pcap
-    "tls-key",          // TLS private-key decrypt — needs TLS-SIP pcap + the key
-    "srtp-keys",        // SRTP decrypt — needs an SRTP pcap + key material
+    "keylog-watch", // live keylog tailing — needs the same + a running source
+    "dtls-keylog",  // DTLS-SRTP key extraction — needs a DTLS pcap
+    "tls-key",      // TLS private-key decrypt — needs TLS-SIP pcap + the key
+    // `srtp-keys` left this list on 2026-09-12, and as with `on-quality-exec`
+    // the reference that retired it is NARROWER than behavior coverage:
+    // `doc_commands_run_test` writes an empty file for the flag and RUNS the
+    // documented command, which references the `--srtp-keys` token. It does
+    // not decrypt anything -- that still needs an SRTP pcap and key material.
     "pcap-export-mode", // encrypted-traffic export mode — pairs with the above
     // ── Root / system services (cannot run in the sandbox) ──────────────────
     // `chroot` was here for needing root to succeed. Its FAILURE path needs no

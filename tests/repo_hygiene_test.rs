@@ -46,15 +46,10 @@ const HOOK_LOG_PREFIX: &str = "sipnab-pre-";
 #[test]
 fn the_git_directory_holds_no_stray_logs() {
     let gitdir = repo().join(".git");
-    let Ok(entries) = std::fs::read_dir(&gitdir) else {
+    if !gitdir.is_dir() {
         return; // a worktree or a bare checkout: nothing to police
-    };
-    let stray: Vec<String> = entries
-        .flatten()
-        .filter_map(|e| e.file_name().into_string().ok())
-        .filter(|n| n.ends_with(".log"))
-        .filter(|n| !n.starts_with(HOOK_LOG_PREFIX))
-        .collect();
+    }
+    let stray = stray_git_files(&gitdir);
     assert!(
         stray.is_empty(),
         ".git/ holds {} stray log(s) that no hook wrote: {stray:?}\n\
@@ -684,6 +679,23 @@ fn the_gate_and_the_cleaner_share_one_definition_of_a_hook_log() {
         "the cleaner does not know the {HOOK_LOG_PREFIX:?} prefix this gate \
          exempts, so the two disagree about what is mess"
     );
+    // And the same list of redirect-target extensions. The gate widening to
+    // `.out` while the cleaner still globbed `*.log` would demand a deletion
+    // the fixer never performs.
+    let line = script
+        .lines()
+        .find(|l| l.starts_with("STRAY_REDIRECT_SUFFIXES = ("))
+        .expect("the cleaner declares STRAY_REDIRECT_SUFFIXES on one line");
+    let theirs: Vec<&str> = regex::Regex::new(r#""(\.[a-z]+)""#)
+        .expect("regex")
+        .captures_iter(line)
+        .map(|c| c.get(1).map_or("", |m| m.as_str()))
+        .collect();
+    assert_eq!(
+        theirs, STRAY_REDIRECT_SUFFIXES,
+        "the gate and the cleaner disagree about which extensions a stray \
+         redirect target has"
+    );
 }
 
 /// Build caches survive when there is room.
@@ -1170,5 +1182,120 @@ fn every_committed_capture_fixture_says_where_it_came_from() {
          Fixtures do not get deleted casually, so this is far more likely to \
          be the directory walk breaking than the tree shrinking.",
         PRE_MANIFEST.len()
+    );
+}
+
+// ── What counts as a stray file in `.git/` ─────────────────────────────
+
+/// The extensions a shell redirect target ends up with.
+///
+/// Mirrored in `scripts/clean-stale.py` as `STRAY_REDIRECT_SUFFIXES`, and
+/// `the_gate_and_the_cleaner_share_one_definition_of_a_hook_log` fails
+/// if the two lists differ. It was `.log` alone until 2026-09-12, when a
+/// background commit wrote `.git/sipnab-bg-commit.log` and the gate caught it
+/// -- and would have missed the identical mistake spelled `bg-commit.out`.
+///
+/// `.txt` is deliberately absent: the pre-commit hook writes
+/// `.git/sipnab-test-wedge-stacks.txt` on purpose, without the hook prefix.
+const STRAY_REDIRECT_SUFFIXES: &[&str] = &[".log", ".out", ".err"];
+
+/// Whether one `.git/` entry is a redirect target nobody owns.
+fn is_stray_git_file(name: &str) -> bool {
+    STRAY_REDIRECT_SUFFIXES.iter().any(|s| name.ends_with(s)) && !name.starts_with(HOOK_LOG_PREFIX)
+}
+
+/// Every stray redirect target directly inside `gitdir`, sorted.
+fn stray_git_files(gitdir: &Path) -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(gitdir) else {
+        return Vec::new();
+    };
+    let mut stray: Vec<String> = entries
+        .flatten()
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_file()))
+        .filter_map(|e| e.file_name().into_string().ok())
+        .filter(|n| is_stray_git_file(n))
+        .collect();
+    stray.sort();
+    stray
+}
+
+/// A redirect target is stray whatever extension it was given.
+#[test]
+fn a_redirect_target_is_stray_whatever_its_extension() {
+    for name in [
+        "sipnab-bg-commit.log", // the file that tripped this gate on 2026-09-12
+        "bg-commit.out",        // the same mistake the old `.log` rule would miss
+        "cargo-test.err",
+    ] {
+        assert!(
+            is_stray_git_file(name),
+            "{name} is a redirect target nobody owns"
+        );
+    }
+}
+
+/// The hooks' own files, and git's, are never called stray.
+#[test]
+fn the_hooks_and_gits_own_files_are_never_called_stray() {
+    for name in [
+        "sipnab-pre-commit-tests.log",
+        "sipnab-pre-commit-tests.live",
+        "sipnab-pre-push-corpus.log",
+        "sipnab-test-wedge-stacks.txt",
+        "COMMIT_EDITMSG",
+        "ORIG_HEAD",
+        "index",
+    ] {
+        assert!(!is_stray_git_file(name), "{name} is owned, not stray");
+    }
+}
+
+/// The scanner, driven against a real directory, reports exactly the strays.
+///
+/// The predicate being right is not the same as the scan applying it. A scan
+/// that filtered on the wrong field, or stopped at the first match, would pass
+/// every predicate test and miss a real file.
+#[test]
+fn the_stray_scan_reports_exactly_the_strays_in_a_real_directory() {
+    let f = Fixture::new("stray_git_scan");
+    for owned in [
+        "sipnab-pre-commit-tests.log",
+        "sipnab-test-wedge-stacks.txt",
+        "COMMIT_EDITMSG",
+    ] {
+        f.write(&format!(".git/{owned}"), "x");
+    }
+    for stray in ["bg-commit.out", "scratch.log", "cargo.err"] {
+        f.write(&format!(".git/{stray}"), "x");
+    }
+    // A directory named like a log is not a file, and is not this rule's.
+    std::fs::create_dir_all(f.root.join(".git/weird.log")).expect("fixture dir");
+    let found = stray_git_files(&f.root.join(".git"));
+    f.discard();
+    assert_eq!(
+        found,
+        vec![
+            "bg-commit.out".to_owned(),
+            "cargo.err".to_owned(),
+            "scratch.log".to_owned()
+        ],
+        "the scan must report every stray file and nothing owned"
+    );
+}
+
+/// With `--apply`, a stray `.out` goes too -- the cleaner acts on the widened rule.
+#[test]
+fn apply_removes_a_stray_out_file_as_well_as_a_log() {
+    let f = Fixture::new("clean_apply_out");
+    f.write(".git/bg-commit.out", "x");
+    f.age(".git/bg-commit.out", 30);
+    let (ok, said) = f.run(&["--apply"]);
+    let gone = !f.exists(".git/bg-commit.out");
+    f.discard();
+    assert!(ok, "the cleaner failed:\n{said}");
+    assert!(
+        gone,
+        "the gate reports a stray `.out` and the cleaner kept it, so the gate \
+         demands a deletion its own fixer will not do:\n{said}"
     );
 }

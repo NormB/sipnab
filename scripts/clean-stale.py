@@ -40,6 +40,13 @@ import time
 # and the cleaner cannot drift into disagreeing about what mess is.
 HOOK_LOG_PREFIX = "sipnab-pre-"
 
+# The extensions a shell redirect target ends up with. `.log` alone until
+# 2026-09-12, when a `.git/sipnab-bg-commit.log` was caught -- and the same
+# mistake spelled `bg-commit.out` would not have been. `.txt` is absent on
+# purpose: the pre-commit hook writes `sipnab-test-wedge-stacks.txt` itself.
+# The gate asserts this line matches its own list.
+STRAY_REDIRECT_SUFFIXES = (".log", ".out", ".err")
+
 # A closed list. Never a glob that could reach a source file: the one mistake
 # this tool must not make is unrecoverable, and every other design choice here
 # is subordinate to that.
@@ -69,14 +76,17 @@ def old_enough(path: pathlib.Path, min_age_days: float) -> bool:
 
 
 def stray_logs(root: pathlib.Path, min_age_days: float) -> list[pathlib.Path]:
-    """`.git/*.log` that no hook wrote."""
+    """`.git/*.log`, `*.out` and `*.err` that no hook wrote."""
     gitdir = root / ".git"
     if not gitdir.is_dir():
         return []
     return sorted(
         p
-        for p in gitdir.glob("*.log")
-        if not p.name.startswith(HOOK_LOG_PREFIX) and old_enough(p, min_age_days)
+        for p in gitdir.iterdir()
+        if p.is_file()
+        and p.name.endswith(STRAY_REDIRECT_SUFFIXES)
+        and not p.name.startswith(HOOK_LOG_PREFIX)
+        and old_enough(p, min_age_days)
     )
 
 

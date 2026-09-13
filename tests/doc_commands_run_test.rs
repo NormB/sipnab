@@ -35,9 +35,11 @@
 
 #![cfg(feature = "full")]
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+
+use clap::CommandFactory;
 
 /// Repository root.
 fn repo() -> &'static Path {
@@ -79,10 +81,13 @@ enum Plan {
     /// loop, or a command substitution feeding the next argument. Running it
     /// would be testing the shell.
     ShellProgram,
-    /// Not run: it would execute a command of its own (`--on-dialog-exec`,
-    /// `--on-quality-exec`) or attach to the kernel (`--uprobe-tls`). A
-    /// documentation gate must not run `curl` at a stranger's endpoint or load
-    /// probes into the machine running the suite.
+    /// Not run: it acts on the HOST. `--on-dialog-exec` / `--on-quality-exec`
+    /// run a command of their own; `--uprobe-tls` attaches to the kernel;
+    /// `--setup-caps` re-invokes through sudo and runs `setcap` on the binary;
+    /// `--wireshark` launches a GUI. A documentation gate must not `curl` a
+    /// stranger's endpoint, load probes, escalate privilege, or open a window
+    /// on whatever machine runs the suite. `--setup-caps` was missed at first,
+    /// and the gate ran `sudo setcap` four times before this caught it.
     SideEffects,
 }
 
@@ -97,7 +102,7 @@ impl Plan {
             Self::ReadsFakeDevice => "runs with a device name that cannot exist",
             Self::Bounded => "runs under a wall-clock bound",
             Self::ShellProgram => "is a shell program, not one invocation",
-            Self::SideEffects => "would exec a command or attach to the kernel",
+            Self::SideEffects => "acts on the host: exec, kernel probe, sudo, or a GUI",
         }
     }
 }
@@ -178,9 +183,10 @@ fn documented_invocations() -> Vec<Invocation> {
 /// exec hook is not run, because the hook is the dangerous half.
 fn classify(cmd: &str) -> Plan {
     // Never run, whatever else it says.
-    let side_effects =
-        regex::Regex::new(r"(^|\s)(--on-[a-z-]+-exec|--uprobe-tls|--uprobe-backend)(\s|=|$)")
-            .expect("regex");
+    let side_effects = regex::Regex::new(
+        r"(^|\s)(--on-[a-z-]+-exec|--uprobe-tls|--uprobe-backend|--setup-caps|--wireshark)(\s|=|$)",
+    )
+    .expect("regex");
     if side_effects.is_match(cmd) {
         return Plan::SideEffects;
     }
@@ -190,8 +196,7 @@ fn classify(cmd: &str) -> Plan {
         return Plan::ShellProgram;
     }
     let serves =
-        regex::Regex::new(r"(^|\s)(--api|--mcp|--metrics-only|-L|--hep-listen|--watch)(\s|=|$)")
-            .expect("regex");
+        regex::Regex::new(r"(^|\s)(--api|--mcp|--metrics|-L|--hep-listen)(\s|=|$)").expect("regex");
     if serves.is_match(cmd) {
         return Plan::Bounded;
     }
@@ -206,7 +211,38 @@ fn classify(cmd: &str) -> Plan {
 /// appear in somebody's `ip link` output, the reason is obvious.
 const FAKE_DEVICE: &str = "sipnab-doc-gate-no-such-device";
 
-/// Drop a trailing shell redirection: it is the shell's argument, not sipnab's.
+/// The one flag in this file that is deliberately NOT a sipnab flag: the probe
+/// `the_usage_error_detector_discriminates` hands the binary to watch clap
+/// refuse it. Held in exactly one place, so the check that every other flag
+/// named here is real can exempt it without exempting anything else.
+const DELIBERATE_NON_FLAG: &str = "--definitely-not-a-flag";
+
+/// Flags whose address sipnab BINDS. Rewritten to `127.0.0.1:0`.
+///
+/// The documentation binds `0.0.0.0:9100`, `0.0.0.0:9060`, `0.0.0.0:8731` --
+/// correct for an operator, and a real listener on every interface of whatever
+/// machine runs this suite, on ports other software already uses.
+const BIND_FLAGS: &[&str] = &["--api", "--mcp-bind", "--metrics", "-L", "--hep-listen"];
+
+/// Flags naming a destination sipnab TRANSMITS to. Rewritten to `127.0.0.1:9`,
+/// the discard port, so nothing leaves the host and no name is resolved.
+///
+/// `--hep-send homer.example.com:9060` resolves a real domain and sends HEP to
+/// it, and `--rtpengine-control` would query any relay a developer happens to
+/// run on the documented port.
+const SEND_FLAGS: &[&str] = &["-H", "--hep-send", "--rtpengine-control"];
+
+/// Flags whose address value only FILTERS what sipnab accepts. Left as the page
+/// wrote them: rewriting an allowlist would test a different command.
+const ADDRESS_FILTER_FLAGS: &[&str] = &["--hep-allow", "--mcp-allowed-host"];
+
+/// Where a bind is sent.
+const LOOPBACK_BIND: &str = "127.0.0.1:0";
+
+/// Where a transmission is sent.
+const LOOPBACK_DISCARD: &str = "127.0.0.1:9";
+
+/// Drop a trailing shell redirection or comment: the shell's, not sipnab's.
 ///
 /// `> report.md`, `2>dtmf.log`, `>> log`, `2>/dev/null`. Only OUTSIDE quotes,
 /// so a `--filter "a > b"` keeps its operator.
@@ -236,6 +272,16 @@ fn strip_redirection(cmd: &str) -> String {
                     chars.next();
                 }
             }
+            // A `#` at a word boundary, outside quotes, begins a shell comment;
+            // the rest of the line is the shell's, not sipnab's. Without this,
+            // `--report  # RFC 2833 / telephone-event` handed sipnab `#`, `RFC`,
+            // `2833`, `/` and the rest as trailing BPF-filter arguments, and the
+            // `/` read as a path escaping the sandbox.
+            (None, '#') if out.is_empty() || out.ends_with(char::is_whitespace) => {
+                while chars.peek().is_some() {
+                    chars.next();
+                }
+            }
             (None, ch) => out.push(ch),
         }
     }
@@ -248,22 +294,15 @@ fn strip_redirection(cmd: &str) -> String {
 /// `ci.sipnablint` is failing on this test's setup rather than on anything the
 /// page got wrong. Named explicitly rather than guessed from the shape of the
 /// value: a list is auditable and a heuristic is not.
+///
+/// Two of the original entries, `--hosts` and `--srtp-key-file`, were never
+/// sipnab flags: typed from memory, and a list is only auditable if something
+/// audits it. `every_flag_this_gate_names_is_one_the_cli_defines` does now.
 const INPUT_FILE_FLAGS: &[&str] = &[
     "--lint-suppress-file",
-    "--hosts",
-    "--srtp-key-file",
+    "--srtp-keys",
     "--keylog",
     "--config",
-];
-
-/// Flags whose value is something this test writes.
-const OUTPUT_PATH_FLAGS: &[&str] = &[
-    "-O",
-    "--output",
-    "--wav-out",
-    "--vcon-out",
-    "--export-vcon-dir",
-    "--mcp-audit-file",
 ];
 
 /// One documented command, ready to run: its argv and the environment the
@@ -274,6 +313,12 @@ const OUTPUT_PATH_FLAGS: &[&str] = &[
 struct Prepared {
     argv: Vec<String>,
     env: Vec<(String, String)>,
+    /// The directory the command runs in: its own, inside the sandbox.
+    ///
+    /// Never the repository. A documented `--run-provenance-file runs.jsonl`
+    /// is a RELATIVE path, and relative to the repository root it wrote beside
+    /// the source on every test run until this existed.
+    cwd: PathBuf,
 }
 
 /// Build the argv actually run, with every substitution this test declares.
@@ -301,19 +346,48 @@ fn prepare(cmd: &str, sandbox: &Path, n: usize) -> Option<Prepared> {
     }
     argv[0] = env!("CARGO_BIN_EXE_sipnab").to_owned();
 
+    let cwd = sandbox.join(format!("cmd-{n}"));
+    std::fs::create_dir_all(&cwd).expect("a per-command directory in the sandbox");
+    let paths = path_flags();
     let fixture = repo().join(FIXTURE).display().to_string();
     for i in 1..argv.len() {
         let prev = argv[i - 1].clone();
         if prev == "-I" || prev == "--input" {
-            if !repo().join(&argv[i]).exists() {
+            // Resolved against the repository and made ABSOLUTE, because the
+            // command no longer runs from the repository root.
+            let in_repo = repo().join(&argv[i]);
+            if !argv[i].starts_with('/') && in_repo.exists() {
+                argv[i] = in_repo.display().to_string();
+            } else {
                 argv[i].clone_from(&fixture);
             }
         } else if INPUT_FILE_FLAGS.contains(&prev.as_str()) {
-            let p = sandbox.join(format!("in-{n}"));
+            let p = cwd.join("input");
             std::fs::write(&p, "").expect("the sandbox is writable");
             argv[i] = p.display().to_string();
-        } else if OUTPUT_PATH_FLAGS.contains(&prev.as_str()) {
-            argv[i] = sandbox.join(format!("out-{n}")).display().to_string();
+        } else if let Some(&is_dir) = paths.get(prev.as_str()) {
+            let in_repo = repo().join(&argv[i]);
+            if !argv[i].starts_with('/') && in_repo.exists() {
+                // A read-only input the repository really has, such as
+                // `--mcp-file-root tests/pcap-samples`.
+                argv[i] = in_repo.display().to_string();
+            } else {
+                // Everything else lands in this command's own directory, by
+                // the file name the page used, so `/var/log/sipnab-mcp.jsonl`
+                // and `./redact-map.json` both stay inside the sandbox.
+                let name = Path::new(&argv[i])
+                    .file_name()
+                    .map_or_else(|| "path".to_owned(), |f| f.to_string_lossy().into_owned());
+                let target = cwd.join(name);
+                if is_dir {
+                    std::fs::create_dir_all(&target).expect("a directory in the sandbox");
+                }
+                argv[i] = target.display().to_string();
+            }
+        } else if BIND_FLAGS.contains(&prev.as_str()) {
+            argv[i] = LOOPBACK_BIND.to_owned();
+        } else if SEND_FLAGS.contains(&prev.as_str()) {
+            argv[i] = LOOPBACK_DISCARD.to_owned();
         } else if prev == "--call-report" || prev == "--export-vcon" {
             argv[i] = FIXTURE_CALL_ID.to_owned();
         } else if prev == "-d" || prev == "--device" {
@@ -332,7 +406,7 @@ fn prepare(cmd: &str, sandbox: &Path, n: usize) -> Option<Prepared> {
     if !argv.iter().any(|a| a == "-N" || a == "--no-tui") {
         argv.push("-N".to_owned());
     }
-    Some(Prepared { argv, env })
+    Some(Prepared { argv, env, cwd })
 }
 
 /// A small POSIX-ish word split: quotes respected, no expansion.
@@ -425,12 +499,12 @@ fn every_documented_command_runs_or_says_why_not() {
         if !plan.is_run() {
             continue;
         }
-        let Some(Prepared { argv, env }) = prepare(&inv.text, &sandbox, n) else {
+        let Some(Prepared { argv, env, cwd }) = prepare(&inv.text, &sandbox, n) else {
             unsplittable.push(inv.clone());
             continue;
         };
         let mut c = Command::new(&argv[0]);
-        c.args(&argv[1..]).current_dir(repo());
+        c.args(&argv[1..]).current_dir(&cwd);
         for (k, v) in env {
             c.env(k, v);
         }
@@ -588,7 +662,7 @@ fn the_never_run_buckets_are_the_dangerous_ones() {
 #[test]
 fn the_usage_error_detector_discriminates() {
     let out = Command::new(env!("CARGO_BIN_EXE_sipnab"))
-        .args(["--definitely-not-a-flag"])
+        .args([DELIBERATE_NON_FLAG])
         .current_dir(repo())
         .output()
         .expect("runnable");
@@ -610,4 +684,523 @@ fn the_usage_error_detector_discriminates() {
         "a perfectly good command was read as a usage error, so this gate would \
          fail on working documentation. stderr was:\n{ok_err}"
     );
+}
+
+// ── The documentation runs somewhere it cannot touch the repository ────
+
+/// The flags whose value is a filesystem path, read from the CLI definition.
+///
+/// Derived rather than listed. The first version of this gate kept a hand list
+/// of six output flags, the documentation used eighteen more, and
+/// `--run-provenance-file runs.jsonl` and `--redact-map ./redact-map.json`
+/// wrote straight into the repository root on every test run -- beside the
+/// source, untracked, and appended to each time. A list only covers the flags
+/// somebody remembered.
+///
+/// `-I` / `--input` is excluded: an input is resolved against the repository
+/// or replaced by the fixture, never sent to the sandbox.
+fn path_flags() -> &'static BTreeMap<String, bool> {
+    static FLAGS: std::sync::OnceLock<BTreeMap<String, bool>> = std::sync::OnceLock::new();
+    FLAGS.get_or_init(derive_path_flags)
+}
+
+/// The walk behind [`path_flags`].
+fn derive_path_flags() -> BTreeMap<String, bool> {
+    let mut out = BTreeMap::new();
+    for arg in sipnab::cli::Cli::command().get_arguments() {
+        let Some(names) = arg.get_value_names() else {
+            continue;
+        };
+        // Split each value name into word tokens and match one exactly.
+        // "PROFILE" contains "FILE" as a substring; it is not a file. A value
+        // name may be `FILE|DIR|GLOB` or `ADDR[:PORT-RANGE]`, so the separators
+        // are every non-letter.
+        let tokens: Vec<String> = names
+            .iter()
+            .flat_map(|n| {
+                n.to_string()
+                    .to_uppercase()
+                    .split(|c: char| !c.is_ascii_alphabetic())
+                    .filter(|t| !t.is_empty())
+                    .map(str::to_owned)
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        let is_path = tokens
+            .iter()
+            .any(|t| matches!(t.as_str(), "FILE" | "DIR" | "PATH" | "OUTPUT"));
+        if !is_path || arg.get_long() == Some("input") {
+            continue;
+        }
+        let is_dir = tokens.iter().any(|t| t == "DIR");
+        if let Some(long) = arg.get_long() {
+            out.insert(format!("--{long}"), is_dir);
+        }
+        if let Some(short) = arg.get_short() {
+            out.insert(format!("-{short}"), is_dir);
+        }
+    }
+    out
+}
+
+/// No argument handed to sipnab names a path outside the sandbox or the
+/// repository's own read-only inputs.
+///
+/// Checked on every runnable documented invocation, so a flag the derivation
+/// misses surfaces here by name instead of as a file somebody finds later in
+/// `/var/log` or the repository root.
+#[test]
+fn no_argument_names_a_path_outside_the_sandbox_or_the_repository() {
+    let sandbox = std::env::temp_dir().join(format!("sipnab-doc-paths-{}", std::process::id()));
+    std::fs::create_dir_all(&sandbox).expect("a sandbox directory");
+    let binary = env!("CARGO_BIN_EXE_sipnab");
+    let mut escapes = Vec::new();
+    let mut checked = 0_usize;
+    for (n, inv) in documented_invocations().iter().enumerate() {
+        if !classify(&inv.text).is_run() {
+            continue;
+        }
+        let Some(p) = prepare(&inv.text, &sandbox, n) else {
+            continue;
+        };
+        checked += 1;
+        if !p.cwd.starts_with(&sandbox) {
+            escapes.push(format!(
+                "{}:{} runs in {}, outside the sandbox",
+                inv.page,
+                inv.line,
+                p.cwd.display()
+            ));
+        }
+        for token in &p.argv[1..] {
+            let value = token.split_once('=').map_or(token.as_str(), |(_, v)| v);
+            if !value.starts_with('/') {
+                continue;
+            }
+            let inside = Path::new(value).starts_with(&sandbox)
+                || Path::new(value).starts_with(repo())
+                || value == binary;
+            if !inside {
+                escapes.push(format!("{}:{} hands sipnab {value}", inv.page, inv.line));
+            }
+        }
+    }
+    let _ = std::fs::remove_dir_all(&sandbox);
+    assert!(checked >= 200, "only {checked} invocation(s) were prepared");
+    assert!(
+        escapes.is_empty(),
+        "{} documented invocation(s) would read or write outside the sandbox \
+         and the repository's inputs:\n{}",
+        escapes.len(),
+        escapes.join("\n")
+    );
+}
+
+/// The path flags come from the CLI, and they include the ones that leaked.
+#[test]
+fn the_path_flags_are_read_from_the_cli_not_listed_by_hand() {
+    let flags = path_flags();
+    assert!(
+        flags.len() >= 25,
+        "only {} path-taking flag(s) derived from the CLI: {:?}. The value-name \
+         scan stopped matching, and everything it misses runs unsandboxed.",
+        flags.len(),
+        flags.keys().collect::<Vec<_>>()
+    );
+    for leaked in [
+        "--run-provenance-file",
+        "--redact-map",
+        "--tui-audit-file",
+        "--mcp-audit-file",
+        "--export-vcon-dir",
+        "--output",
+        "-O",
+    ] {
+        assert!(
+            flags.contains_key(leaked),
+            "{leaked} takes a path and is not in the derived set"
+        );
+    }
+    assert_eq!(
+        flags.get("--export-vcon-dir"),
+        Some(&true),
+        "a DIR flag must be marked as one"
+    );
+    assert!(
+        !flags.contains_key("--input") && !flags.contains_key("-I"),
+        "the input flag is resolved against the repository, never sandboxed"
+    );
+}
+
+/// A documented example that writes a relative file writes it in the sandbox.
+///
+/// The effect, not the argv: the very line that left `runs.jsonl` in the
+/// repository root, run through the same preparation the gate uses.
+#[test]
+fn a_documented_relative_output_lands_in_the_sandbox_not_the_repository() {
+    let doc = std::fs::read_to_string(repo().join("docs/examples.md")).expect("examples.md");
+    let line = doc
+        .lines()
+        .map(str::trim)
+        .find(|l| l.starts_with("sipnab ") && l.contains("--run-provenance-file runs.jsonl"))
+        .expect("docs/examples.md no longer carries the runs.jsonl example this pins");
+
+    let before = std::fs::metadata(repo().join("runs.jsonl"))
+        .ok()
+        .and_then(|m| m.modified().ok());
+    let sandbox = std::env::temp_dir().join(format!("sipnab-doc-relative-{}", std::process::id()));
+    std::fs::create_dir_all(&sandbox).expect("a sandbox directory");
+    let p = prepare(line, &sandbox, 0).expect("the example splits into words");
+    let out = Command::new(&p.argv[0])
+        .args(&p.argv[1..])
+        .current_dir(&p.cwd)
+        .output()
+        .expect("runnable");
+    let written_in_sandbox = std::fs::read_dir(&p.cwd)
+        .map(|d| {
+            d.flatten()
+                .any(|e| e.file_name().to_string_lossy().contains("runs"))
+        })
+        .unwrap_or(false);
+    let after = std::fs::metadata(repo().join("runs.jsonl"))
+        .ok()
+        .and_then(|m| m.modified().ok());
+    let _ = std::fs::remove_dir_all(&sandbox);
+
+    assert!(
+        written_in_sandbox,
+        "the provenance record did not appear in the sandbox. stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        before, after,
+        "running the documented example touched runs.jsonl in the repository \
+         root, which is the defect this exists to prevent"
+    );
+}
+
+// ── Every flag this gate names by hand is one sipnab has ───────────────
+
+/// Every long and short name the CLI accepts, from clap.
+fn cli_flag_names() -> BTreeSet<String> {
+    let mut names = BTreeSet::from(["--help".to_owned(), "--version".to_owned()]);
+    for arg in sipnab::cli::Cli::command().get_arguments() {
+        if let Some(long) = arg.get_long() {
+            names.insert(format!("--{long}"));
+        }
+        if let Some(aliases) = arg.get_all_aliases() {
+            names.extend(aliases.into_iter().map(|a| format!("--{a}")));
+        }
+        if let Some(short) = arg.get_short() {
+            names.insert(format!("-{short}"));
+        }
+    }
+    names
+}
+
+/// Every flag name written inside a string literal in this file's code.
+///
+/// Comments are skipped: prose may discuss a flag that no longer exists. What
+/// the gate actually MATCHES and SUBSTITUTES on is in its literals and regexes,
+/// and that is where five invented names sat.
+fn flag_names_this_file_uses() -> BTreeSet<String> {
+    let src = std::fs::read_to_string(repo().join("tests/doc_commands_run_test.rs"))
+        .expect("this test's own source");
+    let code: String = src
+        .lines()
+        .filter(|l| !l.trim_start().starts_with("//"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let literal = regex::Regex::new(r#"r?"((?:[^"\\]|\\.)*)""#).expect("regex");
+    let long = regex::Regex::new(r"(?:^|[\s|(=\[`])(--[a-z][a-z0-9-]*[a-z0-9])(?:[\s|)=\]`]|$)")
+        .expect("regex");
+    let short = regex::Regex::new(r"(?:^|[\s|(\[`])(-[A-Za-z])(?:[\s|)=\]`]|$)").expect("regex");
+    let mut out = BTreeSet::new();
+    for lit in literal.captures_iter(&code) {
+        let body = lit.get(1).map_or("", |m| m.as_str());
+        for re in [&long, &short] {
+            for c in re.captures_iter(body) {
+                out.insert(c[1].to_owned());
+            }
+        }
+    }
+    out
+}
+
+/// Every flag name this gate matches or substitutes on is one the CLI defines.
+///
+/// The defect this pays for: `--hosts`, `--srtp-key-file`, `--metrics-only`,
+/// `--watch` and `--wav-out` were all in this file, typed from memory, and none
+/// was ever a sipnab flag. A pattern that names a flag nothing accepts matches
+/// nothing, so it failed silently -- and `--metrics`, which does start a
+/// listener, was missing from the server pattern the whole time.
+#[test]
+fn every_flag_this_gate_names_is_one_the_cli_defines() {
+    let real = cli_flag_names();
+    assert!(
+        real.len() >= 150 && real.contains("--input"),
+        "only {} CLI flag name(s) read from clap: the walk is broken",
+        real.len()
+    );
+    let used = flag_names_this_file_uses();
+    assert!(
+        used.contains("--call-report") && used.contains("-O"),
+        "the literal scan found {used:?}, which misses flags this file plainly \
+         uses: it is not reading the code"
+    );
+    let invented: Vec<&String> = used
+        .iter()
+        .filter(|f| f.as_str() != DELIBERATE_NON_FLAG && !real.contains(f.as_str()))
+        .collect();
+    assert!(
+        invented.is_empty(),
+        "this gate names flag(s) sipnab does not have: {invented:?}. A pattern \
+         on a flag nothing accepts matches nothing and says so to nobody."
+    );
+}
+
+/// Every input-file flag takes a path, per the CLI.
+///
+/// Being a real flag is not enough: writing an empty file for a flag whose
+/// value is a mode or a number would hand sipnab a path where it expects
+/// something else, and the refusal would read as a documentation error.
+#[test]
+fn every_input_file_flag_takes_a_path() {
+    let paths = path_flags();
+    for f in INPUT_FILE_FLAGS {
+        assert!(
+            paths.contains_key(*f),
+            "INPUT_FILE_FLAGS names {f}, which the CLI does not declare as \
+             taking a file or directory"
+        );
+    }
+}
+
+/// The only non-flag in this file is the detector's probe, held in one place.
+///
+/// The check above exempts exactly that name. If the exemption could be used
+/// twice, a real typo spelled like a probe would pass it.
+#[test]
+fn the_only_non_flag_in_this_file_is_the_detectors_probe() {
+    let src = std::fs::read_to_string(repo().join("tests/doc_commands_run_test.rs"))
+        .expect("this test's own source");
+    let code: String = src
+        .lines()
+        .filter(|l| !l.trim_start().starts_with("//"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert_eq!(
+        code.matches(&format!("\"{DELIBERATE_NON_FLAG}\"")).count(),
+        1,
+        "{DELIBERATE_NON_FLAG} must be spelled as a literal exactly once -- in \
+         its constant -- so the exemption covers one probe and no typo"
+    );
+    let real = cli_flag_names();
+    let non_flags: Vec<String> = flag_names_this_file_uses()
+        .into_iter()
+        .filter(|f| !real.contains(f))
+        .collect();
+    assert_eq!(
+        non_flags,
+        vec![DELIBERATE_NON_FLAG.to_owned()],
+        "the non-flags named in this file must be exactly the detector's probe"
+    );
+    assert!(
+        !real.contains(DELIBERATE_NON_FLAG),
+        "{DELIBERATE_NON_FLAG} became a real flag, so the detector test would \
+         watch clap ACCEPT it"
+    );
+}
+
+// ── ...and cannot reach the network either ──────────────────────────────
+
+/// Every flag whose value is a network address or host, from clap.
+///
+/// Matched on the value NAME exactly (`ADDR`, `HOST`), not as a substring:
+/// `--mcp-transport <TRANSPORT>` contains "PORT" and is not an address.
+fn address_flags() -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    for arg in sipnab::cli::Cli::command().get_arguments() {
+        let Some(names) = arg.get_value_names() else {
+            continue;
+        };
+        if !names.iter().any(|n| {
+            let n = n.to_string();
+            n == "ADDR" || n == "HOST"
+        }) {
+            continue;
+        }
+        if let Some(long) = arg.get_long() {
+            out.insert(format!("--{long}"));
+        }
+        if let Some(short) = arg.get_short() {
+            out.insert(format!("-{short}"));
+        }
+    }
+    out
+}
+
+/// Every address flag is classified as a bind, a send, or a filter.
+///
+/// The three tables are hand-written because meaning is not in the CLI
+/// definition -- `ADDR` names a bind, a destination and an allowlist alike. So
+/// the tables are audited against clap in both directions: a new address flag
+/// fails here until someone decides what it does, and a table entry that is
+/// not an address flag fails too.
+#[test]
+fn every_address_flag_is_classified_as_a_bind_a_send_or_a_filter() {
+    let derived = address_flags();
+    assert!(
+        derived.contains("--api") && derived.contains("--hep-send") && derived.len() >= 8,
+        "only {} address flag(s) derived from the CLI: {derived:?}",
+        derived.len()
+    );
+    let mut seen = BTreeMap::new();
+    for (table, flags) in [
+        ("BIND_FLAGS", BIND_FLAGS),
+        ("SEND_FLAGS", SEND_FLAGS),
+        ("ADDRESS_FILTER_FLAGS", ADDRESS_FILTER_FLAGS),
+    ] {
+        for f in flags {
+            assert!(
+                derived.contains(*f),
+                "{table} names {f}, which the CLI does not declare as taking an address"
+            );
+            if let Some(other) = seen.insert(*f, table) {
+                panic!("{f} is in both {other} and {table}");
+            }
+        }
+    }
+    let unclassified: Vec<&String> = derived
+        .iter()
+        .filter(|f| !seen.contains_key(f.as_str()))
+        .collect();
+    assert!(
+        unclassified.is_empty(),
+        "these address flags are in no table, so a documented command using one \
+         would run with the page's own address: {unclassified:?}"
+    );
+}
+
+/// No documented command, as run, binds anything but loopback or transmits
+/// anywhere but the discard port.
+#[test]
+fn no_documented_command_binds_publicly_or_transmits_off_the_host() {
+    let sandbox = std::env::temp_dir().join(format!("sipnab-doc-addrs-{}", std::process::id()));
+    std::fs::create_dir_all(&sandbox).expect("a sandbox directory");
+    let mut offenses = Vec::new();
+    let mut addressed = 0_usize;
+    for (n, inv) in documented_invocations().iter().enumerate() {
+        if !classify(&inv.text).is_run() {
+            continue;
+        }
+        let Some(p) = prepare(&inv.text, &sandbox, n) else {
+            continue;
+        };
+        for pair in p.argv.windows(2) {
+            let (flag, value) = (pair[0].as_str(), pair[1].as_str());
+            let expected = if BIND_FLAGS.contains(&flag) {
+                LOOPBACK_BIND
+            } else if SEND_FLAGS.contains(&flag) {
+                LOOPBACK_DISCARD
+            } else {
+                continue;
+            };
+            addressed += 1;
+            if value != expected {
+                offenses.push(format!("{}:{} runs {flag} {value}", inv.page, inv.line));
+            }
+        }
+    }
+    let _ = std::fs::remove_dir_all(&sandbox);
+    assert!(
+        addressed >= 10,
+        "only {addressed} bind or send argument(s) seen across the documentation, \
+         which names at least a dozen: the check is not reaching them"
+    );
+    assert!(
+        offenses.is_empty(),
+        "these documented commands would bind publicly or transmit off the \
+         host when run:\n{}",
+        offenses.join("\n")
+    );
+}
+
+// ── Three defects this gate shipped, each with a test that would have caught it ──
+
+/// A trailing shell comment is not handed to sipnab as arguments.
+///
+/// `sipnab ... --report  # RFC 2833 / telephone-event` ran with `#`, `RFC`,
+/// `2833`, `/` and the rest as trailing BPF-filter positionals, and the bare
+/// `/` read as a path escaping the sandbox. `strip_redirection` drops a `#`
+/// that begins a word, the way the shell does.
+#[test]
+fn a_trailing_shell_comment_is_not_passed_as_arguments() {
+    let stripped =
+        strip_redirection("sipnab -N -I capture.pcap --report  # RFC 2833 / telephone-event");
+    assert_eq!(
+        stripped, "sipnab -N -I capture.pcap --report",
+        "the comment survived into the command line"
+    );
+    // A `#` INSIDE a word (a fragment identifier, say) is not a comment.
+    assert_eq!(
+        strip_redirection("sipnab show-frame cap.pcap#5@abcd"),
+        "sipnab show-frame cap.pcap#5@abcd",
+        "a # mid-word is not a comment and must be kept"
+    );
+    // A `#` inside quotes is literal.
+    assert_eq!(
+        strip_redirection(r#"sipnab --filter "a # b""#),
+        r#"sipnab --filter "a # b""#,
+        "a quoted # is not a comment"
+    );
+}
+
+/// A value-name containing FILE as a substring is not a path flag.
+///
+/// `--capture-profile <PROFILE>` and `--mcp-tools <PROFILE>` take a named
+/// profile, not a path. "PROFILE".contains("FILE") is true, so the first
+/// version of `path_flags` replaced their values with sandbox paths and sipnab
+/// refused `/tmp/.../signaling` and `/tmp/.../core` as invalid profiles.
+#[test]
+fn a_profile_flag_is_not_mistaken_for_a_path() {
+    let paths = path_flags();
+    for not_a_path in ["--capture-profile", "--mcp-tools"] {
+        assert!(
+            !paths.contains_key(not_a_path),
+            "{not_a_path} takes a PROFILE, not a path, but path_flags lists it \
+             -- its value would be replaced with a sandbox path sipnab refuses"
+        );
+    }
+    // The real path flags are still found.
+    for is_a_path in ["--output", "--mcp-file-root", "--run-provenance-file"] {
+        assert!(
+            paths.contains_key(is_a_path),
+            "{is_a_path} is a path flag and went missing"
+        );
+    }
+}
+
+/// A command that escalates privilege or opens a GUI is never run.
+///
+/// `--setup-caps` re-invokes sipnab through sudo and runs `setcap
+/// cap_net_raw,cap_net_admin+ep` on the binary; `--wireshark` launches a GUI.
+/// Both were classified `Reads` at first, and on a host with passwordless sudo
+/// the gate ran `sudo setcap` four times -- granting the debug binary the very
+/// capability whose absence the capture-probe tests then measured.
+#[test]
+fn a_privilege_escalation_or_gui_launch_is_never_run() {
+    for cmd in [
+        "sipnab --setup-caps",
+        "sudo sipnab --setup-caps",
+        "sipnab -N -I capture.pcap --wireshark",
+    ] {
+        assert_eq!(
+            classify(cmd),
+            Plan::SideEffects,
+            "{cmd:?} would be RUN by this gate, and it acts on the host"
+        );
+    }
+    // An ordinary read beside them is not swept up.
+    assert_eq!(classify("sipnab -N -I capture.pcap --report"), Plan::Reads);
 }
