@@ -10,6 +10,19 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Added
+
+- **The last two gating specs are written: ST-S5 and PAR-S1.** ST-S5
+  (`relay-statistics-documentation.md`) says what the docs and site must teach
+  about relay statistics -- per capability, the operator's real question, the
+  command that answers it, and what the answer does NOT tell them, with the
+  tier caveat as half the recipe rather than a footnote. PAR-S1
+  (`surface-parity-definition.md`) defines parity so it can be gated: every
+  capability on every surface it BELONGS on, each surface with a question a
+  capability must pass, and every absence either a gap or a recorded decision.
+  All six statistics specs (ST-S1 through ST-S5) and the parity spec now exist
+  before any of the implementation they gate.
+
 ### Fixed
 
 - **The homepage's section ledes failed a WCAG contrast check, and the
