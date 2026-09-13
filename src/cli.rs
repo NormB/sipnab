@@ -1552,6 +1552,17 @@ pub struct RtpArgs {
     #[arg(help_heading = "RTP", long = "rtpengine-control", value_name = "ADDR")]
     pub rtpengine_control: Option<String>,
 
+    /// Ask the relay named by `--rtpengine-control` for its own statistics and
+    /// print them (ST1/C1).
+    ///
+    /// The counters the relay keeps about ITSELF -- packets relayed, sessions,
+    /// its own loss and jitter. They are `relay_reported`: a claim from the
+    /// box, not a measurement sipnab made, and the output says so. Needs the
+    /// same live source `--rtpengine-control` does, because asking transmits;
+    /// a file-backed run prints why it will not ask rather than asking.
+    #[arg(help_heading = "RTP", long = "relay-stats")]
+    pub relay_stats: bool,
+
     /// Maximum number of RTP streams to track simultaneously.
     #[arg(help_heading = "RTP", long, value_name = "N")]
     pub max_streams: Option<u64>,

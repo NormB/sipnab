@@ -25,8 +25,18 @@ const FIXTURE: &str = concat!(
 
 /// The fixture's pairs, as `parse_statistics_reply` produces them.
 fn fixture_pairs() -> Vec<(String, String)> {
-    let bytes = std::fs::read(FIXTURE).expect("the rtpengine statistics fixture is readable");
-    match parse_statistics_reply(&bytes).expect("the fixture is a valid statistics reply") {
+    let datagram = std::fs::read(FIXTURE).expect("the rtpengine statistics fixture is readable");
+    // The fixture is the raw datagram: `<cookie> <bencode>`. The transport
+    // (`framed_reply_body`) strips and validates the cookie before the parser
+    // sees it, so this mirrors that -- feeding the parser the bencode alone,
+    // exactly what `ControlClient::statistics` passes it. Feeding the whole
+    // datagram was the ST2 defect: it hid that the live path double-stripped.
+    let space = datagram
+        .iter()
+        .position(|b| *b == b' ')
+        .expect("the fixture datagram has a cookie separator");
+    let bencode = &datagram[space + 1..];
+    match parse_statistics_reply(bencode).expect("the fixture is a valid statistics reply") {
         ControlReply::Statistics(pairs) => pairs,
         other => panic!("the fixture did not parse as statistics: {other:?}"),
     }
@@ -114,4 +124,66 @@ fn a_string_typed_integer_survives_as_its_digits() {
         ),
         other => panic!("uptime should be counted, got {other:?}"),
     }
+}
+
+/// The parser decodes the bencode ALONE; the cookie is the transport's job.
+///
+/// The regression for the double-strip: `ControlClient::statistics` hands over
+/// a body whose cookie is already stripped, and the parser must decode it as
+/// is. Feeding it the raw datagram -- cookie still attached -- must now FAIL,
+/// because the cookie is not bencode; a parser that still stripped would parse
+/// it and hide the very defect this pins.
+#[test]
+fn the_parser_decodes_bencode_alone_not_a_framed_datagram() {
+    let datagram = std::fs::read(FIXTURE).expect("fixture readable");
+    let space = datagram
+        .iter()
+        .position(|b| *b == b' ')
+        .expect("a cookie separator");
+    let bencode = &datagram[space + 1..];
+
+    // What the transport yields: bencode alone. Parses.
+    assert!(
+        parse_statistics_reply(bencode).is_ok(),
+        "the parser must accept the cookie-stripped bencode the client passes it"
+    );
+    // The raw datagram, cookie attached: must be refused, proving no re-strip.
+    assert!(
+        parse_statistics_reply(&datagram).is_err(),
+        "the parser must NOT strip a cookie itself; a framed datagram is the \
+         transport's to unwrap, and accepting one would re-hide the double-strip"
+    );
+}
+
+/// Round-trip framing to parse: build a framed reply, strip as the transport
+/// does, parse -- the whole shape the live path takes, without a socket.
+#[test]
+fn a_framed_reply_stripped_as_the_transport_does_then_parses_and_tiers() {
+    let datagram = std::fs::read(FIXTURE).expect("fixture readable");
+    // Re-frame with a different cookie to prove the parser cares only about the
+    // bencode, not which cookie framed it.
+    let space = datagram
+        .iter()
+        .position(|b| *b == b' ')
+        .expect("a cookie separator");
+    let bencode = datagram[space + 1..].to_vec();
+    let reframed = [b"reframed99 ".as_slice(), &bencode].concat();
+
+    let strip_at = reframed.iter().position(|b| *b == b' ').expect("separator");
+    let body = &reframed[strip_at + 1..];
+    let pairs = match parse_statistics_reply(body).expect("parses") {
+        ControlReply::Statistics(p) => p,
+        other => panic!("not statistics: {other:?}"),
+    };
+    let tiered = relay_reported(&pairs);
+    assert!(
+        tiered.len() >= 200,
+        "the reframed reply tiers to the same counters"
+    );
+    assert!(
+        tiered
+            .iter()
+            .all(|s| s.tier == StatisticTier::RelayReported),
+        "all relay_reported"
+    );
 }

@@ -12,6 +12,26 @@ entry that carries them.
 
 ### Added
 
+- **The CLI can ask a relay for its own statistics: `--relay-stats` (ST7/C1).**
+  Given `--rtpengine-control <addr>` and a live source, it fetches the relay's
+  `statistics`, tiers every counter `relay_reported`, and prints them under a
+  header naming the relay, the moment asked, and the tier once. A file-backed
+  run prints why it will not ask (`not_permitted`) and a run with no relay says
+  to name one (`not_configured`) -- the ST-S4 classifications. The decision is
+  a pure, tested function; the fetch was verified end to end against the
+  harness rtpengine, printing its 251 real counters.
+
+### Fixed
+
+- **`parse_statistics_reply` double-stripped the cookie on the live path.** The
+  transport (`framed_reply_body`) already strips and validates the ng cookie,
+  then the parser stripped a cookie again and failed with "no cookie
+  separator" -- so `statistics` never parsed against a real relay. The ST2
+  fixture test masked it by passing the raw datagram, which the spurious strip
+  happened to handle. The parser now decodes the bencode alone; the tests feed
+  it what the transport yields, and two regressions pin that a framed datagram
+  is refused so the strip cannot creep back.
+
 - **A gate that fails the build when a commit attributes an AI.** The user's
   standing rule is that commits carry no assistant co-author, no session link,
   and no "generated with" line; a mid-session instruction has twice injected

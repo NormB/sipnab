@@ -49,7 +49,7 @@ was driving all of them.
 
 | Surface | Rows | `e2e` | `parsed` | `referenced` | `none` |
 |---|---|---|---|---|---|
-| CLI flags | 265 | 134 | 51 | 79 | 1 |
+| CLI flags | 266 | 139 | 47 | 79 | 1 |
 | HTTP routes | 18 | 18 | -- | 0 | 0 |
 | MCP tools | 66 | 66 | -- | 0 | 0 |
 
@@ -83,17 +83,17 @@ behind them.
 
 | Flag | Short | Value | Group | Detected | Where | Audited | What a person found |
 |---|---|---|---|---|---|---|---|
-| `--help` | `-h` |  | Options | e2e | `tests/cli_test.rs` |  |  |
-| `--version` | `-V` |  | Options | e2e | `tests/branch_protection_drift_test.rs`, `tests/cli_test.rs` +4 |  |  |
-| `--device` | `-d` | `IFACE` | Capture | e2e | `tests/cli_flag_behavior_test.rs`, `tests/hep_test.rs` +1 |  |  |
-| `--input` | `-I` |  | Capture | e2e | `tests/analyze_test.rs`, `tests/cli_flag_behavior_test.rs` +56 |  |  |
+| `--help` | `-h` |  | Options | e2e | `tests/cli_test.rs`, `tests/doc_commands_run_test.rs` |  |  |
+| `--version` | `-V` |  | Options | e2e | `tests/branch_protection_drift_test.rs`, `tests/cli_test.rs` +5 |  |  |
+| `--device` | `-d` | `IFACE` | Capture | e2e | `tests/capture_probe_test.rs`, `tests/cli_flag_behavior_test.rs` +3 |  |  |
+| `--input` | `-I` |  | Capture | e2e | `tests/analyze_test.rs`, `tests/cli_flag_behavior_test.rs` +57 |  |  |
 | `--recursive` |  |  | Capture | e2e | `tests/input_set_accounting_test.rs`, `tests/multi_input_test.rs` |  |  |
 | `--input-name` |  | `GLOB` | Capture | e2e | `tests/multi_input_test.rs` |  |  |
-| `--output` | `-O` | `FILE` | Capture | e2e | `tests/cli_flag_behavior_test.rs`, `tests/filter_output_paths_test.rs` +5 |  |  |
+| `--output` | `-O` | `FILE` | Capture | e2e | `tests/cli_flag_behavior_test.rs`, `tests/doc_commands_run_test.rs` +6 |  |  |
 | `--buffer` | `-B` | `MIB` | Capture | parsed | `src/cli.rs` |  |  |
 | `--buffer-budget` |  | `MIB` | Capture | parsed | `src/cli.rs` |  |  |
 | `--snaplen` |  | `BYTES` | Capture | parsed | `src/cli.rs` |  |  |
-| `--capture-profile` |  | `PROFILE` | Capture | parsed | `src/cli.rs` |  |  |
+| `--capture-profile` |  | `PROFILE` | Capture | e2e | `tests/doc_commands_run_test.rs` |  |  |
 | `--limitlen` | `-S` | `BYTES` | Capture | parsed | `src/cli.rs` |  |  |
 | `--no-reassembly` |  |  | Capture | parsed | `src/cli.rs` |  |  |
 | `--quiet-bad-parse` | `-x` |  | Capture | e2e | `tests/tui_e2e_test.rs` |  |  |
@@ -105,17 +105,17 @@ behind them.
 | `--bpf-file` |  | `FILE` | Capture | e2e | `tests/cli_flag_behavior_test.rs` |  |  |
 | `--capture-tunnels` |  |  | Capture | parsed | `src/cli.rs` |  |  |
 | `--count` | `-n` | `N` | Capture | e2e | `tests/cli_flag_behavior_test.rs`, `tests/input_set_accounting_test.rs` +5 |  |  |
-| `--duration` |  | `DURATION` | Capture | e2e | `tests/cli_flag_behavior_test.rs`, `tests/hep_test.rs` +1 |  |  |
+| `--duration` |  | `DURATION` | Capture | e2e | `tests/capture_probe_test.rs`, `tests/cli_flag_behavior_test.rs` +3 |  |  |
 | `--autostop` |  | `CONDITION` | Capture | e2e | `tests/parse_path_test.rs` |  |  |
 | `--split` |  | `CONDITION` | Capture | e2e | `tests/cli_flag_behavior_test.rs`, `tests/output_never_overwrites_input_test.rs` |  |  |
 | `--split-keep` |  | `N` | Capture | e2e | `tests/cli_flag_behavior_test.rs` |  |  |
 | `--replay` |  |  | Capture | e2e | `tests/mcp_stdio_shutdown_test.rs` |  |  |
 | `--pcapng` |  |  | Capture | e2e | `tests/cli_flag_behavior_test.rs`, `tests/integration_test.rs` +2 |  |  |
-| `--no-tui` | `-N` |  | Mode | e2e | `tests/analyze_test.rs`, `tests/cli_flag_behavior_test.rs` +55 |  |  |
+| `--no-tui` | `-N` |  | Mode | e2e | `tests/analyze_test.rs`, `tests/capture_probe_test.rs` +58 |  |  |
 | `--calls-only` | `-c` |  | Mode | e2e | `src/output/event_exec.rs`, `src/security/alerting.rs` +7 |  |  |
 | `--telephone-event` | `-t` |  | Mode | e2e | `tests/dtmf_retransmission_test.rs`, `tests/tui_e2e_test.rs` |  |  |
 | `--dtmf-cleartext` |  |  | Mode | referenced | `tests/dtmf_masking_test.rs` | **behavior** | dtmf_cleartext_emits_the_digit_value_at_debug_level (tests/dtmf_masking_test.rs), with an anti-vacuity guard |
-| `--quiet` | `-q` |  | Mode | e2e | `tests/cli_flag_behavior_test.rs`, `tests/config_wiring_test.rs` +33 |  |  |
+| `--quiet` | `-q` |  | Mode | e2e | `tests/capture_probe_test.rs`, `tests/cli_flag_behavior_test.rs` +36 |  |  |
 | `--resolve` |  |  | Name resolution | e2e | `tests/integration_test.rs` |  |  |
 | `--reverse-dns` |  |  | Name resolution | parsed | `src/cli.rs` |  |  |
 | `--dns-cache-entries` |  | `N` | Name resolution | e2e | `tests/config_wiring_test.rs` |  |  |
@@ -150,7 +150,7 @@ behind them.
 | `--call-report` |  |  | Output | e2e | `tests/cli_flag_behavior_test.rs`, `tests/cli_test.rs` +3 |  |  |
 | `--export-vcon` |  |  | Output | e2e | `tests/vcon_cli_test.rs` |  |  |
 | `--export-vcon-when` |  | `EXPR` | Output | e2e | `tests/filter_alias_parity_test.rs` |  |  |
-| `--export-vcon-dir` |  | `DIR` | Output | e2e | `tests/filter_alias_parity_test.rs` |  |  |
+| `--export-vcon-dir` |  | `DIR` | Output | e2e | `tests/doc_commands_run_test.rs`, `tests/filter_alias_parity_test.rs` |  |  |
 | `--vcon-max-inline-media` |  | `MIB` | Output | parsed | `src/cli.rs` |  |  |
 | `--content-deny-header` |  | `NAME` | Output | parsed | `src/cli.rs` |  |  |
 | `--content-deny-tombstone` |  |  | Output | parsed | `src/cli.rs` |  |  |
@@ -159,7 +159,7 @@ behind them.
 | `--redact` |  |  | Output | parsed | `src/cli.rs` |  |  |
 | `--redact-key-file` |  | `FILE` | Output | referenced | `src/app/batch.rs`, `src/cli.rs` +1 |  |  |
 | `--redact-keep-prefix` |  | `N` | Output | parsed | `src/cli.rs` |  |  |
-| `--redact-map` |  | `FILE` | Output | parsed | `src/cli.rs` |  |  |
+| `--redact-map` |  | `FILE` | Output | e2e | `tests/doc_commands_run_test.rs` |  |  |
 | `--markdown` |  |  | Output | e2e | `tests/analyze_test.rs` |  |  |
 | `--hexdump` |  |  | Output | e2e | `tests/integration_test.rs` |  |  |
 | `--delta-time` |  |  | Output | referenced | `tests/cli_options_test.rs` | **behavior** | golden tests/cli/out/text-delta.trycmd pins relative stamps where the flagless golden pins absolute |
@@ -170,12 +170,12 @@ behind them.
 | `--color` |  | `WHEN` | Output | e2e | `tests/config_wiring_test.rs` |  |  |
 | `--payload-limit` |  | `BYTES` | Output | referenced | `tests/cli_options_test.rs` | **behavior** | payload_limit_truncates_raw_dump: [truncated] appears, User-Agent disappears, against a no-flag baseline |
 | `--text-dump` | `-T` |  | Output | e2e | `tests/cli_flag_behavior_test.rs`, `tests/integration_test.rs` |  |  |
-| `--no-cli-print` |  |  | Output | e2e | `tests/analyze_test.rs`, `tests/cli_flag_behavior_test.rs` +21 |  |  |
-| `--wireshark` |  |  | Output | referenced | `src/cli.rs` | **behavior** | golden tests/cli/out/wireshark.trycmd adds two lines absent from the flagless golden |
+| `--no-cli-print` |  |  | Output | e2e | `tests/analyze_test.rs`, `tests/capture_probe_test.rs` +23 |  |  |
+| `--wireshark` |  |  | Output | referenced | `src/cli.rs`, `tests/doc_commands_run_test.rs` | **behavior** | golden tests/cli/out/wireshark.trycmd adds two lines absent from the flagless golden |
 | `--lint` |  |  | Output | e2e | `tests/config_wiring_test.rs` |  |  |
 | `--lint-fail-on` |  | `SEVERITY` | Output | referenced | `tests/cli_options_test.rs` | **parse-only** | EXIT 3 IS NEVER OBSERVED. The assertion is guarded behind `if findings > 0` and no checked-in capture produces a lint finding |
 | `--lint-max-per-rule` |  | `N` | Output | referenced | `tests/threshold_wiring_test.rs` | **behavior** | lint_max_per_rule_bounds_the_findings_one_rule_prints (tests/threshold_wiring_test.rs); proves the flag can raise the cap |
-| `--lint-suppress-file` |  | `FILE` | Output | parsed | `src/cli.rs` |  |  |
+| `--lint-suppress-file` |  | `FILE` | Output | e2e | `tests/doc_commands_run_test.rs` |  |  |
 | `--lint-no-suppress` |  |  | Output | parsed | `src/cli.rs` |  |  |
 | `--tshark-filter` |  | `EXPR` | Output | referenced | `src/app/batch.rs`, `src/cli.rs` | **behavior** | golden tests/cli/out/tshark-filter.trycmd emits the -Y filter |
 | `--fail2ban` |  |  | Output | e2e | `tests/cli_flag_behavior_test.rs`, `tests/offline_never_transmits_test.rs` |  |  |
@@ -191,7 +191,8 @@ behind them.
 | `--tag` |  | `TAG` | Dialog | e2e | `tests/cli_flag_behavior_test.rs` |  |  |
 | `--leg-correlation-window` |  | `MS` | Dialog | referenced | `tests/leg_correlation_window_test.rs` | **behavior** | leg_correlation_window_test.rs strips every other correlation route so only the window can answer |
 | `--active-idle-window` |  | `SECS` | Dialog | e2e | `tests/config_wiring_test.rs` |  |  |
-| `--rtpengine-control` |  | `ADDR` | RTP | e2e | `tests/mcp_protocol_features_test.rs`, `tests/offline_never_transmits_test.rs` |  |  |
+| `--rtpengine-control` |  | `ADDR` | RTP | e2e | `tests/doc_commands_run_test.rs`, `tests/mcp_protocol_features_test.rs` +1 |  |  |
+| `--relay-stats` |  |  | RTP | referenced | `src/app/bootstrap.rs` |  |  |
 | `--max-streams` |  | `N` | RTP | e2e | `tests/config_wiring_test.rs` |  |  |
 | `--max-lost-sequences` |  | `N` | RTP | referenced | `src/cli.rs` | **behavior** | via config key: probe_max_lost_sequences moves the burst count 333 -> 33 |
 | `--quality-interval` |  | `SECONDS` | RTP | referenced | `src/cli.rs` | **behavior** | via config key: probe_quality_interval_secs moves the snapshot count on a thirty-second capture |
@@ -233,17 +234,17 @@ behind them.
 | `--stir-shaken` |  |  | Security | e2e | `tests/config_wiring_test.rs` |  |  |
 | `--syslog` |  |  | Security | none | -- | **mention-only** | No occurrence anywhere outside comments. Acknowledged in flag_coverage_test's KNOWN_UNTESTED ("requires a syslog daemon") |
 | `--alert-json` |  |  | Security | referenced | `tests/cli_options_test.rs` | **parse-only** | asserts exit 0 on a fixture where no alert fires; set_json_output has one caller and no test |
-| `--run-provenance-file` |  | `FILE` | Security | e2e | `tests/run_provenance_test.rs` |  |  |
-| `--tui-audit-file` |  | `FILE` | Security | e2e | `tests/tui_action_trail_test.rs` |  |  |
+| `--run-provenance-file` |  | `FILE` | Security | e2e | `tests/doc_commands_run_test.rs`, `tests/run_provenance_test.rs` |  |  |
+| `--tui-audit-file` |  | `FILE` | Security | e2e | `tests/doc_commands_run_test.rs`, `tests/tui_action_trail_test.rs` |  |  |
 | `--recommend-block` |  | `DIALECT` | Security | referenced | `src/cli.rs`, `tests/block_recommendation_test.rs` | **behavior** | a_swept_source_gets_a_rule_naming_it and an_established_source_carries_its_counter_evidence (tests/block_recommendation_test.rs) drive the real binary and assert the emitted rule; an_unaccused_capture_recommends_nothing is the anti-vacuity half |
 | `--on-dialog-exec` |  | `CMD` | Event execution | e2e | `tests/cli_flag_behavior_test.rs`, `tests/config_wiring_test.rs` +1 |  |  |
-| `--on-quality-exec` |  | `CMD` | Event execution | referenced | `src/config.rs` | **mention-only** | COMMAND EXECUTION. Every EventExecEngine::new in the corpus passes None for the quality command |
+| `--on-quality-exec` |  | `CMD` | Event execution | referenced | `src/config.rs`, `tests/doc_commands_run_test.rs` | **mention-only** | COMMAND EXECUTION. Every EventExecEngine::new in the corpus passes None for the quality command |
 | `--exec-rate-limit` |  | `N` | Event execution | referenced | `tests/cli_options_test.rs` | **parse-only** | the value's effect is proven only via engine.set_exec_rate_limit(0) called in-test; neither wiring site is asserted |
 | `--exec-queue-depth` |  | `N` | Event execution | referenced | `tests/bootstrap_test.rs` | **behavior** | the_exec_queue_depth_reaches_the_engine_the_plan_builds (tests/bootstrap_test.rs); (spawned, queue_full) moves 2,2 -> 4,0 |
-| `--metrics` |  | `ADDR` | Network listeners | e2e | `tests/config_wiring_test.rs`, `tests/mcp_metrics_wiring_test.rs` +1 |  |  |
+| `--metrics` |  | `ADDR` | Network listeners | e2e | `tests/config_wiring_test.rs`, `tests/doc_commands_run_test.rs` +2 |  |  |
 | `--metrics-auth` |  |  | Network listeners | referenced | `src/cli.rs`, `src/output/prometheus_server.rs` | **mention-only** | CREDENTIAL. Only whole-token occurrences are comments. It passes flag_coverage_test only because --metrics-auth-file contains the string |
 | `--metrics-auth-file` |  | `FILE` | Network listeners | parsed | `src/cli.rs` |  |  |
-| `--api` |  | `ADDR` | Network listeners | e2e | `tests/parse_path_test.rs`, `tests/support/server.rs` |  |  |
+| `--api` |  | `ADDR` | Network listeners | e2e | `tests/doc_commands_run_test.rs`, `tests/parse_path_test.rs` +1 |  |  |
 | `--api-key` |  | `KEY` | Network listeners | referenced | `src/app/bootstrap.rs`, `src/output/api.rs` +5 | **behavior** | auth_accepts_correct_bearer_and_rejects_everything_else (tests/api_test.rs): 200 vs 401 across five shapes |
 | `--api-signing-key` |  | `KEY` | Network listeners | referenced | `src/app/bootstrap.rs`, `src/app/servers.rs` +4 | **behavior** | seven tests in tests/api_token_test.rs: expiry, forgery, tampering, rotation, scope |
 | `--api-signing-key-file` |  | `FILE` | Network listeners | e2e | `tests/cli_flag_behavior_test.rs` |  |  |
@@ -257,24 +258,24 @@ behind them.
 | `--api-rate-limit-per-peer` |  | `N` | Network listeners | referenced | `src/cli.rs` | **behavior** | via config key: probe_api_rate_limit_per_peer counts HTTP 503 refusals from one peer |
 | `--mcp` |  |  | MCP (Model Context Protocol) | e2e | `tests/analyze_test.rs`, `tests/config_wiring_test.rs` +14 |  |  |
 | `--mcp-transport` |  | `TRANSPORT` | MCP (Model Context Protocol) | e2e | `tests/mcp_audit_sink_test.rs`, `tests/mcp_metrics_wiring_test.rs` +5 |  |  |
-| `--mcp-bind` |  | `ADDR` | MCP (Model Context Protocol) | e2e | `tests/mcp_scope_test.rs`, `tests/support/mcp.rs` |  |  |
+| `--mcp-bind` |  | `ADDR` | MCP (Model Context Protocol) | e2e | `tests/doc_commands_run_test.rs`, `tests/mcp_scope_test.rs` +1 |  |  |
 | `--mcp-token` |  | `TOKEN` | MCP (Model Context Protocol) | e2e | `tests/mcp_token_test.rs` |  |  |
 | `--mcp-token-file` |  | `FILE` | MCP (Model Context Protocol) | e2e | `tests/mcp_token_test.rs` |  |  |
 | `--mcp-signing-key` |  | `KEY` | MCP (Model Context Protocol) | e2e | `tests/mcp_scope_test.rs`, `tests/mcp_token_test.rs` |  |  |
 | `--mcp-signing-key-file` |  | `FILE` | MCP (Model Context Protocol) | e2e | `tests/cli_flag_behavior_test.rs`, `tests/mcp_token_rotation_test.rs` |  |  |
 | `--mcp-revoked-file` |  | `FILE` | MCP (Model Context Protocol) | e2e | `tests/mcp_token_test.rs` |  |  |
 | `--mcp-token-ttl` |  | `SECS` | MCP (Model Context Protocol) | e2e | `tests/mcp_token_test.rs` |  |  |
-| `--mcp-audit-file` |  | `FILE` | MCP (Model Context Protocol) | e2e | `tests/mcp_audit_sink_test.rs` |  |  |
+| `--mcp-audit-file` |  | `FILE` | MCP (Model Context Protocol) | e2e | `tests/doc_commands_run_test.rs`, `tests/mcp_audit_sink_test.rs` |  |  |
 | `--mcp-max-concurrent` |  | `N` | MCP (Model Context Protocol) | parsed | `src/cli.rs` |  |  |
-| `--mcp-tools` |  | `PROFILE` | MCP (Model Context Protocol) | e2e | `tests/mcp_tool_profile_test.rs` |  |  |
+| `--mcp-tools` |  | `PROFILE` | MCP (Model Context Protocol) | e2e | `tests/doc_commands_run_test.rs`, `tests/mcp_tool_profile_test.rs` |  |  |
 | `--mcp-max-rows` |  | `N` | MCP (Model Context Protocol) | parsed | `tests/mcp_row_cap_test.rs` |  |  |
 | `--mcp-max-body-bytes` |  | `N` | MCP (Model Context Protocol) | referenced | `src/cli.rs` | **behavior** | via config key: probe_mcp_max_body_bytes changes the search_messages snippet length |
 | `--mcp-max-wait-seconds` |  | `N` | MCP (Model Context Protocol) | referenced | `src/cli.rs`, `src/mcp/tools/await_condition.rs` | **behavior** | via config key: probe_mcp_max_wait_seconds changes the effective await_condition deadline |
 | `--mcp-max-findings` |  | `N` | MCP (Model Context Protocol) | referenced | `src/cli.rs` | **behavior** | via config key: probe_mcp_max_findings changes the remaining budget in save_findings |
 | `--mcp-rate-limit-per-peer` |  | `N` | MCP (Model Context Protocol) | e2e | `tests/mcp_stdio_test.rs` |  |  |
-| `--mcp-allowed-host` |  | `HOST` | MCP (Model Context Protocol) | e2e | `tests/mcp_token_test.rs` |  |  |
+| `--mcp-allowed-host` |  | `HOST` | MCP (Model Context Protocol) | e2e | `tests/doc_commands_run_test.rs`, `tests/mcp_token_test.rs` |  |  |
 | `--mcp-resource-url` |  | `URL` | MCP (Model Context Protocol) | referenced | `src/mcp/transport.rs`, `tests/mcp_http_test.rs` |  |  |
-| `--mcp-file-root` |  | `DIR` | MCP (Model Context Protocol) | e2e | `tests/mcp_completeness_test.rs`, `tests/mcp_completion_test.rs` +4 |  |  |
+| `--mcp-file-root` |  | `DIR` | MCP (Model Context Protocol) | e2e | `tests/doc_commands_run_test.rs`, `tests/mcp_completeness_test.rs` +5 |  |  |
 | `--mcp-evidence-ring` |  | `MIB` | MCP (Model Context Protocol) | parsed | `src/cli.rs` |  |  |
 | `--mcp-sampling-budget` |  | `PER_HOUR` | MCP (Model Context Protocol) | referenced | `src/mcp/sampling.rs`, `tests/mcp_sampling_wiring_test.rs` |  |  |
 | `--mcp-allow-shutdown` |  |  | MCP (Model Context Protocol) | e2e | `tests/mcp_diagnostic_tools_test.rs`, `tests/mcp_elicitation_test.rs` |  |  |
@@ -299,8 +300,8 @@ behind them.
 | `--mos-bad` |  | `MOS` | Analysis | referenced | `src/cli.rs` | **behavior** | same test, case mos_bad: MOS 3.5 moves Warning -> Bad |
 | `--rtt-warn-ms` |  | `MS` | Analysis | referenced | `src/cli.rs` | **behavior** | same test, case rtt_warn_ms |
 | `--rtt-bad-ms` |  | `MS` | Analysis | referenced | `src/cli.rs` | **behavior** | same test, case rtt_bad_ms |
-| `--hep-listen` | `-L` | `ADDR` | HEP | e2e | `tests/cli_flag_behavior_test.rs`, `tests/config_wiring_test.rs` +3 |  |  |
-| `--hep-send` | `-H` | `ADDR` | HEP | e2e | `tests/hep_send_file_export_test.rs`, `tests/hep_test.rs` |  |  |
+| `--hep-listen` | `-L` | `ADDR` | HEP | e2e | `tests/cli_flag_behavior_test.rs`, `tests/config_wiring_test.rs` +4 |  |  |
+| `--hep-send` | `-H` | `ADDR` | HEP | e2e | `tests/doc_commands_run_test.rs`, `tests/hep_send_file_export_test.rs` +1 |  |  |
 | `--hep-send-transport` |  |  | HEP | parsed | `src/cli.rs` |  |  |
 | `--hep-listen-transport` |  |  | HEP | parsed | `src/cli.rs` |  |  |
 | `--hep-tls-ca` |  | `FILE` | HEP | parsed | `src/cli.rs` |  |  |
@@ -312,16 +313,16 @@ behind them.
 | `--hep-auth-mode` |  |  | HEP | e2e | `tests/hep_test.rs` |  |  |
 | `--hep-hmac-window` |  | `SECS` | HEP | e2e | `tests/hep_test.rs` |  |  |
 | `--hep-parse` | `-E` |  | HEP | e2e | `tests/cli_flag_behavior_test.rs` |  |  |
-| `--hep-allow` |  | `ADDR` | HEP | e2e | `tests/config_wiring_test.rs`, `tests/hep_test.rs` |  |  |
+| `--hep-allow` |  | `ADDR` | HEP | e2e | `tests/config_wiring_test.rs`, `tests/doc_commands_run_test.rs` +1 |  |  |
 | `--hep-rate-limit` |  | `N` | HEP | e2e | `tests/hep_test.rs` |  |  |
 | `--hep-rate-limit-per-peer` |  |  | HEP | e2e | `tests/config_wiring_test.rs` |  |  |
 | `--tls-key` | `-k` | `FILE` | TLS / Decryption | referenced | `src/app/batch.rs`, `src/app/bootstrap.rs` | **behavior** | DECRYPTION MATERIAL. A real TLS 1.2 GCM record decrypts back to a REGISTER. The flag's file-load hop (RsaKey::from_pem_file) is untested |
-| `--keylog` |  | `FILE` | TLS / Decryption | parsed | `src/cli.rs` |  |  |
+| `--keylog` |  | `FILE` | TLS / Decryption | e2e | `tests/doc_commands_run_test.rs` |  |  |
 | `--keylog-fd` |  | `N` | TLS / Decryption | parsed | `src/cli.rs` |  |  |
 | `--keylog-watch` |  |  | TLS / Decryption | referenced | `src/app/batch.rs`, `src/app/bootstrap.rs` | **mention-only** | DECRYPTION. The live keylog poll and the late-decrypt hold have no test tying them to the flag. CHANGELOG records a prior regression here |
 | `--tls-lockon-window` |  | `RECORDS` | TLS / Decryption | parsed | `tests/cli_defaults_test.rs` |  |  |
 | `--dtls-keylog` |  | `FILE` | TLS / Decryption | referenced | `src/app/batch.rs`, `src/app/bootstrap.rs` +1 | **behavior** | DECRYPTION MATERIAL. Split proof: parse -> extract -> an SRTP packet decrypts. The file-load hop is untested |
-| `--srtp-keys` |  | `FILE` | TLS / Decryption | referenced | `src/app/batch.rs`, `src/app/bootstrap.rs` +1 | **behavior** | DECRYPTION MATERIAL. Key-file parsing and decryption both tested, with a wrong-key negative. The file-load hop is untested |
+| `--srtp-keys` |  | `FILE` | TLS / Decryption | e2e | `tests/doc_commands_run_test.rs` | **behavior** | DECRYPTION MATERIAL. Key-file parsing and decryption both tested, with a wrong-key negative. The file-load hop is untested |
 | `--pcap-export-mode` |  | `MODE` | TLS / Decryption | referenced | `src/app/bootstrap.rs` | **parse-only** | Three tests assert the string->enum mapping. No test writes a file in two modes and compares |
 | `--allow-coredump` |  |  | TLS / Decryption | referenced | `src/privilege.rs`, `tests/cli_options_test.rs` | **parse-only** | SAFETY SWITCH. Its smoke test runs on a capture with NO key material, so the code it guards never executes either way |
 | `--uprobe-tls` |  |  | TLS / Decryption | parsed | `tests/uprobe_cli_test.rs` |  |  |
@@ -343,7 +344,7 @@ behind them.
 | `--mint-token` |  |  | Token minting | e2e | `tests/cli_flag_behavior_test.rs`, `tests/mcp_token_test.rs` |  |  |
 | `--token-id` |  | `ID` | Token minting | e2e | `tests/cli_flag_behavior_test.rs`, `tests/mcp_token_test.rs` |  |  |
 | `--token-scope` |  | `SCOPE` | Token minting | e2e | `tests/cli_flag_behavior_test.rs` |  |  |
-| `--config` | `-f` | `FILE` | Config | e2e | `tests/cli_flag_behavior_test.rs`, `tests/config_test.rs` +1 |  |  |
+| `--config` | `-f` | `FILE` | Config | e2e | `tests/cli_flag_behavior_test.rs`, `tests/config_test.rs` +2 |  |  |
 | `--no-config` | `-F` |  | Config | e2e | `tests/config_test.rs`, `tests/config_wiring_test.rs` +2 |  |  |
 | `--dump-config` | `-D` |  | Config | e2e | `tests/cli_flag_behavior_test.rs`, `tests/config_test.rs` +1 |  |  |
 | `--completions` |  | `SHELL` | Config | referenced | `tests/cli_help_test.rs` | **behavior** | completions_emit_scripts_for_each_shell runs the real binary for bash/zsh/fish; unknown shell exits 2 |

@@ -1093,6 +1093,128 @@ pub struct ReadyReconciler {
     pub permit: TransmitPermit,
 }
 
+/// What `--relay-stats` should do, decided from the flag and the run's context.
+///
+/// Pure, so the decision is tested without a relay or a socket: the fetch that
+/// follows a `Fetch` is the only part that transmits.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RelayStatsAction {
+    /// Not asked for.
+    Skip,
+    /// Asked, but no relay was named to ask -- `--rtpengine-control` absent.
+    /// Maps to ST-S4's `not_configured`.
+    NotConfigured,
+    /// Asked, a relay named, but this run may not transmit (a file-backed run).
+    /// Maps to ST-S4's `not_permitted`.
+    NotPermitted,
+    /// Fetch statistics from the relay at this address.
+    Fetch(String),
+}
+
+/// Decide what `--relay-stats` does from whether it was asked, whether a relay
+/// was named, and whether this run may transmit.
+///
+/// The order is deliberate: no relay is reported before no permit, because an
+/// operator who named no relay has a different fix (name one) than one whose
+/// run cannot transmit (capture live).
+#[must_use]
+pub fn relay_stats_action(
+    asked: bool,
+    relay_addr: Option<&str>,
+    may_transmit: bool,
+) -> RelayStatsAction {
+    if !asked {
+        return RelayStatsAction::Skip;
+    }
+    match relay_addr {
+        None => RelayStatsAction::NotConfigured,
+        Some(_) if !may_transmit => RelayStatsAction::NotPermitted,
+        Some(addr) => RelayStatsAction::Fetch(addr.to_owned()),
+    }
+}
+
+/// Ask the relay for its own statistics and print them, when `--relay-stats`
+/// was given (ST1/C1).
+///
+/// The pure decision is [`relay_stats_action`]; this performs it. A `Fetch`
+/// transmits, so it is reached only with a permit in hand, and its result is
+/// tiered `relay_reported`, resolved to the three-state wire form, and printed
+/// through the CLI's statistics formatter.
+fn report_relay_statistics(cli: &Cli, source: Option<&CaptureSource>) {
+    use crate::rtpengine::control::{ControlClient, DEFAULT_CONTROL_TIMEOUT};
+    use crate::security::transmit_guard::TransmitPermit;
+
+    let permit = source.and_then(TransmitPermit::for_source);
+    let action = relay_stats_action(
+        cli.rtp_args.relay_stats,
+        cli.rtp_args.rtpengine_control.as_deref(),
+        permit.is_some(),
+    );
+    let addr = match action {
+        RelayStatsAction::Skip => return,
+        RelayStatsAction::NotConfigured => {
+            tracing::error!(
+                "--relay-stats needs a relay to ask. Name one with \
+                 --rtpengine-control <addr>, for example \
+                 --rtpengine-control 127.0.0.1:22222."
+            );
+            return;
+        }
+        RelayStatsAction::NotPermitted => {
+            tracing::error!(
+                "--relay-stats will not ask a relay on a run that reads a file: \
+                 asking transmits, and a file's addresses are historical and \
+                 belong to third parties. Ask from a live capture (-d <device>)."
+            );
+            return;
+        }
+        RelayStatsAction::Fetch(addr) => addr,
+    };
+    let Some(permit) = permit else {
+        // Unreachable: `Fetch` is only produced when `permit.is_some()`.
+        return;
+    };
+    let socket = match addr.parse::<std::net::SocketAddr>() {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::error!(
+                "--rtpengine-control {addr} is not an address and port ({e}); \
+                 nothing was asked."
+            );
+            return;
+        }
+    };
+    let client = ControlClient::new(socket, DEFAULT_CONTROL_TIMEOUT);
+    let obtained_at = chrono::Utc::now();
+    match client.statistics(&permit) {
+        Ok(crate::relay::types::ControlReply::Statistics(pairs)) => {
+            let tiered = crate::stats_vocab::relay_reported(&pairs);
+            let wire = crate::stats_vocab::resolve_for_wire(&tiered);
+            let label = format!("rtpengine at {addr}");
+            print!(
+                "{}",
+                crate::output::relay_statistics::format_relay_statistics(
+                    &wire,
+                    &label,
+                    obtained_at
+                )
+            );
+        }
+        Ok(other) => {
+            tracing::error!("relay at {addr} answered {other:?}, not statistics");
+        }
+        Err(e) => {
+            // ST-S4 `unreachable`: over UDP, a timeout is indistinguishable
+            // from a down relay, a filtered port or a lost reply, so it claims
+            // none of them.
+            tracing::error!(
+                "relay at {addr} did not answer --relay-stats ({e}); asked, \
+                 nothing came back."
+            );
+        }
+    }
+}
+
 /// Everything `--rtpengine-control` produced during launch.
 #[derive(Default)]
 pub struct RelayControl {
@@ -1257,6 +1379,10 @@ pub fn launch(
     // source the caller planned is not always the one that opened, and asking
     // the relay is exactly as gated as any other transmit.
     let relay = relay_startup_snapshot(cli, Some(&source));
+
+    // `--relay-stats`: print the relay's own counters, gated exactly as the
+    // snapshot above is. Prints and returns; the run proceeds.
+    report_relay_statistics(cli, Some(&source));
 
     // 14. Create the packet channel: a capped, auto-shrinking queue. Occupancy
     //     grows under load up to the cap and the (unbounded) storage frees its

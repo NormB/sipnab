@@ -30,7 +30,7 @@
 /// consumers already parse. `crate::relay_vocab`'s `media-relay` keeps its
 /// hyphen because it is a different, already-shipped field; this vocabulary is
 /// new and chooses the convention its neighbors use.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum StatisticTier {
     /// What rtpengine or rtpproxy says about ITSELF, obtained by asking it. A
     /// claim from a box that may have restarted, and whose control plane may or

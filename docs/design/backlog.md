@@ -250,7 +250,7 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
   silently negates most of CT2's benefit on exactly the busy servers CT2
   targets, and because it makes `-B` advice misleading until fixed.
   **Done:** immediate mode is now a decision, not a constant.
-  `immediate_mode_for(mode)` ([`src/app/bootstrap.rs:2531`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L2531)) is
+  `immediate_mode_for(mode)` ([`src/app/bootstrap.rs:2664`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L2664)) is
   `matches!(mode, RunMode::Tui)` and is the only place that answers the
   question; `bootstrap.rs:537` assigns its result to
   `CaptureConfig::immediate_mode`, and [`src/capture/live.rs:219-220`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L219-L220) passes that
@@ -822,7 +822,7 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
   reconstruction path is offline-only. Cheap, and it removes a silent
   expectation mismatch on exactly the busy-server workload where someone would
   reach for it. **Done:** `cores_ignored_warning`
-  ([`src/app/bootstrap.rs:3012`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L3012)) returns the message and the reason —
+  ([`src/app/bootstrap.rs:3145`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L3145)) returns the message and the reason —
   `--multi-device` opens one capture per interface, or the run captures live
   rather than reading a saved file — and `bootstrap.rs:492` warns with it.
   Warned rather than refused, because the run is correct, just single-threaded,
@@ -1707,7 +1707,7 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
   truncation breaks `--retain-audio`/WAV export and Opus decode (they need RTP
   payload, not just headers), and it degrades `-O` pcap re-emit to truncated
   frames. **Two of three "Do:" items are done, and this line claimed neither
-  until 2026-08-06.** `snaplen_truncation_warning` ([`src/app/bootstrap.rs:3219`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L3219),
+  until 2026-08-06.** `snaplen_truncation_warning` ([`src/app/bootstrap.rs:3352`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L3352),
   tagged `(CT3)`) warns when a truncating snaplen feeds `-O`; a matching
   `snaplen_audio_retention_warning` now warns when it feeds `--retain-audio`
   instead, since that path is retained *audio*, not a re-emitted pcap, and

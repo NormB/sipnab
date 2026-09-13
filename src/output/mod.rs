@@ -55,6 +55,7 @@ pub mod prometheus;
 pub mod prometheus_server;
 #[cfg(any(feature = "api", feature = "mcp", feature = "vcon"))]
 pub mod redact;
+pub mod relay_statistics;
 pub mod run_integrity;
 pub mod runtime;
 pub mod sink;

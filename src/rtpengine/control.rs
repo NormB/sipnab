@@ -361,11 +361,14 @@ fn flatten_bencode(
 ///
 /// When the body is not a dictionary at all.
 pub fn parse_statistics_reply(body: &[u8]) -> anyhow::Result<ControlReply> {
-    // The body is `<cookie> <bencode>`, the same framing every ng reply uses.
-    let Some(sep) = body.iter().position(|&b| b == b' ') else {
-        anyhow::bail!("statistics reply has no cookie separator");
-    };
-    let decoded = crate::rtpengine::bencode::decode(&body[sep + 1..])
+    // `body` is the BENCODE alone. The cookie and its space are the transport's
+    // framing, stripped and VALIDATED by `framed_reply_body` before this is
+    // called -- so this decodes from the front and does not strip again. It
+    // did strip a cookie once, which double-stripped the live path (the client
+    // hands over an already-framed body) while a test that passed the raw
+    // datagram masked it: the reply then decoded fine because the spurious
+    // strip removed the cookie the test had left on.
+    let decoded = crate::rtpengine::bencode::decode(body)
         .map_err(|e| anyhow::anyhow!("statistics reply is not bencode: {e}"))?;
     let mut pairs: Vec<(String, String)> = Vec::new();
     flatten_bencode("", &decoded, &mut pairs);
