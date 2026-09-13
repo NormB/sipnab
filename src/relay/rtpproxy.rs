@@ -459,3 +459,58 @@ pub fn interpret(command: &RtpproxyControl, reply: &RtpproxyControl) -> Option<M
         },
     })
 }
+
+/// Statistics from an `I` (info) reply's free text (ST3).
+///
+/// rtpproxy's `I` answers five `label: value` lines -- `sessions created: 0`,
+/// `active sessions`, `active streams`, `packets received`, `packets
+/// transmitted`. `decode_reply` keeps the whole body as `Reply::Text` because
+/// its lines are not a promised wire grammar; ST-S2 recorded them as the
+/// documented shape, so THIS is where that documented shape is read, and
+/// nowhere in the decoder that must stay grammar-agnostic.
+///
+/// The label is kept exactly as the relay wrote it, spaces and all: it is the
+/// relay's own name, and `active sessions` has no `G` identifier at all, so
+/// there is nothing to normalize it to. A line without a `: ` is skipped
+/// rather than guessed at.
+#[must_use]
+pub fn info_statistics(reply_text: &str) -> Vec<(String, String)> {
+    reply_text
+        .lines()
+        .filter_map(|line| line.split_once(':'))
+        .map(|(label, value)| (label.trim().to_string(), value.trim().to_string()))
+        .filter(|(label, value)| !label.is_empty() && !value.is_empty())
+        .collect()
+}
+
+/// The five positional per-session counters of a `Q` reply (ST3).
+///
+/// `Q` answers `ttl npkts_ina npkts_ino nrelayed ndropped` as five
+/// space-separated integers -- the order is the binary's own format string,
+/// recorded in ST-S2 and corroborated by `nrelayed == npkts_ina + npkts_ino`
+/// on a live call. A reply that is not exactly five integer fields is REFUSED
+/// (`None`): labeling fewer or more by these names would name a counter from
+/// whatever sat in the position, the mistake the decoder already refuses
+/// elsewhere.
+#[must_use]
+pub fn query_statistics(reply_text: &str) -> Option<Vec<(String, String)>> {
+    const FIELDS: [&str; 5] = ["ttl", "npkts_ina", "npkts_ino", "nrelayed", "ndropped"];
+    let values: Vec<&str> = reply_text.split_whitespace().collect();
+    // Exactly five, every one an integer, or nothing. Fewer or more, or a
+    // non-numeric field, means this is not the positional Q reply and naming
+    // the fields would invent a schema.
+    if values.len() != FIELDS.len()
+        || !values
+            .iter()
+            .all(|v| !v.is_empty() && v.bytes().all(|b| b.is_ascii_digit()))
+    {
+        return None;
+    }
+    Some(
+        FIELDS
+            .iter()
+            .zip(values.iter())
+            .map(|(name, v)| ((*name).to_string(), (*v).to_string()))
+            .collect(),
+    )
+}

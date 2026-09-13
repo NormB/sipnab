@@ -12,6 +12,20 @@ entry that carries them.
 
 ### Added
 
+- **ST3 is implemented: the statistics rtpproxy reports, in the same tier
+  vocabulary.** `info_statistics` reads an `I` reply's five `label: value`
+  lines into the relay's own labels, kept verbatim -- `active streams` has no
+  `G` identifier to normalize to -- and skips any line that is not
+  `label: value`, empty sides included. `query_statistics` names a `Q` reply's
+  five positional fields `ttl npkts_ina npkts_ino nrelayed ndropped`, in the
+  binary's own order, and REFUSES any reply that is not exactly five integers
+  rather than labeling a counter from whatever sat in the position. Both feed
+  the same `relay_reported` tierer rtpengine's statistics do -- one adapter,
+  both relays, because RP2 forbids a second relay becoming a second code path.
+  The reply shapes are inline literals captured from the harness rtpproxy, and
+  the `Q` test checks the identity `nrelayed == npkts_ina + npkts_ino` that
+  ST-S2 used to confirm the field order.
+
 - **ST2 is implemented: a relay's own statistics, tiered and kept by name.**
   `relay_reported` turns the `(name, value)` pairs rtpengine's `statistics`
   already yields into `TieredStatistic`s -- every one `relay_reported` and
