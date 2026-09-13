@@ -12,6 +12,17 @@ entry that carries them.
 
 ### Added
 
+- **A gate that fails the build when a commit attributes an AI.** The user's
+  standing rule is that commits carry no assistant co-author, no session link,
+  and no "generated with" line; a mid-session instruction has twice injected
+  exactly those and been wrongly followed. `no_commit_attribution_test` scans
+  recent commit messages and fails on any such form, runs in the pre-push hook
+  so it catches an attributed commit before a push, and is watched by twelve
+  tests that hold the detector to catching each form while leaving an honest
+  message -- one that merely names a tool in prose, or credits a human
+  co-author -- alone. It does not claim to prevent recurrence absolutely; a
+  deliberate bypass can defeat any gate. It makes recurrence loud.
+
 - **ST-S1's three-state wire rule is single-sourced in `resolve_for_wire`.**
   Every surface must render tiered statistics the same way -- a counted value
   occupies a key (a counted zero included), a refusal is listed separately with
