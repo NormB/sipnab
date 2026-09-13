@@ -250,7 +250,7 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
   silently negates most of CT2's benefit on exactly the busy servers CT2
   targets, and because it makes `-B` advice misleading until fixed.
   **Done:** immediate mode is now a decision, not a constant.
-  `immediate_mode_for(mode)` ([`src/app/bootstrap.rs:2664`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L2664)) is
+  `immediate_mode_for(mode)` ([`src/app/bootstrap.rs:2832`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L2832)) is
   `matches!(mode, RunMode::Tui)` and is the only place that answers the
   question; `bootstrap.rs:537` assigns its result to
   `CaptureConfig::immediate_mode`, and [`src/capture/live.rs:219-220`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L219-L220) passes that
@@ -1707,7 +1707,7 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
   truncation breaks `--retain-audio`/WAV export and Opus decode (they need RTP
   payload, not just headers), and it degrades `-O` pcap re-emit to truncated
   frames. **Two of three "Do:" items are done, and this line claimed neither
-  until 2026-08-06.** `snaplen_truncation_warning` ([`src/app/bootstrap.rs:3382`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L3382),
+  until 2026-08-06.** `snaplen_truncation_warning` ([`src/app/bootstrap.rs:3520`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L3520),
   tagged `(CT3)`) warns when a truncating snaplen feeds `-O`; a matching
   `snaplen_audio_retention_warning` now warns when it feeds `--retain-audio`
   instead, since that path is retained *audio*, not a re-emitted pcap, and
@@ -5850,9 +5850,11 @@ apart in the first place (see PAR).
   forbids. The tool transmits, so it stays behind the existing permit.
 
 - [ ] **ST7 — CLI flags for all three tiers.** IN PROGRESS: C1 landed
-  (`--relay-stats`, global counters), C2 (`--relay-stats-call`, per-call) and C3
-  (`--relay-stats-list`, the names a relay knows) landed, each verified live
-  against the harness. C4 compare, C5 poll, and the 50-test minimum remain.
+  (`--relay-stats`, global counters), C2 (`--relay-stats-call`, per-call), C3
+  (`--relay-stats-list`, the names a relay knows) and C4 (`--relay-compare`,
+  relay vs capture) landed, each verified live against the harness. C4's live
+  run surfaced the relay-hairpin double count and the note now names it; C4 also
+  keeps zero and absent distinct (ST9). C5 poll and the 50-test minimum remain.
   50 tests minimum. Includes the
   output shapes: a human-readable form and a machine-readable one that agree,
   since a number that differs between `--json` and the table is a defect nobody
@@ -6604,7 +6606,7 @@ class recur:
   speaks", and [`docs/mcp-tools.md`](https://github.com/NormB/sipnab/blob/main/docs/mcp-tools.md) described the two as taking one vocabulary.
   They do not: `--filter` runs `expand_alias` first
   ([`src/app/bootstrap.rs:2157`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L2157)) and `vcon_selection`
-  ([`src/app/batch.rs:5602`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L5602)) parses raw. The doc claim is corrected;
+  ([`src/app/batch.rs:5625`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L5625)) parses raw. The doc claim is corrected;
   the behavior is not, and the flag is the one that is wrong -- reusing the
   filter language is the stated design, and ten `DIAGNOSTIC_ALIASES` are part
   of that language.

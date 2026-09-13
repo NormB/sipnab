@@ -49,7 +49,7 @@ was driving all of them.
 
 | Surface | Rows | `e2e` | `parsed` | `referenced` | `none` |
 |---|---|---|---|---|---|
-| CLI flags | 268 | 139 | 50 | 78 | 1 |
+| CLI flags | 269 | 139 | 51 | 78 | 1 |
 | HTTP routes | 18 | 18 | -- | 0 | 0 |
 | MCP tools | 66 | 66 | -- | 0 | 0 |
 
@@ -195,6 +195,7 @@ behind them.
 | `--relay-stats` |  |  | RTP | parsed | `tests/relay_stats_cli_test.rs` |  |  |
 | `--relay-stats-call` |  |  | RTP | parsed | `tests/relay_stats_cli_test.rs` |  |  |
 | `--relay-stats-list` |  |  | RTP | parsed | `tests/relay_stats_cli_test.rs` |  |  |
+| `--relay-compare` |  |  | RTP | parsed | `tests/relay_stats_cli_test.rs` |  |  |
 | `--max-streams` |  | `N` | RTP | e2e | `tests/config_wiring_test.rs` |  |  |
 | `--max-lost-sequences` |  | `N` | RTP | referenced | `src/cli.rs` | **behavior** | via config key: probe_max_lost_sequences moves the burst count 333 -> 33 |
 | `--quality-interval` |  | `SECONDS` | RTP | referenced | `src/cli.rs` | **behavior** | via config key: probe_quality_interval_secs moves the snapshot count on a thirty-second capture |

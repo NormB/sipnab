@@ -71,7 +71,7 @@ open, and it is what decides whether the remote viewer shows a MOS at all.
 ([`stream_store.rs:925`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L925)) files a report only
 against a stream whose SSRC it has already seen from the media itself — a
 report for an unknown SSRC records nothing, which `rtcp_unknown_ssrc_is_noop`
-([`stream_store.rs:4124`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L4124)) pins. So a
+([`stream_store.rs:4149`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L4149)) pins. So a
 viewer fed by HEP alone decodes every RTCP report and can show no quality figure
 for any of them. Received RTCP reaches the MOS delay term (`MosDelay::resolve`,
 [`quality.rs:605`](https://github.com/NormB/sipnab/blob/main/src/rtp/quality.rs#L605)) only when the same

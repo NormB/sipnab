@@ -3605,6 +3605,23 @@ impl BatchRunner {
             }
         }
 
+        // 21b. --relay-compare <CALL-ID>: the relay's own per-call RTP count
+        //      beside what sipnab measured (ST7 / C4). Here, not at startup,
+        //      because sipnab's measured tally is only final once the capture
+        //      has drained; the relay is asked once, now. `handle.source` is
+        //      still readable after the thread join above (a partial move of
+        //      `handle.thread`), and it, not `cli`, is what the transmit permit
+        //      derives from -- the same source the capture actually opened.
+        if let Some(call_id) = cli.rtp_args.relay_compare.as_deref() {
+            let ss_guard = stream_store.read();
+            crate::app::bootstrap::report_relay_comparison(
+                &cli,
+                &handle.source,
+                call_id,
+                &ss_guard,
+            );
+        }
+
         // 21z. --lint: run the RFC conformance linter over every dialog (#147).
         //
         // The linter shipped reachable only over MCP, which put the project's

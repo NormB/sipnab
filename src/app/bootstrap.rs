@@ -1245,6 +1245,144 @@ fn report_relay_statistics(cli: &Cli, source: Option<&CaptureSource>) {
     }
 }
 
+/// Compare the relay's own per-call RTP packet count against sipnab's
+/// measurement, and print it (ST7 / C4).
+///
+/// Runs AFTER capture, from the post-capture section of `batch::run`, when
+/// sipnab's measured tally for the call is final; the relay is asked once, now.
+/// It gates exactly like `report_relay_statistics` -- naming a call does not
+/// change whether the run may transmit -- and reuses [`relay_stats_action`] for
+/// that decision, since asking the relay is what transmits.
+///
+/// The comparison is a comparison, never an aggregate: sipnab's count and the
+/// relay's `totals.RTP.packets` are shown side by side, each labeled with its
+/// tier, and the two are never summed. A relay that does not hold the call, or
+/// a reply with no per-call RTP total, is reported as an unavailable relay side
+/// rather than compared against a fabricated zero -- the ST-S4 discipline: zero
+/// and absent are different answers.
+pub fn report_relay_comparison(
+    cli: &Cli,
+    source: &CaptureSource,
+    call_id: &str,
+    stream_store: &crate::rtp::stream_store::StreamStore,
+) {
+    use crate::rtpengine::control::{ControlClient, DEFAULT_CONTROL_TIMEOUT};
+    use crate::security::transmit_guard::TransmitPermit;
+    use crate::stats_vocab::{
+        CompareOutcome, StatisticValue, lookup, ready_comparison, relay_reported,
+    };
+
+    let permit = TransmitPermit::for_source(source);
+    let action = relay_stats_action(
+        true,
+        cli.rtp_args.rtpengine_control.as_deref(),
+        permit.is_some(),
+    );
+    let addr = match action {
+        RelayStatsAction::Skip => return,
+        RelayStatsAction::NotConfigured => {
+            tracing::error!(
+                "--relay-compare needs a relay to ask. Name one with \
+                 --rtpengine-control <addr>."
+            );
+            return;
+        }
+        RelayStatsAction::NotPermitted => {
+            tracing::error!(
+                "--relay-compare will not ask a relay on a run that reads a file: \
+                 asking transmits. Compare from a live capture (-d <device>)."
+            );
+            return;
+        }
+        RelayStatsAction::Fetch(addr) => addr,
+    };
+    let Some(permit) = permit else {
+        return; // Unreachable: `Fetch` implies `permit.is_some()`.
+    };
+    let socket = match addr.parse::<std::net::SocketAddr>() {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::error!("--rtpengine-control {addr} is not an address and port ({e}).");
+            return;
+        }
+    };
+
+    // sipnab's own side, from the RTP it actually captured for the call. A
+    // stream is created only when a packet arrives, so a call with any linked
+    // stream has measured >= 1; NO linked stream means sipnab captured no RTP
+    // for this call -- absent, NOT a measured zero (ST9). The two must not
+    // render the same, so the absent case travels as `None`, never `Some(0)`.
+    let sipnab_side = if stream_store.streams_for(call_id).next().is_some() {
+        Some(stream_store.measured_packet_count_for(call_id))
+    } else {
+        None
+    };
+
+    let client = ControlClient::new(socket, DEFAULT_CONTROL_TIMEOUT);
+    let obtained_at = chrono::Utc::now();
+    let label = format!("rtpengine at {addr}");
+
+    match client.call_statistics(&permit, call_id) {
+        Ok(crate::relay::types::ControlReply::Statistics(pairs)) => {
+            let tiered = relay_reported(&pairs);
+            // The call-level RTP total, both directions, as the relay counts
+            // it. Absent when the relay does not hold the call (rtpengine
+            // answers `Unknown call-id`, which carries no `totals.RTP.packets`).
+            let relay_side = match lookup(&tiered, "totals.RTP.packets") {
+                StatisticValue::Counted(s) => s.parse::<u64>().ok(),
+                _ => None,
+            };
+            match ready_comparison(relay_side, sipnab_side) {
+                CompareOutcome::Compared(comparison) => print!(
+                    "{}",
+                    crate::output::relay_statistics::format_relay_comparison(
+                        &comparison,
+                        call_id,
+                        &label,
+                        obtained_at
+                    )
+                ),
+                CompareOutcome::SipnabHasNoRtp { relay_value } => {
+                    // The call IS on the relay, but sipnab captured no media for
+                    // it. Most often the capture filter: sipnab's default is
+                    // SIP-only, so RTP on the relay's media ports never reached
+                    // the parser. Say that rather than showing 0 vs a big number.
+                    tracing::warn!(
+                        "relay at {addr} reports {relay_value} RTP packet(s) for call \
+                         {call_id}, but sipnab captured no RTP for it, so there is nothing \
+                         to compare. If you expected media, widen the capture filter to \
+                         include the RTP ports -- the default filter is SIP-only."
+                    );
+                }
+                CompareOutcome::RelayDoesNotHoldCall { sipnab_value } => {
+                    tracing::warn!(
+                        "sipnab measured {sipnab_value} RTP packet(s) for call {call_id}, \
+                         but relay at {addr} does not hold it, so there is nothing from the \
+                         relay to compare against."
+                    );
+                }
+                CompareOutcome::NeitherSide => {
+                    tracing::warn!(
+                        "neither does relay at {addr} hold call {call_id} nor did sipnab \
+                         capture RTP for it; nothing to compare."
+                    );
+                }
+            }
+        }
+        Ok(other) => {
+            tracing::error!("relay at {addr} answered {other:?}, not per-call statistics");
+        }
+        Err(e) => {
+            let measured = sipnab_side.unwrap_or(0);
+            tracing::error!(
+                "relay at {addr} did not answer the per-call statistics request for \
+                 call {call_id} ({e}); sipnab measured {measured} RTP packet(s), but the \
+                 relay's side did not arrive."
+            );
+        }
+    }
+}
+
 /// Everything `--rtpengine-control` produced during launch.
 #[derive(Default)]
 pub struct RelayControl {

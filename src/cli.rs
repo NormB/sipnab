@@ -1590,6 +1590,20 @@ pub struct RtpArgs {
     #[arg(help_heading = "RTP", long = "relay-stats-list")]
     pub relay_stats_list: bool,
 
+    /// Compare the relay's own RTP packet count for ONE call against what
+    /// sipnab measured on the wire (ST7/C4).
+    ///
+    /// The one place two tiers meet in one answer, and it is a comparison,
+    /// never a sum: the relay's `totals.RTP.packets` for the call
+    /// (`relay_reported`) beside sipnab's own count of the RTP packets it
+    /// captured for it (`sipnab_measured`), both shown, both labeled, with a
+    /// word verdict and a note. The two count different sockets over different
+    /// windows, so an ordinary gap is not a relay fault -- the note says so.
+    /// Runs after capture, when sipnab's tally is final. Same live-source gate
+    /// as `--relay-stats`.
+    #[arg(help_heading = "RTP", long = "relay-compare", value_name = "CALL-ID")]
+    pub relay_compare: Option<String>,
+
     /// Maximum number of RTP streams to track simultaneously.
     #[arg(help_heading = "RTP", long, value_name = "N")]
     pub max_streams: Option<u64>,

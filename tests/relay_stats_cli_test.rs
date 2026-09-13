@@ -149,3 +149,46 @@ fn a_list_ask_is_gated_like_the_global_one() {
         "listing on a file-backed run may not transmit"
     );
 }
+
+/// `--relay-compare <CALL-ID>` parses and carries the id; off by default (C4).
+#[test]
+fn the_relay_compare_flag_parses_and_carries_the_id() {
+    use clap::Parser;
+    let on = sipnab::cli::Cli::try_parse_from([
+        "sipnab",
+        "-N",
+        "-I",
+        "x.pcap",
+        "--relay-compare",
+        "1-9@10.0.0.1",
+    ])
+    .expect("--relay-compare parses");
+    assert_eq!(
+        on.rtp_args.relay_compare.as_deref(),
+        Some("1-9@10.0.0.1"),
+        "the Call-ID is carried verbatim"
+    );
+    let off = sipnab::cli::Cli::try_parse_from(["sipnab", "-N", "-I", "x.pcap"]).expect("bare");
+    assert!(off.rtp_args.relay_compare.is_none(), "off unless given");
+}
+
+/// A compare ask is gated exactly like the global one: comparing asks the relay
+/// for its side, and asking transmits, so a file-backed run may not.
+#[test]
+fn a_compare_ask_is_gated_like_the_global_one() {
+    assert_eq!(
+        relay_stats_action(true, Some("10.0.0.2:22222"), true),
+        RelayStatsAction::Fetch("10.0.0.2:22222".to_owned()),
+        "asked, a relay named, a permit: fetch the relay's side"
+    );
+    assert_eq!(
+        relay_stats_action(true, None, true),
+        RelayStatsAction::NotConfigured,
+        "comparing with no relay named is not_configured"
+    );
+    assert_eq!(
+        relay_stats_action(true, Some("10.0.0.2:22222"), false),
+        RelayStatsAction::NotPermitted,
+        "comparing on a file-backed run may not transmit"
+    );
+}

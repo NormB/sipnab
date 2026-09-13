@@ -17,7 +17,7 @@
 
 use chrono::{DateTime, Utc};
 
-use crate::stats_vocab::{NameSource, StatisticTier, WireStatistics};
+use crate::stats_vocab::{NameSource, StatisticTier, TierComparison, WireStatistics};
 
 /// The width the name column is padded to, so values line up.
 const NAME_WIDTH: usize = 44;
@@ -113,5 +113,41 @@ pub fn format_relay_stat_names(
     for name in names {
         out.push_str(&format!("  {name}\n"));
     }
+    out
+}
+
+/// Render a relay-vs-capture comparison as a text block (ST7 / C4).
+///
+/// A comparison, never an aggregate: both figures are shown on their own line
+/// with their own tier named, the verdict is a word, and the note travels
+/// beneath so the caveat is not dropped at the CLI. The two counts are never
+/// summed or differenced here -- the reader sees both and judges the gap.
+#[must_use]
+pub fn format_relay_comparison(
+    comparison: &TierComparison,
+    call_id: &str,
+    relay_label: &str,
+    obtained_at: DateTime<Utc>,
+) -> String {
+    let stamp = obtained_at.format("%Y-%m-%dT%H:%M:%SZ");
+    let relay_name = comparison.relay.name.as_deref().unwrap_or("RTP packets");
+    let mut out = format!(
+        "Relay vs capture for call {call_id} ({relay_label}, asked {stamp}) — {}\n",
+        comparison.verdict.as_wire_str()
+    );
+    out.push_str(&format!(
+        "  {:<NAME_WIDTH$} {}  [{} {}]\n",
+        "relay",
+        comparison.relay.value,
+        comparison.relay.tier.as_wire_str(),
+        relay_name,
+    ));
+    out.push_str(&format!(
+        "  {:<NAME_WIDTH$} {}  [{}]\n",
+        "sipnab",
+        comparison.sipnab.value,
+        comparison.sipnab.tier.as_wire_str(),
+    ));
+    out.push_str(&format!("  note: {}\n", comparison.note));
     out
 }

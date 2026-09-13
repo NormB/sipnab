@@ -12,6 +12,21 @@ entry that carries them.
 
 ### Added
 
+- **`--relay-compare <CALL-ID>` compares a relay's per-call count against
+  sipnab's own (ST7/C4).** The one place two tiers meet in one answer, and it is
+  a comparison, never a sum: the relay's `totals.RTP.packets` for the call
+  (`relay_reported`) beside sipnab's count of the RTP it captured for it
+  (`sipnab_measured`), both shown and labeled, with a word verdict and a
+  direction-aware note. `ready_comparison` keeps zero and absent distinct
+  (ST9): a relay that does not hold the call, or a call sipnab captured no RTP
+  for, is reported as absent, never compared against a made-up zero. The note
+  explains a gap in the direction it occurred -- an undercount points at
+  `capture_health`; an overcount names the relay hairpin, where a capture
+  seeing both sides counts each packet twice. Runs after capture, when
+  sipnab's tally is final. Verified live against the harness (relay 1998 vs
+  sipnab 3980 across 4 streams -- the hairpin doubling the note now names).
+  Same live-source gate as `--relay-stats`.
+
 - **`--relay-stats-list` lists which statistics a relay knows (ST7/C3).**
   The key set is version-specific, so "what can I ask for?" is a real question:
   without it a caller learns a name is absent only by asking for it and failing.

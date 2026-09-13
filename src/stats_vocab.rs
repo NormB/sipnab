@@ -242,6 +242,172 @@ impl NameSource {
     }
 }
 
+/// One side of a tier comparison: a counted whole number at a named tier (C4).
+///
+/// The relay side carries the source's own key name (`totals.RTP.packets`) so
+/// the reader knows which counter the relay's figure came from; sipnab's side
+/// has no such name because it is a measurement, not a reported key.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ComparedFigure {
+    /// The count, as a whole number. Both sides count RTP packets for one call.
+    pub value: u64,
+    /// The source's own name for the figure, where it has one.
+    pub name: Option<String>,
+    /// Which kind of claim this figure is.
+    pub tier: StatisticTier,
+}
+
+/// The verdict of comparing two tiers -- a WORD, never a number (ST-S1).
+///
+/// The difference between a relay's count and sipnab's is not itself a
+/// statistic: the two count different sockets over different windows, so
+/// `relay - sipnab` describes nothing. The verdict says only whether they agree.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ComparisonVerdict {
+    /// The two counts are equal.
+    Match,
+    /// The two counts are not equal. An ordinary difference is not a relay
+    /// fault, which is why the comparison carries a note and not just this word.
+    Differ,
+}
+
+impl ComparisonVerdict {
+    /// The wire spelling, matching ST-S3's example (`differ`).
+    #[must_use]
+    pub const fn as_wire_str(self) -> &'static str {
+        match self {
+            Self::Match => "match",
+            Self::Differ => "differ",
+        }
+    }
+}
+
+/// A comparison of the SAME quantity across two tiers (ST7 / C4).
+///
+/// The one place two tiers appear in one answer, and it is a comparison, never
+/// an aggregate: both figures are shown, both tiers are named, the verdict is a
+/// word, and the note explains that an ordinary difference is not a relay fault.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TierComparison {
+    /// What the relay reported about itself.
+    pub relay: ComparedFigure,
+    /// What sipnab measured from the packets it captured.
+    pub sipnab: ComparedFigure,
+    /// Whether the two counts agree.
+    pub verdict: ComparisonVerdict,
+    /// Why a difference is ordinary, in the operator's words. Not decoration: a
+    /// bare "differ" sends an operator to the relay first, and the usual cause
+    /// is not there.
+    pub note: String,
+}
+
+/// Compare a relay's reported count against sipnab's measured count (C4).
+///
+/// The verdict is exact: equal is a match, anything else differs. There is no
+/// tolerance band, because a band would be a policy number sipnab does not
+/// have; both raw counts travel and the operator judges the gap. The note
+/// states the direction of a gap in prose and names its ordinary causes, but
+/// never computes `relay - sipnab` as a value -- the cross-tier arithmetic
+/// ST-S1's [`blends_tiers`] forbids stays out of the data, and the reader
+/// subtracts the two shown figures themselves if they want to.
+#[must_use]
+pub fn compare_relay_and_sipnab(relay: ComparedFigure, sipnab: ComparedFigure) -> TierComparison {
+    let verdict = if relay.value == sipnab.value {
+        ComparisonVerdict::Match
+    } else {
+        ComparisonVerdict::Differ
+    };
+    let note = match verdict {
+        ComparisonVerdict::Match => {
+            format!("the relay and sipnab agree at {} RTP packets", relay.value)
+        }
+        // The note is direction-aware, because the ordinary causes are opposite.
+        // sipnab BELOW the relay is an undercount -- packets that never reached
+        // the capture point. sipnab ABOVE the relay is an overcount -- most
+        // often a capture that sees BOTH sides of the relay hairpin, counting
+        // each relayed packet twice (arriving, then leaving). A single note
+        // listing only undercount causes would misexplain the second case,
+        // which is the common one when capturing a relay's own segment.
+        ComparisonVerdict::Differ if sipnab.value < relay.value => "sipnab counted fewer; it \
+             measures only the RTP that reached its capture point, so an ordinary gap is not a \
+             relay fault -- a capture on a mirror port under load undercounts, a relay restart \
+             mid-call zeroes its counters, and a window that does not line up differs for \
+             neither's fault. capture_health says whether this run dropped any packets."
+            .to_string(),
+        ComparisonVerdict::Differ => "the relay counted fewer; a capture that sees both sides of \
+             a relay counts each packet more than once -- once arriving at the relay and once \
+             leaving it -- so a point upstream AND downstream of the relay reads about twice \
+             the relay's own count. A window that does not line up or a relay restart mid-call \
+             also gaps them. To compare like for like, capture one leg, or read the relay's \
+             per-stream counts."
+            .to_string(),
+    };
+    TierComparison {
+        relay,
+        sipnab,
+        verdict,
+        note,
+    }
+}
+
+/// The outcome of readying a C4 comparison, once each side's availability is
+/// known (ST9: zero and absent are different answers).
+///
+/// A side is `Some(n)` when it produced a real count -- including a real zero --
+/// and `None` when it produced nothing to compare: a relay that does not hold
+/// the call, or a capture that measured no RTP for it. The three non-`Compared`
+/// arms exist so an absent side is never rendered as `0` in a comparison that
+/// then reads as a gap the relay must answer for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CompareOutcome {
+    /// Both sides produced a count; here is their comparison.
+    Compared(TierComparison),
+    /// The relay reported a count, but sipnab captured no RTP for this call --
+    /// not measured zero, absent. The relay's figure is carried so a caller can
+    /// say the call IS on the relay, sipnab just did not see its media.
+    SipnabHasNoRtp {
+        /// The relay's reported RTP packet count for the call.
+        relay_value: u64,
+    },
+    /// sipnab measured the call, but the relay does not hold it. sipnab's count
+    /// is carried; the relay side is absent, not zero.
+    RelayDoesNotHoldCall {
+        /// What sipnab measured for the call.
+        sipnab_value: u64,
+    },
+    /// Neither side produced anything: nothing to compare, and no invented zero.
+    NeitherSide,
+}
+
+/// Decide a C4 comparison from each side's availability (ST9).
+///
+/// `None` on a side means it produced nothing to compare -- a relay that does
+/// not hold the call, or a capture with no RTP for it -- and is reported as
+/// absent rather than coerced to `0`. Only when BOTH sides produced a count
+/// (each `Some`, a real zero included) are they compared. This is where "zero
+/// versus absent" is kept distinct: the caller passes `Some(0)` for a genuine
+/// measured zero and `None` for "nothing here", and the two never collapse.
+#[must_use]
+pub fn ready_comparison(relay_value: Option<u64>, sipnab_value: Option<u64>) -> CompareOutcome {
+    match (relay_value, sipnab_value) {
+        (Some(relay), Some(sipnab)) => CompareOutcome::Compared(compare_relay_and_sipnab(
+            ComparedFigure {
+                value: relay,
+                name: Some("totals.RTP.packets".to_string()),
+                tier: StatisticTier::RelayReported,
+            },
+            ComparedFigure {
+                value: sipnab,
+                name: None,
+                tier: StatisticTier::SipnabMeasured,
+            },
+        )),
+        (Some(relay_value), None) => CompareOutcome::SipnabHasNoRtp { relay_value },
+        (None, Some(sipnab_value)) => CompareOutcome::RelayDoesNotHoldCall { sipnab_value },
+        (None, None) => CompareOutcome::NeitherSide,
+    }
+}
+
 /// Who owns the problem when statistics could not be cleanly obtained.
 ///
 /// The "whose problem" column of ST-S4's classification table, because it is

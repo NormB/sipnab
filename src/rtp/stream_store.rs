@@ -1192,6 +1192,20 @@ impl StreamStore {
             .filter(move |s| s.associated_dialog.as_deref() == Some(call_id))
     }
 
+    /// The RTP packets sipnab measured for one call: the sum of `packet_count`
+    /// over the streams linked to that Call-ID (ST7 / C4).
+    ///
+    /// This is sipnab's OWN count -- packets it captured and correlated -- the
+    /// `sipnab_measured` side of `--relay-compare`. It is bounded by what
+    /// reached the capture point, which is not the same as what the relay saw,
+    /// and the comparison's note says so. A call with no linked streams measures
+    /// zero, which is a real answer (sipnab saw none), distinct from a relay
+    /// that does not hold the call.
+    #[must_use]
+    pub fn measured_packet_count_for(&self, call_id: &str) -> u64 {
+        self.streams_for(call_id).map(|s| s.packet_count).sum()
+    }
+
     /// Link streams to a SIP dialog by matching the SDP media endpoint.
     ///
     /// When SDP is parsed from a SIP message, call this with the negotiated
