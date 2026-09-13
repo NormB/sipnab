@@ -450,29 +450,41 @@ fn a_command_without_a_call_id_names_no_call() {
 /// `R` and `C` create RECORDING streams, and RE5 attributes those from the
 /// recording spool rather than by decoding these commands. Counting them here
 /// would double-count the thing another mechanism owns.
+///
+/// This asserts the CLASSIFICATION `creates`, not the process-global tally the
+/// decoder increments from it. The tally is shared across every test in the
+/// binary, so a before/after read of it races any concurrent test that decodes
+/// an ordinary-media command -- which is exactly how this test failed in CI
+/// while passing locally, on 2026-09-13. The rule is single-sourced: the
+/// decoder increments the tally iff `creates(verb) == Some(Stream::Ordinary)`
+/// (see `src/relay/rtpproxy.rs`), so proving the classification proves the
+/// tally behavior without reading shared state.
 #[test]
 fn recording_commands_do_not_inflate_the_media_tally() {
-    use sipnab::relay::ControlDecoder;
-    use sipnab::relay::media_creating_commands_seen;
-    use sipnab::relay::rtpproxy::RtpproxyDecoder;
+    use sipnab::relay::rtpproxy::{Stream, creates};
 
-    let d = RtpproxyDecoder::on_port(7722);
-    let before = media_creating_commands_seen();
-    d.decode(b"1 R call-abc ftag", 7722)
-        .expect("record decodes");
-    d.decode(b"1 C call-abc arg ftag", 7722)
-        .expect("copy decodes");
+    // The recording verbs are Recording, not Ordinary, so the decoder's
+    // `creates(...) == Some(Stream::Ordinary)` guard is false for them and the
+    // tally is never touched.
+    for verb in ['R', 'C', 'r', 'c'] {
+        assert_eq!(
+            creates(verb),
+            Some(Stream::Recording),
+            "{verb} creates a recording stream, not an ordinary leg"
+        );
+        assert_ne!(
+            creates(verb),
+            Some(Stream::Ordinary),
+            "{verb} must not be classed as ordinary media, or it would inflate \
+             the unattributed tally"
+        );
+    }
+    // And an ordinary media verb IS Ordinary, so the guard is not vacuously
+    // false for everything -- without this, `creates` returning `None` for all
+    // input would pass the assertions above while counting nothing ever.
     assert_eq!(
-        media_creating_commands_seen(),
-        before,
-        "a recording stream is not an ordinary leg and must not be tallied as \
-         one"
-    );
-    d.decode(b"1 U call-abc 10.0.0.1 12000 ftag", 7722)
-        .expect("update decodes");
-    assert_eq!(
-        media_creating_commands_seen(),
-        before + 1,
-        "and an ordinary media command must be counted, or the tally is dead"
+        creates('U'),
+        Some(Stream::Ordinary),
+        "an update/offer creates ordinary media and DOES count"
     );
 }
