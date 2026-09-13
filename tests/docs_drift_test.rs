@@ -3169,7 +3169,11 @@ fn no_documentation_table_repeats_a_row() {
     // 213 -> 214 by docs/design/relay-statistics-failures.md (ST-S4), the
     // thirteen-condition catalog every surface's failure tests are drawn from.
     // ONE file; `docs/design/` has no website mirror.
-    const EXPECTED_MARKDOWN_FILES: usize = 214;
+    // 214 -> 216 by ST-S5 (relay-statistics-documentation.md) and PAR-S1
+    // (surface-parity-definition.md), the last two gating specs. TWO files;
+    // docs/design/ has no website mirror. Attributed against the staged diff:
+    // --diff-filter=A lists exactly those two new .md paths.
+    const EXPECTED_MARKDOWN_FILES: usize = 216;
     /// How many tables this gate expects to walk.
     ///
     /// Named rather than written twice. The count and the failure message
@@ -3523,7 +3527,10 @@ fn no_documentation_table_repeats_a_row() {
     // (ST-S4): the five classifications, the refusal codes of both relays, the
     // counters either side of a restart, and the three states a statistic can
     // be in. Counted once each, no website mirror.
-    const EXPECTED_TABLES: usize = 880;
+    // 880 -> 883 by ST-S5 (one table: the cookbook recipes) and PAR-S1 (two:
+    // the four surfaces, and the worked capability matrix). Counted once each,
+    // no website mirror.
+    const EXPECTED_TABLES: usize = 883;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

@@ -44,7 +44,7 @@ Tiers:
 
 ## Status
 
-**38 open, 505 done** across 38 sections.
+**36 open, 507 done** across 38 sections.
 Regenerate with `python3 scripts/backlog-status.py --apply`.
 
 | Section | Open | Done | Progress |
@@ -63,7 +63,7 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
 | NAT | 0 | 4 | `##########` |
 | RV | 0 | 8 | `##########` |
 | RP | 1 | 3 | `########..` |
-| ST | 13 | 4 | `##........` |
+| ST | 11 | 6 | `####......` |
 | PAR | 5 | 0 | `..........` |
 | HX | 1 | 2 | `#######...` |
 | AS | 0 | 7 | `##########` |
@@ -5703,8 +5703,21 @@ apart in the first place (see PAR).
   and zero versus absent. Each entry names the expected behavior on all four
   surfaces, so they cannot disagree about what a failure looks like.
 
-- [ ] **ST-S5 — SPEC: what the documentation and the site must teach.** Gates
-  ST-D1 and ST-D2.
+- [x] **ST-S5 — SPEC: what the documentation and the site must teach.** Gates
+  ST-D1 and ST-D2. **Written 2026-09-12:
+  [`relay-statistics-documentation.md`](relay-statistics-documentation.md).**
+
+  The one thing the docs must not let an operator believe: that a relay
+  statistic is a measurement sipnab made. Every recipe showing a relay number
+  shows its tier and what that means for trust, in the operator's words rather
+  than as a type name. Per capability the docs answer three questions -- the
+  operator's actual question, the command that answers it, and what the answer
+  does NOT tell them -- and the caveat is half the recipe, not a footnote. The
+  hardest recipe to get right is named: the relay's loss counter beside
+  sipnab's sequence-gap loss, both "loss" and not the same number. Every
+  example runs, now concretely: `doc_commands_run_test` executes it or places
+  it in a named bucket, and ST-D2's site examples run against the harness,
+  which now runs both relays at once.
 
   **Norm, 2026-09-12:** "the documentation and web site must be improved to
   highlight these capabilities and show the operator how to use them. the
@@ -5735,7 +5748,20 @@ apart in the first place (see PAR).
   executed is a claim, and a copied command that fails is worse than no example
   because the reader blames themselves.
 
-- [ ] **PAR-S1 — SPEC: what parity means here.** Gates every PAR item.
+- [x] **PAR-S1 — SPEC: what parity means here.** Gates every PAR item.
+  **Written 2026-09-12:
+  [`surface-parity-definition.md`](surface-parity-definition.md).**
+
+  Parity is NOT every capability on every surface; it is every capability on
+  every surface it BELONGS on, with a recorded reason where it does not. Each
+  surface has a question a capability must pass -- can the CLI produce it in one
+  shot, would a human at the TUI reach for it, would a program poll it over
+  REST, would an agent ask for it -- and a capability that passes a surface's
+  question and is absent is a GAP, while one that fails it and is absent is a
+  DECISION. PAR2's gate must tell those apart, derive the JOIN from PAR1 rather
+  than a second hand table, name the surfaces a capability is missing from, and
+  carry an anti-vacuity floor. A worked table settles the borderline cases, and
+  ST-S3 is called out as the instance that already followed this rule.
 
   "All surfaces in sync" needs a definition before it can be gated. Must
   distinguish capabilities that belong everywhere from those that are genuinely
