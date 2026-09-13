@@ -1604,6 +1604,27 @@ pub struct RtpArgs {
     #[arg(help_heading = "RTP", long = "relay-compare", value_name = "CALL-ID")]
     pub relay_compare: Option<String>,
 
+    /// Poll the relay named by `--rtpengine-control` for its statistics every
+    /// SECONDS, for as long as the capture runs (ST4/C5).
+    ///
+    /// Nothing polls by default: every other answer sipnab gives comes from
+    /// bytes it already holds, and this one puts a packet on the network on a
+    /// timer, so naming an interval IS the request. The bound on what the timer
+    /// may spend is the interval itself -- one transaction per interval, and the
+    /// next poll begins only once the previous returns, so a slow relay slows
+    /// the cadence rather than stacking outstanding requests. Each polled
+    /// reading says it was polled and names the interval. CLI only: a poll is a
+    /// standing instruction to transmit, and over REST or MCP the caller who
+    /// starts one does not own the host it keeps transmitting from. Same
+    /// live-source gate as `--relay-stats`.
+    #[arg(
+        help_heading = "RTP",
+        long = "relay-stats-interval",
+        value_name = "SECONDS",
+        value_parser = clap::value_parser!(u64).range(1..=3600)
+    )]
+    pub relay_stats_interval: Option<u64>,
+
     /// Maximum number of RTP streams to track simultaneously.
     #[arg(help_heading = "RTP", long, value_name = "N")]
     pub max_streams: Option<u64>,

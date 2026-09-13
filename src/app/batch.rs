@@ -670,6 +670,93 @@ fn parallel_config(
     }
 }
 
+/// Spawn the relay-statistics poll thread when `--relay-stats-interval` asks
+/// for one (ST4/C5).
+///
+/// Returns `(None, None)` when nothing should poll: the flag was not given, no
+/// relay was named, or the run may not transmit (a file-backed run). The gate
+/// mirrors [`relay_stats_action`](crate::app::bootstrap::relay_stats_action) --
+/// polling asks the relay, and asking transmits -- and the `permit` argument
+/// carries whether this run holds a transmit permit at all (it is `Some` only
+/// when a relay was configured on a live source).
+///
+/// The thread transmits, so it cannot be driven from a test; the loop and its
+/// shutdown are tested in [`crate::app::relay_poller`] with an injected action.
+/// Here the injected action is the real fetch-and-print, and this seam is
+/// exercised end to end against the harness.
+fn spawn_relay_stats_poller(
+    cli: &Cli,
+    permit: Option<crate::security::transmit_guard::TransmitPermit>,
+) -> (
+    Option<std::sync::mpsc::Sender<()>>,
+    Option<std::thread::JoinHandle<()>>,
+) {
+    use crate::output::relay_statistics::{FetchOrigin, format_relay_statistics};
+    use crate::rtpengine::control::{ControlClient, DEFAULT_CONTROL_TIMEOUT};
+    use crate::stats_vocab::{relay_reported, resolve_for_wire};
+
+    let Some(secs) = cli.rtp_args.relay_stats_interval else {
+        return (None, None); // Nothing polls by default.
+    };
+    let Some(addr) = cli.rtp_args.rtpengine_control.as_deref() else {
+        tracing::error!(
+            "--relay-stats-interval needs a relay to poll. Name one with \
+             --rtpengine-control <addr>."
+        );
+        return (None, None);
+    };
+    let Some(permit) = permit else {
+        tracing::error!(
+            "--relay-stats-interval will not poll a relay on a run that reads a \
+             file: polling transmits. Poll from a live capture (-d <device>)."
+        );
+        return (None, None);
+    };
+    let socket = match addr.parse::<std::net::SocketAddr>() {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::error!(
+                "--rtpengine-control {addr} is not an address and port ({e}); \
+                 nothing is polled."
+            );
+            return (None, None);
+        }
+    };
+
+    let client = ControlClient::new(socket, DEFAULT_CONTROL_TIMEOUT);
+    let label = format!("rtpengine at {addr}");
+    let err_label = label.clone();
+    let interval = std::time::Duration::from_secs(secs);
+    let (tx, rx) = std::sync::mpsc::channel::<()>();
+
+    let poll = move || match client.statistics(&permit) {
+        Ok(crate::relay::types::ControlReply::Statistics(pairs)) => {
+            let wire = resolve_for_wire(&relay_reported(&pairs));
+            print!(
+                "{}",
+                format_relay_statistics(
+                    &wire,
+                    &label,
+                    chrono::Utc::now(),
+                    FetchOrigin::Polled { every_secs: secs },
+                )
+            );
+        }
+        Ok(other) => tracing::error!("{err_label} answered {other:?}, not statistics"),
+        Err(e) => {
+            tracing::error!("{err_label} did not answer the polled statistics request ({e})");
+        }
+    };
+
+    match crate::app::relay_poller::spawn(interval, rx, poll) {
+        Ok(join) => (Some(tx), Some(join)),
+        Err(e) => {
+            tracing::warn!("could not start the relay statistics poller ({e}); nothing polled");
+            (None, None)
+        }
+    }
+}
+
 /// Spawn the scanner-kill worker with this run's transmit ceiling.
 ///
 /// A function rather than an inline `match` so the ceiling is provably applied:
@@ -2268,6 +2355,12 @@ pub struct BatchRunner {
     relay_orphans: Option<crate::relay::reconcile::OrphanSink>,
     /// The reconciler thread, joined after the loop so its summary prints.
     relay_thread: Option<std::thread::JoinHandle<()>>,
+    /// Shutdown sender for the relay-statistics poll thread (ST4/C5); dropping
+    /// it ends the poll loop. `None` unless `--relay-stats-interval` asked for a
+    /// poll on a live run with a relay to ask.
+    relay_poll_shutdown: Option<std::sync::mpsc::Sender<()>>,
+    /// The relay-statistics poll thread, joined after the loop.
+    relay_poll_thread: Option<std::thread::JoinHandle<()>>,
     /// Heuristic RTP detector for streams with no SDP linkage.
     rtp_heuristic: rtp::heuristic::RtpHeuristic,
     /// Skip all RTP processing (`--no-rtp` or config equivalent).
@@ -2465,6 +2558,12 @@ impl BatchRunner {
         // is that it never polls.
         #[cfg(feature = "mcp")]
         let relay_query_permit = batch.relay.ready.as_ref().map(|r| r.permit);
+        // Captured before the take below moves the reconciler away. The poller
+        // transmits on its own thread with its own client, exactly like
+        // `query_relay`, so it needs only the `Copy` permit -- and it must not
+        // ride the reconciler's cadence (there is none) or its transaction
+        // budget (orphan attribution must not compete with a poll).
+        let relay_poll_permit = batch.relay.ready.as_ref().map(|r| r.permit);
         let (relay_orphans, relay_thread) = match batch.relay.ready.take() {
             Some(ready) => {
                 let (sink, orphan_rx) = crate::relay::reconcile::orphan_channel();
@@ -2488,6 +2587,13 @@ impl BatchRunner {
             }
             None => (None, None),
         };
+
+        // C5: poll the relay's statistics on the operator's interval, if one
+        // was given. Its own thread, its own client, gated like every other
+        // relay-stats form (a relay named and a permit in hand); nothing polls
+        // otherwise.
+        let (relay_poll_shutdown, relay_poll_thread) =
+            spawn_relay_stats_poller(&cli, relay_poll_permit);
 
         let rtp_heuristic = rtp::heuristic::RtpHeuristic::new();
 
@@ -2982,6 +3088,8 @@ impl BatchRunner {
             policy,
             relay_orphans,
             relay_thread,
+            relay_poll_shutdown,
+            relay_poll_thread,
             evidence,
         })
     }
@@ -3051,6 +3159,8 @@ impl BatchRunner {
             policy,
             relay_orphans,
             relay_thread,
+            relay_poll_shutdown,
+            relay_poll_thread,
             evidence,
         } = self;
         // Reused across packets so the hand-off costs no allocation per packet.
@@ -3543,6 +3653,17 @@ impl BatchRunner {
             && join.join().is_err()
         {
             tracing::warn!("the rtpengine reconciler thread panicked");
+        }
+
+        // The stats poller (C5) stops the same way: dropping its shutdown sender
+        // closes the channel its loop waits on, so `recv_timeout` returns at
+        // once rather than sleeping out the interval. Joined here, beside the
+        // reconciler, because the reporting below can exit the process.
+        drop(relay_poll_shutdown);
+        if let Some(join) = relay_poll_thread
+            && join.join().is_err()
+        {
+            tracing::warn!("the relay statistics poll thread panicked");
         }
 
         // 20. Wait for the capture thread to finish

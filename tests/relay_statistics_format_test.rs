@@ -11,7 +11,7 @@
 
 use chrono::{DateTime, TimeZone, Utc};
 
-use sipnab::output::relay_statistics::format_relay_statistics;
+use sipnab::output::relay_statistics::{FetchOrigin, format_relay_statistics};
 use sipnab::stats_vocab::{
     StatisticTier, StatisticValue, TieredStatistic, WireStatistics, relay_reported,
     resolve_for_wire,
@@ -19,6 +19,11 @@ use sipnab::stats_vocab::{
 
 fn at() -> DateTime<Utc> {
     Utc.with_ymd_and_hms(2026, 9, 13, 4, 5, 6).unwrap()
+}
+
+/// Render as a one-shot ask -- the shape every C1/C2 test uses.
+fn asked(wire: &WireStatistics, label: &str) -> String {
+    format_relay_statistics(wire, label, at(), FetchOrigin::Asked)
 }
 
 /// A counted figure renders with its name and value; the header names the
@@ -29,7 +34,7 @@ fn a_counted_figure_renders_with_the_relays_own_name_and_value() {
         ("npkts_relayed".to_string(), "9000".to_string()),
         ("uptime".to_string(), "134".to_string()),
     ]));
-    let text = format_relay_statistics(&wire, "rtpengine at 127.0.0.1:22222", at());
+    let text = asked(&wire, "rtpengine at 127.0.0.1:22222");
 
     assert!(
         text.contains("rtpengine at 127.0.0.1:22222"),
@@ -61,7 +66,7 @@ fn a_uniform_tier_table_states_the_tier_once() {
         ("b".to_string(), "2".to_string()),
         ("c".to_string(), "3".to_string()),
     ]));
-    let text = format_relay_statistics(&wire, "rtpproxy at 127.0.0.1:22223", at());
+    let text = asked(&wire, "rtpproxy at 127.0.0.1:22223");
     assert_eq!(
         text.matches("relay_reported").count(),
         1,
@@ -84,7 +89,7 @@ fn a_mixed_tier_table_annotates_every_row() {
             tier: StatisticTier::SipnabMeasured,
         },
     ]);
-    let text = format_relay_statistics(&wire, "relay", at());
+    let text = asked(&wire, "relay");
     assert!(
         text.contains("relay_reported"),
         "the relay tier is on its row:\n{text}"
@@ -110,7 +115,7 @@ fn a_refusal_is_shown_with_its_code_in_its_own_section() {
             tier: StatisticTier::RelayReported,
         },
     ]);
-    let text = format_relay_statistics(&wire, "relay", at());
+    let text = asked(&wire, "relay");
     assert!(
         text.contains("Refused"),
         "there is a refusals section:\n{text}"
@@ -142,7 +147,7 @@ fn a_not_asked_statistic_is_absent_from_the_output() {
             tier: StatisticTier::RelayReported,
         },
     ]);
-    let text = format_relay_statistics(&wire, "relay", at());
+    let text = asked(&wire, "relay");
     assert!(
         !text.contains("never_asked"),
         "a not-asked statistic must not be rendered:\n{text}"
@@ -156,9 +161,49 @@ fn a_not_asked_statistic_is_absent_from_the_output() {
 /// An empty result says so rather than rendering an empty table.
 #[test]
 fn an_empty_result_says_the_relay_reported_nothing() {
-    let text = format_relay_statistics(&WireStatistics::default(), "relay", at());
+    let text = asked(&WireStatistics::default(), "relay");
     assert!(
         text.to_lowercase().contains("nothing"),
         "an empty result must say the relay reported nothing:\n{text}"
+    );
+}
+
+/// A polled reading says it was polled, and names the interval (ST4/C5): a
+/// number from a timer must not read as a one-shot answer to a question.
+#[test]
+fn a_polled_reading_is_marked_as_a_poll_with_its_interval() {
+    let wire = resolve_for_wire(&relay_reported(&[(
+        "npkts_relayed".to_string(),
+        "9000".to_string(),
+    )]));
+    let text =
+        format_relay_statistics(&wire, "relay", at(), FetchOrigin::Polled { every_secs: 30 });
+    assert!(
+        text.to_lowercase().contains("polled"),
+        "a polled reading must say it was polled:\n{text}"
+    );
+    assert!(
+        text.contains("30s") || text.contains("every 30"),
+        "the poll interval must be named:\n{text}"
+    );
+    // It must NOT claim to have been asked once.
+    assert!(
+        !text.contains("asked"),
+        "a polled reading is not a one-shot ask:\n{text}"
+    );
+}
+
+/// A one-shot ask still says "asked", not "polled" -- the two never collapse.
+#[test]
+fn a_one_shot_ask_says_asked_not_polled() {
+    let wire = resolve_for_wire(&relay_reported(&[("uptime".to_string(), "5".to_string())]));
+    let text = asked(&wire, "relay");
+    assert!(
+        text.contains("asked"),
+        "a one-shot fetch says asked:\n{text}"
+    );
+    assert!(
+        !text.to_lowercase().contains("polled"),
+        "a one-shot fetch is not a poll:\n{text}"
     );
 }

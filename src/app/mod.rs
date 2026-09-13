@@ -7,6 +7,7 @@
 
 pub mod batch;
 pub mod bootstrap;
+pub mod relay_poller;
 pub mod relay_reconciler;
 pub mod run_provenance;
 pub mod servers;

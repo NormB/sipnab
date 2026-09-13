@@ -5849,12 +5849,17 @@ apart in the first place (see PAR).
   doubles the agent surface for no gain, which RP2's acceptance test 1 already
   forbids. The tool transmits, so it stays behind the existing permit.
 
-- [ ] **ST7 — CLI flags for all three tiers.** IN PROGRESS: C1 landed
-  (`--relay-stats`, global counters), C2 (`--relay-stats-call`, per-call), C3
-  (`--relay-stats-list`, the names a relay knows) and C4 (`--relay-compare`,
-  relay vs capture) landed, each verified live against the harness. C4's live
-  run surfaced the relay-hairpin double count and the note now names it; C4 also
-  keeps zero and absent distinct (ST9). C5 poll and the 50-test minimum remain.
+- [ ] **ST7 — CLI flags for all three tiers.** IN PROGRESS: all five
+  capabilities landed and verified live against the harness — C1
+  (`--relay-stats`), C2 (`--relay-stats-call`), C3 (`--relay-stats-list`), C4
+  (`--relay-compare`, which keeps zero and absent distinct per ST9 and whose
+  note names the relay-hairpin double count its live run surfaced), and C5
+  (`--relay-stats-interval`, a poll on its own thread whose interval is the
+  spend bound and where an overlapping poll cannot occur). C1–C4 shipped in
+  0.5.169. The 50-test minimum is met on the CLI surface. **Remaining for the
+  tick: the machine-readable (`--json`) output shape** — the CLI renders a
+  table today; a JSON form that agrees with it, per the line below, is the last
+  ST7 piece.
   50 tests minimum. Includes the
   output shapes: a human-readable form and a machine-readable one that agree,
   since a number that differs between `--json` and the table is a defect nobody
@@ -6606,7 +6611,7 @@ class recur:
   speaks", and [`docs/mcp-tools.md`](https://github.com/NormB/sipnab/blob/main/docs/mcp-tools.md) described the two as taking one vocabulary.
   They do not: `--filter` runs `expand_alias` first
   ([`src/app/bootstrap.rs:2157`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L2157)) and `vcon_selection`
-  ([`src/app/batch.rs:5625`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L5625)) parses raw. The doc claim is corrected;
+  ([`src/app/batch.rs:5746`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L5746)) parses raw. The doc claim is corrected;
   the behavior is not, and the flag is the one that is wrong -- reusing the
   filter language is the stated design, and ten `DIAGNOSTIC_ALIASES` are part
   of that language.

@@ -1225,7 +1225,8 @@ fn report_relay_statistics(cli: &Cli, source: Option<&CaptureSource>) {
                     crate::output::relay_statistics::format_relay_statistics(
                         &wire,
                         &label,
-                        obtained_at
+                        obtained_at,
+                        crate::output::relay_statistics::FetchOrigin::Asked,
                     )
                 );
             }

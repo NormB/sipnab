@@ -22,6 +22,34 @@ use crate::stats_vocab::{NameSource, StatisticTier, TierComparison, WireStatisti
 /// The width the name column is padded to, so values line up.
 const NAME_WIDTH: usize = 44;
 
+/// How a relay-statistics reading was obtained (ST4 / C5).
+///
+/// A figure asked for once, in response to a flag, and a figure a timer keeps
+/// asking for are different facts, and the output must say which -- ST4's rule
+/// that a polled number carries a statement that it came from a poll. The
+/// timestamp already distinguishes two readings; this names WHY a reading
+/// exists, so a polled table is never mistaken for a one-shot answer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FetchOrigin {
+    /// Fetched once, because a flag asked for it.
+    Asked,
+    /// Fetched by a repeating timer, every `every_secs` seconds.
+    Polled {
+        /// The poll interval, in seconds, as the operator configured it.
+        every_secs: u64,
+    },
+}
+
+impl FetchOrigin {
+    /// The header phrase naming when and why this reading was obtained.
+    fn phrase(self, stamp: &str) -> String {
+        match self {
+            Self::Asked => format!("asked {stamp}"),
+            Self::Polled { every_secs } => format!("polled {stamp}, every {every_secs}s"),
+        }
+    }
+}
+
 /// Render resolved relay statistics as a text block.
 ///
 /// `relay_label` names the relay and where it was asked, e.g.
@@ -33,8 +61,10 @@ pub fn format_relay_statistics(
     wire: &WireStatistics,
     relay_label: &str,
     obtained_at: DateTime<Utc>,
+    origin: FetchOrigin,
 ) -> String {
-    let stamp = obtained_at.format("%Y-%m-%dT%H:%M:%SZ");
+    let stamp = obtained_at.format("%Y-%m-%dT%H:%M:%SZ").to_string();
+    let when = origin.phrase(&stamp);
 
     // One tier for the whole table, or several? Stated once in the header when
     // uniform, annotated per row when not.
@@ -49,12 +79,10 @@ pub fn format_relay_statistics(
     let mut out = String::new();
     match uniform_tier {
         Some(tier) => out.push_str(&format!(
-            "Relay statistics ({relay_label}, asked {stamp}) — {} counts\n",
+            "Relay statistics ({relay_label}, {when}) — {} counts\n",
             tier.as_wire_str()
         )),
-        None => out.push_str(&format!(
-            "Relay statistics ({relay_label}, asked {stamp})\n"
-        )),
+        None => out.push_str(&format!("Relay statistics ({relay_label}, {when})\n")),
     }
 
     if wire.present.is_empty() && wire.refusals.is_empty() {

@@ -8,6 +8,26 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Added
+
+- **`--relay-stats-interval <SECONDS>` polls a relay's statistics on a timer
+  (ST7/C5, ST4).** Nothing polls by default; naming an interval is the request,
+  because a poll puts a packet on the network where every other answer comes
+  from bytes sipnab already holds. It runs on its own thread with its own
+  client, so the packet path never waits on the relay, and the interval is the
+  spend bound: one transaction per interval, the next beginning only once the
+  previous returns, so a slow relay slows the cadence rather than stacking
+  outstanding requests -- which is also why a timer can never fire while a poll
+  is still outstanding. Each polled reading says it was `polled` and names the
+  interval, so it is never mistaken for a one-shot answer. CLI only: a poll is a
+  standing instruction to transmit, and over REST or MCP the caller who starts
+  one does not own the host. Same live-source gate as `--relay-stats`. The loop
+  and its shutdown are unit-tested with an injected action; the fetch was
+  verified live against the harness (three polls at a 3s interval, clean
+  shutdown). This completes the CLI relay-statistics surface (C1–C5).
+
 ## [0.5.169] - 2026-09-13
 
 ### Added

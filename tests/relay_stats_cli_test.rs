@@ -192,3 +192,56 @@ fn a_compare_ask_is_gated_like_the_global_one() {
         "comparing on a file-backed run may not transmit"
     );
 }
+
+/// `--relay-stats-interval <SECONDS>` parses and carries the interval; off by
+/// default (ST4/C5).
+#[test]
+fn the_relay_stats_interval_flag_parses_and_carries_the_seconds() {
+    use clap::Parser;
+    let on = sipnab::cli::Cli::try_parse_from([
+        "sipnab",
+        "-N",
+        "-I",
+        "x.pcap",
+        "--relay-stats-interval",
+        "30",
+    ])
+    .expect("--relay-stats-interval parses");
+    assert_eq!(on.rtp_args.relay_stats_interval, Some(30));
+    let off = sipnab::cli::Cli::try_parse_from(["sipnab", "-N", "-I", "x.pcap"]).expect("bare");
+    assert!(
+        off.rtp_args.relay_stats_interval.is_none(),
+        "off unless given"
+    );
+}
+
+/// The interval is bounded: zero is rejected (a zero-second poll is a busy
+/// loop), and so is a value past the ceiling. clap enforces both at parse time.
+#[test]
+fn the_relay_stats_interval_rejects_zero_and_the_absurd() {
+    use clap::Parser;
+    assert!(
+        sipnab::cli::Cli::try_parse_from([
+            "sipnab",
+            "-N",
+            "-I",
+            "x.pcap",
+            "--relay-stats-interval",
+            "0",
+        ])
+        .is_err(),
+        "a zero-second interval must be refused"
+    );
+    assert!(
+        sipnab::cli::Cli::try_parse_from([
+            "sipnab",
+            "-N",
+            "-I",
+            "x.pcap",
+            "--relay-stats-interval",
+            "100000",
+        ])
+        .is_err(),
+        "an interval past the ceiling must be refused"
+    );
+}
