@@ -1318,8 +1318,8 @@ pub fn report_relay_comparison(
     use crate::rtpengine::control::{ControlClient, DEFAULT_CONTROL_TIMEOUT};
     use crate::security::transmit_guard::TransmitPermit;
     use crate::stats_vocab::{
-        CompareOutcome, PerCallReply, StatisticValue, classify_per_call_reply, lookup,
-        ready_comparison, relay_reported,
+        CompareOutcome, PerCallReply, RelayCompareValue, classify_per_call_reply, ready_comparison,
+        relay_compare_value, relay_reported,
     };
 
     let permit = TransmitPermit::for_source(source);
@@ -1387,12 +1387,23 @@ pub fn report_relay_comparison(
                 return;
             }
             let tiered = relay_reported(&pairs);
-            // The call-level RTP total, both directions, as the relay counts
-            // it. Absent when the relay does not hold the call (rtpengine
-            // answers `Unknown call-id`, which carries no `totals.RTP.packets`).
-            let relay_side = match lookup(&tiered, "totals.RTP.packets") {
-                StatisticValue::Counted(s) => s.parse::<u64>().ok(),
-                _ => None,
+            // The call-level RTP total, both directions, as the relay counts it.
+            // Absent when the relay does not hold the call (rtpengine answers
+            // `Unknown call-id`, which carries no `totals.RTP.packets`); SUSPECT
+            // (ST-S4 condition 11) when the relay reports a value too large for
+            // u64 -- carried as its digits, never coerced to absent, which would
+            // read as "does not hold the call".
+            let relay_side = match relay_compare_value(&tiered, "totals.RTP.packets") {
+                RelayCompareValue::Overflow(digits) => {
+                    tracing::error!(
+                        "relay at {addr} reported {digits} RTP packet(s) for call \
+                         {call_id}, a value too large to compare; the answer is suspect, \
+                         carried as received and not truncated."
+                    );
+                    return;
+                }
+                RelayCompareValue::Counted(n) => Some(n),
+                RelayCompareValue::Absent => None,
             };
             match ready_comparison(relay_side, sipnab_side) {
                 CompareOutcome::Compared(comparison) => {

@@ -390,6 +390,47 @@ pub enum CompareOutcome {
     NeitherSide,
 }
 
+/// The relay's per-call figure for a C4 comparison, resolved into the three
+/// answers a comparison must keep apart (ST-S4 conditions 9 and 11): a count
+/// that fits, an absent side, and a value the relay reported that does not fit
+/// `u64`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RelayCompareValue {
+    /// The relay reported a count that fits `u64`: compare it.
+    Counted(u64),
+    /// The relay does not hold this call -- the key was absent (not asked) or a
+    /// refusal. NOT a measured zero.
+    Absent,
+    /// The relay reported a value that does not fit `u64` -- too large, or not a
+    /// plain integer (ST-S4 condition 11: overflow). The digits are carried so a
+    /// surface renders them as received; the answer is SUSPECT, never truncated
+    /// into a narrower type and never read as an absent side.
+    Overflow(String),
+}
+
+/// Resolve the relay's per-call figure for a comparison (ST-S4 conditions 9,11).
+///
+/// The one place the "does the relay's count fit, is it absent, or did it
+/// overflow" decision is made, so the four compare surfaces cannot draw the line
+/// differently. A `Counted` value that parses is a number to compare; a
+/// `Counted` value that does NOT parse is [`RelayCompareValue::Overflow`] --
+/// carried as its digits and classified `suspect`, never coerced to `None` and
+/// read as "the relay does not hold the call"; a not-asked or refused key is
+/// [`RelayCompareValue::Absent`].
+#[must_use]
+pub fn relay_compare_value(stats: &[TieredStatistic], name: &str) -> RelayCompareValue {
+    match lookup(stats, name) {
+        StatisticValue::Counted(s) => match s.parse::<u64>() {
+            Ok(n) => RelayCompareValue::Counted(n),
+            // Present, but not a u64: too large or not a plain integer. Carried
+            // as its digits and reported suspect -- never coerced to an absent
+            // side, which would read as "the relay does not hold the call".
+            Err(_) => RelayCompareValue::Overflow(s),
+        },
+        StatisticValue::NotAsked | StatisticValue::Refused(_) => RelayCompareValue::Absent,
+    }
+}
+
 /// Decide a C4 comparison from each side's availability (ST9).
 ///
 /// `None` on a side means it produced nothing to compare -- a relay that does

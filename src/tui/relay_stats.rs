@@ -25,8 +25,8 @@ use crate::relay::reconcile::ReadOnlyRelay;
 use crate::relay::types::ControlReply;
 use crate::security::transmit_guard::TransmitPermit;
 use crate::stats_vocab::{
-    self, NameSource, StatisticValue, StatisticsOutcome, known_names, lookup, ready_comparison,
-    relay_reply_refusal, relay_reported, resolve_for_wire,
+    self, NameSource, RelayCompareValue, StatisticsOutcome, known_names, ready_comparison,
+    relay_compare_value, relay_reply_refusal, relay_reported, resolve_for_wire,
 };
 
 /// What the TUI needs to ask the relay: the relay itself, a permit to transmit,
@@ -224,9 +224,21 @@ pub fn compose_compare(
         return compose_outcome_text(StatisticsOutcome::Refused, &reason);
     }
     let tiered = relay_reported(pairs);
-    let relay_side = match lookup(&tiered, "totals.RTP.packets") {
-        StatisticValue::Counted(s) => s.parse::<u64>().ok(),
-        _ => None,
+    // ST-S4 condition 11: a per-call total too large for u64 is a SUSPECT answer
+    // carrying its digits, never coerced to an absent side that would read as
+    // "the relay does not hold the call".
+    let relay_side = match relay_compare_value(&tiered, "totals.RTP.packets") {
+        RelayCompareValue::Overflow(digits) => {
+            return compose_outcome_text(
+                StatisticsOutcome::Suspect,
+                &format!(
+                    "the relay reported {digits} RTP packet(s) for call {call_id}, a value too \
+                     large to compare; carried as received, not truncated"
+                ),
+            );
+        }
+        RelayCompareValue::Counted(n) => Some(n),
+        RelayCompareValue::Absent => None,
     };
     match ready_comparison(relay_side, sipnab_side) {
         CompareOutcome::Compared(c) => {

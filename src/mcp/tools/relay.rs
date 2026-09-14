@@ -734,7 +734,8 @@ impl SipnabMcp {
 
         use crate::relay::types::ControlReply;
         use crate::stats_vocab::{
-            StatisticValue, lookup, ready_comparison, relay_reply_refusal, relay_reported,
+            RelayCompareValue, ready_comparison, relay_compare_value, relay_reply_refusal,
+            relay_reported,
         };
         let payload = match reply {
             ControlReply::Statistics(pairs) => {
@@ -742,15 +743,25 @@ impl SipnabMcp {
                     RelayCompareAnswer::refused(access.addr, call_id, reason)
                 } else {
                     let tiered = relay_reported(&pairs);
-                    let relay_side = match lookup(&tiered, "totals.RTP.packets") {
-                        StatisticValue::Counted(s) => s.parse::<u64>().ok(),
-                        _ => None,
-                    };
-                    RelayCompareAnswer::from_outcome(
-                        access.addr,
-                        call_id,
-                        ready_comparison(relay_side, sipnab_side),
-                    )
+                    // ST-S4 condition 11: an oversized per-call total is a suspect
+                    // answer carrying its digits, not an absent side.
+                    match relay_compare_value(&tiered, "totals.RTP.packets") {
+                        RelayCompareValue::Overflow(digits) => {
+                            RelayCompareAnswer::overflow(access.addr, call_id, digits)
+                        }
+                        resolved => {
+                            let relay_side = if let RelayCompareValue::Counted(n) = resolved {
+                                Some(n)
+                            } else {
+                                None
+                            };
+                            RelayCompareAnswer::from_outcome(
+                                access.addr,
+                                call_id,
+                                ready_comparison(relay_side, sipnab_side),
+                            )
+                        }
+                    }
                 }
             }
             _ => RelayCompareAnswer::suspect(access.addr, call_id),
@@ -1508,6 +1519,18 @@ impl RelayCompareAnswer {
     /// The relay answered with something other than statistics.
     fn suspect(addr: std::net::SocketAddr, call_id: &str) -> Self {
         Self::base(addr, call_id, "suspect")
+    }
+
+    /// The relay reported a per-call total too large to fit `u64` (ST-S4
+    /// condition 11): a suspect answer, carrying the digits as received rather
+    /// than truncated or read as an absent side.
+    fn overflow(addr: std::net::SocketAddr, call_id: &str, digits: String) -> Self {
+        let mut a = Self::base(addr, call_id, "suspect");
+        a.note = Some(format!(
+            "the relay reported {digits} RTP packet(s) for this call, a value too large to \
+             compare; carried as received, not truncated"
+        ));
+        a
     }
 
     /// Render a readied C4 comparison, keeping an absent side absent rather than

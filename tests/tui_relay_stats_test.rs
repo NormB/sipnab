@@ -168,6 +168,28 @@ fn an_absent_relay_side_is_not_a_zero() {
     assert!(!text.contains("verdict"), "no comparison was made: {text}");
 }
 
+/// ST-S4 condition 11: a relay per-call total too large for u64 is SUSPECT,
+/// carrying its digits -- not an absent side that would read as "does not hold
+/// this call". The wire case is unreachable (no relay in reach wraps a 64-bit
+/// packet counter), so it is driven from a recorded oversized value, which is
+/// what the catalog says to test against.
+#[test]
+fn an_oversized_relay_count_is_suspect_not_absent() {
+    let huge = "99999999999999999999999"; // 23 digits, past u64::MAX (20 digits)
+    let reply = pairs(&[("totals.RTP.packets", huge)]);
+    let text = compose_compare(&reply, "c@h", Some(4500), "relay X, call c@h", at());
+    assert!(
+        text.contains(StatisticsOutcome::Suspect.as_wire_str()),
+        "an oversized count is a suspect answer: {text}"
+    );
+    assert!(text.contains(huge), "the digits travel, uncoerced: {text}");
+    assert!(
+        !text.contains("does not hold call"),
+        "an oversized count is present, not an absent side: {text}"
+    );
+    assert!(!text.contains("verdict"), "no comparison was made: {text}");
+}
+
 /// Every ST-S4 classification renders its wire token and whose problem it is, so
 /// a terminal reader is sent to the right place -- the same tokens REST puts in
 /// JSON.

@@ -2324,8 +2324,8 @@ fn relay_rest_answer(
     use crate::output::relay_statistics as fmt;
     use crate::relay::types::ControlReply;
     use crate::stats_vocab::{
-        CompareOutcome, StatisticValue, StatisticsOutcome as O, known_names, lookup,
-        ready_comparison, relay_reply_refusal, relay_reported, resolve_for_wire,
+        CompareOutcome, RelayCompareValue, StatisticsOutcome as O, known_names, ready_comparison,
+        relay_compare_value, relay_reply_refusal, relay_reported, resolve_for_wire,
     };
     let to_value = |s: String| -> Value {
         serde_json::from_str(&s).unwrap_or_else(|_| json!({ "outcome": "suspect" }))
@@ -2432,9 +2432,22 @@ fn relay_rest_answer(
                         ));
                     }
                     let tiered = relay_reported(&pairs);
-                    let relay_side = match lookup(&tiered, "totals.RTP.packets") {
-                        StatisticValue::Counted(s) => s.parse::<u64>().ok(),
-                        _ => None,
+                    // ST-S4 condition 11: a per-call total too large for u64 is a
+                    // SUSPECT answer carrying its digits, never coerced to an
+                    // absent side that reads as "the relay does not hold the call".
+                    let relay_side = match relay_compare_value(&tiered, "totals.RTP.packets") {
+                        RelayCompareValue::Overflow(digits) => {
+                            return to_value(fmt::relay_rest_outcome(
+                                O::Suspect,
+                                &format!(
+                                    "{label} reported {digits} RTP packet(s) for call {call_id}, \
+                                     a value too large to compare; carried as received, not \
+                                     truncated"
+                                ),
+                            ));
+                        }
+                        RelayCompareValue::Counted(n) => Some(n),
+                        RelayCompareValue::Absent => None,
                     };
                     match ready_comparison(relay_side, sipnab_side) {
                         CompareOutcome::Compared(c) => to_value(fmt::relay_rest_ok(

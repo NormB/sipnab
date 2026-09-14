@@ -250,7 +250,7 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
   silently negates most of CT2's benefit on exactly the busy servers CT2
   targets, and because it makes `-B` advice misleading until fixed.
   **Done:** immediate mode is now a decision, not a constant.
-  `immediate_mode_for(mode)` ([`src/app/bootstrap.rs:2872`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L2872)) is
+  `immediate_mode_for(mode)` ([`src/app/bootstrap.rs:2918`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L2918)) is
   `matches!(mode, RunMode::Tui)` and is the only place that answers the
   question; `bootstrap.rs:537` assigns its result to
   `CaptureConfig::immediate_mode`, and [`src/capture/live.rs:219-220`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L219-L220) passes that

@@ -23,6 +23,17 @@ entry that carries them.
   already applied, so a per-call refusal is reported as a refusal, carrying the
   relay's verbatim reason, on every surface.
 
+- **An oversized relay count is a suspect answer, not an absent call (ST9,
+  ST-S4 condition 11).** In `--relay-compare` and its REST, MCP and TUI
+  equivalents, a per-call `totals.RTP.packets` that did not fit `u64` failed to
+  parse and became `None`, which every compare surface reads as "the relay does
+  not hold this call". A relay's figure is now resolved through the single
+  `relay_compare_value` rule into a count, an absent side, or an overflow; an
+  overflow is classified `suspect`, carrying the relay's digits as received --
+  never truncated and never read as an absent side. The wire case is unreachable
+  in practice (no relay in reach wraps a 64-bit counter), so it is tested against
+  recorded oversized values, as the catalog directs.
+
 ## [0.5.170] - 2026-09-14
 
 ### Added

@@ -538,3 +538,107 @@ fn classify_per_call_reply_agrees_with_relay_reply_refusal() {
         );
     }
 }
+
+// ── ST9 condition 11: an oversized relay count is suspect, not absent ─────────
+//
+// `relay_compare_value` resolves the relay's per-call figure for a C4
+// comparison into three answers that must not collapse: a count that fits, an
+// absent side, and a value that does not fit u64. The bug it closes: a value
+// that failed `parse::<u64>()` became `None`, which every compare surface reads
+// as "the relay does not hold the call" -- so an answer that is present and too
+// large would be reported as a call the relay is not carrying.
+
+use sipnab::stats_vocab::{RelayCompareValue, relay_compare_value};
+
+/// A relay count that fits `u64` is `Counted`, ready to compare.
+#[test]
+fn a_relay_count_that_fits_is_counted() {
+    assert_eq!(
+        relay_compare_value(
+            &[counted("totals.RTP.packets", "9000")],
+            "totals.RTP.packets"
+        ),
+        RelayCompareValue::Counted(9000),
+    );
+}
+
+/// A counted ZERO is `Counted(0)`, never `Absent` -- ST9's zero-versus-absent
+/// distinction reaching the comparison: a relay that carried the call and
+/// counted no packets is not a relay that does not hold the call.
+#[test]
+fn a_counted_zero_is_counted_not_absent() {
+    assert_eq!(
+        relay_compare_value(&[counted("totals.RTP.packets", "0")], "totals.RTP.packets"),
+        RelayCompareValue::Counted(0),
+        "a measured zero must not read as an absent side"
+    );
+}
+
+/// A key the relay never sent (not asked) is an absent side, not a zero.
+#[test]
+fn a_not_asked_relay_side_is_absent() {
+    assert_eq!(
+        relay_compare_value(&[not_asked("totals.RTP.packets")], "totals.RTP.packets"),
+        RelayCompareValue::Absent,
+    );
+}
+
+/// A refused key is an absent side too -- the relay declined the figure, it did
+/// not report a zero.
+#[test]
+fn a_refused_relay_side_is_absent() {
+    assert_eq!(
+        relay_compare_value(
+            &[refused("totals.RTP.packets", "E50")],
+            "totals.RTP.packets"
+        ),
+        RelayCompareValue::Absent,
+    );
+}
+
+/// A value too large for `u64` is `Overflow`, carrying its digits -- NOT
+/// `Absent`. This is the whole condition-11 gap: an oversized count used to fall
+/// through to `None` and read as "the relay does not hold the call".
+///
+/// The wire case is unreachable in practice: no relay in reach has run long
+/// enough to wrap a 64-bit packet counter, and manufacturing one on a relay
+/// would test a fixture rather than a relay (ST-S4 condition 11). So the
+/// behaviour is driven from a recorded oversized value here, which is the value
+/// the catalog says to test against.
+#[test]
+fn an_oversized_relay_count_is_overflow_not_absent() {
+    let huge = "99999999999999999999999"; // 23 digits, past u64::MAX (20 digits)
+    match relay_compare_value(&[counted("totals.RTP.packets", huge)], "totals.RTP.packets") {
+        RelayCompareValue::Overflow(digits) => assert_eq!(
+            digits, huge,
+            "the oversized value is carried as its digits, uncoerced and untruncated"
+        ),
+        other => panic!("an oversized count must be Overflow, not {other:?}"),
+    }
+}
+
+/// The boundary holds: `u64::MAX` itself still fits and compares.
+#[test]
+fn u64_max_still_fits() {
+    assert_eq!(
+        relay_compare_value(
+            &[counted("totals.RTP.packets", "18446744073709551615")],
+            "totals.RTP.packets"
+        ),
+        RelayCompareValue::Counted(u64::MAX),
+    );
+}
+
+/// A present-but-non-numeric value is also `Overflow` (present, uncomparable),
+/// not `Absent`: an answer that cannot be trusted is the answer's problem, not a
+/// missing call.
+#[test]
+fn a_present_non_numeric_value_is_overflow_not_absent() {
+    match relay_compare_value(
+        &[counted("totals.RTP.packets", "not-a-number")],
+        "totals.RTP.packets",
+    ) {
+        RelayCompareValue::Overflow(digits) => assert_eq!(digits, "not-a-number"),
+        other => panic!("a present, uncomparable value must be Overflow, not {other:?}"),
+    }
+}
