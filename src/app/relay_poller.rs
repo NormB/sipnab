@@ -144,25 +144,72 @@ mod tests {
         );
     }
 
-    /// The loop actually polls on the interval, and keeps polling until stopped.
+    /// The loop calls `poll` once per elapsed interval and keeps going until the
+    /// channel closes.
+    ///
+    /// Driven with a ZERO interval -- every `recv_timeout` returns `Timeout` at
+    /// once -- and a sender the poll closure drops after a fixed number of calls,
+    /// so the count is EXACT and no wall clock decides it. The earlier form slept
+    /// 150ms at a 20ms interval and asserted "at least a couple"; a loaded CI
+    /// runner fired only one and the suite went red, so the repeated-poll
+    /// behavior is pinned deterministically here instead.
     #[test]
-    fn it_polls_each_interval_until_stopped() {
+    fn poll_loop_polls_once_per_interval_until_the_channel_closes() {
         let (tx, rx) = sync_channel::<()>(0);
         let calls = std::sync::Arc::new(AtomicUsize::new(0));
         let c = calls.clone();
-        // A short interval so several fire quickly.
-        let handle = spawn(Duration::from_millis(20), rx, move || {
+        let mut tx = Some(tx);
+        poll_loop(Duration::ZERO, &rx, move || {
+            // Drop the sender after the third poll; the next recv_timeout then
+            // reads Disconnected and the loop stops.
+            if c.fetch_add(1, Ordering::SeqCst) + 1 == 3 {
+                tx.take();
+            }
+        });
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            3,
+            "poll runs once per interval, repeatedly, until the channel closes"
+        );
+    }
+
+    /// A stop signal already waiting ends the loop before any poll -- the
+    /// `Ok(())` arm of `wait_outcome`, exercised through the real loop rather
+    /// than in isolation.
+    #[test]
+    fn poll_loop_does_not_poll_when_a_signal_is_already_waiting() {
+        let (tx, rx) = sync_channel::<()>(1);
+        tx.send(()).expect("buffered send has room");
+        let calls = std::sync::Arc::new(AtomicUsize::new(0));
+        let c = calls.clone();
+        poll_loop(Duration::ZERO, &rx, move || {
             c.fetch_add(1, Ordering::SeqCst);
-        })
-        .expect("spawns");
-        // Let a handful of intervals elapse, then stop.
-        std::thread::sleep(Duration::from_millis(150));
+        });
+        // `tx` outlives the loop, so the first recv reads the buffered signal,
+        // not a disconnect.
         drop(tx);
-        handle.join().expect("the loop ends");
-        assert!(
-            calls.load(Ordering::SeqCst) >= 2,
-            "at least a couple of polls should have fired over ~150ms at 20ms; got {}",
-            calls.load(Ordering::SeqCst)
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            0,
+            "a pending stop signal ends the loop before the first poll"
+        );
+    }
+
+    /// A channel closed before the loop starts ends it before any poll -- the
+    /// `Disconnected` arm, through the real loop.
+    #[test]
+    fn poll_loop_does_not_poll_when_the_channel_is_already_closed() {
+        let (tx, rx) = sync_channel::<()>(0);
+        drop(tx);
+        let calls = std::sync::Arc::new(AtomicUsize::new(0));
+        let c = calls.clone();
+        poll_loop(Duration::ZERO, &rx, move || {
+            c.fetch_add(1, Ordering::SeqCst);
+        });
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            0,
+            "a closed channel ends the loop before the first poll"
         );
     }
 }
