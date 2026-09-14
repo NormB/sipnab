@@ -361,6 +361,61 @@ pub fn compare_relay_and_sipnab(relay: ComparedFigure, sipnab: ComparedFigure) -
     }
 }
 
+/// A cumulative counter that stepped backwards between two polls (ST-S4
+/// condition 6).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BackwardsStep {
+    /// The counter's own name.
+    pub name: String,
+    /// Its value in the earlier reading.
+    pub previous: u64,
+    /// Its value now -- lower than `previous`, which a cumulative counter cannot
+    /// be without a reset.
+    pub current: u64,
+}
+
+/// Detect a cumulative counter that decreased between two relay readings (ST-S4
+/// condition 6: a restart resets every counter, and rtpproxy does not say so).
+///
+/// A relay's reported counters are cumulative -- monotone non-decreasing while
+/// the relay runs -- so a reading LOWER than the one before it cannot happen
+/// without the counter resetting, and the ordinary cause is a restart. rtpproxy
+/// publishes no uptime, so a decrease is the only in-band signal it restarted;
+/// rtpengine's own `uptime` dropping says the same. A polled series that steps
+/// backwards is SUSPECT and must never be smoothed or read as a drop in traffic.
+///
+/// Only names present with a `u64` value in BOTH readings are compared: a name
+/// that appeared or disappeared, or a non-numeric value, is not a step. The
+/// first decrease by sorted name is returned, so the result is deterministic
+/// regardless of the reply's order.
+#[must_use]
+pub fn counter_stepped_backwards(
+    previous: &[(String, String)],
+    current: &[(String, String)],
+) -> Option<BackwardsStep> {
+    let prev_value = |name: &str| {
+        previous
+            .iter()
+            .find(|(n, _)| n == name)
+            .and_then(|(_, v)| v.parse::<u64>().ok())
+    };
+    let mut steps: Vec<BackwardsStep> = current
+        .iter()
+        .filter_map(|(name, v)| {
+            let cur = v.parse::<u64>().ok()?;
+            let prev = prev_value(name)?;
+            (cur < prev).then(|| BackwardsStep {
+                name: name.clone(),
+                previous: prev,
+                current: cur,
+            })
+        })
+        .collect();
+    // Sorted so "the first decrease" does not depend on the reply's order.
+    steps.sort_by(|a, b| a.name.cmp(&b.name));
+    steps.into_iter().next()
+}
+
 /// The outcome of readying a C4 comparison, once each side's availability is
 /// known (ST9: zero and absent are different answers).
 ///

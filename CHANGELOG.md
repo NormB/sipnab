@@ -10,6 +10,19 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Added
+
+- **A polled relay counter that steps backwards is flagged as a probable
+  restart (ST9, ST-S4 condition 6).** `--relay-stats-interval` compared nothing
+  across polls, so a relay that restarted mid-run -- resetting every counter to
+  zero -- read as an ordinary poll showing small numbers. The poll loop now
+  remembers the previous reading and, when a cumulative counter (or rtpengine's
+  `uptime`) steps backwards, says so: the series is suspect and the counters are
+  since an unknown start, never smoothed and never reported as a drop in
+  traffic. rtpproxy publishes no uptime, so a decrease is the only in-band signal
+  it restarted. The detector, `counter_stepped_backwards`, is a pure function
+  tested directly (eight cases).
+
 ### Fixed
 
 - **The CLI reads a relay's per-call refusal as a refusal (ST9, ST-S4

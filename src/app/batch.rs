@@ -695,7 +695,7 @@ fn spawn_relay_stats_poller(
         FetchOrigin, format_relay_statistics, format_relay_statistics_json, maybe_pretty,
     };
     use crate::rtpengine::control::{ControlClient, DEFAULT_CONTROL_TIMEOUT};
-    use crate::stats_vocab::{relay_reported, resolve_for_wire};
+    use crate::stats_vocab::{counter_stepped_backwards, relay_reported, resolve_for_wire};
 
     // Captured before the closure moves: each polled reading honors --json the
     // same way the one-shot forms do.
@@ -736,8 +736,28 @@ fn spawn_relay_stats_poller(
     let interval = std::time::Duration::from_secs(secs);
     let (tx, rx) = std::sync::mpsc::channel::<()>();
 
+    // Holds the previous poll's raw pairs so a counter that steps backwards --
+    // which a cumulative counter cannot do without a reset -- is caught between
+    // polls (ST-S4 condition 6). rtpproxy publishes no uptime, so a decrease is
+    // the only in-band signal it restarted.
+    let mut previous: Option<Vec<(String, String)>> = None;
     let poll = move || match client.statistics(&permit) {
         Ok(crate::relay::types::ControlReply::Statistics(pairs)) => {
+            if let Some(prev) = &previous
+                && let Some(step) = counter_stepped_backwards(prev, &pairs)
+            {
+                // Suspect, not a drop in traffic: never smoothed, and the
+                // counters below are since an unknown start after the reset.
+                tracing::warn!(
+                    "{label}: {} stepped backwards {} -> {} between polls; a cumulative \
+                     counter cannot decrease, so the relay probably restarted (suspect). The \
+                     counters below are since an unknown start.",
+                    step.name,
+                    step.previous,
+                    step.current
+                );
+            }
+            previous = Some(pairs.clone());
             let wire = resolve_for_wire(&relay_reported(&pairs));
             let origin = FetchOrigin::Polled { every_secs: secs };
             if json || json_pretty {

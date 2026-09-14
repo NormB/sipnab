@@ -603,7 +603,7 @@ fn a_refused_relay_side_is_absent() {
 /// The wire case is unreachable in practice: no relay in reach has run long
 /// enough to wrap a 64-bit packet counter, and manufacturing one on a relay
 /// would test a fixture rather than a relay (ST-S4 condition 11). So the
-/// behaviour is driven from a recorded oversized value here, which is the value
+/// behavior is driven from a recorded oversized value here, which is the value
 /// the catalog says to test against.
 #[test]
 fn an_oversized_relay_count_is_overflow_not_absent() {
@@ -641,4 +641,106 @@ fn a_present_non_numeric_value_is_overflow_not_absent() {
         RelayCompareValue::Overflow(digits) => assert_eq!(digits, "not-a-number"),
         other => panic!("a present, uncomparable value must be Overflow, not {other:?}"),
     }
+}
+
+// ── ST9 condition 6: a polled counter that steps backwards is a restart ───────
+//
+// A relay's counters are cumulative, so a reading lower than the one before it
+// cannot happen without a reset -- the relay probably restarted. rtpproxy
+// publishes no uptime, so a decrease is the only in-band signal. The poll loop
+// used to compare nothing across polls; `counter_stepped_backwards` is the pure
+// detector the loop now runs, and it is tested here directly.
+
+use sipnab::stats_vocab::{BackwardsStep, counter_stepped_backwards};
+
+fn kv(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
+    pairs
+        .iter()
+        .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+        .collect()
+}
+
+/// A counter that rose is not a step -- the ordinary case, every poll.
+#[test]
+fn a_rising_counter_is_not_a_backwards_step() {
+    assert_eq!(
+        counter_stepped_backwards(&kv(&[("npkts", "9000")]), &kv(&[("npkts", "9600")])),
+        None,
+    );
+}
+
+/// An unchanged counter is not a step: a quiet relay, not a restarted one.
+#[test]
+fn an_unchanged_counter_is_not_a_backwards_step() {
+    assert_eq!(
+        counter_stepped_backwards(&kv(&[("npkts", "9000")]), &kv(&[("npkts", "9000")])),
+        None,
+    );
+}
+
+/// A counter that decreased is a step, carrying its name and both values so a
+/// surface can say which counter and by how much.
+#[test]
+fn a_decreased_counter_is_a_backwards_step() {
+    assert_eq!(
+        counter_stepped_backwards(&kv(&[("npkts", "9000")]), &kv(&[("npkts", "0")])),
+        Some(BackwardsStep {
+            name: "npkts".to_string(),
+            previous: 9000,
+            current: 0,
+        }),
+    );
+}
+
+/// rtpengine's own `uptime` dropping is the same signal, and the one rtpproxy
+/// cannot give.
+#[test]
+fn uptime_dropping_is_a_backwards_step() {
+    let step = counter_stepped_backwards(&kv(&[("uptime", "134")]), &kv(&[("uptime", "2")]))
+        .expect("uptime fell, which means a restart");
+    assert_eq!(step.name, "uptime");
+    assert_eq!((step.previous, step.current), (134, 2));
+}
+
+/// A counter present only in the current reading has nothing to compare against,
+/// so it is not a step -- a new key is not a decrease.
+#[test]
+fn a_newly_appeared_counter_is_not_a_step() {
+    assert_eq!(
+        counter_stepped_backwards(&kv(&[("a", "1")]), &kv(&[("a", "2"), ("b", "5")])),
+        None,
+    );
+}
+
+/// A counter that disappeared is not a step either: absence is not a decrease.
+#[test]
+fn a_disappeared_counter_is_not_a_step() {
+    assert_eq!(
+        counter_stepped_backwards(&kv(&[("a", "1"), ("b", "5")]), &kv(&[("a", "2")])),
+        None,
+    );
+}
+
+/// Non-numeric values are not counters and are never read as a step -- a string
+/// like rtpengine's `uptime: "134"` is handled by parsing, and a genuinely
+/// non-numeric field is skipped, not compared as text.
+#[test]
+fn non_numeric_values_are_not_a_step() {
+    assert_eq!(
+        counter_stepped_backwards(&kv(&[("version", "zed")]), &kv(&[("version", "aardvark")])),
+        None,
+    );
+}
+
+/// With more than one decrease, the first by sorted name is returned, so the
+/// result does not depend on the reply's order.
+#[test]
+fn the_first_decrease_by_sorted_name_is_deterministic() {
+    let prev = kv(&[("zeta", "9"), ("alpha", "9")]);
+    let cur = kv(&[("zeta", "1"), ("alpha", "1")]);
+    let step = counter_stepped_backwards(&prev, &cur).expect("both fell");
+    assert_eq!(
+        step.name, "alpha",
+        "the alphabetically-first decreased counter is reported, deterministically"
+    );
 }
