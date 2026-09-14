@@ -12,6 +12,23 @@ entry that carries them.
 
 ### Added
 
+- **The TUI exposes relay statistics too (ST8).** A `RelayStats` view, opened
+  with `S` -- lower-case `s` asks what this capture measured, upper-case asks
+  what the relay says. `S` from the call list asks the relay's global counters
+  (C1); `S` from within a call's flow view scopes them to that call (C2); `?`
+  shows the names the relay knows (C3); `K` compares the relay's per-call count
+  against this capture's (C4), keeping zero and absent distinct; and a run
+  started with `--relay-stats-interval` re-asks on that interval and labels the
+  header `polled` (C5). The view TRANSMITS, so the ask runs on a worker thread
+  and never freezes the UI on a slow or unreachable relay -- it shows the last
+  answer, or an ST-S4 classification (`not_configured` / `not_permitted` /
+  `unreachable` / `refused` / `suspect`) told apart the same five ways every
+  other surface tells them. Every figure is rendered by the same
+  `format_relay_*` functions the CLI and REST use, so a number cannot differ
+  between surfaces. This completes the four-surface relay-statistics matrix; a
+  new acceptance test reads the contract from the spec and fails if any surface
+  drops a capability or C5's REST/MCP omission loses its reason.
+
 - **`relay_stats` and `relay_compare` MCP tools bring relay statistics to the
   agent surface (ST6).** `relay_stats` asks the configured relay for its own
   counters -- globally, scoped to one Call-ID, or (with `names_only`) the names

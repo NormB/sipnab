@@ -527,6 +527,12 @@ pub(in crate::tui) fn fkey_bar_items(
                     ]
                 }
             }
+            View::RelayStats { .. } => vec![
+                ("Esc/S", "Close"),
+                ("?", "Names"),
+                ("K", "Compare"),
+                ("\u{2191}\u{2193}", "Scroll"),
+            ],
             _ => vec![("Esc", "Back")],
         }
     }

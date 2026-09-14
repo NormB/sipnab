@@ -859,7 +859,9 @@ fn wiki_intra_docs_links_resolve() {
     // and `relay_compare`; `relay_compare` to `query_relay`) rather than
     // restating the shared opt-in. Five links, one page; the site mirror is
     // generated and outside the extractor's walk.
-    const EXPECTED_WIKI_LINKS: usize = 719;
+    // 719 -> 720 by ST8's `S` row in docs/keybindings.md, which links the new
+    // "Relay statistics" section rather than restating it. One link, one page.
+    const EXPECTED_WIKI_LINKS: usize = 720;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe 6d in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

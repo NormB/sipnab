@@ -290,6 +290,16 @@ pub struct TuiOptions {
     /// fails LATER is the opposite call, and
     /// [`crate::tui::action_trail`] states why.
     pub action_trail: Option<Arc<crate::tui::action_trail::ActionTrail>>,
+    /// What the relay-statistics view needs to transmit (ST8): the relay, a
+    /// permit, and its address. `None` on a run with no relay configured or no
+    /// permit -- a file-backed run, say -- where the view reports the ST-S4
+    /// classification instead of asking. Built by the composition root
+    /// (`crate::app::tui_mode`), never here.
+    pub relay_query: crate::tui::relay_stats::RelayQueryState,
+    /// The relay-stats poll interval the run was started with (ST8, C5), from
+    /// `--relay-stats-interval`. `Some(n)` makes the relay-stats view re-ask
+    /// every `n` seconds and label its counters `polled`; `None` asks once.
+    pub relay_stats_interval: Option<u64>,
 }
 
 impl TuiOptions {
@@ -337,6 +347,8 @@ impl TuiOptions {
         app.set_names_save_path(self.name_setup.save_path);
         app.set_names_config_path(self.name_setup.config_path);
         app.set_action_trail(self.action_trail);
+        app.relay_query = self.relay_query;
+        app.relay_stats_interval = self.relay_stats_interval;
         app
     }
 }
@@ -1161,6 +1173,23 @@ impl FilterDialogState {
 
 // ── View enum ───────────────────────────────────────────────────────
 
+/// Which relay-statistics answer the `RelayStats` view is showing (ST8).
+///
+/// `?` and `K` move between these within one view rather than opening new ones,
+/// so the mode is part of the view's identity and a state test can assert it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RelayStatsMode {
+    /// The relay's own counters -- global (C1) when the view has no call, or
+    /// scoped to one call (C2) when it does.
+    Counters,
+    /// The names the relay knows (C3), reached with `?`. Always the relay's full
+    /// name set, independent of any call the view is scoped to.
+    Names,
+    /// The relay's per-call count beside this capture's (C4), reached with `K`.
+    /// Only meaningful when the view is scoped to a call.
+    Compare,
+}
+
 /// Which view is currently displayed in the TUI.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum View {
@@ -1202,6 +1231,19 @@ pub enum View {
     Help,
     /// Statistics summary view.
     Statistics,
+    /// The live relay's own statistics, asked over its control socket (ST8).
+    ///
+    /// Distinct from [`View::Statistics`], which is about what THIS capture saw:
+    /// lower-case `s` asks what sipnab measured, upper-case `S` asks what the
+    /// relay says. `call_id` scopes the counters to one call (C2) when set, or
+    /// asks the relay's globals (C1) when absent; `mode` selects counters, the
+    /// names the relay knows (C3), or a comparison against this capture (C4).
+    RelayStats {
+        /// The call this view is scoped to, or `None` for the relay's globals.
+        call_id: Option<String>,
+        /// Which answer is shown: counters, names, or a comparison.
+        mode: RelayStatsMode,
+    },
     /// Live call-quality dashboard (aggregate MOS/jitter/loss, worst first).
     QualityDashboard,
     /// RTP stream detail (by StreamKey).

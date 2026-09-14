@@ -15,6 +15,7 @@ pub mod header_form;
 pub mod help;
 pub(crate) mod loss_map;
 pub mod msg_raw;
+pub mod relay_stats;
 pub mod stream_detail;
 pub mod stream_list;
 pub(crate) mod timeline;
@@ -137,6 +138,8 @@ pub struct App {
     help_scroll: u16,
     /// Scroll offset for the statistics view (clamped to content in render).
     stats_scroll: u16,
+    /// Scroll offset for the relay-statistics view (ST8; clamped in render).
+    relay_stats_scroll: u16,
     /// Selected row in the quality dashboard's worst-streams table.
     dashboard_selected: usize,
     /// View to return to when closing the quality dashboard.
@@ -191,6 +194,16 @@ pub struct App {
     stream_displayed: StreamDisplayedCache,
     /// Statistics view aggregate-text cache.
     stats: StatsCache,
+    /// Relay-statistics view cache and the ask in flight (ST8).
+    relay_stats: relay_stats::RelayStatsCache,
+    /// What the relay-statistics view needs to transmit, or which ST-S4
+    /// invocation refusal applies when it cannot ask (no relay, or no permit).
+    relay_query: relay_stats::RelayQueryState,
+    /// The relay-stats poll interval this run was started with (ST8, C5). `Some`
+    /// makes the view re-ask on the interval and label its counters `polled`.
+    relay_stats_interval: Option<u64>,
+    /// When the relay-stats view last started an ask, to time the C5 re-poll.
+    relay_stats_asked_at: Option<std::time::Instant>,
     /// Stream-store generation the dashboard snapshot was derived from.
     dashboard_generation: Option<u64>,
     /// Floors churn-driven dashboard snapshot rebuilds.
@@ -336,9 +349,14 @@ impl App {
             raw_msg_scroll: 0,
             help_scroll: 0,
             stats_scroll: 0,
+            relay_stats_scroll: 0,
             dashboard_selected: 0,
             stream_displayed: StreamDisplayedCache::default(),
             stats: StatsCache::default(),
+            relay_stats: relay_stats::RelayStatsCache::default(),
+            relay_query: relay_stats::RelayQueryState::default(),
+            relay_stats_interval: None,
+            relay_stats_asked_at: None,
             dashboard_generation: None,
             dashboard_floor: ChurnFloor::default(),
             dashboard_return_view: None,
@@ -649,6 +667,93 @@ impl App {
         self.flow.mark_index = None;
         self.flow.diff_selected = None;
         self.flow.merged_calls.clear();
+    }
+
+    /// Keep the relay-statistics view's answer current (ST8).
+    ///
+    /// Absorbs a worker's reply (discarding one for a mode or call the user has
+    /// since left), then kicks off a new ask when the view's `(call_id, mode)`
+    /// is neither what is shown nor what is in flight. The ask runs on a worker
+    /// thread, so this never blocks the loop.
+    fn drive_relay_stats(&mut self) {
+        let want = match &self.current_view {
+            View::RelayStats { call_id, mode } => (call_id.clone(), *mode),
+            _ => return,
+        };
+        // Take any finished reply by value first, so the body can mutate the
+        // cache without the receiver's borrow still being live.
+        let received = self
+            .relay_stats
+            .rx
+            .as_ref()
+            .and_then(|rx| rx.try_recv().ok());
+        if let Some(reply) = received {
+            // A reply for what we are still showing lands; one for a mode/call
+            // the user left is dropped, its header would be wrong.
+            if reply.key == want {
+                self.relay_stats.text = reply.text;
+            }
+            self.relay_stats.showing = Some(reply.key);
+            self.relay_stats.pending = None;
+            self.relay_stats.rx = None;
+        }
+        // C5: a set poll interval forces a re-ask of the COUNTERS once it
+        // elapses, so the header's `polled every Ns` stays honest. Names and
+        // compare are one-shot; only the counters view polls.
+        if want.1 == RelayStatsMode::Counters
+            && self.relay_stats.pending.is_none()
+            && relay_stats::poll_due(
+                self.relay_stats_asked_at,
+                std::time::Instant::now(),
+                self.relay_stats_interval,
+            )
+        {
+            self.relay_stats.showing = None;
+        }
+        let up_to_date = self.relay_stats.showing.as_ref() == Some(&want)
+            || self.relay_stats.pending.as_ref() == Some(&want);
+        if !up_to_date {
+            self.start_relay_stats_ask(want);
+        }
+    }
+
+    /// Start one relay-stats ask for `want`: render the invocation refusal
+    /// directly when the run cannot ask (no thread), else compute this capture's
+    /// side of a comparison and spawn the worker that transmits.
+    fn start_relay_stats_ask(&mut self, want: (Option<String>, RelayStatsMode)) {
+        let access = match &self.relay_query {
+            relay_stats::RelayQueryState::Ready(a) => a.clone(),
+            other => {
+                // No relay or no permit: the ST-S4 invocation refusal, told
+                // apart, and no thread. Marked `showing` so it is not re-asked.
+                if let Some(text) = other.invocation_refusal() {
+                    self.relay_stats.text = text;
+                }
+                self.relay_stats.showing = Some(want);
+                self.relay_stats.pending = None;
+                self.relay_stats.rx = None;
+                return;
+            }
+        };
+        let (call_id, mode) = &want;
+        // sipnab's own side of a comparison: a call with no linked stream is
+        // ABSENT, not a measured zero (ST9).
+        let sipnab_side = if *mode == RelayStatsMode::Compare {
+            call_id.as_ref().and_then(|cid| {
+                let ss = self.stream_store.read();
+                ss.streams_for(cid)
+                    .next()
+                    .is_some()
+                    .then(|| ss.measured_packet_count_for(cid))
+            })
+        } else {
+            None
+        };
+        let origin = relay_stats::fetch_origin(self.relay_stats_interval);
+        self.relay_stats.text = "asking the relay…".to_string();
+        self.relay_stats.pending = Some(want.clone());
+        self.relay_stats_asked_at = Some(std::time::Instant::now());
+        self.relay_stats.rx = Some(relay_stats::spawn_ask(access, want, sipnab_side, origin));
     }
 
     /// Refresh the store-derived caches and apply sticky-bottom autoscroll.
@@ -1121,6 +1226,9 @@ impl App {
         if let Some(v) = fb.stats_scroll {
             self.stats_scroll = v;
         }
+        if let Some(v) = fb.relay_stats_scroll {
+            self.relay_stats_scroll = v;
+        }
     }
 
     /// Return whether packet processing is currently paused.
@@ -1422,6 +1530,10 @@ pub fn run_tui_with_pause(
         // Tick: refresh store-derived caches, render read-only, then
         // persist what the render pass computed (clamps, flow row caches).
         app.sync_caches();
+        // ST8: absorb a finished relay-stats ask and kick off a new one when the
+        // view's call/mode changed. Separate from sync_caches because the ask
+        // mutates `app` while sync_caches holds a store read guard.
+        app.drive_relay_stats();
         let drew = draw_frame(&mut terminal, &mut app)?;
 
         // Deferred work runs here, AFTER the frame that painted its

@@ -42,6 +42,7 @@ CALL LIST:
   N                Name selected address (IP -> host / FQDN)
   O                Open pcap file
   s                Statistics view
+  S                Relay statistics view (asks the relay)
   D                Quality dashboard (live MOS/jitter/loss)
   T                Call timeline (selected dialog)
   F9               Clear active filter
@@ -97,6 +98,12 @@ MESSAGE DIFF / COMBINED DETAIL / STATISTICS:
   h                Header names (diff and combined detail)
   Esc              Back
   q, s             Close statistics (Statistics view)
+
+RELAY STATISTICS VIEW (S asks the relay directly):
+  ?                Names the relay knows (what to ask for)
+  K                Compare relay vs capture (per-call)
+  \u{2191}/\u{2193}, j/k       Scroll
+  Esc, S           Close
 
 QUALITY DASHBOARD:
   \u{2191}/\u{2193}, j/k       Select stream (worst quality first)

@@ -44,7 +44,7 @@ Tiers:
 
 ## Status
 
-**31 open, 512 done** across 38 sections.
+**30 open, 513 done** across 38 sections.
 Regenerate with `python3 scripts/backlog-status.py --apply`.
 
 | Section | Open | Done | Progress |
@@ -63,7 +63,7 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
 | NAT | 0 | 4 | `##########` |
 | RV | 0 | 8 | `##########` |
 | RP | 1 | 3 | `########..` |
-| ST | 6 | 11 | `######....` |
+| ST | 5 | 12 | `#######...` |
 | PAR | 5 | 0 | `..........` |
 | HX | 1 | 2 | `#######...` |
 | AS | 0 | 7 | `##########` |
@@ -5890,9 +5890,24 @@ apart in the first place (see PAR).
   since a number that differs between `--json` and the table is a defect nobody
   notices until it is quoted.
 
-- [ ] **ST8 — the TUI exposes them too.** 50 tests minimum, driven through the
-  PTY harness the E2E tests already use. See PAR — the TUI is the surface
-  furthest behind, and statistics must not widen that gap.
+- [x] **ST8 — the TUI exposes them too. DONE.** A `RelayStats` view
+  (`View::RelayStats { call_id, mode }`), opened with `S`: from the call list it
+  asks the relay's globals (C1), from a call's flow view it scopes to that call
+  (C2), `?` shows the names the relay knows (C3), `K` compares relay against
+  capture (C4, per-call), and a run started with `--relay-stats-interval` labels
+  the counters `polled` and re-asks on the interval (C5). The view TRANSMITS, so
+  the ask runs on a worker thread (the control timeout is 2s -- a synchronous
+  ask would freeze the UI) and its answer arrives over a channel; the pure
+  conversion (reply plus this capture's side -> rendered text) is tested
+  directly, since the wire cannot be driven without a live relay. Refusals are
+  the five ST-S4 classifications, told apart the same way every surface tells
+  them, and rendered by the same `format_relay_*` functions the CLI and REST
+  use. The capability-matrix acceptance test (`relay_stats_matrix_test`) reads
+  the contract from the spec and fails if a surface drops a capability or C5's
+  REST/MCP omission loses its reason; `no_surface_introduces_a_bare_stats_spelling`
+  is the per-surface no-bare-`stats` check. Keys documented in the F1 help and
+  the f-key bar; well past the 50-test minimum across the relay-statistics
+  corpus (state, ask-core, matrix, plus the shared vocab and format tests).
 
 - [ ] **ST9 — failure and edge cases are first-class, not an afterthought.**
 

@@ -37,8 +37,8 @@ expression: output
 │  N                 Name selected address (IP -> host / FQDN)                 │
 │  O                 Open pcap file                                            │
 │  s                 Statistics view                                           │
+│  S                 Relay statistics view (asks the relay)                    │
 │  D                 Quality dashboard (live MOS/jitter/loss)                  │
 │  T                 Call timeline (selected dialog)                           │
-│  F9                Clear active filter                                       │
 └──────────────────────────────────────────────────────────────────────────────┘
 Esc Back

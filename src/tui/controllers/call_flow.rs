@@ -71,6 +71,9 @@ fn flow_selected_message(app: &App, anchor_call_id: &str) -> (String, usize) {
 pub enum CallFlowAction {
     /// The configured quit key — exit the application.
     Quit,
+    /// `S` — open the relay-statistics view scoped to THIS call (ST8, C2): the
+    /// relay's own counters for the call on screen.
+    OpenRelayStats,
     /// Tab/BackTab — move focus between the ladder and the detail pane
     /// (only meaningful while the split preview is visible).
     ToggleDetailFocus,
@@ -206,6 +209,7 @@ pub fn call_flow_action(km: &Keymap, key: KeyEvent) -> Option<CallFlowAction> {
         KeyCode::Char(']') => DetailScrollDown,
         k if k == km.extended_flow || k == KeyCode::Char('x') => ToggleExtended,
         KeyCode::F(6) => ToggleRtpInFlow,
+        KeyCode::Char('S') => OpenRelayStats,
         KeyCode::Char('m') => SetMark,
         KeyCode::Char('M') => ClearMark,
         KeyCode::Char('e') => ToggleFold,
@@ -591,6 +595,19 @@ fn execute_call_flow_action(app: &mut App, action: CallFlowAction) {
             app.current_view = View::CallList;
         }
         CallFlowAction::Help => app.current_view = View::Help,
+        CallFlowAction::OpenRelayStats => {
+            // Scope the relay-stats view to the call on screen (C2). The flow
+            // view IS a call, so `S` here asks the relay what it holds for THIS
+            // one, where `S` from the call list asks the relay's globals.
+            if let View::CallFlow(ref call_id) = app.current_view {
+                let call_id = call_id.clone();
+                app.relay_stats_scroll = 0;
+                app.current_view = View::RelayStats {
+                    call_id: Some(call_id),
+                    mode: RelayStatsMode::Counters,
+                };
+            }
+        }
         CallFlowAction::OpenSaveDialog => open_save_popup(app),
         CallFlowAction::ResetCompare => {
             app.flow.diff_selected = None;

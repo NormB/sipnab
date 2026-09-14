@@ -83,6 +83,8 @@ pub enum CallListAction {
     NameEndpoints,
     /// `s` — open the statistics view.
     OpenStatistics,
+    /// `S` — open the relay-statistics view for the relay's globals (ST8, C1).
+    OpenRelayStats,
     /// `D` — open the quality dashboard, remembering the call list as the
     /// return view.
     OpenDashboard,
@@ -142,6 +144,7 @@ pub fn call_list_action(km: &Keymap, key: KeyEvent) -> Option<CallListAction> {
         KeyCode::Char('O') => OpenFileDialog,
         KeyCode::Char('N') => NameEndpoints,
         KeyCode::Char('s') => OpenStatistics,
+        KeyCode::Char('S') => OpenRelayStats,
         KeyCode::Char('D') => OpenDashboard,
         // 't' (lowercase) is the timestamp-mode cycle; the timeline opens
         // on Shift+T so both keep a call-list binding.
@@ -296,6 +299,13 @@ fn execute_call_list_action(app: &mut App, action: CallListAction) {
         CallListAction::OpenStatistics => {
             app.stats_scroll = 0;
             app.current_view = View::Statistics;
+        }
+        CallListAction::OpenRelayStats => {
+            app.relay_stats_scroll = 0;
+            app.current_view = View::RelayStats {
+                call_id: None,
+                mode: RelayStatsMode::Counters,
+            };
         }
         CallListAction::OpenDashboard => {
             app.dashboard_selected = 0;

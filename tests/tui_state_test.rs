@@ -33,7 +33,9 @@ mod tui_state {
     use sipnab::capture::parse::TransportProto;
     use sipnab::sip::SipMessage;
     use sipnab::sip::parser::parse_sip;
-    use sipnab::tui::{App, ColorMode, Popup, SaveFormat, SdpDisplayMode, TimestampMode, View};
+    use sipnab::tui::{
+        App, ColorMode, Popup, RelayStatsMode, SaveFormat, SdpDisplayMode, TimestampMode, View,
+    };
 
     // ── Helper: SIP message constructors ───────────────────────────────
     //
@@ -263,6 +265,109 @@ mod tui_state {
         assert_eq!(*app.current_view(), View::Statistics);
         app.handle_key(KeyCode::Esc);
         assert_eq!(*app.current_view(), View::CallList);
+    }
+
+    /// `S` (shifted) opens the relay-statistics view for the relay's globals
+    /// (ST8, C1) -- lower-case `s` asks what the capture saw, upper-case asks
+    /// what the relay says.
+    #[test]
+    fn shift_s_opens_relay_stats_view() {
+        let mut app = App::new_test();
+        app.handle_key(KeyCode::Char('S'));
+        assert_eq!(
+            *app.current_view(),
+            View::RelayStats {
+                call_id: None,
+                mode: RelayStatsMode::Counters,
+            }
+        );
+    }
+
+    /// `s` and `S` open DIFFERENT views: the capture's statistics versus the
+    /// relay's. The pairing only helps if the two do not collide.
+    #[test]
+    fn lower_s_and_shift_s_open_different_views() {
+        let mut lower = App::new_test();
+        lower.handle_key(KeyCode::Char('s'));
+        assert_eq!(*lower.current_view(), View::Statistics);
+
+        let mut upper = App::new_test();
+        upper.handle_key(KeyCode::Char('S'));
+        assert!(matches!(*upper.current_view(), View::RelayStats { .. }));
+    }
+
+    /// Esc closes the relay-statistics view back to the call list.
+    #[test]
+    fn esc_from_relay_stats_returns_to_call_list() {
+        let mut app = App::new_test();
+        app.handle_key(KeyCode::Char('S'));
+        assert!(matches!(*app.current_view(), View::RelayStats { .. }));
+        app.handle_key(KeyCode::Esc);
+        assert_eq!(*app.current_view(), View::CallList);
+    }
+
+    /// `S` within the view closes it too, pairing with the `S` that opened it.
+    #[test]
+    fn shift_s_within_relay_stats_closes_it() {
+        let mut app = App::new_test();
+        app.handle_key(KeyCode::Char('S'));
+        assert!(matches!(*app.current_view(), View::RelayStats { .. }));
+        app.handle_key(KeyCode::Char('S'));
+        assert_eq!(*app.current_view(), View::CallList);
+    }
+
+    /// `?` inside the relay-stats view toggles the names mode (C3) rather than
+    /// opening the global help overlay -- the view owns the key there. Pressed
+    /// again it returns to the counters.
+    #[test]
+    fn question_toggles_names_in_relay_stats_not_help() {
+        let mut app = App::new_test();
+        app.handle_key(KeyCode::Char('S'));
+        app.handle_key(KeyCode::Char('?'));
+        assert_eq!(
+            *app.current_view(),
+            View::RelayStats {
+                call_id: None,
+                mode: RelayStatsMode::Names,
+            },
+            "? shows the names, not Help"
+        );
+        app.handle_key(KeyCode::Char('?'));
+        assert_eq!(
+            *app.current_view(),
+            View::RelayStats {
+                call_id: None,
+                mode: RelayStatsMode::Counters,
+            },
+            "? again returns to the counters"
+        );
+    }
+
+    /// `?` still opens Help from an ordinary view -- the relay-stats exception
+    /// does not leak.
+    #[test]
+    fn question_still_opens_help_from_the_call_list() {
+        let mut app = App::new_test();
+        app.handle_key(KeyCode::Char('?'));
+        assert_eq!(*app.current_view(), View::Help);
+    }
+
+    /// `K` in a GLOBAL relay-stats view is a no-op: there is no call to compare,
+    /// so the mode stays on the counters rather than entering a comparison it
+    /// cannot answer.
+    #[test]
+    fn k_compare_is_a_noop_in_the_global_relay_stats_view() {
+        let mut app = App::new_test();
+        app.handle_key(KeyCode::Char('S'));
+        app.handle_key(KeyCode::Char('K'));
+        assert_eq!(
+            *app.current_view(),
+            View::RelayStats {
+                call_id: None,
+                mode: RelayStatsMode::Counters,
+            },
+            "K needs a call; global view stays on counters"
+        );
     }
 
     /// Esc leaves the stream list for the call list.
@@ -979,6 +1084,57 @@ mod tui_state {
         app.handle_key(KeyCode::Enter); // open call flow for first dialog
         assert!(matches!(app.current_view(), View::CallFlow(_)));
         app
+    }
+
+    /// `S` from within a call's flow view opens the relay-statistics view scoped
+    /// to THAT call (ST8, C2) -- where `S` from the call list asks the relay's
+    /// globals (C1).
+    #[test]
+    fn shift_s_from_call_flow_opens_per_call_relay_stats() {
+        let mut app = app_with_call_flow_open();
+        let call_id = match app.current_view() {
+            View::CallFlow(cid) => cid.clone(),
+            other => panic!("expected call flow, got {other:?}"),
+        };
+        app.handle_key(KeyCode::Char('S'));
+        assert_eq!(
+            *app.current_view(),
+            View::RelayStats {
+                call_id: Some(call_id),
+                mode: RelayStatsMode::Counters,
+            },
+            "S from a call's flow scopes the relay-stats view to that call"
+        );
+    }
+
+    /// `K` in a PER-CALL relay-stats view enters the comparison (C4), and toggles
+    /// back to the counters -- the call is what makes the comparison answerable.
+    #[test]
+    fn k_toggles_compare_in_a_per_call_relay_stats_view() {
+        let mut app = app_with_call_flow_open();
+        let call_id = match app.current_view() {
+            View::CallFlow(cid) => cid.clone(),
+            other => panic!("expected call flow, got {other:?}"),
+        };
+        app.handle_key(KeyCode::Char('S'));
+        app.handle_key(KeyCode::Char('K'));
+        assert_eq!(
+            *app.current_view(),
+            View::RelayStats {
+                call_id: Some(call_id.clone()),
+                mode: RelayStatsMode::Compare,
+            },
+            "K compares this call against the capture"
+        );
+        app.handle_key(KeyCode::Char('K'));
+        assert_eq!(
+            *app.current_view(),
+            View::RelayStats {
+                call_id: Some(call_id),
+                mode: RelayStatsMode::Counters,
+            },
+            "K again returns to the counters"
+        );
     }
 
     /// Create an app with the raw message view open.

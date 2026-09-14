@@ -207,6 +207,42 @@ fn build_stores(
 ///
 /// # Side effects
 ///
+/// Build the relay-statistics view's ask state from the run's configuration and
+/// permit (ST8).
+///
+/// The two no-ask reasons are kept apart: no `--rtpengine-control` is
+/// `not_configured`; a configured relay on a run that reads a file (so no
+/// permit) is `not_permitted`. A configured-but-unparseable address is
+/// `not_configured` too -- there is no relay to reach, and the operator's own
+/// invocation is where to look. The relay client is a fresh `ControlClient`,
+/// the same one REST and MCP build in `start_servers`, so all three surfaces
+/// ask the identical way. This is the composition root, which may name the
+/// implementation; the view it hands the client to may not.
+fn build_tui_relay_query(
+    cli: &Cli,
+    permit: Option<crate::security::transmit_guard::TransmitPermit>,
+) -> crate::tui::relay_stats::RelayQueryState {
+    use crate::tui::relay_stats::{RelayQueryState, TuiRelayAccess};
+    let Some(addr_str) = cli.rtp_args.rtpengine_control.as_deref() else {
+        return RelayQueryState::NotConfigured;
+    };
+    let Some(permit) = permit else {
+        return RelayQueryState::NotPermitted;
+    };
+    let Ok(addr) = addr_str.parse::<std::net::SocketAddr>() else {
+        return RelayQueryState::NotConfigured;
+    };
+    let relay = std::sync::Arc::new(crate::rtpengine::control::ControlClient::new(
+        addr,
+        crate::rtpengine::control::DEFAULT_CONTROL_TIMEOUT,
+    ));
+    RelayQueryState::Ready(TuiRelayAccess {
+        relay,
+        permit,
+        addr,
+    })
+}
+
 /// Heavy wiring, in order: optionally starts the standalone Prometheus
 /// metrics server; spawns the "tui-processor" thread that drains the packet
 /// channel, drives the shared pipeline into the stores, lazily opens and
@@ -291,8 +327,15 @@ pub fn run_tui_mode(
     // nothing explains only when there is a reconciler to offer them to, and
     // the reconciler runs on its own thread so the capture path never waits
     // on a relay. Both ends of the arrangement are set up here, or neither.
+    // The relay-statistics view (ST8) transmits too, and a live source grants
+    // exactly one permit for the run. The permit is `Copy` -- it is proof the
+    // source is live, not a single-use ticket -- so the view holds a copy of the
+    // same one the reconciler took. `None` when the source is a file: the view
+    // then reports `not_permitted` rather than asking.
+    let mut relay_query_permit: Option<crate::security::transmit_guard::TransmitPermit> = None;
     let (relay_orphans, relay_thread) = match launched.relay.ready.take() {
         Some(ready) => {
+            relay_query_permit = Some(ready.permit);
             let (sink, orphan_rx) = crate::relay::reconcile::orphan_channel();
             stream_store.write().record_new_orphans(true);
             match crate::app::relay_reconciler::spawn(
@@ -622,6 +665,12 @@ pub fn run_tui_mode(
             ),
             bpf_filter,
             action_trail: action_trail.clone(),
+            // The relay-statistics view's ask state (ST8): a relay + permit when
+            // this run can transmit, or which invocation refusal applies.
+            relay_query: build_tui_relay_query(&cli, relay_query_permit),
+            // C5: the view inherits the run's poll interval, showing it in the
+            // header and re-asking on it.
+            relay_stats_interval: cli.rtp_args.relay_stats_interval,
         },
     ) {
         tracing::error!("TUI error: {e}");

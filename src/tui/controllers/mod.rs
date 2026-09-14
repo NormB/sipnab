@@ -116,8 +116,11 @@ pub(in crate::tui) fn handle_key_event(app: &mut App, key: KeyEvent) {
             }
         }
         // '?' opens help from any view — the near-universal TUI reflex —
-        // by re-dispatching as the configured help key.
-        if key.code == KeyCode::Char('?') {
+        // by re-dispatching as the configured help key. EXCEPT in the
+        // relay-statistics view, where '?' asks the relay which statistics it
+        // knows (C3): that view owns the key, the same way the raw-message
+        // pager owns `n` above.
+        if key.code == KeyCode::Char('?') && !matches!(app.current_view, View::RelayStats { .. }) {
             let help = KeyEvent::new(app.keymap.help, KeyModifiers::NONE);
             dispatch_view_key(app, help);
             return;
@@ -172,6 +175,7 @@ fn dispatch_view_key(app: &mut App, key: KeyEvent) {
         View::CombinedDetail { .. } => handle_combined_detail_key(app, key),
         View::Help => handle_help_key(app, key),
         View::Statistics => handle_statistics_key(app, key),
+        View::RelayStats { .. } => handle_relay_stats_key(app, key),
         View::QualityDashboard => dashboard::handle_dashboard_key(app, key),
         View::CallTimeline(_) => timeline::handle_timeline_key(app, key),
         View::StreamLossMap(_) => loss_map::handle_loss_map_key(app, key),
@@ -494,6 +498,112 @@ pub(in crate::tui) fn handle_statistics_key(app: &mut App, key: KeyEvent) {
     }
 }
 
+/// Everything the relay-statistics view can do for a single key press (ST8).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RelayStatsAction {
+    /// Esc, the quit key, or `S` — close and return to the call list.
+    Close,
+    /// Scroll the text up one line.
+    ScrollUp,
+    /// Scroll the text down one line.
+    ScrollDown,
+    /// Scroll up 20 lines.
+    PageUp,
+    /// Scroll down 20 lines.
+    PageDown,
+    /// Jump to the top.
+    ScrollTop,
+    /// Jump to the bottom (the render pass clamps to the content height).
+    ScrollBottom,
+    /// `?` — show the names the relay knows (C3); pressed again, return to the
+    /// counters.
+    ToggleNames,
+    /// `K` — compare the relay's per-call count against this capture's (C4);
+    /// pressed again, return to the counters. Only meaningful when the view is
+    /// scoped to a call.
+    ToggleCompare,
+}
+
+/// Pure key→action mapping for the relay-statistics view (keymap-aware).
+///
+/// `?` maps to [`RelayStatsAction::ToggleNames`] here, but reaches this view
+/// only because [`handle_key_event`] special-cases it: `?` is otherwise the
+/// global help key. `S` closes, pairing with the `S` that opened the view.
+///
+/// # Returns
+/// The mapped action, or `None` when the key is not bound in this view.
+pub fn relay_stats_action(km: &Keymap, key: KeyEvent) -> Option<RelayStatsAction> {
+    use RelayStatsAction::*;
+    Some(match key.code {
+        k if k == KeyCode::Esc || k == km.quit || k == KeyCode::Char('S') => Close,
+        KeyCode::Char('?') => ToggleNames,
+        KeyCode::Char('K') => ToggleCompare,
+        KeyCode::Up | KeyCode::Char('k') => ScrollUp,
+        KeyCode::Down | KeyCode::Char('j') => ScrollDown,
+        KeyCode::PageUp => PageUp,
+        KeyCode::PageDown => PageDown,
+        KeyCode::Home => ScrollTop,
+        KeyCode::End => ScrollBottom,
+        _ => return None,
+    })
+}
+
+/// Move the relay-stats view to `target`, or back to counters if it is already
+/// there (the toggle `?` and `K` share). `Compare` is refused when the view has
+/// no call to compare, so a global view's `K` is a no-op rather than a mode it
+/// cannot answer. Resets the scroll, because the new answer is a different
+/// length.
+fn toggle_relay_stats_mode(app: &mut App, target: RelayStatsMode) {
+    let View::RelayStats { call_id, mode } = &app.current_view else {
+        return;
+    };
+    if target == RelayStatsMode::Compare && call_id.is_none() {
+        return;
+    }
+    let next = if *mode == target {
+        RelayStatsMode::Counters
+    } else {
+        target
+    };
+    let call_id = call_id.clone();
+    app.current_view = View::RelayStats {
+        call_id,
+        mode: next,
+    };
+    app.relay_stats_scroll = 0;
+}
+
+/// Handle keys in the relay-statistics view: map, then execute.
+///
+/// # Side effects
+/// Scroll actions move `app.relay_stats_scroll`; `ToggleNames`/`ToggleCompare`
+/// change the view's mode (and reset the scroll); `Close` returns to the call
+/// list. Unbound keys are ignored.
+pub(in crate::tui) fn handle_relay_stats_key(app: &mut App, key: KeyEvent) {
+    let Some(action) = relay_stats_action(&app.keymap, key) else {
+        return;
+    };
+    match action {
+        RelayStatsAction::Close => app.current_view = View::CallList,
+        RelayStatsAction::ScrollUp => {
+            app.relay_stats_scroll = app.relay_stats_scroll.saturating_sub(1);
+        }
+        RelayStatsAction::ScrollDown => {
+            app.relay_stats_scroll = app.relay_stats_scroll.saturating_add(1);
+        }
+        RelayStatsAction::PageUp => {
+            app.relay_stats_scroll = app.relay_stats_scroll.saturating_sub(20);
+        }
+        RelayStatsAction::PageDown => {
+            app.relay_stats_scroll = app.relay_stats_scroll.saturating_add(20);
+        }
+        RelayStatsAction::ScrollTop => app.relay_stats_scroll = 0,
+        RelayStatsAction::ScrollBottom => app.relay_stats_scroll = u16::MAX,
+        RelayStatsAction::ToggleNames => toggle_relay_stats_mode(app, RelayStatsMode::Names),
+        RelayStatsAction::ToggleCompare => toggle_relay_stats_mode(app, RelayStatsMode::Compare),
+    }
+}
+
 /// Handle a mouse event (wheel scrolling) against the current view.
 ///
 /// Wheel steps: one row in the list/ladder views (selection follows, like
@@ -595,6 +705,13 @@ pub(in crate::tui) fn handle_mouse_event(app: &mut App, kind: crossterm::event::
                 app.stats_scroll.saturating_add(3)
             } else {
                 app.stats_scroll.saturating_sub(3)
+            };
+        }
+        View::RelayStats { .. } => {
+            app.relay_stats_scroll = if down {
+                app.relay_stats_scroll.saturating_add(3)
+            } else {
+                app.relay_stats_scroll.saturating_sub(3)
             };
         }
         // The timeline is a fixed single screen (no scroll, no selection),

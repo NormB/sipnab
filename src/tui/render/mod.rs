@@ -45,6 +45,8 @@ pub(in crate::tui) struct RenderFeedback {
     pub(in crate::tui) help_scroll: Option<u16>,
     /// Clamped scroll of the statistics view.
     pub(in crate::tui) stats_scroll: Option<u16>,
+    /// Clamped scroll of the relay-statistics view (ST8).
+    pub(in crate::tui) relay_stats_scroll: Option<u16>,
 }
 
 /// Render the entire application frame based on the current view.
@@ -492,6 +494,9 @@ pub(in crate::tui) fn render_app(
         View::Statistics => {
             fb.stats_scroll = Some(render_statistics(frame, main_area, app, ds, ss));
         }
+        View::RelayStats { .. } => {
+            fb.relay_stats_scroll = Some(render_relay_stats(frame, main_area, app));
+        }
         View::QualityDashboard => {
             crate::tui::dashboard::render_dashboard(frame, main_area, app);
         }
@@ -663,6 +668,55 @@ pub(in crate::tui) fn render_statistics(
 
     frame.render_widget(paragraph, area);
     stats_scroll
+}
+
+/// Render the relay-statistics view (ST8): the live relay's own counters, the
+/// names it knows, or a comparison against this capture.
+///
+/// Serves the text `sync_caches` composed off the input path (an asked answer,
+/// or an ST-S4 classification when the relay could not be reached), so the draw
+/// pass never transmits. Returns the clamped scroll.
+///
+/// # Side effects
+/// Draws to `frame` only; no state is mutated.
+pub(in crate::tui) fn render_relay_stats(
+    frame: &mut ratatui::Frame,
+    area: ratatui::layout::Rect,
+    app: &App,
+) -> u16 {
+    let title = match &app.current_view {
+        View::RelayStats {
+            mode: RelayStatsMode::Names,
+            ..
+        } => " Relay statistics — names the relay knows ",
+        View::RelayStats {
+            mode: RelayStatsMode::Compare,
+            ..
+        } => " Relay statistics — relay vs capture ",
+        _ => " Relay statistics ",
+    };
+    // The text `sync_caches` composed off the input path: an asked answer, an
+    // "asking…" line while a worker is in flight, or an ST-S4 classification.
+    let text: &str = if app.relay_stats.text.is_empty() {
+        "asking the relay…"
+    } else {
+        &app.relay_stats.text
+    };
+
+    let total_rows = text.lines().count() as u16;
+    let viewport = area.height.saturating_sub(2);
+    let relay_stats_scroll = app
+        .relay_stats_scroll
+        .min(total_rows.saturating_sub(viewport));
+
+    let block = Block::default().borders(Borders::ALL).title(title);
+    let paragraph = Paragraph::new(text)
+        .block(block)
+        .style(Style::default().fg(app.theme.foreground))
+        .scroll((relay_stats_scroll, 0));
+
+    frame.render_widget(paragraph, area);
+    relay_stats_scroll
 }
 
 /// Estimated rendered rows for `lines` wrapped to `width` columns: the

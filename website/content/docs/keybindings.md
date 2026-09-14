@@ -99,6 +99,7 @@ without toggling anything.
 | u | Cycle From/To column display (default / host:port / user / user@host:port) |
 | r / F6 | Show raw SIP message for selected dialog |
 | s | Switch to Statistics view |
+| S | Open the **Relay statistics** view — asks the live relay for its own counters (`s` asks what this capture saw, `S` asks what the relay says). See [Relay statistics](#relay-statistics) |
 | D | Open the Quality Dashboard (live MOS/jitter/loss) |
 | T | Open the call timeline for the selected dialog (Esc / q closes it) |
 | O | Open pcap file (File Open dialog) |
@@ -275,6 +276,24 @@ the Call List or RTP Streams view.
 | PgUp / PgDn | Page scroll |
 | Home / End | Jump to top/bottom |
 | Esc / q / s | Back to Call List |
+
+## Relay statistics
+
+The live relay's own view of media, asked over its control socket — distinct
+from the **Statistics** view above, which is about what this capture saw. Open
+with `S`: from the Call List it asks the relay's global counters, and from a
+call's flow view it scopes them to that call. Needs a relay control address and
+a live capture; a run reading a file reports that it may not ask. The ask runs
+in the background, so the view never freezes waiting on a slow relay.
+
+| Key | Action |
+|-----|--------|
+| ? | Show the names the relay knows (what you can ask for) |
+| K | Compare the relay's per-call count against this capture's (per-call view only) |
+| Up / k, Down / j | Scroll |
+| PgUp / PgDn | Page scroll |
+| Home / End | Jump to top/bottom |
+| Esc / S | Close |
 
 ## Help
 

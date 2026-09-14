@@ -3538,7 +3538,9 @@ fn no_documentation_table_repeats_a_row() {
     // 883 -> 887 by ST6: the `relay_stats` and `relay_compare` sections in
     // docs/mcp-tools.md each add one parameter table, counted once in docs/ and
     // once in the site mirror -- two tables, two mirrored copies, four in all.
-    const EXPECTED_TABLES: usize = 887;
+    // 887 -> 889 by ST8: the "Relay statistics" section in docs/keybindings.md
+    // adds one key table, counted once in docs/ and once in its site mirror.
+    const EXPECTED_TABLES: usize = 889;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")
