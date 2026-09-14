@@ -44,7 +44,7 @@ Tiers:
 
 ## Status
 
-**30 open, 513 done** across 38 sections.
+**29 open, 514 done** across 38 sections.
 Regenerate with `python3 scripts/backlog-status.py --apply`.
 
 | Section | Open | Done | Progress |
@@ -63,7 +63,7 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
 | NAT | 0 | 4 | `##########` |
 | RV | 0 | 8 | `##########` |
 | RP | 1 | 3 | `########..` |
-| ST | 5 | 12 | `#######...` |
+| ST | 4 | 13 | `########..` |
 | PAR | 5 | 0 | `..........` |
 | HX | 1 | 2 | `#######...` |
 | AS | 0 | 7 | `##########` |
@@ -5909,14 +5909,27 @@ apart in the first place (see PAR).
   the f-key bar; well past the 50-test minimum across the relay-statistics
   corpus (state, ask-core, matrix, plus the shared vocab and format tests).
 
-- [ ] **ST9 — failure and edge cases are first-class, not an afterthought.**
+- [x] **ST9 — failure and edge cases are first-class, not an afterthought.**
 
   Named here so they cannot be quietly dropped from each surface's 50: a relay
   that answers slowly, one that answers with a key sipnab cannot parse, one that
   restarts mid-run and resets every counter, a permit that is absent, a timer
   that fires while a previous poll is still outstanding, and a statistic whose
   value is legitimately zero versus one that is missing. Zero and absent are
-  different answers and must never render the same.
+  different answers and must never render the same. **Done:** the five live gaps
+  are closed against the shipped one-relay-transmit architecture — a per-call
+  refusal read as a refusal not counter rows (cond 4), an oversized count as
+  suspect not an absent call (cond 11), a polled counter that steps backwards as
+  a probable restart (cond 6), a cookie-mismatched reply as suspect not
+  unreachable (cond 7), and a poll that overruns its interval as a slipped
+  cadence (cond 13) — each single-sourced in `stats_vocab` so the surfaces
+  cannot disagree, TDD'd and mutation-verified. The conditions that assume an
+  rtpproxy TRANSMIT path (5, and the rtpproxy halves of 4/6/8/10) are not
+  applicable by design — sipnab reads rtpproxy off the wire and never sends to
+  it — and the "Realization against the shipped architecture" section of
+  [`docs/design/relay-statistics-failures.md`](relay-statistics-failures.md)
+  records which rows are live, which are N/A, and why the two-relay test floor
+  does not apply.
 
 ## PAR — surface parity debt (added 2026-09-12)
 

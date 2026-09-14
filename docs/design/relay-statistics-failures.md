@@ -247,3 +247,65 @@ own shape demands.
 The point of drawing from one list is not to reach a number. It is that four
 surfaces cannot disagree about what a failure looks like if their failure tests
 came from the same thirteen rows.
+
+## Realization against the shipped architecture (ST9)
+
+The catalog above was written before the transmit architecture settled, and it
+assumed sipnab asks BOTH relays. It does not. There is exactly one transmitting
+control client, and it speaks rtpengine ([`src/rtpengine/control.rs`](https://github.com/NormB/sipnab/blob/main/src/rtpengine/control.rs), behind a
+`TransmitPermit`); rtpproxy is read OFF THE WIRE by a decoder
+([`src/relay/rtpproxy.rs`](https://github.com/NormB/sipnab/blob/main/src/relay/rtpproxy.rs)) that has no socket and never sends. sipnab is a passive
+capture tool, and actively probing rtpproxy would contradict that posture — so
+the rows that need an rtpproxy TRANSMIT path are not implemented, by design and
+not by omission. The vocabulary the conditions classify into is single-sourced
+in [`src/stats_vocab.rs`](https://github.com/NormB/sipnab/blob/main/src/stats_vocab.rs), so what a failure looks like is the same on every
+surface whether or not a given condition can arise.
+
+Live — over the rtpengine transmit path and the shared vocabulary — implemented
+and tested by the ST9 commits:
+
+- Conditions 1 and 2 (`not_configured`, `not_permitted`): every surface, kept
+  apart because they send an operator to different places.
+- Condition 3 (`unreachable`): the CLI, REST and TUI render the token; MCP
+  renders a fetch that yields no answer as its documented `internal_error`
+  carrying the reason, which is its surface-appropriate form of the same fact.
+- Condition 4, the rtpengine reasons (`Unrecognized command`, `No call-id in
+  message`, `Unknown call-id`, `Could not decode bencode dictionary`):
+  `refused`, carrying the relay's own words. The CLI per-call and compare paths
+  read a `result: error` reply through the single `classify_per_call_reply` rule
+  rather than tiering it into counter rows.
+- Condition 6: a polled counter — or rtpengine's `uptime` — that steps backwards
+  is flagged a probable restart (`counter_stepped_backwards`), suspect, never
+  smoothed.
+- Condition 7: a reply whose cookie does not match is discarded and classified
+  suspect through the typed `UntrustedReply` marker and the one `fetch_error_outcome`
+  rule, not read as `unreachable`. A fresh cookie per request is unchanged.
+- Condition 9: zero, not-asked and refused stay three states, in `resolve_for_wire`.
+- Condition 11: a per-call total that does not fit `u64` is suspect, carrying its
+  digits (`relay_compare_value`), never coerced to an absent side.
+- Condition 12: C4 with no capture is `not_configured` naming the capture.
+- Condition 13: the serial poll loop cannot overlap polls, so nothing stacks a
+  backlog; a poll that overran its interval says the cadence slipped
+  (`cadence_slipped`).
+
+Not applicable, because sipnab does not transmit to rtpproxy:
+
+- Condition 5 (a bulk rtpproxy `G` returning `E68` for the whole request): sipnab
+  never sends `G`; the decoder reads whatever rtpproxy control datagrams the
+  capture happened to see.
+- The rtpproxy halves of conditions 4 (the six numeric `E`-codes), 6 (rtpproxy
+  publishes no uptime, and there is no polled rtpproxy series to step), 7 (no
+  rtpproxy request, so no cookie to mint or mismatch), 8 (no per-name `G` probe
+  to refuse) and 10 (no per-call tag rewriting to try, so no `E50` to report the
+  spellings of). Each needs sipnab to SEND to rtpproxy, which it does not do.
+
+The 28-on-the-CLI, 27-elsewhere floor in the section above counts both relays
+transmitting — ten sub-cases for condition 4, two each for 5, 6, 7 and 10
+"because the two relays behave differently". With one transmit path those
+doublings do not exist, so the failure suite is drawn from the rtpengine-transmit
+rows and the shared vocabulary instead. Those tests live in
+[`tests/statistics_vocabulary_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/statistics_vocabulary_test.rs) (the vocabulary and the five outcomes, the
+three-state partition, the per-call refusal rule, the compare-value resolution,
+and the backwards-step detector) and beside each surface's pure conversion; the
+count is what they come to, not a number padded to match the two-relay
+assumption.
