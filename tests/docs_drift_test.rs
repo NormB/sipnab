@@ -3178,7 +3178,9 @@ fn no_documentation_table_repeats_a_row() {
     // (surface-parity-definition.md), the last two gating specs. TWO files;
     // docs/design/ has no website mirror. Attributed against the staged diff:
     // --diff-filter=A lists exactly those two new .md paths.
-    const EXPECTED_MARKDOWN_FILES: usize = 216;
+    // 216 -> 217 by the TUI BPF-filter editing spec (tui-bpf-filter-editing.md).
+    // One new file in docs/design/, no website mirror.
+    const EXPECTED_MARKDOWN_FILES: usize = 217;
     /// How many tables this gate expects to walk.
     ///
     /// Named rather than written twice. The count and the failure message
