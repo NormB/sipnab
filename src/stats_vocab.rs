@@ -428,6 +428,20 @@ pub enum Responsibility {
     Answer,
 }
 
+impl Responsibility {
+    /// The wire name, so a surface that reports the classification can also say
+    /// whose problem it is in a stable, machine-readable token.
+    #[must_use]
+    pub const fn as_wire_str(self) -> &'static str {
+        match self {
+            Self::Invocation => "invocation",
+            Self::RelayOrNetwork => "relay_or_network",
+            Self::Request => "request",
+            Self::Answer => "answer",
+        }
+    }
+}
+
 /// What happened when a relay statistic was asked for and NOT cleanly obtained
 /// (ST-S4).
 ///

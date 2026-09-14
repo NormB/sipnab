@@ -1348,6 +1348,7 @@ fn constant_time_eq_different_lengths_still_compares() {
     use std::sync::Arc;
 
     let state = ApiState {
+        relay_query: Default::default(),
         dialog_store: Arc::new(RwLock::new(DialogStore::new(1000, false))),
         stream_store: Arc::new(RwLock::new(StreamStore::new(1000))),
         verifier: Arc::new(sipnab::auth::TokenVerifier::new(
@@ -1404,6 +1405,7 @@ fn constant_time_eq_matching_strings() {
     use tower::ServiceExt;
 
     let state = ApiState {
+        relay_query: Default::default(),
         dialog_store: Arc::new(RwLock::new(DialogStore::new(1000, false))),
         stream_store: Arc::new(RwLock::new(StreamStore::new(1000))),
         verifier: Arc::new(sipnab::auth::TokenVerifier::new(
@@ -1470,6 +1472,7 @@ fn constant_time_eq_different_strings_same_length() {
     use tower::ServiceExt;
 
     let state = ApiState {
+        relay_query: Default::default(),
         dialog_store: Arc::new(RwLock::new(DialogStore::new(1000, false))),
         stream_store: Arc::new(RwLock::new(StreamStore::new(1000))),
         verifier: Arc::new(sipnab::auth::TokenVerifier::new(

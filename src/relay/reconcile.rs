@@ -97,6 +97,26 @@ pub trait ReadOnlyRelay {
     /// When the relay cannot be reached, or answers something this cannot read.
     fn statistics(&self, permit: &TransmitPermit) -> anyhow::Result<ControlReply>;
 
+    /// Ask the relay for its counters about ONE call, by Call-ID.
+    ///
+    /// The per-call companion of [`statistics`](Self::statistics): the relay's
+    /// own numbers for a single call, flattened to name/value pairs the same
+    /// way. Behind the same permit and for the same reason. The default refuses,
+    /// so a relay that has no per-call form (or a test double) is not forced to
+    /// invent one; the implementations that can answer override it.
+    ///
+    /// # Errors
+    ///
+    /// When the relay cannot be reached, answers something this cannot read, or
+    /// does not support a per-call query.
+    fn call_statistics(
+        &self,
+        _permit: &TransmitPermit,
+        _call_id: &str,
+    ) -> anyhow::Result<ControlReply> {
+        anyhow::bail!("this relay has no per-call statistics form")
+    }
+
     /// Where this relay is, for messages an operator reads.
     fn describe(&self) -> String;
 }

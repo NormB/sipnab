@@ -5838,7 +5838,21 @@ apart in the first place (see PAR).
   number came from a poll rather than from a question, and a refusal to poll a
   relay the run was never given.
 
-- [ ] **ST5 — REST endpoints for all three tiers.** 50 tests minimum. Failure
+- [ ] **ST5 — REST endpoints for all three tiers.** IN PROGRESS: the four
+  routes landed and verified live against the harness (`GET /v1/relay/stats`,
+  `/v1/relay/stats/names`, `/v1/relay/stats/call/{call_id}`,
+  `/v1/relay/compare/{call_id}`), each behind `--api-allow-relay-query` on a
+  live source and transmitting once per request. Polling (C5) is deliberately
+  not offered, per ST-S3. Every response is HTTP 200 carrying an `outcome`: `ok`
+  with the payload, or one of the five ST-S4 classifications -- a refusal is
+  content, not a 4xx, because the route exists and the relay is what did not
+  answer; `not_permitted` never degrades to `unreachable`. The layer names no
+  vendor: `RelayRestConfig` holds a `ReadOnlyRelay` trait object the composition
+  root builds, and `call_statistics` is now a trait method. OpenAPI, the written
+  reference and the schema ratchet are in lockstep. **Remaining for the tick:**
+  the cross-surface capability-matrix acceptance test (ST-S3) lands once MCP and
+  TUI exist, and more failure-path tests toward the 50 minimum.
+  50 tests minimum. Failure
   paths included: relay unreachable, relay refused, partial answer, no relay
   configured, statistics requested on a run with no capture. Edge cases:
   counters that reset when a relay restarts, values that overflow their type,

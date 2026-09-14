@@ -2000,6 +2000,14 @@ impl crate::relay::reconcile::ReadOnlyRelay for ControlClient {
         Self::statistics(self, permit)
     }
 
+    fn call_statistics(
+        &self,
+        permit: &crate::security::transmit_guard::TransmitPermit,
+        call_id: &str,
+    ) -> anyhow::Result<ControlReply> {
+        Self::call_statistics(self, permit, call_id)
+    }
+
     fn describe(&self) -> String {
         format!("rtpengine at {}", self.addr())
     }

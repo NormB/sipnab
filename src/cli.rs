@@ -2416,6 +2416,19 @@ pub struct ListenerArgs {
     )]
     pub api_max_rows: Option<u64>,
 
+    /// Let REST clients query the relay named by `--rtpengine-control`
+    /// (`GET /v1/relay/...`), which transmits (ST5).
+    ///
+    /// The REST counterpart of `--mcp-allow-relay-query`, off for the same
+    /// reason: every other REST answer comes from bytes sipnab already holds,
+    /// and these put a packet on the network at the address `--rtpengine-control`
+    /// names -- never one a client chooses. Without this flag the relay routes
+    /// answer `not_permitted`; without `--rtpengine-control`, or on a run
+    /// reading a file, they answer `not_configured` / `not_permitted` and say
+    /// which is missing. Polling is not offered over REST at all.
+    #[arg(help_heading = "Network listeners", long = "api-allow-relay-query")]
+    pub api_allow_relay_query: bool,
+
     /// REST requests one client IP may make per second (`0` = unlimited,
     /// default 100). Config: `[limits] api_rate_limit_per_peer`.
     ///

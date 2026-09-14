@@ -245,3 +245,25 @@ fn the_relay_stats_interval_rejects_zero_and_the_absurd() {
         "an interval past the ceiling must be refused"
     );
 }
+
+/// `--api-allow-relay-query` parses and sets its flag; off by default (ST5).
+/// This is also where the flag token is referenced so the coverage gate sees
+/// it has a test. The REST routes it gates are exercised in `relay_rest_test`.
+#[test]
+fn the_api_allow_relay_query_flag_parses() {
+    use clap::Parser;
+    let on = sipnab::cli::Cli::try_parse_from([
+        "sipnab",
+        "-N",
+        "-I",
+        "x.pcap",
+        "--api-allow-relay-query",
+    ])
+    .expect("--api-allow-relay-query parses");
+    assert!(
+        on.listener_args.api_allow_relay_query,
+        "--api-allow-relay-query sets the flag"
+    );
+    let off = sipnab::cli::Cli::try_parse_from(["sipnab", "-N", "-I", "x.pcap"]).expect("bare");
+    assert!(!off.listener_args.api_allow_relay_query, "off unless given");
+}

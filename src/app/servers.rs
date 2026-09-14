@@ -278,7 +278,10 @@ pub fn start_servers(
     // and re-deriving "is this run live?" from the CLI would be a second copy
     // of that rule, free to drift from it. Gated like `capture_meter` below,
     // because only the MCP door has a tool that transmits.
-    #[cfg(feature = "mcp")] relay_query_permit: Option<
+    // Widened from `mcp` to `any(api, mcp)`: both doors now have a route that
+    // transmits to the relay (`query_relay` on MCP, `GET /v1/relay/...` on
+    // REST). The permit's rule still lives in `TransmitPermit::for_source`.
+    #[cfg(any(feature = "api", feature = "mcp"))] relay_query_permit: Option<
         crate::security::transmit_guard::TransmitPermit,
     >,
     // No longer gated on `metrics`. The scrape endpoint was the first consumer
@@ -458,6 +461,36 @@ pub fn start_servers(
             started_at: std::time::Instant::now(),
             persistence_gate: Arc::clone(&persistence_gate),
             tfps: selection.tfps.clone(),
+            // ST5: relay access for GET /v1/relay/... . The address comes from
+            // --rtpengine-control and nowhere else; the permit is present only
+            // when the run is live AND --api-allow-relay-query is set. A missing
+            // address reads as not_configured, a missing permit as not_permitted
+            // -- the same two distinctions the CLI draws. `relay_query_permit`
+            // is Copy, so the MCP arm below still gets its own.
+            relay_query: crate::output::api::RelayRestConfig {
+                // The composition root chooses the implementation; the API layer
+                // only holds the trait object. `Copy` permit, so the MCP arm
+                // below still gets its own.
+                relay: cli
+                    .rtp_args
+                    .rtpengine_control
+                    .as_deref()
+                    .and_then(|a| a.parse::<std::net::SocketAddr>().ok())
+                    .map(|sock| {
+                        std::sync::Arc::new(crate::rtpengine::control::ControlClient::new(
+                            sock,
+                            crate::rtpengine::control::DEFAULT_CONTROL_TIMEOUT,
+                        ))
+                            as std::sync::Arc<
+                                dyn crate::relay::reconcile::ReadOnlyRelay + Send + Sync,
+                            >
+                    }),
+                permit: if cli.listener_args.api_allow_relay_query {
+                    relay_query_permit
+                } else {
+                    None
+                },
+            },
         };
         let config = ApiServerConfig {
             max_conn: cli.listener_args.api_max_conn,

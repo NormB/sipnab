@@ -557,8 +557,12 @@ pub fn run_tui_mode(
         },
         // `mcp: false` above: this door serves no MCP tools, so there is no
         // `query_relay` here to hold a permit for. The reconciler's own permit
-        // stays with the reconciler.
-        #[cfg(feature = "mcp")]
+        // stays with the reconciler. The REST relay routes (ST5) likewise get
+        // no permit in the TUI: this arm's reconciler already took it, so a TUI
+        // run's `GET /v1/relay/...` answers `not_permitted` -- an operator who
+        // wants relay statistics over REST runs the headless API (`-N --api`),
+        // where the permit is threaded to the door.
+        #[cfg(any(feature = "api", feature = "mcp"))]
         None,
         capture_meter,
     )

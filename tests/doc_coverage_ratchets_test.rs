@@ -401,7 +401,13 @@ fn undocumented_numeric_ceilings_do_not_increase() {
 /// response-only type to satisfy a counter is the dishonest version of fixing
 /// this. Six of the twenty-four are now covered by a real check; the ratchet
 /// cannot see that, and this note is where that fact lives.
-const PERMISSIVE_SCHEMA_COMPONENTS: usize = 24;
+// 24 -> 25 at ST5, for `RelayStatsResponse`: one envelope carries all four
+// relay-statistics routes' clean shapes (C1-C4) PLUS the five ST-S4
+// classifications, discriminated by `outcome`. Pinning it strictly would be five
+// schemas where the discriminator already separates them, and the payload
+// sub-objects are the relay's own version-specific vocabulary sipnab does not
+// freeze into a type. Permissive here is the honest shape, not a dodge.
+const PERMISSIVE_SCHEMA_COMPONENTS: usize = 25;
 
 #[test]
 fn permissive_rest_schema_components_do_not_increase() {

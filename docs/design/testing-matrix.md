@@ -49,15 +49,15 @@ was driving all of them.
 
 | Surface | Rows | `e2e` | `parsed` | `referenced` | `none` |
 |---|---|---|---|---|---|
-| CLI flags | 270 | 139 | 52 | 78 | 1 |
-| HTTP routes | 18 | 18 | -- | 0 | 0 |
+| CLI flags | 271 | 139 | 52 | 79 | 1 |
+| HTTP routes | 22 | 22 | -- | 0 | 0 |
 | MCP tools | 66 | 66 | -- | 0 | 0 |
 
 **Flags with no occurrence at all:** `--syslog`
 
 ## What a person found that the detector could not
 
-The generator understates. Of the 78 flags it could only call
+The generator understates. Of the 79 flags it could only call
 `referenced`, a read of the tests found 65 with a real behavior test --
 evidence that arrives through a config-file equivalent sharing the flag's
 resolver, through a golden file, or through a library-level test, none of
@@ -249,7 +249,7 @@ behind them.
 | `--metrics-auth` |  |  | Network listeners | referenced | `src/cli.rs`, `src/output/prometheus_server.rs` | **mention-only** | CREDENTIAL. Only whole-token occurrences are comments. It passes flag_coverage_test only because --metrics-auth-file contains the string |
 | `--metrics-auth-file` |  | `FILE` | Network listeners | parsed | `src/cli.rs` |  |  |
 | `--api` |  | `ADDR` | Network listeners | e2e | `tests/doc_commands_run_test.rs`, `tests/parse_path_test.rs` +1 |  |  |
-| `--api-key` |  | `KEY` | Network listeners | referenced | `src/app/bootstrap.rs`, `src/output/api.rs` +5 | **behavior** | auth_accepts_correct_bearer_and_rejects_everything_else (tests/api_test.rs): 200 vs 401 across five shapes |
+| `--api-key` |  | `KEY` | Network listeners | referenced | `src/app/bootstrap.rs`, `src/output/api.rs` +6 | **behavior** | auth_accepts_correct_bearer_and_rejects_everything_else (tests/api_test.rs): 200 vs 401 across five shapes |
 | `--api-signing-key` |  | `KEY` | Network listeners | referenced | `src/app/bootstrap.rs`, `src/app/servers.rs` +4 | **behavior** | seven tests in tests/api_token_test.rs: expiry, forgery, tampering, rotation, scope |
 | `--api-signing-key-file` |  | `FILE` | Network listeners | e2e | `tests/cli_flag_behavior_test.rs` |  |  |
 | `--api-revoked-file` |  | `FILE` | Network listeners | referenced | `tests/api_token_test.rs` | **behavior** | revoked_id_is_rejected_via_denylist_file: denylisted 401, fresh 200, both with valid tokens |
@@ -259,6 +259,7 @@ behind them.
 | `--api-max-conn` |  | `N` | Network listeners | referenced | `tests/api_test.rs` | **parse-only** | DoS BOUND. Asserts the server still serves with the flag set; the 503 saturation path is untested |
 | `--metrics-max-conn` |  | `N` | Network listeners | referenced | `src/cli.rs` | **parse-only** | DoS BOUND (SN-02). Resolver precedence tested, ConnGate tested, the join between them is not |
 | `--api-max-rows` |  | `N` | Network listeners | referenced | `src/cli.rs`, `src/output/api.rs` | **parse-only** | Resolver tested and enforcement tested by setting state.max_rows directly; the wiring between them is not |
+| `--api-allow-relay-query` |  |  | Network listeners | referenced | `src/output/api.rs` |  |  |
 | `--api-rate-limit-per-peer` |  | `N` | Network listeners | referenced | `src/cli.rs` | **behavior** | via config key: probe_api_rate_limit_per_peer counts HTTP 503 refusals from one peer |
 | `--mcp` |  |  | MCP (Model Context Protocol) | e2e | `tests/analyze_test.rs`, `tests/config_wiring_test.rs` +14 |  |  |
 | `--mcp-transport` |  | `TRANSPORT` | MCP (Model Context Protocol) | e2e | `tests/mcp_audit_sink_test.rs`, `tests/mcp_metrics_wiring_test.rs` +5 |  |  |
@@ -365,6 +366,10 @@ behind them.
 | `/v1/dialogs/{call_id}/report` | exercised | `tests/api_test.rs` |
 | `/v1/dialogs/{call_id}/vcon` | exercised | `tests/api_test.rs` |
 | `/v1/persistence` | exercised | `tests/api_test.rs`, `tests/openapi_contract_test.rs` |
+| `/v1/relay/compare/{call_id}` | exercised | `tests/relay_rest_test.rs` |
+| `/v1/relay/stats` | exercised | `tests/relay_rest_test.rs` |
+| `/v1/relay/stats/call/{call_id}` | exercised | `tests/relay_rest_test.rs` |
+| `/v1/relay/stats/names` | exercised | `tests/relay_rest_test.rs` |
 | `/v1/report` | exercised | `tests/api_test.rs` |
 | `/v1/runtime` | exercised | `tests/api_test.rs` |
 | `/v1/stats` | exercised | `tests/api_test.rs`, `tests/api_token_test.rs` +3 |

@@ -27,6 +27,7 @@ const KEY: &str = "body-shape-test-key";
 
 fn state_with(gate: &Arc<PersistenceGate>) -> ApiState {
     ApiState {
+        relay_query: Default::default(),
         dialog_store: Arc::new(RwLock::new(sipnab::sip::dialog_store::DialogStore::new(
             1000, false,
         ))),

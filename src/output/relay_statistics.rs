@@ -189,6 +189,42 @@ pub fn format_relay_comparison(
 // cannot silently change the wire form. Because both forms read the same wire
 // data, `--json` and the table cannot disagree about a number.
 
+/// Wrap a success payload from one of the `*_json` emitters in the REST
+/// envelope (ST5), by adding `outcome: "ok"`.
+///
+/// Every relay-stats REST response carries a top-level `outcome`, so a client
+/// reads one field to tell a clean answer from a classification. The success
+/// payload is exactly what the CLI `--json` forms emit -- so REST and the CLI
+/// agree on the figures, and REST adds only the envelope. Infallible: the input
+/// came from an emitter here, so a parse failure yields a bare `{"outcome":
+/// "ok"}` rather than losing the answer.
+#[must_use]
+pub fn relay_rest_ok(payload_json: &str) -> String {
+    let mut v: Value = serde_json::from_str(payload_json).unwrap_or_else(|_| json!({}));
+    v["outcome"] = json!("ok");
+    v.to_string()
+}
+
+/// The REST envelope for a request that did NOT yield a clean answer (ST5,
+/// ST-S4).
+///
+/// Returned with HTTP 200, not an error status: the route exists, the relay is
+/// the thing that did not answer, and a 404 would say the route was wrong. The
+/// body names the classification (`not_configured`, `not_permitted`,
+/// `unreachable`, `refused`, `suspect`), whose problem it is, and a detail --
+/// the same five distinctions every surface draws, so a program reads one token
+/// rather than parsing prose. `not_permitted` is never quietly degraded to
+/// `unreachable`: they send an operator to different places.
+#[must_use]
+pub fn relay_rest_outcome(outcome: crate::stats_vocab::StatisticsOutcome, detail: &str) -> String {
+    json!({
+        "outcome": outcome.as_wire_str(),
+        "responsibility": outcome.responsibility().as_wire_str(),
+        "detail": detail,
+    })
+    .to_string()
+}
+
 /// Pretty-print a compact relay-stats JSON string when `--json-pretty` asked,
 /// mirroring the per-message path (pretty first, else compact). Infallible: the
 /// input came from one of the emitters below, so a parse failure returns it

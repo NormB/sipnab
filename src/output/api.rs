@@ -170,6 +170,27 @@ impl IntoResponse for Problem {
     }
 }
 
+/// What a relay-statistics REST handler needs to answer (ST5).
+///
+/// Carried together, and each half is a distinct refusal when absent: no `addr`
+/// is `not_configured` (the operator named no relay), an `addr` with no
+/// `permit` is `not_permitted` (a file-backed run, or `--api-allow-relay-query`
+/// off). Both `None` -- the default -- is a server with no relay access, which
+/// is every test in this module and every run that did not opt in. The handler
+/// builds a fresh `ControlClient` from `addr` per request, exactly as the CLI's
+/// one-shot path does, so nothing long-lived holds a socket open.
+#[derive(Clone, Default)]
+pub struct RelayRestConfig {
+    /// The relay to ask, chosen by the composition root and named by nothing
+    /// here -- a trait object, so this layer stays free of any implementation.
+    /// `None` when the run configured no relay, which reads as `not_configured`.
+    pub relay: Option<std::sync::Arc<dyn crate::relay::reconcile::ReadOnlyRelay + Send + Sync>>,
+    /// Proof this run may transmit: present only when the run is live AND
+    /// `--api-allow-relay-query` is set. Its absence beside a present `relay` is
+    /// exactly `not_permitted`.
+    pub permit: Option<crate::security::transmit_guard::TransmitPermit>,
+}
+
 /// Shared state passed to every axum handler via `State(...)`.
 #[derive(Clone)]
 pub struct ApiState {
@@ -245,6 +266,11 @@ pub struct ApiState {
     /// state built without one -- every test in this module -- still
     /// answers, with `installed: false` on a machine that has no TFPS.
     pub tfps: crate::security::tfps::TfpsLocator,
+    /// Relay access for the `GET /v1/relay/...` routes (ST5), when this run
+    /// opted in with `--api-allow-relay-query` on a live source. `default()`
+    /// (both halves `None`) is a server with no relay access, which answers
+    /// those routes `not_configured` -- the state every test here builds.
+    pub relay_query: RelayRestConfig,
 }
 
 /// Resolve a caller's `?limit=` to a row count.
@@ -511,6 +537,13 @@ pub fn build_router(state: ApiState) -> Router {
         .route("/v1/streams/{id}", get(get_stream))
         .route("/v1/report", get(get_capture_report))
         .route("/v1/stats", get(get_stats))
+        // Relay statistics (ST5). Each transmits once, behind
+        // --api-allow-relay-query; the /call/ segment keeps C2 from colliding
+        // with the static /names path. Polling (C5) is not offered here.
+        .route("/v1/relay/stats", get(get_relay_stats))
+        .route("/v1/relay/stats/names", get(get_relay_stat_names))
+        .route("/v1/relay/stats/call/{call_id}", get(get_relay_stats_call))
+        .route("/v1/relay/compare/{call_id}", get(get_relay_compare))
         .route("/v1/runtime", get(get_runtime))
         .route("/metrics", get(get_metrics))
         .with_state(state)
@@ -2256,6 +2289,347 @@ async fn get_stats(
     })))
 }
 
+// ── Relay statistics over REST (ST5) ─────────────────────────────────────────
+//
+// Four GET routes that ask the relay named by `--rtpengine-control`. Each
+// transmits ONCE per request, behind `--api-allow-relay-query` and a live
+// source; polling (C5) is deliberately not offered here. The five ST-S4
+// refusals are HTTP 200 with a `classification` in the body, never a 4xx: the
+// route exists, the relay is what did not answer. Only auth (401) and the rate
+// limit (503) are `Problem` errors, via `guard`.
+
+/// Which relay-statistics answer a REST route asks for.
+enum RelayAsk {
+    /// The relay's own global counters (C1).
+    Wide,
+    /// Its per-call counters, by Call-ID (C2).
+    Call(String),
+    /// Which statistics it knows, by name (C3).
+    Names,
+    /// Its per-call RTP count beside sipnab's own (C4).
+    Compare(String),
+}
+
+/// Whether a relay reply is actually the relay saying no, and its reason.
+///
+/// rtpengine answers a call it does not hold with `result: error` and an
+/// `error-reason` (e.g. `Unknown call-id`) rather than an error transport, so a
+/// per-call route must read that as `refused` -- with the relay's own words --
+/// not render it as counters.
+fn relay_reply_refusal(pairs: &[(String, String)]) -> Option<String> {
+    let is_error = pairs
+        .iter()
+        .any(|(k, v)| k == "result" && v.eq_ignore_ascii_case("error"));
+    if !is_error {
+        return None;
+    }
+    let reason = pairs
+        .iter()
+        .find(|(k, _)| k == "error-reason")
+        .map(|(_, v)| v.clone())
+        .unwrap_or_else(|| "the relay refused without a reason".to_string());
+    Some(reason)
+}
+
+/// Build the JSON body for a relay-statistics REST route (ST5).
+///
+/// Sync because it makes a blocking control round trip; handlers run it under
+/// `spawn_blocking` so the async runtime is never held for the up-to-timeout
+/// wait. Returns a 200 body in every case -- a clean answer wrapped
+/// `outcome: "ok"`, or one of the five ST-S4 classifications.
+fn relay_rest_answer(
+    rq: &RelayRestConfig,
+    ask: &RelayAsk,
+    stream_store: &Arc<RwLock<StreamStore>>,
+) -> Value {
+    use crate::output::relay_statistics as fmt;
+    use crate::relay::types::ControlReply;
+    use crate::stats_vocab::{
+        CompareOutcome, StatisticValue, StatisticsOutcome as O, known_names, lookup,
+        ready_comparison, relay_reported, resolve_for_wire,
+    };
+    let to_value = |s: String| -> Value {
+        serde_json::from_str(&s).unwrap_or_else(|_| json!({ "outcome": "suspect" }))
+    };
+
+    // The two invocation refusals, told apart: no relay is not_configured, a
+    // relay without a permit is not_permitted. Never collapse them.
+    let (relay, permit) = match (rq.relay.as_ref(), rq.permit) {
+        (None, _) => {
+            return to_value(fmt::relay_rest_outcome(
+                O::NotConfigured,
+                "no relay to ask; start the server with a relay control address",
+            ));
+        }
+        (Some(_), None) => {
+            return to_value(fmt::relay_rest_outcome(
+                O::NotPermitted,
+                "this run may not query the relay; it needs a live capture source and \
+                 --api-allow-relay-query",
+            ));
+        }
+        (Some(r), Some(p)) => (r, p),
+    };
+
+    let label = format!("relay ({})", relay.describe());
+    let now = chrono::Utc::now();
+    let unreachable = |e: &dyn std::fmt::Display| {
+        to_value(fmt::relay_rest_outcome(
+            O::Unreachable,
+            &format!("{label} did not answer ({e}); asked, nothing came back"),
+        ))
+    };
+
+    match ask {
+        RelayAsk::Wide => match relay.statistics(&permit) {
+            Ok(ControlReply::Statistics(pairs)) => {
+                let wire = resolve_for_wire(&relay_reported(&pairs));
+                to_value(fmt::relay_rest_ok(&fmt::format_relay_statistics_json(
+                    &wire,
+                    &label,
+                    now,
+                    fmt::FetchOrigin::Asked,
+                )))
+            }
+            Ok(_) => to_value(fmt::relay_rest_outcome(
+                O::Suspect,
+                "the relay answered with something other than statistics",
+            )),
+            Err(e) => unreachable(&e),
+        },
+        RelayAsk::Names => match relay.statistics(&permit) {
+            Ok(ControlReply::Statistics(pairs)) => {
+                let names = known_names(&relay_reported(&pairs));
+                to_value(fmt::relay_rest_ok(&fmt::format_relay_stat_names_json(
+                    &names,
+                    crate::stats_vocab::NameSource::Listed,
+                    &label,
+                    now,
+                )))
+            }
+            Ok(_) => to_value(fmt::relay_rest_outcome(
+                O::Suspect,
+                "the relay answered with something other than statistics",
+            )),
+            Err(e) => unreachable(&e),
+        },
+        RelayAsk::Call(call_id) => match relay.call_statistics(&permit, call_id) {
+            Ok(ControlReply::Statistics(pairs)) => {
+                if let Some(reason) = relay_reply_refusal(&pairs) {
+                    return to_value(fmt::relay_rest_outcome(
+                        O::Refused,
+                        &format!("{label} for call {call_id}: {reason}"),
+                    ));
+                }
+                let wire = resolve_for_wire(&relay_reported(&pairs));
+                to_value(fmt::relay_rest_ok(&fmt::format_relay_statistics_json(
+                    &wire,
+                    &format!("{label}, call {call_id}"),
+                    now,
+                    fmt::FetchOrigin::Asked,
+                )))
+            }
+            Ok(_) => to_value(fmt::relay_rest_outcome(
+                O::Suspect,
+                "the relay answered with something other than statistics",
+            )),
+            Err(e) => unreachable(&e),
+        },
+        RelayAsk::Compare(call_id) => {
+            // sipnab's own side: absent (no linked stream) is not measured zero.
+            let ss = stream_store.read();
+            let sipnab_side = if ss.streams_for(call_id).next().is_some() {
+                Some(ss.measured_packet_count_for(call_id))
+            } else {
+                None
+            };
+            drop(ss);
+            match relay.call_statistics(&permit, call_id) {
+                Ok(ControlReply::Statistics(pairs)) => {
+                    if let Some(reason) = relay_reply_refusal(&pairs) {
+                        return to_value(fmt::relay_rest_outcome(
+                            O::Refused,
+                            &format!("{label} for call {call_id}: {reason}"),
+                        ));
+                    }
+                    let tiered = relay_reported(&pairs);
+                    let relay_side = match lookup(&tiered, "totals.RTP.packets") {
+                        StatisticValue::Counted(s) => s.parse::<u64>().ok(),
+                        _ => None,
+                    };
+                    match ready_comparison(relay_side, sipnab_side) {
+                        CompareOutcome::Compared(c) => to_value(fmt::relay_rest_ok(
+                            &fmt::format_relay_comparison_json(&c, call_id, &label, now),
+                        )),
+                        // The call is on the relay, but sipnab captured no RTP for
+                        // it. ST-S4: C4 with no capture reads not_configured, naming
+                        // the capture (not the relay).
+                        CompareOutcome::SipnabHasNoRtp { relay_value } => {
+                            to_value(fmt::relay_rest_outcome(
+                                O::NotConfigured,
+                                &format!(
+                                    "the relay reports {relay_value} RTP packet(s) for call \
+                                     {call_id}, but this capture measured none for it; widen the \
+                                     capture filter to include the media"
+                                ),
+                            ))
+                        }
+                        CompareOutcome::RelayDoesNotHoldCall { .. } => {
+                            to_value(fmt::relay_rest_outcome(
+                                O::Refused,
+                                &format!("{label} does not hold call {call_id}"),
+                            ))
+                        }
+                        CompareOutcome::NeitherSide => to_value(fmt::relay_rest_outcome(
+                            O::Refused,
+                            &format!(
+                                "neither the relay nor this capture has RTP for call {call_id}"
+                            ),
+                        )),
+                    }
+                }
+                Ok(_) => to_value(fmt::relay_rest_outcome(
+                    O::Suspect,
+                    "the relay answered with something other than statistics",
+                )),
+                Err(e) => unreachable(&e),
+            }
+        }
+    }
+}
+
+/// `GET /v1/relay/stats` — the relay's own global counters (ST5 / C1).
+#[utoipa::path(
+    get,
+    path = "/v1/relay/stats",
+    tag = "relay",
+    summary = "The relay's own global statistics",
+    description = "The counters the configured relay keeps about itself, tiered relay_reported. \
+                   Transmits once, behind --api-allow-relay-query on a live run. When no clean \
+                   answer is obtained the body carries an ST-S4 classification and is still 200 \
+                   -- the route exists, the relay is what did not answer.",
+    security(("bearer" = [])),
+    responses(
+        (status = 200, description = "outcome=ok with the relay's counters, or a classification (not_configured/not_permitted/unreachable/refused/suspect).", body = schema::RelayStatsResponse),
+        (status = 401, description = "No bearer credential, or one this server does not accept.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 503, description = "Over the per-source-IP rate limit of 100 requests per second.", body = schema::ProblemJson, content_type = "application/problem+json"),
+    )
+)]
+async fn get_relay_stats(
+    State(state): State<ApiState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, Problem> {
+    guard(&state, &headers, addr.ip())?;
+    let rq = state.relay_query.clone();
+    let ss = Arc::clone(&state.stream_store);
+    let body = tokio::task::spawn_blocking(move || relay_rest_answer(&rq, &RelayAsk::Wide, &ss))
+        .await
+        .unwrap_or_else(|_| json!({ "outcome": "suspect" }));
+    Ok(Json(body))
+}
+
+/// `GET /v1/relay/stats/names` — which statistics the relay knows (ST5 / C3).
+#[utoipa::path(
+    get,
+    path = "/v1/relay/stats/names",
+    tag = "relay",
+    summary = "Which statistics the relay knows",
+    description = "The names the relay can report, obtained by asking it (never a built-in \
+                   table), so a caller learns what to ask for before a request fails on a name \
+                   this build lacks. Names only, no values. Same gate and 200-classification \
+                   rule as /v1/relay/stats.",
+    security(("bearer" = [])),
+    responses(
+        (status = 200, description = "outcome=ok with the name list, or a classification.", body = schema::RelayStatsResponse),
+        (status = 401, description = "No bearer credential, or one this server does not accept.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 503, description = "Over the per-source-IP rate limit of 100 requests per second.", body = schema::ProblemJson, content_type = "application/problem+json"),
+    )
+)]
+async fn get_relay_stat_names(
+    State(state): State<ApiState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, Problem> {
+    guard(&state, &headers, addr.ip())?;
+    let rq = state.relay_query.clone();
+    let ss = Arc::clone(&state.stream_store);
+    let body = tokio::task::spawn_blocking(move || relay_rest_answer(&rq, &RelayAsk::Names, &ss))
+        .await
+        .unwrap_or_else(|_| json!({ "outcome": "suspect" }));
+    Ok(Json(body))
+}
+
+/// `GET /v1/relay/stats/call/{call_id}` — the relay's per-call counters (C2).
+#[utoipa::path(
+    get,
+    path = "/v1/relay/stats/call/{call_id}",
+    tag = "relay",
+    summary = "The relay's per-call statistics",
+    description = "The relay's own counters for one call, by Call-ID, tiered relay_reported. A \
+                   relay that does not hold the call answers in its own words, reported as \
+                   refused with the relay's reason -- not rendered as counters. Same gate and \
+                   200-classification rule as /v1/relay/stats.",
+    params(("call_id" = String, Path, description = "The SIP Call-ID, as the relay knows it.")),
+    security(("bearer" = [])),
+    responses(
+        (status = 200, description = "outcome=ok with the per-call counters, or a classification.", body = schema::RelayStatsResponse),
+        (status = 401, description = "No bearer credential, or one this server does not accept.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 503, description = "Over the per-source-IP rate limit of 100 requests per second.", body = schema::ProblemJson, content_type = "application/problem+json"),
+    )
+)]
+async fn get_relay_stats_call(
+    State(state): State<ApiState>,
+    axum::extract::Path(call_id): axum::extract::Path<String>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, Problem> {
+    guard(&state, &headers, addr.ip())?;
+    let rq = state.relay_query.clone();
+    let ss = Arc::clone(&state.stream_store);
+    let body =
+        tokio::task::spawn_blocking(move || relay_rest_answer(&rq, &RelayAsk::Call(call_id), &ss))
+            .await
+            .unwrap_or_else(|_| json!({ "outcome": "suspect" }));
+    Ok(Json(body))
+}
+
+/// `GET /v1/relay/compare/{call_id}` — relay's count vs sipnab's capture (C4).
+#[utoipa::path(
+    get,
+    path = "/v1/relay/compare/{call_id}",
+    tag = "relay",
+    summary = "Compare the relay's per-call count against this capture",
+    description = "The relay's totals.RTP.packets for one call beside sipnab's own measured \
+                   count, both tiers named, with a word verdict and a note -- never summed. A \
+                   call this capture measured no RTP for reads not_configured (naming the \
+                   capture), a relay that does not hold it reads refused. Same gate and \
+                   200-classification rule as /v1/relay/stats.",
+    params(("call_id" = String, Path, description = "The SIP Call-ID to compare.")),
+    security(("bearer" = [])),
+    responses(
+        (status = 200, description = "outcome=ok with the comparison, or a classification.", body = schema::RelayStatsResponse),
+        (status = 401, description = "No bearer credential, or one this server does not accept.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 503, description = "Over the per-source-IP rate limit of 100 requests per second.", body = schema::ProblemJson, content_type = "application/problem+json"),
+    )
+)]
+async fn get_relay_compare(
+    State(state): State<ApiState>,
+    axum::extract::Path(call_id): axum::extract::Path<String>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, Problem> {
+    guard(&state, &headers, addr.ip())?;
+    let rq = state.relay_query.clone();
+    let ss = Arc::clone(&state.stream_store);
+    let body = tokio::task::spawn_blocking(move || {
+        relay_rest_answer(&rq, &RelayAsk::Compare(call_id), &ss)
+    })
+    .await
+    .unwrap_or_else(|_| json!({ "outcome": "suspect" }));
+    Ok(Json(body))
+}
+
 /// `GET /metrics` — Prometheus-compatible metrics endpoint.
 ///
 /// Populates a `PrometheusMetrics` from the process-wide capture counters
@@ -2872,6 +3246,44 @@ pub mod schema {
         pub messages: u64,
     }
 
+    /// `GET /v1/relay/...` — one envelope for all four relay-statistics routes
+    /// (ST5).
+    ///
+    /// `outcome` is always present: `ok` for a clean answer, or one of the five
+    /// ST-S4 classifications. Every other field is optional because the shape
+    /// depends on which route answered and whether it was clean -- a client
+    /// branches on `outcome` first. Deliberately permissive (the payload
+    /// sub-objects are open) because one envelope carries four different clean
+    /// shapes plus the classifications, and pinning each would be five schemas
+    /// where the discriminator already tells them apart.
+    #[derive(Debug, Clone, ToSchema)]
+    pub struct RelayStatsResponse {
+        /// `ok`, or `not_configured` / `not_permitted` / `unreachable` /
+        /// `refused` / `suspect`.
+        pub outcome: String,
+        /// The relay and where it was asked, on any answer that reached it.
+        pub relay: Option<String>,
+        /// When the relay answered.
+        pub obtained_at: Option<String>,
+        /// `asked` on these routes (a poll is CLI-only and never appears here).
+        pub origin: Option<String>,
+        /// The relay's counters (C1/C2), each with its tier.
+        pub statistics: Option<serde_json::Value>,
+        /// Statistics the relay refused, with its own code, listed apart.
+        pub refusals: Option<serde_json::Value>,
+        /// How the name list was determined: `listed` or `probed` (C3).
+        pub source: Option<String>,
+        /// The names the relay knows (C3).
+        pub names: Option<serde_json::Value>,
+        /// The relay-vs-capture comparison (C4): both tiers, a verdict, a note.
+        pub packets: Option<serde_json::Value>,
+        /// Whose problem a non-`ok` outcome is: `invocation` / `relay_or_network`
+        /// / `request` / `answer`.
+        pub responsibility: Option<String>,
+        /// A sentence explaining a non-`ok` outcome.
+        pub detail: Option<String>,
+    }
+
     /// `GET /v1/stats` — the aggregate view.
     #[derive(Debug, Clone, ToSchema)]
     pub struct Stats {
@@ -3140,11 +3552,16 @@ impl utoipa::Modify for BearerAuth {
         get_stream,
         get_capture_report,
         get_stats,
+        get_relay_stats,
+        get_relay_stat_names,
+        get_relay_stats_call,
+        get_relay_compare,
         get_runtime,
         get_metrics,
     ),
     components(schemas(
         schema::ProblemJson,
+        schema::RelayStatsResponse,
         schema::DialogList,
         schema::DialogSummary,
         schema::TimingSummary,
@@ -3375,6 +3792,7 @@ mod tests {
     /// Build an `ApiState` with empty stores and no auth configured.
     fn make_state() -> ApiState {
         ApiState {
+            relay_query: Default::default(),
             dialog_store: Arc::new(RwLock::new(DialogStore::new(1000, false))),
             stream_store: Arc::new(RwLock::new(StreamStore::new(1000))),
             verifier: Arc::new(crate::auth::TokenVerifier::new(
@@ -3401,9 +3819,110 @@ mod tests {
         }
     }
 
+    // ── ST5: relay-statistics REST classification (no network) ───────────────
+
+    fn empty_streams() -> Arc<RwLock<StreamStore>> {
+        Arc::new(RwLock::new(StreamStore::new(64)))
+    }
+
+    /// A relay stand-in that names no vendor and refuses everything -- enough to
+    /// stand in the `relay` slot for the invocation refusals, which return
+    /// before any method is called.
+    struct StubRelay;
+    impl crate::relay::reconcile::ReadOnlyRelay for StubRelay {
+        fn list(
+            &self,
+            _p: &crate::security::transmit_guard::TransmitPermit,
+            _l: u32,
+        ) -> anyhow::Result<crate::relay::types::ControlReply> {
+            anyhow::bail!("stub")
+        }
+        fn query(
+            &self,
+            _p: &crate::security::transmit_guard::TransmitPermit,
+            _c: &str,
+        ) -> anyhow::Result<crate::relay::types::ControlReply> {
+            anyhow::bail!("stub")
+        }
+        fn statistics(
+            &self,
+            _p: &crate::security::transmit_guard::TransmitPermit,
+        ) -> anyhow::Result<crate::relay::types::ControlReply> {
+            anyhow::bail!("stub")
+        }
+        fn describe(&self) -> String {
+            "a relay".to_string()
+        }
+    }
+
+    /// No relay configured (`addr: None`) is `not_configured`, whose problem is
+    /// the invocation -- on every one of the four routes.
+    #[test]
+    fn relay_rest_no_relay_is_not_configured() {
+        let rq = RelayRestConfig::default();
+        let ss = empty_streams();
+        for ask in [
+            RelayAsk::Wide,
+            RelayAsk::Names,
+            RelayAsk::Call("c".into()),
+            RelayAsk::Compare("c".into()),
+        ] {
+            let v = relay_rest_answer(&rq, &ask, &ss);
+            assert_eq!(
+                v["outcome"], "not_configured",
+                "route must classify, not transmit"
+            );
+            assert_eq!(v["responsibility"], "invocation");
+            assert!(
+                v.get("statistics").is_none(),
+                "a refusal carries no counters"
+            );
+        }
+    }
+
+    /// A relay configured but no permit (a file-backed run, or the flag off) is
+    /// `not_permitted` -- never quietly degraded to `unreachable`, and never a
+    /// transmit. `permit: None` is the only field that differs from a run that
+    /// would transmit.
+    #[test]
+    fn relay_rest_no_permit_is_not_permitted() {
+        let rq = RelayRestConfig {
+            relay: Some(Arc::new(StubRelay)),
+            permit: None,
+        };
+        let v = relay_rest_answer(&rq, &RelayAsk::Wide, &empty_streams());
+        assert_eq!(v["outcome"], "not_permitted");
+        assert_ne!(v["outcome"], "unreachable", "the two must not collapse");
+        assert_eq!(v["responsibility"], "invocation");
+    }
+
+    /// A relay reply carrying `result: error` is a refusal, and its
+    /// `error-reason` travels verbatim; a clean reply is not a refusal.
+    #[test]
+    fn relay_reply_refusal_reads_the_relays_own_no() {
+        let refused = [
+            ("result".to_string(), "error".to_string()),
+            ("error-reason".to_string(), "Unknown call-id".to_string()),
+        ];
+        assert_eq!(
+            relay_reply_refusal(&refused).as_deref(),
+            Some("Unknown call-id"),
+            "the relay's own reason is carried, not invented"
+        );
+        let clean = [
+            ("result".to_string(), "ok".to_string()),
+            ("totals.RTP.packets".to_string(), "9000".to_string()),
+        ];
+        assert!(
+            relay_reply_refusal(&clean).is_none(),
+            "a clean reply is not a refusal"
+        );
+    }
+
     /// Build an `ApiState` whose verifier accepts only the given static key.
     fn make_state_with_key(key: &str) -> ApiState {
         ApiState {
+            relay_query: Default::default(),
             dialog_store: Arc::new(RwLock::new(DialogStore::new(1000, false))),
             stream_store: Arc::new(RwLock::new(StreamStore::new(1000))),
             verifier: Arc::new(crate::auth::TokenVerifier::new(
@@ -3876,6 +4395,7 @@ mod tests {
     /// Build an `ApiState` whose verifier accepts tokens signed with `key`.
     fn make_state_with_signing_key(key: &[u8]) -> ApiState {
         ApiState {
+            relay_query: Default::default(),
             dialog_store: Arc::new(RwLock::new(DialogStore::new(1000, false))),
             stream_store: Arc::new(RwLock::new(StreamStore::new(1000))),
             verifier: Arc::new(crate::auth::TokenVerifier::new(
@@ -4736,6 +5256,7 @@ mod tests {
     async fn rate_limit_exceeded_returns_503() {
         // Create state with rate_limiter max_rps = 1
         let state = ApiState {
+            relay_query: Default::default(),
             dialog_store: Arc::new(RwLock::new(DialogStore::new(1000, false))),
             stream_store: Arc::new(RwLock::new(StreamStore::new(1000))),
             verifier: Arc::new(crate::auth::TokenVerifier::new(
@@ -5686,6 +6207,7 @@ mod tests {
     /// A gate-carrying state with a static bearer key.
     fn make_state_with_gate(gate: &Arc<crate::output::persistence::PersistenceGate>) -> ApiState {
         ApiState {
+            relay_query: Default::default(),
             persistence_gate: Arc::clone(gate),
             ..make_state_with_key(GATE_KEY)
         }
@@ -5749,6 +6271,7 @@ mod tests {
     /// State whose locator names the fake in `dir`.
     fn state_with_tfps(dir: &tempfile::TempDir) -> ApiState {
         ApiState {
+            relay_query: Default::default(),
             tfps: crate::security::tfps::TfpsLocator::new(Some(dir.path().join("tfps_ctl")), None),
             ..make_state_with_key(TFPS_KEY)
         }
@@ -5757,6 +6280,7 @@ mod tests {
     /// State on a machine with no TFPS: the search path is an empty dir.
     fn state_without_tfps(dir: &tempfile::TempDir) -> ApiState {
         ApiState {
+            relay_query: Default::default(),
             tfps: crate::security::tfps::TfpsLocator::new(None, None)
                 .with_search_path(dir.path().as_os_str()),
             ..make_state_with_key(TFPS_KEY)

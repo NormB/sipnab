@@ -1659,6 +1659,73 @@
         ],
         "type": "object"
       },
+      "RelayStatsResponse": {
+        "description": "`GET /v1/relay/...` — one envelope for all four relay-statistics routes\n(ST5).\n\n`outcome` is always present: `ok` for a clean answer, or one of the five\nST-S4 classifications. Every other field is optional because the shape\ndepends on which route answered and whether it was clean -- a client\nbranches on `outcome` first. Deliberately permissive (the payload\nsub-objects are open) because one envelope carries four different clean\nshapes plus the classifications, and pinning each would be five schemas\nwhere the discriminator already tells them apart.",
+        "properties": {
+          "detail": {
+            "description": "A sentence explaining a non-`ok` outcome.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "names": {
+            "description": "The names the relay knows (C3)."
+          },
+          "obtained_at": {
+            "description": "When the relay answered.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "origin": {
+            "description": "`asked` on these routes (a poll is CLI-only and never appears here).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "outcome": {
+            "description": "`ok`, or `not_configured` / `not_permitted` / `unreachable` /\n`refused` / `suspect`.",
+            "type": "string"
+          },
+          "packets": {
+            "description": "The relay-vs-capture comparison (C4): both tiers, a verdict, a note."
+          },
+          "refusals": {
+            "description": "Statistics the relay refused, with its own code, listed apart."
+          },
+          "relay": {
+            "description": "The relay and where it was asked, on any answer that reached it.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "responsibility": {
+            "description": "Whose problem a non-`ok` outcome is: `invocation` / `relay_or_network`\n/ `request` / `answer`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "source": {
+            "description": "How the name list was determined: `listed` or `probed` (C3).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "statistics": {
+            "description": "The relay's counters (C1/C2), each with its tier."
+          }
+        },
+        "required": [
+          "outcome"
+        ],
+        "type": "object"
+      },
       "RtpStream": {
         "additionalProperties": false,
         "description": "Serialized form of StreamJson (src/output/json.rs); also embedded in a dialog/call-report `streams` array and returned by GET /v1/streams/{id}.",
@@ -4044,6 +4111,216 @@
         "summary": "Set the persistence gate",
         "tags": [
           "operations"
+        ]
+      }
+    },
+    "/v1/relay/compare/{call_id}": {
+      "get": {
+        "description": "The relay's totals.RTP.packets for one call beside sipnab's own measured count, both tiers named, with a word verdict and a note -- never summed. A call this capture measured no RTP for reads not_configured (naming the capture), a relay that does not hold it reads refused. Same gate and 200-classification rule as /v1/relay/stats.",
+        "operationId": "get_relay_compare",
+        "parameters": [
+          {
+            "description": "The SIP Call-ID to compare.",
+            "in": "path",
+            "name": "call_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RelayStatsResponse"
+                }
+              }
+            },
+            "description": "outcome=ok with the comparison, or a classification."
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "No bearer credential, or one this server does not accept."
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Over the per-source-IP rate limit of 100 requests per second."
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Compare the relay's per-call count against this capture",
+        "tags": [
+          "relay"
+        ]
+      }
+    },
+    "/v1/relay/stats": {
+      "get": {
+        "description": "The counters the configured relay keeps about itself, tiered relay_reported. Transmits once, behind --api-allow-relay-query on a live run. When no clean answer is obtained the body carries an ST-S4 classification and is still 200 -- the route exists, the relay is what did not answer.",
+        "operationId": "get_relay_stats",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RelayStatsResponse"
+                }
+              }
+            },
+            "description": "outcome=ok with the relay's counters, or a classification (not_configured/not_permitted/unreachable/refused/suspect)."
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "No bearer credential, or one this server does not accept."
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Over the per-source-IP rate limit of 100 requests per second."
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "The relay's own global statistics",
+        "tags": [
+          "relay"
+        ]
+      }
+    },
+    "/v1/relay/stats/call/{call_id}": {
+      "get": {
+        "description": "The relay's own counters for one call, by Call-ID, tiered relay_reported. A relay that does not hold the call answers in its own words, reported as refused with the relay's reason -- not rendered as counters. Same gate and 200-classification rule as /v1/relay/stats.",
+        "operationId": "get_relay_stats_call",
+        "parameters": [
+          {
+            "description": "The SIP Call-ID, as the relay knows it.",
+            "in": "path",
+            "name": "call_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RelayStatsResponse"
+                }
+              }
+            },
+            "description": "outcome=ok with the per-call counters, or a classification."
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "No bearer credential, or one this server does not accept."
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Over the per-source-IP rate limit of 100 requests per second."
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "The relay's per-call statistics",
+        "tags": [
+          "relay"
+        ]
+      }
+    },
+    "/v1/relay/stats/names": {
+      "get": {
+        "description": "The names the relay can report, obtained by asking it (never a built-in table), so a caller learns what to ask for before a request fails on a name this build lacks. Names only, no values. Same gate and 200-classification rule as /v1/relay/stats.",
+        "operationId": "get_relay_stat_names",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RelayStatsResponse"
+                }
+              }
+            },
+            "description": "outcome=ok with the name list, or a classification."
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "No bearer credential, or one this server does not accept."
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Over the per-source-IP rate limit of 100 requests per second."
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Which statistics the relay knows",
+        "tags": [
+          "relay"
         ]
       }
     },

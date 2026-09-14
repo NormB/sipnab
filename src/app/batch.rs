@@ -2569,7 +2569,7 @@ impl BatchRunner {
         // separate client of its own -- sharing the live reconciler would put
         // an agent's question in line behind RE4's orphan work, and RE4's rule
         // is that it never polls.
-        #[cfg(feature = "mcp")]
+        #[cfg(any(feature = "api", feature = "mcp"))]
         let relay_query_permit = batch.relay.ready.as_ref().map(|r| r.permit);
         // Captured before the take below moves the reconciler away. The poller
         // transmits on its own thread with its own client, exactly like
@@ -3041,9 +3041,9 @@ impl BatchRunner {
                 armed_detections: engines.armed_kinds(),
             },
             // Captured above, before the reconciler moved to its own thread.
-            // `None` here is what makes `query_relay` refuse: on a file-backed
-            // run no permit exists to capture.
-            #[cfg(feature = "mcp")]
+            // `None` here is what makes `query_relay` (and GET /v1/relay/...)
+            // refuse: on a file-backed run no permit exists to capture.
+            #[cfg(any(feature = "api", feature = "mcp"))]
             relay_query_permit,
             // The meter travels from `run`, where the receiver lives. Passing
             // `None` here would not omit `sipnab_capture_queue_depth_packets`

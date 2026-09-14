@@ -2049,6 +2049,60 @@ all three counters.
 
 ---
 
+### GET /v1/relay/stats
+
+The relay's own global counters, tiered `relay_reported`. Transmits once to the
+address `--rtpengine-control` names, behind `--api-allow-relay-query` on a live
+run. Every response is HTTP 200 with a top-level `outcome`: `ok` with the
+counters, or one of the five classifications (`not_configured`,
+`not_permitted`, `unreachable`, `refused`, `suspect`) when no clean answer came
+back. A refusal is 200, not a 4xx: the route exists, the relay is what did not
+answer.
+
+```bash
+curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" \
+  http://127.0.0.1:8080/v1/relay/stats | jq .
+```
+
+### GET /v1/relay/stats/names
+
+Which statistics the relay knows, obtained by asking it rather than from a table
+built into sipnab, so a caller learns what to ask for before a request fails on
+a name this build lacks. Names only, no values. Same `outcome` envelope and
+same live-source gate as `/v1/relay/stats`.
+
+```bash
+curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" \
+  http://127.0.0.1:8080/v1/relay/stats/names | jq .
+```
+
+### GET /v1/relay/stats/call/:call_id
+
+The relay's own counters for one call, by Call-ID, tiered `relay_reported`. A
+relay that does not hold the call answers in its own words, reported as
+`outcome: refused` with the relay's reason rather than rendered as counters.
+
+```bash
+curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" \
+  "http://127.0.0.1:8080/v1/relay/stats/call/1-7@203.0.113.9" | jq .
+```
+
+### GET /v1/relay/compare/:call_id
+
+The relay's `totals.RTP.packets` for one call beside sipnab's own measured
+count, both tiers named, with a word verdict and a note — never summed. A call
+this capture measured no RTP for reads `outcome: not_configured` naming the
+capture, and a relay that does not hold the call reads `refused`. Polling on an
+interval is not offered over REST at all — it is a standing instruction to
+transmit that belongs to the operator who owns the host, i.e. the CLI.
+
+```bash
+curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" \
+  "http://127.0.0.1:8080/v1/relay/compare/1-7@203.0.113.9" | jq .
+```
+
+---
+
 ## Status codes
 
 | Code | When |
