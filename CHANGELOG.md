@@ -8,6 +8,21 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Fixed
+
+- **The CLI reads a relay's per-call refusal as a refusal (ST9, ST-S4
+  condition 4).** `--relay-stats-call` and `--relay-compare` tiered a
+  `result: error` reply from rtpengine into counter rows, rendering the relay's
+  own "no" (`Unknown call-id`, `No call-id in message`) as statistics named
+  `result` and `error-reason`; `--relay-compare` additionally collapsed every
+  such refusal into "the relay does not hold this call", dropping the relay's
+  reason and making two different refusals read the same. Both paths now
+  classify the reply through the single `classify_per_call_reply` rule REST
+  already applied, so a per-call refusal is reported as a refusal, carrying the
+  relay's verbatim reason, on every surface.
+
 ## [0.5.170] - 2026-09-14
 
 ### Added

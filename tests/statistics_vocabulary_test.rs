@@ -396,3 +396,145 @@ fn name_source_carries_a_distinct_wire_token() {
         "listed and probed must not collapse to one token"
     );
 }
+
+// ── ST9 condition 4: a per-call refusal is a refusal on every surface ────────
+//
+// `classify_per_call_reply` is the single seam the CLI per-call and compare
+// paths and REST all pass a per-call reply through. It is tested here, not in
+// `report_relay_statistics`/`report_relay_comparison` (src/app/bootstrap.rs),
+// because those transmit to a live rtpengine over a control socket and cannot
+// be driven from a unit test -- so the CONVERSION they perform is tested
+// directly, and the call sites are thin matches over this result. The bug this
+// closes: the CLI per-call path tiered a `result: error` reply into counter
+// rows, rendering the relay's own "no" as statistics (`result -> error`).
+
+use sipnab::stats_vocab::{PerCallReply, classify_per_call_reply};
+
+/// Pairs a real rtpengine sends when it declines a per-call query. The key fact
+/// under test: this is a refusal, not two statistics named `result` and
+/// `error-reason`.
+fn refusal_pairs(reason: &str) -> Vec<(String, String)> {
+    vec![
+        ("result".to_string(), "error".to_string()),
+        ("error-reason".to_string(), reason.to_string()),
+    ]
+}
+
+/// A per-call `result: error` reply classifies as `Refused`, carrying the
+/// relay's own reason -- never as statistics. This is the whole ST9 condition-4
+/// gap on the CLI: the per-call path used to tier these pairs into counter rows.
+#[test]
+fn a_per_call_result_error_classifies_as_refused_with_its_reason() {
+    match classify_per_call_reply(&refusal_pairs("Unknown call-id")) {
+        PerCallReply::Refused(reason) => assert_eq!(
+            reason, "Unknown call-id",
+            "the relay's own reason must travel verbatim"
+        ),
+        PerCallReply::Statistics(stats) => {
+            panic!("a result:error per-call reply must be a refusal, not statistics: {stats:?}")
+        }
+    }
+}
+
+/// The refusal never leaks onto the wire as counter values: `result` and
+/// `error-reason` must not appear as present statistics. This is the failure
+/// mode the classifier exists to stop -- the relay's "no" rendered as data.
+#[test]
+fn a_per_call_refusal_is_never_rendered_as_counter_rows() {
+    let PerCallReply::Refused(_) = classify_per_call_reply(&refusal_pairs("No call-id in message"))
+    else {
+        panic!("a result:error reply must classify as Refused, so nothing tiers it into values");
+    };
+    // And to prove the hazard is real: tiering the same pairs directly (the old
+    // path) WOULD have surfaced `result`/`error-reason` as counted values.
+    let wire = resolve_for_wire(&sipnab::stats_vocab::relay_reported(&refusal_pairs(
+        "No call-id in message",
+    )));
+    assert!(
+        wire.present.iter().any(|v| v.name == "result"),
+        "sanity: the un-classified path really does render the refusal as a value, \
+         which is the bug classify_per_call_reply prevents"
+    );
+}
+
+/// `E68` (no such statistic) and `E50` (no such session) analogues must not
+/// share a message: the reason is carried through unchanged so two different
+/// refusals stay two different answers.
+#[test]
+fn two_different_per_call_refusals_do_not_collapse() {
+    let a = match classify_per_call_reply(&refusal_pairs("Unknown call-id")) {
+        PerCallReply::Refused(r) => r,
+        other => panic!("expected refusal, got {other:?}"),
+    };
+    let b = match classify_per_call_reply(&refusal_pairs("No call-id in message")) {
+        PerCallReply::Refused(r) => r,
+        other => panic!("expected refusal, got {other:?}"),
+    };
+    assert_ne!(
+        a, b,
+        "two distinct relay reasons must not be flattened into one message"
+    );
+}
+
+/// A per-call reply with real statistics classifies as `Statistics`, tiered
+/// `relay_reported`, with every pair present and uncoerced.
+#[test]
+fn a_per_call_statistics_reply_classifies_as_statistics() {
+    let pairs = vec![
+        ("result".to_string(), "ok".to_string()),
+        ("totals.RTP.packets".to_string(), "9000".to_string()),
+        ("totals.RTP.bytes".to_string(), "1440000".to_string()),
+    ];
+    match classify_per_call_reply(&pairs) {
+        PerCallReply::Statistics(stats) => {
+            assert!(
+                stats.iter().any(|s| s.name == "totals.RTP.packets"
+                    && s.value == StatisticValue::Counted("9000".to_string())),
+                "the counted value must survive uncoerced: {stats:?}"
+            );
+            assert!(
+                stats.iter().all(|s| s.tier == StatisticTier::RelayReported),
+                "every relay-reported pair is tiered relay_reported"
+            );
+        }
+        PerCallReply::Refused(reason) => {
+            panic!("a result:ok reply is not a refusal, got Refused({reason:?})")
+        }
+    }
+}
+
+/// A `result: error` with no `error-reason` still refuses -- with a non-empty
+/// stand-in, never an empty string that would render as a silent no.
+#[test]
+fn a_reasonless_per_call_refusal_still_refuses_with_a_stand_in() {
+    match classify_per_call_reply(&[("result".to_string(), "error".to_string())]) {
+        PerCallReply::Refused(reason) => assert!(
+            !reason.is_empty(),
+            "a reasonless refusal must carry a stand-in sentence, never an empty string"
+        ),
+        PerCallReply::Statistics(stats) => {
+            panic!("a reasonless result:error is still a refusal, not statistics: {stats:?}")
+        }
+    }
+}
+
+/// The classifier agrees with the single refusal rule it is built on: it
+/// refuses exactly when `relay_reply_refusal` sees a refusal, so the two cannot
+/// drift into disagreeing about what a per-call "no" is.
+#[test]
+fn classify_per_call_reply_agrees_with_relay_reply_refusal() {
+    for pairs in [
+        refusal_pairs("Unknown call-id"),
+        vec![("result".to_string(), "ok".to_string())],
+        vec![("totals.RTP.packets".to_string(), "0".to_string())],
+        vec![("result".to_string(), "Error".to_string())],
+    ] {
+        let refused_by_rule = relay_reply_refusal(&pairs).is_some();
+        let refused_by_classifier =
+            matches!(classify_per_call_reply(&pairs), PerCallReply::Refused(_));
+        assert_eq!(
+            refused_by_rule, refused_by_classifier,
+            "classify_per_call_reply and relay_reply_refusal must agree for {pairs:?}"
+        );
+    }
+}

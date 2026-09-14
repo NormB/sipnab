@@ -582,6 +582,38 @@ pub fn resolve_for_wire(stats: &[TieredStatistic]) -> WireStatistics {
     WireStatistics { present, refusals }
 }
 
+/// A per-call relay reply, classified: the relay's own refusal (carrying its
+/// verbatim reason) kept distinct from the statistics it returned.
+///
+/// ST-S4 condition 4: a per-call reply of `result: error` is a REFUSAL -- the
+/// request's problem, reported with the relay's own words -- and must never be
+/// rendered as counter rows (`result -> error`, `error-reason -> ...`), which is
+/// exactly what a caller that tiers the pairs without first asking this question
+/// produces. Single-sourced so the CLI per-call and compare paths and REST
+/// cannot draw the line differently: a refusal is a refusal on all of them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PerCallReply {
+    /// The relay refused this call, with the reason it gave (`error-reason`, or a
+    /// stand-in when it gave none -- never an empty string).
+    Refused(String),
+    /// The relay answered with statistics for the call, tiered `relay_reported`.
+    Statistics(Vec<TieredStatistic>),
+}
+
+/// Classify a per-call relay reply's name/value pairs (ST-S4 condition 4).
+///
+/// A `result: error` reply is [`PerCallReply::Refused`] carrying the relay's own
+/// reason (via [`relay_reply_refusal`]); anything else is the call's statistics,
+/// tiered `relay_reported`. The one rule every per-call caller applies, so a
+/// refusal cannot render as statistics on one surface and a refusal on another.
+#[must_use]
+pub fn classify_per_call_reply(pairs: &[(String, String)]) -> PerCallReply {
+    match relay_reply_refusal(pairs) {
+        Some(reason) => PerCallReply::Refused(reason),
+        None => PerCallReply::Statistics(relay_reported(pairs)),
+    }
+}
+
 /// Whether a relay reply is actually the relay saying no, and its reason.
 ///
 /// A relay answers a call it does not hold with `result: error` and an

@@ -1207,8 +1207,30 @@ fn report_relay_statistics(cli: &Cli, source: Option<&CaptureSource>) {
     // way the per-message path chooses -- pretty first, else compact, else text.
     let json = cli.output_args.json;
     let json_pretty = cli.output_args.json_pretty;
+    // Only a per-call fetch (C2) can be refused for the call; a relay-wide or
+    // name-list request reads the relay's own `statistics`. `list` takes
+    // precedence over a Call-ID above, so a listing fetch is never per-call.
+    let per_call = if listing {
+        None
+    } else {
+        cli.rtp_args.relay_stats_call.as_deref()
+    };
     match fetched {
         Ok(crate::relay::types::ControlReply::Statistics(pairs)) => {
+            // ST-S4 condition 4: a `result: error` per-call reply is the relay's
+            // own refusal, not statistics. Read it as a refusal carrying the
+            // relay's reason -- never tier it into counter rows (`result ->
+            // error`) -- the same rule REST applies.
+            if let Some(call_id) = per_call
+                && let crate::stats_vocab::PerCallReply::Refused(reason) =
+                    crate::stats_vocab::classify_per_call_reply(&pairs)
+            {
+                tracing::error!(
+                    "relay at {addr} refused the statistics request for call \
+                     {call_id}: {reason}"
+                );
+                return;
+            }
             let tiered = crate::stats_vocab::relay_reported(&pairs);
             if listing {
                 // C3: the names the relay knows, listed (rtpengine enumerates
@@ -1296,7 +1318,8 @@ pub fn report_relay_comparison(
     use crate::rtpengine::control::{ControlClient, DEFAULT_CONTROL_TIMEOUT};
     use crate::security::transmit_guard::TransmitPermit;
     use crate::stats_vocab::{
-        CompareOutcome, StatisticValue, lookup, ready_comparison, relay_reported,
+        CompareOutcome, PerCallReply, StatisticValue, classify_per_call_reply, lookup,
+        ready_comparison, relay_reported,
     };
 
     let permit = TransmitPermit::for_source(source);
@@ -1351,6 +1374,18 @@ pub fn report_relay_comparison(
 
     match client.call_statistics(&permit, call_id) {
         Ok(crate::relay::types::ControlReply::Statistics(pairs)) => {
+            // ST-S4 condition 4: a `result: error` reply is a refusal, carrying
+            // the relay's own reason. Report it as one BEFORE deciding the call
+            // is absent -- otherwise `Unknown call-id` and `No call-id in
+            // message` both collapse into "does not hold call", dropping the
+            // distinction the operator needs.
+            if let PerCallReply::Refused(reason) = classify_per_call_reply(&pairs) {
+                tracing::error!(
+                    "relay at {addr} refused the per-call statistics request for \
+                     call {call_id}: {reason}; nothing to compare."
+                );
+                return;
+            }
             let tiered = relay_reported(&pairs);
             // The call-level RTP total, both directions, as the relay counts
             // it. Absent when the relay does not hold the call (rtpengine
