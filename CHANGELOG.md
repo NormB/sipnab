@@ -47,6 +47,19 @@ entry that carries them.
   in practice (no relay in reach wraps a 64-bit counter), so it is tested against
   recorded oversized values, as the catalog directs.
 
+- **A relay reply that cannot be trusted is suspect, not unreachable (ST9,
+  ST-S4 condition 7).** A reply whose cookie does not match the request answers a
+  different transaction -- rtpengine replays cached replies keyed on the cookie,
+  so accepting one would attribute another call's streams to this one. Such a
+  reply was already discarded and never interpreted, but the fetch then failed
+  with a plain error that the CLI, REST and TUI all rendered as `unreachable`
+  (the network's problem) when it is the answer's. The discard now carries a
+  typed `UntrustedReply` marker, and one seam rule, `fetch_error_outcome`, maps
+  it to `suspect` while every other fetch failure stays `unreachable`, so the
+  three surfaces agree; MCP already forwards the reason in its error message. A
+  fresh cookie per request is unchanged. Verified end to end against a relay that
+  replies with the wrong cookie and one that stays silent.
+
 ## [0.5.170] - 2026-09-14
 
 ### Added

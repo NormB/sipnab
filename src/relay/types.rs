@@ -83,6 +83,42 @@ pub enum ControlReply {
         reason: String,
     },
 }
+
+/// A relay reply arrived but cannot be trusted -- ST-S4 `suspect` (the answer's
+/// own problem), never `unreachable` (asked, nothing came back).
+///
+/// The reason is supplied by whatever read the reply, so this type stays
+/// vendor-neutral the way the rest of this module is: the control decoder that
+/// finds a reply answering a different transaction passes its own words in, and
+/// this carries them to the surface unchanged. Today the one cause is a reply
+/// whose cookie does not match the request; such a reply is discarded and never
+/// interpreted, and this marks the fetch so a surface classifies it suspect
+/// rather than as no answer at all.
+#[derive(Debug, thiserror::Error)]
+#[error("a relay reply could not be trusted: {reason}")]
+pub struct UntrustedReply {
+    /// Why the reply could not be trusted, in the decoder's own words.
+    pub reason: String,
+}
+
+/// Classify a relay control-fetch failure into an ST-S4 outcome.
+///
+/// `Suspect` when a reply arrived and could not be trusted ([`UntrustedReply`]):
+/// the answer's own problem, never smoothed into "no answer". Otherwise
+/// `Unreachable`: asked, and nothing valid came back -- a timeout, a refused
+/// connection, a socket error, indistinguishable over UDP and all reported the
+/// same weaker true way. Single-sourced so every surface maps a fetch failure to
+/// the same classification rather than each re-deciding from the error text.
+#[must_use]
+pub fn fetch_error_outcome(err: &anyhow::Error) -> crate::stats_vocab::StatisticsOutcome {
+    use crate::stats_vocab::StatisticsOutcome;
+    if err.downcast_ref::<UntrustedReply>().is_some() {
+        StatisticsOutcome::Suspect
+    } else {
+        StatisticsOutcome::Unreachable
+    }
+}
+
 /// One relay-side port, and who the relay exchanges media with on it.
 ///
 /// This is the join key an unexplained stream needs. sipnab sees packets

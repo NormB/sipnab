@@ -304,11 +304,18 @@ fn do_ask(
     let (call_id, mode) = key;
     let obtained_at = chrono::Utc::now();
     let label = answer_label(access.relay.as_ref(), access.addr, call_id.as_deref());
-    let unreachable = |e: &dyn std::fmt::Display| {
-        compose_outcome_text(
+    // ST-S4: a reply that arrived but could not be trusted (a mismatched cookie)
+    // is `suspect`; everything else is `unreachable`. Classified through the one
+    // seam rule so the TUI, REST and the CLI agree on which is which.
+    let fetch_failure = |e: &anyhow::Error| match crate::relay::types::fetch_error_outcome(e) {
+        StatisticsOutcome::Suspect => compose_outcome_text(
+            StatisticsOutcome::Suspect,
+            &format!("{label}: {e}; the reply was discarded and not read"),
+        ),
+        _ => compose_outcome_text(
             StatisticsOutcome::Unreachable,
             &format!("{label} did not answer ({e}); asked, nothing came back"),
-        )
+        ),
     };
     match mode {
         RelayStatsMode::Counters => match call_id {
@@ -316,13 +323,13 @@ fn do_ask(
                 Ok(reply) => {
                     compose_counters_or_names(&reply, &label, obtained_at, true, false, origin)
                 }
-                Err(e) => unreachable(&e),
+                Err(e) => fetch_failure(&e),
             },
             None => match access.relay.statistics(&access.permit) {
                 Ok(reply) => {
                     compose_counters_or_names(&reply, &label, obtained_at, false, false, origin)
                 }
-                Err(e) => unreachable(&e),
+                Err(e) => fetch_failure(&e),
             },
         },
         // Names never label themselves polled: `?` is a one-shot question, and
@@ -336,7 +343,7 @@ fn do_ask(
                 true,
                 fmt::FetchOrigin::Asked,
             ),
-            Err(e) => unreachable(&e),
+            Err(e) => fetch_failure(&e),
         },
         RelayStatsMode::Compare => {
             let Some(cid) = call_id else {
@@ -349,7 +356,7 @@ fn do_ask(
             };
             match access.relay.call_statistics(&access.permit, cid) {
                 Ok(reply) => compose_compare(&reply, cid, sipnab_side, &label, obtained_at),
-                Err(e) => unreachable(&e),
+                Err(e) => fetch_failure(&e),
             }
         }
     }

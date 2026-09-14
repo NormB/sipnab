@@ -560,10 +560,16 @@ fn framed_reply_body<'a>(buf: &'a [u8], cookie: &str) -> anyhow::Result<Option<&
         return Ok(None);
     };
     if &buf[..space] != cookie.as_bytes() {
-        anyhow::bail!(
-            "reply cookie does not match the request; it answers a \
-             different transaction"
-        );
+        // ST-S4 condition 7: a reply whose cookie does not match answers a
+        // different transaction (rtpengine replays cached replies keyed on the
+        // cookie). It is discarded here and never interpreted; the typed marker
+        // makes the surface classify it `suspect` -- the answer's own problem --
+        // rather than `unreachable`, which would read as no answer at all.
+        return Err(anyhow::Error::new(crate::relay::types::UntrustedReply {
+            reason: "reply cookie does not match the request; it answers a \
+                     different transaction"
+                .to_string(),
+        }));
     }
     Ok(Some(&buf[space + 1..]))
 }
@@ -1072,6 +1078,19 @@ mod tests {
             err.to_string().contains("different transaction"),
             "the error must name the cause: {err}"
         );
+        // ST-S4 condition 7: a mismatched cookie is a typed UntrustedReply, so
+        // every surface classifies it SUSPECT (the answer's own problem), never
+        // unreachable (asked, nothing came back).
+        assert!(
+            err.downcast_ref::<crate::relay::types::UntrustedReply>()
+                .is_some(),
+            "a mismatched cookie must be a typed UntrustedReply: {err:#}"
+        );
+        assert_eq!(
+            crate::relay::types::fetch_error_outcome(&err),
+            crate::stats_vocab::StatisticsOutcome::Suspect,
+            "a reply that could not be trusted is suspect, not unreachable"
+        );
         relay.join().expect("relay thread");
     }
 
@@ -1100,6 +1119,13 @@ mod tests {
             err.to_string().contains("no reply"),
             "the error must say the relay was silent: {err}"
         );
+        // The contrast that makes the suspect classification meaningful: a
+        // timeout is UNREACHABLE (asked, nothing came back), never suspect.
+        assert_eq!(
+            crate::relay::types::fetch_error_outcome(&err),
+            crate::stats_vocab::StatisticsOutcome::Unreachable,
+            "a silent relay is unreachable, not suspect"
+        );
         drop(sock);
     }
 
@@ -1114,6 +1140,44 @@ mod tests {
         let a = client.next_seed();
         let b = client.next_seed();
         assert_ne!(a, b, "a client reused a cookie seed across transactions");
+    }
+
+    /// `fetch_error_outcome` classifies an untrusted reply as suspect -- the
+    /// answer's own problem -- so a surface does not report it as no answer.
+    #[test]
+    fn an_untrusted_reply_classifies_as_suspect() {
+        let err = anyhow::Error::new(crate::relay::types::UntrustedReply {
+            reason: "reply cookie does not match".to_string(),
+        });
+        assert_eq!(
+            crate::relay::types::fetch_error_outcome(&err),
+            crate::stats_vocab::StatisticsOutcome::Suspect,
+        );
+    }
+
+    /// Any other fetch failure -- a timeout, a socket error -- is unreachable:
+    /// asked, and nothing valid came back. The default the classifier gives
+    /// everything that is not a typed untrusted reply.
+    #[test]
+    fn a_plain_fetch_error_classifies_as_unreachable() {
+        let err = anyhow::anyhow!("no reply from the relay within 2s");
+        assert_eq!(
+            crate::relay::types::fetch_error_outcome(&err),
+            crate::stats_vocab::StatisticsOutcome::Unreachable,
+        );
+    }
+
+    /// The untrusted-reply marker carries its reason through, so a surface can
+    /// say why the reply was discarded rather than only that it was.
+    #[test]
+    fn an_untrusted_reply_carries_its_reason() {
+        let err = crate::relay::types::UntrustedReply {
+            reason: "reply cookie does not match the request".to_string(),
+        };
+        assert!(
+            err.to_string().contains("reply cookie does not match"),
+            "the reason must travel: {err}"
+        );
     }
 
     /// A full answer is reported as possibly truncated, because that is the

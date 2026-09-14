@@ -2352,11 +2352,19 @@ fn relay_rest_answer(
 
     let label = format!("relay ({})", relay.describe());
     let now = chrono::Utc::now();
-    let unreachable = |e: &dyn std::fmt::Display| {
-        to_value(fmt::relay_rest_outcome(
+    // A fetch that did not yield a trustworthy reply. ST-S4: a reply that
+    // arrived but could not be trusted (a mismatched cookie) is `suspect` -- the
+    // answer's own problem -- and everything else is `unreachable`. Classified
+    // through the single seam rule so REST and the CLI agree.
+    let fetch_failure = |e: &anyhow::Error| match crate::relay::types::fetch_error_outcome(e) {
+        O::Suspect => to_value(fmt::relay_rest_outcome(
+            O::Suspect,
+            &format!("{label}: {e}; the reply was discarded and not read"),
+        )),
+        _ => to_value(fmt::relay_rest_outcome(
             O::Unreachable,
             &format!("{label} did not answer ({e}); asked, nothing came back"),
-        ))
+        )),
     };
 
     match ask {
@@ -2374,7 +2382,7 @@ fn relay_rest_answer(
                 O::Suspect,
                 "the relay answered with something other than statistics",
             )),
-            Err(e) => unreachable(&e),
+            Err(e) => fetch_failure(&e),
         },
         RelayAsk::Names => match relay.statistics(&permit) {
             Ok(ControlReply::Statistics(pairs)) => {
@@ -2390,7 +2398,7 @@ fn relay_rest_answer(
                 O::Suspect,
                 "the relay answered with something other than statistics",
             )),
-            Err(e) => unreachable(&e),
+            Err(e) => fetch_failure(&e),
         },
         RelayAsk::Call(call_id) => match relay.call_statistics(&permit, call_id) {
             Ok(ControlReply::Statistics(pairs)) => {
@@ -2412,7 +2420,7 @@ fn relay_rest_answer(
                 O::Suspect,
                 "the relay answered with something other than statistics",
             )),
-            Err(e) => unreachable(&e),
+            Err(e) => fetch_failure(&e),
         },
         RelayAsk::Compare(call_id) => {
             // sipnab's own side: absent (no linked stream) is not measured zero.
@@ -2484,7 +2492,7 @@ fn relay_rest_answer(
                     O::Suspect,
                     "the relay answered with something other than statistics",
                 )),
-                Err(e) => unreachable(&e),
+                Err(e) => fetch_failure(&e),
             }
         }
     }

@@ -1282,15 +1282,20 @@ fn report_relay_statistics(cli: &Cli, source: Option<&CaptureSource>) {
         Ok(other) => {
             tracing::error!("relay at {addr} answered {other:?}, not statistics");
         }
-        Err(e) => {
-            // ST-S4 `unreachable`: over UDP, a timeout is indistinguishable
-            // from a down relay, a filtered port or a lost reply, so it claims
-            // none of them.
-            tracing::error!(
+        Err(e) => match crate::relay::types::fetch_error_outcome(&e) {
+            // ST-S4 condition 7: a reply arrived and could not be trusted (a
+            // mismatched cookie). Discarded, not interpreted, and reported as the
+            // answer's own problem -- suspect -- not as no answer at all.
+            crate::stats_vocab::StatisticsOutcome::Suspect => tracing::error!(
+                "relay at {addr}: {e}; the reply was discarded and not read (suspect)."
+            ),
+            // Unreachable: over UDP, a timeout is indistinguishable from a down
+            // relay, a filtered port or a lost reply, so it claims none of them.
+            _ => tracing::error!(
                 "relay at {addr} did not answer the statistics request ({e}); \
                  asked, nothing came back."
-            );
-        }
+            ),
+        },
     }
 }
 
@@ -1460,11 +1465,18 @@ pub fn report_relay_comparison(
         }
         Err(e) => {
             let measured = sipnab_side.unwrap_or(0);
-            tracing::error!(
-                "relay at {addr} did not answer the per-call statistics request for \
-                 call {call_id} ({e}); sipnab measured {measured} RTP packet(s), but the \
-                 relay's side did not arrive."
-            );
+            match crate::relay::types::fetch_error_outcome(&e) {
+                // ST-S4 condition 7: a reply arrived and could not be trusted.
+                crate::stats_vocab::StatisticsOutcome::Suspect => tracing::error!(
+                    "relay at {addr}: {e}; the reply for call {call_id} was discarded and not \
+                     read (suspect). sipnab measured {measured} RTP packet(s)."
+                ),
+                _ => tracing::error!(
+                    "relay at {addr} did not answer the per-call statistics request for \
+                     call {call_id} ({e}); sipnab measured {measured} RTP packet(s), but the \
+                     relay's side did not arrive."
+                ),
+            }
         }
     }
 }
