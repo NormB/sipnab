@@ -48,7 +48,7 @@ version = "0.5.171"
 # Bumped after a release finishes publishing, not while cutting it.
 # `site_advertises_only_a_released_version` requires a matching `v<x.y.z>` tag,
 # so advertising something unreleased fails the suite rather than the visitor.
-published_version = "0.5.170"
+published_version = "0.5.171"
 # Release date of `published_version` above -- NOT of `version`, further up.
 # `download.html` renders this beside `published_version` in a single sentence,
 # so the date belongs to the release a reader can actually download.
@@ -121,6 +121,7 @@ macos_floor_intel = "10.12"
 #   0.5.168  15,862,664 bytes   (+45,056, leaving 914,552 bytes of headroom)
 #   0.5.169  15,916,232 bytes   (+53,568, leaving 860,984 bytes of headroom)
 #   0.5.170  16,072,008 bytes   (+155,776, leaving 705,208 bytes of headroom)
+#   0.5.171  16,096,776 bytes   (+24,768, leaving 680,440 bytes of headroom)
 #
 # So 0.5.159 shipped one ordinary release away from tipping and nothing said
 # so. The 118,784 bytes are `find_in_captures` -- a 66th MCP tool with derived
@@ -151,7 +152,12 @@ macos_floor_intel = "10.12"
 # the --json shape and the --relay-stats-interval poller (ST7/C5) and the TUI
 # RelayStats view on its own worker thread (ST8), plus a cargo-minor-patch
 # dependency bump, cost 155,776. The same vocabulary again, so the four new
-# surfaces cost about three MCP tools between them rather than one each.
+# surfaces cost about three MCP tools between them rather than one each -- and
+# 680,440 at 0.5.171, where the ST9 failure and edge-case work (the per-call
+# refusal, overflow, restart-detection, cookie-mismatch and interval-slip rules,
+# each single-sourced in stats_vocab) plus a rustls security bump cost 24,768.
+# Closing the edge cases was mostly reusing the vocabulary already there, which
+# is why it cost a fraction of a surface.
 # That figure is measured from the shipped tarball each release, checksum
 # verified against the `.sha256` beside it, which is what makes it a
 # measurement rather than an estimate carried forward.
