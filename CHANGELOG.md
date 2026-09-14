@@ -8,6 +8,20 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [0.5.172] - 2026-09-14
+
+### Added
+
+- **The cookbook gains relay-statistics recipes (ST-D1).** Four task-first
+  recipes in the cookbook, in the question-command-caveat shape the docs guide
+  demands: whether a relay is dropping packets, whether it is holding sessions
+  nobody released, whether its view of a call matches your capture's, and -- the
+  one the tier rule exists for -- how the relay's reported loss, the loss sipnab
+  measured on the wire, and the far end's RTCP claim are three different numbers,
+  none authoritative over the others. Each recipe names the tier a relay figure
+  belongs to, so a reader never mistakes the relay's own count for something
+  sipnab saw.
+
 ## [0.5.171] - 2026-09-14
 
 ### Added
