@@ -10,6 +10,8 @@
 #[cfg(feature = "native")]
 pub mod atomic;
 #[cfg(feature = "native")]
+pub mod bpf_filter;
+#[cfg(feature = "native")]
 pub mod channel;
 #[cfg(feature = "tls")]
 pub mod decrypt;
