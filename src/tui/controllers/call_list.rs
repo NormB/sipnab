@@ -85,6 +85,9 @@ pub enum CallListAction {
     OpenStatistics,
     /// `S` — open the relay-statistics view for the relay's globals (ST8, C1).
     OpenRelayStats,
+    /// `B` — show the full BPF capture-filter expression (status line 2
+    /// summarizes the auto-generated default).
+    OpenBpfFilter,
     /// `D` — open the quality dashboard, remembering the call list as the
     /// return view.
     OpenDashboard,
@@ -145,6 +148,7 @@ pub fn call_list_action(km: &Keymap, key: KeyEvent) -> Option<CallListAction> {
         KeyCode::Char('N') => NameEndpoints,
         KeyCode::Char('s') => OpenStatistics,
         KeyCode::Char('S') => OpenRelayStats,
+        KeyCode::Char('B') => OpenBpfFilter,
         KeyCode::Char('D') => OpenDashboard,
         // 't' (lowercase) is the timestamp-mode cycle; the timeline opens
         // on Shift+T so both keep a call-list binding.
@@ -306,6 +310,9 @@ fn execute_call_list_action(app: &mut App, action: CallListAction) {
                 call_id: None,
                 mode: RelayStatsMode::Counters,
             };
+        }
+        CallListAction::OpenBpfFilter => {
+            app.current_view = View::BpfFilter;
         }
         CallListAction::OpenDashboard => {
             app.dashboard_selected = 0;
@@ -826,6 +833,14 @@ mod tests {
         assert!(!app.paused);
         handle_call_list_key(&mut app, key(KeyCode::Char('p')));
         assert!(app.paused);
+    }
+
+    /// `B` opens the full-BPF-filter view.
+    #[test]
+    fn call_list_b_opens_the_bpf_filter_view() {
+        let mut app = App::new_test();
+        handle_call_list_key(&mut app, key(KeyCode::Char('B')));
+        assert_eq!(app.current_view, View::BpfFilter);
     }
 
     /// F1/F2/F7/F8 open help, save, filter, and settings respectively.

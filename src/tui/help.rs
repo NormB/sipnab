@@ -43,6 +43,7 @@ CALL LIST:
   O                Open pcap file
   s                Statistics view
   S                Relay statistics view (asks the relay)
+  B                Show the full BPF capture filter
   D                Quality dashboard (live MOS/jitter/loss)
   T                Call timeline (selected dialog)
   F9               Clear active filter

@@ -1248,6 +1248,13 @@ pub enum View {
         /// Which answer is shown: counters, names, or a comparison.
         mode: RelayStatsMode,
     },
+    /// The full BPF capture-filter expression, shown verbatim in a popup.
+    ///
+    /// Status line 2 summarizes the auto-generated default (its expression runs
+    /// to thousands of columns); this is where the full, pasteable text is one
+    /// keystroke away, wrapped to the popup width. A later increment makes it
+    /// editable and adds scrolling for a filter taller than the popup.
+    BpfFilter,
     /// Live call-quality dashboard (aggregate MOS/jitter/loss, worst first).
     QualityDashboard,
     /// RTP stream detail (by StreamKey).

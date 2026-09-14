@@ -176,6 +176,7 @@ fn dispatch_view_key(app: &mut App, key: KeyEvent) {
         View::Help => handle_help_key(app, key),
         View::Statistics => handle_statistics_key(app, key),
         View::RelayStats { .. } => handle_relay_stats_key(app, key),
+        View::BpfFilter => handle_bpf_filter_key(app, key),
         View::QualityDashboard => dashboard::handle_dashboard_key(app, key),
         View::CallTimeline(_) => timeline::handle_timeline_key(app, key),
         View::StreamLossMap(_) => loss_map::handle_loss_map_key(app, key),
@@ -310,6 +311,24 @@ pub(in crate::tui) fn handle_help_key(app: &mut App, key: KeyEvent) {
         HelpAction::PageUp => app.help_scroll = app.help_scroll.saturating_sub(10),
         HelpAction::ScrollTop => app.help_scroll = 0,
         HelpAction::ScrollBottom => app.help_scroll = u16::MAX, // clamped to content in render
+    }
+}
+
+/// Handle keys for the full-BPF-filter popup.
+///
+/// Read-only for now: any close key (`Esc`, `B`, `q`) returns to the call list.
+/// A later increment turns this into the capture-filter editor and adds
+/// scrolling for an expression taller than the popup.
+pub(in crate::tui) fn handle_bpf_filter_key(app: &mut App, key: KeyEvent) {
+    use crossterm::event::KeyCode;
+    // The open key `B` (documented) toggles the popup closed; `q` and Esc are
+    // the usual close keys. Lowercase `b` is deliberately not a close key -- it
+    // would be an undocumented handled key.
+    if matches!(
+        key.code,
+        KeyCode::Esc | KeyCode::Char('B') | KeyCode::Char('q')
+    ) {
+        app.current_view = View::CallList;
     }
 }
 
@@ -714,6 +733,10 @@ pub(in crate::tui) fn handle_mouse_event(app: &mut App, kind: crossterm::event::
                 app.relay_stats_scroll.saturating_sub(3)
             };
         }
+        // The full-BPF popup is read-only and its content wraps to a single
+        // screen for any real filter, so its wheel arm is intentionally empty
+        // (v1). The editor increment adds scrolling.
+        View::BpfFilter => {}
         // The timeline is a fixed single screen (no scroll, no selection),
         // so its wheel arm is intentionally empty. Deleting it is a compile
         // error, but FOLDING it into a neighbor is not, and that was the
@@ -1410,6 +1433,26 @@ mod tests {
         app.current_view = View::Help;
         handle_help_key(&mut app, key(KeyCode::Char('z')));
         assert_eq!(app.current_view, View::Help);
+    }
+
+    /// Esc, B and q all close the full-BPF-filter popup; another key leaves it
+    /// open (read-only, so nothing else does anything yet).
+    #[test]
+    fn bpf_filter_key_closes() {
+        for code in [KeyCode::Esc, KeyCode::Char('B'), KeyCode::Char('q')] {
+            let mut app = App::new_test();
+            app.current_view = View::BpfFilter;
+            handle_bpf_filter_key(&mut app, key(code));
+            assert_eq!(app.current_view, View::CallList, "closes on {code:?}");
+        }
+        let mut app = App::new_test();
+        app.current_view = View::BpfFilter;
+        handle_bpf_filter_key(&mut app, key(KeyCode::Char('z')));
+        assert_eq!(
+            app.current_view,
+            View::BpfFilter,
+            "an unbound key leaves the popup open"
+        );
     }
 
     /// Esc and `s` both close the statistics view.

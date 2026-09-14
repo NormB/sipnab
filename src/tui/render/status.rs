@@ -556,6 +556,7 @@ pub(in crate::tui) fn fkey_bar_items(
                 ("K", "Compare"),
                 ("\u{2191}\u{2193}", "Scroll"),
             ],
+            View::BpfFilter => vec![("Esc/B", "Close")],
             _ => vec![("Esc", "Back")],
         }
     }
@@ -901,6 +902,7 @@ mod tests {
                 msg2_idx: 1,
             },
             View::Help,
+            View::BpfFilter,
         ] {
             let mut terminal = Terminal::new(TestBackend::new(120, 3)).unwrap();
             terminal

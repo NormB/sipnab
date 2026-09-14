@@ -497,6 +497,9 @@ pub(in crate::tui) fn render_app(
         View::RelayStats { .. } => {
             fb.relay_stats_scroll = Some(render_relay_stats(frame, main_area, app));
         }
+        View::BpfFilter => {
+            render_bpf_filter(frame, main_area, app);
+        }
         View::QualityDashboard => {
             crate::tui::dashboard::render_dashboard(frame, main_area, app);
         }
@@ -717,6 +720,36 @@ pub(in crate::tui) fn render_relay_stats(
 
     frame.render_widget(paragraph, area);
     relay_stats_scroll
+}
+
+/// Render the full BPF capture filter in a bordered popup, wrapped to the width.
+///
+/// Status line 2 summarizes the auto-generated default (its expression runs to
+/// thousands of columns); this shows it verbatim so the operator can read and
+/// paste the exact filter the capture is running. Read-only for now; a later
+/// increment turns it into the capture-filter editor.
+///
+/// # Side effects
+/// Draws to `frame` only; no state is mutated.
+pub(in crate::tui) fn render_bpf_filter(
+    frame: &mut ratatui::Frame,
+    area: ratatui::layout::Rect,
+    app: &App,
+) {
+    let body = if app.bpf_filter.is_empty() {
+        "No capture filter is in force — every packet the source delivers reaches the parser."
+            .to_string()
+    } else {
+        app.bpf_filter.clone()
+    };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" BPF Filter — the exact expression the capture is running ");
+    let paragraph = Paragraph::new(body)
+        .block(block)
+        .style(Style::default().fg(app.theme.foreground))
+        .wrap(Wrap { trim: false });
+    frame.render_widget(paragraph, area);
 }
 
 /// Estimated rendered rows for `lines` wrapped to `width` columns: the

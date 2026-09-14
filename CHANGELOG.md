@@ -18,9 +18,10 @@ entry that carries them.
   on the startup log line. An operator's own filter is still shown verbatim, cut
   with an ellipsis only when it overflows the row. This is the first landed piece
   of the editable capture-filter feature specified in
-  `docs/design/tui-bpf-filter-editing.md`; the pure `compose_selection` core, the
-  full-view popup, the editable field (replace, or append with an AND/OR toggle)
-  and runtime re-apply follow.
+  `docs/design/tui-bpf-filter-editing.md`. Pressing `B` opens a popup showing the
+  full expression verbatim (wrapped and pasteable), so the summary is never a
+  dead end. The editable field (replace, or append with an AND/OR toggle) and
+  runtime re-apply follow.
 
 ## [0.5.172] - 2026-09-14
 
