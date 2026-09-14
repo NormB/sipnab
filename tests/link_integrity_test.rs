@@ -861,7 +861,11 @@ fn wiki_intra_docs_links_resolve() {
     // generated and outside the extractor's walk.
     // 719 -> 720 by ST8's `S` row in docs/keybindings.md, which links the new
     // "Relay statistics" section rather than restating it. One link, one page.
-    const EXPECTED_WIKI_LINKS: usize = 720;
+    // 720 -> 725 by ST-D1's four cookbook recipes in docs/examples.md: four rows
+    // in the "What do you want to do?" table linking recipes 61-64, plus recipe
+    // 64's cross-link to recipe 22. Five links, one page; the mirror is outside
+    // the extractor's walk.
+    const EXPECTED_WIKI_LINKS: usize = 725;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe 6d in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

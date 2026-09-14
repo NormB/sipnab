@@ -78,6 +78,10 @@ are new, recipe 1 is the broadest starting point.
 | Get a count an agent cannot miscount | [57. Ask the capture how many calls failed](#57-ask-the-capture-how-many-calls-failed) |
 | Get the facts behind a MOS score | [58. Ask why the MOS is what it is](#58-ask-why-the-mos-is-what-it-is) |
 | Decrypt TLS from a server private key | [59. Decrypt TLS with the server's private key](#59-decrypt-tls-with-the-server-s-private-key) |
+| Ask a media relay whether it is dropping packets | [61. Ask a relay whether it is dropping packets](#61-ask-a-relay-whether-it-is-dropping-packets) |
+| See if a relay is holding sessions nobody released | [62. Ask a relay what it is still holding](#62-ask-a-relay-what-it-is-still-holding) |
+| Compare a relay's view of a call with mine | [63. Compare a relay's per-call count with your capture](#63-compare-a-relay-s-per-call-count-with-your-capture) |
+| Tell a relay's reported loss from the loss I measured | [64. Read a relay's loss beside the loss you measured](#64-read-a-relay-s-loss-beside-the-loss-you-measured) |
 | Just find a command to copy | [Look up a one-liner by task](#look-up-a-one-liner-by-task) |
 
 ### Where a recipe fits
@@ -3194,6 +3198,89 @@ SRTP needs media keys instead:
 - `sudo sipnab -N -d eth0 -H homer.example.net:9060` — mirror captured traffic to Homer
 - `sudo sipnab -N -d eth0 -H collector:9060 --hep-send-transport tcp` — mirror over TCP instead of UDP, for a collector that wants a stream
 - `sipnab -N -L 0.0.0.0:9060 --hep-listen-transport tls --hep-tls-cert cert.pem --hep-tls-key key.pem --hep-allow 192.0.2.0/24` — receive HEP inside TLS. Each side names its own transport, so a relay can take TCP in and send UDP out
+
+---
+
+## 61. Ask a relay whether it is dropping packets
+
+**Problem:** Audio is bad and the media relay (rtpengine) is the prime suspect. You want the relay's OWN drop and throughput counters, not a guess from the packets your capture happened to see.
+
+A relay statistic is a claim from the relay, not something sipnab measured. Asking over the relay's read-only control port prints what it says, tagged as the relay's own count so you never mistake it for sipnab's:
+
+```bash
+sipnab -N -d eth0 --rtpengine-control 127.0.0.1:22222 --relay-stats
+```
+
+Every figure names the relay as its source (wire tier `relay_reported`). Reading it as "sipnab saw this" is the one mistake this whole view exists to stop.
+
+**Pitfalls:**
+
+- **A relay that restarted a second ago reads as a quiet one.** rtpengine's counters are cumulative and reset to zero on restart. Where the relay publishes `uptime`, sipnab shows it beside them, and rtpproxy publishes none — so a small number can mean "handled little" or "just restarted", and only the uptime tells them apart. sipnab flags a polled series (`--relay-stats-interval`) that steps backwards as a probable restart rather than a drop in traffic.
+- Asking transmits to the relay, so this needs a live source (`-d`), never a capture file. sipnab refuses `--relay-stats` on `-I file.pcap`, because a file's addresses belong to third parties.
+- A statistic missing from the reply was not asked for. A zero means the relay counted zero. They are different answers and never render the same.
+
+---
+
+## 62. Ask a relay what it is still holding
+
+**Problem:** You suspect leaked sessions — calls that ended but whose media ports the relay never tore down.
+
+```bash
+sipnab -N -d eth0 --rtpengine-control 127.0.0.1:22222 --relay-stats
+```
+
+Read the active-session count beside the created and destroyed totals: a created count far above destroyed, with a high active count, is the shape of sessions nobody released.
+
+**Pitfalls:**
+
+- **"Active" is this instant, not a window.** A session torn down a second ago is already gone from the count. Poll on a timer with `--relay-stats-interval 5` to watch it move rather than reading one snapshot.
+- The counters are the relay's own (`relay_reported`), cumulative, and reset on restart — see the uptime caveat in recipe 61.
+
+---
+
+## 63. Compare a relay's per-call count with your capture
+
+**Problem:** You have a Call-ID and want to know whether the relay's view of it matches what your capture saw — "we sent it" / "we never got it", one hop up.
+
+```bash
+sipnab -N -d eth0 --rtpengine-control 127.0.0.1:22222 --relay-compare 'abc123@host'
+```
+
+This shows two figures side by side — the relay's own RTP packet count for the call, and the count sipnab measured from the media it captured — each showing which it is, and a one-word verdict (match or differ) with a plain-language note.
+
+**Pitfalls:**
+
+- **A difference is not automatically a fault.** The two count different sockets over different windows with different start times. Three ordinary causes: a capture off a mirror port under load misses packets, a capture that sees BOTH sides of the relay's hairpin counts each packet twice, and a relay that restarted mid-call zeroed its counters. The note names these — read it before you escalate.
+- The relay side is absent, not zero, when the relay does not hold the call, and sipnab's side is absent, not zero, when your capture saw no RTP for it. An absent side never renders as `0`, and sipnab flags a per-call total too large to compare as suspect rather than reading it as a call the relay does not hold.
+
+---
+
+## 64. Read a relay's loss beside the loss you measured
+
+**Problem:** The relay reports packet loss and so does sipnab, and the two numbers disagree. You need to know which to believe.
+
+**Neither — because they are not the same measurement.** This is the recipe most easily got wrong, and getting it wrong is how a real fault gets blamed on the wrong hop. There are three different "loss" numbers for one call, and each is a different claim:
+
+| The number | Wire tier | What it actually is |
+|---|---|---|
+| The relay's own loss counter | the relay's own count (`relay_reported`) | what the relay's box counted, on its sockets, since its last restart |
+| sipnab's sequence-gap loss | what sipnab saw on the wire (`sipnab_measured`) | gaps in the RTP sequence numbers that reached the capture point — bounded by what your capture saw |
+| the far end's RTCP `fraction lost` | what the far end claims (`endpoint_reported`) | the remote endpoint's own assertion, never checkable |
+
+```bash
+sipnab -N -d eth0 --rtpengine-control 127.0.0.1:22222 --relay-stats
+```
+
+```bash
+sipnab -N -I capture.pcap --call-report 'abc123@host'
+```
+
+The first asks the relay for its own loss counter, live. The second reads what sipnab measured on the wire and the far end's RTCP claim, from the capture. None is authoritative over the others: the relay's count and sipnab's differ whenever the capture is off the relay's path, and the far end's claim is about a third socket again. Cite the tier when you quote the number — "the relay reports 40 lost, our capture measured 3 gaps" — and the disagreement stops being a contradiction and becomes three facts about three points on the path.
+
+**Pitfalls:**
+
+- Do not subtract one tier from another. The relay's count minus sipnab's is not "packets sipnab missed" — the two count different sockets over different windows, so the difference describes nothing.
+- For sipnab's own capture loss versus the network's (a different axis — whether YOUR capture dropped packets), see [recipe 22](#22-measure-whether-the-loss-is-yours-or-the-network-s).
 
 ---
 

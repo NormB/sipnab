@@ -3540,7 +3540,9 @@ fn no_documentation_table_repeats_a_row() {
     // once in the site mirror -- two tables, two mirrored copies, four in all.
     // 887 -> 889 by ST8: the "Relay statistics" section in docs/keybindings.md
     // adds one key table, counted once in docs/ and once in its site mirror.
-    const EXPECTED_TABLES: usize = 889;
+    // 889 -> 891 by ST-D1: recipe 64 in the cookbook (docs/examples.md) adds one
+    // three-tier "loss" table, counted once in docs/ and once in its site mirror.
+    const EXPECTED_TABLES: usize = 891;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")
