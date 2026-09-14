@@ -8,7 +8,7 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
-## [Unreleased]
+## [0.5.171] - 2026-09-14
 
 ### Added
 
@@ -70,6 +70,14 @@ entry that carries them.
   three surfaces agree; MCP already forwards the reason in its error message. A
   fresh cookie per request is unchanged. Verified end to end against a relay that
   replies with the wrong cookie and one that stays silent.
+
+### Security
+
+- **rustls advanced to 0.23.45 (RUSTSEC-2026-0285).** Versions 0.23.13 through
+  0.23.44 accepted TLS 1.3 handshake messages across encryption-level
+  boundaries; 0.23.45 closes it. rustls is in sipnab's dependency tree, so the
+  released lockfiles and binary carry the patched version. `cargo audit` is clean
+  on both the root and fuzz lockfiles.
 
 ## [0.5.170] - 2026-09-14
 
