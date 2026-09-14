@@ -280,6 +280,10 @@ pub struct TuiOptions {
     /// dialog reads its file through `capture::file::open_offline`, which
     /// compiles no filter at all.
     pub bpf_filter: String,
+    /// Whether `bpf_filter` is the auto-generated live default (not an operator
+    /// expression), so status line 2 can summarize it. Comes from
+    /// `CaptureConfig::bpf_filter_generated`, set where the default is generated.
+    pub bpf_filter_generated: bool,
     /// Where this session records what the operator did, when
     /// `--tui-audit-file` asked for a trail. `None` -- the default -- writes
     /// nothing anywhere.
@@ -341,7 +345,7 @@ impl TuiOptions {
         app.declared_one_way_delay_ms = self.declared_one_way_delay_ms;
         app.quality_bands = self.quality_bands;
         app.set_protected_inputs(self.protected_inputs);
-        app.set_bpf_filter(self.bpf_filter);
+        app.set_bpf_filter(self.bpf_filter, self.bpf_filter_generated);
         app.set_resolver(self.name_setup.resolver);
         app.set_name_mode(self.name_setup.mode);
         app.set_names_save_path(self.name_setup.save_path);

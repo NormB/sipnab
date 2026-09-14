@@ -320,6 +320,7 @@ pub fn run_tui_mode(
 
     // Read before the capture config moves into the processing thread below.
     let bpf_filter = bpf_status_text(&capture_config);
+    let bpf_filter_generated = capture_config.bpf_filter_generated;
 
     let (dialog_store, stream_store) = build_stores(&cli, &config, &launched.relay.snapshot);
 
@@ -664,6 +665,7 @@ pub fn run_tui_mode(
                 cli.capture_args.recursive,
             ),
             bpf_filter,
+            bpf_filter_generated,
             action_trail: action_trail.clone(),
             // The relay-statistics view's ask state (ST8): a relay + permit when
             // this run can transmit, or which invocation refusal applies.

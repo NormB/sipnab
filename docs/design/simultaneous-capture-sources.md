@@ -89,7 +89,7 @@ decisions downstream read the source as a scalar:
   from the source *variant*: `Live` and `Hep` yes, `File` and `Uprobe` no.
 - **Thread spawn.** [`src/app/bootstrap.rs:936`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L936) branches to
   `start_multi_capture` for `--multi-device`, otherwise `start_capture`
-  ([`src/capture/native.rs:455`](https://github.com/NormB/sipnab/blob/main/src/capture/native.rs#L455)), which matches the variant and spawns one named
+  ([`src/capture/native.rs:471`](https://github.com/NormB/sipnab/blob/main/src/capture/native.rs#L471)), which matches the variant and spawns one named
   thread per arm.
 
 ### 2.3 How a packet reaches the pipeline
@@ -126,7 +126,7 @@ per device, hands each a `tx.clone()`, drops its own clone so the channel closes
 when the last reader exits, aggregates a per-device readiness signal, tears every
 sibling down when any one fails to open, and joins them all from a coordinator
 thread whose `JoinHandle` becomes the single `CaptureHandle`
-([`src/capture/native.rs:386`](https://github.com/NormB/sipnab/blob/main/src/capture/native.rs#L386)).
+([`src/capture/native.rs:402`](https://github.com/NormB/sipnab/blob/main/src/capture/native.rs#L402)).
 
 Every structural question a composite source raises — readiness aggregation,
 one-fails-all teardown, a single join handle, channel close on last producer —

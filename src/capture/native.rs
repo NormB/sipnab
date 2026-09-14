@@ -271,6 +271,12 @@ pub struct CaptureConfig {
     pub buffer_mb: u32,
     /// Optional BPF filter expression.
     pub bpf_filter: Option<String>,
+    /// Whether `bpf_filter` is the auto-generated live default (not an
+    /// operator-supplied expression). Set at the one place the default is
+    /// generated, so a surface can summarize the default rather than show its
+    /// thousand-column expression. Defaults to `false`: an operator filter, a
+    /// file replay, or no filter is never "the generated default".
+    pub bpf_filter_generated: bool,
     /// Stop after capturing this many packets.
     pub count: Option<u64>,
     /// Stop after this duration.
@@ -356,6 +362,7 @@ impl Default for CaptureConfig {
             snaplen: 65535,
             buffer_mb: DEFAULT_BUFFER_MB,
             bpf_filter: None,
+            bpf_filter_generated: false,
             count: None,
             duration: None,
             replay: false,

@@ -96,6 +96,32 @@ fn fit_bpf_to_cols(bpf: &str, cols: usize) -> String {
     out
 }
 
+/// What status line 2 shows for the auto-generated default capture filter.
+///
+/// The generated live filter is one portrange arm plus an encapsulation arm per
+/// link-header/tunnel-depth offset -- well over a thousand columns -- and a
+/// truncated prefix of it reads as a complete filter that does less than it
+/// does. So the default is summarized rather than shown raw; the full text is on
+/// the startup log line, exactly as `fit_bpf_to_cols` notes.
+const BPF_DEFAULT_SUMMARY: &str = "default (SIP + RTP, all encapsulations)";
+
+/// The text to draw in status line 2's BPF slot, fitted to `cols`.
+///
+/// A `generated` default is shown as [`BPF_DEFAULT_SUMMARY`], not its raw
+/// expression. An operator's own filter is shown verbatim, cut with `…` only
+/// when it overflows the row. `live_only` appends the `[live capture]` marker
+/// for the offline-after-`O` case (the filter belongs to the live half still
+/// running behind an opened file), on either kind.
+fn bpf_display(generated: bool, bpf: &str, live_only: bool, cols: usize) -> String {
+    let base = if generated { BPF_DEFAULT_SUMMARY } else { bpf };
+    let shown = if live_only && !bpf.is_empty() {
+        format!("{base} [live capture]")
+    } else {
+        base.to_string()
+    };
+    fit_bpf_to_cols(&shown, cols)
+}
+
 /// Render status line 1: `Current Mode: Online (any)    Dialogs: N (N displayed)`
 ///
 /// The mode is colored good/bad for online/offline; a bold `PAUSED`
@@ -191,13 +217,10 @@ pub(in crate::tui) fn render_status_line2(frame: &mut ratatui::Frame, area: Rect
     // filter is not cleared: it is still in force for the live half, and
     // blanking it would claim no filter was compiled, which is a different and
     // false thing to say.
-    let shown_bpf = if app.bpf_is_live_only() && !app.bpf_filter.is_empty() {
-        std::borrow::Cow::Owned(format!("{} [live capture]", app.bpf_filter))
-    } else {
-        std::borrow::Cow::Borrowed(app.bpf_filter.as_str())
-    };
-    let bpf_text = fit_bpf_to_cols(
-        &shown_bpf,
+    let bpf_text = bpf_display(
+        app.bpf_filter_generated,
+        &app.bpf_filter,
+        app.bpf_is_live_only(),
         (area.width as usize).saturating_sub(line2_used_cols(filter_text, "")),
     );
     let used = line2_used_cols(filter_text, &bpf_text);
@@ -598,6 +621,70 @@ pub(in crate::tui) fn render_fkey_bar(
 mod tests {
     use super::*;
     use crate::tui::render::test_support::*;
+
+    /// The auto-generated default is summarized, never drawn as its raw
+    /// thousand-column expression -- the whole point of the display fix. A
+    /// truncated prefix of the generated filter reads as a complete filter that
+    /// captures less than it does.
+    #[test]
+    fn a_generated_default_is_summarized_not_shown_raw() {
+        let raw = "udp and (portrange 5060-5061 or ip proto 41) or ".repeat(40);
+        let out = bpf_display(true, &raw, false, 200);
+        assert_eq!(out, BPF_DEFAULT_SUMMARY);
+        assert!(
+            !out.contains("portrange"),
+            "the raw generated expression must not leak into the slot: {out}"
+        );
+    }
+
+    /// An operator's own filter is shown verbatim when it fits -- pasteable into
+    /// tcpdump, unchanged.
+    #[test]
+    fn an_operator_filter_is_shown_verbatim() {
+        assert_eq!(
+            bpf_display(false, "udp port 5060", false, 40),
+            "udp port 5060"
+        );
+    }
+
+    /// A long operator filter is still cut with `…`, the existing behavior for
+    /// an expression the operator authored.
+    #[test]
+    fn a_long_operator_filter_is_cut_with_an_ellipsis() {
+        let out = bpf_display(
+            false,
+            "udp port 5060 and host 192.0.2.5 and portrange 10000-20000",
+            false,
+            20,
+        );
+        assert!(
+            out.ends_with('…'),
+            "a long operator filter is truncated: {out}"
+        );
+    }
+
+    /// The `[live capture]` marker rides on the summary too, so the
+    /// offline-after-`O` case reads correctly for a generated default.
+    #[test]
+    fn the_live_marker_rides_on_the_summary() {
+        let out = bpf_display(true, "anything", true, 200);
+        assert!(
+            out.starts_with(BPF_DEFAULT_SUMMARY),
+            "the summary comes first: {out}"
+        );
+        assert!(
+            out.contains("[live capture]"),
+            "the live marker travels: {out}"
+        );
+    }
+
+    /// An empty filter (nothing compiled) stays empty -- blank means "nothing
+    /// was filtered", never a summary.
+    #[test]
+    fn an_empty_filter_stays_empty() {
+        assert_eq!(bpf_display(false, "", false, 40), "");
+        assert_eq!(bpf_display(false, "", true, 40), "");
+    }
 
     /// The fill accounting for status line 2 measures the filter and BPF
     /// text by rendered columns, not UTF-8 bytes. `"日本語"` is 9 bytes but

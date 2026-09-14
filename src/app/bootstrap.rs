@@ -738,6 +738,9 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
             tracing::warn!("{msg}");
         }
         capture_config.bpf_filter = Some(filter);
+        // The one place the default is generated, so this is where its
+        // provenance is recorded (the TUI summarizes the default from it).
+        capture_config.bpf_filter_generated = true;
     } else if is_live && let Some(ref filter) = capture_config.bpf_filter {
         // Their expression, unmodified — but say what it cannot see.
         if let Some(msg) = explicit_filter_encap_notice(filter) {
@@ -2891,6 +2894,9 @@ fn build_capture_config(cli: &Cli, config: &Config) -> Result<CaptureConfig, Pla
         snaplen,
         buffer_mb,
         bpf_filter,
+        // Operator-supplied or absent here; the live default is generated later
+        // (see the auto_bpf_filter block), which is where this flips to true.
+        bpf_filter_generated: false,
         count,
         duration,
         replay: cli.capture_args.replay,

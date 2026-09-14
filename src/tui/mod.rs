@@ -175,6 +175,10 @@ pub struct App {
     /// with no filter at all, and the label above it changes to
     /// `Offline (…)` while the live capture this describes keeps running.
     bpf_filter: String,
+    /// Whether `bpf_filter` is the auto-generated live default rather than an
+    /// operator-supplied expression. When set, status line 2 shows a compact
+    /// summary instead of the default's thousand-column expression.
+    bpf_filter_generated: bool,
     /// True once an in-session `O` open loaded a file, so `bpf_filter`
     /// describes the LIVE capture and not what is on screen (#190).
     ///
@@ -367,6 +371,7 @@ impl App {
             search_active: false,
             capture_mode: "Online (any)".to_string(),
             bpf_filter: String::new(),
+            bpf_filter_generated: false,
             cached_dialog_count: 0,
             displayed: DisplayedCache::default(),
             cached_displayed_count: 0,
@@ -509,9 +514,12 @@ impl App {
         self.capture_mode = mode;
     }
 
-    /// Set the BPF filter string (`filter`) displayed in the status bar.
-    pub fn set_bpf_filter(&mut self, filter: String) {
+    /// Set the BPF filter string (`filter`) displayed in the status bar, and
+    /// whether it is the auto-generated live default (`generated`) so the status
+    /// line can summarize the default instead of drawing its full expression.
+    pub fn set_bpf_filter(&mut self, filter: String, generated: bool) {
         self.bpf_filter = filter;
+        self.bpf_filter_generated = generated;
     }
 
     /// Mark data as freshly updated: resets the adaptive refresh timer so
@@ -3279,8 +3287,17 @@ mod tests {
         let mut app = App::new_test();
         app.set_capture_mode("Offline (cap.pcap)".to_string());
         assert_eq!(app.capture_mode, "Offline (cap.pcap)");
-        app.set_bpf_filter("udp port 5060".to_string());
+        app.set_bpf_filter("udp port 5060".to_string(), false);
         assert_eq!(app.bpf_filter, "udp port 5060");
+        assert!(
+            !app.bpf_filter_generated,
+            "an operator filter is not generated"
+        );
+        app.set_bpf_filter("auto".to_string(), true);
+        assert!(
+            app.bpf_filter_generated,
+            "the generated default is marked so the status line can summarize it"
+        );
     }
 
     /// `mark_data_updated` flips an idle App back to active polling.

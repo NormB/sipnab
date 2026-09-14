@@ -10,15 +10,17 @@ entry that carries them.
 
 ## [Unreleased]
 
-### Added
+### Changed
 
-- **Design spec: editing the capture filter from the TUI**
-  (`docs/design/tui-bpf-filter-editing.md`). It summarizes the cut-off default
-  BPF string in the status bar and adds an editable filter field -- replace, or
-  append with an AND/OR toggle -- that re-applies to a live capture or re-scans a
-  file, always re-wrapping the operator's selection in the tunnel scaffolding so
-  tunneled SIP never silently breaks. Spec only; the feature awaits review and an
-  implementation plan.
+- **The TUI status bar summarizes the auto-generated default capture filter**
+  rather than drawing a truncated prefix of its thousand-column expression: it
+  shows `default (SIP + RTP, all encapsulations)`, and the full expression stays
+  on the startup log line. An operator's own filter is still shown verbatim, cut
+  with an ellipsis only when it overflows the row. This is the first landed piece
+  of the editable capture-filter feature specified in
+  `docs/design/tui-bpf-filter-editing.md`; the pure `compose_selection` core, the
+  full-view popup, the editable field (replace, or append with an AND/OR toggle)
+  and runtime re-apply follow.
 
 ## [0.5.172] - 2026-09-14
 
