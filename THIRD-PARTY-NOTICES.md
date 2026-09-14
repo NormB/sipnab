@@ -62,8 +62,8 @@ These offer a copyleft option alongside permissive ones. sipnab elects the permi
 | atomic | 0.6.1 | Apache-2.0/MIT |
 | atomic-waker | 1.1.2 | Apache-2.0 OR MIT |
 | autocfg | 1.5.0 | Apache-2.0 OR MIT |
-| aws-lc-rs | 1.17.0 | ISC AND (Apache-2.0 OR ISC) |
-| aws-lc-sys | 0.41.0 | ISC AND (Apache-2.0 OR ISC) AND Apache-2.0 AND MIT AND BSD-3-Clause AND (Apache-2.0 OR ISC OR MIT) AND (Apache-2.0 OR ISC OR MIT-0) |
+| aws-lc-rs | 1.18.1 | ISC AND (Apache-2.0 OR ISC) |
+| aws-lc-sys | 0.45.0 | ISC AND (Apache-2.0 OR ISC) AND Apache-2.0 AND MIT AND BSD-3-Clause AND (Apache-2.0 OR ISC OR MIT) AND (Apache-2.0 OR ISC OR MIT-0) |
 | axum | 0.8.9 | MIT |
 | axum-core | 0.5.6 | MIT |
 | aya | 0.14.0 | MIT OR Apache-2.0 |
@@ -110,7 +110,7 @@ These offer a copyleft option alongside permissive ones. sipnab elects the permi
 | cpufeatures | 0.3.0 | MIT OR Apache-2.0 |
 | crc32fast | 1.5.0 | MIT OR Apache-2.0 |
 | critical-section | 1.2.0 | MIT OR Apache-2.0 |
-| crossbeam-channel | 0.5.16 | MIT OR Apache-2.0 |
+| crossbeam-channel | 0.5.17 | MIT OR Apache-2.0 |
 | crossbeam-utils | 0.8.21 | MIT OR Apache-2.0 |
 | crossterm | 0.29.0 | MIT |
 | crossterm_winapi | 0.9.1 | MIT |
@@ -189,7 +189,7 @@ These offer a copyleft option alongside permissive ones. sipnab elects the permi
 | iana-time-zone | 0.1.65 | MIT OR Apache-2.0 |
 | iana-time-zone-haiku | 0.1.2 | MIT OR Apache-2.0 |
 | ident_case | 1.0.1 | MIT/Apache-2.0 |
-| indexmap | 2.14.1 | Apache-2.0 OR MIT |
+| indexmap | 2.14.2 | Apache-2.0 OR MIT |
 | indoc | 2.0.7 | MIT OR Apache-2.0 |
 | inout | 0.2.2 | MIT OR Apache-2.0 |
 | instability | 0.3.12 | MIT |
@@ -293,14 +293,14 @@ These offer a copyleft option alongside permissive ones. sipnab elects the permi
 | regex-automata | 0.4.16 | MIT OR Apache-2.0 |
 | regex-syntax | 0.8.11 | MIT OR Apache-2.0 |
 | ring | 0.17.14 | Apache-2.0 AND ISC |
-| rmcp | 3.2.0 | Apache-2.0 |
-| rmcp-macros | 3.2.0 | Apache-2.0 |
+| rmcp | 3.3.0 | Apache-2.0 |
+| rmcp-macros | 3.3.0 | Apache-2.0 |
 | rsa | 0.9.10 | MIT OR Apache-2.0 |
 | rustc_version | 0.4.1 | MIT OR Apache-2.0 |
 | rustix | 1.1.4 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
-| rustls | 0.23.43 | Apache-2.0 OR ISC OR MIT |
+| rustls | 0.23.44 | Apache-2.0 OR ISC OR MIT |
 | rustls-pki-types | 1.14.0 | MIT OR Apache-2.0 |
-| rustls-webpki | 0.103.13 | ISC |
+| rustls-webpki | 0.103.15 | ISC |
 | rustversion | 1.0.22 | MIT OR Apache-2.0 |
 | ryu | 1.0.23 | Apache-2.0 OR BSL-1.0 |
 | same-file | 1.0.6 | Unlicense/MIT |
@@ -359,9 +359,9 @@ These offer a copyleft option alongside permissive ones. sipnab elects the permi
 | tokio-macros | 2.7.0 | MIT |
 | tokio-stream | 0.1.18 | MIT |
 | tokio-util | 0.7.18 | MIT |
-| toml | 1.1.5+spec-1.1.0 | MIT OR Apache-2.0 |
+| toml | 1.1.6+spec-1.1.0 | MIT OR Apache-2.0 |
 | toml_datetime | 1.1.1+spec-1.1.0 | MIT OR Apache-2.0 |
-| toml_edit | 0.25.13+spec-1.1.0 | MIT OR Apache-2.0 |
+| toml_edit | 0.25.15+spec-1.1.0 | MIT OR Apache-2.0 |
 | toml_parser | 1.1.3+spec-1.1.0 | MIT OR Apache-2.0 |
 | toml_writer | 1.1.2+spec-1.1.0 | MIT OR Apache-2.0 |
 | tower | 0.5.3 | MIT |
@@ -395,15 +395,15 @@ These offer a copyleft option alongside permissive ones. sipnab elects the permi
 | wasm-bindgen-macro | 0.2.117 | MIT OR Apache-2.0 |
 | wasm-bindgen-macro-support | 0.2.117 | MIT OR Apache-2.0 |
 | wasm-bindgen-shared | 0.2.117 | MIT OR Apache-2.0 |
-| wasm-encoder | 0.258.0 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
+| wasm-encoder | 0.259.0 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
 | wasmi | 2.0.0 | MIT/Apache-2.0 |
 | wasmi_collections | 2.0.0 | MIT/Apache-2.0 |
 | wasmi_core | 2.0.0 | MIT/Apache-2.0 |
 | wasmi_ir | 2.0.0 | MIT/Apache-2.0 |
 | wasmparser | 0.228.0 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
-| wasmparser | 0.258.0 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
-| wast | 258.0.0 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
-| wat | 1.258.0 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
+| wasmparser | 0.259.0 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
+| wast | 259.0.0 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
+| wat | 1.259.0 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
 | wezterm-bidi | 0.2.3 | MIT AND Unicode-DFS-2016 |
 | wezterm-blob-leases | 0.1.1 | MIT |
 | wezterm-color-types | 0.3.0 | MIT |
