@@ -741,43 +741,59 @@ fn spawn_relay_stats_poller(
     // polls (ST-S4 condition 6). rtpproxy publishes no uptime, so a decrease is
     // the only in-band signal it restarted.
     let mut previous: Option<Vec<(String, String)>> = None;
-    let poll = move || match client.statistics(&permit) {
-        Ok(crate::relay::types::ControlReply::Statistics(pairs)) => {
-            if let Some(prev) = &previous
-                && let Some(step) = counter_stepped_backwards(prev, &pairs)
-            {
-                // Suspect, not a drop in traffic: never smoothed, and the
-                // counters below are since an unknown start after the reset.
-                tracing::warn!(
-                    "{label}: {} stepped backwards {} -> {} between polls; a cumulative \
+    let poll = move || {
+        // Time the round trip. The serial loop never overlaps polls, so a relay
+        // slower than the interval slows the cadence rather than stacking
+        // requests; a poll whose own round trip overran the interval is where
+        // that slip happens, and it is said plainly rather than left silent
+        // (ST-S4 condition 13, the visibility half).
+        let started = std::time::Instant::now();
+        let result = client.statistics(&permit);
+        let elapsed = started.elapsed();
+        if crate::app::relay_poller::cadence_slipped(elapsed, interval) {
+            tracing::warn!(
+                "{label}: this poll's round trip took {elapsed:.1?}, longer than the {secs}s \
+                 interval; the polling cadence has slipped and is slower than requested."
+            );
+        }
+        match result {
+            Ok(crate::relay::types::ControlReply::Statistics(pairs)) => {
+                if let Some(prev) = &previous
+                    && let Some(step) = counter_stepped_backwards(prev, &pairs)
+                {
+                    // Suspect, not a drop in traffic: never smoothed, and the
+                    // counters below are since an unknown start after the reset.
+                    tracing::warn!(
+                        "{label}: {} stepped backwards {} -> {} between polls; a cumulative \
                      counter cannot decrease, so the relay probably restarted (suspect). The \
                      counters below are since an unknown start.",
-                    step.name,
-                    step.previous,
-                    step.current
-                );
+                        step.name,
+                        step.previous,
+                        step.current
+                    );
+                }
+                previous = Some(pairs.clone());
+                let wire = resolve_for_wire(&relay_reported(&pairs));
+                let origin = FetchOrigin::Polled { every_secs: secs };
+                if json || json_pretty {
+                    println!(
+                        "{}",
+                        maybe_pretty(
+                            format_relay_statistics_json(&wire, &label, chrono::Utc::now(), origin),
+                            json_pretty
+                        )
+                    );
+                } else {
+                    print!(
+                        "{}",
+                        format_relay_statistics(&wire, &label, chrono::Utc::now(), origin)
+                    );
+                }
             }
-            previous = Some(pairs.clone());
-            let wire = resolve_for_wire(&relay_reported(&pairs));
-            let origin = FetchOrigin::Polled { every_secs: secs };
-            if json || json_pretty {
-                println!(
-                    "{}",
-                    maybe_pretty(
-                        format_relay_statistics_json(&wire, &label, chrono::Utc::now(), origin),
-                        json_pretty
-                    )
-                );
-            } else {
-                print!(
-                    "{}",
-                    format_relay_statistics(&wire, &label, chrono::Utc::now(), origin)
-                );
+            Ok(other) => tracing::error!("{err_label} answered {other:?}, not statistics"),
+            Err(e) => {
+                tracing::error!("{err_label} did not answer the polled statistics request ({e})");
             }
-        }
-        Ok(other) => tracing::error!("{err_label} answered {other:?}, not statistics"),
-        Err(e) => {
-            tracing::error!("{err_label} did not answer the polled statistics request ({e})");
         }
     };
 

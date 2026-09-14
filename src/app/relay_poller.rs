@@ -20,7 +20,14 @@
 //! outstanding requests. There is no separate rate limiter because the shape of
 //! the loop is the limiter: one transaction per interval, never overlapping.
 //! This is also why ST9's "a timer fires while a previous poll is outstanding"
-//! cannot happen here -- the poll is synchronous on this one thread.
+//! cannot happen here -- the poll is synchronous on this one thread, so there is
+//! no independent tick to skip and no backlog to count.
+//!
+//! What the serial shape does not give for free is VISIBILITY of the slowing it
+//! causes, which is the other half of ST-S4 condition 13: an interval that is
+//! silently not being met is a number an operator reads wrongly. A poll whose
+//! own round trip overran the interval is where the cadence slipped, and
+//! [`cadence_slipped`] is the predicate the fetch loop uses to say so plainly.
 //!
 //! # Shutdown
 //!
@@ -54,6 +61,21 @@ pub fn wait_outcome(recv: Result<(), RecvTimeoutError>) -> WaitOutcome {
         Err(RecvTimeoutError::Timeout) => WaitOutcome::Poll,
         Ok(()) | Err(RecvTimeoutError::Disconnected) => WaitOutcome::Stop,
     }
+}
+
+/// Whether one poll's round trip overran the interval it runs on (ST-S4
+/// condition 13, the visibility half).
+///
+/// The serial loop below can never fire a second poll while one is outstanding
+/// -- there is no independent timer to skip -- so a relay slower than the
+/// interval does not stack a backlog; it slows the cadence. That slowing is the
+/// number the catalog says an operator reads wrongly if it is silent: the run
+/// asked for "every N seconds" and is getting slower. A poll whose own round
+/// trip took longer than the interval is where the cadence has slipped, and the
+/// caller says so. Exactly on time is not a slip -- only strictly longer is.
+#[must_use]
+pub fn cadence_slipped(elapsed: Duration, interval: Duration) -> bool {
+    elapsed > interval
 }
 
 /// Poll on `interval` until told to stop, calling `poll` once per interval.
@@ -118,6 +140,36 @@ mod tests {
             wait_outcome(Err(RecvTimeoutError::Disconnected)),
             WaitOutcome::Stop
         );
+    }
+
+    /// A poll faster than its interval has not slipped -- the ordinary case.
+    #[test]
+    fn a_poll_within_the_interval_has_not_slipped() {
+        assert!(!cadence_slipped(
+            Duration::from_millis(100),
+            Duration::from_secs(3)
+        ));
+    }
+
+    /// A poll exactly as long as the interval is on time, not a slip: the
+    /// cadence is met, if only just. The boundary a mutation to `>=` would break.
+    #[test]
+    fn a_poll_exactly_on_the_interval_has_not_slipped() {
+        assert!(!cadence_slipped(
+            Duration::from_secs(3),
+            Duration::from_secs(3)
+        ));
+    }
+
+    /// A poll that took longer than its interval has slipped: the run cannot keep
+    /// the cadence it was asked for, and the operator must be told rather than
+    /// left to read an interval that is silently not being met.
+    #[test]
+    fn a_poll_longer_than_the_interval_has_slipped() {
+        assert!(cadence_slipped(
+            Duration::from_millis(3100),
+            Duration::from_secs(3)
+        ));
     }
 
     /// Dropping the sender ends the loop -- it does not hang waiting out the

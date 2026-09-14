@@ -23,6 +23,17 @@ entry that carries them.
   it restarted. The detector, `counter_stepped_backwards`, is a pure function
   tested directly (eight cases).
 
+- **A relay poll that overruns its interval says the cadence has slipped (ST9,
+  ST-S4 condition 13).** `--relay-stats-interval` runs one poll at a time -- the
+  next begins only once the previous returns -- so a relay slower than the
+  interval slows the cadence rather than stacking a backlog of outstanding
+  requests; there is no independent timer, so ST9's "a tick fires while a poll is
+  outstanding" cannot occur. What was silent was the slowing itself: a poll whose
+  own round trip took longer than the interval now warns that the cadence has
+  slipped and is slower than requested, so an operator does not read an interval
+  that is not being met. The predicate, `cadence_slipped`, is tested on its
+  boundary -- exactly on the interval is not a slip.
+
 ### Fixed
 
 - **The CLI reads a relay's per-call refusal as a refusal (ST9, ST-S4
