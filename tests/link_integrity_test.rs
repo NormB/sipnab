@@ -853,7 +853,13 @@ fn wiki_intra_docs_links_resolve() {
     // gate rather than by a second regex: with docs/examples.md reverted the
     // count is still 714, so it contributes none of the three, and the site
     // mirrors are outside the extractor's walk.
-    const EXPECTED_WIKI_LINKS: usize = 714;
+    // 714 -> 719 by ST6's `relay_stats` and `relay_compare` sections in
+    // docs/mcp-tools.md: two index-table rows linking their own sections, and
+    // three cross-links between the relay tools (`relay_stats` to `query_relay`
+    // and `relay_compare`; `relay_compare` to `query_relay`) rather than
+    // restating the shared opt-in. Five links, one page; the site mirror is
+    // generated and outside the extractor's walk.
+    const EXPECTED_WIKI_LINKS: usize = 719;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe 6d in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

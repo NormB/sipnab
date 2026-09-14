@@ -569,6 +569,199 @@ impl SipnabMcp {
             ContentBlock::text(crate::mcp::shape::untrusted_note()),
         ]))
     }
+
+    /// Ask the relay for its own statistics counters (C1/C2/C3).
+    ///
+    /// A global ask returns the relay's own counters; a `call_id` scopes them to
+    /// one call; `names_only` returns the names the relay knows rather than their
+    /// values, for "what can I even ask for". Tiered `relay_reported` throughout:
+    /// these are the relay's claims about itself, never blended with what sipnab
+    /// measured -- that comparison is `relay_compare`.
+    ///
+    /// # Errors
+    ///
+    /// `invalid_params` (-32602) when the run cannot or may not ask -- the opt-in
+    /// is off, no relay address was configured, or this run reads a file and can
+    /// obtain no transmit permit. `internal_error` (-32603) when the relay was
+    /// asked and nothing came back: nothing is known, which is not the same as
+    /// the relay reporting nothing. A relay that answered but declined the ask
+    /// (a Call-ID it does not hold) is a success carrying `outcome: "refused"`
+    /// with the relay's own words -- the relay answered, it just said no.
+    #[tool(
+        name = "relay_stats",
+        description = "Asks the configured relay for the statistics it keeps \
+                       about ITSELF: its global counters, the counters for one \
+                       Call-ID, or -- with names_only -- the names it knows so \
+                       an agent learns what it can ask for, since the key set is \
+                       version-specific. Every figure is tiered relay_reported, \
+                       never blended with what sipnab measured. Like query_relay \
+                       this TRANSMITS, so it is off unless --mcp-allow-relay-query \
+                       is given, refused on a run reading a file, and the \
+                       destination comes from operator configuration only.",
+        output_schema = schema_for_output::<RelayStatsAnswer>(),
+        annotations(read_only_hint = true, open_world_hint = true)
+    )]
+    pub async fn relay_stats(
+        &self,
+        Parameters(params): Parameters<RelayStatsParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let Some(access) = self.relay_query_access() else {
+            return Err(rmcp::ErrorData::invalid_params(
+                format!(
+                    "relay_stats is not available on this server. It transmits, \
+                     so it needs three things: --mcp-allow-relay-query to enable \
+                     it, {} <addr:port> to say which relay to ask, and a live \
+                     source. A run reading a capture file can obtain no transmit \
+                     permit.",
+                    crate::cli::RELAY_CONTROL_FLAG
+                ),
+                None,
+            ));
+        };
+
+        let client = &access.relay;
+        let call_id = params.call_id.as_deref();
+        // names_only is a global concept -- "what can I even ask for" -- so it is
+        // honored only without a call_id, matching the REST names route.
+        let names_only = params.names_only.unwrap_or(false) && call_id.is_none();
+        let reply = match call_id {
+            Some(cid) => client.call_statistics(&access.permit, cid),
+            None => client.statistics(&access.permit),
+        };
+        let reply = reply.map_err(|e| {
+            rmcp::ErrorData::internal_error(
+                format!(
+                    "the relay at {} did not answer: {e:#}. Nothing is known \
+                     about its statistics; this is not an answer that it has none.",
+                    access.addr
+                ),
+                None,
+            )
+        })?;
+
+        let payload = RelayStatsAnswer::from_reply(access.addr, &reply, call_id, names_only);
+        Ok(CallToolResult::success(vec![
+            ContentBlock::json(serde_json::to_value(&payload).map_err(|e| {
+                rmcp::ErrorData::internal_error(format!("serialization failed: {e}"), None)
+            })?)?,
+            ContentBlock::text(crate::mcp::shape::untrusted_note()),
+        ]))
+    }
+
+    /// Compare the relay's per-call RTP count against this capture's (C4).
+    ///
+    /// A comparison, never a sum: both figures travel with their tiers, the
+    /// verdict is a word, and a note explains that an ordinary gap is not a
+    /// relay fault -- the two count different sockets over different windows. A
+    /// side that produced nothing is reported absent, never coerced to zero, so
+    /// "the relay does not hold this call" never reads as a gap the relay must
+    /// answer for.
+    ///
+    /// # Errors
+    ///
+    /// `invalid_params` (-32602) when the run cannot or may not ask, or when
+    /// `call_id` is blank. `internal_error` (-32603) when the relay was asked
+    /// and nothing came back. A relay that answered is a success whose `outcome`
+    /// says what was found: `compared`, `sipnab_has_no_rtp`,
+    /// `relay_does_not_hold_call`, `neither`, `refused`, or `suspect`.
+    #[tool(
+        name = "relay_compare",
+        description = "Compares the relay's reported RTP packet count for one \
+                       call against the count sipnab measured from the packets \
+                       it captured. Shows both figures with their tiers \
+                       (relay_reported and sipnab_measured) and a word verdict; \
+                       it never sums or subtracts them, because the two count \
+                       different sockets over different windows. Like query_relay \
+                       this TRANSMITS: off unless --mcp-allow-relay-query is \
+                       given, refused on a run reading a file, destination from \
+                       operator configuration only.",
+        output_schema = schema_for_output::<RelayCompareAnswer>(),
+        annotations(read_only_hint = true, open_world_hint = true)
+    )]
+    pub async fn relay_compare(
+        &self,
+        Parameters(params): Parameters<RelayCompareParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let Some(access) = self.relay_query_access() else {
+            return Err(rmcp::ErrorData::invalid_params(
+                format!(
+                    "relay_compare is not available on this server. It transmits, \
+                     so it needs three things: --mcp-allow-relay-query to enable \
+                     it, {} <addr:port> to say which relay to ask, and a live \
+                     source. A run reading a capture file can obtain no transmit \
+                     permit.",
+                    crate::cli::RELAY_CONTROL_FLAG
+                ),
+                None,
+            ));
+        };
+
+        let call_id = params.call_id.trim();
+        if call_id.is_empty() {
+            return Err(rmcp::ErrorData::invalid_params(
+                "relay_compare needs a call_id to compare; a blank string names \
+                 no call, and comparing nothing has no answer."
+                    .to_string(),
+                None,
+            ));
+        }
+
+        // sipnab's own side first: no linked stream is ABSENT, not a measured
+        // zero, so a call sipnab never saw is not rendered as `0` against the
+        // relay. Held only long enough to read.
+        let sipnab_side = {
+            let ss = self.stream_store.read();
+            if ss.streams_for(call_id).next().is_some() {
+                Some(ss.measured_packet_count_for(call_id))
+            } else {
+                None
+            }
+        };
+
+        let reply = access
+            .relay
+            .call_statistics(&access.permit, call_id)
+            .map_err(|e| {
+                rmcp::ErrorData::internal_error(
+                    format!(
+                        "the relay at {} did not answer for call {call_id}: {e:#}. \
+                     Nothing is known; this is not an answer that it holds nothing.",
+                        access.addr
+                    ),
+                    None,
+                )
+            })?;
+
+        use crate::relay::types::ControlReply;
+        use crate::stats_vocab::{
+            StatisticValue, lookup, ready_comparison, relay_reply_refusal, relay_reported,
+        };
+        let payload = match reply {
+            ControlReply::Statistics(pairs) => {
+                if let Some(reason) = relay_reply_refusal(&pairs) {
+                    RelayCompareAnswer::refused(access.addr, call_id, reason)
+                } else {
+                    let tiered = relay_reported(&pairs);
+                    let relay_side = match lookup(&tiered, "totals.RTP.packets") {
+                        StatisticValue::Counted(s) => s.parse::<u64>().ok(),
+                        _ => None,
+                    };
+                    RelayCompareAnswer::from_outcome(
+                        access.addr,
+                        call_id,
+                        ready_comparison(relay_side, sipnab_side),
+                    )
+                }
+            }
+            _ => RelayCompareAnswer::suspect(access.addr, call_id),
+        };
+        Ok(CallToolResult::success(vec![
+            ContentBlock::json(serde_json::to_value(&payload).map_err(|e| {
+                rmcp::ErrorData::internal_error(format!("serialization failed: {e}"), None)
+            })?)?,
+            ContentBlock::text(crate::mcp::shape::untrusted_note()),
+        ]))
+    }
 }
 
 /// Decide what one endpoint's delivery path is worth.
@@ -1086,6 +1279,285 @@ impl RelayAnswer {
     }
 }
 
+// ── relay_stats / relay_compare (ST6) ────────────────────────────────────────
+
+/// Arguments to `relay_stats`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+pub struct RelayStatsParams {
+    /// A Call-ID to scope the counters to one call. Omit for the relay's own
+    /// global counters.
+    pub call_id: Option<String>,
+    /// Return the NAMES the relay knows rather than their values -- "what can I
+    /// even ask for", since the key set is version-specific. Ignored when a
+    /// `call_id` is given.
+    pub names_only: Option<bool>,
+}
+
+/// Arguments to `relay_compare`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+pub struct RelayCompareParams {
+    /// The Call-ID to compare the relay's count against this capture's.
+    pub call_id: String,
+}
+
+/// One counted statistic the relay reported, its value uncoerced.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+pub struct RelayStatView {
+    /// The relay's own name for it, unaltered.
+    pub name: String,
+    /// The value, as the relay wrote it (kept as text; never parsed narrower).
+    pub value: String,
+}
+
+/// The relay's own statistics, tiered `relay_reported` (ST6 / C1–C3).
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+pub struct RelayStatsAnswer {
+    /// The relay and where it was asked.
+    pub relay_address: String,
+    /// Always `relay_reported`: these are the relay's claims about itself, never
+    /// blended with what sipnab measured.
+    pub tier: String,
+    /// `ok`, or `refused` when the relay declined (e.g. a Call-ID it does not
+    /// hold), or `suspect` when the reply was not statistics.
+    pub outcome: String,
+    /// Counted values (C1 global, or C2 per-call). Absent on a names-only or
+    /// refused answer.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub statistics: Option<Vec<RelayStatView>>,
+    /// The names the relay knows (C3), when `names_only` was asked.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub names: Option<Vec<String>>,
+    /// How the name set was determined: `listed` (the relay enumerated them) or
+    /// `probed` (the names that did not refuse). Present only with `names`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub names_source: Option<String>,
+    /// One sentence stating what `names_source` means, so a probed set is never
+    /// read as a definitive enumeration. Present only with `names`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub names_note: Option<&'static str>,
+    /// The relay's own words when it declined -- reached, understood, said no.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub refusal: Option<String>,
+    /// Always `asked`: sipnab put the question over the control socket.
+    pub delivery_trust: DeliveryTrust,
+    /// The one-line reading of `delivery_trust`.
+    pub delivery_note: &'static str,
+    /// Version of this response shape.
+    pub schema_version: u32,
+}
+
+impl RelayStatsAnswer {
+    /// A relay-reported answer with the given outcome and every optional field
+    /// empty, for one of the branches below to fill.
+    fn base(addr: std::net::SocketAddr, outcome: &str) -> Self {
+        Self {
+            relay_address: addr.to_string(),
+            tier: crate::stats_vocab::StatisticTier::RelayReported
+                .as_wire_str()
+                .to_string(),
+            outcome: outcome.to_string(),
+            statistics: None,
+            names: None,
+            names_source: None,
+            names_note: None,
+            refusal: None,
+            delivery_trust: DeliveryTrust::Asked,
+            delivery_note: DeliveryTrust::Asked.explain(),
+            schema_version: 1,
+        }
+    }
+
+    /// Render a `statistics`/`call_statistics` reply for an agent, applying the
+    /// SAME rules the REST surface does.
+    ///
+    /// `call_id` is `Some` for a per-call ask and drives one difference: only a
+    /// per-call reply can be the relay saying it does not hold the call, so the
+    /// `result: error` refusal check ([`crate::stats_vocab::relay_reply_refusal`],
+    /// the one copy REST also reads) is applied there and not to the global
+    /// query, exactly as `relay_rest_answer` does. `names_only` is honored only
+    /// for a global ask; the caller does not set it with a `call_id`.
+    fn from_reply(
+        addr: std::net::SocketAddr,
+        reply: &crate::relay::types::ControlReply,
+        call_id: Option<&str>,
+        names_only: bool,
+    ) -> Self {
+        use crate::relay::types::ControlReply;
+        use crate::stats_vocab::{
+            NameSource, known_names, relay_reply_refusal, relay_reported, resolve_for_wire,
+        };
+        let ControlReply::Statistics(pairs) = reply else {
+            return Self::base(addr, "suspect");
+        };
+        // Only a per-call reply can be the relay's "I do not hold that call".
+        if call_id.is_some()
+            && let Some(reason) = relay_reply_refusal(pairs)
+        {
+            let mut a = Self::base(addr, "refused");
+            a.refusal = Some(reason);
+            return a;
+        }
+        let tiered = relay_reported(pairs);
+        if names_only {
+            // The current relay enumerates its statistics -- the reply IS the
+            // list -- so the source is `listed`, matching the REST names route.
+            let source = NameSource::Listed;
+            let mut a = Self::base(addr, "ok");
+            a.names = Some(known_names(&tiered));
+            a.names_source = Some(source.as_wire_str().to_string());
+            a.names_note = Some(source.how_determined());
+            a
+        } else {
+            let wire = resolve_for_wire(&tiered);
+            let mut a = Self::base(addr, "ok");
+            a.statistics = Some(
+                wire.present
+                    .iter()
+                    .map(|v| RelayStatView {
+                        name: v.name.clone(),
+                        value: v.value.clone(),
+                    })
+                    .collect(),
+            );
+            a
+        }
+    }
+}
+
+/// The relay's per-call RTP count beside this capture's (ST6 / C4).
+///
+/// A comparison, never a sum: both figures with their tiers, a word verdict,
+/// and a note. The two count different sockets over different windows, so an
+/// ordinary gap is not a relay fault.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+pub struct RelayCompareAnswer {
+    /// The relay and where it was asked.
+    pub relay_address: String,
+    /// The call compared.
+    pub call_id: String,
+    /// `compared`, `sipnab_has_no_rtp`, `relay_does_not_hold_call`, `neither`,
+    /// `refused` (the relay said no), or `suspect` (the reply was not
+    /// statistics).
+    pub outcome: String,
+    /// The relay's count (`relay_reported`) and its own key name, when present.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub relay_reported: Option<RelayComparedFigure>,
+    /// What sipnab measured (`sipnab_measured`), when it captured RTP for this
+    /// call.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sipnab_measured: Option<u64>,
+    /// `match` or `differ`, present only when both sides were compared.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub verdict: Option<String>,
+    /// Why a difference is ordinary, in the operator's words.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+    /// The relay's own words when it declined the per-call ask. Present only on
+    /// a `refused` outcome.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub refusal: Option<String>,
+    /// Always `asked`.
+    pub delivery_trust: DeliveryTrust,
+    /// The one-line reading of `delivery_trust`.
+    pub delivery_note: &'static str,
+    /// Version of this response shape.
+    pub schema_version: u32,
+}
+
+/// The relay's side of a comparison: its count and its own key name.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+pub struct RelayComparedFigure {
+    /// The count.
+    pub value: u64,
+    /// The relay's own name for the counter (`totals.RTP.packets`).
+    pub name: String,
+}
+
+impl RelayCompareAnswer {
+    /// A comparison answer with the given outcome and every optional field
+    /// empty, for one of the constructors below to fill.
+    fn base(addr: std::net::SocketAddr, call_id: &str, outcome: &str) -> Self {
+        Self {
+            relay_address: addr.to_string(),
+            call_id: call_id.to_string(),
+            outcome: outcome.to_string(),
+            relay_reported: None,
+            sipnab_measured: None,
+            verdict: None,
+            note: None,
+            refusal: None,
+            delivery_trust: DeliveryTrust::Asked,
+            delivery_note: DeliveryTrust::Asked.explain(),
+            schema_version: 1,
+        }
+    }
+
+    /// The relay declined the per-call ask; carry its own words verbatim.
+    fn refused(addr: std::net::SocketAddr, call_id: &str, reason: String) -> Self {
+        let mut a = Self::base(addr, call_id, "refused");
+        a.refusal = Some(reason);
+        a
+    }
+
+    /// The relay answered with something other than statistics.
+    fn suspect(addr: std::net::SocketAddr, call_id: &str) -> Self {
+        Self::base(addr, call_id, "suspect")
+    }
+
+    /// Render a readied C4 comparison, keeping an absent side absent rather than
+    /// coercing it to zero.
+    fn from_outcome(
+        addr: std::net::SocketAddr,
+        call_id: &str,
+        outcome: crate::stats_vocab::CompareOutcome,
+    ) -> Self {
+        use crate::stats_vocab::CompareOutcome;
+        let base = |o: &str| Self::base(addr, call_id, o);
+        match outcome {
+            CompareOutcome::Compared(c) => {
+                let mut a = base("compared");
+                a.relay_reported = Some(RelayComparedFigure {
+                    value: c.relay.value,
+                    name: c
+                        .relay
+                        .name
+                        .clone()
+                        .unwrap_or_else(|| "RTP packets".to_string()),
+                });
+                a.sipnab_measured = Some(c.sipnab.value);
+                a.verdict = Some(c.verdict.as_wire_str().to_string());
+                a.note = Some(c.note.clone());
+                a
+            }
+            CompareOutcome::SipnabHasNoRtp { relay_value } => {
+                let mut a = base("sipnab_has_no_rtp");
+                a.relay_reported = Some(RelayComparedFigure {
+                    value: relay_value,
+                    name: "totals.RTP.packets".to_string(),
+                });
+                a.note = Some(
+                    "the relay holds this call but this capture measured no RTP for it; \
+                     widen the capture filter to include the media"
+                        .to_string(),
+                );
+                a
+            }
+            CompareOutcome::RelayDoesNotHoldCall { sipnab_value } => {
+                let mut a = base("relay_does_not_hold_call");
+                a.sipnab_measured = Some(sipnab_value);
+                a
+            }
+            CompareOutcome::NeitherSide => base("neither"),
+        }
+    }
+}
+
 #[cfg(test)]
 mod query_relay_view_tests {
     use super::*;
@@ -1596,5 +2068,193 @@ mod query_relay_view_tests {
             "two reasons share an explanation, so the distinction the caller \
              was given is not visible to the reader: {explanations:?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod relay_stats_view_tests {
+    use super::*;
+    use crate::relay::types::ControlReply;
+    use crate::stats_vocab::ready_comparison;
+
+    /// The address a stats answer echoes -- a literal, so no test depends on
+    /// anything an operator configured.
+    fn addr() -> std::net::SocketAddr {
+        "127.0.0.1:22222".parse().expect("a literal address")
+    }
+
+    fn pairs(kv: &[(&str, &str)]) -> Vec<(String, String)> {
+        kv.iter()
+            .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+            .collect()
+    }
+
+    /// A global stats reply is `ok`, tiered `relay_reported`, and carries the
+    /// relay's counters verbatim -- a counted zero included, never dropped.
+    ///
+    /// Driven through `from_reply` rather than over the wire because relay_stats
+    /// TRANSMITS and cannot run against a stock test server, the same reason
+    /// query_relay's conversion is tested directly.
+    #[test]
+    fn a_global_reply_is_ok_and_carries_the_relays_counters() {
+        let reply = ControlReply::Statistics(pairs(&[
+            ("totals.RTP.packets", "9000"),
+            ("totals.RTP.bytes", "0"),
+        ]));
+        let a = RelayStatsAnswer::from_reply(addr(), &reply, None, false);
+        assert_eq!(a.outcome, "ok");
+        assert_eq!(a.tier, "relay_reported");
+        let stats = a.statistics.expect("a values answer carries statistics");
+        assert_eq!(stats.len(), 2);
+        let zero = stats
+            .iter()
+            .find(|s| s.name == "totals.RTP.bytes")
+            .expect("the zero counter must survive, not be dropped");
+        assert_eq!(zero.value, "0", "a counted zero is a value, not an absence");
+        assert!(a.names.is_none(), "a values answer names nothing");
+        assert!(a.refusal.is_none());
+        assert_eq!(a.delivery_trust, DeliveryTrust::Asked);
+    }
+
+    /// `names_only` returns the names the relay knows, the source token, and the
+    /// sentence that says how the set was determined -- so a probed set is never
+    /// read as a definitive enumeration.
+    #[test]
+    fn a_names_only_reply_lists_names_with_their_source_and_note() {
+        let reply = ControlReply::Statistics(pairs(&[
+            ("totals.RTP.packets", "9000"),
+            ("totals.RTP.bytes", "12"),
+        ]));
+        let a = RelayStatsAnswer::from_reply(addr(), &reply, None, true);
+        assert_eq!(a.outcome, "ok");
+        let names = a.names.expect("a names answer carries names");
+        assert!(names.contains(&"totals.RTP.packets".to_string()));
+        assert_eq!(a.names_source.as_deref(), Some("listed"));
+        assert!(
+            a.names_note.unwrap_or("").len() > 20,
+            "the names note must state how the set was determined"
+        );
+        assert!(a.statistics.is_none(), "a names answer carries no values");
+    }
+
+    /// A per-call reply that is the relay's own no (`result: error`) is
+    /// `refused`, carrying the relay's reason verbatim -- never rendered as
+    /// counters.
+    #[test]
+    fn a_per_call_result_error_is_refused_with_the_relays_reason() {
+        let reply = ControlReply::Statistics(pairs(&[
+            ("result", "error"),
+            ("error-reason", "Unknown call-id"),
+        ]));
+        let a = RelayStatsAnswer::from_reply(addr(), &reply, Some("nope@host"), false);
+        assert_eq!(a.outcome, "refused");
+        assert_eq!(a.refusal.as_deref(), Some("Unknown call-id"));
+        assert!(
+            a.statistics.is_none(),
+            "a refusal must not be rendered as counters"
+        );
+    }
+
+    /// The refusal check is applied ONLY to a per-call ask, matching REST: a
+    /// GLOBAL reply that happens to carry a `result` key is rendered as counters,
+    /// not read as a refusal. The `call_id` argument is what draws that line.
+    #[test]
+    fn the_refusal_check_is_scoped_to_a_per_call_ask() {
+        let reply = ControlReply::Statistics(pairs(&[("result", "error")]));
+        let global = RelayStatsAnswer::from_reply(addr(), &reply, None, false);
+        assert_eq!(
+            global.outcome, "ok",
+            "a global ask does not apply the per-call refusal rule"
+        );
+        let per_call = RelayStatsAnswer::from_reply(addr(), &reply, Some("c@h"), false);
+        assert_eq!(
+            per_call.outcome, "refused",
+            "the same reply on a per-call ask IS a refusal"
+        );
+    }
+
+    /// A reply that is not statistics at all is `suspect` -- an answer arrived,
+    /// and it cannot be trusted as counters.
+    ///
+    /// The stats path's decoder returns only `Statistics` or an error, so this
+    /// is the defensive fallback for a shape the current client never produces;
+    /// it is asserted so a future decoder that could cannot silently pass a
+    /// non-statistics reply off as `ok`.
+    #[test]
+    fn a_non_statistics_reply_is_suspect() {
+        let reply = ControlReply::Refused {
+            reason: "unexpected on the stats path".to_string(),
+        };
+        let a = RelayStatsAnswer::from_reply(addr(), &reply, None, false);
+        assert_eq!(a.outcome, "suspect");
+        assert!(a.statistics.is_none());
+    }
+
+    /// A comparison shows both figures with their tiers and a word verdict, and
+    /// never a summed or differenced field -- the two counts are shown, not
+    /// combined.
+    #[test]
+    fn a_comparison_shows_both_sides_and_a_word_verdict() {
+        let differ = RelayCompareAnswer::from_outcome(
+            addr(),
+            "c@h",
+            ready_comparison(Some(9000), Some(4500)),
+        );
+        assert_eq!(differ.outcome, "compared");
+        assert_eq!(differ.verdict.as_deref(), Some("differ"));
+        assert_eq!(differ.relay_reported.as_ref().map(|f| f.value), Some(9000));
+        assert_eq!(differ.sipnab_measured, Some(4500));
+        assert!(
+            differ.note.unwrap_or_default().len() > 20,
+            "a differ verdict must carry the note that a gap is not a relay fault"
+        );
+        let same = RelayCompareAnswer::from_outcome(
+            addr(),
+            "c@h",
+            ready_comparison(Some(9000), Some(9000)),
+        );
+        assert_eq!(same.verdict.as_deref(), Some("match"));
+    }
+
+    /// An absent side is reported as absent, never coerced to zero: a relay that
+    /// does not hold the call carries sipnab's measured count and NO relay
+    /// figure, and the reverse for a call sipnab never captured.
+    #[test]
+    fn an_absent_side_is_never_rendered_as_zero() {
+        let relay_missing =
+            RelayCompareAnswer::from_outcome(addr(), "c@h", ready_comparison(None, Some(4500)));
+        assert_eq!(relay_missing.outcome, "relay_does_not_hold_call");
+        assert!(
+            relay_missing.relay_reported.is_none(),
+            "an absent relay side must not be a zero figure"
+        );
+        assert_eq!(relay_missing.sipnab_measured, Some(4500));
+
+        let sipnab_missing =
+            RelayCompareAnswer::from_outcome(addr(), "c@h", ready_comparison(Some(9000), None));
+        assert_eq!(sipnab_missing.outcome, "sipnab_has_no_rtp");
+        assert_eq!(
+            sipnab_missing.relay_reported.as_ref().map(|f| f.value),
+            Some(9000)
+        );
+        assert!(sipnab_missing.sipnab_measured.is_none());
+
+        let neither = RelayCompareAnswer::from_outcome(addr(), "c@h", ready_comparison(None, None));
+        assert_eq!(neither.outcome, "neither");
+        assert!(neither.relay_reported.is_none() && neither.sipnab_measured.is_none());
+    }
+
+    /// The compare tool's own refusal and suspect constructors carry the same
+    /// meaning as the stats tool: the relay's own no, and an untrusted answer.
+    #[test]
+    fn compare_refused_and_suspect_carry_their_meaning() {
+        let refused = RelayCompareAnswer::refused(addr(), "c@h", "Unknown call-id".to_string());
+        assert_eq!(refused.outcome, "refused");
+        assert_eq!(refused.refusal.as_deref(), Some("Unknown call-id"));
+        assert!(refused.verdict.is_none());
+
+        let suspect = RelayCompareAnswer::suspect(addr(), "c@h");
+        assert_eq!(suspect.outcome, "suspect");
+        assert!(suspect.relay_reported.is_none() && suspect.sipnab_measured.is_none());
     }
 }

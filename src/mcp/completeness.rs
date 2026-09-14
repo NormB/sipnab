@@ -128,6 +128,12 @@ pub const SOURCE_INDEPENDENT_TOOLS: &[&str] = &[
     // much of the capture has been read would attach a fact about sipnab's
     // reading to a statement made by another process.
     "query_relay",
+    // The relay's own counters, for the same reason as `query_relay`: a
+    // relay_reported figure is a statement another process made about itself,
+    // and how much of the capture sipnab has read says nothing about it.
+    // `relay_compare` is deliberately NOT here -- it reads the capture store for
+    // its `sipnab_measured` side, so its answer does move with the load.
+    "relay_stats",
     // Answer from the TFPS peer, not from the capture store, for the
     // reason `query_relay` gives: how much of the capture has been read
     // says nothing about what another process holds.

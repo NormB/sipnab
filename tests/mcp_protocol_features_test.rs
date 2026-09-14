@@ -256,14 +256,30 @@ fn text_payload(reply: &Value) -> Value {
 /// A list like this is where coverage goes to die, so every entry names a
 /// PROPERTY of the tool rather than a convenience, and the gates below fail if
 /// an entry stops being registered, loses its reason, or becomes drivable.
-const SCHEMA_NOT_DRIVEN: &[(&str, &str)] = &[(
-    "query_relay",
-    "transmits to a relay that must be reachable, and needs a live capture \
-     source for a transmit permit to exist at all. A stock test server has \
-     neither, so every call here refuses before a payload is built. Driving it \
-     would mean standing up a relay and a live interface inside a unit test, \
-     and a fake reachable at a real address is a transmitting test.",
-)];
+const SCHEMA_NOT_DRIVEN: &[(&str, &str)] = &[
+    (
+        "query_relay",
+        "transmits to a relay that must be reachable, and needs a live capture \
+         source for a transmit permit to exist at all. A stock test server has \
+         neither, so every call here refuses before a payload is built. Driving it \
+         would mean standing up a relay and a live interface inside a unit test, \
+         and a fake reachable at a real address is a transmitting test.",
+    ),
+    (
+        "relay_stats",
+        "transmits to the relay for its own counters, so like query_relay it needs \
+         a reachable relay and a live source before a payload exists. A stock test \
+         server has neither and the call refuses first; the conversion it performs \
+         is driven directly in relay_stats_view_tests instead.",
+    ),
+    (
+        "relay_compare",
+        "transmits to the relay for one call's counters to set beside the capture's, \
+         so it needs a reachable relay and a live source like query_relay. A stock \
+         test server has neither and the call refuses first; the conversion is \
+         driven directly in relay_stats_view_tests instead.",
+    ),
+];
 
 fn schema_probes(call_id: &str) -> Vec<(&'static str, Value)> {
     vec![
@@ -861,36 +877,45 @@ fn every_schema_excuse_is_registered_and_reasoned() {
     }
 }
 
-/// The excused tool really is undrivable here, and refuses for the stated
+/// Every excused tool really is undrivable here, and refuses for the stated
 /// reason rather than answering.
 ///
-/// This is the half that keeps the excuse honest. If `query_relay` ever starts
-/// answering on a stock server, that is a hole in the opt-in -- a tool that
-/// transmits would be reachable without `--mcp-allow-relay-query`, without a
-/// configured relay, and on a run reading a FILE. The excuse and the security
-/// property rest on the same fact, so one test covers both.
+/// This is the half that keeps each excuse honest. If one of these transmit
+/// tools ever starts answering on a stock server, that is a hole in the opt-in
+/// -- a tool that transmits would be reachable without `--mcp-allow-relay-query`,
+/// without a configured relay, and on a run reading a FILE. The excuse and the
+/// security property rest on the same fact, so one test covers both, and it
+/// loops over the whole excuse list so a new excuse cannot ship unproven.
 #[test]
-fn the_excused_tool_refuses_on_a_stock_server() {
+fn every_excused_tool_refuses_on_a_stock_server() {
+    // Enough arguments to clear parameter deserialization, so the refusal is the
+    // access gate's own and not a missing-field error: relay_compare requires a
+    // call_id, the others take none.
+    let probe_args = |tool: &str| match tool {
+        "relay_compare" => json!({ "call_id": "probe@stock" }),
+        _ => json!({}),
+    };
     let mut wire = Wire::start();
-    let reply = wire.call("query_relay", json!({}), None);
-
-    assert!(
-        reply["result"].is_null(),
-        "query_relay answered on a server with no relay configured, no opt-in, \
-         and a file source. A tool that transmits must not be reachable there: \
-         {reply}"
-    );
-    let message = reply["error"]["message"].as_str().unwrap_or_default();
-    for required in [
-        "--mcp-allow-relay-query",
-        "--rtpengine-control",
-        "live",
-        "transmit permit",
-    ] {
+    for (tool, _reason) in SCHEMA_NOT_DRIVEN {
+        let reply = wire.call(tool, probe_args(tool), None);
         assert!(
-            message.contains(required),
-            "the refusal must name {required} so an operator knows which of the \
-             three requirements is missing: {message}"
+            reply["result"].is_null(),
+            "{tool} answered on a server with no relay configured, no opt-in, \
+             and a file source. A tool that transmits must not be reachable \
+             there: {reply}"
         );
+        let message = reply["error"]["message"].as_str().unwrap_or_default();
+        for required in [
+            "--mcp-allow-relay-query",
+            "--rtpengine-control",
+            "live",
+            "transmit permit",
+        ] {
+            assert!(
+                message.contains(required),
+                "{tool}'s refusal must name {required} so an operator knows which \
+                 of the three requirements is missing: {message}"
+            );
+        }
     }
 }

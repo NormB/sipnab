@@ -240,6 +240,17 @@ impl NameSource {
             }
         }
     }
+
+    /// The stable wire token, so every surface reports `listed` versus `probed`
+    /// from one spelling rather than each copying the two-arm match. A probed
+    /// set is the weaker claim, and the token is what tells the two apart.
+    #[must_use]
+    pub const fn as_wire_str(self) -> &'static str {
+        match self {
+            Self::Listed => "listed",
+            Self::Probed => "probed",
+        }
+    }
 }
 
 /// One side of a tier comparison: a counted whole number at a named tier (C4).
@@ -569,4 +580,30 @@ pub fn resolve_for_wire(stats: &[TieredStatistic]) -> WireStatistics {
         }
     }
     WireStatistics { present, refusals }
+}
+
+/// Whether a relay reply is actually the relay saying no, and its reason.
+///
+/// A relay answers a call it does not hold with `result: error` and an
+/// `error-reason` (e.g. `Unknown call-id`) rather than an error transport, so a
+/// per-call caller must read that as a refusal -- carrying the relay's own
+/// words -- not render it as counters. The single copy of that rule: REST and
+/// MCP both call this so the two surfaces cannot draw the line differently.
+/// `result` is matched case-insensitively, and a refusal with no reason gets a
+/// stand-in sentence rather than an empty string, which would render as a
+/// silent no.
+#[must_use]
+pub fn relay_reply_refusal(pairs: &[(String, String)]) -> Option<String> {
+    let is_error = pairs
+        .iter()
+        .any(|(k, v)| k == "result" && v.eq_ignore_ascii_case("error"));
+    if !is_error {
+        return None;
+    }
+    let reason = pairs
+        .iter()
+        .find(|(k, _)| k == "error-reason")
+        .map(|(_, v)| v.clone())
+        .unwrap_or_else(|| "the relay refused without a reason".to_string());
+    Some(reason)
 }

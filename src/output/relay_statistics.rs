@@ -287,10 +287,7 @@ pub fn format_relay_stat_names_json(
     json!({
         "relay": relay_label,
         "obtained_at": stamp,
-        "source": match source {
-            NameSource::Listed => "listed",
-            NameSource::Probed => "probed",
-        },
+        "source": source.as_wire_str(),
         "names": names,
     })
     .to_string()

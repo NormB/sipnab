@@ -44,7 +44,7 @@ Tiers:
 
 ## Status
 
-**32 open, 511 done** across 38 sections.
+**31 open, 512 done** across 38 sections.
 Regenerate with `python3 scripts/backlog-status.py --apply`.
 
 | Section | Open | Done | Progress |
@@ -63,7 +63,7 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
 | NAT | 0 | 4 | `##########` |
 | RV | 0 | 8 | `##########` |
 | RP | 1 | 3 | `########..` |
-| ST | 7 | 10 | `######....` |
+| ST | 6 | 11 | `######....` |
 | PAR | 5 | 0 | `..........` |
 | HX | 1 | 2 | `#######...` |
 | AS | 0 | 7 | `##########` |
@@ -5858,10 +5858,21 @@ apart in the first place (see PAR).
   counters that reset when a relay restarts, values that overflow their type,
   a key present in one relay version and absent in the next.
 
-- [ ] **ST6 — an MCP tool for all three tiers.** 50 tests minimum. It must be
-  ONE tool, not one per relay: a parallel `query_rtpproxy` beside `query_relay`
-  doubles the agent surface for no gain, which RP2's acceptance test 1 already
-  forbids. The tool transmits, so it stays behind the existing permit.
+- [x] **ST6 — MCP tools for all three tiers. DONE.** Two read-only tools, split
+  by CAPABILITY rather than by relay -- neither names a vendor, so RP2's
+  acceptance test 1 (one tool, not one per relay) holds and the seam test
+  confirms it. `relay_stats` returns the relay's own counters, global or
+  per-call or names-only (C1–C3), tiered `relay_reported`. `relay_compare` sets
+  the relay's per-call RTP count beside sipnab's measured count (C4), both tiers
+  named and a word verdict, never a sum, an absent side never coerced to zero
+  (ST9). Both transmit, so both sit behind `query_relay`'s permit and opt-in and
+  refuse identically without it; a relay that answers but declines is a success
+  carrying its own words, and only an unreachable relay is an error. The refusal
+  rule and the tier vocabulary are single-sourced with the REST surface
+  (`stats_vocab::relay_reply_refusal`), so the two cannot classify a reply
+  differently. The tools transmit and cannot be driven on a stock server, so the
+  conversion is tested directly and mutation-verified, and the whole excuse list
+  is proven to refuse there.
 
 - [x] **ST7 — CLI flags for all three tiers. DONE.** All five capabilities
   landed and verified live against the harness — C1 (`--relay-stats`), C2

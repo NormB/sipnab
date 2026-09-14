@@ -1027,6 +1027,14 @@ const NOT_PROBED: &[(&str, &str)] = &[
         "installs kernel uprobes and needs --mcp-allow-tls-capture",
     ),
     ("stop_tls_capture", "the other half of the uprobe pair"),
+    (
+        "relay_compare",
+        "transmits to the relay, so like query_relay it refuses on a stock \
+         server and cannot be driven over the wire here. The capture side it \
+         reads is ONE call's bounded RTP count, not a population it could have \
+         read more of, and the comparison it returns already points to \
+         capture_health for whether this run dropped packets",
+    ),
 ];
 
 /// Every `#[tool]` block under `src/mcp/` whose text holds one of `markers`.

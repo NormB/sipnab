@@ -12,6 +12,20 @@ entry that carries them.
 
 ### Added
 
+- **`relay_stats` and `relay_compare` MCP tools bring relay statistics to the
+  agent surface (ST6).** `relay_stats` asks the configured relay for its own
+  counters -- globally, scoped to one Call-ID, or (with `names_only`) the names
+  the relay knows so an agent learns what it can ask for -- each tiered
+  `relay_reported`. `relay_compare` sets the relay's per-call RTP count beside
+  the count sipnab measured, showing both figures with their tiers and a word
+  verdict, never a summed or differenced figure. Both transmit, so both share
+  `query_relay`'s opt-in (`--mcp-allow-relay-query`, a configured relay, a live
+  source) and refuse identically without it; a relay that answers but declines
+  (a Call-ID it does not hold) is a success carrying the relay's own words, and
+  an absent side of a comparison is reported absent, never coerced to zero. The
+  refusal rule and the tier vocabulary are single-sourced with the REST surface,
+  so the two cannot classify the same reply differently.
+
 - **Relay statistics render as JSON under `--json` (ST7).** Every relay-stats
   form (`--relay-stats`, `--relay-stats-call`, `--relay-stats-list`,
   `--relay-compare`, and the `--relay-stats-interval` poll) emits a single JSON

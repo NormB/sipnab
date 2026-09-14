@@ -2310,27 +2310,6 @@ enum RelayAsk {
     Compare(String),
 }
 
-/// Whether a relay reply is actually the relay saying no, and its reason.
-///
-/// rtpengine answers a call it does not hold with `result: error` and an
-/// `error-reason` (e.g. `Unknown call-id`) rather than an error transport, so a
-/// per-call route must read that as `refused` -- with the relay's own words --
-/// not render it as counters.
-fn relay_reply_refusal(pairs: &[(String, String)]) -> Option<String> {
-    let is_error = pairs
-        .iter()
-        .any(|(k, v)| k == "result" && v.eq_ignore_ascii_case("error"));
-    if !is_error {
-        return None;
-    }
-    let reason = pairs
-        .iter()
-        .find(|(k, _)| k == "error-reason")
-        .map(|(_, v)| v.clone())
-        .unwrap_or_else(|| "the relay refused without a reason".to_string());
-    Some(reason)
-}
-
 /// Build the JSON body for a relay-statistics REST route (ST5).
 ///
 /// Sync because it makes a blocking control round trip; handlers run it under
@@ -2346,7 +2325,7 @@ fn relay_rest_answer(
     use crate::relay::types::ControlReply;
     use crate::stats_vocab::{
         CompareOutcome, StatisticValue, StatisticsOutcome as O, known_names, lookup,
-        ready_comparison, relay_reported, resolve_for_wire,
+        ready_comparison, relay_reply_refusal, relay_reported, resolve_for_wire,
     };
     let to_value = |s: String| -> Value {
         serde_json::from_str(&s).unwrap_or_else(|_| json!({ "outcome": "suspect" }))
@@ -3905,7 +3884,7 @@ mod tests {
             ("error-reason".to_string(), "Unknown call-id".to_string()),
         ];
         assert_eq!(
-            relay_reply_refusal(&refused).as_deref(),
+            crate::stats_vocab::relay_reply_refusal(&refused).as_deref(),
             Some("Unknown call-id"),
             "the relay's own reason is carried, not invented"
         );
@@ -3914,7 +3893,7 @@ mod tests {
             ("totals.RTP.packets".to_string(), "9000".to_string()),
         ];
         assert!(
-            relay_reply_refusal(&clean).is_none(),
+            crate::stats_vocab::relay_reply_refusal(&clean).is_none(),
             "a clean reply is not a refusal"
         );
     }

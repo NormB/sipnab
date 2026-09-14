@@ -136,6 +136,8 @@ ordinary update.
 | Tool | Parameters | Returns |
 |---|---|---|
 | [`query_relay`](#query_relay) | `call_id?`, `max_calls?` | **Transmits.** Asks the configured relay what it holds right now. Needs `--mcp-allow-relay-query` and a live source; the destination comes from operator configuration only |
+| [`relay_stats`](#relay_stats) | `call_id?`, `names_only?` | **Transmits.** Asks the configured relay for its own counters (global, per-call, or the names it knows), tiered `relay_reported`. Same opt-in and live-source gate as `query_relay` |
+| [`relay_compare`](#relay_compare) | `call_id` | **Transmits.** Sets the relay's per-call RTP count beside sipnab's measured count, both tiers named and a word verdict, never a sum. Same gate as `query_relay` |
 | [`open_capture`](#open_capture) | `filename` | **Destructive.** Replaces every dialog and stream with another capture from `--mcp-file-root`. Needs `--mcp-allow-open-capture`; loads in the background |
 | [`shutdown_server`](#shutdown_server) | `dry_run?`, `save_to?`, `discard_unsaved?` | **Destructive.** Stops the process. Needs `--mcp-allow-shutdown`; dry-run by default |
 | [`start_tls_capture`](#start_tls_capture) | `flavors`, `libraries` | installs kernel uprobes and reads SIP plaintext with no key; needs `--mcp-allow-tls-capture` |
@@ -195,14 +197,15 @@ A file source loads on a background thread, so an agent's first call lands
 inside a window a human client never sees: on a 921 MB capture, `list_dialogs`
 answered with 6 of 18,241 dialogs. `tail_dialogs` and `capture_status` have
 always carried `source_exhausted`. Now every tool that answers from the capture
-does. Sixteen tools are the exception, because their answer cannot move with
+does. Seventeen tools are the exception, because their answer cannot move with
 the load. Nine read something other than the capture store —
 `explain_response_code`, `explain_rule`, `decode_evidence`, `decode_ng`,
 `show_evidence`, `list_captures`, `list_tls_libraries`, `server_capabilities`
 and `compare_captures`, which reads two files and never the loaded capture.
-The other seven ask another process: `query_relay` puts the question to the
-media relay, and `tfps_status`, `tfps_banned`, `tfps_dropped`, `tfps_labels`,
-`tfps_ban` and `tfps_unban` put it to the toll-fraud prevention peer. How much
+The other eight ask another process: `query_relay` and `relay_stats` put the
+question to the media relay, and `tfps_status`, `tfps_banned`, `tfps_dropped`,
+`tfps_labels`, `tfps_ban` and `tfps_unban` put it to the toll-fraud prevention
+peer. How much
 of the capture sipnab has read says nothing about what those hold. The
 tools that answer with a rendered document — `render_ladder`, and
 `get_capture_report` / `get_dialog_report` in `markdown` and `text` — have no
@@ -5608,6 +5611,86 @@ the first 32 of an unknown number" are different statements.
       ]
     }
   ],
+  "delivery_trust": "asked",
+  "delivery_note": "sipnab asked the relay over its control socket; no third party could answer",
+  "schema_version": 1
+}
+```
+
+### `relay_stats`
+
+**Transmits, like [`query_relay`](#query_relay).** It asks the configured relay
+for the statistics it keeps about ITSELF -- never a figure sipnab derived -- so
+each value carries the tier `relay_reported` and never blends with what sipnab
+measured. That comparison is [`relay_compare`](#relay_compare).
+
+Three modes from two parameters:
+
+| Name | Type | Legal values | If omitted |
+|---|---|---|---|
+| `call_id` | string? | One Call-ID, to scope the counters to that call. | The relay's own global counters. |
+| `names_only` | bool? | `true` returns the NAMES the relay knows, not their values -- "what can I even ask for", since the key set is version-specific. | `false`. A `call_id` overrides it. |
+
+It needs the same three things `query_relay` does, and refuses identically when
+one is missing: `--mcp-allow-relay-query`, a configured relay control address,
+and a live source.
+
+A relay that answers but declines -- a Call-ID it does not hold -- is a
+**success** carrying `outcome: "refused"` and the relay's own words, not an
+error: the relay answered, it just said no. An unreachable relay is the error,
+because nothing is then known.
+
+```jsonc
+// relay_stats { "call_id": "call-2c9d47@192.0.2.10" }
+{
+  "relay_address": "127.0.0.1:22222",
+  "tier": "relay_reported",
+  "outcome": "ok",
+  "statistics": [
+    { "name": "totals.RTP.packets", "value": "9000" },
+    { "name": "totals.RTP.bytes", "value": "1440000" }
+  ],
+  "delivery_trust": "asked",
+  "delivery_note": "sipnab asked the relay over its control socket; no third party could answer",
+  "schema_version": 1
+}
+```
+
+A `names_only` answer carries `names`, a `names_source` (`listed` when the relay
+enumerated them, `probed` when they are the names that did not refuse) and a
+`names_note` stating how sipnab determined the set -- so a probed set is never
+read as a definitive enumeration.
+
+### `relay_compare`
+
+**Transmits, like [`query_relay`](#query_relay).** It sets the relay's own RTP
+packet count for one call beside the count sipnab measured from the packets it
+captured. A comparison, never a sum: both figures travel with their tiers
+(`relay_reported` and `sipnab_measured`), the verdict is a word, and it never
+computes `relay - sipnab` as a value -- the two count different sockets over
+different windows, so an ordinary gap is not a relay fault.
+
+| Name | Type | Legal values | If omitted |
+|---|---|---|---|
+| `call_id` | string | The Call-ID to compare. | Required -- the call fails. |
+
+Same opt-in and live-source gate as `relay_stats`. It reports an absent side as
+absent, never coercing it to zero: a call the relay does not hold carries sipnab's
+count and no relay figure (`outcome: "relay_does_not_hold_call"`), and a call
+sipnab never captured carries the relay's figure and no measured one
+(`outcome: "sipnab_has_no_rtp"`). Only when both sides produced a count -- a
+real zero included -- are they compared.
+
+```jsonc
+// relay_compare { "call_id": "call-2c9d47@192.0.2.10" }
+{
+  "relay_address": "127.0.0.1:22222",
+  "call_id": "call-2c9d47@192.0.2.10",
+  "outcome": "compared",
+  "relay_reported": { "value": 9000, "name": "totals.RTP.packets" },
+  "sipnab_measured": 9000,
+  "verdict": "match",
+  "note": "the relay and sipnab agree at 9000 RTP packets",
   "delivery_trust": "asked",
   "delivery_note": "sipnab asked the relay over its control socket; no third party could answer",
   "schema_version": 1

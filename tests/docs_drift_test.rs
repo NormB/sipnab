@@ -2657,9 +2657,14 @@ fn mcp_tool_table_lists_every_registered_tool() {
     // because the only way inside another file was `open_capture`, which
     // replaces every dialog and stream. Read-only, so the split moves
     // 53-of-65 to 54-of-66 and the twelve write-capable tools are unchanged.
+    // 66 -> 68 by `relay_stats` and `relay_compare` (ST6), which bring relay
+    // statistics to the agent surface: the relay's own counters, and its
+    // per-call count beside sipnab's. Both read-only and both transmit, so the
+    // split moves 54-of-66 to 56-of-68 and the twelve write-capable tools are
+    // unchanged.
     assert_eq!(
         registered.len(),
-        66,
+        68,
         "found only {} #[tool(name = ...)] entries under src/mcp/ — the \
          attribute shape changed and this test is no longer reading the \
          registry: {registered:?}",
@@ -3530,7 +3535,10 @@ fn no_documentation_table_repeats_a_row() {
     // 880 -> 883 by ST-S5 (one table: the cookbook recipes) and PAR-S1 (two:
     // the four surfaces, and the worked capability matrix). Counted once each,
     // no website mirror.
-    const EXPECTED_TABLES: usize = 883;
+    // 883 -> 887 by ST6: the `relay_stats` and `relay_compare` sections in
+    // docs/mcp-tools.md each add one parameter table, counted once in docs/ and
+    // once in the site mirror -- two tables, two mirrored copies, four in all.
+    const EXPECTED_TABLES: usize = 887;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

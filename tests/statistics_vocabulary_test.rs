@@ -326,3 +326,73 @@ fn the_three_states_partition_without_collapsing() {
         "the not-asked statistic must be omitted from the wire entirely"
     );
 }
+
+use sipnab::stats_vocab::{NameSource, relay_reply_refusal};
+
+/// A relay reply carrying `result: error` is the relay's own no, and its
+/// `error-reason` travels verbatim so the reader sees the relay's words, not a
+/// paraphrase. This is the single rule REST and MCP both read; it lives here so
+/// the two surfaces cannot drift.
+#[test]
+fn a_relay_reply_with_result_error_is_a_refusal_carrying_its_reason() {
+    let refused = [
+        ("result".to_string(), "error".to_string()),
+        ("error-reason".to_string(), "Unknown call-id".to_string()),
+    ];
+    assert_eq!(
+        relay_reply_refusal(&refused).as_deref(),
+        Some("Unknown call-id"),
+        "result:error must read as a refusal carrying the relay's own reason"
+    );
+}
+
+/// A clean reply -- `result: ok`, or counters with no `result` key at all -- is
+/// not a refusal, so it is never rendered as one.
+#[test]
+fn a_clean_relay_reply_is_not_a_refusal() {
+    let clean = [
+        ("result".to_string(), "ok".to_string()),
+        ("totals.RTP.packets".to_string(), "42".to_string()),
+    ];
+    assert!(
+        relay_reply_refusal(&clean).is_none(),
+        "result:ok is not a refusal"
+    );
+    let counters = [("totals.RTP.packets".to_string(), "42".to_string())];
+    assert!(
+        relay_reply_refusal(&counters).is_none(),
+        "a reply with no result key is not a refusal"
+    );
+}
+
+/// `result: error` is matched without regard to case (a relay may answer
+/// `Error`), and a refusal that gives no `error-reason` still reads as a
+/// refusal, with a stand-in sentence rather than an empty string -- an empty
+/// reason would render as a silent no.
+#[test]
+fn a_refusal_is_case_insensitive_and_never_reasonless() {
+    let mixed_case = [("result".to_string(), "Error".to_string())];
+    let reason = relay_reply_refusal(&mixed_case);
+    assert!(
+        reason.is_some(),
+        "result:Error (mixed case) must still read as a refusal"
+    );
+    assert!(
+        !reason.as_deref().unwrap_or("").is_empty(),
+        "a reasonless refusal must carry a stand-in sentence, never an empty string"
+    );
+}
+
+/// `NameSource` has a stable wire token, distinct per variant, so a surface can
+/// report `listed` vs `probed` from one spelling rather than copying the two-arm
+/// match. `probed` is the weaker claim, and the token says which was made.
+#[test]
+fn name_source_carries_a_distinct_wire_token() {
+    assert_eq!(NameSource::Listed.as_wire_str(), "listed");
+    assert_eq!(NameSource::Probed.as_wire_str(), "probed");
+    assert_ne!(
+        NameSource::Listed.as_wire_str(),
+        NameSource::Probed.as_wire_str(),
+        "listed and probed must not collapse to one token"
+    );
+}

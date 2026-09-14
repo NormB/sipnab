@@ -739,6 +739,8 @@ fn stdio_mcp_full_tool_set_and_remaining_tools() {
         "open_capture",
         "reconcile_orphans",
         "query_relay",
+        "relay_compare",
+        "relay_stats",
         "render_ladder",
         "rtp_stats",
         "runtime_stats",
@@ -774,7 +776,7 @@ fn stdio_mcp_full_tool_set_and_remaining_tools() {
     }
     expected.sort();
     assert_eq!(names, expected, "MCP tool set drifted");
-    let want = if cfg!(feature = "vcon") { 66 } else { 64 };
+    let want = if cfg!(feature = "vcon") { 68 } else { 66 };
     assert_eq!(names.len(), want, "expected exactly {want} MCP tools");
 
     // find_problems with default kinds (['problems']) → JSON array, no error.
