@@ -44,7 +44,7 @@ Tiers:
 
 ## Status
 
-**29 open, 514 done** across 38 sections.
+**28 open, 515 done** across 38 sections.
 Regenerate with `python3 scripts/backlog-status.py --apply`.
 
 | Section | Open | Done | Progress |
@@ -63,7 +63,7 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
 | NAT | 0 | 4 | `##########` |
 | RV | 0 | 8 | `##########` |
 | RP | 1 | 3 | `########..` |
-| ST | 4 | 13 | `########..` |
+| ST | 3 | 14 | `########..` |
 | PAR | 5 | 0 | `..........` |
 | HX | 1 | 2 | `#######...` |
 | AS | 0 | 7 | `##########` |
@@ -5729,13 +5729,20 @@ apart in the first place (see PAR).
   answer does NOT tell them — the tier rule from ST-S1 in prose an operator
   reads rather than as a type name.
 
-- [ ] **ST-D1 — the cookbook gains statistics recipes.** Task-first, in the
+- [x] **ST-D1 — the cookbook gains statistics recipes.** Task-first, in the
   shape the docs guide already demands: the question first, the command second,
   the caveat third. At minimum, one recipe per question an operator brings to a
   relay — is it dropping packets, is it holding sessions nobody released, does
   its view of this call match mine, and is what it reports about loss the same
   thing my capture measured. That last one is the tier rule in practice, and it
-  is the recipe most likely to be got wrong without it.
+  is the recipe most likely to be got wrong without it. **Done:** shipped in
+  v0.5.172 as four recipes in [`docs/examples.md`](https://github.com/NormB/sipnab/blob/main/docs/examples.md), one per question above, each in
+  the question-command-caveat shape and each naming the tier a relay figure
+  belongs to. The loss recipe states the tier rule outright — the relay's
+  reported loss, the loss sipnab measured on the wire, and the far end's RTCP
+  claim are three different numbers, none authoritative over the others — so a
+  reader never mistakes the relay's own count for something sipnab saw. Held by
+  the docs table/wiki-link ratchets that fixed the recipe count when they landed.
 
 - [ ] **ST-D2 — the site shows them, not just the reference.** The homepage and
   the docs navigation surface statistics as a capability rather than leaving
