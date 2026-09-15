@@ -48,7 +48,7 @@ version = "0.5.174"
 # Bumped after a release finishes publishing, not while cutting it.
 # `site_advertises_only_a_released_version` requires a matching `v<x.y.z>` tag,
 # so advertising something unreleased fails the suite rather than the visitor.
-published_version = "0.5.173"
+published_version = "0.5.174"
 # Release date of `published_version` above -- NOT of `version`, further up.
 # `download.html` renders this beside `published_version` in a single sentence,
 # so the date belongs to the release a reader can actually download.
@@ -124,6 +124,7 @@ macos_floor_intel = "10.12"
 #   0.5.171  16,096,776 bytes   (+24,768, leaving 680,440 bytes of headroom)
 #   0.5.172  16,096,776 bytes   (unchanged, leaving 680,440 bytes of headroom)
 #   0.5.173  16,121,352 bytes   (+24,576, leaving 655,864 bytes of headroom)
+#   0.5.174  16,125,448 bytes   (+4,096, leaving 651,768 bytes of headroom)
 #
 # So 0.5.159 shipped one ordinary release away from tipping and nothing said
 # so. The 118,784 bytes are `find_in_captures` -- a 66th MCP tool with derived
@@ -166,7 +167,11 @@ macos_floor_intel = "10.12"
 # re-apply across every fanout socket, and the shared generation-stamped
 # control the loops poll) cost 24,576. About a fraction of a surface again: the
 # editor reuses the pure filter composition already there and the loops reuse
-# the poll point they already had for shutdown.
+# the poll point they already had for shutdown -- and 651,768 at 0.5.174, where
+# the offline re-scan (the file loader re-reading under the composed filter, a
+# filter argument threaded through the load path, and the editor's Enter wired
+# to it) cost 4,096: one page, because it reuses the loader and the store-reset
+# the in-session file open already had.
 # That figure is measured from the shipped tarball each release, checksum
 # verified against the `.sha256` beside it, which is what makes it a
 # measurement rather than an estimate carried forward.
