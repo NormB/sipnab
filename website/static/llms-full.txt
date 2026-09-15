@@ -5929,7 +5929,7 @@ Two environment variables tune it. To pin a specific version instead of taking
 whatever the latest release is:
 
 ```bash
-curl -fsSL https://sipnab.com/install.sh | SIPNAB_VERSION=0.5.174 sh
+curl -fsSL https://sipnab.com/install.sh | SIPNAB_VERSION=0.5.175 sh
 ```
 
 To install somewhere other than `/usr/local/bin` — a directory you already own,
@@ -6062,7 +6062,7 @@ canonical triples deliberately: they match `rustc -vV`, they are what
 script constructs them.
 
 On Linux x86_64, the static musl tarball runs on any distro and any glibc,
-Alpine included. Replace `<version>` with the latest, e.g. 0.5.174:
+Alpine included. Replace `<version>` with the latest, e.g. 0.5.175:
 
 ```bash
 # Run all of these, in order.
@@ -6081,7 +6081,7 @@ sudo install -m 755 sipnab-<version>-aarch64-unknown-linux-musl/sipnab /usr/loca
 ```
 
 Manual download with checksum verification (replace `<version>` with the
-latest, e.g. 0.5.174):
+latest, e.g. 0.5.175):
 
 ```bash
 # Run all of these, in order.
@@ -6123,7 +6123,7 @@ cargo install sipnab --features full
 Download the `.deb` for your architecture from the [latest release](https://github.com/NormB/sipnab/releases/latest) and install with `apt` (it resolves the `libpcap0.8` runtime dependency). The `.deb` needs glibc >= 2.36, i.e. Debian 12+ / Ubuntu 23.04+ -- on older releases use the static musl tarball above.
 
 Download and install the amd64 (x86_64) package — replace `<version>` with the
-latest, e.g. 0.5.174:
+latest, e.g. 0.5.175:
 
 ```bash
 # Run all of these, in order.
@@ -6182,26 +6182,26 @@ dependency — for headless servers, mirroring the `.deb` variants).
 The standard package on an x86_64 host:
 
 ```bash
-sudo rpm -i sipnab-0.5.174-1.x86_64.rpm
+sudo rpm -i sipnab-0.5.175-1.x86_64.rpm
 ```
 
 The headless / no-ALSA variant on the same architecture:
 
 ```bash
-sudo rpm -i sipnab-0.5.174-1.x86_64-noaudio.rpm
+sudo rpm -i sipnab-0.5.175-1.x86_64-noaudio.rpm
 ```
 
 The standard package on an aarch64 (arm64) host — pick the variant matching
 `uname -m`:
 
 ```bash
-sudo rpm -i sipnab-0.5.174-1.aarch64.rpm
+sudo rpm -i sipnab-0.5.175-1.aarch64.rpm
 ```
 
 The headless / no-ALSA variant on aarch64:
 
 ```bash
-sudo rpm -i sipnab-0.5.174-1.aarch64-noaudio.rpm
+sudo rpm -i sipnab-0.5.175-1.aarch64-noaudio.rpm
 ```
 
 ### Homebrew (macOS)
@@ -6527,7 +6527,7 @@ sipnab -D
 `--version` lists the Cargo features compiled into the binary, e.g.
 
 ```text
-sipnab 0.5.174 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf,vcon
+sipnab 0.5.175 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf,vcon
 ```
 
 This is the fastest way to confirm a build carries the feature set
@@ -14155,7 +14155,7 @@ itself):
 
    ```bash
    sipnab --version
-   # sipnab 0.5.174 (...) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,vcon,bpf
+   # sipnab 0.5.175 (...) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,vcon,bpf
    ```
 
    If `mcp` is missing you have a source build without features — rebuild
@@ -15303,7 +15303,7 @@ Then confirm the build can do what you are about to ask of it:
 ```json
 {
   "schema_version": 1,
-  "version": "0.5.174",
+  "version": "0.5.175",
   "features": ["api", "audio", "hep", "mcp", "mcp-http", "metrics",
                "native", "plugins", "tls", "tui"],
   "can_decrypt": true,
@@ -15869,7 +15869,7 @@ stdin and the `sleep`s pace the handshake — so paste it as a unit:
 Expected first line of response:
 
 ```json
-{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"sipnab","version": "0.5.174"},"instructions":"sipnab MCP server — queries captured SIP dialogs ..."}}
+{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"sipnab","version": "0.5.175"},"instructions":"sipnab MCP server — queries captured SIP dialogs ..."}}
 ```
 
 ### Test the HTTP wire by hand
@@ -18197,7 +18197,7 @@ No parameters. Returns:
 ```jsonc
 {
   "schema_version": 1,
-  "version": "0.5.174",
+  "version": "0.5.175",
   "features": ["api", "hep", "mcp", "native", "tls", "tui"],
   "can_decrypt": true,           // tls
   "can_hep": true,               // hep
@@ -21943,7 +21943,7 @@ The container example runs against [`tests/pcap-samples/sip-rtp-g711.pcap`](http
       "type": "report",
       "dialog": 0,
       "vendor": "sipnab",
-      "product": "sipnab 0.5.174 (passive observer; not a recording system)",
+      "product": "sipnab 0.5.175 (passive observer; not a recording system)",
       "schema": "sipnab-dialog-diagnosis/1",
       "mediatype": "application/json",
       "encoding": "json",
@@ -31581,6 +31581,7 @@ nobody has loaded fails the suite:
 | 0.5.172 | x86_64-unknown-linux-gnu | Debian 13, x86_64 | 7.0.14-3-pve | 2026-09-14 | attached, 1 library plus `tcp_sendmsg` |
 | 0.5.173 | x86_64-unknown-linux-gnu | Debian 13, x86_64 | 7.0.14-3-pve | 2026-09-15 | attached, 1 library plus `tcp_sendmsg` |
 | 0.5.174 | x86_64-unknown-linux-gnu | Debian 13, x86_64 | 7.0.14-3-pve | 2026-09-15 | attached, 1 library plus `tcp_sendmsg` |
+| 0.5.175 | x86_64-unknown-linux-gnu | Debian 13, x86_64 | 7.0.14-3-pve | 2026-09-15 | attached, 1 library plus `tcp_sendmsg` |
 
 That requirement makes this file part of every phase-two release commit, which
 the classifier deciding what a phase-two commit looks like has to agree with.
