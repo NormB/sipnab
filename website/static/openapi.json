@@ -1,6 +1,72 @@
 {
   "components": {
     "schemas": {
+      "Aggregate": {
+        "description": "A \"how many, by what\" count over the dialog store, one dimension.",
+        "properties": {
+          "buckets": {
+            "description": "The buckets, largest first, ties broken by value for a stable answer.",
+            "items": {
+              "$ref": "#/components/schemas/AggregateBucket"
+            },
+            "type": "array"
+          },
+          "distinct_values": {
+            "description": "How many distinct values the dimension took, before the cut.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "group_by": {
+            "description": "The dimension the count grouped by, echoed verbatim.",
+            "type": "string"
+          },
+          "other_count": {
+            "description": "Total count in every bucket past the `top_n` cut, so the answer still\nsums to `total_matched`.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "schema_version": {
+            "description": "Version of this response's shape.",
+            "example": 1,
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "total_matched": {
+            "description": "How many dialogs the filter admitted, across all buckets.",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "schema_version",
+          "group_by",
+          "buckets",
+          "other_count",
+          "distinct_values",
+          "total_matched"
+        ],
+        "type": "object"
+      },
+      "AggregateBucket": {
+        "description": "One bucket of an aggregate: a grouped value and how many dialogs fell in\nit. A null in the data becomes the literal `(none)` rather than being\ndropped, so the buckets sum to the total.",
+        "properties": {
+          "count": {
+            "description": "How many dialogs fell in this bucket.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "value": {
+            "description": "The grouped value, rendered as a string.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "value",
+          "count"
+        ],
+        "type": "object"
+      },
       "CallReport": {
         "additionalProperties": false,
         "description": "Serialized form of DialogJson (src/output/json.rs): the `--call-report --json` output and GET /v1/dialogs/{id}. The embedded `streams` items mirror stream.schema.json (kept self-contained, no cross-file $ref).",
@@ -3947,6 +4013,93 @@
         "summary": "Prometheus metrics",
         "tags": [
           "operations"
+        ]
+      }
+    },
+    "/v1/aggregate": {
+      "get": {
+        "description": "How many dialogs, grouped by one dimension — the same question the MCP `aggregate_dialogs` tool answers.\n\nOne dimension at a time: narrow with `filter` rather than asking for a second. The buckets are largest first, ties broken by value so the same store always gives the same answer, and `other_count` carries everything past `top_n` so the buckets plus it sum to `total_matched`. A `(none)` bucket counts the dialogs with no value for the dimension.",
+        "operationId": "get_aggregate",
+        "parameters": [
+          {
+            "description": "The dimension to group by — one of the groupable fields (`state`,\n`response_code`, `method`, `from.user`, `to.user`, `ua`, `src.ip`,\n`dst.ip`, `rtp.codec`). A key outside that set is a 400. Required.",
+            "in": "query",
+            "name": "by",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "A DSL expression narrowing which dialogs are counted, the same language\n`/v1/dialogs?filter=` compiles. An expression that does not parse is a 400.",
+            "in": "query",
+            "name": "filter",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Keep the largest N buckets; the rest fold into `other_count`. Clamped to\nthe server's row cap.",
+            "in": "query",
+            "name": "top_n",
+            "required": false,
+            "schema": {
+              "minimum": 0,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Aggregate"
+                }
+              }
+            },
+            "description": "The buckets, largest first."
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "An unknown dimension, or a filter that does not parse."
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "No bearer credential, or one this server does not accept."
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Over the per-source-IP rate limit of 100 requests per second."
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Count dialogs by a dimension",
+        "tags": [
+          "dialogs"
         ]
       }
     },

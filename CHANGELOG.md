@@ -71,6 +71,15 @@ entry that carries them.
   walk moves into one `DialogStore::correlation_tree` the MCP `get_call_tree`
   tool now shares, so the two surfaces render one walk. This closes the
   `get_call_tree` REST gap, leaving 40 named gaps.
+- **`GET /v1/aggregate` (PAR3).** How many dialogs, grouped by one dimension —
+  `state`, `response_code`, `method`, `from.user`, `to.user`, `ua`, `src.ip`,
+  `dst.ip` or `rtp.codec` — narrowed by an optional DSL `filter` and capped by
+  `top_n`, with the overflow folded into `other_count` so the buckets sum to
+  `total_matched`. The groupable dimensions and the bucketing rule move into
+  `crate::sip::dialog` (`GROUPABLE`, `dialog_group_value_raw`) the MCP
+  `aggregate_dialogs` tool now shares, so a build with `api` but not `mcp` still
+  offers the same dimensions. This closes the `aggregate_dialogs` REST gap,
+  leaving 39 named gaps.
 
 ## [0.5.175] - 2026-09-15
 

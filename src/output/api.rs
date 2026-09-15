@@ -442,6 +442,22 @@ pub struct StreamListParams {
     pub mos_below: Option<f64>,
 }
 
+/// Query parameters for the `GET /v1/aggregate` endpoint.
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct AggregateParams {
+    /// The dimension to group by — one of the groupable fields (`state`,
+    /// `response_code`, `method`, `from.user`, `to.user`, `ua`, `src.ip`,
+    /// `dst.ip`, `rtp.codec`). A key outside that set is a 400. Required.
+    pub by: Option<String>,
+    /// A DSL expression narrowing which dialogs are counted, the same language
+    /// `/v1/dialogs?filter=` compiles. An expression that does not parse is a 400.
+    pub filter: Option<String>,
+    /// Keep the largest N buckets; the rest fold into `other_count`. Clamped to
+    /// the server's row cap.
+    pub top_n: Option<usize>,
+}
+
 // ── Router construction ─────────────────────────────────────────────
 
 /// Per-request wall-clock cap. The API is request/response (no streaming), so a
@@ -551,6 +567,7 @@ pub fn build_router(state: ApiState) -> Router {
         .route("/v1/streams/{id}", get(get_stream))
         .route("/v1/report", get(get_capture_report))
         .route("/v1/stats", get(get_stats))
+        .route("/v1/aggregate", get(get_aggregate))
         // Relay statistics (ST5). Each transmits once, behind
         // --api-allow-relay-query; the /call/ segment keeps C2 from colliding
         // with the static /names path. Polling (C5) is not offered here.
@@ -1140,6 +1157,108 @@ async fn get_tree(
         total_messages: tree.total_messages,
         first_activity: tree.first_activity.map(|t| t.to_rfc3339()),
         last_activity: tree.last_activity.map(|t| t.to_rfc3339()),
+    }))
+}
+
+/// `GET /v1/aggregate` — count dialogs grouped by one dimension (PAR3:
+/// aggregate_dialogs on REST).
+///
+/// # Arguments
+///
+/// * `state` — Shared application state.
+/// * `addr` — Client socket address used for rate limiting.
+/// * `headers` — Request headers (auth).
+/// * `params` — `by` (the dimension), optional `filter` and `top_n`.
+///
+/// # Returns
+///
+/// 200 with the buckets, largest first; 400 for an unknown dimension or a filter
+/// that does not parse; 401/503 from the guard.
+///
+/// # Side effects
+///
+/// Holds the dialog- and stream-store read locks while tallying; mutates the
+/// rate limiter.
+#[utoipa::path(
+    get,
+    path = "/v1/aggregate",
+    tag = "dialogs",
+    summary = "Count dialogs by a dimension",
+    description = "How many dialogs, grouped by one dimension — the same question the MCP `aggregate_dialogs` tool answers.\n\nOne dimension at a time: narrow with `filter` rather than asking for a second. The buckets are largest first, ties broken by value so the same store always gives the same answer, and `other_count` carries everything past `top_n` so the buckets plus it sum to `total_matched`. A `(none)` bucket counts the dialogs with no value for the dimension.",
+    params(AggregateParams),
+    security(("bearer" = [])),
+    responses(
+        (status = 200, description = "The buckets, largest first.", body = schema::Aggregate),
+        (status = 400, description = "An unknown dimension, or a filter that does not parse.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 401, description = "No bearer credential, or one this server does not accept.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 503, description = "Over the per-source-IP rate limit of 100 requests per second.", body = schema::ProblemJson, content_type = "application/problem+json"),
+    )
+)]
+async fn get_aggregate(
+    State(state): State<ApiState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Query(params): Query<AggregateParams>,
+) -> Result<impl IntoResponse, Problem> {
+    guard(&state, &headers, addr.ip())?;
+
+    let key = params.by.as_deref().map(str::trim).unwrap_or("");
+    if !crate::sip::dialog::GROUPABLE.contains(&key) {
+        return Err(Problem::detailed(
+            StatusCode::BAD_REQUEST,
+            format!(
+                "cannot group by '{key}'; one of: {}. One dimension only — narrow \
+                 with `filter` rather than adding a second.",
+                crate::sip::dialog::GROUPABLE.join(", ")
+            ),
+        ));
+    }
+
+    // Same DSL and 400-on-parse-failure as `/v1/dialogs?filter=`.
+    let dsl = match params.filter.as_deref() {
+        Some(expr) => Some(
+            crate::sip::dsl::FilterExpr::parse(expr)
+                .map_err(|e| Problem::detailed(StatusCode::BAD_REQUEST, format!("filter: {e}")))?,
+        ),
+        None => None,
+    };
+    let top_n = resolve_page_limit(params.top_n, state.max_rows);
+
+    let ds = state.dialog_store.read();
+    let ss = state.stream_store.read();
+    // `select_dialogs` applies the filter and pairs each dialog with its
+    // streams, the path the CLI and the MCP tool also take, so the surfaces
+    // count the same store. The bucketing rule is `dialog_group_value_raw`.
+    let selection = crate::sip::dsl::select_dialogs(dsl.as_ref(), &ds, &ss);
+    let total_matched = selection.dialogs.len();
+    let mut tally: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for item in &selection.dialogs {
+        if let Some(value) = crate::sip::dialog::dialog_group_value_raw(key, item.0, &item.1) {
+            *tally.entry(value).or_insert(0) += 1;
+        }
+    }
+    drop(ss);
+    drop(ds);
+
+    let distinct_values = tally.len();
+    let mut ordered: Vec<(String, usize)> = tally.into_iter().collect();
+    // Largest first, ties broken by value so a cursor-free aggregate does not
+    // reorder between calls and look like the capture changed.
+    ordered.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    let other_count: usize = ordered.iter().skip(top_n).map(|(_, c)| *c).sum();
+    let buckets: Vec<schema::AggregateBucket> = ordered
+        .into_iter()
+        .take(top_n)
+        .map(|(value, count)| schema::AggregateBucket { value, count })
+        .collect();
+
+    Ok(Json(schema::Aggregate {
+        schema_version: 1,
+        group_by: key.to_string(),
+        buckets,
+        other_count,
+        distinct_values,
+        total_matched,
     }))
 }
 
@@ -3234,6 +3353,36 @@ pub mod schema {
         pub last_activity: Option<String>,
     }
 
+    /// One bucket of an aggregate: a grouped value and how many dialogs fell in
+    /// it. A null in the data becomes the literal `(none)` rather than being
+    /// dropped, so the buckets sum to the total.
+    #[derive(Debug, Clone, serde::Serialize, ToSchema)]
+    pub struct AggregateBucket {
+        /// The grouped value, rendered as a string.
+        pub value: String,
+        /// How many dialogs fell in this bucket.
+        pub count: usize,
+    }
+
+    /// A "how many, by what" count over the dialog store, one dimension.
+    #[derive(Debug, Clone, serde::Serialize, ToSchema)]
+    pub struct Aggregate {
+        /// Version of this response's shape.
+        #[schema(example = 1)]
+        pub schema_version: u32,
+        /// The dimension the count grouped by, echoed verbatim.
+        pub group_by: String,
+        /// The buckets, largest first, ties broken by value for a stable answer.
+        pub buckets: Vec<AggregateBucket>,
+        /// Total count in every bucket past the `top_n` cut, so the answer still
+        /// sums to `total_matched`.
+        pub other_count: usize,
+        /// How many distinct values the dimension took, before the cut.
+        pub distinct_values: usize,
+        /// How many dialogs the filter admitted, across all buckets.
+        pub total_matched: usize,
+    }
+
     /// Transaction timing, as carried by every dialog summary.
     #[derive(Debug, Clone, ToSchema)]
     pub struct TimingSummary {
@@ -3950,6 +4099,7 @@ impl utoipa::Modify for BearerAuth {
         get_dialog_report,
         get_correlated,
         get_tree,
+        get_aggregate,
         get_persistence,
         set_persistence,
         get_tfps_status,
@@ -3978,6 +4128,8 @@ impl utoipa::Modify for BearerAuth {
         schema::Correlated,
         schema::CallTreeLeg,
         schema::CallTree,
+        schema::AggregateBucket,
+        schema::Aggregate,
         schema::RelayStatsResponse,
         schema::DialogList,
         schema::DialogSummary,
@@ -4373,6 +4525,83 @@ mod tests {
             .await
             .expect("oneshot");
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    // ── aggregate (PAR3: aggregate_dialogs) ───────────────────────────
+
+    /// `GET /v1/aggregate?by=from.user` counts each distinct user once. Closes
+    /// the aggregate_dialogs REST gap.
+    #[tokio::test]
+    async fn aggregate_groups_by_from_user() {
+        let state = make_state();
+        populate_dialogs(&state); // from users user0/user1/user2
+        let app = build_router(state);
+
+        let resp = app
+            .oneshot(test_request("/v1/aggregate?by=from.user"))
+            .await
+            .expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_to_string(resp.into_body()).await;
+        let parsed: Value = serde_json::from_str(&body).expect("valid JSON");
+        assert_eq!(parsed["schema_version"], 1);
+        assert_eq!(parsed["group_by"], "from.user");
+        assert_eq!(parsed["distinct_values"], 3);
+        assert_eq!(parsed["total_matched"], 3);
+        let buckets = parsed["buckets"].as_array().expect("buckets");
+        assert_eq!(buckets.len(), 3);
+        // Each user appears once; ties broken by value, so user0/1/2 in order.
+        for (i, b) in buckets.iter().enumerate() {
+            assert_eq!(b["value"], format!("user{i}"));
+            assert_eq!(b["count"], 1);
+        }
+    }
+
+    /// Grouping by `state` puts all three seeded dialogs in one bucket.
+    #[tokio::test]
+    async fn aggregate_by_state_is_one_bucket() {
+        let state = make_state();
+        populate_dialogs(&state);
+        let app = build_router(state);
+
+        let resp = app
+            .oneshot(test_request("/v1/aggregate?by=state"))
+            .await
+            .expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_to_string(resp.into_body()).await;
+        let parsed: Value = serde_json::from_str(&body).expect("valid JSON");
+        assert_eq!(parsed["distinct_values"], 1);
+        assert_eq!(parsed["total_matched"], 3);
+        assert_eq!(parsed["buckets"][0]["count"], 3);
+    }
+
+    /// A dimension outside the groupable set is a 400 that lists the real ones.
+    #[tokio::test]
+    async fn aggregate_unknown_dimension_is_400() {
+        let state = make_state();
+        populate_dialogs(&state);
+        let app = build_router(state);
+
+        let resp = app
+            .oneshot(test_request("/v1/aggregate?by=bogus"))
+            .await
+            .expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    /// A missing dimension is a 400: `by` is required.
+    #[tokio::test]
+    async fn aggregate_missing_dimension_is_400() {
+        let state = make_state();
+        populate_dialogs(&state);
+        let app = build_router(state);
+
+        let resp = app
+            .oneshot(test_request("/v1/aggregate"))
+            .await
+            .expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
 
     fn make_state() -> ApiState {

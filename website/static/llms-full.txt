@@ -5645,6 +5645,58 @@ all three counters.
 
 ---
 
+### GET /v1/aggregate
+
+How many dialogs, grouped by one dimension — the "how many, by what" question,
+answered over the store rather than the model.
+
+**Query parameters:**
+
+- `by` (required) — the dimension: one of `state`, `response_code`, `method`,
+  `from.user`, `to.user`, `ua`, `src.ip`, `dst.ip`, `rtp.codec`. A key outside
+  that set is a `400`.
+- `filter` (optional) — a DSL expression narrowing which dialogs the count
+  includes, the same language `/v1/dialogs?filter=` compiles. A malformed
+  expression is a `400`.
+- `top_n` (optional) — keep the largest N buckets; the rest fold into
+  `other_count`.
+
+**curl:**
+
+```bash
+curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" "http://127.0.0.1:8080/v1/aggregate?by=response_code" | jq .
+```
+
+**Response:**
+
+```json
+{
+  "schema_version": 1,
+  "group_by": "response_code",
+  "buckets": [
+    { "value": "200", "count": 412 },
+    { "value": "486", "count": 19 },
+    { "value": "(none)", "count": 7 }
+  ],
+  "other_count": 0,
+  "distinct_values": 3,
+  "total_matched": 438
+}
+```
+
+**One dimension at a time.** Narrow with `filter` rather than asking for a
+second. The buckets are largest first, ties broken by value so the same store
+always gives the same answer, and `other_count` carries everything past `top_n`
+so the buckets plus it sum to `total_matched`. A `(none)` bucket counts the
+dialogs with no value for the dimension — "how many carry no User-Agent" is a
+real question, and dropping them would break the sum.
+
+The MCP tool `aggregate_dialogs` answers from the same `GROUPABLE` dimensions and
+the same bucketing rule (`dialog_group_value_raw`), fencing the sender-controlled
+values for a model where this route returns them raw for a program.
+
+---
+
 ### GET /v1/relay/stats
 
 The relay's own global counters, tiered `relay_reported`. Transmits once to the

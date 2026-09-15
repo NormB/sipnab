@@ -177,7 +177,7 @@ Count dialogs grouped by one field — state, response code, source IP, codec.
 |---|---|
 | CLI | gap: arbitrary single-field counts are one-shot, but no group-by flag exists (PAR5) |
 | TUI | `Statistics` |
-| REST | gap: an integrator would poll arbitrary group-by counts, but only fixed coverage exists (PAR3) |
+| REST | `/v1/aggregate` |
 | MCP | `aggregate_dialogs` |
 
 ### Carrier metrics by group

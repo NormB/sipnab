@@ -1154,83 +1154,39 @@ pub struct AggregateDialogsParams {
     pub top_n: Option<u32>,
 }
 
-/// Every field a dialog can be grouped by, shared by `aggregate_dialogs` and
-/// `compare_captures`.
+/// Every field a dialog can be grouped by, shared by `aggregate_dialogs`,
+/// `compare_captures` and the REST `/v1/aggregate` route.
 ///
-/// One list rather than one per tool. A key one tool accepts and the other
-/// rejects is a vocabulary an agent cannot learn: it would have to discover,
-/// per tool, which of two overlapping sets it was talking to.
-pub(crate) const GROUPABLE: &[&str] = &[
-    "state",
-    "response_code",
-    "method",
-    "from.user",
-    "to.user",
-    "ua",
-    "src.ip",
-    "dst.ip",
-    "rtp.codec",
-];
+/// One list rather than one per tool or surface. A key one accepts and another
+/// rejects is a vocabulary a caller cannot learn. Defined in `crate::sip::dialog`
+/// so a build with `api` but not `mcp` can offer the same dimensions, and
+/// re-exported here so the existing callers keep their path.
+pub(crate) use crate::sip::dialog::GROUPABLE;
 
-/// The bucket `dialog` falls into for `key`, ready to put in front of a model.
+/// The bucket `dialog` falls into for `key`, fenced for a model, `None` for a
+/// key outside [`GROUPABLE`].
 ///
-/// `None` for a key outside [`GROUPABLE`], which callers report as an internal
-/// error: adding a key to that list without an arm here is a bug the compiler
-/// cannot see, so it fails loudly rather than silently bucketing every dialog
-/// as one.
-///
-/// `(none)` rather than dropping the row: "how many dialogs carry no
-/// User-Agent" is a real question, and a bucket set that silently omits them
-/// would not sum to the total the caller reports beside it.
+/// The bucketing rule is shared (`crate::sip::dialog::dialog_group_value_raw`);
+/// the fence is this surface's. Four keys carry text the packet's SENDER wrote
+/// -- `from.user`, `to.user` and `ua` are attacker-controlled on a public
+/// interface, and so is `rtp.codec`: for a dynamic payload type `RtpStream::codec`
+/// is the `a=rtpmap` encoding name straight from the sender's SDP, and a bucket
+/// label reads as a category name, a better disguise for injected text than a
+/// header value. They reach a language model here exactly as a row would, so
+/// they are fenced exactly as a row fences them (#139); the rest are values
+/// sipnab derived (a state name, a status code, an IP) and pass through.
 pub(crate) fn dialog_group_value(
     key: &str,
     dialog: &crate::sip::dialog::SipDialog,
     streams: &[&crate::rtp::stream::RtpStream],
 ) -> Option<String> {
-    let value = match key {
-        "state" => dialog.state().to_string(),
-        "response_code" => dialog
-            .final_status_code()
-            .map_or_else(|| "(none)".to_string(), |c| c.to_string()),
-        "method" => dialog.method.as_str().to_string(),
-        "from.user" => dialog.from_user.clone().unwrap_or_else(|| "(none)".into()),
-        "to.user" => dialog.to_user.clone().unwrap_or_else(|| "(none)".into()),
-        // Across all messages, matching `Field::Ua`: the UA can sit on any of
-        // them, not only the first.
-        "ua" => dialog
-            .messages
-            .iter()
-            .find_map(|m| m.user_agent().map(str::to_string))
-            .unwrap_or_else(|| "(none)".into()),
-        "src.ip" => dialog.src_addr.to_string(),
-        "dst.ip" => dialog.dst_addr.to_string(),
-        "rtp.codec" => streams
-            .first()
-            .and_then(|s| s.codec.clone())
-            .unwrap_or_else(|| "(none)".to_string()),
-        _ => return None,
-    };
-    // Four of these keys carry text the packet's SENDER wrote --
-    // `from.user`, `to.user` and `ua` are attacker-controlled on a public
-    // interface, and so is `rtp.codec`. They reach a language model here
-    // exactly as they would in a row, so they are fenced exactly as a row
-    // fences them (#139). The rest are values sipnab derived: a state name, a
-    // status code, an IP.
-    //
-    // `rtp.codec` was excluded on a premise this comment used to state and
-    // that the code does not hold: "a codec from a payload type table" is true
-    // only for the STATIC payload types. For a dynamic one,
-    // `RtpStream::codec` is assigned the `a=rtpmap` encoding name straight out
-    // of the SDP (`crate::rtp::stream_store`), so the sender chooses the
-    // string — and a bucket label is read as a category name, which is a
-    // better disguise for injected text than a header value is.
-    Some(
+    crate::sip::dialog::dialog_group_value_raw(key, dialog, streams).map(|value| {
         if matches!(key, "from.user" | "to.user" | "ua" | "rtp.codec") {
             super::shape::fence_field(&value)
         } else {
             value
-        },
-    )
+        }
+    })
 }
 
 /// One bucket of an [`AggregateDialogsParams`] answer.

@@ -510,6 +510,63 @@ pub fn method_breakdown<'a>(
     rows
 }
 
+/// The dimensions a dialog can be grouped by, one per "how many, by what"
+/// question. One list, shared by the MCP `aggregate_dialogs` tool and the REST
+/// `/v1/aggregate` route so the two surfaces offer the same dimensions.
+pub const GROUPABLE: &[&str] = &[
+    "state",
+    "response_code",
+    "method",
+    "from.user",
+    "to.user",
+    "ua",
+    "src.ip",
+    "dst.ip",
+    "rtp.codec",
+];
+
+/// The bucket `dialog` falls into for `key`, as written on the wire, `None` for
+/// a key outside [`GROUPABLE`].
+///
+/// The RAW value: a sender-controlled dimension (`from.user`, `to.user`, `ua`,
+/// `rtp.codec`) is returned verbatim, because a program consuming REST wants the
+/// value it can key on. The MCP surface wraps those same four in its own
+/// injection fence before a value reaches a model; the fencing is the surface's,
+/// the bucketing rule is here.
+///
+/// `(none)` rather than dropping the row: "how many dialogs carry no User-Agent"
+/// is a real question, and a bucket set that silently omits them would not sum
+/// to the total reported beside it.
+pub fn dialog_group_value_raw(
+    key: &str,
+    dialog: &SipDialog,
+    streams: &[&crate::rtp::stream::RtpStream],
+) -> Option<String> {
+    Some(match key {
+        "state" => dialog.state().to_string(),
+        "response_code" => dialog
+            .final_status_code()
+            .map_or_else(|| "(none)".to_string(), |c| c.to_string()),
+        "method" => dialog.method.as_str().to_string(),
+        "from.user" => dialog.from_user.clone().unwrap_or_else(|| "(none)".into()),
+        "to.user" => dialog.to_user.clone().unwrap_or_else(|| "(none)".into()),
+        // Across all messages, matching `Field::Ua`: the UA can sit on any of
+        // them, not only the first.
+        "ua" => dialog
+            .messages
+            .iter()
+            .find_map(|m| m.user_agent().map(str::to_string))
+            .unwrap_or_else(|| "(none)".into()),
+        "src.ip" => dialog.src_addr.to_string(),
+        "dst.ip" => dialog.dst_addr.to_string(),
+        "rtp.codec" => streams
+            .first()
+            .and_then(|s| s.codec.clone())
+            .unwrap_or_else(|| "(none)".to_string()),
+        _ => return None,
+    })
+}
+
 // ── Tests ────────────────────────────────────────────────────────────
 
 /// Unit tests for dialog creation and the per-method state machines

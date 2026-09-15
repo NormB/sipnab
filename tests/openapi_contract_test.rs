@@ -790,6 +790,14 @@ fn every_documented_response_matches_what_the_server_sends() {
         let url = path
             .replace("{call_id}", &encode(&call_id))
             .replace("{id}", &encode(&ssrc));
+        // `/v1/aggregate` requires a `by` dimension; supply one so the route
+        // answers 200 with its schema rather than the 400 a missing dimension
+        // earns. The contract under test is the response shape, not the guard.
+        let url = if path == "/v1/aggregate" {
+            format!("{url}?by=state")
+        } else {
+            url
+        };
         checked.insert(url, component.to_string());
     }
 

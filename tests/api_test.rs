@@ -87,6 +87,20 @@ fn tree_answers_with_the_versioned_envelope() {
     );
 }
 
+/// `GET /v1/aggregate` answers over the shipped binary with the buckets
+/// envelope (PAR3). The single call groups into one bucket by state.
+#[test]
+fn aggregate_answers_with_the_buckets_envelope() {
+    let srv = ApiServer::spawn(&[]);
+    let resp = srv.get("/v1/aggregate?by=state");
+    assert_eq!(resp.status, 200, "/v1/aggregate status");
+    let body = resp.json();
+    assert_eq!(body["schema_version"], 1);
+    assert_eq!(body["group_by"], "state");
+    assert!(body["buckets"].is_array(), "buckets is an array");
+    assert!(body["total_matched"].is_number(), "total_matched present");
+}
+
 /// The server accepts `--api-max-conn` (the in-flight-request cap) and still
 /// serves — keeps the flag under test coverage.
 #[test]

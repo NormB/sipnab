@@ -50,7 +50,7 @@ was driving all of them.
 | Surface | Rows | `e2e` | `parsed` | `referenced` | `none` |
 |---|---|---|---|---|---|
 | CLI flags | 271 | 139 | 53 | 78 | 1 |
-| HTTP routes | 25 | 25 | -- | 0 | 0 |
+| HTTP routes | 26 | 26 | -- | 0 | 0 |
 | MCP tools | 68 | 68 | -- | 0 | 0 |
 
 **Flags with no occurrence at all:** `--syslog`
@@ -361,6 +361,7 @@ behind them.
 |---|---|---|
 | `/health` | exercised | `tests/api_test.rs`, `tests/openapi_contract_test.rs` |
 | `/metrics` | exercised | `tests/api_test.rs`, `tests/api_token_test.rs` +3 |
+| `/v1/aggregate` | exercised | `tests/api_test.rs` |
 | `/v1/capabilities` | exercised | `tests/api_test.rs` |
 | `/v1/dialogs` | exercised | `tests/api_operator_flows_test.rs`, `tests/api_test.rs` +3 |
 | `/v1/dialogs/{call_id}` | exercised | `tests/api_operator_flows_test.rs`, `tests/api_test.rs` +1 |

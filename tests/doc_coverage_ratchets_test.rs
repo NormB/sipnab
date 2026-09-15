@@ -420,7 +420,10 @@ fn undocumented_numeric_ceilings_do_not_increase() {
 // 29 -> 31 at PAR3, for `CallTree` and `CallTreeLeg`, the
 // `GET /v1/dialogs/{call_id}/tree` response. Response-only, same reason, pinned
 // by the same contract test. Two components.
-const PERMISSIVE_SCHEMA_COMPONENTS: usize = 31;
+// 31 -> 33 at PAR3, for `Aggregate` and `AggregateBucket`, the
+// `GET /v1/aggregate` response. Response-only, same reason, pinned by the same
+// contract test. Two components.
+const PERMISSIVE_SCHEMA_COMPONENTS: usize = 33;
 
 #[test]
 fn permissive_rest_schema_components_do_not_increase() {
