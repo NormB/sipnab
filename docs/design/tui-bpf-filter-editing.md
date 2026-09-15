@@ -62,17 +62,28 @@ Status line 2 renders the BPF slot three ways:
 
 ## The editor
 
-`B` enters BPF edit mode, modeled on the search input the TUI already has:
+`B` opens the full-filter popup (implemented); a later increment turns it into
+an append editor, modeled on the search input the TUI already has:
 
-- A text input pre-filled with the current **selection** (not the scaffolding).
-- A **Replace | Append** toggle. Replace makes the typed text the whole
-  selection. Append combines it with the current selection.
-- When Append is active, an **AND | OR** toggle. AND narrows — the kernel
-  captures only packets matching both. OR widens — it captures packets matching
-  either.
-- `Enter` applies. `Esc` cancels and leaves the running filter untouched.
+- A text input where the operator types an expression to combine with the
+  running filter, with an **AND | OR** toggle. AND narrows — the kernel captures
+  only packets matching both. OR widens — it captures packets matching either.
+- Append operates on the WHOLE current effective filter: AND yields
+  `(current) and (typed)`, OR yields `(current) or (typed)`. Because "current"
+  already contains the tunnel scaffolding, append preserves it — the operator
+  cannot drop tunnel handling by appending.
+- `Enter` applies (validating first). `Esc` cancels and leaves the running
+  filter untouched.
 - As the operator types, the editor renders the full effective expression the
   apply will compile, so what runs is visible before it runs.
+
+**v1 is append-only; Replace is deferred.** See the implementation finding
+below: the generated default's port selection is woven THROUGH its tunnel arms,
+so there is no separable "selection" to replace and re-wrap. Replace-on-the-
+default needs a design decision — refuse it, replace-the-whole-filter with a
+warning that tunnel handling is dropped, or regenerate the scaffolding — that a
+later version settles. Append is always correct and ships first (Norm chose
+append-only v1, 2026-09-14).
 
 ## The filter model, as pure functions
 
@@ -92,6 +103,36 @@ Every apply **validates before it changes anything**: sipnab compiles the
 effective expression first, and on a compile error it shows the compiler's own
 message and leaves the running filter exactly as it was. A typo never takes the
 capture down.
+
+## Implementation status and a finding that reshapes the model
+
+Landed so far (in their own commits, all CI-green, not yet released):
+
+- `compose_selection` — [`src/capture/bpf_filter.rs`](https://github.com/NormB/sipnab/blob/main/src/capture/bpf_filter.rs), the Replace/AppendAnd/AppendOr core, TDD'd and mutation-verified.
+- The status-bar summary of the generated default, and the `B` popup showing the
+  full expression verbatim (both wired through the App and the exhaustive view
+  matches).
+
+**The finding that reshapes `wrap_in_scaffolding`.** Reading
+[`auto_bpf_filter`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs) shows the generated default is NOT `scaffolding(selection)` with a
+separable selection. It is three OR-ed arms — an untagged `portrange`, a tunnel
+arm `((ether proto …) and (ip_and_ports_at(offset, lo, hi) or …))`, and per-port
+opt-in arms — and the port selection `lo,hi` is woven THROUGH the tunnel arm's
+per-offset tests, not wrapped around a decomposable inner expression. So there
+is no "selection" to extract and re-wrap for the default, and
+`wrap_in_scaffolding(selection)` as written above cannot be built for it.
+
+What this changes:
+
+- **Append is unaffected and always correct**: it operates on the WHOLE current
+  effective filter (`(current) and/or (typed)`), so the scaffolding, being
+  inside `current`, is preserved. This is what v1 ships.
+- **Replace on the generated default is deferred** — it is the only case that
+  needed `wrap_in_scaffolding`, and the decision between refuse / warn-and-drop /
+  regenerate is left to a later version.
+- An operator-supplied filter has no scaffolding (it is used as-is at capture
+  open), so for it "the current filter" simply IS the operator's expression, and
+  both append and a future replace are straightforward.
 
 ## Runtime re-apply
 
