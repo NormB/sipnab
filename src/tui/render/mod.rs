@@ -47,6 +47,10 @@ pub(in crate::tui) struct RenderFeedback {
     pub(in crate::tui) stats_scroll: Option<u16>,
     /// Clamped scroll of the relay-statistics view (ST8).
     pub(in crate::tui) relay_stats_scroll: Option<u16>,
+    /// Content-clamped scroll of the full-BPF-filter popup (`B`). Only the
+    /// render knows the wrapped height at the popup's width, so it clamps the
+    /// operator's `End`/`PgDn` sentinel and reports the true offset back.
+    pub(in crate::tui) bpf_scroll: Option<u16>,
 }
 
 /// Render the entire application frame based on the current view.
@@ -498,7 +502,7 @@ pub(in crate::tui) fn render_app(
             fb.relay_stats_scroll = Some(render_relay_stats(frame, main_area, app));
         }
         View::BpfFilter => {
-            render_bpf_filter(frame, main_area, app);
+            fb.bpf_scroll = Some(render_bpf_filter(frame, main_area, app));
         }
         View::QualityDashboard => {
             crate::tui::dashboard::render_dashboard(frame, main_area, app);
@@ -735,21 +739,34 @@ pub(in crate::tui) fn render_bpf_filter(
     frame: &mut ratatui::Frame,
     area: ratatui::layout::Rect,
     app: &App,
-) {
+) -> u16 {
     let body = if app.bpf_filter.is_empty() {
         "No capture filter is in force — every packet the source delivers reaches the parser."
             .to_string()
     } else {
         app.bpf_filter.clone()
     };
+    // Wrap the filter to the popup's inner width HERE, then render those exact
+    // lines (no ratatui `Wrap`). The scroll then clamps to a row count that
+    // matches what renders, so `End` reaches the true bottom — a ceil estimate
+    // under-counts word-wrapped text and would hide the tail, the one thing
+    // this view exists to show.
+    let inner_w = area.width.saturating_sub(2);
+    let lines = wrap_to_width(&body, inner_w);
+    let viewport = area.height.saturating_sub(2) as usize;
+    let max_scroll = lines.len().saturating_sub(viewport).min(u16::MAX as usize) as u16;
+    let clamped = app.bpf_scroll.min(max_scroll);
+
+    let text: Vec<Line> = lines.into_iter().map(Line::from).collect();
     let block = Block::default()
         .borders(Borders::ALL)
         .title(" BPF Filter — the exact expression the capture is running ");
-    let paragraph = Paragraph::new(body)
+    let paragraph = Paragraph::new(text)
         .block(block)
         .style(Style::default().fg(app.theme.foreground))
-        .wrap(Wrap { trim: false });
+        .scroll((clamped, 0));
     frame.render_widget(paragraph, area);
+    clamped
 }
 
 /// Estimated rendered rows for `lines` wrapped to `width` columns: the
@@ -766,6 +783,67 @@ fn estimated_wrapped_rows(lines: &[Line<'_>], width: u16) -> u16 {
         })
         .sum::<usize>()
         .min(u16::MAX as usize) as u16
+}
+
+/// Greedy word-wrap `text` to `width` display columns, one `String` per visual
+/// row, so the row count the scroll clamps against is exactly what renders.
+///
+/// The BPF popup shows a machine-generated filter that runs to well over a
+/// thousand columns. The scroll clamp needs the true wrapped height, and
+/// [`estimated_wrapped_rows`] (ceil of width) UNDER-counts word-wrapped text,
+/// which would leave the tail unreachable in the one view whose whole job is to
+/// show the filter in full. Wrapping here and rendering these exact lines keeps
+/// the clamp and the render in lockstep — without ratatui's unstable
+/// `line_count`. Breaks at spaces; a token wider than `width` is hard-broken so
+/// no row exceeds it. Width is measured with `unicode-width`, so a wide glyph
+/// counts as two columns. `width == 0` returns the text unwrapped (a degenerate
+/// popup the caller never produces); embedded newlines split logical lines
+/// first. Pure.
+fn wrap_to_width(text: &str, width: u16) -> Vec<String> {
+    use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+    let w = width as usize;
+    if w == 0 {
+        return vec![text.to_string()];
+    }
+    let mut rows: Vec<String> = Vec::new();
+    for logical in text.split('\n') {
+        let mut cur = String::new();
+        let mut cur_w = 0usize;
+        for word in logical.split(' ') {
+            let ww = word.width();
+            // If the word (plus a joining space) would overflow the row, break.
+            if !cur.is_empty() && cur_w + 1 + ww > w {
+                rows.push(std::mem::take(&mut cur));
+                cur_w = 0;
+            }
+            if ww > w {
+                // A token wider than the whole row: flush any partial row, then
+                // hard-break the token so no row exceeds the width.
+                if !cur.is_empty() {
+                    rows.push(std::mem::take(&mut cur));
+                    cur_w = 0;
+                }
+                for ch in word.chars() {
+                    let cw = ch.width().unwrap_or(0);
+                    if !cur.is_empty() && cur_w + cw > w {
+                        rows.push(std::mem::take(&mut cur));
+                        cur_w = 0;
+                    }
+                    cur.push(ch);
+                    cur_w += cw;
+                }
+            } else {
+                if !cur.is_empty() {
+                    cur.push(' ');
+                    cur_w += 1;
+                }
+                cur.push_str(word);
+                cur_w += ww;
+            }
+        }
+        rows.push(cur); // the logical line's final (possibly empty) row
+    }
+    rows
 }
 
 /// Align two line sequences by their longest common subsequence, yielding
@@ -1350,6 +1428,114 @@ mod tests {
         let out = render_to_string(&mut app, 120, 24);
         assert!(out.contains("Match Expression"));
         assert!(out.contains("udp port 5060"));
+    }
+
+    /// A short filter that fits stays on one row, unchanged.
+    #[test]
+    fn wrap_to_width_keeps_short_text_on_one_row() {
+        assert_eq!(
+            wrap_to_width("udp port 5060", 40),
+            vec!["udp port 5060".to_string()]
+        );
+    }
+
+    /// Words break at spaces: "aaaa bbbb" (9) fills a width-9 row, and "cccc"
+    /// starts the next.
+    #[test]
+    fn wrap_to_width_breaks_at_spaces() {
+        assert_eq!(
+            wrap_to_width("aaaa bbbb cccc", 9),
+            vec!["aaaa bbbb".to_string(), "cccc".to_string()]
+        );
+    }
+
+    /// A single token wider than the row is hard-broken so no row overflows.
+    #[test]
+    fn wrap_to_width_hard_breaks_an_overlong_token() {
+        assert_eq!(
+            wrap_to_width("aaaaaaaa", 3),
+            vec!["aaa".to_string(), "aaa".to_string(), "aa".to_string()]
+        );
+    }
+
+    /// Property: no wrapped row ever exceeds the width, across a real slice of a
+    /// generated filter at several widths.
+    #[test]
+    fn wrap_to_width_never_exceeds_the_width() {
+        use unicode_width::UnicodeWidthStr;
+        let filter = "portrange 10000-20000 or ((ether proto 0x0800) and \
+             (ip[9]==17 and (udp[0:2]>=10000 or udp[2:2]<=20000))) or udp port 5060";
+        for width in [8u16, 16, 30, 77] {
+            for row in wrap_to_width(filter, width) {
+                assert!(
+                    row.width() <= width as usize,
+                    "row {row:?} exceeds width {width}"
+                );
+            }
+        }
+    }
+
+    /// Embedded newlines split logical lines before wrapping.
+    #[test]
+    fn wrap_to_width_splits_on_newlines() {
+        assert_eq!(
+            wrap_to_width("ab\ncd", 10),
+            vec!["ab".to_string(), "cd".to_string()]
+        );
+    }
+
+    /// The full-BPF popup clamps its scroll to the wrapped content height, so an
+    /// over-eager `End` lands with the LAST wrapped row on screen — the point of
+    /// the view is to read the whole filter, tail included.
+    #[test]
+    fn render_bpf_filter_scroll_reaches_the_wrapped_bottom() {
+        // A filter far taller than a short popup once wrapped. The tail token
+        // is unique so its presence on screen is unambiguous.
+        let filter = (0..40)
+            .map(|i| format!("udp port {}", 5000 + i))
+            .collect::<Vec<_>>()
+            .join(" or ");
+        let mut app = app_with_dialog();
+        app.bpf_filter = filter.clone();
+
+        // Narrow + short: 40 columns, 10 rows (38 inner cols, 8 inner rows).
+        let (cols, rows) = (40u16, 10u16);
+        let inner_w = cols - 2;
+        let total = wrap_to_width(&filter, inner_w).len();
+        let viewport = (rows - 2) as usize;
+        assert!(
+            total > viewport,
+            "test needs an overflowing filter: {total} rows vs {viewport} viewport"
+        );
+
+        // End sets the sentinel; render clamps it to the true bottom and
+        // returns the clamped offset.
+        app.bpf_scroll = u16::MAX;
+        let mut terminal = Terminal::new(TestBackend::new(cols, rows)).unwrap();
+        let mut clamped = 0u16;
+        terminal
+            .draw(|frame| clamped = render_bpf_filter(frame, frame.area(), &app))
+            .unwrap();
+        assert_eq!(
+            clamped as usize,
+            total - viewport,
+            "End clamps to content height minus the inner viewport"
+        );
+
+        // The last wrapped row's final token must be on screen at that offset.
+        let last_row = wrap_to_width(&filter, inner_w).pop().unwrap();
+        let tail_token = last_row.trim().split(' ').next_back().unwrap().to_string();
+        let buf = terminal.backend().buffer();
+        let mut text = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                text.push_str(buf.cell((x, y)).unwrap().symbol());
+            }
+        }
+        assert!(
+            text.contains(&tail_token),
+            "the tail token {tail_token:?} must be visible at the clamped bottom;\n{text}"
+        );
     }
 
     // ── Popups via render_app overlay ──────────────────────────────

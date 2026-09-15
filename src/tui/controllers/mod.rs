@@ -316,19 +316,35 @@ pub(in crate::tui) fn handle_help_key(app: &mut App, key: KeyEvent) {
 
 /// Handle keys for the full-BPF-filter popup.
 ///
-/// Read-only for now: any close key (`Esc`, `B`, `q`) returns to the call list.
-/// A later increment turns this into the capture-filter editor and adds
-/// scrolling for an expression taller than the popup.
+/// Read-only: a close key (`Esc`, `B`, `q`) returns to the call list, and the
+/// scroll keys (↑/↓, j/k, PgUp/PgDn, Home/End) move through a filter too tall
+/// for the popup — the generated default runs to well over a thousand columns,
+/// so wrapped it can overflow the pane. A later increment turns this into the
+/// capture-filter editor.
 pub(in crate::tui) fn handle_bpf_filter_key(app: &mut App, key: KeyEvent) {
     use crossterm::event::KeyCode;
     // The open key `B` (documented) toggles the popup closed; `q` and Esc are
     // the usual close keys. Lowercase `b` is deliberately not a close key -- it
     // would be an undocumented handled key.
-    if matches!(
-        key.code,
-        KeyCode::Esc | KeyCode::Char('B') | KeyCode::Char('q')
-    ) {
-        app.current_view = View::CallList;
+    match key.code {
+        KeyCode::Esc | KeyCode::Char('B') | KeyCode::Char('q') => {
+            app.current_view = View::CallList;
+            app.bpf_scroll = 0; // start at the top next time
+        }
+        // Scroll the way the help and detail views do. `End` sets a sentinel
+        // the render pass clamps to the true bottom, since only the render
+        // knows the wrapped height at the popup's width.
+        KeyCode::Down | KeyCode::Char('j') => {
+            app.bpf_scroll = app.bpf_scroll.saturating_add(1);
+        }
+        KeyCode::Up | KeyCode::Char('k') => {
+            app.bpf_scroll = app.bpf_scroll.saturating_sub(1);
+        }
+        KeyCode::PageDown => app.bpf_scroll = app.bpf_scroll.saturating_add(10),
+        KeyCode::PageUp => app.bpf_scroll = app.bpf_scroll.saturating_sub(10),
+        KeyCode::Home => app.bpf_scroll = 0,
+        KeyCode::End => app.bpf_scroll = u16::MAX,
+        _ => {}
     }
 }
 
@@ -1453,6 +1469,61 @@ mod tests {
             View::BpfFilter,
             "an unbound key leaves the popup open"
         );
+    }
+
+    /// Down/j advance one wrapped line; Up/k retreat and saturate at the top.
+    #[test]
+    fn bpf_filter_line_scroll_saturates_at_top() {
+        let mut app = App::new_test();
+        app.current_view = View::BpfFilter;
+        handle_bpf_filter_key(&mut app, key(KeyCode::Down));
+        handle_bpf_filter_key(&mut app, key(KeyCode::Char('j')));
+        assert_eq!(app.bpf_scroll, 2, "Down and j each advance one line");
+        handle_bpf_filter_key(&mut app, key(KeyCode::Up));
+        assert_eq!(app.bpf_scroll, 1, "Up retreats one line");
+        handle_bpf_filter_key(&mut app, key(KeyCode::Char('k')));
+        handle_bpf_filter_key(&mut app, key(KeyCode::Char('k')));
+        assert_eq!(app.bpf_scroll, 0, "k retreats and saturates at the top");
+    }
+
+    /// PageDown jumps ten lines; PageUp retreats ten and saturates at the top.
+    #[test]
+    fn bpf_filter_page_scroll() {
+        let mut app = App::new_test();
+        app.current_view = View::BpfFilter;
+        handle_bpf_filter_key(&mut app, key(KeyCode::PageDown));
+        assert_eq!(app.bpf_scroll, 10, "PageDown jumps ten lines");
+        handle_bpf_filter_key(&mut app, key(KeyCode::PageUp));
+        assert_eq!(app.bpf_scroll, 0, "PageUp retreats ten and saturates");
+    }
+
+    /// Home returns to the top; End sets the bottom sentinel (render clamps it).
+    #[test]
+    fn bpf_filter_home_and_end() {
+        let mut app = App::new_test();
+        app.current_view = View::BpfFilter;
+        handle_bpf_filter_key(&mut app, key(KeyCode::PageDown));
+        handle_bpf_filter_key(&mut app, key(KeyCode::Home));
+        assert_eq!(app.bpf_scroll, 0, "Home returns to the top");
+        handle_bpf_filter_key(&mut app, key(KeyCode::End));
+        assert_eq!(
+            app.bpf_scroll,
+            u16::MAX,
+            "End sets the bottom sentinel; render clamps it to the content"
+        );
+    }
+
+    /// Closing the popup resets the scroll so the next open starts at the top.
+    #[test]
+    fn bpf_filter_close_resets_scroll() {
+        for code in [KeyCode::Esc, KeyCode::Char('B'), KeyCode::Char('q')] {
+            let mut app = App::new_test();
+            app.current_view = View::BpfFilter;
+            app.bpf_scroll = 7;
+            handle_bpf_filter_key(&mut app, key(code));
+            assert_eq!(app.current_view, View::CallList, "closes on {code:?}");
+            assert_eq!(app.bpf_scroll, 0, "closing resets the scroll ({code:?})");
+        }
     }
 
     /// Esc and `s` both close the statistics view.

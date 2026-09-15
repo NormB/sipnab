@@ -189,6 +189,13 @@ pub struct App {
     /// false one, and "no filter compiled" is a specific claim this session
     /// cannot make.
     bpf_is_live_only: bool,
+    /// Scroll offset for the full-BPF-filter popup (`B`). The generated
+    /// default filter runs to well over a thousand columns; wrapped, it can be
+    /// taller than the popup, so the operator scrolls to read all of it rather
+    /// than seeing a prefix and an ellipsis. Clamped to the content height in
+    /// [`render::render_bpf_filter`] each frame, so an over-eager `End`/`PgDn`
+    /// self-corrects; reset to `0` when the popup closes.
+    bpf_scroll: u16,
     /// Cached total dialog count (updated when lock is available).
     cached_dialog_count: usize,
     /// Displayed dialog list cache (filter+search+sort, derived per tick).
@@ -351,6 +358,7 @@ impl App {
             flow: CallFlowViewState::default(),
             flow_detail_max_hscroll: None,
             bpf_is_live_only: false,
+            bpf_scroll: 0,
             raw_msg_scroll: 0,
             help_scroll: 0,
             stats_scroll: 0,
@@ -1237,6 +1245,9 @@ impl App {
         }
         if let Some(v) = fb.relay_stats_scroll {
             self.relay_stats_scroll = v;
+        }
+        if let Some(v) = fb.bpf_scroll {
+            self.bpf_scroll = v;
         }
     }
 
