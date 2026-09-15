@@ -33,6 +33,15 @@ entry that carries them.
   operational, every absence carries a reason, and the 46 named gaps are counted
   so closing one is a deliberate edit. The gaps are the PAR3 (REST, 19), PAR4
   (TUI, 12) and PAR5 (CLI, 15) work list.
+- **A DSL `filter` on `GET /v1/dialogs` (PAR3).** The REST dialog list now
+  accepts the same filter expression the CLI `--filter` and the TUI compile —
+  aliases (`problems`), field comparisons (`from.user == '1001'`), and a
+  full-text `payload =~ 'scanner'` over the raw message. It reuses
+  `select_dialogs`, so the three surfaces cannot narrow the same store
+  differently, and an expression that does not parse is a 400 with a reason
+  rather than a silent unfiltered page. This closes two of PAR2's REST gaps —
+  the diagnostic problem filter (`find_problems`) and message-body search
+  (`search_messages`) — leaving 44 named gaps.
 
 ## [0.5.175] - 2026-09-15
 

@@ -144,7 +144,7 @@ Find every SIP message whose full text contains this substring.
 |---|---|
 | CLI | `--match` |
 | TUI | `CallList` |
-| REST | gap: a program would poll a message-body search, but `/v1/dialogs` filters only by state and from-regex (PAR3) |
+| REST | `/v1/dialogs` with a `payload =~` DSL `filter` |
 | MCP | `search_messages` |
 
 ### Search by time window
@@ -210,7 +210,7 @@ Show me the calls matching diagnostic aliases — problems, one-way, late-media.
 |---|---|
 | CLI | `--filter` |
 | TUI | `QualityDashboard` |
-| REST | gap: a program cannot poll problem calls by alias, because `/v1/dialogs` filters only by state and from-regex (PAR3) |
+| REST | `/v1/dialogs` with a DSL `filter` (aliases like `problems`) |
 | MCP | `find_problems` |
 
 ### RFC conformance findings

@@ -3722,6 +3722,15 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "description": "Filter by a DSL expression — the same language the CLI `--filter` and\nthe TUI filter dialog compile (e.g. `problems`, `from.user == '1001'`,\n`payload =~ 'scanner'`, `method == 'INVITE' AND rtp.loss > 2.0`). An\nexpression that does not parse is a 400, so a client learns its query\nwas rejected rather than receiving every row. ANDed with `state`/`from`.",
+            "in": "query",
+            "name": "filter",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {

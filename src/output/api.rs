@@ -414,6 +414,12 @@ pub struct DialogListParams {
     pub state: Option<String>,
     /// Filter by From user (regex pattern).
     pub from: Option<String>,
+    /// Filter by a DSL expression — the same language the CLI `--filter` and
+    /// the TUI filter dialog compile (e.g. `problems`, `from.user == '1001'`,
+    /// `payload =~ 'scanner'`, `method == 'INVITE' AND rtp.loss > 2.0`). An
+    /// expression that does not parse is a 400, so a client learns its query
+    /// was rejected rather than receiving every row. ANDed with `state`/`from`.
+    pub filter: Option<String>,
 }
 
 /// Query parameters for the `GET /v1/streams` endpoint.
@@ -975,7 +981,32 @@ async fn list_dialogs(
             .ok()
     });
 
+    // Compile the DSL filter before touching the store, so a malformed
+    // expression is a 400 with a reason rather than a silent unfiltered page.
+    // Deliberately stricter than the `from` regex above, which is best-effort:
+    // a structured query a client got wrong is a client error it must see.
+    let dsl = match params.filter.as_deref() {
+        Some(expr) => Some(
+            crate::sip::dsl::FilterExpr::parse(expr)
+                .map_err(|e| Problem::detailed(StatusCode::BAD_REQUEST, format!("filter: {e}")))?,
+        ),
+        None => None,
+    };
+
     let ds = state.dialog_store.read();
+    // The DSL reads media/asymmetry fields, so it is evaluated against the
+    // streams too. `select_dialogs` groups streams by Call-ID once (the same
+    // path `--report` and `--json-dialogs` take, so the surfaces agree), and
+    // the selected Call-IDs are ANDed with `state`/`from` below.
+    let dsl_selected: Option<std::collections::HashSet<String>> = dsl.as_ref().map(|expr| {
+        let ss = state.stream_store.read();
+        crate::sip::dsl::select_dialogs(Some(expr), &ds, &ss)
+            .dialogs
+            .iter()
+            .map(|(d, _)| d.call_id.clone())
+            .collect()
+    });
+
     // Materialize the FILTERED set first so `total` reflects what the page is
     // drawn from. Reporting the unfiltered store size here would break
     // pagination: a client paging by `total` over a narrower filtered result
@@ -983,6 +1014,11 @@ async fn list_dialogs(
     let filtered: Vec<&crate::sip::dialog::SipDialog> = ds
         .iter()
         .filter(|d| {
+            if let Some(sel) = &dsl_selected
+                && !sel.contains(d.call_id.as_str())
+            {
+                return false;
+            }
             if let Some(sf) = state_filter {
                 let state_str = d.state().to_string();
                 if !state_str.eq_ignore_ascii_case(sf) {
@@ -6454,6 +6490,75 @@ mod tests {
         let body = body_to_string(resp.into_body()).await;
         let parsed: Value = serde_json::from_str(&body).expect("valid JSON");
         assert_eq!(parsed["dialogs"].as_array().expect("array").len(), 3);
+    }
+
+    // ── list_dialogs DSL filter (PAR3: find_problems, search_messages) ─
+
+    /// A DSL `filter` narrows the page to matching dialogs, using the same
+    /// expression language the CLI `--filter` and the TUI filter dialog compile.
+    /// Closes the find_problems REST gap: a program can now poll by any DSL
+    /// field or alias, not only `state` and a `from` regex.
+    #[tokio::test]
+    async fn list_dialogs_dsl_filter_narrows() {
+        let state = make_state();
+        populate_dialogs(&state); // from users user0/user1/user2
+        let app = build_router(state);
+
+        // filter=from.user == 'user1'
+        let resp = app
+            .oneshot(test_request(
+                "/v1/dialogs?filter=from.user%20%3D%3D%20%27user1%27",
+            ))
+            .await
+            .expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_to_string(resp.into_body()).await;
+        let parsed: Value = serde_json::from_str(&body).expect("valid JSON");
+        assert_eq!(parsed["dialogs"].as_array().expect("array").len(), 1);
+        assert_eq!(parsed["dialogs"][0]["from_user"], "user1");
+        // total reflects the filtered set, so a client paging by it terminates.
+        assert_eq!(parsed["total"], 1);
+    }
+
+    /// A DSL `payload` regex searches the full raw message text. Closes the
+    /// search_messages REST gap: a substring in any header or body was
+    /// unreachable over REST, which filtered only by state and a `from` regex.
+    #[tokio::test]
+    async fn list_dialogs_dsl_payload_search() {
+        let state = make_state();
+        populate_dialogs(&state);
+        let app = build_router(state);
+
+        // filter=payload =~ 'user2'  (the From header of dialog 2)
+        let resp = app
+            .oneshot(test_request(
+                "/v1/dialogs?filter=payload%20%3D~%20%27user2%27",
+            ))
+            .await
+            .expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_to_string(resp.into_body()).await;
+        let parsed: Value = serde_json::from_str(&body).expect("valid JSON");
+        assert_eq!(parsed["dialogs"].as_array().expect("array").len(), 1);
+        assert_eq!(parsed["dialogs"][0]["from_user"], "user2");
+    }
+
+    /// An unparseable DSL `filter` is a 400 that says so, not a silent
+    /// unfiltered 200. A structured query a client got wrong must fail loudly,
+    /// so it learns the expression was rejected rather than acting on every row
+    /// (the deliberate difference from the `from` regex, which is best-effort).
+    #[tokio::test]
+    async fn list_dialogs_dsl_invalid_filter_is_400() {
+        let state = make_state();
+        populate_dialogs(&state);
+        let app = build_router(state);
+
+        // filter=from.user ==   (no value: does not parse)
+        let resp = app
+            .oneshot(test_request("/v1/dialogs?filter=from.user%20%3D%3D"))
+            .await
+            .expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
 
     // ── list_* filtered-total (pagination correctness) ────────────────
