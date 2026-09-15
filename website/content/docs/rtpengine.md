@@ -498,6 +498,78 @@ The first four are gaps in what sipnab learned. Reporting any of them as
 the fifth would turn a run that never reached the relay into a run that
 asked and heard the stream belongs to nobody.
 
+## Relay statistics
+
+Attribution answers whose media a stream is. A relay also keeps counters about
+itself — the packets it relayed, the sessions it holds, its own loss and jitter
+— and `--relay-stats` asks the relay named by `--rtpengine-control` for them and
+prints them:
+
+```bash
+sudo sipnab -N -d eth0 --rtpengine-control 127.0.0.1:22222 --relay-stats
+```
+
+Every figure names the relay as its source. The header marks it
+`relay_reported`: a claim the relay makes about itself, not a measurement sipnab
+took from the wire. Reading it as "sipnab saw this" is the one mistake this whole
+view exists to stop.
+
+To watch a counter move rather than reading one snapshot, poll on a timer:
+
+```bash
+sudo sipnab -N -d eth0 --rtpengine-control 127.0.0.1:22222 --relay-stats-interval 5
+```
+
+Each reading marks itself `polled` and names the interval, so it reads as a
+timer's output rather than a one-shot answer.
+
+### Three numbers for one call, and none of them wins
+
+The tier is the whole point here, not a footnote. One call carries three
+different "loss" figures, and each one describes a different socket at a
+different point on the path:
+
+- **The relay's own count** (`relay_reported`) — what the relay counted on its
+  own sockets since its last restart. `--relay-compare` puts it beside sipnab's
+  own count for one call, labels each, and prints a one-word verdict with a note.
+- **What sipnab saw on the wire** (`sipnab_measured`) — gaps in the RTP sequence
+  numbers that reached the capture point, so it reflects only what the capture
+  caught.
+- **What the far end claims** (`endpoint_reported`) — the remote endpoint's own
+  assertion over RTCP, which nobody can check.
+
+sipnab never subtracts one tier from another. The relay's count minus sipnab's is
+not "packets sipnab missed", because the two count different sockets over
+different windows, so their difference describes nothing. Name the tier when you
+quote the number — "the relay reports 40 lost, our capture measured 3 gaps" —
+and the disagreement stops being a contradiction and becomes three facts about
+three points on the path.
+
+The cookbook works each question end to end:
+[the relay-statistics recipes](@/docs/cookbook.md#61-ask-a-relay-whether-it-is-dropping-packets)
+cover whether a relay drops packets (recipe 61), whether it holds sessions nobody
+released (recipe 62), whether its view of one call matches yours (recipe 63), and
+this three-tier loss comparison (recipe 64).
+
+### Asking transmits, so a file run refuses
+
+`--relay-stats` needs a live source. Asking a relay transmits, and a capture
+file's addresses belong to third parties and describe the past, so on `-I <file>`
+sipnab refuses to ask and says why rather than reaching an address the file named:
+
+```bash
+sipnab -N -I capture.pcap --relay-stats --rtpengine-control 127.0.0.1:22222
+```
+
+```text
+--relay-stats will not ask a relay on a run that reads a file: asking
+transmits, and a file's addresses are historical and belong to third
+parties. Ask from a live capture (-d <device>).
+```
+
+The rest of the analysis still runs and still exits 0. What the run loses is the
+ask.
+
 ## Let an agent ask the relay
 
 Everything above is a person at a terminal. `query_relay` gives an AI agent the

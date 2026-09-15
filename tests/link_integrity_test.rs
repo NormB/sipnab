@@ -865,7 +865,10 @@ fn wiki_intra_docs_links_resolve() {
     // in the "What do you want to do?" table linking recipes 61-64, plus recipe
     // 64's cross-link to recipe 22. Five links, one page; the mirror is outside
     // the extractor's walk.
-    const EXPECTED_WIKI_LINKS: usize = 725;
+    // 725 -> 726 by ST-D2's "Relay statistics" section in docs/rtpengine.md,
+    // which links the cookbook's relay-statistics recipes rather than restating
+    // them. One link, one page; the mirror is outside the extractor's walk.
+    const EXPECTED_WIKI_LINKS: usize = 726;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe 6d in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file
