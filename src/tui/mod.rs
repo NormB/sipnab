@@ -8,6 +8,7 @@
 //! (100ms active, 500ms idle, immediate on keypress).
 
 pub mod action_trail;
+pub mod bpf_editor;
 pub mod call_flow;
 pub mod call_list;
 pub mod dashboard;
