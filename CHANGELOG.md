@@ -42,6 +42,14 @@ entry that carries them.
   rather than a silent unfiltered page. This closes two of PAR2's REST gaps —
   the diagnostic problem filter (`find_problems`) and message-body search
   (`search_messages`) — leaving 44 named gaps.
+- **`GET /v1/capabilities` (PAR3).** A program can now discover what this build
+  compiled in and what the operator turned on before it asks, so a refusal it
+  could have predicted does not read as a dead end. The feature set is the one
+  canonical `compiled_features` list — the same `--version` prints and the MCP
+  `server_capabilities` tool returns, which this change rewires onto that list,
+  deleting the duplicate it had kept — and the response also carries the REST
+  server's runtime opt-ins. This closes the `server_capabilities` REST gap, the
+  one machine-contract route REST lacked, leaving 43 named gaps.
 
 ## [0.5.175] - 2026-09-15
 

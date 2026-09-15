@@ -407,7 +407,14 @@ fn undocumented_numeric_ceilings_do_not_increase() {
 // schemas where the discriminator already separates them, and the payload
 // sub-objects are the relay's own version-specific vocabulary sipnab does not
 // freeze into a type. Permissive here is the honest shape, not a dodge.
-const PERMISSIVE_SCHEMA_COMPONENTS: usize = 25;
+// 25 -> 27 at PAR3, for `Capabilities` and `CapabilitiesRuntime`, the
+// `GET /v1/capabilities` response. Both are response-only: `deny_unknown_fields`
+// governs Deserialize and would be inert here, which the note above names as the
+// dishonest way to move this counter. What actually pins them is the contract
+// test `every_documented_response_matches_what_the_server_sends`, since the
+// server, not a caller, chooses these fields. Two components, attributed by
+// counting `ToSchema` derives against HEAD.
+const PERMISSIVE_SCHEMA_COMPONENTS: usize = 27;
 
 #[test]
 fn permissive_rest_schema_components_do_not_increase() {

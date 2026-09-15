@@ -1226,6 +1226,68 @@
         ],
         "type": "object"
       },
+      "Capabilities": {
+        "description": "What this build can do and what the operator turned on: the machine\ncontract a client reads before it asks, so a refusal it could have\npredicted does not read as a dead end. The build fields are the same the\nMCP `server_capabilities` tool returns — one canonical `compiled_features`\nlist — paired with the REST server's own runtime opt-ins.",
+        "properties": {
+          "can_decrypt": {
+            "description": "True when this build can decrypt TLS.",
+            "type": "boolean"
+          },
+          "can_hep": {
+            "description": "True when this build can receive HEP.",
+            "type": "boolean"
+          },
+          "can_plugins": {
+            "description": "True when this build can load WASM plugins.",
+            "type": "boolean"
+          },
+          "features": {
+            "description": "Compiled-in feature names, sorted. The canonical `compiled_features`\nlist, shared with `--version` and the MCP tool so no two surfaces\nclaim different builds of the same binary.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "runtime": {
+            "$ref": "#/components/schemas/CapabilitiesRuntime",
+            "description": "The REST server's runtime opt-ins."
+          },
+          "schema_version": {
+            "description": "Version of this response's shape.",
+            "example": 1,
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "version": {
+            "description": "The crate version this binary was built from.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "schema_version",
+          "version",
+          "features",
+          "can_decrypt",
+          "can_hep",
+          "can_plugins",
+          "runtime"
+        ],
+        "type": "object"
+      },
+      "CapabilitiesRuntime": {
+        "description": "The REST server's startup opt-ins, each off by default, so a client can\ntell a capability this build lacks from one this run did not turn on.",
+        "properties": {
+          "api_allow_relay_query": {
+            "description": "Whether this run may transmit a relay query — `--api-allow-relay-query`\non a live source. Off means the `/v1/relay/...` routes answer\n`not_configured` or `not_permitted` rather than reaching the relay.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "api_allow_relay_query"
+        ],
+        "type": "object"
+      },
       "CaptureIdentity": {
         "description": "Which capture an answer came from, and which revision of its stores.\n\nCompare two of these to learn what changed: a different `instance`\nmeans a different capture, and every cursor, index and Call-ID from the\nearlier answer is meaningless; the same instance with a higher\ngeneration means the same capture grew.\n\nThe SAME identity MCP's `capture_status` stamps its answers with, from\nthe same object, so an agent and an HTTP client polling one process can\ntell they are describing one capture.",
         "properties": {
@@ -3675,6 +3737,48 @@
           }
         ],
         "summary": "Prometheus metrics",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
+    "/v1/capabilities": {
+      "get": {
+        "description": "The build's compiled feature set — the same canonical list `--version` and the MCP `server_capabilities` tool report — and the REST server's runtime opt-ins.\n\nA program reads this before it asks: a capability absent from `features` is one this binary cannot do, and a runtime opt-in that is off is one this run did not turn on. A mid-integration refusal would blur those two facts, and this route keeps them apart.",
+        "operationId": "get_capabilities",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Capabilities"
+                }
+              }
+            },
+            "description": "The build's features and the run's opt-ins."
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "No bearer credential, or one this server does not accept."
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Over the per-source-IP rate limit of 100 requests per second."
+          }
+        },
+        "summary": "Server capabilities",
         "tags": [
           "operations"
         ]

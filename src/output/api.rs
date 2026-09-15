@@ -551,6 +551,7 @@ pub fn build_router(state: ApiState) -> Router {
         .route("/v1/relay/stats/call/{call_id}", get(get_relay_stats_call))
         .route("/v1/relay/compare/{call_id}", get(get_relay_compare))
         .route("/v1/runtime", get(get_runtime))
+        .route("/v1/capabilities", get(get_capabilities))
         .route("/metrics", get(get_metrics))
         .with_state(state)
         // Request hardening on every route.
@@ -920,6 +921,60 @@ fn guard_scoped(
 )]
 async fn health_check() -> &'static str {
     "ok"
+}
+
+/// `GET /v1/capabilities` — what this build can do and what the operator turned
+/// on, so a client can discover the surface before a refusal it could have
+/// predicted reads as a dead end (PAR3: the machine contract REST had lacked).
+///
+/// # Arguments
+///
+/// * `state` — Shared application state (for the relay opt-in and the guard).
+/// * `addr` — Client socket address used for rate limiting.
+/// * `headers` — Request headers (auth).
+///
+/// # Returns
+///
+/// 200 with the compiled feature set and the run's opt-ins; 401/503 from the
+/// guard.
+#[utoipa::path(
+    get,
+    path = "/v1/capabilities",
+    tag = "operations",
+    summary = "Server capabilities",
+    description = "The build's compiled feature set — the same canonical list `--version` and the MCP `server_capabilities` tool report — and the REST server's runtime opt-ins.\n\nA program reads this before it asks: a capability absent from `features` is one this binary cannot do, and a runtime opt-in that is off is one this run did not turn on. A mid-integration refusal would blur those two facts, and this route keeps them apart.",
+    responses(
+        (status = 200, description = "The build's features and the run's opt-ins.", body = schema::Capabilities),
+        (status = 401, description = "No bearer credential, or one this server does not accept.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 503, description = "Over the per-source-IP rate limit of 100 requests per second.", body = schema::ProblemJson, content_type = "application/problem+json"),
+    )
+)]
+async fn get_capabilities(
+    State(state): State<ApiState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, Problem> {
+    guard(&state, &headers, addr.ip())?;
+
+    // The one canonical list, so `--version`, the MCP tool and this route can
+    // never claim different builds of the same binary.
+    let mut features: Vec<String> = crate::cli::compiled_features()
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect();
+    features.sort();
+
+    Ok(Json(schema::Capabilities {
+        schema_version: 1,
+        version: env!("CARGO_PKG_VERSION").to_string(),
+        features,
+        can_decrypt: cfg!(feature = "tls"),
+        can_hep: cfg!(feature = "hep"),
+        can_plugins: cfg!(feature = "plugins"),
+        runtime: schema::CapabilitiesRuntime {
+            api_allow_relay_query: state.relay_query.permit.is_some(),
+        },
+    }))
 }
 
 /// `GET /v1/dialogs` — list dialogs with optional filtering and pagination.
@@ -2862,6 +2917,42 @@ pub mod schema {
         pub detail: Option<String>,
     }
 
+    /// What this build can do and what the operator turned on: the machine
+    /// contract a client reads before it asks, so a refusal it could have
+    /// predicted does not read as a dead end. The build fields are the same the
+    /// MCP `server_capabilities` tool returns — one canonical `compiled_features`
+    /// list — paired with the REST server's own runtime opt-ins.
+    #[derive(Debug, Clone, serde::Serialize, ToSchema)]
+    pub struct Capabilities {
+        /// Version of this response's shape.
+        #[schema(example = 1)]
+        pub schema_version: u32,
+        /// The crate version this binary was built from.
+        pub version: String,
+        /// Compiled-in feature names, sorted. The canonical `compiled_features`
+        /// list, shared with `--version` and the MCP tool so no two surfaces
+        /// claim different builds of the same binary.
+        pub features: Vec<String>,
+        /// True when this build can decrypt TLS.
+        pub can_decrypt: bool,
+        /// True when this build can receive HEP.
+        pub can_hep: bool,
+        /// True when this build can load WASM plugins.
+        pub can_plugins: bool,
+        /// The REST server's runtime opt-ins.
+        pub runtime: CapabilitiesRuntime,
+    }
+
+    /// The REST server's startup opt-ins, each off by default, so a client can
+    /// tell a capability this build lacks from one this run did not turn on.
+    #[derive(Debug, Clone, serde::Serialize, ToSchema)]
+    pub struct CapabilitiesRuntime {
+        /// Whether this run may transmit a relay query — `--api-allow-relay-query`
+        /// on a live source. Off means the `/v1/relay/...` routes answer
+        /// `not_configured` or `not_permitted` rather than reaching the relay.
+        pub api_allow_relay_query: bool,
+    }
+
     /// Transaction timing, as carried by every dialog summary.
     #[derive(Debug, Clone, ToSchema)]
     pub struct TimingSummary {
@@ -3593,10 +3684,13 @@ impl utoipa::Modify for BearerAuth {
         get_relay_stats_call,
         get_relay_compare,
         get_runtime,
+        get_capabilities,
         get_metrics,
     ),
     components(schemas(
         schema::ProblemJson,
+        schema::Capabilities,
+        schema::CapabilitiesRuntime,
         schema::RelayStatsResponse,
         schema::DialogList,
         schema::DialogSummary,
@@ -4714,6 +4808,81 @@ mod tests {
 
         let body = body_to_string(resp.into_body()).await;
         assert_eq!(body, "ok");
+    }
+
+    // ── capabilities (PAR3: server_capabilities on REST) ──────────────
+
+    /// `GET /v1/capabilities` reports the build's compiled feature set, so a
+    /// program can discover what this sipnab can do before it asks and reads a
+    /// mid-integration refusal as a dead end.
+    #[tokio::test]
+    async fn capabilities_reports_the_compiled_feature_set() {
+        let state = make_state();
+        let app = build_router(state);
+
+        let resp = app
+            .oneshot(test_request("/v1/capabilities"))
+            .await
+            .expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_to_string(resp.into_body()).await;
+        let parsed: Value = serde_json::from_str(&body).expect("valid JSON");
+        assert_eq!(parsed["schema_version"], 1);
+        assert_eq!(parsed["version"], env!("CARGO_PKG_VERSION"));
+        let features: Vec<String> = parsed["features"]
+            .as_array()
+            .expect("features array")
+            .iter()
+            .map(|v| v.as_str().expect("string").to_string())
+            .collect();
+        // The `api` feature is on in the build that serves this route.
+        assert!(features.contains(&"api".to_string()));
+    }
+
+    /// The feature list REST reports IS the one canonical `compiled_features()`
+    /// the CLI `--version` and the MCP `server_capabilities` also derive from,
+    /// so no two surfaces can claim different builds of the same binary.
+    #[tokio::test]
+    async fn capabilities_features_are_the_canonical_list() {
+        let state = make_state();
+        let app = build_router(state);
+
+        let resp = app
+            .oneshot(test_request("/v1/capabilities"))
+            .await
+            .expect("oneshot");
+        let body = body_to_string(resp.into_body()).await;
+        let parsed: Value = serde_json::from_str(&body).expect("valid JSON");
+        let mut got: Vec<String> = parsed["features"]
+            .as_array()
+            .expect("array")
+            .iter()
+            .map(|v| v.as_str().expect("string").to_string())
+            .collect();
+        got.sort();
+        let mut want: Vec<String> = crate::cli::compiled_features()
+            .iter()
+            .map(|s| (*s).to_string())
+            .collect();
+        want.sort();
+        assert_eq!(got, want);
+    }
+
+    /// The response carries the REST opt-ins the operator set, so a client can
+    /// tell a capability this build lacks from one this run did not turn on. A
+    /// state built without `--api-allow-relay-query` reports it off.
+    #[tokio::test]
+    async fn capabilities_reports_the_relay_opt_in() {
+        let state = make_state();
+        let app = build_router(state);
+
+        let resp = app
+            .oneshot(test_request("/v1/capabilities"))
+            .await
+            .expect("oneshot");
+        let body = body_to_string(resp.into_body()).await;
+        let parsed: Value = serde_json::from_str(&body).expect("valid JSON");
+        assert_eq!(parsed["runtime"]["api_allow_relay_query"], false);
     }
 
     /// `GET /v1/dialogs` returns 200 with all three seeded dialogs and the

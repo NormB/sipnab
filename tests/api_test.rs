@@ -32,6 +32,28 @@ fn health_returns_ok() {
     assert_eq!(resp.body.trim(), "ok");
 }
 
+/// `GET /v1/capabilities` reports the shipped binary's compiled feature set and
+/// the run's opt-ins, so a client can discover the surface before a refusal it
+/// could have predicted (PAR3). Driven against the real binary, so the `api`
+/// feature it reports is the one that actually served the request.
+#[test]
+fn capabilities_reports_features_and_opt_ins() {
+    let srv = ApiServer::spawn(&[]);
+    let resp = srv.get("/v1/capabilities");
+    assert_eq!(resp.status, 200, "/v1/capabilities status");
+    let body = resp.json();
+    assert_eq!(body["schema_version"], 1);
+    assert_eq!(body["version"], env!("CARGO_PKG_VERSION"));
+    let features = body["features"].as_array().expect("features array");
+    assert!(
+        features.iter().any(|f| f == "api"),
+        "the api feature is on in the binary that served this route"
+    );
+    // A server spawned without --api-allow-relay-query reports the opt-in off,
+    // which is a different fact from the feature being absent.
+    assert_eq!(body["runtime"]["api_allow_relay_query"], false);
+}
+
 /// The server accepts `--api-max-conn` (the in-flight-request cap) and still
 /// serves — keeps the flag under test coverage.
 #[test]

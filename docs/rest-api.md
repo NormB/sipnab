@@ -1738,6 +1738,49 @@ The MCP tool `runtime_stats` returns the same envelope from the same
 derivation — including the same refusal and the same clamp — so the two
 surfaces cannot disagree about one process.
 
+### GET /v1/capabilities
+
+What this build can do and what the operator turned on — the machine contract a
+program reads before it asks, so a refusal it could have predicted does not read
+as a dead end.
+
+**curl:**
+
+```bash
+curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" http://127.0.0.1:8080/v1/capabilities | jq .
+```
+
+**Response:**
+
+```json
+{
+  "schema_version": 1,
+  "version": "0.5.175",
+  "features": ["api", "audio", "bpf", "hep", "mcp", "metrics", "native", "tls", "tui", "vcon"],
+  "can_decrypt": true,
+  "can_hep": true,
+  "can_plugins": false,
+  "runtime": {
+    "api_allow_relay_query": false
+  }
+}
+```
+
+**`features` is the one canonical list.** The same set `--version` prints and
+the MCP `server_capabilities` tool returns, read from `cfg!` so it cannot name a
+feature the binary lacks. A capability absent here is one this build cannot do,
+which is a different fact from one this run did not turn on.
+
+**`runtime` names what the operator turned on.** A route that answers
+`not_configured` because `--api-allow-relay-query` was not passed is not a
+missing feature, and a program that blurs the two retries something that can
+never work. `api_allow_relay_query` is off unless this run may transmit a relay
+query.
+
+The MCP tool `server_capabilities` returns the same feature set from the same
+`compiled_features` list, so the two surfaces cannot claim different builds of
+one binary.
+
 ### GET /v1/stats
 
 Aggregate statistics across all dialogs and streams, including PDD percentiles.

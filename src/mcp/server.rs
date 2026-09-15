@@ -5853,28 +5853,14 @@ impl SipnabMcp {
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub async fn server_capabilities(&self) -> Result<CallToolResult, rmcp::ErrorData> {
-        // Read from cfg! rather than a hand-kept list, so this cannot claim a
-        // feature the binary does not actually have.
-        let mut features: Vec<String> = Vec::new();
-        for (name, on) in [
-            ("native", cfg!(feature = "native")),
-            ("tui", cfg!(feature = "tui")),
-            ("tls", cfg!(feature = "tls")),
-            ("hep", cfg!(feature = "hep")),
-            ("api", cfg!(feature = "api")),
-            ("mcp", cfg!(feature = "mcp")),
-            ("mcp-http", cfg!(feature = "mcp-http")),
-            ("metrics", cfg!(feature = "metrics")),
-            ("audio", cfg!(feature = "audio")),
-            ("plugins", cfg!(feature = "plugins")),
-            ("vcon", cfg!(feature = "vcon")),
-            ("bpf", cfg!(feature = "bpf")),
-            ("wasm", cfg!(feature = "wasm")),
-        ] {
-            if on {
-                features.push(name.to_string());
-            }
-        }
+        // The one canonical `compiled_features` list, shared with `--version`
+        // and the REST `/v1/capabilities` route, so no two surfaces claim
+        // different builds of the same binary. It reads `cfg!` rather than a
+        // hand-kept list, so it cannot name a feature the binary lacks.
+        let mut features: Vec<String> = crate::cli::compiled_features()
+            .iter()
+            .map(|s| (*s).to_string())
+            .collect();
         features.sort();
 
         let payload = CapabilitiesResponse {

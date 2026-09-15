@@ -73,32 +73,31 @@ fn declared_features() -> BTreeSet<String> {
 
 /// Every feature name `server_capabilities` is able to report.
 ///
-/// Read off the `("name", cfg!(feature = "name"))` pair list in the source
-/// rather than from a live call, because a live call can only ever show the
-/// features THIS build turned on. The bug being gated is an omission, and an
-/// omission is invisible in any single build's output.
+/// `server_capabilities` derives its feature list from the one canonical
+/// `compiled_features()` in `src/cli.rs` (shared with `--version` and the REST
+/// `/v1/capabilities` route), so the names it can report are the ones that
+/// function's `cfg!(feature = "name")` checks name. Read off the source rather
+/// than a live call, because a live call can only ever show the features THIS
+/// build turned on, and the bug being gated is an omission — invisible in any
+/// single build's output.
 fn reportable_features() -> BTreeSet<String> {
-    let src = repo("src/mcp/server.rs");
+    let src = repo("src/cli.rs");
     let at = src
-        .find("pub async fn server_capabilities")
-        .expect("server.rs has no server_capabilities");
+        .find("pub fn compiled_features")
+        .expect("cli.rs has no compiled_features");
     let body = &src[at..];
     let end = body
-        .find("features.sort()")
-        .expect("the capability feature list no longer sorts; this scan is reading the wrong code");
+        .find("\n}")
+        .expect("compiled_features has no close brace; this scan is reading the wrong code");
+    let section = &body[..end];
     let mut out = BTreeSet::new();
-    for line in body[..end].lines() {
-        let line = line.trim();
-        let Some(rest) = line.strip_prefix("(\"") else {
-            continue;
-        };
-        let Some((name, tail)) = rest.split_once('"') else {
-            continue;
-        };
-        // The pair must actually consult cfg!, or the report is a hand-kept
-        // claim rather than a reading of the build.
-        if tail.contains("cfg!(feature = ") {
-            out.insert(name.to_string());
+    // Each name is read from a `cfg!(feature = "name")` check, so the report is
+    // a reading of the build rather than a hand-kept claim.
+    let needle = "cfg!(feature = \"";
+    for (i, _) in section.match_indices(needle) {
+        let after = &section[i + needle.len()..];
+        if let Some(q) = after.find('"') {
+            out.insert(after[..q].to_string());
         }
     }
     out

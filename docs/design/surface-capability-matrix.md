@@ -540,7 +540,7 @@ What did this build compile in, and what did the operator turn on?
 |---|---|
 | CLI | decision: `--version` carries the human-readable feature list, and the runtime opt-ins are flags the operator set themselves |
 | TUI | decision: the `Help` view's version line shows the feature list, and the structured opt-in contract is machine-only |
-| REST | gap: a program must discover build features and opt-ins to avoid confusing mid-integration refusals, but no `/v1/capabilities` route exists (PAR3) |
+| REST | `/v1/capabilities` |
 | MCP | `server_capabilities` |
 
 ### Remote lifecycle stop
