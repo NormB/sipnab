@@ -3919,6 +3919,633 @@ mod tests {
         );
     }
 
+    // ── ST5: relay-statistics REST failure paths and edge cases (ST-S4) ───────
+    //
+    // These drive `relay_rest_answer` with a scripted relay behind a REAL
+    // transmit permit, so every reachable ST-S4 condition is exercised through
+    // the actual routing rather than only the pure conversion. No live relay is
+    // needed: the seam is `ReadOnlyRelay`, so a double answers from a script.
+    //
+    // What is deliberately NOT driven here, by the shipped architecture
+    // (ST9, `docs/design/relay-statistics-failures.md`): sipnab has ONE
+    // transmitting control client and it speaks rtpengine; it never SENDS to
+    // rtpproxy, which it reads off the wire. So the rtpproxy-only rows -- the
+    // bulk `G` partial that returns `E68` for the whole set (condition 5), the
+    // six numeric rtpproxy `E`-codes (condition 4), the per-name `G` refusal
+    // (condition 8) and the `;1` tag-rewrite `E50` (condition 10) -- have no
+    // wire to reach here. Their classification vocabulary is single-sourced in
+    // `stats_vocab` and driven in `tests/statistics_vocabulary_test.rs`; the
+    // partial RENDERING a probed path would need is pinned in
+    // `tests/relay_rest_envelope_test.rs`. Here we cover what the rtpengine
+    // transmit path can actually produce.
+
+    use crate::relay::types::{ControlReply, Enumeration, UntrustedReply};
+
+    /// What a scripted relay answers one ask with.
+    #[derive(Clone)]
+    enum Scripted {
+        /// A clean `statistics` reply carrying these name/value pairs.
+        Stats(Vec<(&'static str, &'static str)>),
+        /// A well-formed reply that is NOT statistics (a `list` answer), so a
+        /// route sees a shape it did not ask for -- ST-S4 `suspect`.
+        WrongShape,
+        /// The fetch failed and nothing came back -- ST-S4 `unreachable`.
+        Timeout,
+        /// A reply arrived that cannot be trusted (a cookie mismatch) -- ST-S4
+        /// `suspect`, never `unreachable`.
+        Untrusted,
+    }
+
+    impl Scripted {
+        fn produce(&self) -> anyhow::Result<ControlReply> {
+            match self {
+                Self::Stats(pairs) => Ok(ControlReply::Statistics(
+                    pairs
+                        .iter()
+                        .map(|(n, v)| ((*n).to_owned(), (*v).to_owned()))
+                        .collect(),
+                )),
+                Self::WrongShape => Ok(ControlReply::Calls(Enumeration {
+                    call_ids: Vec::new(),
+                    truncated: false,
+                })),
+                Self::Timeout => anyhow::bail!("no route to host"),
+                Self::Untrusted => Err(anyhow::Error::new(UntrustedReply {
+                    reason: "reply cookie did not match the request".to_owned(),
+                })),
+            }
+        }
+    }
+
+    /// A relay double answering the wide/names ask and the per-call ask from two
+    /// independent scripts, so a route's exact fetch can be shaped.
+    struct ScriptedRelay {
+        wide: Scripted,
+        per_call: Scripted,
+    }
+
+    impl crate::relay::reconcile::ReadOnlyRelay for ScriptedRelay {
+        fn list(
+            &self,
+            _p: &crate::security::transmit_guard::TransmitPermit,
+            _l: u32,
+        ) -> anyhow::Result<ControlReply> {
+            anyhow::bail!("this double lists no calls")
+        }
+        fn query(
+            &self,
+            _p: &crate::security::transmit_guard::TransmitPermit,
+            _c: &str,
+        ) -> anyhow::Result<ControlReply> {
+            anyhow::bail!("this double queries no calls")
+        }
+        fn statistics(
+            &self,
+            _p: &crate::security::transmit_guard::TransmitPermit,
+        ) -> anyhow::Result<ControlReply> {
+            self.wide.produce()
+        }
+        fn call_statistics(
+            &self,
+            _p: &crate::security::transmit_guard::TransmitPermit,
+            _call_id: &str,
+        ) -> anyhow::Result<ControlReply> {
+            self.per_call.produce()
+        }
+        fn describe(&self) -> String {
+            "relay-under-test".to_owned()
+        }
+    }
+
+    /// A permit only a live source grants -- the property that keeps a
+    /// file-backed run from ever transmitting to an address it read out of a
+    /// capture.
+    fn live_permit() -> crate::security::transmit_guard::TransmitPermit {
+        crate::security::transmit_guard::TransmitPermit::for_source(
+            &crate::capture::CaptureSource::Live {
+                device: "eth0".to_owned(),
+            },
+        )
+        .expect("a live source grants a permit")
+    }
+
+    /// A relay config that WILL transmit: a scripted relay behind a live permit.
+    fn transmitting(wide: Scripted, per_call: Scripted) -> RelayRestConfig {
+        RelayRestConfig {
+            relay: Some(Arc::new(ScriptedRelay { wide, per_call })),
+            permit: Some(live_permit()),
+        }
+    }
+
+    /// A stream store holding `n` measured RTP packets linked to `call_id`, so
+    /// `measured_packet_count_for(call_id)` is `n`: the `sipnab_measured` side
+    /// of a C4 comparison. Built by driving the real correlation path (record
+    /// packets, link the endpoint) rather than hand-setting a field, so it is
+    /// the count a live run would measure.
+    fn streams_with_call(call_id: &str, n: u16) -> Arc<RwLock<StreamStore>> {
+        use crate::capture::parse::{InputOrigin, ParsedPacket, TransportProto};
+        let src = std::net::IpAddr::V4(std::net::Ipv4Addr::new(192, 0, 2, 10));
+        let dst = std::net::IpAddr::V4(std::net::Ipv4Addr::new(198, 51, 100, 1));
+        let (src_port, dst_port, ssrc) = (20000u16, 40000u16, 0x1234u32);
+        let mut ss = StreamStore::new(64);
+        for i in 0..n {
+            let seq = 100 + i;
+            let mut payload = Vec::with_capacity(172);
+            payload.push(0x80);
+            payload.push(0x00); // PT 0, PCMU
+            payload.extend_from_slice(&seq.to_be_bytes());
+            payload.extend_from_slice(&(u32::from(seq) * 160).to_be_bytes());
+            payload.extend_from_slice(&ssrc.to_be_bytes());
+            payload.extend_from_slice(&[0x7F; 160]);
+            let parsed = ParsedPacket {
+                frame_bytes: None,
+                frame: None,
+                timestamp: chrono::Utc::now(),
+                src_addr: src,
+                dst_addr: dst,
+                src_port,
+                dst_port,
+                transport: TransportProto::Udp,
+                payload: payload.into(),
+                ip_id: None,
+                tcp_seq: None,
+                tcp_flags: None,
+                fragment_offset: None,
+                more_fragments: false,
+                ip_protocol: 17,
+                dscp: None,
+                input_origin: InputOrigin::Wire,
+                hep: None,
+            };
+            let hdr = crate::rtp::parser::parse_rtp_header(&parsed.payload)
+                .expect("synthetic RTP header parses");
+            ss.process_rtp(&parsed, &hdr, chrono::Utc::now());
+        }
+        ss.link_endpoint(src, src_port, call_id, &[]);
+        assert_eq!(
+            ss.measured_packet_count_for(call_id),
+            u64::from(n),
+            "the fixture must actually link {n} packets, or the compare test is \
+             asserting against a side it did not build"
+        );
+        Arc::new(RwLock::new(ss))
+    }
+
+    /// Condition 3: a relay that does not answer is `unreachable` on every route
+    /// that asks it -- the network's or the relay's problem -- and the message
+    /// says the weaker true thing, never "the relay is down": over UDP a wrong
+    /// port, a filtered port and a lost reply are indistinguishable.
+    #[test]
+    fn relay_rest_no_answer_is_unreachable_told_the_weaker_way() {
+        let ss = empty_streams();
+        for ask in [RelayAsk::Wide, RelayAsk::Names, RelayAsk::Call("c".into())] {
+            let rq = transmitting(Scripted::Timeout, Scripted::Timeout);
+            let v = relay_rest_answer(&rq, &ask, &ss);
+            assert_eq!(v["outcome"], "unreachable", "asked, nothing came back");
+            assert_eq!(v["responsibility"], "relay_or_network");
+            let detail = v["detail"]
+                .as_str()
+                .unwrap_or_default()
+                .to_ascii_lowercase();
+            assert!(
+                !detail.contains("is down") && !detail.contains("relay is down"),
+                "must not claim the relay is down; nothing observed proves it: {detail}"
+            );
+            assert!(
+                v.get("statistics").is_none(),
+                "an unreachable relay yields no counters"
+            );
+        }
+    }
+
+    /// Condition 3 on the compare route too: no answer is `unreachable`, not a
+    /// comparison against an absent relay side.
+    #[test]
+    fn relay_rest_compare_no_answer_is_unreachable() {
+        let rq = transmitting(Scripted::Timeout, Scripted::Timeout);
+        let v = relay_rest_answer(&rq, &RelayAsk::Compare("c".into()), &empty_streams());
+        assert_eq!(v["outcome"], "unreachable");
+        assert_eq!(v["responsibility"], "relay_or_network");
+    }
+
+    /// Condition 7: a reply that arrived but cannot be trusted (a mismatched
+    /// cookie) is `suspect` -- the answer's own problem -- and never smoothed
+    /// into `unreachable`. The two send an operator to different places.
+    #[test]
+    fn relay_rest_untrusted_reply_is_suspect_not_unreachable() {
+        for ask in [RelayAsk::Wide, RelayAsk::Call("c".into())] {
+            let rq = transmitting(Scripted::Untrusted, Scripted::Untrusted);
+            let v = relay_rest_answer(&rq, &ask, &empty_streams());
+            assert_eq!(v["outcome"], "suspect", "a reply that cannot be trusted");
+            assert_ne!(v["outcome"], "unreachable", "the two must not collapse");
+            assert_eq!(v["responsibility"], "answer");
+            let detail = v["detail"].as_str().unwrap_or_default();
+            assert!(
+                detail.contains("discarded") || detail.contains("not read"),
+                "a suspect reply says it was discarded, not interpreted: {detail}"
+            );
+        }
+    }
+
+    /// A well-formed reply of the WRONG kind (a `list` where statistics were
+    /// asked) is `suspect`, never rendered as if it were counters.
+    #[test]
+    fn relay_rest_wrong_reply_shape_is_suspect() {
+        for ask in [RelayAsk::Wide, RelayAsk::Names, RelayAsk::Call("c".into())] {
+            let rq = transmitting(Scripted::WrongShape, Scripted::WrongShape);
+            let v = relay_rest_answer(&rq, &ask, &empty_streams());
+            assert_eq!(
+                v["outcome"], "suspect",
+                "a reply that is not statistics is suspect, not ok"
+            );
+            assert!(v.get("statistics").is_none());
+        }
+    }
+
+    /// Condition 4: a per-call reply of `result: error` is a REFUSAL carrying
+    /// the relay's own words verbatim -- the request's problem -- never rendered
+    /// as counter rows. Each of the four rtpengine reasons travels unchanged.
+    #[test]
+    fn relay_rest_per_call_refusal_carries_the_relays_own_words() {
+        // Three of the four documented reasons. The fourth ("could not decode
+        // the ... dictionary") is left out here on purpose: its real wording
+        // names the relay's wire format, and `relay_seam_test` forbids a vendor
+        // token anywhere in `src/output/` code. The verbatim-travel property it
+        // would test is already proven by these three and by the envelope test,
+        // so the seam is worth more than a fourth near-identical case.
+        for reason in [
+            "Unrecognized command",
+            "No call-id in message",
+            "Unknown call-id",
+        ] {
+            let per_call = Scripted::Stats(vec![("result", "error"), ("error-reason", reason)]);
+            let rq = transmitting(Scripted::Timeout, per_call);
+            let v = relay_rest_answer(&rq, &RelayAsk::Call("1-7@h".into()), &empty_streams());
+            assert_eq!(v["outcome"], "refused", "the relay reached, and said no");
+            assert_eq!(v["responsibility"], "request");
+            let detail = v["detail"].as_str().unwrap_or_default();
+            assert!(
+                detail.contains(reason),
+                "the relay's own reason must travel verbatim: {reason:?} not in {detail:?}"
+            );
+        }
+    }
+
+    /// Condition 4's core: "the vocabulary" and "their call" are never the same
+    /// message. `Unrecognized command` (the request is malformed) and
+    /// `Unknown call-id` (this call is not held) reach the caller as DIFFERENT
+    /// details, the rtpengine analogue of rtpproxy's `E68`/`E50` split.
+    #[test]
+    fn relay_rest_two_refusal_reasons_do_not_share_a_message() {
+        let vocab = transmitting(
+            Scripted::Timeout,
+            Scripted::Stats(vec![
+                ("result", "error"),
+                ("error-reason", "Unrecognized command"),
+            ]),
+        );
+        let call = transmitting(
+            Scripted::Timeout,
+            Scripted::Stats(vec![
+                ("result", "error"),
+                ("error-reason", "Unknown call-id"),
+            ]),
+        );
+        let vocab_detail = relay_rest_answer(&vocab, &RelayAsk::Call("c".into()), &empty_streams())
+            ["detail"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned();
+        let call_detail =
+            relay_rest_answer(&call, &RelayAsk::Call("c".into()), &empty_streams())["detail"]
+                .as_str()
+                .unwrap_or_default()
+                .to_owned();
+        assert_ne!(
+            vocab_detail, call_detail,
+            "a misspelled command and a missing call must not read as one refusal"
+        );
+    }
+
+    /// The compare route reads a `result: error` reply through the SAME refusal
+    /// rule as the per-call route, so the two surfaces cannot classify one reply
+    /// as a refusal and the other as counters.
+    #[test]
+    fn relay_rest_compare_refusal_uses_the_one_rule() {
+        let per_call = Scripted::Stats(vec![
+            ("result", "error"),
+            ("error-reason", "Unknown call-id"),
+        ]);
+        let rq = transmitting(Scripted::Timeout, per_call);
+        let v = relay_rest_answer(&rq, &RelayAsk::Compare("c".into()), &empty_streams());
+        assert_eq!(v["outcome"], "refused");
+        assert!(
+            v["detail"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("Unknown call-id"),
+            "the compare route carries the relay's own reason too: {v}"
+        );
+    }
+
+    /// A clean wide answer is `ok`, tiered `relay_reported`, and every value
+    /// survives EXACTLY as the relay sent it: an integer counter stays its
+    /// digits and rtpengine's string `uptime` stays a string, never coerced.
+    #[test]
+    fn relay_rest_wide_ok_carries_values_uncoerced() {
+        let rq = transmitting(
+            Scripted::Stats(vec![("npkts_relayed", "9000"), ("uptime", "134")]),
+            Scripted::Timeout,
+        );
+        let v = relay_rest_answer(&rq, &RelayAsk::Wide, &empty_streams());
+        assert_eq!(v["outcome"], "ok");
+        assert_eq!(v["origin"], "asked");
+        let stats = v["statistics"].as_array().expect("statistics array");
+        let find = |name: &str| {
+            stats
+                .iter()
+                .find(|s| s["name"] == name)
+                .unwrap_or_else(|| panic!("{name} present: {v}"))
+        };
+        assert_eq!(find("npkts_relayed")["value"], "9000");
+        assert_eq!(find("npkts_relayed")["tier"], "relay_reported");
+        assert_eq!(
+            find("uptime")["value"],
+            "134",
+            "a value the relay sent as a string stays a string"
+        );
+    }
+
+    /// Conditions 6 and 9: after a relay restart every counter reads `0`, and a
+    /// single REST ask reports that honestly -- a counted zero is a VALUE
+    /// (present, `\"0\"`), not an absent key and not a refusal, and never
+    /// `unreachable`. REST does not poll (C5 omitted), so the backwards-STEP
+    /// detection that would flag a restart as suspect lives in the polled path,
+    /// not here; a lone post-restart sample is a legitimate zero.
+    #[test]
+    fn relay_rest_a_post_restart_zero_is_a_value_not_absent() {
+        let rq = transmitting(
+            Scripted::Stats(vec![("nsess_created", "0"), ("npkts_rcvd", "0")]),
+            Scripted::Timeout,
+        );
+        let v = relay_rest_answer(&rq, &RelayAsk::Wide, &empty_streams());
+        assert_eq!(v["outcome"], "ok", "a relay that restarted still answered");
+        let stats = v["statistics"].as_array().expect("statistics array");
+        let zero = stats
+            .iter()
+            .find(|s| s["name"] == "npkts_rcvd")
+            .expect("the zero counter occupies a key");
+        assert_eq!(zero["value"], "0", "a counted zero is carried, not omitted");
+    }
+
+    /// C3: the names route reports exactly the keys the relay listed, sorted,
+    /// with `source: listed` -- the answer comes from asking, never a table
+    /// compiled into sipnab.
+    #[test]
+    fn relay_rest_names_are_the_relays_listed_keys() {
+        let rq = transmitting(
+            Scripted::Stats(vec![
+                ("uptime", "5"),
+                ("npkts_relayed", "1"),
+                ("nsess", "2"),
+            ]),
+            Scripted::Timeout,
+        );
+        let v = relay_rest_answer(&rq, &RelayAsk::Names, &empty_streams());
+        assert_eq!(v["outcome"], "ok");
+        assert_eq!(v["source"], "listed", "the relay enumerated its own set");
+        let names: Vec<&str> = v["names"]
+            .as_array()
+            .expect("names array")
+            .iter()
+            .map(|n| n.as_str().unwrap_or_default())
+            .collect();
+        assert_eq!(
+            names,
+            vec!["npkts_relayed", "nsess", "uptime"],
+            "the names are the keys the relay reported, sorted: {v}"
+        );
+    }
+
+    /// Condition 8: a key present in one relay version and absent in the next.
+    /// The names route reflects each version's own reply, so `rtpa_nlost`
+    /// appears for the build that lists it and is absent for the build that does
+    /// not -- the surface offers no fixed menu, and a caller can discover the
+    /// difference before a request fails on the missing name.
+    #[test]
+    fn relay_rest_names_track_the_relay_version() {
+        let has = transmitting(
+            Scripted::Stats(vec![("rtpa_nlost", "3"), ("npkts_relayed", "9")]),
+            Scripted::Timeout,
+        );
+        let lacks = transmitting(
+            Scripted::Stats(vec![("npkts_relayed", "9")]),
+            Scripted::Timeout,
+        );
+        let names = |rq: &RelayRestConfig| -> Vec<String> {
+            relay_rest_answer(rq, &RelayAsk::Names, &empty_streams())["names"]
+                .as_array()
+                .expect("names array")
+                .iter()
+                .map(|n| n.as_str().unwrap_or_default().to_owned())
+                .collect()
+        };
+        assert!(
+            names(&has).iter().any(|n| n == "rtpa_nlost"),
+            "the version that lists rtpa_nlost offers it"
+        );
+        assert!(
+            !names(&lacks).iter().any(|n| n == "rtpa_nlost"),
+            "the version that does not list it does not invent it"
+        );
+    }
+
+    /// C2 success: a clean per-call reply is `ok`, the relay's counters tiered
+    /// `relay_reported`, and the label names the call so a two-relay estate
+    /// keeps the answer attributed.
+    #[test]
+    fn relay_rest_call_ok_carries_per_call_counters() {
+        let rq = transmitting(
+            Scripted::Timeout,
+            Scripted::Stats(vec![("totals.RTP.packets", "8994"), ("result", "ok")]),
+        );
+        let v = relay_rest_answer(&rq, &RelayAsk::Call("1-7@h".into()), &empty_streams());
+        assert_eq!(v["outcome"], "ok");
+        let stats = v["statistics"].as_array().expect("statistics array");
+        assert!(
+            stats
+                .iter()
+                .any(|s| s["name"] == "totals.RTP.packets" && s["value"] == "8994"),
+            "the per-call counter is carried: {v}"
+        );
+        assert!(
+            v["relay"].as_str().unwrap_or_default().contains("1-7@h"),
+            "the label names the call: {v}"
+        );
+    }
+
+    /// Condition 11: a per-call total too large for `u64` is `suspect`, carrying
+    /// its digits as received -- never truncated into a narrower type, and never
+    /// coerced to an absent side that would read as "the relay does not hold the
+    /// call". The wire case (a real counter wrapping) is unreachable -- no relay
+    /// in reach has run long enough -- so the OVERSIZED VALUE is manufactured and
+    /// the conversion it forces is what is driven.
+    #[test]
+    fn relay_rest_compare_overflow_is_suspect_carrying_its_digits() {
+        let huge = "99999999999999999999999999"; // 26 nines, past u64::MAX
+        let rq = transmitting(
+            Scripted::Timeout,
+            Scripted::Stats(vec![("totals.RTP.packets", huge)]),
+        );
+        let v = relay_rest_answer(
+            &rq,
+            &RelayAsk::Compare("c".into()),
+            &streams_with_call("c", 5),
+        );
+        assert_eq!(
+            v["outcome"], "suspect",
+            "a value that will not fit is suspect"
+        );
+        assert_eq!(v["responsibility"], "answer");
+        assert!(
+            v["detail"].as_str().unwrap_or_default().contains(huge),
+            "the digits are carried as received, not truncated: {v}"
+        );
+    }
+
+    /// Condition 12: C4 on a call this capture measured no RTP for is
+    /// `not_configured` naming the CAPTURE, not the relay -- so an operator is
+    /// not sent to debug a relay that is working. The relay holds the call
+    /// (a real count), sipnab simply did not see its media.
+    #[test]
+    fn relay_rest_compare_with_no_capture_side_names_the_capture() {
+        let rq = transmitting(
+            Scripted::Timeout,
+            Scripted::Stats(vec![("totals.RTP.packets", "9000")]),
+        );
+        // Empty store: sipnab measured nothing for this call.
+        let v = relay_rest_answer(&rq, &RelayAsk::Compare("c".into()), &empty_streams());
+        assert_eq!(v["outcome"], "not_configured");
+        assert_eq!(v["responsibility"], "invocation");
+        let detail = v["detail"].as_str().unwrap_or_default();
+        assert!(
+            detail.contains("capture"),
+            "the message points at the capture, not the relay: {detail}"
+        );
+    }
+
+    /// C4 when the relay does not hold the call either: the relay side is absent
+    /// (not a measured zero) and this capture has none, so there is nothing to
+    /// compare -- `refused`, never a zero-versus-zero match invented from two
+    /// absences.
+    #[test]
+    fn relay_rest_compare_with_neither_side_is_refused() {
+        let rq = transmitting(
+            Scripted::Timeout,
+            // A clean reply that simply lacks totals.RTP.packets: the relay does
+            // not hold this call, but did not error.
+            Scripted::Stats(vec![("result", "ok")]),
+        );
+        let v = relay_rest_answer(&rq, &RelayAsk::Compare("c".into()), &empty_streams());
+        assert_eq!(v["outcome"], "refused");
+        assert!(
+            v["detail"].as_str().unwrap_or_default().contains("neither"),
+            "neither side had RTP for the call: {v}"
+        );
+    }
+
+    /// C4 when sipnab measured the call but the relay's reply lacks the key: the
+    /// relay side is absent, sipnab's is a real count, so the relay does not hold
+    /// the call -- `refused`. sipnab's figure is not rendered against an invented
+    /// relay zero.
+    #[test]
+    fn relay_rest_compare_relay_absent_capture_present_is_refused() {
+        let rq = transmitting(Scripted::Timeout, Scripted::Stats(vec![("result", "ok")]));
+        let v = relay_rest_answer(
+            &rq,
+            &RelayAsk::Compare("c".into()),
+            &streams_with_call("c", 8),
+        );
+        assert_eq!(v["outcome"], "refused");
+        assert!(
+            v["detail"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("does not hold"),
+            "the relay does not hold the call sipnab measured: {v}"
+        );
+    }
+
+    /// C4 with both sides: `ok`, both figures shown, both tiers named, a word
+    /// verdict, and a note that is never optional -- and never a summed or
+    /// differenced field, which the cross-tier arithmetic rule forbids. Equal
+    /// counts read `match`.
+    #[test]
+    fn relay_rest_compare_both_sides_present_is_ok_and_names_both_tiers() {
+        let rq = transmitting(
+            Scripted::Timeout,
+            Scripted::Stats(vec![("totals.RTP.packets", "10")]),
+        );
+        let v = relay_rest_answer(
+            &rq,
+            &RelayAsk::Compare("c".into()),
+            &streams_with_call("c", 10),
+        );
+        assert_eq!(v["outcome"], "ok");
+        let packets = &v["packets"];
+        assert_eq!(packets["relay_reported"]["value"], 10);
+        assert_eq!(packets["sipnab_measured"]["value"], 10);
+        assert_eq!(packets["verdict"], "match", "equal counts match");
+        assert!(
+            packets["note"].as_str().is_some_and(|n| !n.is_empty()),
+            "the note is not optional decoration: {v}"
+        );
+        assert!(
+            packets.get("difference").is_none() && packets.get("total").is_none(),
+            "a comparison never carries a summed or differenced field: {v}"
+        );
+    }
+
+    /// C4 when the two sides disagree: `differ`, and BOTH figures survive so an
+    /// operator reads the gap rather than a single reconciled number. The note
+    /// stays, because a bare "differ" sends an operator to the relay first.
+    #[test]
+    fn relay_rest_compare_differing_sides_keep_both_figures() {
+        let rq = transmitting(
+            Scripted::Timeout,
+            Scripted::Stats(vec![("totals.RTP.packets", "12")]),
+        );
+        let v = relay_rest_answer(
+            &rq,
+            &RelayAsk::Compare("c".into()),
+            &streams_with_call("c", 10),
+        );
+        assert_eq!(v["outcome"], "ok");
+        assert_eq!(v["packets"]["verdict"], "differ");
+        assert_eq!(v["packets"]["relay_reported"]["value"], 12);
+        assert_eq!(v["packets"]["sipnab_measured"]["value"], 10);
+        assert!(
+            v["packets"]["note"].as_str().is_some_and(|n| !n.is_empty()),
+            "a differ verdict must carry its note: {v}"
+        );
+    }
+
+    /// Condition 12's other half: C1/C2/C3 do NOT need a capture -- the relay is
+    /// asked directly. A wide ask answers `ok` against an empty stream store,
+    /// so an operator querying a relay on a run with no capture is not refused.
+    #[test]
+    fn relay_rest_global_stats_answer_without_a_capture() {
+        let rq = transmitting(
+            Scripted::Stats(vec![("npkts_relayed", "1")]),
+            Scripted::Timeout,
+        );
+        let v = relay_rest_answer(&rq, &RelayAsk::Wide, &empty_streams());
+        assert_eq!(
+            v["outcome"], "ok",
+            "global relay stats need no capture; the relay answers directly"
+        );
+    }
+
     /// Build an `ApiState` whose verifier accepts only the given static key.
     fn make_state_with_key(key: &str) -> ApiState {
         ApiState {

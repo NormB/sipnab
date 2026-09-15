@@ -44,7 +44,7 @@ Tiers:
 
 ## Status
 
-**28 open, 515 done** across 38 sections.
+**25 open, 518 done** across 38 sections.
 Regenerate with `python3 scripts/backlog-status.py --apply`.
 
 | Section | Open | Done | Progress |
@@ -63,7 +63,7 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
 | NAT | 0 | 4 | `##########` |
 | RV | 0 | 8 | `##########` |
 | RP | 1 | 3 | `########..` |
-| ST | 3 | 14 | `########..` |
+| ST | 0 | 17 | `##########` |
 | PAR | 5 | 0 | `..........` |
 | HX | 1 | 2 | `#######...` |
 | AS | 0 | 7 | `##########` |
@@ -5744,7 +5744,7 @@ apart in the first place (see PAR).
   reader never mistakes the relay's own count for something sipnab saw. Held by
   the docs table/wiki-link ratchets that fixed the recipe count when they landed.
 
-- [ ] **ST-D2 — the site shows them, not just the reference.** The homepage and
+- [x] **ST-D2 — the site shows them, not just the reference.** The homepage and
   the docs navigation surface statistics as a capability rather than leaving
   them to be discovered in a flag table. Includes runnable examples on the
   relevant pages, held by the existing two-examples-per-flag gate, and the
@@ -5753,7 +5753,14 @@ apart in the first place (see PAR).
   **Every example must run against the harness before it ships.** The
   release-verification lesson applies to documentation too: an example nobody
   executed is a claim, and a copied command that fails is worse than no example
-  because the reader blames themselves.
+  because the reader blames themselves. **Done:** the homepage capability table
+  gains a relay-statistics row, and [`docs/rtpengine.md`](https://github.com/NormB/sipnab/blob/main/docs/rtpengine.md) gains a "Relay
+  statistics" section teaching the three-tier rule with runnable examples, each
+  verified in the worktree (the offline refusal against a shipped capture is
+  shown with its real output; the live-relay statistics blocks were deliberately
+  not fabricated, since no live relay is reachable to run them). No homepage demo
+  tab, for the same reason — those demos are real binary output. The one new
+  cookbook link moved the wiki-link ratchet 725→726.
 
 - [x] **PAR-S1 — SPEC: what parity means here.** Gates every PAR item.
   **Written 2026-09-12:
@@ -5866,25 +5873,42 @@ apart in the first place (see PAR).
   standing instruction to transmit, and over REST or MCP the caller who starts
   one does not own the host it keeps transmitting from.
 
-- [ ] **ST5 — REST endpoints for all three tiers.** IN PROGRESS: the four
-  routes landed and verified live against the harness (`GET /v1/relay/stats`,
+- [x] **ST5 — REST endpoints for all three tiers. DONE.** The four routes
+  landed and verified live against the harness (`GET /v1/relay/stats`,
   `/v1/relay/stats/names`, `/v1/relay/stats/call/{call_id}`,
   `/v1/relay/compare/{call_id}`), each behind `--api-allow-relay-query` on a
   live source and transmitting once per request. Polling (C5) is deliberately
   not offered, per ST-S3. Every response is HTTP 200 carrying an `outcome`: `ok`
   with the payload, or one of the five ST-S4 classifications -- a refusal is
   content, not a 4xx, because the route exists and the relay is what did not
-  answer; `not_permitted` never degrades to `unreachable`. The layer names no
-  vendor: `RelayRestConfig` holds a `ReadOnlyRelay` trait object the composition
-  root builds, and `call_statistics` is now a trait method. OpenAPI, the written
-  reference and the schema ratchet are in lockstep. **Remaining for the tick:**
-  the cross-surface capability-matrix acceptance test (ST-S3) lands once MCP and
-  TUI exist, and more failure-path tests toward the 50 minimum.
-  50 tests minimum. Failure
-  paths included: relay unreachable, relay refused, partial answer, no relay
-  configured, statistics requested on a run with no capture. Edge cases:
-  counters that reset when a relay restarts, values that overflow their type,
-  a key present in one relay version and absent in the next.
+  answer, and `not_permitted` never degrades to `unreachable`. The layer names
+  no vendor: `RelayRestConfig` holds a `ReadOnlyRelay` trait object the
+  composition root builds, and `call_statistics` is a trait method. OpenAPI, the
+  written reference and the schema ratchet are in lockstep. The cross-surface
+  capability-matrix acceptance test (ST-S3) has its REST arm now that MCP (ST6)
+  and the TUI (ST8) exist:
+  `st_s3_the_rest_capability_cells_are_backed_by_real_routes` reads each REST
+  spelling from the surfaces spec and grounds it against a running server, so a
+  doc that renames a route the router does not serve fails the test rather than
+  drifting -- the REST counterpart of the matrix test's TUI grounding. The
+  failure suite drives `relay_rest_answer` through a `ReadOnlyRelay` double
+  behind a real transmit permit, so every reachable ST-S4 condition is exercised
+  without a live relay. Failure paths covered: relay unreachable (told the
+  weaker true way, never "the relay is down"), relay refused carrying the
+  relay's own reason verbatim, a reply that cannot be trusted kept `suspect` and
+  never `unreachable`, no relay configured, `not_permitted` kept distinct, and
+  statistics on a run with no capture (C1--C3 answer, C4 reads `not_configured`
+  naming the capture). Edge cases: a counter reading zero after a restart
+  carried as a value rather than an absence, a per-call total that overflows
+  `u64` carried as its digits and classified `suspect`, and a key present in one
+  relay version and absent in the next. The rows that need a transmit to
+  rtpproxy have no wire, because sipnab never sends to it (ST9) -- the
+  partial-answer RENDERING they would need is pinned at the REST envelope, and
+  the shared classification vocabulary is single-sourced in
+  [`tests/statistics_vocabulary_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/statistics_vocabulary_test.rs). Well past the 50-test minimum across
+  the relay-statistics corpus the REST surface draws from -- the shared
+  vocabulary, the format and tier tests, plus the REST-specific envelope, route
+  and `relay_rest_answer` tests (33 REST-specific, up from 11).
 
 - [x] **ST6 — MCP tools for all three tiers. DONE.** Two read-only tools, split
   by CAPABILITY rather than by relay -- neither names a vendor, so RP2's

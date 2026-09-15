@@ -8,6 +8,34 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Added
+
+- **REST failure-path and cross-surface acceptance coverage for relay
+  statistics (ST5).** The relay-statistics REST routes gain the failure-path
+  tests toward their 50-test floor — relay unreachable, relay refused, a partial
+  answer, no relay configured, statistics requested on a run with no capture,
+  and the edge cases (a counter that resets when a relay restarts, a value that
+  overflows its type, a key present in one relay version and absent in the next)
+  — plus the ST-S3 cross-surface capability-matrix acceptance test, which could
+  land now that the MCP tools and the TUI RelayStats view both exist.
+
+### Changed
+
+- **The relay-statistics poller is gated through one tested rule (ST4).** The
+  refusal to poll a relay the run was never given was a second, untested copy of
+  the one-shot gate; it is now a pure `relay_poll_plan` derived from the same
+  `relay_stats_action`, so the CLI's one-shot ask and the `--relay-stats-interval`
+  poller cannot drift. Nothing polls by default, the interval is bounded
+  (`1..=3600`), and a polled figure is labelled `polled` distinctly from a
+  one-shot `asked`.
+- **The site surfaces relay statistics as a capability (ST-D2).** The homepage
+  capability table gains a relay-statistics row, and the rtpengine docs page
+  teaches the three-tier rule (`relay_reported` / `sipnab_measured` /
+  `endpoint_reported`, none authoritative) with runnable, harness-verified
+  examples, rather than leaving the feature to be found in a flag table.
+
 ## [0.5.174] - 2026-09-15
 
 ### Added
