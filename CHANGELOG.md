@@ -8,7 +8,26 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
-## [Unreleased]
+## [0.5.173] - 2026-09-15
+
+### Added
+
+- **The TUI can edit the capture filter at runtime, from the `B` popup.** The
+  popup is a text input, modeled on the search field: type an expression to
+  append to the running filter, `Tab` toggles whether it narrows (AND) or widens
+  (OR), and the preview above shows the composed effective filter live, so what
+  an apply would run is visible before it runs. Because append operates on the
+  whole current filter, the tunnel/encapsulation scaffolding inside it is
+  preserved — an operator cannot drop tunneled-SIP handling by accident. `Enter`
+  validates the composed expression (a dead-handle `pcap_compile`, so a typo is
+  caught without touching the running capture) and, on a single or fanout **live**
+  device, re-applies it: the kernel captures under the new filter from that point
+  on, the status line says `filter changed; applies to new packets`, and a filter
+  libpcap rejects leaves the running one in place with the error shown. The apply
+  reaches every fanout socket. For a file source (`-I`) or `--multi-device`, the
+  editor is validate-only (no runtime re-apply); a re-scan of a replayed file
+  under a new filter is a later change. Specified in
+  `docs/design/tui-bpf-filter-editing.md`.
 
 ### Changed
 
@@ -16,12 +35,10 @@ entry that carries them.
   rather than drawing a truncated prefix of its thousand-column expression: it
   shows `default (SIP + RTP, all encapsulations)`, and the full expression stays
   on the startup log line. An operator's own filter is still shown verbatim, cut
-  with an ellipsis only when it overflows the row. This is the first landed piece
-  of the editable capture-filter feature specified in
-  `docs/design/tui-bpf-filter-editing.md`. Pressing `B` opens a popup showing the
-  full expression verbatim (wrapped and pasteable), so the summary is never a
-  dead end. The editable field (replace, or append with an AND/OR toggle) and
-  runtime re-apply follow.
+  with an ellipsis only when it overflows the row. Pressing `B` opens the editor
+  popup (above), whose preview scrolls (`↑/↓`, `j/k`, `PgUp/PgDn`, `Home/End`) so
+  a filter taller than the popup can be read in full — the summary and the
+  ellipsis are never a dead end.
 
 ## [0.5.172] - 2026-09-14
 
