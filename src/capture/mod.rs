@@ -46,6 +46,8 @@ pub mod pcap_reader;
 #[cfg(feature = "native")]
 pub mod pcapng_meta;
 pub mod reassembly;
+#[cfg(feature = "native")]
+pub mod reconfigure;
 pub mod session;
 #[cfg(target_os = "linux")]
 pub mod uprobe;

@@ -304,6 +304,14 @@ pub struct TuiOptions {
     /// `--relay-stats-interval`. `Some(n)` makes the relay-stats view re-ask
     /// every `n` seconds and label its counters `polled`; `None` asks once.
     pub relay_stats_interval: Option<u64>,
+    /// Runtime BPF-filter reconfigure control (`Some` only for a single/fanout
+    /// live capture): the shared handle the editor's `Enter` stamps a new
+    /// filter on. `None` makes the editor validate-only.
+    pub reconfigure_control: Option<std::sync::Arc<crate::capture::reconfigure::FilterControl>>,
+    /// Channel the capture loops report filter-install outcomes on, drained by
+    /// the event loop. Paired with `reconfigure_control`.
+    pub reconfigure_outcomes:
+        Option<crossbeam_channel::Receiver<crate::capture::reconfigure::FilterApplyOutcome>>,
 }
 
 impl TuiOptions {
@@ -353,6 +361,7 @@ impl TuiOptions {
         app.set_action_trail(self.action_trail);
         app.relay_query = self.relay_query;
         app.relay_stats_interval = self.relay_stats_interval;
+        app.set_reconfigure(self.reconfigure_control, self.reconfigure_outcomes);
         app
     }
 }

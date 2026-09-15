@@ -202,6 +202,20 @@ pub struct App {
     /// effective filter. Reset when the popup closes. See
     /// [`crate::tui::bpf_editor::BpfEditor`].
     bpf_editor: bpf_editor::BpfEditor,
+    /// Runtime BPF-filter reconfigure control, shared with the capture loop(s).
+    /// `Some` only for a single/fanout live capture; `None` (file/uprobe/HEP/
+    /// multi-device) makes the editor validate-only. The editor's `Enter`
+    /// stamps a request here; the loops install it and report back on
+    /// `reconfigure_outcomes`.
+    reconfigure_control: Option<std::sync::Arc<crate::capture::reconfigure::FilterControl>>,
+    /// Where the capture loops report filter-install outcomes; drained each
+    /// tick to confirm or reject a pending re-apply.
+    reconfigure_outcomes:
+        Option<crossbeam_channel::Receiver<crate::capture::reconfigure::FilterApplyOutcome>>,
+    /// The generation and composed filter of an apply awaiting confirmation, so
+    /// the matching outcome knows what to promote to `bpf_filter`. `None` when
+    /// nothing is in flight.
+    bpf_pending: Option<(u64, String)>,
     /// Cached total dialog count (updated when lock is available).
     cached_dialog_count: usize,
     /// Displayed dialog list cache (filter+search+sort, derived per tick).
@@ -366,6 +380,9 @@ impl App {
             bpf_is_live_only: false,
             bpf_scroll: 0,
             bpf_editor: bpf_editor::BpfEditor::new(),
+            reconfigure_control: None,
+            reconfigure_outcomes: None,
+            bpf_pending: None,
             raw_msg_scroll: 0,
             help_scroll: 0,
             stats_scroll: 0,
@@ -536,6 +553,86 @@ impl App {
     pub fn set_bpf_filter(&mut self, filter: String, generated: bool) {
         self.bpf_filter = filter;
         self.bpf_filter_generated = generated;
+    }
+
+    /// Wire the runtime BPF-filter reconfigure control and outcome channel.
+    /// Both `Some` (a single/fanout live capture) or both `None`.
+    pub fn set_reconfigure(
+        &mut self,
+        control: Option<std::sync::Arc<crate::capture::reconfigure::FilterControl>>,
+        outcomes: Option<
+            crossbeam_channel::Receiver<crate::capture::reconfigure::FilterApplyOutcome>,
+        >,
+    ) {
+        self.reconfigure_control = control;
+        self.reconfigure_outcomes = outcomes;
+    }
+
+    /// Whether this session can re-apply the capture filter at runtime — true
+    /// only for a single/fanout live capture. The editor uses it to apply on
+    /// `Enter` rather than merely validate.
+    pub(in crate::tui) fn can_reapply_filter(&self) -> bool {
+        self.reconfigure_control.is_some()
+    }
+
+    /// Stamp a request to re-apply `filter` on the shared control and remember
+    /// it as pending, so the matching outcome can promote it to `bpf_filter`.
+    /// A no-op (returns false) when this session cannot re-apply.
+    pub(in crate::tui) fn request_filter_reapply(&mut self, filter: String) -> bool {
+        let Some(control) = self.reconfigure_control.as_ref() else {
+            return false;
+        };
+        let generation = control.request(filter.clone());
+        self.bpf_pending = Some((generation, filter));
+        true
+    }
+
+    /// Drain filter-install outcomes reported by the capture loop(s). On the
+    /// outcome that matches the pending request, promote the applied filter to
+    /// `bpf_filter` (so further edits append to it) and report on the status
+    /// line, or report the rejection and leave the running filter unchanged.
+    ///
+    /// # Side effects
+    /// Consumes queued outcomes; may set `bpf_filter`, `status_error`, clear
+    /// `bpf_pending`, and reset the editor when an apply lands.
+    pub(in crate::tui) fn drain_filter_outcomes(&mut self) {
+        use crate::capture::reconfigure::FilterApplyOutcome;
+        let Some(rx) = self.reconfigure_outcomes.as_ref() else {
+            return;
+        };
+        // Snapshot the queued outcomes first, then act — try_recv borrows the
+        // receiver, and acting needs `&mut self`.
+        let mut outcomes = Vec::new();
+        while let Ok(outcome) = rx.try_recv() {
+            outcomes.push(outcome);
+        }
+        for outcome in outcomes {
+            match outcome {
+                FilterApplyOutcome::Applied { generation } => {
+                    if let Some((pending_gen, filter)) = self.bpf_pending.take() {
+                        if pending_gen == generation {
+                            self.bpf_filter = filter;
+                            self.bpf_filter_generated = false;
+                            self.bpf_editor = bpf_editor::BpfEditor::new();
+                            self.status_error =
+                                Some("filter changed; applies to new packets".to_string());
+                        } else {
+                            // A stale/duplicate outcome (another socket, or an
+                            // older generation): keep waiting for our own.
+                            self.bpf_pending = Some((pending_gen, filter));
+                        }
+                    }
+                }
+                FilterApplyOutcome::Rejected { generation, error } => {
+                    if let Some((pending_gen, _)) = self.bpf_pending
+                        && pending_gen == generation
+                    {
+                        self.bpf_pending = None;
+                        self.status_error = Some(format!("filter rejected: {error}"));
+                    }
+                }
+            }
+        }
     }
 
     /// Mark data as freshly updated: resets the adaptive refresh timer so
@@ -1553,6 +1650,9 @@ pub fn run_tui_with_pause(
         // progress line) and drain detached-worker completion messages.
         controllers::poll_pcap_load(&mut app);
         app.drain_async_messages();
+        // Absorb any runtime BPF-filter install outcome the capture loop(s)
+        // reported, promoting a confirmed apply or surfacing a rejection.
+        app.drain_filter_outcomes();
 
         // Tick: refresh store-derived caches, render read-only, then
         // persist what the render pass computed (clamps, flow row caches).
@@ -1648,6 +1748,105 @@ mod tests {
         let app = App::new(ds, ss, Theme::default(), Keymap::default());
         assert_eq!(app.current_view, View::CallList);
         assert!(!app.should_quit);
+    }
+
+    /// An App with a live reconfigure control wired, plus the sender a "capture
+    /// loop" would report install outcomes on.
+    fn app_with_reconfigure() -> (
+        App,
+        Arc<crate::capture::reconfigure::FilterControl>,
+        crossbeam_channel::Sender<crate::capture::reconfigure::FilterApplyOutcome>,
+    ) {
+        let ds = Arc::new(RwLock::new(DialogStore::new(100, false)));
+        let ss = Arc::new(RwLock::new(StreamStore::new(100)));
+        let mut app = App::new(ds, ss, Theme::default(), Keymap::default());
+        let control = Arc::new(crate::capture::reconfigure::FilterControl::new());
+        let (otx, orx) = crossbeam_channel::unbounded();
+        app.set_reconfigure(Some(Arc::clone(&control)), Some(orx));
+        (app, control, otx)
+    }
+
+    /// Without a control (a file source, `--multi-device`), a re-apply request
+    /// is a no-op — the editor is validate-only there.
+    #[test]
+    fn request_filter_reapply_is_a_noop_without_a_control() {
+        let ds = Arc::new(RwLock::new(DialogStore::new(100, false)));
+        let ss = Arc::new(RwLock::new(StreamStore::new(100)));
+        let mut app = App::new(ds, ss, Theme::default(), Keymap::default());
+        assert!(!app.can_reapply_filter());
+        assert!(!app.request_filter_reapply("udp port 5060".to_string()));
+        assert!(app.bpf_pending.is_none());
+    }
+
+    /// A confirmed apply promotes the requested filter to the effective filter,
+    /// resets the editor, and clears the pending marker.
+    #[test]
+    fn a_confirmed_apply_promotes_the_filter() {
+        use crate::capture::reconfigure::FilterApplyOutcome;
+        let (mut app, _control, otx) = app_with_reconfigure();
+        assert!(app.can_reapply_filter());
+        assert!(app.request_filter_reapply("udp port 5060".to_string()));
+        // The capture loop installs generation 1 and reports success.
+        otx.send(FilterApplyOutcome::Applied { generation: 1 })
+            .unwrap();
+        app.drain_filter_outcomes();
+        assert_eq!(
+            app.bpf_filter, "udp port 5060",
+            "the applied filter is now effective"
+        );
+        assert!(
+            app.bpf_pending.is_none(),
+            "nothing pending after confirmation"
+        );
+        assert_eq!(
+            app.bpf_editor.input(),
+            "",
+            "the editor resets for the next edit"
+        );
+        assert_eq!(
+            app.status_error.as_deref(),
+            Some("filter changed; applies to new packets")
+        );
+    }
+
+    /// A rejected apply leaves the running filter unchanged and reports the
+    /// error, so a filter libpcap could not install never takes the capture out.
+    #[test]
+    fn a_rejected_apply_keeps_the_old_filter() {
+        use crate::capture::reconfigure::FilterApplyOutcome;
+        let (mut app, _control, otx) = app_with_reconfigure();
+        app.set_bpf_filter("udp port 5060".to_string(), false);
+        app.request_filter_reapply("bad and and".to_string());
+        otx.send(FilterApplyOutcome::Rejected {
+            generation: 1,
+            error: "syntax error".to_string(),
+        })
+        .unwrap();
+        app.drain_filter_outcomes();
+        assert_eq!(app.bpf_filter, "udp port 5060", "the old filter stands");
+        assert!(app.bpf_pending.is_none());
+        assert!(app.status_error.as_deref().unwrap().contains("rejected"));
+    }
+
+    /// A stale outcome (an older generation, or another socket's late report)
+    /// does not disturb a newer pending request.
+    #[test]
+    fn a_stale_outcome_does_not_clear_a_newer_pending() {
+        use crate::capture::reconfigure::FilterApplyOutcome;
+        let (mut app, control, otx) = app_with_reconfigure();
+        control.request("old".to_string()); // generation 1, not tracked by the app
+        app.request_filter_reapply("new".to_string()); // generation 2 is what the app awaits
+        otx.send(FilterApplyOutcome::Applied { generation: 1 })
+            .unwrap();
+        app.drain_filter_outcomes();
+        assert!(
+            app.bpf_pending.is_some(),
+            "the generation-2 request still stands"
+        );
+        assert_ne!(
+            app.bpf_filter, "new",
+            "the stale outcome did not promote 'new'"
+        );
     }
 
     /// WS4.3: one frame derives the displayed dialog list AT MOST once,

@@ -15,6 +15,7 @@ use anyhow::{Context, Result};
 use super::channel::PacketTx;
 #[cfg(feature = "hep")]
 use super::hep;
+use super::reconfigure::ReconfigureHandle;
 use super::{device, file, live};
 use crate::signals;
 
@@ -473,6 +474,7 @@ pub fn start_capture(
     config: CaptureConfig,
     tx: PacketTx,
     ready_tx: Option<crossbeam_channel::Sender<Result<(), String>>>,
+    reconfigure: Option<ReconfigureHandle>,
 ) -> Result<CaptureHandle> {
     let source_clone = source.clone();
 
@@ -483,7 +485,7 @@ pub fn start_capture(
                 .name(format!("capture-{device}"))
                 .spawn(move || {
                     let sockets = config.fanout_sockets;
-                    live::capture_live_fanout(&device, &config, tx, ready_tx, sockets)
+                    live::capture_live_fanout(&device, &config, tx, ready_tx, sockets, reconfigure)
                 })
                 .context("Failed to spawn live capture thread")?
         }
@@ -684,6 +686,9 @@ pub fn start_multi_capture(
             config,
             tx,
             ready_tx,
+            // Runtime filter re-apply is not wired through the multi-device
+            // coordinator in v1; a single-device or fanout live capture has it.
+            None,
         );
     }
 
@@ -738,7 +743,7 @@ fn spawn_capture_member(
     ready: MemberReadyTx,
 ) -> Result<thread::JoinHandle<Result<()>>> {
     let label = source.label(); // for error context
-    start_capture(source, config, tx, Some(ready))
+    start_capture(source, config, tx, Some(ready), None)
         .map(|h| h.thread)
         .with_context(|| format!("Failed to spawn capture thread for {label}"))
 }
@@ -956,6 +961,7 @@ mod tests {
             config,
             pkt_tx,
             Some(ready_tx),
+            None,
         )
         .expect("start_capture should succeed");
 
@@ -1385,6 +1391,7 @@ mod tests {
                 CaptureConfig::default(),
                 tx,
                 None,
+                None,
             )
             .err()
             .expect("a File member must be refused");
@@ -1399,6 +1406,7 @@ mod tests {
                 CaptureSource::Composite(vec![live.clone()]),
                 CaptureConfig::default(),
                 tx,
+                None,
                 None,
             )
             .err()
@@ -1416,6 +1424,7 @@ mod tests {
                 ]),
                 CaptureConfig::default(),
                 tx,
+                None,
                 None,
             )
             .err()

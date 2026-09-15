@@ -341,16 +341,23 @@ pub(in crate::tui) fn handle_bpf_filter_key(app: &mut App, key: KeyEvent) {
             app.bpf_scroll = 0; // start at the top next time
         }
         KeyCode::Enter => {
-            // Validate the composed effective filter and report the outcome. The
-            // runtime re-apply (a channel to the capture thread) is a later
-            // increment; this catches a typo before it can matter.
+            // Validate the composed effective filter first, so a typo is caught
+            // here rather than at the capture thread. On a live capture, request
+            // the re-apply and report progress; the confirmed outcome arrives on
+            // the next tick (see `App::drain_filter_outcomes`). Where re-apply is
+            // not wired (a file source, `--multi-device`), report the check only.
             let composed = app.bpf_editor.compose(&app.bpf_filter);
-            app.status_error = Some(
-                match crate::capture::bpf_filter::validate_filter(&composed) {
-                    Ok(()) => format!("filter OK (compiles): {composed}"),
-                    Err(msg) => format!("filter rejected: {msg}"),
-                },
-            );
+            match crate::capture::bpf_filter::validate_filter(&composed) {
+                Ok(()) => {
+                    if app.can_reapply_filter() {
+                        app.request_filter_reapply(composed);
+                        app.status_error = Some("applying filter…".to_string());
+                    } else {
+                        app.status_error = Some(format!("filter OK (compiles): {composed}"));
+                    }
+                }
+                Err(msg) => app.status_error = Some(format!("filter rejected: {msg}")),
+            }
         }
         KeyCode::Tab => app.bpf_editor.toggle_mode(),
         KeyCode::Backspace => app.bpf_editor.backspace(),
@@ -1594,6 +1601,37 @@ mod tests {
         handle_bpf_filter_key(&mut app, key(KeyCode::Enter));
         let msg = app.status_error.clone().expect("Enter sets a status");
         assert!(msg.contains("rejected"), "reports the rejection: {msg}");
+    }
+
+    /// On a live capture (a reconfigure control wired), Enter requests the
+    /// re-apply and reports progress; the confirmed outcome promotes the
+    /// composed append to the effective filter.
+    #[test]
+    fn bpf_filter_enter_applies_on_a_live_capture() {
+        use crate::capture::reconfigure::{FilterApplyOutcome, FilterControl};
+        let mut app = App::new_test();
+        let control = std::sync::Arc::new(FilterControl::new());
+        let (otx, orx) = crossbeam_channel::unbounded();
+        app.set_reconfigure(Some(std::sync::Arc::clone(&control)), Some(orx));
+        app.current_view = View::BpfFilter;
+        app.set_bpf_filter("udp port 5060".to_string(), false);
+        for c in "host 192.0.2.5".chars() {
+            handle_bpf_filter_key(&mut app, key(KeyCode::Char(c)));
+        }
+        handle_bpf_filter_key(&mut app, key(KeyCode::Enter));
+        assert!(
+            app.status_error.as_deref().unwrap().contains("applying"),
+            "Enter reports the apply is in flight: {:?}",
+            app.status_error
+        );
+        // The capture loop confirms generation 1.
+        otx.send(FilterApplyOutcome::Applied { generation: 1 })
+            .unwrap();
+        app.drain_filter_outcomes();
+        assert_eq!(
+            app.bpf_filter, "(udp port 5060) and (host 192.0.2.5)",
+            "the composed append is now the effective filter"
+        );
     }
 
     /// Esc and `s` both close the statistics view.

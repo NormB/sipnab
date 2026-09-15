@@ -274,6 +274,10 @@ pub fn run_tui_mode(
     // lifetime change nobody asked for.
     let handle = launched.handle;
     let rx = launched.rx;
+    // The runtime BPF-filter reconfigure handles (Some only for a single/fanout
+    // live capture), handed to the App so `B`'s Enter can re-apply the filter.
+    let reconfigure_control = launched.reconfigure_control;
+    let reconfigure_outcomes = launched.reconfigure_outcomes;
     let no_rtp = cli.capture_args.no_rtp || config.capture.no_rtp.unwrap_or(false);
 
     // The operator's action trail, opened before any thread this function
@@ -673,6 +677,9 @@ pub fn run_tui_mode(
             // C5: the view inherits the run's poll interval, showing it in the
             // header and re-asking on it.
             relay_stats_interval: cli.rtp_args.relay_stats_interval,
+            // Runtime BPF re-apply (Some only for a single/fanout live device).
+            reconfigure_control,
+            reconfigure_outcomes,
         },
     ) {
         tracing::error!("TUI error: {e}");

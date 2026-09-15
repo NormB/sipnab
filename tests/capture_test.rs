@@ -366,7 +366,8 @@ fn start_capture_file_source() {
     let source = CaptureSource::File {
         paths: vec![fixture_path()],
     };
-    let handle = start_capture(source, CaptureConfig::default(), tx, None).expect("start_capture");
+    let handle =
+        start_capture(source, CaptureConfig::default(), tx, None, None).expect("start_capture");
 
     // Wait for the thread to finish
     handle.thread.join().expect("join").expect("capture result");

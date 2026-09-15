@@ -1033,6 +1033,15 @@ pub struct Launched {
     /// leave it an orphan headless. The reconciler cannot be rebuilt at all
     /// without losing the bounds it accumulated -- see [`ReadyReconciler`].
     pub relay: RelayControl,
+    /// Runtime BPF-filter reconfigure for a single/fanout live capture: the
+    /// shared control the TUI stamps a new filter on, and the channel the
+    /// capture loops report install outcomes on. `None` for file/uprobe/HEP and
+    /// `--multi-device` sources, where a runtime re-apply is not wired.
+    pub reconfigure_control: Option<std::sync::Arc<crate::capture::reconfigure::FilterControl>>,
+    /// Outcomes of runtime filter installs, drained by the TUI. Paired with
+    /// `reconfigure_control` (both `Some` or both `None`).
+    pub reconfigure_outcomes:
+        Option<crossbeam_channel::Receiver<crate::capture::reconfigure::FilterApplyOutcome>>,
 }
 
 /// Open a streaming keylog source, if this run has one, while still privileged.
@@ -1673,6 +1682,23 @@ pub fn launch(
     //     device/file/socket is open before we drop privileges.
     let (ready_tx, ready_rx) = crossbeam_channel::bounded::<Result<(), String>>(1);
 
+    // Runtime BPF-filter re-apply is available on a single or fanout LIVE
+    // device only (not `--multi-device`, not a file/uprobe/HEP source). Build
+    // the shared control just for that case; elsewhere the TUI shows the editor
+    // as validate-only rather than pretending an apply that no loop would run.
+    let (reconfigure_control, reconfigure_handle, reconfigure_outcomes) =
+        if !cli.capture_args.multi_device && matches!(source, CaptureSource::Live { .. }) {
+            let control = std::sync::Arc::new(crate::capture::reconfigure::FilterControl::new());
+            let (otx, orx) = crossbeam_channel::unbounded();
+            let handle = crate::capture::reconfigure::ReconfigureHandle {
+                control: std::sync::Arc::clone(&control),
+                outcomes: otx,
+            };
+            (Some(control), Some(handle), Some(orx))
+        } else {
+            (None, None, None)
+        };
+
     let handle = if cli.capture_args.multi_device {
         let device_str = match &source {
             CaptureSource::Live { device } => device.clone(),
@@ -1690,7 +1716,13 @@ pub fn launch(
             }
         }
     } else {
-        match capture::start_capture(source, capture_config.clone(), tx, Some(ready_tx)) {
+        match capture::start_capture(
+            source,
+            capture_config.clone(),
+            tx,
+            Some(ready_tx),
+            reconfigure_handle,
+        ) {
             Ok(h) => h,
             Err(e) => {
                 tracing::error!("Failed to start capture: {e}");
@@ -2033,6 +2065,8 @@ pub fn launch(
         #[cfg(feature = "tls")]
         keylog_source,
         relay,
+        reconfigure_control,
+        reconfigure_outcomes,
     }
 }
 

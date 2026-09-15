@@ -13,6 +13,7 @@ use chrono::{DateTime, TimeZone, Utc};
 
 use super::CaptureConfig;
 use super::packet::Packet;
+use super::reconfigure::{ReconfigureHandle, apply_pending};
 use crate::signals;
 
 /// How long [`wait_readable`] blocks before returning control to the capture
@@ -171,8 +172,9 @@ pub fn capture_live(
     config: &CaptureConfig,
     tx: PacketTx,
     ready_tx: Option<crossbeam_channel::Sender<Result<(), String>>>,
+    reconfigure: Option<ReconfigureHandle>,
 ) -> Result<()> {
-    capture_live_group(device, config, tx, ready_tx, None, None)
+    capture_live_group(device, config, tx, ready_tx, None, None, reconfigure)
 }
 
 /// How many sockets a fanout request resolves to, and why.
@@ -271,6 +273,7 @@ pub fn capture_live_fanout(
     tx: PacketTx,
     ready_tx: Option<crossbeam_channel::Sender<Result<(), String>>>,
     sockets: usize,
+    reconfigure: Option<ReconfigureHandle>,
 ) -> Result<()> {
     let group = match plan_fanout(sockets) {
         FanoutPlan::Solo(reason) => {
@@ -280,7 +283,7 @@ pub fn capture_live_fanout(
                      --cores {sockets} does not widen a live capture here."
                 );
             }
-            return capture_live(device, config, tx, ready_tx);
+            return capture_live(device, config, tx, ready_tx, reconfigure);
         }
         FanoutPlan::Group(_) => fanout_group_id(),
     };
@@ -294,7 +297,7 @@ pub fn capture_live_fanout(
             "'{device}': the kernel refused PACKET_FANOUT ({e}); capturing on \
              one socket. Live capture will not scale past a single core here."
         );
-        return capture_live(device, config, tx, ready_tx);
+        return capture_live(device, config, tx, ready_tx, reconfigure);
     }
 
     // -B is PER HANDLE, so N sockets ask the kernel for N rings of that size.
@@ -324,11 +327,22 @@ pub fn capture_live_fanout(
         // one-shot channel would leave the caller's meaning of "ready" up to
         // whichever thread won.
         let ready = if index == 0 { ready_tx.clone() } else { None };
+        // Every socket polls the same shared control, so a runtime filter change
+        // reaches all of them; each installs it on its own handle.
+        let reconfigure = reconfigure.clone();
         handles.push(
             std::thread::Builder::new()
                 .name(format!("capture-{device}-{index}"))
                 .spawn(move || {
-                    capture_live_group(&device, &config, tx, ready, Some(group), Some(index))
+                    capture_live_group(
+                        &device,
+                        &config,
+                        tx,
+                        ready,
+                        Some(group),
+                        Some(index),
+                        reconfigure,
+                    )
                 })?,
         );
     }
@@ -407,6 +421,7 @@ fn capture_live_group(
     ready_tx: Option<crossbeam_channel::Sender<Result<(), String>>>,
     fanout_group: Option<u16>,
     socket_index: Option<usize>,
+    reconfigure: Option<ReconfigureHandle>,
 ) -> Result<()> {
     // Promiscuous mode is opt-out (`--no-promisc` / `config.promisc`). The "any"
     // pseudo-device on Linux does not support it regardless.
@@ -598,6 +613,10 @@ fn capture_live_group(
     // the process-global totals — see `fold_stats`.
     let mut last_stats = std::time::Instant::now();
     let (mut prev_dropped, mut prev_if_dropped) = (0u32, 0u32);
+    // The generation of the last filter this socket installed at runtime. The
+    // initial filter was applied at open (above); reconfigure only carries
+    // CHANGES, so this starts at 0 (the control's resting generation).
+    let mut installed_filter_gen = 0u64;
 
     tracing::info!(
         "Capturing on '{device}' (link_type={link_type}, snaplen={})",
@@ -627,6 +646,13 @@ fn capture_live_group(
         if signals::shutdown_requested() {
             tracing::debug!("Shutdown requested, stopping live capture");
             break;
+        }
+
+        // Install a runtime filter change if one is pending. The poll is a cheap
+        // atomic load on the common (unchanged) path; only a real change locks,
+        // compiles, and calls `pcap_setfilter` on this socket's handle.
+        if let Some(ref handle) = reconfigure {
+            installed_filter_gen = apply_pending(&mut cap, handle, installed_filter_gen);
         }
 
         if let Some(max_count) = config.count
@@ -1073,7 +1099,7 @@ mod tests {
         let (ready_tx, ready_rx) = crossbeam_channel::bounded(1);
         let (tx, _rx) = crate::capture::channel::packet_channel(16);
         let config = crate::capture::CaptureConfig::default();
-        let result = capture_live("sipnab-no-such-dev0", &config, tx, Some(ready_tx));
+        let result = capture_live("sipnab-no-such-dev0", &config, tx, Some(ready_tx), None);
         assert!(result.is_err(), "nonexistent device must fail");
         let err = ready_rx
             .try_recv()
