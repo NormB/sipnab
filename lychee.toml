@@ -204,6 +204,24 @@ exclude = [
   # exclusion for availability, not for access. Reverse it if lychee grows
   # per-host accepts or retries rejected 5xx.
   'bestpractices\.dev',
+  # The 3GPP specification portal, cited by docs/sip-header-fields.md as the
+  # authoritative source for the P-headers 3GPP defines (SpecificationDetails
+  # for spec 1055 / TS 24.229). It answered 200 through 0.5.174 -- that release's
+  # Docs job was green on these same links -- and started failing between then
+  # and 0.5.175 with "invalid peer certificate: UnknownIssuer" on a dozen refs.
+  #
+  # This is a server-side TLS regression, not a dead link: curl from a
+  # residential connection gets the identical "unable to get local issuer
+  # certificate", so portal.3gpp.org is now serving a chain missing its
+  # intermediate. Nothing lychee can do rescues an untrusted chain -- it is not a
+  # status code to `accept` and not a timeout to raise -- and --insecure is not
+  # worth turning on repo-wide to trust one misconfigured host.
+  #
+  # The cost is small and stated: these are canonical 3GPP specification numbers,
+  # stable for the life of the release, so a link rotting behind the exclusion is
+  # close to impossible. Reverse it when portal.3gpp.org serves a complete chain
+  # again -- the exclusion is for their cert, not forever.
+  'portal\.3gpp\.org',
 ]
 
 exclude_path = [
