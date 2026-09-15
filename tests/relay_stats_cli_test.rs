@@ -10,7 +10,9 @@
 
 #![cfg(feature = "full")]
 
-use sipnab::app::bootstrap::{RelayStatsAction, relay_stats_action};
+use sipnab::app::bootstrap::{
+    RelayPollPlan, RelayStatsAction, relay_poll_plan, relay_stats_action,
+};
 
 /// The flag off is a skip, whatever else is true -- nothing transmits unbidden.
 #[test]
@@ -244,6 +246,88 @@ fn the_relay_stats_interval_rejects_zero_and_the_absurd() {
         .is_err(),
         "an interval past the ceiling must be refused"
     );
+}
+
+/// Nothing polls by default (ST4): with no interval, the plan is `Idle` whatever
+/// else is true. This is the rule that a timer transmits only when an operator
+/// names an interval -- absent one, no packet leaves.
+#[test]
+fn no_interval_means_nothing_polls() {
+    assert_eq!(
+        relay_poll_plan(None, Some("127.0.0.1:22222"), true),
+        RelayPollPlan::Idle,
+        "no interval, no poll -- even with a relay named and a permit in hand"
+    );
+    assert_eq!(
+        relay_poll_plan(None, None, false),
+        RelayPollPlan::Idle,
+        "no interval, no poll -- nothing configured either way"
+    );
+}
+
+/// Asked to poll with no relay named is refused as `not_configured` (ST4): the
+/// run was never given a relay to poll, so the request is refused, not silently
+/// dropped. The operator's fix is to name one.
+#[test]
+fn polling_with_no_relay_is_refused_as_not_configured() {
+    assert_eq!(
+        relay_poll_plan(Some(30), None, true),
+        RelayPollPlan::NotConfigured,
+        "a poll with no relay to poll is refused, not a silent no-op"
+    );
+}
+
+/// Asked to poll a relay on a run that may not transmit is `not_permitted` -- a
+/// file-backed run. Ordered after the no-relay case, exactly like the one-shot
+/// gate: naming no relay has a different fix than a run that cannot transmit.
+#[test]
+fn polling_without_a_permit_is_not_permitted() {
+    assert_eq!(
+        relay_poll_plan(Some(30), Some("127.0.0.1:22222"), false),
+        RelayPollPlan::NotPermitted,
+        "polling transmits; a file-backed run may not"
+    );
+}
+
+/// A poll with an interval, a relay, and a permit carries BOTH the interval and
+/// the address the operator named, verbatim -- the interval so each reading can
+/// say it was polled every N seconds, the address so the poll reaches it.
+#[test]
+fn polling_with_interval_relay_and_permit_carries_both() {
+    assert_eq!(
+        relay_poll_plan(Some(30), Some("10.0.0.2:22222"), true),
+        RelayPollPlan::Poll {
+            secs: 30,
+            addr: "10.0.0.2:22222".to_owned()
+        },
+        "the interval and the address are both carried to the poll"
+    );
+}
+
+/// The poll gate is the SAME rule as the one-shot ask: for any relay/permit
+/// pair, a poll (asked = an interval is present) and `relay_stats_action` with
+/// `asked = true` reach the same verdict. One rule, so the two cannot drift.
+#[test]
+fn the_poll_gate_matches_the_one_shot_gate() {
+    for relay in [None, Some("10.0.0.2:22222")] {
+        for permit in [false, true] {
+            let poll = relay_poll_plan(Some(15), relay, permit);
+            let one_shot = relay_stats_action(true, relay, permit);
+            let agree = matches!(
+                (&poll, &one_shot),
+                (
+                    RelayPollPlan::NotConfigured,
+                    RelayStatsAction::NotConfigured
+                ) | (RelayPollPlan::NotPermitted, RelayStatsAction::NotPermitted)
+                    | (RelayPollPlan::Poll { .. }, RelayStatsAction::Fetch(_))
+            );
+            assert!(
+                agree,
+                "poll and one-shot must agree for relay={relay:?} permit={permit}: \
+                 {poll:?} vs {one_shot:?}"
+            );
+        }
+    }
 }
 
 /// `--api-allow-relay-query` parses and sets its flag; off by default (ST5).

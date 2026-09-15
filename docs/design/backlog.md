@@ -250,7 +250,7 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
   silently negates most of CT2's benefit on exactly the busy servers CT2
   targets, and because it makes `-B` advice misleading until fixed.
   **Done:** immediate mode is now a decision, not a constant.
-  `immediate_mode_for(mode)` ([`src/app/bootstrap.rs:2970`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L2970)) is
+  `immediate_mode_for(mode)` ([`src/app/bootstrap.rs:3028`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L3028)) is
   `matches!(mode, RunMode::Tui)` and is the only place that answers the
   question; `bootstrap.rs:537` assigns its result to
   `CaptureConfig::immediate_mode`, and [`src/capture/live.rs:219-220`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L219-L220) passes that
@@ -822,7 +822,7 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
   reconstruction path is offline-only. Cheap, and it removes a silent
   expectation mismatch on exactly the busy-server workload where someone would
   reach for it. **Done:** `cores_ignored_warning`
-  ([`src/app/bootstrap.rs:3451`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L3451)) returns the message and the reason —
+  ([`src/app/bootstrap.rs:3509`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L3509)) returns the message and the reason —
   `--multi-device` opens one capture per interface, or the run captures live
   rather than reading a saved file — and `bootstrap.rs:492` warns with it.
   Warned rather than refused, because the run is correct, just single-threaded,
@@ -1707,7 +1707,7 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
   truncation breaks `--retain-audio`/WAV export and Opus decode (they need RTP
   payload, not just headers), and it degrades `-O` pcap re-emit to truncated
   frames. **Two of three "Do:" items are done, and this line claimed neither
-  until 2026-08-06.** `snaplen_truncation_warning` ([`src/app/bootstrap.rs:3658`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L3658),
+  until 2026-08-06.** `snaplen_truncation_warning` ([`src/app/bootstrap.rs:3716`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L3716),
   tagged `(CT3)`) warns when a truncating snaplen feeds `-O`; a matching
   `snaplen_audio_retention_warning` now warns when it feeds `--retain-audio`
   instead, since that path is retained *audio*, not a re-emitted pcap, and
@@ -5831,7 +5831,7 @@ apart in the first place (see PAR).
   what those positions are from the source before reporting them**; a decoder
   that labeled them by guess would be inventing a schema.
 
-- [ ] **ST4 — an operator may ask for polling; nothing polls by default.**
+- [x] **ST4 — an operator may ask for polling; nothing polls by default. DONE.**
 
   **Norm, 2026-09-12:** "the polling a relay on a timer should be an operator
   specified ability."
@@ -5841,9 +5841,30 @@ apart in the first place (see PAR).
   other answer sipnab gives comes from bytes it already holds, and this one puts
   a packet on the network. An operator naming an interval IS the request.
 
-  Needs: a bound on what a timer may spend, a statement in the output when a
-  number came from a poll rather than from a question, and a refusal to poll a
-  relay the run was never given.
+  All three needs landed and are held by tests. **A bound on what a timer may
+  spend:** `--relay-stats-interval` takes `1..=3600` seconds, so a zero-second
+  busy loop and an absurd ceiling are both refused at parse time
+  (`the_relay_stats_interval_rejects_zero_and_the_absurd`), and the poll loop is
+  serial — one transaction per interval, the next beginning only once the
+  previous returns — so a slow relay slows the cadence rather than stacking
+  outstanding requests (`crate::app::relay_poller`, ten unit tests). **A
+  statement in the output when a number came from a poll:** every surface labels
+  a polled reading `polled` and names the interval, kept distinct from a one-shot
+  `asked` (`FetchOrigin`), held for the CLI table
+  (`a_polled_reading_is_marked_as_a_poll_with_its_interval`,
+  `a_one_shot_ask_says_asked_not_polled`), the JSON form
+  (`relay_statistics_json_test`), and the TUI counters view
+  (`tui_relay_stats_test`). **A refusal to poll a relay the run was never
+  given:** the poll gate is `relay_poll_plan`, which shares its one rule with the
+  one-shot ask (`relay_stats_action`) so the two cannot drift — a poll with no
+  relay named is `NotConfigured` and refused with the operator's fix, never a
+  silent no-op, and nothing polls when no interval was given
+  (`no_interval_means_nothing_polls`,
+  `polling_with_no_relay_is_refused_as_not_configured`,
+  `polling_without_a_permit_is_not_permitted`,
+  `the_poll_gate_matches_the_one_shot_gate`). CLI only, per ST-S3: a poll is a
+  standing instruction to transmit, and over REST or MCP the caller who starts
+  one does not own the host it keeps transmitting from.
 
 - [ ] **ST5 — REST endpoints for all three tiers.** IN PROGRESS: the four
   routes landed and verified live against the harness (`GET /v1/relay/stats`,
@@ -6671,7 +6692,7 @@ class recur:
   speaks", and [`docs/mcp-tools.md`](https://github.com/NormB/sipnab/blob/main/docs/mcp-tools.md) described the two as taking one vocabulary.
   They do not: `--filter` runs `expand_alias` first
   ([`src/app/bootstrap.rs:2157`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L2157)) and `vcon_selection`
-  ([`src/app/batch.rs:5795`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L5795)) parses raw. The doc claim is corrected;
+  ([`src/app/batch.rs:5812`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L5812)) parses raw. The doc claim is corrected;
   the behavior is not, and the flag is the one that is wrong -- reusing the
   filter language is the stated design, and ten `DIAGNOSTIC_ALIASES` are part
   of that language.

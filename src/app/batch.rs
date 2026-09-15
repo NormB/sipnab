@@ -674,14 +674,16 @@ fn parallel_config(
 /// for one (ST4/C5).
 ///
 /// Returns `(None, None)` when nothing should poll: the flag was not given, no
-/// relay was named, or the run may not transmit (a file-backed run). The gate
-/// mirrors [`relay_stats_action`](crate::app::bootstrap::relay_stats_action) --
-/// polling asks the relay, and asking transmits -- and the `permit` argument
-/// carries whether this run holds a transmit permit at all (it is `Some` only
-/// when a relay was configured on a live source).
+/// relay was named, or the run may not transmit (a file-backed run). The gate is
+/// [`relay_poll_plan`](crate::app::bootstrap::relay_poll_plan), which shares its
+/// rule with the one-shot ask -- polling asks the relay, and asking transmits --
+/// so the two cannot drift. The `permit` argument carries whether this run holds
+/// a transmit permit at all (it is `Some` only when a relay was configured on a
+/// live source).
 ///
 /// The thread transmits, so it cannot be driven from a test; the loop and its
-/// shutdown are tested in [`crate::app::relay_poller`] with an injected action.
+/// shutdown are tested in [`crate::app::relay_poller`] with an injected action,
+/// and the poll/refuse decision this reads is tested through `relay_poll_plan`.
 /// Here the injected action is the real fetch-and-print, and this seam is
 /// exercised end to end against the harness.
 fn spawn_relay_stats_poller(
@@ -702,21 +704,36 @@ fn spawn_relay_stats_poller(
     let json = cli.output_args.json;
     let json_pretty = cli.output_args.json_pretty;
 
-    let Some(secs) = cli.rtp_args.relay_stats_interval else {
-        return (None, None); // Nothing polls by default.
-    };
-    let Some(addr) = cli.rtp_args.rtpengine_control.as_deref() else {
-        tracing::error!(
-            "--relay-stats-interval needs a relay to poll. Name one with \
-             --rtpengine-control <addr>."
-        );
-        return (None, None);
+    use crate::app::bootstrap::{RelayPollPlan, relay_poll_plan};
+
+    // The precondition is ONE rule, shared with the one-shot ask
+    // (`relay_stats_action`): a poll transmits on a timer, so it needs an
+    // interval, a relay named, and a permit. A missing relay or permit is
+    // REFUSED with the operator's fix, never a silent no-op.
+    let (secs, addr) = match relay_poll_plan(
+        cli.rtp_args.relay_stats_interval,
+        cli.rtp_args.rtpengine_control.as_deref(),
+        permit.is_some(),
+    ) {
+        RelayPollPlan::Idle => return (None, None), // Nothing polls by default.
+        RelayPollPlan::NotConfigured => {
+            tracing::error!(
+                "--relay-stats-interval needs a relay to poll. Name one with \
+                 --rtpengine-control <addr>."
+            );
+            return (None, None);
+        }
+        RelayPollPlan::NotPermitted => {
+            tracing::error!(
+                "--relay-stats-interval will not poll a relay on a run that reads a \
+                 file: polling transmits. Poll from a live capture (-d <device>)."
+            );
+            return (None, None);
+        }
+        RelayPollPlan::Poll { secs, addr } => (secs, addr),
     };
     let Some(permit) = permit else {
-        tracing::error!(
-            "--relay-stats-interval will not poll a relay on a run that reads a \
-             file: polling transmits. Poll from a live capture (-d <device>)."
-        );
+        // Unreachable: a `Poll` plan is produced only when `permit.is_some()`.
         return (None, None);
     };
     let socket = match addr.parse::<std::net::SocketAddr>() {

@@ -1145,6 +1145,64 @@ pub fn relay_stats_action(
     }
 }
 
+/// What `--relay-stats-interval` should do, decided from the interval and the
+/// run's context (ST4 / C5).
+///
+/// The poll transmits on a timer, so the same gate the one-shot forms use
+/// applies -- a relay must be named and the run must hold a transmit permit --
+/// plus the interval itself, which a one-shot ask has no equivalent of. Pure, so
+/// the "nothing polls by default", "no relay is refused", and "a file-backed run
+/// may not poll" decisions are tested without a relay, a socket, or a thread.
+/// The thread that follows a `Poll` is the only part that transmits.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RelayPollPlan {
+    /// No interval was given -- nothing polls by default.
+    Idle,
+    /// An interval, but no relay named to poll -- `--rtpengine-control` absent.
+    /// Maps to ST-S4's `not_configured`, exactly as the one-shot ask does.
+    NotConfigured,
+    /// An interval and a relay named, but this run may not transmit (it reads a
+    /// file). Maps to ST-S4's `not_permitted`.
+    NotPermitted,
+    /// Poll the relay at this address every `secs` seconds.
+    Poll {
+        /// The interval in seconds, as the operator configured it.
+        secs: u64,
+        /// The relay address the operator named, carried verbatim.
+        addr: String,
+    },
+}
+
+/// Decide what `--relay-stats-interval` does from the interval, whether a relay
+/// was named, and whether this run may transmit.
+///
+/// Nothing polls unless an interval was given: absent an interval this is
+/// `Idle`, and no packet leaves. When an interval IS given the gating rule is
+/// exactly the one-shot ask's -- [`relay_stats_action`] with `asked = true` --
+/// so the two never drift: a poll with no relay is `NotConfigured` and a poll a
+/// file-backed run may not make is `NotPermitted`, in that order. Only when a
+/// relay is named and a permit is held does it become a `Poll` carrying the
+/// interval and the address.
+#[must_use]
+pub fn relay_poll_plan(
+    interval: Option<u64>,
+    relay_addr: Option<&str>,
+    may_transmit: bool,
+) -> RelayPollPlan {
+    let Some(secs) = interval else {
+        return RelayPollPlan::Idle; // Nothing polls by default.
+    };
+    match relay_stats_action(true, relay_addr, may_transmit) {
+        RelayStatsAction::NotConfigured => RelayPollPlan::NotConfigured,
+        RelayStatsAction::NotPermitted => RelayPollPlan::NotPermitted,
+        RelayStatsAction::Fetch(addr) => RelayPollPlan::Poll { secs, addr },
+        // `asked` is `true` above, so a poll ask is never `Skip`. Treat it as
+        // idle rather than panic, so a future change to the shared rule cannot
+        // turn a refusal into a crash.
+        RelayStatsAction::Skip => RelayPollPlan::Idle,
+    }
+}
+
 /// Ask the relay for its own statistics and print them, when `--relay-stats`
 /// was given (ST1/C1).
 ///
