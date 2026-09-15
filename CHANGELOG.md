@@ -21,6 +21,18 @@ entry that carries them.
   to it (set, not count) with an anti-vacuity floor. This is the raw material for
   the capability↔surface JOIN and the parity gate that follow; the TUI surface
   had never been machine-enumerated before.
+- **The surface-capability JOIN and its parity gate (PAR2).** An authored matrix
+  (`docs/design/surface-capability-matrix.md`) joins the four inventories into
+  61 capabilities, anchored on the 68 MCP tools: for each of CLI, TUI, REST and
+  MCP, either the real spelling that reaches the capability or a recorded reason
+  it is absent — a `decision` where the surface's own question rules it out, a
+  `gap` where it belongs but is not built yet. A gate
+  (`tests/surface_capability_matrix_test.rs`, six tests) holds the matrix to the
+  PAR1 inventory: every spelling is a real item, every MCP tool is claimed by
+  exactly one capability, every REST route and TUI view is claimed or declared
+  operational, every absence carries a reason, and the 46 named gaps are counted
+  so closing one is a deliberate edit. The gaps are the PAR3 (REST, 19), PAR4
+  (TUI, 12) and PAR5 (CLI, 15) work list.
 
 ## [0.5.175] - 2026-09-15
 

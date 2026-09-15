@@ -44,7 +44,7 @@ Tiers:
 
 ## Status
 
-**25 open, 518 done** across 38 sections.
+**23 open, 520 done** across 38 sections.
 Regenerate with `python3 scripts/backlog-status.py --apply`.
 
 | Section | Open | Done | Progress |
@@ -64,7 +64,7 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
 | RV | 0 | 8 | `##########` |
 | RP | 1 | 3 | `########..` |
 | ST | 0 | 17 | `##########` |
-| PAR | 5 | 0 | `..........` |
+| PAR | 3 | 2 | `####......` |
 | HX | 1 | 2 | `#######...` |
 | AS | 0 | 7 | `##########` |
 | DOC | 0 | 16 | `##########` |
@@ -5994,16 +5994,20 @@ flags, 16 TUI views. The asymmetry is real and it is structural: new capability
 has been landing on the MCP surface first because that is where the agent work
 was, and the other three have been catching up by hand or not at all.
 
-- [ ] **PAR1 — record which capabilities exist on which surface.** A table,
+- [x] **PAR1 — record which capabilities exist on which surface.** A table,
   generated rather than written, so it cannot drift. The existing coverage
   matrix already enumerates flags, routes and tools separately; what is missing
   is the JOIN that says a capability is reachable three ways and not four.
+  Done — the generator, the generated inventory and the freshness gate landed,
+  and the four surfaces now measure CLI 271, TUI 14, REST 22, MCP 68.
 
-- [ ] **PAR2 — a gate that fails when a capability lands on one surface only.**
+- [x] **PAR2 — a gate that fails when a capability lands on one surface only.**
   Without it this debt returns the moment attention moves. The mechanism this
   repo already uses is a source scan with an anti-vacuity floor, and it must
   name the surfaces a capability is missing from rather than only that it is
-  incomplete.
+  incomplete. Done — the authored matrix joins 61 capabilities across the four
+  surfaces, and its gate names 46 gaps: PAR3 closes 19 on REST, PAR4 closes 12
+  on the TUI, PAR5 closes 15 on the CLI.
 
 - [ ] **PAR3 — close the REST gap.** 17 routes against 79 tools is the widest
   one. Establish first which of the 79 are genuinely agent-shaped and which
