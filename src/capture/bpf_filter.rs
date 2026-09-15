@@ -52,6 +52,30 @@ pub fn compose_selection(current: &str, new: &str, mode: ComposeMode) -> String 
     }
 }
 
+/// Check that `bpf` compiles as a capture filter, returning libpcap's own error
+/// message when it does not.
+///
+/// This is the validate-before-apply guard: the TUI editor runs it on the
+/// composed expression before an apply, so a typo is caught and reported
+/// without touching the running capture. It compiles against a *dead* handle
+/// ([`pcap::Capture::dead`]) with the DLT the live loop uses, which is exactly
+/// what a dead handle is for -- `pcap_compile` is fully supported there, needs
+/// no device or privileges, and does not call `pcap_setfilter` (which a dead
+/// handle can reject on some libpcap builds). The runtime apply still calls
+/// `cap.filter()` on the live handle, so this never substitutes for the
+/// authoritative apply-time check -- it is the fast, safe pre-flight.
+pub fn validate_filter(bpf: &str) -> Result<(), String> {
+    // Ethernet: the loop compiles against whatever DLT the device reports, but
+    // a filter's syntactic validity does not depend on the link type for the
+    // expressions an operator types here, and a dead handle needs a concrete
+    // one. `compile`, not `filter`: compile is the reliable dead-handle step.
+    let cap = pcap::Capture::dead(pcap::Linktype::ETHERNET)
+        .map_err(|e| format!("could not open a validation handle: {e}"))?;
+    cap.compile(bpf, true)
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -119,5 +143,26 @@ mod tests {
             compose_selection("port 5060", "", ComposeMode::AppendAnd),
             "port 5060"
         );
+    }
+
+    /// A well-formed filter compiles; an empty one is valid (matches all).
+    #[test]
+    fn validate_accepts_a_well_formed_filter() {
+        validate_filter("udp port 5060").expect("a real BPF expression compiles");
+        validate_filter("").expect("an empty filter is valid (matches everything)");
+    }
+
+    /// A composed append validates as one expression (the parentheses hold).
+    #[test]
+    fn validate_accepts_a_composed_append() {
+        let composed = compose_selection("udp port 5060", "host 192.0.2.5", ComposeMode::AppendAnd);
+        validate_filter(&composed).expect("the composed append compiles");
+    }
+
+    /// A malformed filter fails with libpcap's message, not a panic.
+    #[test]
+    fn validate_rejects_a_malformed_filter() {
+        let err = validate_filter("port and and 5060").expect_err("garbage must not compile");
+        assert!(!err.is_empty(), "the compiler error is reported: {err}");
     }
 }

@@ -556,7 +556,12 @@ pub(in crate::tui) fn fkey_bar_items(
                 ("K", "Compare"),
                 ("\u{2191}\u{2193}", "Scroll"),
             ],
-            View::BpfFilter => vec![("Esc/B", "Close"), ("\u{2191}\u{2193}", "Scroll")],
+            View::BpfFilter => vec![
+                ("Esc", "Cancel"),
+                ("Tab", "AND/OR"),
+                ("Enter", "Check"),
+                ("\u{2191}\u{2193}", "Scroll"),
+            ],
             _ => vec![("Esc", "Back")],
         }
     }

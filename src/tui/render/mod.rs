@@ -726,12 +726,22 @@ pub(in crate::tui) fn render_relay_stats(
     relay_stats_scroll
 }
 
-/// Render the full BPF capture filter in a bordered popup, wrapped to the width.
+/// Rows the editor's input box occupies at the bottom of the popup: a bordered
+/// single-line field (top border, the line, bottom border). The preview takes
+/// the rest, so its scroll clamp subtracts this.
+pub(in crate::tui) const BPF_INPUT_ROWS: u16 = 3;
+
+/// Render the BPF-filter editor popup: a composed-filter preview above a text
+/// input for the appended expression.
 ///
-/// Status line 2 summarizes the auto-generated default (its expression runs to
-/// thousands of columns); this shows it verbatim so the operator can read and
-/// paste the exact filter the capture is running. Read-only for now; a later
-/// increment turns it into the capture-filter editor.
+/// The preview shows the CURRENT filter composed with what the operator has
+/// typed (empty input shows the current filter unchanged), wrapped to the width
+/// and scrollable — the generated default runs to thousands of columns. The
+/// input box below shows the append mode and the typed expression.
+///
+/// # Returns
+/// The scroll offset the preview was clamped to, which the caller stores so an
+/// over-eager `End`/`PgDn` self-corrects on the next frame.
 ///
 /// # Side effects
 /// Draws to `frame` only; no state is mutated.
@@ -740,32 +750,61 @@ pub(in crate::tui) fn render_bpf_filter(
     area: ratatui::layout::Rect,
     app: &App,
 ) -> u16 {
-    let body = if app.bpf_filter.is_empty() {
+    // Preview on top, the input box pinned to the bottom.
+    let [preview_area, input_area] =
+        Layout::vertical([Constraint::Min(1), Constraint::Length(BPF_INPUT_ROWS)]).areas(area);
+
+    // The preview is the effective filter that applying now would run: the
+    // CURRENT filter composed with what the operator has typed. Empty input
+    // composes to the current filter unchanged, so an untouched editor shows
+    // exactly what is running — and appending always keeps the tunnel
+    // scaffolding, which sits inside `current`.
+    let effective = app.bpf_editor.compose(&app.bpf_filter);
+    let body = if effective.is_empty() {
         "No capture filter is in force — every packet the source delivers reaches the parser."
             .to_string()
     } else {
-        app.bpf_filter.clone()
+        effective
     };
-    // Wrap the filter to the popup's inner width HERE, then render those exact
-    // lines (no ratatui `Wrap`). The scroll then clamps to a row count that
-    // matches what renders, so `End` reaches the true bottom — a ceil estimate
-    // under-counts word-wrapped text and would hide the tail, the one thing
-    // this view exists to show.
-    let inner_w = area.width.saturating_sub(2);
+    // Wrap to the preview's inner width HERE, then render those exact lines (no
+    // ratatui `Wrap`). The scroll then clamps to a row count that matches what
+    // renders, so `End` reaches the true bottom — a ceil estimate under-counts
+    // word-wrapped text and would hide the tail, the one thing this view exists
+    // to show.
+    let inner_w = preview_area.width.saturating_sub(2);
     let lines = wrap_to_width(&body, inner_w);
-    let viewport = area.height.saturating_sub(2) as usize;
+    let viewport = preview_area.height.saturating_sub(2) as usize;
     let max_scroll = lines.len().saturating_sub(viewport).min(u16::MAX as usize) as u16;
     let clamped = app.bpf_scroll.min(max_scroll);
 
     let text: Vec<Line> = lines.into_iter().map(Line::from).collect();
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(" BPF Filter — the exact expression the capture is running ");
-    let paragraph = Paragraph::new(text)
-        .block(block)
+    let preview = Paragraph::new(text)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" Effective capture filter (preview) "),
+        )
         .style(Style::default().fg(app.theme.foreground))
         .scroll((clamped, 0));
-    frame.render_widget(paragraph, area);
+    frame.render_widget(preview, preview_area);
+
+    // The input box: the append mode and what the operator has typed, with a
+    // block cursor. Clipped (not wrapped) — the preview above shows the full
+    // composed result.
+    let mode = match app.bpf_editor.mode() {
+        crate::tui::bpf_editor::AppendMode::And => "AND",
+        crate::tui::bpf_editor::AppendMode::Or => "OR",
+    };
+    let input_line = format!("[{mode}] {}\u{2588}", app.bpf_editor.input());
+    let input = Paragraph::new(input_line)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" Append — Tab: AND/OR   Enter: check   Esc: cancel "),
+        )
+        .style(Style::default().fg(app.theme.foreground));
+    frame.render_widget(input, input_area);
+
     clamped
 }
 
@@ -1498,11 +1537,12 @@ mod tests {
         let mut app = app_with_dialog();
         app.bpf_filter = filter.clone();
 
-        // Narrow + short: 40 columns, 10 rows (38 inner cols, 8 inner rows).
-        let (cols, rows) = (40u16, 10u16);
+        // Narrow + short: 40 columns, 12 rows. The input box takes the bottom
+        // BPF_INPUT_ROWS; the preview keeps the rest, minus its own borders.
+        let (cols, rows) = (40u16, 12u16);
         let inner_w = cols - 2;
         let total = wrap_to_width(&filter, inner_w).len();
-        let viewport = (rows - 2) as usize;
+        let viewport = (rows - BPF_INPUT_ROWS - 2) as usize;
         assert!(
             total > viewport,
             "test needs an overflowing filter: {total} rows vs {viewport} viewport"
@@ -1536,6 +1576,39 @@ mod tests {
             text.contains(&tail_token),
             "the tail token {tail_token:?} must be visible at the clamped bottom;\n{text}"
         );
+    }
+
+    /// The editor popup previews the COMPOSED effective filter (current AND/OR
+    /// typed), echoes the typed expression in the input box, and shows the mode.
+    #[test]
+    fn render_bpf_filter_shows_the_composed_preview_and_the_input() {
+        let mut app = app_with_dialog();
+        app.bpf_filter = "udp port 5060".to_string();
+        for c in "host 192.0.2.5".chars() {
+            app.bpf_editor.insert(c);
+        }
+        let mut terminal = Terminal::new(TestBackend::new(80, 16)).unwrap();
+        terminal
+            .draw(|frame| {
+                render_bpf_filter(frame, frame.area(), &app);
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        let mut out = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                out.push_str(buf.cell((x, y)).unwrap().symbol());
+            }
+        }
+        assert!(
+            out.contains("(udp port 5060) and (host 192.0.2.5)"),
+            "preview shows the composed effective filter:\n{out}"
+        );
+        assert!(
+            out.contains("host 192.0.2.5"),
+            "the input box echoes the typed expression:\n{out}"
+        );
+        assert!(out.contains("AND"), "the append mode is shown:\n{out}");
     }
 
     // ── Popups via render_app overlay ──────────────────────────────

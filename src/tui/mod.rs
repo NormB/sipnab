@@ -196,6 +196,12 @@ pub struct App {
     /// [`render::render_bpf_filter`] each frame, so an over-eager `End`/`PgDn`
     /// self-corrects; reset to `0` when the popup closes.
     bpf_scroll: u16,
+    /// The append editor's state for the `B` popup: the expression the operator
+    /// is typing and the AND/OR mode. Empty input composes to the current
+    /// filter unchanged, so an unopened or untouched editor shows exactly the
+    /// effective filter. Reset when the popup closes. See
+    /// [`crate::tui::bpf_editor::BpfEditor`].
+    bpf_editor: bpf_editor::BpfEditor,
     /// Cached total dialog count (updated when lock is available).
     cached_dialog_count: usize,
     /// Displayed dialog list cache (filter+search+sort, derived per tick).
@@ -359,6 +365,7 @@ impl App {
             flow_detail_max_hscroll: None,
             bpf_is_live_only: false,
             bpf_scroll: 0,
+            bpf_editor: bpf_editor::BpfEditor::new(),
             raw_msg_scroll: 0,
             help_scroll: 0,
             stats_scroll: 0,

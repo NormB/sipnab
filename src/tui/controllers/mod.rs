@@ -79,6 +79,14 @@ pub(in crate::tui) fn handle_key_event(app: &mut App, key: KeyEvent) {
         return;
     }
 
+    // The BPF-filter popup is a text input: it takes every key (the same way
+    // search does above), so typing an expression that contains `v`, `n`, `q`
+    // or `?` reaches the editor instead of the global fallback keys below.
+    if app.current_view == View::BpfFilter {
+        handle_bpf_filter_key(app, key);
+        return;
+    }
+
     // Global fallback keys ('v'/'V' version, 'n' name-mode cycle, '?' help,
     // F12 mouse-capture toggle) apply in every view — but a key the user
     // explicitly rebound in the keymap wins, so a rebind can never be
@@ -314,32 +322,43 @@ pub(in crate::tui) fn handle_help_key(app: &mut App, key: KeyEvent) {
     }
 }
 
-/// Handle keys for the full-BPF-filter popup.
+/// Handle keys for the BPF-filter editor popup.
 ///
-/// Read-only: a close key (`Esc`, `B`, `q`) returns to the call list, and the
-/// scroll keys (↑/↓, j/k, PgUp/PgDn, Home/End) move through a filter too tall
-/// for the popup — the generated default runs to well over a thousand columns,
-/// so wrapped it can overflow the pane. A later increment turns this into the
-/// capture-filter editor.
+/// The popup is a text input (routed all keys in `handle_key_event`, like
+/// search): printable characters and Backspace edit the appended expression,
+/// `Tab` flips the AND/OR mode, and `Enter` validates the composed effective
+/// filter (compile-only for now — a later increment re-applies it to the
+/// running capture). `Esc` cancels, discarding the typed expression. The arrow
+/// and page keys scroll the preview, which can be taller than the popup — the
+/// generated default runs to well over a thousand columns; `End` sets a
+/// sentinel the render pass clamps to the true bottom.
 pub(in crate::tui) fn handle_bpf_filter_key(app: &mut App, key: KeyEvent) {
     use crossterm::event::KeyCode;
-    // The open key `B` (documented) toggles the popup closed; `q` and Esc are
-    // the usual close keys. Lowercase `b` is deliberately not a close key -- it
-    // would be an undocumented handled key.
     match key.code {
-        KeyCode::Esc | KeyCode::Char('B') | KeyCode::Char('q') => {
+        KeyCode::Esc => {
             app.current_view = View::CallList;
+            app.bpf_editor = crate::tui::bpf_editor::BpfEditor::new(); // discard the edit
             app.bpf_scroll = 0; // start at the top next time
         }
-        // Scroll the way the help and detail views do. `End` sets a sentinel
-        // the render pass clamps to the true bottom, since only the render
-        // knows the wrapped height at the popup's width.
-        KeyCode::Down | KeyCode::Char('j') => {
-            app.bpf_scroll = app.bpf_scroll.saturating_add(1);
+        KeyCode::Enter => {
+            // Validate the composed effective filter and report the outcome. The
+            // runtime re-apply (a channel to the capture thread) is a later
+            // increment; this catches a typo before it can matter.
+            let composed = app.bpf_editor.compose(&app.bpf_filter);
+            app.status_error = Some(
+                match crate::capture::bpf_filter::validate_filter(&composed) {
+                    Ok(()) => format!("filter OK (compiles): {composed}"),
+                    Err(msg) => format!("filter rejected: {msg}"),
+                },
+            );
         }
-        KeyCode::Up | KeyCode::Char('k') => {
-            app.bpf_scroll = app.bpf_scroll.saturating_sub(1);
-        }
+        KeyCode::Tab => app.bpf_editor.toggle_mode(),
+        KeyCode::Backspace => app.bpf_editor.backspace(),
+        KeyCode::Char(c) => app.bpf_editor.insert(c),
+        // Scroll the preview. `End` sets a sentinel the render clamps to the
+        // true bottom, since only the render knows the wrapped height.
+        KeyCode::Down => app.bpf_scroll = app.bpf_scroll.saturating_add(1),
+        KeyCode::Up => app.bpf_scroll = app.bpf_scroll.saturating_sub(1),
         KeyCode::PageDown => app.bpf_scroll = app.bpf_scroll.saturating_add(10),
         KeyCode::PageUp => app.bpf_scroll = app.bpf_scroll.saturating_sub(10),
         KeyCode::Home => app.bpf_scroll = 0,
@@ -1451,48 +1470,65 @@ mod tests {
         assert_eq!(app.current_view, View::Help);
     }
 
-    /// Esc, B and q all close the full-BPF-filter popup; another key leaves it
-    /// open (read-only, so nothing else does anything yet).
+    /// The popup is a text input now: Esc closes it, and printable keys that
+    /// used to close or scroll it (`B`, `q`, `j`, `k`) type instead.
     #[test]
-    fn bpf_filter_key_closes() {
-        for code in [KeyCode::Esc, KeyCode::Char('B'), KeyCode::Char('q')] {
-            let mut app = App::new_test();
-            app.current_view = View::BpfFilter;
-            handle_bpf_filter_key(&mut app, key(code));
-            assert_eq!(app.current_view, View::CallList, "closes on {code:?}");
-        }
+    fn bpf_filter_esc_closes_but_letters_type() {
         let mut app = App::new_test();
         app.current_view = View::BpfFilter;
-        handle_bpf_filter_key(&mut app, key(KeyCode::Char('z')));
-        assert_eq!(
-            app.current_view,
-            View::BpfFilter,
-            "an unbound key leaves the popup open"
-        );
+        for c in ['B', 'q', 'j', 'k'] {
+            handle_bpf_filter_key(&mut app, key(KeyCode::Char(c)));
+            assert_eq!(
+                app.current_view,
+                View::BpfFilter,
+                "'{c}' types into the filter, it does not close the popup"
+            );
+        }
+        assert_eq!(app.bpf_editor.input(), "Bqjk", "the letters were typed");
+        handle_bpf_filter_key(&mut app, key(KeyCode::Esc));
+        assert_eq!(app.current_view, View::CallList, "Esc closes the popup");
     }
 
-    /// Down/j advance one wrapped line; Up/k retreat and saturate at the top.
+    /// Characters append to the expression; Backspace deletes the last one.
     #[test]
-    fn bpf_filter_line_scroll_saturates_at_top() {
+    fn bpf_filter_typing_edits_the_expression() {
+        let mut app = App::new_test();
+        app.current_view = View::BpfFilter;
+        for c in "host".chars() {
+            handle_bpf_filter_key(&mut app, key(KeyCode::Char(c)));
+        }
+        assert_eq!(app.bpf_editor.input(), "host");
+        handle_bpf_filter_key(&mut app, key(KeyCode::Backspace));
+        assert_eq!(app.bpf_editor.input(), "hos");
+    }
+
+    /// Tab flips the append mode between AND (narrow) and OR (widen).
+    #[test]
+    fn bpf_filter_tab_toggles_and_or() {
+        use crate::tui::bpf_editor::AppendMode;
+        let mut app = App::new_test();
+        app.current_view = View::BpfFilter;
+        assert_eq!(app.bpf_editor.mode(), AppendMode::And, "starts narrowing");
+        handle_bpf_filter_key(&mut app, key(KeyCode::Tab));
+        assert_eq!(app.bpf_editor.mode(), AppendMode::Or, "Tab widens");
+        handle_bpf_filter_key(&mut app, key(KeyCode::Tab));
+        assert_eq!(app.bpf_editor.mode(), AppendMode::And, "Tab narrows again");
+    }
+
+    /// Arrows/PgUp/PgDn scroll the preview and saturate at the top; letters do
+    /// not scroll any more (they type — see the test above).
+    #[test]
+    fn bpf_filter_arrows_scroll_the_preview() {
         let mut app = App::new_test();
         app.current_view = View::BpfFilter;
         handle_bpf_filter_key(&mut app, key(KeyCode::Down));
-        handle_bpf_filter_key(&mut app, key(KeyCode::Char('j')));
-        assert_eq!(app.bpf_scroll, 2, "Down and j each advance one line");
+        handle_bpf_filter_key(&mut app, key(KeyCode::Down));
+        assert_eq!(app.bpf_scroll, 2, "Down advances one line each");
         handle_bpf_filter_key(&mut app, key(KeyCode::Up));
         assert_eq!(app.bpf_scroll, 1, "Up retreats one line");
-        handle_bpf_filter_key(&mut app, key(KeyCode::Char('k')));
-        handle_bpf_filter_key(&mut app, key(KeyCode::Char('k')));
-        assert_eq!(app.bpf_scroll, 0, "k retreats and saturates at the top");
-    }
-
-    /// PageDown jumps ten lines; PageUp retreats ten and saturates at the top.
-    #[test]
-    fn bpf_filter_page_scroll() {
-        let mut app = App::new_test();
-        app.current_view = View::BpfFilter;
         handle_bpf_filter_key(&mut app, key(KeyCode::PageDown));
-        assert_eq!(app.bpf_scroll, 10, "PageDown jumps ten lines");
+        assert_eq!(app.bpf_scroll, 11, "PageDown jumps ten lines");
+        handle_bpf_filter_key(&mut app, key(KeyCode::PageUp));
         handle_bpf_filter_key(&mut app, key(KeyCode::PageUp));
         assert_eq!(app.bpf_scroll, 0, "PageUp retreats ten and saturates");
     }
@@ -1513,17 +1549,51 @@ mod tests {
         );
     }
 
-    /// Closing the popup resets the scroll so the next open starts at the top.
+    /// Esc discards the typed expression and resets the scroll, so the next
+    /// open starts clean at the top.
     #[test]
-    fn bpf_filter_close_resets_scroll() {
-        for code in [KeyCode::Esc, KeyCode::Char('B'), KeyCode::Char('q')] {
-            let mut app = App::new_test();
-            app.current_view = View::BpfFilter;
-            app.bpf_scroll = 7;
-            handle_bpf_filter_key(&mut app, key(code));
-            assert_eq!(app.current_view, View::CallList, "closes on {code:?}");
-            assert_eq!(app.bpf_scroll, 0, "closing resets the scroll ({code:?})");
+    fn bpf_filter_esc_discards_input_and_resets_scroll() {
+        let mut app = App::new_test();
+        app.current_view = View::BpfFilter;
+        app.bpf_scroll = 7;
+        for c in "host 192.0.2.5".chars() {
+            handle_bpf_filter_key(&mut app, key(KeyCode::Char(c)));
         }
+        handle_bpf_filter_key(&mut app, key(KeyCode::Esc));
+        assert_eq!(app.current_view, View::CallList, "Esc closes");
+        assert_eq!(app.bpf_scroll, 0, "Esc resets the scroll");
+        assert_eq!(
+            app.bpf_editor.input(),
+            "",
+            "Esc discards the typed expression"
+        );
+    }
+
+    /// Enter validates the composed effective filter and reports the outcome on
+    /// the status line — success for a good expression, the compiler's message
+    /// for a broken one — without changing the view.
+    #[test]
+    fn bpf_filter_enter_validates_and_reports() {
+        let mut app = App::new_test();
+        app.current_view = View::BpfFilter;
+        app.bpf_filter = "udp port 5060".to_string();
+        for c in "host 192.0.2.5".chars() {
+            handle_bpf_filter_key(&mut app, key(KeyCode::Char(c)));
+        }
+        handle_bpf_filter_key(&mut app, key(KeyCode::Enter));
+        let msg = app.status_error.clone().expect("Enter sets a status");
+        assert!(
+            msg.contains("OK") && msg.contains("host 192.0.2.5"),
+            "reports success with the composed filter: {msg}"
+        );
+        assert_eq!(app.current_view, View::BpfFilter, "Enter does not close");
+
+        for c in " and and".chars() {
+            handle_bpf_filter_key(&mut app, key(KeyCode::Char(c)));
+        }
+        handle_bpf_filter_key(&mut app, key(KeyCode::Enter));
+        let msg = app.status_error.clone().expect("Enter sets a status");
+        assert!(msg.contains("rejected"), "reports the rejection: {msg}");
     }
 
     /// Esc and `s` both close the statistics view.
