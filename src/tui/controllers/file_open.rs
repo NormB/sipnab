@@ -210,7 +210,7 @@ pub(in crate::tui) fn handle_file_open_popup_key(app: &mut App, key: KeyEvent) {
                 refresh_file_entries(app);
             } else {
                 let path = entry.path.to_string_lossy().into_owned();
-                begin_pcap_load(app, &path);
+                begin_pcap_load(app, &path, None);
                 app.active_popup = None;
             }
         }
@@ -261,7 +261,7 @@ pub(in crate::tui) fn handle_file_open_manual_key(app: &mut App, key: KeyEvent) 
                 app.active_popup = None;
                 return;
             }
-            begin_pcap_load(app, &path);
+            begin_pcap_load(app, &path, None);
             app.active_popup = None;
         }
         KeyCode::Backspace => {
@@ -382,6 +382,7 @@ fn run_pcap_load(
     dialog_store: &Arc<RwLock<DialogStore>>,
     stream_store: &Arc<RwLock<StreamStore>>,
     progress: &PcapLoadProgress,
+    bpf_filter: Option<&str>,
 ) -> PcapLoadOutcome {
     let filename = path
         .file_name()
@@ -404,6 +405,22 @@ fn run_pcap_load(
             };
         }
     };
+
+    // The BPF editor's re-scan hands a filter to apply as the file is re-read.
+    // Validate-before-read: a filter that will not compile against this file's
+    // link type returns the compiler's own message and leaves the stores as
+    // `reset_for_load` left them (empty) rather than reading unfiltered — the
+    // operator asked for a specific view of the file, not all of it.
+    if let Some(bpf) = bpf_filter
+        && let Err(e) = cap.filter(bpf, true)
+    {
+        return PcapLoadOutcome {
+            message: format!("Filter rejected: {e}"),
+            sip_count: 0,
+            capture_mode,
+            file_names: Vec::new(),
+        };
+    }
 
     let mut packet_count = 0u64;
     let mut sip_count = 0u64;
@@ -593,7 +610,7 @@ fn apply_load_outcome(app: &mut App, outcome: PcapLoadOutcome) {
 /// the shared stores, stores the progress handle in `app.pcap_load`, and
 /// paints a "Loading…" status. A failed thread spawn is reported on the
 /// status line.
-pub(in crate::tui) fn begin_pcap_load(app: &mut App, path_str: &str) {
+pub(in crate::tui) fn begin_pcap_load(app: &mut App, path_str: &str, bpf_filter: Option<&str>) {
     if app.pcap_load.is_some() {
         let msg = "A pcap load is already in progress".to_string();
         app.status_error = Some(msg.clone());
@@ -609,6 +626,9 @@ pub(in crate::tui) fn begin_pcap_load(app: &mut App, path_str: &str) {
     }
     // Same reason as `load_pcap_file`: this file is now an input.
     app.protect_input_file(path);
+    // This file is now what the BPF editor re-scans under a new filter — an
+    // in-session `O` open re-targets the re-scan at the file on screen.
+    app.rescan_path = Some(path.to_path_buf());
 
     reset_for_load(app);
 
@@ -622,11 +642,18 @@ pub(in crate::tui) fn begin_pcap_load(app: &mut App, path_str: &str) {
     let dialog_store = Arc::clone(&app.dialog_store);
     let stream_store = Arc::clone(&app.stream_store);
     let path_owned = path.to_path_buf();
+    let filter_owned = bpf_filter.map(str::to_string);
+    let rescanning = filter_owned.is_some();
     let spawned = std::thread::Builder::new()
         .name("pcap-load".to_string())
         .spawn(move || {
-            let outcome =
-                run_pcap_load(&path_owned, &dialog_store, &stream_store, &worker_progress);
+            let outcome = run_pcap_load(
+                &path_owned,
+                &dialog_store,
+                &stream_store,
+                &worker_progress,
+                filter_owned.as_deref(),
+            );
             *worker_progress.result.lock() = Some(outcome);
             worker_progress
                 .done
@@ -634,7 +661,11 @@ pub(in crate::tui) fn begin_pcap_load(app: &mut App, path_str: &str) {
         });
     match spawned {
         Ok(_) => {
-            app.status_error = Some(format!("Loading {filename}…"));
+            app.status_error = Some(if rescanning {
+                format!("Re-scanning {filename} with new filter…")
+            } else {
+                format!("Loading {filename}…")
+            });
             app.pcap_load = Some(progress);
             // The swap is the moment the session stops describing the capture
             // it started with: `reset_for_load` above has already emptied both
@@ -713,7 +744,7 @@ mod tests {
         app.protect_input_file(path);
         reset_for_load(app);
         let progress = PcapLoadProgress::new(path_str);
-        let outcome = run_pcap_load(path, &app.dialog_store, &app.stream_store, &progress);
+        let outcome = run_pcap_load(path, &app.dialog_store, &app.stream_store, &progress, None);
         let message = outcome.message.clone();
         apply_load_outcome(app, outcome);
         message
@@ -959,7 +990,7 @@ mod tests {
     fn begin_pcap_load_populates_stores_in_background_and_poll_applies_result() {
         let mut app = App::new_test();
         let fixture = fixture_pcap();
-        begin_pcap_load(&mut app, fixture.to_str().unwrap());
+        begin_pcap_load(&mut app, fixture.to_str().unwrap(), None);
         assert!(app.pcap_load.is_some(), "a load worker must be in flight");
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         while app.pcap_load.is_some() {
@@ -983,12 +1014,58 @@ mod tests {
         );
     }
 
+    /// The re-scan applies its filter as the file is re-read: an expression
+    /// matching nothing drops every SIP packet an unfiltered read would keep.
+    #[test]
+    fn run_pcap_load_applies_the_rescan_filter() {
+        let fixture = fixture_pcap();
+        let progress = PcapLoadProgress::new("t");
+        let ds = Arc::new(RwLock::new(DialogStore::new(100, false)));
+        let ss = Arc::new(RwLock::new(StreamStore::new(100)));
+
+        let unfiltered = run_pcap_load(&fixture, &ds, &ss, &progress, None);
+        assert!(
+            unfiltered.sip_count > 0,
+            "the fixture has SIP when unfiltered"
+        );
+
+        ds.write().clear();
+        ss.write().clear();
+        let filtered = run_pcap_load(&fixture, &ds, &ss, &progress, Some("udp port 65000"));
+        assert_eq!(
+            filtered.sip_count, 0,
+            "a filter matching nothing drops all SIP"
+        );
+        assert!(
+            ds.read().is_empty(),
+            "no dialogs survive a filter that matches nothing"
+        );
+    }
+
+    /// A filter that will not compile is reported and nothing is read, so a
+    /// typo in the re-scan cannot silently reload the whole file unfiltered.
+    #[test]
+    fn run_pcap_load_rejects_a_malformed_filter() {
+        let fixture = fixture_pcap();
+        let progress = PcapLoadProgress::new("t");
+        let ds = Arc::new(RwLock::new(DialogStore::new(100, false)));
+        let ss = Arc::new(RwLock::new(StreamStore::new(100)));
+        let out = run_pcap_load(&fixture, &ds, &ss, &progress, Some("port and and 5060"));
+        assert!(
+            out.message.contains("rejected"),
+            "reports the compile error: {}",
+            out.message
+        );
+        assert_eq!(out.sip_count, 0);
+        assert!(ds.read().is_empty(), "a rejected filter reads nothing");
+    }
+
     /// A missing file is reported on the status line without spawning a
     /// load worker.
     #[test]
     fn begin_pcap_load_missing_file_reports_immediately() {
         let mut app = App::new_test();
-        begin_pcap_load(&mut app, "/nonexistent/path/file.pcap");
+        begin_pcap_load(&mut app, "/nonexistent/path/file.pcap", None);
         assert!(app.pcap_load.is_none(), "no worker for a missing file");
         assert!(
             app.status_error
@@ -1007,7 +1084,7 @@ mod tests {
         let mut app = App::new_test();
         app.pcap_load = Some(std::sync::Arc::new(PcapLoadProgress::new("other.pcap")));
         let fixture = fixture_pcap();
-        begin_pcap_load(&mut app, fixture.to_str().unwrap());
+        begin_pcap_load(&mut app, fixture.to_str().unwrap(), None);
         let msg = app.status_error.clone().unwrap_or_default();
         assert!(msg.contains("in progress"), "busy guard, got: {msg}");
         assert_eq!(

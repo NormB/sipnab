@@ -216,6 +216,12 @@ pub struct App {
     /// the matching outcome knows what to promote to `bpf_filter`. `None` when
     /// nothing is in flight.
     bpf_pending: Option<(u64, String)>,
+    /// The capture file the editor's `Enter` re-scans under a new filter, when
+    /// this is an offline session with a single input. `Some` for `-I one.pcap`
+    /// or the last file an in-session `O` open loaded; `None` for a live capture
+    /// (which re-applies instead), a multi-file input, or no input, where the
+    /// editor stays validate-only. Only the render/controller read it.
+    rescan_path: Option<std::path::PathBuf>,
     /// Cached total dialog count (updated when lock is available).
     cached_dialog_count: usize,
     /// Displayed dialog list cache (filter+search+sort, derived per tick).
@@ -383,6 +389,7 @@ impl App {
             reconfigure_control: None,
             reconfigure_outcomes: None,
             bpf_pending: None,
+            rescan_path: None,
             raw_msg_scroll: 0,
             help_scroll: 0,
             stats_scroll: 0,

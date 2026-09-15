@@ -312,6 +312,10 @@ pub struct TuiOptions {
     /// the event loop. Paired with `reconfigure_control`.
     pub reconfigure_outcomes:
         Option<crossbeam_channel::Receiver<crate::capture::reconfigure::FilterApplyOutcome>>,
+    /// The single capture file the editor re-scans under a new filter (offline
+    /// sessions only). `Some` for `-I one.pcap`; `None` for a live capture, a
+    /// multi-file input, or no input.
+    pub rescan_path: Option<std::path::PathBuf>,
 }
 
 impl TuiOptions {
@@ -362,6 +366,7 @@ impl TuiOptions {
         app.relay_query = self.relay_query;
         app.relay_stats_interval = self.relay_stats_interval;
         app.set_reconfigure(self.reconfigure_control, self.reconfigure_outcomes);
+        app.rescan_path = self.rescan_path;
         app
     }
 }

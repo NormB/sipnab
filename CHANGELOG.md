@@ -8,6 +8,22 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Added
+
+- **The BPF editor re-scans an offline capture under a new filter.** For a
+  single-file session (`-I one.pcap`, or a file opened in-session with `O`),
+  `Enter` in the `B` editor now re-reads the file from disk under the composed
+  filter — clearing and rebuilding the dialog and stream stores — rather than
+  only validating. This completes the editor across sources: a live capture
+  re-applies to the running kernel filter, and a replayed file re-scans. Because
+  the re-scan reads the file afresh, it can *widen* what is shown beyond the
+  filter the file was first read with, which a display filter (`F7`) cannot. A
+  filter that will not compile is reported and nothing is re-read, so a typo
+  cannot silently reload the whole file unfiltered. Multi-file inputs stay
+  validate-only. Specified in `docs/design/tui-bpf-filter-editing.md`.
+
 ## [0.5.173] - 2026-09-15
 
 ### Added

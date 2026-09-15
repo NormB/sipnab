@@ -680,6 +680,10 @@ pub fn run_tui_mode(
             // Runtime BPF re-apply (Some only for a single/fanout live device).
             reconfigure_control,
             reconfigure_outcomes,
+            // The editor re-scans a single offline input under a new filter;
+            // a multi-file input or a live device leaves this None.
+            rescan_path: (cli.capture_args.input.len() == 1)
+                .then(|| std::path::PathBuf::from(&cli.capture_args.input[0])),
         },
     ) {
         tracing::error!("TUI error: {e}");

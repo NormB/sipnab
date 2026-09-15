@@ -342,16 +342,29 @@ pub(in crate::tui) fn handle_bpf_filter_key(app: &mut App, key: KeyEvent) {
         }
         KeyCode::Enter => {
             // Validate the composed effective filter first, so a typo is caught
-            // here rather than at the capture thread. On a live capture, request
-            // the re-apply and report progress; the confirmed outcome arrives on
-            // the next tick (see `App::drain_filter_outcomes`). Where re-apply is
-            // not wired (a file source, `--multi-device`), report the check only.
+            // here rather than at the capture thread or the re-scan. Three ways
+            // to apply, in order: a live capture re-applies to the running
+            // kernel filter; a single offline file re-scans from disk under the
+            // new filter; anything else (multi-file input, no input) reports the
+            // check only.
             let composed = app.bpf_editor.compose(&app.bpf_filter);
             match crate::capture::bpf_filter::validate_filter(&composed) {
                 Ok(()) => {
                     if app.can_reapply_filter() {
                         app.request_filter_reapply(composed);
                         app.status_error = Some("applying filter…".to_string());
+                    } else if let Some(path) = app.rescan_path.clone() {
+                        // Re-read the file under the composed filter. begin_pcap_load
+                        // resets the stores and view and paints a "Re-scanning…"
+                        // status; only when it actually started (a load was not
+                        // already in flight, the file still exists) do we promote
+                        // the composed filter and consume the edit.
+                        let path_str = path.to_string_lossy().into_owned();
+                        file_open::begin_pcap_load(app, &path_str, Some(&composed));
+                        if app.pcap_load.is_some() {
+                            app.set_bpf_filter(composed, false);
+                            app.bpf_editor = crate::tui::bpf_editor::BpfEditor::new();
+                        }
                     } else {
                         app.status_error = Some(format!("filter OK (compiles): {composed}"));
                     }
@@ -1632,6 +1645,45 @@ mod tests {
             app.bpf_filter, "(udp port 5060) and (host 192.0.2.5)",
             "the composed append is now the effective filter"
         );
+    }
+
+    /// On an offline single-file session, Enter re-scans the file under the
+    /// composed filter: a load starts, the composed filter becomes effective,
+    /// and the editor is consumed.
+    #[test]
+    fn bpf_filter_enter_rescans_an_offline_file() {
+        let fixture =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/sip_call.pcap");
+        let mut app = App::new_test();
+        app.rescan_path = Some(fixture);
+        app.current_view = View::BpfFilter;
+        app.set_bpf_filter("udp port 5060".to_string(), false);
+        for c in "host 192.0.2.5".chars() {
+            handle_bpf_filter_key(&mut app, key(KeyCode::Char(c)));
+        }
+        handle_bpf_filter_key(&mut app, key(KeyCode::Enter));
+
+        assert!(app.pcap_load.is_some(), "the re-scan load started");
+        assert_eq!(
+            app.bpf_filter, "(udp port 5060) and (host 192.0.2.5)",
+            "the composed filter is now the file's effective filter"
+        );
+        assert_eq!(app.bpf_editor.input(), "", "the edit is consumed");
+        assert!(
+            app.status_error
+                .as_deref()
+                .unwrap_or_default()
+                .contains("Re-scanning"),
+            "status: {:?}",
+            app.status_error
+        );
+
+        // Drain the worker so its thread finishes before the test returns.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while app.pcap_load.is_some() && std::time::Instant::now() < deadline {
+            file_open::poll_pcap_load(&mut app);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
     }
 
     /// Esc and `s` both close the statistics view.
