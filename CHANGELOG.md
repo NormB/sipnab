@@ -8,6 +8,20 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Added
+
+- **Surface-parity inventory and freshness gate (PAR1 foundation).** A generator
+  (`scripts/capability-matrix.py`) reads every capability-bearing item on each of
+  the four surfaces from its own source — CLI flags (271), TUI `View` variants
+  (14), REST routes (22), MCP tools (68) — into a generated inventory
+  (`docs/design/surface-capability-inventory.md`), and a gate
+  (`tests/capability_matrix_test.rs`) re-derives each surface and holds the doc
+  to it (set, not count) with an anti-vacuity floor. This is the raw material for
+  the capability↔surface JOIN and the parity gate that follow; the TUI surface
+  had never been machine-enumerated before.
+
 ## [0.5.175] - 2026-09-15
 
 ### Added
