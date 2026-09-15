@@ -48,7 +48,7 @@ version = "0.5.173"
 # Bumped after a release finishes publishing, not while cutting it.
 # `site_advertises_only_a_released_version` requires a matching `v<x.y.z>` tag,
 # so advertising something unreleased fails the suite rather than the visitor.
-published_version = "0.5.172"
+published_version = "0.5.173"
 # Release date of `published_version` above -- NOT of `version`, further up.
 # `download.html` renders this beside `published_version` in a single sentence,
 # so the date belongs to the release a reader can actually download.
@@ -57,7 +57,7 @@ published_version = "0.5.172"
 # untagged version is the conflation the published_version split exists to
 # prevent. `site_release_date_matches_changelog` reads `published_version` and
 # enforces this.
-release_date = "2026-09-14"
+release_date = "2026-09-15"
 # Minimum glibc of the released -gnu binaries and .debs. This is NOT a free
 # choice: it is whatever the "Enforce glibc floor" step in release.yml admits,
 # and it must equal SIPNAB_GLIBC_FLOOR in static/install.sh, which decides
@@ -123,6 +123,7 @@ macos_floor_intel = "10.12"
 #   0.5.170  16,072,008 bytes   (+155,776, leaving 705,208 bytes of headroom)
 #   0.5.171  16,096,776 bytes   (+24,768, leaving 680,440 bytes of headroom)
 #   0.5.172  16,096,776 bytes   (unchanged, leaving 680,440 bytes of headroom)
+#   0.5.173  16,121,352 bytes   (+24,576, leaving 655,864 bytes of headroom)
 #
 # So 0.5.159 shipped one ordinary release away from tipping and nothing said
 # so. The 118,784 bytes are `find_in_captures` -- a 66th MCP tool with derived
@@ -160,7 +161,12 @@ macos_floor_intel = "10.12"
 # Closing the edge cases was mostly reusing the vocabulary already there, which
 # is why it cost a fraction of a surface -- and 680,440 at 0.5.172, which
 # measured byte-for-byte identical to 0.5.171: it shipped the ST-D1 cookbook
-# recipes and nothing that compiles into the binary.
+# recipes and nothing that compiles into the binary -- and 655,864 at 0.5.173,
+# where the runtime capture-filter editor (the append composer, its live
+# re-apply across every fanout socket, and the shared generation-stamped
+# control the loops poll) cost 24,576. About a fraction of a surface again: the
+# editor reuses the pure filter composition already there and the loops reuse
+# the poll point they already had for shutdown.
 # That figure is measured from the shipped tarball each release, checksum
 # verified against the `.sha256` beside it, which is what makes it a
 # measurement rather than an estimate carried forward.
