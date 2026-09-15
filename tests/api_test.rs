@@ -70,6 +70,23 @@ fn correlated_answers_with_the_versioned_envelope() {
     assert!(body["total_matched"].is_number(), "total_matched present");
 }
 
+/// `GET /v1/dialogs/{id}/tree` answers over the shipped binary with the tree
+/// envelope (PAR3). The single call in the fixture is its own root and only leg.
+#[test]
+fn tree_answers_with_the_versioned_envelope() {
+    let srv = ApiServer::spawn(&[]);
+    let resp = srv.get(&format!("/v1/dialogs/{CALL_ID}/tree"));
+    assert_eq!(resp.status, 200, "/v1/dialogs/{{id}}/tree status");
+    let body = resp.json();
+    assert_eq!(body["schema_version"], 1);
+    assert_eq!(body["root_call_id"], CALL_ID);
+    assert!(body["legs"].is_array(), "legs is an array");
+    assert!(
+        body["total_legs"].as_u64().unwrap_or(0) >= 1,
+        "the root is always a leg"
+    );
+}
+
 /// The server accepts `--api-max-conn` (the in-flight-request cap) and still
 /// serves — keeps the flag under test coverage.
 #[test]

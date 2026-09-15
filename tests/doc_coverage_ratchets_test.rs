@@ -417,7 +417,10 @@ fn undocumented_numeric_ceilings_do_not_increase() {
 // 27 -> 29 at PAR3, for `Correlated` and `CorrelatedLeg`, the
 // `GET /v1/dialogs/{call_id}/correlated` response. Response-only for the same
 // reason, pinned by the same contract test. Two components.
-const PERMISSIVE_SCHEMA_COMPONENTS: usize = 29;
+// 29 -> 31 at PAR3, for `CallTree` and `CallTreeLeg`, the
+// `GET /v1/dialogs/{call_id}/tree` response. Response-only, same reason, pinned
+// by the same contract test. Two components.
+const PERMISSIVE_SCHEMA_COMPONENTS: usize = 31;
 
 #[test]
 fn permissive_rest_schema_components_do_not_increase() {

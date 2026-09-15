@@ -122,7 +122,7 @@ Show me every leg of this call as a tree across the B2BUA, SBC and PBX hops.
 |---|---|
 | CLI | gap: transitive multi-leg reassembly is a one-shot fact, but no flag exposes correlation (PAR5) |
 | TUI | `CallFlow` |
-| REST | gap: a program reassembling a carrier call would poll this, but no correlation route exists (PAR3) |
+| REST | `/v1/dialogs/{call_id}/tree` |
 | MCP | `get_call_tree` |
 
 ### Correlate legs

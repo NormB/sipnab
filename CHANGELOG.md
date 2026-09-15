@@ -63,6 +63,14 @@ entry that carries them.
   `find_correlated` tool now shares, so the two surfaces cannot disagree about
   whether a strategy is an identifier match. This closes the `find_correlated`
   REST gap, leaving 41 named gaps.
+- **`GET /v1/dialogs/{call_id}/tree` (PAR3).** The whole tree of legs reachable
+  from a call, walked transitively across a B2BUA, SBC or PBX — where
+  `/correlated` answers one hop, this follows every identifier match to the end,
+  reporting `depth`, `parent_call_id`, whether each leg was `followed`, and
+  `heuristic_edges`. A timing guess is a leaf, its subtree left unsearched. The
+  walk moves into one `DialogStore::correlation_tree` the MCP `get_call_tree`
+  tool now shares, so the two surfaces render one walk. This closes the
+  `get_call_tree` REST gap, leaving 40 named gaps.
 
 ## [0.5.175] - 2026-09-15
 

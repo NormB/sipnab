@@ -10,8 +10,6 @@
 //! which is the difference between one cheap call and a page fetch that comes
 //! back empty for a reason the agent cannot see.
 
-use std::collections::{HashSet, VecDeque};
-
 use crate::mcp::server::SipnabMcp;
 use crate::mcp::shape::resolve_limit_with_cap;
 use crate::output::model::DialogSummary;
@@ -180,112 +178,49 @@ impl SipnabMcp {
 
         let payload = {
             let ds = self.dialog_store.read();
-            let root = ds.get(&params.call_id).ok_or_else(|| {
+            // The one walk, shared with the REST tree route so they cannot
+            // disagree about the shape of a call. This tool attaches the fenced
+            // dialog projection to each leg the walk found.
+            let tree = ds.correlation_tree(&params.call_id, limit).ok_or_else(|| {
                 rmcp::ErrorData::invalid_params(
                     format!("call_id '{}' not found", params.call_id),
                     None,
                 )
             })?;
 
-            let mut legs = vec![CallTreeLeg {
-                call_id: root.call_id.clone(),
-                depth: 0,
-                parent_call_id: None,
-                score: None,
-                strategy: None,
-                identifier_match: None,
-                // Overwritten below from `walked`; the root is always walked.
-                followed: false,
-                dialog: crate::mcp::shape::fenced_dialog_summary(root),
-            }];
-            let mut total_messages = root.messages.len();
-            let mut first_activity = root.created_at;
-            let mut last_activity = root.updated_at;
-
-            // Seeded with the root so a leg correlating back to it — which most
-            // strategies do, being symmetric — is not re-added as its own child.
-            let mut seen: HashSet<String> = HashSet::from([root.call_id.clone()]);
-            let mut walked: HashSet<String> = HashSet::new();
-            let mut queue: VecDeque<(String, u32)> = VecDeque::from([(root.call_id.clone(), 0)]);
-            let mut truncated = false;
-            let mut heuristic_edges = 0usize;
-            let mut max_depth = 0u32;
-
-            while let Some((parent, depth)) = queue.pop_front() {
-                walked.insert(parent.clone());
-                let mut found = ds.find_correlated_scored(&parent);
-                // `find_correlated_scored` sorts by score alone, so ties fall in
-                // store order and two runs over the same capture can emit the
-                // legs in different orders. A tree an agent diffs across polls
-                // has to be stable, so the Call-ID breaks the tie.
-                found.sort_by(|a, b| {
-                    b.score
-                        .cmp(&a.score)
-                        .then_with(|| a.dialog.call_id.cmp(&b.dialog.call_id))
-                });
-
-                for r in found {
-                    if !seen.insert(r.dialog.call_id.clone()) {
-                        continue;
-                    }
-                    if legs.len() >= limit {
-                        truncated = true;
-                        break;
-                    }
-                    let (strategy, identifier_match) = r.reason.strategy();
-                    if !identifier_match {
-                        heuristic_edges += 1;
-                    }
-                    let child_depth = depth + 1;
-                    max_depth = max_depth.max(child_depth);
-                    total_messages += r.dialog.messages.len();
-                    first_activity = first_activity.min(r.dialog.created_at);
-                    last_activity = last_activity.max(r.dialog.updated_at);
-                    legs.push(CallTreeLeg {
-                        call_id: r.dialog.call_id.clone(),
-                        depth: child_depth,
-                        parent_call_id: Some(parent.clone()),
-                        score: Some(r.score),
-                        strategy: Some(strategy.to_string()),
-                        identifier_match: Some(identifier_match),
-                        followed: false,
-                        dialog: crate::mcp::shape::fenced_dialog_summary(r.dialog),
-                    });
-                    if identifier_match {
-                        queue.push_back((r.dialog.call_id.clone(), child_depth));
-                    }
-                }
-                if truncated {
-                    break;
-                }
-            }
+            let legs: Vec<CallTreeLeg> = tree
+                .legs
+                .iter()
+                .filter_map(|leg| {
+                    // Every leg's Call-ID came from the store under this same
+                    // read lock, so the lookup succeeds; a leg whose dialog
+                    // vanished is skipped rather than rendered empty.
+                    let dialog = ds.get(&leg.call_id)?;
+                    Some(CallTreeLeg {
+                        call_id: leg.call_id.clone(),
+                        depth: leg.depth,
+                        parent_call_id: leg.parent_call_id.clone(),
+                        score: leg.score,
+                        strategy: leg.strategy.map(str::to_string),
+                        identifier_match: leg.identifier_match,
+                        followed: leg.followed,
+                        dialog: crate::mcp::shape::fenced_dialog_summary(dialog),
+                    })
+                })
+                .collect();
             drop(ds);
-
-            // Set from what the walk ACTUALLY visited, not from the decision to
-            // enqueue: a leg still sitting in the queue when the row cap ended
-            // the walk is a leaf in this answer whatever its strategy was, and
-            // reporting it as followed would claim its subtree was searched.
-            for leg in &mut legs {
-                leg.followed = walked.contains(&leg.call_id);
-            }
-            legs.sort_by(|a, b| {
-                a.depth
-                    .cmp(&b.depth)
-                    .then_with(|| a.dialog.created_at.cmp(&b.dialog.created_at))
-                    .then_with(|| a.call_id.cmp(&b.call_id))
-            });
 
             CallTreeResponse {
                 schema_version: 1,
                 root_call_id: params.call_id.clone(),
                 total_legs: legs.len(),
                 legs,
-                max_depth,
-                truncated,
-                heuristic_edges,
-                total_messages,
-                first_activity: Some(first_activity.to_rfc3339()),
-                last_activity: Some(last_activity.to_rfc3339()),
+                max_depth: tree.max_depth,
+                truncated: tree.truncated,
+                heuristic_edges: tree.heuristic_edges,
+                total_messages: tree.total_messages,
+                first_activity: tree.first_activity.map(|t| t.to_rfc3339()),
+                last_activity: tree.last_activity.map(|t| t.to_rfc3339()),
             }
         };
 

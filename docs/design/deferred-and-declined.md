@@ -60,7 +60,7 @@ keyed on Call-ID. That works only if a Call-ID identifies at most one call in
 the combined view. It does not.
 
 The clearest statement of this is in the code that had to cope with it.
-`DialogStore::merge` ([`dialog_store.rs:1076`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1076))
+`DialogStore::merge` ([`dialog_store.rs:1148`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1148))
 carries a doc section headed *"Same-Call-ID collisions are the normal case, not
 the rare one"* ([`:554`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L554)), and explains that a
 call through a proxy or SBC reconstructs as two fragments keyed on the same
@@ -191,7 +191,7 @@ The cheap version — load both captures into one store and add a "capture A / B
 column — cannot work, because the column has nothing to read. There is no field
 to populate. Adding one means touching `Packet`, `ParsedPacket`, `SipMessage`
 and `SipDialog`, which is the zero-copy payload spine (D3) and the hot path;
-`process_message` ([`dialog_store.rs:854`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L854)) is
+`process_message` ([`dialog_store.rs:903`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L903)) is
 written to avoid even a single owned-key allocation per message. A per-message
 `String` source label is a straightforward regression of that work.
 
@@ -350,7 +350,7 @@ and the first has already told the agent what to send. And there is no
 observable "it happened" from outside: the process is still running, the counts
 still look plausible, and the operator reading `/v1/dialogs` has no way to tell
 a mutated store from a merely-changed one, because `DialogStore::generation`
-([`dialog_store.rs:637`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L637)) is internal to
+([`dialog_store.rs:709`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L709)) is internal to
 cache invalidation and appears on no wire format.
 
 ### The prompt-injection chain, grounded
@@ -447,7 +447,7 @@ requirement to satisfy rather than a reason to stop.
 1. **A wire-visible store identity** — a generation or etag on REST and MCP
    responses — so a consumer can detect that the thing it is reading changed
    underneath it. `DialogStore::generation` already exists internally
-   ([`dialog_store.rs:637`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L637)) and is bumped by every
+   ([`dialog_store.rs:709`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L709)) and is bumped by every
    mutating method; exposing it is small. Without it, "who changed this" has no
    answer at any layer. §4 needs the same primitive, so it is built once.
 2. **The write-back state is separate from the analysis** — an annotation store
@@ -731,7 +731,7 @@ field moves behind a shared lock. Two agents on one HTTP server would read the
 same store and disagree about which capture it is.
 
 **Nothing on the wire would reveal the swap.** `DialogStore::generation`
-([`dialog_store.rs:637`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L637)) is bumped by every
+([`dialog_store.rs:709`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L709)) is bumped by every
 mutating method and is exposed nowhere: not in `DialogSummary`
 ([`model.rs`](../../src/output/model.rs)), not in any REST response
 ([`api.rs:204-211`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L204-L211), all `GET`), not in any MCP payload.
@@ -804,7 +804,7 @@ decision was taken, not as it stands now:
    ([`server.rs:5729`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5729)) naming the old file in the
    calling session and in every other one.
 2. **Capture identity must be visible on the wire.** `DialogStore::generation`
-   ([`dialog_store.rs:637`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L637)) is bumped by every
+   ([`dialog_store.rs:709`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L709)) is bumped by every
    mutating method and exposed nowhere, so a `/v1/dialogs` poller cannot tell the
    dataset changed underneath it. This is the same primitive §2 requires;
    building it once settles both.

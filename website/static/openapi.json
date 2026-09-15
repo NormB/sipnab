@@ -1226,6 +1226,135 @@
         ],
         "type": "object"
       },
+      "CallTree": {
+        "description": "The tree of legs reachable from one call across a B2BUA, SBC or PBX.",
+        "properties": {
+          "first_activity": {
+            "description": "Earliest leg creation time in the tree, RFC 3339.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "heuristic_edges": {
+            "description": "How many edges are timing guesses rather than identifier matches.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "last_activity": {
+            "description": "Latest leg update time in the tree, RFC 3339.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "legs": {
+            "description": "Every leg found, ordered by depth then creation time.",
+            "items": {
+              "$ref": "#/components/schemas/CallTreeLeg"
+            },
+            "type": "array"
+          },
+          "max_depth": {
+            "description": "Deepest hop count reached.",
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "root_call_id": {
+            "description": "Call-ID the walk started from, echoed verbatim.",
+            "type": "string"
+          },
+          "schema_version": {
+            "description": "Version of this response's shape.",
+            "example": 1,
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "total_legs": {
+            "description": "Number of legs returned, root included.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "total_messages": {
+            "description": "Total SIP messages across every leg.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "truncated": {
+            "description": "True when the row cap stopped the walk before it ran out of legs.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "schema_version",
+          "root_call_id",
+          "legs",
+          "total_legs",
+          "max_depth",
+          "truncated",
+          "heuristic_edges",
+          "total_messages"
+        ],
+        "type": "object"
+      },
+      "CallTreeLeg": {
+        "description": "One leg of a call tree: a dialog, and how the walk reached it. Follow\n`call_id` to `/v1/dialogs/{call_id}` for the leg's detail.",
+        "properties": {
+          "call_id": {
+            "description": "Call-ID of this leg.",
+            "type": "string"
+          },
+          "depth": {
+            "description": "Hops from the root. Zero for the root itself.",
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "followed": {
+            "description": "Whether the walk continued THROUGH this leg. False on a leg reached\nby a timing guess, and on any leg the cap cut the walk short of.",
+            "type": "boolean"
+          },
+          "identifier_match": {
+            "description": "Whether the edge compared identifiers rather than guessing. Null for\nthe root, which the caller named rather than the walk matching.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "parent_call_id": {
+            "description": "The leg this one was correlated FROM. Null for the root.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "score": {
+            "description": "Confidence of the edge from the parent, 0-100. Null for the root.",
+            "format": "int32",
+            "maximum": 100,
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "strategy": {
+            "description": "Which strategy matched this edge. Null for the root.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "call_id",
+          "depth",
+          "followed"
+        ],
+        "type": "object"
+      },
       "Capabilities": {
         "description": "What this build can do and what the operator turned on: the machine\ncontract a client reads before it asks, so a refusal it could have\npredicted does not read as a dead end. The build fields are the same the\nMCP `server_capabilities` tool returns — one canonical `compiled_features`\nlist — paired with the REST server's own runtime opt-ins.",
         "properties": {
@@ -4196,6 +4325,74 @@
           }
         ],
         "summary": "Get a call report",
+        "tags": [
+          "dialogs"
+        ]
+      }
+    },
+    "/v1/dialogs/{call_id}/tree": {
+      "get": {
+        "description": "The whole tree of legs reachable from this call, walked transitively across a B2BUA, SBC or PBX — where `/correlated` answers one hop, this follows every identifier match to the end.\n\nA timing guess is a leaf: `followed` is false and its subtree is not searched, because a guess is not firm enough to walk through. `heuristic_edges` counts the guesses in the tree, and `truncated` is true when the row cap stopped the walk early. Follow each leg's `call_id` to `/v1/dialogs/{call_id}` for its detail.",
+        "operationId": "get_tree",
+        "parameters": [
+          {
+            "description": "Call-ID of any leg, percent-encoded. The walk is symmetric, so any leg returns the same tree, rooted differently.",
+            "in": "path",
+            "name": "call_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CallTree"
+                }
+              }
+            },
+            "description": "The tree of legs, root included."
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "No bearer credential, or one this server does not accept."
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "No dialog carries that Call-ID in this capture."
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Over the per-source-IP rate limit of 100 requests per second."
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Walk a call's tree",
         "tags": [
           "dialogs"
         ]

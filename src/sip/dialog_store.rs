@@ -191,6 +191,55 @@ impl CorrelationResult<'_> {
         (strategy, identifier_match, observed_gap_ms)
     }
 }
+
+/// One leg of a correlation tree: which dialog, and how the walk reached it.
+///
+/// Carries only the edge -- the Call-IDs and the strategy -- not the dialog's
+/// rendering, so each surface (`get_call_tree`, the REST tree route) attaches
+/// its own dialog projection to the same walk.
+#[derive(Debug, Clone)]
+pub struct TreeLeg {
+    /// Call-ID of this leg.
+    pub call_id: String,
+    /// Hops from the root. Zero for the root itself.
+    pub depth: u32,
+    /// The leg this one was correlated FROM. `None` for the root.
+    pub parent_call_id: Option<String>,
+    /// Confidence of the edge from the parent. `None` for the root.
+    pub score: Option<u8>,
+    /// Which strategy matched this edge. `None` for the root.
+    pub strategy: Option<&'static str>,
+    /// Whether the edge is an identifier comparison rather than a guess. `None`
+    /// for the root, which the caller named rather than the walk matching.
+    pub identifier_match: Option<bool>,
+    /// Whether the walk continued THROUGH this leg. False on a leg reached by a
+    /// timing guess, and on any leg the cap cut the walk short of -- the two
+    /// produce the same leaf shape for opposite reasons.
+    pub followed: bool,
+}
+
+/// The correlation graph reachable from one dialog, breadth-first.
+///
+/// Returned by [`DialogStore::correlation_tree`]. The one walk both
+/// `get_call_tree` and the REST `/v1/dialogs/{id}/tree` route render, so the two
+/// surfaces cannot disagree about the shape of a call.
+#[derive(Debug, Clone)]
+pub struct CorrelationTree {
+    /// Every leg found, ordered by depth then creation time then Call-ID.
+    pub legs: Vec<TreeLeg>,
+    /// Deepest hop count reached.
+    pub max_depth: u32,
+    /// True when the leg cap stopped the walk before it ran out of legs.
+    pub truncated: bool,
+    /// How many edges are timing guesses rather than identifier matches.
+    pub heuristic_edges: usize,
+    /// Total SIP messages across every leg -- the size of the merged ladder.
+    pub total_messages: usize,
+    /// Earliest leg creation time in the tree.
+    pub first_activity: Option<chrono::DateTime<chrono::Utc>>,
+    /// Latest leg update time in the tree.
+    pub last_activity: Option<chrono::DateTime<chrono::Utc>>,
+}
 /// How messages are grouped into tracked units (`--dialog-track`).
 ///
 /// See `docs/design/dialog-tracking-modes.md`. The short version: `CallId` is
@@ -1557,6 +1606,116 @@ impl DialogStore {
         // Sort by score descending
         results.sort_by_key(|r| std::cmp::Reverse(r.score));
         results
+    }
+
+    /// Walk the correlation graph from `call_id`, breadth-first, following only
+    /// identifier matches -- a timing guess is a leaf, its subtree unsearched --
+    /// up to `limit` legs including the root. `None` when the Call-ID is unknown.
+    ///
+    /// The one walk both `get_call_tree` and the REST `/v1/dialogs/{id}/tree`
+    /// route render, so they cannot disagree about the shape of a call. The walk
+    /// is symmetric: naming any leg returns the same tree, rooted differently.
+    pub fn correlation_tree(&self, call_id: &str, limit: usize) -> Option<CorrelationTree> {
+        let root = self.get(call_id)?;
+
+        let mut legs = vec![TreeLeg {
+            call_id: root.call_id.clone(),
+            depth: 0,
+            parent_call_id: None,
+            score: None,
+            strategy: None,
+            identifier_match: None,
+            // Overwritten below from `walked`; the root is always walked.
+            followed: false,
+        }];
+        let mut total_messages = root.messages.len();
+        let mut first_activity = root.created_at;
+        let mut last_activity = root.updated_at;
+
+        // Seeded with the root so a leg correlating back to it -- which most
+        // strategies do, being symmetric -- is not re-added as its own child.
+        let mut seen: std::collections::HashSet<String> =
+            std::collections::HashSet::from([root.call_id.clone()]);
+        let mut walked: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut queue: std::collections::VecDeque<(String, u32)> =
+            std::collections::VecDeque::from([(root.call_id.clone(), 0)]);
+        let mut truncated = false;
+        let mut heuristic_edges = 0usize;
+        let mut max_depth = 0u32;
+
+        while let Some((parent, depth)) = queue.pop_front() {
+            walked.insert(parent.clone());
+            let mut found = self.find_correlated_scored(&parent);
+            // `find_correlated_scored` sorts by score alone, so ties fall in
+            // store order and two runs can emit legs in different orders. A tree
+            // a caller diffs across polls must be stable, so the Call-ID breaks
+            // the tie.
+            found.sort_by(|a, b| {
+                b.score
+                    .cmp(&a.score)
+                    .then_with(|| a.dialog.call_id.cmp(&b.dialog.call_id))
+            });
+
+            for r in found {
+                if !seen.insert(r.dialog.call_id.clone()) {
+                    continue;
+                }
+                if legs.len() >= limit {
+                    truncated = true;
+                    break;
+                }
+                let (strategy, identifier_match) = r.reason.strategy();
+                if !identifier_match {
+                    heuristic_edges += 1;
+                }
+                let child_depth = depth + 1;
+                max_depth = max_depth.max(child_depth);
+                total_messages += r.dialog.messages.len();
+                first_activity = first_activity.min(r.dialog.created_at);
+                last_activity = last_activity.max(r.dialog.updated_at);
+                legs.push(TreeLeg {
+                    call_id: r.dialog.call_id.clone(),
+                    depth: child_depth,
+                    parent_call_id: Some(parent.clone()),
+                    score: Some(r.score),
+                    strategy: Some(strategy),
+                    identifier_match: Some(identifier_match),
+                    followed: false,
+                });
+                if identifier_match {
+                    queue.push_back((r.dialog.call_id.clone(), child_depth));
+                }
+            }
+            if truncated {
+                break;
+            }
+        }
+
+        // Set from what the walk ACTUALLY visited, not from the decision to
+        // enqueue: a leg still in the queue when the cap ended the walk is a leaf
+        // in this answer whatever its strategy, and reporting it as followed
+        // would claim its subtree was searched.
+        for leg in &mut legs {
+            leg.followed = walked.contains(&leg.call_id);
+        }
+        legs.sort_by(|a, b| {
+            let a_created = self.get(&a.call_id).map(|d| d.created_at);
+            let b_created = self.get(&b.call_id).map(|d| d.created_at);
+            a.depth
+                .cmp(&b.depth)
+                .then_with(|| a_created.cmp(&b_created))
+                .then_with(|| a.call_id.cmp(&b.call_id))
+        });
+
+        Some(CorrelationTree {
+            legs,
+            max_depth,
+            truncated,
+            heuristic_edges,
+            total_messages,
+            first_activity: Some(first_activity),
+            last_activity: Some(last_activity),
+        })
     }
 
     /// Find dialogs correlated to the given Call-ID, discarding the reason.

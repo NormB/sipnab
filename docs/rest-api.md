@@ -869,6 +869,53 @@ Returns `404` if the Call-ID is not found.
 
 ---
 
+### GET /v1/dialogs/:call_id/tree
+
+The whole tree of legs reachable from this call, walked transitively across a
+B2BUA, SBC or PBX. Where `/correlated` answers one hop, this follows every
+identifier match to the end.
+
+**curl:**
+
+```bash
+curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" http://127.0.0.1:8080/v1/dialogs/a1b2c3%40example.com/tree | jq .
+```
+
+**Response:**
+
+```json
+{
+  "schema_version": 1,
+  "root_call_id": "a1b2c3@example.com",
+  "legs": [
+    { "call_id": "a1b2c3@example.com", "depth": 0, "parent_call_id": null, "score": null, "strategy": null, "identifier_match": null, "followed": true },
+    { "call_id": "d4e5f6@sbc.example.com", "depth": 1, "parent_call_id": "a1b2c3@example.com", "score": 100, "strategy": "session_id", "identifier_match": true, "followed": true }
+  ],
+  "total_legs": 2,
+  "max_depth": 1,
+  "truncated": false,
+  "heuristic_edges": 0,
+  "total_messages": 12,
+  "first_activity": "2026-09-15T12:00:00+00:00",
+  "last_activity": "2026-09-15T12:00:41+00:00"
+}
+```
+
+**A timing guess is a leaf.** `followed` is false on a leg reached by
+`timing_heuristic` and the walk does not search its subtree, because a guess is
+not firm enough to walk through. `heuristic_edges` counts the guesses in the
+tree, and `truncated` is true when the row cap stopped the walk early. Follow
+each leg's `call_id` to `/v1/dialogs/{call_id}` for its detail.
+
+**The walk is symmetric.** Naming any leg returns the same tree, rooted at what
+you named. The MCP tool `get_call_tree` renders the same walk (the shared
+`DialogStore::correlation_tree`), embedding each leg's dialog summary rather than
+leaving it to a follow-up fetch.
+
+Returns `404` if the Call-ID is not found.
+
+---
+
 ### GET /v1/dialogs/:call_id/vcon
 
 Export one observed dialog as a [vCon](https://datatracker.ietf.org/doc/draft-ietf-vcon-vcon-core/)

@@ -528,7 +528,8 @@ pub fn build_router(state: ApiState) -> Router {
         .route("/v1/dialogs", get(list_dialogs))
         .route("/v1/dialogs/{call_id}", get(get_dialog))
         .route("/v1/dialogs/{call_id}/report", get(get_dialog_report))
-        .route("/v1/dialogs/{call_id}/correlated", get(get_correlated));
+        .route("/v1/dialogs/{call_id}/correlated", get(get_correlated))
+        .route("/v1/dialogs/{call_id}/tree", get(get_tree));
     // Registered only where the exporter exists. A route that answered 501
     // in a build without the feature would leave a client unable to tell
     // "this sipnab cannot" from "this call has no data", and the second
@@ -1061,6 +1062,84 @@ async fn get_correlated(
         legs,
         total_matched,
         heuristic_only,
+    }))
+}
+
+/// `GET /v1/dialogs/{call_id}/tree` — the whole tree of legs reachable from this
+/// call, walked transitively across a B2BUA, SBC or PBX (PAR3: get_call_tree on
+/// REST).
+///
+/// # Arguments
+///
+/// * `state` — Shared application state.
+/// * `addr` — Client socket address used for rate limiting.
+/// * `headers` — Request headers (auth).
+/// * `call_id` — Call-ID of any leg of the call; the walk is symmetric.
+///
+/// # Returns
+///
+/// 200 with the tree, legs ordered by depth then creation time; 404 when the
+/// Call-ID is unknown; 401/503 from the guard.
+///
+/// # Side effects
+///
+/// Holds the dialog-store read lock while walking; mutates the rate limiter.
+#[utoipa::path(
+    get,
+    path = "/v1/dialogs/{call_id}/tree",
+    tag = "dialogs",
+    summary = "Walk a call's tree",
+    description = "The whole tree of legs reachable from this call, walked transitively across a B2BUA, SBC or PBX — where `/correlated` answers one hop, this follows every identifier match to the end.\n\nA timing guess is a leaf: `followed` is false and its subtree is not searched, because a guess is not firm enough to walk through. `heuristic_edges` counts the guesses in the tree, and `truncated` is true when the row cap stopped the walk early. Follow each leg's `call_id` to `/v1/dialogs/{call_id}` for its detail.",
+    params(("call_id" = String, Path, description = "Call-ID of any leg, percent-encoded. \
+                                                     The walk is symmetric, so any leg returns \
+                                                     the same tree, rooted differently.")),
+    security(("bearer" = [])),
+    responses(
+        (status = 200, description = "The tree of legs, root included.", body = schema::CallTree),
+        (status = 401, description = "No bearer credential, or one this server does not accept.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 404, description = "No dialog carries that Call-ID in this capture.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 503, description = "Over the per-source-IP rate limit of 100 requests per second.", body = schema::ProblemJson, content_type = "application/problem+json"),
+    )
+)]
+async fn get_tree(
+    State(state): State<ApiState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Path(call_id): Path<String>,
+) -> Result<impl IntoResponse, Problem> {
+    guard(&state, &headers, addr.ip())?;
+
+    let ds = state.dialog_store.read();
+    // The one walk, shared with the MCP `get_call_tree` tool. 404 an unknown
+    // Call-ID, the same answer the sibling routes give.
+    let tree = ds
+        .correlation_tree(&call_id, state.max_rows)
+        .ok_or_else(|| Problem::new(StatusCode::NOT_FOUND))?;
+    let legs: Vec<schema::CallTreeLeg> = tree
+        .legs
+        .iter()
+        .map(|leg| schema::CallTreeLeg {
+            call_id: leg.call_id.clone(),
+            depth: leg.depth,
+            parent_call_id: leg.parent_call_id.clone(),
+            score: leg.score,
+            strategy: leg.strategy.map(str::to_string),
+            identifier_match: leg.identifier_match,
+            followed: leg.followed,
+        })
+        .collect();
+
+    Ok(Json(schema::CallTree {
+        schema_version: 1,
+        root_call_id: call_id,
+        total_legs: legs.len(),
+        legs,
+        max_depth: tree.max_depth,
+        truncated: tree.truncated,
+        heuristic_edges: tree.heuristic_edges,
+        total_messages: tree.total_messages,
+        first_activity: tree.first_activity.map(|t| t.to_rfc3339()),
+        last_activity: tree.last_activity.map(|t| t.to_rfc3339()),
     }))
 }
 
@@ -3106,6 +3185,55 @@ pub mod schema {
         pub heuristic_only: bool,
     }
 
+    /// One leg of a call tree: a dialog, and how the walk reached it. Follow
+    /// `call_id` to `/v1/dialogs/{call_id}` for the leg's detail.
+    #[derive(Debug, Clone, serde::Serialize, ToSchema)]
+    pub struct CallTreeLeg {
+        /// Call-ID of this leg.
+        pub call_id: String,
+        /// Hops from the root. Zero for the root itself.
+        pub depth: u32,
+        /// The leg this one was correlated FROM. Null for the root.
+        pub parent_call_id: Option<String>,
+        /// Confidence of the edge from the parent, 0-100. Null for the root.
+        #[schema(minimum = 0, maximum = 100)]
+        pub score: Option<u8>,
+        /// Which strategy matched this edge. Null for the root.
+        pub strategy: Option<String>,
+        /// Whether the edge compared identifiers rather than guessing. Null for
+        /// the root, which the caller named rather than the walk matching.
+        pub identifier_match: Option<bool>,
+        /// Whether the walk continued THROUGH this leg. False on a leg reached
+        /// by a timing guess, and on any leg the cap cut the walk short of.
+        pub followed: bool,
+    }
+
+    /// The tree of legs reachable from one call across a B2BUA, SBC or PBX.
+    #[derive(Debug, Clone, serde::Serialize, ToSchema)]
+    pub struct CallTree {
+        /// Version of this response's shape.
+        #[schema(example = 1)]
+        pub schema_version: u32,
+        /// Call-ID the walk started from, echoed verbatim.
+        pub root_call_id: String,
+        /// Every leg found, ordered by depth then creation time.
+        pub legs: Vec<CallTreeLeg>,
+        /// Number of legs returned, root included.
+        pub total_legs: usize,
+        /// Deepest hop count reached.
+        pub max_depth: u32,
+        /// True when the row cap stopped the walk before it ran out of legs.
+        pub truncated: bool,
+        /// How many edges are timing guesses rather than identifier matches.
+        pub heuristic_edges: usize,
+        /// Total SIP messages across every leg.
+        pub total_messages: usize,
+        /// Earliest leg creation time in the tree, RFC 3339.
+        pub first_activity: Option<String>,
+        /// Latest leg update time in the tree, RFC 3339.
+        pub last_activity: Option<String>,
+    }
+
     /// Transaction timing, as carried by every dialog summary.
     #[derive(Debug, Clone, ToSchema)]
     pub struct TimingSummary {
@@ -3821,6 +3949,7 @@ impl utoipa::Modify for BearerAuth {
         get_dialog,
         get_dialog_report,
         get_correlated,
+        get_tree,
         get_persistence,
         set_persistence,
         get_tfps_status,
@@ -3847,6 +3976,8 @@ impl utoipa::Modify for BearerAuth {
         schema::CapabilitiesRuntime,
         schema::CorrelatedLeg,
         schema::Correlated,
+        schema::CallTreeLeg,
+        schema::CallTree,
         schema::RelayStatsResponse,
         schema::DialogList,
         schema::DialogSummary,
@@ -4197,6 +4328,51 @@ mod tests {
         let parsed: Value = serde_json::from_str(&body).expect("valid JSON");
         assert_eq!(parsed["legs"].as_array().expect("array").len(), 0);
         assert_eq!(parsed["total_matched"], 0);
+    }
+
+    /// `GET /v1/dialogs/{id}/tree` walks the whole correlation tree, root first.
+    /// Closes the get_call_tree REST gap.
+    #[tokio::test]
+    async fn tree_walks_from_the_root() {
+        let state = make_state();
+        populate_correlated_dialogs(&state);
+        let app = build_router(state);
+
+        let resp = app
+            .oneshot(test_request("/v1/dialogs/leg-0%40test/tree"))
+            .await
+            .expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_to_string(resp.into_body()).await;
+        let parsed: Value = serde_json::from_str(&body).expect("valid JSON");
+        assert_eq!(parsed["schema_version"], 1);
+        assert_eq!(parsed["root_call_id"], "leg-0@test");
+        assert_eq!(parsed["total_legs"], 2);
+        assert_eq!(parsed["max_depth"], 1);
+        // Both legs are joined by session_id, an identifier match, so no edge is
+        // a guess.
+        assert_eq!(parsed["heuristic_edges"], 0);
+        let legs = parsed["legs"].as_array().expect("legs");
+        assert_eq!(legs[0]["call_id"], "leg-0@test");
+        assert_eq!(legs[0]["depth"], 0);
+        assert_eq!(legs[1]["call_id"], "leg-1@test");
+        assert_eq!(legs[1]["depth"], 1);
+        assert_eq!(legs[1]["strategy"], "session_id");
+        assert_eq!(legs[1]["identifier_match"], true);
+    }
+
+    /// An unknown Call-ID is a 404, matching the sibling dialog routes.
+    #[tokio::test]
+    async fn tree_unknown_call_id_is_404() {
+        let state = make_state();
+        populate_correlated_dialogs(&state);
+        let app = build_router(state);
+
+        let resp = app
+            .oneshot(test_request("/v1/dialogs/nope%40nowhere/tree"))
+            .await
+            .expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
     }
 
     fn make_state() -> ApiState {
