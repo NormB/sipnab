@@ -423,7 +423,10 @@ fn undocumented_numeric_ceilings_do_not_increase() {
 // 31 -> 33 at PAR3, for `Aggregate` and `AggregateBucket`, the
 // `GET /v1/aggregate` response. Response-only, same reason, pinned by the same
 // contract test. Two components.
-const PERMISSIVE_SCHEMA_COMPONENTS: usize = 33;
+// 33 -> 35 at PAR3, for `Lint` and `LintFinding`, the
+// `GET /v1/dialogs/{call_id}/lint` response. Response-only, same reason, pinned
+// by the same contract test. Two components.
+const PERMISSIVE_SCHEMA_COMPONENTS: usize = 35;
 
 #[test]
 fn permissive_rest_schema_components_do_not_increase() {

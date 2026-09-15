@@ -101,6 +101,20 @@ fn aggregate_answers_with_the_buckets_envelope() {
     assert!(body["total_matched"].is_number(), "total_matched present");
 }
 
+/// `GET /v1/dialogs/{id}/lint` answers over the shipped binary with the findings
+/// envelope (PAR3).
+#[test]
+fn lint_answers_with_the_findings_envelope() {
+    let srv = ApiServer::spawn(&[]);
+    let resp = srv.get(&format!("/v1/dialogs/{CALL_ID}/lint"));
+    assert_eq!(resp.status, 200, "/v1/dialogs/{{id}}/lint status");
+    let body = resp.json();
+    assert_eq!(body["schema_version"], 1);
+    assert_eq!(body["call_id"], CALL_ID);
+    assert!(body["findings"].is_array(), "findings is an array");
+    assert!(body["finding_count"].is_number(), "finding_count present");
+}
+
 /// The server accepts `--api-max-conn` (the in-flight-request cap) and still
 /// serves — keeps the flag under test coverage.
 #[test]

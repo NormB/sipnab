@@ -80,6 +80,12 @@ entry that carries them.
   `aggregate_dialogs` tool now shares, so a build with `api` but not `mcp` still
   offers the same dimensions. This closes the `aggregate_dialogs` REST gap,
   leaving 39 named gaps.
+- **`GET /v1/dialogs/{call_id}/lint` (PAR3).** The RFC-conformance findings for
+  one dialog — each with its rule, severity, `basis` (`must`, `should`,
+  `interop` or `observation`), RFC number and section, and what the message held
+  against what the section calls for — the same checks the CLI `--lint` runs and
+  the MCP `lint_dialog` tool reports, media-derived rules included. This closes
+  the `lint_dialog` REST gap, leaving 38 named gaps.
 
 ## [0.5.175] - 2026-09-15
 

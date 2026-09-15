@@ -1907,6 +1907,97 @@
         ],
         "type": "object"
       },
+      "Lint": {
+        "description": "The RFC-conformance findings for one dialog.",
+        "properties": {
+          "call_id": {
+            "description": "The Call-ID the findings are for.",
+            "type": "string"
+          },
+          "finding_count": {
+            "description": "How many findings the dialog tripped.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "findings": {
+            "description": "The findings, in the linter's own order.",
+            "items": {
+              "$ref": "#/components/schemas/LintFinding"
+            },
+            "type": "array"
+          },
+          "schema_version": {
+            "description": "Version of this response's shape.",
+            "example": 1,
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "schema_version",
+          "call_id",
+          "finding_count",
+          "findings"
+        ],
+        "type": "object"
+      },
+      "LintFinding": {
+        "description": "One RFC-conformance finding: the rule, its severity and basis, the RFC\nsection it reads from, and what the message held against what the section\ncalls for. The same fields the MCP `lint_dialog` tool reports.",
+        "properties": {
+          "basis": {
+            "description": "What kind of claim the rule makes: `must`, `should`, `interop` or\n`observation`. A `must` violation and an interop wart are not the\nsame finding, and the word keeps them apart.",
+            "type": "string"
+          },
+          "expected": {
+            "description": "What the cited section calls for.",
+            "type": "string"
+          },
+          "explanation": {
+            "description": "Why the difference matters, in the terms an operator acts on.",
+            "type": "string"
+          },
+          "message_index": {
+            "description": "Index into the dialog's messages of the message the finding is drawn\nfrom.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "observed": {
+            "description": "What the capture actually holds.",
+            "type": "string"
+          },
+          "rfc": {
+            "description": "RFC number the rule reads from.",
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "rule_id": {
+            "description": "The rule that fired.",
+            "type": "string"
+          },
+          "section": {
+            "description": "Section within that RFC.",
+            "type": "string"
+          },
+          "severity": {
+            "description": "How loudly to report it: `error`, `warning` or `info`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "rule_id",
+          "severity",
+          "basis",
+          "rfc",
+          "section",
+          "message_index",
+          "observed",
+          "expected",
+          "explanation"
+        ],
+        "type": "object"
+      },
       "MethodCount": {
         "description": "One opening method and how many dialogs in the filtered set it opened.\n\nA list of pairs rather than an object: JSON object key order is not\nguaranteed, and the useful reading of this field is \"what dominates\",\nwhich only an ordered sequence can carry.",
         "properties": {
@@ -4400,6 +4491,74 @@
           }
         ],
         "summary": "Correlate a call's legs",
+        "tags": [
+          "dialogs"
+        ]
+      }
+    },
+    "/v1/dialogs/{call_id}/lint": {
+      "get": {
+        "description": "The RFC-conformance defects this dialog trips, each with its rule, severity, basis, RFC number and section, and what the message held against what the section calls for — the same checks the CLI `--lint` runs and the MCP `lint_dialog` tool reports.\n\n`basis` separates a `must` violation from an interop wart or an observation the wire contradicts, so a reader does not discount an RFC breach because it sits beside a heuristic. The media-derived rules run too, from the dialog's RTP streams.",
+        "operationId": "get_lint",
+        "parameters": [
+          {
+            "description": "Call-ID of the dialog, percent-encoded. Call-IDs routinely carry `@` and may carry `;`, `+` or `/`.",
+            "in": "path",
+            "name": "call_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Lint"
+                }
+              }
+            },
+            "description": "The conformance findings for this dialog."
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "No bearer credential, or one this server does not accept."
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "No dialog carries that Call-ID in this capture."
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Over the per-source-IP rate limit of 100 requests per second."
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Lint a dialog for RFC conformance",
         "tags": [
           "dialogs"
         ]

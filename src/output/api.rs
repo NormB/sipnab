@@ -545,7 +545,8 @@ pub fn build_router(state: ApiState) -> Router {
         .route("/v1/dialogs/{call_id}", get(get_dialog))
         .route("/v1/dialogs/{call_id}/report", get(get_dialog_report))
         .route("/v1/dialogs/{call_id}/correlated", get(get_correlated))
-        .route("/v1/dialogs/{call_id}/tree", get(get_tree));
+        .route("/v1/dialogs/{call_id}/tree", get(get_tree))
+        .route("/v1/dialogs/{call_id}/lint", get(get_lint));
     // Registered only where the exporter exists. A route that answered 501
     // in a build without the feature would leave a client unable to tell
     // "this sipnab cannot" from "this call has no data", and the second
@@ -1259,6 +1260,88 @@ async fn get_aggregate(
         other_count,
         distinct_values,
         total_matched,
+    }))
+}
+
+/// `GET /v1/dialogs/{call_id}/lint` — the RFC-conformance findings for one
+/// dialog (PAR3: lint_dialog on REST).
+///
+/// # Arguments
+///
+/// * `state` — Shared application state.
+/// * `addr` — Client socket address used for rate limiting.
+/// * `headers` — Request headers (auth).
+/// * `call_id` — Call-ID of the dialog to lint.
+///
+/// # Returns
+///
+/// 200 with the findings, in the linter's order; 404 when the Call-ID is
+/// unknown; 401/503 from the guard.
+///
+/// # Side effects
+///
+/// Holds the dialog- and stream-store read locks while linting; mutates the
+/// rate limiter.
+#[utoipa::path(
+    get,
+    path = "/v1/dialogs/{call_id}/lint",
+    tag = "dialogs",
+    summary = "Lint a dialog for RFC conformance",
+    description = "The RFC-conformance defects this dialog trips, each with its rule, severity, basis, RFC number and section, and what the message held against what the section calls for — the same checks the CLI `--lint` runs and the MCP `lint_dialog` tool reports.\n\n`basis` separates a `must` violation from an interop wart or an observation the wire contradicts, so a reader does not discount an RFC breach because it sits beside a heuristic. The media-derived rules run too, from the dialog's RTP streams.",
+    params(("call_id" = String, Path, description = "Call-ID of the dialog, percent-encoded. \
+                                                     Call-IDs routinely carry `@` and may carry \
+                                                     `;`, `+` or `/`.")),
+    security(("bearer" = [])),
+    responses(
+        (status = 200, description = "The conformance findings for this dialog.", body = schema::Lint),
+        (status = 401, description = "No bearer credential, or one this server does not accept.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 404, description = "No dialog carries that Call-ID in this capture.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 503, description = "Over the per-source-IP rate limit of 100 requests per second.", body = schema::ProblemJson, content_type = "application/problem+json"),
+    )
+)]
+async fn get_lint(
+    State(state): State<ApiState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Path(call_id): Path<String>,
+) -> Result<impl IntoResponse, Problem> {
+    guard(&state, &headers, addr.ip())?;
+
+    // DialogStore before StreamStore, the lock order the stores document.
+    let ds = state.dialog_store.read();
+    let dialog = ds
+        .get(&call_id)
+        .ok_or_else(|| Problem::new(StatusCode::NOT_FOUND))?;
+    let media = {
+        let ss = state.stream_store.read();
+        crate::sip::lint::ObservedMedia::from_streams(ss.streams_for(&call_id))
+    };
+    // The same linter the CLI `--lint` and the MCP tool run. Media-derived rules
+    // read `media`; the rest read the dialog's messages.
+    let outcome = crate::sip::lint::Linter::new(crate::sip::lint::LintConfig::new())
+        .lint_dialog_with_media_detailed(dialog, &media);
+    let findings: Vec<schema::LintFinding> = outcome
+        .findings
+        .iter()
+        .map(|f| schema::LintFinding {
+            rule_id: f.rule_id.to_string(),
+            severity: f.severity.as_str().to_string(),
+            basis: f.basis.as_str().to_string(),
+            rfc: f.rfc,
+            section: f.section.to_string(),
+            message_index: f.message_index,
+            observed: f.observed.clone(),
+            expected: f.expected.clone(),
+            explanation: f.explanation.clone(),
+        })
+        .collect();
+    drop(ds);
+
+    Ok(Json(schema::Lint {
+        schema_version: 1,
+        call_id,
+        finding_count: findings.len(),
+        findings,
     }))
 }
 
@@ -3383,6 +3466,48 @@ pub mod schema {
         pub total_matched: usize,
     }
 
+    /// One RFC-conformance finding: the rule, its severity and basis, the RFC
+    /// section it reads from, and what the message held against what the section
+    /// calls for. The same fields the MCP `lint_dialog` tool reports.
+    #[derive(Debug, Clone, serde::Serialize, ToSchema)]
+    pub struct LintFinding {
+        /// The rule that fired.
+        pub rule_id: String,
+        /// How loudly to report it: `error`, `warning` or `info`.
+        pub severity: String,
+        /// What kind of claim the rule makes: `must`, `should`, `interop` or
+        /// `observation`. A `must` violation and an interop wart are not the
+        /// same finding, and the word keeps them apart.
+        pub basis: String,
+        /// RFC number the rule reads from.
+        pub rfc: u32,
+        /// Section within that RFC.
+        pub section: String,
+        /// Index into the dialog's messages of the message the finding is drawn
+        /// from.
+        pub message_index: usize,
+        /// What the capture actually holds.
+        pub observed: String,
+        /// What the cited section calls for.
+        pub expected: String,
+        /// Why the difference matters, in the terms an operator acts on.
+        pub explanation: String,
+    }
+
+    /// The RFC-conformance findings for one dialog.
+    #[derive(Debug, Clone, serde::Serialize, ToSchema)]
+    pub struct Lint {
+        /// Version of this response's shape.
+        #[schema(example = 1)]
+        pub schema_version: u32,
+        /// The Call-ID the findings are for.
+        pub call_id: String,
+        /// How many findings the dialog tripped.
+        pub finding_count: usize,
+        /// The findings, in the linter's own order.
+        pub findings: Vec<LintFinding>,
+    }
+
     /// Transaction timing, as carried by every dialog summary.
     #[derive(Debug, Clone, ToSchema)]
     pub struct TimingSummary {
@@ -4100,6 +4225,7 @@ impl utoipa::Modify for BearerAuth {
         get_correlated,
         get_tree,
         get_aggregate,
+        get_lint,
         get_persistence,
         set_persistence,
         get_tfps_status,
@@ -4130,6 +4256,8 @@ impl utoipa::Modify for BearerAuth {
         schema::CallTree,
         schema::AggregateBucket,
         schema::Aggregate,
+        schema::LintFinding,
+        schema::Lint,
         schema::RelayStatsResponse,
         schema::DialogList,
         schema::DialogSummary,
@@ -4602,6 +4730,58 @@ mod tests {
             .await
             .expect("oneshot");
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    // ── lint (PAR3: lint_dialog) ──────────────────────────────────────
+
+    /// `GET /v1/dialogs/{id}/lint` returns the dialog's RFC-conformance
+    /// findings. Closes the lint_dialog REST gap.
+    #[tokio::test]
+    async fn lint_returns_conformance_findings() {
+        let state = make_state();
+        populate_dialogs(&state);
+        let app = build_router(state);
+
+        let resp = app
+            .oneshot(test_request("/v1/dialogs/call-0%40test/lint"))
+            .await
+            .expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_to_string(resp.into_body()).await;
+        let parsed: Value = serde_json::from_str(&body).expect("valid JSON");
+        assert_eq!(parsed["schema_version"], 1);
+        assert_eq!(parsed["call_id"], "call-0@test");
+        let findings = parsed["findings"].as_array().expect("findings array");
+        assert_eq!(
+            parsed["finding_count"].as_u64().expect("count") as usize,
+            findings.len(),
+            "finding_count must match the findings it counts"
+        );
+        // The bare INVITE (no Via, no Max-Forwards) trips conformance rules, and
+        // each finding carries its rule, severity and RFC section.
+        assert!(
+            !findings.is_empty(),
+            "a bare INVITE trips conformance rules"
+        );
+        let f = &findings[0];
+        assert!(f["rule_id"].is_string());
+        assert!(f["severity"].is_string());
+        assert!(f["rfc"].is_number());
+        assert!(f["section"].is_string());
+    }
+
+    /// An unknown Call-ID is a 404, matching the sibling dialog routes.
+    #[tokio::test]
+    async fn lint_unknown_call_id_is_404() {
+        let state = make_state();
+        populate_dialogs(&state);
+        let app = build_router(state);
+
+        let resp = app
+            .oneshot(test_request("/v1/dialogs/nope%40nowhere/lint"))
+            .await
+            .expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
     }
 
     fn make_state() -> ApiState {

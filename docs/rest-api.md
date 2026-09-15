@@ -916,6 +916,53 @@ Returns `404` if the Call-ID is not found.
 
 ---
 
+### GET /v1/dialogs/:call_id/lint
+
+The RFC-conformance defects this dialog trips, each with its rule, severity,
+basis and the RFC section it reads from — the same checks the CLI `--lint` runs.
+
+**curl:**
+
+```bash
+curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" http://127.0.0.1:8080/v1/dialogs/a1b2c3%40example.com/lint | jq .
+```
+
+**Response:**
+
+```json
+{
+  "schema_version": 1,
+  "call_id": "a1b2c3@example.com",
+  "finding_count": 1,
+  "findings": [
+    {
+      "rule_id": "SIP-3261-8.1.1.6-MAX-FORWARDS-MISSING",
+      "severity": "warning",
+      "basis": "should",
+      "rfc": 3261,
+      "section": "8.1.1.6",
+      "message_index": 0,
+      "observed": "no Max-Forwards header",
+      "expected": "a Max-Forwards header on the request",
+      "explanation": "A request with no Max-Forwards can loop indefinitely across proxies."
+    }
+  ]
+}
+```
+
+**`basis` says how firm each finding is.** `must` is an RFC breach, `should` a
+recommendation deviated from, `interop` a wart deployed equipment mishandles,
+`observation` a promise the wire contradicts. Reporting them under one word
+teaches a reader to discount the breach, so the field keeps them apart. The
+media-derived rules run too, from the dialog's RTP streams.
+
+The MCP tool `lint_dialog` reports the same findings from the same linter, adding
+the frame pointers and suppression accounting an agent uses.
+
+Returns `404` if the Call-ID is not found.
+
+---
+
 ### GET /v1/dialogs/:call_id/vcon
 
 Export one observed dialog as a [vCon](https://datatracker.ietf.org/doc/draft-ietf-vcon-vcon-core/)

@@ -221,7 +221,7 @@ What SIP RFC-conformance defects does this call or message trip?
 |---|---|
 | CLI | `--lint` with `--lint-fail-on` |
 | TUI | gap: a human reviewing a message in `RawMessage` cannot see its RFC findings inline, because no conformance panel exists (PAR4) |
-| REST | gap: a CI or monitor would poll lint results, but the report carries only signaling findings, not RFC conformance (PAR3) |
+| REST | `/v1/dialogs/{call_id}/lint` |
 | MCP | `lint_dialog` and `validate_message` |
 
 ### Tail changes since a cursor
