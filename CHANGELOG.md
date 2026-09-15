@@ -86,6 +86,15 @@ entry that carries them.
   against what the section calls for — the same checks the CLI `--lint` runs and
   the MCP `lint_dialog` tool reports, media-derived rules included. This closes
   the `lint_dialog` REST gap, leaving 38 named gaps.
+- **`POST /v1/vcon/validate` (PAR3).** Check a vCon container a caller holds
+  against sipnab's vendored schema — the producer-and-conserver boundary, so a
+  store that would refuse a container can tell whoever built it first. The
+  verdict is `valid`, `valid-except-documented-deviation` (a shape sipnab emits
+  and the schema rejects on purpose, named in `deviations` with `explanations`)
+  or `invalid` (real `errors`); a non-object body is a 400. It runs the same
+  ungated `vcon_schema::validate` the MCP `validate_vcon` tool runs, and is the
+  first REST route that validates input rather than reading the capture. This
+  closes the `validate_vcon` REST gap, leaving 37 named gaps.
 
 ## [0.5.175] - 2026-09-15
 

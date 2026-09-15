@@ -553,6 +553,10 @@ pub fn build_router(state: ApiState) -> Router {
     // reading is the one it would act on.
     #[cfg(feature = "vcon")]
     let router = router.route("/v1/dialogs/{call_id}/vcon", get(get_dialog_vcon));
+    // Validating a caller's vCon needs the vendored schema, which is part of the
+    // vcon feature, so this route is gated with it too.
+    #[cfg(feature = "vcon")]
+    let router = router.route("/v1/vcon/validate", axum::routing::post(post_vcon_validate));
     router
         .route(
             "/v1/persistence",
@@ -1342,6 +1346,91 @@ async fn get_lint(
         call_id,
         finding_count: findings.len(),
         findings,
+    }))
+}
+
+#[cfg(feature = "vcon")]
+/// `POST /v1/vcon/validate` — check a vCon container against sipnab's vendored
+/// schema (PAR3: validate_vcon on REST).
+///
+/// # Arguments
+///
+/// * `state` — Shared application state (for the guard).
+/// * `addr` — Client socket address used for rate limiting.
+/// * `headers` — Request headers (auth).
+/// * `body` — The vCon container to validate, a JSON object.
+///
+/// # Returns
+///
+/// 200 with the verdict and any findings; 400 when the body is not a JSON
+/// object; 401/503 from the guard.
+///
+/// # Side effects
+///
+/// Mutates the rate limiter. Reads no store — the container comes from the
+/// request, so this is the one route that validates input a caller holds.
+#[utoipa::path(
+    post,
+    path = "/v1/vcon/validate",
+    tag = "operations",
+    summary = "Validate a vCon container",
+    description = "Check a vCon container a caller holds against sipnab's vendored schema, the producer-and-conserver boundary where a store that would refuse a container can tell whoever built it, before it is stored.\n\n`verdict` is `valid`, `valid-except-documented-deviation` (a shape sipnab emits on purpose that the schema rejects on purpose, named in `deviations` with a paragraph in `explanations`) or `invalid` (real `errors`). The MCP `validate_vcon` tool runs the same `vcon_schema::validate`.",
+    request_body(content = serde_json::Value, description = "The vCon container to validate.", content_type = "application/json"),
+    security(("bearer" = [])),
+    responses(
+        (status = 200, description = "The verdict and any findings.", body = schema::VconValidation),
+        (status = 400, description = "The body is not a JSON object.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 401, description = "No bearer credential, or one this server does not accept.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 503, description = "Over the per-source-IP rate limit of 100 requests per second.", body = schema::ProblemJson, content_type = "application/problem+json"),
+    )
+)]
+async fn post_vcon_validate(
+    State(state): State<ApiState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    body: Result<Json<Value>, axum::extract::rejection::JsonRejection>,
+) -> Result<impl IntoResponse, Problem> {
+    guard(&state, &headers, addr.ip())?;
+
+    let Json(container) = body.map_err(|_| {
+        Problem::detailed(
+            StatusCode::BAD_REQUEST,
+            "the body must be a JSON vCon container",
+        )
+    })?;
+    if !container.is_object() {
+        return Err(Problem::detailed(
+            StatusCode::BAD_REQUEST,
+            "a vCon container is a JSON object; pass the container itself, not a \
+             string or array holding it",
+        ));
+    }
+
+    // The shared validator the MCP tool also runs; not feature-gated, so an
+    // api-only build validates too.
+    let report = crate::output::vcon_schema::validate(&container);
+    let finding = |f: &crate::output::vcon_schema::SchemaFinding| schema::VconFinding {
+        instance_path: f.instance_path.clone(),
+        keyword: f.keyword.to_string(),
+        detail: f.detail.clone(),
+        deviation: f.deviation.map(str::to_string),
+    };
+
+    Ok(Json(schema::VconValidation {
+        schema_version: 1,
+        verdict: report.verdict.as_str().to_string(),
+        schema_id: report.schema_id.clone(),
+        schema_path: report.schema_path.to_string(),
+        errors: report.errors.iter().map(finding).collect(),
+        deviations: report.deviations.iter().map(finding).collect(),
+        explanations: report
+            .explanations
+            .iter()
+            .map(|e| schema::VconExplanation {
+                name: e.name.to_string(),
+                explanation: e.explanation.to_string(),
+            })
+            .collect(),
     }))
 }
 
@@ -3508,6 +3597,51 @@ pub mod schema {
         pub findings: Vec<LintFinding>,
     }
 
+    /// One place a vCon container disagrees with the vendored schema.
+    #[derive(Debug, Clone, serde::Serialize, ToSchema)]
+    pub struct VconFinding {
+        /// JSON Pointer to the offending value, `/dialog/2` shaped.
+        pub instance_path: String,
+        /// The schema keyword that refused it.
+        pub keyword: String,
+        /// What was wrong, in one sentence.
+        pub detail: String,
+        /// The documented deviation this finding IS, when it is one; absent for
+        /// an ordinary error.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub deviation: Option<String>,
+    }
+
+    /// Why a documented deviation is a deviation rather than an error.
+    #[derive(Debug, Clone, serde::Serialize, ToSchema)]
+    pub struct VconExplanation {
+        /// The deviation name the findings reference.
+        pub name: String,
+        /// One paragraph on why sipnab emits it and the schema rejects it.
+        pub explanation: String,
+    }
+
+    /// The verdict on a vCon container checked against the vendored schema.
+    #[derive(Debug, Clone, serde::Serialize, ToSchema)]
+    pub struct VconValidation {
+        /// Version of this response's shape.
+        #[schema(example = 1)]
+        pub schema_version: u32,
+        /// The one-word verdict: `valid`, `valid-except-documented-deviation`
+        /// or `invalid`.
+        pub verdict: String,
+        /// The `$id` the vendored schema declares.
+        pub schema_id: String,
+        /// Where that schema lives in the repository.
+        pub schema_path: String,
+        /// Findings that are NOT documented deviations. Empty on a clean pass.
+        pub errors: Vec<VconFinding>,
+        /// Findings that ARE documented deviations, kept apart from the errors.
+        pub deviations: Vec<VconFinding>,
+        /// One paragraph per distinct deviation named above.
+        pub explanations: Vec<VconExplanation>,
+    }
+
     /// Transaction timing, as carried by every dialog summary.
     #[derive(Debug, Clone, ToSchema)]
     pub struct TimingSummary {
@@ -4355,7 +4489,15 @@ pub fn openapi_json() -> String {
 /// advertising a route the binary does not serve is worse than no document.
 #[cfg(feature = "vcon")]
 #[derive(utoipa::OpenApi)]
-#[openapi(paths(get_dialog_vcon), components(schemas(schema::Vcon)))]
+#[openapi(
+    paths(get_dialog_vcon, post_vcon_validate),
+    components(schemas(
+        schema::Vcon,
+        schema::VconValidation,
+        schema::VconFinding,
+        schema::VconExplanation
+    ))
+)]
 struct VconDoc;
 
 // ── Tests ───────────────────────────────────────────────────────────
@@ -4782,6 +4924,59 @@ mod tests {
             .await
             .expect("oneshot");
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    // ── vcon validate (PAR3: validate_vcon) ───────────────────────────
+
+    /// `POST /v1/vcon/validate` checks a container against the vendored schema.
+    /// An empty object is not a valid vCon, so the verdict is `invalid` with
+    /// errors naming the missing required fields. Closes the validate_vcon gap.
+    #[tokio::test]
+    async fn vcon_validate_reports_an_invalid_container() {
+        let state = make_state();
+        let app = build_router(state);
+
+        let resp = app
+            .oneshot(test_post("/v1/vcon/validate", "{}"))
+            .await
+            .expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_to_string(resp.into_body()).await;
+        let parsed: Value = serde_json::from_str(&body).expect("valid JSON");
+        assert_eq!(parsed["schema_version"], 1);
+        assert_eq!(parsed["verdict"], "invalid");
+        assert!(
+            !parsed["errors"].as_array().expect("errors").is_empty(),
+            "an empty object trips the schema's required fields"
+        );
+    }
+
+    /// A body that is not a JSON object is a 400, not a verdict: a vCon
+    /// container is an object, and a string or array holding one is a caller
+    /// mistake worth naming rather than validating.
+    #[tokio::test]
+    async fn vcon_validate_non_object_is_400() {
+        let state = make_state();
+        let app = build_router(state);
+
+        let resp = app
+            .oneshot(test_post("/v1/vcon/validate", "[1, 2, 3]"))
+            .await
+            .expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    /// A body that is not JSON at all is a 400.
+    #[tokio::test]
+    async fn vcon_validate_malformed_body_is_400() {
+        let state = make_state();
+        let app = build_router(state);
+
+        let resp = app
+            .oneshot(test_post("/v1/vcon/validate", "not json at all"))
+            .await
+            .expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
 
     fn make_state() -> ApiState {

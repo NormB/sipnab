@@ -4013,6 +4013,109 @@
           "analysis"
         ],
         "type": "object"
+      },
+      "VconExplanation": {
+        "description": "Why a documented deviation is a deviation rather than an error.",
+        "properties": {
+          "explanation": {
+            "description": "One paragraph on why sipnab emits it and the schema rejects it.",
+            "type": "string"
+          },
+          "name": {
+            "description": "The deviation name the findings reference.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "explanation"
+        ],
+        "type": "object"
+      },
+      "VconFinding": {
+        "description": "One place a vCon container disagrees with the vendored schema.",
+        "properties": {
+          "detail": {
+            "description": "What was wrong, in one sentence.",
+            "type": "string"
+          },
+          "deviation": {
+            "description": "The documented deviation this finding IS, when it is one; absent for\nan ordinary error.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "instance_path": {
+            "description": "JSON Pointer to the offending value, `/dialog/2` shaped.",
+            "type": "string"
+          },
+          "keyword": {
+            "description": "The schema keyword that refused it.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "instance_path",
+          "keyword",
+          "detail"
+        ],
+        "type": "object"
+      },
+      "VconValidation": {
+        "description": "The verdict on a vCon container checked against the vendored schema.",
+        "properties": {
+          "deviations": {
+            "description": "Findings that ARE documented deviations, kept apart from the errors.",
+            "items": {
+              "$ref": "#/components/schemas/VconFinding"
+            },
+            "type": "array"
+          },
+          "errors": {
+            "description": "Findings that are NOT documented deviations. Empty on a clean pass.",
+            "items": {
+              "$ref": "#/components/schemas/VconFinding"
+            },
+            "type": "array"
+          },
+          "explanations": {
+            "description": "One paragraph per distinct deviation named above.",
+            "items": {
+              "$ref": "#/components/schemas/VconExplanation"
+            },
+            "type": "array"
+          },
+          "schema_id": {
+            "description": "The `$id` the vendored schema declares.",
+            "type": "string"
+          },
+          "schema_path": {
+            "description": "Where that schema lives in the repository.",
+            "type": "string"
+          },
+          "schema_version": {
+            "description": "Version of this response's shape.",
+            "example": 1,
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "verdict": {
+            "description": "The one-word verdict: `valid`, `valid-except-documented-deviation`\nor `invalid`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "schema_version",
+          "verdict",
+          "schema_id",
+          "schema_path",
+          "errors",
+          "deviations",
+          "explanations"
+        ],
+        "type": "object"
       }
     },
     "securitySchemes": {
@@ -5850,6 +5953,72 @@
         "summary": "Ask TFPS to release a source",
         "tags": [
           "tfps"
+        ]
+      }
+    },
+    "/v1/vcon/validate": {
+      "post": {
+        "description": "Check a vCon container a caller holds against sipnab's vendored schema, the producer-and-conserver boundary where a store that would refuse a container can tell whoever built it, before it is stored.\n\n`verdict` is `valid`, `valid-except-documented-deviation` (a shape sipnab emits on purpose that the schema rejects on purpose, named in `deviations` with a paragraph in `explanations`) or `invalid` (real `errors`). The MCP `validate_vcon` tool runs the same `vcon_schema::validate`.",
+        "operationId": "post_vcon_validate",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {}
+            }
+          },
+          "description": "The vCon container to validate.",
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VconValidation"
+                }
+              }
+            },
+            "description": "The verdict and any findings."
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "The body is not a JSON object."
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "No bearer credential, or one this server does not accept."
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Over the per-source-IP rate limit of 100 requests per second."
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Validate a vCon container",
+        "tags": [
+          "operations"
         ]
       }
     }

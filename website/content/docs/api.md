@@ -2287,6 +2287,47 @@ values for a model where this route returns them raw for a program.
 
 ---
 
+### POST /v1/vcon/validate
+
+Check a vCon container against sipnab's vendored schema — the producer-and-
+conserver boundary, where a store that would refuse a container can warn whoever
+built it first, before it reaches the store. The one route that validates input
+a caller holds rather than reading the capture.
+
+**curl:**
+
+```bash
+curl -s -X POST -H "Authorization: Bearer $SIPNAB_API_KEY" -H "Content-Type: application/json" \
+  --data-binary @container.json http://127.0.0.1:8080/v1/vcon/validate | jq .
+```
+
+**Response:**
+
+```json
+{
+  "schema_version": 1,
+  "verdict": "invalid",
+  "schema_id": "https://sipnab.com/schemas/vcon.schema.json",
+  "schema_path": "schemas/vcon.schema.json",
+  "errors": [
+    { "instance_path": "", "keyword": "required", "detail": "the container is missing the required `vcon` version property" }
+  ],
+  "deviations": [],
+  "explanations": []
+}
+```
+
+**`verdict` is one of three.** `valid` is a clean pass. `invalid` carries real
+`errors`. `valid-except-documented-deviation` names a shape sipnab emits on
+purpose that the schema rejects on purpose — those sit in `deviations`, each with
+a paragraph in `explanations`, kept apart from the errors so a producer does not
+treat a deliberate shape as a defect.
+
+The body must be the JSON object itself, not a string holding it. A non-object
+is a `400`. The MCP tool `validate_vcon` runs the same `vcon_schema::validate`.
+
+---
+
 ### GET /v1/relay/stats
 
 The relay's own global counters, tiered `relay_reported`. Transmits once to the

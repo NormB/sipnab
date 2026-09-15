@@ -115,6 +115,19 @@ fn lint_answers_with_the_findings_envelope() {
     assert!(body["finding_count"].is_number(), "finding_count present");
 }
 
+/// `POST /v1/vcon/validate` answers over the shipped binary with the verdict
+/// envelope (PAR3). An empty object is not a valid vCon.
+#[test]
+fn vcon_validate_answers_over_the_socket() {
+    let srv = ApiServer::spawn(&[]);
+    let resp = srv.post_json("/v1/vcon/validate", "{}");
+    assert_eq!(resp.status, 200, "/v1/vcon/validate status");
+    let body = resp.json();
+    assert_eq!(body["schema_version"], 1);
+    assert_eq!(body["verdict"], "invalid");
+    assert!(body["errors"].is_array(), "errors is an array");
+}
+
 /// The server accepts `--api-max-conn` (the in-flight-request cap) and still
 /// serves — keeps the flag under test coverage.
 #[test]

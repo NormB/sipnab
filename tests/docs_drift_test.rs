@@ -45,6 +45,14 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             "website/content/docs/internals/uprobe-capture.md",
         ],
     ),
+    // curl's, named by the REST API page's `POST /v1/vcon/validate` example.
+    // `--data-binary` sends the JSON container's bytes exactly. It is a curl
+    // flag, not a sipnab one, and documenting how to POST a container must not
+    // turn it into one.
+    (
+        "data-binary",
+        &["docs/rest-api.md", "website/content/docs/api.md"],
+    ),
     // `cargo llvm-cov`'s, named by the coverage note that documents the CI
     // gate and the local rehearsal of it. `--fail-under-lines` is the floor
     // the workflow enforces and `--skip` names the two test groups the

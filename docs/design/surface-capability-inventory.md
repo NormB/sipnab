@@ -11,7 +11,7 @@ reachable three ways and not four is visible only once these four are set
 beside one another. [`tests/capability_matrix_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/capability_matrix_test.rs) keeps
 this current and requires the matrix to account for every row here.
 
-Totals: CLI 271, TUI 14, REST 27, MCP 68.
+Totals: CLI 271, TUI 14, REST 28, MCP 68.
 
 ## CLI flags (271)
 
@@ -304,7 +304,7 @@ Totals: CLI 271, TUI 14, REST 27, MCP 68.
 - `StreamList`
 - `StreamLossMap`
 
-## REST routes (27)
+## REST routes (28)
 
 - `/health`
 - `/metrics`
@@ -333,6 +333,7 @@ Totals: CLI 271, TUI 14, REST 27, MCP 68.
 - `/v1/tfps/labels`
 - `/v1/tfps/status`
 - `/v1/tfps/unban`
+- `/v1/vcon/validate`
 
 ## MCP tools (68)
 

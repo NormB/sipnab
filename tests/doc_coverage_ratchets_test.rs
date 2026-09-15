@@ -426,7 +426,11 @@ fn undocumented_numeric_ceilings_do_not_increase() {
 // 33 -> 35 at PAR3, for `Lint` and `LintFinding`, the
 // `GET /v1/dialogs/{call_id}/lint` response. Response-only, same reason, pinned
 // by the same contract test. Two components.
-const PERMISSIVE_SCHEMA_COMPONENTS: usize = 35;
+// 35 -> 38 at PAR3, for `VconValidation`, `VconFinding` and `VconExplanation`,
+// the `POST /v1/vcon/validate` response. Response-only, same reason. The POST
+// route's body schema is not checked by the GET-only contract test, but the
+// response shape is pinned by the same rule. Three components.
+const PERMISSIVE_SCHEMA_COMPONENTS: usize = 38;
 
 #[test]
 fn permissive_rest_schema_components_do_not_increase() {

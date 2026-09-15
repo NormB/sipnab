@@ -496,7 +496,7 @@ Does this vCon container pass sipnab's vendored schema?
 |---|---|
 | CLI | gap: schema conformance of a document is a one-shot CI check, but no flag exists (PAR5) |
 | TUI | decision: validating JSON against a schema is a CI concern, and a human at a terminal would not reach for a conformance screen |
-| REST | gap: a producer-and-conserver integration boundary is exactly where a validate endpoint belongs, but it is absent (PAR3) |
+| REST | `/v1/vcon/validate` (POST) |
 | MCP | `validate_vcon` |
 
 ### SIPREC metadata
