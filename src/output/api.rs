@@ -420,6 +420,12 @@ pub struct DialogListParams {
     /// expression that does not parse is a 400, so a client learns its query
     /// was rejected rather than receiving every row. ANDed with `state`/`from`.
     pub filter: Option<String>,
+    /// Only dialogs whose first message is at or after this RFC 3339 instant
+    /// (e.g. `2026-09-15T12:00:00Z`). A timestamp that does not parse is a 400.
+    pub after: Option<String>,
+    /// Only dialogs whose first message is at or before this RFC 3339 instant.
+    /// A timestamp that does not parse is a 400.
+    pub before: Option<String>,
 }
 
 /// Query parameters for the `GET /v1/streams` endpoint.
@@ -1048,6 +1054,22 @@ async fn list_dialogs(
         None => None,
     };
 
+    // Parse the time window up front, so a malformed timestamp is a 400 rather
+    // than a silently ignored window a client would read as the answer to its
+    // question. `after`/`before` bound the dialog's first-message instant.
+    let parse_ts = |name: &str,
+                    v: Option<&str>|
+     -> Result<Option<chrono::DateTime<chrono::Utc>>, Problem> {
+        match v {
+            Some(s) => chrono::DateTime::parse_from_rfc3339(s)
+                .map(|t| Some(t.with_timezone(&chrono::Utc)))
+                .map_err(|e| Problem::detailed(StatusCode::BAD_REQUEST, format!("{name}: {e}"))),
+            None => Ok(None),
+        }
+    };
+    let after = parse_ts("after", params.after.as_deref())?;
+    let before = parse_ts("before", params.before.as_deref())?;
+
     let ds = state.dialog_store.read();
     // The DSL reads media/asymmetry fields, so it is evaluated against the
     // streams too. `select_dialogs` groups streams by Call-ID once (the same
@@ -1071,6 +1093,16 @@ async fn list_dialogs(
         .filter(|d| {
             if let Some(sel) = &dsl_selected
                 && !sel.contains(d.call_id.as_str())
+            {
+                return false;
+            }
+            if let Some(a) = after
+                && d.created_at < a
+            {
+                return false;
+            }
+            if let Some(b) = before
+                && d.created_at > b
             {
                 return false;
             }
@@ -6725,6 +6757,78 @@ mod tests {
         // filter=from.user ==   (no value: does not parse)
         let resp = app
             .oneshot(test_request("/v1/dialogs?filter=from.user%20%3D%3D"))
+            .await
+            .expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    // ── list_dialogs time window (PAR3: search_by_time) ───────────────
+
+    /// `after` excludes dialogs that opened before it. The fixture's three
+    /// dialogs open at 12:00, so an `after` of 13:00 admits none. Closes the
+    /// search_by_time REST gap: a wall-clock window was unreachable over REST.
+    #[tokio::test]
+    async fn list_dialogs_after_excludes_earlier_dialogs() {
+        let state = make_state();
+        populate_dialogs(&state); // all open at 2024-06-15T12:00:00Z
+        let app = build_router(state);
+
+        let resp = app
+            .oneshot(test_request("/v1/dialogs?after=2024-06-15T13:00:00Z"))
+            .await
+            .expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_to_string(resp.into_body()).await;
+        let parsed: Value = serde_json::from_str(&body).expect("valid JSON");
+        assert_eq!(parsed["dialogs"].as_array().expect("array").len(), 0);
+        assert_eq!(parsed["total"], 0);
+    }
+
+    /// `after` admits dialogs that opened at or after it.
+    #[tokio::test]
+    async fn list_dialogs_after_admits_later_dialogs() {
+        let state = make_state();
+        populate_dialogs(&state);
+        let app = build_router(state);
+
+        let resp = app
+            .oneshot(test_request("/v1/dialogs?after=2024-06-15T11:00:00Z"))
+            .await
+            .expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_to_string(resp.into_body()).await;
+        let parsed: Value = serde_json::from_str(&body).expect("valid JSON");
+        assert_eq!(parsed["dialogs"].as_array().expect("array").len(), 3);
+    }
+
+    /// `before` excludes dialogs that opened after it.
+    #[tokio::test]
+    async fn list_dialogs_before_excludes_later_dialogs() {
+        let state = make_state();
+        populate_dialogs(&state);
+        let app = build_router(state);
+
+        let resp = app
+            .oneshot(test_request("/v1/dialogs?before=2024-06-15T11:00:00Z"))
+            .await
+            .expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_to_string(resp.into_body()).await;
+        let parsed: Value = serde_json::from_str(&body).expect("valid JSON");
+        assert_eq!(parsed["dialogs"].as_array().expect("array").len(), 0);
+    }
+
+    /// A timestamp that is not RFC 3339 is a 400, not a silently ignored
+    /// window, so a client learns its query was malformed rather than reading
+    /// an unfiltered page as the answer to its question.
+    #[tokio::test]
+    async fn list_dialogs_invalid_timestamp_is_400() {
+        let state = make_state();
+        populate_dialogs(&state);
+        let app = build_router(state);
+
+        let resp = app
+            .oneshot(test_request("/v1/dialogs?after=notatimestamp"))
             .await
             .expect("oneshot");
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);

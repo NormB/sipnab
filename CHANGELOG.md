@@ -50,6 +50,11 @@ entry that carries them.
   deleting the duplicate it had kept — and the response also carries the REST
   server's runtime opt-ins. This closes the `server_capabilities` REST gap, the
   one machine-contract route REST lacked, leaving 43 named gaps.
+- **A time window on `GET /v1/dialogs` (PAR3).** `after` and `before` RFC 3339
+  parameters bound the dialog list to those whose first message falls in a
+  wall-clock window, the question `search_by_time` answers for an agent. A
+  timestamp that does not parse is a 400 rather than a silently ignored window.
+  This closes the `search_by_time` REST gap, leaving 42 named gaps.
 
 ## [0.5.175] - 2026-09-15
 

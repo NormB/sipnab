@@ -3835,6 +3835,24 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "description": "Only dialogs whose first message is at or after this RFC 3339 instant\n(e.g. `2026-09-15T12:00:00Z`). A timestamp that does not parse is a 400.",
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Only dialogs whose first message is at or before this RFC 3339 instant.\nA timestamp that does not parse is a 400.",
+            "in": "query",
+            "name": "before",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {

@@ -155,7 +155,7 @@ Which dialogs fall in this wall-clock window?
 |---|---|
 | CLI | gap: scoping a batch to when the user says it broke is one-shot, but no time-window flag exists and the filter has no timestamp field (PAR5) |
 | TUI | gap: a human reviewing a capture wants a time-range filter, but the filter dialog has no time field (PAR4) |
-| REST | gap: an integrator would query a window, but `/v1/dialogs` exposes only state and from, no time params (PAR3) |
+| REST | `/v1/dialogs` with `after`/`before` |
 | MCP | `search_by_time` |
 
 ### Call-volume histogram
