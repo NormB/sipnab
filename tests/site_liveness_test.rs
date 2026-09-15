@@ -882,11 +882,20 @@ fn the_push_gate_checks_each_message_against_its_diff() {
         "nothing runs the claim checker, so a count in a commit message is \
          still whatever somebody typed"
     );
-    // The hook counts the attribute with a grep, so the pattern is escaped
-    // there. Matching the escaped form is matching the thing that runs.
+    // The hook derives the count from the diff (`--net-added`) rather than
+    // trusting a typed number, then classifies the message against it.
     assert!(
-        hook.contains(r"#\[test\]"),
-        "the hook never counts the tests a commit adds, so it has nothing to \
+        hook.contains("--net-added"),
+        "the hook classifies a message against a count it does not derive from \
+         the diff, so the claim is still whatever somebody typed"
+    );
+    // The counting itself lives in the checker, and it counts an async test as
+    // a test -- the regression `scripts/tests/test_check_test_claim.py` pins.
+    let script = std::fs::read_to_string(repo().join("scripts/check-test-claim.sh"))
+        .expect("check-test-claim.sh is in the tree");
+    assert!(
+        script.contains(r"#\[(tokio::)?test\]"),
+        "the checker never counts the tests a commit adds, so it has nothing to \
          compare the claim against"
     );
 }

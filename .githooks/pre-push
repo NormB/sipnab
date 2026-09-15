@@ -474,9 +474,12 @@ if UPSTREAM=$(git rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null
 	CLAIM_BAD=""
 	for commit in $(git rev-list --no-merges "$UPSTREAM..HEAD" 2>/dev/null || true); do
 		DIFF=$(git show --format='' -U0 "$commit" -- '*.rs' 2>/dev/null || true)
-		ADDED=$(printf '%s\n' "$DIFF" | grep -c '^+.*#\[test\]' || true)
-		REMOVED=$(printf '%s\n' "$DIFF" | grep -c '^-.*#\[test\]' || true)
-		NET=$((ADDED - REMOVED))
+		# One rule, in the tested script: it counts `#[test]` and
+		# `#[tokio::test]` alike (an async test is a test cargo runs), added
+		# minus removed. Counting only `#[test]` inline here read a commit of
+		# three async tests as zero.
+		NET=$(printf '%s\n' "$DIFF" \
+			| sh "$(dirname "$0")/../scripts/check-test-claim.sh" --net-added)
 		CLAIM_OUT=$(git log -1 --format=%B "$commit" \
 			| sh "$(dirname "$0")/../scripts/check-test-claim.sh" --classify "$NET" 2>&1) \
 			&& CLAIM_RC=0 || CLAIM_RC=$?

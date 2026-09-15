@@ -147,5 +147,18 @@ if [ "${1:-}" = "--classify" ]; then
 	exit $?
 fi
 
-printf 'usage: %s --classify <actual count>   (message on stdin)\n' "$0" >&2
+# The net tests a unified diff adds, `#[test]` and `#[tokio::test]` alike, added
+# minus removed. An async test is a test: cargo runs it and the homepage count
+# reuses cargo's own "N passed", so the number a claim is checked against must
+# see it too. Counting only `#[test]` read a commit of three async tests as
+# zero. Reads the diff on stdin so the caller need not shell-quote it.
+if [ "${1:-}" = "--net-added" ]; then
+	diff=$(cat)
+	added=$(printf '%s\n' "$diff" | grep -cE '^\+.*#\[(tokio::)?test\]' || true)
+	removed=$(printf '%s\n' "$diff" | grep -cE '^-.*#\[(tokio::)?test\]' || true)
+	printf '%s\n' "$((added - removed))"
+	exit 0
+fi
+
+printf 'usage: %s --classify <actual count> | --net-added   (input on stdin)\n' "$0" >&2
 exit 64
