@@ -4282,6 +4282,55 @@ Returns `404` if the Call-ID is not found.
 
 ---
 
+### GET /v1/dialogs/:call_id/correlated
+
+The other legs of this call across a B2BUA, SBC or PBX, each with the strategy
+that matched it — so a program can stitch a carrier call back together.
+
+**curl:**
+
+```bash
+curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" http://127.0.0.1:8080/v1/dialogs/a1b2c3%40example.com/correlated | jq .
+```
+
+**Response:**
+
+```json
+{
+  "schema_version": 1,
+  "source_call_id": "a1b2c3@example.com",
+  "legs": [
+    {
+      "call_id": "d4e5f6@sbc.example.com",
+      "score": 100,
+      "strategy": "session_id",
+      "identifier_match": true,
+      "observed_gap_ms": null
+    }
+  ],
+  "total_matched": 1,
+  "heuristic_only": false
+}
+```
+
+**`strategy` names how each leg matched, and `identifier_match` says whether to
+trust it.** `session_id` (RFC 7989) and `x_call_id` compared identifiers built
+to cross a B2BUA. `timing_heuristic` is a guess from matching endpoints and a
+close creation time, and `observed_gap_ms` carries the gap it saw so a reader
+can judge it — a 15 ms gap on a quiet box and a 1,900 ms gap on a busy SBC score
+the same and mean different things. `heuristic_only` is true when every leg is
+such a guess.
+
+**One hop.** This route answers the legs one step from the Call-ID asked about.
+To walk a whole tree, follow each leg's `call_id` back into this route. The MCP
+tool `find_correlated` returns the same shape from the same
+`CorrelationResult::strategy_and_gap` derivation, so the two surfaces cannot
+disagree about whether a strategy is an identifier match.
+
+Returns `404` if the Call-ID is not found.
+
+---
+
 ### GET /v1/dialogs/:call_id/vcon
 
 Export one observed dialog as a [vCon](https://datatracker.ietf.org/doc/draft-ietf-vcon-vcon-core/)

@@ -527,7 +527,8 @@ pub fn build_router(state: ApiState) -> Router {
         .route("/health", get(health_check))
         .route("/v1/dialogs", get(list_dialogs))
         .route("/v1/dialogs/{call_id}", get(get_dialog))
-        .route("/v1/dialogs/{call_id}/report", get(get_dialog_report));
+        .route("/v1/dialogs/{call_id}/report", get(get_dialog_report))
+        .route("/v1/dialogs/{call_id}/correlated", get(get_correlated));
     // Registered only where the exporter exists. A route that answered 501
     // in a build without the feature would leave a client unable to tell
     // "this sipnab cannot" from "this call has no data", and the second
@@ -980,6 +981,86 @@ async fn get_capabilities(
         runtime: schema::CapabilitiesRuntime {
             api_allow_relay_query: state.relay_query.permit.is_some(),
         },
+    }))
+}
+
+/// `GET /v1/dialogs/{call_id}/correlated` — the other legs of this call and the
+/// strategy that matched each (PAR3: find_correlated on REST).
+///
+/// # Arguments
+///
+/// * `state` — Shared application state.
+/// * `addr` — Client socket address used for rate limiting.
+/// * `headers` — Request headers (auth).
+/// * `call_id` — Call-ID of the dialog to correlate from.
+///
+/// # Returns
+///
+/// 200 with the correlated legs, highest score first; 404 when the Call-ID is
+/// unknown; 401/503 from the guard.
+///
+/// # Side effects
+///
+/// Holds the dialog-store read lock while correlating; mutates the rate limiter.
+#[utoipa::path(
+    get,
+    path = "/v1/dialogs/{call_id}/correlated",
+    tag = "dialogs",
+    summary = "Correlate a call's legs",
+    description = "The other legs of this call across a B2BUA, SBC or PBX, each with the strategy that matched it and whether that strategy compared identifiers or guessed from timing.\n\nOne hop from one Call-ID. To walk a whole tree, follow each `call_id` back into this route. `heuristic_only` is true when every match is a timing guess, so a reader weighs the answer accordingly.",
+    params(("call_id" = String, Path, description = "Call-ID of the dialog, percent-encoded. \
+                                                     Call-IDs routinely carry `@` and may carry \
+                                                     `;`, `+` or `/`.")),
+    security(("bearer" = [])),
+    responses(
+        (status = 200, description = "The other legs of this call, each with the strategy that \
+                                      matched it.", body = schema::Correlated),
+        (status = 401, description = "No bearer credential, or one this server does not accept.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 404, description = "No dialog carries that Call-ID in this capture.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 503, description = "Over the per-source-IP rate limit of 100 requests per second.", body = schema::ProblemJson, content_type = "application/problem+json"),
+    )
+)]
+async fn get_correlated(
+    State(state): State<ApiState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Path(call_id): Path<String>,
+) -> Result<impl IntoResponse, Problem> {
+    guard(&state, &headers, addr.ip())?;
+
+    let ds = state.dialog_store.read();
+    // 404 an unknown Call-ID, the same answer `/v1/dialogs/{call_id}` gives, so
+    // an empty-legs 200 always means "this call stands alone" and never "this
+    // call is not here" — two facts a caller acts on differently.
+    let source_created = match ds.get(&call_id) {
+        Some(d) => d.created_at,
+        None => return Err(Problem::new(StatusCode::NOT_FOUND)),
+    };
+    let results = ds.find_correlated_scored(&call_id);
+    let total_matched = results.len();
+    let legs: Vec<schema::CorrelatedLeg> = results
+        .iter()
+        .take(state.max_rows)
+        .map(|r| {
+            let (strategy, identifier_match, observed_gap_ms) =
+                r.strategy_and_gap(Some(source_created));
+            schema::CorrelatedLeg {
+                call_id: r.dialog.call_id.clone(),
+                score: r.score,
+                strategy: strategy.to_string(),
+                identifier_match,
+                observed_gap_ms,
+            }
+        })
+        .collect();
+    let heuristic_only = !legs.is_empty() && legs.iter().all(|l| !l.identifier_match);
+
+    Ok(Json(schema::Correlated {
+        schema_version: 1,
+        source_call_id: call_id,
+        legs,
+        total_matched,
+        heuristic_only,
     }))
 }
 
@@ -2985,6 +3066,46 @@ pub mod schema {
         pub api_allow_relay_query: bool,
     }
 
+    /// One other leg of a call, and the strategy that matched it. The fields
+    /// mirror the MCP `find_correlated` tool's `CorrelatedLeg`, built from the
+    /// one `CorrelationResult::strategy_and_gap` rule so the two surfaces cannot
+    /// disagree about whether a strategy is an identifier match.
+    #[derive(Debug, Clone, serde::Serialize, ToSchema)]
+    pub struct CorrelatedLeg {
+        /// Call-ID of the correlated dialog. Feed it to `/v1/dialogs/{call_id}`.
+        pub call_id: String,
+        /// Confidence, 0-100.
+        #[schema(minimum = 0, maximum = 100)]
+        pub score: u8,
+        /// Which strategy matched, by name: `session_id`, `x_call_id`,
+        /// `sdp_origin`, `charging_vector_related_icid`, `charging_vector_icid`,
+        /// `via_branch` or `timing_heuristic`.
+        pub strategy: String,
+        /// True when the strategy compared identifiers, false for a guess.
+        pub identifier_match: bool,
+        /// For `timing_heuristic` only: the observed gap between the two
+        /// dialogs' creation, in milliseconds. Null for an identifier match,
+        /// where it would be a number with no bearing on why they matched.
+        pub observed_gap_ms: Option<i64>,
+    }
+
+    /// The other legs of one call, with the source it was asked about.
+    #[derive(Debug, Clone, serde::Serialize, ToSchema)]
+    pub struct Correlated {
+        /// Version of this response's shape.
+        #[schema(example = 1)]
+        pub schema_version: u32,
+        /// The Call-ID the legs were correlated against.
+        pub source_call_id: String,
+        /// The correlated legs, highest score first.
+        pub legs: Vec<CorrelatedLeg>,
+        /// How many legs matched before the row cap.
+        pub total_matched: usize,
+        /// True when every matched leg is a timing guess rather than an
+        /// identifier match, so a reader weighs the whole answer accordingly.
+        pub heuristic_only: bool,
+    }
+
     /// Transaction timing, as carried by every dialog summary.
     #[derive(Debug, Clone, ToSchema)]
     pub struct TimingSummary {
@@ -3699,6 +3820,7 @@ impl utoipa::Modify for BearerAuth {
         list_dialogs,
         get_dialog,
         get_dialog_report,
+        get_correlated,
         get_persistence,
         set_persistence,
         get_tfps_status,
@@ -3723,6 +3845,8 @@ impl utoipa::Modify for BearerAuth {
         schema::ProblemJson,
         schema::Capabilities,
         schema::CapabilitiesRuntime,
+        schema::CorrelatedLeg,
+        schema::Correlated,
         schema::RelayStatsResponse,
         schema::DialogList,
         schema::DialogSummary,
@@ -3952,6 +4076,129 @@ mod tests {
     }
 
     /// Build an `ApiState` with empty stores and no auth configured.
+    /// Two dialogs sharing one RFC 7989 Session-ID, so `find_correlated` links
+    /// them by the `session_id` strategy (an identifier match). `leg-0@test`
+    /// and `leg-1@test`.
+    fn populate_correlated_dialogs(state: &ApiState) {
+        let mut ds = state.dialog_store.write();
+        let ts = chrono::TimeZone::with_ymd_and_hms(&chrono::Utc, 2024, 6, 15, 12, 0, 0).unwrap();
+        let localhost = std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST);
+        let session = "ab30317f1a784dc48ff97d6dd1a2b3c4";
+        for i in 0..2 {
+            let raw = build_sip(
+                "INVITE sip:bob@example.com SIP/2.0",
+                &[
+                    &format!("From: <sip:user{i}@example.com>;tag=t{i}"),
+                    "To: <sip:bob@example.com>",
+                    &format!("Call-ID: leg-{i}@test"),
+                    &format!("Session-ID: {session}"),
+                    "CSeq: 1 INVITE",
+                    "Content-Length: 0",
+                ],
+                b"",
+            );
+            let msg = crate::sip::parser::parse_sip(
+                &raw,
+                ts,
+                localhost,
+                localhost,
+                5060,
+                5060,
+                TransportProto::Udp,
+            )
+            .expect("parse");
+            ds.process_message(msg);
+        }
+    }
+
+    /// `GET /v1/dialogs/{id}/correlated` names the other legs of a call and the
+    /// strategy that matched each. Closes the find_correlated REST gap.
+    #[tokio::test]
+    async fn correlated_returns_the_linked_leg() {
+        let state = make_state();
+        populate_correlated_dialogs(&state);
+        let app = build_router(state);
+
+        let resp = app
+            .oneshot(test_request("/v1/dialogs/leg-0%40test/correlated"))
+            .await
+            .expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_to_string(resp.into_body()).await;
+        let parsed: Value = serde_json::from_str(&body).expect("valid JSON");
+        assert_eq!(parsed["schema_version"], 1);
+        assert_eq!(parsed["source_call_id"], "leg-0@test");
+        let legs = parsed["legs"].as_array().expect("legs array");
+        assert_eq!(legs.len(), 1);
+        assert_eq!(legs[0]["call_id"], "leg-1@test");
+        assert_eq!(legs[0]["strategy"], "session_id");
+        assert_eq!(legs[0]["identifier_match"], true);
+        assert_eq!(parsed["total_matched"], 1);
+    }
+
+    /// An unknown Call-ID is a 404, the same answer `GET /v1/dialogs/{id}`
+    /// gives, rather than an empty-legs 200 that reads as "this call has no
+    /// other legs" when the truth is "this call is not here".
+    #[tokio::test]
+    async fn correlated_unknown_call_id_is_404() {
+        let state = make_state();
+        populate_correlated_dialogs(&state);
+        let app = build_router(state);
+
+        let resp = app
+            .oneshot(test_request("/v1/dialogs/nope%40nowhere/correlated"))
+            .await
+            .expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    /// A known dialog with no correlated legs is an empty list, not a 404: the
+    /// call exists, it simply stands alone. Built as the only dialog in the
+    /// store, so nothing — not even the timing heuristic — can match it.
+    #[tokio::test]
+    async fn correlated_uncorrelated_dialog_is_empty() {
+        let state = make_state();
+        {
+            let mut ds = state.dialog_store.write();
+            let ts =
+                chrono::TimeZone::with_ymd_and_hms(&chrono::Utc, 2024, 6, 15, 12, 0, 0).unwrap();
+            let localhost = std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST);
+            let raw = build_sip(
+                "INVITE sip:bob@example.com SIP/2.0",
+                &[
+                    "From: <sip:alice@example.com>;tag=t0",
+                    "To: <sip:bob@example.com>",
+                    "Call-ID: lonely@test",
+                    "CSeq: 1 INVITE",
+                    "Content-Length: 0",
+                ],
+                b"",
+            );
+            let msg = crate::sip::parser::parse_sip(
+                &raw,
+                ts,
+                localhost,
+                localhost,
+                5060,
+                5060,
+                TransportProto::Udp,
+            )
+            .expect("parse");
+            ds.process_message(msg);
+        }
+        let app = build_router(state);
+
+        let resp = app
+            .oneshot(test_request("/v1/dialogs/lonely%40test/correlated"))
+            .await
+            .expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_to_string(resp.into_body()).await;
+        let parsed: Value = serde_json::from_str(&body).expect("valid JSON");
+        assert_eq!(parsed["legs"].as_array().expect("array").len(), 0);
+        assert_eq!(parsed["total_matched"], 0);
+    }
+
     fn make_state() -> ApiState {
         ApiState {
             relay_query: Default::default(),

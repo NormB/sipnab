@@ -55,6 +55,14 @@ entry that carries them.
   wall-clock window, the question `search_by_time` answers for an agent. A
   timestamp that does not parse is a 400 rather than a silently ignored window.
   This closes the `search_by_time` REST gap, leaving 42 named gaps.
+- **`GET /v1/dialogs/{call_id}/correlated` (PAR3).** The other legs of a call
+  across a B2BUA, SBC or PBX, each with the strategy that matched it and whether
+  that strategy compared identifiers or guessed from timing — so a program can
+  stitch a carrier call back together, one hop per request. The leg-building
+  moves into one `CorrelationResult::strategy_and_gap` rule the MCP
+  `find_correlated` tool now shares, so the two surfaces cannot disagree about
+  whether a strategy is an identifier match. This closes the `find_correlated`
+  REST gap, leaving 41 named gaps.
 
 ## [0.5.175] - 2026-09-15
 

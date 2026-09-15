@@ -414,7 +414,10 @@ fn undocumented_numeric_ceilings_do_not_increase() {
 // test `every_documented_response_matches_what_the_server_sends`, since the
 // server, not a caller, chooses these fields. Two components, attributed by
 // counting `ToSchema` derives against HEAD.
-const PERMISSIVE_SCHEMA_COMPONENTS: usize = 27;
+// 27 -> 29 at PAR3, for `Correlated` and `CorrelatedLeg`, the
+// `GET /v1/dialogs/{call_id}/correlated` response. Response-only for the same
+// reason, pinned by the same contract test. Two components.
+const PERMISSIVE_SCHEMA_COMPONENTS: usize = 29;
 
 #[test]
 fn permissive_rest_schema_components_do_not_increase() {

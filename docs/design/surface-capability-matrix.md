@@ -133,7 +133,7 @@ What are the other legs of this call, and by which strategy was each matched?
 |---|---|
 | CLI | gap: a one-shot "where did this call go next" is legitimate, but no flag exposes correlation (PAR5) |
 | TUI | `CallFlow` |
-| REST | gap: a program stitching legs would poll it, but no correlation route or field exists (PAR3) |
+| REST | `/v1/dialogs/{call_id}/correlated` |
 | MCP | `find_correlated` |
 
 ### Search message bodies

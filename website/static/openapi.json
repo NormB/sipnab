@@ -1358,6 +1358,85 @@
         ],
         "type": "object"
       },
+      "Correlated": {
+        "description": "The other legs of one call, with the source it was asked about.",
+        "properties": {
+          "heuristic_only": {
+            "description": "True when every matched leg is a timing guess rather than an\nidentifier match, so a reader weighs the whole answer accordingly.",
+            "type": "boolean"
+          },
+          "legs": {
+            "description": "The correlated legs, highest score first.",
+            "items": {
+              "$ref": "#/components/schemas/CorrelatedLeg"
+            },
+            "type": "array"
+          },
+          "schema_version": {
+            "description": "Version of this response's shape.",
+            "example": 1,
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "source_call_id": {
+            "description": "The Call-ID the legs were correlated against.",
+            "type": "string"
+          },
+          "total_matched": {
+            "description": "How many legs matched before the row cap.",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "schema_version",
+          "source_call_id",
+          "legs",
+          "total_matched",
+          "heuristic_only"
+        ],
+        "type": "object"
+      },
+      "CorrelatedLeg": {
+        "description": "One other leg of a call, and the strategy that matched it. The fields\nmirror the MCP `find_correlated` tool's `CorrelatedLeg`, built from the\none `CorrelationResult::strategy_and_gap` rule so the two surfaces cannot\ndisagree about whether a strategy is an identifier match.",
+        "properties": {
+          "call_id": {
+            "description": "Call-ID of the correlated dialog. Feed it to `/v1/dialogs/{call_id}`.",
+            "type": "string"
+          },
+          "identifier_match": {
+            "description": "True when the strategy compared identifiers, false for a guess.",
+            "type": "boolean"
+          },
+          "observed_gap_ms": {
+            "description": "For `timing_heuristic` only: the observed gap between the two\ndialogs' creation, in milliseconds. Null for an identifier match,\nwhere it would be a number with no bearing on why they matched.",
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "score": {
+            "description": "Confidence, 0-100.",
+            "format": "int32",
+            "maximum": 100,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "strategy": {
+            "description": "Which strategy matched, by name: `session_id`, `x_call_id`,\n`sdp_origin`, `charging_vector_related_icid`, `charging_vector_icid`,\n`via_branch` or `timing_heuristic`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "call_id",
+          "score",
+          "strategy",
+          "identifier_match"
+        ],
+        "type": "object"
+      },
       "Dialog": {
         "description": "`GET /v1/dialogs/{call_id}` — the full dialog.\n\nThe projection `output::json::dialog_to_json` builds, which is a\nSUPERSET of [`DialogSummary`] and not the same shape: it carries the\ndisplay names, the SDP timeline, the media diagnosis and the streams\nthemselves. `tests/openapi_contract_test.rs` reads a real one off a\nrunning server and fails if a key here is missing from it, or one of\nits keys is missing from here.\n\nThe nested objects are left open rather than enumerated. Their\ndefinitions live in `output::json`, and repeating them here would be\nthe drift this document exists to remove; the live check is what holds\nthe top level honest.",
         "properties": {
@@ -3971,6 +4050,74 @@
           }
         ],
         "summary": "Get one dialog",
+        "tags": [
+          "dialogs"
+        ]
+      }
+    },
+    "/v1/dialogs/{call_id}/correlated": {
+      "get": {
+        "description": "The other legs of this call across a B2BUA, SBC or PBX, each with the strategy that matched it and whether that strategy compared identifiers or guessed from timing.\n\nOne hop from one Call-ID. To walk a whole tree, follow each `call_id` back into this route. `heuristic_only` is true when every match is a timing guess, so a reader weighs the answer accordingly.",
+        "operationId": "get_correlated",
+        "parameters": [
+          {
+            "description": "Call-ID of the dialog, percent-encoded. Call-IDs routinely carry `@` and may carry `;`, `+` or `/`.",
+            "in": "path",
+            "name": "call_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Correlated"
+                }
+              }
+            },
+            "description": "The other legs of this call, each with the strategy that matched it."
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "No bearer credential, or one this server does not accept."
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "No dialog carries that Call-ID in this capture."
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Over the per-source-IP rate limit of 100 requests per second."
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Correlate a call's legs",
         "tags": [
           "dialogs"
         ]

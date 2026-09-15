@@ -168,6 +168,29 @@ pub struct CorrelationResult<'a> {
     /// Why this dialog was considered correlated.
     pub reason: CorrelationReason,
 }
+
+impl CorrelationResult<'_> {
+    /// The strategy's name, whether it compared identifiers, and -- for a
+    /// timing guess only -- the observed creation gap against `source_created`
+    /// in milliseconds.
+    ///
+    /// One place, so `find_correlated`, `get_call_tree` and the REST route
+    /// cannot disagree about whether a strategy is an identifier match, and the
+    /// gap is attached only where it IS the evidence: on an identifier match it
+    /// would be a number with no bearing on why they matched.
+    pub fn strategy_and_gap(
+        &self,
+        source_created: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> (&'static str, bool, Option<i64>) {
+        let (strategy, identifier_match) = self.reason.strategy();
+        let observed_gap_ms = (!identifier_match)
+            .then(|| {
+                source_created.map(|src| (self.dialog.created_at - src).num_milliseconds().abs())
+            })
+            .flatten();
+        (strategy, identifier_match, observed_gap_ms)
+    }
+}
 /// How messages are grouped into tracked units (`--dialog-track`).
 ///
 /// See `docs/design/dialog-tracking-modes.md`. The short version: `CallId` is

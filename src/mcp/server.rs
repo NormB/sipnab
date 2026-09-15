@@ -7797,21 +7797,14 @@ impl SipnabMcp {
                 .iter()
                 .take(limit)
                 .map(|r| {
-                    // The name and the identifier/guess split come from
-                    // `CorrelationReason::strategy`, not from a match written
-                    // here. `get_call_tree` reports the same vocabulary, and a
-                    // second copy is how one tool ends up calling a timing
-                    // guess an identifier match while the other does not.
-                    let (strategy, identifier_match) = r.reason.strategy();
-                    // The gap is the evidence for the guess, so it is attached
-                    // only where it IS the evidence. On an identifier match it
-                    // would be a number with no bearing on why they matched.
-                    let observed_gap_ms = (!identifier_match)
-                        .then(|| {
-                            source_created
-                                .map(|src| (r.dialog.created_at - src).num_milliseconds().abs())
-                        })
-                        .flatten();
+                    // One rule, in `CorrelationResult::strategy_and_gap`, so
+                    // `get_call_tree` and the REST route report the same
+                    // vocabulary. A second copy is how one tool ends up calling
+                    // a timing guess an identifier match while another does
+                    // not. The gap rides along, attached only where it is the
+                    // evidence for a guess.
+                    let (strategy, identifier_match, observed_gap_ms) =
+                        r.strategy_and_gap(source_created);
                     CorrelatedLeg {
                         call_id: r.dialog.call_id.clone(),
                         score: r.score,

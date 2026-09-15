@@ -191,7 +191,7 @@ The cheap version — load both captures into one store and add a "capture A / B
 column — cannot work, because the column has nothing to read. There is no field
 to populate. Adding one means touching `Packet`, `ParsedPacket`, `SipMessage`
 and `SipDialog`, which is the zero-copy payload spine (D3) and the hot path;
-`process_message` ([`dialog_store.rs:831`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L831)) is
+`process_message` ([`dialog_store.rs:854`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L854)) is
 written to avoid even a single owned-key allocation per message. A per-message
 `String` source label is a straightforward regression of that work.
 

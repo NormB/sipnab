@@ -54,6 +54,22 @@ fn capabilities_reports_features_and_opt_ins() {
     assert_eq!(body["runtime"]["api_allow_relay_query"], false);
 }
 
+/// `GET /v1/dialogs/{id}/correlated` answers over the shipped binary with the
+/// versioned envelope, so a program can walk a call's legs (PAR3). The single
+/// call in the fixture stands alone, so the leg list is empty and total_matched
+/// is zero — the point is the shape and the 200, not a match.
+#[test]
+fn correlated_answers_with_the_versioned_envelope() {
+    let srv = ApiServer::spawn(&[]);
+    let resp = srv.get(&format!("/v1/dialogs/{CALL_ID}/correlated"));
+    assert_eq!(resp.status, 200, "/v1/dialogs/{{id}}/correlated status");
+    let body = resp.json();
+    assert_eq!(body["schema_version"], 1);
+    assert_eq!(body["source_call_id"], CALL_ID);
+    assert!(body["legs"].is_array(), "legs is an array");
+    assert!(body["total_matched"].is_number(), "total_matched present");
+}
+
 /// The server accepts `--api-max-conn` (the in-flight-request cap) and still
 /// serves — keeps the flag under test coverage.
 #[test]
