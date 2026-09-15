@@ -1206,30 +1206,62 @@ fn probe_mcp_max_rows() -> (String, String) {
             serde_json::json!({
             "jsonrpc":"2.0","method":"notifications/initialized"}),
         );
-        // Ask for far more than either cap allows, so the cap is what bounds it.
-        send(
-            &mut stdin,
-            serde_json::json!({
-            "jsonrpc":"2.0","id":2,"method":"tools/call",
-            "params":{"name":"list_dialogs","arguments":{"limit":500}}}),
-        );
+        // Poll `list_dialogs` until the row count settles, rather than reading
+        // it once. A file source is still being ingested when the server begins
+        // answering, so the first query can land before every call is in the
+        // store -- and an uncapped run that read a half-loaded store would look
+        // exactly like a capped one, failing this probe for a reason that has
+        // nothing to do with the cap. Under CI load that race is what happened.
+        // The cap makes the capped run settle at its ceiling immediately; the
+        // uncapped run settles once ingestion finishes. Ask for far more than
+        // either cap allows, so the cap is what bounds a settled count.
+        let query = |w: &mut std::process::ChildStdin, id: i64| {
+            send(
+                w,
+                serde_json::json!({
+                "jsonrpc":"2.0","id":id,"method":"tools/call",
+                "params":{"name":"list_dialogs","arguments":{"limit":500}}}),
+            );
+        };
+        let read_rows = |out: &mut BufReader<std::process::ChildStdout>,
+                         line: &mut String,
+                         id: i64|
+         -> Option<usize> {
+            for _ in 0..40 {
+                line.clear();
+                if out.read_line(line).unwrap_or(0) == 0 {
+                    return None;
+                }
+                let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+                    continue;
+                };
+                if v["id"] != serde_json::json!(id) {
+                    continue;
+                }
+                let text = v["result"]["content"][0]["text"].as_str().unwrap_or("");
+                let parsed: serde_json::Value = serde_json::from_str(text).unwrap_or_default();
+                return Some(parsed["dialogs"].as_array().map(Vec::len).unwrap_or(0));
+            }
+            None
+        };
 
         let mut rows = 0usize;
-        for _ in 0..40 {
-            line.clear();
-            if out.read_line(&mut line).unwrap_or(0) == 0 {
+        let mut stable = 0u32;
+        for id in 2i64..102 {
+            query(&mut stdin, id);
+            let Some(n) = read_rows(&mut out, &mut line, id) else {
                 break;
-            }
-            let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else {
-                continue;
             };
-            if v["id"] != serde_json::json!(2) {
-                continue;
+            if n == rows {
+                stable += 1;
+                if stable >= 2 {
+                    break;
+                }
+            } else {
+                rows = n;
+                stable = 0;
             }
-            let text = v["result"]["content"][0]["text"].as_str().unwrap_or("");
-            let parsed: serde_json::Value = serde_json::from_str(text).unwrap_or_default();
-            rows = parsed["dialogs"].as_array().map(Vec::len).unwrap_or(0);
-            break;
+            std::thread::sleep(std::time::Duration::from_millis(20));
         }
         let _ = child.kill();
         let _ = child.wait();
