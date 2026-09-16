@@ -11,7 +11,7 @@ reachable three ways and not four is visible only once these four are set
 beside one another. [`tests/capability_matrix_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/capability_matrix_test.rs) keeps
 this current and requires the matrix to account for every row here.
 
-Totals: CLI 272, TUI 15, REST 39, MCP 68.
+Totals: CLI 272, TUI 16, REST 39, MCP 68.
 
 ## CLI flags (272)
 
@@ -288,12 +288,13 @@ Totals: CLI 272, TUI 15, REST 39, MCP 68.
 - `--word`
 - `--ws-portrange`
 
-## TUI views (15)
+## TUI views (16)
 
 - `BpfFilter`
 - `CallFlow`
 - `CallList`
 - `CallTimeline`
+- `CarrierMetrics`
 - `CombinedDetail`
 - `Help`
 - `MessageDiff`

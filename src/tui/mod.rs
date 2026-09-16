@@ -61,12 +61,12 @@ mod theme;
 use controllers::*;
 #[doc(hidden)]
 pub use controllers::{
-    CallFlowAction, CallListAction, CombinedDetailAction, DashboardAction, HelpAction,
-    LossMapAction, MessageDiffAction, RawMessageAction, StatisticsAction, StreamDetailAction,
-    StreamListAction, TalkersAction, TimelineAction, call_flow_action, call_list_action,
-    combined_detail_action, dashboard_action, help_action, loss_map_action, message_diff_action,
-    raw_message_action, statistics_action, stream_detail_action, stream_list_action,
-    talkers_action, timeline_action,
+    CallFlowAction, CallListAction, CarrierMetricsAction, CombinedDetailAction, DashboardAction,
+    HelpAction, LossMapAction, MessageDiffAction, RawMessageAction, StatisticsAction,
+    StreamDetailAction, StreamListAction, TalkersAction, TimelineAction, call_flow_action,
+    call_list_action, carrier_metrics_action, combined_detail_action, dashboard_action,
+    help_action, loss_map_action, message_diff_action, raw_message_action, statistics_action,
+    stream_detail_action, stream_list_action, talkers_action, timeline_action,
 };
 use render::*;
 use save::*;
@@ -141,6 +141,7 @@ pub struct App {
     /// Scroll offset for the statistics view (clamped to content in render).
     stats_scroll: u16,
     talkers_scroll: u16,
+    carrier_metrics_scroll: u16,
     /// Scroll offset for the relay-statistics view (ST8; clamped in render).
     relay_stats_scroll: u16,
     /// Selected row in the quality dashboard's worst-streams table.
@@ -235,6 +236,7 @@ pub struct App {
     /// Statistics view aggregate-text cache.
     stats: StatsCache,
     talkers: TalkersCache,
+    carrier_metrics: CarrierMetricsCache,
     /// Relay-statistics view cache and the ask in flight (ST8).
     relay_stats: relay_stats::RelayStatsCache,
     /// What the relay-statistics view needs to transmit, or which ST-S4
@@ -397,11 +399,13 @@ impl App {
             help_scroll: 0,
             stats_scroll: 0,
             talkers_scroll: 0,
+            carrier_metrics_scroll: 0,
             relay_stats_scroll: 0,
             dashboard_selected: 0,
             stream_displayed: StreamDisplayedCache::default(),
             stats: StatsCache::default(),
             talkers: TalkersCache::default(),
+            carrier_metrics: CarrierMetricsCache::default(),
             relay_stats: relay_stats::RelayStatsCache::default(),
             relay_query: relay_stats::RelayQueryState::default(),
             relay_stats_interval: None,
@@ -1073,6 +1077,21 @@ impl App {
             }
         }
 
+        // Carrier metrics table: a full-store aggregation that also grounds MOS
+        // off the streams, so it reads both stores and keys on both generations.
+        if self.current_view == View::CarrierMetrics
+            && let Some(ss) = self.stream_store.try_read()
+        {
+            let key = (store.generation(), ss.generation());
+            let force = self.carrier_metrics.key.is_none();
+            let stale = self.carrier_metrics.key != Some(key);
+            if force || (stale && self.carrier_metrics.floor.ready()) {
+                self.carrier_metrics.text = render::carrier_metrics_text(&store, &ss);
+                self.carrier_metrics.key = Some(key);
+                self.carrier_metrics.floor.mark();
+            }
+        }
+
         // CallFlow ladder cache (WS4.3c): the theme-free layout half is
         // derived at most once here, keyed on everything that shapes it
         // ([`LadderKey`]); the render pass only re-styles the cached rows.
@@ -1375,6 +1394,9 @@ impl App {
         }
         if let Some(v) = fb.talkers_scroll {
             self.talkers_scroll = v;
+        }
+        if let Some(v) = fb.carrier_metrics_scroll {
+            self.carrier_metrics_scroll = v;
         }
         if let Some(v) = fb.relay_stats_scroll {
             self.relay_stats_scroll = v;

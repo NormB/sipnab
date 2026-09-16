@@ -19,9 +19,9 @@ mod source_scan;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use sipnab::tui::help::HELP_TEXT;
 use sipnab::tui::{
-    Keymap, call_flow_action, call_list_action, combined_detail_action, dashboard_action,
-    help_action, message_diff_action, raw_message_action, statistics_action, stream_detail_action,
-    stream_list_action, talkers_action,
+    Keymap, call_flow_action, call_list_action, carrier_metrics_action, combined_detail_action,
+    dashboard_action, help_action, message_diff_action, raw_message_action, statistics_action,
+    stream_detail_action, stream_list_action, talkers_action,
 };
 
 /// Display token for a key as it appears in the help's key column.
@@ -190,7 +190,7 @@ fn mapped_char_keys_are_documented_or_allowlisted() {
     let docs = documented_tokens();
     let km = Keymap::default();
     type Probe = (&'static str, fn(&Keymap, KeyEvent) -> bool);
-    let probes: [Probe; 11] = [
+    let probes: [Probe; 12] = [
         ("call_list", |km, k| call_list_action(km, k).is_some()),
         ("stream_list", |km, k| stream_list_action(km, k).is_some()),
         ("stream_detail", |km, k| {
@@ -205,6 +205,9 @@ fn mapped_char_keys_are_documented_or_allowlisted() {
         ("help", |km, k| help_action(km, k).is_some()),
         ("statistics", |km, k| statistics_action(km, k).is_some()),
         ("talkers", |km, k| talkers_action(km, k).is_some()),
+        ("carrier_metrics", |km, k| {
+            carrier_metrics_action(km, k).is_some()
+        }),
         ("dashboard", |km, k| dashboard_action(km, k).is_some()),
     ];
     let mut undocumented = Vec::new();

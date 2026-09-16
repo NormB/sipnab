@@ -1253,6 +1253,10 @@ pub enum View {
     /// view, the same ranking the MCP `top_talkers` tool and `GET /v1/talkers`
     /// answer. Opened with `g` from the call list.
     Talkers,
+    /// Carrier metrics per group (ASR/NER/ACD by destination IP): the
+    /// route-quality table `GET /v1/dialogs/rates` answers, computed through the
+    /// shared `crate::sip::group_metrics` accumulator. Opened with `m`.
+    CarrierMetrics,
     /// The live relay's own statistics, asked over its control socket (ST8).
     ///
     /// Distinct from [`View::Statistics`], which is about what THIS capture saw:
@@ -1407,6 +1411,20 @@ pub(in crate::tui) struct StatsCache {
     /// Pre-rendered statistics text the view scrolls through.
     pub(in crate::tui) text: String,
     /// Floors generation-driven recomputation of the aggregate text.
+    pub(in crate::tui) floor: ChurnFloor,
+}
+
+/// Cross-tick cache of the carrier-metrics table text.
+///
+/// Reads both stores (streams ground the MOS side), so it keys on both
+/// generations like [`StatsCache`], and is floored the same way.
+#[derive(Debug, Default)]
+pub(in crate::tui) struct CarrierMetricsCache {
+    /// (dialog generation, stream generation) the table was derived from.
+    pub(in crate::tui) key: Option<(u64, u64)>,
+    /// Pre-rendered metrics table the view scrolls through.
+    pub(in crate::tui) text: String,
+    /// Floors generation-driven recomputation of the table.
     pub(in crate::tui) floor: ChurnFloor,
 }
 

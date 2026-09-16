@@ -1,0 +1,24 @@
+---
+source: tests/tui_snapshot_test.rs
+expression: output
+---
+ Current Mode: Online (any)    Dialogs: 3 (3 displayed)  [A]
+ Match Expression:     BPF Filter:
+ Display Filter:
+┌ Carrier Metrics ─────────────────────────────────────────────────────────────┐
+│Carrier Metrics (by destination IP)                                           │
+│                                                                              │
+│Destination IP            Calls      ASR      NER       ACD                   │
+│10.0.0.2                      3    66.7%    66.7%     60.0s                   │
+│                                                                              │
+│1 destination(s). ASR = answered / seizures, NER = delivered / seizures, ACD =│
+│A dash means the group had no decided call attempt (no INVITE reached a final │
+│                                                                              │
+│Press Esc to return.                                                          │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+Esc Back

@@ -1033,6 +1033,22 @@ mod tui_snapshots {
         insta::assert_snapshot!(output);
     }
 
+    /// Snapshot: the carrier-metrics table (ASR/NER/ACD by destination IP),
+    /// opened with `m` (PAR4).
+    #[test]
+    fn carrier_metrics_view() {
+        let backend = TestBackend::new(80, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = test_app_with_dialogs();
+        app.handle_key(crossterm::event::KeyCode::Char('m')); // open carrier metrics
+        assert_eq!(app.current_view(), &sipnab::tui::View::CarrierMetrics);
+
+        terminal.draw(|frame| app.render(frame)).unwrap();
+
+        let output = buffer_to_string(&terminal);
+        insta::assert_snapshot!(output);
+    }
+
     /// Snapshot: the F7 filter popup over an empty call list.
     #[test]
     fn filter_dialog_popup() {

@@ -47,6 +47,8 @@ pub(in crate::tui) struct RenderFeedback {
     pub(in crate::tui) stats_scroll: Option<u16>,
     /// Clamped scroll of the talkers view.
     pub(in crate::tui) talkers_scroll: Option<u16>,
+    /// Clamped scroll of the carrier-metrics view.
+    pub(in crate::tui) carrier_metrics_scroll: Option<u16>,
     /// Clamped scroll of the relay-statistics view (ST8).
     pub(in crate::tui) relay_stats_scroll: Option<u16>,
     /// Content-clamped scroll of the full-BPF-filter popup (`B`). Only the
@@ -503,6 +505,9 @@ pub(in crate::tui) fn render_app(
         View::Talkers => {
             fb.talkers_scroll = Some(render_talkers(frame, main_area, app, ds));
         }
+        View::CarrierMetrics => {
+            fb.carrier_metrics_scroll = Some(render_carrier_metrics(frame, main_area, app, ds, ss));
+        }
         View::RelayStats { .. } => {
             fb.relay_stats_scroll = Some(render_relay_stats(frame, main_area, app));
         }
@@ -771,6 +776,122 @@ pub(in crate::tui) fn render_talkers(
     let block = Block::default()
         .borders(Borders::ALL)
         .title(" Top Talkers ");
+    let paragraph = Paragraph::new(text)
+        .block(block)
+        .style(Style::default().fg(app.theme.foreground))
+        .scroll((scroll, 0));
+
+    frame.render_widget(paragraph, area);
+    scroll
+}
+
+/// Build the carrier-metrics table: ASR/NER/ACD per destination IP.
+///
+/// Accumulates through the shared `crate::sip::group_metrics` — the same
+/// per-group figures `GET /v1/dialogs/rates` reports — so the two surfaces agree
+/// on a route's answer-seizure ratio. Groups by `dst.ip`, the destination each
+/// call was routed to. A group whose INVITEs never reached a final response
+/// shows `—` for a ratio rather than a misleading zero.
+///
+/// # Arguments
+/// * `ds` - Dialog store snapshot to group.
+/// * `ss` - Stream store snapshot (grounds the MOS side of the metrics).
+pub(in crate::tui) fn carrier_metrics_text(ds: &DialogStore, ss: &StreamStore) -> String {
+    use crate::sip::group_metrics::{GroupAccumulator, group_value_raw};
+    use std::collections::HashMap;
+
+    let dimension = "dst.ip";
+    let delay = crate::rtp::quality::MosDelay::from_capture(ss);
+    let mut tally: HashMap<String, GroupAccumulator> = HashMap::new();
+    for d in ds.iter() {
+        let streams: Vec<&crate::rtp::stream::RtpStream> = ss.streams_for(&d.call_id).collect();
+        if let Some(value) = group_value_raw(dimension, d, &streams) {
+            tally.entry(value).or_default().add(d, &streams, delay);
+        }
+    }
+    let mut rows: Vec<(&String, &GroupAccumulator)> = tally.iter().collect();
+    crate::sort::sort_by_dyn(&mut rows, &mut |a, b| {
+        b.1.dialogs().cmp(&a.1.dialogs()).then_with(|| a.0.cmp(b.0))
+    });
+
+    // `—` when the metric has no decided population, never a zero that would
+    // read as a perfect (or terrible) route.
+    let cell = |acc: &GroupAccumulator, metric: &str, suffix: &str| -> String {
+        match acc.value_of(metric) {
+            Some(Ok(v)) => format!("{v:.1}{suffix}"),
+            _ => "—".to_string(),
+        }
+    };
+
+    let mut text = String::from("Carrier Metrics (by destination IP)\n\n");
+    if rows.is_empty() {
+        text.push_str("No dialogs captured yet.\n");
+    } else {
+        text.push_str(&format!(
+            "{:<24} {:>6} {:>8} {:>8} {:>9}\n",
+            "Destination IP", "Calls", "ASR", "NER", "ACD"
+        ));
+        for (dest, acc) in &rows {
+            text.push_str(&format!(
+                "{:<24} {:>6} {:>8} {:>8} {:>9}\n",
+                dest,
+                acc.dialogs(),
+                cell(acc, "asr", "%"),
+                cell(acc, "ner", "%"),
+                cell(acc, "acd", "s"),
+            ));
+        }
+        text.push_str(&format!(
+            "\n{} destination(s). ASR = answered / seizures, NER = delivered / \
+             seizures, ACD = mean conversation seconds.\n",
+            rows.len()
+        ));
+        text.push_str(
+            "A dash means the group had no decided call attempt (no INVITE reached a \
+             final response).\n",
+        );
+    }
+    text.push_str("\nPress Esc to return.");
+    text
+}
+
+/// Render the carrier-metrics view: the cached `app.carrier_metrics.text` (or a
+/// direct recomputation on the first frame) inside a bordered, scrollable
+/// paragraph.
+///
+/// # Arguments
+/// * `frame` - Frame to draw into.
+/// * `area` - Main-pane area for the view.
+/// * `app` - Application state (cached text, scroll, theme).
+/// * `ds` - Dialog store snapshot for the cache-miss fallback.
+/// * `ss` - Stream store snapshot for the cache-miss fallback.
+///
+/// # Returns
+/// The content-clamped scroll offset, reported back via `RenderFeedback`.
+pub(in crate::tui) fn render_carrier_metrics(
+    frame: &mut ratatui::Frame,
+    area: ratatui::layout::Rect,
+    app: &App,
+    ds: &DialogStore,
+    ss: &StreamStore,
+) -> u16 {
+    let fallback;
+    let text: &str = if app.carrier_metrics.text.is_empty() {
+        fallback = carrier_metrics_text(ds, ss);
+        &fallback
+    } else {
+        &app.carrier_metrics.text
+    };
+
+    let total_rows = text.lines().count() as u16;
+    let viewport = area.height.saturating_sub(2);
+    let scroll = app
+        .carrier_metrics_scroll
+        .min(total_rows.saturating_sub(viewport));
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Carrier Metrics ");
     let paragraph = Paragraph::new(text)
         .block(block)
         .style(Style::default().fg(app.theme.foreground))
@@ -1458,6 +1579,58 @@ mod tests {
         assert!(
             busy_pos < quiet_pos,
             "the busier sender (2 dialogs) must rank above the quieter (1):\n{text}"
+        );
+    }
+
+    /// The carrier-metrics table groups by destination IP, ranks the busiest
+    /// route first, and carries the ASR/NER/ACD columns. A discriminating
+    /// fixture (two calls to one destination, one to another), because the
+    /// shared snapshot fixture's routes tie.
+    #[test]
+    fn carrier_metrics_text_ranks_the_busiest_destination_first() {
+        use crate::net::TransportProto;
+        use crate::sip::parser::parse_sip;
+        use crate::test_utils::build_sip_message as build_sip;
+        use chrono::TimeZone;
+        use std::net::{IpAddr, Ipv4Addr};
+
+        let ts = chrono::Utc.with_ymd_and_hms(2024, 6, 15, 12, 0, 0).unwrap();
+        let src = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
+        let busy_dst = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 9));
+        let quiet_dst = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 8));
+        let mut ds = DialogStore::new(1000, true);
+        let ss = StreamStore::new(100);
+        for (i, dst) in [(0u8, busy_dst), (1, busy_dst), (2, quiet_dst)] {
+            let raw = build_sip(
+                "INVITE sip:bob@example.com SIP/2.0",
+                &[
+                    "From: <sip:alice@example.com>;tag=t1",
+                    "To: <sip:bob@example.com>",
+                    &format!("Call-ID: cm{i}@h"),
+                    "CSeq: 1 INVITE",
+                    "Content-Length: 0",
+                ],
+                b"",
+            );
+            ds.process_message(
+                parse_sip(&raw, ts, src, dst, 5060, 5060, TransportProto::Udp).expect("parse"),
+            );
+        }
+
+        let text = carrier_metrics_text(&ds, &ss);
+        let busy_pos = text
+            .find("10.0.0.9")
+            .expect("the busy destination is listed");
+        let quiet_pos = text
+            .find("10.0.0.8")
+            .expect("the quiet destination is listed");
+        assert!(
+            busy_pos < quiet_pos,
+            "the busier route (2 calls) must rank above the quieter (1):\n{text}"
+        );
+        assert!(
+            text.contains("ASR"),
+            "the table carries the ASR column:\n{text}"
         );
     }
 

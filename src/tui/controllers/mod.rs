@@ -184,6 +184,7 @@ fn dispatch_view_key(app: &mut App, key: KeyEvent) {
         View::Help => handle_help_key(app, key),
         View::Statistics => handle_statistics_key(app, key),
         View::Talkers => handle_talkers_key(app, key),
+        View::CarrierMetrics => handle_carrier_metrics_key(app, key),
         View::RelayStats { .. } => handle_relay_stats_key(app, key),
         View::BpfFilter => handle_bpf_filter_key(app, key),
         View::QualityDashboard => dashboard::handle_dashboard_key(app, key),
@@ -645,6 +646,82 @@ pub(in crate::tui) fn handle_talkers_key(app: &mut App, key: KeyEvent) {
     }
 }
 
+/// Everything the carrier-metrics view can do for a single key press.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CarrierMetricsAction {
+    /// Esc, the quit key, or `m` — close the view and return to the call list.
+    Close,
+    /// Scroll the table up one line.
+    ScrollUp,
+    /// Scroll the table down one line.
+    ScrollDown,
+    /// Scroll the table up 20 lines.
+    PageUp,
+    /// Scroll the table down 20 lines.
+    PageDown,
+    /// Jump to the top of the table.
+    ScrollTop,
+    /// Jump to the bottom (the render pass clamps to the content height).
+    ScrollBottom,
+}
+
+/// Pure key→action mapping for the carrier-metrics view (keymap-aware).
+///
+/// # Arguments
+/// * `km` - the active keymap; the rebindable quit key is honored.
+/// * `key` - the key event whose code is matched against the bindings.
+///
+/// # Returns
+/// The mapped `CarrierMetricsAction`, or `None` when the key is not bound here.
+pub fn carrier_metrics_action(km: &Keymap, key: KeyEvent) -> Option<CarrierMetricsAction> {
+    use CarrierMetricsAction::*;
+    Some(match key.code {
+        k if k == KeyCode::Esc || k == km.quit || k == KeyCode::Char('m') => Close,
+        KeyCode::Up | KeyCode::Char('k') => ScrollUp,
+        KeyCode::Down | KeyCode::Char('j') => ScrollDown,
+        KeyCode::PageUp => PageUp,
+        KeyCode::PageDown => PageDown,
+        KeyCode::Home => ScrollTop,
+        KeyCode::End => ScrollBottom,
+        _ => return None,
+    })
+}
+
+/// Handle keys in the carrier-metrics view: map, then execute.
+///
+/// # Arguments
+/// * `app` - the application state to mutate.
+/// * `key` - the key event, mapped via `carrier_metrics_action`.
+///
+/// # Side effects
+/// Scroll actions move `app.carrier_metrics_scroll`; `Close` returns to the
+/// call list. Unbound keys are ignored.
+pub(in crate::tui) fn handle_carrier_metrics_key(app: &mut App, key: KeyEvent) {
+    let Some(action) = carrier_metrics_action(&app.keymap, key) else {
+        return;
+    };
+    match action {
+        CarrierMetricsAction::Close => {
+            app.current_view = View::CallList;
+        }
+        CarrierMetricsAction::ScrollUp => {
+            app.carrier_metrics_scroll = app.carrier_metrics_scroll.saturating_sub(1);
+        }
+        CarrierMetricsAction::ScrollDown => {
+            app.carrier_metrics_scroll = app.carrier_metrics_scroll.saturating_add(1);
+        }
+        CarrierMetricsAction::PageUp => {
+            app.carrier_metrics_scroll = app.carrier_metrics_scroll.saturating_sub(20);
+        }
+        CarrierMetricsAction::PageDown => {
+            app.carrier_metrics_scroll = app.carrier_metrics_scroll.saturating_add(20);
+        }
+        CarrierMetricsAction::ScrollTop => app.carrier_metrics_scroll = 0,
+        // Clamped to the content height by the render pass.
+        CarrierMetricsAction::ScrollBottom => app.carrier_metrics_scroll = u16::MAX,
+    }
+}
+
 /// Everything the relay-statistics view can do for a single key press (ST8).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RelayStatsAction {
@@ -859,6 +936,13 @@ pub(in crate::tui) fn handle_mouse_event(app: &mut App, kind: crossterm::event::
                 app.talkers_scroll.saturating_add(3)
             } else {
                 app.talkers_scroll.saturating_sub(3)
+            };
+        }
+        View::CarrierMetrics => {
+            app.carrier_metrics_scroll = if down {
+                app.carrier_metrics_scroll.saturating_add(3)
+            } else {
+                app.carrier_metrics_scroll.saturating_sub(3)
             };
         }
         View::RelayStats { .. } => {

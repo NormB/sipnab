@@ -38,7 +38,7 @@ expression: output
 │  O                 Open pcap file                                            │
 │  s                 Statistics view                                           │
 │  g                 Top talkers (busiest participants, by source IP)          │
+│  m                 Carrier metrics (ASR/NER/ACD by destination IP)           │
 │  S                 Relay statistics view (asks the relay)                    │
-│  B                 Edit the BPF capture filter (append)                      │
 └──────────────────────────────────────────────────────────────────────────────┘
 Esc Back

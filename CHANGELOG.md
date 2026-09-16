@@ -12,6 +12,15 @@ entry that carries them.
 
 ### Added
 
+- **Carrier-metrics TUI view (PAR4).** A new `CarrierMetrics` view, opened with
+  `m` from the call list, tabulates ASR, NER and ACD per destination IP — the
+  route-quality view neither `Statistics` nor `QualityDashboard` computed. It
+  accumulates through the shared `crate::sip::group_metrics`, the same per-group
+  figures `GET /v1/dialogs/rates` reports, so the two surfaces agree on a route's
+  answer-seizure ratio; a group whose INVITEs never reached a final response
+  shows `—` rather than a misleading zero. Cached across frames (keyed on both
+  store generations), scrollable, Esc/`q`/`m` closes. Closes the
+  carrier-metrics-by-group TUI gap, leaving 25 named gaps.
 - **Top-talkers TUI view (PAR4).** A new `Talkers` view, opened with `g` from
   the call list, ranks the busiest participants by source IP — dialogs,
   messages, INVITEs, answered and failed per talker, busiest first. It ranks
