@@ -2411,6 +2411,71 @@ when nothing changed.
 
 ---
 
+### GET /v1/dialogs/rates
+
+Carrier metrics per group — ASR, NER, ACD, post-dial-delay percentiles, MOS p10
+and a retransmit rate — grouped by one dimension. The scorecard a monitoring
+system polls, which `/v1/aggregate` bare counts cannot express. The same figures
+the MCP `group_dialogs` tool computes.
+
+**Query parameters:**
+
+- `by` (required) — the ONE dimension to group by: the fields `/v1/aggregate`
+  counts by (`state`, `response_code`, `method`, `from.user`, `to.user`, `ua`,
+  `src.ip`, `dst.ip`, `rtp.codec`) plus `to_domain`, `hour` and `next_hop`. A
+  key outside that set is a `400`.
+- `metrics` (optional) — a comma-separated subset of `count`, `asr`, `ner`,
+  `acd`, `pdd_p50`, `pdd_p95`, `mos_p10`, `retransmit_rate`. Defaults to all. An
+  unknown name is a `400`.
+- `filter` (optional) — a DSL expression narrowing which dialogs the route
+  groups, the language `/v1/dialogs?filter=` compiles. A malformed expression is
+  a `400`.
+- `top_n` (optional) — keep the largest N groups by dialog count; the rest fold
+  into `other_count`. Clamped to the server's row cap.
+
+**curl:**
+
+```bash
+curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" "http://127.0.0.1:8080/v1/dialogs/rates?by=next_hop&metrics=asr,ner,acd" | jq .
+```
+
+**Response:**
+
+```json
+{
+  "schema_version": 1,
+  "group_by": "next_hop",
+  "metrics": ["acd", "asr", "ner"],
+  "units": { "acd": "seconds", "asr": "percent", "ner": "percent" },
+  "groups": [
+    {
+      "value": "203.0.113.9:5060",
+      "count": 120,
+      "metrics": { "asr": 71.67, "ner": 95.0, "acd": 182.4 },
+      "not_grounded": {},
+      "population": {
+        "dialogs": 120, "seizures": 120, "answered": 86, "delivered": 114,
+        "completed_calls": 86, "pdd_measured": 118, "mos_grounded_dialogs": 0,
+        "retransmits": 4
+      }
+    }
+  ],
+  "other_count": 0,
+  "distinct_values": 1,
+  "total_matched": 120
+}
+```
+
+**Every figure carries the population behind it,** and a metric its
+population cannot support comes back null with the reason in `not_grounded`
+rather than as a zero — an ASR of zero over a group of registrations is not a
+failing trunk. Groups come back largest-first by dialog count, and `other_count`
+carries everything past `top_n`, so the groups plus it account for
+`total_matched`. NER credits a far-end decline (a busy or an explicit reject)
+that ASR does not, per ITU-T E.411.
+
+---
+
 ### POST /v1/vcon/validate
 
 Check a vCon container against sipnab's vendored schema — the producer-and-

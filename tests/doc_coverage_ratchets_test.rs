@@ -439,7 +439,10 @@ fn undocumented_numeric_ceilings_do_not_increase() {
 // 42 -> 43 at PAR3, for `TailPage`, the `GET /v1/dialogs/tail` response. Doc-
 // only (like `DialogList`): the route answers with untyped summaries, so this
 // mirrors the shape for the contract test. One component.
-const PERMISSIVE_SCHEMA_COMPONENTS: usize = 43;
+// 43 -> 46 at PAR3, for `Rates`, `RateGroup` and `RatePopulation`, the
+// `GET /v1/dialogs/rates` response. Response-only, same reason, pinned by the
+// same contract test. Three components.
+const PERMISSIVE_SCHEMA_COMPONENTS: usize = 46;
 
 #[test]
 fn permissive_rest_schema_components_do_not_increase() {

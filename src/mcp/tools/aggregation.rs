@@ -2,6 +2,10 @@
 
 use crate::mcp::server::SipnabMcp;
 use crate::mcp::shape::resolve_limit_with_cap;
+// The per-group metric rule lives outside the `mcp` feature so the REST
+// `/v1/dialogs/rates` route computes the same figures. This surface fences the
+// dimension values and renders the shared result.
+use crate::sip::group_metrics::{self, EXTRA_DIMENSIONS, GroupAccumulator, METRICS, rounded};
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CallToolResult, ContentBlock};
 use rmcp::schemars::JsonSchema;
@@ -44,70 +48,6 @@ pub struct TimelinePage {
     /// The width actually used, echoed because the caller may have omitted it.
     pub bucket_seconds: u64,
 }
-
-/// Dimensions `group_dialogs` accepts beyond the shared
-/// [`GROUPABLE`](crate::mcp::server::GROUPABLE) list.
-///
-/// A strict SUPERSET, which is why it does not repeat the vocabulary mistake
-/// `GROUPABLE` warns about. Two tools with overlapping-but-incomparable key
-/// sets cannot be learned — an agent has to discover, per tool, which of two
-/// sets it is talking to. A superset can: everything `aggregate_dialogs`
-/// groups by, `group_dialogs` groups by too, plus these three.
-///
-/// They live here rather than in the shared list because they earn their place
-/// from the METRICS. "Which trunk", "which customer domain" and "which hour"
-/// are the questions a per-group ASR exists to answer, and none of them is
-/// worth a bucket of bare counts: `timeline` already draws call volume against
-/// time, and `dst.ip` already answers "where did the traffic go" when the
-/// answer is a count.
-const EXTRA_DIMENSIONS: &[&str] = &["to_domain", "hour", "next_hop"];
-
-/// Seconds in the calendar hour the `hour` dimension buckets on.
-const HOUR_SECONDS: i64 = 3600;
-
-/// Every metric `group_dialogs` computes, with the unit it is expressed in.
-///
-/// One table rather than a list and a lookup beside it. The dispatch, the
-/// default set, the refusal message and the `units` block all read this, so a
-/// metric cannot be offered without a unit, accepted without being computed,
-/// or computed in a unit the answer does not name.
-const METRICS: &[(&str, &str)] = &[
-    ("count", "dialogs"),
-    ("asr", "percent"),
-    ("ner", "percent"),
-    ("acd", "seconds"),
-    ("pdd_p50", "milliseconds"),
-    ("pdd_p95", "milliseconds"),
-    ("mos_p10", "mos"),
-    ("retransmit_rate", "retransmissions per dialog"),
-];
-
-/// Final INVITE responses that mean the network DELIVERED the call and the
-/// far end decided its fate. The numerator of NER, per ITU-T E.411.
-///
-/// NER exists to separate "the network could not carry this call" from "the
-/// network carried it and the callee said no", because those have different
-/// owners and only the first is anybody's outage. So each of these is an
-/// answer from the destination side: 480 and 486 are the callee unavailable or
-/// busy, 600 is busy everywhere, 603 is an explicit decline, and 487 is the
-/// CALLER hanging up on a call that had already reached the far end.
-///
-/// 408 Request Timeout is deliberately absent. A proxy emits it when a
-/// transaction went unanswered, which happens for a silent phone and for an
-/// unreachable next hop alike — crediting it to the network would credit the
-/// network for calls that may never have arrived, which is the exact
-/// misattribution NER was defined to prevent. Everything not listed here, and
-/// every other 4xx/5xx/6xx, counts as network-ineffective.
-const DESTINATION_DECIDED: &[u16] = &[480, 486, 487, 600, 603];
-
-/// Decimal places every metric is rounded to.
-///
-/// A ratio over three dialogs is not accurate to fourteen decimal places, and
-/// printing it that way states a precision the population cannot support. Two
-/// is enough to read, and it costs nothing: the population each figure was
-/// computed over is published beside it, so a reader who wants the exact ratio
-/// divides the two integers.
-const METRIC_DECIMALS: f64 = 100.0;
 
 /// Parameters for `group_dialogs`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
@@ -244,260 +184,27 @@ pub struct GroupDialogsResponse {
     pub capture_identity: crate::provenance::CaptureEtag,
 }
 
-/// The host half of a `host[:port]` taken from a SIP URI.
+/// The group `dialog` falls into for `key`, fenced for a model.
 ///
-/// IPv6 literals are bracketed in a SIP URI (RFC 3261 §19.1.1), so the address
-/// ends at the `]` and only a `:` after it can be a port. An unbracketed value
-/// carries at most one `:`, and that one is the port — so a value with more
-/// than one is returned whole rather than truncated at a colon that is part of
-/// an address a peer wrote malformed.
-fn host_only(host_port: &str) -> &str {
-    if host_port.starts_with('[') {
-        return match host_port.find(']') {
-            Some(close) => &host_port[..=close],
-            None => host_port,
-        };
-    }
-    match host_port.rsplit_once(':') {
-        Some((host, _)) if !host.contains(':') => host,
-        _ => host_port,
-    }
-}
-
-/// The group `dialog` falls into for `key`, ready to put in front of a model.
-///
-/// The shared keys go straight to
-/// [`dialog_group_value`](crate::mcp::server::dialog_group_value) rather than
-/// being re-extracted here, so the two tools cannot come to disagree about
-/// what `ua` or `rtp.codec` means for one dialog.
-///
-/// `None` for a key this tool does not offer, which the caller reports as an
-/// internal error: a dimension added to a list without an arm here is a bug
-/// the compiler cannot see, so it fails loudly rather than silently grouping
-/// every dialog as one.
+/// The dimension extraction is [`group_metrics::group_value_raw`], shared with
+/// the REST route so the two surfaces group one dialog the same way. This
+/// surface fences the sender-authored dimensions before a value reaches a
+/// model: `to_domain` is a URI host a peer wrote, fenced exactly as `to.user`
+/// is, while `hour` and `next_hop` are sipnab's own computation and go raw. The
+/// shared keys defer to [`dialog_group_value`](crate::mcp::server::dialog_group_value),
+/// which already fences the sender-controlled ones. `None` for a key this tool
+/// does not offer, which the caller reports as an internal error.
 fn group_value(
     key: &str,
     dialog: &crate::sip::dialog::SipDialog,
     streams: &[&crate::rtp::stream::RtpStream],
 ) -> Option<String> {
     match key {
-        // The To URI's host, written by whoever sent the request, so it is
-        // fenced exactly as `to.user` is.
-        "to_domain" => Some(crate::mcp::shape::fence(
-            dialog.to_host.as_deref().map_or("(none)", host_only),
-        )),
-        // The calendar hour the dialog opened in, aligned to the epoch for the
-        // reason `timeline_buckets` aligns its buckets there: two captures of
-        // the same window then land on the same boundaries and can be laid
-        // side by side.
-        "hour" => Some(
-            chrono::DateTime::from_timestamp(
-                dialog
-                    .created_at
-                    .timestamp()
-                    .div_euclid(HOUR_SECONDS)
-                    .saturating_mul(HOUR_SECONDS),
-                0,
-            )
-            .unwrap_or_default()
-            .to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-        ),
-        // Where the dialog's opening message was addressed on the wire. Read
-        // off the IP and transport headers, so it is sipnab's own observation
-        // rather than anything a peer claimed in a header -- and it is the
-        // next hop only from the vantage point of a capture taken beside the
-        // sender, which is where a proxy's own trunk traffic is captured.
-        "next_hop" => Some(format!("{}:{}", dialog.dst_addr, dialog.dst_port)),
+        "to_domain" => group_metrics::group_value_raw(key, dialog, streams)
+            .map(|v| crate::mcp::shape::fence(&v)),
+        "hour" | "next_hop" => group_metrics::group_value_raw(key, dialog, streams),
         _ => crate::mcp::server::dialog_group_value(key, dialog, streams),
     }
-}
-
-/// Everything one group needs, accumulated in one pass over the store.
-///
-/// Populations are counted rather than derived afterwards because most of them
-/// cannot be recovered from the others: "answered" and "seizures" are not
-/// "count" minus anything, since a group of REGISTER dialogs has a count and
-/// no seizures at all.
-#[derive(Debug, Clone, Default)]
-struct GroupAccumulator {
-    /// Every dialog that fell in this group.
-    dialogs: usize,
-    /// INVITE dialogs that reached a final response.
-    seizures: usize,
-    /// Seizures answered with a 2xx.
-    answered: usize,
-    /// Seizures whose final response says the far end decided.
-    delivered: usize,
-    /// Conversation milliseconds summed over answered-and-ended calls.
-    conversation_ms_total: i64,
-    /// How many calls contributed to `conversation_ms_total`.
-    completed_calls: usize,
-    /// Every measured post-dial delay, in milliseconds.
-    pdd_ms: Vec<f64>,
-    /// One grounded MOS per dialog: the worst across its scorable streams.
-    mos: Vec<f64>,
-    /// Retransmitted messages summed across the group.
-    retransmits: u64,
-}
-
-impl GroupAccumulator {
-    /// Fold one dialog and its streams into this group.
-    fn add(
-        &mut self,
-        dialog: &crate::sip::dialog::SipDialog,
-        streams: &[&crate::rtp::stream::RtpStream],
-        delay: crate::rtp::quality::MosDelay<'_>,
-    ) {
-        self.dialogs += 1;
-        self.retransmits += u64::from(dialog.timing.total_retransmits());
-
-        // A seizure is an INVITE that got an answer of some kind. Both halves
-        // matter: a REGISTER is not a call attempt, and an INVITE still
-        // ringing when the capture ended has not failed -- counting it as a
-        // failed seizure reports a live capture as an outage that grows worse
-        // the earlier you look.
-        if dialog.method == crate::sip::method::SipMethod::Invite
-            && let Some(code) = dialog.final_status_code()
-        {
-            self.seizures += 1;
-            if (200..300).contains(&code) {
-                self.answered += 1;
-                self.delivered += 1;
-            } else if DESTINATION_DECIDED.contains(&code) {
-                self.delivered += 1;
-            }
-        }
-
-        if let Some(ms) = dialog.timing.conversation_ms() {
-            self.conversation_ms_total = self.conversation_ms_total.saturating_add(ms);
-            self.completed_calls += 1;
-        }
-        if let Some(ms) = dialog.timing.pdd_ms() {
-            self.pdd_ms.push(ms as f64);
-        }
-
-        // Only streams whose codec has a real impairment factor, and the WORST
-        // of them, matching what `rtp.mos` means in the filter DSL. Scoring an
-        // unpublished codec would put a placeholder into a percentile, where it
-        // is indistinguishable from a measurement.
-        if let Some(worst) = streams
-            .iter()
-            .filter(|s| crate::rtp::quality::mos_is_grounded(s.codec.as_deref()))
-            .map(|s| delay.score(s))
-            .reduce(f64::min)
-        {
-            self.mos.push(worst);
-        }
-    }
-
-    /// This group's value for `metric`.
-    ///
-    /// `None` for a metric with no extractor — the caller raises that as an
-    /// internal error rather than reporting a silent zero. `Some(Err(why))` is
-    /// the grounding refusal: the metric exists and this group's population
-    /// cannot support it, and `why` names the population that was missing.
-    fn value_of(&self, metric: &str) -> Option<Result<f64, String>> {
-        /// The refusal an empty population produces, so every branch phrases
-        /// it as "what was missing" rather than "no data".
-        fn empty(reason: &str) -> Option<Result<f64, String>> {
-            Some(Err(reason.to_string()))
-        }
-
-        let ratio =
-            |numerator: usize, denominator: usize| numerator as f64 * 100.0 / denominator as f64;
-        let seizure_refusal = "no INVITE in this group reached a final response, so nothing in \
-                               it was a decided call attempt";
-
-        Some(Ok(match metric {
-            "count" => self.dialogs as f64,
-            "asr" => {
-                if self.seizures == 0 {
-                    return empty(seizure_refusal);
-                }
-                ratio(self.answered, self.seizures)
-            }
-            "ner" => {
-                if self.seizures == 0 {
-                    return empty(seizure_refusal);
-                }
-                ratio(self.delivered, self.seizures)
-            }
-            "acd" => {
-                if self.completed_calls == 0 {
-                    return empty(
-                        "no call in this group was both answered and torn down inside the \
-                         capture, so no conversation was timed",
-                    );
-                }
-                self.conversation_ms_total as f64 / self.completed_calls as f64 / 1000.0
-            }
-            "pdd_p50" | "pdd_p95" => {
-                let p = if metric == "pdd_p50" { 50.0 } else { 95.0 };
-                let mut sorted = self.pdd_ms.clone();
-                crate::sort::sort_by_dyn(&mut sorted, &mut f64::total_cmp);
-                match percentile_nearest_rank(&sorted, p) {
-                    Some(v) => v,
-                    None => {
-                        return empty(
-                            "no INVITE in this group was followed by a 180 or 183, so post-dial \
-                             delay was never measured",
-                        );
-                    }
-                }
-            }
-            "mos_p10" => {
-                let mut sorted = self.mos.clone();
-                crate::sort::sort_by_dyn(&mut sorted, &mut f64::total_cmp);
-                match percentile_nearest_rank(&sorted, 10.0) {
-                    Some(v) => v,
-                    None => {
-                        return empty(
-                            "no stream in this group uses a codec with a published or \
-                             operator-declared impairment factor, so every MOS here would be a \
-                             placeholder rather than an estimate",
-                        );
-                    }
-                }
-            }
-            // Never refused: a group exists because a dialog fell into it, so
-            // the denominator is at least one. It is a FLOOR rather than an
-            // exact figure -- a dialog past `MAX_SEEN_CSEQ_PER_DIALOG` stops
-            // recognizing new retransmissions -- and it counts retransmitted
-            // messages per dialog, not the share of messages that were
-            // retransmissions. The message denominator is the one retention
-            // sheds; this one is not.
-            "retransmit_rate" => self.retransmits as f64 / self.dialogs.max(1) as f64,
-            _ => return None,
-        }))
-    }
-}
-
-/// The value at percentile `p` (0-100) of `sorted`, by nearest rank.
-///
-/// No interpolation, deliberately. An interpolated p95 returns a number no
-/// call experienced, and these percentiles are quoted back to a carrier as
-/// evidence about real calls; nearest rank always names an observed sample.
-///
-/// `None` for an empty slice — a percentile of nothing is not zero.
-fn percentile_nearest_rank(sorted: &[f64], p: f64) -> Option<f64> {
-    if sorted.is_empty() {
-        return None;
-    }
-    // ceil(p/100 * n), held inside 1..=n so p=0 still names the smallest
-    // sample instead of indexing before the slice.
-    let rank = (p / 100.0 * sorted.len() as f64).ceil().max(1.0) as usize;
-    sorted.get(rank.min(sorted.len()) - 1).copied()
-}
-
-/// `value` at [`METRIC_DECIMALS`], with a non-finite result reported as absent.
-///
-/// A NaN or an infinity is not a measurement, and `serde_json` cannot carry
-/// one anyway — it would serialize as `null` with nothing saying why. Rounding
-/// is where both are caught.
-fn rounded(value: f64) -> Option<f64> {
-    value
-        .is_finite()
-        .then(|| (value * METRIC_DECIMALS).round() / METRIC_DECIMALS)
 }
 
 #[tool_router(router = aggregation_router, vis = "pub(crate)")]
@@ -699,9 +406,11 @@ impl SipnabMcp {
         // the same answer -- a cursor-free grouping that reordered between
         // calls would look like the capture changed.
         crate::sort::sort_by_dyn(&mut ordered, &mut |a, b| {
-            b.1.dialogs.cmp(&a.1.dialogs).then_with(|| a.0.cmp(&b.0))
+            b.1.dialogs()
+                .cmp(&a.1.dialogs())
+                .then_with(|| a.0.cmp(&b.0))
         });
-        let other_count: usize = ordered.iter().skip(top_n).map(|(_, a)| a.dialogs).sum();
+        let other_count: usize = ordered.iter().skip(top_n).map(|(_, a)| a.dialogs()).sum();
 
         let mut groups = Vec::with_capacity(ordered.len().min(top_n));
         for (value, acc) in ordered.into_iter().take(top_n) {
@@ -738,20 +447,21 @@ impl SipnabMcp {
                     }
                 }
             }
+            let pop = acc.population();
             groups.push(DialogGroup {
                 value,
-                count: acc.dialogs,
+                count: pop.dialogs,
                 metrics,
                 not_grounded,
                 population: GroupPopulation {
-                    dialogs: acc.dialogs,
-                    seizures: acc.seizures,
-                    answered: acc.answered,
-                    delivered: acc.delivered,
-                    completed_calls: acc.completed_calls,
-                    pdd_measured: acc.pdd_ms.len(),
-                    mos_grounded_dialogs: acc.mos.len(),
-                    retransmits: acc.retransmits,
+                    dialogs: pop.dialogs,
+                    seizures: pop.seizures,
+                    answered: pop.answered,
+                    delivered: pop.delivered,
+                    completed_calls: pop.completed_calls,
+                    pdd_measured: pop.pdd_measured,
+                    mos_grounded_dialogs: pop.mos_grounded_dialogs,
+                    retransmits: pop.retransmits,
                 },
             });
         }
@@ -1012,50 +722,6 @@ mod tests {
         let groups = v["groups"].as_array().expect("groups array");
         assert_eq!(groups.len(), 1, "expected exactly one group: {v}");
         &groups[0]
-    }
-
-    /// Nearest rank names a sample that was actually observed, at both ends.
-    ///
-    /// An interpolating percentile would answer 25 for the median of
-    /// `[10, 20, 30, 40]`, which is a post-dial delay no call in the set ever
-    /// had — and these figures are quoted back to a carrier as evidence about
-    /// real calls.
-    #[test]
-    fn percentile_nearest_rank_names_an_observed_sample() {
-        let samples = [10.0, 20.0, 30.0, 40.0];
-        assert_eq!(percentile_nearest_rank(&samples, 50.0), Some(20.0));
-        assert_eq!(percentile_nearest_rank(&samples, 95.0), Some(40.0));
-        // p10 of four samples rounds up to rank 1: the worst one, not a
-        // fraction of it, and not an index before the slice.
-        assert_eq!(percentile_nearest_rank(&samples, 10.0), Some(10.0));
-        assert_eq!(percentile_nearest_rank(&samples, 0.0), Some(10.0));
-        assert_eq!(
-            percentile_nearest_rank(&[], 50.0),
-            None,
-            "a percentile of nothing is not zero"
-        );
-    }
-
-    /// A port is stripped and an address is not.
-    ///
-    /// The IPv6 arm is the one that matters: `[2001:db8::1]` split at its last
-    /// colon yields `[2001:db8:`, which is neither a host nor a group anybody
-    /// could act on.
-    #[test]
-    fn host_only_strips_a_port_and_keeps_an_address() {
-        assert_eq!(host_only("example.com:5060"), "example.com");
-        assert_eq!(host_only("example.com"), "example.com");
-        assert_eq!(host_only("[2001:db8::1]:5060"), "[2001:db8::1]");
-        assert_eq!(host_only("[2001:db8::1]"), "[2001:db8::1]");
-        assert_eq!(host_only("2001:db8::1"), "2001:db8::1");
-    }
-
-    /// A value that is not a finite number never reaches the answer as one.
-    #[test]
-    fn rounded_refuses_a_value_that_is_not_a_number() {
-        assert_eq!(rounded(66.66666), Some(66.67));
-        assert_eq!(rounded(f64::NAN), None);
-        assert_eq!(rounded(f64::INFINITY), None);
     }
 
     /// The whole point of the tool: a RATE per group, not a count.

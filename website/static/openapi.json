@@ -2169,6 +2169,179 @@
         ],
         "type": "object"
       },
+      "RateGroup": {
+        "description": "One group's carrier metrics, with the population behind them and the\nreason for any metric its population could not support.",
+        "properties": {
+          "count": {
+            "description": "Dialogs in the group (the same as `population.dialogs`, surfaced for\na reader who reads only the top line).",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "metrics": {
+            "additionalProperties": {
+              "format": "double",
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "description": "Each requested metric to its value, or null when the population could\nnot support it — the reason is then in `not_grounded`.",
+            "propertyNames": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "not_grounded": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "For each null metric, the population that was missing. A null with no\nentry here would be a silent gap.",
+            "propertyNames": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "population": {
+            "$ref": "#/components/schemas/RatePopulation",
+            "description": "The populations every figure was computed over."
+          },
+          "value": {
+            "description": "The dimension value this group is keyed on.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "value",
+          "count",
+          "metrics",
+          "not_grounded",
+          "population"
+        ],
+        "type": "object"
+      },
+      "RatePopulation": {
+        "description": "The populations one rate group's figures were computed over, published so\na reader checks every ratio against its denominator.",
+        "properties": {
+          "answered": {
+            "description": "Seizures answered with a 2xx.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "completed_calls": {
+            "description": "Calls both answered and torn down inside the capture (the ACD base).",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "delivered": {
+            "description": "Seizures the far end decided (answered or an E.411 destination code).",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "dialogs": {
+            "description": "Every dialog in the group.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "mos_grounded_dialogs": {
+            "description": "Dialogs a grounded MOS was scored for.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "pdd_measured": {
+            "description": "Dialogs a post-dial delay was measured for.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "retransmits": {
+            "description": "Retransmitted messages summed across the group.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "seizures": {
+            "description": "INVITE dialogs that reached a final response.",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "dialogs",
+          "seizures",
+          "answered",
+          "delivered",
+          "completed_calls",
+          "pdd_measured",
+          "mos_grounded_dialogs",
+          "retransmits"
+        ],
+        "type": "object"
+      },
+      "Rates": {
+        "description": "Carrier metrics per group over the dialog store, one dimension.",
+        "properties": {
+          "distinct_values": {
+            "description": "How many distinct values the dimension took, before the cut.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "group_by": {
+            "description": "The dimension the metrics were grouped by, echoed verbatim.",
+            "type": "string"
+          },
+          "groups": {
+            "description": "The groups, largest first, ties broken by value for a stable answer.",
+            "items": {
+              "$ref": "#/components/schemas/RateGroup"
+            },
+            "type": "array"
+          },
+          "metrics": {
+            "description": "The metric names computed, sorted.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "other_count": {
+            "description": "Dialogs in every group past the `top_n` cut, so the groups plus this\naccount for `total_matched`.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "schema_version": {
+            "description": "Version of this response's shape.",
+            "example": 1,
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "total_matched": {
+            "description": "How many dialogs the filter admitted, across all groups.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "units": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Each metric name to the unit it is expressed in.",
+            "propertyNames": {
+              "type": "string"
+            },
+            "type": "object"
+          }
+        },
+        "required": [
+          "schema_version",
+          "group_by",
+          "metrics",
+          "units",
+          "groups",
+          "other_count",
+          "distinct_values",
+          "total_matched"
+        ],
+        "type": "object"
+      },
       "RelayStatsResponse": {
         "description": "`GET /v1/relay/...` — one envelope for all four relay-statistics routes\n(ST5).\n\n`outcome` is always present: `ok` for a clean answer, or one of the five\nST-S4 classifications. Every other field is optional because the shape\ndepends on which route answered and whether it was clean -- a client\nbranches on `outcome` first. Deliberately permissive (the payload\nsub-objects are open) because one envelope carries four different clean\nshapes plus the classifications, and pinning each would be five schemas\nwhere the discriminator already tells them apart.",
         "properties": {
@@ -4719,6 +4892,102 @@
           }
         ],
         "summary": "Compare two calls side by side",
+        "tags": [
+          "dialogs"
+        ]
+      }
+    },
+    "/v1/dialogs/rates": {
+      "get": {
+        "description": "ASR, NER, ACD, post-dial-delay percentiles, MOS p10 and a retransmit rate, grouped by one dimension — the carrier scorecard a monitoring system polls, which `/v1/aggregate` bare counts cannot express. The same figures the MCP `group_dialogs` tool computes.\n\nEvery figure carries the population it was computed over, and a metric its population cannot support comes back null with the reason in `not_grounded` rather than as a zero: an ASR of zero over a group of registrations is not a failing trunk. Groups are largest-first by dialog count, and `other_count` carries everything past `top_n`. Beyond the count dimensions this route also groups by `to_domain`, `hour` and `next_hop`.",
+        "operationId": "get_rates",
+        "parameters": [
+          {
+            "description": "The ONE dimension to group by: the groupable fields (`state`,\n`response_code`, `method`, `from.user`, `to.user`, `ua`, `src.ip`,\n`dst.ip`, `rtp.codec`) plus `to_domain`, `hour` and `next_hop`. A key\noutside that set is a 400. Required.",
+            "in": "query",
+            "name": "by",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Comma-separated metrics to compute — `count`, `asr`, `ner`, `acd`,\n`pdd_p50`, `pdd_p95`, `mos_p10`, `retransmit_rate`. Defaults to all of\nthem. An unknown name is a 400.",
+            "in": "query",
+            "name": "metrics",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "A DSL expression narrowing which dialogs are grouped, the same language\n`/v1/dialogs?filter=` compiles. An expression that does not parse is a 400.",
+            "in": "query",
+            "name": "filter",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Keep the largest N groups by dialog count; the rest fold into\n`other_count`. Clamped to the server's row cap.",
+            "in": "query",
+            "name": "top_n",
+            "required": false,
+            "schema": {
+              "minimum": 0,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Rates"
+                }
+              }
+            },
+            "description": "The groups and their metrics, largest first."
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "An unknown dimension, an unknown metric, or a filter that does not parse."
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "No bearer credential, or one this server does not accept."
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Over the per-source-IP rate limit of 100 requests per second."
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Carrier metrics per group",
         "tags": [
           "dialogs"
         ]

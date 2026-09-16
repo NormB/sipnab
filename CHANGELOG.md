@@ -118,6 +118,16 @@ entry that carries them.
   drops `next_cursor` straight into the `since` query where a raw `+` would
   decode to a space. This closes the `tail_dialogs` REST gap, leaving 34 named
   gaps.
+- **`GET /v1/dialogs/rates` (PAR3).** Carrier metrics per group — ASR, NER, ACD,
+  post-dial-delay percentiles, MOS p10 and a retransmit rate — grouped by one
+  dimension, the scorecard a monitoring system polls that `/v1/aggregate` bare
+  counts cannot express. Every figure carries the population it was computed
+  over, and a metric its population cannot support comes back null with the
+  reason rather than as a misleading zero. The accumulator, the eight-metric
+  grounding and the dimension extraction move into `crate::sip::group_metrics`
+  (outside the `mcp` feature), shared with the MCP `group_dialogs` tool, which
+  now fences the dimension values and renders the shared result. This closes the
+  per-group-rates REST gap, leaving 33 named gaps.
 
 ## [0.5.175] - 2026-09-15
 

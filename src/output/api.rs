@@ -492,6 +492,27 @@ pub struct TailParams {
     pub limit: Option<usize>,
 }
 
+/// Query parameters for the `GET /v1/dialogs/rates` endpoint.
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct RatesParams {
+    /// The ONE dimension to group by: the groupable fields (`state`,
+    /// `response_code`, `method`, `from.user`, `to.user`, `ua`, `src.ip`,
+    /// `dst.ip`, `rtp.codec`) plus `to_domain`, `hour` and `next_hop`. A key
+    /// outside that set is a 400. Required.
+    pub by: Option<String>,
+    /// Comma-separated metrics to compute — `count`, `asr`, `ner`, `acd`,
+    /// `pdd_p50`, `pdd_p95`, `mos_p10`, `retransmit_rate`. Defaults to all of
+    /// them. An unknown name is a 400.
+    pub metrics: Option<String>,
+    /// A DSL expression narrowing which dialogs are grouped, the same language
+    /// `/v1/dialogs?filter=` compiles. An expression that does not parse is a 400.
+    pub filter: Option<String>,
+    /// Keep the largest N groups by dialog count; the rest fold into
+    /// `other_count`. Clamped to the server's row cap.
+    pub top_n: Option<usize>,
+}
+
 // ── Router construction ─────────────────────────────────────────────
 
 /// Per-request wall-clock cap. The API is request/response (no streaming), so a
@@ -582,6 +603,7 @@ pub fn build_router(state: ApiState) -> Router {
         .route("/v1/dialogs/compare", get(get_compare))
         // Static segment, wins over `{call_id}` — see the note on compare.
         .route("/v1/dialogs/tail", get(get_dialogs_tail))
+        .route("/v1/dialogs/rates", get(get_rates))
         .route("/v1/dialogs/{call_id}", get(get_dialog))
         .route("/v1/dialogs/{call_id}/report", get(get_dialog_report))
         .route("/v1/dialogs/{call_id}/correlated", get(get_correlated))
@@ -1546,6 +1568,210 @@ async fn get_dialogs_tail(
         "next_cursor": next_cursor,
         "returned": returned,
     })))
+}
+
+/// `GET /v1/dialogs/rates` — carrier metrics per group (PAR3: group_dialogs on
+/// REST).
+///
+/// # Arguments
+///
+/// * `state` — Shared application state.
+/// * `addr` — Client socket address used for rate limiting.
+/// * `headers` — Request headers (auth).
+/// * `params` — `by` dimension, optional `metrics` CSV, `filter`, `top_n`.
+///
+/// # Returns
+///
+/// 200 with the groups and their metrics, largest first; 400 for an unknown
+/// dimension, an unknown metric, or an unparseable filter; 401/503 from the
+/// guard.
+///
+/// # Side effects
+///
+/// Holds the dialog- and stream-store read locks while grouping; mutates the
+/// rate limiter.
+#[utoipa::path(
+    get,
+    path = "/v1/dialogs/rates",
+    tag = "dialogs",
+    summary = "Carrier metrics per group",
+    description = "ASR, NER, ACD, post-dial-delay percentiles, MOS p10 and a retransmit rate, grouped by one dimension — the carrier scorecard a monitoring system polls, which `/v1/aggregate` bare counts cannot express. The same figures the MCP `group_dialogs` tool computes.\n\nEvery figure carries the population it was computed over, and a metric its population cannot support comes back null with the reason in `not_grounded` rather than as a zero: an ASR of zero over a group of registrations is not a failing trunk. Groups are largest-first by dialog count, and `other_count` carries everything past `top_n`. Beyond the count dimensions this route also groups by `to_domain`, `hour` and `next_hop`.",
+    params(RatesParams),
+    security(("bearer" = [])),
+    responses(
+        (status = 200, description = "The groups and their metrics, largest first.", body = schema::Rates),
+        (status = 400, description = "An unknown dimension, an unknown metric, or a filter that does not parse.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 401, description = "No bearer credential, or one this server does not accept.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 503, description = "Over the per-source-IP rate limit of 100 requests per second.", body = schema::ProblemJson, content_type = "application/problem+json"),
+    )
+)]
+async fn get_rates(
+    State(state): State<ApiState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Query(params): Query<RatesParams>,
+) -> Result<impl IntoResponse, Problem> {
+    guard(&state, &headers, addr.ip())?;
+
+    // The dimension set is the shared groupable list plus the three this route
+    // and the MCP `group_dialogs` tool add on top.
+    let key = params.by.as_deref().map(str::trim).unwrap_or("");
+    let dims: Vec<&str> = crate::sip::dialog::GROUPABLE
+        .iter()
+        .chain(crate::sip::group_metrics::EXTRA_DIMENSIONS)
+        .copied()
+        .collect();
+    if !dims.contains(&key) {
+        return Err(Problem::detailed(
+            StatusCode::BAD_REQUEST,
+            format!(
+                "cannot group by '{key}'; one of: {}. One dimension only — narrow \
+                 with `filter` rather than adding a second.",
+                dims.join(", ")
+            ),
+        ));
+    }
+
+    // Metrics: the requested set (sorted, de-duplicated), or all of them. An
+    // unknown name is a 400, the same rule `group_dialogs` applies, so a
+    // misspelled metric is named rather than silently dropped.
+    let all_metrics: Vec<String> = crate::sip::group_metrics::METRICS
+        .iter()
+        .map(|(name, _)| (*name).to_string())
+        .collect();
+    let wanted: Vec<String> = match params.metrics.as_deref() {
+        Some(csv) => {
+            let mut set: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+            for m in csv.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+                if !crate::sip::group_metrics::METRICS
+                    .iter()
+                    .any(|(n, _)| *n == m)
+                {
+                    return Err(Problem::detailed(
+                        StatusCode::BAD_REQUEST,
+                        format!("unknown metric '{m}'; one of: {}", all_metrics.join(", ")),
+                    ));
+                }
+                set.insert(m.to_string());
+            }
+            if set.is_empty() {
+                all_metrics.clone()
+            } else {
+                set.into_iter().collect()
+            }
+        }
+        None => all_metrics.clone(),
+    };
+
+    let dsl = match params.filter.as_deref() {
+        Some(expr) => Some(
+            crate::sip::dsl::FilterExpr::parse(expr)
+                .map_err(|e| Problem::detailed(StatusCode::BAD_REQUEST, format!("filter: {e}")))?,
+        ),
+        None => None,
+    };
+    let top_n = resolve_page_limit(params.top_n, state.max_rows);
+
+    let ds = state.dialog_store.read();
+    let ss = state.stream_store.read();
+    let delay = crate::rtp::quality::MosDelay::from_capture(&ss);
+    // Same filter + stream-pairing path `/v1/aggregate` takes, so the two
+    // surfaces group the same store. The per-group metric rule is shared with
+    // the MCP tool in `crate::sip::group_metrics`.
+    let selection = crate::sip::dsl::select_dialogs(dsl.as_ref(), &ds, &ss);
+    let total_matched = selection.dialogs.len();
+
+    let mut tally: std::collections::HashMap<String, crate::sip::group_metrics::GroupAccumulator> =
+        std::collections::HashMap::new();
+    for item in &selection.dialogs {
+        if let Some(value) = crate::sip::group_metrics::group_value_raw(key, item.0, &item.1) {
+            tally.entry(value).or_default().add(item.0, &item.1, delay);
+        }
+    }
+    drop(ss);
+    drop(ds);
+
+    let distinct_values = tally.len();
+    let mut ordered: Vec<(String, crate::sip::group_metrics::GroupAccumulator)> =
+        tally.into_iter().collect();
+    // Largest first, ties broken by value so a cursor-free grouping does not
+    // reorder between calls and look like the capture changed.
+    ordered.sort_by(|a, b| {
+        b.1.dialogs()
+            .cmp(&a.1.dialogs())
+            .then_with(|| a.0.cmp(&b.0))
+    });
+    let other_count: usize = ordered.iter().skip(top_n).map(|(_, a)| a.dialogs()).sum();
+
+    let mut groups = Vec::with_capacity(ordered.len().min(top_n));
+    for (value, acc) in ordered.into_iter().take(top_n) {
+        let mut metrics = std::collections::BTreeMap::new();
+        let mut not_grounded = std::collections::BTreeMap::new();
+        for m in &wanted {
+            match acc.value_of(m) {
+                Some(Ok(v)) => match crate::sip::group_metrics::rounded(v) {
+                    Some(v) => {
+                        metrics.insert(m.clone(), Some(v));
+                    }
+                    None => {
+                        metrics.insert(m.clone(), None);
+                        not_grounded.insert(
+                            m.clone(),
+                            "the computed value is not a finite number".to_string(),
+                        );
+                    }
+                },
+                Some(Err(why)) => {
+                    metrics.insert(m.clone(), None);
+                    not_grounded.insert(m.clone(), why);
+                }
+                None => {
+                    return Err(Problem::detailed(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("metric '{m}' has no extractor"),
+                    ));
+                }
+            }
+        }
+        let pop = acc.population();
+        groups.push(schema::RateGroup {
+            value,
+            count: pop.dialogs,
+            metrics,
+            not_grounded,
+            population: schema::RatePopulation {
+                dialogs: pop.dialogs,
+                seizures: pop.seizures,
+                answered: pop.answered,
+                delivered: pop.delivered,
+                completed_calls: pop.completed_calls,
+                pdd_measured: pop.pdd_measured,
+                mos_grounded_dialogs: pop.mos_grounded_dialogs,
+                retransmits: pop.retransmits,
+            },
+        });
+    }
+
+    let units = wanted
+        .iter()
+        .filter_map(|m| {
+            crate::sip::group_metrics::METRICS
+                .iter()
+                .find(|(name, _)| name == m)
+                .map(|(_, unit)| (m.clone(), (*unit).to_string()))
+        })
+        .collect();
+
+    Ok(Json(schema::Rates {
+        schema_version: 1,
+        group_by: key.to_string(),
+        metrics: wanted,
+        units,
+        groups,
+        other_count,
+        distinct_values,
+        total_matched,
+    }))
 }
 
 /// `GET /v1/dialogs/{call_id}/lint` — the RFC-conformance findings for one
@@ -4006,6 +4232,70 @@ pub mod schema {
         pub returned: usize,
     }
 
+    /// The populations one rate group's figures were computed over, published so
+    /// a reader checks every ratio against its denominator.
+    #[derive(Debug, Clone, serde::Serialize, ToSchema)]
+    pub struct RatePopulation {
+        /// Every dialog in the group.
+        pub dialogs: usize,
+        /// INVITE dialogs that reached a final response.
+        pub seizures: usize,
+        /// Seizures answered with a 2xx.
+        pub answered: usize,
+        /// Seizures the far end decided (answered or an E.411 destination code).
+        pub delivered: usize,
+        /// Calls both answered and torn down inside the capture (the ACD base).
+        pub completed_calls: usize,
+        /// Dialogs a post-dial delay was measured for.
+        pub pdd_measured: usize,
+        /// Dialogs a grounded MOS was scored for.
+        pub mos_grounded_dialogs: usize,
+        /// Retransmitted messages summed across the group.
+        pub retransmits: u64,
+    }
+
+    /// One group's carrier metrics, with the population behind them and the
+    /// reason for any metric its population could not support.
+    #[derive(Debug, Clone, serde::Serialize, ToSchema)]
+    pub struct RateGroup {
+        /// The dimension value this group is keyed on.
+        pub value: String,
+        /// Dialogs in the group (the same as `population.dialogs`, surfaced for
+        /// a reader who reads only the top line).
+        pub count: usize,
+        /// Each requested metric to its value, or null when the population could
+        /// not support it — the reason is then in `not_grounded`.
+        pub metrics: std::collections::BTreeMap<String, Option<f64>>,
+        /// For each null metric, the population that was missing. A null with no
+        /// entry here would be a silent gap.
+        pub not_grounded: std::collections::BTreeMap<String, String>,
+        /// The populations every figure was computed over.
+        pub population: RatePopulation,
+    }
+
+    /// Carrier metrics per group over the dialog store, one dimension.
+    #[derive(Debug, Clone, serde::Serialize, ToSchema)]
+    pub struct Rates {
+        /// Version of this response's shape.
+        #[schema(example = 1)]
+        pub schema_version: u32,
+        /// The dimension the metrics were grouped by, echoed verbatim.
+        pub group_by: String,
+        /// The metric names computed, sorted.
+        pub metrics: Vec<String>,
+        /// Each metric name to the unit it is expressed in.
+        pub units: std::collections::BTreeMap<String, String>,
+        /// The groups, largest first, ties broken by value for a stable answer.
+        pub groups: Vec<RateGroup>,
+        /// Dialogs in every group past the `top_n` cut, so the groups plus this
+        /// account for `total_matched`.
+        pub other_count: usize,
+        /// How many distinct values the dimension took, before the cut.
+        pub distinct_values: usize,
+        /// How many dialogs the filter admitted, across all groups.
+        pub total_matched: usize,
+    }
+
     /// Transaction timing, as carried by every dialog summary.
     #[derive(Debug, Clone, ToSchema)]
     pub struct TimingSummary {
@@ -4726,6 +5016,7 @@ impl utoipa::Modify for BearerAuth {
         get_timeline,
         get_compare,
         get_dialogs_tail,
+        get_rates,
         get_lint,
         get_persistence,
         set_persistence,
@@ -4764,6 +5055,9 @@ impl utoipa::Modify for BearerAuth {
         schema::ComparisonSide,
         schema::Comparison,
         schema::TailPage,
+        schema::RatePopulation,
+        schema::RateGroup,
+        schema::Rates,
         schema::RelayStatsResponse,
         schema::DialogList,
         schema::DialogSummary,
@@ -5499,6 +5793,94 @@ mod tests {
 
         let resp = app
             .oneshot(test_request("/v1/dialogs/tail?since=not-a-timestamp"))
+            .await
+            .expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    // ── rates (PAR3: group_dialogs) ───────────────────────────────────
+
+    /// Grouped by method, the answered call and the busy one land in one INVITE
+    /// group: ASR is the one answer over two seizures (50%), and NER credits the
+    /// busy (486 is a far-end decline) so all seizures were network-effective.
+    /// Closes the group_dialogs REST gap.
+    #[tokio::test]
+    async fn rates_report_asr_and_ner_per_group() {
+        let state = make_state();
+        seed_compare_pair(&state); // answered@test INVITE→200, busy@test INVITE→486
+        let app = build_router(state);
+
+        let resp = app
+            .oneshot(test_request("/v1/dialogs/rates?by=method"))
+            .await
+            .expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_to_string(resp.into_body()).await;
+        let parsed: Value = serde_json::from_str(&body).expect("valid JSON");
+        assert_eq!(parsed["schema_version"], 1);
+        assert_eq!(parsed["group_by"], "method");
+        let g = &parsed["groups"][0];
+        assert_eq!(g["value"], "INVITE");
+        assert_eq!(g["count"], 2);
+        assert_eq!(g["metrics"]["asr"], 50.0);
+        assert_eq!(g["metrics"]["ner"], 100.0);
+        assert_eq!(g["population"]["seizures"], 2);
+    }
+
+    /// A group whose INVITEs never reached a final response has no seizures, so
+    /// ASR comes back null with the reason in `not_grounded` — not a zero that
+    /// reads as a failing trunk.
+    #[tokio::test]
+    async fn rates_refuse_asr_over_a_group_with_no_seizures() {
+        let state = make_state();
+        populate_dialogs(&state); // three bare INVITEs, no final response
+        let app = build_router(state);
+
+        let resp = app
+            .oneshot(test_request("/v1/dialogs/rates?by=method&metrics=asr"))
+            .await
+            .expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_to_string(resp.into_body()).await;
+        let parsed: Value = serde_json::from_str(&body).expect("valid JSON");
+        let g = &parsed["groups"][0];
+        assert!(
+            g["metrics"]["asr"].is_null(),
+            "asr is refused, not zero: {g}"
+        );
+        assert!(
+            g["not_grounded"]["asr"]
+                .as_str()
+                .is_some_and(|s| s.contains("final response")),
+            "the refusal names the missing population: {g}"
+        );
+    }
+
+    /// A dimension outside the offered set is a 400 that names the set.
+    #[tokio::test]
+    async fn rates_unknown_dimension_is_400() {
+        let state = make_state();
+        populate_dialogs(&state);
+        let app = build_router(state);
+
+        let resp = app
+            .oneshot(test_request("/v1/dialogs/rates?by=phase_of_moon"))
+            .await
+            .expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    /// An unknown metric name is a 400, not a silently dropped column.
+    #[tokio::test]
+    async fn rates_unknown_metric_is_400() {
+        let state = make_state();
+        populate_dialogs(&state);
+        let app = build_router(state);
+
+        let resp = app
+            .oneshot(test_request(
+                "/v1/dialogs/rates?by=method&metrics=throughput",
+            ))
             .await
             .expect("oneshot");
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);

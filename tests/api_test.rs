@@ -155,6 +155,28 @@ fn tail_answers_with_the_change_page_envelope() {
     );
 }
 
+/// `GET /v1/dialogs/rates` answers over the shipped binary with the carrier-
+/// metrics envelope (PAR3): a group per dimension value, each figure's unit,
+/// and the group's population beside it.
+#[test]
+fn rates_answer_with_the_metrics_envelope() {
+    let srv = ApiServer::spawn(&[]);
+    let resp = srv.get("/v1/dialogs/rates?by=method");
+    assert_eq!(resp.status, 200, "/v1/dialogs/rates status");
+    let body = resp.json();
+    assert_eq!(body["schema_version"], 1);
+    assert_eq!(body["group_by"], "method");
+    assert!(body["groups"].is_array(), "groups is an array");
+    assert!(
+        body["units"]["asr"].is_string(),
+        "each metric names its unit"
+    );
+    assert!(
+        body["groups"][0]["population"]["dialogs"].is_number(),
+        "each group publishes the population its figures were computed over"
+    );
+}
+
 /// `GET /v1/dialogs/{id}/lint` answers over the shipped binary with the findings
 /// envelope (PAR3).
 #[test]
