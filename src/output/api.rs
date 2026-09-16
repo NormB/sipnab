@@ -531,6 +531,19 @@ pub struct TalkersParams {
     pub prefix_digits: Option<u32>,
 }
 
+/// Query parameters for the `GET /v1/endpoints` endpoint.
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct EndpointParams {
+    /// The endpoint's IP address. Give exactly one of `ip` or `user`.
+    pub ip: Option<String>,
+    /// A SIP URI user part, e.g. `alice`. Give exactly one of `ip` or `user`.
+    pub user: Option<String>,
+    /// Maximum dialog summaries to return, clamped to the server's row cap. The
+    /// counts above them always describe every match, not this page.
+    pub limit: Option<usize>,
+}
+
 // ── Router construction ─────────────────────────────────────────────
 
 /// Per-request wall-clock cap. The API is request/response (no streaming), so a
@@ -655,6 +668,7 @@ pub fn build_router(state: ApiState) -> Router {
         .route("/v1/aggregate", get(get_aggregate))
         .route("/v1/timeline", get(get_timeline))
         .route("/v1/talkers", get(get_talkers))
+        .route("/v1/endpoints", get(get_endpoints))
         // Relay statistics (ST5). Each transmits once, behind
         // --api-allow-relay-query; the /call/ segment keeps C2 from colliding
         // with the static /names path. Polling (C5) is not offered here.
@@ -1909,6 +1923,117 @@ async fn get_talkers(
         distinct_talkers,
         total_matched,
     }))
+}
+
+/// `GET /v1/endpoints` — everything one endpoint did (PAR3: describe_endpoint on
+/// REST).
+///
+/// # Arguments
+///
+/// * `state` — Shared application state.
+/// * `addr` — Client socket address used for rate limiting.
+/// * `headers` — Request headers (auth).
+/// * `params` — exactly one of `ip` or `user`, and an optional `limit`.
+///
+/// # Returns
+///
+/// 200 with the endpoint report; 400 when neither or both selectors are given,
+/// or an address does not parse; 401/503 from the guard.
+///
+/// # Side effects
+///
+/// Holds the dialog- and stream-store read locks while scanning; mutates the
+/// rate limiter.
+#[utoipa::path(
+    get,
+    path = "/v1/endpoints",
+    tag = "dialogs",
+    summary = "Everything one endpoint did",
+    description = "Everything one endpoint did, selected by `ip` OR `user` (exactly one) — dialog counts by method and state, INVITE outcomes with a failure rate, REGISTER state, the `User-Agent` and `Server` banners it sent, the signaling-stack fingerprint read off its request syntax, a private-`Contact` rewrite check, its RTP streams, and a bounded page of its most recent dialogs. The counts cover every match, and only the dialog page is limited. The same facets the MCP `describe_endpoint` tool reports.\n\nSecurity findings are NOT here. The alert engine files them against a source address in a ring this route does not hold, so they are the separate security-findings capability. Banner text, codec tokens and dialog fields come back raw, the values a program keys on.",
+    params(EndpointParams),
+    security(("bearer" = [])),
+    responses(
+        (status = 200, description = "The endpoint report.", body = schema::EndpointDescription),
+        (status = 400, description = "Neither or both of `ip`/`user`, or an address that does not parse.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 401, description = "No bearer credential, or one this server does not accept.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 503, description = "Over the per-source-IP rate limit of 100 requests per second.", body = schema::ProblemJson, content_type = "application/problem+json"),
+    )
+)]
+async fn get_endpoints(
+    State(state): State<ApiState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Query(params): Query<EndpointParams>,
+) -> Result<impl IntoResponse, Problem> {
+    guard(&state, &headers, addr.ip())?;
+
+    let selector =
+        crate::sip::endpoint::Selector::parse(params.ip.as_deref(), params.user.as_deref())
+            .map_err(|e| Problem::detailed(StatusCode::BAD_REQUEST, e))?;
+    let limit = resolve_page_limit(params.limit, state.max_rows);
+
+    let ds = state.dialog_store.read();
+    let ss = state.stream_store.read();
+    // The scan is shared with the MCP `describe_endpoint` tool. This surface
+    // renders the raw values and omits findings — a separate capability.
+    let report = crate::sip::endpoint::describe(&ds, &ss, &selector, limit);
+
+    let user_agents: Vec<Value> = report
+        .banners
+        .iter()
+        .map(|b| json!({ "header": b.header, "value": b.value, "count": b.count }))
+        .collect();
+    let recent_dialogs: Vec<Value> = report
+        .recent_call_ids
+        .iter()
+        .filter_map(|id| ds.get(id))
+        .map(dialog_summary)
+        .collect();
+    drop(ss);
+    drop(ds);
+
+    let calls = json!({
+        "invites": report.calls.invites,
+        "with_final_status": report.calls.with_final_status,
+        "failed": report.calls.failed,
+        "failure_rate_pct": report.calls.failure_rate_pct,
+        "by_final_status": report.calls.by_final_status,
+    });
+    let registration = json!({
+        "applicable": report.registration.applicable,
+        "dialogs": report.registration.dialogs,
+        "succeeded": report.registration.succeeded,
+        "failed": report.registration.failed,
+        "auth_loops": report.registration.auth_loops,
+        "problem_call_ids": report.registration.problem_call_ids,
+    });
+    let streams = json!({
+        "count": report.streams.count,
+        "orphaned": report.streams.orphaned,
+        "packets": report.streams.packets,
+        "lost_packets": report.streams.lost_packets,
+        "max_jitter_ms": report.streams.max_jitter_ms,
+        "codecs": report.streams.codecs,
+    });
+
+    Ok(Json(json!({
+        "schema_version": 1,
+        "endpoint_kind": report.kind,
+        "endpoint": report.value,
+        "dialogs": report.dialogs,
+        "by_method": report.by_method,
+        "by_state": report.by_state,
+        "messages_sent": report.messages_sent,
+        "messages_received": report.messages_received,
+        "calls": calls,
+        "registration": registration,
+        "user_agents": user_agents,
+        "stack": report.stack,
+        "contact_rewrite": report.contact_rewrite,
+        "streams": streams,
+        "recent_dialogs": recent_dialogs,
+        "truncated": report.truncated,
+    })))
 }
 
 /// `GET /v1/dialogs/{call_id}/lint` — the RFC-conformance findings for one
@@ -4475,6 +4600,111 @@ pub mod schema {
         pub total_matched: usize,
     }
 
+    /// A `User-Agent` or `Server` banner an endpoint sent, and how often.
+    #[derive(Debug, Clone, ToSchema)]
+    pub struct EndpointBannerRow {
+        /// The header that carried it — `User-Agent` on a request, `Server` on
+        /// a response.
+        pub header: String,
+        /// The banner text, as the sender wrote it (raw, unfenced).
+        pub value: String,
+        /// Messages carrying it.
+        pub count: usize,
+    }
+
+    /// INVITE outcomes for an endpoint.
+    #[derive(Debug, Clone, ToSchema)]
+    pub struct EndpointCalls {
+        /// INVITE dialogs involving the endpoint.
+        pub invites: usize,
+        /// Of those, how many reached a final INVITE response.
+        pub with_final_status: usize,
+        /// Of those, how many ended 4xx, 5xx or 6xx.
+        pub failed: usize,
+        /// `failed` over `with_final_status`, as a percent. Null when nothing
+        /// has reached a final status.
+        pub failure_rate_pct: Option<f64>,
+        /// Count per final INVITE status code.
+        pub by_final_status: std::collections::BTreeMap<String, usize>,
+    }
+
+    /// REGISTER activity for an endpoint.
+    #[derive(Debug, Clone, ToSchema)]
+    pub struct EndpointReg {
+        /// False when the endpoint sent no REGISTER at all.
+        pub applicable: bool,
+        /// Dialogs carrying a REGISTER request.
+        pub dialogs: usize,
+        /// Of those, how many drew a 2xx.
+        pub succeeded: usize,
+        /// Of those, how many the diagnosis calls a registration failure.
+        pub failed: usize,
+        /// Of those, how many are looping on authentication.
+        pub auth_loops: usize,
+        /// Call-IDs of the REGISTER dialogs that failed or looped.
+        pub problem_call_ids: Vec<String>,
+    }
+
+    /// RTP an endpoint sent or received. Codecs are raw.
+    #[derive(Debug, Clone, ToSchema)]
+    pub struct EndpointStreamsView {
+        /// Streams attributed to the endpoint.
+        pub count: usize,
+        /// Of those, how many are not linked to any dialog.
+        pub orphaned: usize,
+        /// Total RTP packets across them.
+        pub packets: u64,
+        /// Total packets the sequence gaps say were lost.
+        pub lost_packets: u64,
+        /// Worst interarrival jitter seen on any of them, milliseconds.
+        pub max_jitter_ms: Option<f64>,
+        /// Codecs observed, sorted, unfenced.
+        pub codecs: Vec<String>,
+    }
+
+    /// Everything one endpoint did, selected by ip or user. The same facets the
+    /// MCP `describe_endpoint` tool reports, minus its security findings — those
+    /// are the separate security-findings capability, not this route.
+    #[derive(Debug, Clone, ToSchema)]
+    pub struct EndpointDescription {
+        /// Version of this response's shape.
+        #[schema(example = 1)]
+        pub schema_version: u32,
+        /// Which selector was used — `ip` or `user`.
+        pub endpoint_kind: String,
+        /// The selector's value, echoed verbatim.
+        pub endpoint: String,
+        /// Dialogs the endpoint took part in.
+        pub dialogs: usize,
+        /// Dialog count per method.
+        pub by_method: std::collections::BTreeMap<String, usize>,
+        /// Dialog count per state.
+        pub by_state: std::collections::BTreeMap<String, usize>,
+        /// Messages the endpoint SENT (zero for a user lookup).
+        pub messages_sent: usize,
+        /// Messages addressed TO the endpoint (zero for a user lookup).
+        pub messages_received: usize,
+        /// Call outcomes.
+        pub calls: EndpointCalls,
+        /// Registration state.
+        pub registration: EndpointReg,
+        /// Banners the endpoint sent, most frequent first, raw.
+        pub user_agents: Vec<EndpointBannerRow>,
+        /// The signaling stack fingerprint, read off request syntax.
+        #[schema(value_type = Object)]
+        pub stack: serde_json::Value,
+        /// Whether a private `Contact` this endpoint registered was rewritten.
+        /// Null when the endpoint sent no REGISTER.
+        #[schema(value_type = Option<Object>)]
+        pub contact_rewrite: Option<serde_json::Value>,
+        /// Media attributed to the endpoint.
+        pub streams: EndpointStreamsView,
+        /// The most recent dialogs, newest first, bounded by `limit`.
+        pub recent_dialogs: Vec<DialogSummary>,
+        /// True when `dialogs` exceeds what `recent_dialogs` carries.
+        pub truncated: bool,
+    }
+
     /// Transaction timing, as carried by every dialog summary.
     #[derive(Debug, Clone, ToSchema)]
     pub struct TimingSummary {
@@ -5197,6 +5427,7 @@ impl utoipa::Modify for BearerAuth {
         get_dialogs_tail,
         get_rates,
         get_talkers,
+        get_endpoints,
         get_lint,
         get_persistence,
         set_persistence,
@@ -5240,6 +5471,11 @@ impl utoipa::Modify for BearerAuth {
         schema::Rates,
         schema::Talker,
         schema::Talkers,
+        schema::EndpointBannerRow,
+        schema::EndpointCalls,
+        schema::EndpointReg,
+        schema::EndpointStreamsView,
+        schema::EndpointDescription,
         schema::RelayStatsResponse,
         schema::DialogList,
         schema::DialogSummary,
@@ -6175,6 +6411,94 @@ mod tests {
 
         let resp = app
             .oneshot(test_request("/v1/talkers?by=prefix&prefix_digits=0"))
+            .await
+            .expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    // ── endpoints (PAR3: describe_endpoint) ───────────────────────────
+
+    /// By ip, the report attributes what the address SENT: its two INVITE
+    /// dialogs, its messages-sent, its INVITE count, and its banner returned
+    /// RAW — REST hands a program the value it keys on, and the recent dialogs
+    /// are rendered. Closes the describe_endpoint gap.
+    #[tokio::test]
+    async fn endpoints_by_ip_describes_the_sender() {
+        let state = make_state();
+        seed_talkers(&state);
+        let app = build_router(state);
+
+        let resp = app
+            .oneshot(test_request("/v1/endpoints?ip=192.0.2.1"))
+            .await
+            .expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_to_string(resp.into_body()).await;
+        let parsed: Value = serde_json::from_str(&body).expect("valid JSON");
+        assert_eq!(parsed["schema_version"], 1);
+        assert_eq!(parsed["endpoint_kind"], "ip");
+        assert_eq!(parsed["endpoint"], "192.0.2.1");
+        assert_eq!(parsed["dialogs"], 2, "two INVITEs from .1");
+        assert_eq!(parsed["messages_sent"], 2);
+        assert_eq!(parsed["calls"]["invites"], 2);
+        assert_eq!(parsed["user_agents"][0]["value"], "Phone/A");
+        assert_eq!(parsed["user_agents"][0]["count"], 2);
+        assert_eq!(
+            parsed["recent_dialogs"].as_array().expect("an array").len(),
+            2
+        );
+        assert!(
+            !body.contains('\u{2066}') && !body.contains("untrusted"),
+            "REST returns the banner raw, unfenced: {body}"
+        );
+    }
+
+    /// By user, the selector matches on the URI user part, not a socket: it
+    /// finds the dialogs `alice` took part in but reports no messages sent, a
+    /// count a user selector cannot honestly derive.
+    #[tokio::test]
+    async fn endpoints_by_user_selects_on_the_uri_user() {
+        let state = make_state();
+        seed_talkers(&state);
+        let app = build_router(state);
+
+        let resp = app
+            .oneshot(test_request("/v1/endpoints?user=alice"))
+            .await
+            .expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_to_string(resp.into_body()).await;
+        let parsed: Value = serde_json::from_str(&body).expect("valid JSON");
+        assert_eq!(parsed["endpoint_kind"], "user");
+        assert_eq!(parsed["dialogs"], 3, "alice is the From user of all three");
+        assert_eq!(parsed["messages_sent"], 0, "a user has no socket side");
+    }
+
+    /// Neither `ip` nor `user` is a 400: an endpoint is one or the other, and
+    /// neither can be inferred from the other.
+    #[tokio::test]
+    async fn endpoints_missing_selector_is_400() {
+        let state = make_state();
+        seed_talkers(&state);
+        let app = build_router(state);
+
+        let resp = app
+            .oneshot(test_request("/v1/endpoints"))
+            .await
+            .expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    /// Both `ip` and `user` is a 400: the two select different sets, and which
+    /// combination was meant changes the answer.
+    #[tokio::test]
+    async fn endpoints_both_selectors_is_400() {
+        let state = make_state();
+        seed_talkers(&state);
+        let app = build_router(state);
+
+        let resp = app
+            .oneshot(test_request("/v1/endpoints?ip=192.0.2.1&user=alice"))
             .await
             .expect("oneshot");
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);

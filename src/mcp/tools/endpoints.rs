@@ -11,7 +11,6 @@
 //! already hold.
 
 use std::collections::BTreeMap;
-use std::net::IpAddr;
 
 use crate::mcp::server::SipnabMcp;
 use crate::mcp::shape::{
@@ -22,7 +21,10 @@ use crate::output::model::DialogSummary;
 // `/v1/talkers` route ranks the same store the same way. This surface fences
 // the `ua` keys and renders the shared result; `banner_of` is shared with
 // `describe_endpoint` here too.
-use crate::sip::talkers::{TalkerAccumulator, TalkerDimension, banner_of};
+use crate::sip::talkers::{TalkerAccumulator, TalkerDimension};
+// The endpoint scan (Selector, the describe pass, the stream rollup) is shared
+// with the REST `/v1/endpoints` route. This surface fences and adds findings.
+use crate::sip::endpoint::Selector;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CallToolResult, ContentBlock};
 use rmcp::schemars::JsonSchema;
@@ -357,243 +359,80 @@ impl SipnabMcp {
         Parameters(params): Parameters<DescribeEndpointParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let limit = resolve_limit_with_cap(params.limit, self.row_cap);
-        let selector = Selector::from_params(&params)?;
+        let selector =
+            crate::sip::endpoint::Selector::parse(params.ip.as_deref(), params.user.as_deref())
+                .map_err(|e| rmcp::ErrorData::invalid_params(e, None))?;
 
+        // The scan is shared with the REST `/v1/endpoints` route in
+        // `crate::sip::endpoint`. This surface fences the sender-authored
+        // strings and adds the security findings, which the REST server has no
+        // ring for.
+        let findings = self.endpoint_findings(&selector, limit);
         let payload = {
             let ds = self.dialog_store.read();
+            let ss = self.stream_store.read();
+            let report = crate::sip::endpoint::describe(&ds, &ss, &selector, limit);
 
-            let mut dialogs: Vec<&crate::sip::dialog::SipDialog> = Vec::new();
-            let mut by_method: BTreeMap<String, usize> = BTreeMap::new();
-            let mut by_state: BTreeMap<String, usize> = BTreeMap::new();
-            let mut messages_sent = 0usize;
-            let mut messages_received = 0usize;
-            let mut banners: BTreeMap<(String, String), usize> = BTreeMap::new();
-            let mut stack = crate::sip::stack_fingerprint::FingerprintAccumulator::default();
-            // The REGISTER observation, and every later request's destination,
-            // collected in one pass so the corroboration below reads one
-            // capture rather than two.
-            // The observation, the address it arrived from, and the AoR it
-            // registered. The AoR is the tie the corroboration needs: a
-            // request misrouted to the private `Contact` carries NO address
-            // belonging to this endpoint -- that is what being misrouted
-            // means -- so nothing addressed-based can find it. What it does
-            // carry is the registered user in its request URI and `To`.
-            let mut contact_observation: Option<(
-                crate::sip::contact_rewrite::ContactObservation,
-                std::net::IpAddr,
-                Option<String>,
-            )> = None;
-
-            let mut invites = 0usize;
-            let mut with_final_status = 0usize;
-            let mut failed = 0usize;
-            let mut by_final_status: BTreeMap<String, usize> = BTreeMap::new();
-
-            let mut reg_dialogs = 0usize;
-            let mut reg_succeeded = 0usize;
-            let mut reg_failed = 0usize;
-            let mut reg_auth_loops = 0usize;
-            let mut reg_problem_ids: Vec<String> = Vec::new();
-
-            for d in ds.iter() {
-                if !selector.matches_dialog(d) {
-                    continue;
-                }
-                dialogs.push(d);
-                *by_method.entry(d.method.as_str().to_string()).or_insert(0) += 1;
-                *by_state.entry(d.state().to_string()).or_insert(0) += 1;
-
-                for m in &d.messages {
-                    if selector.sent(m) {
-                        messages_sent += 1;
-                        if let Some((header, value)) = banner_of(m) {
-                            *banners.entry((header, value)).or_insert(0) += 1;
-                        }
-                        // REQUESTS only. A response echoes the request's
-                        // branch, `From` tag and Call-ID verbatim, so reading
-                        // one would fingerprint the party that SENT the
-                        // request as if it were the party that answered --
-                        // and on any dialog the two are different stacks.
-                        if m.is_request {
-                            stack.observe(
-                                m.top_via_branch().unwrap_or_default(),
-                                m.from_tag().unwrap_or_default(),
-                                m.call_id().unwrap_or_default(),
-                            );
-                            // The FIRST REGISTER this endpoint sent. A later
-                            // one may carry a rewritten Contact the endpoint
-                            // learned from a 200 OK, and reading that would
-                            // report the cure as the disease.
-                            if m.method == Some(crate::sip::method::SipMethod::Register)
-                                && contact_observation.is_none()
-                            {
-                                contact_observation = Some((
-                                    crate::sip::contact_rewrite::observe(
-                                        m.contact()
-                                            .and_then(crate::sip::contact_rewrite::contact_host),
-                                        m.src_addr,
-                                    ),
-                                    m.src_addr,
-                                    m.to_user(),
-                                ));
-                            }
-                        }
-                    }
-                    if selector.received(m) {
-                        messages_received += 1;
-                    }
-                }
-
-                if d.method == crate::sip::method::SipMethod::Invite {
-                    invites += 1;
-                    if let Some(code) = d.final_status_code() {
-                        with_final_status += 1;
-                        *by_final_status.entry(code.to_string()).or_insert(0) += 1;
-                        if code >= 400 {
-                            failed += 1;
-                        }
-                    }
-                }
-
-                // Keyed off the REQUEST rather than off `d.method`: a REGISTER
-                // can arrive inside a dialog opened by something else once
-                // Call-ID reuse is in play, and a registration that is not
-                // examined reports as a healthy one.
-                let registers = d.messages.iter().any(|m| {
-                    m.is_request && m.method == Some(crate::sip::method::SipMethod::Register)
-                });
-                if registers {
-                    reg_dialogs += 1;
-                    let diag = crate::sip::diagnosis::diagnose_signaling(&d.messages);
-                    let ok = d.messages.iter().any(|m| {
-                        !m.is_request
-                            && m.cseq().map(|(_, method)| method) == Some("REGISTER")
-                            && m.status_code.is_some_and(|c| (200..300).contains(&c))
-                    });
-                    if ok {
-                        reg_succeeded += 1;
-                    }
-                    let problem = diag.registration_failure.is_some() || diag.auth_loop.is_some();
-                    if diag.registration_failure.is_some() {
-                        reg_failed += 1;
-                    }
-                    if diag.auth_loop.is_some() {
-                        reg_auth_loops += 1;
-                    }
-                    if problem && reg_problem_ids.len() < limit {
-                        reg_problem_ids.push(d.call_id.clone());
-                    }
-                }
-            }
-
-            // Newest first: an operator chasing a complaint wants what just
-            // happened, and `list_dialogs` already pages the whole history
-            // oldest-first for anyone sweeping it.
-            dialogs.sort_by(|a, b| {
-                b.updated_at
-                    .cmp(&a.updated_at)
-                    .then_with(|| a.call_id.cmp(&b.call_id))
-            });
-            let matched_call_ids: std::collections::HashSet<&str> =
-                dialogs.iter().map(|d| d.call_id.as_str()).collect();
-            let streams = self.endpoint_streams(&selector, &matched_call_ids);
-
-            // The conjunction. `rewrite_required` is the observation and is
-            // true for three quarters of a healthy estate; what settles it is
-            // which address the rest of the estate then used.
-            let contact_rewrite = contact_observation.map(|(o, registered_from, aor)| {
-                let contact_addr = o
-                    .contact_host
-                    .as_deref()
-                    .and_then(crate::sip::contact_rewrite::host_address);
-                let mut to_contact = 0usize;
-                let mut to_source = 0usize;
-                // A second pass, over EVERY dialog rather than this endpoint's.
-                // Only reached when a REGISTER was seen, which is the rare
-                // case, and it is the only pass that can see a request the
-                // registrar addressed somewhere this endpoint never was.
-                if let Some(aor) = aor.as_deref() {
-                    for d in ds.iter() {
-                        for m in &d.messages {
-                            if !m.is_request
-                                || m.method == Some(crate::sip::method::SipMethod::Register)
-                            {
-                                continue;
-                            }
-                            // RFC 3261 section 19.1.4 makes the user part
-                            // case-sensitive, so `Alice` and `alice` are two
-                            // URIs and folding them would attribute one
-                            // endpoint's traffic to another.
-                            if m.to_user().as_deref() != Some(aor) {
-                                continue;
-                            }
-                            if Some(m.dst_addr) == contact_addr {
-                                to_contact += 1;
-                            } else if m.dst_addr == registered_from {
-                                to_source += 1;
-                            }
-                            // Anything else went to a third address -- a proxy,
-                            // another leg -- and says nothing about whether the
-                            // registrar rewrote. Counting it as `to_source`
-                            // would report a rewrite nothing observed.
-                        }
-                    }
-                }
-                crate::sip::contact_rewrite::corroborate(o, to_contact, to_source)
-            });
-
-            let mut user_agents: Vec<EndpointBanner> = banners
-                .into_iter()
-                .map(|((header, value), count)| EndpointBanner {
-                    header,
-                    value: fence(&value),
-                    count,
+            let user_agents: Vec<EndpointBanner> = report
+                .banners
+                .iter()
+                .map(|b| EndpointBanner {
+                    header: b.header.clone(),
+                    value: fence(&b.value),
+                    count: b.count,
                 })
                 .collect();
-            user_agents.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.value.cmp(&b.value)));
-
-            let total_dialogs = dialogs.len();
-            let recent_dialogs: Vec<DialogSummary> = dialogs
+            let streams = EndpointStreams {
+                count: report.streams.count,
+                orphaned: report.streams.orphaned,
+                packets: report.streams.packets,
+                lost_packets: report.streams.lost_packets,
+                max_jitter_ms: report.streams.max_jitter_ms,
+                codecs: report
+                    .streams
+                    .codecs
+                    .iter()
+                    .map(|c| fence_field(c))
+                    .collect(),
+            };
+            let recent_dialogs: Vec<DialogSummary> = report
+                .recent_call_ids
                 .iter()
-                .take(limit)
-                .map(|d| fenced_dialog_summary(d))
+                .filter_map(|id| ds.get(id))
+                .map(fenced_dialog_summary)
                 .collect();
-            drop(ds);
+            let truncated = report.truncated;
 
             DescribeEndpointResponse {
                 schema_version: 1,
-                endpoint_kind: selector.kind().to_string(),
-                endpoint: selector.value().to_string(),
-                dialogs: total_dialogs,
-                by_method,
-                by_state,
-                messages_sent,
-                messages_received,
+                endpoint_kind: report.kind.to_string(),
+                endpoint: report.value,
+                dialogs: report.dialogs,
+                by_method: report.by_method,
+                by_state: report.by_state,
+                messages_sent: report.messages_sent,
+                messages_received: report.messages_received,
                 calls: EndpointCallOutcomes {
-                    invites,
-                    with_final_status,
-                    failed,
-                    // Guarded, not defaulted. `0.0` on a zero denominator is a
-                    // clean bill of health for an endpoint nothing has been
-                    // measured about.
-                    failure_rate_pct: (with_final_status > 0)
-                        .then(|| (failed as f64 / with_final_status as f64) * 100.0),
-                    by_final_status,
+                    invites: report.calls.invites,
+                    with_final_status: report.calls.with_final_status,
+                    failed: report.calls.failed,
+                    failure_rate_pct: report.calls.failure_rate_pct,
+                    by_final_status: report.calls.by_final_status,
                 },
                 registration: EndpointRegistration {
-                    applicable: reg_dialogs > 0,
-                    dialogs: reg_dialogs,
-                    succeeded: reg_succeeded,
-                    failed: reg_failed,
-                    auth_loops: reg_auth_loops,
-                    problem_call_ids: reg_problem_ids,
+                    applicable: report.registration.applicable,
+                    dialogs: report.registration.dialogs,
+                    succeeded: report.registration.succeeded,
+                    failed: report.registration.failed,
+                    auth_loops: report.registration.auth_loops,
+                    problem_call_ids: report.registration.problem_call_ids,
                 },
                 user_agents,
-                stack: stack.finish(),
-                contact_rewrite,
+                stack: report.stack,
+                contact_rewrite: report.contact_rewrite,
                 streams,
-                findings: self.endpoint_findings(&selector, limit),
-                truncated: total_dialogs > recent_dialogs.len(),
+                findings,
+                truncated,
                 recent_dialogs,
             }
         };
@@ -752,170 +591,7 @@ impl SipnabMcp {
     }
 }
 
-/// Which entity `describe_endpoint` was asked about.
-///
-/// A small enum rather than two `Option`s threaded through the scan: every
-/// predicate below differs between the two selectors, and an `Option` pair
-/// leaves "both" and "neither" representable long after they were rejected.
-enum Selector {
-    /// An address, matched against message and stream endpoints.
-    Ip(IpAddr),
-    /// A SIP URI user part, matched against dialog From/To users.
-    User(String),
-}
-
-impl Selector {
-    /// Read the selector out of the request.
-    ///
-    /// # Errors
-    ///
-    /// `invalid_params` (-32602) when neither or both selectors are present,
-    /// or when the address does not parse.
-    fn from_params(params: &DescribeEndpointParams) -> Result<Self, rmcp::ErrorData> {
-        match (params.ip.as_deref(), params.user.as_deref()) {
-            (Some(ip), None) => ip.parse::<IpAddr>().map(Selector::Ip).map_err(|e| {
-                rmcp::ErrorData::invalid_params(format!("ip '{ip}' is not an address: {e}"), None)
-            }),
-            (None, Some(user)) => Ok(Selector::User(user.to_string())),
-            (None, None) => Err(rmcp::ErrorData::invalid_params(
-                "give exactly one of ip or user: an endpoint is either an \
-                 address or a URI user part, and neither can be inferred from \
-                 the other"
-                    .to_string(),
-                None,
-            )),
-            (Some(_), Some(_)) => Err(rmcp::ErrorData::invalid_params(
-                "give exactly one of ip or user, not both: the two select \
-                 different sets, and whether you meant their intersection or \
-                 their union changes the answer"
-                    .to_string(),
-                None,
-            )),
-        }
-    }
-
-    /// The selector's name, for the response.
-    fn kind(&self) -> &'static str {
-        match self {
-            Self::Ip(_) => "ip",
-            Self::User(_) => "user",
-        }
-    }
-
-    /// The selector's value, for the response.
-    fn value(&self) -> String {
-        match self {
-            Self::Ip(ip) => ip.to_string(),
-            Self::User(u) => u.clone(),
-        }
-    }
-
-    /// Whether this dialog involves the endpoint.
-    fn matches_dialog(&self, d: &crate::sip::dialog::SipDialog) -> bool {
-        match self {
-            // Every message, not `d.src_addr`/`d.dst_addr`: those record where
-            // the dialog OPENED, and a leg re-originated by a proxy mid-call
-            // carries addresses the opening message never had.
-            Self::Ip(ip) => d
-                .messages
-                .iter()
-                .any(|m| m.src_addr == *ip || m.dst_addr == *ip),
-            // Exact, per RFC 3261 §19.1.4 — the user part is case-sensitive.
-            Self::User(u) => {
-                d.from_user.as_deref() == Some(u.as_str())
-                    || d.to_user.as_deref() == Some(u.as_str())
-            }
-        }
-    }
-
-    /// Whether the endpoint SENT this message.
-    ///
-    /// Always false for a user selector: a URI user part names a party, not a
-    /// socket, and the party that sent a given message is not recoverable from
-    /// it. Reporting a count derived from something else under the name
-    /// `messages_sent` would be worse than reporting zero.
-    fn sent(&self, m: &crate::sip::SipMessage) -> bool {
-        match self {
-            Self::Ip(ip) => m.src_addr == *ip,
-            Self::User(_) => false,
-        }
-    }
-
-    /// Whether the message was addressed TO the endpoint. False for a user
-    /// selector, for the reason [`Self::sent`] gives.
-    fn received(&self, m: &crate::sip::SipMessage) -> bool {
-        match self {
-            Self::Ip(ip) => m.dst_addr == *ip,
-            Self::User(_) => false,
-        }
-    }
-
-    /// Whether this RTP stream belongs to the endpoint.
-    ///
-    /// An address is matched against the media 5-tuple directly. A user has no
-    /// media identity of its own, so its streams are the ones linked to its
-    /// dialogs — which is why the matched Call-IDs are passed in.
-    fn matches_stream(
-        &self,
-        s: &crate::rtp::stream::RtpStream,
-        call_ids: &std::collections::HashSet<&str>,
-    ) -> bool {
-        match self {
-            Self::Ip(ip) => s.key.src.ip() == *ip || s.key.dst.ip() == *ip,
-            Self::User(_) => s
-                .associated_dialog
-                .as_deref()
-                .is_some_and(|id| call_ids.contains(id)),
-        }
-    }
-}
-
 impl SipnabMcp {
-    /// Media attributed to the endpoint.
-    ///
-    /// # Arguments
-    ///
-    /// * `selector` — the entity asked about.
-    /// * `call_ids` — Call-IDs of the endpoint's dialogs, used only by the
-    ///   `user` selector, which has no media identity of its own.
-    fn endpoint_streams(
-        &self,
-        selector: &Selector,
-        call_ids: &std::collections::HashSet<&str>,
-    ) -> EndpointStreams {
-        let ss = self.stream_store.read();
-        let mut out = EndpointStreams {
-            count: 0,
-            orphaned: 0,
-            packets: 0,
-            lost_packets: 0,
-            max_jitter_ms: None,
-            codecs: Vec::new(),
-        };
-        let mut codecs: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-        for s in ss.iter() {
-            if !selector.matches_stream(s, call_ids) {
-                continue;
-            }
-            out.count += 1;
-            if s.associated_dialog.is_none() {
-                out.orphaned += 1;
-            }
-            out.packets = out.packets.saturating_add(s.packet_count);
-            out.lost_packets = out.lost_packets.saturating_add(s.lost_packets);
-            out.max_jitter_ms = Some(out.max_jitter_ms.map_or(s.jitter, |m: f64| m.max(s.jitter)));
-            if let Some(c) = &s.codec {
-                codecs.insert(c.clone());
-            }
-        }
-        // For a dynamic payload type `RtpStream::codec` holds the SDP's own
-        // `a=rtpmap` encoding name, so the offerer chose this string. Fenced
-        // at the boundary rather than in `stream_store`, which also feeds the
-        // CLI and REST readers who want the token unmarked.
-        out.codecs = codecs.iter().map(|c| fence_field(c)).collect();
-        out
-    }
-
     /// Security findings filed against the endpoint.
     ///
     /// # Arguments

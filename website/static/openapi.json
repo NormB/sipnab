@@ -1990,6 +1990,287 @@
         ],
         "type": "object"
       },
+      "EndpointBannerRow": {
+        "description": "A `User-Agent` or `Server` banner an endpoint sent, and how often.",
+        "properties": {
+          "count": {
+            "description": "Messages carrying it.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "header": {
+            "description": "The header that carried it — `User-Agent` on a request, `Server` on\na response.",
+            "type": "string"
+          },
+          "value": {
+            "description": "The banner text, as the sender wrote it (raw, unfenced).",
+            "type": "string"
+          }
+        },
+        "required": [
+          "header",
+          "value",
+          "count"
+        ],
+        "type": "object"
+      },
+      "EndpointCalls": {
+        "description": "INVITE outcomes for an endpoint.",
+        "properties": {
+          "by_final_status": {
+            "additionalProperties": {
+              "minimum": 0,
+              "type": "integer"
+            },
+            "description": "Count per final INVITE status code.",
+            "propertyNames": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "failed": {
+            "description": "Of those, how many ended 4xx, 5xx or 6xx.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "failure_rate_pct": {
+            "description": "`failed` over `with_final_status`, as a percent. Null when nothing\nhas reached a final status.",
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "invites": {
+            "description": "INVITE dialogs involving the endpoint.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "with_final_status": {
+            "description": "Of those, how many reached a final INVITE response.",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "invites",
+          "with_final_status",
+          "failed",
+          "by_final_status"
+        ],
+        "type": "object"
+      },
+      "EndpointDescription": {
+        "description": "Everything one endpoint did, selected by ip or user. The same facets the\nMCP `describe_endpoint` tool reports, minus its security findings — those\nare the separate security-findings capability, not this route.",
+        "properties": {
+          "by_method": {
+            "additionalProperties": {
+              "minimum": 0,
+              "type": "integer"
+            },
+            "description": "Dialog count per method.",
+            "propertyNames": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "by_state": {
+            "additionalProperties": {
+              "minimum": 0,
+              "type": "integer"
+            },
+            "description": "Dialog count per state.",
+            "propertyNames": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "calls": {
+            "$ref": "#/components/schemas/EndpointCalls",
+            "description": "Call outcomes."
+          },
+          "contact_rewrite": {
+            "description": "Whether a private `Contact` this endpoint registered was rewritten.\nNull when the endpoint sent no REGISTER.",
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "dialogs": {
+            "description": "Dialogs the endpoint took part in.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "endpoint": {
+            "description": "The selector's value, echoed verbatim.",
+            "type": "string"
+          },
+          "endpoint_kind": {
+            "description": "Which selector was used — `ip` or `user`.",
+            "type": "string"
+          },
+          "messages_received": {
+            "description": "Messages addressed TO the endpoint (zero for a user lookup).",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "messages_sent": {
+            "description": "Messages the endpoint SENT (zero for a user lookup).",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "recent_dialogs": {
+            "description": "The most recent dialogs, newest first, bounded by `limit`.",
+            "items": {
+              "$ref": "#/components/schemas/DialogSummary"
+            },
+            "type": "array"
+          },
+          "registration": {
+            "$ref": "#/components/schemas/EndpointReg",
+            "description": "Registration state."
+          },
+          "schema_version": {
+            "description": "Version of this response's shape.",
+            "example": 1,
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "stack": {
+            "description": "The signaling stack fingerprint, read off request syntax.",
+            "type": "object"
+          },
+          "streams": {
+            "$ref": "#/components/schemas/EndpointStreamsView",
+            "description": "Media attributed to the endpoint."
+          },
+          "truncated": {
+            "description": "True when `dialogs` exceeds what `recent_dialogs` carries.",
+            "type": "boolean"
+          },
+          "user_agents": {
+            "description": "Banners the endpoint sent, most frequent first, raw.",
+            "items": {
+              "$ref": "#/components/schemas/EndpointBannerRow"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "schema_version",
+          "endpoint_kind",
+          "endpoint",
+          "dialogs",
+          "by_method",
+          "by_state",
+          "messages_sent",
+          "messages_received",
+          "calls",
+          "registration",
+          "user_agents",
+          "stack",
+          "streams",
+          "recent_dialogs",
+          "truncated"
+        ],
+        "type": "object"
+      },
+      "EndpointReg": {
+        "description": "REGISTER activity for an endpoint.",
+        "properties": {
+          "applicable": {
+            "description": "False when the endpoint sent no REGISTER at all.",
+            "type": "boolean"
+          },
+          "auth_loops": {
+            "description": "Of those, how many are looping on authentication.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "dialogs": {
+            "description": "Dialogs carrying a REGISTER request.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "failed": {
+            "description": "Of those, how many the diagnosis calls a registration failure.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "problem_call_ids": {
+            "description": "Call-IDs of the REGISTER dialogs that failed or looped.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "succeeded": {
+            "description": "Of those, how many drew a 2xx.",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "applicable",
+          "dialogs",
+          "succeeded",
+          "failed",
+          "auth_loops",
+          "problem_call_ids"
+        ],
+        "type": "object"
+      },
+      "EndpointStreamsView": {
+        "description": "RTP an endpoint sent or received. Codecs are raw.",
+        "properties": {
+          "codecs": {
+            "description": "Codecs observed, sorted, unfenced.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "count": {
+            "description": "Streams attributed to the endpoint.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "lost_packets": {
+            "description": "Total packets the sequence gaps say were lost.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "max_jitter_ms": {
+            "description": "Worst interarrival jitter seen on any of them, milliseconds.",
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "orphaned": {
+            "description": "Of those, how many are not linked to any dialog.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "packets": {
+            "description": "Total RTP packets across them.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "count",
+          "orphaned",
+          "packets",
+          "lost_packets",
+          "codecs"
+        ],
+        "type": "object"
+      },
       "Lint": {
         "description": "The RFC-conformance findings for one dialog.",
         "properties": {
@@ -5601,6 +5882,93 @@
           }
         ],
         "summary": "Export a dialog as a vCon",
+        "tags": [
+          "dialogs"
+        ]
+      }
+    },
+    "/v1/endpoints": {
+      "get": {
+        "description": "Everything one endpoint did, selected by `ip` OR `user` (exactly one) — dialog counts by method and state, INVITE outcomes with a failure rate, REGISTER state, the `User-Agent` and `Server` banners it sent, the signaling-stack fingerprint read off its request syntax, a private-`Contact` rewrite check, its RTP streams, and a bounded page of its most recent dialogs. The counts cover every match, and only the dialog page is limited. The same facets the MCP `describe_endpoint` tool reports.\n\nSecurity findings are NOT here. The alert engine files them against a source address in a ring this route does not hold, so they are the separate security-findings capability. Banner text, codec tokens and dialog fields come back raw, the values a program keys on.",
+        "operationId": "get_endpoints",
+        "parameters": [
+          {
+            "description": "The endpoint's IP address. Give exactly one of `ip` or `user`.",
+            "in": "query",
+            "name": "ip",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "A SIP URI user part, e.g. `alice`. Give exactly one of `ip` or `user`.",
+            "in": "query",
+            "name": "user",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Maximum dialog summaries to return, clamped to the server's row cap. The\ncounts above them always describe every match, not this page.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "minimum": 0,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EndpointDescription"
+                }
+              }
+            },
+            "description": "The endpoint report."
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Neither or both of `ip`/`user`, or an address that does not parse."
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "No bearer credential, or one this server does not accept."
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Over the per-source-IP rate limit of 100 requests per second."
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Everything one endpoint did",
         "tags": [
           "dialogs"
         ]

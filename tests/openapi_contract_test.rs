@@ -801,6 +801,11 @@ fn every_documented_response_matches_what_the_server_sends() {
         } else if path == "/v1/talkers" {
             // `/v1/talkers` needs a `by` too; `ip` is the shape-neutral choice.
             format!("{url}?by=ip")
+        } else if path == "/v1/endpoints" {
+            // `/v1/endpoints` needs a selector; the fixture's caller 10.0.0.1
+            // is a real endpoint, so the route answers 200 with its schema
+            // rather than the 400 a missing selector earns.
+            format!("{url}?ip=10.0.0.1")
         } else if path == "/v1/dialogs/compare" {
             // `/v1/dialogs/compare` needs two Call-IDs; compare the fixture's
             // one call to itself so the route answers 200 with its schema

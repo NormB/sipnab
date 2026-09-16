@@ -857,7 +857,7 @@ curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" http://127.0.0.1:8080/v1/dial
 ```
 
 **`strategy` names how each leg matched, and `identifier_match` says whether to
-trust it.** `session_id` (RFC 7989) and `x_call_id` compared identifiers built
+trust it.** `session_id` ([RFC 7989](https://www.rfc-editor.org/rfc/rfc7989)) and `x_call_id` compared identifiers built
 to cross a B2BUA. `timing_heuristic` is a guess from matching endpoints and a
 close creation time, and `observed_gap_ms` carries the gap it saw so a reader
 can judge it — a 15 ms gap on a quiet box and a 1,900 ms gap on a busy SBC score
@@ -2384,7 +2384,7 @@ answers.
 
 - `since` (optional) — the previous response's `next_cursor`, passed back
   verbatim. The route returns only dialogs updated strictly after it. Omit it on the
-  first poll. A cursor whose timestamp half is not RFC 3339 is a `400`.
+  first poll. A cursor whose timestamp half is not [RFC 3339](https://www.rfc-editor.org/rfc/rfc3339) is a `400`.
 - `limit` (optional) — the most rows to return, clamped to the server's row cap.
 
 **curl:**
@@ -2526,6 +2526,94 @@ so a `limit`-bounded page never reads as the whole ranking. The `ip` key is the
 message SENDER, so a proxy does not top the ranking for calls it only forwarded.
 A `ua` key is a banner a stranger typed and comes back verbatim, so a program
 that renders it treats it as untrusted text.
+
+---
+
+### GET /v1/endpoints
+
+Everything one endpoint did, selected by `ip` **or** `user` (exactly one) — the
+single-participant profile you reach for when a complaint names one phone or one
+extension. Dialog counts by method and state, INVITE outcomes with a failure
+rate, REGISTER state, the `User-Agent` and `Server` banners it sent, the
+signaling-stack fingerprint read off its request syntax, a private-`Contact`
+rewrite check, its RTP streams, and a bounded page of its most recent dialogs.
+The same facets the MCP `describe_endpoint` tool reports.
+
+**Query parameters:**
+
+- `ip` (one of `ip`/`user`) — the endpoint's IP address. An address that does
+  not parse is a `400`.
+- `user` (one of `ip`/`user`) — a SIP URI user part, e.g. `alice`. Matched
+  case-sensitively, per [RFC 3261 §19.1.4](https://www.rfc-editor.org/rfc/rfc3261#section-19.1.4).
+- `limit` (optional) — the most recent-dialog summaries to return, clamped to the
+  server's row cap. The counts always describe every match, not this page.
+
+Neither selector, or both, is a `400`: an endpoint is either an address or a URI
+user part, and one never implies the other.
+
+**curl:**
+
+```bash
+curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" "http://127.0.0.1:8080/v1/endpoints?ip=203.0.113.9&limit=10" | jq .
+```
+
+**Response:**
+
+```json
+{
+  "schema_version": 1,
+  "endpoint_kind": "ip",
+  "endpoint": "203.0.113.9",
+  "dialogs": 42,
+  "by_method": { "INVITE": 40, "REGISTER": 2 },
+  "by_state": { "Completed": 38, "Failed": 4 },
+  "messages_sent": 210,
+  "messages_received": 198,
+  "calls": {
+    "invites": 40,
+    "with_final_status": 38,
+    "failed": 4,
+    "failure_rate_pct": 10.53,
+    "by_final_status": { "200": 34, "486": 3, "603": 1 }
+  },
+  "registration": {
+    "applicable": true,
+    "dialogs": 2,
+    "succeeded": 2,
+    "failed": 0,
+    "auth_loops": 0,
+    "problem_call_ids": []
+  },
+  "user_agents": [
+    { "header": "User-Agent", "value": "Grandstream GXP2140 1.0.11.3", "count": 208 }
+  ],
+  "stack": { "vendor": "grandstream", "confidence": "high" },
+  "contact_rewrite": null,
+  "streams": {
+    "count": 38,
+    "orphaned": 0,
+    "packets": 152000,
+    "lost_packets": 12,
+    "max_jitter_ms": 4.7,
+    "codecs": ["PCMU", "telephone-event"]
+  },
+  "recent_dialogs": [
+    { "call_id": "a1b2@203.0.113.9", "method": "INVITE", "state": "Completed" }
+  ],
+  "truncated": true
+}
+```
+
+**The counts cover every match. Only `recent_dialogs` is a page.** `truncated` is
+true when the endpoint's dialog total exceeds what that page carries. An `ip`
+selector reads a socket, so `messages_sent`/`messages_received` count what the
+address sent and received. A `user` selector names a party with no socket of its
+own, so both are `0`, and its streams are the ones linked to its dialogs. Banner
+values and codec tokens come back **raw** — the values a program keys on, unlike
+the MCP surface which fences them. `contact_rewrite` is `null` unless the
+endpoint sent a REGISTER. **Security findings are not here:** the alert engine
+files them against a source address in a ring this route does not hold, so they
+are the separate `security_findings` capability.
 
 ---
 

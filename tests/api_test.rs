@@ -200,6 +200,36 @@ fn talkers_answer_with_the_ranking_envelope() {
     );
 }
 
+/// `GET /v1/endpoints` answers over the shipped binary with the describe
+/// envelope (PAR3): the selector echoed, dialog and message counts, the banner
+/// rows, the call and registration facets, and a page of recent dialogs. The
+/// fixture's caller `10.0.0.1` sent the one dialog, so it is a real endpoint.
+#[test]
+fn endpoints_answer_with_the_describe_envelope() {
+    let srv = ApiServer::spawn(&[]);
+    let resp = srv.get("/v1/endpoints?ip=10.0.0.1");
+    assert_eq!(resp.status, 200, "/v1/endpoints status");
+    let body = resp.json();
+    assert_eq!(body["schema_version"], 1);
+    assert_eq!(body["endpoint_kind"], "ip");
+    assert_eq!(body["endpoint"], "10.0.0.1");
+    assert!(body["dialogs"].is_number(), "dialog count present");
+    assert!(
+        body["messages_sent"].as_u64().expect("messages_sent") >= 1,
+        "the caller sent at least the INVITE"
+    );
+    assert!(body["user_agents"].is_array(), "banner rows is an array");
+    assert!(body["calls"]["invites"].is_number(), "call facet present");
+    assert!(
+        body["registration"]["applicable"].is_boolean(),
+        "registration facet present"
+    );
+    assert!(
+        body["recent_dialogs"].is_array(),
+        "recent dialogs is an array"
+    );
+}
+
 /// `GET /v1/dialogs/{id}/lint` answers over the shipped binary with the findings
 /// envelope (PAR3).
 #[test]

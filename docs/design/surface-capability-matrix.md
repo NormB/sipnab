@@ -309,7 +309,7 @@ Everything one endpoint did — counts, INVITE outcomes, REGISTER state, streams
 |---|---|
 | CLI | gap: a one-shot per-endpoint rollup is CLI-shaped, but the match flags filter and dump, they do not aggregate (PAR5) |
 | TUI | gap: a triager reaches for everything this IP did, but no endpoint view exists (PAR4) |
-| REST | gap: an integrating program would poll a per-endpoint summary, but no endpoint route exists (PAR3) |
+| REST | `/v1/endpoints` |
 | MCP | `describe_endpoint` |
 
 ### Export decoded audio

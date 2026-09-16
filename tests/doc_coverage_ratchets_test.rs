@@ -444,7 +444,11 @@ fn undocumented_numeric_ceilings_do_not_increase() {
 // same contract test. Three components.
 // 46 -> 48 at PAR3, for `Talker` and `Talkers`, the `GET /v1/talkers` response.
 // Response-only, same reason, pinned by the same contract test. Two components.
-const PERMISSIVE_SCHEMA_COMPONENTS: usize = 48;
+// 48 -> 53 at PAR3, for `EndpointBannerRow`, `EndpointCalls`, `EndpointReg`,
+// `EndpointStreamsView` and `EndpointDescription`, the `GET /v1/endpoints`
+// response. Response-only, same reason, pinned by the same contract test. Five
+// components.
+const PERMISSIVE_SCHEMA_COMPONENTS: usize = 53;
 
 #[test]
 fn permissive_rest_schema_components_do_not_increase() {

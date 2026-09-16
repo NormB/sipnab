@@ -12,6 +12,17 @@ entry that carries them.
 
 ### Added
 
+- **`GET /v1/endpoints` (PAR3).** Everything one endpoint did, selected by `ip`
+  or `user` (exactly one) — dialog counts by method and state, INVITE outcomes
+  with a failure rate, REGISTER state, the `User-Agent`/`Server` banners it sent,
+  the signaling-stack fingerprint, a private-`Contact` rewrite check, its RTP
+  streams, and a bounded page of its most recent dialogs. The single-participant
+  profile you reach for when a complaint names one phone, which no other route
+  exposed. The whole scan moves into `crate::sip::endpoint` (outside the `mcp`
+  feature), shared with the MCP `describe_endpoint` tool, which fences the banner
+  and codec strings and adds its security findings on top; REST returns them raw
+  and omits findings (the separate `security_findings` capability). This closes
+  the `describe_endpoint` REST gap, leaving 31 named gaps.
 - **`GET /v1/talkers` (PAR3).** Ranks the busiest participants by `ip`, `ua` or
   `prefix` (the dialed number's leading digits), largest first — the
   volume-and-abuse view a dashboard polls, which no other route exposed. Each
