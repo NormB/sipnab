@@ -1206,6 +1206,10 @@ pub enum RelayStatsMode {
     /// The relay's per-call count beside this capture's (C4), reached with `K`.
     /// Only meaningful when the view is scoped to a call.
     Compare,
+    /// The Call-IDs the relay is holding right now (ST8 holdings), reached with
+    /// `H`. Always the relay's full held set, independent of any call the view
+    /// is scoped to.
+    Holdings,
 }
 
 /// Which view is currently displayed in the TUI.

@@ -343,6 +343,33 @@ mod tui_state {
         );
     }
 
+    /// `H` inside the relay-stats view toggles the holdings mode (ST8) — the
+    /// Call-IDs the relay is holding — and, pressed again, returns to the
+    /// counters. Holdings is a global set, so it needs no call scope.
+    #[test]
+    fn h_toggles_holdings_in_relay_stats() {
+        let mut app = App::new_test();
+        app.handle_key(KeyCode::Char('S'));
+        app.handle_key(KeyCode::Char('H'));
+        assert_eq!(
+            *app.current_view(),
+            View::RelayStats {
+                call_id: None,
+                mode: RelayStatsMode::Holdings,
+            },
+            "H shows the relay's holdings"
+        );
+        app.handle_key(KeyCode::Char('H'));
+        assert_eq!(
+            *app.current_view(),
+            View::RelayStats {
+                call_id: None,
+                mode: RelayStatsMode::Counters,
+            },
+            "H again returns to the counters"
+        );
+    }
+
     /// `?` still opens Help from an ordinary view -- the relay-stats exception
     /// does not leak.
     #[test]

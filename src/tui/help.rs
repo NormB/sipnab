@@ -131,6 +131,7 @@ ENDPOINT ROLLUP:
 RELAY STATISTICS VIEW (S asks the relay directly):
   ?                Names the relay knows (what to ask for)
   K                Compare relay vs capture (per-call)
+  H                What the relay is holding now (Call-IDs)
   \u{2191}/\u{2193}, j/k       Scroll
   Esc, S           Close
 

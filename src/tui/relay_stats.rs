@@ -173,6 +173,56 @@ pub fn compose_counters_or_names(
     }
 }
 
+/// Compose the text for a relay `list` reply (ST8 holdings): the Call-IDs the
+/// relay is holding right now. Pure, so it is tested without a relay or a
+/// thread, the same reason the counters and compare conversions are. A refusal
+/// carries the relay's own words; any other reply shape is `suspect`, matching
+/// `relay_rest_answer`'s holdings arm.
+///
+/// STUB — filled in after the failing test.
+#[must_use]
+pub fn compose_holdings(
+    reply: &ControlReply,
+    label: &str,
+    obtained_at: chrono::DateTime<chrono::Utc>,
+) -> String {
+    use std::fmt::Write as _;
+
+    let ControlReply::Calls(e) = reply else {
+        return match reply {
+            ControlReply::Refused { reason } => {
+                compose_outcome_text(StatisticsOutcome::Refused, &format!("{label}: {reason}"))
+            }
+            _ => compose_outcome_text(
+                StatisticsOutcome::Suspect,
+                "the relay answered with something other than a call list",
+            ),
+        };
+    };
+
+    let mut out = String::new();
+    let _ = writeln!(out, "{label}");
+    let _ = writeln!(out, "asked {}", obtained_at.to_rfc3339());
+    let _ = writeln!(out);
+    if e.call_ids.is_empty() {
+        let _ = writeln!(out, "The relay holds no calls.");
+    } else {
+        let plural = if e.call_ids.len() == 1 { "" } else { "s" };
+        let _ = writeln!(out, "Holding {} call{plural}:", e.call_ids.len());
+        for cid in &e.call_ids {
+            // Raw: a Call-ID is the relay's own word, shown as it wrote it.
+            let _ = writeln!(out, "  {cid}");
+        }
+        if e.truncated {
+            let _ = writeln!(
+                out,
+                "  … more, not shown (the relay returned a bounded set)"
+            );
+        }
+    }
+    out
+}
+
 /// Whether a C5 re-poll is due: an interval is set and at least that long has
 /// passed since the last ask (or none has been made). Pure, so the cadence is
 /// tested without a clock -- the same lesson the relay-poll loop test learned.
@@ -356,6 +406,17 @@ fn do_ask(
             };
             match access.relay.call_statistics(&access.permit, cid) {
                 Ok(reply) => compose_compare(&reply, cid, sipnab_side, &label, obtained_at),
+                Err(e) => fetch_failure(&e),
+            }
+        }
+        // Holdings is the relay's full held set, independent of any call scope
+        // (like Names), so it ignores `call_id`.
+        RelayStatsMode::Holdings => {
+            match access
+                .relay
+                .list(&access.permit, crate::relay::reconcile::DEFAULT_LIST_LIMIT)
+            {
+                Ok(reply) => compose_holdings(&reply, &label, obtained_at),
                 Err(e) => fetch_failure(&e),
             }
         }

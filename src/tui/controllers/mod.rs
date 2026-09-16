@@ -898,6 +898,9 @@ pub enum RelayStatsAction {
     /// pressed again, return to the counters. Only meaningful when the view is
     /// scoped to a call.
     ToggleCompare,
+    /// `H` — show the Call-IDs the relay is holding right now (ST8 holdings);
+    /// pressed again, return to the counters.
+    ToggleHoldings,
 }
 
 /// Pure key→action mapping for the relay-statistics view (keymap-aware).
@@ -914,6 +917,7 @@ pub fn relay_stats_action(km: &Keymap, key: KeyEvent) -> Option<RelayStatsAction
         k if k == KeyCode::Esc || k == km.quit || k == KeyCode::Char('S') => Close,
         KeyCode::Char('?') => ToggleNames,
         KeyCode::Char('K') => ToggleCompare,
+        KeyCode::Char('H') => ToggleHoldings,
         KeyCode::Up | KeyCode::Char('k') => ScrollUp,
         KeyCode::Down | KeyCode::Char('j') => ScrollDown,
         KeyCode::PageUp => PageUp,
@@ -977,6 +981,7 @@ pub(in crate::tui) fn handle_relay_stats_key(app: &mut App, key: KeyEvent) {
         RelayStatsAction::ScrollBottom => app.relay_stats_scroll = u16::MAX,
         RelayStatsAction::ToggleNames => toggle_relay_stats_mode(app, RelayStatsMode::Names),
         RelayStatsAction::ToggleCompare => toggle_relay_stats_mode(app, RelayStatsMode::Compare),
+        RelayStatsAction::ToggleHoldings => toggle_relay_stats_mode(app, RelayStatsMode::Holdings),
     }
 }
 

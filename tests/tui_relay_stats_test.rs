@@ -15,7 +15,8 @@ use sipnab::output::relay_statistics::FetchOrigin;
 use sipnab::relay::types::ControlReply;
 use sipnab::stats_vocab::StatisticsOutcome;
 use sipnab::tui::relay_stats::{
-    RelayQueryState, compose_compare, compose_counters_or_names, compose_outcome_text,
+    RelayQueryState, compose_compare, compose_counters_or_names, compose_holdings,
+    compose_outcome_text,
 };
 
 fn at() -> chrono::DateTime<chrono::Utc> {
@@ -54,6 +55,47 @@ fn global_counters_render_relay_reported_values() {
     assert!(
         text.contains("totals.RTP.bytes"),
         "the zero counter survives: {text}"
+    );
+}
+
+/// A holdings answer lists every Call-ID the relay is holding and flags a
+/// truncated set, so an operator can tell "these are all of them" from "there
+/// are more the relay did not return". The wire is unreachable without a live
+/// relay (ST8); the conversion is pure and exercised here directly.
+#[test]
+fn holdings_lists_the_call_ids_and_flags_truncation() {
+    use sipnab::relay::types::Enumeration;
+    let reply = ControlReply::Calls(Enumeration {
+        call_ids: vec!["aaa@h".to_string(), "bbb@h".to_string()],
+        truncated: true,
+    });
+    let text = compose_holdings(&reply, "relay X (127.0.0.1:22222)", at());
+    assert!(
+        text.contains("aaa@h") && text.contains("bbb@h"),
+        "both held call-ids are listed:\n{text}"
+    );
+    assert!(
+        text.contains("Holding 2 call"),
+        "the count is stated:\n{text}"
+    );
+    assert!(text.contains('…'), "the truncated set is flagged:\n{text}");
+}
+
+/// A relay that refuses the list is reported in its own words, classified
+/// `refused` — the relay was reached and declined, not unreachable.
+#[test]
+fn holdings_renders_a_relay_refusal_verbatim() {
+    let reply = ControlReply::Refused {
+        reason: "list disabled by config".to_string(),
+    };
+    let text = compose_holdings(&reply, "relay X (addr)", at());
+    assert!(
+        text.contains("list disabled by config"),
+        "the relay's words travel:\n{text}"
+    );
+    assert!(
+        text.contains("refused"),
+        "the refusal is classified:\n{text}"
     );
 }
 

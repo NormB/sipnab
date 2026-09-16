@@ -1214,6 +1214,10 @@ pub(in crate::tui) fn render_relay_stats(
             mode: RelayStatsMode::Compare,
             ..
         } => " Relay statistics — relay vs capture ",
+        View::RelayStats {
+            mode: RelayStatsMode::Holdings,
+            ..
+        } => " Relay statistics — what the relay holds ",
         _ => " Relay statistics ",
     };
     // The text `sync_caches` composed off the input path: an asked answer, an

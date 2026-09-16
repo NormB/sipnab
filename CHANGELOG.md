@@ -12,6 +12,18 @@ entry that carries them.
 
 ### Added
 
+- **Relay holdings in the TUI (PAR4).** The `RelayStats` view gained a holdings
+  mode, reached with `H`: the Call-IDs the live relay is holding right now, with
+  a truncation flag when the relay returned a bounded set. REST already exposed
+  this (`GET /v1/relay/holdings`); the TUI transmitted for the relay's *stats*
+  and *compare* but had no view of what it *holds*. It reuses the whole
+  relay-stats machinery — the off-thread ask (the view transmits, so it never
+  blocks the UI), the ST-S4 refusal classifications (`not_configured` /
+  `not_permitted` / `refused` / `unreachable`), and the vendor-neutral label —
+  and renders `ControlReply::Calls`, the same structured reply the REST route
+  formats, so the two surfaces cannot disagree about what is held. The
+  conversion is pure and unit-tested; the wire stays live-only, as the other
+  relay modes are. Closes the relay-holdings TUI gap, leaving 22 named gaps.
 - **Per-endpoint rollup TUI view (PAR4).** A new `EndpointRollup` view, opened
   with `e` from the call list on the selected call's source address, shows
   everything that endpoint did across the capture — dialog counts by method and
