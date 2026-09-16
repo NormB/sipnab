@@ -1703,7 +1703,12 @@ async fn get_rates(
     });
     let other_count: usize = ordered.iter().skip(top_n).map(|(_, a)| a.dialogs()).sum();
 
-    let mut groups = Vec::with_capacity(ordered.len().min(top_n));
+    // Not `Vec::with_capacity`: the size would flow from the `top_n` query
+    // parameter, and though `resolve_page_limit` clamps it to the row cap,
+    // CodeQL's uncontrolled-allocation-size taint does not see the clamp — and
+    // the loop pushes at most `top_n` items regardless, so the capacity hint
+    // bought nothing worth the alert.
+    let mut groups: Vec<schema::RateGroup> = Vec::new();
     for (value, acc) in ordered.into_iter().take(top_n) {
         let mut metrics = std::collections::BTreeMap::new();
         let mut not_grounded = std::collections::BTreeMap::new();
