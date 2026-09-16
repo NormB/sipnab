@@ -271,6 +271,20 @@ pub struct ApiState {
     /// (both halves `None`) is a server with no relay access, which answers
     /// those routes `not_configured` -- the state every test here builds.
     pub relay_query: RelayRestConfig,
+    /// The SAME alert engine the MCP server holds, for `GET /v1/security/findings`.
+    ///
+    /// `None` on a build or run with no engine — every test in this module, and
+    /// any headless run started without `--mcp`/`--api` sharing one. The route
+    /// then answers an empty findings list with the armed-state note rather than
+    /// erroring, the same reading the MCP tool gives.
+    pub alert_engine: Option<Arc<RwLock<crate::security::AlertEngine>>>,
+    /// Which detectors this run armed, by the rule name each files findings
+    /// under — the list `GET /v1/security/findings` reports as `armed_kinds`.
+    ///
+    /// Carried rather than read off the engine because the engine exists on
+    /// every headless run whether or not a detector was armed, so its presence
+    /// cannot answer "was anything watching". Empty means nothing is armed.
+    pub armed_detections: Vec<String>,
 }
 
 /// Resolve a caller's `?limit=` to a row count.
@@ -544,6 +558,23 @@ pub struct EndpointParams {
     pub limit: Option<usize>,
 }
 
+/// Query parameters for the `GET /v1/security/findings` endpoint.
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct SecurityFindingsParams {
+    /// Comma-separated detector kinds to filter to — `scanner`, `fraud`,
+    /// `digest`, `reg_flood`. Omitted returns all kinds. Any other name is a
+    /// `400` naming the four (a URL query cannot repeat a key into a list, so
+    /// the kinds ride in one comma-separated value).
+    pub kinds: Option<String>,
+    /// RFC 3339 timestamp; only findings recorded strictly after are returned.
+    pub since: Option<String>,
+    /// Maximum findings to return, clamped to the server's row cap.
+    /// `total_matched` still counts every match, so a page is never mistaken for
+    /// the whole ring.
+    pub limit: Option<usize>,
+}
+
 // ── Router construction ─────────────────────────────────────────────
 
 /// Per-request wall-clock cap. The API is request/response (no streaming), so a
@@ -669,6 +700,7 @@ pub fn build_router(state: ApiState) -> Router {
         .route("/v1/timeline", get(get_timeline))
         .route("/v1/talkers", get(get_talkers))
         .route("/v1/endpoints", get(get_endpoints))
+        .route("/v1/security/findings", get(get_security_findings))
         // Relay statistics (ST5). Each transmits once, behind
         // --api-allow-relay-query; the /call/ segment keeps C2 from colliding
         // with the static /names path. Polling (C5) is not offered here.
@@ -2034,6 +2066,105 @@ async fn get_endpoints(
         "recent_dialogs": recent_dialogs,
         "truncated": report.truncated,
     })))
+}
+
+/// `GET /v1/security/findings` — the armed detectors' recorded findings (PAR3:
+/// security_findings on REST).
+///
+/// # Arguments
+///
+/// * `state` — Shared application state (carries the alert engine and the armed
+///   list).
+/// * `addr` — Client socket address used for rate limiting.
+/// * `headers` — Request headers (auth).
+/// * `params` — an optional comma-separated `kinds` filter, an optional `since`
+///   RFC 3339 cursor, and an optional `limit`.
+///
+/// # Returns
+///
+/// 200 always — an empty list plus a `note` when no detector is armed, so a SOC
+/// dashboard can tell "nothing tripped" from "nothing was watching"; 400 on an
+/// unknown kind or a malformed `since`; 401/503 from the guard.
+///
+/// # Side effects
+///
+/// Holds the alert-engine read lock while walking the ring; mutates the rate
+/// limiter.
+#[utoipa::path(
+    get,
+    path = "/v1/security/findings",
+    tag = "security",
+    summary = "sipnab's own detector findings",
+    description = "The findings the armed detectors (`scanner`, `fraud`, `digest`, `reg_flood`) recorded, newest first — the poll a SOC dashboard makes, which sipnab only pushed to syslog and stderr before. The same ring the MCP `security_findings` tool reads.\n\nAn empty `findings` list is two different states, and `detection_armed` tells them apart: false means no detector was armed, so nothing could have been recorded, and a `note` says so. `total_matched` counts every finding the filter admits across the whole ring, so a bounded page is never read as the whole history. The `detail` line comes back raw, the value a program keys on.",
+    params(SecurityFindingsParams),
+    security(("bearer" = [])),
+    responses(
+        (status = 200, description = "The findings page, with the armed-state distinction.", body = schema::SecurityFindings),
+        (status = 400, description = "An unknown `kinds` value, or a `since` that is not RFC 3339.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 401, description = "No bearer credential, or one this server does not accept.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 503, description = "Over the per-source-IP rate limit of 100 requests per second.", body = schema::ProblemJson, content_type = "application/problem+json"),
+    )
+)]
+async fn get_security_findings(
+    State(state): State<ApiState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Query(params): Query<SecurityFindingsParams>,
+) -> Result<impl IntoResponse, Problem> {
+    guard(&state, &headers, addr.ip())?;
+
+    // A URL query cannot repeat a key into a list, so the kinds ride in one
+    // comma-separated value. Empty segments are dropped so a trailing comma is
+    // not a fifth, empty kind the vocabulary check would reject.
+    let kinds: Vec<String> = params
+        .kinds
+        .as_deref()
+        .unwrap_or("")
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect();
+    // The vocabulary check, `since` parse, ring walk and armed/note assembly are
+    // shared with the MCP tool in `crate::security::findings`.
+    let (kinds, since) = crate::security::findings::parse_query(&kinds, params.since.as_deref())
+        .map_err(|e| Problem::detailed(StatusCode::BAD_REQUEST, e))?;
+    let limit = resolve_page_limit(params.limit, state.max_rows);
+
+    let report = {
+        let guard = state.alert_engine.as_ref().map(|e| e.read());
+        crate::security::findings::build_report(
+            guard.as_deref(),
+            &state.armed_detections,
+            &kinds,
+            since,
+            limit,
+        )
+    };
+
+    let findings: Vec<schema::SecurityFinding> = report
+        .rows
+        .iter()
+        .map(|f| schema::SecurityFinding {
+            rule_name: f.rule_name.clone(),
+            src_ip: f.src_ip.to_string(),
+            // Raw: REST hands a program the detector's own line. The MCP tool
+            // fences the `ua=` half; a SOC pipeline keys on it instead.
+            detail: f.detail.clone(),
+            timestamp: f.timestamp.to_rfc3339(),
+        })
+        .collect();
+
+    Ok(Json(schema::SecurityFindings {
+        schema_version: 1,
+        returned: findings.len(),
+        findings,
+        total_matched: report.total_matched,
+        truncated: report.truncated,
+        armed_kinds: report.armed_kinds,
+        detection_armed: report.detection_armed,
+        note: report.note,
+    }))
 }
 
 /// `GET /v1/dialogs/{call_id}/lint` — the RFC-conformance findings for one
@@ -4705,6 +4836,46 @@ pub mod schema {
         pub truncated: bool,
     }
 
+    /// One security finding an armed detector recorded. The `detail` is raw.
+    #[derive(Debug, Clone, serde::Serialize, ToSchema)]
+    pub struct SecurityFinding {
+        /// The rule that fired — `scanner`, `fraud`, `digest` or `reg_flood`.
+        pub rule_name: String,
+        /// The source address the finding is about.
+        pub src_ip: String,
+        /// The detector's own detail line, raw (the MCP surface fences it).
+        pub detail: String,
+        /// RFC 3339 timestamp of when the finding fired.
+        pub timestamp: String,
+    }
+
+    /// The armed detectors' recorded findings, with the armed-state distinction.
+    #[derive(Debug, Clone, serde::Serialize, ToSchema)]
+    pub struct SecurityFindings {
+        /// Version of this response's shape.
+        #[schema(example = 1)]
+        pub schema_version: u32,
+        /// This page of findings, newest first, raw.
+        pub findings: Vec<SecurityFinding>,
+        /// Rows in `findings`, so counting the array is never necessary.
+        pub returned: usize,
+        /// Findings matching the filter across the whole retained ring,
+        /// independent of `limit`.
+        pub total_matched: usize,
+        /// True when matches remain after this page. Narrow with `since` or
+        /// raise `limit`.
+        pub truncated: bool,
+        /// The detectors armed on this server, by the rule name each files
+        /// under. Empty means nothing is armed.
+        pub armed_kinds: Vec<String>,
+        /// True when at least one detector is armed. An empty `findings` with
+        /// this false means nothing was watching, NOT that traffic was clean.
+        pub detection_armed: bool,
+        /// Present only when nothing is armed, saying so in words.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub note: Option<String>,
+    }
+
     /// Transaction timing, as carried by every dialog summary.
     #[derive(Debug, Clone, ToSchema)]
     pub struct TimingSummary {
@@ -5428,6 +5599,7 @@ impl utoipa::Modify for BearerAuth {
         get_rates,
         get_talkers,
         get_endpoints,
+        get_security_findings,
         get_lint,
         get_persistence,
         set_persistence,
@@ -5476,6 +5648,8 @@ impl utoipa::Modify for BearerAuth {
         schema::EndpointReg,
         schema::EndpointStreamsView,
         schema::EndpointDescription,
+        schema::SecurityFinding,
+        schema::SecurityFindings,
         schema::RelayStatsResponse,
         schema::DialogList,
         schema::DialogSummary,
@@ -5513,7 +5687,8 @@ impl utoipa::Modify for BearerAuth {
         (name = "streams", description = "RTP streams the capture is tracking"),
         (name = "capture", description = "The capture as a whole"),
         (name = "operations", description = "Liveness, metrics, and the persistence gate"),
-        (name = "tfps", description = "The toll-fraud prevention peer on this host, when one is installed: what it condemns, what it dropped, its verdict log, and an operator's ban or release relayed to it")
+        (name = "tfps", description = "The toll-fraud prevention peer on this host, when one is installed: what it condemns, what it dropped, its verdict log, and an operator's ban or release relayed to it"),
+        (name = "security", description = "sipnab's own armed detectors: the findings the scanner, fraud, digest and reg-flood rules recorded")
     )
 )]
 pub struct ApiDoc;
@@ -6504,6 +6679,116 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
 
+    // ── security findings (PAR3: security_findings) ───────────────────
+
+    /// A state whose alert engine has recorded `scanner` and `fraud` findings,
+    /// with the `scanner` detector armed.
+    fn state_with_findings() -> ApiState {
+        let mut engine = crate::security::AlertEngine::new(Vec::new(), None);
+        let at = chrono::TimeZone::with_ymd_and_hms(&chrono::Utc, 2024, 6, 15, 12, 0, 0).unwrap();
+        engine.fire(
+            "scanner",
+            "203.0.113.9".parse().unwrap(),
+            "ua=sipvicious",
+            at,
+        );
+        engine.fire(
+            "fraud",
+            "203.0.113.10".parse().unwrap(),
+            "irsf destination",
+            at,
+        );
+        ApiState {
+            alert_engine: Some(Arc::new(RwLock::new(engine))),
+            armed_detections: vec!["scanner".to_string()],
+            ..make_state()
+        }
+    }
+
+    /// The route returns the recorded findings with the RAW detail — REST hands
+    /// a SOC pipeline the value it keys on, unlike the MCP tool which fences it.
+    /// Closes the security_findings REST gap.
+    #[tokio::test]
+    async fn security_findings_returns_recorded_findings_raw() {
+        let app = build_router(state_with_findings());
+        let resp = app
+            .oneshot(test_request("/v1/security/findings"))
+            .await
+            .expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_to_string(resp.into_body()).await;
+        let parsed: Value = serde_json::from_str(&body).expect("valid JSON");
+        assert_eq!(parsed["schema_version"], 1);
+        assert_eq!(parsed["total_matched"], 2);
+        assert_eq!(parsed["detection_armed"], true);
+        assert_eq!(parsed["armed_kinds"][0], "scanner");
+        assert!(parsed["note"].is_null(), "an armed server attaches no note");
+        // Detail comes back raw and unfenced.
+        let details: Vec<String> = parsed["findings"]
+            .as_array()
+            .expect("findings array")
+            .iter()
+            .map(|f| f["detail"].as_str().unwrap_or_default().to_string())
+            .collect();
+        assert!(
+            details.iter().any(|d| d == "ua=sipvicious"),
+            "the detector's line comes back raw: {details:?}"
+        );
+        assert!(
+            !body.contains('\u{2066}') && !body.contains("untrusted"),
+            "REST returns the detail unfenced: {body}"
+        );
+    }
+
+    /// A comma-separated `kinds` filter narrows the ring.
+    #[tokio::test]
+    async fn security_findings_filters_by_kind() {
+        let app = build_router(state_with_findings());
+        let resp = app
+            .oneshot(test_request("/v1/security/findings?kinds=fraud"))
+            .await
+            .expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::OK);
+        let parsed: Value =
+            serde_json::from_str(&body_to_string(resp.into_body()).await).expect("valid JSON");
+        assert_eq!(parsed["total_matched"], 1);
+        assert_eq!(parsed["findings"][0]["rule_name"], "fraud");
+    }
+
+    /// With no detector armed, the route answers 200 with an empty list AND the
+    /// note that says so — the distinction a SOC dashboard needs, which a bare
+    /// `[]` cannot draw.
+    #[tokio::test]
+    async fn security_findings_without_a_detector_explains_the_empty_list() {
+        let app = build_router(make_state());
+        let resp = app
+            .oneshot(test_request("/v1/security/findings"))
+            .await
+            .expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::OK);
+        let parsed: Value =
+            serde_json::from_str(&body_to_string(resp.into_body()).await).expect("valid JSON");
+        assert_eq!(parsed["returned"], 0);
+        assert_eq!(parsed["detection_armed"], false);
+        assert!(
+            parsed["note"]
+                .as_str()
+                .is_some_and(|n| n.contains("nothing was watching")),
+            "the empty list is explained"
+        );
+    }
+
+    /// A kind outside the four is a 400 that names the vocabulary.
+    #[tokio::test]
+    async fn security_findings_unknown_kind_is_400() {
+        let app = build_router(state_with_findings());
+        let resp = app
+            .oneshot(test_request("/v1/security/findings?kinds=bogus"))
+            .await
+            .expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
     // ── lint (PAR3: lint_dialog) ──────────────────────────────────────
 
     /// `GET /v1/dialogs/{id}/lint` returns the dialog's RFC-conformance
@@ -6642,6 +6927,8 @@ mod tests {
             // forgot to consult it pass.
             persistence_gate: Arc::new(crate::output::persistence::PersistenceGate::new(false)),
             tfps: Default::default(),
+            alert_engine: None,
+            armed_detections: Vec::new(),
         }
     }
 
@@ -7402,6 +7689,8 @@ mod tests {
             // forgot to consult it pass.
             persistence_gate: Arc::new(crate::output::persistence::PersistenceGate::new(false)),
             tfps: Default::default(),
+            alert_engine: None,
+            armed_detections: Vec::new(),
         }
     }
 
@@ -7951,6 +8240,8 @@ mod tests {
             // forgot to consult it pass.
             persistence_gate: Arc::new(crate::output::persistence::PersistenceGate::new(false)),
             tfps: Default::default(),
+            alert_engine: None,
+            armed_detections: Vec::new(),
         }
     }
 
@@ -8808,6 +9099,8 @@ mod tests {
             // forgot to consult it pass.
             persistence_gate: Arc::new(crate::output::persistence::PersistenceGate::new(false)),
             tfps: Default::default(),
+            alert_engine: None,
+            armed_detections: Vec::new(),
         };
         populate_dialogs(&state);
 

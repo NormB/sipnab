@@ -1681,8 +1681,8 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
   `sipnab_capture_invalid_timestamps_total` (the field is declared at
   [`src/output/prometheus.rs:119`](https://github.com/NormB/sipnab/blob/main/src/output/prometheus.rs#L119), read from the atomic at `:149`, rendered at
   `:523`, and named in [`tests/metrics_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/metrics_test.rs) so a rename cannot silently drop
-  it); the MCP `capture_status` tool carries the field ([`src/mcp/server.rs:5659`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5659),
-  it); the MCP `capture_status` tool carries the field ([`src/mcp/server.rs:5659`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5659),
+  it); the MCP `capture_status` tool carries the field ([`src/mcp/server.rs:5621`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5621),
+  it); the MCP `capture_status` tool carries the field ([`src/mcp/server.rs:5621`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5621),
   populated at `:1356`) and reports it as a delta between two calls (`:1676`);
   and the batch summary explains it in prose
   ([`src/app/batch.rs:905-925`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L905-L925), the doc comment on `report_capture_quality`). The
@@ -2770,7 +2770,7 @@ output path.
     2026-08-06, verified against the tree).** Shipped: `FrameRef`
     ([`src/capture/packet.rs:377`](https://github.com/NormB/sipnab/blob/main/src/capture/packet.rs#L377)) and `capture::resolve::resolve`
     ([`src/capture/resolve.rs:191`](https://github.com/NormB/sipnab/blob/main/src/capture/resolve.rs#L191)); the `show_evidence` MCP tool
-    (`#[tool(` at [`src/mcp/server.rs:6991`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L6991), handler at `:3866`), confined to
+    (`#[tool(` at [`src/mcp/server.rs:6953`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L6953), handler at `:3866`), confined to
     the file root and honest about
     itself with three states — `verified` / `unverified` / `unresolvable` —
     rather than resolving a foreign ref against the wrong file; and
@@ -3396,7 +3396,7 @@ implementation.
   `value_parser = ["full", "metrics", "read"]`) rather than the
   `--mcp-token-scope` proposed above, with the help text drawing the
   audience line ("REST API tokens only" / "MCP tokens only"). Enforcement is
-  `scope_of` ([`src/mcp/server.rs:8422`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L8422), the `mcp-http` arm), reading the scope out of the
+  `scope_of` ([`src/mcp/server.rs:8384`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L8384), the `mcp-http` arm), reading the scope out of the
   `McpAuth::BearerVerified` admission record, and `scope_refusal` (`:4872`),
   which is called from the hand-written `call_tool` (`:4951`). The
   no-second-list requirement held literally: `scope_refusal` decides from the
@@ -6492,7 +6492,7 @@ promises an absence is acted on; a missing feature is merely absent.
 
 - [x] **DOC4 (done 2026-08-30) — [`docs/mcp-deploy.md:248`](https://github.com/NormB/sipnab/blob/main/docs/mcp-deploy.md#L248) opens the remote-access section by
   promising no tool mutates the stores.** `open_capture` calls `ds.clear()` and
-  `ss.clear()` ([`src/mcp/server.rs:7509`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L7509)). The code already knows: a note at
+  `ss.clear()` ([`src/mcp/server.rs:7471`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L7471)). The code already knows: a note at
   `:8377` records that the wire `instructions` string was corrected for exactly
   this. The page was not. [`SECURITY.md:35`](https://github.com/NormB/sipnab/blob/main/SECURITY.md#L35) scopes reports to "any MCP tool that
   mutates dialog/stream/alert state", so a good-faith reporter is told the scope

@@ -2592,6 +2592,11 @@ pub struct UnanalyzedPort {
 
 /// The rule names `security_findings` can filter on, sorted.
 ///
+/// Defined in [`crate::security::findings`] so the REST `GET /v1/security/findings`
+/// route filters on the same vocabulary — `src/security/` cannot depend on
+/// `src/mcp/`, so the one list both doors share lives below the door layer and
+/// is re-exported here for the tool's own docs and callers.
+///
 /// This is the whole vocabulary: `AlertEngine::fire` is reached from exactly
 /// five call sites in `crate::app::batch`, and they file findings under these
 /// four names. An `--alert` rule tunes the threshold of one of them by name; it
@@ -2601,7 +2606,7 @@ pub struct UnanalyzedPort {
 /// `security_findings_kinds_match_the_names_the_detectors_file_under` reads
 /// those call sites and fails if the two ever disagree, so this list cannot
 /// quietly go stale the way a documented enum does.
-pub const SECURITY_FINDING_KINDS: [&str; 4] = ["digest", "fraud", "reg_flood", "scanner"];
+pub use crate::security::findings::SECURITY_FINDING_KINDS;
 
 /// Parameters for `security_findings`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
@@ -5546,97 +5551,54 @@ impl SipnabMcp {
         Parameters(params): Parameters<SecurityFindingsParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let limit = resolve_limit_with_cap(params.limit, self.row_cap);
-        let since: Option<chrono::DateTime<chrono::Utc>> = match params.since {
-            Some(s) => match chrono::DateTime::parse_from_rfc3339(&s) {
-                Ok(dt) => Some(dt.with_timezone(&chrono::Utc)),
-                Err(e) => {
-                    return Err(rmcp::ErrorData::invalid_params(
-                        format!("since must be RFC 3339: {e}"),
-                        None,
-                    ));
-                }
-            },
-            None => None,
-        };
-
+        // The vocabulary check, `since` parse, ring walk and armed/note
+        // assembly are shared with the REST route in `crate::security::findings`
+        // — one rule in one place, so the two doors cannot drift.
         let kinds_owned: Vec<String> = params.kinds.unwrap_or_default();
-        for k in &kinds_owned {
-            if !SECURITY_FINDING_KINDS.contains(&k.as_str()) {
-                // Name the vocabulary, and name the near miss. `reg-flood` is
-                // the spelling the `--alert` grammar uses for the same
-                // detector, so an operator who has written one reaches for it
-                // here first.
-                let suggestion = SECURITY_FINDING_KINDS
-                    .iter()
-                    .find(|known| known.replace('_', "-") == k.replace('_', "-").to_lowercase())
-                    .map(|known| format!(" (did you mean '{known}'?)"))
-                    .unwrap_or_default();
-                return Err(rmcp::ErrorData::invalid_params(
-                    format!(
-                        "unknown kind '{k}', expected one of: {}{suggestion}",
-                        SECURITY_FINDING_KINDS.join(", ")
-                    ),
-                    None,
-                ));
-            }
-        }
+        let (kinds, since) =
+            crate::security::findings::parse_query(&kinds_owned, params.since.as_deref())
+                .map_err(|e| rmcp::ErrorData::invalid_params(e, None))?;
 
-        let (findings, total_matched) = match &self.alert_engine {
-            Some(engine) => {
-                let kinds_ref: Vec<&str> = kinds_owned.iter().map(String::as_str).collect();
-                let guard = engine.read();
-                // The whole ring buffer, not the first `limit` of it, for the
-                // reason `dialog_page` collects every match: a truncated scan
-                // cannot report what it truncated. The buffer is bounded by
-                // `--findings-history`, so this is a bounded walk.
-                let raw = guard.iter_findings(&kinds_ref, since, usize::MAX);
-                let total = raw.len();
-                let page = raw
-                    .iter()
-                    .take(limit)
-                    .map(|f| FindingJson {
-                        rule_name: f.rule_name.clone(),
-                        src_ip: f.src_ip.to_string(),
-                        // Fenced for the reason `generate_fail2ban_rule`
-                        // fences the SAME field: a detail line is built as
-                        // `method=… ua=… detection=…`, and the `ua=` half is
-                        // the scanner's own banner. Two of the three tools
-                        // serving this string fenced it and this one did not,
-                        // which made the omission look considered.
-                        // `fence`, not `fence_field`, matching the sibling
-                        // tool: the detail is already bounded by `body_cap`
-                        // here, and the tighter per-field cap would cut a
-                        // legitimately long line that the operator's own
-                        // ceiling had already admitted.
-                        detail: super::shape::fence(&super::shape::truncate_string(
-                            &f.detail,
-                            self.body_cap,
-                        )),
-                        timestamp: f.timestamp.to_rfc3339(),
-                    })
-                    .collect::<Vec<_>>();
-                (page, total)
-            }
-            None => (Vec::new(), 0),
+        let report = {
+            let guard = self.alert_engine.as_ref().map(|e| e.read());
+            crate::security::findings::build_report(
+                guard.as_deref(),
+                &self.armed_detections,
+                &kinds,
+                since,
+                limit,
+            )
         };
 
-        let detection_armed = !self.armed_detections.is_empty();
+        let findings: Vec<FindingJson> = report
+            .rows
+            .iter()
+            .map(|f| FindingJson {
+                rule_name: f.rule_name.clone(),
+                src_ip: f.src_ip.to_string(),
+                // Fenced for the reason `generate_fail2ban_rule` fences the SAME
+                // field: a detail line is built as `method=… ua=… detection=…`,
+                // and the `ua=` half is the scanner's own banner. `fence`, not
+                // `fence_field`, matching the sibling tool: the detail is bounded
+                // by `body_cap` here, and the tighter per-field cap would cut a
+                // legitimately long line the operator's own ceiling admitted.
+                detail: super::shape::fence(&super::shape::truncate_string(
+                    &f.detail,
+                    self.body_cap,
+                )),
+                timestamp: f.timestamp.to_rfc3339(),
+            })
+            .collect();
+
         let page = FindingsPage {
             schema_version: 1,
             returned: findings.len(),
             findings,
-            total_matched,
-            truncated: total_matched > limit,
-            armed_kinds: self.armed_detections.clone(),
-            detection_armed,
-            note: (!detection_armed).then(|| {
-                "No detection rule is armed on this server, so no finding could \
-                 have been recorded. An empty findings list here means nothing \
-                 was watching, NOT that the traffic was clean. Arm a detector \
-                 with --kill-scanner, --fraud-detect, --digest-leak or \
-                 --reg-flood and re-run the capture."
-                    .to_string()
-            }),
+            total_matched: report.total_matched,
+            truncated: report.truncated,
+            armed_kinds: report.armed_kinds,
+            detection_armed: report.detection_armed,
+            note: report.note,
         };
         Ok(CallToolResult::success(vec![
             ContentBlock::json(page)?,

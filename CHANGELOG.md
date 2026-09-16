@@ -12,6 +12,19 @@ entry that carries them.
 
 ### Added
 
+- **`GET /v1/security/findings` (PAR3).** The findings sipnab's own armed
+  detectors (`scanner`, `fraud`, `digest`, `reg_flood`) recorded, newest first —
+  the poll a SOC dashboard makes, which sipnab only pushed to syslog and stderr
+  before. Optional comma-separated `kinds` filter (an unknown kind is a `400`
+  naming the four), a `since` RFC 3339 cursor, and a `limit`; `total_matched`
+  counts every match across the whole ring. An empty `findings` list is two
+  states told apart by `detection_armed`: false carries a `note` that nothing
+  was watching, so the list is not misread as a clean bill of health. The
+  vocabulary check, `since` parse, ring walk and armed/note assembly move into
+  `crate::security::findings` (below the door layer, since `src/security/` cannot
+  depend on `src/mcp/`), shared with the MCP `security_findings` tool, which
+  fences the `detail` line; REST returns it raw. This closes the
+  `security_findings` REST gap, leaving 30 named gaps.
 - **`GET /v1/endpoints` (PAR3).** Everything one endpoint did, selected by `ip`
   or `user` (exactly one) — dialog counts by method and state, INVITE outcomes
   with a failure rate, REGISTER state, the `User-Agent`/`Server` banners it sent,

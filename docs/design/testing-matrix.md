@@ -50,7 +50,7 @@ was driving all of them.
 | Surface | Rows | `e2e` | `parsed` | `referenced` | `none` |
 |---|---|---|---|---|---|
 | CLI flags | 271 | 139 | 53 | 78 | 1 |
-| HTTP routes | 34 | 34 | -- | 0 | 0 |
+| HTTP routes | 35 | 35 | -- | 0 | 0 |
 | MCP tools | 68 | 68 | -- | 0 | 0 |
 
 **Flags with no occurrence at all:** `--syslog`
@@ -232,7 +232,7 @@ behind them.
 | `--scanner-established-factor` |  | `N` | Security | referenced | `tests/threshold_wiring_test.rs` | **behavior** | scanner_established_factor_decides_what_a_registration_buys |
 | `--scanner-answer-grace` |  | `MS` | Security | referenced | `tests/threshold_wiring_test.rs` | **behavior** | scanner_answer_grace_ms_decides_how_slow_a_link_may_be |
 | `--findings-history` |  | `N` | Security | parsed | `src/cli.rs` |  |  |
-| `--digest-leak` |  |  | Security | referenced | `src/app/bootstrap.rs`, `src/mcp/server.rs` +4 | **parse-only** | INTRUSION DETECTOR. The only tests assert the flag changes nothing on a clean fixture; a regression that stops building the detector passes them |
+| `--digest-leak` |  |  | Security | referenced | `src/app/bootstrap.rs`, `src/mcp/tools/endpoints.rs` +4 | **parse-only** | INTRUSION DETECTOR. The only tests assert the flag changes nothing on a clean fixture; a regression that stops building the detector passes them |
 | `--alert` |  | `CHANNEL` | Security | e2e | `tests/cli_flag_behavior_test.rs` |  |  |
 | `--alert-exec` |  | `CMD` | Security | referenced | `src/app/batch.rs`, `src/security/alerting.rs` | **mention-only** | COMMAND EXECUTION. The mechanism is extremely well tested, always by constructing AlertEngine directly. Nothing proves the flag reaches it |
 | `--stir-shaken` |  |  | Security | e2e | `tests/config_wiring_test.rs` |  |  |
@@ -381,6 +381,7 @@ behind them.
 | `/v1/relay/stats/names` | exercised | `tests/relay_rest_test.rs` |
 | `/v1/report` | exercised | `tests/api_test.rs` |
 | `/v1/runtime` | exercised | `tests/api_test.rs` |
+| `/v1/security/findings` | exercised | `tests/api_test.rs` |
 | `/v1/stats` | exercised | `tests/api_test.rs`, `tests/api_token_test.rs` +3 |
 | `/v1/streams` | exercised | `tests/api_operator_flows_test.rs`, `tests/api_test.rs` +2 |
 | `/v1/streams/{id}` | exercised | `tests/api_operator_flows_test.rs`, `tests/api_test.rs` |

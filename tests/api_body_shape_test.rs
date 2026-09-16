@@ -50,6 +50,8 @@ fn state_with(gate: &Arc<PersistenceGate>) -> ApiState {
         started_at: std::time::Instant::now(),
         persistence_gate: Arc::clone(gate),
         tfps: Default::default(),
+        alert_engine: None,
+        armed_detections: Vec::new(),
     }
 }
 

@@ -491,6 +491,17 @@ pub fn start_servers(
                     None
                 },
             },
+            // The SAME engine the MCP arm below is handed, so both doors read
+            // one findings ring. `armed_detections` comes from Selection for the
+            // reason the MCP server's does: the engine is built on every
+            // headless run, so only what the operator armed answers "was
+            // anything watching".
+            alert_engine: alerts.map(std::sync::Arc::clone),
+            armed_detections: selection
+                .armed_detections
+                .iter()
+                .map(|s| (*s).to_string())
+                .collect(),
         };
         let config = ApiServerConfig {
             max_conn: cli.listener_args.api_max_conn,

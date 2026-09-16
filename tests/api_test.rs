@@ -230,6 +230,57 @@ fn endpoints_answer_with_the_describe_envelope() {
     );
 }
 
+/// `GET /v1/security/findings` answers over the shipped binary with the
+/// findings envelope (PAR3). With no detector armed, the shipping binary reports
+/// `detection_armed: false` and a note — the distinction a SOC dashboard needs,
+/// which a bare empty array cannot draw.
+#[test]
+fn security_findings_answer_with_the_armed_state_distinction() {
+    let srv = ApiServer::spawn(&[]);
+    let resp = srv.get("/v1/security/findings");
+    assert_eq!(resp.status, 200, "/v1/security/findings status");
+    let body = resp.json();
+    assert_eq!(body["schema_version"], 1);
+    assert!(body["findings"].is_array(), "findings is an array");
+    assert!(body["total_matched"].is_number(), "total_matched present");
+    assert_eq!(
+        body["detection_armed"], false,
+        "no detector was armed on this run"
+    );
+    assert!(
+        body["note"]
+            .as_str()
+            .is_some_and(|n| n.contains("nothing was watching")),
+        "an unarmed server explains its empty list"
+    );
+}
+
+/// With `--kill-scanner`, the shipping binary arms the scanner detector, and the
+/// REST route reflects that end-to-end: `detection_armed` is true and
+/// `armed_kinds` names the scanner. Proves the CLI flag reaches the API state.
+#[test]
+fn security_findings_reflects_an_armed_detector() {
+    let srv = ApiServer::spawn(&["--kill-scanner"]);
+    let resp = srv.get("/v1/security/findings");
+    assert_eq!(resp.status, 200, "/v1/security/findings status");
+    let body = resp.json();
+    assert_eq!(
+        body["detection_armed"], true,
+        "--kill-scanner arms the scanner detector"
+    );
+    let armed: Vec<&str> = body["armed_kinds"]
+        .as_array()
+        .expect("armed_kinds array")
+        .iter()
+        .filter_map(|k| k.as_str())
+        .collect();
+    assert!(
+        armed.contains(&"scanner"),
+        "the armed scanner detector is named: {armed:?}"
+    );
+    assert!(body["note"].is_null(), "an armed server attaches no note");
+}
+
 /// `GET /v1/dialogs/{id}/lint` answers over the shipped binary with the findings
 /// envelope (PAR3).
 #[test]

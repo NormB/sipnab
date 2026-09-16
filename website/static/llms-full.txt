@@ -6074,6 +6074,61 @@ are the separate `security_findings` capability.
 
 ---
 
+### GET /v1/security/findings
+
+What sipnab's own armed detectors — `scanner`, `fraud`, `digest`, `reg_flood` —
+recorded, newest first. The poll a SOC dashboard makes: before this route,
+sipnab's detections went only to syslog and stderr, so nothing could query them.
+The same ring the MCP `security_findings` tool reads.
+
+**Query parameters:**
+
+- `kinds` (optional) — a comma-separated subset of `scanner`, `fraud`, `digest`,
+  `reg_flood`. Omitted returns every kind. Any other name is a `400` naming the
+  four. A URL query cannot repeat a key into a list, so the kinds ride in one
+  comma-separated value (`kinds=scanner,fraud`).
+- `since` (optional) — an RFC 3339 timestamp; the route returns only findings
+  recorded strictly after it. A malformed value is a `400`.
+- `limit` (optional) — the most findings to return, clamped to the server's row
+  cap. `total_matched` still counts every match.
+
+**curl:**
+
+```bash
+curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" "http://127.0.0.1:8080/v1/security/findings?kinds=scanner,fraud&limit=100" | jq .
+```
+
+**Response:**
+
+```json
+{
+  "schema_version": 1,
+  "findings": [
+    { "rule_name": "scanner", "src_ip": "203.0.113.9", "detail": "method=OPTIONS ua=sipvicious detection=scanner", "timestamp": "2026-09-16T12:00:00+00:00" }
+  ],
+  "returned": 1,
+  "total_matched": 1,
+  "truncated": false,
+  "armed_kinds": ["scanner"],
+  "detection_armed": true
+}
+```
+
+**An empty `findings` list is two different states, and `detection_armed` tells
+them apart.** When it is `false`, this run armed no detector, so nothing could
+have fired — the response then carries a `note` saying exactly that, and a
+reader must NOT take an empty list for a clean bill of health. When it is
+`true`, an empty list means the armed detectors saw nothing to report. Arm a
+detector with `--kill-scanner`, `--fraud-detect`, `--digest-leak` or
+`--reg-flood`. `total_matched` counts every finding the filter admits across the
+whole retained ring (bounded by `--findings-history`), so a `limit`-bounded page
+is never mistaken for the whole history. The `detail` line is a string the
+detector built from observed traffic — its `ua=` half is a banner a stranger
+typed — and it comes back **raw**, the value a program keys on, unlike the MCP
+tool which fences it.
+
+---
+
 ### POST /v1/vcon/validate
 
 Check a vCon container against sipnab's vendored schema — the producer-and-

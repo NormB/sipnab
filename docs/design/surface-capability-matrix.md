@@ -595,7 +595,7 @@ What did the armed detectors — scanner, fraud, digest, reg-flood — record re
 |---|---|
 | CLI | `--alert-json` |
 | TUI | gap: a human watching a live capture would reach for a scanner and fraud alert panel, but alerts route only to syslog and stderr (PAR4) |
-| REST | gap: a SOC dashboard cannot poll sipnab's own detections, because only push channels exist and there is no findings route (PAR3) |
+| REST | `/v1/security/findings` |
 | MCP | `security_findings` |
 
 ### Explain and triage

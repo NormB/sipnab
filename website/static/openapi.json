@@ -3269,6 +3269,95 @@
         ],
         "type": "object"
       },
+      "SecurityFinding": {
+        "description": "One security finding an armed detector recorded. The `detail` is raw.",
+        "properties": {
+          "detail": {
+            "description": "The detector's own detail line, raw (the MCP surface fences it).",
+            "type": "string"
+          },
+          "rule_name": {
+            "description": "The rule that fired — `scanner`, `fraud`, `digest` or `reg_flood`.",
+            "type": "string"
+          },
+          "src_ip": {
+            "description": "The source address the finding is about.",
+            "type": "string"
+          },
+          "timestamp": {
+            "description": "RFC 3339 timestamp of when the finding fired.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "rule_name",
+          "src_ip",
+          "detail",
+          "timestamp"
+        ],
+        "type": "object"
+      },
+      "SecurityFindings": {
+        "description": "The armed detectors' recorded findings, with the armed-state distinction.",
+        "properties": {
+          "armed_kinds": {
+            "description": "The detectors armed on this server, by the rule name each files\nunder. Empty means nothing is armed.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "detection_armed": {
+            "description": "True when at least one detector is armed. An empty `findings` with\nthis false means nothing was watching, NOT that traffic was clean.",
+            "type": "boolean"
+          },
+          "findings": {
+            "description": "This page of findings, newest first, raw.",
+            "items": {
+              "$ref": "#/components/schemas/SecurityFinding"
+            },
+            "type": "array"
+          },
+          "note": {
+            "description": "Present only when nothing is armed, saying so in words.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "returned": {
+            "description": "Rows in `findings`, so counting the array is never necessary.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "schema_version": {
+            "description": "Version of this response's shape.",
+            "example": 1,
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "total_matched": {
+            "description": "Findings matching the filter across the whole retained ring,\nindependent of `limit`.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "truncated": {
+            "description": "True when matches remain after this page. Narrow with `since` or\nraise `limit`.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "schema_version",
+          "findings",
+          "returned",
+          "total_matched",
+          "truncated",
+          "armed_kinds",
+          "detection_armed"
+        ],
+        "type": "object"
+      },
       "SkippedPort": {
         "description": "One of the busiest ports the port gate excluded.",
         "properties": {
@@ -6419,6 +6508,93 @@
         ]
       }
     },
+    "/v1/security/findings": {
+      "get": {
+        "description": "The findings the armed detectors (`scanner`, `fraud`, `digest`, `reg_flood`) recorded, newest first — the poll a SOC dashboard makes, which sipnab only pushed to syslog and stderr before. The same ring the MCP `security_findings` tool reads.\n\nAn empty `findings` list is two different states, and `detection_armed` tells them apart: false means no detector was armed, so nothing could have been recorded, and a `note` says so. `total_matched` counts every finding the filter admits across the whole ring, so a bounded page is never read as the whole history. The `detail` line comes back raw, the value a program keys on.",
+        "operationId": "get_security_findings",
+        "parameters": [
+          {
+            "description": "Comma-separated detector kinds to filter to — `scanner`, `fraud`,\n`digest`, `reg_flood`. Omitted returns all kinds. Any other name is a\n`400` naming the four (a URL query cannot repeat a key into a list, so\nthe kinds ride in one comma-separated value).",
+            "in": "query",
+            "name": "kinds",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "RFC 3339 timestamp; only findings recorded strictly after are returned.",
+            "in": "query",
+            "name": "since",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Maximum findings to return, clamped to the server's row cap.\n`total_matched` still counts every match, so a page is never mistaken for\nthe whole ring.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "minimum": 0,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SecurityFindings"
+                }
+              }
+            },
+            "description": "The findings page, with the armed-state distinction."
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "An unknown `kinds` value, or a `since` that is not RFC 3339."
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "No bearer credential, or one this server does not accept."
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Over the per-source-IP rate limit of 100 requests per second."
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "sipnab's own detector findings",
+        "tags": [
+          "security"
+        ]
+      }
+    },
     "/v1/stats": {
       "get": {
         "description": "Counts across dialogs and streams, with post-dial-delay percentiles — and, beside them, what they are drawn from.\n\n`capture_quality` says how much of the wire went missing and `unanalysed_sip_messages` how much the port gate set aside before anything analyzed it. Without those two, every total here reads as a total when it may be a floor: measured on one corpus the port gate alone excluded 37.7% of the SIP.",
@@ -7300,6 +7476,10 @@
     {
       "description": "The toll-fraud prevention peer on this host, when one is installed: what it condemns, what it dropped, its verdict log, and an operator's ban or release relayed to it",
       "name": "tfps"
+    },
+    {
+      "description": "sipnab's own armed detectors: the findings the scanner, fraud, digest and reg-flood rules recorded",
+      "name": "security"
     }
   ]
 }

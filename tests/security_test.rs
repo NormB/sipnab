@@ -1375,6 +1375,8 @@ fn constant_time_eq_different_lengths_still_compares() {
             false,
         )),
         tfps: Default::default(),
+        alert_engine: None,
+        armed_detections: Vec::new(),
     };
 
     // Build a request with wrong-length key
@@ -1432,6 +1434,8 @@ fn constant_time_eq_matching_strings() {
             false,
         )),
         tfps: Default::default(),
+        alert_engine: None,
+        armed_detections: Vec::new(),
     };
 
     let app = build_router(state);
@@ -1499,6 +1503,8 @@ fn constant_time_eq_different_strings_same_length() {
             false,
         )),
         tfps: Default::default(),
+        alert_engine: None,
+        armed_detections: Vec::new(),
     };
 
     let app = build_router(state);
