@@ -12,6 +12,15 @@ entry that carries them.
 
 ### Added
 
+- **Call-volume histogram TUI view (PAR4).** A new `CallVolume` view, opened
+  with `b` from the call list, draws dialogs-per-time-bucket as a text
+  histogram, one bar per bucket scaled against the busiest, with empty intervals
+  kept so a lull is visible rather than skipped. It buckets through the shared
+  `DialogStore::timeline_buckets` at the same 60-second default `GET /v1/timeline`
+  uses, so the two surfaces bucket the capture the same way. Like the talkers and
+  carrier-metrics views it caches the whole-store bucketing across frames (keyed
+  on the dialog generation), is scrollable, and Esc/`q`/`b` closes it. Closes the
+  call-volume-histogram TUI gap, leaving 20 named gaps.
 - **Capture-health TUI view (PAR4).** A new `CaptureHealth` view, opened with
   `h` from the call list, answers "am I dropping packets?" — the loss counters
   (kernel- and interface-dropped packets, corrupt timestamps), the decode

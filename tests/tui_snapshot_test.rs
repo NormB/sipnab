@@ -1097,6 +1097,22 @@ mod tui_snapshots {
         insta::assert_snapshot!(output);
     }
 
+    /// Snapshot: the call-volume histogram, opened with `b`. The fixture's three
+    /// dialogs fall in one 60s bucket, so it draws a single full-width bar (PAR4).
+    #[test]
+    fn call_volume_view() {
+        let backend = TestBackend::new(80, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = test_app_with_dialogs();
+        app.handle_key(crossterm::event::KeyCode::Char('b')); // open call volume
+        assert_eq!(app.current_view(), &sipnab::tui::View::CallVolume);
+
+        terminal.draw(|frame| app.render(frame)).unwrap();
+
+        let output = buffer_to_string(&terminal);
+        insta::assert_snapshot!(output);
+    }
+
     /// Snapshot: the F7 filter popup over an empty call list.
     #[test]
     fn filter_dialog_popup() {

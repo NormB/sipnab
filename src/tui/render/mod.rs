@@ -55,6 +55,8 @@ pub(in crate::tui) struct RenderFeedback {
     pub(in crate::tui) endpoint_scroll: Option<u16>,
     /// Clamped scroll of the capture-health view.
     pub(in crate::tui) capture_health_scroll: Option<u16>,
+    /// Clamped scroll of the call-volume histogram view.
+    pub(in crate::tui) call_volume_scroll: Option<u16>,
     /// Clamped scroll of the relay-statistics view (ST8).
     pub(in crate::tui) relay_stats_scroll: Option<u16>,
     /// Content-clamped scroll of the full-BPF-filter popup (`B`). Only the
@@ -522,6 +524,9 @@ pub(in crate::tui) fn render_app(
         }
         View::CaptureHealth => {
             fb.capture_health_scroll = Some(render_capture_health(frame, main_area, app));
+        }
+        View::CallVolume => {
+            fb.call_volume_scroll = Some(render_call_volume(frame, main_area, app, ds));
         }
         View::RelayStats { .. } => {
             fb.relay_stats_scroll = Some(render_relay_stats(frame, main_area, app));
@@ -1271,6 +1276,84 @@ pub(in crate::tui) fn capture_health_text(q: &crate::output::prometheus::Capture
         q.ice_role_conflicts
     );
     out
+}
+
+/// The widest a call-volume histogram bar renders — the busiest bucket fills
+/// it, the rest scale against it.
+const VOLUME_BAR_WIDTH: usize = 40;
+
+/// Bucket width for the call-volume histogram, matching `GET /v1/timeline`'s
+/// default so the TUI and REST bucket the same way. Shared with `sync_caches`,
+/// which fills the cache the view scrolls.
+pub(in crate::tui) const VOLUME_BUCKET_SECONDS: u64 = 60;
+
+/// Build the call-volume histogram: dialogs per fixed-width time bucket, the
+/// same buckets `GET /v1/timeline` and the MCP `timeline` tool report, drawn as
+/// one text bar per bucket. Empty intervals are kept — a lull is information.
+///
+/// STUB — filled in after the failing test.
+pub(in crate::tui) fn volume_histogram_text(ds: &DialogStore, width_seconds: u64) -> String {
+    use std::fmt::Write as _;
+
+    let buckets = ds.timeline_buckets(width_seconds);
+    let mut out = String::new();
+    let _ = writeln!(out, "Call volume — {width_seconds}s buckets");
+    let _ = writeln!(out);
+    if buckets.is_empty() {
+        let _ = writeln!(out, "  No calls in the capture.");
+        return out;
+    }
+    // Scale every bar against the busiest bucket, which fills the width.
+    let max = buckets.iter().map(|(_, c)| *c).max().unwrap_or(0).max(1);
+    for (ts, count) in &buckets {
+        let bar_len = (u128::from(*count) * VOLUME_BAR_WIDTH as u128 / u128::from(max)) as usize;
+        let bar = "█".repeat(bar_len);
+        let _ = writeln!(
+            out,
+            "  {}  {bar:<VOLUME_BAR_WIDTH$}  {count}",
+            ts.format("%Y-%m-%d %H:%M:%S"),
+        );
+    }
+    out
+}
+
+/// Render the call-volume histogram view. Serves the cross-tick cache
+/// [`crate::tui::state::VolumeCache`] `sync_caches` fills, falling back to a
+/// direct bucketing on the first frame after the view opens. Returns the
+/// clamped scroll.
+///
+/// # Side effects
+/// Draws to `frame` only; no state is mutated.
+pub(in crate::tui) fn render_call_volume(
+    frame: &mut ratatui::Frame,
+    area: ratatui::layout::Rect,
+    app: &App,
+    ds: &DialogStore,
+) -> u16 {
+    let fallback;
+    let text: &str = if app.call_volume.text.is_empty() {
+        fallback = volume_histogram_text(ds, VOLUME_BUCKET_SECONDS);
+        &fallback
+    } else {
+        &app.call_volume.text
+    };
+
+    let total_rows = text.lines().count() as u16;
+    let viewport = area.height.saturating_sub(2);
+    let scroll = app
+        .call_volume_scroll
+        .min(total_rows.saturating_sub(viewport));
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Call volume ");
+    let paragraph = Paragraph::new(text)
+        .block(block)
+        .style(Style::default().fg(app.theme.foreground))
+        .scroll((scroll, 0));
+
+    frame.render_widget(paragraph, area);
+    scroll
 }
 
 /// Render the capture-health view. Reads the process-global counters through
@@ -2254,6 +2337,71 @@ mod tests {
         assert!(
             !clean.contains("DEGRADED"),
             "a clean capture is not marked degraded:\n{clean}"
+        );
+    }
+
+    /// The call-volume histogram scales each bucket's bar against the busiest
+    /// and keeps empty intervals. A fixture with five calls in one 60s bucket,
+    /// none in the next and two in the third: the busy bar fills the width, the
+    /// quiet bar is shorter, and the empty middle bucket is still a row.
+    #[test]
+    fn volume_histogram_text_scales_bars_and_keeps_empty_buckets() {
+        use crate::net::TransportProto;
+        use crate::sip::parser::parse_sip;
+        use crate::test_utils::build_sip_message as build_sip;
+        use chrono::TimeZone;
+        use std::net::{IpAddr, Ipv4Addr};
+
+        let src = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
+        let dst = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 9));
+        let base = chrono::Utc.with_ymd_and_hms(2024, 6, 15, 12, 0, 0).unwrap();
+        let mut ds = DialogStore::new(1000, true);
+        // 5 in bucket 0 (12:00), 2 in bucket 2 (12:02) — bucket 1 (12:01) empty.
+        let mut i = 0u32;
+        for (offset_secs, n) in [(0i64, 5), (120, 2)] {
+            for _ in 0..n {
+                let raw = build_sip(
+                    "INVITE sip:bob@example.com SIP/2.0",
+                    &[
+                        "From: <sip:alice@example.com>;tag=t1",
+                        "To: <sip:bob@example.com>",
+                        &format!("Call-ID: vh{i}@h"),
+                        "CSeq: 1 INVITE",
+                        "Content-Length: 0",
+                    ],
+                    b"",
+                );
+                let ts = base + chrono::TimeDelta::seconds(offset_secs);
+                ds.process_message(
+                    parse_sip(&raw, ts, src, dst, 5060, 5060, TransportProto::Udp).expect("parse"),
+                );
+                i += 1;
+            }
+        }
+
+        let text = volume_histogram_text(&ds, 60);
+        let rows: Vec<&str> = text.lines().filter(|l| l.contains("2024-")).collect();
+        assert_eq!(
+            rows.len(),
+            3,
+            "three buckets including the empty middle:\n{text}"
+        );
+        let busy = rows
+            .iter()
+            .find(|l| l.trim_end().ends_with(" 5"))
+            .expect("the busy bucket row");
+        let quiet = rows
+            .iter()
+            .find(|l| l.trim_end().ends_with(" 2"))
+            .expect("the quiet bucket row");
+        assert_eq!(
+            busy.matches('█').count(),
+            VOLUME_BAR_WIDTH,
+            "the busiest bucket fills the bar:\n{text}"
+        );
+        assert!(
+            quiet.matches('█').count() < busy.matches('█').count(),
+            "a quieter bucket's bar is shorter:\n{text}"
         );
     }
 

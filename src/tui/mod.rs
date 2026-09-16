@@ -61,14 +61,14 @@ mod theme;
 use controllers::*;
 #[doc(hidden)]
 pub use controllers::{
-    CallFlowAction, CallListAction, CaptureHealthAction, CarrierMetricsAction,
+    CallFlowAction, CallListAction, CallVolumeAction, CaptureHealthAction, CarrierMetricsAction,
     CombinedDetailAction, CompareDialogsAction, DashboardAction, EndpointRollupAction, HelpAction,
     LossMapAction, MessageDiffAction, RawMessageAction, StatisticsAction, StreamDetailAction,
     StreamListAction, TalkersAction, TimelineAction, call_flow_action, call_list_action,
-    capture_health_action, carrier_metrics_action, combined_detail_action, compare_dialogs_action,
-    dashboard_action, endpoint_rollup_action, help_action, loss_map_action, message_diff_action,
-    raw_message_action, statistics_action, stream_detail_action, stream_list_action,
-    talkers_action, timeline_action,
+    call_volume_action, capture_health_action, carrier_metrics_action, combined_detail_action,
+    compare_dialogs_action, dashboard_action, endpoint_rollup_action, help_action, loss_map_action,
+    message_diff_action, raw_message_action, statistics_action, stream_detail_action,
+    stream_list_action, talkers_action, timeline_action,
 };
 use render::*;
 use save::*;
@@ -150,6 +150,8 @@ pub struct App {
     endpoint_scroll: u16,
     /// Clamped scroll of the capture-health view (`h`).
     capture_health_scroll: u16,
+    /// Clamped scroll of the call-volume histogram view (`b`).
+    call_volume_scroll: u16,
     /// Scroll offset for the relay-statistics view (ST8; clamped in render).
     relay_stats_scroll: u16,
     /// Selected row in the quality dashboard's worst-streams table.
@@ -246,6 +248,7 @@ pub struct App {
     talkers: TalkersCache,
     carrier_metrics: CarrierMetricsCache,
     endpoint: EndpointCache,
+    call_volume: VolumeCache,
     /// Relay-statistics view cache and the ask in flight (ST8).
     relay_stats: relay_stats::RelayStatsCache,
     /// What the relay-statistics view needs to transmit, or which ST-S4
@@ -412,6 +415,7 @@ impl App {
             compare_scroll: 0,
             endpoint_scroll: 0,
             capture_health_scroll: 0,
+            call_volume_scroll: 0,
             relay_stats_scroll: 0,
             dashboard_selected: 0,
             stream_displayed: StreamDisplayedCache::default(),
@@ -419,6 +423,7 @@ impl App {
             talkers: TalkersCache::default(),
             carrier_metrics: CarrierMetricsCache::default(),
             endpoint: EndpointCache::default(),
+            call_volume: VolumeCache::default(),
             relay_stats: relay_stats::RelayStatsCache::default(),
             relay_query: relay_stats::RelayQueryState::default(),
             relay_stats_interval: None,
@@ -1090,6 +1095,20 @@ impl App {
             }
         }
 
+        // Call-volume histogram: a full-store bucketing like the talkers
+        // ranking — dialog-derived, so it keys on the dialog generation alone.
+        if self.current_view == View::CallVolume {
+            let key = store.generation();
+            let force = self.call_volume.key.is_none();
+            let stale = self.call_volume.key != Some(key);
+            if force || (stale && self.call_volume.floor.ready()) {
+                self.call_volume.text =
+                    render::volume_histogram_text(&store, render::VOLUME_BUCKET_SECONDS);
+                self.call_volume.key = Some(key);
+                self.call_volume.floor.mark();
+            }
+        }
+
         // Carrier metrics table: a full-store aggregation that also grounds MOS
         // off the streams, so it reads both stores and keys on both generations.
         if self.current_view == View::CarrierMetrics
@@ -1448,6 +1467,9 @@ impl App {
         }
         if let Some(v) = fb.capture_health_scroll {
             self.capture_health_scroll = v;
+        }
+        if let Some(v) = fb.call_volume_scroll {
+            self.call_volume_scroll = v;
         }
         if let Some(v) = fb.relay_stats_scroll {
             self.relay_stats_scroll = v;

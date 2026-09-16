@@ -188,6 +188,7 @@ fn dispatch_view_key(app: &mut App, key: KeyEvent) {
         View::CompareDialogs { .. } => handle_compare_dialogs_key(app, key),
         View::EndpointRollup { .. } => handle_endpoint_rollup_key(app, key),
         View::CaptureHealth => handle_capture_health_key(app, key),
+        View::CallVolume => handle_call_volume_key(app, key),
         View::RelayStats { .. } => handle_relay_stats_key(app, key),
         View::BpfFilter => handle_bpf_filter_key(app, key),
         View::QualityDashboard => dashboard::handle_dashboard_key(app, key),
@@ -951,6 +952,82 @@ pub(in crate::tui) fn handle_capture_health_key(app: &mut App, key: KeyEvent) {
     }
 }
 
+/// Everything the call-volume histogram view can do for a single key press.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CallVolumeAction {
+    /// Esc, the quit key, or `b` — close the histogram and return to the list.
+    Close,
+    /// Scroll the histogram up one line.
+    ScrollUp,
+    /// Scroll the histogram down one line.
+    ScrollDown,
+    /// Scroll the histogram up 20 lines.
+    PageUp,
+    /// Scroll the histogram down 20 lines.
+    PageDown,
+    /// Jump to the top of the histogram.
+    ScrollTop,
+    /// Jump to the bottom (the render pass clamps to the content height).
+    ScrollBottom,
+}
+
+/// Pure key→action mapping for the call-volume histogram view (keymap-aware).
+///
+/// # Arguments
+/// * `km` - the active keymap; the rebindable quit key is honored.
+/// * `key` - the key event whose code is matched against the bindings.
+///
+/// # Returns
+/// The mapped `CallVolumeAction`, or `None` when the key is not bound here.
+pub fn call_volume_action(km: &Keymap, key: KeyEvent) -> Option<CallVolumeAction> {
+    use CallVolumeAction::*;
+    Some(match key.code {
+        k if k == KeyCode::Esc || k == km.quit || k == KeyCode::Char('b') => Close,
+        KeyCode::Up | KeyCode::Char('k') => ScrollUp,
+        KeyCode::Down | KeyCode::Char('j') => ScrollDown,
+        KeyCode::PageUp => PageUp,
+        KeyCode::PageDown => PageDown,
+        KeyCode::Home => ScrollTop,
+        KeyCode::End => ScrollBottom,
+        _ => return None,
+    })
+}
+
+/// Handle keys in the call-volume histogram view: map, then execute.
+///
+/// # Arguments
+/// * `app` - the application state to mutate.
+/// * `key` - the key event, mapped via `call_volume_action`.
+///
+/// # Side effects
+/// Scroll actions move `app.call_volume_scroll`; `Close` returns to the call
+/// list. Unbound keys are ignored.
+pub(in crate::tui) fn handle_call_volume_key(app: &mut App, key: KeyEvent) {
+    let Some(action) = call_volume_action(&app.keymap, key) else {
+        return;
+    };
+    match action {
+        CallVolumeAction::Close => {
+            app.current_view = View::CallList;
+        }
+        CallVolumeAction::ScrollUp => {
+            app.call_volume_scroll = app.call_volume_scroll.saturating_sub(1);
+        }
+        CallVolumeAction::ScrollDown => {
+            app.call_volume_scroll = app.call_volume_scroll.saturating_add(1);
+        }
+        CallVolumeAction::PageUp => {
+            app.call_volume_scroll = app.call_volume_scroll.saturating_sub(20);
+        }
+        CallVolumeAction::PageDown => {
+            app.call_volume_scroll = app.call_volume_scroll.saturating_add(20);
+        }
+        CallVolumeAction::ScrollTop => app.call_volume_scroll = 0,
+        // Clamped to the content height by the render pass.
+        CallVolumeAction::ScrollBottom => app.call_volume_scroll = u16::MAX,
+    }
+}
+
 /// Everything the relay-statistics view can do for a single key press (ST8).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RelayStatsAction {
@@ -1198,6 +1275,13 @@ pub(in crate::tui) fn handle_mouse_event(app: &mut App, kind: crossterm::event::
                 app.capture_health_scroll.saturating_add(3)
             } else {
                 app.capture_health_scroll.saturating_sub(3)
+            };
+        }
+        View::CallVolume => {
+            app.call_volume_scroll = if down {
+                app.call_volume_scroll.saturating_add(3)
+            } else {
+                app.call_volume_scroll.saturating_sub(3)
             };
         }
         View::RelayStats { .. } => {

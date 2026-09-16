@@ -1284,6 +1284,10 @@ pub enum View {
     /// Opened with `h` from the call list. Reads process-global counters, so it
     /// renders straight from `CaptureQuality::current` each frame.
     CaptureHealth,
+    /// Call volume over time: dialogs per fixed-width bucket, drawn as a text
+    /// histogram — the same buckets `GET /v1/timeline` and the MCP `timeline`
+    /// tool report. Opened with `b` from the call list.
+    CallVolume,
     /// The live relay's own statistics, asked over its control socket (ST8).
     ///
     /// Distinct from [`View::Statistics`], which is about what THIS capture saw:
@@ -1470,6 +1474,22 @@ pub(in crate::tui) struct EndpointCache {
     /// Pre-rendered rollup text the view scrolls through.
     pub(in crate::tui) text: String,
     /// Floors generation-driven recomputation of the report.
+    pub(in crate::tui) floor: ChurnFloor,
+}
+
+/// Cross-tick cache of the call-volume histogram text.
+///
+/// A full-store bucketing like [`TalkersCache`], cached for the same reason and
+/// keyed the same way: the histogram is dialog-derived (bucketed by
+/// `created_at`) and reads no streams, so the dialog generation alone decides
+/// whether it is stale.
+#[derive(Debug, Default)]
+pub(in crate::tui) struct VolumeCache {
+    /// The dialog generation the histogram was derived from.
+    pub(in crate::tui) key: Option<u64>,
+    /// Pre-rendered histogram text the view scrolls through.
+    pub(in crate::tui) text: String,
+    /// Floors generation-driven recomputation of the histogram.
     pub(in crate::tui) floor: ChurnFloor,
 }
 

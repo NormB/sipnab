@@ -47,6 +47,7 @@ CALL LIST:
   c                Compare two checked calls (Space to check exactly two)
   e                Endpoint rollup (everything this call's source did)
   h                Capture health (dropped/undecodable/NAT counters)
+  b                Call volume histogram (calls per time bucket)
   S                Relay statistics view (asks the relay)
   B                Edit the BPF capture filter (append)
   D                Quality dashboard (live MOS/jitter/loss)
@@ -134,6 +135,12 @@ CAPTURE HEALTH:
   PgUp/PgDn       Page scroll
   Home/End         Jump to top/bottom
   Esc, q, h        Close
+
+CALL VOLUME HISTOGRAM:
+  ↑/↓, j/k       Scroll
+  PgUp/PgDn       Page scroll
+  Home/End         Jump to top/bottom
+  Esc, q, b        Close
 
 RELAY STATISTICS VIEW (S asks the relay directly):
   ?                Names the relay knows (what to ask for)
