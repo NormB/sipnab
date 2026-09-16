@@ -152,6 +152,11 @@ fn lint_answers_with_the_findings_envelope() {
 
 /// `POST /v1/vcon/validate` answers over the shipped binary with the verdict
 /// envelope (PAR3). An empty object is not a valid vCon.
+///
+/// Gated like `vcon_route_is_served_by_the_shipping_binary` below: the route is
+/// `#[cfg(feature = "vcon")]`, so a build without the feature answers 404 and
+/// this test would fail in the no-vcon feature combos CI runs.
+#[cfg(feature = "vcon")]
 #[test]
 fn vcon_validate_answers_over_the_socket() {
     let srv = ApiServer::spawn(&[]);

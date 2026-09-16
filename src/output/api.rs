@@ -5359,6 +5359,11 @@ mod tests {
     /// `POST /v1/vcon/validate` checks a container against the vendored schema.
     /// An empty object is not a valid vCon, so the verdict is `invalid` with
     /// errors naming the missing required fields. Closes the validate_vcon gap.
+    ///
+    /// Gated with the route it drives: `post_vcon_validate` exists only when the
+    /// `vcon` feature is compiled in, so without it the route is a 404 and this
+    /// test would fail in the no-vcon feature combos CI runs.
+    #[cfg(feature = "vcon")]
     #[tokio::test]
     async fn vcon_validate_reports_an_invalid_container() {
         let state = make_state();
@@ -5382,6 +5387,7 @@ mod tests {
     /// A body that is not a JSON object is a 400, not a verdict: a vCon
     /// container is an object, and a string or array holding one is a caller
     /// mistake worth naming rather than validating.
+    #[cfg(feature = "vcon")]
     #[tokio::test]
     async fn vcon_validate_non_object_is_400() {
         let state = make_state();
@@ -5395,6 +5401,7 @@ mod tests {
     }
 
     /// A body that is not JSON at all is a 400.
+    #[cfg(feature = "vcon")]
     #[tokio::test]
     async fn vcon_validate_malformed_body_is_400() {
         let state = make_state();
