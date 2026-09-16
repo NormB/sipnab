@@ -1049,6 +1049,31 @@ mod tui_snapshots {
         insta::assert_snapshot!(output);
     }
 
+    /// Snapshot: the two-call comparison, opened with `c` after checking two
+    /// calls with Space. The fixture's completed call and its failed (503) call
+    /// differ on state, final status and message count, so those rows are
+    /// flagged `(differs)` and the differences line names them (PAR4).
+    #[test]
+    fn compare_view() {
+        let backend = TestBackend::new(80, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = test_app_with_dialogs();
+        app.handle_key(crossterm::event::KeyCode::Char(' ')); // check the first call
+        app.handle_key(crossterm::event::KeyCode::Down);
+        app.handle_key(crossterm::event::KeyCode::Char(' ')); // check the second call
+        app.handle_key(crossterm::event::KeyCode::Char('c')); // open the comparison
+        assert!(
+            matches!(app.current_view(), sipnab::tui::View::CompareDialogs { .. }),
+            "expected the comparison view, got {:?}",
+            app.current_view()
+        );
+
+        terminal.draw(|frame| app.render(frame)).unwrap();
+
+        let output = buffer_to_string(&terminal);
+        insta::assert_snapshot!(output);
+    }
+
     /// Snapshot: the F7 filter popup over an empty call list.
     #[test]
     fn filter_dialog_popup() {

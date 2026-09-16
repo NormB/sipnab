@@ -288,7 +288,7 @@ Totals: CLI 272, TUI 16, REST 39, MCP 68.
 - `--word`
 - `--ws-portrange`
 
-## TUI views (16)
+## TUI views (17)
 
 - `BpfFilter`
 - `CallFlow`
@@ -296,6 +296,7 @@ Totals: CLI 272, TUI 16, REST 39, MCP 68.
 - `CallTimeline`
 - `CarrierMetrics`
 - `CombinedDetail`
+- `CompareDialogs`
 - `Help`
 - `MessageDiff`
 - `QualityDashboard`

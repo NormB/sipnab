@@ -1,0 +1,24 @@
+---
+source: tests/tui_snapshot_test.rs
+expression: output
+---
+ Current Mode: Online (any)    Dialogs: 3 (3 displayed)  [A]
+ Match Expression:     BPF Filter:
+ Display Filter:
+┌ Compare two calls ───────────────────────────────────────────────────────────┐
+│Compare two calls                                                             │
+│                                                                              │
+│  A: call-1@test                                                              │
+│  B: call-2@test                                                              │
+│                                                                              │
+│  state         A: Completed                   B: Failed  (differs)           │
+│  final status  A: 200                         B: 503  (differs)              │
+│  messages      A: 4                           B: 2  (differs)                │
+│  methods       A: BYE,INVITE                  B: INVITE  (differs)           │
+│                                                                              │
+│  Differences: state, final_status_code, msg_count, methods                   │
+│                                                                              │
+│  B hints:                                                                    │
+│    - Call failed: 503 Service Unavailable.                                   │
+└──────────────────────────────────────────────────────────────────────────────┘
+Esc Back

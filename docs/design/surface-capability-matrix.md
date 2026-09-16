@@ -198,7 +198,7 @@ Put two calls side by side and list what differs.
 | Surface | Detail |
 |---|---|
 | CLI | gap: one-shot comparison belongs here, but there is no compare flag (PAR5) |
-| TUI | gap: `MessageDiff` diffs two messages, not two calls, so the call-level compare is absent (PAR4) |
+| TUI | `CompareDialogs` |
 | REST | `/v1/dialogs/compare` |
 | MCP | `compare_dialogs` |
 

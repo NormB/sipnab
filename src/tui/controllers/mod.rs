@@ -185,6 +185,7 @@ fn dispatch_view_key(app: &mut App, key: KeyEvent) {
         View::Statistics => handle_statistics_key(app, key),
         View::Talkers => handle_talkers_key(app, key),
         View::CarrierMetrics => handle_carrier_metrics_key(app, key),
+        View::CompareDialogs { .. } => handle_compare_dialogs_key(app, key),
         View::RelayStats { .. } => handle_relay_stats_key(app, key),
         View::BpfFilter => handle_bpf_filter_key(app, key),
         View::QualityDashboard => dashboard::handle_dashboard_key(app, key),
@@ -722,6 +723,80 @@ pub(in crate::tui) fn handle_carrier_metrics_key(app: &mut App, key: KeyEvent) {
     }
 }
 
+/// Everything the two-call comparison view can do for a single key press.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompareDialogsAction {
+    /// Esc, the quit key, or `c` — close the comparison and return to the list.
+    Close,
+    /// Scroll the comparison up one line.
+    ScrollUp,
+    /// Scroll the comparison down one line.
+    ScrollDown,
+    /// Scroll the comparison up 20 lines.
+    PageUp,
+    /// Scroll the comparison down 20 lines.
+    PageDown,
+    /// Jump to the top of the comparison.
+    ScrollTop,
+    /// Jump to the bottom (the render pass clamps to the content height).
+    ScrollBottom,
+}
+
+/// Pure key→action mapping for the two-call comparison view (keymap-aware).
+///
+/// # Arguments
+/// * `km` - the active keymap; the rebindable quit key is honored.
+/// * `key` - the key event whose code is matched against the bindings.
+///
+/// # Returns
+/// The mapped `CompareDialogsAction`, or `None` when the key is not bound here.
+pub fn compare_dialogs_action(km: &Keymap, key: KeyEvent) -> Option<CompareDialogsAction> {
+    use CompareDialogsAction::*;
+    Some(match key.code {
+        k if k == KeyCode::Esc || k == km.quit || k == KeyCode::Char('c') => Close,
+        KeyCode::Up | KeyCode::Char('k') => ScrollUp,
+        KeyCode::Down | KeyCode::Char('j') => ScrollDown,
+        KeyCode::PageUp => PageUp,
+        KeyCode::PageDown => PageDown,
+        KeyCode::Home => ScrollTop,
+        KeyCode::End => ScrollBottom,
+        _ => return None,
+    })
+}
+
+/// Handle keys in the two-call comparison view: map, then execute.
+///
+/// # Arguments
+/// * `app` - the application state to mutate.
+/// * `key` - the key event, mapped via `compare_dialogs_action`.
+///
+/// # Side effects
+/// Scroll actions move `app.compare_scroll`; `Close` returns to the call list.
+/// Unbound keys are ignored.
+pub(in crate::tui) fn handle_compare_dialogs_key(app: &mut App, key: KeyEvent) {
+    let Some(action) = compare_dialogs_action(&app.keymap, key) else {
+        return;
+    };
+    match action {
+        CompareDialogsAction::Close => {
+            app.current_view = View::CallList;
+        }
+        CompareDialogsAction::ScrollUp => {
+            app.compare_scroll = app.compare_scroll.saturating_sub(1);
+        }
+        CompareDialogsAction::ScrollDown => {
+            app.compare_scroll = app.compare_scroll.saturating_add(1);
+        }
+        CompareDialogsAction::PageUp => app.compare_scroll = app.compare_scroll.saturating_sub(20),
+        CompareDialogsAction::PageDown => {
+            app.compare_scroll = app.compare_scroll.saturating_add(20)
+        }
+        CompareDialogsAction::ScrollTop => app.compare_scroll = 0,
+        // Clamped to the content height by the render pass.
+        CompareDialogsAction::ScrollBottom => app.compare_scroll = u16::MAX,
+    }
+}
+
 /// Everything the relay-statistics view can do for a single key press (ST8).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RelayStatsAction {
@@ -943,6 +1018,13 @@ pub(in crate::tui) fn handle_mouse_event(app: &mut App, kind: crossterm::event::
                 app.carrier_metrics_scroll.saturating_add(3)
             } else {
                 app.carrier_metrics_scroll.saturating_sub(3)
+            };
+        }
+        View::CompareDialogs { .. } => {
+            app.compare_scroll = if down {
+                app.compare_scroll.saturating_add(3)
+            } else {
+                app.compare_scroll.saturating_sub(3)
             };
         }
         View::RelayStats { .. } => {

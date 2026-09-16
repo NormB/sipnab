@@ -12,6 +12,16 @@ entry that carries them.
 
 ### Added
 
+- **Compare-two-calls TUI view (PAR4).** A new `CompareDialogs` view, opened with
+  `c` from the call list once two calls are checked (`Space`), puts them side by
+  side and flags the fields that differ — state, final status, message count and
+  request methods — over the shared `crate::sip::dialog::compare_dialogs` rule,
+  the same differences `GET /v1/dialogs/compare` and the MCP `compare_dialogs`
+  tool name. `MessageDiff` diffed two messages; this diffs two calls. It reuses
+  the existing checked-row selection (so no separate mark state), renders straight
+  from the store each frame like the message-diff view, is scrollable, and
+  Esc/`q`/`c` closes it. Closes the call-level compare TUI gap, leaving 24 named
+  gaps.
 - **Carrier-metrics TUI view (PAR4).** A new `CarrierMetrics` view, opened with
   `m` from the call list, tabulates ASR, NER and ACD per destination IP — the
   route-quality view neither `Statistics` nor `QualityDashboard` computed. It

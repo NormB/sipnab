@@ -44,6 +44,7 @@ CALL LIST:
   s                Statistics view
   g                Top talkers (busiest participants, by source IP)
   m                Carrier metrics (ASR/NER/ACD by destination IP)
+  c                Compare two checked calls (Space to check exactly two)
   S                Relay statistics view (asks the relay)
   B                Edit the BPF capture filter (append)
   D                Quality dashboard (live MOS/jitter/loss)
@@ -113,6 +114,12 @@ CARRIER METRICS:
   PgUp/PgDn       Page scroll
   Home/End         Jump to top/bottom
   Esc, q, m        Close
+
+COMPARE TWO CALLS:
+  ↑/↓, j/k       Scroll
+  PgUp/PgDn       Page scroll
+  Home/End         Jump to top/bottom
+  Esc, q, c        Close
 
 RELAY STATISTICS VIEW (S asks the relay directly):
   ?                Names the relay knows (what to ask for)

@@ -1257,6 +1257,16 @@ pub enum View {
     /// route-quality table `GET /v1/dialogs/rates` answers, computed through the
     /// shared `crate::sip::group_metrics` accumulator. Opened with `m`.
     CarrierMetrics,
+    /// Two calls compared field by field: the same `state`, `final_status_code`,
+    /// `msg_count` and `methods` differences `GET /v1/dialogs/compare` and the
+    /// MCP `compare_dialogs` tool name, over the shared `compare_dialogs` rule.
+    /// Opened with `c` from the call list when exactly two calls are checked.
+    CompareDialogs {
+        /// Call-ID of the first call to compare.
+        a: String,
+        /// Call-ID of the second call to compare.
+        b: String,
+    },
     /// The live relay's own statistics, asked over its control socket (ST8).
     ///
     /// Distinct from [`View::Statistics`], which is about what THIS capture saw:

@@ -39,6 +39,6 @@ expression: output
 │  s                 Statistics view                                           │
 │  g                 Top talkers (busiest participants, by source IP)          │
 │  m                 Carrier metrics (ASR/NER/ACD by destination IP)           │
-│  S                 Relay statistics view (asks the relay)                    │
+│  c                 Compare two checked calls (Space to check exactly two)    │
 └──────────────────────────────────────────────────────────────────────────────┘
 Esc Back

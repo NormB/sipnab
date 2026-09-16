@@ -61,12 +61,13 @@ mod theme;
 use controllers::*;
 #[doc(hidden)]
 pub use controllers::{
-    CallFlowAction, CallListAction, CarrierMetricsAction, CombinedDetailAction, DashboardAction,
-    HelpAction, LossMapAction, MessageDiffAction, RawMessageAction, StatisticsAction,
-    StreamDetailAction, StreamListAction, TalkersAction, TimelineAction, call_flow_action,
-    call_list_action, carrier_metrics_action, combined_detail_action, dashboard_action,
-    help_action, loss_map_action, message_diff_action, raw_message_action, statistics_action,
-    stream_detail_action, stream_list_action, talkers_action, timeline_action,
+    CallFlowAction, CallListAction, CarrierMetricsAction, CombinedDetailAction,
+    CompareDialogsAction, DashboardAction, HelpAction, LossMapAction, MessageDiffAction,
+    RawMessageAction, StatisticsAction, StreamDetailAction, StreamListAction, TalkersAction,
+    TimelineAction, call_flow_action, call_list_action, carrier_metrics_action,
+    combined_detail_action, compare_dialogs_action, dashboard_action, help_action, loss_map_action,
+    message_diff_action, raw_message_action, statistics_action, stream_detail_action,
+    stream_list_action, talkers_action, timeline_action,
 };
 use render::*;
 use save::*;
@@ -142,6 +143,8 @@ pub struct App {
     stats_scroll: u16,
     talkers_scroll: u16,
     carrier_metrics_scroll: u16,
+    /// Clamped scroll of the two-call comparison view (`c`).
+    compare_scroll: u16,
     /// Scroll offset for the relay-statistics view (ST8; clamped in render).
     relay_stats_scroll: u16,
     /// Selected row in the quality dashboard's worst-streams table.
@@ -400,6 +403,7 @@ impl App {
             stats_scroll: 0,
             talkers_scroll: 0,
             carrier_metrics_scroll: 0,
+            compare_scroll: 0,
             relay_stats_scroll: 0,
             dashboard_selected: 0,
             stream_displayed: StreamDisplayedCache::default(),
@@ -1397,6 +1401,9 @@ impl App {
         }
         if let Some(v) = fb.carrier_metrics_scroll {
             self.carrier_metrics_scroll = v;
+        }
+        if let Some(v) = fb.compare_scroll {
+            self.compare_scroll = v;
         }
         if let Some(v) = fb.relay_stats_scroll {
             self.relay_stats_scroll = v;

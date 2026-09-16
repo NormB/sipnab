@@ -49,6 +49,8 @@ pub(in crate::tui) struct RenderFeedback {
     pub(in crate::tui) talkers_scroll: Option<u16>,
     /// Clamped scroll of the carrier-metrics view.
     pub(in crate::tui) carrier_metrics_scroll: Option<u16>,
+    /// Clamped scroll of the two-call comparison view.
+    pub(in crate::tui) compare_scroll: Option<u16>,
     /// Clamped scroll of the relay-statistics view (ST8).
     pub(in crate::tui) relay_stats_scroll: Option<u16>,
     /// Content-clamped scroll of the full-BPF-filter popup (`B`). Only the
@@ -508,6 +510,9 @@ pub(in crate::tui) fn render_app(
         View::CarrierMetrics => {
             fb.carrier_metrics_scroll = Some(render_carrier_metrics(frame, main_area, app, ds, ss));
         }
+        View::CompareDialogs { a, b } => {
+            fb.compare_scroll = Some(render_compare(frame, main_area, app, ds, a, b));
+        }
         View::RelayStats { .. } => {
             fb.relay_stats_scroll = Some(render_relay_stats(frame, main_area, app));
         }
@@ -892,6 +897,135 @@ pub(in crate::tui) fn render_carrier_metrics(
     let block = Block::default()
         .borders(Borders::ALL)
         .title(" Carrier Metrics ");
+    let paragraph = Paragraph::new(text)
+        .block(block)
+        .style(Style::default().fg(app.theme.foreground))
+        .scroll((scroll, 0));
+
+    frame.render_widget(paragraph, area);
+    scroll
+}
+
+/// Build the two-call comparison table over the shared
+/// [`crate::sip::dialog::compare_dialogs`] rule, so this view names the same
+/// differences `GET /v1/dialogs/compare` and the MCP `compare_dialogs` tool do.
+///
+/// Each of the four compared fields (state, final status, message count,
+/// methods) is a row with both sides; a differing field is flagged so the eye
+/// lands on why one call worked and the other did not. `hints` are shown per
+/// side but, like the shared rule, not diffed. A Call-ID no longer in the
+/// capture is reported rather than silently dropped.
+///
+/// # Arguments
+/// * `ds` - Dialog store snapshot holding both calls.
+/// * `a_id` - Call-ID of the first call.
+/// * `b_id` - Call-ID of the second call.
+pub(in crate::tui) fn compare_dialogs_text(ds: &DialogStore, a_id: &str, b_id: &str) -> String {
+    use std::fmt::Write as _;
+
+    let (Some(a), Some(b)) = (ds.get(a_id), ds.get(b_id)) else {
+        let mut out = String::from("Compare two calls\n\n");
+        if ds.get(a_id).is_none() {
+            let _ = writeln!(out, "  Call A ({a_id}) is no longer in the capture.");
+        }
+        if ds.get(b_id).is_none() {
+            let _ = writeln!(out, "  Call B ({b_id}) is no longer in the capture.");
+        }
+        return out;
+    };
+
+    let cmp = crate::sip::dialog::compare_dialogs(a, b);
+    let differs = |field: &str| -> &'static str {
+        if cmp.differences.iter().any(|d| d == field) {
+            "  (differs)"
+        } else {
+            ""
+        }
+    };
+    let status = |code: Option<u16>| code.map_or_else(|| "—".to_string(), |c| c.to_string());
+
+    let mut out = String::new();
+    let _ = writeln!(out, "Compare two calls");
+    let _ = writeln!(out);
+    let _ = writeln!(out, "  A: {}", cmp.a.call_id);
+    let _ = writeln!(out, "  B: {}", cmp.b.call_id);
+    let _ = writeln!(out);
+    let _ = writeln!(
+        out,
+        "  {:<14}A: {:<28}B: {}{}",
+        "state",
+        cmp.a.state,
+        cmp.b.state,
+        differs("state")
+    );
+    let _ = writeln!(
+        out,
+        "  {:<14}A: {:<28}B: {}{}",
+        "final status",
+        status(cmp.a.final_status_code),
+        status(cmp.b.final_status_code),
+        differs("final_status_code")
+    );
+    let _ = writeln!(
+        out,
+        "  {:<14}A: {:<28}B: {}{}",
+        "messages",
+        cmp.a.msg_count,
+        cmp.b.msg_count,
+        differs("msg_count")
+    );
+    let _ = writeln!(
+        out,
+        "  {:<14}A: {:<28}B: {}{}",
+        "methods",
+        cmp.a.methods.join(","),
+        cmp.b.methods.join(","),
+        differs("methods")
+    );
+    let _ = writeln!(out);
+    if cmp.differences.is_empty() {
+        let _ = writeln!(
+            out,
+            "  Differences: none — the two calls match on every compared field"
+        );
+    } else {
+        let _ = writeln!(out, "  Differences: {}", cmp.differences.join(", "));
+    }
+    for (label, hints) in [("A", &cmp.a.hints), ("B", &cmp.b.hints)] {
+        if !hints.is_empty() {
+            let _ = writeln!(out);
+            let _ = writeln!(out, "  {label} hints:");
+            for h in hints {
+                let _ = writeln!(out, "    - {h}");
+            }
+        }
+    }
+    out
+}
+
+/// Render the two-call comparison view. Parameterized by the two Call-IDs on
+/// the view, so — like the message-diff view — it renders straight from the
+/// store each frame rather than through a cross-tick cache; the comparison is a
+/// handful of field lookups, not a whole-store accumulation.
+///
+/// # Side effects
+/// Draws to `frame` only. Returns the clamped scroll.
+pub(in crate::tui) fn render_compare(
+    frame: &mut ratatui::Frame,
+    area: ratatui::layout::Rect,
+    app: &App,
+    ds: &DialogStore,
+    a_id: &str,
+    b_id: &str,
+) -> u16 {
+    let text = compare_dialogs_text(ds, a_id, b_id);
+    let total_rows = text.lines().count() as u16;
+    let viewport = area.height.saturating_sub(2);
+    let scroll = app.compare_scroll.min(total_rows.saturating_sub(viewport));
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Compare two calls ");
     let paragraph = Paragraph::new(text)
         .block(block)
         .style(Style::default().fg(app.theme.foreground))
@@ -1631,6 +1765,114 @@ mod tests {
         assert!(
             text.contains("ASR"),
             "the table carries the ASR column:\n{text}"
+        );
+    }
+
+    /// The comparison view names exactly the fields that differ. One call is
+    /// answered (200 OK), the other never gets a final response, so `state`,
+    /// `final_status_code` and `msg_count` differ while the request methods
+    /// match. The output must flag the differing rows and list those fields —
+    /// and must not claim a methods difference. This exercises the formatter's
+    /// own field→row marker mapping, not just the shared `compare_dialogs` rule.
+    #[test]
+    fn compare_dialogs_text_marks_the_differing_fields() {
+        use crate::net::TransportProto;
+        use crate::sip::parser::parse_sip;
+        use crate::test_utils::build_sip_message as build_sip;
+        use chrono::TimeZone;
+        use std::net::{IpAddr, Ipv4Addr};
+
+        let ts = chrono::Utc.with_ymd_and_hms(2024, 6, 15, 12, 0, 0).unwrap();
+        let src = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
+        let dst = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 9));
+        let mut ds = DialogStore::new(1000, true);
+
+        // Call A: INVITE then 200 OK (answered).
+        let invite_a = build_sip(
+            "INVITE sip:bob@example.com SIP/2.0",
+            &[
+                "From: <sip:alice@example.com>;tag=t1",
+                "To: <sip:bob@example.com>",
+                "Call-ID: cmp-a@h",
+                "CSeq: 1 INVITE",
+                "Content-Length: 0",
+            ],
+            b"",
+        );
+        ds.process_message(
+            parse_sip(&invite_a, ts, src, dst, 5060, 5060, TransportProto::Udp).expect("parse"),
+        );
+        let ok_a = build_sip(
+            "SIP/2.0 200 OK",
+            &[
+                "From: <sip:alice@example.com>;tag=t1",
+                "To: <sip:bob@example.com>;tag=s1",
+                "Call-ID: cmp-a@h",
+                "CSeq: 1 INVITE",
+                "Content-Length: 0",
+            ],
+            b"",
+        );
+        ds.process_message(
+            parse_sip(&ok_a, ts, dst, src, 5060, 5060, TransportProto::Udp).expect("parse"),
+        );
+
+        // Call B: INVITE only (never answered).
+        let invite_b = build_sip(
+            "INVITE sip:bob@example.com SIP/2.0",
+            &[
+                "From: <sip:alice@example.com>;tag=t2",
+                "To: <sip:bob@example.com>",
+                "Call-ID: cmp-b@h",
+                "CSeq: 1 INVITE",
+                "Content-Length: 0",
+            ],
+            b"",
+        );
+        ds.process_message(
+            parse_sip(&invite_b, ts, src, dst, 5060, 5060, TransportProto::Udp).expect("parse"),
+        );
+
+        let text = compare_dialogs_text(&ds, "cmp-a@h", "cmp-b@h");
+
+        // Both Call-IDs identify their side.
+        assert!(
+            text.contains("cmp-a@h") && text.contains("cmp-b@h"),
+            "both call-ids present:\n{text}"
+        );
+
+        // The differences line lists the fields that moved and not the ones
+        // that matched (methods are identical: INVITE on both).
+        let diff_line = text
+            .lines()
+            .find(|l| l.contains("Differences:"))
+            .expect("a differences line");
+        assert!(
+            diff_line.contains("final_status_code"),
+            "differences names final_status_code: {diff_line}"
+        );
+        assert!(
+            !diff_line.contains("methods"),
+            "methods match, so must not be listed: {diff_line}"
+        );
+
+        // The formatter flags the differing rows and leaves the matching one
+        // unflagged — its own field→row mapping, distinct from the shared rule.
+        let fs_row = text
+            .lines()
+            .find(|l| l.contains("final status"))
+            .expect("a final-status row");
+        assert!(
+            fs_row.contains("(differs)"),
+            "the differing final-status row is flagged: {fs_row}"
+        );
+        let methods_row = text
+            .lines()
+            .find(|l| l.trim_start().starts_with("methods"))
+            .expect("a methods row");
+        assert!(
+            !methods_row.contains("(differs)"),
+            "the matching methods row is not flagged: {methods_row}"
         );
     }
 
