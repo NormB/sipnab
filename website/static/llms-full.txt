@@ -5781,6 +5781,55 @@ discarding one would hide the gap. The MCP tool `timeline` buckets the same way.
 
 ---
 
+### GET /v1/dialogs/compare
+
+Two calls side by side, with the fields that differ named for you — the same
+comparison the MCP `compare_dialogs` tool answers.
+
+**Query parameters:**
+
+- `a` (required) — Call-ID of the first call. A Call-ID with no dialog is a `404`.
+- `b` (required) — Call-ID of the second call. A Call-ID with no dialog is a `404`.
+
+**curl:**
+
+```bash
+curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" "http://127.0.0.1:8080/v1/dialogs/compare?a=call-a@example.com&b=call-b@example.com" | jq .
+```
+
+**Response:**
+
+```json
+{
+  "schema_version": 1,
+  "a": {
+    "call_id": "call-a@example.com",
+    "state": "InCall",
+    "final_status_code": 200,
+    "msg_count": 7,
+    "methods": ["ACK", "BYE", "INVITE"],
+    "hints": []
+  },
+  "b": {
+    "call_id": "call-b@example.com",
+    "state": "Failed",
+    "final_status_code": 486,
+    "msg_count": 3,
+    "methods": ["INVITE"],
+    "hints": ["the callee was busy"]
+  },
+  "differences": ["state", "final_status_code", "msg_count", "methods"]
+}
+```
+
+**`differences` names the fields that moved** — a subset of `state`,
+`final_status_code`, `msg_count` and `methods`, in that order, empty when the
+two calls match on all four. A client that diffs the two itself sometimes
+reports a difference that is not there, so the route names them. `hints` rides
+along per side but stays out of the diff.
+
+---
+
 ### POST /v1/vcon/validate
 
 Check a vCon container against sipnab's vendored schema — the producer-and-

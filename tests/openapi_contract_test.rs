@@ -795,6 +795,11 @@ fn every_documented_response_matches_what_the_server_sends() {
         // earns. The contract under test is the response shape, not the guard.
         let url = if path == "/v1/aggregate" {
             format!("{url}?by=state")
+        } else if path == "/v1/dialogs/compare" {
+            // `/v1/dialogs/compare` needs two Call-IDs; compare the fixture's
+            // one call to itself so the route answers 200 with its schema
+            // rather than the 400 a missing `a`/`b` earns.
+            format!("{url}?a={id}&b={id}", id = encode(&call_id))
         } else {
             url
         };

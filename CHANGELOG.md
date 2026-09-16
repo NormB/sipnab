@@ -101,6 +101,13 @@ entry that carries them.
   stays in the series because an empty bucket is what an outage looks like. The
   bucketing rule moves into `DialogStore::timeline_buckets` the MCP `timeline`
   tool now shares. This closes the `timeline` REST gap, leaving 36 named gaps.
+- **`GET /v1/dialogs/compare` (PAR3).** Two calls side by side — state, outcome
+  code, message count and method set — with the fields that differ named, so a
+  client need not diff the two itself and report a difference that is not there.
+  `differences` lists what moved. The per-side summary and the diff rule move
+  into `crate::sip::dialog::compare_dialogs`, which the MCP `compare_dialogs`
+  tool now shares. This closes the `compare_dialogs` REST gap, leaving 35 named
+  gaps.
 
 ## [0.5.175] - 2026-09-15
 

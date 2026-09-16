@@ -114,6 +114,28 @@ fn timeline_answers_with_the_buckets_envelope() {
     assert!(body["bucket_seconds"].is_number(), "bucket_seconds present");
 }
 
+/// `GET /v1/dialogs/compare` answers over the shipped binary with the
+/// comparison envelope (PAR3). A call compared to itself differs in nothing, so
+/// `differences` is empty — the point is the shape, the 200, and that the diff
+/// ran over the socket.
+#[test]
+fn compare_answers_over_the_socket() {
+    let srv = ApiServer::spawn(&[]);
+    let resp = srv.get(&format!("/v1/dialogs/compare?a={CALL_ID}&b={CALL_ID}"));
+    assert_eq!(resp.status, 200, "/v1/dialogs/compare status");
+    let body = resp.json();
+    assert_eq!(body["schema_version"], 1);
+    assert_eq!(body["a"]["call_id"], CALL_ID);
+    assert_eq!(body["b"]["call_id"], CALL_ID);
+    assert!(
+        body["differences"]
+            .as_array()
+            .expect("differences is an array")
+            .is_empty(),
+        "a call equals itself, so nothing differs"
+    );
+}
+
 /// `GET /v1/dialogs/{id}/lint` answers over the shipped binary with the findings
 /// envelope (PAR3).
 #[test]

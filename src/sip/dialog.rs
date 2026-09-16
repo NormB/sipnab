@@ -567,6 +567,91 @@ pub fn dialog_group_value_raw(
     })
 }
 
+/// One call summarized to the fields a side-by-side comparison diffs: its
+/// state, outcome code, message count, the request methods it carried, and its
+/// signaling diagnosis. The MCP `compare_dialogs` tool and the REST
+/// `/v1/dialogs/compare` route render exactly these.
+///
+/// None of the fields is sender-controlled free text: `state` is a sipnab enum,
+/// the methods come from the parsed [`SipMethod`], and the hints are sipnab's
+/// own diagnosis — so a surface that fences attacker strings need not fence
+/// these.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DialogSide {
+    /// The dialog's Call-ID.
+    pub call_id: String,
+    /// The dialog state, as the [`DialogState`] variant name.
+    pub state: String,
+    /// The final INVITE response code, `None` while the call is in progress.
+    pub final_status_code: Option<u16>,
+    /// How many SIP messages the dialog holds.
+    pub msg_count: usize,
+    /// The distinct request methods seen, sorted.
+    pub methods: Vec<String>,
+    /// The signaling-diagnosis hints for the call.
+    pub hints: Vec<String>,
+}
+
+/// Summarize one dialog into the fields [`compare_dialogs`] diffs.
+pub fn dialog_side(dialog: &SipDialog) -> DialogSide {
+    let mut methods: Vec<String> = dialog
+        .messages
+        .iter()
+        .filter(|m| m.is_request)
+        .filter_map(|m| m.method.as_ref().map(|x| x.as_str().to_string()))
+        .collect();
+    methods.sort();
+    methods.dedup();
+    DialogSide {
+        call_id: dialog.call_id.clone(),
+        state: format!("{:?}", dialog.state()),
+        final_status_code: dialog.final_status_code(),
+        msg_count: dialog.messages.len(),
+        methods,
+        hints: crate::sip::diagnosis::diagnose_signaling(&dialog.messages).hints,
+    }
+}
+
+/// Two dialogs summarized side by side, naming which fields differ.
+///
+/// The comparison itself is the rule worth sharing: an agent or a REST client
+/// asked to diff two objects will sometimes report a difference that is not
+/// there. `differences` names the fields that moved, in a fixed order, so both
+/// surfaces answer the same "why did this call work and that one not?" the same
+/// way. `hints` is reported per side but not diffed — two calls rarely carry
+/// identical hint wording, and a hint delta is noise beside the four facts that
+/// decide the outcome.
+#[derive(Debug, Clone)]
+pub struct DialogComparison {
+    /// The first dialog's summary.
+    pub a: DialogSide,
+    /// The second dialog's summary.
+    pub b: DialogSide,
+    /// The field names that differ, a subset of `state`, `final_status_code`,
+    /// `msg_count`, `methods`, in that order.
+    pub differences: Vec<String>,
+}
+
+/// Compare two dialogs, naming the fields that differ. See [`DialogComparison`].
+pub fn compare_dialogs(a: &SipDialog, b: &SipDialog) -> DialogComparison {
+    let a = dialog_side(a);
+    let b = dialog_side(b);
+    let mut differences = Vec::new();
+    if a.state != b.state {
+        differences.push("state".to_string());
+    }
+    if a.final_status_code != b.final_status_code {
+        differences.push("final_status_code".to_string());
+    }
+    if a.msg_count != b.msg_count {
+        differences.push("msg_count".to_string());
+    }
+    if a.methods != b.methods {
+        differences.push("methods".to_string());
+    }
+    DialogComparison { a, b, differences }
+}
+
 // ── Tests ────────────────────────────────────────────────────────────
 
 /// Unit tests for dialog creation and the per-method state machines
@@ -1863,6 +1948,44 @@ mod tests {
             "ALL holds {} entries; a duplicate or a missing variant makes \
              every ALL-driven gate cover the wrong set",
             named.len()
+        );
+    }
+
+    /// An answered call and a busy one differ in state and outcome code, but
+    /// share method set and message count — so the comparison names the two
+    /// that moved and stays silent on the two that did not. The whole point of
+    /// the shared rule is that neither surface diffs the pair itself and reports
+    /// a difference that is not there.
+    #[test]
+    fn compare_names_only_the_fields_that_differ() {
+        // Build each dialog the way ingest does: advance state on the message
+        // and then record it, so `state()` and the message-scanning accessors
+        // (`final_status_code`, method set, count) agree.
+        let mut answered = SipDialog::new(&make_invite()).expect("dialog");
+        let ok = make_response(200, "OK", "INVITE");
+        update_state(&mut answered, &ok);
+        answered.messages.push(ok);
+
+        let mut busy = SipDialog::new(&make_invite()).expect("dialog");
+        let busy_resp = make_response(486, "Busy Here", "INVITE");
+        update_state(&mut busy, &busy_resp);
+        busy.messages.push(busy_resp);
+
+        let a = dialog_side(&answered);
+        assert_eq!(a.state, "InCall");
+        assert_eq!(a.final_status_code, Some(200));
+        assert_eq!(a.msg_count, 2);
+        assert_eq!(a.methods, vec!["INVITE".to_string()]);
+
+        let cmp = compare_dialogs(&answered, &busy);
+        // The busy leg's own summary, so the diff is grounded in both sides.
+        assert_eq!(cmp.b.state, "Failed");
+        assert_eq!(cmp.b.final_status_code, Some(486));
+        // Message count (2 vs 2) and method set ([INVITE] vs [INVITE]) match, so
+        // only state and the outcome code are named — in that order.
+        assert_eq!(
+            cmp.differences,
+            vec!["state".to_string(), "final_status_code".to_string()]
         );
     }
 }

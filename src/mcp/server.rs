@@ -6153,42 +6153,27 @@ impl SipnabMcp {
                 )
             })?;
 
-            let side = |d: &crate::sip::dialog::SipDialog| {
-                let mut methods: Vec<String> = d
-                    .messages
-                    .iter()
-                    .filter(|m| m.is_request)
-                    .filter_map(|m| m.method.as_ref().map(|x| x.as_str().to_string()))
-                    .collect();
-                methods.sort();
-                methods.dedup();
-                let diag = crate::sip::diagnosis::diagnose_signaling(&d.messages);
+            // The per-side summary and the difference-naming are one rule,
+            // shared with the REST `/v1/dialogs/compare` route: an agent asked
+            // to diff two objects itself will sometimes report a difference
+            // that is not there, so the tool names them. This surface renders
+            // the shared result; the rule lives in `crate::sip::dialog`.
+            let cmp = crate::sip::dialog::compare_dialogs(a, b);
+            let side = |s: &crate::sip::dialog::DialogSide| {
                 serde_json::json!({
-                    "call_id": d.call_id,
-                    "state": format!("{:?}", d.state()),
-                    "final_status_code": d.final_status_code(),
-                    "msg_count": d.messages.len(),
-                    "methods": methods,
-                    "hints": diag.hints,
+                    "call_id": s.call_id,
+                    "state": s.state,
+                    "final_status_code": s.final_status_code,
+                    "msg_count": s.msg_count,
+                    "methods": s.methods,
+                    "hints": s.hints,
                 })
             };
-            let (ja, jb) = (side(a), side(b));
-
-            // Name the differences rather than leaving the caller to diff two
-            // objects. The whole point of the tool is the comparison, and an
-            // agent asked to spot it itself will sometimes report a difference
-            // that is not there.
-            let mut differences = Vec::new();
-            for key in ["state", "final_status_code", "msg_count", "methods"] {
-                if ja[key] != jb[key] {
-                    differences.push(key.to_string());
-                }
-            }
             serde_json::json!({
                 "schema_version": 1,
-                "a": ja,
-                "b": jb,
-                "differences": differences,
+                "a": side(&cmp.a),
+                "b": side(&cmp.b),
+                "differences": cmp.differences,
             })
         };
         Ok(CallToolResult::success(vec![ContentBlock::json(payload)?]))

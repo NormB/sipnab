@@ -279,9 +279,9 @@ registry has grown since, and the count is pinned by
 The argument below does not depend on the number. Four
 of them touch something other than the stores: `export_capture`
 ([`server.rs:7422`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L7422)) writes a pcap, `export_audio`
-([`server.rs:7475`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L7475)) writes a WAV, `list_captures`
-([`server.rs:7206`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L7206)) reads a directory, and
-`shutdown_server` ([`server.rs:7948`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L7948)) ends the process.
+([`server.rs:7452`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L7452)) writes a WAV, `list_captures`
+([`server.rs:7183`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L7183)) reads a directory, and
+`shutdown_server` ([`server.rs:7925`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L7925)) ends the process.
 
 **None of them mutates a store.** `shutdown_server` reads `dialog_store` and
 `stream_store` for its report, optionally writes a file, and then calls
@@ -815,7 +815,7 @@ decision was taken, not as it stands now:
 The opt-in machinery and the path confinement are already solved and should be
 reused rather than redesigned: the `shutdown_server` flag, off-by-default field,
 builder and first-statement refusal
-([`server.rs:7948`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L7948)), and `--mcp-file-root` with
+([`server.rs:7925`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L7925)), and `--mcp-file-root` with
 `resolve_in_root` ([`server.rs:858`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L858)).
 
 **What shipped**, against those three:

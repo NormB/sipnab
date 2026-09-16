@@ -1553,6 +1553,89 @@
         ],
         "type": "object"
       },
+      "Comparison": {
+        "description": "Two calls side by side, naming which fields differ.",
+        "properties": {
+          "a": {
+            "$ref": "#/components/schemas/ComparisonSide",
+            "description": "The first call's summary."
+          },
+          "b": {
+            "$ref": "#/components/schemas/ComparisonSide",
+            "description": "The second call's summary."
+          },
+          "differences": {
+            "description": "The field names that differ — a subset of `state`,\n`final_status_code`, `msg_count`, `methods`, in that order. Empty\nwhen the two calls match on all four. `hints` is reported per side\nbut not diffed.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "schema_version": {
+            "description": "Version of this response's shape.",
+            "example": 1,
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "schema_version",
+          "a",
+          "b",
+          "differences"
+        ],
+        "type": "object"
+      },
+      "ComparisonSide": {
+        "description": "One call summarized for a side-by-side comparison: the fields\n`/v1/dialogs/compare` diffs, the same the MCP `compare_dialogs` tool\nreports.",
+        "properties": {
+          "call_id": {
+            "description": "The dialog's Call-ID.",
+            "type": "string"
+          },
+          "final_status_code": {
+            "description": "The final INVITE response code, null while the call is in progress.",
+            "format": "int32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "hints": {
+            "description": "The signaling-diagnosis hints for the call.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "methods": {
+            "description": "The distinct request methods seen, sorted.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "msg_count": {
+            "description": "How many SIP messages the dialog holds.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "state": {
+            "description": "The dialog state (`InCall`, `Failed`, `Completed`, …).",
+            "type": "string"
+          }
+        },
+        "required": [
+          "call_id",
+          "state",
+          "msg_count",
+          "methods",
+          "hints"
+        ],
+        "type": "object"
+      },
       "Correlated": {
         "description": "The other legs of one call, with the source it was asked about.",
         "properties": {
@@ -4512,6 +4595,93 @@
           }
         ],
         "summary": "List dialogs",
+        "tags": [
+          "dialogs"
+        ]
+      }
+    },
+    "/v1/dialogs/compare": {
+      "get": {
+        "description": "Two calls side by side — state, outcome code, message count and method set — with the fields that differ named for you. The same comparison the MCP `compare_dialogs` tool answers.\n\nA client could fetch both dialogs and diff them, but one asked to spot the difference itself will sometimes report a difference that is not there. This route names them: `differences` lists the fields that moved, a subset of `state`, `final_status_code`, `msg_count` and `methods`. A Call-ID with no dialog is a 404 that names which of the two is missing.",
+        "operationId": "get_compare",
+        "parameters": [
+          {
+            "description": "Call-ID of the first dialog. A Call-ID with no dialog is a 404. Required.",
+            "in": "query",
+            "name": "a",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Call-ID of the second dialog. A Call-ID with no dialog is a 404.\nRequired.",
+            "in": "query",
+            "name": "b",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Comparison"
+                }
+              }
+            },
+            "description": "The two summaries and the fields that differ."
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "A missing `a` or `b` query parameter."
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "No bearer credential, or one this server does not accept."
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "No dialog carries one of the two Call-IDs in this capture."
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Over the per-source-IP rate limit of 100 requests per second."
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Compare two calls side by side",
         "tags": [
           "dialogs"
         ]

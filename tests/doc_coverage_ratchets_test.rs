@@ -433,7 +433,10 @@ fn undocumented_numeric_ceilings_do_not_increase() {
 // 38 -> 40 at PAR3, for `Timeline` and `TimelineBucket`, the `GET /v1/timeline`
 // response. Response-only, same reason, pinned by the same contract test. Two
 // components.
-const PERMISSIVE_SCHEMA_COMPONENTS: usize = 40;
+// 40 -> 42 at PAR3, for `Comparison` and `ComparisonSide`, the
+// `GET /v1/dialogs/compare` response. Response-only, same reason, pinned by the
+// same contract test. Two components.
+const PERMISSIVE_SCHEMA_COMPONENTS: usize = 42;
 
 #[test]
 fn permissive_rest_schema_components_do_not_increase() {

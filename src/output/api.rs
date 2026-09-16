@@ -467,6 +467,17 @@ pub struct TimelineParams {
     pub bucket_seconds: Option<u64>,
 }
 
+/// Query parameters for the `GET /v1/dialogs/compare` endpoint.
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct CompareParams {
+    /// Call-ID of the first dialog. A Call-ID with no dialog is a 404. Required.
+    pub a: Option<String>,
+    /// Call-ID of the second dialog. A Call-ID with no dialog is a 404.
+    /// Required.
+    pub b: Option<String>,
+}
+
 // ── Router construction ─────────────────────────────────────────────
 
 /// Per-request wall-clock cap. The API is request/response (no streaming), so a
@@ -551,6 +562,10 @@ pub fn build_router(state: ApiState) -> Router {
     let router = Router::new()
         .route("/health", get(health_check))
         .route("/v1/dialogs", get(list_dialogs))
+        // Static segment, so it wins over `{call_id}` (matchit 0.8): a dialog
+        // whose Call-ID is literally "compare" is unreachable here, which no
+        // real capture hits.
+        .route("/v1/dialogs/compare", get(get_compare))
         .route("/v1/dialogs/{call_id}", get(get_dialog))
         .route("/v1/dialogs/{call_id}/report", get(get_dialog_report))
         .route("/v1/dialogs/{call_id}/correlated", get(get_correlated))
@@ -1346,6 +1361,105 @@ async fn get_timeline(
         returned: buckets.len(),
         bucket_seconds: width,
         buckets,
+    }))
+}
+
+/// `GET /v1/dialogs/compare` — two calls side by side, with the fields that
+/// differ named (PAR3: compare_dialogs on REST).
+///
+/// # Arguments
+///
+/// * `state` — Shared application state.
+/// * `addr` — Client socket address used for rate limiting.
+/// * `headers` — Request headers (auth).
+/// * `params` — `a` and `b`, the two Call-IDs to compare.
+///
+/// # Returns
+///
+/// 200 with the two summaries and the differing fields; 400 when `a` or `b` is
+/// missing; 404 when either Call-ID has no dialog, naming which; 401/503 from
+/// the guard.
+///
+/// # Side effects
+///
+/// Holds the dialog-store read lock while summarizing; mutates the rate limiter.
+#[utoipa::path(
+    get,
+    path = "/v1/dialogs/compare",
+    tag = "dialogs",
+    summary = "Compare two calls side by side",
+    description = "Two calls side by side — state, outcome code, message count and method set — with the fields that differ named for you. The same comparison the MCP `compare_dialogs` tool answers.\n\nA client could fetch both dialogs and diff them, but one asked to spot the difference itself will sometimes report a difference that is not there. This route names them: `differences` lists the fields that moved, a subset of `state`, `final_status_code`, `msg_count` and `methods`. A Call-ID with no dialog is a 404 that names which of the two is missing.",
+    params(CompareParams),
+    security(("bearer" = [])),
+    responses(
+        (status = 200, description = "The two summaries and the fields that differ.", body = schema::Comparison),
+        (status = 400, description = "A missing `a` or `b` query parameter.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 401, description = "No bearer credential, or one this server does not accept.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 404, description = "No dialog carries one of the two Call-IDs in this capture.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 503, description = "Over the per-source-IP rate limit of 100 requests per second.", body = schema::ProblemJson, content_type = "application/problem+json"),
+    )
+)]
+async fn get_compare(
+    State(state): State<ApiState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Query(params): Query<CompareParams>,
+) -> Result<impl IntoResponse, Problem> {
+    guard(&state, &headers, addr.ip())?;
+
+    let a_id = params
+        .a
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| {
+            Problem::detailed(
+                StatusCode::BAD_REQUEST,
+                "the `a` query parameter is required: the Call-ID of the first call to compare",
+            )
+        })?;
+    let b_id = params
+        .b
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| {
+            Problem::detailed(
+                StatusCode::BAD_REQUEST,
+                "the `b` query parameter is required: the Call-ID of the second call to compare",
+            )
+        })?;
+
+    let ds = state.dialog_store.read();
+    let a = ds.get(a_id).ok_or_else(|| {
+        Problem::detailed(
+            StatusCode::NOT_FOUND,
+            format!("no dialog carries a='{a_id}'"),
+        )
+    })?;
+    let b = ds.get(b_id).ok_or_else(|| {
+        Problem::detailed(
+            StatusCode::NOT_FOUND,
+            format!("no dialog carries b='{b_id}'"),
+        )
+    })?;
+
+    // The shared comparison rule, so this route and the MCP `compare_dialogs`
+    // tool name the same differences.
+    let cmp = crate::sip::dialog::compare_dialogs(a, b);
+    let side = |s: crate::sip::dialog::DialogSide| schema::ComparisonSide {
+        call_id: s.call_id,
+        state: s.state,
+        final_status_code: s.final_status_code,
+        msg_count: s.msg_count,
+        methods: s.methods,
+        hints: s.hints,
+    };
+    Ok(Json(schema::Comparison {
+        schema_version: 1,
+        a: side(cmp.a),
+        b: side(cmp.b),
+        differences: cmp.differences,
     }))
 }
 
@@ -3752,6 +3866,42 @@ pub mod schema {
         pub bucket_seconds: u64,
     }
 
+    /// One call summarized for a side-by-side comparison: the fields
+    /// `/v1/dialogs/compare` diffs, the same the MCP `compare_dialogs` tool
+    /// reports.
+    #[derive(Debug, Clone, serde::Serialize, ToSchema)]
+    pub struct ComparisonSide {
+        /// The dialog's Call-ID.
+        pub call_id: String,
+        /// The dialog state (`InCall`, `Failed`, `Completed`, …).
+        pub state: String,
+        /// The final INVITE response code, null while the call is in progress.
+        pub final_status_code: Option<u16>,
+        /// How many SIP messages the dialog holds.
+        pub msg_count: usize,
+        /// The distinct request methods seen, sorted.
+        pub methods: Vec<String>,
+        /// The signaling-diagnosis hints for the call.
+        pub hints: Vec<String>,
+    }
+
+    /// Two calls side by side, naming which fields differ.
+    #[derive(Debug, Clone, serde::Serialize, ToSchema)]
+    pub struct Comparison {
+        /// Version of this response's shape.
+        #[schema(example = 1)]
+        pub schema_version: u32,
+        /// The first call's summary.
+        pub a: ComparisonSide,
+        /// The second call's summary.
+        pub b: ComparisonSide,
+        /// The field names that differ — a subset of `state`,
+        /// `final_status_code`, `msg_count`, `methods`, in that order. Empty
+        /// when the two calls match on all four. `hints` is reported per side
+        /// but not diffed.
+        pub differences: Vec<String>,
+    }
+
     /// Transaction timing, as carried by every dialog summary.
     #[derive(Debug, Clone, ToSchema)]
     pub struct TimingSummary {
@@ -4470,6 +4620,7 @@ impl utoipa::Modify for BearerAuth {
         get_tree,
         get_aggregate,
         get_timeline,
+        get_compare,
         get_lint,
         get_persistence,
         set_persistence,
@@ -4505,6 +4656,8 @@ impl utoipa::Modify for BearerAuth {
         schema::Lint,
         schema::TimelineBucket,
         schema::Timeline,
+        schema::ComparisonSide,
+        schema::Comparison,
         schema::RelayStatsResponse,
         schema::DialogList,
         schema::DialogSummary,
@@ -5040,6 +5193,110 @@ mod tests {
 
         let resp = app
             .oneshot(test_request("/v1/timeline?bucket_seconds=0"))
+            .await
+            .expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    // ── compare (PAR3: compare_dialogs) ───────────────────────────────
+
+    /// Seed one answered call (`answered@test`, INVITE→200) and one busy call
+    /// (`busy@test`, INVITE→486), so a comparison has both a difference (state
+    /// and outcome code) and a match (one INVITE each, two messages each).
+    fn seed_compare_pair(state: &ApiState) {
+        let mut ds = state.dialog_store.write();
+        let ts = chrono::TimeZone::with_ymd_and_hms(&chrono::Utc, 2024, 6, 15, 12, 0, 0).unwrap();
+        let localhost = std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST);
+        let mut feed = |start: &str, call_id: &str, to_tag: bool| {
+            let to = if to_tag {
+                "To: <sip:bob@example.com>;tag=t2"
+            } else {
+                "To: <sip:bob@example.com>"
+            };
+            let raw = build_sip(
+                start,
+                &[
+                    "From: <sip:alice@example.com>;tag=t1",
+                    to,
+                    &format!("Call-ID: {call_id}"),
+                    "CSeq: 1 INVITE",
+                    "Content-Length: 0",
+                ],
+                b"",
+            );
+            let msg = crate::sip::parser::parse_sip(
+                &raw,
+                ts,
+                localhost,
+                localhost,
+                5060,
+                5060,
+                TransportProto::Udp,
+            )
+            .expect("parse");
+            ds.process_message(msg);
+        };
+        feed("INVITE sip:bob@example.com SIP/2.0", "answered@test", false);
+        feed("SIP/2.0 200 OK", "answered@test", true);
+        feed("INVITE sip:bob@example.com SIP/2.0", "busy@test", false);
+        feed("SIP/2.0 486 Busy Here", "busy@test", true);
+    }
+
+    /// `GET /v1/dialogs/compare` names the fields that differ and stays silent
+    /// on the ones that match. Closes the compare_dialogs REST gap.
+    #[tokio::test]
+    async fn compare_names_the_fields_that_differ() {
+        let state = make_state();
+        seed_compare_pair(&state);
+        let app = build_router(state);
+
+        let resp = app
+            .oneshot(test_request(
+                "/v1/dialogs/compare?a=answered@test&b=busy@test",
+            ))
+            .await
+            .expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_to_string(resp.into_body()).await;
+        let parsed: Value = serde_json::from_str(&body).expect("valid JSON");
+        assert_eq!(parsed["schema_version"], 1);
+        assert_eq!(parsed["a"]["state"], "InCall");
+        assert_eq!(parsed["a"]["final_status_code"], 200);
+        assert_eq!(parsed["b"]["state"], "Failed");
+        assert_eq!(parsed["b"]["final_status_code"], 486);
+        // State and outcome moved; method set and message count did not.
+        assert_eq!(
+            parsed["differences"],
+            serde_json::json!(["state", "final_status_code"])
+        );
+    }
+
+    /// A Call-ID with no dialog is a 404 that names which of the two is missing.
+    #[tokio::test]
+    async fn compare_unknown_call_id_is_404() {
+        let state = make_state();
+        seed_compare_pair(&state);
+        let app = build_router(state);
+
+        let resp = app
+            .oneshot(test_request(
+                "/v1/dialogs/compare?a=answered@test&b=ghost@test",
+            ))
+            .await
+            .expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    /// A comparison with no second call is a 400: the route needs two Call-IDs,
+    /// and a request naming one is a mistake, not an empty answer.
+    #[tokio::test]
+    async fn compare_missing_b_is_400() {
+        let state = make_state();
+        seed_compare_pair(&state);
+        let app = build_router(state);
+
+        let resp = app
+            .oneshot(test_request("/v1/dialogs/compare?a=answered@test"))
             .await
             .expect("oneshot");
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);

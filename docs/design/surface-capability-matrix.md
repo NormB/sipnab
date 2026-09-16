@@ -199,7 +199,7 @@ Put two calls side by side and list what differs.
 |---|---|
 | CLI | gap: one-shot comparison belongs here, but there is no compare flag (PAR5) |
 | TUI | gap: `MessageDiff` diffs two messages, not two calls, so the call-level compare is absent (PAR4) |
-| REST | gap: a client composes two dialog fetches and diffs them, but no single compare route exists (PAR3) |
+| REST | `/v1/dialogs/compare` |
 | MCP | `compare_dialogs` |
 
 ### Diagnostic problem filter
