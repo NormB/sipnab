@@ -46,8 +46,18 @@ pub mod pcap_reader;
 #[cfg(feature = "native")]
 pub mod pcapng_meta;
 pub mod reassembly;
+// Diffs two capture FILES by aggregate — shared by the MCP `compare_captures`
+// tool and the REST capture-compare route. Native for the same reason as
+// `replay`, which it reads through.
+#[cfg(feature = "native")]
+pub mod compare;
 #[cfg(feature = "native")]
 pub mod reconfigure;
+// Reads a capture FILE into a fresh pair of stores, off the live path — shared
+// by MCP `open_capture`/`compare_captures` and the REST capture-compare route.
+// Native because it opens a pcap; `api` and `mcp` both imply `native`.
+#[cfg(feature = "native")]
+pub mod replay;
 pub mod session;
 #[cfg(target_os = "linux")]
 pub mod uprobe;

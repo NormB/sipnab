@@ -310,6 +310,39 @@ fn audio_answers_with_a_wav_over_the_shipping_binary() {
     );
 }
 
+/// `GET /v1/captures/compare` answers over the shipped binary with the diff
+/// envelope (PAR3): with `--api-file-root` set, two real fixtures diff by state,
+/// each side naming its own file and each bucket carrying a signed delta.
+#[test]
+fn captures_compare_diffs_two_files_over_the_shipping_binary() {
+    let root = format!("{}/tests/pcap-samples", env!("CARGO_MANIFEST_DIR"));
+    let srv = ApiServer::spawn(&["--api-file-root", &root]);
+    let resp = srv
+        .get("/v1/captures/compare?a=b2bua-asterisk.pcapng&b=sip-rtp-g711.pcap&dimensions=state");
+    assert_eq!(resp.status, 200, "/v1/captures/compare status");
+    let body = resp.json();
+    assert_eq!(body["schema_version"], 1);
+    assert_eq!(body["a"]["filename"], "b2bua-asterisk.pcapng");
+    assert_eq!(body["b"]["filename"], "sip-rtp-g711.pcap");
+    assert_eq!(body["dimensions"][0]["dimension"], "state");
+    assert!(
+        body["dimensions"][0]["buckets"].is_array(),
+        "each dimension carries its ranked buckets"
+    );
+}
+
+/// Without `--api-file-root`, the shipping binary answers 503 — capture
+/// comparison is a file-reading capability that is off by default.
+#[test]
+fn captures_compare_without_a_file_root_is_503() {
+    let srv = ApiServer::spawn(&[]);
+    let resp = srv.get("/v1/captures/compare?a=a.pcap&b=b.pcap");
+    assert_eq!(
+        resp.status, 503,
+        "the capability is off until --api-file-root is set"
+    );
+}
+
 /// `GET /v1/dialogs/{id}/lint` answers over the shipped binary with the findings
 /// envelope (PAR3).
 #[test]

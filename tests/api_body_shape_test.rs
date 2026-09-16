@@ -52,6 +52,7 @@ fn state_with(gate: &Arc<PersistenceGate>) -> ApiState {
         tfps: Default::default(),
         alert_engine: None,
         armed_detections: Vec::new(),
+        file_root: None,
     }
 }
 

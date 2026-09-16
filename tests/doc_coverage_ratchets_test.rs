@@ -451,7 +451,11 @@ fn undocumented_numeric_ceilings_do_not_increase() {
 // 53 -> 55 at PAR3, for `SecurityFinding` and `SecurityFindings`, the
 // `GET /v1/security/findings` response. Response-only, same reason, pinned by
 // the same contract test. Two components.
-const PERMISSIVE_SCHEMA_COMPONENTS: usize = 55;
+// 55 -> 59 at PAR3, for `CaptureSideView`, `BucketDeltaView`, `DimensionDiffView`
+// and `CaptureComparisonView`, the `GET /v1/captures/compare` response.
+// Response-only, same reason. Four components. (`GET /v1/dialogs/{id}/audio`
+// added no component — its body is binary `audio/wav`, not JSON.)
+const PERMISSIVE_SCHEMA_COMPONENTS: usize = 59;
 
 #[test]
 fn permissive_rest_schema_components_do_not_increase() {

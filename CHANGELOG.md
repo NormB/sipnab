@@ -12,6 +12,19 @@ entry that carries them.
 
 ### Added
 
+- **`GET /v1/captures/compare` (PAR3).** Diff two capture files by aggregate —
+  per dimension, how many dialogs fell in each bucket in each capture and how far
+  that moved, ranked so "today is worse than yesterday, and here is where" is the
+  first row. The query a monitoring system polls, which no REST route exposed.
+  The diff core (`snapshot`, `diff_dimension`) and the pcap→stores reader move
+  into `crate::capture::compare` and `crate::capture::replay` (below the door
+  layer, since `src/capture/` cannot depend on `src/mcp/`), shared with the MCP
+  `compare_captures` tool — which fences the sender-controlled bucket values
+  before a model sees them, while REST returns them raw. Reading files off disk
+  is opt-in behind a new `--api-file-root`: a bare filename only, confined to the
+  root by the same resolver `-O` uses, so a separator, a `..` or a symlink out of
+  the root is refused; the route answers `503` until the flag is set. This closes
+  the `compare_captures` REST gap, leaving 28 named gaps.
 - **`GET /v1/dialogs/{call_id}/audio` (PAR3).** The call's decoded RTP audio as
   a standalone `audio/wav` file — mono for one direction, stereo for two, with a
   provenance note embedded in the file naming the mechanism, the version, and

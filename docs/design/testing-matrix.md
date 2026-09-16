@@ -49,15 +49,15 @@ was driving all of them.
 
 | Surface | Rows | `e2e` | `parsed` | `referenced` | `none` |
 |---|---|---|---|---|---|
-| CLI flags | 271 | 139 | 53 | 78 | 1 |
-| HTTP routes | 36 | 36 | -- | 0 | 0 |
+| CLI flags | 272 | 139 | 53 | 79 | 1 |
+| HTTP routes | 37 | 37 | -- | 0 | 0 |
 | MCP tools | 68 | 68 | -- | 0 | 0 |
 
 **Flags with no occurrence at all:** `--syslog`
 
 ## What a person found that the detector could not
 
-The generator understates. Of the 78 flags it could only call
+The generator understates. Of the 79 flags it could only call
 `referenced`, a read of the tests found 65 with a real behavior test --
 evidence that arrives through a config-file equivalent sharing the flag's
 resolver, through a golden file, or through a library-level test, none of
@@ -260,6 +260,7 @@ behind them.
 | `--metrics-max-conn` |  | `N` | Network listeners | referenced | `src/cli.rs` | **parse-only** | DoS BOUND (SN-02). Resolver precedence tested, ConnGate tested, the join between them is not |
 | `--api-max-rows` |  | `N` | Network listeners | referenced | `src/cli.rs`, `src/output/api.rs` | **parse-only** | Resolver tested and enforcement tested by setting state.max_rows directly; the wiring between them is not |
 | `--api-allow-relay-query` |  |  | Network listeners | parsed | `tests/relay_stats_cli_test.rs` |  |  |
+| `--api-file-root` |  | `DIR` | Network listeners | referenced | `src/output/api.rs`, `tests/api_test.rs` |  |  |
 | `--api-rate-limit-per-peer` |  | `N` | Network listeners | referenced | `src/cli.rs` | **behavior** | via config key: probe_api_rate_limit_per_peer counts HTTP 503 refusals from one peer |
 | `--mcp` |  |  | MCP (Model Context Protocol) | e2e | `tests/analyze_test.rs`, `tests/config_wiring_test.rs` +14 |  |  |
 | `--mcp-transport` |  | `TRANSPORT` | MCP (Model Context Protocol) | e2e | `tests/mcp_audit_sink_test.rs`, `tests/mcp_metrics_wiring_test.rs` +5 |  |  |
@@ -363,6 +364,7 @@ behind them.
 | `/metrics` | exercised | `tests/api_test.rs`, `tests/api_token_test.rs` +3 |
 | `/v1/aggregate` | exercised | `tests/api_test.rs`, `tests/openapi_contract_test.rs` |
 | `/v1/capabilities` | exercised | `tests/api_test.rs` |
+| `/v1/captures/compare` | exercised | `tests/api_test.rs`, `tests/openapi_contract_test.rs` |
 | `/v1/dialogs` | exercised | `tests/api_operator_flows_test.rs`, `tests/api_test.rs` +3 |
 | `/v1/dialogs/compare` | exercised | `tests/api_test.rs`, `tests/openapi_contract_test.rs` |
 | `/v1/dialogs/rates` | exercised | `tests/api_test.rs`, `tests/openapi_contract_test.rs` |

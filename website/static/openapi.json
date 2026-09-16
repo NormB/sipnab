@@ -67,6 +67,37 @@
         ],
         "type": "object"
       },
+      "BucketDeltaView": {
+        "description": "One value's movement between the two captures. `value` is raw.",
+        "properties": {
+          "a": {
+            "description": "Dialogs in this bucket in capture `a`.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "b": {
+            "description": "Dialogs in this bucket in capture `b`.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "delta": {
+            "description": "`b - a`. Negative means the value became rarer.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "value": {
+            "description": "The grouped value, raw. Absent from a side means zero there.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "value",
+          "a",
+          "b",
+          "delta"
+        ],
+        "type": "object"
+      },
       "CallReport": {
         "additionalProperties": false,
         "description": "Serialized form of DialogJson (src/output/json.rs): the `--call-report --json` output and GET /v1/dialogs/{id}. The embedded `streams` items mirror stream.schema.json (kept self-contained, no cross-file $ref).",
@@ -1483,6 +1514,45 @@
         ],
         "type": "object"
       },
+      "CaptureComparisonView": {
+        "description": "Two capture files diffed by aggregate. Bucket values are raw.",
+        "properties": {
+          "a": {
+            "$ref": "#/components/schemas/CaptureSideView",
+            "description": "The baseline."
+          },
+          "b": {
+            "$ref": "#/components/schemas/CaptureSideView",
+            "description": "The capture held against it."
+          },
+          "dimensions": {
+            "description": "One entry per requested dimension, in the order requested.",
+            "items": {
+              "$ref": "#/components/schemas/DimensionDiffView"
+            },
+            "type": "array"
+          },
+          "schema_version": {
+            "description": "Version of this response's shape.",
+            "example": 1,
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "summary": {
+            "description": "What the two sides are and what the numbers do not cover.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "schema_version",
+          "a",
+          "b",
+          "dimensions",
+          "summary"
+        ],
+        "type": "object"
+      },
       "CaptureIdentity": {
         "description": "Which capture an answer came from, and which revision of its stores.\n\nCompare two of these to learn what changed: a different `instance`\nmeans a different capture, and every cursor, index and Call-ID from the\nearlier answer is meaningless; the same instance with a higher\ngeneration means the same capture grew.\n\nThe SAME identity MCP's `capture_status` stamps its answers with, from\nthe same object, so an agent and an HTTP client polling one process can\ntell they are describing one capture.",
         "properties": {
@@ -1550,6 +1620,52 @@
           "streams_examined",
           "complete",
           "findings"
+        ],
+        "type": "object"
+      },
+      "CaptureSideView": {
+        "description": "What reading one capture produced, for `GET /v1/captures/compare`.",
+        "properties": {
+          "dialogs": {
+            "description": "Dialogs the read produced.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "dialogs_dropped": {
+            "description": "Dialogs the scratch store's capacity refused; non-zero means this\nside is truncated and every count is a floor.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "filename": {
+            "description": "The name the caller gave.",
+            "type": "string"
+          },
+          "packets": {
+            "description": "Packets read from the file.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "read_error": {
+            "description": "Why the read stopped early, when it did.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "streams": {
+            "description": "RTP streams the read produced.",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "filename",
+          "packets",
+          "dialogs",
+          "streams",
+          "dialogs_dropped"
         ],
         "type": "object"
       },
@@ -1987,6 +2103,38 @@
           "created_at",
           "updated_at",
           "timing"
+        ],
+        "type": "object"
+      },
+      "DimensionDiffView": {
+        "description": "One dimension's diff.",
+        "properties": {
+          "buckets": {
+            "description": "Buckets, largest absolute movement first.",
+            "items": {
+              "$ref": "#/components/schemas/BucketDeltaView"
+            },
+            "type": "array"
+          },
+          "dimension": {
+            "description": "The field grouped on.",
+            "type": "string"
+          },
+          "distinct_values": {
+            "description": "Distinct values seen across both captures.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "other": {
+            "$ref": "#/components/schemas/BucketDeltaView",
+            "description": "Everything past `top_n`, summed."
+          }
+        },
+        "required": [
+          "dimension",
+          "buckets",
+          "other",
+          "distinct_values"
         ],
         "type": "object"
       },
@@ -5160,6 +5308,112 @@
         "summary": "Server capabilities",
         "tags": [
           "operations"
+        ]
+      }
+    },
+    "/v1/captures/compare": {
+      "get": {
+        "description": "Diffs two capture files in `--api-file-root` by aggregate: per dimension, how many dialogs fell in each bucket in each capture and how far that moved, ranked so 'today is worse than yesterday, and here is where' is the first row. The poll a monitoring system makes; the same diff the MCP `compare_captures` tool answers.\n\nEach name is a bare FILENAME, never a path — a separator, a `..`, or a symlink out of the root is refused. Neither file becomes the capture this server serves. Bucket values come back raw, the values a program keys on. The route answers 503 until the server is started with `--api-file-root`, a file-reading capability that is off by default.",
+        "operationId": "get_captures_compare",
+        "parameters": [
+          {
+            "description": "Baseline capture: a bare filename inside `--api-file-root`. Required.",
+            "in": "query",
+            "name": "a",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Capture held against the baseline: a bare filename in the same root.\nRequired, and a name that resolves to the same file as `a` is a `400`.",
+            "in": "query",
+            "name": "b",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Comma-separated dimensions to diff, from the aggregate vocabulary\n(`state`, `response_code`, `method`, `from.user`, `to.user`, `ua`,\n`src.ip`, `dst.ip`, `rtp.codec`). Omitted takes `state`,`response_code`.",
+            "in": "query",
+            "name": "dimensions",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Rows per dimension; everything past it is summed into `(other)`. Clamped\nto the server's row cap.",
+            "in": "query",
+            "name": "top_n",
+            "required": false,
+            "schema": {
+              "minimum": 0,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CaptureComparisonView"
+                }
+              }
+            },
+            "description": "The ranked per-dimension diff."
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "A name that is not a bare filename or resolves outside the root, two names for one file, or an unknown dimension."
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "No bearer credential, or one this server does not accept."
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "A named capture yielded no dialogs and reported why; diffing against it would show every bucket collapsing to zero."
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "The server was started without `--api-file-root`, so capture comparison is not offered."
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Diff two capture files",
+        "tags": [
+          "capture"
         ]
       }
     },

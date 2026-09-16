@@ -6163,6 +6163,70 @@ tool which fences it.
 
 ---
 
+### GET /v1/captures/compare
+
+Diff two capture files by aggregate: per dimension, how many dialogs fell in
+each bucket in each capture and how far that moved, ranked so "today is worse
+than yesterday, and here is where" is the first row — the query a monitoring
+system polls, and the same diff the MCP `compare_captures` tool answers. Before
+this, no capture-vs-capture view existed on REST.
+
+**Query parameters:**
+
+- `a` (required) — the baseline capture, a bare filename inside `--api-file-root`.
+- `b` (required) — the capture held against it, a bare filename in the same
+  root. A name that resolves to the same file as `a` is a `400`.
+- `dimensions` (optional) — a comma-separated subset of the aggregate vocabulary
+  (`state`, `response_code`, `method`, `from.user`, `to.user`, `ua`, `src.ip`,
+  `dst.ip`, `rtp.codec`). Omitted takes `state` and `response_code`.
+- `top_n` (optional) — rows per dimension, clamped to the server's row cap.
+  Everything past it sums into an `(other)` bucket.
+
+**curl:**
+
+```bash
+curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" "http://127.0.0.1:8080/v1/captures/compare?a=yesterday.pcap&b=today.pcap&dimensions=response_code" | jq .
+```
+
+**Response:**
+
+```json
+{
+  "schema_version": 1,
+  "a": { "filename": "yesterday.pcap", "packets": 41003, "dialogs": 812, "streams": 640, "dialogs_dropped": 0 },
+  "b": { "filename": "today.pcap", "packets": 52110, "dialogs": 941, "streams": 733, "dialogs_dropped": 0 },
+  "dimensions": [
+    {
+      "dimension": "response_code",
+      "buckets": [
+        { "value": "503", "a": 1, "b": 60, "delta": 59 },
+        { "value": "200", "a": 700, "b": 690, "delta": -10 }
+      ],
+      "other": { "value": "(other)", "a": 111, "b": 191, "delta": 80 },
+      "distinct_values": 7
+    }
+  ],
+  "summary": "'yesterday.pcap' (812 dialogs) is the baseline; 'today.pcap' (941 dialogs) is held against it, so delta is b minus a. Neither is the capture this server holds."
+}
+```
+
+**Buckets rank by how far they MOVED, not by how big they are** — the largest
+bucket is usually the one that changed least, so ranking by movement puts the
+answer first. A value present in one capture only reads as zero on the other
+side, because "this appeared today" is the finding. `dialogs_dropped` above zero
+means that side hit the dialog ceiling and its counts are a floor. Bucket values
+come back **raw**: a `ua` or `from.user` bucket is a banner a stranger typed, and
+this route hands a program the value it keys on, unlike the MCP tool which fences
+those dimensions.
+
+**This route reads files off disk, so it is opt-in.** Each name is a bare
+FILENAME, never a path — the route refuses a separator, a `..`, or a symlink
+that resolves out of the root. A dialog-free file that reported why it read
+nothing is a `422`, not a diff whose every bucket collapsed to zero. The route answers `503`
+until an operator starts the server with `--api-file-root <DIR>`.
+
+---
+
 ### POST /v1/vcon/validate
 
 Check a vCon container against sipnab's vendored schema — the producer-and-
@@ -11124,6 +11188,7 @@ Unprivileged runs (`sipnab --setup-caps`) now do too.
 | `--api-max-rows` | `<N>` | `1000` | Rows one list-style REST response returns. The REST counterpart of `--mcp-max-rows`, settable for the same reason: the right ceiling belongs to the consumer, not to sipnab. A batch consumer piping `/v1/dialogs` to a file wants every row; a dashboard drawing a table wants far fewer. A caller may always ask for less with `?limit=`, and nothing it sends asks for more than this. Config: `[limits] api_max_rows` Feature: `api` |
 | `--api-rate-limit-per-peer` | `<N>` | `100` | REST requests one client IP may make per second; `0` disables the cap, the reading `--mcp-rate-limit-per-peer` and `--hep-rate-limit` also give it. The limiter counts by source address, so a dashboard polling `/v1/streams` on a short timer, or several collectors behind one NAT, share a single allowance. A refusal is `503` rather than `429` because the limiter runs before authentication, so it says nothing about the credential. Config: `[limits] api_rate_limit_per_peer` Feature: `api` |
 | `--api-allow-relay-query` | -- | -- | Let REST clients query the relay named by `--rtpengine-control` through the `GET /v1/relay/...` routes, which transmit. The REST counterpart of `--mcp-allow-relay-query`, off for the same reason: every other REST answer comes from bytes sipnab already holds, and these put a packet on the network — at the address that flag names, never one a client chooses. Without this flag those routes answer `not_permitted`; without a relay, or on a file-backed run, `not_configured`. Each response is HTTP 200 carrying an `outcome`, so a refusal is content, not a 4xx. Polling on an interval is not offered over REST at all. Feature: `api` |
+| `--api-file-root` | `<DIR>` | -- | Directory of capture files `GET /v1/captures/compare` may diff. The REST counterpart of `--mcp-file-root`, off for the same reason: every other REST answer comes from bytes sipnab already holds, while this reads FILES a client names. It takes a bare FILENAME, never a path: sipnab rejects a separator, a `..` or an absolute prefix before touching the filesystem, and refuses a symlink that resolves out of the root at open, by the same check `-O` uses. Without this flag the compare route answers `503`. Naming one directory means the worst a client can do is name files inside it. Feature: `api` |
 | `--metrics-max-conn` | `<N>` | `16` | Metrics scrapes served at once before further ones get `503`. The gate stops a burst of slow clients exhausting threads and taking monitoring down, and sixteen suits one Prometheus; an HA pair, a federating parent, a `remote_write` shard, an alertmanager sidecar and one engineer's `curl` reach it without anything unusual happening. A refused scrape leaves a hole in the series that reads as a capture that died rather than as a busy endpoint. Config: `[limits] metrics_max_conn` Feature: `metrics` |
 | `-L`, `--hep-listen` | `<ADDR>` | -- | Listen for HEP (Homer Encapsulation Protocol) packets. **Combines with `-d <iface>`**: HEP then supplies signaling while the interface supplies the RTP a HEP feed cannot carry, and streams bind to dialogs by SDP media endpoint. Give that run an explicit media-only BPF expression (`sipnab -N -d eth0 -L 127.0.0.1:9060 "udp portrange 10000-20000"`) — without one the interface gets the auto-generated *signaling* filter, captures no media, and sees every mirrored message a second time. One interface and one listener only: `--multi-device` with `-L`, `-I` with `-L`, and `-O` alongside the pair are each refused with the reason. See [cookbook recipe 6d](examples.md#6d-take-signaling-from-hep-and-media-off-the-wire-in-one-process). Feature: `hep` |
 | `-H`, `--hep-send` | `<ADDR>` | -- | Send captured packets via HEP to a remote collector: SIP as protocol type 1 and RTCP as type 5, so the collector can report media quality and not only call setup. RTP is never forwarded. **On `-I <file>` this forwards the file's contents**: every SIP message and RTCP report sipnab reads out of the capture goes to `<ADDR>` as recorded, redacted in no way. sipnab announces that at startup, naming the flag, the destination and the capture files, before it reads the first packet. See [What `--hep-send` sends](#what---hep-send-sends). Feature: `hep` |
@@ -11155,6 +11220,8 @@ Unprivileged runs (`sipnab --setup-caps`) now do too.
 - `sudo sipnab -N -d eth0 --api 127.0.0.1:8080 --api-key s3cret --api-max-rows 200 --api-rate-limit-per-peer 600` — the opposite, for a dashboard: short pages a browser can render, and six hundred requests a second per address, so a dozen browsers refreshing twice a second behind one office NAT share an allowance that fits them
 - `sudo sipnab -N -d eth0 --api 127.0.0.1:8080 --api-key s3cret --rtpengine-control 127.0.0.1:22222 --api-allow-relay-query` — a live capture whose REST clients may also ask the relay: `GET /v1/relay/stats` returns its counters as one JSON object with an `outcome`, transmitting once per request. Off without this flag, when those routes answer `not_permitted`
 - `sipnab -N -I capture.pcap --api 127.0.0.1:8080 --api-key s3cret --api-allow-relay-query --rtpengine-control 127.0.0.1:22222` — the relay routes still answer on a file run, but with `outcome: not_permitted`: a file-backed run holds no transmit permit, so no packet reaches the relay, and the addresses in a capture belong to third parties
+- `sudo sipnab -N -d eth0 --api 127.0.0.1:8080 --api-key s3cret --api-file-root /var/lib/sipnab/captures` — a live capture whose REST clients may also diff rotations: `GET /v1/captures/compare?a=yesterday.pcap&b=today.pcap` reads two files from that one directory and nothing outside it, ranking what moved. Off without the flag, when the route answers `503`
+- `sipnab -N -I today.pcap --api 127.0.0.1:8080 --api-key s3cret --api-file-root /srv/pcaps` — the compare route works on a file-backed run too: it diffs the two NAMED files under `/srv/pcaps`, never the loaded `today.pcap`, so a monitoring box can poll one sipnab for a rolling day-over-day comparison
 - `sudo sipnab -N -d eth0 --metrics 127.0.0.1:9090 --metrics-max-conn 64` — an HA Prometheus pair, a federating parent, a `remote_write` shard and an alertmanager sidecar all scraping one sipnab: at sixteen slots a slow scrape turns the next one away with `503`, and the hole in the series reads as a capture that died
 - `sudo sipnab -N -d eth0 --metrics 127.0.0.1:9090 --metrics-max-conn 2` — a single scraper on a small box, where two slots covers every client this endpoint has, and a third connection is something to turn away
 - `sipnab -N -L 0.0.0.0:9060 --hep-parse --hep-auth-file /etc/sipnab/hep.key --hep-auth-mode hmac --hep-hmac-window 120` — a collector whose agents run on hardware with a drifting clock: two minutes of tolerance keeps them heard while someone repairs the NTP problem

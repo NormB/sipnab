@@ -178,16 +178,15 @@ pub fn spawn(
     Ok(load)
 }
 
-/// Read every packet of `path` into the two stores.
+/// Read every packet of `path` into the two stores, tracking completeness.
 ///
-/// Routes through [`crate::pipeline::process_packet`] — the same applier the
-/// live path uses — rather than a second classify-and-store loop, so an opened
-/// capture is analyzed exactly as an `-I` one is.
-///
-/// The SIP port gate is off (`sip_portrange: None`), which is what the TUI's
-/// interactive open does. It is also the direction that cannot under-report:
-/// `--portrange` narrows which ports count as SIP, and a capture opened here
-/// is read with every port considered.
+/// A thin wrapper over [`crate::capture::replay::read_into_stores`], the shared
+/// non-mcp reader. This layer adds the one thing that reader deliberately does
+/// NOT: on a read that ended before the file did — an open failure, a shutdown,
+/// or a truncated dump — it sets the MCP completeness flag, so `capture_health`
+/// and every other tool can say the stores it answers from are partial (VAL2).
+/// The reader stays surface-agnostic because `src/capture/` cannot depend on
+/// `src/mcp/`.
 ///
 /// # Returns
 ///
@@ -203,100 +202,15 @@ pub(crate) fn read_into_stores(
     stream_store: &Arc<RwLock<StreamStore>>,
     progress: &AtomicU64,
 ) -> Result<u64, (u64, String)> {
-    // The guard owns any decompressed temp file (libpcap cannot read gzip) and
-    // must outlive the read loop, so keep it bound for the whole function.
-    let (mut cap, _gz_guard) = match crate::capture::file::open_offline(path) {
-        Ok(opened) => opened,
-        Err(e) => {
-            // Zero of the file was read. That is the most partial read there
-            // is, and every later answer rests on the stores this load was
-            // supposed to fill and did not.
-            super::completeness::note_source_stopped_early();
-            return Err((0, format!("{e:#}")));
-        }
-    };
-    let link_type = cap.get_datalink().0;
-    let mut rtp_heuristic = crate::rtp::heuristic::RtpHeuristic::new();
-    let opts = crate::pipeline::PipelineOptions::default();
-    let mut packets = 0u64;
-
-    loop {
-        // A load must not outlive a SIGTERM. Without this a multi-gigabyte
-        // read holds the process open long after the operator asked it to
-        // stop, and the packets go nowhere anyone will see.
-        if crate::signals::shutdown_requested() {
-            // Stopped by request rather than by a fault, and still a read that
-            // ended before the file did. Anything answered from these stores
-            // afterwards covers part of a capture.
-            super::completeness::note_source_stopped_early();
-            return Err((packets, "shutdown requested during the load".to_string()));
-        }
-        let pkt = match cap.next_packet() {
-            Ok(pkt) => pkt,
-            // Clean EOF: the file ended where the file ends.
-            Err(pcap::Error::NoMorePackets) => break,
-            // Anything else is a read that ended before the FILE did — a
-            // truncated dump file is the common one, and it is the normal state
-            // of a ring buffer's newest member. The packets already parsed stay
-            // in the stores, exactly as the CLI keeps them, because discarding
-            // them would lose more than the error costs. What changes is that
-            // the run now says so: `sipnab -N -I truncated.pcap` prints
-            // `1 stopped early` on stderr and every MCP response was silent
-            // about it, including `capture_health`, which is the tool an agent
-            // calls to ask whether a capture is sound (VAL2).
-            Err(e) => {
-                tracing::warn!(
-                    "capture '{}' stopped early after {packets} packet(s): {e}",
-                    path.display()
-                );
-                super::completeness::note_source_stopped_early();
-                break;
-            }
-        };
-        packets += 1;
-        progress.store(packets, Ordering::Relaxed);
-
-        // The shared, hardened converter: an out-of-range or nanosecond
-        // tv_usec (crafted or high-precision capture) is rejected and counted
-        // rather than overflowing here.
-        let ts = crate::capture::file::pcap_ts_to_chrono(pkt.header.ts);
-        let packet = crate::capture::Packet::new(
-            ts,
-            pkt.data.to_vec(),
-            pkt.header.caplen as usize,
-            pkt.header.len as usize,
-            None,
-            link_type,
-        );
-        // An agent asking over MCP gets the same accounting a human gets on
-        // the CLI. Dropping the error here would let a tool call report an
-        // empty, confident answer about a capture none of which was read —
-        // the failure mode this counter exists to remove.
-        let parsed = match crate::capture::parse::parse_packet(&packet) {
-            Ok(p) => p,
-            Err(e) => {
-                crate::capture::record_undecodable(&e, crate::capture::FrameFacts::UNRECORDED);
-                continue;
-            }
-        };
-        if parsed.payload.is_empty() {
-            continue;
-        }
-        // No decryption keys on this path, so no substituted plaintext.
-        let mut decrypt = crate::pipeline::MediaDecrypt::default();
-        crate::pipeline::process_packet(
-            &parsed,
-            dialog_store,
-            stream_store,
-            &mut rtp_heuristic,
-            &opts,
-            &mut decrypt,
-            // RE4 asks a live relay. This path reads a FILE, whose calls
-            // ended in the past, so there is nothing here to ask about.
-            None,
-        );
+    let outcome =
+        crate::capture::replay::read_into_stores(path, dialog_store, stream_store, progress);
+    if outcome.stopped_early {
+        super::completeness::note_source_stopped_early();
     }
-    Ok(packets)
+    match outcome.error {
+        Some(e) => Err((outcome.packets, e)),
+        None => Ok(outcome.packets),
+    }
 }
 
 #[cfg(test)]

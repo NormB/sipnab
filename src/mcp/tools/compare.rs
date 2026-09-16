@@ -19,15 +19,6 @@ use rmcp::model::{CallToolResult, ContentBlock};
 use rmcp::schemars::JsonSchema;
 use rmcp::{tool, tool_router};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
-
-/// Dimensions `compare_captures` diffs when the caller names none.
-///
-/// The two an operator opens a baseline comparison with: how many calls
-/// reached each dialog state, and which final response codes they ended on.
-/// Everything else in [`crate::mcp::server::GROUPABLE`] narrows a finding that
-/// one of these two produced first.
-const DEFAULT_DIMENSIONS: &[&str] = &["state", "response_code"];
 
 /// Parameters for `compare_captures`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
@@ -130,145 +121,54 @@ pub struct CompareCapturesResponse {
     pub summary: String,
 }
 
-/// One capture read into private stores and reduced to counts.
+/// Map the shared raw comparison onto the MCP wire shape, fencing the bucket
+/// values of the sender-controlled dimensions before they reach a model.
 ///
-/// The stores themselves never leave the blocking thread: a comparison must
-/// not put a second capture's dialogs anywhere a query can reach them, or
-/// every later answer becomes a mixture of two files.
-struct Snapshot {
-    /// The counts this side reports.
-    side: CaptureSide,
-    /// `dimension -> value -> dialogs`.
-    tallies: BTreeMap<String, BTreeMap<String, usize>>,
-}
-
-/// Read `path` and reduce it to per-dimension tallies.
-///
-/// Runs on a blocking thread. Reads through
-/// [`crate::mcp::load::read_into_stores`] — the same function `open_capture`
-/// uses — rather than a second read loop, so a capture compared here is
-/// analyzed exactly as one that was opened.
-///
-/// `max_dialogs` and `max_streams` are the caller's, not this function's: the
-/// ceilings are policy, the tool handler is where sipnab's shipped defaults are
-/// named, and a helper that chose its own would be a second place to change
-/// them. Whatever a cap refuses is counted and reported through
-/// [`CaptureSide::dialogs_dropped`] rather than silently shed.
-fn snapshot(
-    path: &std::path::Path,
-    filename: &str,
-    dimensions: &[String],
-    max_dialogs: usize,
-    max_streams: usize,
-) -> Snapshot {
-    use crate::rtp::stream_store::StreamStore;
-    use crate::sip::dialog_store::DialogStore;
-    use std::sync::Arc;
-
-    let ds = Arc::new(parking_lot::RwLock::new(DialogStore::new(
-        max_dialogs,
-        false,
-    )));
-    let ss = Arc::new(parking_lot::RwLock::new(StreamStore::new(max_streams)));
-    let progress = std::sync::atomic::AtomicU64::new(0);
-    let (packets, read_error) = match crate::mcp::load::read_into_stores(path, &ds, &ss, &progress)
-    {
-        Ok(packets) => (packets, None),
-        Err((packets, e)) => (packets, Some(e)),
-    };
-
-    let dialogs_read = ds.read();
-    let streams_read = ss.read();
-    let mut tallies: BTreeMap<String, BTreeMap<String, usize>> = BTreeMap::new();
-    for dimension in dimensions {
-        let bucket = tallies.entry(dimension.clone()).or_default();
-        for d in dialogs_read.iter() {
-            let streams: Vec<&crate::rtp::stream::RtpStream> =
-                streams_read.streams_for(&d.call_id).collect();
-            // `None` cannot happen: the caller validated every dimension
-            // against GROUPABLE before the file was opened. Skipping rather
-            // than panicking keeps a future key added to one list and not the
-            // other from taking the process down.
-            if let Some(value) = crate::mcp::server::dialog_group_value(dimension, d, &streams) {
-                *bucket.entry(value).or_insert(0) += 1;
-            }
+/// Only `from.user`, `to.user`, `ua` and `rtp.codec` carry attacker-typed text;
+/// a `state` or `response_code` bucket is sipnab's own vocabulary and is left
+/// as-is. `fence_field`, matching `dialog_group_value`, which fences the same
+/// four when a single-capture aggregate is rendered.
+fn fence_comparison(cmp: crate::capture::compare::CaptureComparison) -> CompareCapturesResponse {
+    fn to_side(s: crate::capture::compare::CaptureSide) -> CaptureSide {
+        CaptureSide {
+            filename: s.filename,
+            packets: s.packets,
+            dialogs: s.dialogs,
+            streams: s.streams,
+            dialogs_dropped: s.dialogs_dropped,
+            read_error: s.read_error,
         }
     }
-
-    Snapshot {
-        side: CaptureSide {
-            filename: filename.to_string(),
-            packets,
-            dialogs: dialogs_read.len(),
-            streams: streams_read.len(),
-            dialogs_dropped: dialogs_read.total_capacity_dialogs_dropped(),
-            read_error,
+    let fenced = |dimension: &str, bd: &crate::capture::compare::BucketDelta| BucketDelta {
+        value: if matches!(dimension, "from.user" | "to.user" | "ua" | "rtp.codec") {
+            crate::mcp::shape::fence_field(&bd.value)
+        } else {
+            bd.value.clone()
         },
-        tallies,
-    }
-}
-
-/// Join one dimension's two tallies into ranked deltas.
-///
-/// Ranked by ABSOLUTE movement rather than by count, because the question the
-/// tool exists for is "what changed", and the largest bucket is usually the
-/// one that changed least. Ties break on the value so the same pair of files
-/// always produces the same order.
-fn diff_dimension(
-    dimension: &str,
-    a: &BTreeMap<String, usize>,
-    b: &BTreeMap<String, usize>,
-    top_n: usize,
-) -> DimensionDiff {
-    let mut values: Vec<&String> = a.keys().chain(b.keys()).collect();
-    values.sort_unstable();
-    values.dedup();
-    let distinct_values = values.len();
-
-    let mut rows: Vec<BucketDelta> = values
-        .into_iter()
-        .map(|value| {
-            let (ca, cb) = (
-                a.get(value).copied().unwrap_or(0),
-                b.get(value).copied().unwrap_or(0),
-            );
-            BucketDelta {
-                value: value.clone(),
-                a: ca,
-                b: cb,
-                delta: cb as i64 - ca as i64,
-            }
+        a: bd.a,
+        b: bd.b,
+        delta: bd.delta,
+    };
+    let dimensions = cmp
+        .dimensions
+        .iter()
+        .map(|dd| DimensionDiff {
+            dimension: dd.dimension.clone(),
+            buckets: dd
+                .buckets
+                .iter()
+                .map(|b| fenced(&dd.dimension, b))
+                .collect(),
+            other: fenced(&dd.dimension, &dd.other),
+            distinct_values: dd.distinct_values,
         })
         .collect();
-    crate::sort::sort_by_dyn(&mut rows, &mut |x, y| {
-        y.delta.abs().cmp(&x.delta.abs()).then_with(|| {
-            y.a.saturating_add(y.b)
-                .cmp(&x.a.saturating_add(x.b))
-                .then_with(|| x.value.cmp(&y.value))
-        })
-    });
-
-    let other = rows.iter().skip(top_n).fold(
-        BucketDelta {
-            value: "(other)".to_string(),
-            a: 0,
-            b: 0,
-            delta: 0,
-        },
-        |mut acc, r| {
-            acc.a += r.a;
-            acc.b += r.b;
-            acc.delta += r.delta;
-            acc
-        },
-    );
-    rows.truncate(top_n);
-
-    DimensionDiff {
-        dimension: dimension.to_string(),
-        buckets: rows,
-        other,
-        distinct_values,
+    CompareCapturesResponse {
+        schema_version: 1,
+        a: to_side(cmp.a),
+        b: to_side(cmp.b),
+        dimensions,
+        summary: cmp.summary,
     }
 }
 
@@ -387,135 +287,61 @@ impl SipnabMcp {
         &self,
         Parameters(params): Parameters<CompareCapturesParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        // Vocabulary first, files second. Reading two captures is the most
-        // expensive thing this surface does, and a mistyped dimension must
-        // not cost it.
-        let requested: Vec<String> = match params.dimensions.as_deref() {
-            None | Some([]) => DEFAULT_DIMENSIONS
-                .iter()
-                .map(|d| (*d).to_string())
-                .collect(),
-            Some(list) => {
-                let mut seen: Vec<String> = Vec::new();
-                for raw in list {
-                    let key = raw.trim();
-                    if !crate::mcp::server::GROUPABLE.contains(&key) {
-                        return Err(rmcp::ErrorData::invalid_params(
-                            format!(
-                                "cannot compare on '{key}'; one of: {}",
-                                crate::mcp::server::GROUPABLE.join(", ")
-                            ),
-                            None,
-                        ));
-                    }
-                    // Deduped rather than refused: a repeated dimension is a
-                    // caller assembling a list, not an error worth a round
-                    // trip, and diffing it twice would double the read.
-                    if !seen.iter().any(|s| s == key) {
-                        seen.push(key.to_string());
-                    }
-                }
-                seen
-            }
-        };
+        // The vocabulary check, `since`-free read, ranking and summary are
+        // shared with the REST route in `crate::capture::compare` — one rule in
+        // one place. Vocabulary first, files second: reading two captures is
+        // the most expensive thing this surface does, and a mistyped dimension
+        // must not cost it. `resolve_dimensions` runs before any file is
+        // touched.
+        let dims = crate::capture::compare::resolve_dimensions(params.dimensions.as_deref())
+            .map_err(|e| rmcp::ErrorData::invalid_params(e.to_string(), None))?;
         let top_n = crate::mcp::shape::resolve_limit_with_cap(params.top_n, self.row_cap);
 
+        // The MCP resolver confines both names to `--mcp-file-root` and
+        // canonicalizes them; the shared `compare` catches two names for one
+        // file. A guard on `a` alone would let `b` walk out of the root.
         let path_a = self.resolve_in_root(&params.a)?;
         let path_b = self.resolve_in_root(&params.b)?;
-        // The resolver canonicalizes, so this catches two names for one file
-        // as well as the same name twice. A capture diffed against itself is
-        // all zeros — true, and two full reads to learn nothing.
-        if path_a == path_b {
-            return Err(rmcp::ErrorData::invalid_params(
-                format!(
-                    "'{}' and '{}' are the same file ({}); a capture compared \
-                     with itself differs from itself nowhere",
-                    params.a,
-                    params.b,
-                    path_a.display()
-                ),
-                None,
-            ));
-        }
 
         let (name_a, name_b) = (params.a.clone(), params.b.clone());
-        let dims = requested.clone();
-        // One blocking task reading in sequence, not two in parallel: the
-        // tallies are small and the stores are not, so holding one capture at
-        // a time is the difference between one file's memory and two.
-        // The shipped `-l` / `--max-streams` ceilings, so a capture that fits
-        // under sipnab's own defaults fits here too.
         let max_dialogs = crate::cli::Cli::DEFAULT_DIALOG_LIMIT as usize;
         let max_streams = crate::cli::Cli::DEFAULT_MAX_STREAMS as usize;
-        let (snap_a, snap_b) = tokio::task::spawn_blocking(move || {
-            let a = snapshot(&path_a, &name_a, &dims, max_dialogs, max_streams);
-            let b = snapshot(&path_b, &name_b, &dims, max_dialogs, max_streams);
-            (a, b)
+        // On a blocking thread: two whole captures inside a handler would hold
+        // the single runtime thread the MCP server and the REST API share.
+        let comparison = tokio::task::spawn_blocking(move || {
+            crate::capture::compare::compare(
+                crate::capture::compare::CaptureRef {
+                    path: &path_a,
+                    name: &name_a,
+                },
+                crate::capture::compare::CaptureRef {
+                    path: &path_b,
+                    name: &name_b,
+                },
+                &dims,
+                max_dialogs,
+                max_streams,
+                top_n,
+            )
         })
         .await
         .map_err(|e| {
             rmcp::ErrorData::internal_error(format!("the capture read did not finish: {e}"), None)
+        })?
+        .map_err(|e| match e {
+            // A diff against a file that would not open shows every bucket
+            // collapsing to zero, a finding that is not there — internal, not a
+            // bad request. The other two are the caller's input.
+            crate::capture::compare::CompareError::Unreadable { .. } => {
+                rmcp::ErrorData::internal_error(e.to_string(), None)
+            }
+            crate::capture::compare::CompareError::SameFile { .. }
+            | crate::capture::compare::CompareError::UnknownDimension { .. } => {
+                rmcp::ErrorData::invalid_params(e.to_string(), None)
+            }
         })?;
 
-        for snap in [&snap_a, &snap_b] {
-            if snap.side.dialogs == 0
-                && let Some(err) = &snap.side.read_error
-            {
-                return Err(rmcp::ErrorData::internal_error(
-                    format!(
-                        "'{}' yielded no dialogs and reported: {err}. Refusing to \
-                         diff against it — every bucket would appear to have \
-                         collapsed to zero, which is a finding that is not there.",
-                        snap.side.filename
-                    ),
-                    None,
-                ));
-            }
-        }
-
-        let empty = BTreeMap::new();
-        let dimensions: Vec<DimensionDiff> = requested
-            .iter()
-            .map(|d| {
-                diff_dimension(
-                    d,
-                    snap_a.tallies.get(d).unwrap_or(&empty),
-                    snap_b.tallies.get(d).unwrap_or(&empty),
-                    top_n,
-                )
-            })
-            .collect();
-
-        let mut summary = format!(
-            "'{}' ({} dialogs) is the baseline; '{}' ({} dialogs) is held \
-             against it, so delta is b minus a. Neither is the capture this \
-             server has loaded.",
-            snap_a.side.filename, snap_a.side.dialogs, snap_b.side.filename, snap_b.side.dialogs,
-        );
-        for side in [&snap_a.side, &snap_b.side] {
-            if let Some(err) = &side.read_error {
-                summary.push_str(&format!(
-                    " '{}' was read only in part ({err}), so its counts are a \
-                     floor.",
-                    side.filename
-                ));
-            }
-            if side.dialogs_dropped > 0 {
-                summary.push_str(&format!(
-                    " '{}' exceeded the dialog ceiling and {} dialog(s) were \
-                     not counted.",
-                    side.filename, side.dialogs_dropped
-                ));
-            }
-        }
-
-        let response = CompareCapturesResponse {
-            schema_version: 1,
-            a: snap_a.side,
-            b: snap_b.side,
-            dimensions,
-            summary,
-        };
+        let response = fence_comparison(comparison);
         Ok(CallToolResult::success(vec![
             ContentBlock::json(response)?,
             ContentBlock::text(crate::mcp::shape::untrusted_note()),
@@ -841,11 +667,27 @@ mod tests {
 
     /// Dialogs and their `state` tally for one fixture, computed here rather
     /// than taken from the tool, so the tool's numbers are checked against an
-    /// independent read of the same file.
-    fn states_of(name: &str) -> (usize, BTreeMap<String, usize>) {
-        let snap = snapshot(&fixture(name), name, &["state".to_string()], 1000, 1000);
-        let tally = snap.tallies.get("state").cloned().unwrap_or_default();
-        (snap.side.dialogs, tally)
+    /// INDEPENDENT read of the same file — reimplemented here on purpose rather
+    /// than routed through `crate::capture::compare`, so the cross-check does
+    /// not lean on the code it is checking.
+    fn states_of(name: &str) -> (usize, std::collections::BTreeMap<String, usize>) {
+        let ds = Arc::new(RwLock::new(DialogStore::new(1000, false)));
+        let ss = Arc::new(RwLock::new(StreamStore::new(1000)));
+        let progress = AtomicU64::new(0);
+        crate::mcp::load::read_into_stores(&fixture(name), &ds, &ss, &progress)
+            .expect("the fixture must read cleanly");
+        let dsr = ds.read();
+        let ssr = ss.read();
+        let mut tally: std::collections::BTreeMap<String, usize> =
+            std::collections::BTreeMap::new();
+        for d in dsr.iter() {
+            let streams: Vec<&crate::rtp::stream::RtpStream> =
+                ssr.streams_for(&d.call_id).collect();
+            if let Some(v) = crate::sip::dialog::dialog_group_value_raw("state", d, &streams) {
+                *tally.entry(v).or_insert(0) += 1;
+            }
+        }
+        (dsr.len(), tally)
     }
 
     // ── compare_captures ────────────────────────────────────────────────
@@ -1071,85 +913,6 @@ mod tests {
             "the refusal must name the file and why; got {err:?}"
         );
         let _ = std::fs::remove_dir_all(&root);
-    }
-
-    /// Buckets are ranked by how far they MOVED, not by how big they are. The
-    /// largest bucket is usually the one that changed least, and putting it
-    /// first buries the answer.
-    #[test]
-    fn buckets_rank_by_movement_not_by_size() {
-        let a: BTreeMap<String, usize> = [("200".to_string(), 900), ("503".to_string(), 1)].into();
-        let b: BTreeMap<String, usize> = [("200".to_string(), 899), ("503".to_string(), 60)].into();
-        let diff = diff_dimension("response_code", &a, &b, 10);
-        assert_eq!(
-            diff.buckets[0].value, "503",
-            "the bucket that moved 59 must outrank the one that moved 1"
-        );
-        assert_eq!(diff.buckets[0].delta, 59);
-        assert_eq!(diff.buckets[1].delta, -1);
-        assert_eq!(diff.distinct_values, 2);
-    }
-
-    /// A value present in one capture only is reported as zero on the other
-    /// side, because "this appeared today" is the finding, not a missing row.
-    #[test]
-    fn a_value_seen_in_one_capture_only_reads_as_zero_on_the_other() {
-        let a: BTreeMap<String, usize> = [("200".to_string(), 5)].into();
-        let b: BTreeMap<String, usize> = [("200".to_string(), 5), ("603".to_string(), 4)].into();
-        let diff = diff_dimension("response_code", &a, &b, 10);
-        let new = diff
-            .buckets
-            .iter()
-            .find(|r| r.value == "603")
-            .expect("the new value must be a bucket, not an omission");
-        assert_eq!((new.a, new.b, new.delta), (0, 4, 4));
-    }
-
-    /// Everything past `top_n` is summed rather than dropped, so the rows and
-    /// the remainder still account for both populations.
-    #[test]
-    fn buckets_past_top_n_are_summed_into_other() {
-        let a: BTreeMap<String, usize> = [
-            ("200".to_string(), 10),
-            ("404".to_string(), 3),
-            ("486".to_string(), 2),
-        ]
-        .into();
-        let b: BTreeMap<String, usize> = [
-            ("200".to_string(), 1),
-            ("404".to_string(), 3),
-            ("486".to_string(), 2),
-        ]
-        .into();
-        let diff = diff_dimension("response_code", &a, &b, 1);
-        assert_eq!(diff.buckets.len(), 1, "top_n must bound the rows");
-        assert_eq!(
-            diff.buckets[0].a + diff.other.a,
-            15,
-            "rows plus other must account for a"
-        );
-        assert_eq!(
-            diff.buckets[0].b + diff.other.b,
-            6,
-            "rows plus other must account for b"
-        );
-    }
-
-    /// A cap the capture exceeds is reported, not hidden: a diff over a
-    /// truncated population is a wrong answer that looks like a right one.
-    #[test]
-    fn a_capture_over_the_dialog_ceiling_says_so() {
-        let snap = snapshot(
-            &fixture("sip-problem-call.pcap"),
-            "sip-problem-call.pcap",
-            &["state".to_string()],
-            1,
-            1000,
-        );
-        assert!(
-            snap.side.dialogs_dropped > 0,
-            "a one-dialog ceiling over a multi-dialog capture must report the loss"
-        );
     }
 
     // ── build_evidence_package ──────────────────────────────────────────

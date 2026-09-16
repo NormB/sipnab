@@ -11,9 +11,9 @@ reachable three ways and not four is visible only once these four are set
 beside one another. [`tests/capability_matrix_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/capability_matrix_test.rs) keeps
 this current and requires the matrix to account for every row here.
 
-Totals: CLI 271, TUI 14, REST 36, MCP 68.
+Totals: CLI 272, TUI 14, REST 37, MCP 68.
 
-## CLI flags (271)
+## CLI flags (272)
 
 - `--ack-timeout`
 - `--active-idle-window`
@@ -25,6 +25,7 @@ Totals: CLI 271, TUI 14, REST 36, MCP 68.
 - `--analyze`
 - `--api`
 - `--api-allow-relay-query`
+- `--api-file-root`
 - `--api-key`
 - `--api-max-conn`
 - `--api-max-rows`
@@ -304,12 +305,13 @@ Totals: CLI 271, TUI 14, REST 36, MCP 68.
 - `StreamList`
 - `StreamLossMap`
 
-## REST routes (36)
+## REST routes (37)
 
 - `/health`
 - `/metrics`
 - `/v1/aggregate`
 - `/v1/capabilities`
+- `/v1/captures/compare`
 - `/v1/dialogs`
 - `/v1/dialogs/compare`
 - `/v1/dialogs/rates`

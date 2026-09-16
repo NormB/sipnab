@@ -463,7 +463,7 @@ Is today's capture worse than yesterday's, and in which bucket?
 |---|---|
 | CLI | gap: diff capture A against B and rank what moved is exactly a cron job, but it is absent (PAR5) |
 | TUI | decision: a whole-file cross-capture trend is a batch artifact, not an interactive terminal affordance |
-| REST | gap: today against yesterday, ranked, is a queryable fact a monitoring system would poll, but no capture-vs-capture route exists (PAR3) |
+| REST | `/v1/captures/compare` |
 | MCP | `compare_captures` |
 
 ### Export capture to pcap

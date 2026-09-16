@@ -2701,6 +2701,70 @@ tool which fences it.
 
 ---
 
+### GET /v1/captures/compare
+
+Diff two capture files by aggregate: per dimension, how many dialogs fell in
+each bucket in each capture and how far that moved, ranked so "today is worse
+than yesterday, and here is where" is the first row — the query a monitoring
+system polls, and the same diff the MCP `compare_captures` tool answers. Before
+this, no capture-vs-capture view existed on REST.
+
+**Query parameters:**
+
+- `a` (required) — the baseline capture, a bare filename inside `--api-file-root`.
+- `b` (required) — the capture held against it, a bare filename in the same
+  root. A name that resolves to the same file as `a` is a `400`.
+- `dimensions` (optional) — a comma-separated subset of the aggregate vocabulary
+  (`state`, `response_code`, `method`, `from.user`, `to.user`, `ua`, `src.ip`,
+  `dst.ip`, `rtp.codec`). Omitted takes `state` and `response_code`.
+- `top_n` (optional) — rows per dimension, clamped to the server's row cap.
+  Everything past it sums into an `(other)` bucket.
+
+**curl:**
+
+```bash
+curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" "http://127.0.0.1:8080/v1/captures/compare?a=yesterday.pcap&b=today.pcap&dimensions=response_code" | jq .
+```
+
+**Response:**
+
+```json
+{
+  "schema_version": 1,
+  "a": { "filename": "yesterday.pcap", "packets": 41003, "dialogs": 812, "streams": 640, "dialogs_dropped": 0 },
+  "b": { "filename": "today.pcap", "packets": 52110, "dialogs": 941, "streams": 733, "dialogs_dropped": 0 },
+  "dimensions": [
+    {
+      "dimension": "response_code",
+      "buckets": [
+        { "value": "503", "a": 1, "b": 60, "delta": 59 },
+        { "value": "200", "a": 700, "b": 690, "delta": -10 }
+      ],
+      "other": { "value": "(other)", "a": 111, "b": 191, "delta": 80 },
+      "distinct_values": 7
+    }
+  ],
+  "summary": "'yesterday.pcap' (812 dialogs) is the baseline; 'today.pcap' (941 dialogs) is held against it, so delta is b minus a. Neither is the capture this server holds."
+}
+```
+
+**Buckets rank by how far they MOVED, not by how big they are** — the largest
+bucket is usually the one that changed least, so ranking by movement puts the
+answer first. A value present in one capture only reads as zero on the other
+side, because "this appeared today" is the finding. `dialogs_dropped` above zero
+means that side hit the dialog ceiling and its counts are a floor. Bucket values
+come back **raw**: a `ua` or `from.user` bucket is a banner a stranger typed, and
+this route hands a program the value it keys on, unlike the MCP tool which fences
+those dimensions.
+
+**This route reads files off disk, so it is opt-in.** Each name is a bare
+FILENAME, never a path — the route refuses a separator, a `..`, or a symlink
+that resolves out of the root. A dialog-free file that reported why it read
+nothing is a `422`, not a diff whose every bucket collapsed to zero. The route answers `503`
+until an operator starts the server with `--api-file-root <DIR>`.
+
+---
+
 ### POST /v1/vcon/validate
 
 Check a vCon container against sipnab's vendored schema — the producer-and-

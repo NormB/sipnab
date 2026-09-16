@@ -285,6 +285,11 @@ pub struct ApiState {
     /// every headless run whether or not a detector was armed, so its presence
     /// cannot answer "was anything watching". Empty means nothing is armed.
     pub armed_detections: Vec<String>,
+    /// Directory `GET /v1/captures/compare` may diff capture files in, from
+    /// `--api-file-root`. `None` (every test here, and any run started without
+    /// the flag) makes that route answer `not_configured` — a file-reading
+    /// capability is opt-in, like [`Self::relay_query`].
+    pub file_root: Option<std::path::PathBuf>,
 }
 
 /// Resolve a caller's `?limit=` to a row count.
@@ -316,6 +321,64 @@ fn resolve_page_limit(requested: Option<usize>, cap: usize) -> usize {
 /// A page size, not a ceiling: it is what `?limit=` defaults to, and any
 /// caller can ask for more up to [`ApiState::max_rows`].
 const DEFAULT_PAGE_ROWS: usize = 50;
+
+/// Resolve a caller's bare filename against `--api-file-root`, confined.
+///
+/// The whole security model of `--api-file-root`: a FILENAME, never a path.
+/// Anything with a separator, a `..`, or an absolute prefix is refused before
+/// the filesystem is touched (400), and a symlink that resolves out of the root
+/// is refused at the same [`crate::capture::output_guard::canonical_target`]
+/// check `-O` and the MCP file tools use — one confinement primitive, not a
+/// second. A `None` root means the capability was never enabled (503).
+///
+/// # Arguments
+///
+/// * `root` — the configured file root, or `None`.
+/// * `name` — the caller-supplied filename.
+fn resolve_in_file_root(
+    root: Option<&std::path::Path>,
+    name: &str,
+) -> Result<std::path::PathBuf, Problem> {
+    let root = root.ok_or_else(|| {
+        Problem::detailed(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "capture comparison is not configured on this server: start sipnab \
+             with --api-file-root <DIR> to enable it",
+        )
+    })?;
+    if name.is_empty() {
+        return Err(Problem::detailed(
+            StatusCode::BAD_REQUEST,
+            "filename must not be empty",
+        ));
+    }
+    // One path component, and it must be a plain name.
+    let mut parts = std::path::Path::new(name).components();
+    let only = parts.next();
+    let extra = parts.next();
+    let bare = matches!(only, Some(std::path::Component::Normal(_))) && extra.is_none();
+    if !bare || name.contains('/') || name.contains('\\') || name.contains("..") {
+        return Err(Problem::detailed(
+            StatusCode::BAD_REQUEST,
+            format!(
+                "'{name}' is not a bare filename. This route takes a name, not a \
+                 path, and reads only inside --api-file-root."
+            ),
+        ));
+    }
+    // A bare name can still leave the root through a symlink already placed
+    // there. `canonical_target` resolves it — the same resolver `-O` and the MCP
+    // file tools use — and the resolved path must stay under the root.
+    let resolved = crate::capture::output_guard::canonical_target(&root.join(name));
+    let canonical_root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    if !resolved.starts_with(&canonical_root) {
+        return Err(Problem::detailed(
+            StatusCode::BAD_REQUEST,
+            format!("'{name}' resolves outside --api-file-root."),
+        ));
+    }
+    Ok(resolved)
+}
 
 // ── Rate limiter ────────────────────────────────────────────────────
 
@@ -575,6 +638,24 @@ pub struct SecurityFindingsParams {
     pub limit: Option<usize>,
 }
 
+/// Query parameters for the `GET /v1/captures/compare` endpoint.
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct CaptureCompareParams {
+    /// Baseline capture: a bare filename inside `--api-file-root`. Required.
+    pub a: Option<String>,
+    /// Capture held against the baseline: a bare filename in the same root.
+    /// Required, and a name that resolves to the same file as `a` is a `400`.
+    pub b: Option<String>,
+    /// Comma-separated dimensions to diff, from the aggregate vocabulary
+    /// (`state`, `response_code`, `method`, `from.user`, `to.user`, `ua`,
+    /// `src.ip`, `dst.ip`, `rtp.codec`). Omitted takes `state`,`response_code`.
+    pub dimensions: Option<String>,
+    /// Rows per dimension; everything past it is summed into `(other)`. Clamped
+    /// to the server's row cap.
+    pub top_n: Option<usize>,
+}
+
 // ── Router construction ─────────────────────────────────────────────
 
 /// Per-request wall-clock cap. The API is request/response (no streaming), so a
@@ -702,6 +783,7 @@ pub fn build_router(state: ApiState) -> Router {
         .route("/v1/talkers", get(get_talkers))
         .route("/v1/endpoints", get(get_endpoints))
         .route("/v1/security/findings", get(get_security_findings))
+        .route("/v1/captures/compare", get(get_captures_compare))
         // Relay statistics (ST5). Each transmits once, behind
         // --api-allow-relay-query; the /call/ segment keeps C2 from colliding
         // with the static /names path. Polling (C5) is not offered here.
@@ -2165,6 +2247,165 @@ async fn get_security_findings(
         armed_kinds: report.armed_kinds,
         detection_armed: report.detection_armed,
         note: report.note,
+    }))
+}
+
+/// `GET /v1/captures/compare` — diff two capture files by aggregate (PAR3:
+/// compare_captures on REST).
+///
+/// # Arguments
+///
+/// * `state` — Shared application state (carries `--api-file-root`).
+/// * `addr` — Client socket address used for rate limiting.
+/// * `headers` — Request headers (auth).
+/// * `params` — `a` and `b` (bare filenames), an optional comma-separated
+///   `dimensions`, and an optional `top_n`.
+///
+/// # Returns
+///
+/// 200 with the ranked diff; 400 on a bad path, a same-file pair, or an unknown
+/// dimension; 422 when a side yielded no dialogs and reported why; 503 when the
+/// server was started without `--api-file-root`; 401 from the guard.
+///
+/// # Side effects
+///
+/// Reads two files on a blocking task; bumps the process-wide undecodable-frame
+/// tallies exactly as the MCP tool does; mutates the rate limiter.
+#[utoipa::path(
+    get,
+    path = "/v1/captures/compare",
+    tag = "capture",
+    summary = "Diff two capture files",
+    description = "Diffs two capture files in `--api-file-root` by aggregate: per dimension, how many dialogs fell in each bucket in each capture and how far that moved, ranked so 'today is worse than yesterday, and here is where' is the first row. The poll a monitoring system makes; the same diff the MCP `compare_captures` tool answers.\n\nEach name is a bare FILENAME, never a path — a separator, a `..`, or a symlink out of the root is refused. Neither file becomes the capture this server serves. Bucket values come back raw, the values a program keys on. The route answers 503 until the server is started with `--api-file-root`, a file-reading capability that is off by default.",
+    params(CaptureCompareParams),
+    security(("bearer" = [])),
+    responses(
+        (status = 200, description = "The ranked per-dimension diff.", body = schema::CaptureComparisonView),
+        (status = 400, description = "A name that is not a bare filename or resolves outside the root, two names for one file, or an unknown dimension.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 401, description = "No bearer credential, or one this server does not accept.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 422, description = "A named capture yielded no dialogs and reported why; diffing against it would show every bucket collapsing to zero.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 503, description = "The server was started without `--api-file-root`, so capture comparison is not offered.", body = schema::ProblemJson, content_type = "application/problem+json"),
+    )
+)]
+async fn get_captures_compare(
+    State(state): State<ApiState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Query(params): Query<CaptureCompareParams>,
+) -> Result<impl IntoResponse, Problem> {
+    guard(&state, &headers, addr.ip())?;
+
+    let a = params
+        .a
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| {
+            Problem::detailed(StatusCode::BAD_REQUEST, "give 'a', the baseline filename")
+        })?;
+    let b = params
+        .b
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| {
+            Problem::detailed(
+                StatusCode::BAD_REQUEST,
+                "give 'b', the filename to hold against the baseline",
+            )
+        })?;
+
+    // A URL query cannot repeat a key into a list, so the dimensions ride in one
+    // comma-separated value. The vocabulary check runs before any file is read.
+    let dims_in: Vec<String> = params
+        .dimensions
+        .as_deref()
+        .unwrap_or("")
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect();
+    let dims_opt = (!dims_in.is_empty()).then_some(dims_in);
+    let dims = crate::capture::compare::resolve_dimensions(dims_opt.as_deref())
+        .map_err(|e| Problem::detailed(StatusCode::BAD_REQUEST, e.to_string()))?;
+    let top_n = resolve_page_limit(params.top_n, state.max_rows);
+
+    // Resolve both names in the file root: 503 when the capability is off, 400
+    // on a path that is not a bare, in-root filename. Both sides are checked, so
+    // a guard on `a` alone cannot let `b` walk out of the root.
+    let path_a = resolve_in_file_root(state.file_root.as_deref(), a)?;
+    let path_b = resolve_in_file_root(state.file_root.as_deref(), b)?;
+    let (name_a, name_b) = (a.to_string(), b.to_string());
+    let max_dialogs = crate::cli::Cli::DEFAULT_DIALOG_LIMIT as usize;
+    let max_streams = crate::cli::Cli::DEFAULT_MAX_STREAMS as usize;
+
+    // On a blocking task: two whole captures inside the handler would hold the
+    // single runtime thread the REST API and the MCP server share.
+    let comparison = tokio::task::spawn_blocking(move || {
+        crate::capture::compare::compare(
+            crate::capture::compare::CaptureRef {
+                path: &path_a,
+                name: &name_a,
+            },
+            crate::capture::compare::CaptureRef {
+                path: &path_b,
+                name: &name_b,
+            },
+            &dims,
+            max_dialogs,
+            max_streams,
+            top_n,
+        )
+    })
+    .await
+    .map_err(|e| {
+        Problem::detailed(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("the capture read did not finish: {e}"),
+        )
+    })?
+    .map_err(|e| match e {
+        crate::capture::compare::CompareError::Unreadable { .. } => {
+            Problem::detailed(StatusCode::UNPROCESSABLE_ENTITY, e.to_string())
+        }
+        crate::capture::compare::CompareError::SameFile { .. }
+        | crate::capture::compare::CompareError::UnknownDimension { .. } => {
+            Problem::detailed(StatusCode::BAD_REQUEST, e.to_string())
+        }
+    })?;
+
+    // RAW: REST returns the bucket values unfenced (the MCP tool fences the
+    // sender-controlled dimensions). One map from the shared shape to the view.
+    let side = |s: crate::capture::compare::CaptureSide| schema::CaptureSideView {
+        filename: s.filename,
+        packets: s.packets,
+        dialogs: s.dialogs,
+        streams: s.streams,
+        dialogs_dropped: s.dialogs_dropped,
+        read_error: s.read_error,
+    };
+    let bucket = |bd: crate::capture::compare::BucketDelta| schema::BucketDeltaView {
+        value: bd.value,
+        a: bd.a,
+        b: bd.b,
+        delta: bd.delta,
+    };
+    let dimensions = comparison
+        .dimensions
+        .into_iter()
+        .map(|dd| schema::DimensionDiffView {
+            dimension: dd.dimension,
+            buckets: dd.buckets.into_iter().map(&bucket).collect(),
+            other: bucket(dd.other),
+            distinct_values: dd.distinct_values,
+        })
+        .collect();
+
+    Ok(Json(schema::CaptureComparisonView {
+        schema_version: 1,
+        a: side(comparison.a),
+        b: side(comparison.b),
+        dimensions,
+        summary: comparison.summary,
     }))
 }
 
@@ -4988,6 +5229,67 @@ pub mod schema {
         pub note: Option<String>,
     }
 
+    /// What reading one capture produced, for `GET /v1/captures/compare`.
+    #[derive(Debug, Clone, serde::Serialize, ToSchema)]
+    pub struct CaptureSideView {
+        /// The name the caller gave.
+        pub filename: String,
+        /// Packets read from the file.
+        pub packets: u64,
+        /// Dialogs the read produced.
+        pub dialogs: usize,
+        /// RTP streams the read produced.
+        pub streams: usize,
+        /// Dialogs the scratch store's capacity refused; non-zero means this
+        /// side is truncated and every count is a floor.
+        pub dialogs_dropped: u64,
+        /// Why the read stopped early, when it did.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub read_error: Option<String>,
+    }
+
+    /// One value's movement between the two captures. `value` is raw.
+    #[derive(Debug, Clone, serde::Serialize, ToSchema)]
+    pub struct BucketDeltaView {
+        /// The grouped value, raw. Absent from a side means zero there.
+        pub value: String,
+        /// Dialogs in this bucket in capture `a`.
+        pub a: usize,
+        /// Dialogs in this bucket in capture `b`.
+        pub b: usize,
+        /// `b - a`. Negative means the value became rarer.
+        pub delta: i64,
+    }
+
+    /// One dimension's diff.
+    #[derive(Debug, Clone, serde::Serialize, ToSchema)]
+    pub struct DimensionDiffView {
+        /// The field grouped on.
+        pub dimension: String,
+        /// Buckets, largest absolute movement first.
+        pub buckets: Vec<BucketDeltaView>,
+        /// Everything past `top_n`, summed.
+        pub other: BucketDeltaView,
+        /// Distinct values seen across both captures.
+        pub distinct_values: usize,
+    }
+
+    /// Two capture files diffed by aggregate. Bucket values are raw.
+    #[derive(Debug, Clone, serde::Serialize, ToSchema)]
+    pub struct CaptureComparisonView {
+        /// Version of this response's shape.
+        #[schema(example = 1)]
+        pub schema_version: u32,
+        /// The baseline.
+        pub a: CaptureSideView,
+        /// The capture held against it.
+        pub b: CaptureSideView,
+        /// One entry per requested dimension, in the order requested.
+        pub dimensions: Vec<DimensionDiffView>,
+        /// What the two sides are and what the numbers do not cover.
+        pub summary: String,
+    }
+
     /// Transaction timing, as carried by every dialog summary.
     #[derive(Debug, Clone, ToSchema)]
     pub struct TimingSummary {
@@ -5712,6 +6014,7 @@ impl utoipa::Modify for BearerAuth {
         get_talkers,
         get_endpoints,
         get_security_findings,
+        get_captures_compare,
         get_dialog_audio,
         get_lint,
         get_persistence,
@@ -5763,6 +6066,10 @@ impl utoipa::Modify for BearerAuth {
         schema::EndpointDescription,
         schema::SecurityFinding,
         schema::SecurityFindings,
+        schema::CaptureSideView,
+        schema::BucketDeltaView,
+        schema::DimensionDiffView,
+        schema::CaptureComparisonView,
         schema::RelayStatsResponse,
         schema::DialogList,
         schema::DialogSummary,
@@ -6957,6 +7264,129 @@ mod tests {
         assert_eq!(wav_filename_stem("..."), "audio");
     }
 
+    // ── captures compare (PAR3: compare_captures) ─────────────────────
+
+    fn pcap_samples_root() -> std::path::PathBuf {
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/pcap-samples")
+    }
+
+    fn state_with_file_root() -> ApiState {
+        ApiState {
+            file_root: Some(pcap_samples_root()),
+            ..make_state()
+        }
+    }
+
+    /// Without `--api-file-root` the route answers 503: reading files off disk
+    /// is an opt-in capability, off by default.
+    #[tokio::test]
+    async fn captures_compare_not_configured_is_503() {
+        let app = build_router(make_state());
+        let resp = app
+            .oneshot(test_request("/v1/captures/compare?a=x.pcap&b=y.pcap"))
+            .await
+            .expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    /// A missing baseline is a 400, checked before any file is touched.
+    #[tokio::test]
+    async fn captures_compare_missing_selector_is_400() {
+        let app = build_router(state_with_file_root());
+        let resp = app
+            .oneshot(test_request("/v1/captures/compare?b=sip-rtp-g711.pcap"))
+            .await
+            .expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    /// A name that is not a bare filename is refused — `--api-file-root` takes a
+    /// name, never a path, so a separator, a `..` or an absolute prefix cannot
+    /// escape the root. Both sides are checked.
+    #[tokio::test]
+    async fn captures_compare_path_traversal_is_400() {
+        let state = state_with_file_root();
+        for pair in [
+            "a=../escape.pcap&b=sip-rtp-g711.pcap",
+            "a=sip-rtp-g711.pcap&b=/etc/passwd",
+            "a=sub/dir.pcap&b=sip-rtp-g711.pcap",
+        ] {
+            let app = build_router(state.clone());
+            let resp = app
+                .oneshot(test_request(&format!("/v1/captures/compare?{pair}")))
+                .await
+                .expect("oneshot");
+            assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "{pair}");
+        }
+    }
+
+    /// A symlink INSIDE the root that points out of it is refused at resolution:
+    /// the escape is not in the string, so only the canonical-path check catches
+    /// it. This is the confinement's load-bearing case.
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn captures_compare_symlink_out_of_root_is_400() {
+        let root = tempfile::tempdir().expect("tempdir");
+        // A real capture inside the root, and a symlink beside it pointing at a
+        // file OUTSIDE the root.
+        std::fs::copy(
+            pcap_samples_root().join("sip-rtp-g711.pcap"),
+            root.path().join("inside.pcap"),
+        )
+        .expect("stage an in-root capture");
+        let outside = pcap_samples_root().join("b2bua-asterisk.pcapng");
+        std::os::unix::fs::symlink(&outside, root.path().join("escape.pcap"))
+            .expect("stage a symlink out of the root");
+
+        let state = ApiState {
+            file_root: Some(root.path().to_path_buf()),
+            ..make_state()
+        };
+        let app = build_router(state);
+        let resp = app
+            .oneshot(test_request(
+                "/v1/captures/compare?a=escape.pcap&b=inside.pcap",
+            ))
+            .await
+            .expect("oneshot");
+        assert_eq!(
+            resp.status(),
+            StatusCode::BAD_REQUEST,
+            "a symlink out of the root must be refused"
+        );
+    }
+
+    /// Two real files diff by state: each bucket carries both sides and their
+    /// signed delta, and the sides are not crossed. Closes the compare_captures
+    /// REST gap.
+    #[tokio::test]
+    async fn captures_compare_diffs_two_files() {
+        let app = build_router(state_with_file_root());
+        let resp = app
+            .oneshot(test_request(
+                "/v1/captures/compare?a=b2bua-asterisk.pcapng&b=sip-rtp-g711.pcap&dimensions=state",
+            ))
+            .await
+            .expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::OK);
+        let parsed: Value =
+            serde_json::from_str(&body_to_string(resp.into_body()).await).expect("valid JSON");
+        assert_eq!(parsed["schema_version"], 1);
+        assert_eq!(parsed["a"]["filename"], "b2bua-asterisk.pcapng");
+        assert_eq!(parsed["b"]["filename"], "sip-rtp-g711.pcap");
+        assert_eq!(parsed["dimensions"][0]["dimension"], "state");
+        let buckets = parsed["dimensions"][0]["buckets"]
+            .as_array()
+            .expect("state buckets");
+        for bucket in buckets {
+            assert_eq!(
+                bucket["delta"].as_i64().expect("delta"),
+                bucket["b"].as_i64().expect("b") - bucket["a"].as_i64().expect("a"),
+                "delta is b minus a"
+            );
+        }
+    }
+
     // ── lint (PAR3: lint_dialog) ──────────────────────────────────────
 
     /// `GET /v1/dialogs/{id}/lint` returns the dialog's RFC-conformance
@@ -7097,6 +7527,7 @@ mod tests {
             tfps: Default::default(),
             alert_engine: None,
             armed_detections: Vec::new(),
+            file_root: None,
         }
     }
 
@@ -7859,6 +8290,7 @@ mod tests {
             tfps: Default::default(),
             alert_engine: None,
             armed_detections: Vec::new(),
+            file_root: None,
         }
     }
 
@@ -8410,6 +8842,7 @@ mod tests {
             tfps: Default::default(),
             alert_engine: None,
             armed_detections: Vec::new(),
+            file_root: None,
         }
     }
 
@@ -9269,6 +9702,7 @@ mod tests {
             tfps: Default::default(),
             alert_engine: None,
             armed_detections: Vec::new(),
+            file_root: None,
         };
         populate_dialogs(&state);
 

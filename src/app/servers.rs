@@ -502,6 +502,13 @@ pub fn start_servers(
                 .iter()
                 .map(|s| (*s).to_string())
                 .collect(),
+            // Opt-in, like the relay permit above: a file-reading capability is
+            // off unless the operator named a directory to confine it to.
+            file_root: cli
+                .listener_args
+                .api_file_root
+                .as_ref()
+                .map(std::path::PathBuf::from),
         };
         let config = ApiServerConfig {
             max_conn: cli.listener_args.api_max_conn,

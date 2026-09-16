@@ -2429,6 +2429,23 @@ pub struct ListenerArgs {
     #[arg(help_heading = "Network listeners", long = "api-allow-relay-query")]
     pub api_allow_relay_query: bool,
 
+    /// Directory of capture files `GET /v1/captures/compare` may diff.
+    ///
+    /// The REST counterpart of `--mcp-file-root`, and off for the same reason:
+    /// every other REST answer comes from bytes sipnab already holds, while this
+    /// reads FILES a client names. It takes a FILENAME, never a path — anything
+    /// with a separator, a `..`, or an absolute prefix is rejected before
+    /// touching the filesystem, and a symlink that resolves out of the root is
+    /// refused at open. Without this flag the route answers `not_configured`.
+    /// Naming one directory means the worst a client can do is name files inside
+    /// it.
+    #[arg(
+        help_heading = "Network listeners",
+        long = "api-file-root",
+        value_name = "DIR"
+    )]
+    pub api_file_root: Option<String>,
+
     /// REST requests one client IP may make per second (`0` = unlimited,
     /// default 100). Config: `[limits] api_rate_limit_per_peer`.
     ///
