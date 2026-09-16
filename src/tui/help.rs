@@ -42,6 +42,7 @@ CALL LIST:
   N                Name selected address (IP -> host / FQDN)
   O                Open pcap file
   s                Statistics view
+  g                Top talkers (busiest participants, by source IP)
   S                Relay statistics view (asks the relay)
   B                Edit the BPF capture filter (append)
   D                Quality dashboard (live MOS/jitter/loss)
@@ -99,6 +100,12 @@ MESSAGE DIFF / COMBINED DETAIL / STATISTICS:
   h                Header names (diff and combined detail)
   Esc              Back
   q, s             Close statistics (Statistics view)
+
+TOP TALKERS:
+  ↑/↓, j/k       Scroll
+  PgUp/PgDn       Page scroll
+  Home/End         Jump to top/bottom
+  Esc, q, g        Close
 
 RELAY STATISTICS VIEW (S asks the relay directly):
   ?                Names the relay knows (what to ask for)

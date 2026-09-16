@@ -1249,6 +1249,10 @@ pub enum View {
     Help,
     /// Statistics summary view.
     Statistics,
+    /// Busiest-participant ranking (by source IP): the volume-and-abuse triage
+    /// view, the same ranking the MCP `top_talkers` tool and `GET /v1/talkers`
+    /// answer. Opened with `g` from the call list.
+    Talkers,
     /// The live relay's own statistics, asked over its control socket (ST8).
     ///
     /// Distinct from [`View::Statistics`], which is about what THIS capture saw:
@@ -1403,6 +1407,22 @@ pub(in crate::tui) struct StatsCache {
     /// Pre-rendered statistics text the view scrolls through.
     pub(in crate::tui) text: String,
     /// Floors generation-driven recomputation of the aggregate text.
+    pub(in crate::tui) floor: ChurnFloor,
+}
+
+/// Cross-tick cache of the talkers ranking text.
+///
+/// A full-store aggregation like [`StatsCache`], and cached for the same
+/// reason: ranking every participant on every frame while the view is open
+/// would recompute over the whole dialog store each redraw. Keyed on the dialog
+/// generation alone — the ranking is dialog-derived and reads no streams.
+#[derive(Debug, Default)]
+pub(in crate::tui) struct TalkersCache {
+    /// The dialog generation the ranking was derived from.
+    pub(in crate::tui) key: Option<u64>,
+    /// Pre-rendered ranking text the view scrolls through.
+    pub(in crate::tui) text: String,
+    /// Floors generation-driven recomputation of the ranking.
     pub(in crate::tui) floor: ChurnFloor,
 }
 

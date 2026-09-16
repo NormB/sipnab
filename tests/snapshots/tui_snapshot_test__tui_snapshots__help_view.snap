@@ -37,8 +37,8 @@ expression: output
 │  N                 Name selected address (IP -> host / FQDN)                 │
 │  O                 Open pcap file                                            │
 │  s                 Statistics view                                           │
+│  g                 Top talkers (busiest participants, by source IP)          │
 │  S                 Relay statistics view (asks the relay)                    │
 │  B                 Edit the BPF capture filter (append)                      │
-│  D                 Quality dashboard (live MOS/jitter/loss)                  │
 └──────────────────────────────────────────────────────────────────────────────┘
 Esc Back

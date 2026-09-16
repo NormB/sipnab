@@ -83,6 +83,7 @@ pub enum CallListAction {
     NameEndpoints,
     /// `s` — open the statistics view.
     OpenStatistics,
+    OpenTalkers,
     /// `S` — open the relay-statistics view for the relay's globals (ST8, C1).
     OpenRelayStats,
     /// `B` — show the full BPF capture-filter expression (status line 2
@@ -147,6 +148,7 @@ pub fn call_list_action(km: &Keymap, key: KeyEvent) -> Option<CallListAction> {
         KeyCode::Char('O') => OpenFileDialog,
         KeyCode::Char('N') => NameEndpoints,
         KeyCode::Char('s') => OpenStatistics,
+        KeyCode::Char('g') => OpenTalkers,
         KeyCode::Char('S') => OpenRelayStats,
         KeyCode::Char('B') => OpenBpfFilter,
         KeyCode::Char('D') => OpenDashboard,
@@ -303,6 +305,10 @@ fn execute_call_list_action(app: &mut App, action: CallListAction) {
         CallListAction::OpenStatistics => {
             app.stats_scroll = 0;
             app.current_view = View::Statistics;
+        }
+        CallListAction::OpenTalkers => {
+            app.talkers_scroll = 0;
+            app.current_view = View::Talkers;
         }
         CallListAction::OpenRelayStats => {
             app.relay_stats_scroll = 0;

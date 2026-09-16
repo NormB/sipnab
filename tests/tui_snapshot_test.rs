@@ -1017,6 +1017,22 @@ mod tui_snapshots {
         insta::assert_snapshot!(output);
     }
 
+    /// Snapshot: the top-talkers ranking, opened with `p`. Ranks the fixture's
+    /// participants by source IP (PAR4).
+    #[test]
+    fn talkers_view() {
+        let backend = TestBackend::new(80, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = test_app_with_dialogs();
+        app.handle_key(crossterm::event::KeyCode::Char('g')); // open talkers
+        assert_eq!(app.current_view(), &sipnab::tui::View::Talkers);
+
+        terminal.draw(|frame| app.render(frame)).unwrap();
+
+        let output = buffer_to_string(&terminal);
+        insta::assert_snapshot!(output);
+    }
+
     /// Snapshot: the F7 filter popup over an empty call list.
     #[test]
     fn filter_dialog_popup() {

@@ -45,6 +45,8 @@ pub(in crate::tui) struct RenderFeedback {
     pub(in crate::tui) help_scroll: Option<u16>,
     /// Clamped scroll of the statistics view.
     pub(in crate::tui) stats_scroll: Option<u16>,
+    /// Clamped scroll of the talkers view.
+    pub(in crate::tui) talkers_scroll: Option<u16>,
     /// Clamped scroll of the relay-statistics view (ST8).
     pub(in crate::tui) relay_stats_scroll: Option<u16>,
     /// Content-clamped scroll of the full-BPF-filter popup (`B`). Only the
@@ -498,6 +500,9 @@ pub(in crate::tui) fn render_app(
         View::Statistics => {
             fb.stats_scroll = Some(render_statistics(frame, main_area, app, ds, ss));
         }
+        View::Talkers => {
+            fb.talkers_scroll = Some(render_talkers(frame, main_area, app, ds));
+        }
         View::RelayStats { .. } => {
             fb.relay_stats_scroll = Some(render_relay_stats(frame, main_area, app));
         }
@@ -675,6 +680,104 @@ pub(in crate::tui) fn render_statistics(
 
     frame.render_widget(paragraph, area);
     stats_scroll
+}
+
+/// Build the talkers ranking text: participants ranked by dialog count, busiest
+/// first, by source IP.
+///
+/// Ranks through the shared `crate::sip::talkers` accumulator — the same
+/// crediting rule the MCP `top_talkers` tool and `GET /v1/talkers` use — so the
+/// three surfaces cannot disagree about who was busiest. `ip` is the triage
+/// default: the SENDER of each message, so a proxy does not top the ranking for
+/// calls it only forwarded.
+///
+/// # Arguments
+/// * `ds` - Dialog store snapshot to rank.
+pub(in crate::tui) fn talkers_text(ds: &DialogStore) -> String {
+    use crate::sip::talkers::{TalkerAccumulator, TalkerDimension};
+    use std::collections::BTreeMap;
+
+    let dim = TalkerDimension::Ip;
+    let mut tally: BTreeMap<String, TalkerAccumulator> = BTreeMap::new();
+    for d in ds.iter() {
+        dim.credit(d, &mut tally);
+    }
+    let mut rows: Vec<(&String, &TalkerAccumulator)> = tally.iter().collect();
+    crate::sort::sort_by_dyn(&mut rows, &mut |a, b| {
+        b.1.dialogs
+            .cmp(&a.1.dialogs)
+            .then_with(|| b.1.messages.cmp(&a.1.messages))
+            .then_with(|| a.0.cmp(b.0))
+    });
+
+    let mut text = String::from("Top Talkers (by source IP)\n\n");
+    if rows.is_empty() {
+        text.push_str("No dialogs captured yet.\n");
+    } else {
+        text.push_str(&format!(
+            "{:<3} {:<24} {:>7} {:>8} {:>7} {:>8} {:>6}\n",
+            "#", "Source IP", "Dialogs", "Msgs", "INVITEs", "Answered", "Failed"
+        ));
+        for (i, (key, acc)) in rows.iter().enumerate() {
+            text.push_str(&format!(
+                "{:<3} {:<24} {:>7} {:>8} {:>7} {:>8} {:>6}\n",
+                i + 1,
+                key,
+                acc.dialogs,
+                acc.messages,
+                acc.invites,
+                acc.answered,
+                acc.failed
+            ));
+        }
+        text.push_str(&format!("\n{} distinct talker(s).\n", rows.len()));
+        text.push_str(
+            "A participant is credited for every dialog it took part in, so shares overlap.\n",
+        );
+    }
+    text.push_str("\nPress Esc to return.");
+    text
+}
+
+/// Render the talkers view: the cached `app.talkers.text` (or a direct
+/// recomputation on the first frame) inside a bordered, scrollable paragraph.
+///
+/// # Arguments
+/// * `frame` - Frame to draw into.
+/// * `area` - Main-pane area for the view.
+/// * `app` - Application state (cached text, scroll, theme).
+/// * `ds` - Dialog store snapshot for the cache-miss fallback.
+///
+/// # Returns
+/// The content-clamped scroll offset, reported back via `RenderFeedback`.
+pub(in crate::tui) fn render_talkers(
+    frame: &mut ratatui::Frame,
+    area: ratatui::layout::Rect,
+    app: &App,
+    ds: &DialogStore,
+) -> u16 {
+    let fallback;
+    let text: &str = if app.talkers.text.is_empty() {
+        fallback = talkers_text(ds);
+        &fallback
+    } else {
+        &app.talkers.text
+    };
+
+    let total_rows = text.lines().count() as u16;
+    let viewport = area.height.saturating_sub(2);
+    let scroll = app.talkers_scroll.min(total_rows.saturating_sub(viewport));
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Top Talkers ");
+    let paragraph = Paragraph::new(text)
+        .block(block)
+        .style(Style::default().fg(app.theme.foreground))
+        .scroll((scroll, 0));
+
+    frame.render_widget(paragraph, area);
+    scroll
 }
 
 /// Render the relay-statistics view (ST8): the live relay's own counters, the
@@ -1312,6 +1415,50 @@ mod tests {
         let out = render_to_string(&mut app, 80, 24);
         // The dialog count should reflect one dialog.
         assert!(out.contains("Dialogs: 1"));
+    }
+
+    /// The talkers ranking puts the busiest sender first. A discriminating
+    /// fixture (one IP sends two dialogs, the other one), because the shared
+    /// snapshot fixture's talkers tie and would not reveal a broken sort.
+    #[test]
+    fn talkers_text_ranks_the_busiest_first() {
+        use crate::net::TransportProto;
+        use crate::sip::parser::parse_sip;
+        use crate::test_utils::build_sip_message as build_sip;
+        use chrono::TimeZone;
+        use std::net::{IpAddr, Ipv4Addr};
+
+        let ts = chrono::Utc.with_ymd_and_hms(2024, 6, 15, 12, 0, 0).unwrap();
+        let busy = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
+        let quiet = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2));
+        let dst = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 9));
+        let mut ds = DialogStore::new(1000, true);
+        // Two INVITEs from `busy`, one from `quiet` (senders only, so the
+        // destination is never credited a dialog).
+        for (i, src) in [(0u8, busy), (1, busy), (2, quiet)] {
+            let raw = build_sip(
+                "INVITE sip:bob@example.com SIP/2.0",
+                &[
+                    "From: <sip:alice@example.com>;tag=t1",
+                    "To: <sip:bob@example.com>",
+                    &format!("Call-ID: tk{i}@h"),
+                    "CSeq: 1 INVITE",
+                    "Content-Length: 0",
+                ],
+                b"",
+            );
+            ds.process_message(
+                parse_sip(&raw, ts, src, dst, 5060, 5060, TransportProto::Udp).expect("parse"),
+            );
+        }
+
+        let text = talkers_text(&ds);
+        let busy_pos = text.find("10.0.0.1").expect("the busy talker is listed");
+        let quiet_pos = text.find("10.0.0.2").expect("the quiet talker is listed");
+        assert!(
+            busy_pos < quiet_pos,
+            "the busier sender (2 dialogs) must rank above the quieter (1):\n{text}"
+        );
     }
 
     /// The call-list f-key bar drops low-priority items when narrow and

@@ -12,6 +12,14 @@ entry that carries them.
 
 ### Added
 
+- **Top-talkers TUI view (PAR4).** A new `Talkers` view, opened with `g` from
+  the call list, ranks the busiest participants by source IP — dialogs,
+  messages, INVITEs, answered and failed per talker, busiest first. It ranks
+  through the same shared `crate::sip::talkers` accumulator the MCP `top_talkers`
+  tool and `GET /v1/talkers` use, so the three surfaces cannot disagree about who
+  was busiest. Cached across frames like the statistics view (keyed on the dialog
+  generation), scrollable, and Esc/`q`/`g` closes it. This closes the top_talkers
+  TUI gap, leaving 26 named gaps.
 - **`GET /v1/relay/holdings` and `/v1/relay/holdings/{call_id}` (PAR3).** What
   the live relay is holding right now — every Call-ID it knows, or the tags,
   ports and SSRCs of one call. REST already transmitted for relay *stats* but

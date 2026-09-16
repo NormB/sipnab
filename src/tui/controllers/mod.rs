@@ -183,6 +183,7 @@ fn dispatch_view_key(app: &mut App, key: KeyEvent) {
         View::CombinedDetail { .. } => handle_combined_detail_key(app, key),
         View::Help => handle_help_key(app, key),
         View::Statistics => handle_statistics_key(app, key),
+        View::Talkers => handle_talkers_key(app, key),
         View::RelayStats { .. } => handle_relay_stats_key(app, key),
         View::BpfFilter => handle_bpf_filter_key(app, key),
         View::QualityDashboard => dashboard::handle_dashboard_key(app, key),
@@ -572,6 +573,78 @@ pub(in crate::tui) fn handle_statistics_key(app: &mut App, key: KeyEvent) {
     }
 }
 
+/// Everything the talkers view can do for a single key press.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TalkersAction {
+    /// Esc, the quit key, or `g` — close talkers and return to the call list.
+    Close,
+    /// Scroll the ranking up one line.
+    ScrollUp,
+    /// Scroll the ranking down one line.
+    ScrollDown,
+    /// Scroll the ranking up 20 lines.
+    PageUp,
+    /// Scroll the ranking down 20 lines.
+    PageDown,
+    /// Jump to the top of the ranking.
+    ScrollTop,
+    /// Jump to the bottom (the render pass clamps to the content height).
+    ScrollBottom,
+}
+
+/// Pure key→action mapping for the talkers view (keymap-aware).
+///
+/// # Arguments
+/// * `km` - the active keymap; the rebindable quit key is honored.
+/// * `key` - the key event whose code is matched against the bindings.
+///
+/// # Returns
+/// The mapped `TalkersAction`, or `None` when the key is not bound in this view.
+pub fn talkers_action(km: &Keymap, key: KeyEvent) -> Option<TalkersAction> {
+    use TalkersAction::*;
+    Some(match key.code {
+        k if k == KeyCode::Esc || k == km.quit || k == KeyCode::Char('g') => Close,
+        KeyCode::Up | KeyCode::Char('k') => ScrollUp,
+        KeyCode::Down | KeyCode::Char('j') => ScrollDown,
+        KeyCode::PageUp => PageUp,
+        KeyCode::PageDown => PageDown,
+        KeyCode::Home => ScrollTop,
+        KeyCode::End => ScrollBottom,
+        _ => return None,
+    })
+}
+
+/// Handle keys in the talkers view: map, then execute.
+///
+/// # Arguments
+/// * `app` - the application state to mutate.
+/// * `key` - the key event, mapped via `talkers_action`.
+///
+/// # Side effects
+/// Scroll actions move `app.talkers_scroll`; `Close` returns to the call list.
+/// Unbound keys are ignored.
+pub(in crate::tui) fn handle_talkers_key(app: &mut App, key: KeyEvent) {
+    let Some(action) = talkers_action(&app.keymap, key) else {
+        return;
+    };
+    match action {
+        TalkersAction::Close => {
+            app.current_view = View::CallList;
+        }
+        TalkersAction::ScrollUp => {
+            app.talkers_scroll = app.talkers_scroll.saturating_sub(1);
+        }
+        TalkersAction::ScrollDown => {
+            app.talkers_scroll = app.talkers_scroll.saturating_add(1);
+        }
+        TalkersAction::PageUp => app.talkers_scroll = app.talkers_scroll.saturating_sub(20),
+        TalkersAction::PageDown => app.talkers_scroll = app.talkers_scroll.saturating_add(20),
+        TalkersAction::ScrollTop => app.talkers_scroll = 0,
+        // Clamped to the content height by the render pass.
+        TalkersAction::ScrollBottom => app.talkers_scroll = u16::MAX,
+    }
+}
+
 /// Everything the relay-statistics view can do for a single key press (ST8).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RelayStatsAction {
@@ -779,6 +852,13 @@ pub(in crate::tui) fn handle_mouse_event(app: &mut App, kind: crossterm::event::
                 app.stats_scroll.saturating_add(3)
             } else {
                 app.stats_scroll.saturating_sub(3)
+            };
+        }
+        View::Talkers => {
+            app.talkers_scroll = if down {
+                app.talkers_scroll.saturating_add(3)
+            } else {
+                app.talkers_scroll.saturating_sub(3)
             };
         }
         View::RelayStats { .. } => {
