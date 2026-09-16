@@ -513,6 +513,24 @@ pub struct RatesParams {
     pub top_n: Option<usize>,
 }
 
+/// Query parameters for the `GET /v1/talkers` endpoint.
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct TalkersParams {
+    /// Which kind of talker to rank: `ip`, `ua` or `prefix` (the dialed
+    /// number's leading digits). A key outside that set is a 400. Required.
+    pub by: Option<String>,
+    /// A DSL expression narrowing which dialogs count, the same language
+    /// `/v1/dialogs?filter=` compiles. An expression that does not parse is a 400.
+    pub filter: Option<String>,
+    /// Maximum rows to return, clamped to the server's row cap. `distinct_talkers`
+    /// still counts every talker, so a page is never mistaken for the whole rank.
+    pub limit: Option<usize>,
+    /// Leading digits of the dialed number that make one `prefix` bucket
+    /// (default 4). Zero is a 400. Ignored for every other `by`.
+    pub prefix_digits: Option<u32>,
+}
+
 // ── Router construction ─────────────────────────────────────────────
 
 /// Per-request wall-clock cap. The API is request/response (no streaming), so a
@@ -636,6 +654,7 @@ pub fn build_router(state: ApiState) -> Router {
         .route("/v1/stats", get(get_stats))
         .route("/v1/aggregate", get(get_aggregate))
         .route("/v1/timeline", get(get_timeline))
+        .route("/v1/talkers", get(get_talkers))
         // Relay statistics (ST5). Each transmits once, behind
         // --api-allow-relay-query; the /call/ segment keeps C2 from colliding
         // with the static /names path. Polling (C5) is not offered here.
@@ -1775,6 +1794,119 @@ async fn get_rates(
         groups,
         other_count,
         distinct_values,
+        total_matched,
+    }))
+}
+
+/// `GET /v1/talkers` — rank the busiest participants (PAR3: top_talkers on
+/// REST).
+///
+/// # Arguments
+///
+/// * `state` — Shared application state.
+/// * `addr` — Client socket address used for rate limiting.
+/// * `headers` — Request headers (auth).
+/// * `params` — `by` dimension, optional `filter`, `limit`, `prefix_digits`.
+///
+/// # Returns
+///
+/// 200 with the ranked talkers, busiest first; 400 for an unknown dimension, a
+/// zero-width prefix, or an unparseable filter; 401/503 from the guard.
+///
+/// # Side effects
+///
+/// Holds the dialog- and stream-store read locks while ranking; mutates the
+/// rate limiter.
+#[utoipa::path(
+    get,
+    path = "/v1/talkers",
+    tag = "dialogs",
+    summary = "Rank the busiest participants",
+    description = "The busiest participants by `ip`, `ua` or `prefix` (the dialed number's leading digits), largest first — the volume-and-abuse view a dashboard polls, which no other route exposes. The same ranking the MCP `top_talkers` tool answers.\n\nEach row carries dialogs, messages, INVITEs, answered, failed, and the share of matched dialogs the talker appeared in. A dialog counts for every participant that took part in it, so `ip` and `ua` shares sum above 100%. `/v1/aggregate` answers the one-bucket-per-dialog question instead. `distinct_talkers` counts every talker, so a `limit`-bounded page is never mistaken for the whole ranking.",
+    params(TalkersParams),
+    security(("bearer" = [])),
+    responses(
+        (status = 200, description = "The ranked talkers, busiest first.", body = schema::Talkers),
+        (status = 400, description = "An unknown dimension, a zero-width prefix, or a filter that does not parse.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 401, description = "No bearer credential, or one this server does not accept.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 503, description = "Over the per-source-IP rate limit of 100 requests per second.", body = schema::ProblemJson, content_type = "application/problem+json"),
+    )
+)]
+async fn get_talkers(
+    State(state): State<ApiState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Query(params): Query<TalkersParams>,
+) -> Result<impl IntoResponse, Problem> {
+    guard(&state, &headers, addr.ip())?;
+
+    // One validated dimension, the same parse the MCP tool uses; the plain-text
+    // refusal becomes a 400.
+    let dimension = crate::sip::talkers::TalkerDimension::parse(
+        params.by.as_deref().unwrap_or("").trim(),
+        params.prefix_digits,
+    )
+    .map_err(|e| Problem::detailed(StatusCode::BAD_REQUEST, e))?;
+
+    let dsl = match params.filter.as_deref() {
+        Some(expr) => Some(
+            crate::sip::dsl::FilterExpr::parse(expr)
+                .map_err(|e| Problem::detailed(StatusCode::BAD_REQUEST, format!("filter: {e}")))?,
+        ),
+        None => None,
+    };
+    let limit = resolve_page_limit(params.limit, state.max_rows);
+
+    let ds = state.dialog_store.read();
+    let ss = state.stream_store.read();
+    // Same filter + selection path `/v1/aggregate` and `/v1/dialogs/rates` take.
+    // The crediting rule is shared with the MCP tool in `crate::sip::talkers`.
+    let selection = crate::sip::dsl::select_dialogs(dsl.as_ref(), &ds, &ss);
+    let total_matched = selection.dialogs.len();
+    let mut tally: std::collections::BTreeMap<String, crate::sip::talkers::TalkerAccumulator> =
+        std::collections::BTreeMap::new();
+    for item in &selection.dialogs {
+        dimension.credit(item.0, &mut tally);
+    }
+    drop(ss);
+    drop(ds);
+
+    let distinct_talkers = tally.len();
+    let mut ordered: Vec<(String, crate::sip::talkers::TalkerAccumulator)> =
+        tally.into_iter().collect();
+    // Dialogs first, messages as the tie-break, then the key so the same store
+    // always answers in the same order.
+    ordered.sort_by(|(ka, a), (kb, b)| {
+        b.dialogs
+            .cmp(&a.dialogs)
+            .then_with(|| b.messages.cmp(&a.messages))
+            .then_with(|| ka.cmp(kb))
+    });
+    // RAW keys: a program consuming REST wants the value it can key on, so a
+    // `ua` banner is returned verbatim (the MCP surface fences it).
+    let talkers: Vec<schema::Talker> = ordered
+        .into_iter()
+        .take(limit)
+        .map(|(key, acc)| schema::Talker {
+            key,
+            dialogs: acc.dialogs,
+            messages: acc.messages,
+            invites: acc.invites,
+            answered: acc.answered,
+            failed: acc.failed,
+            // Guarded rather than defaulted: a zero share on an empty capture
+            // reads as a talker measured to be idle.
+            share_pct: (total_matched > 0)
+                .then(|| (acc.dialogs as f64 / total_matched as f64) * 100.0),
+        })
+        .collect();
+
+    Ok(Json(schema::Talkers {
+        schema_version: 1,
+        by: dimension.name().to_string(),
+        truncated: distinct_talkers > talkers.len(),
+        talkers,
+        distinct_talkers,
         total_matched,
     }))
 }
@@ -4301,6 +4433,48 @@ pub mod schema {
         pub total_matched: usize,
     }
 
+    /// One ranked talker: a participant and what it did across the dialogs it
+    /// took part in. The same fields the MCP `top_talkers` tool reports.
+    #[derive(Debug, Clone, serde::Serialize, ToSchema)]
+    pub struct Talker {
+        /// The talker's key — an address (`ip`), a banner (`ua`), or the dialed
+        /// number's leading digits (`prefix`).
+        pub key: String,
+        /// Dialogs the talker appeared in.
+        pub dialogs: usize,
+        /// Messages attributed to the talker.
+        pub messages: usize,
+        /// Of `dialogs`, the INVITE ones.
+        pub invites: usize,
+        /// Of `invites`, the ones that reached a 2xx.
+        pub answered: usize,
+        /// Of `invites`, the ones that ended 4xx, 5xx or 6xx.
+        pub failed: usize,
+        /// The share of matched dialogs this talker appeared in, as a percent.
+        /// Null on an empty capture, where a zero would read as a talker
+        /// measured to be idle. Shares sum above 100% because a dialog counts
+        /// for every participant.
+        pub share_pct: Option<f64>,
+    }
+
+    /// The busiest participants, ranked largest first.
+    #[derive(Debug, Clone, serde::Serialize, ToSchema)]
+    pub struct Talkers {
+        /// Version of this response's shape.
+        #[schema(example = 1)]
+        pub schema_version: u32,
+        /// The dimension ranked by (`ip`, `ua` or `prefix`), echoed verbatim.
+        pub by: String,
+        /// The ranked talkers, busiest first, ties broken by messages then key.
+        pub talkers: Vec<Talker>,
+        /// True when there are more distinct talkers than the page returned.
+        pub truncated: bool,
+        /// How many distinct talkers the filter admitted, before the page cut.
+        pub distinct_talkers: usize,
+        /// How many dialogs the filter admitted, the share denominator.
+        pub total_matched: usize,
+    }
+
     /// Transaction timing, as carried by every dialog summary.
     #[derive(Debug, Clone, ToSchema)]
     pub struct TimingSummary {
@@ -5022,6 +5196,7 @@ impl utoipa::Modify for BearerAuth {
         get_compare,
         get_dialogs_tail,
         get_rates,
+        get_talkers,
         get_lint,
         get_persistence,
         set_persistence,
@@ -5063,6 +5238,8 @@ impl utoipa::Modify for BearerAuth {
         schema::RatePopulation,
         schema::RateGroup,
         schema::Rates,
+        schema::Talker,
+        schema::Talkers,
         schema::RelayStatsResponse,
         schema::DialogList,
         schema::DialogSummary,
@@ -5886,6 +6063,118 @@ mod tests {
             .oneshot(test_request(
                 "/v1/dialogs/rates?by=method&metrics=throughput",
             ))
+            .await
+            .expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    // ── talkers (PAR3: top_talkers) ───────────────────────────────────
+
+    /// Seed three INVITEs: two from 192.0.2.1 (banner `Phone/A`) and one from
+    /// 192.0.2.2 (banner `Phone/B`), all dialing 1-555, so a ranking has a clear
+    /// busiest talker and a tie-break below it.
+    fn seed_talkers(state: &ApiState) {
+        let mut ds = state.dialog_store.write();
+        let ts = chrono::TimeZone::with_ymd_and_hms(&chrono::Utc, 2024, 6, 15, 12, 0, 0).unwrap();
+        let dst = std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST);
+        let mut feed = |call_id: &str, src_last: u8, ua: &str| {
+            let raw = build_sip(
+                "INVITE sip:15551234000@example.com SIP/2.0",
+                &[
+                    "From: <sip:alice@example.com>;tag=t1",
+                    "To: <sip:15551234000@example.com>",
+                    &format!("Call-ID: {call_id}"),
+                    "CSeq: 1 INVITE",
+                    &format!("User-Agent: {ua}"),
+                    "Content-Length: 0",
+                ],
+                b"",
+            );
+            let src = std::net::IpAddr::V4(std::net::Ipv4Addr::new(192, 0, 2, src_last));
+            let msg =
+                crate::sip::parser::parse_sip(&raw, ts, src, dst, 5060, 5060, TransportProto::Udp)
+                    .expect("parse");
+            ds.process_message(msg);
+        };
+        feed("tk1@test", 1, "Phone/A");
+        feed("tk2@test", 1, "Phone/A");
+        feed("tk3@test", 2, "Phone/B");
+    }
+
+    /// By ip, the busiest sender ranks first with its share of matched dialogs,
+    /// and `distinct_talkers` counts every sender. Closes the top_talkers gap.
+    #[tokio::test]
+    async fn talkers_by_ip_ranks_the_busiest_first() {
+        let state = make_state();
+        seed_talkers(&state);
+        let app = build_router(state);
+
+        let resp = app
+            .oneshot(test_request("/v1/talkers?by=ip"))
+            .await
+            .expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_to_string(resp.into_body()).await;
+        let parsed: Value = serde_json::from_str(&body).expect("valid JSON");
+        assert_eq!(parsed["schema_version"], 1);
+        assert_eq!(parsed["by"], "ip");
+        assert_eq!(parsed["distinct_talkers"], 2);
+        assert_eq!(parsed["total_matched"], 3);
+        assert_eq!(parsed["talkers"][0]["key"], "192.0.2.1");
+        assert_eq!(parsed["talkers"][0]["dialogs"], 2);
+        assert_eq!(parsed["talkers"][1]["key"], "192.0.2.2");
+        assert_eq!(parsed["talkers"][1]["dialogs"], 1);
+        // 2 of 3 matched dialogs.
+        let share = parsed["talkers"][0]["share_pct"].as_f64().expect("a share");
+        assert!((share - 200.0 / 3.0).abs() < 1e-9, "share was {share}");
+    }
+
+    /// By ua, the key is the banner the sender wrote, returned RAW — REST hands
+    /// a program the value it can key on, unlike the MCP surface which fences it.
+    #[tokio::test]
+    async fn talkers_by_ua_returns_the_raw_banner() {
+        let state = make_state();
+        seed_talkers(&state);
+        let app = build_router(state);
+
+        let resp = app
+            .oneshot(test_request("/v1/talkers?by=ua"))
+            .await
+            .expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_to_string(resp.into_body()).await;
+        let parsed: Value = serde_json::from_str(&body).expect("valid JSON");
+        assert_eq!(parsed["talkers"][0]["key"], "Phone/A");
+        assert!(
+            !body.contains('\u{2066}') && !body.contains("untrusted"),
+            "REST returns the banner raw, unfenced: {body}"
+        );
+    }
+
+    /// A dimension outside `ip`/`ua`/`prefix` is a 400 that names the set.
+    #[tokio::test]
+    async fn talkers_unknown_dimension_is_400() {
+        let state = make_state();
+        seed_talkers(&state);
+        let app = build_router(state);
+
+        let resp = app
+            .oneshot(test_request("/v1/talkers?by=pairs"))
+            .await
+            .expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    /// A zero-width prefix is a 400: it puts every destination in one bucket, a
+    /// ranking of one row that says nothing.
+    #[tokio::test]
+    async fn talkers_zero_width_prefix_is_400() {
+        let state = make_state();
+        seed_talkers(&state);
+        let app = build_router(state);
+
+        let resp = app
+            .oneshot(test_request("/v1/talkers?by=prefix&prefix_digits=0"))
             .await
             .expect("oneshot");
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);

@@ -32,6 +32,7 @@ pub mod siprec;
 pub mod stack_fingerprint;
 #[cfg(feature = "tls")]
 pub mod stir_shaken;
+pub mod talkers;
 pub mod termination;
 pub mod timing;
 

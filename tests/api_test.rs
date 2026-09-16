@@ -177,6 +177,29 @@ fn rates_answer_with_the_metrics_envelope() {
     );
 }
 
+/// `GET /v1/talkers` answers over the shipped binary with the ranking envelope
+/// (PAR3): a row per participant with dialog and message counts, and
+/// `distinct_talkers` counting every one.
+#[test]
+fn talkers_answer_with_the_ranking_envelope() {
+    let srv = ApiServer::spawn(&[]);
+    let resp = srv.get("/v1/talkers?by=ip");
+    assert_eq!(resp.status, 200, "/v1/talkers status");
+    let body = resp.json();
+    assert_eq!(body["schema_version"], 1);
+    assert_eq!(body["by"], "ip");
+    assert!(body["talkers"].is_array(), "talkers is an array");
+    assert!(
+        body["distinct_talkers"].is_number(),
+        "distinct_talkers present"
+    );
+    assert!(body["total_matched"].is_number(), "total_matched present");
+    assert!(
+        body["talkers"][0]["dialogs"].is_number(),
+        "each talker carries its dialog count"
+    );
+}
+
 /// `GET /v1/dialogs/{id}/lint` answers over the shipped binary with the findings
 /// envelope (PAR3).
 #[test]

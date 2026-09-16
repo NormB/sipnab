@@ -18,6 +18,11 @@ use crate::mcp::shape::{
     fence, fence_field, fenced_dialog_summary, resolve_limit_with_cap, truncate_string,
 };
 use crate::output::model::DialogSummary;
+// The talker-ranking rule lives outside the `mcp` feature so the REST
+// `/v1/talkers` route ranks the same store the same way. This surface fences
+// the `ua` keys and renders the shared result; `banner_of` is shared with
+// `describe_endpoint` here too.
+use crate::sip::talkers::{TalkerAccumulator, TalkerDimension, banner_of};
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CallToolResult, ContentBlock};
 use rmcp::schemars::JsonSchema;
@@ -653,7 +658,8 @@ impl SipnabMcp {
         &self,
         Parameters(params): Parameters<TopTalkersParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        let dimension = TalkerDimension::from_params(&params)?;
+        let dimension = TalkerDimension::parse(&params.by, params.prefix_digits)
+            .map_err(|e| rmcp::ErrorData::invalid_params(e, None))?;
         let limit = resolve_limit_with_cap(params.limit, self.row_cap);
         let filter = self.compile_filter(params.filter.as_deref())?;
 
@@ -710,7 +716,13 @@ impl SipnabMcp {
             .into_iter()
             .take(limit)
             .map(|(key, acc)| TopTalker {
-                key: dimension.render_key(&key),
+                // Only `ua` keys are sender-authored; the shared rule says which,
+                // this surface fences them before a value reaches a model.
+                key: if dimension.fences_key() {
+                    fence(&key)
+                } else {
+                    key
+                },
                 dialogs: acc.dialogs,
                 messages: acc.messages,
                 invites: acc.invites,
@@ -738,214 +750,6 @@ impl SipnabMcp {
             ContentBlock::text(crate::mcp::shape::untrusted_note()),
         ]))
     }
-}
-
-/// Digits of the dialed number one `prefix` bucket covers when the caller
-/// names none.
-///
-/// Four, because that is where a North American plan's NPA plus the first
-/// digit of the NXX separates one route from another, and it is short enough
-/// that an international number still groups by country and carrier rather
-/// than resolving to one row per destination.
-const DEFAULT_PREFIX_DIGITS: usize = 4;
-
-/// Bucket key used when a dialog has no To user at all.
-const NO_DESTINATION: &str = "(none)";
-
-/// Bucket key used when the To user carries no leading digits, so it names a
-/// person rather than a number and has no dialing prefix.
-const NON_NUMERIC_DESTINATION: &str = "(non-numeric)";
-
-/// What `top_talkers` was asked to rank.
-///
-/// An enum rather than the raw string threaded through the scan: the string
-/// is validated once, at the edge, and every decision below is then a match
-/// the compiler checks. A `&str` carried into the loop leaves "prefix without
-/// a width" representable long after it was rejected.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum TalkerDimension {
-    /// Addresses that sent messages.
-    Ip,
-    /// `User-Agent` and `Server` banners.
-    Ua,
-    /// Leading digits of the dialed number, this many of them.
-    Prefix(usize),
-}
-
-/// What one talker did, accumulated across the dialogs it took part in.
-#[derive(Debug, Clone, Default)]
-struct TalkerAccumulator {
-    /// Dialogs the talker appeared in.
-    dialogs: usize,
-    /// Messages attributed to the talker.
-    messages: usize,
-    /// Of `dialogs`, the INVITE ones.
-    invites: usize,
-    /// Of `invites`, the ones that reached a 2xx.
-    answered: usize,
-    /// Of `invites`, the ones that ended 4xx, 5xx or 6xx.
-    failed: usize,
-}
-
-impl TalkerDimension {
-    /// Read the dimension out of the request.
-    ///
-    /// # Errors
-    ///
-    /// `invalid_params` (-32602) for an unknown `by`, or for a `prefix` asked
-    /// for with zero digits — a zero-width prefix puts every destination in
-    /// one bucket, which is a ranking of one row that says nothing.
-    fn from_params(params: &TopTalkersParams) -> Result<Self, rmcp::ErrorData> {
-        match params.by.trim() {
-            "ip" => Ok(Self::Ip),
-            "ua" => Ok(Self::Ua),
-            "prefix" => match params.prefix_digits {
-                Some(0) => Err(rmcp::ErrorData::invalid_params(
-                    "prefix_digits must be greater than zero: a zero-digit \
-                     prefix is the same bucket for every destination, so the \
-                     ranking would have exactly one row"
-                        .to_string(),
-                    None,
-                )),
-                Some(n) => Ok(Self::Prefix(n as usize)),
-                None => Ok(Self::Prefix(DEFAULT_PREFIX_DIGITS)),
-            },
-            other => Err(rmcp::ErrorData::invalid_params(
-                format!(
-                    "cannot rank by '{other}'; one of: ip, ua, prefix. One \
-                     dimension only -- a ranking of pairs answers a different \
-                     question from a ranking of either half."
-                ),
-                None,
-            )),
-        }
-    }
-
-    /// The dimension's name, for the response.
-    fn name(self) -> &'static str {
-        match self {
-            Self::Ip => "ip",
-            Self::Ua => "ua",
-            Self::Prefix(_) => "prefix",
-        }
-    }
-
-    /// Credit one dialog to every talker that took part in it.
-    ///
-    /// # Arguments
-    ///
-    /// * `d` — the dialog, already past the filter.
-    /// * `tally` — the per-talker accumulator map.
-    ///
-    /// # Side effects
-    ///
-    /// Adds one dialog to each distinct key the dialog carries, plus the
-    /// messages attributed to that key. A key appears at most once per
-    /// dialog, so an endpoint that sent forty messages in one call counts as
-    /// one dialog and forty messages rather than as forty dialogs.
-    fn credit(
-        self,
-        d: &crate::sip::dialog::SipDialog,
-        tally: &mut BTreeMap<String, TalkerAccumulator>,
-    ) {
-        // Key to the messages it accounts for, built per dialog so the
-        // de-duplication is structural rather than a second pass that could
-        // disagree with the first.
-        let mut per_key: BTreeMap<String, usize> = BTreeMap::new();
-        match self {
-            // The SENDER. A talker is a thing that put packets on the wire,
-            // and counting receivers too would rank a proxy top of every
-            // capture it appears in for work it did not originate.
-            Self::Ip => {
-                for m in &d.messages {
-                    *per_key.entry(m.src_addr.to_string()).or_insert(0) += 1;
-                }
-            }
-            // `banner_of` reads `User-Agent` off requests and `Server` off
-            // responses, so each banner names the party that wrote it.
-            Self::Ua => {
-                for m in &d.messages {
-                    if let Some((_, value)) = banner_of(m) {
-                        *per_key.entry(value).or_insert(0) += 1;
-                    }
-                }
-            }
-            // One bucket per dialog: a dialog has one dialed number, so
-            // every message in it belongs to that destination.
-            Self::Prefix(digits) => {
-                per_key.insert(prefix_key(d.to_user.as_deref(), digits), d.messages.len());
-            }
-        }
-
-        let invite = d.method == crate::sip::method::SipMethod::Invite;
-        let final_code = d.final_status_code();
-        let answered = invite && final_code.is_some_and(|c| (200..300).contains(&c));
-        let failed = invite && final_code.is_some_and(|c| c >= 400);
-
-        for (key, messages) in per_key {
-            let acc = tally.entry(key).or_default();
-            acc.dialogs += 1;
-            acc.messages += messages;
-            if invite {
-                acc.invites += 1;
-                if answered {
-                    acc.answered += 1;
-                }
-                if failed {
-                    acc.failed += 1;
-                }
-            }
-        }
-    }
-
-    /// The key as it goes into the response.
-    ///
-    /// Only `ua` is fenced. An address is a value sipnab derived from the
-    /// packet headers, and a `prefix` key is either digits this code
-    /// extracted or one of two literals it chose — neither can carry text the
-    /// sender wrote. A banner is a string a stranger typed.
-    fn render_key(self, key: &str) -> String {
-        match self {
-            Self::Ua => fence(key),
-            Self::Ip | Self::Prefix(_) => key.to_string(),
-        }
-    }
-}
-
-/// The prefix bucket a dialed number falls into.
-///
-/// Leading digits only, after an optional `+`: an E.164 number is written
-/// both ways on one wire, and bucketing `+15551234` apart from `15551234`
-/// would split one destination in two and rank each half below where the
-/// destination belongs.
-///
-/// # Arguments
-///
-/// * `to_user` — the dialog's To user part, if it has one.
-/// * `digits` — how many leading digits make a bucket.
-///
-/// # Returns
-///
-/// The leading digits (fewer, for a number shorter than `digits`), or a named
-/// literal for a destination with no digits at all. Named rather than
-/// dropped: "how much traffic goes to a name rather than a number" is a real
-/// question, and a bucket set that silently omits it would not describe the
-/// capture.
-fn prefix_key(to_user: Option<&str>, digits: usize) -> String {
-    let Some(user) = to_user else {
-        return NO_DESTINATION.to_string();
-    };
-    let leading: String = user
-        .strip_prefix('+')
-        .unwrap_or(user)
-        .chars()
-        .take_while(char::is_ascii_digit)
-        .take(digits)
-        .collect();
-    if leading.is_empty() {
-        return NON_NUMERIC_DESTINATION.to_string();
-    }
-    leading
 }
 
 /// Which entity `describe_endpoint` was asked about.
@@ -1063,22 +867,6 @@ impl Selector {
                 .as_deref()
                 .is_some_and(|id| call_ids.contains(id)),
         }
-    }
-}
-
-/// The banner one message carries about ITS OWN sender, if any.
-///
-/// `User-Agent` on a request and `Server` on a response, per RFC 3261 §20.41
-/// and §20.35. A request's `Server` header and a response's `User-Agent` are
-/// not errors on the wire, but they describe the other direction, so reading
-/// them here would file the far end's software under this endpoint.
-fn banner_of(m: &crate::sip::SipMessage) -> Option<(String, String)> {
-    if m.is_request {
-        m.header("User-Agent")
-            .map(|v| ("User-Agent".to_string(), v.to_string()))
-    } else {
-        m.header("Server")
-            .map(|v| ("Server".to_string(), v.to_string()))
     }
 }
 

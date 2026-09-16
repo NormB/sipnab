@@ -2481,6 +2481,54 @@ that ASR does not, per ITU-T E.411.
 
 ---
 
+### GET /v1/talkers
+
+The busiest participants, ranked largest first by `ip`, `ua` or `prefix` (the
+dialed number's leading digits) — the volume-and-abuse view a dashboard polls,
+which no other route exposes. The same ranking the MCP `top_talkers` tool
+answers.
+
+**Query parameters:**
+
+- `by` (required) — `ip`, `ua`, or `prefix`. A key outside that set is a `400`.
+- `filter` (optional) — a DSL expression narrowing which dialogs count, the
+  language `/v1/dialogs?filter=` compiles. A malformed expression is a `400`.
+- `limit` (optional) — the most rows to return, clamped to the server's row cap.
+- `prefix_digits` (optional) — leading digits that make one `prefix` bucket
+  (default 4). Zero is a `400`. Ignored for every other `by`.
+
+**curl:**
+
+```bash
+curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" "http://127.0.0.1:8080/v1/talkers?by=ip&limit=10" | jq .
+```
+
+**Response:**
+
+```json
+{
+  "schema_version": 1,
+  "by": "ip",
+  "talkers": [
+    { "key": "203.0.113.9", "dialogs": 812, "messages": 4123, "invites": 812, "answered": 640, "failed": 121, "share_pct": 67.66 }
+  ],
+  "truncated": true,
+  "distinct_talkers": 47,
+  "total_matched": 1200
+}
+```
+
+**A dialog counts for every participant that took part in it,** so `ip` and `ua`
+shares sum above 100% — `/v1/aggregate` answers the one-bucket-per-dialog
+question instead. Rows rank by dialogs, then messages, then the key, so one
+store always answers in the same order. `distinct_talkers` counts every talker,
+so a `limit`-bounded page never reads as the whole ranking. The `ip` key is the
+message SENDER, so a proxy does not top the ranking for calls it only forwarded.
+A `ua` key is a banner a stranger typed and comes back verbatim, so a program
+that renders it treats it as untrusted text.
+
+---
+
 ### POST /v1/vcon/validate
 
 Check a vCon container against sipnab's vendored schema — the producer-and-

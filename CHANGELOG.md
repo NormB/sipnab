@@ -8,6 +8,20 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Added
+
+- **`GET /v1/talkers` (PAR3).** Ranks the busiest participants by `ip`, `ua` or
+  `prefix` (the dialed number's leading digits), largest first — the
+  volume-and-abuse view a dashboard polls, which no other route exposed. Each
+  row carries dialogs, messages, INVITEs, answered, failed and the talker's
+  share of matched dialogs. A dialog counts for every participant, so `ip` and
+  `ua` shares sum above 100%. The crediting rule and the dimension parsing move
+  into `crate::sip::talkers` (outside the `mcp` feature), shared with the MCP
+  `top_talkers` tool, which now fences the `ua` keys and renders the shared
+  result. This closes the `top_talkers` REST gap, leaving 32 named gaps.
+
 ## [0.5.176] - 2026-09-16
 
 ### Added

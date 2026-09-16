@@ -442,7 +442,9 @@ fn undocumented_numeric_ceilings_do_not_increase() {
 // 43 -> 46 at PAR3, for `Rates`, `RateGroup` and `RatePopulation`, the
 // `GET /v1/dialogs/rates` response. Response-only, same reason, pinned by the
 // same contract test. Three components.
-const PERMISSIVE_SCHEMA_COMPONENTS: usize = 46;
+// 46 -> 48 at PAR3, for `Talker` and `Talkers`, the `GET /v1/talkers` response.
+// Response-only, same reason, pinned by the same contract test. Two components.
+const PERMISSIVE_SCHEMA_COMPONENTS: usize = 48;
 
 #[test]
 fn permissive_rest_schema_components_do_not_increase() {

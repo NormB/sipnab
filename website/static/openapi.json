@@ -3535,6 +3535,103 @@
         ],
         "type": "object"
       },
+      "Talker": {
+        "description": "One ranked talker: a participant and what it did across the dialogs it\ntook part in. The same fields the MCP `top_talkers` tool reports.",
+        "properties": {
+          "answered": {
+            "description": "Of `invites`, the ones that reached a 2xx.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "dialogs": {
+            "description": "Dialogs the talker appeared in.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "failed": {
+            "description": "Of `invites`, the ones that ended 4xx, 5xx or 6xx.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "invites": {
+            "description": "Of `dialogs`, the INVITE ones.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "key": {
+            "description": "The talker's key — an address (`ip`), a banner (`ua`), or the dialed\nnumber's leading digits (`prefix`).",
+            "type": "string"
+          },
+          "messages": {
+            "description": "Messages attributed to the talker.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "share_pct": {
+            "description": "The share of matched dialogs this talker appeared in, as a percent.\nNull on an empty capture, where a zero would read as a talker\nmeasured to be idle. Shares sum above 100% because a dialog counts\nfor every participant.",
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "key",
+          "dialogs",
+          "messages",
+          "invites",
+          "answered",
+          "failed"
+        ],
+        "type": "object"
+      },
+      "Talkers": {
+        "description": "The busiest participants, ranked largest first.",
+        "properties": {
+          "by": {
+            "description": "The dimension ranked by (`ip`, `ua` or `prefix`), echoed verbatim.",
+            "type": "string"
+          },
+          "distinct_talkers": {
+            "description": "How many distinct talkers the filter admitted, before the page cut.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "schema_version": {
+            "description": "Version of this response's shape.",
+            "example": 1,
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "talkers": {
+            "description": "The ranked talkers, busiest first, ties broken by messages then key.",
+            "items": {
+              "$ref": "#/components/schemas/Talker"
+            },
+            "type": "array"
+          },
+          "total_matched": {
+            "description": "How many dialogs the filter admitted, the share denominator.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "truncated": {
+            "description": "True when there are more distinct talkers than the page returned.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "schema_version",
+          "by",
+          "talkers",
+          "truncated",
+          "distinct_talkers",
+          "total_matched"
+        ],
+        "type": "object"
+      },
       "TfpsAction": {
         "description": "`tfps_ctl ban --json`, `unban --json`, and every line `ingest` answers\nwith: what TFPS did about one address.",
         "properties": {
@@ -6174,6 +6271,104 @@
         "summary": "Get one RTP stream",
         "tags": [
           "streams"
+        ]
+      }
+    },
+    "/v1/talkers": {
+      "get": {
+        "description": "The busiest participants by `ip`, `ua` or `prefix` (the dialed number's leading digits), largest first — the volume-and-abuse view a dashboard polls, which no other route exposes. The same ranking the MCP `top_talkers` tool answers.\n\nEach row carries dialogs, messages, INVITEs, answered, failed, and the share of matched dialogs the talker appeared in. A dialog counts for every participant that took part in it, so `ip` and `ua` shares sum above 100%. `/v1/aggregate` answers the one-bucket-per-dialog question instead. `distinct_talkers` counts every talker, so a `limit`-bounded page is never mistaken for the whole ranking.",
+        "operationId": "get_talkers",
+        "parameters": [
+          {
+            "description": "Which kind of talker to rank: `ip`, `ua` or `prefix` (the dialed\nnumber's leading digits). A key outside that set is a 400. Required.",
+            "in": "query",
+            "name": "by",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "A DSL expression narrowing which dialogs count, the same language\n`/v1/dialogs?filter=` compiles. An expression that does not parse is a 400.",
+            "in": "query",
+            "name": "filter",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Maximum rows to return, clamped to the server's row cap. `distinct_talkers`\nstill counts every talker, so a page is never mistaken for the whole rank.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Leading digits of the dialed number that make one `prefix` bucket\n(default 4). Zero is a 400. Ignored for every other `by`.",
+            "in": "query",
+            "name": "prefix_digits",
+            "required": false,
+            "schema": {
+              "format": "int32",
+              "minimum": 0,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Talkers"
+                }
+              }
+            },
+            "description": "The ranked talkers, busiest first."
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "An unknown dimension, a zero-width prefix, or a filter that does not parse."
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "No bearer credential, or one this server does not accept."
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Over the per-source-IP rate limit of 100 requests per second."
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Rank the busiest participants",
+        "tags": [
+          "dialogs"
         ]
       }
     },

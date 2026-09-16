@@ -798,6 +798,9 @@ fn every_documented_response_matches_what_the_server_sends() {
             // with its schema rather than the 400 a missing dimension earns.
             // The contract under test is the response shape, not the guard.
             format!("{url}?by=state")
+        } else if path == "/v1/talkers" {
+            // `/v1/talkers` needs a `by` too; `ip` is the shape-neutral choice.
+            format!("{url}?by=ip")
         } else if path == "/v1/dialogs/compare" {
             // `/v1/dialogs/compare` needs two Call-IDs; compare the fixture's
             // one call to itself so the route answers 200 with its schema

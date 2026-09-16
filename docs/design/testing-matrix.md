@@ -50,7 +50,7 @@ was driving all of them.
 | Surface | Rows | `e2e` | `parsed` | `referenced` | `none` |
 |---|---|---|---|---|---|
 | CLI flags | 271 | 139 | 53 | 78 | 1 |
-| HTTP routes | 32 | 32 | -- | 0 | 0 |
+| HTTP routes | 33 | 33 | -- | 0 | 0 |
 | MCP tools | 68 | 68 | -- | 0 | 0 |
 
 **Flags with no occurrence at all:** `--syslog`
@@ -383,6 +383,7 @@ behind them.
 | `/v1/stats` | exercised | `tests/api_test.rs`, `tests/api_token_test.rs` +3 |
 | `/v1/streams` | exercised | `tests/api_operator_flows_test.rs`, `tests/api_test.rs` +2 |
 | `/v1/streams/{id}` | exercised | `tests/api_operator_flows_test.rs`, `tests/api_test.rs` |
+| `/v1/talkers` | exercised | `tests/api_test.rs`, `tests/openapi_contract_test.rs` |
 | `/v1/tfps/ban` | exercised | `tests/tfps_surfaces_test.rs` |
 | `/v1/tfps/banned` | exercised | `tests/tfps_surfaces_test.rs` |
 | `/v1/tfps/dropped` | exercised | `tests/tfps_surfaces_test.rs` |
