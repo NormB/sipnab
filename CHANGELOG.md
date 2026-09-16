@@ -12,6 +12,17 @@ entry that carries them.
 
 ### Added
 
+- **`GET /v1/relay/holdings` and `/v1/relay/holdings/{call_id}` (PAR3).** What
+  the live relay is holding right now — every Call-ID it knows, or the tags,
+  ports and SSRCs of one call. REST already transmitted for relay *stats* but
+  had no view of the relay's *holdings*; this closes that gap. Like the stats
+  routes it TRANSMITS one control request, so it is gated behind
+  `--api-allow-relay-query` on a live source and answers `not_permitted` /
+  `not_configured` otherwise, at HTTP 200 with a classification (a refusal is
+  content, not a 4xx). It reuses the existing REST relay access
+  (`ReadOnlyRelay::list`/`query`) and the shared `outcome` envelope — no new
+  config, no new schema component. The same holdings the MCP `query_relay` tool
+  reports. This closes the `query_relay` REST gap, leaving 27 named gaps.
 - **`GET /v1/captures/compare` (PAR3).** Diff two capture files by aggregate —
   per dimension, how many dialogs fell in each bucket in each capture and how far
   that moved, ranked so "today is worse than yesterday, and here is where" is the

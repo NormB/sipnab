@@ -791,6 +791,8 @@ pub fn build_router(state: ApiState) -> Router {
         .route("/v1/relay/stats/names", get(get_relay_stat_names))
         .route("/v1/relay/stats/call/{call_id}", get(get_relay_stats_call))
         .route("/v1/relay/compare/{call_id}", get(get_relay_compare))
+        .route("/v1/relay/holdings", get(get_relay_holdings))
+        .route("/v1/relay/holdings/{call_id}", get(get_relay_holdings_call))
         .route("/v1/runtime", get(get_runtime))
         .route("/v1/capabilities", get(get_capabilities))
         .route("/metrics", get(get_metrics))
@@ -4135,6 +4137,14 @@ enum RelayAsk {
     Names,
     /// Its per-call RTP count beside sipnab's own (C4).
     Compare(String),
+    /// Every Call-ID it is holding right now (query_relay list).
+    Holdings {
+        /// The most Call-IDs to return before the relay marks the rest
+        /// truncated.
+        max_calls: u32,
+    },
+    /// The ports and tags it holds for one call (query_relay per-call).
+    Holding(String),
 }
 
 /// Build the JSON body for a relay-statistics REST route (ST5).
@@ -4322,6 +4332,75 @@ fn relay_rest_answer(
                 Err(e) => fetch_failure(&e),
             }
         }
+        RelayAsk::Holdings { max_calls } => match relay.list(&permit, *max_calls) {
+            Ok(ControlReply::Calls(e)) => to_value(fmt::relay_rest_ok(
+                &json!({
+                    "kind": "calls",
+                    "call_ids": e.call_ids,
+                    "truncated": e.truncated,
+                    "relay": label,
+                    "obtained_at": now.to_rfc3339(),
+                    "origin": "asked",
+                })
+                .to_string(),
+            )),
+            Ok(ControlReply::Refused { reason }) => to_value(fmt::relay_rest_outcome(
+                O::Refused,
+                &format!("{label}: {reason}"),
+            )),
+            Ok(_) => to_value(fmt::relay_rest_outcome(
+                O::Suspect,
+                "the relay answered with something other than a call list",
+            )),
+            Err(e) => fetch_failure(&e),
+        },
+        RelayAsk::Holding(call_id) => match relay.query(&permit, call_id) {
+            Ok(ControlReply::Call(view)) => to_value(fmt::relay_rest_ok(
+                &json!({
+                    "kind": "call",
+                    "call_id": view.call_id,
+                    // Raw: the tags and Call-IDs are the relay's own words. The
+                    // relay is operator-configured, and the untrusted-content note
+                    // rides on the response the way it does for the stats routes.
+                    "tags": view
+                        .tags
+                        .iter()
+                        .map(|t| json!({
+                            "tag": t.tag,
+                            "in_dialogue_with": t.in_dialogue_with,
+                            "media_subscriptions": t.media_subscriptions,
+                            "is_media_subscriber": t.is_media_subscriber(),
+                            "codec": t.codec,
+                            "streams": t
+                                .streams
+                                .iter()
+                                .map(|s| json!({
+                                    "local_address": s.local_address,
+                                    "local_port": s.local_port,
+                                    "endpoint": s.endpoint,
+                                    "advertised_endpoint": s.advertised_endpoint,
+                                    "is_rtcp": s.is_rtcp,
+                                    "ssrcs": s.ssrcs,
+                                }))
+                                .collect::<Vec<_>>(),
+                        }))
+                        .collect::<Vec<_>>(),
+                    "relay": label,
+                    "obtained_at": now.to_rfc3339(),
+                    "origin": "asked",
+                })
+                .to_string(),
+            )),
+            Ok(ControlReply::Refused { reason }) => to_value(fmt::relay_rest_outcome(
+                O::Refused,
+                &format!("{label} for call {call_id}: {reason}"),
+            )),
+            Ok(_) => to_value(fmt::relay_rest_outcome(
+                O::Suspect,
+                "the relay answered with something other than a call view",
+            )),
+            Err(e) => fetch_failure(&e),
+        },
     }
 }
 
@@ -4451,6 +4530,121 @@ async fn get_relay_compare(
     let ss = Arc::clone(&state.stream_store);
     let body = tokio::task::spawn_blocking(move || {
         relay_rest_answer(&rq, &RelayAsk::Compare(call_id), &ss)
+    })
+    .await
+    .unwrap_or_else(|_| json!({ "outcome": "suspect" }));
+    Ok(Json(body))
+}
+
+/// Query parameters for `GET /v1/relay/holdings`.
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct RelayHoldingsParams {
+    /// The most Call-IDs to ask for; the relay marks the rest `truncated`.
+    /// Omitted takes the shared default.
+    pub max_calls: Option<u32>,
+}
+
+/// `GET /v1/relay/holdings` — the Call-IDs the live relay is holding now (ST5,
+/// query_relay list on REST).
+///
+/// # Arguments
+///
+/// * `state` — Shared application state (carries the relay access).
+/// * `addr` — Client socket address used for rate limiting.
+/// * `headers` — Request headers (auth).
+/// * `params` — an optional `max_calls`.
+///
+/// # Returns
+///
+/// 200 in every case — `outcome: ok` with the Call-IDs, or an ST-S4
+/// classification (`not_configured` / `not_permitted` / `unreachable` /
+/// `refused` / `suspect`); 401/503 from the guard.
+///
+/// # Side effects
+///
+/// Transmits one control request to the relay on a blocking task; mutates the
+/// rate limiter.
+#[utoipa::path(
+    get,
+    path = "/v1/relay/holdings",
+    tag = "relay",
+    summary = "What the relay is holding now",
+    description = "Asks the configured relay for every Call-ID it is holding right now. This TRANSMITS: it puts one control request on the network per call, so it is off unless `--api-allow-relay-query` is set on a live source, and answers `not_permitted`/`not_configured` otherwise. It closes the gap a passive decoder cannot — a call already in progress when sipnab started has no control exchange left to read — which is exactly the case during incident response. The same holdings the MCP `query_relay` tool lists. `outcome` is `ok` or one of five classifications; a refusal is content, not a 4xx.",
+    params(RelayHoldingsParams),
+    security(("bearer" = [])),
+    responses(
+        (status = 200, description = "outcome=ok with the held Call-IDs, or a classification.", body = schema::RelayStatsResponse),
+        (status = 401, description = "No bearer credential, or one this server does not accept.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 503, description = "Over the per-source-IP rate limit of 100 requests per second.", body = schema::ProblemJson, content_type = "application/problem+json"),
+    )
+)]
+async fn get_relay_holdings(
+    State(state): State<ApiState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Query(params): Query<RelayHoldingsParams>,
+) -> Result<impl IntoResponse, Problem> {
+    guard(&state, &headers, addr.ip())?;
+    let rq = state.relay_query.clone();
+    let ss = Arc::clone(&state.stream_store);
+    let max_calls = params
+        .max_calls
+        .unwrap_or(crate::relay::reconcile::DEFAULT_LIST_LIMIT);
+    let body = tokio::task::spawn_blocking(move || {
+        relay_rest_answer(&rq, &RelayAsk::Holdings { max_calls }, &ss)
+    })
+    .await
+    .unwrap_or_else(|_| json!({ "outcome": "suspect" }));
+    Ok(Json(body))
+}
+
+/// `GET /v1/relay/holdings/{call_id}` — the ports and tags the live relay holds
+/// for one call (ST5, query_relay per-call on REST).
+///
+/// # Arguments
+///
+/// * `state` — Shared application state (carries the relay access).
+/// * `call_id` — the Call-ID to ask about, from the path.
+/// * `addr` — Client socket address used for rate limiting.
+/// * `headers` — Request headers (auth).
+///
+/// # Returns
+///
+/// 200 in every case — `outcome: ok` with the call's tags and streams, or an
+/// ST-S4 classification; 401/503 from the guard.
+///
+/// # Side effects
+///
+/// Transmits one control request to the relay on a blocking task; mutates the
+/// rate limiter.
+#[utoipa::path(
+    get,
+    path = "/v1/relay/holdings/{call_id}",
+    tag = "relay",
+    summary = "What the relay holds for one call",
+    description = "Asks the relay what it holds for one Call-ID: the tags, negotiated ports and SSRCs of every leg it is bridging. Same gate and 200-classification rule as `/v1/relay/holdings`; it TRANSMITS one control request. The same per-call view the MCP `query_relay` tool returns.",
+    params(
+        ("call_id" = String, Path, description = "The Call-ID to ask the relay about."),
+    ),
+    security(("bearer" = [])),
+    responses(
+        (status = 200, description = "outcome=ok with the call's tags and streams, or a classification.", body = schema::RelayStatsResponse),
+        (status = 401, description = "No bearer credential, or one this server does not accept.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 503, description = "Over the per-source-IP rate limit of 100 requests per second.", body = schema::ProblemJson, content_type = "application/problem+json"),
+    )
+)]
+async fn get_relay_holdings_call(
+    State(state): State<ApiState>,
+    axum::extract::Path(call_id): axum::extract::Path<String>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, Problem> {
+    guard(&state, &headers, addr.ip())?;
+    let rq = state.relay_query.clone();
+    let ss = Arc::clone(&state.stream_store);
+    let body = tokio::task::spawn_blocking(move || {
+        relay_rest_answer(&rq, &RelayAsk::Holding(call_id), &ss)
     })
     .await
     .unwrap_or_else(|_| json!({ "outcome": "suspect" }));
@@ -5710,21 +5904,29 @@ pub mod schema {
         pub messages: u64,
     }
 
-    /// `GET /v1/relay/...` — one envelope for all four relay-statistics routes
-    /// (ST5).
+    /// `GET /v1/relay/...` — one envelope for every relay route (ST5): the four
+    /// statistics routes and the two holdings routes.
     ///
     /// `outcome` is always present: `ok` for a clean answer, or one of the five
     /// ST-S4 classifications. Every other field is optional because the shape
     /// depends on which route answered and whether it was clean -- a client
     /// branches on `outcome` first. Deliberately permissive (the payload
-    /// sub-objects are open) because one envelope carries four different clean
-    /// shapes plus the classifications, and pinning each would be five schemas
-    /// where the discriminator already tells them apart.
+    /// sub-objects are open) because one envelope carries several different clean
+    /// shapes plus the classifications, and pinning each would be a schema per
+    /// route where the discriminator already tells them apart.
     #[derive(Debug, Clone, ToSchema)]
     pub struct RelayStatsResponse {
         /// `ok`, or `not_configured` / `not_permitted` / `unreachable` /
         /// `refused` / `suspect`.
         pub outcome: String,
+        /// The Call-IDs the relay is holding (holdings list route).
+        pub call_ids: Option<Vec<String>>,
+        /// Whether the relay held more Call-IDs than it returned (holdings list).
+        pub truncated: Option<bool>,
+        /// The Call-ID asked about (holdings per-call route).
+        pub call_id: Option<String>,
+        /// The tags, ports and streams the relay holds for one call (per-call).
+        pub tags: Option<serde_json::Value>,
         /// The relay and where it was asked, on any answer that reached it.
         pub relay: Option<String>,
         /// When the relay answered.
@@ -6033,6 +6235,8 @@ impl utoipa::Modify for BearerAuth {
         get_relay_stat_names,
         get_relay_stats_call,
         get_relay_compare,
+        get_relay_holdings,
+        get_relay_holdings_call,
         get_runtime,
         get_capabilities,
         get_metrics,
@@ -7578,6 +7782,8 @@ mod tests {
             RelayAsk::Names,
             RelayAsk::Call("c".into()),
             RelayAsk::Compare("c".into()),
+            RelayAsk::Holdings { max_calls: 10 },
+            RelayAsk::Holding("c".into()),
         ] {
             let v = relay_rest_answer(&rq, &ask, &ss);
             assert_eq!(
@@ -7606,6 +7812,86 @@ mod tests {
         assert_eq!(v["outcome"], "not_permitted");
         assert_ne!(v["outcome"], "unreachable", "the two must not collapse");
         assert_eq!(v["responsibility"], "invocation");
+    }
+
+    /// A relay stand-in that answers the holdings asks with fixed replies, so
+    /// the list and per-call formatting can be driven without a network.
+    struct HoldsRelay;
+    impl crate::relay::reconcile::ReadOnlyRelay for HoldsRelay {
+        fn list(
+            &self,
+            _p: &crate::security::transmit_guard::TransmitPermit,
+            _l: u32,
+        ) -> anyhow::Result<ControlReply> {
+            Ok(ControlReply::Calls(crate::relay::types::Enumeration {
+                call_ids: vec!["call-a".into(), "call-b".into()],
+                truncated: true,
+            }))
+        }
+        fn query(
+            &self,
+            _p: &crate::security::transmit_guard::TransmitPermit,
+            c: &str,
+        ) -> anyhow::Result<ControlReply> {
+            Ok(ControlReply::Call(crate::relay::types::CallView {
+                call_id: c.to_string(),
+                tags: vec![crate::relay::types::RelayTag {
+                    tag: "from-tag".into(),
+                    in_dialogue_with: vec!["to-tag".into()],
+                    media_subscriptions: vec![],
+                    codec: Some("PCMU".into()),
+                    streams: vec![crate::relay::types::RelayStream {
+                        local_address: "203.0.113.9".into(),
+                        local_port: 30000,
+                        endpoint: Some("198.51.100.1:40000".into()),
+                        advertised_endpoint: None,
+                        is_rtcp: false,
+                        ssrcs: vec![0x1234],
+                    }],
+                }],
+            }))
+        }
+        fn statistics(
+            &self,
+            _p: &crate::security::transmit_guard::TransmitPermit,
+        ) -> anyhow::Result<ControlReply> {
+            anyhow::bail!("this double answers only holdings")
+        }
+        fn describe(&self) -> String {
+            "a holding relay".to_string()
+        }
+    }
+
+    /// The holdings LIST route returns the relay's Call-IDs and its truncation
+    /// flag, wrapped `outcome: ok`. Closes the query_relay REST gap (list).
+    #[test]
+    fn relay_rest_holdings_lists_the_call_ids() {
+        let rq = RelayRestConfig {
+            relay: Some(Arc::new(HoldsRelay)),
+            permit: Some(live_permit()),
+        };
+        let v = relay_rest_answer(&rq, &RelayAsk::Holdings { max_calls: 10 }, &empty_streams());
+        assert_eq!(v["outcome"], "ok");
+        assert_eq!(v["call_ids"][0], "call-a");
+        assert_eq!(v["call_ids"][1], "call-b");
+        assert_eq!(v["truncated"], true, "the relay held more than it returned");
+    }
+
+    /// The holdings PER-CALL route returns the call's tags, ports and SSRCs,
+    /// wrapped `outcome: ok`. Closes the query_relay REST gap (per-call).
+    #[test]
+    fn relay_rest_holding_shows_one_calls_tags() {
+        let rq = RelayRestConfig {
+            relay: Some(Arc::new(HoldsRelay)),
+            permit: Some(live_permit()),
+        };
+        let v = relay_rest_answer(&rq, &RelayAsk::Holding("call-x".into()), &empty_streams());
+        assert_eq!(v["outcome"], "ok");
+        assert_eq!(v["call_id"], "call-x");
+        assert_eq!(v["tags"][0]["tag"], "from-tag");
+        assert_eq!(v["tags"][0]["codec"], "PCMU");
+        assert_eq!(v["tags"][0]["streams"][0]["local_port"], 30000);
+        assert_eq!(v["tags"][0]["streams"][0]["ssrcs"][0], 0x1234);
     }
 
     /// A relay reply carrying `result: error` is a refusal, and its

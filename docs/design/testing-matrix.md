@@ -50,7 +50,7 @@ was driving all of them.
 | Surface | Rows | `e2e` | `parsed` | `referenced` | `none` |
 |---|---|---|---|---|---|
 | CLI flags | 272 | 139 | 53 | 79 | 1 |
-| HTTP routes | 37 | 37 | -- | 0 | 0 |
+| HTTP routes | 39 | 39 | -- | 0 | 0 |
 | MCP tools | 68 | 68 | -- | 0 | 0 |
 
 **Flags with no occurrence at all:** `--syslog`
@@ -379,6 +379,8 @@ behind them.
 | `/v1/endpoints` | exercised | `tests/api_test.rs`, `tests/openapi_contract_test.rs` |
 | `/v1/persistence` | exercised | `tests/api_test.rs`, `tests/openapi_contract_test.rs` |
 | `/v1/relay/compare/{call_id}` | exercised | `tests/relay_rest_test.rs` |
+| `/v1/relay/holdings` | exercised | `tests/api_test.rs` |
+| `/v1/relay/holdings/{call_id}` | exercised | `tests/api_test.rs` |
 | `/v1/relay/stats` | exercised | `tests/relay_rest_test.rs` |
 | `/v1/relay/stats/call/{call_id}` | exercised | `tests/relay_rest_test.rs` |
 | `/v1/relay/stats/names` | exercised | `tests/relay_rest_test.rs` |

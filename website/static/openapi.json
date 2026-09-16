@@ -2772,8 +2772,25 @@
         "type": "object"
       },
       "RelayStatsResponse": {
-        "description": "`GET /v1/relay/...` — one envelope for all four relay-statistics routes\n(ST5).\n\n`outcome` is always present: `ok` for a clean answer, or one of the five\nST-S4 classifications. Every other field is optional because the shape\ndepends on which route answered and whether it was clean -- a client\nbranches on `outcome` first. Deliberately permissive (the payload\nsub-objects are open) because one envelope carries four different clean\nshapes plus the classifications, and pinning each would be five schemas\nwhere the discriminator already tells them apart.",
+        "description": "`GET /v1/relay/...` — one envelope for every relay route (ST5): the four\nstatistics routes and the two holdings routes.\n\n`outcome` is always present: `ok` for a clean answer, or one of the five\nST-S4 classifications. Every other field is optional because the shape\ndepends on which route answered and whether it was clean -- a client\nbranches on `outcome` first. Deliberately permissive (the payload\nsub-objects are open) because one envelope carries several different clean\nshapes plus the classifications, and pinning each would be a schema per\nroute where the discriminator already tells them apart.",
         "properties": {
+          "call_id": {
+            "description": "The Call-ID asked about (holdings per-call route).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "call_ids": {
+            "description": "The Call-IDs the relay is holding (holdings list route).",
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
           "detail": {
             "description": "A sentence explaining a non-`ok` outcome.",
             "type": [
@@ -2831,6 +2848,16 @@
           },
           "statistics": {
             "description": "The relay's counters (C1/C2), each with its tier."
+          },
+          "tags": {
+            "description": "The tags, ports and streams the relay holds for one call (per-call)."
+          },
+          "truncated": {
+            "description": "Whether the relay held more Call-IDs than it returned (holdings list).",
+            "type": [
+              "boolean",
+              "null"
+            ]
           }
         },
         "required": [
@@ -6566,6 +6593,124 @@
           }
         ],
         "summary": "Compare the relay's per-call count against this capture",
+        "tags": [
+          "relay"
+        ]
+      }
+    },
+    "/v1/relay/holdings": {
+      "get": {
+        "description": "Asks the configured relay for every Call-ID it is holding right now. This TRANSMITS: it puts one control request on the network per call, so it is off unless `--api-allow-relay-query` is set on a live source, and answers `not_permitted`/`not_configured` otherwise. It closes the gap a passive decoder cannot — a call already in progress when sipnab started has no control exchange left to read — which is exactly the case during incident response. The same holdings the MCP `query_relay` tool lists. `outcome` is `ok` or one of five classifications; a refusal is content, not a 4xx.",
+        "operationId": "get_relay_holdings",
+        "parameters": [
+          {
+            "description": "The most Call-IDs to ask for; the relay marks the rest `truncated`.\nOmitted takes the shared default.",
+            "in": "query",
+            "name": "max_calls",
+            "required": false,
+            "schema": {
+              "format": "int32",
+              "minimum": 0,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RelayStatsResponse"
+                }
+              }
+            },
+            "description": "outcome=ok with the held Call-IDs, or a classification."
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "No bearer credential, or one this server does not accept."
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Over the per-source-IP rate limit of 100 requests per second."
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "What the relay is holding now",
+        "tags": [
+          "relay"
+        ]
+      }
+    },
+    "/v1/relay/holdings/{call_id}": {
+      "get": {
+        "description": "Asks the relay what it holds for one Call-ID: the tags, negotiated ports and SSRCs of every leg it is bridging. Same gate and 200-classification rule as `/v1/relay/holdings`; it TRANSMITS one control request. The same per-call view the MCP `query_relay` tool returns.",
+        "operationId": "get_relay_holdings_call",
+        "parameters": [
+          {
+            "description": "The Call-ID to ask the relay about.",
+            "in": "path",
+            "name": "call_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RelayStatsResponse"
+                }
+              }
+            },
+            "description": "outcome=ok with the call's tags and streams, or a classification."
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "No bearer credential, or one this server does not accept."
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Over the per-source-IP rate limit of 100 requests per second."
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "What the relay holds for one call",
         "tags": [
           "relay"
         ]

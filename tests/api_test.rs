@@ -343,6 +343,27 @@ fn captures_compare_without_a_file_root_is_503() {
     );
 }
 
+/// `GET /v1/relay/holdings` answers over the shipping binary (ST5, query_relay):
+/// with no relay configured it classifies `not_configured` at HTTP 200, proving
+/// the route is served and gated like the other relay routes rather than
+/// transmitting.
+#[test]
+fn relay_holdings_answers_over_the_shipping_binary() {
+    let srv = ApiServer::spawn(&[]);
+    let list = srv.get("/v1/relay/holdings");
+    assert_eq!(list.status, 200, "/v1/relay/holdings status");
+    let list_body = list.json();
+    assert_eq!(
+        list_body["outcome"], "not_configured",
+        "no relay was configured, so the route classifies rather than transmits"
+    );
+    assert_eq!(list_body["responsibility"], "invocation");
+
+    let per_call = srv.get("/v1/relay/holdings/abc123@203.0.113.9");
+    assert_eq!(per_call.status, 200, "/v1/relay/holdings/{{id}} status");
+    assert_eq!(per_call.json()["outcome"], "not_configured");
+}
+
 /// `GET /v1/dialogs/{id}/lint` answers over the shipped binary with the findings
 /// envelope (PAR3).
 #[test]

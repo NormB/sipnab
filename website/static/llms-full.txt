@@ -6322,6 +6322,42 @@ curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" \
 
 ---
 
+### GET /v1/relay/holdings
+
+Every Call-ID the live relay is holding right now. This TRANSMITS one control
+request, so it sits behind `--api-allow-relay-query` on a live source and reads
+`not_permitted`/`not_configured` otherwise, exactly as the stats routes do. It
+closes the gap a passive decoder cannot: a call already in progress when sipnab
+started left no control exchange to read, which is the case during incident
+response. The same holdings the MCP `query_relay` tool lists. `?max_calls=<N>`
+caps the list, and the relay marks the rest `truncated`.
+
+```bash
+curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" "http://127.0.0.1:8080/v1/relay/holdings?max_calls=500" | jq .
+```
+
+The body carries `outcome: ok` with `call_ids` and `truncated`, or one of the
+five classifications. `outcome` is the field a client branches on first.
+
+---
+
+### GET /v1/relay/holdings/:call_id
+
+What the relay holds for one call: each tag it bridges, that tag's negotiated
+ports and SSRCs, and the codec. Same gate and 200-classification rule as the
+list route, and it TRANSMITS one control request. The same per-call view the
+MCP `query_relay` tool returns.
+
+```bash
+curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" \
+  "http://127.0.0.1:8080/v1/relay/holdings/1-7@203.0.113.9" | jq .
+```
+
+The `call_ids`, tags and ports are the relay's own words and come back raw, the
+values a program keys on.
+
+---
+
 ## Status codes
 
 | Code | When |
