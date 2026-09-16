@@ -4563,6 +4563,40 @@ build without the `vcon` feature.
 
 ---
 
+### GET /v1/dialogs/:call_id/audio
+
+The call's decoded RTP audio as a standalone `audio/wav` file — mono for one
+direction, stereo for two. The same bytes the MCP `export_audio` tool writes and
+the vCon exporter inlines, from one decode, so a `.wav` saved here verifies
+against a container's `content_hash`. Before this route, audio reached REST only
+inline inside a vCon.
+
+**curl:**
+
+```bash
+curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" http://127.0.0.1:8080/v1/dialogs/abc123@203.0.113.9/audio -o call.wav
+```
+
+**Response:** the WAV bytes, `Content-Type: audio/wav`, with a
+`Content-Disposition` naming the download after a sanitized Call-ID. An
+`X-Sipnab-Audio-Partial` header carries one bit — `true` when the file falls
+short of the call — so a program branches on it without parsing the RIFF chunks.
+
+**A provenance note travels inside the file, not only in a header.** It names the
+mechanism (`sipnab-capture`), the version that wrote it, and — when the file is
+partial — how: a wrapped payload ring, a stream sipnab could not decode, a
+direction the capture never saw. So a `.wav` forwarded and played months later
+still says what it is and what it leaves out. The audio carries only what the
+capture point saw and what retention kept. It is not a recording the endpoints
+made.
+
+sipnab must have retained the payload (start the server with `--retain-audio`)
+for there to be anything to decode. A Call-ID no dialog carries is a `404`. A
+dialog that exists but carries only undecodable codecs, or whose payload this run
+did not keep, is a `422` whose body names which — never a silent empty file.
+
+---
+
 ### GET /v1/persistence
 
 Report whether this capture is still writing call content to disk.

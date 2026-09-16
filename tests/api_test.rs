@@ -281,6 +281,35 @@ fn security_findings_reflects_an_armed_detector() {
     assert!(body["note"].is_null(), "an armed server attaches no note");
 }
 
+/// `GET /v1/dialogs/{call_id}/audio` answers over the shipped binary with a WAV
+/// (PAR3). With `--retain-audio` and a G.711 fixture, the route returns
+/// `audio/wav` bytes that begin with the RIFF/WAVE magic and carry the embedded
+/// provenance note — the same bytes the file export and the vCon inliner make.
+#[test]
+fn audio_answers_with_a_wav_over_the_shipping_binary() {
+    let srv =
+        ApiServer::spawn_with_pcap("tests/pcap-samples/sip-rtp-g711.pcap", &["--retain-audio"]);
+    let dialogs = srv.get("/v1/dialogs").json();
+    let call_id = dialogs["dialogs"][0]["call_id"]
+        .as_str()
+        .expect("the fixture must produce a dialog, or this test proves nothing");
+    let resp = srv.get(&format!("/v1/dialogs/{call_id}/audio"));
+    assert_eq!(resp.status, 200, "/v1/dialogs/{{id}}/audio status");
+    assert_eq!(
+        resp.content_type.as_deref(),
+        Some("audio/wav"),
+        "the route declares the audio it returns"
+    );
+    assert!(
+        resp.body.starts_with("RIFF") && resp.body.contains("WAVE"),
+        "the body is a RIFF/WAVE file"
+    );
+    assert!(
+        resp.body.contains("sipnab-capture"),
+        "the provenance note is embedded in the file, not only in a header"
+    );
+}
+
 /// `GET /v1/dialogs/{id}/lint` answers over the shipped binary with the findings
 /// envelope (PAR3).
 #[test]

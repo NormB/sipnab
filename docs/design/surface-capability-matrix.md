@@ -320,7 +320,7 @@ Give me this call's decoded RTP audio as a file.
 |---|---|
 | CLI | gap: a one-shot `--export-audio` to a WAV is CLI-shaped, but audio leaves the CLI only inside a vCon, never as a standalone WAV (PAR5) |
 | TUI | `StreamDetail` |
-| REST | gap: audio reaches REST only inline in `/v1/dialogs/{call_id}/vcon`, with no standalone audio resource (PAR3) |
+| REST | `/v1/dialogs/{call_id}/audio` |
 | MCP | `export_audio` |
 
 ### Relay statistics

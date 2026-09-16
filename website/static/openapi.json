@@ -5616,6 +5616,89 @@
         ]
       }
     },
+    "/v1/dialogs/{call_id}/audio": {
+      "get": {
+        "description": "The call's decoded RTP audio as a standalone `audio/wav` file — mono for one direction, stereo for two, with a provenance note embedded in the file naming what it is and every way it falls short of the call. The same bytes the MCP `export_audio` tool writes and the vCon inliner carries, from one decode, so a `.wav` exported here verifies against a container's `content_hash`.\n\nsipnab must have retained the payload (`--retain-audio`) for there to be anything to decode. A dialog that carries only undecodable codecs, or whose payload this run did not keep, is a 422 whose body explains which — never a silent empty file. The audio is bounded by where the capture point sat and by what retention kept; it is not a recording the endpoints made.",
+        "operationId": "get_dialog_audio",
+        "parameters": [
+          {
+            "description": "The dialog's Call-ID.",
+            "in": "path",
+            "name": "call_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "audio/wav": {
+                "schema": {
+                  "items": {
+                    "format": "int32",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "type": "array"
+                }
+              }
+            },
+            "description": "The decoded audio, with its provenance note embedded."
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "No bearer credential, or one this server does not accept."
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "No dialog carries that Call-ID in this capture."
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "The dialog exists but sipnab retained no decodable audio for it; the body names why."
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Over the per-source-IP rate limit of 100 requests per second."
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "The call's decoded RTP as a WAV",
+        "tags": [
+          "dialogs"
+        ]
+      }
+    },
     "/v1/dialogs/{call_id}/correlated": {
       "get": {
         "description": "The other legs of this call across a B2BUA, SBC or PBX, each with the strategy that matched it and whether that strategy compared identifiers or guessed from timing.\n\nOne hop from one Call-ID. To walk a whole tree, follow each `call_id` back into this route. `heuristic_only` is true when every match is a timing guess, so a reader weighs the answer accordingly.",

@@ -23,10 +23,27 @@ use std::time::{Duration, Instant};
 
 include!("timeout.rs");
 
-/// A minimal HTTP response: status code + body (headers are discarded).
+/// A minimal HTTP response: status code, body, and the `Content-Type` header.
+///
+/// Other headers are discarded; `content_type` is kept because a binary route
+/// (`GET /v1/dialogs/{id}/audio`) is verified by the type it declares, not only
+/// by its bytes.
 pub struct Resp {
     pub status: u16,
     pub body: String,
+    /// The `Content-Type` response header, lowercased, when present.
+    pub content_type: Option<String>,
+}
+
+/// The lowercased `Content-Type` value from an HTTP header block, if present.
+fn content_type_of(head: &str) -> Option<String> {
+    head.lines().find_map(|l| {
+        l.split_once(':').and_then(|(k, v)| {
+            k.trim()
+                .eq_ignore_ascii_case("content-type")
+                .then(|| v.trim().to_lowercase())
+        })
+    })
 }
 
 impl Resp {
@@ -261,13 +278,20 @@ fn http_get(addr: &str, path: &str, auth: Option<&str>) -> Resp {
         .and_then(|c| c.parse::<u16>().ok())
         .unwrap_or_else(|| panic!("no status line in response:\n{text}"));
 
-    // Body is everything after the first blank line.
-    let body = text
+    // Body is everything after the first blank line; the head before it carries
+    // the Content-Type.
+    let (head, body) = text
         .split_once("\r\n\r\n")
-        .map(|(_, b)| b.to_string())
-        .unwrap_or_default();
+        .map_or((String::new(), String::new()), |(h, b)| {
+            (h.to_string(), b.to_string())
+        });
+    let content_type = content_type_of(&head);
 
-    Resp { status, body }
+    Resp {
+        status,
+        body,
+        content_type,
+    }
 }
 
 /// Minimal blocking HTTP/1.1 POST over a fresh `Connection: close` socket.
@@ -303,12 +327,18 @@ fn http_post(addr: &str, path: &str, body: &str, auth: Option<&str>) -> Resp {
         .and_then(|c| c.parse::<u16>().ok())
         .unwrap_or_else(|| panic!("no status line in response:\n{text}"));
 
-    let body = text
+    let (head, body) = text
         .split_once("\r\n\r\n")
-        .map(|(_, b)| b.to_string())
-        .unwrap_or_default();
+        .map_or((String::new(), String::new()), |(h, b)| {
+            (h.to_string(), b.to_string())
+        });
+    let content_type = content_type_of(&head);
 
-    Resp { status, body }
+    Resp {
+        status,
+        body,
+        content_type,
+    }
 }
 
 /// Spawn `sipnab --api` with the given args, collect stderr for `wait`, then

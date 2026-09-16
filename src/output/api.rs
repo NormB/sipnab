@@ -670,7 +670,8 @@ pub fn build_router(state: ApiState) -> Router {
         .route("/v1/dialogs/{call_id}/report", get(get_dialog_report))
         .route("/v1/dialogs/{call_id}/correlated", get(get_correlated))
         .route("/v1/dialogs/{call_id}/tree", get(get_tree))
-        .route("/v1/dialogs/{call_id}/lint", get(get_lint));
+        .route("/v1/dialogs/{call_id}/lint", get(get_lint))
+        .route("/v1/dialogs/{call_id}/audio", get(get_dialog_audio));
     // Registered only where the exporter exists. A route that answered 501
     // in a build without the feature would leave a client unable to tell
     // "this sipnab cannot" from "this call has no data", and the second
@@ -2165,6 +2166,117 @@ async fn get_security_findings(
         detection_armed: report.detection_armed,
         note: report.note,
     }))
+}
+
+/// Sanitize a Call-ID into a safe `Content-Disposition` filename stem.
+///
+/// The Call-ID is attacker-controlled — a stranger's `Call-ID:` header — and
+/// goes into a response header, so any character outside a conservative set
+/// becomes `_`. That closes header (CRLF) injection and keeps the filename
+/// portable. An empty result falls back to `audio`, never a nameless download.
+fn wav_filename_stem(call_id: &str) -> String {
+    let stem: String = call_id
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let trimmed = stem.trim_matches('.');
+    if trimmed.is_empty() {
+        "audio".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+/// `GET /v1/dialogs/{call_id}/audio` — the call's decoded RTP as a WAV (PAR3:
+/// export_audio on REST).
+///
+/// # Arguments
+///
+/// * `state` — Shared application state.
+/// * `addr` — Client socket address used for rate limiting.
+/// * `headers` — Request headers (auth).
+/// * `call_id` — The dialog's Call-ID, from the path.
+///
+/// # Returns
+///
+/// 200 with an `audio/wav` body (the same bytes the file export and the vCon
+/// inliner produce, provenance note embedded); 404 when no dialog carries that
+/// Call-ID; 422 when the dialog exists but sipnab retained no decodable audio
+/// for it; 401/503 from the guard.
+///
+/// # Side effects
+///
+/// Holds the dialog- and stream-store read locks while decoding; mutates the
+/// rate limiter.
+#[utoipa::path(
+    get,
+    path = "/v1/dialogs/{call_id}/audio",
+    tag = "dialogs",
+    summary = "The call's decoded RTP as a WAV",
+    description = "The call's decoded RTP audio as a standalone `audio/wav` file — mono for one direction, stereo for two, with a provenance note embedded in the file naming what it is and every way it falls short of the call. The same bytes the MCP `export_audio` tool writes and the vCon inliner carries, from one decode, so a `.wav` exported here verifies against a container's `content_hash`.\n\nsipnab must have retained the payload (`--retain-audio`) for there to be anything to decode. A dialog that carries only undecodable codecs, or whose payload this run did not keep, is a 422 whose body explains which — never a silent empty file. The audio is bounded by where the capture point sat and by what retention kept; it is not a recording the endpoints made.",
+    params(
+        ("call_id" = String, Path, description = "The dialog's Call-ID."),
+    ),
+    security(("bearer" = [])),
+    responses(
+        (status = 200, description = "The decoded audio, with its provenance note embedded.", content_type = "audio/wav", body = Vec<u8>),
+        (status = 401, description = "No bearer credential, or one this server does not accept.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 404, description = "No dialog carries that Call-ID in this capture.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 422, description = "The dialog exists but sipnab retained no decodable audio for it; the body names why.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 503, description = "Over the per-source-IP rate limit of 100 requests per second.", body = schema::ProblemJson, content_type = "application/problem+json"),
+    )
+)]
+async fn get_dialog_audio(
+    State(state): State<ApiState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Path(call_id): Path<String>,
+) -> Result<impl IntoResponse, Problem> {
+    guard(&state, &headers, addr.ip())?;
+
+    let ds = state.dialog_store.read();
+    if ds.get(&call_id).is_none() {
+        return Err(Problem::detailed(
+            StatusCode::NOT_FOUND,
+            format!("no dialog carries Call-ID '{call_id}' in this capture"),
+        ));
+    }
+    let ss = state.stream_store.read();
+    let streams: Vec<&crate::rtp::stream::RtpStream> = ss.streams_for(&call_id).collect();
+    // Decode while the lock is held — `streams` borrows the store. The decode is
+    // shared with the file export and the vCon inliner, so this WAV is byte-for-
+    // byte what those produce. A dialog with no decodable retained payload is a
+    // 422 carrying `nothing_to_decode`'s explanation, never a silent empty file.
+    let audio = crate::rtp::audio_export::decode_dialog_audio(&streams)
+        .map_err(|e| Problem::detailed(StatusCode::UNPROCESSABLE_ENTITY, e.to_string()))?;
+    drop(ss);
+    drop(ds);
+
+    let stem = wav_filename_stem(&call_id);
+    // The provenance note lives inside the bytes (a RIFF comment chunk), so a
+    // client that saves the file keeps it; `x-sipnab-audio-partial` surfaces the
+    // one bit a program branches on without parsing RIFF.
+    Ok((
+        StatusCode::OK,
+        [
+            ("content-type", "audio/wav".to_string()),
+            (
+                "content-disposition",
+                format!("attachment; filename=\"{stem}.wav\""),
+            ),
+            (
+                "x-sipnab-audio-partial",
+                (!audio.partial.is_empty()).to_string(),
+            ),
+        ],
+        audio.wav,
+    ))
 }
 
 /// `GET /v1/dialogs/{call_id}/lint` — the RFC-conformance findings for one
@@ -5600,6 +5712,7 @@ impl utoipa::Modify for BearerAuth {
         get_talkers,
         get_endpoints,
         get_security_findings,
+        get_dialog_audio,
         get_lint,
         get_persistence,
         set_persistence,
@@ -6787,6 +6900,61 @@ mod tests {
             .await
             .expect("oneshot");
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    // ── audio (PAR3: export_audio) ────────────────────────────────────
+
+    /// A Call-ID no dialog carries is a 404 — the audio resource of a call that
+    /// is not here cannot exist.
+    #[tokio::test]
+    async fn audio_unknown_call_is_404() {
+        let state = make_state();
+        populate_dialogs(&state);
+        let app = build_router(state);
+        let resp = app
+            .oneshot(test_request("/v1/dialogs/does-not-exist@nowhere/audio"))
+            .await
+            .expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    /// A dialog that exists but carries no exportable audio is a 422, not a
+    /// silent empty file — the body names why (here: no RTP streams at all).
+    /// Closes the export_audio REST gap's error path.
+    #[tokio::test]
+    async fn audio_with_no_streams_is_422() {
+        let state = make_state();
+        populate_dialogs(&state);
+        let app = build_router(state);
+        let resp = app
+            .oneshot(test_request("/v1/dialogs/call-0@test/audio"))
+            .await
+            .expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body = body_to_string(resp.into_body()).await;
+        assert!(
+            body.contains("RTP stream") || body.contains("decode"),
+            "the 422 explains what is missing: {body}"
+        );
+    }
+
+    /// The Call-ID becomes the download filename, so it is sanitized: a stranger
+    /// controls the `Call-ID` header, and it must not smuggle CRLF or quotes
+    /// into a `Content-Disposition`. An id with nothing usable falls back to a
+    /// name rather than a nameless download.
+    #[test]
+    fn wav_filename_stem_sanitizes() {
+        assert_eq!(wav_filename_stem("call-1@10.0.0.1"), "call-1_10.0.0.1");
+        let injected = wav_filename_stem("x\r\nSet-Cookie: y");
+        assert!(
+            !injected.contains('\r')
+                && !injected.contains('\n')
+                && !injected.contains('"')
+                && !injected.contains(':'),
+            "header-unsafe characters must be neutralized: {injected}"
+        );
+        assert_eq!(wav_filename_stem(""), "audio");
+        assert_eq!(wav_filename_stem("..."), "audio");
     }
 
     // ── lint (PAR3: lint_dialog) ──────────────────────────────────────

@@ -12,6 +12,18 @@ entry that carries them.
 
 ### Added
 
+- **`GET /v1/dialogs/{call_id}/audio` (PAR3).** The call's decoded RTP audio as
+  a standalone `audio/wav` file — mono for one direction, stereo for two, with a
+  provenance note embedded in the file naming the mechanism, the version, and
+  every way it falls short of the call (a wrapped payload ring, an undecodable
+  stream, a direction the capture never saw). Before this, audio reached REST
+  only inline inside a vCon. The route serves the same bytes the MCP
+  `export_audio` tool writes and the vCon exporter inlines — one decode via
+  `rtp::audio_export::decode_dialog_audio` — so a `.wav` saved here verifies
+  against a container's `content_hash`. A Call-ID no dialog carries is a `404`; a
+  dialog with no decodable retained payload is a `422` whose body names why,
+  never a silent empty file. Needs `--retain-audio`. This closes the
+  `export_audio` REST gap, leaving 29 named gaps.
 - **`GET /v1/security/findings` (PAR3).** The findings sipnab's own armed
   detectors (`scanner`, `fraud`, `digest`, `reg_flood`) recorded, newest first —
   the poll a SOC dashboard makes, which sipnab only pushed to syslog and stderr
