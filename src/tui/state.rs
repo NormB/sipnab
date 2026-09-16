@@ -1279,6 +1279,11 @@ pub enum View {
         /// The endpoint's address, as a string (parsed back to a selector).
         ip: String,
     },
+    /// The capture's own health: the loss, decode and media-path counters
+    /// `GET /v1/stats` reports under `capture_quality`, with a degraded flag.
+    /// Opened with `h` from the call list. Reads process-global counters, so it
+    /// renders straight from `CaptureQuality::current` each frame.
+    CaptureHealth,
     /// The live relay's own statistics, asked over its control socket (ST8).
     ///
     /// Distinct from [`View::Statistics`], which is about what THIS capture saw:

@@ -19,9 +19,9 @@ mod source_scan;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use sipnab::tui::help::HELP_TEXT;
 use sipnab::tui::{
-    Keymap, call_flow_action, call_list_action, carrier_metrics_action, combined_detail_action,
-    compare_dialogs_action, dashboard_action, endpoint_rollup_action, help_action,
-    message_diff_action, raw_message_action, statistics_action, stream_detail_action,
+    Keymap, call_flow_action, call_list_action, capture_health_action, carrier_metrics_action,
+    combined_detail_action, compare_dialogs_action, dashboard_action, endpoint_rollup_action,
+    help_action, message_diff_action, raw_message_action, statistics_action, stream_detail_action,
     stream_list_action, talkers_action,
 };
 
@@ -191,7 +191,7 @@ fn mapped_char_keys_are_documented_or_allowlisted() {
     let docs = documented_tokens();
     let km = Keymap::default();
     type Probe = (&'static str, fn(&Keymap, KeyEvent) -> bool);
-    let probes: [Probe; 14] = [
+    let probes: [Probe; 15] = [
         ("call_list", |km, k| call_list_action(km, k).is_some()),
         ("stream_list", |km, k| stream_list_action(km, k).is_some()),
         ("stream_detail", |km, k| {
@@ -214,6 +214,9 @@ fn mapped_char_keys_are_documented_or_allowlisted() {
         }),
         ("endpoint_rollup", |km, k| {
             endpoint_rollup_action(km, k).is_some()
+        }),
+        ("capture_health", |km, k| {
+            capture_health_action(km, k).is_some()
         }),
         ("dashboard", |km, k| dashboard_action(km, k).is_some()),
     ];
@@ -298,6 +301,9 @@ fn every_documented_view_key_is_handled() {
         }),
         ("ENDPOINT ROLLUP:", |km, k| {
             endpoint_rollup_action(km, k).is_some()
+        }),
+        ("CAPTURE HEALTH:", |km, k| {
+            capture_health_action(km, k).is_some()
         }),
         ("QUALITY DASHBOARD:", |km, k| {
             dashboard_action(km, k).is_some()

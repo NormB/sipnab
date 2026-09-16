@@ -91,6 +91,9 @@ pub enum CallListAction {
     /// `e` — open the per-endpoint rollup for the selected call's source
     /// address: everything that endpoint did across the capture.
     OpenEndpoint,
+    /// `h` — open the capture-health panel: the loss, decode and media-path
+    /// counters, with a degraded flag.
+    OpenCaptureHealth,
     /// `S` — open the relay-statistics view for the relay's globals (ST8, C1).
     OpenRelayStats,
     /// `B` — show the full BPF capture-filter expression (status line 2
@@ -159,6 +162,7 @@ pub fn call_list_action(km: &Keymap, key: KeyEvent) -> Option<CallListAction> {
         KeyCode::Char('m') => OpenCarrierMetrics,
         KeyCode::Char('c') => CompareDialogs,
         KeyCode::Char('e') => OpenEndpoint,
+        KeyCode::Char('h') => OpenCaptureHealth,
         KeyCode::Char('S') => OpenRelayStats,
         KeyCode::Char('B') => OpenBpfFilter,
         KeyCode::Char('D') => OpenDashboard,
@@ -356,6 +360,10 @@ fn execute_call_list_action(app: &mut App, action: CallListAction) {
                     app.current_view = View::EndpointRollup { ip };
                 }
             }
+        }
+        CallListAction::OpenCaptureHealth => {
+            app.capture_health_scroll = 0;
+            app.current_view = View::CaptureHealth;
         }
         CallListAction::OpenRelayStats => {
             app.relay_stats_scroll = 0;

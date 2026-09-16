@@ -187,6 +187,7 @@ fn dispatch_view_key(app: &mut App, key: KeyEvent) {
         View::CarrierMetrics => handle_carrier_metrics_key(app, key),
         View::CompareDialogs { .. } => handle_compare_dialogs_key(app, key),
         View::EndpointRollup { .. } => handle_endpoint_rollup_key(app, key),
+        View::CaptureHealth => handle_capture_health_key(app, key),
         View::RelayStats { .. } => handle_relay_stats_key(app, key),
         View::BpfFilter => handle_bpf_filter_key(app, key),
         View::QualityDashboard => dashboard::handle_dashboard_key(app, key),
@@ -874,6 +875,82 @@ pub(in crate::tui) fn handle_endpoint_rollup_key(app: &mut App, key: KeyEvent) {
     }
 }
 
+/// Everything the capture-health view can do for a single key press.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CaptureHealthAction {
+    /// Esc, the quit key, or `h` — close the panel and return to the list.
+    Close,
+    /// Scroll the panel up one line.
+    ScrollUp,
+    /// Scroll the panel down one line.
+    ScrollDown,
+    /// Scroll the panel up 20 lines.
+    PageUp,
+    /// Scroll the panel down 20 lines.
+    PageDown,
+    /// Jump to the top of the panel.
+    ScrollTop,
+    /// Jump to the bottom (the render pass clamps to the content height).
+    ScrollBottom,
+}
+
+/// Pure key→action mapping for the capture-health view (keymap-aware).
+///
+/// # Arguments
+/// * `km` - the active keymap; the rebindable quit key is honored.
+/// * `key` - the key event whose code is matched against the bindings.
+///
+/// # Returns
+/// The mapped `CaptureHealthAction`, or `None` when the key is not bound here.
+pub fn capture_health_action(km: &Keymap, key: KeyEvent) -> Option<CaptureHealthAction> {
+    use CaptureHealthAction::*;
+    Some(match key.code {
+        k if k == KeyCode::Esc || k == km.quit || k == KeyCode::Char('h') => Close,
+        KeyCode::Up | KeyCode::Char('k') => ScrollUp,
+        KeyCode::Down | KeyCode::Char('j') => ScrollDown,
+        KeyCode::PageUp => PageUp,
+        KeyCode::PageDown => PageDown,
+        KeyCode::Home => ScrollTop,
+        KeyCode::End => ScrollBottom,
+        _ => return None,
+    })
+}
+
+/// Handle keys in the capture-health view: map, then execute.
+///
+/// # Arguments
+/// * `app` - the application state to mutate.
+/// * `key` - the key event, mapped via `capture_health_action`.
+///
+/// # Side effects
+/// Scroll actions move `app.capture_health_scroll`; `Close` returns to the call
+/// list. Unbound keys are ignored.
+pub(in crate::tui) fn handle_capture_health_key(app: &mut App, key: KeyEvent) {
+    let Some(action) = capture_health_action(&app.keymap, key) else {
+        return;
+    };
+    match action {
+        CaptureHealthAction::Close => {
+            app.current_view = View::CallList;
+        }
+        CaptureHealthAction::ScrollUp => {
+            app.capture_health_scroll = app.capture_health_scroll.saturating_sub(1);
+        }
+        CaptureHealthAction::ScrollDown => {
+            app.capture_health_scroll = app.capture_health_scroll.saturating_add(1);
+        }
+        CaptureHealthAction::PageUp => {
+            app.capture_health_scroll = app.capture_health_scroll.saturating_sub(20);
+        }
+        CaptureHealthAction::PageDown => {
+            app.capture_health_scroll = app.capture_health_scroll.saturating_add(20);
+        }
+        CaptureHealthAction::ScrollTop => app.capture_health_scroll = 0,
+        // Clamped to the content height by the render pass.
+        CaptureHealthAction::ScrollBottom => app.capture_health_scroll = u16::MAX,
+    }
+}
+
 /// Everything the relay-statistics view can do for a single key press (ST8).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RelayStatsAction {
@@ -1114,6 +1191,13 @@ pub(in crate::tui) fn handle_mouse_event(app: &mut App, kind: crossterm::event::
                 app.endpoint_scroll.saturating_add(3)
             } else {
                 app.endpoint_scroll.saturating_sub(3)
+            };
+        }
+        View::CaptureHealth => {
+            app.capture_health_scroll = if down {
+                app.capture_health_scroll.saturating_add(3)
+            } else {
+                app.capture_health_scroll.saturating_sub(3)
             };
         }
         View::RelayStats { .. } => {

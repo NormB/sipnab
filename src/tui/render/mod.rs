@@ -53,6 +53,8 @@ pub(in crate::tui) struct RenderFeedback {
     pub(in crate::tui) compare_scroll: Option<u16>,
     /// Clamped scroll of the per-endpoint rollup view.
     pub(in crate::tui) endpoint_scroll: Option<u16>,
+    /// Clamped scroll of the capture-health view.
+    pub(in crate::tui) capture_health_scroll: Option<u16>,
     /// Clamped scroll of the relay-statistics view (ST8).
     pub(in crate::tui) relay_stats_scroll: Option<u16>,
     /// Content-clamped scroll of the full-BPF-filter popup (`B`). Only the
@@ -517,6 +519,9 @@ pub(in crate::tui) fn render_app(
         }
         View::EndpointRollup { .. } => {
             fb.endpoint_scroll = Some(render_endpoint(frame, main_area, app, ds, ss));
+        }
+        View::CaptureHealth => {
+            fb.capture_health_scroll = Some(render_capture_health(frame, main_area, app));
         }
         View::RelayStats { .. } => {
             fb.relay_stats_scroll = Some(render_relay_stats(frame, main_area, app));
@@ -1182,6 +1187,114 @@ pub(in crate::tui) fn render_endpoint(
     let scroll = app.endpoint_scroll.min(total_rows.saturating_sub(viewport));
 
     let block = Block::default().borders(Borders::ALL).title(" Endpoint ");
+    let paragraph = Paragraph::new(text)
+        .block(block)
+        .style(Style::default().fg(app.theme.foreground))
+        .scroll((scroll, 0));
+
+    frame.render_widget(paragraph, area);
+    scroll
+}
+
+/// Build the capture-health panel from a
+/// [`crate::output::prometheus::CaptureQuality`] snapshot — the same counters
+/// `GET /v1/stats` reports under `capture_quality`, spelled for a terminal.
+///
+/// Taking the snapshot as an argument keeps this pure: `CaptureQuality::current`
+/// reads process-global atomics, so the caller passes a value and a test builds
+/// its own rather than depending on whatever the process happens to hold.
+///
+/// STUB — filled in after the failing test.
+pub(in crate::tui) fn capture_health_text(q: &crate::output::prometheus::CaptureQuality) -> String {
+    use std::fmt::Write as _;
+
+    let mut out = String::new();
+    let _ = writeln!(out, "Capture health");
+    let _ = writeln!(out);
+    if q.degraded() {
+        let _ = writeln!(
+            out,
+            "  Status: DEGRADED — packets were lost or timestamps corrupted",
+        );
+    } else {
+        let _ = writeln!(out, "  Status: no degradation observed");
+    }
+    let _ = writeln!(out);
+    let _ = writeln!(out, "  Loss (packets that never reached the analysis):");
+    let _ = writeln!(
+        out,
+        "    Kernel-dropped (ring full):   {}",
+        q.kernel_dropped_packets
+    );
+    let _ = writeln!(
+        out,
+        "    Interface/driver-dropped:     {}",
+        q.interface_dropped_packets
+    );
+    let _ = writeln!(
+        out,
+        "    Corrupt timestamps:           {}",
+        q.invalid_timestamps
+    );
+    let _ = writeln!(out);
+    let _ = writeln!(out, "  Decode (frames present but unread):");
+    let _ = writeln!(
+        out,
+        "    Undecodable frames:           {}",
+        q.undecodable_frames
+    );
+    let _ = writeln!(
+        out,
+        "    Snapped (truncated) frames:   {}",
+        q.snapped_frames
+    );
+    let _ = writeln!(out);
+    let _ = writeln!(out, "  Network (media-path signals):");
+    let _ = writeln!(
+        out,
+        "    Unanswered STUN/TURN:         {}",
+        q.unanswered_nat_requests
+    );
+    let _ = writeln!(
+        out,
+        "    Lapsed TURN allocations:      {}",
+        q.lapsed_turn_allocations
+    );
+    let _ = writeln!(
+        out,
+        "    Streams on lapsed allocations: {}",
+        q.lapsed_turn_allocation_streams
+    );
+    let _ = writeln!(
+        out,
+        "    ICE role conflicts:           {}",
+        q.ice_role_conflicts
+    );
+    out
+}
+
+/// Render the capture-health view. Reads the process-global counters through
+/// `CaptureQuality::current` each frame (cheap — atomics, no store scan) and
+/// paints [`capture_health_text`]. Returns the clamped scroll.
+///
+/// # Side effects
+/// Draws to `frame` only; no state is mutated.
+pub(in crate::tui) fn render_capture_health(
+    frame: &mut ratatui::Frame,
+    area: ratatui::layout::Rect,
+    app: &App,
+) -> u16 {
+    let q = crate::output::prometheus::CaptureQuality::current();
+    let text = capture_health_text(&q);
+    let total_rows = text.lines().count() as u16;
+    let viewport = area.height.saturating_sub(2);
+    let scroll = app
+        .capture_health_scroll
+        .min(total_rows.saturating_sub(viewport));
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Capture health ");
     let paragraph = Paragraph::new(text)
         .block(block)
         .style(Style::default().fg(app.theme.foreground))
@@ -2105,6 +2218,42 @@ mod tests {
         assert!(
             text.contains("failed: 1"),
             "exactly one of the two INVITEs failed (503):\n{text}"
+        );
+    }
+
+    /// The capture-health panel marks a degraded capture and renders each loss
+    /// counter, and a clean snapshot is not marked degraded. The snapshot is a
+    /// constructed fixture, not `CaptureQuality::current` — the counters are
+    /// process globals another test could move, so the formatter is exercised
+    /// on a value of the test's own.
+    #[test]
+    fn capture_health_text_reports_degradation_and_the_loss_counters() {
+        use crate::output::prometheus::CaptureQuality;
+
+        let degraded = CaptureQuality {
+            kernel_dropped_packets: 7,
+            interface_dropped_packets: 3,
+            undecodable_frames: 11,
+            ..Default::default()
+        };
+        let text = capture_health_text(&degraded);
+        assert!(
+            text.contains("DEGRADED"),
+            "a capture with kernel drops reads degraded:\n{text}"
+        );
+        assert!(
+            text.contains('7'),
+            "the kernel-drop count is shown:\n{text}"
+        );
+        assert!(
+            text.contains("11"),
+            "the undecodable-frame count is shown:\n{text}"
+        );
+
+        let clean = capture_health_text(&CaptureQuality::default());
+        assert!(
+            !clean.contains("DEGRADED"),
+            "a clean capture is not marked degraded:\n{clean}"
         );
     }
 

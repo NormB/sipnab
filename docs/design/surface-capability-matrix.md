@@ -396,7 +396,7 @@ Is the capture path losing packets — kernel drops, invalid timestamps, undecod
 | Surface | Detail |
 |---|---|
 | CLI | `--analyze` |
-| TUI | gap: a live-capture operator wants an am-I-dropping-packets readout, but `Statistics` shows counts with no drop or undecodable counters (PAR4) |
+| TUI | `CaptureHealth` |
 | REST | `/v1/stats` |
 | MCP | `capture_health` |
 

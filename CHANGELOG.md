@@ -12,6 +12,18 @@ entry that carries them.
 
 ### Added
 
+- **Capture-health TUI view (PAR4).** A new `CaptureHealth` view, opened with
+  `h` from the call list, answers "am I dropping packets?" — the loss counters
+  (kernel- and interface-dropped packets, corrupt timestamps), the decode
+  counters (undecodable and snapped frames) and the media-path counters
+  (unanswered STUN/TURN, lapsed TURN allocations and their streams, ICE role
+  conflicts), with a degraded flag when any loss counter has moved. These are
+  the same `CaptureQuality` counters `GET /v1/stats` reports under
+  `capture_quality`; `Statistics` showed dialog and stream counts but none of
+  these. The text builder takes the snapshot as an argument, so it is pure and
+  unit-tested on a constructed value rather than the process globals
+  `CaptureQuality::current` reads. Closes the capture-health TUI gap, leaving 21
+  named gaps.
 - **Relay holdings in the TUI (PAR4).** The `RelayStats` view gained a holdings
   mode, reached with `H`: the Call-IDs the live relay is holding right now, with
   a truncation flag when the relay returned a bounded set. REST already exposed
