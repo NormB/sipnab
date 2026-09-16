@@ -430,7 +430,10 @@ fn undocumented_numeric_ceilings_do_not_increase() {
 // the `POST /v1/vcon/validate` response. Response-only, same reason. The POST
 // route's body schema is not checked by the GET-only contract test, but the
 // response shape is pinned by the same rule. Three components.
-const PERMISSIVE_SCHEMA_COMPONENTS: usize = 38;
+// 38 -> 40 at PAR3, for `Timeline` and `TimelineBucket`, the `GET /v1/timeline`
+// response. Response-only, same reason, pinned by the same contract test. Two
+// components.
+const PERMISSIVE_SCHEMA_COMPONENTS: usize = 40;
 
 #[test]
 fn permissive_rest_schema_components_do_not_increase() {

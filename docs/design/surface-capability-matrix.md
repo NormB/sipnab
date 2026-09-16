@@ -166,7 +166,7 @@ What is the call volume over time, in fixed-width buckets?
 |---|---|
 | CLI | gap: a volume histogram is a one-shot batch fact, but no flag produces per-bucket counts (PAR5) |
 | TUI | gap: a human watching would use a volume sparkline, but no such view exists (PAR4) |
-| REST | gap: a dashboard would poll a volume series, but no route exists (PAR3) |
+| REST | `/v1/timeline` |
 | MCP | `timeline` |
 
 ### Group-by counts

@@ -101,6 +101,19 @@ fn aggregate_answers_with_the_buckets_envelope() {
     assert!(body["total_matched"].is_number(), "total_matched present");
 }
 
+/// `GET /v1/timeline` answers over the shipped binary with the buckets envelope
+/// (PAR3).
+#[test]
+fn timeline_answers_with_the_buckets_envelope() {
+    let srv = ApiServer::spawn(&[]);
+    let resp = srv.get("/v1/timeline");
+    assert_eq!(resp.status, 200, "/v1/timeline status");
+    let body = resp.json();
+    assert_eq!(body["schema_version"], 1);
+    assert!(body["buckets"].is_array(), "buckets is an array");
+    assert!(body["bucket_seconds"].is_number(), "bucket_seconds present");
+}
+
 /// `GET /v1/dialogs/{id}/lint` answers over the shipped binary with the findings
 /// envelope (PAR3).
 #[test]

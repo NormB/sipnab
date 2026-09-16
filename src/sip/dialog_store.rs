@@ -1718,6 +1718,42 @@ impl DialogStore {
         })
     }
 
+    /// Dialogs bucketed by their first message's instant into fixed-width
+    /// intervals aligned to the epoch, oldest first, gaps included. Each entry
+    /// is the interval's start and how many dialogs opened in it.
+    ///
+    /// The one bucketing rule the MCP `timeline` tool and the REST `/v1/timeline`
+    /// route share, so a histogram is bucketed one way. Aligned to the epoch,
+    /// not to the first call, so two captures line up. `width_seconds` must be
+    /// non-zero -- callers reject a zero width, which would put every dialog in
+    /// every bucket.
+    pub fn timeline_buckets(
+        &self,
+        width_seconds: u64,
+    ) -> Vec<(chrono::DateTime<chrono::Utc>, u64)> {
+        debug_assert!(width_seconds > 0, "callers reject zero before calling");
+        let width = i64::try_from(width_seconds).unwrap_or(i64::MAX).max(1);
+
+        let mut counts: std::collections::BTreeMap<i64, u64> = std::collections::BTreeMap::new();
+        for d in self.iter() {
+            let bucket = d.created_at.timestamp().div_euclid(width);
+            *counts.entry(bucket).or_insert(0) += 1;
+        }
+        let (Some(&first), Some(&last)) = (counts.keys().next(), counts.keys().next_back()) else {
+            return Vec::new();
+        };
+
+        (first..=last)
+            .map(|b| {
+                (
+                    chrono::DateTime::from_timestamp(b.saturating_mul(width), 0)
+                        .unwrap_or_default(),
+                    counts.get(&b).copied().unwrap_or(0),
+                )
+            })
+            .collect()
+    }
+
     /// Find dialogs correlated to the given Call-ID, discarding the reason.
     ///
     /// Returns every correlated dialog, regardless of score. All seven

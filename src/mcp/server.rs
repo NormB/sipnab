@@ -4083,25 +4083,17 @@ impl SipnabMcp {
     /// outage looks like -- and a series that silently skips it renders as
     /// continuous traffic with a shorter x-axis.
     pub(crate) fn timeline_buckets(&self, width_seconds: u64) -> Vec<TimelineBucket> {
-        debug_assert!(width_seconds > 0, "callers reject zero before calling");
-        let ds = self.dialog_store.read();
-        let width = i64::try_from(width_seconds).unwrap_or(i64::MAX).max(1);
-
-        let mut counts: std::collections::BTreeMap<i64, u64> = std::collections::BTreeMap::new();
-        for d in ds.iter() {
-            let bucket = d.created_at.timestamp().div_euclid(width);
-            *counts.entry(bucket).or_insert(0) += 1;
-        }
-        let (Some(&first), Some(&last)) = (counts.keys().next(), counts.keys().next_back()) else {
-            return Vec::new();
-        };
-
-        (first..=last)
-            .map(|b| TimelineBucket {
-                start: chrono::DateTime::from_timestamp(b.saturating_mul(width), 0)
-                    .unwrap_or_default(),
+        // The shared bucketing rule, so this tool and the REST `/v1/timeline`
+        // route cannot disagree; this surface just names the interval width on
+        // each row.
+        self.dialog_store
+            .read()
+            .timeline_buckets(width_seconds)
+            .into_iter()
+            .map(|(start, dialogs)| TimelineBucket {
+                start,
                 bucket_seconds: width_seconds,
-                dialogs: counts.get(&b).copied().unwrap_or(0),
+                dialogs,
             })
             .collect()
     }

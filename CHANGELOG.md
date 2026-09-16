@@ -95,6 +95,12 @@ entry that carries them.
   ungated `vcon_schema::validate` the MCP `validate_vcon` tool runs, and is the
   first REST route that validates input rather than reading the capture. This
   closes the `validate_vcon` REST gap, leaving 37 named gaps.
+- **`GET /v1/timeline` (PAR3).** Call volume over time in fixed-width buckets —
+  the volume series a dashboard polls, which no route exposed. Buckets align to
+  the epoch, not the first call, so two captures line up, and an empty interval
+  stays in the series because an empty bucket is what an outage looks like. The
+  bucketing rule moves into `DialogStore::timeline_buckets` the MCP `timeline`
+  tool now shares. This closes the `timeline` REST gap, leaving 36 named gaps.
 
 ## [0.5.175] - 2026-09-15
 

@@ -3912,6 +3912,70 @@
         ],
         "type": "object"
       },
+      "Timeline": {
+        "description": "Call volume over time, in fixed-width buckets.",
+        "properties": {
+          "bucket_seconds": {
+            "description": "The bucket width actually used, echoed because the caller may have\nomitted it.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "buckets": {
+            "description": "One row per interval, oldest first, gaps included (an empty interval\nis the outage, so it is not dropped).",
+            "items": {
+              "$ref": "#/components/schemas/TimelineBucket"
+            },
+            "type": "array"
+          },
+          "returned": {
+            "description": "Rows in `buckets`.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "schema_version": {
+            "description": "Version of this response's shape.",
+            "example": 1,
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "schema_version",
+          "buckets",
+          "returned",
+          "bucket_seconds"
+        ],
+        "type": "object"
+      },
+      "TimelineBucket": {
+        "description": "One interval of a call-volume histogram.",
+        "properties": {
+          "bucket_seconds": {
+            "description": "Width of the interval in seconds, echoed so a row reads on its own.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "dialogs": {
+            "description": "Dialogs whose first message fell in this interval.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "start": {
+            "description": "Start of the interval, inclusive, RFC 3339. Aligned to the epoch, not\nto the first call, so two captures line up.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "start",
+          "bucket_seconds",
+          "dialogs"
+        ],
+        "type": "object"
+      },
       "TimingSummary": {
         "description": "Transaction timing, as carried by every dialog summary.",
         "properties": {
@@ -5953,6 +6017,76 @@
         "summary": "Ask TFPS to release a source",
         "tags": [
           "tfps"
+        ]
+      }
+    },
+    "/v1/timeline": {
+      "get": {
+        "description": "How many calls opened over time, in fixed-width buckets — the volume series a dashboard polls, which no other route exposed.\n\nBuckets align to the epoch rather than to the first call, so two captures line up, and an empty interval is kept rather than dropped because an empty bucket is exactly what an outage looks like. The MCP `timeline` tool buckets the same way.",
+        "operationId": "get_timeline",
+        "parameters": [
+          {
+            "description": "Bucket width in seconds (default 60). Zero is a 400: a zero-width bucket\ndescribes no interval, and every dialog would fall into all of them.",
+            "in": "query",
+            "name": "bucket_seconds",
+            "required": false,
+            "schema": {
+              "format": "int64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Timeline"
+                }
+              }
+            },
+            "description": "One row per interval, oldest first."
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "A bucket width of zero."
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "No bearer credential, or one this server does not accept."
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Over the per-source-IP rate limit of 100 requests per second."
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Call volume over time",
+        "tags": [
+          "dialogs"
         ]
       }
     },

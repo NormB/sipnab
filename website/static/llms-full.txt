@@ -5744,6 +5744,43 @@ values for a model where this route returns them raw for a program.
 
 ---
 
+### GET /v1/timeline
+
+How many calls opened over time, in fixed-width buckets — the volume series a
+dashboard polls.
+
+**Query parameters:**
+
+- `bucket_seconds` (optional) — the interval width, default 60. Zero is a `400`.
+
+**curl:**
+
+```bash
+curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" "http://127.0.0.1:8080/v1/timeline?bucket_seconds=300" | jq .
+```
+
+**Response:**
+
+```json
+{
+  "schema_version": 1,
+  "buckets": [
+    { "start": "2026-09-15T12:00:00+00:00", "bucket_seconds": 300, "dialogs": 42 },
+    { "start": "2026-09-15T12:05:00+00:00", "bucket_seconds": 300, "dialogs": 0 },
+    { "start": "2026-09-15T12:10:00+00:00", "bucket_seconds": 300, "dialogs": 51 }
+  ],
+  "returned": 3,
+  "bucket_seconds": 300
+}
+```
+
+**Buckets align to the epoch, not to the first call,** so two captures line up
+on the same boundaries. The series keeps every empty interval rather than
+discarding it — an empty bucket is exactly what an outage looks like, and
+discarding one would hide the gap. The MCP tool `timeline` buckets the same way.
+
+---
+
 ### POST /v1/vcon/validate
 
 Check a vCon container against sipnab's vendored schema — the producer-and-

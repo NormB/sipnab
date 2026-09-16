@@ -50,7 +50,7 @@ was driving all of them.
 | Surface | Rows | `e2e` | `parsed` | `referenced` | `none` |
 |---|---|---|---|---|---|
 | CLI flags | 271 | 139 | 53 | 78 | 1 |
-| HTTP routes | 28 | 28 | -- | 0 | 0 |
+| HTTP routes | 29 | 29 | -- | 0 | 0 |
 | MCP tools | 68 | 68 | -- | 0 | 0 |
 
 **Flags with no occurrence at all:** `--syslog`
@@ -386,6 +386,7 @@ behind them.
 | `/v1/tfps/labels` | exercised | `tests/tfps_surfaces_test.rs` |
 | `/v1/tfps/status` | exercised | `tests/tfps_surfaces_test.rs` |
 | `/v1/tfps/unban` | exercised | `tests/tfps_surfaces_test.rs` |
+| `/v1/timeline` | exercised | `tests/api_test.rs` |
 | `/v1/vcon/validate` | exercised | `tests/api_test.rs` |
 
 ## MCP tools

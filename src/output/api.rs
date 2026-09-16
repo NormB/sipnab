@@ -458,6 +458,15 @@ pub struct AggregateParams {
     pub top_n: Option<usize>,
 }
 
+/// Query parameters for the `GET /v1/timeline` endpoint.
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct TimelineParams {
+    /// Bucket width in seconds (default 60). Zero is a 400: a zero-width bucket
+    /// describes no interval, and every dialog would fall into all of them.
+    pub bucket_seconds: Option<u64>,
+}
+
 // ── Router construction ─────────────────────────────────────────────
 
 /// Per-request wall-clock cap. The API is request/response (no streaming), so a
@@ -573,6 +582,7 @@ pub fn build_router(state: ApiState) -> Router {
         .route("/v1/report", get(get_capture_report))
         .route("/v1/stats", get(get_stats))
         .route("/v1/aggregate", get(get_aggregate))
+        .route("/v1/timeline", get(get_timeline))
         // Relay statistics (ST5). Each transmits once, behind
         // --api-allow-relay-query; the /call/ segment keeps C2 from colliding
         // with the static /names path. Polling (C5) is not offered here.
@@ -1264,6 +1274,78 @@ async fn get_aggregate(
         other_count,
         distinct_values,
         total_matched,
+    }))
+}
+
+/// `GET /v1/timeline` — call volume over time, in fixed-width buckets (PAR3:
+/// timeline on REST).
+///
+/// # Arguments
+///
+/// * `state` — Shared application state.
+/// * `addr` — Client socket address used for rate limiting.
+/// * `headers` — Request headers (auth).
+/// * `params` — optional `bucket_seconds` (default 60).
+///
+/// # Returns
+///
+/// 200 with one row per interval, oldest first, gaps included; 400 for a zero
+/// bucket width; 401/503 from the guard.
+///
+/// # Side effects
+///
+/// Holds the dialog-store read lock while bucketing; mutates the rate limiter.
+#[utoipa::path(
+    get,
+    path = "/v1/timeline",
+    tag = "dialogs",
+    summary = "Call volume over time",
+    description = "How many calls opened over time, in fixed-width buckets — the volume series a dashboard polls, which no other route exposed.\n\nBuckets align to the epoch rather than to the first call, so two captures line up, and an empty interval is kept rather than dropped because an empty bucket is exactly what an outage looks like. The MCP `timeline` tool buckets the same way.",
+    params(TimelineParams),
+    security(("bearer" = [])),
+    responses(
+        (status = 200, description = "One row per interval, oldest first.", body = schema::Timeline),
+        (status = 400, description = "A bucket width of zero.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 401, description = "No bearer credential, or one this server does not accept.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 503, description = "Over the per-source-IP rate limit of 100 requests per second.", body = schema::ProblemJson, content_type = "application/problem+json"),
+    )
+)]
+async fn get_timeline(
+    State(state): State<ApiState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Query(params): Query<TimelineParams>,
+) -> Result<impl IntoResponse, Problem> {
+    guard(&state, &headers, addr.ip())?;
+
+    let width = params.bucket_seconds.unwrap_or(60);
+    if width == 0 {
+        return Err(Problem::detailed(
+            StatusCode::BAD_REQUEST,
+            "bucket_seconds must be greater than zero: a zero-width bucket \
+             describes no interval, and every dialog would fall into all of them",
+        ));
+    }
+
+    // The shared bucketing rule, so this route and the MCP `timeline` tool
+    // agree; this surface renders the interval start as RFC 3339.
+    let buckets: Vec<schema::TimelineBucket> = state
+        .dialog_store
+        .read()
+        .timeline_buckets(width)
+        .into_iter()
+        .map(|(start, dialogs)| schema::TimelineBucket {
+            start: start.to_rfc3339(),
+            bucket_seconds: width,
+            dialogs,
+        })
+        .collect();
+
+    Ok(Json(schema::Timeline {
+        schema_version: 1,
+        returned: buckets.len(),
+        bucket_seconds: width,
+        buckets,
     }))
 }
 
@@ -3642,6 +3724,34 @@ pub mod schema {
         pub explanations: Vec<VconExplanation>,
     }
 
+    /// One interval of a call-volume histogram.
+    #[derive(Debug, Clone, serde::Serialize, ToSchema)]
+    pub struct TimelineBucket {
+        /// Start of the interval, inclusive, RFC 3339. Aligned to the epoch, not
+        /// to the first call, so two captures line up.
+        pub start: String,
+        /// Width of the interval in seconds, echoed so a row reads on its own.
+        pub bucket_seconds: u64,
+        /// Dialogs whose first message fell in this interval.
+        pub dialogs: u64,
+    }
+
+    /// Call volume over time, in fixed-width buckets.
+    #[derive(Debug, Clone, serde::Serialize, ToSchema)]
+    pub struct Timeline {
+        /// Version of this response's shape.
+        #[schema(example = 1)]
+        pub schema_version: u32,
+        /// One row per interval, oldest first, gaps included (an empty interval
+        /// is the outage, so it is not dropped).
+        pub buckets: Vec<TimelineBucket>,
+        /// Rows in `buckets`.
+        pub returned: usize,
+        /// The bucket width actually used, echoed because the caller may have
+        /// omitted it.
+        pub bucket_seconds: u64,
+    }
+
     /// Transaction timing, as carried by every dialog summary.
     #[derive(Debug, Clone, ToSchema)]
     pub struct TimingSummary {
@@ -4359,6 +4469,7 @@ impl utoipa::Modify for BearerAuth {
         get_correlated,
         get_tree,
         get_aggregate,
+        get_timeline,
         get_lint,
         get_persistence,
         set_persistence,
@@ -4392,6 +4503,8 @@ impl utoipa::Modify for BearerAuth {
         schema::Aggregate,
         schema::LintFinding,
         schema::Lint,
+        schema::TimelineBucket,
+        schema::Timeline,
         schema::RelayStatsResponse,
         schema::DialogList,
         schema::DialogSummary,
@@ -4869,6 +4982,64 @@ mod tests {
 
         let resp = app
             .oneshot(test_request("/v1/aggregate"))
+            .await
+            .expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    // ── timeline (PAR3: timeline) ─────────────────────────────────────
+
+    /// `GET /v1/timeline` buckets calls by time. The three seeded dialogs share
+    /// one second, so they fall in one bucket. Closes the timeline REST gap.
+    #[tokio::test]
+    async fn timeline_buckets_the_calls() {
+        let state = make_state();
+        populate_dialogs(&state); // all open at 2024-06-15T12:00:00Z
+        let app = build_router(state);
+
+        let resp = app
+            .oneshot(test_request("/v1/timeline"))
+            .await
+            .expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_to_string(resp.into_body()).await;
+        let parsed: Value = serde_json::from_str(&body).expect("valid JSON");
+        assert_eq!(parsed["schema_version"], 1);
+        assert_eq!(parsed["bucket_seconds"], 60);
+        assert_eq!(parsed["returned"], 1);
+        let buckets = parsed["buckets"].as_array().expect("buckets");
+        assert_eq!(buckets.len(), 1);
+        assert_eq!(buckets[0]["dialogs"], 3);
+        assert_eq!(buckets[0]["bucket_seconds"], 60);
+    }
+
+    /// The requested bucket width is honored and echoed on the answer.
+    #[tokio::test]
+    async fn timeline_honors_the_requested_width() {
+        let state = make_state();
+        populate_dialogs(&state);
+        let app = build_router(state);
+
+        let resp = app
+            .oneshot(test_request("/v1/timeline?bucket_seconds=3600"))
+            .await
+            .expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_to_string(resp.into_body()).await;
+        let parsed: Value = serde_json::from_str(&body).expect("valid JSON");
+        assert_eq!(parsed["bucket_seconds"], 3600);
+        assert_eq!(parsed["buckets"][0]["dialogs"], 3);
+    }
+
+    /// A zero bucket width is a 400, not an answer: it describes no interval.
+    #[tokio::test]
+    async fn timeline_zero_width_is_400() {
+        let state = make_state();
+        populate_dialogs(&state);
+        let app = build_router(state);
+
+        let resp = app
+            .oneshot(test_request("/v1/timeline?bucket_seconds=0"))
             .await
             .expect("oneshot");
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
