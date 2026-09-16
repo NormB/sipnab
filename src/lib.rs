@@ -53,6 +53,7 @@ pub mod config;
 #[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
 pub mod crash;
 pub mod crypto;
+pub mod cursor;
 pub mod error;
 pub mod expect;
 pub mod llmnr;

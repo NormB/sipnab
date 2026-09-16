@@ -1754,6 +1754,38 @@ impl DialogStore {
             .collect()
     }
 
+    /// A page of dialogs for change-tracking pollers: those updated strictly
+    /// after `cursor` (all of them when `cursor` is `None`), oldest update
+    /// first with the Call-ID breaking ties, truncated to `limit`, plus the
+    /// cursor to resume from.
+    ///
+    /// The order and the truncation are one rule, shared by the MCP
+    /// `tail_dialogs` tool and the REST `/v1/dialogs/tail` route. Sorting
+    /// BEFORE truncating is the point: the store's own order is insertion
+    /// order, and truncating that first would let `next_cursor` name a row
+    /// past dialogs the page never returned, so the next poll would skip them.
+    /// `next_cursor` is `None` when nothing matched.
+    pub fn tail_page(
+        &self,
+        cursor: Option<&crate::cursor::Cursor>,
+        limit: usize,
+    ) -> (Vec<&SipDialog>, Option<String>) {
+        let mut changed: Vec<&SipDialog> = self
+            .iter()
+            .filter(|d| cursor.is_none_or(|c| c.precedes(d.updated_at, &d.call_id)))
+            .collect();
+        crate::sort::sort_by_dyn(&mut changed, &mut |a, b| {
+            a.updated_at
+                .cmp(&b.updated_at)
+                .then_with(|| a.call_id.cmp(&b.call_id))
+        });
+        changed.truncate(limit);
+        let next_cursor = changed
+            .last()
+            .map(|d| crate::cursor::format_cursor(d.updated_at, &d.call_id));
+        (changed, next_cursor)
+    }
+
     /// Find dialogs correlated to the given Call-ID, discarding the reason.
     ///
     /// Returns every correlated dialog, regardless of score. All seven
@@ -5318,6 +5350,70 @@ Content-Type: application/rs-metadata+xml\r\n\r\n\
             store.total_dialogs_opened(),
             3,
             "one of its own plus the source's two, however many the cap kept"
+        );
+    }
+
+    // ── tail_page (shared change-tracking pagination) ──────────────────
+
+    /// Build a store of three dialogs updated at t0 < t1 < t2, out of insertion
+    /// order, so a test that passes only when the rows are re-sorted by update
+    /// time cannot pass on insertion order by accident.
+    fn store_of_three_updates() -> DialogStore {
+        let t0 = base_ts();
+        let mut store = DialogStore::new(1000, true);
+        // Insert middle, then newest, then oldest.
+        store.process_message(make_invite_msg("mid@h", t0 + TimeDelta::seconds(1)));
+        store.process_message(make_invite_msg("new@h", t0 + TimeDelta::seconds(2)));
+        store.process_message(make_invite_msg("old@h", t0));
+        store
+    }
+
+    /// With no cursor, every dialog comes back oldest-update first and the
+    /// next_cursor names the newest — the position a poller resumes from.
+    #[test]
+    fn tail_page_orders_by_update_time_and_names_the_newest() {
+        let store = store_of_three_updates();
+        let (page, next) = store.tail_page(None, 10);
+        let ids: Vec<&str> = page.iter().map(|d| d.call_id.as_str()).collect();
+        assert_eq!(ids, vec!["old@h", "mid@h", "new@h"], "oldest update first");
+        assert_eq!(
+            next,
+            Some(crate::cursor::format_cursor(
+                base_ts() + TimeDelta::seconds(2),
+                "new@h"
+            )),
+            "the cursor names the newest row, so the next poll resumes after it"
+        );
+    }
+
+    /// A cursor at the middle row returns only what updated strictly after it,
+    /// so a poll that already saw `old` and `mid` gets just `new`.
+    #[test]
+    fn tail_page_resumes_strictly_after_the_cursor() {
+        let store = store_of_three_updates();
+        let cursor = crate::cursor::parse_cursor(&crate::cursor::format_cursor(
+            base_ts() + TimeDelta::seconds(1),
+            "mid@h",
+        ))
+        .expect("cursor parses");
+        let (page, _next) = store.tail_page(Some(&cursor), 10);
+        let ids: Vec<&str> = page.iter().map(|d| d.call_id.as_str()).collect();
+        assert_eq!(ids, vec!["new@h"], "only rows updated after the cursor");
+    }
+
+    /// The limit is applied AFTER the update-time sort, so next_cursor names the
+    /// last row actually returned — never a newer row the page skipped. Trunc-
+    /// ating before the sort would let the cursor jump past `mid` and `new`.
+    #[test]
+    fn tail_page_truncates_after_sorting_not_before() {
+        let store = store_of_three_updates();
+        let (page, next) = store.tail_page(None, 1);
+        let ids: Vec<&str> = page.iter().map(|d| d.call_id.as_str()).collect();
+        assert_eq!(ids, vec!["old@h"], "the single oldest-update row");
+        assert_eq!(
+            next,
+            Some(crate::cursor::format_cursor(base_ts(), "old@h")),
+            "the cursor names the row returned, so the next page starts at mid"
         );
     }
 }

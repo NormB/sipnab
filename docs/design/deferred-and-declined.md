@@ -278,10 +278,10 @@ registry has grown since, and the count is pinned by
 `mcp_tool_table_lists_every_registered_tool` rather than by this sentence.
 The argument below does not depend on the number. Four
 of them touch something other than the stores: `export_capture`
-([`server.rs:7422`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L7422)) writes a pcap, `export_audio`
-([`server.rs:7452`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L7452)) writes a WAV, `list_captures`
-([`server.rs:7183`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L7183)) reads a directory, and
-`shutdown_server` ([`server.rs:7925`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L7925)) ends the process.
+([`server.rs:7381`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L7381)) writes a pcap, `export_audio`
+([`server.rs:7434`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L7434)) writes a WAV, `list_captures`
+([`server.rs:7165`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L7165)) reads a directory, and
+`shutdown_server` ([`server.rs:7907`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L7907)) ends the process.
 
 **None of them mutates a store.** `shutdown_server` reads `dialog_store` and
 `stream_store` for its report, optionally writes a file, and then calls
@@ -725,7 +725,7 @@ documents *"the tool server; cloned per HTTP session"* and
 built once at startup ([`servers.rs:224-249`](https://github.com/NormB/sipnab/blob/main/src/app/servers.rs#L224-L249)) with
 `name` taken from `cli.primary_input()` — which returns only the *first* `-I`
 argument ([`cli.rs:1363-1365`](https://github.com/NormB/sipnab/blob/main/src/cli.rs#L1363-L1365)). So after an `open_capture`,
-`capture_status` ([`server.rs:5685`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5685)) would keep naming
+`capture_status` ([`server.rs:5659`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5659)) would keep naming
 the old file, in the calling session as well as every other one, unless the
 field moves behind a shared lock. Two agents on one HTTP server would read the
 same store and disagree about which capture it is.
@@ -801,7 +801,7 @@ decision was taken, not as it stands now:
    a `SipnabMcp` cloned per HTTP session
    ([`transport.rs:192`](https://github.com/NormB/sipnab/blob/main/src/mcp/transport.rs#L192)). Until it moves behind
    a shared lock, a swap leaves `capture_status`
-   ([`server.rs:5685`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5685)) naming the old file in the
+   ([`server.rs:5659`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5659)) naming the old file in the
    calling session and in every other one.
 2. **Capture identity must be visible on the wire.** `DialogStore::generation`
    ([`dialog_store.rs:709`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L709)) is bumped by every
@@ -815,7 +815,7 @@ decision was taken, not as it stands now:
 The opt-in machinery and the path confinement are already solved and should be
 reused rather than redesigned: the `shutdown_server` flag, off-by-default field,
 builder and first-statement refusal
-([`server.rs:7925`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L7925)), and `--mcp-file-root` with
+([`server.rs:7907`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L7907)), and `--mcp-file-root` with
 `resolve_in_root` ([`server.rs:858`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L858)).
 
 **What shipped**, against those three:

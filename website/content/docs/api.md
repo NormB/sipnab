@@ -2373,6 +2373,49 @@ along per side but stays out of the diff.
 
 ---
 
+### GET /v1/dialogs/tail
+
+The dialogs that changed since your last poll — cursor-based change tracking,
+the pattern a monitoring system reaches for, and one that the `/v1/dialogs`
+offset pagination cannot express. The same question the MCP `tail_dialogs` tool
+answers.
+
+**Query parameters:**
+
+- `since` (optional) — the previous response's `next_cursor`, passed back
+  verbatim. The route returns only dialogs updated strictly after it. Omit it on the
+  first poll. A cursor whose timestamp half is not RFC 3339 is a `400`.
+- `limit` (optional) — the most rows to return, clamped to the server's row cap.
+
+**curl:**
+
+```bash
+curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" "http://127.0.0.1:8080/v1/dialogs/tail" | jq .
+```
+
+**Response:**
+
+```json
+{
+  "schema_version": 1,
+  "dialogs": [
+    { "call_id": "a@example.com", "state": "InCall", "updated_at": "2026-09-15T12:00:03Z" }
+  ],
+  "returned": 1,
+  "next_cursor": "2026-09-15T12:00:03Z|a@example.com"
+}
+```
+
+**The rows are the same summaries `/v1/dialogs` returns,** oldest update first.
+Pass `next_cursor` back as `since` on the next poll and only later changes come
+back. The cursor renders its timestamp as `Z` rather than `+00:00`, so it drops
+straight into the `since` query — a raw `+` there decodes to a space. A tie
+group sharing one update instant resumes on the `(timestamp, Call-ID)` pair, so
+a page boundary inside it neither repeats nor skips a row. `next_cursor` is null
+when nothing changed.
+
+---
+
 ### POST /v1/vcon/validate
 
 Check a vCon container against sipnab's vendored schema — the producer-and-

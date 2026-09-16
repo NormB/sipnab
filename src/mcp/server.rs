@@ -5478,32 +5478,14 @@ impl SipnabMcp {
             // Capture lock first, then the stores — see `CaptureState`.
             let state = self.capture.read();
             let ds = self.dialog_store.read();
-            // Collect EVERY dialog past the cursor, sort by the cursor's
-            // ordering key (updated_at, Call-ID tie-break), and only then
-            // truncate to `limit`. Truncating first (store order is
-            // insertion order, not update order) would let next_cursor
-            // jump past dialogs that were never returned. A compound
-            // cursor keeps a legacy bare-timestamp cursor's strictly-after
-            // filter, and resumes after (updated_at, call_id) so a tie
-            // group split across a page boundary is neither dropped nor
-            // duplicated.
-            let mut changed: Vec<&crate::sip::dialog::SipDialog> = ds
-                .iter()
-                .filter(|d| {
-                    cursor
-                        .as_ref()
-                        .is_none_or(|c| c.precedes(d.updated_at, &d.call_id))
-                })
-                .collect();
-            crate::sort::sort_by_dyn(&mut changed, &mut |a, b| {
-                a.updated_at
-                    .cmp(&b.updated_at)
-                    .then_with(|| a.call_id.cmp(&b.call_id))
-            });
-            changed.truncate(limit);
-            let next_cursor = changed
-                .last()
-                .map(|d| super::shape::format_cursor(d.updated_at, &d.call_id));
+            // The order + truncation + next_cursor rule is shared with the
+            // REST `/v1/dialogs/tail` route: collect every dialog past the
+            // cursor, sort by (updated_at, Call-ID tie-break), and only then
+            // truncate — truncating store (insertion) order first would let
+            // next_cursor jump past dialogs never returned. This surface adds
+            // its own fencing, source_exhausted, capture identity and field
+            // projection on top.
+            let (changed, next_cursor) = ds.tail_page(cursor.as_ref(), limit);
             let summaries: Vec<DialogSummary> = changed
                 .into_iter()
                 .map(super::shape::fenced_dialog_summary)

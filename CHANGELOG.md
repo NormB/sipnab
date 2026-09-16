@@ -108,6 +108,16 @@ entry that carries them.
   into `crate::sip::dialog::compare_dialogs`, which the MCP `compare_dialogs`
   tool now shares. This closes the `compare_dialogs` REST gap, leaving 35 named
   gaps.
+- **`GET /v1/dialogs/tail` (PAR3).** Cursor-based change tracking — the dialogs
+  updated since your last poll, the pattern a monitoring system uses and one
+  offset pagination cannot express. Pass the previous `next_cursor` back as
+  `since`. The order, truncation and cursor rule move into
+  `DialogStore::tail_page`, shared with the MCP `tail_dialogs` tool, and the
+  compound cursor itself moves out to `crate::cursor` (outside the `mcp`
+  feature). Cursors now render UTC as `Z` rather than `+00:00`, so a client
+  drops `next_cursor` straight into the `since` query where a raw `+` would
+  decode to a space. This closes the `tail_dialogs` REST gap, leaving 34 named
+  gaps.
 
 ## [0.5.175] - 2026-09-15
 

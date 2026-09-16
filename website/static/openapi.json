@@ -3325,6 +3325,43 @@
         ],
         "type": "object"
       },
+      "TailPage": {
+        "description": "A page of dialogs updated since a cursor, for change-tracking pollers.\nDoc-only, like [`DialogList`]: the route answers with the same untyped\nsummaries `/v1/dialogs` builds, so this mirrors the shape for the\ncontract test rather than being serialized directly.",
+        "properties": {
+          "dialogs": {
+            "description": "The dialogs updated strictly after the request cursor, oldest update\nfirst, ties broken by Call-ID.",
+            "items": {
+              "$ref": "#/components/schemas/DialogSummary"
+            },
+            "type": "array"
+          },
+          "next_cursor": {
+            "description": "Opaque cursor (`<RFC 3339>|<Call-ID>` of the last row) to pass back\nas `since` to resume. Null when no dialogs matched.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "returned": {
+            "description": "Rows in `dialogs`.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "schema_version": {
+            "description": "Version of this response's shape.",
+            "example": 1,
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "schema_version",
+          "dialogs",
+          "returned"
+        ],
+        "type": "object"
+      },
       "TfpsAction": {
         "description": "`tfps_ctl ban --json`, `unban --json`, and every line `ingest` answers\nwith: what TFPS did about one address.",
         "properties": {
@@ -4682,6 +4719,84 @@
           }
         ],
         "summary": "Compare two calls side by side",
+        "tags": [
+          "dialogs"
+        ]
+      }
+    },
+    "/v1/dialogs/tail": {
+      "get": {
+        "description": "The dialogs updated since your last poll — cursor-based change tracking, the pattern a monitoring system uses and one that `/v1/dialogs` offset pagination cannot express. The same question the MCP `tail_dialogs` tool answers.\n\nPass the previous response's `next_cursor` back as `since`, and only dialogs updated strictly after it are returned, oldest update first. Omit `since` on the first poll. The rows are the same summaries `/v1/dialogs` returns. `next_cursor` is null when nothing changed.",
+        "operationId": "get_dialogs_tail",
+        "parameters": [
+          {
+            "description": "Resume cursor: pass back the previous response's `next_cursor` verbatim\n(`<RFC 3339>|<Call-ID>`). Only dialogs updated strictly after that\nposition are returned. A bare RFC 3339 timestamp is also accepted. Omit\non the first poll to start from the beginning. A cursor whose timestamp\nhalf is not RFC 3339 is a 400.",
+            "in": "query",
+            "name": "since",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Maximum dialogs to return, clamped to the server's row cap.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "minimum": 0,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TailPage"
+                }
+              }
+            },
+            "description": "The changed dialogs and the cursor to resume from."
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "A `since` cursor whose timestamp half is not RFC 3339."
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "No bearer credential, or one this server does not accept."
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Over the per-source-IP rate limit of 100 requests per second."
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Poll for dialogs changed since a cursor",
         "tags": [
           "dialogs"
         ]

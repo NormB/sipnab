@@ -136,6 +136,25 @@ fn compare_answers_over_the_socket() {
     );
 }
 
+/// `GET /v1/dialogs/tail` answers over the shipped binary with the change-page
+/// envelope (PAR3). The fixture's one dialog comes back with a cursor to resume
+/// from, and that cursor carries no `+` — it rides in a URL query.
+#[test]
+fn tail_answers_with_the_change_page_envelope() {
+    let srv = ApiServer::spawn(&[]);
+    let resp = srv.get("/v1/dialogs/tail");
+    assert_eq!(resp.status, 200, "/v1/dialogs/tail status");
+    let body = resp.json();
+    assert_eq!(body["schema_version"], 1);
+    assert!(body["dialogs"].is_array(), "dialogs is an array");
+    assert_eq!(body["returned"], 1);
+    let cursor = body["next_cursor"].as_str().expect("a resume cursor");
+    assert!(
+        !cursor.contains('+'),
+        "the cursor rides in a URL query, where `+` decodes to a space: {cursor}"
+    );
+}
+
 /// `GET /v1/dialogs/{id}/lint` answers over the shipped binary with the findings
 /// envelope (PAR3).
 #[test]

@@ -478,6 +478,20 @@ pub struct CompareParams {
     pub b: Option<String>,
 }
 
+/// Query parameters for the `GET /v1/dialogs/tail` endpoint.
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct TailParams {
+    /// Resume cursor: pass back the previous response's `next_cursor` verbatim
+    /// (`<RFC 3339>|<Call-ID>`). Only dialogs updated strictly after that
+    /// position are returned. A bare RFC 3339 timestamp is also accepted. Omit
+    /// on the first poll to start from the beginning. A cursor whose timestamp
+    /// half is not RFC 3339 is a 400.
+    pub since: Option<String>,
+    /// Maximum dialogs to return, clamped to the server's row cap.
+    pub limit: Option<usize>,
+}
+
 // ── Router construction ─────────────────────────────────────────────
 
 /// Per-request wall-clock cap. The API is request/response (no streaming), so a
@@ -566,6 +580,8 @@ pub fn build_router(state: ApiState) -> Router {
         // whose Call-ID is literally "compare" is unreachable here, which no
         // real capture hits.
         .route("/v1/dialogs/compare", get(get_compare))
+        // Static segment, wins over `{call_id}` — see the note on compare.
+        .route("/v1/dialogs/tail", get(get_dialogs_tail))
         .route("/v1/dialogs/{call_id}", get(get_dialog))
         .route("/v1/dialogs/{call_id}/report", get(get_dialog_report))
         .route("/v1/dialogs/{call_id}/correlated", get(get_correlated))
@@ -1461,6 +1477,75 @@ async fn get_compare(
         b: side(cmp.b),
         differences: cmp.differences,
     }))
+}
+
+/// `GET /v1/dialogs/tail` — dialogs changed since a cursor, for change-tracking
+/// pollers (PAR3: tail_dialogs on REST).
+///
+/// # Arguments
+///
+/// * `state` — Shared application state.
+/// * `addr` — Client socket address used for rate limiting.
+/// * `headers` — Request headers (auth).
+/// * `params` — optional `since` cursor and `limit`.
+///
+/// # Returns
+///
+/// 200 with the dialogs updated after the cursor (oldest update first) and a
+/// `next_cursor` to resume from; 400 for a `since` whose timestamp half is not
+/// RFC 3339; 401/503 from the guard.
+///
+/// # Side effects
+///
+/// Holds the dialog-store read lock while paging; mutates the rate limiter.
+#[utoipa::path(
+    get,
+    path = "/v1/dialogs/tail",
+    tag = "dialogs",
+    summary = "Poll for dialogs changed since a cursor",
+    description = "The dialogs updated since your last poll — cursor-based change tracking, the pattern a monitoring system uses and one that `/v1/dialogs` offset pagination cannot express. The same question the MCP `tail_dialogs` tool answers.\n\nPass the previous response's `next_cursor` back as `since`, and only dialogs updated strictly after it are returned, oldest update first. Omit `since` on the first poll. The rows are the same summaries `/v1/dialogs` returns. `next_cursor` is null when nothing changed.",
+    params(TailParams),
+    security(("bearer" = [])),
+    responses(
+        (status = 200, description = "The changed dialogs and the cursor to resume from.", body = schema::TailPage),
+        (status = 400, description = "A `since` cursor whose timestamp half is not RFC 3339.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 401, description = "No bearer credential, or one this server does not accept.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 503, description = "Over the per-source-IP rate limit of 100 requests per second.", body = schema::ProblemJson, content_type = "application/problem+json"),
+    )
+)]
+async fn get_dialogs_tail(
+    State(state): State<ApiState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Query(params): Query<TailParams>,
+) -> Result<impl IntoResponse, Problem> {
+    guard(&state, &headers, addr.ip())?;
+
+    let cursor = match params.since.as_deref() {
+        Some(raw) => Some(
+            crate::cursor::parse_cursor(raw)
+                .map_err(|e| Problem::detailed(StatusCode::BAD_REQUEST, format!("since: {e}")))?,
+        ),
+        None => None,
+    };
+    let limit = resolve_page_limit(params.limit, state.max_rows);
+
+    // The order + truncation + next_cursor rule is shared with the MCP
+    // `tail_dialogs` tool, so the two surfaces page the same store the same
+    // way. This surface renders each row with the same `dialog_summary` the
+    // `/v1/dialogs` list uses.
+    let ds = state.dialog_store.read();
+    let (page, next_cursor) = ds.tail_page(cursor.as_ref(), limit);
+    let dialogs: Vec<Value> = page.iter().map(|&d| dialog_summary(d)).collect();
+    drop(ds);
+    let returned = dialogs.len();
+
+    Ok(Json(json!({
+        "schema_version": 1,
+        "dialogs": dialogs,
+        "next_cursor": next_cursor,
+        "returned": returned,
+    })))
 }
 
 /// `GET /v1/dialogs/{call_id}/lint` — the RFC-conformance findings for one
@@ -3902,6 +3987,25 @@ pub mod schema {
         pub differences: Vec<String>,
     }
 
+    /// A page of dialogs updated since a cursor, for change-tracking pollers.
+    /// Doc-only, like [`DialogList`]: the route answers with the same untyped
+    /// summaries `/v1/dialogs` builds, so this mirrors the shape for the
+    /// contract test rather than being serialized directly.
+    #[derive(Debug, Clone, ToSchema)]
+    pub struct TailPage {
+        /// Version of this response's shape.
+        #[schema(example = 1)]
+        pub schema_version: u32,
+        /// The dialogs updated strictly after the request cursor, oldest update
+        /// first, ties broken by Call-ID.
+        pub dialogs: Vec<DialogSummary>,
+        /// Opaque cursor (`<RFC 3339>|<Call-ID>` of the last row) to pass back
+        /// as `since` to resume. Null when no dialogs matched.
+        pub next_cursor: Option<String>,
+        /// Rows in `dialogs`.
+        pub returned: usize,
+    }
+
     /// Transaction timing, as carried by every dialog summary.
     #[derive(Debug, Clone, ToSchema)]
     pub struct TimingSummary {
@@ -4621,6 +4725,7 @@ impl utoipa::Modify for BearerAuth {
         get_aggregate,
         get_timeline,
         get_compare,
+        get_dialogs_tail,
         get_lint,
         get_persistence,
         set_persistence,
@@ -4658,6 +4763,7 @@ impl utoipa::Modify for BearerAuth {
         schema::Timeline,
         schema::ComparisonSide,
         schema::Comparison,
+        schema::TailPage,
         schema::RelayStatsResponse,
         schema::DialogList,
         schema::DialogSummary,
@@ -5297,6 +5403,102 @@ mod tests {
 
         let resp = app
             .oneshot(test_request("/v1/dialogs/compare?a=answered@test"))
+            .await
+            .expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    // ── tail (PAR3: tail_dialogs) ─────────────────────────────────────
+
+    /// Without a cursor, every dialog comes back and a `next_cursor` names the
+    /// last row — and that cursor is URL-safe (Zulu, no `+`), because a client
+    /// passes it straight back in the `since` query. Closes the tail REST gap.
+    #[tokio::test]
+    async fn tail_without_a_cursor_returns_every_dialog_and_a_url_safe_cursor() {
+        let state = make_state();
+        populate_dialogs(&state); // call-0/1/2@test, all at 2024-06-15T12:00:00Z
+        let app = build_router(state);
+
+        let resp = app
+            .oneshot(test_request("/v1/dialogs/tail"))
+            .await
+            .expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_to_string(resp.into_body()).await;
+        let parsed: Value = serde_json::from_str(&body).expect("valid JSON");
+        assert_eq!(parsed["schema_version"], 1);
+        assert_eq!(parsed["returned"], 3);
+        assert_eq!(parsed["dialogs"].as_array().expect("dialogs").len(), 3);
+        let cursor = parsed["next_cursor"].as_str().expect("a cursor");
+        assert!(
+            !cursor.contains('+'),
+            "the cursor rides back in a URL query, where `+` becomes a space: {cursor}"
+        );
+    }
+
+    /// A cursor at the first row returns only what sorts strictly after it — the
+    /// identity tie-break, since all three share an update instant.
+    #[tokio::test]
+    async fn tail_since_a_cursor_returns_only_later_rows() {
+        let state = make_state();
+        populate_dialogs(&state);
+        let app = build_router(state);
+
+        // `%7C` is the `|` separator, percent-encoded for the query.
+        let resp = app
+            .oneshot(test_request(
+                "/v1/dialogs/tail?since=2024-06-15T12:00:00Z%7Ccall-0@test",
+            ))
+            .await
+            .expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_to_string(resp.into_body()).await;
+        let parsed: Value = serde_json::from_str(&body).expect("valid JSON");
+        assert_eq!(parsed["returned"], 2, "call-1 and call-2, not call-0");
+    }
+
+    /// Re-polling with the response's own `next_cursor` returns nothing new: the
+    /// client has seen everything up to that position. Proves the cursor round-
+    /// trips through the query unencoded-corrupted.
+    #[tokio::test]
+    async fn tail_re_poll_with_its_cursor_sees_nothing_new() {
+        let state = make_state();
+        populate_dialogs(&state);
+        let app = build_router(state);
+
+        let first = app
+            .clone()
+            .oneshot(test_request("/v1/dialogs/tail"))
+            .await
+            .expect("oneshot");
+        let body = body_to_string(first.into_body()).await;
+        let parsed: Value = serde_json::from_str(&body).expect("valid JSON");
+        let cursor = parsed["next_cursor"].as_str().expect("a cursor");
+
+        // Pass it back verbatim, percent-encoding only the `|` separator the
+        // query grammar reserves — the client's job, and the Zulu timestamp
+        // needs nothing more.
+        let uri = format!("/v1/dialogs/tail?since={}", cursor.replace('|', "%7C"));
+        let again = app.oneshot(test_request(&uri)).await.expect("oneshot");
+        assert_eq!(again.status(), StatusCode::OK);
+        let body = body_to_string(again.into_body()).await;
+        let parsed: Value = serde_json::from_str(&body).expect("valid JSON");
+        assert_eq!(
+            parsed["returned"], 0,
+            "nothing updated after the last cursor"
+        );
+    }
+
+    /// A `since` whose timestamp half is not RFC 3339 is a 400, not a silent
+    /// reset to the beginning that would loop a poller forever.
+    #[tokio::test]
+    async fn tail_bad_cursor_is_400() {
+        let state = make_state();
+        populate_dialogs(&state);
+        let app = build_router(state);
+
+        let resp = app
+            .oneshot(test_request("/v1/dialogs/tail?since=not-a-timestamp"))
             .await
             .expect("oneshot");
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);

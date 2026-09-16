@@ -232,7 +232,7 @@ Which dialogs changed since I last polled?
 |---|---|
 | CLI | decision: cursor-resume polling is a machine pattern, and the CLI streams live with `--json-dialogs` instead of resuming from a cursor |
 | TUI | `CallList` |
-| REST | gap: change-tracking-since-cursor is the canonical REST polling pattern, but `/v1/dialogs` offers only offset pagination (PAR3) |
+| REST | `/v1/dialogs/tail` |
 | MCP | `tail_dialogs` |
 
 ### Orphaned media reconciliation
