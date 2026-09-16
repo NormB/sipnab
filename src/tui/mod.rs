@@ -62,12 +62,12 @@ use controllers::*;
 #[doc(hidden)]
 pub use controllers::{
     CallFlowAction, CallListAction, CarrierMetricsAction, CombinedDetailAction,
-    CompareDialogsAction, DashboardAction, HelpAction, LossMapAction, MessageDiffAction,
-    RawMessageAction, StatisticsAction, StreamDetailAction, StreamListAction, TalkersAction,
-    TimelineAction, call_flow_action, call_list_action, carrier_metrics_action,
-    combined_detail_action, compare_dialogs_action, dashboard_action, help_action, loss_map_action,
-    message_diff_action, raw_message_action, statistics_action, stream_detail_action,
-    stream_list_action, talkers_action, timeline_action,
+    CompareDialogsAction, DashboardAction, EndpointRollupAction, HelpAction, LossMapAction,
+    MessageDiffAction, RawMessageAction, StatisticsAction, StreamDetailAction, StreamListAction,
+    TalkersAction, TimelineAction, call_flow_action, call_list_action, carrier_metrics_action,
+    combined_detail_action, compare_dialogs_action, dashboard_action, endpoint_rollup_action,
+    help_action, loss_map_action, message_diff_action, raw_message_action, statistics_action,
+    stream_detail_action, stream_list_action, talkers_action, timeline_action,
 };
 use render::*;
 use save::*;
@@ -145,6 +145,8 @@ pub struct App {
     carrier_metrics_scroll: u16,
     /// Clamped scroll of the two-call comparison view (`c`).
     compare_scroll: u16,
+    /// Clamped scroll of the per-endpoint rollup view (`e`).
+    endpoint_scroll: u16,
     /// Scroll offset for the relay-statistics view (ST8; clamped in render).
     relay_stats_scroll: u16,
     /// Selected row in the quality dashboard's worst-streams table.
@@ -240,6 +242,7 @@ pub struct App {
     stats: StatsCache,
     talkers: TalkersCache,
     carrier_metrics: CarrierMetricsCache,
+    endpoint: EndpointCache,
     /// Relay-statistics view cache and the ask in flight (ST8).
     relay_stats: relay_stats::RelayStatsCache,
     /// What the relay-statistics view needs to transmit, or which ST-S4
@@ -404,12 +407,14 @@ impl App {
             talkers_scroll: 0,
             carrier_metrics_scroll: 0,
             compare_scroll: 0,
+            endpoint_scroll: 0,
             relay_stats_scroll: 0,
             dashboard_selected: 0,
             stream_displayed: StreamDisplayedCache::default(),
             stats: StatsCache::default(),
             talkers: TalkersCache::default(),
             carrier_metrics: CarrierMetricsCache::default(),
+            endpoint: EndpointCache::default(),
             relay_stats: relay_stats::RelayStatsCache::default(),
             relay_query: relay_stats::RelayQueryState::default(),
             relay_stats_interval: None,
@@ -1096,6 +1101,35 @@ impl App {
             }
         }
 
+        // Endpoint rollup: a full-store scan like the carrier metrics, keyed on
+        // both generations PLUS the endpoint identity, because the view is
+        // parameterized. The address is lifted out of the view first so the
+        // match borrow is released before `self.endpoint` is written.
+        let endpoint_ip = if let View::EndpointRollup { ref ip } = self.current_view {
+            Some(ip.clone())
+        } else {
+            None
+        };
+        if let Some(ip) = endpoint_ip
+            && let Some(ss) = self.stream_store.try_read()
+        {
+            let key = (ip.clone(), store.generation(), ss.generation());
+            let force = self.endpoint.key.is_none();
+            let stale = self.endpoint.key.as_ref() != Some(&key);
+            if force || (stale && self.endpoint.floor.ready()) {
+                self.endpoint.text = match ip.parse::<std::net::IpAddr>() {
+                    Ok(addr) => render::endpoint_text(
+                        &store,
+                        &ss,
+                        &crate::sip::endpoint::Selector::Ip(addr),
+                    ),
+                    Err(_) => format!("Endpoint ip {ip}\n\n  (not a valid address)\n"),
+                };
+                self.endpoint.key = Some(key);
+                self.endpoint.floor.mark();
+            }
+        }
+
         // CallFlow ladder cache (WS4.3c): the theme-free layout half is
         // derived at most once here, keyed on everything that shapes it
         // ([`LadderKey`]); the render pass only re-styles the cached rows.
@@ -1404,6 +1438,9 @@ impl App {
         }
         if let Some(v) = fb.compare_scroll {
             self.compare_scroll = v;
+        }
+        if let Some(v) = fb.endpoint_scroll {
+            self.endpoint_scroll = v;
         }
         if let Some(v) = fb.relay_stats_scroll {
             self.relay_stats_scroll = v;

@@ -1074,6 +1074,29 @@ mod tui_snapshots {
         insta::assert_snapshot!(output);
     }
 
+    /// Snapshot: the per-endpoint rollup, opened with `e` on the selected call.
+    /// Shows everything that call's source address did — dialog counts by method
+    /// and state, INVITE outcomes, registration, banners and media (PAR4). The
+    /// cache is empty in a unit test (no event loop ran `sync_caches`), so the
+    /// render's direct-scan fallback supplies the real report.
+    #[test]
+    fn endpoint_view() {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = test_app_with_dialogs();
+        app.handle_key(crossterm::event::KeyCode::Char('e')); // open endpoint rollup
+        assert!(
+            matches!(app.current_view(), sipnab::tui::View::EndpointRollup { .. }),
+            "expected the endpoint rollup, got {:?}",
+            app.current_view()
+        );
+
+        terminal.draw(|frame| app.render(frame)).unwrap();
+
+        let output = buffer_to_string(&terminal);
+        insta::assert_snapshot!(output);
+    }
+
     /// Snapshot: the F7 filter popup over an empty call list.
     #[test]
     fn filter_dialog_popup() {

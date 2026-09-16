@@ -12,6 +12,18 @@ entry that carries them.
 
 ### Added
 
+- **Per-endpoint rollup TUI view (PAR4).** A new `EndpointRollup` view, opened
+  with `e` from the call list on the selected call's source address, shows
+  everything that endpoint did across the capture — dialog counts by method and
+  state, INVITE outcomes with a failure rate, REGISTER state, the banners it
+  sent, and its RTP streams. It scans through the shared
+  `crate::sip::endpoint::describe`, the same report `GET /v1/endpoints` and the
+  MCP `describe_endpoint` tool return, so the three surfaces agree on what an
+  address did. Like the statistics and carrier-metrics views it caches the
+  full-store scan across frames (keyed on the endpoint plus both store
+  generations, so scrolling one endpoint never rescans or serves another's
+  text), is scrollable, and Esc/`q`/`e` closes it. Closes the per-endpoint
+  rollup TUI gap, leaving 23 named gaps.
 - **Compare-two-calls TUI view (PAR4).** A new `CompareDialogs` view, opened with
   `c` from the call list once two calls are checked (`Space`), puts them side by
   side and flags the fields that differ — state, final status, message count and

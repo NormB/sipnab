@@ -20,8 +20,9 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use sipnab::tui::help::HELP_TEXT;
 use sipnab::tui::{
     Keymap, call_flow_action, call_list_action, carrier_metrics_action, combined_detail_action,
-    compare_dialogs_action, dashboard_action, help_action, message_diff_action, raw_message_action,
-    statistics_action, stream_detail_action, stream_list_action, talkers_action,
+    compare_dialogs_action, dashboard_action, endpoint_rollup_action, help_action,
+    message_diff_action, raw_message_action, statistics_action, stream_detail_action,
+    stream_list_action, talkers_action,
 };
 
 /// Display token for a key as it appears in the help's key column.
@@ -190,7 +191,7 @@ fn mapped_char_keys_are_documented_or_allowlisted() {
     let docs = documented_tokens();
     let km = Keymap::default();
     type Probe = (&'static str, fn(&Keymap, KeyEvent) -> bool);
-    let probes: [Probe; 13] = [
+    let probes: [Probe; 14] = [
         ("call_list", |km, k| call_list_action(km, k).is_some()),
         ("stream_list", |km, k| stream_list_action(km, k).is_some()),
         ("stream_detail", |km, k| {
@@ -210,6 +211,9 @@ fn mapped_char_keys_are_documented_or_allowlisted() {
         }),
         ("compare_dialogs", |km, k| {
             compare_dialogs_action(km, k).is_some()
+        }),
+        ("endpoint_rollup", |km, k| {
+            endpoint_rollup_action(km, k).is_some()
         }),
         ("dashboard", |km, k| dashboard_action(km, k).is_some()),
     ];
@@ -291,6 +295,9 @@ fn every_documented_view_key_is_handled() {
         ("TOP TALKERS:", |km, k| talkers_action(km, k).is_some()),
         ("COMPARE TWO CALLS:", |km, k| {
             compare_dialogs_action(km, k).is_some()
+        }),
+        ("ENDPOINT ROLLUP:", |km, k| {
+            endpoint_rollup_action(km, k).is_some()
         }),
         ("QUALITY DASHBOARD:", |km, k| {
             dashboard_action(km, k).is_some()

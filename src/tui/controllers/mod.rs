@@ -186,6 +186,7 @@ fn dispatch_view_key(app: &mut App, key: KeyEvent) {
         View::Talkers => handle_talkers_key(app, key),
         View::CarrierMetrics => handle_carrier_metrics_key(app, key),
         View::CompareDialogs { .. } => handle_compare_dialogs_key(app, key),
+        View::EndpointRollup { .. } => handle_endpoint_rollup_key(app, key),
         View::RelayStats { .. } => handle_relay_stats_key(app, key),
         View::BpfFilter => handle_bpf_filter_key(app, key),
         View::QualityDashboard => dashboard::handle_dashboard_key(app, key),
@@ -797,6 +798,82 @@ pub(in crate::tui) fn handle_compare_dialogs_key(app: &mut App, key: KeyEvent) {
     }
 }
 
+/// Everything the per-endpoint rollup view can do for a single key press.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EndpointRollupAction {
+    /// Esc, the quit key, or `e` — close the rollup and return to the list.
+    Close,
+    /// Scroll the rollup up one line.
+    ScrollUp,
+    /// Scroll the rollup down one line.
+    ScrollDown,
+    /// Scroll the rollup up 20 lines.
+    PageUp,
+    /// Scroll the rollup down 20 lines.
+    PageDown,
+    /// Jump to the top of the rollup.
+    ScrollTop,
+    /// Jump to the bottom (the render pass clamps to the content height).
+    ScrollBottom,
+}
+
+/// Pure key→action mapping for the per-endpoint rollup view (keymap-aware).
+///
+/// # Arguments
+/// * `km` - the active keymap; the rebindable quit key is honored.
+/// * `key` - the key event whose code is matched against the bindings.
+///
+/// # Returns
+/// The mapped `EndpointRollupAction`, or `None` when the key is not bound here.
+pub fn endpoint_rollup_action(km: &Keymap, key: KeyEvent) -> Option<EndpointRollupAction> {
+    use EndpointRollupAction::*;
+    Some(match key.code {
+        k if k == KeyCode::Esc || k == km.quit || k == KeyCode::Char('e') => Close,
+        KeyCode::Up | KeyCode::Char('k') => ScrollUp,
+        KeyCode::Down | KeyCode::Char('j') => ScrollDown,
+        KeyCode::PageUp => PageUp,
+        KeyCode::PageDown => PageDown,
+        KeyCode::Home => ScrollTop,
+        KeyCode::End => ScrollBottom,
+        _ => return None,
+    })
+}
+
+/// Handle keys in the per-endpoint rollup view: map, then execute.
+///
+/// # Arguments
+/// * `app` - the application state to mutate.
+/// * `key` - the key event, mapped via `endpoint_rollup_action`.
+///
+/// # Side effects
+/// Scroll actions move `app.endpoint_scroll`; `Close` returns to the call list.
+/// Unbound keys are ignored.
+pub(in crate::tui) fn handle_endpoint_rollup_key(app: &mut App, key: KeyEvent) {
+    let Some(action) = endpoint_rollup_action(&app.keymap, key) else {
+        return;
+    };
+    match action {
+        EndpointRollupAction::Close => {
+            app.current_view = View::CallList;
+        }
+        EndpointRollupAction::ScrollUp => {
+            app.endpoint_scroll = app.endpoint_scroll.saturating_sub(1);
+        }
+        EndpointRollupAction::ScrollDown => {
+            app.endpoint_scroll = app.endpoint_scroll.saturating_add(1);
+        }
+        EndpointRollupAction::PageUp => {
+            app.endpoint_scroll = app.endpoint_scroll.saturating_sub(20)
+        }
+        EndpointRollupAction::PageDown => {
+            app.endpoint_scroll = app.endpoint_scroll.saturating_add(20);
+        }
+        EndpointRollupAction::ScrollTop => app.endpoint_scroll = 0,
+        // Clamped to the content height by the render pass.
+        EndpointRollupAction::ScrollBottom => app.endpoint_scroll = u16::MAX,
+    }
+}
+
 /// Everything the relay-statistics view can do for a single key press (ST8).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RelayStatsAction {
@@ -1025,6 +1102,13 @@ pub(in crate::tui) fn handle_mouse_event(app: &mut App, kind: crossterm::event::
                 app.compare_scroll.saturating_add(3)
             } else {
                 app.compare_scroll.saturating_sub(3)
+            };
+        }
+        View::EndpointRollup { .. } => {
+            app.endpoint_scroll = if down {
+                app.endpoint_scroll.saturating_add(3)
+            } else {
+                app.endpoint_scroll.saturating_sub(3)
             };
         }
         View::RelayStats { .. } => {

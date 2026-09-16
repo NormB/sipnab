@@ -45,6 +45,7 @@ CALL LIST:
   g                Top talkers (busiest participants, by source IP)
   m                Carrier metrics (ASR/NER/ACD by destination IP)
   c                Compare two checked calls (Space to check exactly two)
+  e                Endpoint rollup (everything this call's source did)
   S                Relay statistics view (asks the relay)
   B                Edit the BPF capture filter (append)
   D                Quality dashboard (live MOS/jitter/loss)
@@ -120,6 +121,12 @@ COMPARE TWO CALLS:
   PgUp/PgDn       Page scroll
   Home/End         Jump to top/bottom
   Esc, q, c        Close
+
+ENDPOINT ROLLUP:
+  ↑/↓, j/k       Scroll
+  PgUp/PgDn       Page scroll
+  Home/End         Jump to top/bottom
+  Esc, q, e        Close
 
 RELAY STATISTICS VIEW (S asks the relay directly):
   ?                Names the relay knows (what to ask for)

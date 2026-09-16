@@ -88,6 +88,9 @@ pub enum CallListAction {
     /// `c` — compare the two checked calls field by field. A no-op with a hint
     /// unless exactly two calls are checked (`Space`).
     CompareDialogs,
+    /// `e` — open the per-endpoint rollup for the selected call's source
+    /// address: everything that endpoint did across the capture.
+    OpenEndpoint,
     /// `S` — open the relay-statistics view for the relay's globals (ST8, C1).
     OpenRelayStats,
     /// `B` — show the full BPF capture-filter expression (status line 2
@@ -155,6 +158,7 @@ pub fn call_list_action(km: &Keymap, key: KeyEvent) -> Option<CallListAction> {
         KeyCode::Char('g') => OpenTalkers,
         KeyCode::Char('m') => OpenCarrierMetrics,
         KeyCode::Char('c') => CompareDialogs,
+        KeyCode::Char('e') => OpenEndpoint,
         KeyCode::Char('S') => OpenRelayStats,
         KeyCode::Char('B') => OpenBpfFilter,
         KeyCode::Char('D') => OpenDashboard,
@@ -334,6 +338,23 @@ fn execute_call_list_action(app: &mut App, action: CallListAction) {
                 };
             } else {
                 app.status_error = Some("check exactly two calls (Space) to compare".to_string());
+            }
+        }
+        CallListAction::OpenEndpoint => {
+            // The rollup is keyed on the selected call's SOURCE address (where
+            // the dialog opened). Reset the cache so it recomputes for this
+            // endpoint rather than serving a previously-opened one's text.
+            if let Some(call_id) = get_selected_call_id(app) {
+                let ip = {
+                    let store = app.dialog_store.read();
+                    store.get(&call_id).map(|d| d.src_addr.to_string())
+                };
+                if let Some(ip) = ip {
+                    app.endpoint_scroll = 0;
+                    app.endpoint.key = None;
+                    app.endpoint.text.clear();
+                    app.current_view = View::EndpointRollup { ip };
+                }
             }
         }
         CallListAction::OpenRelayStats => {

@@ -1267,6 +1267,14 @@ pub enum View {
         /// Call-ID of the second call to compare.
         b: String,
     },
+    /// Everything one endpoint (an IP) did across the capture: dialog counts by
+    /// method and state, INVITE outcomes, registration, banners and media — the
+    /// same scan `GET /v1/endpoints` and the MCP `describe_endpoint` tool report.
+    /// Opened with `e` from the call list, on the selected call's source address.
+    EndpointRollup {
+        /// The endpoint's address, as a string (parsed back to a selector).
+        ip: String,
+    },
     /// The live relay's own statistics, asked over its control socket (ST8).
     ///
     /// Distinct from [`View::Statistics`], which is about what THIS capture saw:
@@ -1435,6 +1443,24 @@ pub(in crate::tui) struct CarrierMetricsCache {
     /// Pre-rendered metrics table the view scrolls through.
     pub(in crate::tui) text: String,
     /// Floors generation-driven recomputation of the table.
+    pub(in crate::tui) floor: ChurnFloor,
+}
+
+/// Cross-tick cache of the per-endpoint rollup text.
+///
+/// A full-store scan like [`CarrierMetricsCache`] (`describe` walks every dialog
+/// and stream), cached for the same reason and keyed the same way — plus the
+/// endpoint identity, because the view is parameterized: a different endpoint is
+/// a different report even at the same store generations, so scrolling one must
+/// not serve another's text.
+#[derive(Debug, Default)]
+pub(in crate::tui) struct EndpointCache {
+    /// (endpoint value, dialog generation, stream generation) the report was
+    /// derived from.
+    pub(in crate::tui) key: Option<(String, u64, u64)>,
+    /// Pre-rendered rollup text the view scrolls through.
+    pub(in crate::tui) text: String,
+    /// Floors generation-driven recomputation of the report.
     pub(in crate::tui) floor: ChurnFloor,
 }
 

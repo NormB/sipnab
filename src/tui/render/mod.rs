@@ -51,6 +51,8 @@ pub(in crate::tui) struct RenderFeedback {
     pub(in crate::tui) carrier_metrics_scroll: Option<u16>,
     /// Clamped scroll of the two-call comparison view.
     pub(in crate::tui) compare_scroll: Option<u16>,
+    /// Clamped scroll of the per-endpoint rollup view.
+    pub(in crate::tui) endpoint_scroll: Option<u16>,
     /// Clamped scroll of the relay-statistics view (ST8).
     pub(in crate::tui) relay_stats_scroll: Option<u16>,
     /// Content-clamped scroll of the full-BPF-filter popup (`B`). Only the
@@ -512,6 +514,9 @@ pub(in crate::tui) fn render_app(
         }
         View::CompareDialogs { a, b } => {
             fb.compare_scroll = Some(render_compare(frame, main_area, app, ds, a, b));
+        }
+        View::EndpointRollup { .. } => {
+            fb.endpoint_scroll = Some(render_endpoint(frame, main_area, app, ds, ss));
         }
         View::RelayStats { .. } => {
             fb.relay_stats_scroll = Some(render_relay_stats(frame, main_area, app));
@@ -1003,6 +1008,115 @@ pub(in crate::tui) fn compare_dialogs_text(ds: &DialogStore, a_id: &str, b_id: &
     out
 }
 
+/// Recent-dialog page size for the endpoint rollup — bounds `recent_call_ids`,
+/// the only part of the report `crate::sip::endpoint::describe` limits.
+const ENDPOINT_RECENT_LIMIT: usize = 20;
+
+/// Build the per-endpoint rollup: everything one endpoint (an IP, here) did,
+/// through the shared [`crate::sip::endpoint::describe`] — the same scan
+/// `GET /v1/endpoints` and the MCP `describe_endpoint` tool report, raw. STUB —
+/// filled in after the failing test.
+pub(in crate::tui) fn endpoint_text(
+    ds: &DialogStore,
+    ss: &StreamStore,
+    selector: &crate::sip::endpoint::Selector,
+) -> String {
+    use std::fmt::Write as _;
+
+    let r = crate::sip::endpoint::describe(ds, ss, selector, ENDPOINT_RECENT_LIMIT);
+
+    let counts = |m: &std::collections::BTreeMap<String, usize>| -> String {
+        if m.is_empty() {
+            "—".to_string()
+        } else {
+            m.iter()
+                .map(|(k, v)| format!("{k} {v}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        }
+    };
+
+    let mut out = String::new();
+    let _ = writeln!(out, "Endpoint {} {}", r.kind, r.value);
+    let _ = writeln!(out);
+    let _ = writeln!(
+        out,
+        "  Dialogs: {}    Messages sent: {}  received: {}",
+        r.dialogs, r.messages_sent, r.messages_received
+    );
+    let _ = writeln!(out);
+    let _ = writeln!(out, "  By method:   {}", counts(&r.by_method));
+    let _ = writeln!(out, "  By state:    {}", counts(&r.by_state));
+    let _ = writeln!(out);
+
+    let rate = r.calls.failure_rate_pct.map_or_else(
+        || "no final status".to_string(),
+        |p| format!("{p:.1}% fail"),
+    );
+    let _ = writeln!(
+        out,
+        "  INVITEs: {}   with final: {}   failed: {}   ({rate})",
+        r.calls.invites, r.calls.with_final_status, r.calls.failed
+    );
+    let _ = writeln!(out);
+
+    if r.registration.applicable {
+        let _ = writeln!(
+            out,
+            "  Registration: {} dialogs, {} ok, {} failed, {} auth-loops",
+            r.registration.dialogs,
+            r.registration.succeeded,
+            r.registration.failed,
+            r.registration.auth_loops
+        );
+    } else {
+        let _ = writeln!(out, "  Registration: not applicable");
+    }
+    let _ = writeln!(out);
+
+    if r.banners.is_empty() {
+        let _ = writeln!(out, "  Banners: none");
+    } else {
+        let _ = writeln!(out, "  Banners:");
+        for b in &r.banners {
+            let _ = writeln!(out, "    {}: {} (x{})", b.header, b.value, b.count);
+        }
+    }
+    let _ = writeln!(out);
+
+    if r.streams.count == 0 {
+        let _ = writeln!(out, "  Streams: none");
+    } else {
+        let codecs = if r.streams.codecs.is_empty() {
+            "—".to_string()
+        } else {
+            r.streams.codecs.join(", ")
+        };
+        let jitter = r
+            .streams
+            .max_jitter_ms
+            .map_or_else(|| "—".to_string(), |j| format!("{j:.1}"));
+        let _ = writeln!(
+            out,
+            "  Streams: {}   codecs: {}   packets {}  lost {}  max jitter {jitter} ms",
+            r.streams.count, codecs, r.streams.packets, r.streams.lost_packets
+        );
+    }
+
+    let shown = r.recent_call_ids.len();
+    if shown > 0 {
+        let _ = writeln!(out);
+        let _ = writeln!(out, "  Recent calls ({shown}/{}):", r.dialogs);
+        for id in &r.recent_call_ids {
+            let _ = writeln!(out, "    {id}");
+        }
+        if r.truncated {
+            let _ = writeln!(out, "    … {} more", r.dialogs.saturating_sub(shown));
+        }
+    }
+    out
+}
+
 /// Render the two-call comparison view. Parameterized by the two Call-IDs on
 /// the view, so — like the message-diff view — it renders straight from the
 /// store each frame rather than through a cross-tick cache; the comparison is a
@@ -1026,6 +1140,48 @@ pub(in crate::tui) fn render_compare(
     let block = Block::default()
         .borders(Borders::ALL)
         .title(" Compare two calls ");
+    let paragraph = Paragraph::new(text)
+        .block(block)
+        .style(Style::default().fg(app.theme.foreground))
+        .scroll((scroll, 0));
+
+    frame.render_widget(paragraph, area);
+    scroll
+}
+
+/// Render the per-endpoint rollup view. Serves the cross-tick cache
+/// [`crate::tui::state::EndpointCache`] `sync_caches` fills, and falls back to a
+/// direct scan on the first frame after the view opens (before the cache is
+/// populated) so the panel is never briefly blank. Returns the clamped scroll.
+///
+/// # Side effects
+/// Draws to `frame` only; no state is mutated.
+pub(in crate::tui) fn render_endpoint(
+    frame: &mut ratatui::Frame,
+    area: ratatui::layout::Rect,
+    app: &App,
+    ds: &DialogStore,
+    ss: &StreamStore,
+) -> u16 {
+    let fallback;
+    let text: &str = if app.endpoint.text.is_empty() {
+        fallback = match &app.current_view {
+            View::EndpointRollup { ip } => match ip.parse::<std::net::IpAddr>() {
+                Ok(addr) => endpoint_text(ds, ss, &crate::sip::endpoint::Selector::Ip(addr)),
+                Err(_) => format!("Endpoint ip {ip}\n\n  (not a valid address)\n"),
+            },
+            _ => String::new(),
+        };
+        &fallback
+    } else {
+        &app.endpoint.text
+    };
+
+    let total_rows = text.lines().count() as u16;
+    let viewport = area.height.saturating_sub(2);
+    let scroll = app.endpoint_scroll.min(total_rows.saturating_sub(viewport));
+
+    let block = Block::default().borders(Borders::ALL).title(" Endpoint ");
     let paragraph = Paragraph::new(text)
         .block(block)
         .style(Style::default().fg(app.theme.foreground))
@@ -1873,6 +2029,78 @@ mod tests {
         assert!(
             !methods_row.contains("(differs)"),
             "the matching methods row is not flagged: {methods_row}"
+        );
+    }
+
+    /// The endpoint rollup renders the shared `describe` report: the endpoint's
+    /// address, its dialog count, the per-method breakdown, and the INVITE
+    /// outcomes. A discriminating fixture — one IP that placed two calls, one
+    /// answered (200) and one failed (503) — so the outcome counts are non-zero
+    /// and distinguishable, exercising the formatter's rendering of the report's
+    /// fields (not just `describe`, which owns the scan).
+    #[test]
+    fn endpoint_text_reports_the_dialogs_and_invite_outcomes() {
+        use crate::net::TransportProto;
+        use crate::sip::parser::parse_sip;
+        use crate::test_utils::build_sip_message as build_sip;
+        use chrono::TimeZone;
+        use std::net::{IpAddr, Ipv4Addr};
+
+        let ts = chrono::Utc.with_ymd_and_hms(2024, 6, 15, 12, 0, 0).unwrap();
+        let ua = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 7));
+        let dst = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 9));
+        let mut ds = DialogStore::new(1000, true);
+        let ss = StreamStore::new(100);
+
+        // Two INVITEs from the same source: one answered, one 503.
+        for (i, code, reason) in [(0u8, 200u16, "OK"), (1, 503, "Service Unavailable")] {
+            let invite = build_sip(
+                "INVITE sip:bob@example.com SIP/2.0",
+                &[
+                    "From: <sip:alice@example.com>;tag=t1",
+                    "To: <sip:bob@example.com>",
+                    &format!("Call-ID: ep{i}@h"),
+                    "CSeq: 1 INVITE",
+                    "Content-Length: 0",
+                ],
+                b"",
+            );
+            ds.process_message(
+                parse_sip(&invite, ts, ua, dst, 5060, 5060, TransportProto::Udp).expect("parse"),
+            );
+            let resp = build_sip(
+                &format!("SIP/2.0 {code} {reason}"),
+                &[
+                    "From: <sip:alice@example.com>;tag=t1",
+                    "To: <sip:bob@example.com>;tag=s1",
+                    &format!("Call-ID: ep{i}@h"),
+                    "CSeq: 1 INVITE",
+                    "Content-Length: 0",
+                ],
+                b"",
+            );
+            ds.process_message(
+                parse_sip(&resp, ts, dst, ua, 5060, 5060, TransportProto::Udp).expect("parse"),
+            );
+        }
+
+        let text = endpoint_text(&ds, &ss, &crate::sip::endpoint::Selector::Ip(ua));
+
+        assert!(
+            text.contains("10.0.0.7"),
+            "names the endpoint address:\n{text}"
+        );
+        assert!(
+            text.contains("Dialogs: 2"),
+            "reports the two dialogs it took part in:\n{text}"
+        );
+        assert!(
+            text.contains("INVITE 2"),
+            "the per-method breakdown counts both INVITEs:\n{text}"
+        );
+        assert!(
+            text.contains("failed: 1"),
+            "exactly one of the two INVITEs failed (503):\n{text}"
         );
     }
 
