@@ -452,31 +452,34 @@ thread_local! {
 pub fn displayed_dialogs<'a>(
     store: &'a DialogStore,
     filter: Option<&FilterExpr>,
+    after: Option<chrono::DateTime<chrono::Utc>>,
+    before: Option<chrono::DateTime<chrono::Utc>>,
     search_query: &str,
     sort_column: SortColumn,
     sort_ascending: bool,
 ) -> Vec<&'a crate::sip::dialog::SipDialog> {
     #[cfg(test)]
     DISPLAYED_DIALOGS_CALLS.with(|c| c.set(c.get() + 1));
-    let mut dialogs: Vec<_> = match filter {
-        // This list is built from dialogs alone; with no stream data it
-        // cannot testify that a call carried no media.
-        Some(f) => store
-            .iter()
-            // No streams reach this list, so `rtp.*` compares as unknown and
-            // no delay evidence could change an answer. `unknown()` states
-            // that rather than implying a store was consulted.
-            .filter(|d| {
-                f.matches_dialog(
-                    d,
-                    &[],
-                    crate::rtp::diagnosis::CaptureMedia::Absent,
-                    crate::rtp::quality::MosDelay::unknown(),
-                )
-            })
-            .collect(),
-        None => store.iter().collect(),
-    };
+    let mut dialogs: Vec<_> = store
+        .iter()
+        // Half-open `[after, before)` through the one shared rule, so the TUI's
+        // time filter agrees at the boundary with REST `/v1/dialogs` and the
+        // MCP `search_by_time` tool. An open bound admits everything on that
+        // side.
+        .filter(|d| crate::cursor::in_time_window(d.created_at, after, before))
+        // This list is built from dialogs alone; with no stream data it cannot
+        // testify that a call carried no media, so `rtp.*` compares as unknown
+        // and no delay evidence could change an answer.
+        .filter(|d| match filter {
+            Some(f) => f.matches_dialog(
+                d,
+                &[],
+                crate::rtp::diagnosis::CaptureMedia::Absent,
+                crate::rtp::quality::MosDelay::unknown(),
+            ),
+            None => true,
+        })
+        .collect();
     if !search_query.is_empty() {
         let q = search_query.to_ascii_lowercase();
         dialogs.retain(|d| dialog_matches_search(d, &q));
@@ -1914,41 +1917,98 @@ mod tests {
     #[test]
     fn displayed_dialogs_filter_and_search_intersect() {
         let store = mixed_store();
-        let all = displayed_dialogs(&store, None, "", SortColumn::Index, true);
+        let all = displayed_dialogs(&store, None, None, None, "", SortColumn::Index, true);
         assert_eq!(all.len(), 5);
 
         // The field incident's expression matches everything here.
         let f = crate::sip::dsl::FilterExpr::parse("(method == 'OPTIONS' OR method == 'INVITE')")
             .unwrap();
         assert_eq!(
-            displayed_dialogs(&store, Some(&f), "", SortColumn::Index, true).len(),
+            displayed_dialogs(&store, Some(&f), None, None, "", SortColumn::Index, true).len(),
             5
         );
         // Search alone.
         assert_eq!(
-            displayed_dialogs(&store, None, "sipsak", SortColumn::Index, true).len(),
+            displayed_dialogs(&store, None, None, None, "sipsak", SortColumn::Index, true).len(),
             2
         );
         assert_eq!(
-            displayed_dialogs(&store, None, "559", SortColumn::Index, true).len(),
+            displayed_dialogs(&store, None, None, None, "559", SortColumn::Index, true).len(),
             1
         );
         // Filter ∩ search: the invisible-narrowing composition from the
         // field incident.
         assert_eq!(
-            displayed_dialogs(&store, Some(&f), "559", SortColumn::Index, true).len(),
+            displayed_dialogs(&store, Some(&f), None, None, "559", SortColumn::Index, true).len(),
             1
         );
         // A method-restricted filter composes with search on another field.
         let inv = crate::sip::dsl::FilterExpr::parse("method == 'INVITE'").unwrap();
         assert_eq!(
-            displayed_dialogs(&store, Some(&inv), "carol", SortColumn::Index, true).len(),
+            displayed_dialogs(
+                &store,
+                Some(&inv),
+                None,
+                None,
+                "carol",
+                SortColumn::Index,
+                true
+            )
+            .len(),
             1
         );
         // Disjoint filter and search: empty, not an error.
         assert_eq!(
-            displayed_dialogs(&store, Some(&inv), "sipsak", SortColumn::Index, true).len(),
+            displayed_dialogs(
+                &store,
+                Some(&inv),
+                None,
+                None,
+                "sipsak",
+                SortColumn::Index,
+                true
+            )
+            .len(),
             0
+        );
+    }
+
+    /// The time window hides dialogs outside `[after, before)`, the upper bound
+    /// exclusive — the TUI's half of the rule REST `/v1/dialogs` and the MCP
+    /// `search_by_time` tool share, applied through `cursor::in_time_window`.
+    /// `mixed_store`'s five dialogs open one second apart from 08:45:00Z.
+    #[test]
+    fn displayed_dialogs_time_window_is_half_open() {
+        let store = mixed_store();
+        let at = |s: u32| {
+            chrono::TimeZone::with_ymd_and_hms(&chrono::Utc, 2026, 7, 7, 8, 45, s).unwrap()
+        };
+        // No bounds: all five.
+        assert_eq!(
+            displayed_dialogs(&store, None, None, None, "", SortColumn::Index, true).len(),
+            5
+        );
+        // [08:45:01, 08:45:04): lower inclusive, upper exclusive — admits :01,
+        // :02, :03, and excludes both :00 (below) and the :04 boundary.
+        assert_eq!(
+            displayed_dialogs(
+                &store,
+                None,
+                Some(at(1)),
+                Some(at(4)),
+                "",
+                SortColumn::Index,
+                true
+            )
+            .len(),
+            3,
+            "half-open window admits :01/:02/:03; excludes :00 and the :04 boundary"
+        );
+        // A lower bound alone is inclusive at its own instant.
+        assert_eq!(
+            displayed_dialogs(&store, None, Some(at(4)), None, "", SortColumn::Index, true).len(),
+            1,
+            "after == the last dialog's instant still admits it"
         );
     }
 
@@ -1959,7 +2019,7 @@ mod tests {
         let store = mixed_store();
         for q in ["\\", "'", "\u{0}", ".*", "((((", "559 ", " ", "\u{202e}"] {
             // Must not panic; result count is whatever literally matches.
-            let _ = displayed_dialogs(&store, None, q, SortColumn::Index, true);
+            let _ = displayed_dialogs(&store, None, None, None, q, SortColumn::Index, true);
         }
     }
 

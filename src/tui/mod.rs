@@ -122,8 +122,15 @@ pub struct App {
     settings_dialog: SettingsDialogState,
     /// Active filter expression (applied to the call list).
     active_filter: Option<FilterExpr>,
-    /// Human-readable text of the active filter (for the status bar).
+    /// Human-readable text of the active filter (for the status bar). Carries
+    /// the time window too, so the displayed-list cache key invalidates when the
+    /// window changes.
     active_filter_text: String,
+    /// Active time-window lower bound (inclusive) — the filter dialog's `After`
+    /// field, applied to the call list beside `active_filter`.
+    active_time_after: Option<chrono::DateTime<chrono::Utc>>,
+    /// Active time-window upper bound (exclusive) — the dialog's `Before` field.
+    active_time_before: Option<chrono::DateTime<chrono::Utc>>,
     /// Transient status bar error message (cleared on next view change).
     status_error: Option<String>,
     /// Call flow ladder state (selection, scroll, toggles, render caches).
@@ -421,6 +428,8 @@ impl App {
             settings_dialog: SettingsDialogState::default(),
             active_filter: None,
             active_filter_text: String::new(),
+            active_time_after: None,
+            active_time_before: None,
             status_error: None,
             flow: CallFlowViewState::default(),
             flow_detail_max_hscroll: None,
@@ -605,6 +614,8 @@ impl App {
     pub(crate) fn clear_active_filter(&mut self) {
         self.active_filter = None;
         self.active_filter_text.clear();
+        self.active_time_after = None;
+        self.active_time_before = None;
         self.record_action("filter_cleared", "", "", "ok", "");
     }
 
@@ -1055,6 +1066,8 @@ impl App {
             self.displayed.ids = call_list::displayed_dialogs(
                 &store,
                 self.active_filter.as_ref(),
+                self.active_time_after,
+                self.active_time_before,
                 &self.search_query,
                 self.call_list.sort_column(),
                 self.call_list.sort_ascending(),

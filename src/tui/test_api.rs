@@ -299,6 +299,8 @@ impl App {
         let displayed = call_list::displayed_dialogs(
             store,
             self.active_filter.as_ref(),
+            self.active_time_after,
+            self.active_time_before,
             &self.search_query,
             self.call_list.sort_column(),
             self.call_list.sort_ascending(),

@@ -97,6 +97,8 @@ fn bench_displayed_dialogs(c: &mut Criterion) {
             displayed_dialogs(
                 &store,
                 None,
+                None,
+                None,
                 "",
                 sipnab::tui::call_list::SortColumn::Index,
                 true,
@@ -111,6 +113,8 @@ fn bench_displayed_dialogs(c: &mut Criterion) {
         b.iter(|| {
             displayed_dialogs(
                 &store,
+                None,
+                None,
                 None,
                 "zzz-no-such-string",
                 sipnab::tui::call_list::SortColumn::Index,

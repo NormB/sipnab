@@ -1676,6 +1676,8 @@ pub(in crate::tui) fn get_selected_call_id(app: &App) -> Option<String> {
     let dialogs = crate::tui::call_list::displayed_dialogs(
         &store,
         app.active_filter.as_ref(),
+        app.active_time_after,
+        app.active_time_before,
         &app.search_query,
         app.call_list.sort_column(),
         app.call_list.sort_ascending(),
@@ -1696,6 +1698,8 @@ pub(in crate::tui) fn checked_displayed_call_ids(app: &App) -> Vec<String> {
     crate::tui::call_list::displayed_dialogs(
         &store,
         app.active_filter.as_ref(),
+        app.active_time_after,
+        app.active_time_before,
         &app.search_query,
         app.call_list.sort_column(),
         app.call_list.sort_ascending(),
@@ -1716,6 +1720,8 @@ pub(in crate::tui) fn filtered_dialog_count(app: &App) -> usize {
     crate::tui::call_list::displayed_dialogs(
         &store,
         app.active_filter.as_ref(),
+        app.active_time_after,
+        app.active_time_before,
         &app.search_query,
         app.call_list.sort_column(),
         app.call_list.sort_ascending(),

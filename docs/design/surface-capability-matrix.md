@@ -154,7 +154,7 @@ Which dialogs fall in this wall-clock window?
 | Surface | Detail |
 |---|---|
 | CLI | gap: scoping a batch to when the user says it broke is one-shot, but no time-window flag exists and the filter has no timestamp field (PAR5) |
-| TUI | gap: a human reviewing a capture wants a time-range filter, but the filter dialog has no time field (PAR4) |
+| TUI | the `CallList` filter dialog's `After`/`Before` time bounds, applied as a half-open `[after, before)` window through the shared `cursor::in_time_window` |
 | REST | `/v1/dialogs` with `after`/`before` |
 | MCP | `search_by_time` |
 

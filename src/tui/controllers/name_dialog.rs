@@ -18,6 +18,8 @@ pub(in crate::tui) fn get_selected_dialog_endpoints(
     let dialogs = crate::tui::call_list::displayed_dialogs(
         &store,
         app.active_filter.as_ref(),
+        app.active_time_after,
+        app.active_time_before,
         &app.search_query,
         app.call_list.sort_column(),
         app.call_list.sort_ascending(),

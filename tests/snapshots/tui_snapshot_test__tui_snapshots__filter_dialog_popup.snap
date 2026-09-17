@@ -3,14 +3,15 @@ source: tests/tui_snapshot_test.rs
 expression: output
 ---
  Current Mode: Online (any)    Dialogs: 0 (0 displayed)  [A]
- Match Expression:     BPF Filter:
- Display Fil┌ Filter ──────────────────────────────────────────────┐
-# ▲   Method│                                                      │   Duratio
-            │  SIP From:    [                                   ]  │
-  No SIP dia│  SIP To:      [                                   ]  │
-            │  Source:      [                                   ]  │
-  Waiting fo│  Destination: [                                   ]  │
-  Press 'q' │  Payload:     [                                   ]  │
+ Match Expre┌ Filter ──────────────────────────────────────────────┐
+ Display Fil│                                                      │
+# ▲   Method│  SIP From:    [                                   ]  │   Duratio
+            │  SIP To:      [                                   ]  │
+  No SIP dia│  Source:      [                                   ]  │
+            │  Destination: [                                   ]  │
+  Waiting fo│  Payload:     [                                   ]  │
+  Press 'q' │  After:       [                                   ]  │
+            │  Before:      [                                   ]  │
             │  ──────────────────────────────────────────────────  │
             │  All       [*]                                       │
             │  REGISTER  [*]             OPTIONS   [*]             │
@@ -24,5 +25,4 @@ expression: output
             │  Tab move · Enter apply · Esc cancel                 │
             │                                                      │
             └──────────────────────────────────────────────────────┘
-
 Tab Next  Space Toggle  Enter Apply  Esc Cancel  F9 Clear

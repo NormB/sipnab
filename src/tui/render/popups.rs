@@ -884,7 +884,10 @@ pub(in crate::tui) fn render_filter_popup(
     theme: &Theme,
 ) {
     let popup_width: u16 = 56;
-    let popup_height: u16 = 20;
+    // Two rows taller than the five-field original: the `After`/`Before` time
+    // bounds are text fields six and seven, and the separator, method grid and
+    // buttons below them shift down with the field loop.
+    let popup_height: u16 = 22;
     let popup_area = centered_popup(area, popup_width, popup_height);
 
     // Clear the area behind the popup
@@ -910,6 +913,8 @@ pub(in crate::tui) fn render_filter_popup(
         "  Source:      ",
         "  Destination: ",
         "  Payload:     ",
+        "  After:       ",
+        "  Before:      ",
     ];
     let field_width = iw.saturating_sub(labels[0].len() as u16 + 2); // +2 for margin
 

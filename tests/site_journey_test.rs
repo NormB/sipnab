@@ -3700,7 +3700,7 @@ mod search_demo_narrowing {
 
         let shown_with = |app: &App, q: &str| {
             let store = app.dialog_store_ref().read();
-            displayed_dialogs(&store, None, q, SortColumn::Index, true).len()
+            displayed_dialogs(&store, None, None, None, q, SortColumn::Index, true).len()
         };
         let total = shown_with(&app, "");
         assert!(
@@ -3827,7 +3827,7 @@ mod demo_terminal_method_rendering {
     fn expected_methods(app: &App, query: &str) -> Vec<String> {
         let store = app.dialog_store_ref().read();
         let mut methods: Vec<String> =
-            displayed_dialogs(&store, None, query, SortColumn::Index, true)
+            displayed_dialogs(&store, None, None, None, query, SortColumn::Index, true)
                 .iter()
                 .map(|d| d.method.as_str().to_string())
                 .collect();

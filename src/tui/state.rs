@@ -543,7 +543,7 @@ pub(in crate::tui) const FILTER_METHODS: [&str; 10] = [
 ];
 
 /// Number of text input fields in the filter dialog.
-pub(in crate::tui) const FILTER_TEXT_FIELD_COUNT: usize = 5;
+pub(in crate::tui) const FILTER_TEXT_FIELD_COUNT: usize = 7;
 
 /// Total focusable items: 5 text fields + 10 method checkboxes + the
 /// "All" master checkbox + 2 buttons.
@@ -876,6 +876,14 @@ impl NameDialogState {
     }
 }
 
+/// A half-open `[after, before)` time window: an inclusive lower bound and an
+/// exclusive upper bound, each open (`None`) when unset. The filter dialog
+/// parses its `After`/`Before` fields into one of these.
+pub(in crate::tui) type TimeWindow = (
+    Option<chrono::DateTime<chrono::Utc>>,
+    Option<chrono::DateTime<chrono::Utc>>,
+);
+
 /// Structured state for the filter dialog.
 #[derive(Debug, Clone)]
 pub struct FilterDialogState {
@@ -889,11 +897,17 @@ pub struct FilterDialogState {
     pub(in crate::tui) destination: String,
     /// Payload content filter text.
     pub(in crate::tui) payload: String,
+    /// Lower time bound, RFC 3339; empty means unbounded below. INCLUSIVE.
+    pub(in crate::tui) time_after: String,
+    /// Upper time bound, RFC 3339; empty means unbounded above. EXCLUSIVE, so
+    /// the pair is the half-open `[after, before)` window the REST
+    /// `/v1/dialogs` route and the MCP `search_by_time` tool apply.
+    pub(in crate::tui) time_before: String,
     /// Method checkbox states, indexed by position in FILTER_METHODS.
     pub(in crate::tui) methods: [bool; 10],
-    /// Currently focused UI element index.
-    /// 0-4 = text fields, 5 = "All" master checkbox, 6-15 = method
-    /// checkboxes, 16 = Filter button, 17 = Cancel button.
+    /// Currently focused UI element index. The boundaries derive from
+    /// `FILTER_TEXT_FIELD_COUNT`: 0..N-1 = text fields, then the "All" master
+    /// checkbox, the method checkboxes, and the Filter/Cancel buttons.
     pub(in crate::tui) focused_field: usize,
     /// Cursor position within the currently focused text field.
     pub(in crate::tui) cursor_pos: usize,
@@ -912,6 +926,8 @@ impl Default for FilterDialogState {
             source: String::new(),
             destination: String::new(),
             payload: String::new(),
+            time_after: String::new(),
+            time_before: String::new(),
             // All SIP methods checked by default == show every message. The
             // method filter only narrows once the user unchecks something.
             methods: [true; 10],
@@ -942,7 +958,7 @@ impl FilterDialogState {
         self.methods = [target; 10];
     }
 
-    /// Get a reference to the text field at the given index (0-4).
+    /// Get a reference to the text field at the given index (0..FILTER_TEXT_FIELD_COUNT).
     pub(in crate::tui) fn text_field(&self, idx: usize) -> &str {
         match idx {
             0 => &self.sip_from,
@@ -950,11 +966,13 @@ impl FilterDialogState {
             2 => &self.source,
             3 => &self.destination,
             4 => &self.payload,
+            5 => &self.time_after,
+            6 => &self.time_before,
             _ => "",
         }
     }
 
-    /// Get a mutable reference to the text field at the given index (0-4).
+    /// Get a mutable reference to the text field at the given index (0..FILTER_TEXT_FIELD_COUNT).
     pub(in crate::tui) fn text_field_mut(&mut self, idx: usize) -> Option<&mut String> {
         match idx {
             0 => Some(&mut self.sip_from),
@@ -962,6 +980,8 @@ impl FilterDialogState {
             2 => Some(&mut self.source),
             3 => Some(&mut self.destination),
             4 => Some(&mut self.payload),
+            5 => Some(&mut self.time_after),
+            6 => Some(&mut self.time_before),
             _ => None,
         }
     }
@@ -1165,6 +1185,8 @@ impl FilterDialogState {
         self.source.clear();
         self.destination.clear();
         self.payload.clear();
+        self.time_after.clear();
+        self.time_before.clear();
         // Re-check every method so "clear filter" means show all, matching the
         // dialog's default state.
         self.methods = [true; 10];
@@ -1198,8 +1220,37 @@ impl FilterDialogState {
             && self.source.is_empty()
             && self.destination.is_empty()
             && self.payload.is_empty()
+            && self.time_after.is_empty()
+            && self.time_before.is_empty()
             // All methods checked == no method narrowing == an "empty" filter.
             && self.methods.iter().all(|&v| v)
+    }
+
+    /// Parse the two time bounds into a half-open `[after, before)` window.
+    ///
+    /// An empty field is an open bound (`None`). A non-empty field must be RFC
+    /// 3339 — the form the REST `after`/`before` query params take — and a value
+    /// that does not parse comes back as an error naming the field, so the
+    /// dialog shows it inline and keeps the typed text rather than discarding a
+    /// near-miss timestamp. The upper bound is exclusive; the window itself is
+    /// applied through `crate::cursor::in_time_window`, the one shared rule.
+    pub(in crate::tui) fn parse_time_window(&self) -> Result<TimeWindow, String> {
+        fn parse(
+            field: &str,
+            label: &str,
+        ) -> Result<Option<chrono::DateTime<chrono::Utc>>, String> {
+            let s = field.trim();
+            if s.is_empty() {
+                return Ok(None);
+            }
+            chrono::DateTime::parse_from_rfc3339(s)
+                .map(|t| Some(t.with_timezone(&chrono::Utc)))
+                .map_err(|e| format!("{label} time: {e}"))
+        }
+        Ok((
+            parse(&self.time_after, "After")?,
+            parse(&self.time_before, "Before")?,
+        ))
     }
 }
 

@@ -15,8 +15,36 @@ use crate::tui::*;
 /// `app.active_filter`/`active_filter_text`, and closes or keeps the
 /// popup depending on parse success.
 pub(in crate::tui) fn apply_filter_dialog(app: &mut App) {
+    // The time bounds are parsed first because they are the only field that can
+    // fail to parse (the text fields are regex-escaped into the DSL and cannot).
+    // A malformed timestamp keeps the dialog open with the error shown, the way
+    // a bad DSL expression would, so the typed text is corrected, not discarded.
+    let window = match app.filter_dialog.parse_time_window() {
+        Ok(w) => w,
+        Err(msg) => {
+            app.filter_dialog.error = Some(msg);
+            return;
+        }
+    };
     let expr_text = app.filter_dialog.build_filter_expression();
-    apply_filter_expression(app, expr_text);
+    apply_filter_expression(app, expr_text, window);
+}
+
+/// Human-readable text of a filter: the DSL expression, the time window, or
+/// both. Feeds the status bar AND the displayed-list cache key, so it must
+/// change whenever the DSL or either bound changes.
+fn describe_filter(expr_text: Option<&str>, window: crate::tui::state::TimeWindow) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(text) = expr_text {
+        parts.push(text.to_string());
+    }
+    if let Some(a) = window.0 {
+        parts.push(format!("after {}", a.to_rfc3339()));
+    }
+    if let Some(b) = window.1 {
+        parts.push(format!("before {}", b.to_rfc3339()));
+    }
+    parts.join(" | ")
 }
 
 /// Parse and apply `expr_text`. On a parse error the dialog STAYS OPEN with
@@ -34,51 +62,66 @@ pub(in crate::tui) fn apply_filter_dialog(app: &mut App) {
 /// `active_filter_text` and closes the popup; on a parse error, sets
 /// `app.filter_dialog.error` and leaves the popup open. Clears
 /// `app.status_error` on every path that applies.
-pub(in crate::tui) fn apply_filter_expression(app: &mut App, expr_text: Option<String>) {
+pub(in crate::tui) fn apply_filter_expression(
+    app: &mut App,
+    expr_text: Option<String>,
+    window: crate::tui::state::TimeWindow,
+) {
     // No SIP methods selected => show nothing. This is the explicit "mute
     // everything" state (distinct from all-checked, which shows everything).
+    // The time window is moot here — nothing shows regardless — but it is
+    // stored so reopening the dialog reflects it.
     if !app.filter_dialog.any_method_checked() {
         app.active_filter = Some(FilterExpr::never());
         app.active_filter_text = "(no methods selected)".to_string();
+        app.active_time_after = window.0;
+        app.active_time_before = window.1;
         app.status_error = None;
         app.filter_dialog.error = None;
         app.active_popup = None;
         app.record_action("filter_applied", "(no methods selected)", "", "ok", "");
         return;
     }
-    match expr_text {
-        Some(expr_text) => match FilterExpr::parse(&expr_text) {
-            Ok(expr) => {
-                app.active_filter = Some(expr);
-                app.active_filter_text = expr_text;
-                app.status_error = None;
-                app.filter_dialog.error = None;
-                // The applied expression IS recorded, unlike the search query
-                // -- see `crate::tui::action_trail` for why the two are not
-                // the same question. A filter decides what the operator could
-                // see and therefore what they could export, so it is part of
-                // the chain the export record belongs to; a search only moves
-                // a cursor inside what is already on screen. Cloned because
-                // the text has just moved onto the app.
-                let applied = app.active_filter_text.clone();
-                app.record_action("filter_applied", &applied, "", "ok", "");
-            }
+
+    // Parse the DSL first — it can only fail on a hand-built expression, never
+    // on the regex-escaped dialog text, but the guard keeps that promise honest.
+    let filter = match &expr_text {
+        Some(text) => match FilterExpr::parse(text) {
+            Ok(expr) => Some(expr),
             Err(e) => {
                 app.filter_dialog.error = Some(format!("Filter error: {e}"));
                 return;
             }
         },
-        None => {
-            // All fields empty — clear any active filter. A cleared filter is
-            // a state change of its own: after it the operator can see and
-            // export everything again, so `clear_active_filter` records it.
-            // Called after `status_error` is cleared, never before -- see that
-            // method.
-            app.status_error = None;
-            app.filter_dialog.error = None;
-            app.clear_active_filter();
-        }
+        None => None,
+    };
+
+    // Nothing at all — no DSL and no time bound — is a true clear. A cleared
+    // filter is a state change of its own: after it the operator can see and
+    // export everything again, so `clear_active_filter` records it.
+    if filter.is_none() && window.0.is_none() && window.1.is_none() {
+        app.status_error = None;
+        app.filter_dialog.error = None;
+        app.clear_active_filter();
+        app.active_popup = None;
+        return;
     }
+
+    // A DSL filter, a time window, or both. The window is applied beside the
+    // DSL in `displayed_dialogs`, and folded into the text so the status bar
+    // shows it and the displayed-list cache key covers a window change.
+    app.active_filter = filter;
+    app.active_time_after = window.0;
+    app.active_time_before = window.1;
+    app.active_filter_text = describe_filter(expr_text.as_deref(), window);
+    app.status_error = None;
+    app.filter_dialog.error = None;
+    // The applied filter IS recorded, unlike the search query -- see
+    // `crate::tui::action_trail` for why the two are not the same question. A
+    // filter decides what the operator could see and therefore export; a search
+    // only moves a cursor inside what is already on screen.
+    let applied = app.active_filter_text.clone();
+    app.record_action("filter_applied", &applied, "", "ok", "");
     app.active_popup = None;
 }
 
@@ -241,7 +284,7 @@ mod tests {
         app.active_popup = Some(Popup::FilterDialog);
 
         // Unquoted value — the classic DSL parse error.
-        apply_filter_expression(&mut app, Some("method == INVITE".to_string()));
+        apply_filter_expression(&mut app, Some("method == INVITE".to_string()), (None, None));
 
         assert!(
             matches!(app.active_popup, Some(Popup::FilterDialog)),
@@ -262,10 +305,69 @@ mod tests {
         );
 
         // Fixing the expression applies, clears the error, and closes.
-        apply_filter_expression(&mut app, Some("method == 'INVITE'".to_string()));
+        apply_filter_expression(
+            &mut app,
+            Some("method == 'INVITE'".to_string()),
+            (None, None),
+        );
         assert!(app.active_popup.is_none(), "valid filter closes the dialog");
         assert!(app.filter_dialog.error.is_none());
         assert!(app.active_filter.is_some());
+    }
+
+    /// The time bounds parse through `apply_filter_dialog`: a malformed
+    /// timestamp keeps the dialog open with an inline error naming the field
+    /// and applies nothing, while a good pair sets the active window and closes
+    /// — even with no DSL filter, since the DSL has no wall-clock field.
+    #[test]
+    fn apply_filter_dialog_applies_a_time_window_and_flags_a_bad_one() {
+        let at =
+            |h: u32| chrono::TimeZone::with_ymd_and_hms(&chrono::Utc, 2026, 7, 7, h, 0, 0).unwrap();
+        let mut app = App::new_test();
+        app.active_popup = Some(Popup::FilterDialog);
+
+        // A malformed upper bound: the dialog stays open, nothing is applied.
+        app.filter_dialog.time_after = "2026-07-07T08:00:00Z".to_string();
+        app.filter_dialog.time_before = "not a timestamp".to_string();
+        apply_filter_dialog(&mut app);
+        assert!(
+            matches!(app.active_popup, Some(Popup::FilterDialog)),
+            "a bad timestamp keeps the dialog open"
+        );
+        assert!(
+            app.filter_dialog
+                .error
+                .as_deref()
+                .unwrap_or("")
+                .contains("Before"),
+            "the error names the offending field: {:?}",
+            app.filter_dialog.error
+        );
+        assert!(
+            app.active_time_after.is_none() && app.active_time_before.is_none(),
+            "nothing is applied while a bound is malformed"
+        );
+
+        // Fix the upper bound: the window applies and the dialog closes, with
+        // no DSL filter — only a window.
+        app.filter_dialog.time_before = "2026-07-07T09:00:00Z".to_string();
+        apply_filter_dialog(&mut app);
+        assert!(
+            app.active_popup.is_none(),
+            "a valid window closes the dialog"
+        );
+        assert!(app.filter_dialog.error.is_none());
+        assert_eq!(app.active_time_after, Some(at(8)));
+        assert_eq!(app.active_time_before, Some(at(9)));
+        assert!(
+            app.active_filter.is_none(),
+            "no DSL filter was set, only a window"
+        );
+        assert!(
+            app.active_filter_text.contains("after") && app.active_filter_text.contains("before"),
+            "the status text names the window: {}",
+            app.active_filter_text
+        );
     }
 }
 
@@ -319,8 +421,8 @@ mod all_checkbox_order_tests {
         open_filter(&mut app);
         assert_eq!(app.filter_dialog.focused_field, 0);
 
-        // Tab through the 5 text fields lands on the All checkbox.
-        for _ in 0..5 {
+        // Tab through the text fields lands on the All checkbox.
+        for _ in 0..FILTER_TEXT_FIELD_COUNT {
             handle_filter_popup_key(&mut app, key(KeyCode::Tab));
         }
         assert_eq!(

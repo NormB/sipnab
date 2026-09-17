@@ -12,6 +12,15 @@ entry that carries them.
 
 ### Added
 
+- **Time-range filter in the TUI (PAR4).** The `CallList` filter dialog gains
+  `After` and `Before` fields (RFC 3339), so a person reviewing a capture can
+  scope it to a wall-clock window the way `GET /v1/dialogs` and the MCP
+  `search_by_time` tool already allowed. The bounds form a half-open `[after,
+  before)` window applied through the shared `cursor::in_time_window`, so all
+  three surfaces agree at the boundary; a malformed timestamp keeps the dialog
+  open with an inline error naming the field rather than discarding the typed
+  text, and the window applies even with no other filter set. Closes the last
+  PAR4 gap in the surface-parity matrix, leaving 15 named gaps.
 - **Security findings in the TUI, fed live (PAR4).** A new `SecurityFindings`
   view, opened with `a` from the call list, shows the armed detectors' alerts —
   each with its detector, source address, the detector's own evidence, and the
