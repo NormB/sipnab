@@ -322,7 +322,7 @@ impl GroupAccumulator {
 /// experienced, and these percentiles are quoted back to a carrier as evidence
 /// about real calls; nearest rank always names an observed sample. `None` for
 /// an empty slice — a percentile of nothing is not zero.
-fn percentile_nearest_rank(sorted: &[f64], p: f64) -> Option<f64> {
+pub(crate) fn percentile_nearest_rank<T: Copy>(sorted: &[T], p: f64) -> Option<T> {
     if sorted.is_empty() {
         return None;
     }
@@ -483,7 +483,7 @@ mod tests {
         assert_eq!(percentile_nearest_rank(&samples, 10.0), Some(10.0));
         assert_eq!(percentile_nearest_rank(&samples, 0.0), Some(10.0));
         assert_eq!(
-            percentile_nearest_rank(&[], 50.0),
+            percentile_nearest_rank::<f64>(&[], 50.0),
             None,
             "a percentile of nothing is not zero"
         );

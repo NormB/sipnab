@@ -106,6 +106,13 @@ entry that carries them.
   The cursor now only moves forward, and a sequence that was presumed lost but
   arrives late (while still in the bounded loss log) is credited back. A genuine
   sequence gap is still counted.
+- **The `/v1/stats` percentiles agree with `/v1/dialogs/rates`.** `/v1/stats`
+  computed a percentile by rounding an index over `n - 1`, while
+  `/v1/dialogs/rates` and MCP `group_dialogs` use nearest rank
+  (`ceil(p/100 · n)`), so the two doors quoted different p50/p95 for the same
+  post-dial-delay population — `[10, 20, 30, 40]` p50 was 30 on one and 20 on
+  the other. Both now call one generic `percentile_nearest_rank`, so there is a
+  single percentile rule and it always names an observed sample.
 
 ### Security
 

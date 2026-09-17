@@ -4778,16 +4778,17 @@ fn approximate_mos(stream: &crate::rtp::stream::RtpStream, delay: quality::MosDe
     delay.score(stream)
 }
 
-/// Compute the p-th percentile of a sorted slice (nearest-rank by rounded
-/// index).
+/// Compute the p-th percentile of a sorted slice by nearest rank (no
+/// interpolation).
+///
+/// Delegates to `group_metrics::percentile_nearest_rank` so this door (used by
+/// `/v1/stats`) quotes the same percentile as `/v1/dialogs/rates` and MCP
+/// `group_dialogs` for the same sample. It used to round an index over `n - 1`,
+/// which disagreed with the ceil-based nearest rank the other doors use.
 ///
 /// Returns `None` if the slice is empty.
 fn percentile(sorted: &[i64], p: u8) -> Option<i64> {
-    if sorted.is_empty() {
-        return None;
-    }
-    let idx = ((p as f64 / 100.0) * (sorted.len() as f64 - 1.0)).round() as usize;
-    Some(sorted[idx.min(sorted.len() - 1)])
+    crate::sip::group_metrics::percentile_nearest_rank(sorted, f64::from(p))
 }
 
 // ── OpenAPI document ────────────────────────────────────────────────
@@ -10061,16 +10062,22 @@ mod tests {
     #[test]
     fn percentile_computation() {
         let values = vec![10, 20, 30, 40, 50, 60, 70, 80, 90, 100];
-        // p50 with 10 elements: index = round(0.50 * 9) = round(4.5) = 5 -> 60
-        assert_eq!(percentile(&values, 50), Some(60));
+        // Nearest rank, no interpolation: p50 of 10 elements is rank
+        // ceil(0.50 * 10) = 5, i.e. the 5th sample -> 50.
+        assert_eq!(percentile(&values, 50), Some(50));
         assert_eq!(percentile(&values, 95), Some(100));
         assert_eq!(percentile(&[], 50), None);
 
-        // Odd-length array: p50 of [10,20,30,40,50] -> index = round(0.50*4) = 2 -> 30
+        // Odd-length array: p50 of [10,20,30,40,50] is rank ceil(0.50*5) = 3 -> 30.
         let odd = vec![10, 20, 30, 40, 50];
         assert_eq!(percentile(&odd, 50), Some(30));
         assert_eq!(percentile(&odd, 0), Some(10));
         assert_eq!(percentile(&odd, 100), Some(50));
+
+        // This door now agrees with `/v1/dialogs/rates` and MCP `group_dialogs`,
+        // which quote `group_metrics::percentile_nearest_rank` for the same
+        // sample. Before, `[10,20,30,40]` p50 was 30 here and 20 there.
+        assert_eq!(percentile(&[10, 20, 30, 40], 50), Some(20));
     }
 
     // ── Stream-store helpers ──────────────────────────────────────────
