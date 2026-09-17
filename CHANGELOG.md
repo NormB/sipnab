@@ -12,6 +12,19 @@ entry that carries them.
 
 ### Added
 
+- **TFPS-observe TUI view (PAR4).** A new `TfpsObserve` view, opened with `x`
+  from the call list, shows the enforcing peer's current state read from
+  `tfps_ctl` — the sources it bans (with the rule, the rule's evidence, and
+  whether the firewall holds the ban or is only observing) on `b`, and the
+  per-source drop counters on `d`. Alerts previously reached only syslog and
+  stderr; this puts them in the capture UI beside the peer. Like the relay-stats
+  view it TRANSMITS — it shells out to `tfps_ctl` (a child process) — so the ask
+  runs on an off-thread worker (the render pass never spawns a process), and the
+  peer's own "not installed" words show when it is absent rather than an empty
+  list that would read as "nothing banned". It renders the same `Reply` the REST
+  routes and the MCP `tfps_banned`/`tfps_dropped` tools do; the conversions are
+  pure and unit-tested, the wire staying live-only. Closes the TFPS-observe TUI
+  gap, leaving 17 named gaps.
 - **RFC-conformance TUI view (PAR4).** A new `Conformance` view, opened with `f`
   on the selected call, lists the call's SIP RFC-conformance findings — each with
   a severity, its RFC citation (`RFC 3261 §8.1.1.7`), the message it was drawn

@@ -100,6 +100,9 @@ pub enum CallListAction {
     OpenSdpTimeline,
     /// `f` — open the RFC-conformance findings of the selected call.
     OpenConformance,
+    /// `x` — open the TFPS-observe view (the enforcing peer's banned sources and
+    /// drop counters). Independent of any selected call.
+    OpenTfpsObserve,
     /// `S` — open the relay-statistics view for the relay's globals (ST8, C1).
     OpenRelayStats,
     /// `B` — show the full BPF capture-filter expression (status line 2
@@ -172,6 +175,7 @@ pub fn call_list_action(km: &Keymap, key: KeyEvent) -> Option<CallListAction> {
         KeyCode::Char('b') => OpenCallVolume,
         KeyCode::Char('o') => OpenSdpTimeline,
         KeyCode::Char('f') => OpenConformance,
+        KeyCode::Char('x') => OpenTfpsObserve,
         KeyCode::Char('S') => OpenRelayStats,
         KeyCode::Char('B') => OpenBpfFilter,
         KeyCode::Char('D') => OpenDashboard,
@@ -389,6 +393,15 @@ fn execute_call_list_action(app: &mut App, action: CallListAction) {
                 app.conformance_scroll = 0;
                 app.current_view = View::Conformance { call_id };
             }
+        }
+        CallListAction::OpenTfpsObserve => {
+            app.tfps_scroll = 0;
+            // Reset the worker cache so the view asks afresh rather than showing
+            // a prior facet's text before the new ask lands.
+            app.tfps = tfps_observe::TfpsCache::default();
+            app.current_view = View::TfpsObserve {
+                mode: tfps_observe::TfpsMode::default(),
+            };
         }
         CallListAction::OpenRelayStats => {
             app.relay_stats_scroll = 0;

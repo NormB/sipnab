@@ -300,6 +300,10 @@ pub struct TuiOptions {
     /// classification instead of asking. Built by the composition root
     /// (`crate::app::tui_mode`), never here.
     pub relay_query: crate::tui::relay_stats::RelayQueryState,
+    /// The enforcing peer's `tfps_ctl` locator, for the TFPS-observe view to ask
+    /// (banned sources / drop counters). Default answers "not installed". Built
+    /// by the composition root (`crate::app::tui_mode`), never here.
+    pub tfps_access: crate::security::tfps::TfpsLocator,
     /// The relay-stats poll interval the run was started with (ST8, C5), from
     /// `--relay-stats-interval`. `Some(n)` makes the relay-stats view re-ask
     /// every `n` seconds and label its counters `polled`; `None` asks once.
@@ -364,6 +368,7 @@ impl TuiOptions {
         app.set_names_config_path(self.name_setup.config_path);
         app.set_action_trail(self.action_trail);
         app.relay_query = self.relay_query;
+        app.tfps_access = self.tfps_access;
         app.relay_stats_interval = self.relay_stats_interval;
         app.set_reconfigure(self.reconfigure_control, self.reconfigure_outcomes);
         app.rescan_path = self.rescan_path;
@@ -1303,6 +1308,13 @@ pub enum View {
     Conformance {
         /// Call-ID of the dialog to lint.
         call_id: String,
+    },
+    /// The enforcing TFPS peer's current state: the sources it bans, or its
+    /// per-source drop counters, read from `tfps_ctl`. Opened with `x` from the
+    /// call list; `b`/`d` switch facets. Independent of any call.
+    TfpsObserve {
+        /// Which facet — banned sources or drop counters — is showing.
+        mode: crate::tui::tfps_observe::TfpsMode,
     },
     /// The live relay's own statistics, asked over its control socket (ST8).
     ///

@@ -61,6 +61,8 @@ pub(in crate::tui) struct RenderFeedback {
     pub(in crate::tui) sdp_timeline_scroll: Option<u16>,
     /// Clamped scroll of the RFC-conformance view.
     pub(in crate::tui) conformance_scroll: Option<u16>,
+    /// Clamped scroll of the TFPS-observe view.
+    pub(in crate::tui) tfps_scroll: Option<u16>,
     /// Clamped scroll of the relay-statistics view (ST8).
     pub(in crate::tui) relay_stats_scroll: Option<u16>,
     /// Content-clamped scroll of the full-BPF-filter popup (`B`). Only the
@@ -528,6 +530,9 @@ pub(in crate::tui) fn render_app(
         }
         View::CaptureHealth => {
             fb.capture_health_scroll = Some(render_capture_health(frame, main_area, app));
+        }
+        View::TfpsObserve { .. } => {
+            fb.tfps_scroll = Some(render_tfps(frame, main_area, app));
         }
         View::CallVolume => {
             fb.call_volume_scroll = Some(render_call_volume(frame, main_area, app, ds));
@@ -1580,6 +1585,48 @@ pub(in crate::tui) fn render_capture_health(
     let block = Block::default()
         .borders(Borders::ALL)
         .title(" Capture health ");
+    let paragraph = Paragraph::new(text)
+        .block(block)
+        .style(Style::default().fg(app.theme.foreground))
+        .scroll((scroll, 0));
+
+    frame.render_widget(paragraph, area);
+    scroll
+}
+
+/// Render the TFPS-observe view: the enforcing peer's banned sources or drop
+/// counters. Serves the text the off-thread worker composed (an asked answer, an
+/// "asking…" line while it is in flight, or the peer's own not-installed words),
+/// so the draw pass never spawns a child process. Returns the clamped scroll.
+///
+/// # Side effects
+/// Draws to `frame` only; no state is mutated.
+pub(in crate::tui) fn render_tfps(
+    frame: &mut ratatui::Frame,
+    area: ratatui::layout::Rect,
+    app: &App,
+) -> u16 {
+    use crate::tui::tfps_observe::TfpsMode;
+    let title = match &app.current_view {
+        View::TfpsObserve {
+            mode: TfpsMode::Banned,
+        } => " TFPS — banned sources ",
+        View::TfpsObserve {
+            mode: TfpsMode::Dropped,
+        } => " TFPS — dropped packets ",
+        _ => " TFPS observe ",
+    };
+    let text: &str = if app.tfps.text.is_empty() {
+        "asking tfps_ctl…"
+    } else {
+        &app.tfps.text
+    };
+
+    let total_rows = text.lines().count() as u16;
+    let viewport = area.height.saturating_sub(2);
+    let scroll = app.tfps_scroll.min(total_rows.saturating_sub(viewport));
+
+    let block = Block::default().borders(Borders::ALL).title(title);
     let paragraph = Paragraph::new(text)
         .block(block)
         .style(Style::default().fg(app.theme.foreground))

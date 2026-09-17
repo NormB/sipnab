@@ -19,6 +19,7 @@ pub mod msg_raw;
 pub mod relay_stats;
 pub mod stream_detail;
 pub mod stream_list;
+pub mod tfps_observe;
 pub(crate) mod timeline;
 
 use std::collections::HashSet;
@@ -65,11 +66,11 @@ pub use controllers::{
     CombinedDetailAction, CompareDialogsAction, ConformanceAction, DashboardAction,
     EndpointRollupAction, HelpAction, LossMapAction, MessageDiffAction, RawMessageAction,
     SdpTimelineAction, StatisticsAction, StreamDetailAction, StreamListAction, TalkersAction,
-    TimelineAction, call_flow_action, call_list_action, call_volume_action, capture_health_action,
-    carrier_metrics_action, combined_detail_action, compare_dialogs_action, conformance_action,
-    dashboard_action, endpoint_rollup_action, help_action, loss_map_action, message_diff_action,
-    raw_message_action, sdp_timeline_action, statistics_action, stream_detail_action,
-    stream_list_action, talkers_action, timeline_action,
+    TfpsObserveAction, TimelineAction, call_flow_action, call_list_action, call_volume_action,
+    capture_health_action, carrier_metrics_action, combined_detail_action, compare_dialogs_action,
+    conformance_action, dashboard_action, endpoint_rollup_action, help_action, loss_map_action,
+    message_diff_action, raw_message_action, sdp_timeline_action, statistics_action,
+    stream_detail_action, stream_list_action, talkers_action, tfps_observe_action, timeline_action,
 };
 use render::*;
 use save::*;
@@ -157,6 +158,8 @@ pub struct App {
     sdp_timeline_scroll: u16,
     /// Clamped scroll of the RFC-conformance view (`f`).
     conformance_scroll: u16,
+    /// Clamped scroll of the TFPS-observe view (`x`).
+    tfps_scroll: u16,
     /// Scroll offset for the relay-statistics view (ST8; clamped in render).
     relay_stats_scroll: u16,
     /// Selected row in the quality dashboard's worst-streams table.
@@ -259,6 +262,12 @@ pub struct App {
     /// What the relay-statistics view needs to transmit, or which ST-S4
     /// invocation refusal applies when it cannot ask (no relay, or no permit).
     relay_query: relay_stats::RelayQueryState,
+    /// TFPS-observe view cache and the ask in flight (banned sources / drops).
+    tfps: tfps_observe::TfpsCache,
+    /// The enforcing peer's `tfps_ctl` locator, for the observe view to ask.
+    /// Default (no ctl) answers "not installed"; the real one is threaded in by
+    /// [`crate::tui::state::TuiOptions::into_app`].
+    tfps_access: crate::security::tfps::TfpsLocator,
     /// The relay-stats poll interval this run was started with (ST8, C5). `Some`
     /// makes the view re-ask on the interval and label its counters `polled`.
     relay_stats_interval: Option<u64>,
@@ -423,6 +432,7 @@ impl App {
             call_volume_scroll: 0,
             sdp_timeline_scroll: 0,
             conformance_scroll: 0,
+            tfps_scroll: 0,
             relay_stats_scroll: 0,
             dashboard_selected: 0,
             stream_displayed: StreamDisplayedCache::default(),
@@ -433,6 +443,8 @@ impl App {
             call_volume: VolumeCache::default(),
             relay_stats: relay_stats::RelayStatsCache::default(),
             relay_query: relay_stats::RelayQueryState::default(),
+            tfps: tfps_observe::TfpsCache::default(),
+            tfps_access: crate::security::tfps::TfpsLocator::default(),
             relay_stats_interval: None,
             relay_stats_asked_at: None,
             dashboard_generation: None,
@@ -876,6 +888,38 @@ impl App {
             || self.relay_stats.pending.as_ref() == Some(&want);
         if !up_to_date {
             self.start_relay_stats_ask(want);
+        }
+    }
+
+    /// Drive the TFPS-observe view's off-thread ask: absorb a finished reply,
+    /// and spawn a fresh one when the shown facet no longer matches the view's.
+    ///
+    /// Separate from `sync_caches` for the same reason `drive_relay_stats` is:
+    /// the worker mutates `self` while `sync_caches` holds a store read guard.
+    fn drive_tfps(&mut self) {
+        let want = match &self.current_view {
+            View::TfpsObserve { mode } => *mode,
+            _ => return,
+        };
+        // Take a finished reply by value first, then mutate the cache.
+        let received = self.tfps.rx.as_ref().and_then(|rx| rx.try_recv().ok());
+        if let Some(reply) = received {
+            // A reply for the facet the user left is dropped; its header would
+            // be wrong.
+            if reply.mode == want {
+                self.tfps.text = reply.text;
+            }
+            self.tfps.showing = Some(reply.mode);
+            self.tfps.pending = None;
+            self.tfps.rx = None;
+        }
+        let up_to_date = self.tfps.showing == Some(want) || self.tfps.pending == Some(want);
+        if !up_to_date {
+            self.tfps.pending = Some(want);
+            self.tfps.rx = Some(crate::tui::tfps_observe::spawn_tfps_ask(
+                self.tfps_access.clone(),
+                want,
+            ));
         }
     }
 
@@ -1484,6 +1528,9 @@ impl App {
         if let Some(v) = fb.conformance_scroll {
             self.conformance_scroll = v;
         }
+        if let Some(v) = fb.tfps_scroll {
+            self.tfps_scroll = v;
+        }
         if let Some(v) = fb.relay_stats_scroll {
             self.relay_stats_scroll = v;
         }
@@ -1798,6 +1845,7 @@ pub fn run_tui_with_pause(
         // view's call/mode changed. Separate from sync_caches because the ask
         // mutates `app` while sync_caches holds a store read guard.
         app.drive_relay_stats();
+        app.drive_tfps();
         let drew = draw_frame(&mut terminal, &mut app)?;
 
         // Deferred work runs here, AFTER the frame that painted its

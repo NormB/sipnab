@@ -370,6 +370,38 @@ mod tui_state {
         );
     }
 
+    /// `x` opens the TFPS-observe view on the banned-sources facet, and `d`/`b`
+    /// switch the facet without leaving the view.
+    #[test]
+    fn x_opens_tfps_observe_and_bd_switch_facets() {
+        use sipnab::tui::tfps_observe::TfpsMode;
+        let mut app = App::new_test();
+        app.handle_key(KeyCode::Char('x'));
+        assert_eq!(
+            *app.current_view(),
+            View::TfpsObserve {
+                mode: TfpsMode::Banned,
+            },
+            "x opens the banned-sources facet"
+        );
+        app.handle_key(KeyCode::Char('d'));
+        assert_eq!(
+            *app.current_view(),
+            View::TfpsObserve {
+                mode: TfpsMode::Dropped,
+            },
+            "d switches to the drop counters"
+        );
+        app.handle_key(KeyCode::Char('b'));
+        assert_eq!(
+            *app.current_view(),
+            View::TfpsObserve {
+                mode: TfpsMode::Banned,
+            },
+            "b switches back to the banned sources"
+        );
+    }
+
     /// `?` still opens Help from an ordinary view -- the relay-stats exception
     /// does not leak.
     #[test]

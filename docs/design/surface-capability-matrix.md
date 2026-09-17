@@ -682,7 +682,7 @@ Is the enforcement peer condemning sources, and what has it dropped?
 | Surface | Detail |
 |---|---|
 | CLI | decision: the enforcement peer's own control tool is the authoritative status path, and sipnab is a passive observer that proxies it |
-| TUI | gap: a live status, banned-sources and drop-counter panel would fit the capture UI beside an enforcing peer, but none of the views provides it (PAR4) |
+| TUI | `TfpsObserve` |
 | REST | `/v1/tfps/status`, `/v1/tfps/banned` and `/v1/tfps/dropped` |
 | MCP | `tfps_status`, `tfps_banned` and `tfps_dropped` |
 

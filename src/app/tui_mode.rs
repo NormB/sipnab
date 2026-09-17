@@ -674,6 +674,9 @@ pub fn run_tui_mode(
             // The relay-statistics view's ask state (ST8): a relay + permit when
             // this run can transmit, or which invocation refusal applies.
             relay_query: build_tui_relay_query(&cli, relay_query_permit),
+            // The TFPS-observe view's locator: the same `tfps_ctl` resolution the
+            // server door uses, so the view asks the peer this run was pointed at.
+            tfps_access: cli.tfps_locator(&config),
             // C5: the view inherits the run's poll interval, showing it in the
             // header and re-asking on it.
             relay_stats_interval: cli.rtp_args.relay_stats_interval,
