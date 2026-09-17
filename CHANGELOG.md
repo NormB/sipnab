@@ -90,6 +90,14 @@ entry that carries them.
   in an event-exec environment. It now skips the malformed entry (keeping the
   stream's static payload-type clock rate), like the out-of-range payload-type
   guard beside it.
+- **Zero split, autostop, and business-hours values are rejected.** Three more
+  degenerate inputs were accepted and silently broke behavior: `--split
+  filesize:0` / `duration:0` rotated the capture on every byte or packet
+  (filling a directory with empty files); `--autostop duration:0` / `filesize:0`
+  stopped the capture immediately, so it recorded nothing; and `--business-hours
+  8-8` (a zero-width window) made the off-hours fraud check read every call as
+  off-hours, because `hour < start || hour >= end` is always true when start and
+  end are equal. Each parser now rejects the degenerate value and says why.
 
 ### Security
 

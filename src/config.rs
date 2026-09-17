@@ -955,6 +955,12 @@ pub fn parse_business_hours(spec: &str) -> Result<(u8, u8), crate::Error> {
     if start > 23 || end > 23 {
         return Err(invalid());
     }
+    if start == end {
+        return Err(crate::Error::ConfigInvalid(format!(
+            "[security] business_hours start and end must differ; \"{start}-{end}\" is a \
+             zero-width window that would treat every call as off-hours"
+        )));
+    }
     Ok((start, end))
 }
 
@@ -2335,6 +2341,18 @@ mod tests {
         assert_eq!(parse_portrange(" 100 - 200 ").unwrap(), (100, 200));
         // single-port range (start == end) is allowed
         assert_eq!(parse_portrange("5060-5060").unwrap(), (5060, 5060));
+    }
+
+    /// A zero-width business-hours window (`start == end`) is rejected: with
+    /// `start <= end` the off-hours test is `hour < start || hour >= end`,
+    /// always true when they are equal, so every call would read as off-hours.
+    #[test]
+    fn parse_business_hours_rejects_a_zero_width_window() {
+        assert!(parse_business_hours("8-8").is_err());
+        assert!(parse_business_hours("0-0").is_err());
+        // Ordinary and overnight windows still parse.
+        assert!(parse_business_hours("8-18").is_ok());
+        assert!(parse_business_hours("22-6").is_ok());
     }
 
     /// Malformed shapes, non-numeric or out-of-range ports, and start > end

@@ -1190,6 +1190,9 @@ pub fn parse_split(split: &str) -> Result<(Option<u64>, Option<std::time::Durati
     let value: u64 = parts[1]
         .parse()
         .with_context(|| format!("Invalid --split value: '{}'", parts[1]))?;
+    if value == 0 {
+        anyhow::bail!("--split {key} must be > 0, got 0 (a 0 rotates on every packet)");
+    }
 
     match key {
         "filesize" => Ok((Some(mib_to_bytes(value)), None)),
@@ -1445,6 +1448,17 @@ mod tests {
         assert!(parse_split("bogus:5").is_err());
         assert!(parse_split("filesize").is_err());
         assert!(parse_split("filesize:abc").is_err());
+    }
+
+    /// A split threshold of 0 is rejected: `filesize:0` rotates on every byte
+    /// and `duration:0` on every packet, filling a directory with empty files.
+    #[test]
+    fn parse_split_rejects_zero() {
+        assert!(parse_split("filesize:0").is_err());
+        assert!(parse_split("duration:0").is_err());
+        // A positive threshold still parses.
+        assert!(parse_split("filesize:10").is_ok());
+        assert!(parse_split("duration:60").is_ok());
     }
 
     /// The DSB body layout is `TLSK` type, LE length, data, zero padding.

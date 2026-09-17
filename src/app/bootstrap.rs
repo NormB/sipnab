@@ -2803,6 +2803,11 @@ pub(crate) fn parse_autostop(
     let value: u64 = parts[1]
         .parse()
         .map_err(|_| format!("Invalid autostop value: '{}'", parts[1]))?;
+    if value == 0 {
+        return Err(format!(
+            "autostop {key} must be > 0, got 0 (0 stops the capture immediately)"
+        ));
+    }
 
     match key {
         "duration" => Ok((Some(std::time::Duration::from_secs(value)), None)),
@@ -3985,6 +3990,16 @@ mod tests {
         assert!(parse_autostop("duration").is_err()); // missing ':'
         assert!(parse_autostop("duration:notanumber").is_err());
         assert!(parse_autostop("unknown:10").is_err()); // unknown key
+    }
+
+    /// An autostop threshold of 0 is rejected: `duration:0` stops the capture
+    /// immediately and `filesize:0` after zero bytes, so it captures nothing.
+    #[test]
+    fn parse_autostop_rejects_zero() {
+        assert!(parse_autostop("duration:0").is_err());
+        assert!(parse_autostop("filesize:0").is_err());
+        assert!(parse_autostop("duration:30").is_ok());
+        assert!(parse_autostop("filesize:100").is_ok());
     }
 
     // ── build_filter_expr ──────────────────────────────────────────────
