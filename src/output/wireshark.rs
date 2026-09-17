@@ -104,6 +104,36 @@ pub fn dsl_to_wireshark(filter: &str) -> Result<String> {
     Ok(result)
 }
 
+/// Escape a captured value for inclusion inside a Wireshark display-filter
+/// double-quoted string. Backslash and double-quote are escaped; control
+/// characters (which a display filter cannot carry, and which a Call-ID never
+/// legitimately holds) are dropped. Without this a Call-ID such as
+/// `a" || sip.method != "b` would close the string and inject filter syntax,
+/// silently turning a one-call filter into one that matches almost everything.
+pub fn escape_display_filter_value(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for ch in value.chars() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            c if c.is_control() => {}
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+/// Build a Wireshark display filter matching any of `call_ids`, escaping each
+/// value so a crafted Call-ID cannot break out of the quoted string. Empty
+/// input yields an empty filter.
+pub fn call_id_display_filter(call_ids: &[String]) -> String {
+    call_ids
+        .iter()
+        .map(|id| format!("sip.Call-ID == \"{}\"", escape_display_filter_value(id)))
+        .collect::<Vec<_>>()
+        .join(" || ")
+}
+
 /// Generate a tshark command line from capture configuration.
 ///
 /// # Arguments
@@ -171,6 +201,41 @@ fn shell_single_quote(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A Call-ID that tries to close the display-filter string and OR in a
+    /// catch-all is escaped, so the filter still matches only that call.
+    #[test]
+    fn escape_display_filter_value_neutralizes_a_quote_injection() {
+        assert_eq!(
+            escape_display_filter_value("a\" || sip.method != \"b"),
+            "a\\\" || sip.method != \\\"b"
+        );
+        // Backslash is escaped; control characters are dropped.
+        assert_eq!(escape_display_filter_value("a\\b\nc"), "a\\\\bc");
+    }
+
+    /// The Call-ID filter escapes each value, so a hostile Call-ID cannot break
+    /// out of the quoted string.
+    #[test]
+    fn call_id_display_filter_escapes_each_value() {
+        assert_eq!(
+            call_id_display_filter(&["a\" || x".to_string()]),
+            "sip.Call-ID == \"a\\\" || x\""
+        );
+    }
+
+    /// A Call-ID that tries to break out of the `-Y '...'` shell quote is
+    /// rendered as the `'\''` idiom, so the emitted command stays one -Y word
+    /// and the injected shell command is inert data, not a second command.
+    #[test]
+    fn a_tshark_command_shell_quotes_an_injecting_call_id() {
+        let filter = call_id_display_filter(&["a'; touch /tmp/pwned; echo '".to_string()]);
+        let cmd = generate_tshark_command(None, Some("in.pcap"), None, Some(&filter));
+        assert!(
+            cmd.contains("'\\''"),
+            "the single quote must be shell-escaped so it cannot end the -Y quote, got: {cmd}"
+        );
+    }
 
     /// `method` maps to `sip.Method` with the value untouched.
     #[test]

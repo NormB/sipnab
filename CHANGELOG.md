@@ -113,6 +113,17 @@ entry that carries them.
   de-registration or fabricating a shortened-grant finding. Both now skip the
   quoted display name first, like `extract_tag` and `extract_uri_host_port`
   already do — RFC 3261 §25.1 admits `<`, `>` and `;` inside a `quoted-string`.
+- **`--wireshark` / `--tshark-filter` escape the Call-ID before it reaches a
+  filter or a shell.** Both options built a Wireshark display filter — and the
+  `tshark -r … -Y '…'` command line — by interpolating the raw Call-ID with no
+  escaping. A captured Call-ID is an unrestricted header value, so one containing
+  `"` could close the filter string and OR in a catch-all (silently widening a
+  one-call filter to match nearly everything), and one containing `'` could break
+  out of the `-Y '…'` shell quote, so an operator who copy-pasted the emitted
+  command ran attacker-supplied shell commands. The live path now escapes each
+  Call-ID for the display-filter string and shell-quotes the whole command
+  through the same helpers the MCP tool already used; the filename is
+  shell-quoted too.
 
 ## [0.5.177] - 2026-09-17
 

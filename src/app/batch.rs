@@ -3823,11 +3823,13 @@ impl BatchRunner {
             if call_ids.is_empty() {
                 eprintln!("No SIP dialogs to generate Wireshark filter for.");
             } else {
-                let filter_parts: Vec<String> = call_ids
-                    .iter()
-                    .map(|id| format!("sip.Call-ID == \"{}\"", id))
-                    .collect();
-                println!("{}", filter_parts.join(" || "));
+                // Escape each Call-ID before it lands inside the display
+                // filter's quoted string — a raw Call-ID could close the string
+                // and OR in a catch-all that silently matches almost everything.
+                println!(
+                    "{}",
+                    crate::output::wireshark::call_id_display_filter(&call_ids)
+                );
             }
         }
 
@@ -3842,7 +3844,18 @@ impl BatchRunner {
             if let Some(ref tshark_expr) = cli.output_args.tshark_filter {
                 // User provided a custom tshark filter expression.
                 match &input_file {
-                    Ok(file) => println!("tshark -r {file} -Y '{tshark_expr}' -V"),
+                    // Shell-quote the file name and the filter: an operator
+                    // pastes this command, so a name or expression carrying a
+                    // single quote must not break out of the `-Y '…'` word.
+                    Ok(file) => println!(
+                        "{}",
+                        crate::output::wireshark::generate_tshark_command(
+                            None,
+                            Some(file.as_str()),
+                            None,
+                            Some(tshark_expr.as_str()),
+                        )
+                    ),
                     Err(e) => tracing::error!("Cannot emit --tshark-filter command: {e}"),
                 }
             } else if let Ok(file) = &input_file {
@@ -3851,11 +3864,20 @@ impl BatchRunner {
                 let ds_guard = dialog_store.read();
                 let call_ids: Vec<String> = ds_guard.iter().map(|d| d.call_id.clone()).collect();
                 if !call_ids.is_empty() {
-                    let filter_parts: Vec<String> = call_ids
-                        .iter()
-                        .map(|id| format!("sip.Call-ID == \"{}\"", id))
-                        .collect();
-                    println!("tshark -r {} -Y '{}' -V", file, filter_parts.join(" || "));
+                    // Escape the Call-IDs into the display filter, then
+                    // shell-quote the whole command so a crafted Call-ID neither
+                    // breaks the filter nor injects a shell command a copy-paste
+                    // would run.
+                    let filter = crate::output::wireshark::call_id_display_filter(&call_ids);
+                    println!(
+                        "{}",
+                        crate::output::wireshark::generate_tshark_command(
+                            None,
+                            Some(file.as_str()),
+                            None,
+                            Some(&filter),
+                        )
+                    );
                 }
             }
         }
