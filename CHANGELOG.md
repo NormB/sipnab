@@ -73,6 +73,14 @@ entry that carries them.
   finding then carried the moment the process happened to run, breaking the
   evidence timeline a reader reconstructs and the `iter_findings` since-cursor
   that filters on it. Findings now carry the capture time the event fired at.
+- **An answered call's outcome is its 2xx, not a later failure.**
+  `final_status_code` took the numeric maximum across every final INVITE
+  response, so a call answered with a 200 that then saw a re-INVITE 488 (or a
+  forked leg's higher non-2xx) reported 488 — an answered, in-call dialog
+  counted as Failed. That corrupted per-endpoint failure counts and the group
+  ASR/NER rates, which read the same field. It now prefers a 2xx when one
+  exists, matching the documented rule that a 2xx is the outcome of an answered
+  call; the highest failure code stands only when no 2xx was seen.
 
 ### Security
 

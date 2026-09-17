@@ -277,6 +277,7 @@ impl SipDialog {
         // non-auth max is the answer when any non-challenge final exists;
         // otherwise (challenged but never authenticated) the challenge itself
         // is the outcome.
+        let mut max_2xx: Option<u16> = None;
         let mut max_non_auth: Option<u16> = None;
         let mut max_any: Option<u16> = None;
         for m in &self.messages {
@@ -294,8 +295,16 @@ impl SipDialog {
             if code != 401 && code != 407 {
                 max_non_auth = max_non_auth.max(Some(code));
             }
+            if (200..300).contains(&code) {
+                max_2xx = max_2xx.max(Some(code));
+            }
         }
-        max_non_auth.or(max_any)
+        // A 2xx means the call was answered — that is its outcome, even when a
+        // later re-INVITE or a forked leg carries a higher code. Taking the
+        // plain max reported that higher failure code and counted an answered,
+        // in-call dialog as Failed. Only when no 2xx exists does the highest
+        // failure code stand; a call only ever challenged reports the challenge.
+        max_2xx.or(max_non_auth).or(max_any)
     }
 
     /// Create a new dialog from the first message in a conversation.
@@ -1028,6 +1037,26 @@ mod tests {
             dialog.state,
             DialogState::InCall,
             "a 487 after a 2xx must not un-answer an established call"
+        );
+    }
+
+    /// An answered call's outcome is its 2xx, not a later re-INVITE (or forked)
+    /// failure. `final_status_code` took the numeric MAX across every final
+    /// INVITE response, so a 200 followed by a 488 reported 488 — an answered,
+    /// in-call dialog counted as Failed, corrupting endpoint failure rates and
+    /// group ASR/NER. The doc says the 2xx is the outcome of an answered call.
+    #[test]
+    fn final_status_code_prefers_a_2xx_over_a_later_failure() {
+        let invite = make_invite();
+        let mut dialog = SipDialog::new(&invite).expect("dialog");
+        dialog.messages.push(make_response(200, "OK", "INVITE"));
+        dialog
+            .messages
+            .push(make_response(488, "Not Acceptable Here", "INVITE"));
+        assert_eq!(
+            dialog.final_status_code(),
+            Some(200),
+            "an answered call reports its 2xx, not a later re-INVITE/forked failure"
         );
     }
 
