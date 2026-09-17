@@ -1046,10 +1046,13 @@ impl RtpStream {
         // Detect packet loss from sequence number gaps.
         // Handle wraparound: expected next is last_seq + 1 (mod 65536).
         let expected = self.last_seq.wrapping_add(1);
-        if header.sequence != expected {
-            // Calculate gap accounting for wraparound
+        if header.sequence == expected {
+            // In order: advance the loss cursor.
+            self.last_seq = header.sequence;
+        } else {
+            // Gap accounting, with wraparound: a small forward gap (< 32768) is
+            // presumed loss; a large one is a packet that arrived out of order.
             let gap = header.sequence.wrapping_sub(expected) as u64;
-            // Sanity check: if gap is huge (>= 32768), it's likely reordering, not loss
             if gap < 32768 {
                 self.lost_packets += gap;
                 self.interval_lost += gap;
@@ -1062,9 +1065,24 @@ impl RtpStream {
                     self.lost_sequences
                         .push_back(expected.wrapping_add(offset as u16));
                 }
+                self.last_seq = header.sequence;
+            } else {
+                // A reordered packet: its sequence is behind the cursor. Do NOT
+                // rewind `last_seq` — doing so made the next in-order packet
+                // read as a fresh gap and double-counted the loss. If this
+                // sequence had been presumed lost, it actually arrived: credit
+                // it back, best-effort, while it is still in the bounded log.
+                if let Some(pos) = self
+                    .lost_sequences
+                    .iter()
+                    .position(|&s| s == header.sequence)
+                {
+                    self.lost_sequences.remove(pos);
+                    self.lost_packets = self.lost_packets.saturating_sub(1);
+                    self.interval_lost = self.interval_lost.saturating_sub(1);
+                }
             }
         }
-        self.last_seq = header.sequence;
 
         // Comfort Noise (PT=13) tracking for silence detection.
         //
@@ -1487,6 +1505,33 @@ mod tests {
     /// Fixed-epoch test clock: `secs` seconds past 1_700_000_000 UTC.
     pub(super) fn ts(secs: i64) -> DateTime<Utc> {
         DateTime::from_timestamp(1_700_000_000 + secs, 0).expect("valid timestamp")
+    }
+
+    /// A reordered packet is not counted as loss. `1, 3, 2, 4` arrives with
+    /// nothing actually lost, but the loss cursor rewound on the out-of-order
+    /// `2`, so the following `4` read as a fresh gap and a sequence was
+    /// double-counted (loss of 2 for a stream that lost nothing). The cursor
+    /// now only moves forward, and a presumed-lost sequence that arrives late
+    /// is credited back.
+    #[test]
+    fn a_reordered_packet_is_not_counted_as_loss() {
+        let mut s = RtpStream::new(make_key(), &make_header(1, 0, 0), ts(0));
+        s.update(&make_header(3, 0, 0), ts(1), 160);
+        s.update(&make_header(2, 0, 0), ts(2), 160);
+        s.update(&make_header(4, 0, 0), ts(3), 160);
+        assert_eq!(
+            s.lost_packets, 0,
+            "1,3,2,4 is a reorder of four consecutive packets — none were lost"
+        );
+    }
+
+    /// A genuine gap is still counted: after seq 1, seq 4 arrives and 2 and 3
+    /// never do, which is two lost.
+    #[test]
+    fn a_real_sequence_gap_is_still_counted_as_loss() {
+        let mut s = RtpStream::new(make_key(), &make_header(1, 0, 0), ts(0));
+        s.update(&make_header(4, 0, 0), ts(1), 160);
+        assert_eq!(s.lost_packets, 2, "a gap of seq 2 and 3 is two lost");
     }
 
     /// Burst/gap analysis must bound its window to the sequence range the

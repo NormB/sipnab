@@ -98,6 +98,14 @@ entry that carries them.
   8-8` (a zero-width window) made the off-hours fraud check read every call as
   off-hours, because `hour < start || hour >= end` is always true when start and
   end are equal. Each parser now rejects the degenerate value and says why.
+- **Reordered RTP packets are no longer counted as loss.** The loss cursor
+  (`last_seq`) advanced on every packet, including one that arrived out of
+  order, so a reorder like `1, 3, 2, 4` rewound the cursor on the `2` and made
+  the following `4` read as a fresh gap — reporting two lost packets for a
+  stream that lost nothing, inflating the loss percentage and the MOS penalty.
+  The cursor now only moves forward, and a sequence that was presumed lost but
+  arrives late (while still in the bounded loss log) is credited back. A genuine
+  sequence gap is still counted.
 
 ### Security
 
