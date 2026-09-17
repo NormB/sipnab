@@ -71,13 +71,19 @@ struct MimePart {
 /// Returns `None` when no boundary parameter is present.
 fn extract_boundary(content_type: &str) -> Option<String> {
     content_type.split(';').find_map(|param| {
-        let param = param.trim();
-        // Try quoted form first to avoid greedily matching the opening quote
-        param
-            .strip_prefix("boundary=\"")
+        // RFC 2045 §5.1: parameter names are case-insensitive, so match the
+        // `boundary` name without regard to case (a `BOUNDARY=` was missed),
+        // then strip a quoted value.
+        let (name, value) = param.trim().split_once('=')?;
+        if !name.trim().eq_ignore_ascii_case("boundary") {
+            return None;
+        }
+        let value = value.trim();
+        let value = value
+            .strip_prefix('"')
             .and_then(|s| s.strip_suffix('"'))
-            .or_else(|| param.strip_prefix("boundary="))
-            .map(|b| b.to_string())
+            .unwrap_or(value);
+        Some(value.to_string())
     })
 }
 
@@ -444,6 +450,20 @@ mod tests {
     fn test_extract_boundary_quoted() {
         let ct = r#"multipart/mixed; boundary="unique-Boundary""#;
         assert_eq!(extract_boundary(ct), Some("unique-Boundary".to_string()));
+    }
+
+    /// The `boundary` parameter name is case-insensitive (RFC 2045 §5.1), so an
+    /// uppercase or mixed-case `BOUNDARY=` is still recognized.
+    #[test]
+    fn test_extract_boundary_case_insensitive() {
+        assert_eq!(
+            extract_boundary("multipart/mixed; BOUNDARY=upperCase"),
+            Some("upperCase".to_string())
+        );
+        assert_eq!(
+            extract_boundary(r#"multipart/mixed; Boundary="Mixed-Case""#),
+            Some("Mixed-Case".to_string())
+        );
     }
 
     /// A full SDP+metadata multipart body yields session, participant, and

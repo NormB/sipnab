@@ -456,12 +456,31 @@ fn extract_display_name(header_value: &str) -> Option<String> {
 
     // Quoted display name: "Name" <sip:...>
     if let Some(after_quote) = trimmed.strip_prefix('"') {
-        let end_quote = after_quote.find('"')?;
-        let name = &after_quote[..end_quote];
-        if name.is_empty() {
+        // Scan for the closing quote, honoring `\"` / `\\` quoted-pairs and
+        // unescaping them. A naive search for the first `"` truncated a name
+        // like "O\"Brien" at the escaped quote (RFC 3261 quoted-string admits
+        // `\"` as a literal quote).
+        let mut name = String::new();
+        let mut chars = after_quote.chars();
+        let mut closed = false;
+        while let Some(c) = chars.next() {
+            match c {
+                '\\' => {
+                    if let Some(escaped) = chars.next() {
+                        name.push(escaped);
+                    }
+                }
+                '"' => {
+                    closed = true;
+                    break;
+                }
+                other => name.push(other),
+            }
+        }
+        if !closed || name.is_empty() {
             return None;
         }
-        return Some(name.to_string());
+        return Some(name);
     }
 
     // Bare token display name: Name <sip:...>
@@ -893,6 +912,22 @@ mod tests {
         assert_eq!(
             extract_uri_user(r#""Alice" <sip:1001@example.com>;tag=abc"#),
             Some("1001".to_string())
+        );
+    }
+
+    /// A display name with an escaped quote (`\"`) is not truncated at the
+    /// escaped quote, and the quoted-pair is unescaped. RFC 3261 quoted-string
+    /// admits `\"` as a literal quote inside the name.
+    #[test]
+    fn extract_display_name_handles_an_escaped_quote() {
+        assert_eq!(
+            extract_display_name(r#""O\"Brien" <sip:ob@example.com>"#),
+            Some("O\"Brien".to_string())
+        );
+        // A plain quoted name is unchanged.
+        assert_eq!(
+            extract_display_name(r#""Alice" <sip:a@example.com>"#),
+            Some("Alice".to_string())
         );
     }
 

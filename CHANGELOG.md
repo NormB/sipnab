@@ -124,6 +124,18 @@ entry that carries them.
   that was not capped, so a stream of datagrams from spoofed pairs grew it
   without limit. It now evicts to a fixed cap (`MAX_CANDIDATES`, 8192), like the
   STUN/TURN/DNS stores.
+- **A truncated message with a body separator but no body sets `parse_error`.**
+  The Content-Length check ran only when body bytes followed the separator, so a
+  message ending right at the `\r\n\r\n` while declaring `Content-Length: 100` —
+  a body cut off entirely — read as clean. The check now runs whenever a
+  separator is present.
+- **A display name's escaped quote is no longer truncated.**
+  `extract_display_name` stopped at the first `"`, so `"O\"Brien"` became `O\`;
+  it now honors `\"` and `\\` quoted-pairs and unescapes them (RFC 3261
+  quoted-string).
+- **The SIPREC `boundary` parameter name is matched case-insensitively.**
+  `BOUNDARY=` was missed (RFC 2045 §5.1 makes parameter names case-insensitive),
+  so the multipart body did not split and the recording metadata was lost.
 
 ### Security
 

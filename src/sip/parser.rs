@@ -684,8 +684,12 @@ fn parse_headers_and_body(
     }
 
     // Extract body
-    let body = if found_body_separator && pos < data.len() {
-        let body_bytes = &data[pos..];
+    let body = if found_body_separator {
+        // Body bytes after the separator, possibly empty. A separator with no
+        // body still has a Content-Length to honor: a message truncated right
+        // at the separator promises a body it does not carry, and the old
+        // `pos < data.len()` guard skipped that case, leaving parse_error unset.
+        let body_bytes = data.get(pos..).unwrap_or(&[]);
 
         // Validate against Content-Length if present. A header that is present
         // but non-numeric must not be silently treated as absent: flag it via
@@ -708,8 +712,14 @@ fn parse_headers_and_body(
             if body_bytes.len() < expected_len {
                 parse_error = true;
             }
-            // Take at most expected_len bytes
-            Some(pos..pos + body_bytes.len().min(expected_len))
+            if body_bytes.is_empty() {
+                None
+            } else {
+                // Take at most expected_len bytes
+                Some(pos..pos + body_bytes.len().min(expected_len))
+            }
+        } else if body_bytes.is_empty() {
+            None
         } else {
             Some(pos..data.len())
         }
@@ -1860,6 +1870,32 @@ Content-Length: 0\r\n\
 
         assert!(sip.parse_error);
         assert_eq!(sip.body[..], b"short"[..]);
+    }
+
+    /// A body separator with ZERO body bytes but a non-zero Content-Length is
+    /// truncated and must set parse_error. The short-body check skipped the
+    /// case where there were no body bytes at all (`pos == data.len()`).
+    #[test]
+    fn empty_body_shorter_than_content_length_sets_parse_error() {
+        let msg = build_sip(
+            "INVITE sip:bob@example.com SIP/2.0",
+            &["Content-Length: 100"],
+            b"",
+        );
+        let sip = parse_sip(
+            &msg,
+            ts(),
+            localhost_v4(),
+            localhost_v4(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("should parse with error flag");
+        assert!(
+            sip.parse_error,
+            "a separator with zero body but Content-Length: 100 is truncated"
+        );
     }
 
     // ── Security regression tests ────────────────────────────────────
