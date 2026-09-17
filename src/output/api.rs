@@ -1054,7 +1054,12 @@ fn check_auth(state: &ApiState, headers: &HeaderMap, required_scope: &str) -> Re
 
     let auth_str = auth_header.to_str().map_err(|_| StatusCode::UNAUTHORIZED)?;
 
-    if let Some(token) = auth_str.strip_prefix("Bearer ")
+    // RFC 7235 section 2.1 makes the auth-scheme case-insensitive, so match
+    // `Bearer` without regard to case (a spec-legal `bearer <token>` was
+    // rejected before). The token is everything after the first space, exactly
+    // as `strip_prefix("Bearer ")` took it.
+    if let Some((scheme, token)) = auth_str.split_once(' ')
+        && scheme.eq_ignore_ascii_case("Bearer")
         && state
             .verifier
             .verify(token, chrono::Utc::now().timestamp(), required_scope)
@@ -9088,6 +9093,23 @@ mod tests {
         let app = build_router(state);
 
         let req = test_request_with_header("/v1/dialogs", "Authorization", "Bearer secret-key");
+
+        let resp = app.oneshot(req).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    /// The auth-scheme is case-insensitive (RFC 7235 section 2.1), so a
+    /// lowercase `bearer` prefix on an otherwise-correct key authenticates.
+    /// The scheme match compared `Bearer` case-sensitively, so a spec-legal
+    /// `bearer <token>` client (the standalone metrics server's Basic check is
+    /// already case-insensitive) was rejected with 401.
+    #[tokio::test]
+    async fn auth_lowercase_bearer_scheme_returns_200() {
+        let state = make_state_with_key("secret-key");
+        populate_dialogs(&state);
+        let app = build_router(state);
+
+        let req = test_request_with_header("/v1/dialogs", "Authorization", "bearer secret-key");
 
         let resp = app.oneshot(req).await.expect("oneshot");
         assert_eq!(resp.status(), StatusCode::OK);

@@ -154,14 +154,13 @@ impl DigestLeakDetector {
 
         for header_value in auth_headers {
             // Skip non-Digest schemes
-            let trimmed = header_value.trim();
-            if !trimmed.starts_with("Digest") && !trimmed.starts_with("digest") {
+            if !is_digest_scheme(header_value) {
                 continue;
             }
 
             // Check for weak algorithm (MD5)
             if let Some(algo) = extract_param(header_value, "algorithm") {
-                if algo.eq_ignore_ascii_case("MD5") {
+                if algo.eq_ignore_ascii_case("MD5") || algo.eq_ignore_ascii_case("MD5-sess") {
                     alerts.push(DigestAlert {
                         vulnerability: DigestVulnerability::WeakAlgorithm,
                         detail: format!("challenge uses algorithm={algo} (should be SHA-256+)"),
@@ -227,8 +226,7 @@ impl DigestLeakDetector {
             .collect();
 
         for header_value in auth_headers {
-            let trimmed = header_value.trim();
-            if !trimmed.starts_with("Digest") && !trimmed.starts_with("digest") {
+            if !is_digest_scheme(header_value) {
                 continue;
             }
 
@@ -253,27 +251,74 @@ impl Default for DigestLeakDetector {
     }
 }
 
+/// Whether `header`'s auth-scheme is `Digest`.
+///
+/// The scheme is the first whitespace-delimited token, compared without regard
+/// to case: RFC 7235 section 2.1 makes the auth-scheme case-insensitive, so
+/// `Digest`, `digest` and `DIGEST` are one scheme. Matching only `Digest` and
+/// `digest` let an uppercase spelling slip past every check below.
+fn is_digest_scheme(header: &str) -> bool {
+    header
+        .trim_start()
+        .split(|c: char| c.is_ascii_whitespace())
+        .next()
+        .is_some_and(|scheme| scheme.eq_ignore_ascii_case("Digest"))
+}
+
 /// Extract a parameter value from a Digest authentication header.
 ///
 /// Handles both quoted (`param="value"`) and unquoted (`param=value`) forms.
-/// Parameter matching is case-insensitive.
+/// Parameter matching is case-insensitive and only at a real auth-param
+/// boundary: the list after the scheme is split on commas that are not inside
+/// a quoted string, so a `,` or an `=` inside a quoted value does not split a
+/// parameter, and a name is matched against a whole `name=value` token rather
+/// than by substring. A naive substring search reported `qop` present when the
+/// text only appeared inside `realm="qop=x"`, and matched `nonce` inside
+/// `cnonce` -- both hid a genuinely missing parameter.
 fn extract_param<'a>(header: &'a str, param_name: &str) -> Option<&'a str> {
-    let lower_header = header.to_ascii_lowercase();
-    let search = format!("{}=", param_name.to_ascii_lowercase());
+    // The parameters follow the scheme token, which ends at the first
+    // whitespace. A header with no parameters (scheme only) yields nothing.
+    let params = header
+        .trim_start()
+        .split_once(|c: char| c.is_ascii_whitespace())?
+        .1;
 
-    let idx = lower_header.find(&search)?;
-    let value_start = idx + search.len();
-    let remainder = &header[value_start..];
+    // Split on commas outside quotes. Commas and quotes are ASCII, so every
+    // slice boundary lands on a char boundary even when a value is UTF-8.
+    let bytes = params.as_bytes();
+    let mut in_quotes = false;
+    let mut seg_start = 0usize;
+    for (i, &b) in bytes.iter().enumerate() {
+        match b {
+            b'"' => in_quotes = !in_quotes,
+            b',' if !in_quotes => {
+                if let Some(v) = param_value(&params[seg_start..i], param_name) {
+                    return Some(v);
+                }
+                seg_start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    param_value(&params[seg_start..], param_name)
+}
 
-    if let Some(after_quote) = remainder.strip_prefix('"') {
-        // Quoted value
+/// The value of one `name=value` auth-param segment, when its name matches
+/// `wanted` case-insensitively. A quoted value is returned without its
+/// surrounding quotes; an unquoted value is trimmed; an empty value is `None`.
+fn param_value<'a>(segment: &'a str, wanted: &str) -> Option<&'a str> {
+    let (name, value) = segment.split_once('=')?;
+    if !name.trim().eq_ignore_ascii_case(wanted) {
+        return None;
+    }
+    let value = value.trim();
+    if let Some(after_quote) = value.strip_prefix('"') {
         let end_quote = after_quote.find('"')?;
         Some(&after_quote[..end_quote])
+    } else if value.is_empty() {
+        None
     } else {
-        // Unquoted value — ends at comma, space, or end-of-string
-        let end = remainder.find([',', ' ', '\t']).unwrap_or(remainder.len());
-        let value = remainder[..end].trim();
-        if value.is_empty() { None } else { Some(value) }
+        Some(value)
     }
 }
 
@@ -667,6 +712,158 @@ mod tests {
     fn extract_param_missing() {
         let header = r#"Digest realm="example.com""#;
         assert_eq!(extract_param(header, "qop"), None);
+    }
+
+    /// Build a 401 challenge carrying an arbitrary challenge header line.
+    fn parse_challenge_www(www_authenticate: &str) -> SipMessage {
+        let raw = build_sip(
+            "SIP/2.0 401 Unauthorized",
+            &[
+                "From: <sip:alice@example.com>;tag=t1",
+                "To: <sip:alice@example.com>;tag=t2",
+                "Call-ID: sd-challenge@example.com",
+                "CSeq: 1 REGISTER",
+                www_authenticate,
+                "Content-Length: 0",
+            ],
+            b"",
+        );
+        parse_sip(
+            &raw,
+            ts(),
+            localhost(),
+            localhost(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("parse 401")
+    }
+
+    /// Build a REGISTER carrying an arbitrary Authorization header line.
+    fn parse_register_auth(authorization: &str) -> SipMessage {
+        let raw = build_sip(
+            "REGISTER sip:registrar@example.com SIP/2.0",
+            &[
+                "From: <sip:alice@example.com>;tag=t1",
+                "To: <sip:alice@example.com>",
+                "Call-ID: sd-auth@example.com",
+                "CSeq: 2 REGISTER",
+                authorization,
+                "Content-Length: 0",
+            ],
+            b"",
+        );
+        parse_sip(
+            &raw,
+            ts(),
+            localhost(),
+            localhost(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("parse REGISTER")
+    }
+
+    /// The auth-scheme is case-insensitive (RFC 7235 section 2.1), so an
+    /// uppercase `DIGEST` challenge must still be analyzed. The scheme guard
+    /// only matched `Digest`/`digest`, so a challenge that spelled the scheme
+    /// any other way slipped past every check -- a one-character evasion of the
+    /// whole digest-leak detector.
+    #[test]
+    fn an_uppercase_digest_scheme_is_still_analyzed() {
+        let mut detector = DigestLeakDetector::new();
+        let msg = parse_challenge_www(
+            r#"WWW-Authenticate: DIGEST realm="example.com", nonce="n1", algorithm=MD5"#,
+        );
+        let alerts = detector.check(&msg);
+        assert!(
+            alerts
+                .iter()
+                .any(|a| a.vulnerability == DigestVulnerability::WeakAlgorithm),
+            "an uppercase DIGEST scheme must still be analyzed (RFC 7235 \
+             makes the scheme case-insensitive), got: {alerts:?}"
+        );
+    }
+
+    /// `MD5-sess` is MD5-based and just as weak as `MD5`, but the weak-algorithm
+    /// check compared only against the literal `MD5`, so `algorithm=MD5-sess`
+    /// passed as if it were strong.
+    #[test]
+    fn md5_sess_is_flagged_as_a_weak_algorithm() {
+        let mut detector = DigestLeakDetector::new();
+        let msg = parse_challenge_www(
+            r#"WWW-Authenticate: Digest realm="example.com", nonce="n2", algorithm=MD5-sess, qop="auth""#,
+        );
+        let alerts = detector.check(&msg);
+        assert!(
+            alerts
+                .iter()
+                .any(|a| a.vulnerability == DigestVulnerability::WeakAlgorithm),
+            "MD5-sess is a weak algorithm and must be flagged, got: {alerts:?}"
+        );
+    }
+
+    /// A `qop=` sitting inside a quoted `realm` value is not the challenge's
+    /// `qop` parameter. The old substring search found it and reported a
+    /// healthy `qop`, hiding a genuinely missing one -- the downgrade the
+    /// MissingQop check exists to catch.
+    #[test]
+    fn a_qop_inside_a_realm_value_does_not_hide_a_missing_qop() {
+        let mut detector = DigestLeakDetector::new();
+        let msg = parse_challenge_www(
+            r#"WWW-Authenticate: Digest realm="qop=bad", nonce="n3", algorithm=SHA-256"#,
+        );
+        let alerts = detector.check(&msg);
+        assert!(
+            alerts
+                .iter()
+                .any(|a| a.vulnerability == DigestVulnerability::MissingQop),
+            "the challenge has no real qop, so MissingQop must fire even though \
+             the realm value contains the text 'qop=', got: {alerts:?}"
+        );
+    }
+
+    /// A `cnonce=` sitting inside a quoted `realm` value is not the response's
+    /// `cnonce`. The old substring search found it and reported a present
+    /// cnonce, hiding the missing one the MissingCnonce check exists to catch.
+    #[test]
+    fn a_cnonce_inside_a_realm_value_does_not_hide_a_missing_cnonce() {
+        let mut detector = DigestLeakDetector::new();
+        let msg = parse_register_auth(
+            r#"Authorization: Digest username="alice", realm="cnonce=fake", nonce="n4", qop=auth, response="aabbcc""#,
+        );
+        let alerts = detector.check(&msg);
+        assert!(
+            alerts
+                .iter()
+                .any(|a| a.vulnerability == DigestVulnerability::MissingCnonce),
+            "the response has qop but no real cnonce, so MissingCnonce must fire \
+             even though the realm value contains the text 'cnonce=', got: {alerts:?}"
+        );
+    }
+
+    /// `extract_param` matches a parameter only at a real token boundary: not
+    /// inside a quoted value, and not as a substring of a longer name
+    /// (`nonce` must not be found inside `cnonce`).
+    #[test]
+    fn extract_param_matches_only_at_a_token_boundary() {
+        // `qop=` inside a quoted realm value is not a qop parameter.
+        assert_eq!(
+            extract_param(r#"Digest realm="qop=bad", nonce="n""#, "qop"),
+            None
+        );
+        // A real cnonce is returned, not the decoy inside the realm value.
+        assert_eq!(
+            extract_param(r#"Digest realm="cnonce=x", cnonce="real""#, "cnonce"),
+            Some("real")
+        );
+        // `nonce` is not matched inside `cnonce`.
+        assert_eq!(
+            extract_param(r#"Digest cnonce="c", nonce="thenonce""#, "nonce"),
+            Some("thenonce")
+        );
     }
 
     /// The reuse decision as a function of its two inputs: no previous

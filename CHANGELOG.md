@@ -23,6 +23,24 @@ entry that carries them.
   now requires the hex body to be ASCII, and both duration parsers use
   `checked_mul` and reject an overflowing value. Each input flows straight from
   the command line or a config file, so a graceful rejection replaces the abort.
+- **The REST API accepts a lowercase `bearer` authorization scheme.** RFC 7235
+  makes the HTTP auth-scheme case-insensitive, but `check_auth` matched `Bearer`
+  case-sensitively, so a spec-legal `Authorization: bearer <token>` was rejected
+  with 401 — while the standalone metrics server's Basic check was already
+  case-insensitive. The scheme now matches without regard to case.
+
+### Security
+
+- **The digest-leak detector no longer misses case- and boundary-based
+  evasions.** Three gaps let a 401/407 challenge or an Authorization response
+  slip past detection: the scheme guard matched only `Digest`/`digest`, so an
+  uppercase `DIGEST` evaded every check; the weak-algorithm test flagged only a
+  literal `MD5`, missing the equally weak `MD5-sess`; and the parameter
+  extractor searched by substring, so a `qop=` inside `realm="qop=x"` reported a
+  healthy `qop` (hiding a genuinely missing one that signals a downgrade), and
+  `nonce` matched inside `cnonce`. The scheme match is now case-insensitive per
+  RFC 7235, `MD5-sess` is flagged, and parameters are parsed at real auth-param
+  boundaries with quoted values respected.
 
 ## [0.5.177] - 2026-09-17
 
