@@ -48,6 +48,13 @@ entry that carries them.
   negative value fired it on every stream, despite the flag documenting a
   1.0-5.0 MOS scale. `NamesConfig` now validates at startup like every other
   section, and `--quality-threshold` rejects a non-finite or out-of-range value.
+- **Opening a new capture in the TUI drops the prior time-window filter.**
+  `reset_for_load` cleared the DSL filter (`active_filter` and its text) but left
+  the `After`/`Before` time bounds set, so loading a second capture hid every
+  dialog outside a window that belonged to the previous file — while the status
+  bar, which renders only the filter text, showed no active filter and offered
+  no hint why rows were missing. It now clears both bounds, matching the
+  canonical `clear_active_filter`.
 
 ### Security
 

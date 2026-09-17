@@ -545,7 +545,7 @@ pub(in crate::tui) const FILTER_METHODS: [&str; 10] = [
 /// Number of text input fields in the filter dialog.
 pub(in crate::tui) const FILTER_TEXT_FIELD_COUNT: usize = 7;
 
-/// Total focusable items: 5 text fields + 10 method checkboxes + the
+/// Total focusable items: 7 text fields + 10 method checkboxes + the
 /// "All" master checkbox + 2 buttons.
 pub(in crate::tui) const FILTER_ITEM_COUNT: usize =
     FILTER_TEXT_FIELD_COUNT + FILTER_METHODS.len() + 3;

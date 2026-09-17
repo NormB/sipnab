@@ -348,6 +348,13 @@ fn reset_for_load(app: &mut App) {
     app.stream_list = StreamListState::new();
     app.active_filter = None;
     app.active_filter_text.clear();
+    // Drop the time-window half of the filter too. Leaving it set hid the new
+    // capture's dialogs outside a window that belonged to the previous file,
+    // with the status bar (which shows only `active_filter_text`) reporting no
+    // filter at all. The swap is recorded separately, so this nulls the bounds
+    // directly rather than through `clear_active_filter`.
+    app.active_time_after = None;
+    app.active_time_before = None;
     app.flow.selected = 0;
     app.flow.scroll = 0;
     app.flow.cached_msg_count = 0;
@@ -748,6 +755,30 @@ mod tests {
         let message = outcome.message.clone();
         apply_load_outcome(app, outcome);
         message
+    }
+
+    /// Opening a new capture drops the WHOLE prior filter, including a time
+    /// window. `reset_for_load` cleared `active_filter` and
+    /// `active_filter_text` but left `active_time_after`/`active_time_before`
+    /// set, so the new file's dialogs outside the stale window were hidden
+    /// while the status bar — which renders only `active_filter_text` — showed
+    /// no active filter. The canonical `clear_active_filter` clears all four.
+    #[test]
+    fn reset_for_load_clears_the_active_time_window() {
+        let mut app = App::new_test();
+        app.active_time_after = Some(chrono::Utc::now());
+        app.active_time_before = Some(chrono::Utc::now());
+        app.active_filter_text = "after 2026-07-07T08:00:00Z | before ...".to_string();
+
+        reset_for_load(&mut app);
+
+        assert!(
+            app.active_time_after.is_none() && app.active_time_before.is_none(),
+            "opening a new capture must drop the prior time window, but the bounds \
+             survived: after={:?} before={:?}",
+            app.active_time_after,
+            app.active_time_before
+        );
     }
 
     /// A capture whose packet record carries an out-of-range microsecond
