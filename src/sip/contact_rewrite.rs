@@ -153,13 +153,12 @@ pub fn contact_host(header: &str) -> Option<&str> {
     if value.starts_with('*') {
         return None;
     }
-    // The URI is inside angle brackets when a display name is present, and
-    // bare otherwise. Take the bracketed form first: a display name may itself
-    // contain something that looks like a URI.
-    let uri = match value.split_once('<') {
-        Some((_, rest)) => rest.split_once('>').map(|(u, _)| u)?,
-        None => value.split(';').next()?,
-    };
+    // Locate the addr-spec through the shared, decoy-resistant `addr_spec`,
+    // which skips a quoted display name before finding the angle brackets. The
+    // old `split_once('<')` took the FIRST `<`, so a bracketed decoy URI inside
+    // the display name (`"<sip:x@decoy>" <sip:real@host>`) won the host and let
+    // a NATed endpoint suppress the contact-rewrite / NAT detection.
+    let uri = crate::sip::message::addr_spec(value);
     let after_scheme = uri.split_once(':').map(|(_, r)| r).unwrap_or(uri);
     // A `user@host` split, when there is a user part.
     let hostport = after_scheme
@@ -232,6 +231,19 @@ mod tests {
         ] {
             assert_eq!(contact_host(header), want, "header {header:?}");
         }
+    }
+
+    /// A bracketed decoy URI inside a quoted display name does not win the
+    /// host. `split_once('<')` took the first `<`, which is inside the quotes,
+    /// so a NATed endpoint could read its public decoy back and suppress the
+    /// contact-rewrite / NAT detection. RFC 3261 §25.1 admits `<` and `>` in a
+    /// `quoted-string`; the addr-spec after the display name is the real one.
+    #[test]
+    fn a_bracketed_decoy_in_the_display_name_does_not_win_the_host() {
+        assert_eq!(
+            contact_host("\"<sip:x@203.0.113.9>\" <sip:alice@192.168.1.50>"),
+            Some("192.168.1.50")
+        );
     }
 
     /// An address is recovered from a host that carries a port or brackets.

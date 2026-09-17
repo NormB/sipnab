@@ -340,7 +340,7 @@ impl SipMessage {
 /// An unterminated quote yields `""`, not the remainder. A header whose display
 /// name never closes has no parseable addr-spec, and returning the tail would
 /// resume scanning inside the region this exists to skip.
-fn skip_quoted_display_name(header_value: &str) -> &str {
+pub(crate) fn skip_quoted_display_name(header_value: &str) -> &str {
     let trimmed = header_value.trim_start();
     let Some(rest) = trimmed.strip_prefix('"') else {
         return trimmed;
@@ -372,7 +372,7 @@ fn skip_quoted_display_name(header_value: &str) -> &str {
 /// scanning for `sip:` anywhere — and drifted apart exactly as duplicated logic
 /// does: the user side was hardened against a decoy and the host side was not,
 /// thirty lines below it. One locator is the fix; a second scanner was the bug.
-fn addr_spec(header_value: &str) -> &str {
+pub(crate) fn addr_spec(header_value: &str) -> &str {
     let value = skip_quoted_display_name(header_value);
     match value.find('<') {
         Some(lt) => {

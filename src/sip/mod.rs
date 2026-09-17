@@ -102,6 +102,11 @@ pub(crate) fn registration_expiry(msg: &SipMessage) -> Option<u32> {
         // finding manufactured out of a parameter that says nothing about the
         // binding. §10.2.1.1 puts the binding lifetime on the HEADER
         // parameter.
+        //
+        // Skip a quoted display name first: RFC 3261 §25.1 admits `>` and `;`
+        // inside a `quoted-string`, so `find('>')` on the raw value could match
+        // a `>` inside the display name and read a decoy `expires` from it.
+        let contact = crate::sip::message::skip_quoted_display_name(contact);
         let params = match contact.find('>') {
             Some(close) => &contact[close + 1..],
             // A bare addr-spec has no brackets; RFC 3261 §20.10 then forbids
@@ -180,6 +185,17 @@ mod tests {
     #[test]
     fn a_uri_expires_parameter_is_not_the_binding_lifetime() {
         let msg = contact_msg("<sip:alice@10.0.0.1;expires=60;transport=udp>;expires=3600");
+        assert_eq!(registration_expiry(&msg), Some(3600));
+    }
+
+    /// A quoted display name that contains `>;expires=…` is not the header
+    /// parameter. `find('>')` matched the `>` inside the quotes, so a crafted
+    /// display name reported the decoy `expires` — masking a de-registration
+    /// (`;expires=0`) as a normal registration, or fabricating a shortened
+    /// grant. RFC 3261 §25.1 admits `>` and `;` inside a `quoted-string`.
+    #[test]
+    fn a_quoted_display_name_does_not_steal_the_registration_expiry() {
+        let msg = contact_msg(r#""x>;expires=99;y" <sip:alice@10.0.0.1>;expires=3600"#);
         assert_eq!(registration_expiry(&msg), Some(3600));
     }
 

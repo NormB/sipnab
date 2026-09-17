@@ -86,6 +86,16 @@ entry that carries them.
   `nonce` matched inside `cnonce`. The scheme match is now case-insensitive per
   RFC 7235, `MD5-sess` is flagged, and parameters are parsed at real auth-param
   boundaries with quoted values respected.
+- **A quoted display name can no longer steal the addr-spec.** Two header
+  helpers located the SIP URI by hand instead of through the shared,
+  decoy-resistant `addr_spec`, so a bracketed or `>`-bearing quoted display name
+  won: `contact_host` (NAT / contact-rewrite detection) read the host out of a
+  decoy URI inside `"<sip:x@public>" <sip:real@private>`, letting a NATed
+  endpoint suppress the detection; and `registration_expiry` read a decoy
+  `expires` out of `"x>;expires=99" <sip:…>;expires=3600`, masking a
+  de-registration or fabricating a shortened-grant finding. Both now skip the
+  quoted display name first, like `extract_tag` and `extract_uri_host_port`
+  already do — RFC 3261 §25.1 admits `<`, `>` and `;` inside a `quoted-string`.
 
 ## [0.5.177] - 2026-09-17
 
