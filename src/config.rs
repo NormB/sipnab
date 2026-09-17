@@ -1794,7 +1794,11 @@ pub fn parse_color(s: &str) -> Option<ratatui::style::Color> {
         "gray" | "grey" => Some(Color::Gray),
         "dark_gray" | "dark_grey" | "darkgray" | "darkgrey" => Some(Color::DarkGray),
         "reset" | "default" => Some(Color::Reset),
-        hex if hex.starts_with('#') && hex.len() == 7 => {
+        // `hex.len()` is a BYTE count, so a 7-byte value can still be
+        // non-ASCII (`#` + a 3-byte char + 3 bytes). `is_ascii()` keeps the
+        // byte slices below on char boundaries; without it `&hex[1..3]` could
+        // land inside a multibyte char and panic on operator-typed input.
+        hex if hex.starts_with('#') && hex.len() == 7 && hex.is_ascii() => {
             let r = u8::from_str_radix(&hex[1..3], 16).ok()?;
             let g = u8::from_str_radix(&hex[3..5], 16).ok()?;
             let b = u8::from_str_radix(&hex[5..7], 16).ok()?;
@@ -2855,6 +2859,34 @@ filter = "/"
         assert_eq!(parse_color("reset"), Some(Color::Reset));
         assert_eq!(parse_color("#ff8800"), Some(Color::Rgb(255, 136, 0)));
         assert_eq!(parse_color("bogus"), None);
+    }
+
+    /// A 7-BYTE `#`-string can be non-ASCII, and `hex.len() == 7` counts BYTES:
+    /// `#€uvw` is `#`(1) + `€`(3) + `uvw`(3) = 7 bytes, so it passed the guard,
+    /// then `&hex[1..3]` sliced through the middle of `€` and panicked "byte
+    /// index 3 is not a char boundary" — on a value an operator merely typed
+    /// into `[theme]`. A multibyte 7-byte value must reject cleanly (like any
+    /// other unknown color), never panic. The second case panics at the
+    /// `&hex[3..5]` slice instead; the third confirms real hex still parses.
+    #[cfg(feature = "tui")]
+    #[test]
+    fn parse_color_multibyte_seven_bytes_rejects_without_panicking() {
+        use ratatui::style::Color;
+        assert_eq!(
+            parse_color("#€uvw"),
+            None,
+            "'€' at byte 1: [1..3] is mid-char"
+        );
+        assert_eq!(
+            parse_color("#uv€w"),
+            None,
+            "'€' at byte 3: [3..5] is mid-char"
+        );
+        assert_eq!(
+            parse_color("#ff8800"),
+            Some(Color::Rgb(255, 136, 0)),
+            "real ASCII hex is unaffected"
+        );
     }
 
     /// `parse_keycode` maps chars, function keys, and special names;

@@ -126,10 +126,13 @@ fn parse_duration(s: &str) -> Option<Duration> {
     let num_part = &s[..s.len() - suffix.len_utf8()];
     let value: u64 = num_part.parse().ok()?;
 
+    // `value * 60` / `value * 3600` panicked in debug and wrapped in release on
+    // a window/cooldown large enough to overflow `u64` seconds; these fields
+    // come from operator-supplied `--alert-rule` text, so reject the overflow.
     match suffix {
         's' => Some(Duration::from_secs(value)),
-        'm' => Some(Duration::from_secs(value * 60)),
-        'h' => Some(Duration::from_secs(value * 3600)),
+        'm' => value.checked_mul(60).map(Duration::from_secs),
+        'h' => value.checked_mul(3600).map(Duration::from_secs),
         _ => None,
     }
 }
@@ -1068,6 +1071,22 @@ mod tests {
         assert_eq!(parse_duration("10µ"), None);
         assert_eq!(parse_duration("5秒"), None);
         assert_eq!(parse_duration("µ"), None);
+    }
+
+    /// A window/cooldown whose value overflows `u64` seconds once the `m`/`h`
+    /// multiplier is applied is rejected (`None`), not a panic. `value * 60`
+    /// panicked in debug and wrapped in release; `--alert-rule` window and
+    /// cooldown fields flow here from operator-supplied text.
+    #[test]
+    fn parse_duration_overflow_is_rejected_not_panic() {
+        assert_eq!(parse_duration("18446744073709551615m"), None);
+        assert_eq!(parse_duration("18446744073709551615h"), None);
+        // The largest hour count that still fits keeps working.
+        assert_eq!(
+            parse_duration("5124095576030431h"),
+            Some(Duration::from_secs(18_446_744_073_709_551_600))
+        );
+        assert_eq!(parse_duration("5124095576030432h"), None);
     }
 
     /// A basic rule parses name/threshold/window and defaults cooldown to 2x.

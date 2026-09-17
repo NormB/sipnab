@@ -8,6 +8,22 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Fixed
+
+- **Config and duration parsers reject malformed input instead of panicking.**
+  Three parsers aborted the process on adversarial or mistyped input rather than
+  returning an error: `parse_color` sliced a seven-byte string on a fixed byte
+  index, so a value like `#€uvw` (a `#` plus a three-byte character) panicked on
+  a UTF-8 char boundary; and both copies of `parse_duration` (the capture
+  `--duration` flag and the `--alert-rule` window/cooldown fields) computed
+  `value * multiplier` unchecked, so a value large enough to overflow `u64`
+  seconds panicked in a debug build and wrapped in a release build. `parse_color`
+  now requires the hex body to be ASCII, and both duration parsers use
+  `checked_mul` and reject an overflowing value. Each input flows straight from
+  the command line or a config file, so a graceful rejection replaces the abort.
+
 ## [0.5.177] - 2026-09-17
 
 ### Added

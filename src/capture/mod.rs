@@ -1397,7 +1397,14 @@ pub fn parse_duration(s: &str) -> Result<Duration> {
         .parse()
         .with_context(|| format!("Invalid duration value: '{num_str}'"))?;
 
-    Ok(Duration::from_secs(value * multiplier))
+    // `value * multiplier` panicked in debug and wrapped in release on a value
+    // large enough to overflow `u64` seconds (e.g. `18446744073709551615m`).
+    // `--duration` takes this string straight from the command line, so reject
+    // the overflow instead of aborting.
+    let secs = value
+        .checked_mul(multiplier)
+        .with_context(|| format!("Duration too large: '{s}'"))?;
+    Ok(Duration::from_secs(secs))
 }
 
 /// Unit tests for duration parsing, TCP SIP framing, and the
@@ -1431,6 +1438,26 @@ mod tests {
         assert!(parse_duration("").is_err());
         assert!(parse_duration("abc").is_err());
         assert!(parse_duration("5x").is_err());
+    }
+
+    /// A duration whose value overflows `u64` seconds once the suffix
+    /// multiplier is applied is rejected, not a panic. `value * multiplier`
+    /// panicked in debug and wrapped in release; `--duration` takes this
+    /// string straight from the command line, so an operator typo (or a
+    /// hostile config) must not abort the process.
+    #[test]
+    fn parse_duration_overflow_is_rejected_not_panic() {
+        // u64::MAX minutes/hours both overflow the *60 / *3600 multiply.
+        assert!(parse_duration("18446744073709551615m").is_err());
+        assert!(parse_duration("18446744073709551615h").is_err());
+        // The largest hour count that still fits (u64::MAX / 3600, floored)
+        // must keep working — the guard rejects overflow, not large values.
+        assert_eq!(
+            parse_duration("5124095576030431h").unwrap(),
+            Duration::from_secs(18_446_744_073_709_551_600)
+        );
+        // One hour more overflows and is rejected.
+        assert!(parse_duration("5124095576030432h").is_err());
     }
 
     // ── TCP SIP framing (SNB-0008) ──────────────────────────────────
