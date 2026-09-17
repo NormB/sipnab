@@ -663,7 +663,13 @@ impl AlertEngine {
         // Sanitize attacker-controlled values for log output (M3)
         let sanitized_detail = sanitize_log_value(detail);
 
-        let fired_at = chrono::Utc::now();
+        // Capture time, not wall-clock. Offline a whole capture elapses in
+        // milliseconds of wall time, so `Utc::now()` would stamp every finding
+        // (and the `--alert-json` line below) with the replay moment, breaking
+        // the evidence timeline a reader reconstructs and the `iter_findings`
+        // since-cursor. The rate logic above already runs on `now` for the
+        // same reason.
+        let fired_at = now;
 
         // Phase 8.3 — store the finding in the ring buffer (after cooldown,
         // before any logging/syslog/exec) so deduplicated firings are
@@ -1167,6 +1173,30 @@ mod tests {
 
         let second = engine.fire("test", test_ip(), "second alert", at(0));
         assert!(!second, "second alert within cooldown should be suppressed");
+    }
+
+    /// A finding is stamped with CAPTURE time, not wall-clock. Offline a whole
+    /// capture elapses in milliseconds of wall time, so `Utc::now()` stamped
+    /// every finding with the replay moment — breaking the evidence timeline a
+    /// reader reconstructs and the `iter_findings` since-cursor, which filters
+    /// on the timestamp. The rate logic already runs on the capture-time `now`.
+    #[test]
+    fn a_finding_is_stamped_with_capture_time_not_wall_clock() {
+        let mut engine = AlertEngine::new(vec![], None);
+        engine.set_findings_capacity(10);
+        assert!(engine.fire("scanner", test_ip(), "probe", at(1000)));
+        let findings = engine.iter_findings(&[], None, 10);
+        assert_eq!(
+            findings.len(),
+            1,
+            "the firing should have stored one finding"
+        );
+        assert_eq!(
+            findings[0].timestamp,
+            at(1000),
+            "a finding must carry the capture time it fired at, not the wall-clock \
+             moment the process happened to run"
+        );
     }
 
     /// Different source IPs have independent cooldowns.

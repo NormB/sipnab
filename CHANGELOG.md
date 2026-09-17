@@ -66,6 +66,13 @@ entry that carries them.
   header value is unrestricted) without the response-level note that every
   sibling appends to mark returned identifiers as untrusted capture data. The
   note is now attached.
+- **Security findings are stamped with capture time, not wall-clock.** The alert
+  engine measures its rate windows in capture time so an offline replay behaves
+  as the live capture did, but it stamped each finding's timestamp — and the
+  `--alert-json` line — with `Utc::now()` instead. On a replayed pcap every
+  finding then carried the moment the process happened to run, breaking the
+  evidence timeline a reader reconstructs and the `iter_findings` since-cursor
+  that filters on it. Findings now carry the capture time the event fired at.
 
 ### Security
 
