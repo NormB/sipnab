@@ -189,6 +189,7 @@ fn dispatch_view_key(app: &mut App, key: KeyEvent) {
         View::EndpointRollup { .. } => handle_endpoint_rollup_key(app, key),
         View::CaptureHealth => handle_capture_health_key(app, key),
         View::CallVolume => handle_call_volume_key(app, key),
+        View::SdpTimeline { .. } => handle_sdp_timeline_key(app, key),
         View::RelayStats { .. } => handle_relay_stats_key(app, key),
         View::BpfFilter => handle_bpf_filter_key(app, key),
         View::QualityDashboard => dashboard::handle_dashboard_key(app, key),
@@ -1028,6 +1029,82 @@ pub(in crate::tui) fn handle_call_volume_key(app: &mut App, key: KeyEvent) {
     }
 }
 
+/// Everything the SDP offer/answer timeline view can do for a single key press.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SdpTimelineAction {
+    /// Esc, the quit key, or `o` — close the timeline and return to the list.
+    Close,
+    /// Scroll the timeline up one line.
+    ScrollUp,
+    /// Scroll the timeline down one line.
+    ScrollDown,
+    /// Scroll the timeline up 20 lines.
+    PageUp,
+    /// Scroll the timeline down 20 lines.
+    PageDown,
+    /// Jump to the top of the timeline.
+    ScrollTop,
+    /// Jump to the bottom (the render pass clamps to the content height).
+    ScrollBottom,
+}
+
+/// Pure key→action mapping for the SDP offer/answer timeline view (keymap-aware).
+///
+/// # Arguments
+/// * `km` - the active keymap; the rebindable quit key is honored.
+/// * `key` - the key event whose code is matched against the bindings.
+///
+/// # Returns
+/// The mapped `SdpTimelineAction`, or `None` when the key is not bound here.
+pub fn sdp_timeline_action(km: &Keymap, key: KeyEvent) -> Option<SdpTimelineAction> {
+    use SdpTimelineAction::*;
+    Some(match key.code {
+        k if k == KeyCode::Esc || k == km.quit || k == KeyCode::Char('o') => Close,
+        KeyCode::Up | KeyCode::Char('k') => ScrollUp,
+        KeyCode::Down | KeyCode::Char('j') => ScrollDown,
+        KeyCode::PageUp => PageUp,
+        KeyCode::PageDown => PageDown,
+        KeyCode::Home => ScrollTop,
+        KeyCode::End => ScrollBottom,
+        _ => return None,
+    })
+}
+
+/// Handle keys in the SDP offer/answer timeline view: map, then execute.
+///
+/// # Arguments
+/// * `app` - the application state to mutate.
+/// * `key` - the key event, mapped via `sdp_timeline_action`.
+///
+/// # Side effects
+/// Scroll actions move `app.sdp_timeline_scroll`; `Close` returns to the call
+/// list. Unbound keys are ignored.
+pub(in crate::tui) fn handle_sdp_timeline_key(app: &mut App, key: KeyEvent) {
+    let Some(action) = sdp_timeline_action(&app.keymap, key) else {
+        return;
+    };
+    match action {
+        SdpTimelineAction::Close => {
+            app.current_view = View::CallList;
+        }
+        SdpTimelineAction::ScrollUp => {
+            app.sdp_timeline_scroll = app.sdp_timeline_scroll.saturating_sub(1);
+        }
+        SdpTimelineAction::ScrollDown => {
+            app.sdp_timeline_scroll = app.sdp_timeline_scroll.saturating_add(1);
+        }
+        SdpTimelineAction::PageUp => {
+            app.sdp_timeline_scroll = app.sdp_timeline_scroll.saturating_sub(20);
+        }
+        SdpTimelineAction::PageDown => {
+            app.sdp_timeline_scroll = app.sdp_timeline_scroll.saturating_add(20);
+        }
+        SdpTimelineAction::ScrollTop => app.sdp_timeline_scroll = 0,
+        // Clamped to the content height by the render pass.
+        SdpTimelineAction::ScrollBottom => app.sdp_timeline_scroll = u16::MAX,
+    }
+}
+
 /// Everything the relay-statistics view can do for a single key press (ST8).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RelayStatsAction {
@@ -1282,6 +1359,13 @@ pub(in crate::tui) fn handle_mouse_event(app: &mut App, kind: crossterm::event::
                 app.call_volume_scroll.saturating_add(3)
             } else {
                 app.call_volume_scroll.saturating_sub(3)
+            };
+        }
+        View::SdpTimeline { .. } => {
+            app.sdp_timeline_scroll = if down {
+                app.sdp_timeline_scroll.saturating_add(3)
+            } else {
+                app.sdp_timeline_scroll.saturating_sub(3)
             };
         }
         View::RelayStats { .. } => {

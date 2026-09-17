@@ -12,6 +12,16 @@ entry that carries them.
 
 ### Added
 
+- **SDP offer/answer timeline TUI view (PAR4).** A new `SdpTimeline` view, opened
+  with `o` on the selected call, distills the call's SDP negotiation: each offer
+  and answer in order, its codecs, media anchor and directionality, and any
+  mid-call event — hold, resume, codec change, T.38 switch, a moved anchor, a
+  transfer. `RawMessage` showed only the raw SDP; this is the distilled view a
+  human debugging mid-call renegotiation reaches for. It reads the dialog's
+  `sdp_timeline`, the same field the MCP `get_sdp_timeline` tool and the JSON
+  export read, so the surfaces agree on the negotiation. The text builder takes
+  the exchange slice as an argument, so it is pure and unit-tested on a
+  constructed timeline. Closes the SDP-timeline TUI gap, leaving 19 named gaps.
 - **Call-volume histogram TUI view (PAR4).** A new `CallVolume` view, opened
   with `b` from the call list, draws dialogs-per-time-bucket as a text
   histogram, one bar per bucket scaled against the busiest, with empty intervals

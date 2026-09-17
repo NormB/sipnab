@@ -96,6 +96,8 @@ pub enum CallListAction {
     OpenCaptureHealth,
     /// `b` — open the call-volume histogram: dialogs per time bucket, as bars.
     OpenCallVolume,
+    /// `o` — open the SDP offer/answer timeline of the selected call.
+    OpenSdpTimeline,
     /// `S` — open the relay-statistics view for the relay's globals (ST8, C1).
     OpenRelayStats,
     /// `B` — show the full BPF capture-filter expression (status line 2
@@ -166,6 +168,7 @@ pub fn call_list_action(km: &Keymap, key: KeyEvent) -> Option<CallListAction> {
         KeyCode::Char('e') => OpenEndpoint,
         KeyCode::Char('h') => OpenCaptureHealth,
         KeyCode::Char('b') => OpenCallVolume,
+        KeyCode::Char('o') => OpenSdpTimeline,
         KeyCode::Char('S') => OpenRelayStats,
         KeyCode::Char('B') => OpenBpfFilter,
         KeyCode::Char('D') => OpenDashboard,
@@ -371,6 +374,12 @@ fn execute_call_list_action(app: &mut App, action: CallListAction) {
         CallListAction::OpenCallVolume => {
             app.call_volume_scroll = 0;
             app.current_view = View::CallVolume;
+        }
+        CallListAction::OpenSdpTimeline => {
+            if let Some(call_id) = get_selected_call_id(app) {
+                app.sdp_timeline_scroll = 0;
+                app.current_view = View::SdpTimeline { call_id };
+            }
         }
         CallListAction::OpenRelayStats => {
             app.relay_stats_scroll = 0;

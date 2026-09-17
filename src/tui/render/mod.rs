@@ -57,6 +57,8 @@ pub(in crate::tui) struct RenderFeedback {
     pub(in crate::tui) capture_health_scroll: Option<u16>,
     /// Clamped scroll of the call-volume histogram view.
     pub(in crate::tui) call_volume_scroll: Option<u16>,
+    /// Clamped scroll of the SDP offer/answer timeline view.
+    pub(in crate::tui) sdp_timeline_scroll: Option<u16>,
     /// Clamped scroll of the relay-statistics view (ST8).
     pub(in crate::tui) relay_stats_scroll: Option<u16>,
     /// Content-clamped scroll of the full-BPF-filter popup (`B`). Only the
@@ -527,6 +529,9 @@ pub(in crate::tui) fn render_app(
         }
         View::CallVolume => {
             fb.call_volume_scroll = Some(render_call_volume(frame, main_area, app, ds));
+        }
+        View::SdpTimeline { call_id } => {
+            fb.sdp_timeline_scroll = Some(render_sdp_timeline(frame, main_area, app, ds, call_id));
         }
         View::RelayStats { .. } => {
             fb.relay_stats_scroll = Some(render_relay_stats(frame, main_area, app));
@@ -1125,6 +1130,116 @@ pub(in crate::tui) fn endpoint_text(
         }
     }
     out
+}
+
+/// A short label for a mid-call SDP event, for the timeline's event column.
+fn sdp_event_label(e: &crate::sip::sdp_timeline::SdpEvent) -> String {
+    use crate::sip::sdp_timeline::SdpEvent;
+    match e {
+        SdpEvent::Hold => "on hold".to_string(),
+        SdpEvent::Resume => "resumed".to_string(),
+        SdpEvent::CodecChange => "codec change".to_string(),
+        SdpEvent::T38Switch => "switched to T.38 fax".to_string(),
+        SdpEvent::MediaAnchorChange => "media anchor moved".to_string(),
+        SdpEvent::Transfer { target } => match target {
+            Some(t) => format!("transfer to {t}"),
+            None => "transfer (no Refer-To)".to_string(),
+        },
+        // Exhaustive within this crate: a new SdpEvent variant should make this
+        // fail to compile so the timeline learns to label it, rather than fall
+        // into a generic arm silently.
+    }
+}
+
+/// Build the SDP offer/answer timeline for a dialog: each offer and answer in
+/// order, with its codecs, media anchor and mode, and any mid-call event (hold,
+/// resume, codec change, T.38, a moved anchor, a transfer) — the distilled view
+/// of what `RawMessage` shows only as raw SDP. Reads the `sdp_timeline` the MCP
+/// `get_sdp_timeline` tool and the JSON export read, taking the slice as an
+/// argument so the conversion is pure.
+///
+/// STUB — filled in after the failing test.
+pub(in crate::tui) fn sdp_timeline_text(
+    exchanges: &[crate::sip::sdp_timeline::SdpExchange],
+) -> String {
+    use crate::sip::sdp_timeline::OfferAnswer;
+    use std::fmt::Write as _;
+
+    let mut out = String::new();
+    let _ = writeln!(out, "SDP offer/answer timeline");
+    let _ = writeln!(out);
+    if exchanges.is_empty() {
+        let _ = writeln!(out, "  No SDP offers or answers in this call.");
+        return out;
+    }
+    for x in exchanges {
+        let dir = match x.direction {
+            OfferAnswer::Offer => "OFFER ",
+            OfferAnswer::Answer => "ANSWER",
+        };
+        let media = if x.is_t38 {
+            "T.38 fax".to_string()
+        } else if x.codecs.is_empty() {
+            "—".to_string()
+        } else {
+            x.codecs.join(",")
+        };
+        let addr = format!(
+            "{}:{}",
+            x.media_addr.as_deref().unwrap_or("—"),
+            x.media_port
+                .map_or_else(|| "—".to_string(), |p| p.to_string()),
+        );
+        let event = x
+            .event
+            .as_ref()
+            .map_or_else(String::new, |e| format!("   ← {}", sdp_event_label(e)));
+        let _ = writeln!(
+            out,
+            "  {}  {dir}  {media:<20}  {addr:<22}  {}{event}",
+            x.timestamp.format("%H:%M:%S%.3f"),
+            x.mode,
+        );
+    }
+    out
+}
+
+/// Render a dialog's SDP offer/answer timeline. Parameterized by the Call-ID on
+/// the view, so — like the message-diff and compare views — it renders straight
+/// from the store each frame; a dialog's `sdp_timeline` is a short vector, not a
+/// whole-store scan. Returns the clamped scroll.
+///
+/// # Side effects
+/// Draws to `frame` only; no state is mutated.
+pub(in crate::tui) fn render_sdp_timeline(
+    frame: &mut ratatui::Frame,
+    area: ratatui::layout::Rect,
+    app: &App,
+    ds: &DialogStore,
+    call_id: &str,
+) -> u16 {
+    let text = match ds.get(call_id) {
+        Some(d) => sdp_timeline_text(&d.sdp_timeline),
+        None => {
+            format!("SDP offer/answer timeline\n\n  Call {call_id} is no longer in the capture.\n")
+        }
+    };
+    let total_rows = text.lines().count() as u16;
+    let viewport = area.height.saturating_sub(2);
+    let scroll = app
+        .sdp_timeline_scroll
+        .min(total_rows.saturating_sub(viewport));
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" SDP timeline ");
+    let paragraph = Paragraph::new(text)
+        .block(block)
+        .style(Style::default().fg(app.theme.foreground))
+        .scroll((scroll, 0));
+
+    frame.render_widget(paragraph, area);
+    scroll
 }
 
 /// Render the two-call comparison view. Parameterized by the two Call-IDs on
@@ -2229,6 +2344,68 @@ mod tests {
         assert!(
             !methods_row.contains("(differs)"),
             "the matching methods row is not flagged: {methods_row}"
+        );
+    }
+
+    /// The SDP timeline renders each offer and answer with its codecs and media
+    /// anchor, and flags a mid-call event. A three-exchange fixture — an offer,
+    /// its answer, then a re-offer that puts the call on hold — exercises the
+    /// direction labels, the codec and anchor columns, and the event marker.
+    #[test]
+    fn sdp_timeline_text_shows_offers_answers_and_mid_call_events() {
+        use crate::sip::sdp_timeline::{OfferAnswer, SdpEvent, SdpExchange};
+        use chrono::TimeZone;
+
+        let t = |s: u32| chrono::Utc.with_ymd_and_hms(2024, 6, 15, 12, 0, s).unwrap();
+        let exchanges = vec![
+            SdpExchange {
+                timestamp: t(0),
+                direction: OfferAnswer::Offer,
+                codecs: vec!["PCMU".to_string(), "PCMA".to_string()],
+                media_addr: Some("10.0.0.1".to_string()),
+                media_port: Some(5004),
+                mode: "sendrecv".to_string(),
+                is_t38: false,
+                event: None,
+            },
+            SdpExchange {
+                timestamp: t(1),
+                direction: OfferAnswer::Answer,
+                codecs: vec!["PCMU".to_string()],
+                media_addr: Some("10.0.0.9".to_string()),
+                media_port: Some(6000),
+                mode: "sendrecv".to_string(),
+                is_t38: false,
+                event: None,
+            },
+            SdpExchange {
+                timestamp: t(30),
+                direction: OfferAnswer::Offer,
+                codecs: vec!["PCMU".to_string()],
+                media_addr: Some("10.0.0.1".to_string()),
+                media_port: Some(5004),
+                mode: "sendonly".to_string(),
+                is_t38: false,
+                event: Some(SdpEvent::Hold),
+            },
+        ];
+
+        let text = sdp_timeline_text(&exchanges);
+        assert!(
+            text.contains("OFFER") && text.contains("ANSWER"),
+            "both the offer and the answer are labeled:\n{text}"
+        );
+        assert!(
+            text.contains("PCMU,PCMA"),
+            "the offer's codec set renders:\n{text}"
+        );
+        assert!(
+            text.contains("10.0.0.9:6000"),
+            "the answer's media anchor renders:\n{text}"
+        );
+        assert!(
+            text.contains("on hold"),
+            "the mid-call hold event is flagged:\n{text}"
         );
     }
 

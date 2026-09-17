@@ -646,18 +646,21 @@ fn every_tui_key_the_homepage_names_is_bound() {
 
 /// The key scan is case-sensitive, which is the whole point of it.
 ///
-/// The live page said `o` opens a capture while the binding is `O`. A scan that
-/// folded case would have certified that, so this proves it does not.
+/// It once mattered live: the page said `o` opens a capture while the binding
+/// was `O`, and a scan that folded case would have certified that. Lowercase
+/// `o` is a binding of its own now (the SDP timeline), so this proves
+/// case-sensitivity against `j` (bound, the scroll-down key) versus `J` (not) —
+/// a pair that still differs.
 #[test]
 fn the_tui_key_scan_distinguishes_case() {
     let tui = tui_sources();
     assert!(
-        tui.contains("Char('O')"),
-        "src/tui no longer binds `O`; this gate's fixture is gone"
+        tui.contains("Char('j')"),
+        "src/tui no longer binds `j`; this gate's fixture is gone"
     );
     assert!(
-        !tui.contains("Char('o')"),
-        "src/tui now binds lowercase `o` as well — this gate proved case \
+        !tui.contains("Char('J')"),
+        "src/tui now binds uppercase `J` as well — this gate proved case \
          mattered by relying on exactly one of the pair existing, so rewrite it \
          against a pair that still differs rather than deleting it"
     );

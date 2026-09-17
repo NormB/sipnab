@@ -48,6 +48,7 @@ CALL LIST:
   e                Endpoint rollup (everything this call's source did)
   h                Capture health (dropped/undecodable/NAT counters)
   b                Call volume histogram (calls per time bucket)
+  o                SDP offer/answer timeline of the selected call
   S                Relay statistics view (asks the relay)
   B                Edit the BPF capture filter (append)
   D                Quality dashboard (live MOS/jitter/loss)
@@ -141,6 +142,12 @@ CALL VOLUME HISTOGRAM:
   PgUp/PgDn       Page scroll
   Home/End         Jump to top/bottom
   Esc, q, b        Close
+
+SDP OFFER/ANSWER TIMELINE:
+  ↑/↓, j/k       Scroll
+  PgUp/PgDn       Page scroll
+  Home/End         Jump to top/bottom
+  Esc, q, o        Close
 
 RELAY STATISTICS VIEW (S asks the relay directly):
   ?                Names the relay knows (what to ask for)

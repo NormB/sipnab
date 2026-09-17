@@ -1288,6 +1288,14 @@ pub enum View {
     /// histogram — the same buckets `GET /v1/timeline` and the MCP `timeline`
     /// tool report. Opened with `b` from the call list.
     CallVolume,
+    /// A dialog's SDP offer/answer timeline: each offer and answer, its codecs,
+    /// media anchor and mode, and mid-call events — the distilled view of what
+    /// `RawMessage` shows as raw SDP, the same `sdp_timeline` the MCP
+    /// `get_sdp_timeline` tool reads. Opened with `o` on the selected call.
+    SdpTimeline {
+        /// Call-ID of the dialog whose SDP timeline is shown.
+        call_id: String,
+    },
     /// The live relay's own statistics, asked over its control socket (ST8).
     ///
     /// Distinct from [`View::Statistics`], which is about what THIS capture saw:

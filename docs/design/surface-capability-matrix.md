@@ -110,7 +110,7 @@ What were the SDP offer and answer exchanges, in order?
 | Surface | Detail |
 |---|---|
 | CLI | `--json-dialogs` |
-| TUI | gap: a human debugging mid-call renegotiation has no distilled offer and answer view, only raw SDP inside `RawMessage` (PAR4) |
+| TUI | `SdpTimeline` |
 | REST | `/v1/dialogs/{call_id}` |
 | MCP | `get_sdp_timeline` |
 

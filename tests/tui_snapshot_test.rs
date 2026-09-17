@@ -1113,6 +1113,28 @@ mod tui_snapshots {
         insta::assert_snapshot!(output);
     }
 
+    /// Snapshot: the SDP offer/answer timeline, opened with `o` on the selected
+    /// call. The fixture's calls carry no SDP, so it renders the empty-state
+    /// line — proving the view opens and renders; the rich rendering is covered
+    /// by the `sdp_timeline_text` unit test (PAR4).
+    #[test]
+    fn sdp_timeline_view() {
+        let backend = TestBackend::new(80, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = test_app_with_dialogs();
+        app.handle_key(crossterm::event::KeyCode::Char('o')); // open SDP timeline
+        assert!(
+            matches!(app.current_view(), sipnab::tui::View::SdpTimeline { .. }),
+            "expected the SDP timeline, got {:?}",
+            app.current_view()
+        );
+
+        terminal.draw(|frame| app.render(frame)).unwrap();
+
+        let output = buffer_to_string(&terminal);
+        insta::assert_snapshot!(output);
+    }
+
     /// Snapshot: the F7 filter popup over an empty call list.
     #[test]
     fn filter_dialog_popup() {
