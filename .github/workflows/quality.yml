@@ -661,6 +661,16 @@ jobs:
         # e2e/ rather than at the root. The `./` says which tree it means.
         run: npx playwright test ./tests/accessibility.spec.js
 
+      # The site's journey specs, against the same build and server. They sat
+      # in e2e/tests/ running nowhere until 2026-09-17, when both turned out to
+      # be red on main: the homepage had grown a demo tab and an outcome tab,
+      # and a version check could not match a version written with a `v`.
+      # site_journey_test's every_e2e_spec_runs_in_the_quality_workflow fails a
+      # spec that no step names.
+      - name: Browser journeys (smoke, demo disclosure)
+        working-directory: e2e
+        run: npx playwright test ./tests/smoke.spec.js ./tests/demo-disclosure.spec.js
+
       # A failed accessibility run should say WHICH element on WHICH page, and
       # the trace is how that is read without reproducing the run locally.
       - name: Upload Playwright traces

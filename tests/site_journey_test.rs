@@ -8481,6 +8481,65 @@ fn the_site_csp_grants_no_unsafe_inline_and_no_new_origin() {
 /// mismatch does not fail: it produces a measurement of an unstyled page.
 const SITE_GATE_PORT: &str = "1111";
 
+/// Every browser spec under e2e/tests/ is run by a step in quality.yml.
+///
+/// `smoke.spec.js` and `demo-disclosure.spec.js` were written, passed, and
+/// then ran nowhere but the machine of whoever remembered them. By 2026-09-17
+/// both were red on main and nothing had noticed: the homepage had grown a
+/// twelfth demo tab and a fifth outcome tab while the disclosure spec still
+/// counted eleven and four, and the smoke spec looked for a bare `0.x.y` on a
+/// homepage that writes every version as `v0.5.x` -- which a `\b0\.` pattern
+/// can never match. A spec that no workflow runs is a claim about the site
+/// that nobody checks.
+#[test]
+fn every_e2e_spec_runs_in_the_quality_workflow() {
+    let dir = repo().join("e2e/tests");
+    let mut specs: Vec<String> = std::fs::read_dir(&dir)
+        .unwrap_or_else(|e| panic!("read {}: {e}", dir.display()))
+        .map(|e| {
+            e.expect("dir entry")
+                .file_name()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .filter(|n| n.ends_with(".spec.js"))
+        .collect();
+    specs.sort();
+    assert!(
+        specs.len() >= 4,
+        "found only {} specs in e2e/tests ({specs:?}); accessibility, download \
+         layout, smoke and demo disclosure exist, so the listing is broken",
+        specs.len()
+    );
+
+    let yaml = read(".github/workflows/quality.yml");
+    let run_lines: Vec<&str> = yaml
+        .lines()
+        .map(str::trim)
+        .filter(|l| l.starts_with("run: npx playwright test"))
+        .collect();
+    let orphans: Vec<&String> = specs
+        .iter()
+        .filter(|s| {
+            let named = format!("./tests/{s}");
+            !run_lines
+                .iter()
+                .any(|l| l.split_whitespace().any(|w| w == named))
+        })
+        .collect();
+    assert!(
+        orphans.is_empty(),
+        "these e2e specs are run by no `npx playwright test` step in \
+         .github/workflows/quality.yml, so they guard nothing:\n  {}\n\
+         Name each one (as ./tests/<file>, relative to e2e/) in a step.",
+        orphans
+            .iter()
+            .map(|s| s.as_str())
+            .collect::<Vec<_>>()
+            .join("\n  ")
+    );
+}
+
 /// Both website gates exist in `quality.yml`, and each names a file that is
 /// really on disk.
 ///
@@ -8557,6 +8616,11 @@ fn quality_workflow_runs_the_accessibility_and_lighthouse_gates() {
          not exist"
     );
 
+    let journeys = workflow_step_body(
+        ".github/workflows/quality.yml",
+        "Browser journeys (smoke, demo disclosure)",
+    );
+
     // No runner step may be conditional or forgiving. `assert_step_enforces`
     // wants an `exit 1` in the body, which a `run: npx ...` step does not have,
     // so the two properties that do apply are checked directly here.
@@ -8564,6 +8628,7 @@ fn quality_workflow_runs_the_accessibility_and_lighthouse_gates() {
         ("axe-core (WCAG 2 A/AA, serious + critical)", &axe),
         ("Lighthouse budgets", &lh),
         ("Download page layout stability", &layout),
+        ("Browser journeys (smoke, demo disclosure)", &journeys),
     ] {
         assert!(
             !body.contains("continue-on-error"),

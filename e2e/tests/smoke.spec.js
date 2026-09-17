@@ -21,11 +21,15 @@ test.describe('homepage', () => {
 
   test('advertises a version that looks like a release', async ({ page }) => {
     await page.goto('/');
-    const body = await page.locator('body').innerText();
     // Pinning the SHAPE, not the number. A test pinned to 0.5.130 fails on
     // every release and gets updated without being read, which trains people
     // to update it without reading it.
-    expect(body).toMatch(/\b0\.\d+\.\d+\b/);
+    //
+    // The badge, not the body text. This read `/\b0\.\d+\.\d+\b/` over the
+    // whole page, and the homepage writes every version as `v0.5.x` -- there
+    // is no word boundary between the `v` and the `0`, so it could never match,
+    // and no workflow ran it to find that out.
+    await expect(page.locator('.hero-title .version-badge')).toHaveText(/^v\d+\.\d+\.\d+$/);
   });
 
   test('every download link points at a real release asset host', async ({ page }) => {
