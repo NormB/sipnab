@@ -558,6 +558,14 @@ fn parse_rtpmap(value: &str) -> Option<RtpMap> {
     let mut slash_parts = encoding_part.splitn(3, '/');
     let encoding = slash_parts.next()?.to_string();
     let clock_rate: u32 = slash_parts.next()?.parse().ok()?;
+    // RFC 4566: the rtpmap clock rate is required and non-zero. A 0 divides the
+    // jitter calculation `rtp_diff / (clock_rate / 1000)` by zero, poisoning it
+    // with NaN/Inf that then flows into every surface (a Prometheus `_sum inf`
+    // even makes the scrape unparseable). Skip the malformed entry, keeping the
+    // stream's static payload-type clock rate — like the payload-type guard.
+    if clock_rate == 0 {
+        return None;
+    }
     let channels: Option<u32> = slash_parts.next().and_then(|c| c.parse().ok());
 
     Some(RtpMap {
@@ -966,6 +974,29 @@ mod tests {
         let session = parse_sdp(sdp).expect("should parse SDP");
         assert_eq!(session.media[0].rtpmap.len(), 1);
         assert_eq!(session.media[0].rtpmap[0].payload_type, 127);
+    }
+
+    /// An rtpmap with a clock rate of 0 is rejected, not recorded: a 0 clock
+    /// divides the jitter calculation (`rtp_diff / (clock_rate / 1000)`) by
+    /// zero and poisons it with NaN/Inf across every surface (JSON, Prometheus,
+    /// call report, event-exec env). The stream keeps its static-table rate.
+    #[test]
+    fn parse_rtpmap_rejects_a_zero_clock_rate() {
+        let sdp = b"v=0\r\n\
+            o=- 0 0 IN IP4 10.0.0.1\r\n\
+            s=-\r\n\
+            c=IN IP4 10.0.0.1\r\n\
+            t=0 0\r\n\
+            m=audio 20000 RTP/AVP 0 96\r\n\
+            a=rtpmap:0 PCMU/8000\r\n\
+            a=rtpmap:96 opus/0\r\n";
+        let session = parse_sdp(sdp).expect("should parse SDP");
+        let audio = &session.media[0];
+        // Only the valid pt=0 (8000 Hz) entry survives; the clock-0 opus is
+        // skipped like an out-of-range payload type.
+        assert_eq!(audio.rtpmap.len(), 1);
+        assert_eq!(audio.rtpmap[0].payload_type, 0);
+        assert_eq!(audio.rtpmap[0].clock_rate, 8000);
     }
 
     /// `a=crypto` lines are extracted correctly.

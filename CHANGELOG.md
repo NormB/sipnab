@@ -81,6 +81,15 @@ entry that carries them.
   ASR/NER rates, which read the same field. It now prefers a 2xx when one
   exists, matching the documented rule that a 2xx is the outcome of an answered
   call; the highest failure code stands only when no 2xx was seen.
+- **A zero SDP clock rate is rejected before it divides the jitter to NaN.**
+  `parse_rtpmap` accepted `a=rtpmap:96 opus/0`, and a clock rate of 0 was then
+  adopted by the stream and divided into the jitter calculation
+  (`rtp_diff / (clock_rate / 1000)`), producing a permanent NaN/Inf that flowed
+  into every surface — a JSON `null`, a Prometheus `_sum` of `inf` that makes the
+  whole scrape unparseable, a `NaN` in the call report, and `SIPNAB_JITTER=NaN`
+  in an event-exec environment. It now skips the malformed entry (keeping the
+  stream's static payload-type clock rate), like the out-of-range payload-type
+  guard beside it.
 
 ### Security
 
