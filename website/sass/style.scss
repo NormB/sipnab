@@ -2816,12 +2816,19 @@ input:focus-visible,
 .dl-verify-sub { font-size: 0.95rem; margin: 1.6rem 0 0; }
 
 // Detection banner: tells rookies which of the files below is theirs.
+//
+// The `[hidden]` rule is the same one `.demo-tabs-more` needs, for the same
+// reason: `display: flex` here beats the UA sheet's `[hidden] { display: none }`.
+// Without it the banner rendered with JavaScript off, reading "Detected: --
+// the highlighted choice below is the one you want." with no platform in it.
 .dl-detect {
   display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap;
   background: rgba($good, 0.07); border: 1px solid rgba($good, 0.25);
   border-radius: 10px; padding: 0.8rem 1.1rem; margin-bottom: 1.8rem; font-size: 0.92rem;
   b { color: $good; font-weight: 600; }
   a { margin-left: auto; font-size: 0.82rem; }
+
+  &[hidden] { display: none; }
 }
 .dl-detect-dot { width: 8px; height: 8px; border-radius: 50%; background: $good; flex: none; }
 .dl-detect-note { color: $text-dim; font-size: 0.82rem; }

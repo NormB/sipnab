@@ -4596,8 +4596,20 @@ fn inline_script_edits_require_csp_hash_refresh() {
             "sha256-J1UbBOogoXxCXnxiSeI0gyXiVXXoOpudQyXbBuS54aI=",
         ),
         (
+            // Two scripts since 2026-09-17. Platform detection moved out of the
+            // tab script into its own block directly after #dl-detect, so the
+            // banner is filled before the content below it is parsed; filled
+            // from the end of the page, after an async CPU-hint round trip, it
+            // pushed that content down 35px and put /download/ over its
+            // layout-shift budget. This one is the detection block.
             "download.html",
-            "sha256-rFx04kn3jGSGf1MKxuWCk8HI8WZnRlpR9OD2RDUMHPI=",
+            "sha256-QUenvhomHpEtRGrg0Wtup9figwf64dACRTY39Ne1e5E=",
+        ),
+        (
+            // The tab, table-of-contents and copy-button script, which now
+            // reads the detected platform from #dl-detect's data-os.
+            "download.html",
+            "sha256-CdGdvH8fepL0O1vbroLDXZ0jfqZ8IwrtLz8BUItOsKE=",
         ),
         (
             // Re-pinned twice in 0.5.68. First for the hero swap — the static
@@ -8524,12 +8536,34 @@ fn quality_workflow_runs_the_accessibility_and_lighthouse_gates() {
          budgets stop being enforced"
     );
 
-    // Neither runner step may be conditional or forgiving. `assert_step_enforces`
+    // The layout spec is the deterministic half of the CLS budget. Lighthouse
+    // measures a race -- whether the page's async work lands before or after
+    // first paint -- and /download/ passed that race for weeks while carrying a
+    // 0.0559 shift, until 2026-09-17 when it did not. The spec holds the CPU
+    // hint back so the shift happens every run or never; unwired, it guards
+    // only the machine of whoever remembers to run it.
+    let layout = workflow_step_body(
+        ".github/workflows/quality.yml",
+        "Download page layout stability",
+    );
+    assert!(
+        layout.contains("./tests/download-layout.spec.js"),
+        "the layout-stability step does not name \
+         e2e/tests/download-layout.spec.js:\n{layout}"
+    );
+    assert!(
+        repo().join("e2e/tests/download-layout.spec.js").is_file(),
+        "quality.yml runs e2e/tests/download-layout.spec.js and that file does \
+         not exist"
+    );
+
+    // No runner step may be conditional or forgiving. `assert_step_enforces`
     // wants an `exit 1` in the body, which a `run: npx ...` step does not have,
     // so the two properties that do apply are checked directly here.
     for (name, body) in [
         ("axe-core (WCAG 2 A/AA, serious + critical)", &axe),
         ("Lighthouse budgets", &lh),
+        ("Download page layout stability", &layout),
     ] {
         assert!(
             !body.contains("continue-on-error"),

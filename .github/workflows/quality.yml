@@ -763,6 +763,20 @@ jobs:
           test -x "$resolved"
           echo "CHROME_PATH=$resolved" >> "$GITHUB_ENV"
 
+      # The deterministic half of the /download/ layout-shift budget below.
+      # Lighthouse measures a race -- whether the page's asynchronous work lands
+      # before or after first paint -- so a shift can pass it for weeks and then
+      # fail a commit that never touched the page, which is what happened on
+      # 2026-09-17. The spec holds the CPU hint back and blocks web fonts, so the
+      # shift it guards against happens on every run or on none. Runs first, so
+      # a real regression is named here rather than as a number over a budget.
+      - name: Download page layout stability
+        working-directory: e2e
+        env:
+          SIPNAB_E2E_CHROME: ${{ env.CHROME_PATH }}
+        # `./tests/...` for the same reason the axe step gives.
+        run: npx playwright test ./tests/download-layout.spec.js
+
       # `autorun` = collect + assert. It exits non-zero when a budget is
       # exceeded, which is the whole point; `--config` names the file so a
       # renamed or deleted config fails loudly instead of falling back to
@@ -777,4 +791,8 @@ jobs:
         with:
           name: lighthouse-reports
           path: e2e/.lighthouseci
+          # A dot-directory: without this upload-artifact skips every file in
+          # it, logs "No files were found", and stays green. It did exactly that
+          # on every run until 2026-09-17.
+          include-hidden-files: true
           if-no-files-found: ignore

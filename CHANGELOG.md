@@ -12,6 +12,19 @@ entry that carries them.
 
 ### Fixed
 
+- **The download page no longer jumps when it detects your platform.** The
+  "Detected: macOS · Intel/AMD" banner painted empty and was filled in only after
+  the browser answered an asynchronous CPU-architecture query; the filled text
+  wrapped onto a second line and pushed the installer command and everything
+  below it down 35 pixels. That shift was most of the page's long-standing,
+  unexplained Lighthouse layout-shift score, and it put `/download/` over its
+  budget. Detection now runs as soon as the banner is parsed, from the user agent
+  alone, and the CPU query only corrects the architecture if it disagrees. The
+  banner also stayed visible with JavaScript off, reading "Detected: — the
+  highlighted choice below is the one you want." with no platform named; it is
+  now hidden unless something fills it. The Lighthouse job's report upload, which
+  had silently uploaded nothing because `.lighthouseci` is a hidden directory,
+  now keeps the reports.
 - **Config and duration parsers reject malformed input instead of panicking.**
   Three parsers aborted the process on adversarial or mistyped input rather than
   returning an error: `parse_color` sliced a seven-byte string on a fixed byte

@@ -40,6 +40,69 @@
     <span class="dl-detect-note" id="dl-detect-note"></span>
     <a href="#all-files">not right? see all files &darr;</a>
   </div>
+  {# Detection runs HERE, directly after the banner it fills, and does not wait
+     for anything. It used to run from the script at the end of the page, inside
+     the callback of navigator.userAgentData.getHighEntropyValues() -- a real
+     asynchronous round trip -- so the banner painted empty and was filled a
+     frame or more later. The filled text wrapped the link onto a second line,
+     the banner grew 35px, and every element below it moved: 0.0559 of layout
+     shift in every Lighthouse run, which is most of the defect
+     e2e/lighthouserc.json carried as "cause not identified", and what pushed
+     /download/ over its 0.15 budget on 2026-09-17.
+
+     Filling it before the parser has reached the content below means there is
+     nothing below to move. The user agent already names the platform; the CPU
+     hint can only refine the architecture, so it rewrites the text only when
+     its answer differs. The script at the end of the page reads the platform
+     back from data-os rather than detecting it a second time.
+     e2e/tests/download-layout.spec.js holds that hint back to prove it. #}
+  <script>
+  (function () {
+    var banner = document.getElementById('dl-detect');
+    if (!banner) { return; }
+    var ua = navigator.userAgent || '';
+    var os = 'mac', osName = 'macOS', osNote = null;
+    // iOS first: WebKit UAs contain "like Mac OS X", and desktop-mode iPads
+    // even claim "Macintosh" — without this branch iPhones read as macOS.
+    if (/iPhone|iPad|iPod/.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1)) {
+      os = 'mac'; osName = 'iPhone/iPad';
+      osNote = 'sipnab runs on macOS and Linux — pick the file for that machine.';
+    }
+    else if (/Macintosh|Mac OS X/.test(ua)) { os = 'mac'; osName = 'macOS'; }
+    else if (/Android/.test(ua)) { os = 'linux'; osName = 'Linux'; }
+    else if (/Ubuntu|Debian/.test(ua)) { os = 'debian'; osName = 'Debian/Ubuntu'; }
+    else if (/Fedora|Red Hat|CentOS|AlmaLinux|Rocky/.test(ua)) { os = 'debian'; osName = 'RHEL/Fedora'; }
+    else if (/Linux/.test(ua)) { os = 'linux'; osName = 'Linux'; }
+    // Advice belongs in osNote, not osName. Stuffing it into the name rendered
+    // "Detected: Windows — use WSL or build from source · Intel/AMD (x86_64 /
+    // amd64) — the highlighted choice below is the one you want", which reads as
+    // one run-on sentence and buries the actual instruction. The iOS branch above
+    // already had the right shape.
+    else if (/Windows/.test(ua)) {
+      os = 'source'; osName = 'Windows';
+      osNote = 'There is no native Windows build — run sipnab under WSL, or build from source.';
+    }
+    var arch = /aarch64|arm64/i.test(ua) ? 'ARM (aarch64 / arm64)'
+             : (/x86_64|x64|amd64|Win64|Intel Mac/i.test(ua) ? 'Intel/AMD (x86_64 / amd64)' : null);
+
+    function render() {
+      document.getElementById('dl-detect-plat').textContent = osName + (arch && !osNote ? ' · ' + arch : '');
+      document.getElementById('dl-detect-note').textContent = osNote || (arch ? '' : 'CPU unknown from this browser — run uname -m to check.');
+    }
+    banner.setAttribute('data-os', os);
+    render();
+    banner.hidden = false;
+
+    // Chromium's client hints upgrade the CPU answer after the fact.
+    if (navigator.userAgentData && navigator.userAgentData.getHighEntropyValues) {
+      navigator.userAgentData.getHighEntropyValues(['architecture']).then(function (h) {
+        var hinted = h.architecture === 'arm' ? 'ARM (aarch64 / arm64)'
+                   : (h.architecture === 'x86' ? 'Intel/AMD (x86_64 / amd64)' : arch);
+        if (hinted !== arch) { arch = hinted; render(); }
+      }, function () {});
+    }
+  })();
+  </script>
 
   <div class="dl-method-head" id="installer"><h2>Fastest path &mdash; the installer picks for you</h2><span class="dl-rec">recommended &middot; start here</span></div>
   {# Every terminal block below carries tabindex="0" on its <code>.
@@ -454,42 +517,12 @@
     });
   });
 
-  // Platform + CPU detection: pick the right tab, then tell the visitor what
-  // we found so rookies don't have to know that x86_64 and amd64 are the same
-  // thing. UA gives the OS; Chromium's client hints upgrade the CPU answer.
-  var ua = navigator.userAgent || '';
-  var os = 'mac', osName = 'macOS', osNote = null;
-  // iOS first: WebKit UAs contain "like Mac OS X", and desktop-mode iPads
-  // even claim "Macintosh" — without this branch iPhones read as macOS.
-  if (/iPhone|iPad|iPod/.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1)) {
-    os = 'mac'; osName = 'iPhone/iPad';
-    osNote = 'sipnab runs on macOS and Linux — pick the file for that machine.';
-  }
-  else if (/Macintosh|Mac OS X/.test(ua)) { os = 'mac'; osName = 'macOS'; }
-  else if (/Android/.test(ua)) { os = 'linux'; osName = 'Linux'; }
-  else if (/Ubuntu|Debian/.test(ua)) { os = 'debian'; osName = 'Debian/Ubuntu'; }
-  else if (/Fedora|Red Hat|CentOS|AlmaLinux|Rocky/.test(ua)) { os = 'debian'; osName = 'RHEL/Fedora'; }
-  else if (/Linux/.test(ua)) { os = 'linux'; osName = 'Linux'; }
-  // Advice belongs in osNote, not osName. Stuffing it into the name rendered
-  // "Detected: Windows — use WSL or build from source · Intel/AMD (x86_64 /
-  // amd64) — the highlighted choice below is the one you want", which reads as
-  // one run-on sentence and buries the actual instruction. The iOS branch above
-  // already had the right shape.
-  else if (/Windows/.test(ua)) {
-    os = 'source'; osName = 'Windows';
-    osNote = 'There is no native Windows build — run sipnab under WSL, or build from source.';
-  }
-  var arch = /aarch64|arm64/i.test(ua) ? 'ARM (aarch64 / arm64)'
-           : (/x86_64|x64|amd64|Win64|Intel Mac/i.test(ua) ? 'Intel/AMD (x86_64 / amd64)' : null);
-
-  function applyDetect() {
-    var banner = document.getElementById('dl-detect');
-    if (banner) {
-      document.getElementById('dl-detect-plat').textContent = osName + (arch && !osNote ? ' · ' + arch : '');
-      document.getElementById('dl-detect-note').textContent = osNote || (arch ? '' : 'CPU unknown from this browser — run uname -m to check.');
-      banner.hidden = false;
-    }
-    var dt = document.querySelector('.dl-tab[data-os="' + os + '"]');
+  // Select the platform the banner detected (see the script beside #dl-detect,
+  // which is the one place detection happens). Synchronously: this used to wait
+  // on the CPU hint too, so the tab badge and panel swap landed after paint.
+  var detectedOs = (document.getElementById('dl-detect') || document.body).getAttribute('data-os');
+  if (detectedOs) {
+    var dt = document.querySelector('.dl-tab[data-os="' + detectedOs + '"]');
     if (dt && !dt.querySelector('.dl-tab-you')) {
       dt.classList.add('dl-tab--detected');
       var you = document.createElement('span');
@@ -498,16 +531,7 @@
       you.textContent = 'you';
       dt.appendChild(you);
     }
-    show(os);
-  }
-  if (navigator.userAgentData && navigator.userAgentData.getHighEntropyValues) {
-    navigator.userAgentData.getHighEntropyValues(['architecture']).then(function (h) {
-      if (h.architecture === 'arm') arch = 'ARM (aarch64 / arm64)';
-      else if (h.architecture === 'x86') arch = 'Intel/AMD (x86_64 / amd64)';
-      applyDetect();
-    }).catch(applyDetect);
-  } else {
-    applyDetect();
+    show(detectedOs);
   }
 
   // Copy buttons. Two things this used to get wrong:

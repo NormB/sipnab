@@ -582,3 +582,83 @@ fn a_job_permissions_block_grants_what_its_steps_need() {
         gaps.join("\n  ")
     );
 }
+
+/// The `path:` entries of one `actions/upload-artifact` step: the inline value,
+/// or every line of a `path: |` block.
+fn upload_paths(step: &str) -> Vec<String> {
+    let lines: Vec<&str> = step.lines().collect();
+    let Some(at) = lines
+        .iter()
+        .position(|l| l.trim_start().starts_with("path:"))
+    else {
+        return Vec::new();
+    };
+    let head = lines[at].trim_start().trim_start_matches("path:").trim();
+    if head != "|" && head != ">" {
+        return vec![head.to_string()];
+    }
+    let indent = lines[at].len() - lines[at].trim_start().len();
+    lines[at + 1..]
+        .iter()
+        .take_while(|l| l.trim().is_empty() || l.len() - l.trim_start().len() > indent)
+        .map(|l| l.trim().to_string())
+        .filter(|l| !l.is_empty())
+        .collect()
+}
+
+/// An artifact upload of a hidden path must say `include-hidden-files: true`.
+///
+/// `actions/upload-artifact` v4.4 and later skip every file under a
+/// dot-prefixed path component unless that input is set, and a skipped file is
+/// not an error: with `if-no-files-found: ignore` or `warn` the step is green.
+/// The Lighthouse job uploaded `e2e/.lighthouseci` that way from the day it was
+/// added. Its log said "No files were found with the provided path", and the
+/// reports were never kept -- so when `/download/` finally went over its layout
+/// shift budget on 2026-09-17, the per-run evidence that would have named the
+/// shifting element did not exist, and the defect had to be re-measured from
+/// scratch.
+#[test]
+fn an_artifact_upload_of_a_hidden_path_opts_into_hidden_files() {
+    let mut uploads = 0usize;
+    let mut offenders: Vec<String> = Vec::new();
+    for (name, body) in workflows() {
+        for step in steps(&body) {
+            if !step.contains("uses: actions/upload-artifact@") {
+                continue;
+            }
+            uploads += 1;
+            let paths = upload_paths(&step);
+            assert!(
+                !paths.is_empty(),
+                "{name}: an upload-artifact step has no `path:` this test can \
+                 read, so the rule below cannot be checked for it:\n{step}"
+            );
+            let hidden: Vec<&String> = paths
+                .iter()
+                .filter(|p| {
+                    p.split('/')
+                        .any(|c| c.starts_with('.') && c != "." && c != "..")
+                })
+                .collect();
+            let opted_in = step
+                .lines()
+                .any(|l| l.trim() == "include-hidden-files: true");
+            if !hidden.is_empty() && !opted_in {
+                offenders.push(format!("{name}: {hidden:?}"));
+            }
+        }
+    }
+    assert!(
+        uploads >= 5,
+        "only {uploads} upload-artifact steps were found across the workflows; \
+         coverage, fuzz, scorecard, sanitizer, release and Lighthouse uploads \
+         exist, so the step parser is broken and a pass here means nothing"
+    );
+    assert!(
+        offenders.is_empty(),
+        "these artifact uploads name a hidden path without \
+         `include-hidden-files: true`, so upload-artifact silently skips \
+         everything under it:\n  {}",
+        offenders.join("\n  ")
+    );
+}
