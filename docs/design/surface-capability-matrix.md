@@ -594,7 +594,7 @@ What did the armed detectors — scanner, fraud, digest, reg-flood — record re
 | Surface | Detail |
 |---|---|
 | CLI | `--alert-json` |
-| TUI | gap: a human watching a live capture would reach for a scanner and fraud alert panel, but alerts route only to syslog and stderr (PAR4) |
+| TUI | `SecurityFindings` |
 | REST | `/v1/security/findings` |
 | MCP | `security_findings` |
 

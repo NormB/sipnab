@@ -103,6 +103,8 @@ pub enum CallListAction {
     /// `x` — open the TFPS-observe view (the enforcing peer's banned sources and
     /// drop counters). Independent of any selected call.
     OpenTfpsObserve,
+    /// `a` — open the security-findings view (the armed detectors' alerts).
+    OpenSecurityFindings,
     /// `S` — open the relay-statistics view for the relay's globals (ST8, C1).
     OpenRelayStats,
     /// `B` — show the full BPF capture-filter expression (status line 2
@@ -176,6 +178,7 @@ pub fn call_list_action(km: &Keymap, key: KeyEvent) -> Option<CallListAction> {
         KeyCode::Char('o') => OpenSdpTimeline,
         KeyCode::Char('f') => OpenConformance,
         KeyCode::Char('x') => OpenTfpsObserve,
+        KeyCode::Char('a') => OpenSecurityFindings,
         KeyCode::Char('S') => OpenRelayStats,
         KeyCode::Char('B') => OpenBpfFilter,
         KeyCode::Char('D') => OpenDashboard,
@@ -402,6 +405,10 @@ fn execute_call_list_action(app: &mut App, action: CallListAction) {
             app.current_view = View::TfpsObserve {
                 mode: tfps_observe::TfpsMode::default(),
             };
+        }
+        CallListAction::OpenSecurityFindings => {
+            app.security_scroll = 0;
+            app.current_view = View::SecurityFindings;
         }
         CallListAction::OpenRelayStats => {
             app.relay_stats_scroll = 0;

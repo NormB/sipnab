@@ -304,6 +304,13 @@ pub struct TuiOptions {
     /// (banned sources / drop counters). Default answers "not installed". Built
     /// by the composition root (`crate::app::tui_mode`), never here.
     pub tfps_access: crate::security::tfps::TfpsLocator,
+    /// The alert engine the capture thread fires security findings into, shared
+    /// with the security-findings view. `None` when no detector was armed. Built
+    /// by the composition root (`crate::app::tui_mode`).
+    pub alert_engine: Option<std::sync::Arc<parking_lot::RwLock<crate::security::AlertEngine>>>,
+    /// The detector kinds armed this run, for the findings report. Empty when
+    /// none were armed.
+    pub armed_detections: Vec<String>,
     /// The relay-stats poll interval the run was started with (ST8, C5), from
     /// `--relay-stats-interval`. `Some(n)` makes the relay-stats view re-ask
     /// every `n` seconds and label its counters `polled`; `None` asks once.
@@ -369,6 +376,8 @@ impl TuiOptions {
         app.set_action_trail(self.action_trail);
         app.relay_query = self.relay_query;
         app.tfps_access = self.tfps_access;
+        app.alert_engine = self.alert_engine;
+        app.armed_detections = self.armed_detections;
         app.relay_stats_interval = self.relay_stats_interval;
         app.set_reconfigure(self.reconfigure_control, self.reconfigure_outcomes);
         app.rescan_path = self.rescan_path;
@@ -1316,6 +1325,11 @@ pub enum View {
         /// Which facet — banned sources or drop counters — is showing.
         mode: crate::tui::tfps_observe::TfpsMode,
     },
+    /// The armed detectors' recorded security findings — the same the
+    /// `GET /v1/security/findings` route and MCP `security_findings` tool report,
+    /// fed live by the capture thread. Opened with `a` from the call list. When
+    /// no detector was armed, it says so rather than reading as "nothing found".
+    SecurityFindings,
     /// The live relay's own statistics, asked over its control socket (ST8).
     ///
     /// Distinct from [`View::Statistics`], which is about what THIS capture saw:

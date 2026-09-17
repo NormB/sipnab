@@ -12,6 +12,25 @@ entry that carries them.
 
 ### Added
 
+- **Security findings in the TUI, fed live (PAR4).** A new `SecurityFindings`
+  view, opened with `a` from the call list, shows the armed detectors' alerts —
+  each with its detector, source address, the detector's own evidence, and the
+  time — the same findings `GET /v1/security/findings` and the MCP
+  `security_findings` tool report. Alerts previously reached only syslog and
+  stderr; a human watching a live capture could not see them. The TUI capture
+  thread now builds the same detectors the batch path does (scanner, fraud,
+  digest, reg-flood, from the same flags — arm-for-arm) and runs them on each SIP
+  message, firing findings into a shared alert engine the view reads through the
+  shared `build_report`. The TUI is a passive observer: it records findings for
+  the view but never acts on a detection's kill/jail effects. A run with no
+  detector armed says nothing was watching rather than reading as "all clear".
+  Because the TUI now detects, `sipnab -d eth0 --fraud-detect` starts instead of
+  refusing with exit 2 — the refusal that used to send an operator to `-N`/`--no-tui`
+  is now scoped to the one mode that still builds no detector, the `--cores`
+  parallel reader. The text builder takes the report as an argument, so it is pure and
+  unit-tested; the live detection path is exercised by the detectors' own
+  batch tests. Closes the detector-security-findings TUI gap, leaving 16 named
+  gaps.
 - **TFPS-observe TUI view (PAR4).** A new `TfpsObserve` view, opened with `x`
   from the call list, shows the enforcing peer's current state read from
   `tfps_ctl` — the sources it bans (with the rule, the rule's evidence, and

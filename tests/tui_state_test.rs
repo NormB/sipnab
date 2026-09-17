@@ -402,6 +402,18 @@ mod tui_state {
         );
     }
 
+    /// `a` opens the security-findings view from the call list.
+    #[test]
+    fn a_opens_security_findings() {
+        let mut app = App::new_test();
+        app.handle_key(KeyCode::Char('a'));
+        assert_eq!(
+            *app.current_view(),
+            View::SecurityFindings,
+            "a opens the security-findings view"
+        );
+    }
+
     /// `?` still opens Help from an ordinary view -- the relay-stats exception
     /// does not leak.
     #[test]

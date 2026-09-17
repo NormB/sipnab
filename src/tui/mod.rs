@@ -65,12 +65,13 @@ pub use controllers::{
     CallFlowAction, CallListAction, CallVolumeAction, CaptureHealthAction, CarrierMetricsAction,
     CombinedDetailAction, CompareDialogsAction, ConformanceAction, DashboardAction,
     EndpointRollupAction, HelpAction, LossMapAction, MessageDiffAction, RawMessageAction,
-    SdpTimelineAction, StatisticsAction, StreamDetailAction, StreamListAction, TalkersAction,
-    TfpsObserveAction, TimelineAction, call_flow_action, call_list_action, call_volume_action,
-    capture_health_action, carrier_metrics_action, combined_detail_action, compare_dialogs_action,
-    conformance_action, dashboard_action, endpoint_rollup_action, help_action, loss_map_action,
-    message_diff_action, raw_message_action, sdp_timeline_action, statistics_action,
-    stream_detail_action, stream_list_action, talkers_action, tfps_observe_action, timeline_action,
+    SdpTimelineAction, SecurityFindingsAction, StatisticsAction, StreamDetailAction,
+    StreamListAction, TalkersAction, TfpsObserveAction, TimelineAction, call_flow_action,
+    call_list_action, call_volume_action, capture_health_action, carrier_metrics_action,
+    combined_detail_action, compare_dialogs_action, conformance_action, dashboard_action,
+    endpoint_rollup_action, help_action, loss_map_action, message_diff_action, raw_message_action,
+    sdp_timeline_action, security_findings_action, statistics_action, stream_detail_action,
+    stream_list_action, talkers_action, tfps_observe_action, timeline_action,
 };
 use render::*;
 use save::*;
@@ -160,6 +161,8 @@ pub struct App {
     conformance_scroll: u16,
     /// Clamped scroll of the TFPS-observe view (`x`).
     tfps_scroll: u16,
+    /// Clamped scroll of the security-findings view (`a`).
+    security_scroll: u16,
     /// Scroll offset for the relay-statistics view (ST8; clamped in render).
     relay_stats_scroll: u16,
     /// Selected row in the quality dashboard's worst-streams table.
@@ -268,6 +271,13 @@ pub struct App {
     /// Default (no ctl) answers "not installed"; the real one is threaded in by
     /// [`crate::tui::state::TuiOptions::into_app`].
     tfps_access: crate::security::tfps::TfpsLocator,
+    /// The alert engine the capture thread fires security findings into, shared
+    /// so the security-findings view can `build_report` from it. `None` when no
+    /// detector was armed for this run (the view then says nothing was watching).
+    alert_engine: Option<std::sync::Arc<RwLock<crate::security::AlertEngine>>>,
+    /// The detector kinds armed this run, for the report's "what was watching"
+    /// line. Empty when none were armed.
+    armed_detections: Vec<String>,
     /// The relay-stats poll interval this run was started with (ST8, C5). `Some`
     /// makes the view re-ask on the interval and label its counters `polled`.
     relay_stats_interval: Option<u64>,
@@ -433,6 +443,7 @@ impl App {
             sdp_timeline_scroll: 0,
             conformance_scroll: 0,
             tfps_scroll: 0,
+            security_scroll: 0,
             relay_stats_scroll: 0,
             dashboard_selected: 0,
             stream_displayed: StreamDisplayedCache::default(),
@@ -445,6 +456,8 @@ impl App {
             relay_query: relay_stats::RelayQueryState::default(),
             tfps: tfps_observe::TfpsCache::default(),
             tfps_access: crate::security::tfps::TfpsLocator::default(),
+            alert_engine: None,
+            armed_detections: Vec::new(),
             relay_stats_interval: None,
             relay_stats_asked_at: None,
             dashboard_generation: None,
@@ -1530,6 +1543,9 @@ impl App {
         }
         if let Some(v) = fb.tfps_scroll {
             self.tfps_scroll = v;
+        }
+        if let Some(v) = fb.security_scroll {
+            self.security_scroll = v;
         }
         if let Some(v) = fb.relay_stats_scroll {
             self.relay_stats_scroll = v;

@@ -22,8 +22,8 @@ use sipnab::tui::{
     Keymap, call_flow_action, call_list_action, call_volume_action, capture_health_action,
     carrier_metrics_action, combined_detail_action, compare_dialogs_action, conformance_action,
     dashboard_action, endpoint_rollup_action, help_action, message_diff_action, raw_message_action,
-    sdp_timeline_action, statistics_action, stream_detail_action, stream_list_action,
-    talkers_action, tfps_observe_action,
+    sdp_timeline_action, security_findings_action, statistics_action, stream_detail_action,
+    stream_list_action, talkers_action, tfps_observe_action,
 };
 
 /// Display token for a key as it appears in the help's key column.
@@ -192,7 +192,7 @@ fn mapped_char_keys_are_documented_or_allowlisted() {
     let docs = documented_tokens();
     let km = Keymap::default();
     type Probe = (&'static str, fn(&Keymap, KeyEvent) -> bool);
-    let probes: [Probe; 19] = [
+    let probes: [Probe; 20] = [
         ("call_list", |km, k| call_list_action(km, k).is_some()),
         ("stream_list", |km, k| stream_list_action(km, k).is_some()),
         ("stream_detail", |km, k| {
@@ -223,6 +223,9 @@ fn mapped_char_keys_are_documented_or_allowlisted() {
         ("sdp_timeline", |km, k| sdp_timeline_action(km, k).is_some()),
         ("conformance", |km, k| conformance_action(km, k).is_some()),
         ("tfps_observe", |km, k| tfps_observe_action(km, k).is_some()),
+        ("security_findings", |km, k| {
+            security_findings_action(km, k).is_some()
+        }),
         ("dashboard", |km, k| dashboard_action(km, k).is_some()),
     ];
     let mut undocumented = Vec::new();
@@ -321,6 +324,9 @@ fn every_documented_view_key_is_handled() {
         }),
         ("TFPS OBSERVE:", |km, k| {
             tfps_observe_action(km, k).is_some()
+        }),
+        ("SECURITY FINDINGS:", |km, k| {
+            security_findings_action(km, k).is_some()
         }),
         ("QUALITY DASHBOARD:", |km, k| {
             dashboard_action(km, k).is_some()

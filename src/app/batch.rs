@@ -856,7 +856,7 @@ fn spawn_kill_worker(
 /// against and cannot fire at all, and the four trigger points. The detector
 /// used to be constructed as `FraudDetector::new(None)`, so it shipped with
 /// its own constants and one whole detection unreachable.
-fn build_fraud_detector(cli: &Cli, config: &Config) -> Option<FraudDetector> {
+pub(crate) fn build_fraud_detector(cli: &Cli, config: &Config) -> Option<FraudDetector> {
     if !(cli.security_args.fraud_detect || config.security.fraud_detect.unwrap_or(false)) {
         return None;
     }

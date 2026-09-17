@@ -63,6 +63,8 @@ pub(in crate::tui) struct RenderFeedback {
     pub(in crate::tui) conformance_scroll: Option<u16>,
     /// Clamped scroll of the TFPS-observe view.
     pub(in crate::tui) tfps_scroll: Option<u16>,
+    /// Clamped scroll of the security-findings view.
+    pub(in crate::tui) security_scroll: Option<u16>,
     /// Clamped scroll of the relay-statistics view (ST8).
     pub(in crate::tui) relay_stats_scroll: Option<u16>,
     /// Content-clamped scroll of the full-BPF-filter popup (`B`). Only the
@@ -533,6 +535,9 @@ pub(in crate::tui) fn render_app(
         }
         View::TfpsObserve { .. } => {
             fb.tfps_scroll = Some(render_tfps(frame, main_area, app));
+        }
+        View::SecurityFindings => {
+            fb.security_scroll = Some(render_security(frame, main_area, app));
         }
         View::CallVolume => {
             fb.call_volume_scroll = Some(render_call_volume(frame, main_area, app, ds));
@@ -1594,6 +1599,108 @@ pub(in crate::tui) fn render_capture_health(
     scroll
 }
 
+/// Build the security-findings panel from a
+/// [`crate::security::findings::FindingsReport`] — the armed detectors' recorded
+/// findings, the same the `GET /v1/security/findings` route and the MCP
+/// `security_findings` tool report. Takes the report as an argument so the
+/// conversion is pure; a run with no detector armed shows the report's note
+/// (which tells "nothing tripped" apart from "nothing was watching") rather than
+/// an empty list. A finding's detail is the detector's own raw string.
+///
+/// STUB — filled in after the failing test.
+pub(in crate::tui) fn findings_text(report: &crate::security::findings::FindingsReport) -> String {
+    use std::fmt::Write as _;
+
+    let mut out = String::new();
+    let _ = writeln!(out, "Security findings");
+    let _ = writeln!(out);
+    if report.armed_kinds.is_empty() {
+        let _ = writeln!(out, "  Detectors armed: none");
+    } else {
+        let _ = writeln!(out, "  Detectors armed: {}", report.armed_kinds.join(", "));
+    }
+    if let Some(note) = &report.note {
+        let _ = writeln!(out);
+        let _ = writeln!(out, "  {note}");
+    }
+    if report.rows.is_empty() {
+        if report.detection_armed {
+            let _ = writeln!(out);
+            let _ = writeln!(out, "  No findings — nothing has tripped a detector.");
+        }
+        return out;
+    }
+    let plural = if report.rows.len() == 1 { "" } else { "s" };
+    let _ = writeln!(out);
+    let _ = writeln!(
+        out,
+        "  {} finding{plural} (of {}):",
+        report.rows.len(),
+        report.total_matched
+    );
+    for f in &report.rows {
+        let _ = writeln!(out);
+        // Raw: the detail is the detector's own string — a scanner rule's is the
+        // sender's own User-Agent text — shown as-is for a human reader.
+        let _ = writeln!(out, "  [{}]  {}", f.rule_name, f.src_ip);
+        let _ = writeln!(out, "    {}", f.detail);
+        let _ = writeln!(out, "    at {}", f.timestamp.to_rfc3339());
+    }
+    if report.truncated {
+        let _ = writeln!(out);
+        let _ = writeln!(
+            out,
+            "  … more findings not shown ({} total)",
+            report.total_matched
+        );
+    }
+    out
+}
+
+/// How many security findings the view renders before it says "more not shown".
+const SECURITY_FINDINGS_LIMIT: usize = 200;
+
+/// Render the security-findings view. Builds the report from the shared alert
+/// engine each frame (a read lock over a bounded ring — cheap) through
+/// [`crate::security::findings::build_report`], the same producer
+/// `GET /v1/security/findings` uses, and paints [`findings_text`]. Returns the
+/// clamped scroll.
+///
+/// # Side effects
+/// Draws to `frame` only; no state is mutated.
+pub(in crate::tui) fn render_security(
+    frame: &mut ratatui::Frame,
+    area: ratatui::layout::Rect,
+    app: &App,
+) -> u16 {
+    let report = {
+        let guard = app.alert_engine.as_ref().map(|e| e.read());
+        crate::security::findings::build_report(
+            guard.as_deref(),
+            &app.armed_detections,
+            &[],
+            None,
+            SECURITY_FINDINGS_LIMIT,
+        )
+    };
+    let text = findings_text(&report);
+
+    let total_rows = text.lines().count() as u16;
+    let viewport = area.height.saturating_sub(2);
+    let scroll = app.security_scroll.min(total_rows.saturating_sub(viewport));
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Security findings ");
+    let paragraph = Paragraph::new(text)
+        .block(block)
+        .style(Style::default().fg(app.theme.foreground))
+        .scroll((scroll, 0));
+
+    frame.render_widget(paragraph, area);
+    scroll
+}
+
 /// Render the TFPS-observe view: the enforcing peer's banned sources or drop
 /// counters. Serves the text the off-thread worker composed (an asked answer, an
 /// "asking…" line while it is in flight, or the peer's own not-installed words),
@@ -2595,6 +2702,65 @@ mod tests {
         assert!(
             text.contains("Via has no branch parameter"),
             "the observed evidence renders:\n{text}"
+        );
+    }
+
+    /// The security-findings panel lists each finding's detector, source and
+    /// evidence, and — when no detector is armed — shows the note that tells
+    /// "nothing tripped" apart from "nothing was watching".
+    #[test]
+    fn findings_text_lists_findings_and_flags_no_detectors() {
+        use crate::security::findings::{FindingRow, FindingsReport, NO_DETECTOR_NOTE};
+        use chrono::TimeZone;
+
+        let t = chrono::Utc.with_ymd_and_hms(2024, 6, 15, 12, 0, 0).unwrap();
+        let armed = FindingsReport {
+            rows: vec![
+                FindingRow {
+                    rule_name: "scanner".to_string(),
+                    src_ip: "10.0.0.1".parse().unwrap(),
+                    detail: "ua=sipvicious".to_string(),
+                    timestamp: t,
+                },
+                FindingRow {
+                    rule_name: "fraud".to_string(),
+                    src_ip: "10.0.0.2".parse().unwrap(),
+                    detail: "dest=+19005551212".to_string(),
+                    timestamp: t,
+                },
+            ],
+            total_matched: 2,
+            armed_kinds: vec!["scanner".to_string(), "fraud".to_string()],
+            detection_armed: true,
+            note: None,
+            truncated: false,
+        };
+        let text = findings_text(&armed);
+        assert!(
+            text.contains("scanner") && text.contains("fraud"),
+            "both detectors' findings render:\n{text}"
+        );
+        assert!(
+            text.contains("10.0.0.1"),
+            "the source address renders:\n{text}"
+        );
+        assert!(
+            text.contains("ua=sipvicious"),
+            "the detector's evidence renders:\n{text}"
+        );
+
+        let idle = FindingsReport {
+            rows: Vec::new(),
+            total_matched: 0,
+            armed_kinds: Vec::new(),
+            detection_armed: false,
+            note: Some(NO_DETECTOR_NOTE.to_string()),
+            truncated: false,
+        };
+        let idle_text = findings_text(&idle);
+        assert!(
+            idle_text.contains(NO_DETECTOR_NOTE),
+            "the no-detector note distinguishes idle from clean:\n{idle_text}"
         );
     }
 

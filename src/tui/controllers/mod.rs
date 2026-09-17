@@ -192,6 +192,7 @@ fn dispatch_view_key(app: &mut App, key: KeyEvent) {
         View::SdpTimeline { .. } => handle_sdp_timeline_key(app, key),
         View::Conformance { .. } => handle_conformance_key(app, key),
         View::TfpsObserve { .. } => handle_tfps_observe_key(app, key),
+        View::SecurityFindings => handle_security_key(app, key),
         View::RelayStats { .. } => handle_relay_stats_key(app, key),
         View::BpfFilter => handle_bpf_filter_key(app, key),
         View::QualityDashboard => dashboard::handle_dashboard_key(app, key),
@@ -1274,6 +1275,82 @@ pub(in crate::tui) fn handle_tfps_observe_key(app: &mut App, key: KeyEvent) {
     }
 }
 
+/// Everything the security-findings view can do for a single key press.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SecurityFindingsAction {
+    /// Esc, the quit key, or `a` — close the view and return to the call list.
+    Close,
+    /// Scroll the findings up one line.
+    ScrollUp,
+    /// Scroll the findings down one line.
+    ScrollDown,
+    /// Scroll the findings up 20 lines.
+    PageUp,
+    /// Scroll the findings down 20 lines.
+    PageDown,
+    /// Jump to the top of the findings.
+    ScrollTop,
+    /// Jump to the bottom (the render pass clamps to the content height).
+    ScrollBottom,
+}
+
+/// Pure key→action mapping for the security-findings view (keymap-aware).
+///
+/// # Arguments
+/// * `km` - the active keymap; the rebindable quit key is honored.
+/// * `key` - the key event whose code is matched against the bindings.
+///
+/// # Returns
+/// The mapped `SecurityFindingsAction`, or `None` when the key is not bound here.
+pub fn security_findings_action(km: &Keymap, key: KeyEvent) -> Option<SecurityFindingsAction> {
+    use SecurityFindingsAction::*;
+    Some(match key.code {
+        k if k == KeyCode::Esc || k == km.quit || k == KeyCode::Char('a') => Close,
+        KeyCode::Up | KeyCode::Char('k') => ScrollUp,
+        KeyCode::Down | KeyCode::Char('j') => ScrollDown,
+        KeyCode::PageUp => PageUp,
+        KeyCode::PageDown => PageDown,
+        KeyCode::Home => ScrollTop,
+        KeyCode::End => ScrollBottom,
+        _ => return None,
+    })
+}
+
+/// Handle keys in the security-findings view: map, then execute.
+///
+/// # Arguments
+/// * `app` - the application state to mutate.
+/// * `key` - the key event, mapped via `security_findings_action`.
+///
+/// # Side effects
+/// Scroll actions move `app.security_scroll`; `Close` returns to the call list.
+/// Unbound keys are ignored.
+pub(in crate::tui) fn handle_security_key(app: &mut App, key: KeyEvent) {
+    let Some(action) = security_findings_action(&app.keymap, key) else {
+        return;
+    };
+    match action {
+        SecurityFindingsAction::Close => {
+            app.current_view = View::CallList;
+        }
+        SecurityFindingsAction::ScrollUp => {
+            app.security_scroll = app.security_scroll.saturating_sub(1);
+        }
+        SecurityFindingsAction::ScrollDown => {
+            app.security_scroll = app.security_scroll.saturating_add(1);
+        }
+        SecurityFindingsAction::PageUp => {
+            app.security_scroll = app.security_scroll.saturating_sub(20)
+        }
+        SecurityFindingsAction::PageDown => {
+            app.security_scroll = app.security_scroll.saturating_add(20);
+        }
+        SecurityFindingsAction::ScrollTop => app.security_scroll = 0,
+        // Clamped to the content height by the render pass.
+        SecurityFindingsAction::ScrollBottom => app.security_scroll = u16::MAX,
+    }
+}
+
 /// Everything the relay-statistics view can do for a single key press (ST8).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RelayStatsAction {
@@ -1528,6 +1605,13 @@ pub(in crate::tui) fn handle_mouse_event(app: &mut App, kind: crossterm::event::
                 app.tfps_scroll.saturating_add(3)
             } else {
                 app.tfps_scroll.saturating_sub(3)
+            };
+        }
+        View::SecurityFindings => {
+            app.security_scroll = if down {
+                app.security_scroll.saturating_add(3)
+            } else {
+                app.security_scroll.saturating_sub(3)
             };
         }
         View::CallVolume => {

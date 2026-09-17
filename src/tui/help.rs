@@ -51,6 +51,7 @@ CALL LIST:
   o                SDP offer/answer timeline of the selected call
   f                RFC conformance findings of the selected call
   x                TFPS observe (enforcing peer's bans and drop counters)
+  a                Security findings (armed detectors' alerts)
   S                Relay statistics view (asks the relay)
   B                Edit the BPF capture filter (append)
   D                Quality dashboard (live MOS/jitter/loss)
@@ -163,6 +164,12 @@ TFPS OBSERVE:
   ↑/↓, j/k       Scroll
   PgUp/PgDn       Page scroll
   Esc, q, x        Close
+
+SECURITY FINDINGS:
+  ↑/↓, j/k       Scroll
+  PgUp/PgDn       Page scroll
+  Home/End         Jump to top/bottom
+  Esc, q, a        Close
 
 RELAY STATISTICS VIEW (S asks the relay directly):
   ?                Names the relay knows (what to ask for)

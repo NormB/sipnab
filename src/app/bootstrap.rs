@@ -3616,19 +3616,21 @@ fn scanner_pattern_unread_refusal(cli: &Cli, config: &Config) -> Option<String> 
 
 /// Detection flags on a run whose mode builds no detector.
 ///
-/// The scanner, fraud, digest-leak and REGISTER-flood detectors are
-/// constructed in exactly one place, `batch::run`. The TUI drives its own
-/// processing thread (`app::tui_mode`) and the parallel offline reader drives
-/// its own workers (`parallel::run_offline_parallel_file`); neither mentions a
-/// detector, so neither can arm one.
+/// The scanner, fraud, digest-leak and REGISTER-flood detectors are built by
+/// the headless single-capture path (`batch::run`) and by the TUI's own
+/// processing thread (`app::tui_mode`), which runs them for their findings and
+/// shows the result in `View::SecurityFindings`. The parallel offline reader
+/// (`parallel::run_offline_parallel_file`) drives its own workers and mentions
+/// no detector, so it alone cannot arm one.
 ///
-/// The TUI is the DEFAULT mode, and that is what makes this worth a line at
-/// startup. Unlike the output flags, no detection flag requires `-N`, so
-/// `sudo sipnab -d eth0 --kill-scanner` parses, captures, fills its panes and
-/// detects nothing — and a run that detects nothing is indistinguishable from
-/// a quiet network. It is the failure `--fail2ban` already warns about one
-/// layer up: an empty finding list reads as "nothing attacked me" when it
-/// means "nothing was looking".
+/// The TUI once could not either, and the refusal covered it too: `sudo sipnab
+/// -d eth0 --kill-scanner` parsed, captured, filled its panes and detected
+/// nothing — a run indistinguishable from a quiet network. Wiring the detectors
+/// into the TUI thread closed that for the DEFAULT mode; `--cores` is the one
+/// that remains, and unlike the output flags no detection flag requires `-N`,
+/// so adding `--cores` for speed silently turns detection off. It is the
+/// failure `--fail2ban` already warns about one layer up: an empty finding list
+/// reads as "nothing attacked me" when it means "nothing was looking".
 ///
 /// REFUSED, not warned, and the distinction is the whole point.
 ///
@@ -3656,9 +3658,11 @@ fn security_detection_unarmed_refusal(
     // Named for what the operator typed, not for the detector struct: the
     // remedy has to be reachable from the command line they are looking at.
     let (path, remedy) = match mode {
-        // The one path that builds them.
-        RunMode::Batch => return None,
-        RunMode::Tui => ("the interactive TUI", "add -N/--no-tui"),
+        // The two paths that build them: the headless single-capture run and
+        // the interactive TUI, whose processing thread runs the same detectors
+        // for their findings (never their kill path — it observes, it does not
+        // transmit).
+        RunMode::Batch | RunMode::Tui => return None,
         RunMode::CoresFile => (
             "the --cores parallel offline reader",
             "drop --cores (the single-core headless read detects)",
@@ -4470,38 +4474,45 @@ mod tests {
 
     // ── detection flags on a mode that builds no detector ──────────────
 
-    /// The defect: `--kill-scanner` is silently inert in the DEFAULT mode.
+    /// The flags the TUI once refused it now runs.
     ///
-    /// The detectors are constructed in one place, `batch::run`. The TUI runs
-    /// its own processing thread and never mentions one, and no detection flag
-    /// requires `-N` the way the output flags do — so `sudo sipnab -d eth0
-    /// --kill-scanner --fraud-detect --reg-flood` parses all three, arms none,
-    /// and fills its panes normally while the scanner it was pointed at goes
-    /// unread. There is no symptom: a run that detects nothing looks exactly
-    /// like a quiet network, which is the failure mode `--fail2ban` already
-    /// warns about one layer up ("an empty jail log means 'nothing was
-    /// detected', not 'nothing happened'").
+    /// The detectors were built in one place, `batch::run`; since the
+    /// security-findings view landed they are also built by the TUI's own
+    /// processing thread (`app::tui_mode`) — for their findings, not their kill
+    /// path. So `sudo sipnab -d eth0 --kill-scanner --fraud-detect --reg-flood`
+    /// arms all three and their findings reach `View::SecurityFindings`, where
+    /// the refusal used to send the operator to `-N`. Only the `--cores`
+    /// parallel reader still builds no detector, so only it still refuses.
     #[test]
-    fn detection_flags_are_refused_when_the_tui_will_not_run_them() {
+    fn detection_flags_now_arm_in_the_watching_tui() {
         let mut cli = base_cli();
         cli.mode_args.no_tui = false;
         cli.capture_args.device = Some("eth0".to_string());
         cli.security_args.kill_scanner = true;
         cli.security_args.fraud_detect = true;
         cli.security_args.reg_flood = true;
-        let msg = security_detection_unarmed_refusal(&cli, &Config::default(), &RunMode::Tui)
-            .expect("detection flags the TUI cannot honor must be reported");
-        for flag in ["--kill-scanner", "--fraud-detect", "--reg-flood"] {
-            assert!(
-                msg.contains(flag),
-                "the warning must name every flag it is ignoring, or the \
-                 operator cannot tell which defense is not armed: {msg}"
-            );
-        }
         assert!(
-            msg.contains("-N") || msg.contains("--no-tui"),
-            "the warning must name the mode that DOES detect, or it reports a \
-             dead end: {msg}"
+            security_detection_unarmed_refusal(&cli, &Config::default(), &RunMode::Tui).is_none(),
+            "the TUI thread runs these detectors now; refusing them would send \
+             an operator to -N for findings the TUI already shows"
+        );
+    }
+
+    /// The operator-facing effect of wiring detectors into the TUI: a watching
+    /// run that asks for detection now STARTS. It exited 2 before the findings
+    /// view — asserting the message flipped is not enough, because `plan` is
+    /// what an operator hits, so this asserts the plan.
+    #[cfg(feature = "tui")]
+    #[test]
+    fn a_watching_tui_run_with_detection_flags_plans() {
+        let mut cli = Cli::parse_from_args(["sipnab"]); // no -N: interactive
+        cli.capture_args.device = Some("eth0".to_string());
+        cli.security_args.fraud_detect = true;
+        let p = plan(&cli, &Config::default())
+            .expect("a watching run that detects must start, not exit 2");
+        assert!(
+            matches!(p.mode, RunMode::Tui),
+            "anti-vacuity: this must be the TUI mode, the one that used to refuse"
         );
     }
 
@@ -4556,20 +4567,22 @@ mod tests {
         );
     }
 
-    /// A detector armed from the CONFIG FILE is ignored just as silently.
+    /// A detector armed from the CONFIG FILE is seen just as a flag is.
     ///
     /// `[security] kill_scanner = true` arms the same detector `--kill-scanner`
     /// does (`batch.rs` ORs the two), and it is the likelier of the pair to be
     /// forgotten: it is set once and never retyped, so the operator has no flag
-    /// in front of them to reconsider when the run mode changes.
+    /// in front of them to reconsider when the run mode changes. On the
+    /// `--cores` reader — the one mode that still builds no detector — it is
+    /// refused like a flag would be.
     #[test]
     fn detection_refusal_reads_the_config_file_too() {
         let mut config = Config::default();
         config.security.kill_scanner = Some(true);
         let mut cli = base_cli();
-        cli.mode_args.no_tui = false;
-        cli.capture_args.device = Some("eth0".to_string());
-        let msg = security_detection_unarmed_refusal(&cli, &config, &RunMode::Tui)
+        cli.limits_args.cores = 8;
+        cli.capture_args.input = vec!["capture.pcap".to_string()];
+        let msg = security_detection_unarmed_refusal(&cli, &config, &RunMode::CoresFile)
             .expect("a config-armed detector must be reported like a flag-armed one");
         assert!(msg.contains("--kill-scanner"), "{msg}");
     }
@@ -4626,10 +4639,15 @@ mod tests {
         );
     }
 
+    /// The refusal claims a mode builds no detector, and that claim is only
+    /// checkable where the mode is written. The TUI thread graduated — it wires
+    /// the detectors in now, which is why it left the refusal — so the parallel
+    /// offline reader is the last mode this covers. Wire a detector into it and
+    /// this fails, the moment the refusal turns into a lie and has to go.
     #[test]
     fn the_modes_this_refuses_still_build_no_detector() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-        for rel in ["src/app/tui_mode.rs", "src/parallel.rs"] {
+        for rel in ["src/parallel.rs"] {
             let full = std::fs::read_to_string(root.join(rel))
                 .unwrap_or_else(|e| panic!("read {rel}: {e}"));
             // Code only. A file is allowed to EXPLAIN that it builds no

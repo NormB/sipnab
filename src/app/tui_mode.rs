@@ -387,6 +387,69 @@ pub fn run_tui_mode(
     // confident `0` for a queue they could not see.
     let capture_meter = Some(rx.meter());
 
+    // Live security detectors: the same detection the batch path runs, built
+    // from the same flags (arm-for-arm with `DetectionEngines::armed_kinds`). The
+    // TUI is a PASSIVE observer — it fires findings into a shared engine for the
+    // security-findings view, but never acts on the kill/jail effects a
+    // detection can also carry. A run with no detector armed builds no engine,
+    // and the view says nothing was watching rather than reading as "all clear".
+    let sec_kill_targets: Vec<crate::security::scanner_kill::KillTarget> = cli
+        .security_args
+        .kill_target
+        .iter()
+        .filter_map(|s| crate::security::scanner_kill::KillTarget::parse(s).ok())
+        .collect();
+    let mut sec_scanner =
+        if cli.security_args.kill_scanner || config.security.kill_scanner.unwrap_or(false) {
+            let custom = cli
+                .security_args
+                .kill_ua
+                .as_deref()
+                .map(|s| vec![s.to_string()])
+                .unwrap_or_default();
+            Some(crate::security::ScannerDetector::with_thresholds(
+                &custom,
+                cli.scanner_thresholds(&config),
+            ))
+        } else {
+            None
+        };
+    let mut sec_fraud = crate::app::batch::build_fraud_detector(&cli, &config);
+    let mut sec_digest = cli
+        .security_args
+        .digest_leak
+        .then(crate::security::DigestLeakDetector::new);
+    let mut sec_reg_flood = cli
+        .security_args
+        .reg_flood
+        .then(|| crate::security::RegFloodDetector::new(cli.reg_flood_threshold(&config)));
+    let mut sec_armed: Vec<String> = Vec::new();
+    if sec_scanner.is_some() || !sec_kill_targets.is_empty() {
+        sec_armed.push("scanner".to_string());
+    }
+    if sec_fraud.is_some() {
+        sec_armed.push("fraud".to_string());
+    }
+    if sec_digest.is_some() {
+        sec_armed.push("digest".to_string());
+    }
+    if sec_reg_flood.is_some() {
+        sec_armed.push("reg_flood".to_string());
+    }
+    sec_armed.sort_unstable();
+    // A plain accumulating engine: the TUI does not want the syslog/json/exec
+    // alert channels (those are batch OUTPUT), only the findings ring the view
+    // reads through `build_report`.
+    let security_engine: Option<std::sync::Arc<RwLock<crate::security::AlertEngine>>> =
+        (!sec_armed.is_empty()).then(|| {
+            std::sync::Arc::new(RwLock::new(crate::security::AlertEngine::new(
+                Vec::new(),
+                None,
+            )))
+        });
+    let sec_engine_for_thread = security_engine.clone();
+    let sec_hep_allow_kill = cli.security_args.hep_allow_kill;
+
     // Spawn packet processing thread
     let processing_thread = std::thread::Builder::new()
         .name("tui-processor".to_string())
@@ -544,6 +607,67 @@ pub fn run_tui_mode(
                             &mut media_decrypt,
                             relay_orphans.as_ref(),
                         );
+                        // Live security detection: re-parse the SIP the pipeline
+                        // just stored (a ParsedPacket carries bytes, not a parsed
+                        // message) and run the armed detectors, firing findings
+                        // into the shared engine the security-findings view reads.
+                        // Only the Alert effect is taken — the TUI is a passive
+                        // observer and never acts on a detection's kill/jail.
+                        if let Some(engine) = &sec_engine_for_thread
+                            && let Ok(sip_msg) = crate::sip::parser::parse_sip(
+                                &pp.payload,
+                                pp.timestamp,
+                                pp.src_addr,
+                                pp.dst_addr,
+                                pp.src_port,
+                                pp.dst_port,
+                                pp.transport,
+                            )
+                        {
+                            let effects = {
+                                let dialog_guard = ds.read();
+                                let dialog = sip_msg.call_id().and_then(|id| dialog_guard.get(id));
+                                let mut detectors = crate::security::detectors::Detectors {
+                                    scanner: sec_scanner.as_mut(),
+                                    fraud: sec_fraud.as_mut(),
+                                    digest: sec_digest.as_mut(),
+                                    reg_flood: sec_reg_flood.as_mut(),
+                                    kill_targets: &sec_kill_targets,
+                                };
+                                let policy = crate::security::detectors::Policy {
+                                    fail2ban: false,
+                                    hep_allow_kill: sec_hep_allow_kill,
+                                    origin: pp.input_origin,
+                                    kill_armed: false,
+                                    kill_response_code: 0,
+                                };
+                                crate::security::detectors::run_detectors(
+                                    &mut detectors,
+                                    &sip_msg,
+                                    dialog,
+                                    policy,
+                                )
+                            };
+                            for effect in effects {
+                                if let crate::security::detectors::Effect::Alert {
+                                    detector,
+                                    src_ip,
+                                    detail,
+                                } = effect
+                                {
+                                    use crate::security::detectors::DetectorKind;
+                                    let kind = match detector {
+                                        DetectorKind::Scanner => "scanner",
+                                        DetectorKind::Fraud => "fraud",
+                                        DetectorKind::Digest => "digest",
+                                        DetectorKind::RegFlood => "reg_flood",
+                                    };
+                                    engine
+                                        .write()
+                                        .fire(kind, src_ip, &detail, sip_msg.timestamp);
+                                }
+                            }
+                        }
                     }
                 }
 
@@ -677,6 +801,11 @@ pub fn run_tui_mode(
             // The TFPS-observe view's locator: the same `tfps_ctl` resolution the
             // server door uses, so the view asks the peer this run was pointed at.
             tfps_access: cli.tfps_locator(&config),
+            // The security-findings view's engine + armed list: the same engine
+            // the capture thread fires into, and the detector kinds it armed.
+            // None/empty when no detector was armed.
+            alert_engine: security_engine,
+            armed_detections: sec_armed,
             // C5: the view inherits the run's poll interval, showing it in the
             // header and re-asking on it.
             relay_stats_interval: cli.rtp_args.relay_stats_interval,
