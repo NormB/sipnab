@@ -21,6 +21,12 @@ use super::parser::{RtpHeader, parse_rtp_header};
 /// Number of consecutive valid RTP packets required before declaring detection.
 const CONSECUTIVE_THRESHOLD: u32 = 3;
 
+/// Cap on tracked candidate flows, to bound memory against a spoofed-source
+/// flood. Every other store in this crate (STUN transactions, TURN
+/// allocations, the DNS cache, per-channel SSRCs) is bounded; this was the odd
+/// one out. Well above any realistic count of concurrent unsignaled RTP flows.
+const MAX_CANDIDATES: usize = 8192;
+
 /// Heuristic RTP stream detector for traffic without SDP signaling.
 ///
 /// Tracks candidate flows by their source/destination address pair. Once
@@ -90,6 +96,16 @@ impl RtpHeuristic {
             SocketAddr::new(parsed.src_addr, parsed.src_port),
             SocketAddr::new(parsed.dst_addr, parsed.dst_port),
         );
+
+        // Bound the map before admitting a new key: a stream of RTP-shaped
+        // datagrams from many spoofed source addr/port pairs would otherwise
+        // grow it without limit. Drop an arbitrary candidate to make room.
+        if self.candidates.len() >= MAX_CANDIDATES
+            && !self.candidates.contains_key(&key)
+            && let Some(evict) = self.candidates.keys().next().copied()
+        {
+            self.candidates.remove(&evict);
+        }
 
         let candidate = self.candidates.entry(key).or_insert(HeuristicCandidate {
             consecutive_valid: 0,
@@ -172,6 +188,26 @@ mod tests {
             input_origin: crate::capture::parse::InputOrigin::Wire,
             hep: None,
         }
+    }
+
+    /// The candidate map is bounded: a flood of distinct RTP-shaped flows from
+    /// spoofed pairs cannot grow it without limit. Every other store in this
+    /// crate is bounded; this one now is too.
+    #[test]
+    fn the_candidate_map_is_bounded_against_a_flood() {
+        let mut heuristic = RtpHeuristic::new();
+        // Feed more distinct even-destination-port flows than the cap; each is
+        // a fresh candidate (`make_rtp_parsed` keeps one source, so each even
+        // dst port is a distinct 5-tuple key).
+        for i in 0..(MAX_CANDIDATES as u32 + 100) {
+            let dst_port = (2 + i * 2) as u16;
+            let _ = heuristic.check(&make_rtp_parsed(100, 0xABCD, 0, dst_port));
+        }
+        assert!(
+            heuristic.candidates.len() <= MAX_CANDIDATES,
+            "the candidate map grew past its cap: {}",
+            heuristic.candidates.len()
+        );
     }
 
     /// Three consecutive valid RTP packets reach the threshold and are detected.

@@ -1024,6 +1024,43 @@ mod tests {
         );
     }
 
+    /// `relayed_ssrc` excludes every RTCP packet type, not just 200..=207.
+    /// RTCP runs 192..=223, which folds to 64..=95 once the top bit is masked;
+    /// excluding only 72..=79 filed the rest as phantom media SSRCs.
+    #[test]
+    fn relayed_ssrc_excludes_all_rtcp_not_just_200_to_207() {
+        // A 12-byte RTCP frame: version 2, packet type 192 (legacy FIR), which
+        // folds to 64. Not a media stream, so no SSRC is recorded.
+        let mut fir = [0u8; 12];
+        fir[0] = 0x80;
+        fir[1] = 192;
+        fir[8..12].copy_from_slice(&0xDEAD_BEEFu32.to_be_bytes());
+        assert_eq!(
+            relayed_ssrc(&fir),
+            None,
+            "RTCP 192 (folds to 64) is not media"
+        );
+
+        // And packet type 208 (folds to 80), above the 200..=207 window.
+        let mut upper = fir;
+        upper[1] = 208;
+        assert_eq!(
+            relayed_ssrc(&upper),
+            None,
+            "RTCP 208 (folds to 80) is not media"
+        );
+
+        // A real media packet (PT 0, PCMU) still records its SSRC.
+        let mut media = [0u8; 12];
+        media[0] = 0x80;
+        media[8..12].copy_from_slice(&0x1234_5678u32.to_be_bytes());
+        assert_eq!(
+            relayed_ssrc(&media),
+            Some(0x1234_5678),
+            "a media packet's SSRC is still recorded"
+        );
+    }
+
     /// The unported entry point is unchanged.
     ///
     /// [`channel_data_payload`] has callers that legitimately have no ports to
@@ -1814,16 +1851,20 @@ pub fn note_channel_data(
 /// return `None` on anything ambiguous than to record an SSRC read out of
 /// something that turns out not to be RTP at all.
 ///
-/// RTCP is excluded on the same reasoning. It shares the version bits, its
-/// packet types land at `72..=79` once the marker bit is masked off, and its
-/// bytes 8..12 are not an SSRC in the sense the stream store means — folding
-/// them in would file a report block under a media stream that never existed.
+/// RTCP is excluded on the same reasoning. It shares the version bits; its
+/// packet types run 192..=223 (RTCP_PT_MIN..=RTCP_PT_MAX), which fold to
+/// `64..=95` once the marker/padding bit is masked off — the same reserved
+/// band [`crate::rtp::is_rtp_packet`] rejects — and its bytes 8..12 are not an
+/// SSRC in the sense the stream store means. Folding them in would file a
+/// report block under a media stream that never existed. Excluding only
+/// `72..=79` (RTCP 200..=207) let the rest — legacy FIR/NACK at 192..=199 and
+/// the block above 207 — through as phantom media SSRCs.
 fn relayed_ssrc(payload: &[u8]) -> Option<u32> {
     if payload.len() < 12 || payload[0] & 0xC0 != 0x80 {
         return None;
     }
-    if (72..=79).contains(&(payload[1] & 0x7F)) {
-        return None; // RTCP, not a media stream
+    if (64..=95).contains(&(payload[1] & 0x7F)) {
+        return None; // RTCP or the reserved band, not a media stream
     }
     Some(u32::from_be_bytes([
         payload[8],

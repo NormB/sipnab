@@ -113,6 +113,17 @@ entry that carries them.
   post-dial-delay population — `[10, 20, 30, 40]` p50 was 30 on one and 20 on
   the other. Both now call one generic `percentile_nearest_rank`, so there is a
   single percentile rule and it always names an observed sample.
+- **`relayed_ssrc` excludes the whole RTCP band, not just 200–207.** It rejected
+  only packet types folding to `72..=79` (RTCP 200–207), so the rest of the RTCP
+  range (192–223, folding to `64..=95`) — legacy FIR/NACK and the block above 207
+  — was filed as a phantom media SSRC under a TURN relay channel. It now excludes
+  the full `64..=95` band that `is_rtp_packet` already rejects.
+- **The heuristic RTP detector's candidate map is bounded.** Keyed by
+  source/destination pair, it grew one entry per RTP-shaped flow and was pruned
+  only on a parse failure for the exact 5-tuple — the one store in this crate
+  that was not capped, so a stream of datagrams from spoofed pairs grew it
+  without limit. It now evicts to a fixed cap (`MAX_CANDIDATES`, 8192), like the
+  STUN/TURN/DNS stores.
 
 ### Security
 
