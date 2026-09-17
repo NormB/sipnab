@@ -209,6 +209,15 @@ entry that carries them.
 
 ### Changed
 
+- **`/v1/dialogs` `before` is now an exclusive bound (breaking).** The REST
+  `after`/`before` window is now half-open `[after, before)` — a dialog whose
+  first message is at exactly `before` is excluded, matching the MCP
+  `search_by_time` tool, which was already half-open. REST alone had treated
+  `before` as inclusive, so a dialog on a window boundary fell into two adjacent
+  windows at once. Both surfaces now decide the window through one shared
+  predicate (`cursor::in_time_window`), so they cannot drift again. `after`
+  stays inclusive. A client that relied on the old inclusive `before` must add
+  a second to its upper bound.
 - **TFPS surface aligned to the released peer's vocabulary (breaking).** The
   fields sipnab reports for the TFPS peer now match what `tfps_ctl` actually
   emits: a ban's and a label's `rule` is `reason` (the peer's `block_log`

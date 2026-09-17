@@ -500,8 +500,10 @@ pub struct DialogListParams {
     /// Only dialogs whose first message is at or after this RFC 3339 instant
     /// (e.g. `2026-09-15T12:00:00Z`). A timestamp that does not parse is a 400.
     pub after: Option<String>,
-    /// Only dialogs whose first message is at or before this RFC 3339 instant.
-    /// A timestamp that does not parse is a 400.
+    /// Only dialogs whose first message is strictly before this RFC 3339 instant
+    /// (exclusive upper bound, so `after`/`before` form a half-open `[after,
+    /// before)` window that matches the MCP `search_by_time` tool and tiles
+    /// without overlap). A timestamp that does not parse is a 400.
     pub before: Option<String>,
 }
 
@@ -2802,14 +2804,10 @@ async fn list_dialogs(
             {
                 return false;
             }
-            if let Some(a) = after
-                && d.created_at < a
-            {
-                return false;
-            }
-            if let Some(b) = before
-                && d.created_at > b
-            {
+            // Half-open `[after, before)` through the one shared rule, so REST
+            // agrees with the MCP `search_by_time` tool at the boundary: a
+            // dialog at exactly `before` belongs to the next window, not this.
+            if !crate::cursor::in_time_window(d.created_at, after, before) {
                 return false;
             }
             if let Some(sf) = state_filter {
@@ -10661,6 +10659,46 @@ mod tests {
         let body = body_to_string(resp.into_body()).await;
         let parsed: Value = serde_json::from_str(&body).expect("valid JSON");
         assert_eq!(parsed["dialogs"].as_array().expect("array").len(), 0);
+    }
+
+    /// `before` is EXCLUSIVE at the boundary: a dialog at exactly `before` is
+    /// outside the window, while a dialog at exactly `after` is inside it. That
+    /// is the half-open `[after, before)` rule REST now shares with the MCP
+    /// `search_by_time` tool through `cursor::in_time_window` — before the
+    /// unification `before` was inclusive here, so a boundary dialog fell into
+    /// two adjacent windows at once.
+    #[tokio::test]
+    async fn list_dialogs_before_is_exclusive_at_the_boundary() {
+        // `before` == the dialogs' own instant -> excluded (exclusive upper).
+        let state = make_state();
+        populate_dialogs(&state); // all open at 2024-06-15T12:00:00Z
+        let resp = build_router(state)
+            .oneshot(test_request("/v1/dialogs?before=2024-06-15T12:00:00Z"))
+            .await
+            .expect("oneshot");
+        let parsed: Value =
+            serde_json::from_str(&body_to_string(resp.into_body()).await).expect("valid JSON");
+        assert_eq!(
+            parsed["dialogs"].as_array().expect("array").len(),
+            0,
+            "a dialog at exactly `before` is outside the half-open window"
+        );
+
+        // `after` == the same instant -> included (inclusive lower): the shared
+        // boundary belongs to the next window, counted exactly once.
+        let state = make_state();
+        populate_dialogs(&state);
+        let resp = build_router(state)
+            .oneshot(test_request("/v1/dialogs?after=2024-06-15T12:00:00Z"))
+            .await
+            .expect("oneshot");
+        let parsed: Value =
+            serde_json::from_str(&body_to_string(resp.into_body()).await).expect("valid JSON");
+        assert_eq!(
+            parsed["dialogs"].as_array().expect("array").len(),
+            3,
+            "a dialog at exactly `after` is inside the window"
+        );
     }
 
     /// A timestamp that is not RFC 3339 is a 400, not a silently ignored

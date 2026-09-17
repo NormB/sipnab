@@ -52,6 +52,24 @@ impl Cursor {
     }
 }
 
+/// Whether an instant falls inside a half-open `[after, before)` window.
+///
+/// The lower bound is inclusive and the upper bound EXCLUSIVE — the rule the MCP
+/// `search_by_time` tool has always applied, and, because this is the one shared
+/// implementation, the rule the REST `/v1/dialogs` `after`/`before` filter and
+/// the TUI's time-range filter apply too. Half-open is what lets adjacent
+/// windows tile without overlap: a dialog at exactly `before` belongs to the
+/// next window, so `[09:00, 10:00)` and `[10:00, 11:00)` each claim the 10:00
+/// instant exactly once. A `None` bound is unbounded on that side.
+#[must_use]
+pub fn in_time_window(
+    t: chrono::DateTime<chrono::Utc>,
+    after: Option<chrono::DateTime<chrono::Utc>>,
+    before: Option<chrono::DateTime<chrono::Utc>>,
+) -> bool {
+    after.is_none_or(|a| t >= a) && before.is_none_or(|b| t < b)
+}
+
 /// Parse `<RFC 3339>` or `<RFC 3339>|<identity>` into a [`Cursor`].
 ///
 /// # Errors
@@ -108,6 +126,52 @@ mod tests {
         let c = format_cursor(at("2026-07-31T10:00:00Z"), "abc@host");
         assert!(!c.contains('+'), "a `+` in a query decodes to a space: {c}");
         assert!(c.contains('Z'), "UTC renders as Zulu, not +00:00: {c}");
+    }
+
+    /// The window is half-open: the lower bound is inclusive, the upper
+    /// EXCLUSIVE, so adjacent windows tile without double-counting the shared
+    /// instant. This is the one rule REST `/v1/dialogs` and MCP `search_by_time`
+    /// share, and the boundary case is the whole reason to share it.
+    #[test]
+    fn time_window_is_half_open() {
+        let lo = at("2026-07-31T10:00:00Z");
+        let hi = at("2026-07-31T11:00:00Z");
+        // Inclusive lower bound.
+        assert!(
+            in_time_window(lo, Some(lo), Some(hi)),
+            "t == after is inside"
+        );
+        // EXCLUSIVE upper bound — the crux of the unification.
+        assert!(
+            !in_time_window(hi, Some(lo), Some(hi)),
+            "t == before is OUTSIDE the window"
+        );
+        // Interior stays in; either side stays out.
+        assert!(in_time_window(
+            at("2026-07-31T10:30:00Z"),
+            Some(lo),
+            Some(hi)
+        ));
+        assert!(!in_time_window(
+            at("2026-07-31T09:59:59Z"),
+            Some(lo),
+            Some(hi)
+        ));
+        assert!(!in_time_window(
+            at("2026-07-31T11:00:01Z"),
+            Some(lo),
+            Some(hi)
+        ));
+        // A `None` bound is unbounded on that side.
+        assert!(in_time_window(at("2000-01-01T00:00:00Z"), None, Some(hi)));
+        assert!(in_time_window(at("2099-01-01T00:00:00Z"), Some(lo), None));
+        assert!(in_time_window(lo, None, None));
+        // Adjacent windows tile: the boundary instant belongs to the LATER one.
+        let later = at("2026-07-31T12:00:00Z");
+        assert!(
+            !in_time_window(hi, Some(lo), Some(hi)) && in_time_window(hi, Some(hi), Some(later)),
+            "the shared boundary instant is claimed by exactly one window"
+        );
     }
 
     /// A compound cursor round-trips through format and parse.

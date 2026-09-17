@@ -5550,7 +5550,7 @@
             }
           },
           {
-            "description": "Only dialogs whose first message is at or before this RFC 3339 instant.\nA timestamp that does not parse is a 400.",
+            "description": "Only dialogs whose first message is strictly before this RFC 3339 instant\n(exclusive upper bound, so `after`/`before` form a half-open `[after,\nbefore)` window that matches the MCP `search_by_time` tool and tiles\nwithout overlap). A timestamp that does not parse is a 400.",
             "in": "query",
             "name": "before",
             "required": false,

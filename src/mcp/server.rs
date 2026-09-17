@@ -6258,10 +6258,7 @@ impl SipnabMcp {
             let delay = crate::rtp::quality::MosDelay::from_capture(&ss);
             let mut matched: Vec<&crate::sip::dialog::SipDialog> = ds
                 .iter()
-                .filter(|d| {
-                    let t = d.created_at;
-                    t >= start && end.is_none_or(|e| t < e)
-                })
+                .filter(|d| crate::cursor::in_time_window(d.created_at, Some(start), end))
                 .filter(|d| {
                     // Streams are collected only for the dialogs that survived
                     // the window, which is the cheap test and usually the
