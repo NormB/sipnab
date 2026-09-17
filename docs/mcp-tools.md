@@ -90,8 +90,10 @@ ordinary update.
 
 
 > **The peer this needs.** These read TFPS through its `tfps_ctl` program in a
-> JSON mode that no released TFPS publishes yet: that work sits on a branch
-> nobody has merged, and nobody has proposed it upstream. Against a released
+> JSON mode no released [TFPS](https://github.com/sippulse/tfps) carries yet:
+> the NormB/tfps fork carries it, and
+> [sippulse/tfps#6](https://github.com/sippulse/tfps/pull/6) proposes it
+> upstream, though no tagged release has it. Against a released
 > TFPS these report a peer they cannot read, which is the honest answer
 > rather than a fault. sipnab's side waits for the other.
 
