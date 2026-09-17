@@ -1,0 +1,28 @@
+---
+source: tests/tui_snapshot_test.rs
+expression: output
+---
+ Current Mode: Online (any)    Dialogs: 3 (3 displayed)  [A]
+ Match Expression:     BPF Filter:
+ Display Filter:
+┌ RFC conformance ─────────────────────────────────────────────────────────────┐
+│RFC conformance findings                                                      │
+│                                                                              │
+│  7 findings                                                                  │
+│                                                                              │
+│  [ERROR]  RFC 3261 §8.1.1  (msg #0)  SIP-3261-8.1.1-MANDATORY-HEADER-MISSING │
+│    observed:  no Via header field                                            │
+│    expected:  Via present                                                    │
+│    Via is one of the six fields §8.1.1 calls mandatory in all SIP requests. A│
+│                                                                              │
+│  [WARNING]  RFC 3261 §8.1.1.6  (msg #0)  SIP-3261-8.1.1.6-MAX-FORWARDS-MISSIN│
+│    observed:  no Max-Forwards header field                                   │
+│    expected:  Max-Forwards: 70                                               │
+│    §8.1.1.6 makes a UAC insert one into every request it originates. Without │
+│                                                                              │
+│  [ERROR]  RFC 3261 §8.1.1  (msg #1)  SIP-3261-8.1.1-MANDATORY-HEADER-MISSING │
+│    observed:  no Via header field                                            │
+│    expected:  Via present                                                    │
+│    Via is one of the six fields §8.1.1 calls mandatory in all SIP requests. R│
+└──────────────────────────────────────────────────────────────────────────────┘
+Esc Back

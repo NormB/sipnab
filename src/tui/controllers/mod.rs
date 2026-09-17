@@ -190,6 +190,7 @@ fn dispatch_view_key(app: &mut App, key: KeyEvent) {
         View::CaptureHealth => handle_capture_health_key(app, key),
         View::CallVolume => handle_call_volume_key(app, key),
         View::SdpTimeline { .. } => handle_sdp_timeline_key(app, key),
+        View::Conformance { .. } => handle_conformance_key(app, key),
         View::RelayStats { .. } => handle_relay_stats_key(app, key),
         View::BpfFilter => handle_bpf_filter_key(app, key),
         View::QualityDashboard => dashboard::handle_dashboard_key(app, key),
@@ -1105,6 +1106,82 @@ pub(in crate::tui) fn handle_sdp_timeline_key(app: &mut App, key: KeyEvent) {
     }
 }
 
+/// Everything the RFC-conformance view can do for a single key press.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConformanceAction {
+    /// Esc, the quit key, or `f` — close the panel and return to the list.
+    Close,
+    /// Scroll the findings up one line.
+    ScrollUp,
+    /// Scroll the findings down one line.
+    ScrollDown,
+    /// Scroll the findings up 20 lines.
+    PageUp,
+    /// Scroll the findings down 20 lines.
+    PageDown,
+    /// Jump to the top of the findings.
+    ScrollTop,
+    /// Jump to the bottom (the render pass clamps to the content height).
+    ScrollBottom,
+}
+
+/// Pure key→action mapping for the RFC-conformance view (keymap-aware).
+///
+/// # Arguments
+/// * `km` - the active keymap; the rebindable quit key is honored.
+/// * `key` - the key event whose code is matched against the bindings.
+///
+/// # Returns
+/// The mapped `ConformanceAction`, or `None` when the key is not bound here.
+pub fn conformance_action(km: &Keymap, key: KeyEvent) -> Option<ConformanceAction> {
+    use ConformanceAction::*;
+    Some(match key.code {
+        k if k == KeyCode::Esc || k == km.quit || k == KeyCode::Char('f') => Close,
+        KeyCode::Up | KeyCode::Char('k') => ScrollUp,
+        KeyCode::Down | KeyCode::Char('j') => ScrollDown,
+        KeyCode::PageUp => PageUp,
+        KeyCode::PageDown => PageDown,
+        KeyCode::Home => ScrollTop,
+        KeyCode::End => ScrollBottom,
+        _ => return None,
+    })
+}
+
+/// Handle keys in the RFC-conformance view: map, then execute.
+///
+/// # Arguments
+/// * `app` - the application state to mutate.
+/// * `key` - the key event, mapped via `conformance_action`.
+///
+/// # Side effects
+/// Scroll actions move `app.conformance_scroll`; `Close` returns to the call
+/// list. Unbound keys are ignored.
+pub(in crate::tui) fn handle_conformance_key(app: &mut App, key: KeyEvent) {
+    let Some(action) = conformance_action(&app.keymap, key) else {
+        return;
+    };
+    match action {
+        ConformanceAction::Close => {
+            app.current_view = View::CallList;
+        }
+        ConformanceAction::ScrollUp => {
+            app.conformance_scroll = app.conformance_scroll.saturating_sub(1);
+        }
+        ConformanceAction::ScrollDown => {
+            app.conformance_scroll = app.conformance_scroll.saturating_add(1);
+        }
+        ConformanceAction::PageUp => {
+            app.conformance_scroll = app.conformance_scroll.saturating_sub(20);
+        }
+        ConformanceAction::PageDown => {
+            app.conformance_scroll = app.conformance_scroll.saturating_add(20);
+        }
+        ConformanceAction::ScrollTop => app.conformance_scroll = 0,
+        // Clamped to the content height by the render pass.
+        ConformanceAction::ScrollBottom => app.conformance_scroll = u16::MAX,
+    }
+}
+
 /// Everything the relay-statistics view can do for a single key press (ST8).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RelayStatsAction {
@@ -1366,6 +1443,13 @@ pub(in crate::tui) fn handle_mouse_event(app: &mut App, kind: crossterm::event::
                 app.sdp_timeline_scroll.saturating_add(3)
             } else {
                 app.sdp_timeline_scroll.saturating_sub(3)
+            };
+        }
+        View::Conformance { .. } => {
+            app.conformance_scroll = if down {
+                app.conformance_scroll.saturating_add(3)
+            } else {
+                app.conformance_scroll.saturating_sub(3)
             };
         }
         View::RelayStats { .. } => {

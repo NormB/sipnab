@@ -98,6 +98,8 @@ pub enum CallListAction {
     OpenCallVolume,
     /// `o` — open the SDP offer/answer timeline of the selected call.
     OpenSdpTimeline,
+    /// `f` — open the RFC-conformance findings of the selected call.
+    OpenConformance,
     /// `S` — open the relay-statistics view for the relay's globals (ST8, C1).
     OpenRelayStats,
     /// `B` — show the full BPF capture-filter expression (status line 2
@@ -169,6 +171,7 @@ pub fn call_list_action(km: &Keymap, key: KeyEvent) -> Option<CallListAction> {
         KeyCode::Char('h') => OpenCaptureHealth,
         KeyCode::Char('b') => OpenCallVolume,
         KeyCode::Char('o') => OpenSdpTimeline,
+        KeyCode::Char('f') => OpenConformance,
         KeyCode::Char('S') => OpenRelayStats,
         KeyCode::Char('B') => OpenBpfFilter,
         KeyCode::Char('D') => OpenDashboard,
@@ -379,6 +382,12 @@ fn execute_call_list_action(app: &mut App, action: CallListAction) {
             if let Some(call_id) = get_selected_call_id(app) {
                 app.sdp_timeline_scroll = 0;
                 app.current_view = View::SdpTimeline { call_id };
+            }
+        }
+        CallListAction::OpenConformance => {
+            if let Some(call_id) = get_selected_call_id(app) {
+                app.conformance_scroll = 0;
+                app.current_view = View::Conformance { call_id };
             }
         }
         CallListAction::OpenRelayStats => {

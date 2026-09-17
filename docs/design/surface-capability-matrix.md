@@ -220,7 +220,7 @@ What SIP RFC-conformance defects does this call or message trip?
 | Surface | Detail |
 |---|---|
 | CLI | `--lint` with `--lint-fail-on` |
-| TUI | gap: a human reviewing a message in `RawMessage` cannot see its RFC findings inline, because no conformance panel exists (PAR4) |
+| TUI | `Conformance` |
 | REST | `/v1/dialogs/{call_id}/lint` |
 | MCP | `lint_dialog` and `validate_message` |
 

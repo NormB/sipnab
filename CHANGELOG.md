@@ -12,6 +12,17 @@ entry that carries them.
 
 ### Added
 
+- **RFC-conformance TUI view (PAR4).** A new `Conformance` view, opened with `f`
+  on the selected call, lists the call's SIP RFC-conformance findings — each with
+  a severity, its RFC citation (`RFC 3261 §8.1.1.7`), the message it was drawn
+  from, and the observed/expected/explanation. `RawMessage` showed the message
+  but not its defects; this is the conformance panel a reviewer reaches for. It
+  lints the one dialog through the shared `crate::sip::lint` catalog, grounding
+  the media rules off its streams exactly as `GET /v1/dialogs/{id}/lint` and the
+  MCP `lint_dialog` tool do, so the surfaces agree on what a call trips. The text
+  builder takes the lint outcome as an argument, so it is pure and unit-tested on
+  a constructed outcome. Closes the RFC-conformance TUI gap, leaving 18 named
+  gaps.
 - **SDP offer/answer timeline TUI view (PAR4).** A new `SdpTimeline` view, opened
   with `o` on the selected call, distills the call's SDP negotiation: each offer
   and answer in order, its codecs, media anchor and directionality, and any

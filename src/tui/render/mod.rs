@@ -59,6 +59,8 @@ pub(in crate::tui) struct RenderFeedback {
     pub(in crate::tui) call_volume_scroll: Option<u16>,
     /// Clamped scroll of the SDP offer/answer timeline view.
     pub(in crate::tui) sdp_timeline_scroll: Option<u16>,
+    /// Clamped scroll of the RFC-conformance view.
+    pub(in crate::tui) conformance_scroll: Option<u16>,
     /// Clamped scroll of the relay-statistics view (ST8).
     pub(in crate::tui) relay_stats_scroll: Option<u16>,
     /// Content-clamped scroll of the full-BPF-filter popup (`B`). Only the
@@ -532,6 +534,10 @@ pub(in crate::tui) fn render_app(
         }
         View::SdpTimeline { call_id } => {
             fb.sdp_timeline_scroll = Some(render_sdp_timeline(frame, main_area, app, ds, call_id));
+        }
+        View::Conformance { call_id } => {
+            fb.conformance_scroll =
+                Some(render_conformance(frame, main_area, app, ds, ss, call_id));
         }
         View::RelayStats { .. } => {
             fb.relay_stats_scroll = Some(render_relay_stats(frame, main_area, app));
@@ -1202,6 +1208,87 @@ pub(in crate::tui) fn sdp_timeline_text(
         );
     }
     out
+}
+
+/// Build the RFC-conformance panel for a dialog: its lint findings, each with a
+/// severity, RFC citation, the message it was drawn from, and the
+/// observed/expected/explanation — the same findings
+/// `GET /v1/dialogs/{id}/lint` and the MCP `lint_dialog` tool report. Takes the
+/// outcome as an argument so the conversion is pure.
+///
+/// STUB — filled in after the failing test.
+pub(in crate::tui) fn conformance_text(outcome: &crate::sip::lint::LintOutcome) -> String {
+    use std::fmt::Write as _;
+
+    let mut out = String::new();
+    let _ = writeln!(out, "RFC conformance findings");
+    let _ = writeln!(out);
+    if outcome.findings.is_empty() {
+        let _ = writeln!(out, "  No RFC conformance findings — this call is clean.");
+        return out;
+    }
+    let plural = if outcome.findings.len() == 1 { "" } else { "s" };
+    let _ = writeln!(out, "  {} finding{plural}", outcome.findings.len());
+    for f in &outcome.findings {
+        let _ = writeln!(out);
+        let _ = writeln!(
+            out,
+            "  [{}]  {}  (msg #{})  {}",
+            f.severity.as_str().to_uppercase(),
+            f.citation(),
+            f.message_index,
+            f.rule_id,
+        );
+        let _ = writeln!(out, "    observed:  {}", f.observed);
+        let _ = writeln!(out, "    expected:  {}", f.expected);
+        let _ = writeln!(out, "    {}", f.explanation);
+    }
+    out
+}
+
+/// Render a dialog's RFC-conformance findings. Parameterized by the Call-ID on
+/// the view; lints the one dialog each frame (cheap — one dialog, not a
+/// whole-store scan) through the shared `crate::sip::lint` catalog, grounding
+/// the media rules off its streams the same way `GET /v1/dialogs/{id}/lint`
+/// does. Returns the clamped scroll.
+///
+/// # Side effects
+/// Draws to `frame` only; no state is mutated.
+pub(in crate::tui) fn render_conformance(
+    frame: &mut ratatui::Frame,
+    area: ratatui::layout::Rect,
+    app: &App,
+    ds: &DialogStore,
+    ss: &StreamStore,
+    call_id: &str,
+) -> u16 {
+    let text = match ds.get(call_id) {
+        Some(dialog) => {
+            let media = crate::sip::lint::ObservedMedia::from_streams(ss.streams_for(call_id));
+            let outcome = crate::sip::lint::Linter::new(crate::sip::lint::LintConfig::new())
+                .lint_dialog_with_media_detailed(dialog, &media);
+            conformance_text(&outcome)
+        }
+        None => {
+            format!("RFC conformance findings\n\n  Call {call_id} is no longer in the capture.\n")
+        }
+    };
+    let total_rows = text.lines().count() as u16;
+    let viewport = area.height.saturating_sub(2);
+    let scroll = app
+        .conformance_scroll
+        .min(total_rows.saturating_sub(viewport));
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" RFC conformance ");
+    let paragraph = Paragraph::new(text)
+        .block(block)
+        .style(Style::default().fg(app.theme.foreground))
+        .scroll((scroll, 0));
+
+    frame.render_widget(paragraph, area);
+    scroll
 }
 
 /// Render a dialog's SDP offer/answer timeline. Parameterized by the Call-ID on
@@ -2406,6 +2493,61 @@ mod tests {
         assert!(
             text.contains("on hold"),
             "the mid-call hold event is flagged:\n{text}"
+        );
+    }
+
+    /// The conformance panel renders each finding's severity, RFC citation, rule
+    /// id and observed evidence. A two-finding outcome — one MUST error, one
+    /// SHOULD warning — exercises the severity labels, the citation formatting
+    /// and the evidence lines.
+    #[test]
+    fn conformance_text_lists_findings_with_severity_and_citation() {
+        use crate::sip::lint::{Basis, Finding, LintOutcome, Severity, WithheldCounts};
+
+        let outcome = LintOutcome {
+            findings: vec![
+                Finding {
+                    rule_id: "via-branch-missing",
+                    severity: Severity::Error,
+                    basis: Basis::Must,
+                    rfc: 3261,
+                    section: "8.1.1.7",
+                    message_index: 2,
+                    observed: "Via has no branch parameter".to_string(),
+                    expected: "every Via carries a branch starting z9hG4bK".to_string(),
+                    explanation: "a proxy cannot match responses without it".to_string(),
+                },
+                Finding {
+                    rule_id: "max-forwards-missing",
+                    severity: Severity::Warning,
+                    basis: Basis::Should,
+                    rfc: 3261,
+                    section: "8.1.1.6",
+                    message_index: 0,
+                    observed: "no Max-Forwards header".to_string(),
+                    expected: "requests should carry Max-Forwards".to_string(),
+                    explanation: "loops are not bounded without it".to_string(),
+                },
+            ],
+            withheld: WithheldCounts::default(),
+        };
+
+        let text = conformance_text(&outcome);
+        assert!(
+            text.contains("via-branch-missing"),
+            "the rule id renders:\n{text}"
+        );
+        assert!(
+            text.to_uppercase().contains("ERROR") && text.to_uppercase().contains("WARNING"),
+            "both severities render:\n{text}"
+        );
+        assert!(
+            text.contains("RFC 3261 §8.1.1.7"),
+            "the RFC citation renders:\n{text}"
+        );
+        assert!(
+            text.contains("Via has no branch parameter"),
+            "the observed evidence renders:\n{text}"
         );
     }
 

@@ -1296,6 +1296,14 @@ pub enum View {
         /// Call-ID of the dialog whose SDP timeline is shown.
         call_id: String,
     },
+    /// A dialog's RFC conformance findings: the lint the same
+    /// `GET /v1/dialogs/{id}/lint` route and MCP `lint_dialog` tool report,
+    /// each finding with its severity, RFC citation and evidence. Opened with
+    /// `f` on the selected call.
+    Conformance {
+        /// Call-ID of the dialog to lint.
+        call_id: String,
+    },
     /// The live relay's own statistics, asked over its control socket (ST8).
     ///
     /// Distinct from [`View::Statistics`], which is about what THIS capture saw:

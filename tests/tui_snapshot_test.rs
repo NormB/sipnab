@@ -1135,6 +1135,26 @@ mod tui_snapshots {
         insta::assert_snapshot!(output);
     }
 
+    /// Snapshot: the RFC-conformance findings, opened with `f` on the selected
+    /// call, linting the fixture dialog through the shared catalog (PAR4).
+    #[test]
+    fn conformance_view() {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = test_app_with_dialogs();
+        app.handle_key(crossterm::event::KeyCode::Char('f')); // open RFC conformance
+        assert!(
+            matches!(app.current_view(), sipnab::tui::View::Conformance { .. }),
+            "expected the conformance view, got {:?}",
+            app.current_view()
+        );
+
+        terminal.draw(|frame| app.render(frame)).unwrap();
+
+        let output = buffer_to_string(&terminal);
+        insta::assert_snapshot!(output);
+    }
+
     /// Snapshot: the F7 filter popup over an empty call list.
     #[test]
     fn filter_dialog_popup() {

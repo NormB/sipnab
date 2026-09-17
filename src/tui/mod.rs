@@ -62,13 +62,14 @@ use controllers::*;
 #[doc(hidden)]
 pub use controllers::{
     CallFlowAction, CallListAction, CallVolumeAction, CaptureHealthAction, CarrierMetricsAction,
-    CombinedDetailAction, CompareDialogsAction, DashboardAction, EndpointRollupAction, HelpAction,
-    LossMapAction, MessageDiffAction, RawMessageAction, SdpTimelineAction, StatisticsAction,
-    StreamDetailAction, StreamListAction, TalkersAction, TimelineAction, call_flow_action,
-    call_list_action, call_volume_action, capture_health_action, carrier_metrics_action,
-    combined_detail_action, compare_dialogs_action, dashboard_action, endpoint_rollup_action,
-    help_action, loss_map_action, message_diff_action, raw_message_action, sdp_timeline_action,
-    statistics_action, stream_detail_action, stream_list_action, talkers_action, timeline_action,
+    CombinedDetailAction, CompareDialogsAction, ConformanceAction, DashboardAction,
+    EndpointRollupAction, HelpAction, LossMapAction, MessageDiffAction, RawMessageAction,
+    SdpTimelineAction, StatisticsAction, StreamDetailAction, StreamListAction, TalkersAction,
+    TimelineAction, call_flow_action, call_list_action, call_volume_action, capture_health_action,
+    carrier_metrics_action, combined_detail_action, compare_dialogs_action, conformance_action,
+    dashboard_action, endpoint_rollup_action, help_action, loss_map_action, message_diff_action,
+    raw_message_action, sdp_timeline_action, statistics_action, stream_detail_action,
+    stream_list_action, talkers_action, timeline_action,
 };
 use render::*;
 use save::*;
@@ -154,6 +155,8 @@ pub struct App {
     call_volume_scroll: u16,
     /// Clamped scroll of the SDP offer/answer timeline view (`o`).
     sdp_timeline_scroll: u16,
+    /// Clamped scroll of the RFC-conformance view (`f`).
+    conformance_scroll: u16,
     /// Scroll offset for the relay-statistics view (ST8; clamped in render).
     relay_stats_scroll: u16,
     /// Selected row in the quality dashboard's worst-streams table.
@@ -419,6 +422,7 @@ impl App {
             capture_health_scroll: 0,
             call_volume_scroll: 0,
             sdp_timeline_scroll: 0,
+            conformance_scroll: 0,
             relay_stats_scroll: 0,
             dashboard_selected: 0,
             stream_displayed: StreamDisplayedCache::default(),
@@ -1476,6 +1480,9 @@ impl App {
         }
         if let Some(v) = fb.sdp_timeline_scroll {
             self.sdp_timeline_scroll = v;
+        }
+        if let Some(v) = fb.conformance_scroll {
+            self.conformance_scroll = v;
         }
         if let Some(v) = fb.relay_stats_scroll {
             self.relay_stats_scroll = v;
