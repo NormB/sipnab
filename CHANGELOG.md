@@ -39,6 +39,15 @@ entry that carries them.
   tracks no dialogs; `--lint-max-per-rule 0` uncaps the lint report. Each now
   carries a `1..` range parser, matching the `scanner_*` flags and closing the
   "the file cannot be the lenient way in" gap from the command-line side.
+- **`[names] dns_cache_entries` and `--quality-threshold` are validated.** Two
+  more validation gaps: `[names] dns_cache_entries = 0` was accepted from a
+  config file — the `[names]` section had no validator wired into startup at all
+  — while `--dns-cache-entries 0` was already refused, and a cap of 0 evicts on
+  every insert so resolved names flicker. And `--quality-threshold` accepted any
+  `f64`, so `nan` silently stopped `--on-quality-exec` from ever firing and a
+  negative value fired it on every stream, despite the flag documenting a
+  1.0-5.0 MOS scale. `NamesConfig` now validates at startup like every other
+  section, and `--quality-threshold` rejects a non-finite or out-of-range value.
 
 ### Security
 

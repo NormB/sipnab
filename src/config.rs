@@ -1697,6 +1697,25 @@ pub struct NamesConfig {
     pub dns_cache_entries: Option<u64>,
 }
 
+impl NamesConfig {
+    /// Reject a `dns_cache_entries` of 0, matching the `--dns-cache-entries`
+    /// flag's `range(1..)`. A cap of 0 evicts on every insert, so the
+    /// reverse-DNS cache holds about one entry and resolved names flicker; the
+    /// flag refuses 0, so the file must too rather than being the lenient way
+    /// in. `[names]` was the one config section with no validator wired into
+    /// startup, so the file could pass a value the flag already rejects.
+    pub fn validate(&self) -> Result<(), crate::Error> {
+        if let Some(0) = self.dns_cache_entries {
+            return Err(crate::Error::ConfigInvalid(
+                "[names] dns_cache_entries must be > 0 (0 evicts on every insert, \
+                 holding about one entry)"
+                    .into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
 /// TUI theme configuration — semantic color slots.
 ///
 /// Each field accepts a color name (`"red"`, `"cyan"`, `"dark_gray"`) or
@@ -3342,6 +3361,29 @@ column_selector = "F10"
         };
         let err = limits.validate().unwrap_err();
         assert!(err.to_string().contains("dialog_limit"));
+    }
+
+    /// `[names] dns_cache_entries = 0` is rejected, naming the key: the flag
+    /// `--dns-cache-entries` already refuses 0, so the file must too. `[names]`
+    /// had no validator wired into startup at all.
+    #[test]
+    fn names_zero_dns_cache_entries_rejected() {
+        let names = NamesConfig {
+            dns_cache_entries: Some(0),
+            ..Default::default()
+        };
+        let err = names.validate().unwrap_err();
+        assert!(err.to_string().contains("dns_cache_entries"));
+    }
+
+    /// A positive `dns_cache_entries` validates.
+    #[test]
+    fn names_positive_dns_cache_entries_ok() {
+        let names = NamesConfig {
+            dns_cache_entries: Some(4096),
+            ..Default::default()
+        };
+        assert!(names.validate().is_ok());
     }
 
     /// `max_streams = 0` is rejected, naming the key.

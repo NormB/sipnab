@@ -1678,7 +1678,13 @@ pub struct RtpArgs {
     pub quality_interval_secs: Option<u64>,
 
     /// MOS quality threshold for alerts (1.0-5.0 scale).
-    #[arg(help_heading = "RTP", long, value_name = "MOS", default_value = "3.0")]
+    #[arg(
+        help_heading = "RTP",
+        long,
+        value_name = "MOS",
+        default_value = "3.0",
+        value_parser = parse_quality_threshold
+    )]
     pub quality_threshold: f64,
 }
 
@@ -5268,6 +5274,25 @@ fn parse_cn_suppression_ratio(s: &str) -> Result<f64, String> {
     Ok(v)
 }
 
+/// Parse `--quality-threshold`: a MOS on the documented 1.0-5.0 scale. A
+/// non-finite (`nan`, `inf`) or out-of-range value is refused rather than
+/// silently changing whether `--on-quality-exec` fires -- `nan` made
+/// `mos >= threshold` always false (hooks never fire) and a value below 1.0
+/// made it always true (fires on every stream).
+fn parse_quality_threshold(s: &str) -> Result<f64, String> {
+    let v: f64 = s
+        .trim()
+        .parse()
+        .map_err(|_| format!("not a number: '{s}'"))?;
+    if !(v.is_finite() && (1.0..=5.0).contains(&v)) {
+        return Err(format!(
+            "quality-threshold is a MOS on the 1.0-5.0 scale and must be a finite \
+             number in that range, got {v}"
+        ));
+    }
+    Ok(v)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -7915,6 +7940,29 @@ mod tests {
             assert!(
                 err.to_string().contains('0'),
                 "{flag} must refuse 0 and say so: {err}"
+            );
+        }
+    }
+
+    /// `--quality-threshold` is a MOS on the documented 1.0-5.0 scale, so a
+    /// non-finite or out-of-range value is refused rather than silently
+    /// changing whether `--on-quality-exec` fires. `nan` made `mos >= threshold`
+    /// always false (hooks never fire); a negative made it always true (fires on
+    /// every stream); both parsed without complaint before.
+    #[test]
+    fn quality_threshold_rejects_non_finite_and_out_of_range() {
+        for bad in ["nan", "-1", "0", "6", "inf"] {
+            assert!(
+                Cli::try_parse_from(["sipnab", "-N", "-I", "x.pcap", "--quality-threshold", bad])
+                    .is_err(),
+                "--quality-threshold {bad} must be refused"
+            );
+        }
+        for good in ["1.0", "3.0", "4.5", "5.0"] {
+            assert!(
+                Cli::try_parse_from(["sipnab", "-N", "-I", "x.pcap", "--quality-threshold", good])
+                    .is_ok(),
+                "--quality-threshold {good} must be accepted"
             );
         }
     }

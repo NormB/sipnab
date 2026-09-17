@@ -2627,6 +2627,16 @@ pub fn load_config(cli: &Cli) -> Result<LoadedConfig, PlanError> {
         });
     }
 
+    // [names] carries dns_cache_entries, which --dns-cache-entries refuses at
+    // 0; the file must too, and until now [names] was the one section with no
+    // validator wired in here at all.
+    if let Err(e) = loaded.config.names.validate() {
+        return Err(PlanError {
+            exit_code: 1,
+            message: e.to_string(),
+        });
+    }
+
     // [quality] is validated as a RESOLVED band set rather than as a section,
     // because an unreachable middle can be assembled from both sources: a warn
     // boundary in the file and its bad boundary on the command line. Checking
