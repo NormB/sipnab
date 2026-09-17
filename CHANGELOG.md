@@ -8,6 +8,18 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Internal
+
+- **The backlog records what publishing sipnab to crates.io would cost.** The
+  download page and six other places advertise `cargo install sipnab --features
+  full`, and the crate has never been published, so that command fails for
+  everyone who copies it. The new P2 item carries what `cargo publish
+  --dry-run` refuses on 0.5.178, what the 33.9 MiB package would have to shed
+  to fit a 10 MiB limit, and the semver commitment the lib's public surface
+  would take on — the decision that has to precede a first publish.
+
 ## [0.5.178] - 2026-09-17
 
 ### Fixed

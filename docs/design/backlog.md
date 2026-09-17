@@ -44,7 +44,7 @@ Tiers:
 
 ## Status
 
-**23 open, 520 done** across 38 sections.
+**24 open, 520 done** across 38 sections.
 Regenerate with `python3 scripts/backlog-status.py --apply`.
 
 | Section | Open | Done | Progress |
@@ -52,7 +52,7 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
 | P0 | 0 | 21 | `##########` |
 | P1 | 0 | 70 | `##########` |
 | PV | 0 | 13 | `##########` |
-| P2 | 0 | 110 | `##########` |
+| P2 | 1 | 110 | `##########` |
 | P3 | 0 | 64 | `##########` |
 | P4 | 0 | 45 | `##########` |
 | PA | 0 | 13 | `##########` |
@@ -2029,6 +2029,49 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
 - [x] src/process_isolation.rs:432 — [efficiency] PerDstRateLimiter::cleanup O(n) on every send. **Done:** `PerDstRateLimiter` cleanup is gated to at most once/second (`cleanup_if_due`, injected clock) like the HEP nonce-prune; the 60s window in `allow()` still governs limiting so a not-yet-swept bucket never mis-limits.
 - [x] process_isolation.rs:204 / parallel.rs:204,336 — [error-handling] `let _ = tx.send` drops dead-worker shard packets silently. **Done:** parallel.rs dead-worker shard sends go through `shard_send`, which returns a lost-packet count accumulated into `ReconResult.dropped_count` and warned — no more silent `let _ = tx.send`. (process_isolation's own dead-worker send was already handled loudly.)
 - [x] src/pipeline.rs:57 — [edge-case] is_rtcp_packet requires odd dst port; [RFC 5761](https://www.rfc-editor.org/rfc/rfc5761) mux RTCP on even port never recognized. **Done:** `is_rtcp_packet` recognizes RFC 5761 muxed RTCP on even ports by content (v2, PT 192-223, self-consistent RTCP length) while keeping the classic odd-port path; the length-consistency guard keeps existing even-port non-RTCP tests passing.
+
+- [ ] **`cargo install sipnab` is advertised in seven places and the crate has
+  never been published.** `crates.io/api/v1/crates/sipnab` returns 404 — the
+  name is unclaimed rather than taken — while `download.html`, `install.md`,
+  `mcp-deploy.md`, [`website/content/docs/build.md`](https://github.com/NormB/sipnab/blob/main/website/content/docs/build.md), the site mirrors and
+  `implementation-plan-v6.md` all tell a reader to run
+  `cargo install sipnab --features full`. That command fails for everyone who
+  copies it. Either publish the crate or stop advertising it; measured
+  2026-09-17 against 0.5.178.
+
+  What publishing needs, from `cargo publish --dry-run` on 0.5.178:
+
+  - `sipnab-bpf-types` is an unconditional path dependency carrying
+    `publish = false` and no `version`, so the dry run refuses twice over. It
+    has to be published first (its name is free too), and the dependency then
+    needs `version = "0.1.0"` beside the `path`.
+  - The package is 33.9 MiB across 1040 files against a 10 MiB compressed
+    crates.io limit: `src/` 12.8 MiB, `docs/` 9.4 MiB (5.5 MiB of it
+    `docs/screenshots/*.png`), `tests/` 6.6 MiB, `harness/` 2.6 MiB,
+    [`CHANGELOG.md`](https://github.com/NormB/sipnab/blob/main/CHANGELOG.md) 0.8 MiB. `exclude` already drops `website/`, `demos/`,
+    `fuzz/` and `tests/pcap-samples/`; it needs extending, or replacing with an
+    `include` allowlist so the shipped set is stated rather than subtracted.
+  - No `readme` key, so crates.io would render an empty front page.
+  - Default features pull `pcap`, so a docs.rs build needs libpcap headers.
+    `[package.metadata.docs.rs]` does not exist and has to name a feature set
+    that builds in their sandbox, or docs.rs publishes a failed build beside a
+    working crate.
+  - `release.yml` has no publish step: the order after a tag is bpf-types,
+    then sipnab, and both versions have to stay in lockstep with the tag.
+
+  Rustdoc is not the obstacle it looks like. [`src/lib.rs`](https://github.com/NormB/sipnab/blob/main/src/lib.rs) already carries
+  `#![warn(missing_docs)]` and `#![warn(clippy::missing_docs_in_private_items)]`,
+  and CI runs `cargo clippy --workspace --all-features --all-targets -- -D
+  warnings` alongside `cargo doc --no-deps --all-features --workspace` with
+  `RUSTDOCFLAGS=-D warnings`. An undocumented item — public or private — already
+  fails the build, so the 2,860 `pub` declarations under `src/` are documented
+  today and docs.rs would render them.
+
+  The decision worth making before the first publish is semver. Publishing the
+  lib makes its public surface an API other crates pin, and every internal
+  refactor becomes a breaking change for them. Narrowing what the lib exports,
+  or saying in the crate docs that it is unstable, is cheaper now than after
+  the first dependent.
 
 ## P3 — code health
 
