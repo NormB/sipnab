@@ -55,6 +55,17 @@ entry that carries them.
   bar, which renders only the filter text, showed no active filter and offered
   no hint why rows were missing. It now clears both bounds, matching the
   canonical `clear_active_filter`.
+- **The MCP `get_dialog` default page respects `--mcp-max-rows`.** With
+  `max_messages` omitted, the tool returned an uncapped 100 messages while the
+  explicit-value path clamped to the row cap, so a server run with a small
+  `--mcp-max-rows` answered `get_dialog` with more messages than any other list
+  tool — the "knob silently does nothing" failure the shaping layer documents.
+  The omitted-parameter default now clamps to the row cap too.
+- **The MCP `search_by_time` tool carries the untrusted-data note.** It was the
+  only tool returning a capture-derived `call_id` (attacker-chosen — the Call-ID
+  header value is unrestricted) without the response-level note that every
+  sibling appends to mark returned identifiers as untrusted capture data. The
+  note is now attached.
 
 ### Security
 

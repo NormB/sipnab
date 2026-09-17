@@ -4817,7 +4817,7 @@ impl SipnabMcp {
                     None,
                 ));
             }
-            None => 100usize,
+            None => 100usize.min(self.row_cap),
             Some(n) => (n as usize).min(self.row_cap),
         };
         let cursor = params.cursor.unwrap_or(0) as usize;
@@ -6322,7 +6322,10 @@ impl SipnabMcp {
         };
         let mut payload = payload;
         Self::project_page_fields(&mut payload, params.fields.as_deref())?;
-        Ok(CallToolResult::success(vec![ContentBlock::json(payload)?]))
+        Ok(CallToolResult::success(vec![
+            ContentBlock::json(payload)?,
+            ContentBlock::text(super::shape::untrusted_note()),
+        ]))
     }
 
     /// First-pass triage: signaling problem, media problem, or neither.
@@ -10562,6 +10565,62 @@ mod tests {
         assert_eq!(v["complete"], true);
         assert!(v["next_cursor"].is_null());
         assert_eq!(v["messages"].as_array().unwrap().len(), 2);
+    }
+
+    /// `get_dialog`'s default `max_messages` (the `None` arm) is capped by
+    /// `--mcp-max-rows`, like the `Some(n)` arm. It returned an uncapped 100,
+    /// so a server with a small row cap answered `get_dialog` with more
+    /// messages than any other list tool would — the "the knob silently does
+    /// nothing" failure `shape.rs` documents as worse than no knob.
+    #[tokio::test]
+    async fn get_dialog_default_max_messages_respects_row_cap() {
+        let server = server_with_dialog("cap@x").with_row_cap(1);
+        let result = server
+            .get_dialog(Parameters(GetDialogParams {
+                call_id: "cap@x".to_string(),
+                max_messages: None,
+                cursor: None,
+            }))
+            .await
+            .expect("get_dialog should succeed");
+        let v: serde_json::Value = serde_json::from_str(&text_of(&result)).unwrap();
+        // The dialog carries 2 messages; with a row cap of 1 the default page
+        // must return at most 1, not the uncapped default of 100.
+        assert_eq!(
+            v["messages"].as_array().unwrap().len(),
+            1,
+            "None max_messages must be clamped to row_cap (1), got {v}"
+        );
+    }
+
+    /// `search_by_time` carries the response-level untrusted-data note, like
+    /// every other MCP tool that returns capture-derived identifiers. It was
+    /// the only tool in the file returning a raw, attacker-chosen `call_id`
+    /// with no note to cover it.
+    #[tokio::test]
+    async fn search_by_time_carries_the_untrusted_note() {
+        let server = server_with_dialog("note@x");
+        let result = server
+            .search_by_time(Parameters(SearchByTimeParams {
+                start: (base_ts() - chrono::Duration::seconds(1)).to_rfc3339(),
+                end: Some((base_ts() + chrono::Duration::seconds(1)).to_rfc3339()),
+                filter: None,
+                limit: Some(10),
+                cursor: None,
+                fields: None,
+            }))
+            .await
+            .expect("search_by_time should succeed");
+        let note = crate::mcp::shape::untrusted_note();
+        assert!(
+            result
+                .content
+                .iter()
+                .filter_map(|c| c.as_text())
+                .any(|t| t.text == note),
+            "search_by_time returns a raw call_id, so it must carry the \
+             untrusted-data note like every sibling tool"
+        );
     }
 
     /// A page smaller than the dialog yields complete=false and next_cursor.
