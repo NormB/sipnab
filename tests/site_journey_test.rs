@@ -4601,9 +4601,12 @@ fn inline_script_edits_require_csp_hash_refresh() {
             // banner is filled before the content below it is parsed; filled
             // from the end of the page, after an async CPU-hint round trip, it
             // pushed that content down 35px and put /download/ over its
-            // layout-shift budget. This one is the detection block.
+            // layout-shift budget. This one is the detection block. Re-pinned
+            // the same day when it stopped deriving a CPU from the user agent
+            // (frozen to x86_64/Intel by Chromium) and began marking tiles from
+            // the client hint instead.
             "download.html",
-            "sha256-QUenvhomHpEtRGrg0Wtup9figwf64dACRTY39Ne1e5E=",
+            "sha256-0811gxPZE6mwpSjalocobPzF4V6TTo2Rvjoo7jh8hVQ=",
         ),
         (
             // The tab, table-of-contents and copy-button script, which now

@@ -36,6 +36,14 @@ const { test, expect } = require('@playwright/test');
 // is the configuration e2e/lighthouserc.json measures. The Mac UA matters: it is
 // the detection branch Lighthouse exercises, and "Intel Mac" is what every Mac
 // browser reports regardless of the chip.
+//
+// That last fact is the CPU half of this file. A user agent cannot name the
+// CPU: Chromium freezes it to "Intel Mac OS X" on every Mac and to
+// "X11; Linux x86_64" on every Linux box -- measured 2026-09-17, Chromium 148 on
+// an aarch64 host sends `Linux x86_64` while its client hint says `arm` -- and
+// Firefox and Safari implement no client hint at all (MDN browser-compat-data,
+// NavigatorUAData.getHighEntropyValues). The banner used to derive a CPU from
+// the user agent anyway, so it told ARM readers they had Intel.
 const LIGHTHOUSE_DESKTOP = {
   viewport: { width: 1350, height: 940 },
   deviceScaleFactor: 1,
@@ -43,11 +51,22 @@ const LIGHTHOUSE_DESKTOP = {
     'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36',
 };
 
+// A Chromium on Linux, whatever its CPU: the reduced user agent always says
+// x86_64.
+const FROZEN_LINUX_CHROME = {
+  viewport: { width: 1350, height: 940 },
+  deviceScaleFactor: 1,
+  userAgent:
+    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36',
+};
+
 // Replaces navigator.userAgentData with one whose getHighEntropyValues() does
 // not settle until the test calls window.__deliverCpuHint(architecture). A
 // real browser's answer arrives "soon"; this one arrives exactly when told, or
-// never. Every layout-shift entry from navigation onward is recorded.
-function installControlledHintAndShiftRecorder() {
+// never. With `hints: false` there is no userAgentData at all, which is what
+// Firefox and Safari expose. Every layout-shift entry from navigation onward is
+// recorded.
+function installControlledHintAndShiftRecorder({ platform, hints }) {
   let deliver;
   const pending = new Promise((resolve) => {
     deliver = resolve;
@@ -56,12 +75,12 @@ function installControlledHintAndShiftRecorder() {
   const fake = {
     brands: [],
     mobile: false,
-    platform: 'macOS',
+    platform,
     getHighEntropyValues: () => pending,
   };
   Object.defineProperty(Navigator.prototype, 'userAgentData', {
     configurable: true,
-    get: () => fake,
+    get: () => (hints ? fake : undefined),
   });
 
   window.__shifts = [];
@@ -94,6 +113,39 @@ async function settle(page) {
   await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
 }
 
+// The layout box of every element on the page, keyed by position in the DOM.
+// This is the direct form of "moves nothing". The Layout Instability API is not
+// enough on its own: a badge put back into the tile's flex row pushed each
+// download icon 70px sideways and it reported no shift at all (checked
+// 2026-09-17 by mutation), while a reader would watch the icon jump.
+//
+// offset* rather than getBoundingClientRect(), because the panels animate in
+// with a transform and a transform is not layout -- but summed up the whole
+// offsetParent chain. A single offsetLeft is relative to the nearest positioned
+// ancestor, so marking a tile `position: relative` changed every child's
+// offsetLeft without moving a pixel, and the first version of this check
+// failed the correct implementation. Borders are added back for the same
+// reason (see the loop).
+async function layoutBoxes(page) {
+  return page.evaluate(() =>
+    Array.from(document.body.querySelectorAll('*'))
+      .filter((e) => e instanceof HTMLElement)
+      .map((e, i) => {
+        let x = 0;
+        let y = 0;
+        for (let n = e; n; n = n.offsetParent) {
+          // offsetLeft starts at the parent's PADDING edge, so its border
+          // (clientLeft) has to be added back or a 1px-bordered tile becoming
+          // positioned reads as its children moving 1px.
+          x += n.offsetLeft + (n.offsetParent ? n.offsetParent.clientLeft : 0);
+          y += n.offsetTop + (n.offsetParent ? n.offsetParent.clientTop : 0);
+        }
+        const cls = typeof e.className === 'string' && e.className ? `.${e.className.split(' ')[0]}` : '';
+        return `${i} ${e.tagName.toLowerCase()}${e.id ? `#${e.id}` : ''}${cls} ${x},${y} ${e.offsetWidth}x${e.offsetHeight}`;
+      }),
+  );
+}
+
 test.describe('without JavaScript', () => {
   test.use({ javaScriptEnabled: false });
 
@@ -109,7 +161,7 @@ test.describe('platform detection under the Lighthouse desktop preset', () => {
 
   test.beforeEach(async ({ page }) => {
     await page.route(/fonts\.bunny\.net/, (route) => route.abort());
-    await page.addInitScript(installControlledHintAndShiftRecorder);
+    await page.addInitScript(installControlledHintAndShiftRecorder, { platform: 'macOS', hints: true });
   });
 
   test('is shown without waiting for the CPU hint', async ({ page }) => {
@@ -117,18 +169,65 @@ test.describe('platform detection under the Lighthouse desktop preset', () => {
     // The hint is never delivered in this test. The user agent alone already
     // names the platform, so the banner must say so on its own.
     await expect(page.locator('#dl-detect')).toBeVisible();
-    await expect(page.locator('#dl-detect-plat')).toHaveText('macOS · Intel/AMD (x86_64 / amd64)');
+    await expect(page.locator('#dl-detect-plat')).toHaveText('macOS');
     await expect(page.locator('.dl-tab[data-os="mac"] .dl-tab-you')).toHaveCount(1);
+    await expect(page.locator('.dl-tile--cpu')).toHaveCount(0);
   });
 
-  test('a CPU hint that agrees with the user agent moves nothing', async ({ page }) => {
+  test('a CPU hint that contradicts the user agent moves nothing', async ({ page }) => {
     await page.goto('/download/');
+    // The tiles the hint marks sit below the fold at this viewport, and the
+    // Layout Instability API only reports movement inside the viewport -- so
+    // unless they are on screen when the hint lands, a mark that pushed them
+    // around would be recorded as nothing.
+    await page.locator('#dl-panel-mac .dl-tiles').scrollIntoViewIfNeeded();
     await settle(page);
-    await page.evaluate(() => window.__deliverCpuHint('x86'));
+    const before = await layoutBoxes(page);
+    // An Apple Silicon Mac: the user agent says Intel, the hint says arm.
+    await page.evaluate(() => window.__deliverCpuHint('arm'));
+    await expect(page.locator('#dl-panel-mac .dl-tile--cpu')).toHaveCount(1);
     await settle(page);
-    await expect(page.locator('#dl-detect-plat')).toHaveText('macOS · Intel/AMD (x86_64 / amd64)');
+
+    const after = await layoutBoxes(page);
+    const moved = after.map((box, i) => (box === before[i] ? null : `${before[i]}  ->  ${box}`)).filter(Boolean);
+    expect(after.length, 'the hint added or removed elements').toBe(before.length);
+    expect(moved, `elements whose layout box changed when the CPU hint arrived:\n${moved.join('\n')}`).toEqual([]);
 
     const shifts = await page.evaluate(() => window.__takeShifts());
     expect(shifts, `layout shifts on /download/ with web fonts blocked:\n${JSON.stringify(shifts, null, 2)}`).toEqual([]);
+  });
+});
+
+test.describe('the CPU is named only by a browser that knows it', () => {
+  test.use(FROZEN_LINUX_CHROME);
+
+  test.beforeEach(async ({ page }) => {
+    await page.route(/fonts\.bunny\.net/, (route) => route.abort());
+  });
+
+  test('a user agent alone names no CPU', async ({ page }) => {
+    await page.addInitScript(installControlledHintAndShiftRecorder, { platform: 'Linux', hints: false });
+    await page.goto('/download/');
+    await expect(page.locator('#dl-detect-plat')).toHaveText('Linux');
+    await expect(page.locator('#dl-detect')).not.toContainText(/Intel|AMD|x86|ARM|aarch64/);
+    await expect(page.locator('.dl-tile--cpu')).toHaveCount(0);
+  });
+
+  test('the CPU hint marks exactly the downloads built for that CPU', async ({ page }) => {
+    await page.addInitScript(installControlledHintAndShiftRecorder, { platform: 'Linux', hints: true });
+    await page.goto('/download/');
+    await settle(page);
+    await page.evaluate(() => window.__deliverCpuHint('arm'));
+
+    const arm = page.locator('.dl-tile[data-arch="arm"]');
+    const x86 = page.locator('.dl-tile[data-arch="x86"]');
+    // Apple Silicon, arm64 .deb, aarch64 .rpm, musl and glibc tarballs -- and
+    // their x86 twins. Fewer means a tile lost its data-arch and will never be
+    // marked for anyone.
+    await expect(arm).toHaveCount(5);
+    await expect(x86).toHaveCount(5);
+    await expect(page.locator('.dl-tile--cpu')).toHaveCount(5);
+    for (const tile of await arm.all()) await expect(tile).toHaveClass(/\bdl-tile--cpu\b/);
+    await expect(page.locator('#dl-detect')).not.toContainText(/Intel|AMD|x86/);
   });
 });

@@ -2776,6 +2776,18 @@ input:focus-visible,
   text-decoration: none; transition: border-color 0.15s, transform 0.15s, background 0.15s;
 }
 .dl-tile:hover { border-color: $accent; transform: translateY(-2px); background: lighten($surface, 2%); }
+// The tile built for the visitor's CPU, marked by the client hint after paint.
+// Everything here is paint, not layout: the border keeps its width, and the
+// badge is absolutely positioned (position: relative on a flex item moves
+// nothing, and an absolute child takes no part in the flex row) -- so a hint
+// that arrives late cannot shift the page. Same badge as the tab's "you".
+.dl-tile--cpu { position: relative; border-color: $code-green; }
+.dl-tile--cpu::after {
+  content: 'your CPU'; position: absolute; top: -0.5rem; right: 0.75rem;
+  font-family: $font-mono; font-size: 0.58rem; font-weight: 700; line-height: 1;
+  text-transform: uppercase; letter-spacing: 0.03em;
+  background: $code-green; color: $bg; border-radius: 4px; padding: 0.16rem 0.32rem;
+}
 .dl-tile-ico {
   flex-shrink: 0; width: 36px; height: 36px; display: grid; place-items: center;
   border-radius: 9px; background: $bg; color: $accent;

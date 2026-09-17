@@ -51,11 +51,18 @@
      /download/ over its 0.15 budget on 2026-09-17.
 
      Filling it before the parser has reached the content below means there is
-     nothing below to move. The user agent already names the platform; the CPU
-     hint can only refine the architecture, so it rewrites the text only when
-     its answer differs. The script at the end of the page reads the platform
-     back from data-os rather than detecting it a second time.
-     e2e/tests/download-layout.spec.js holds that hint back to prove it. #}
+     nothing below to move. The script at the end of the page reads the
+     platform back from data-os rather than detecting it a second time.
+
+     The banner names the OS and never the CPU. A user agent cannot know the
+     CPU -- Chromium sends "Intel Mac OS X" from every Mac and "Linux x86_64"
+     from every Linux box, ARM included, and Firefox and Safari have no client
+     hint to correct it -- so deriving one told ARM readers they had Intel. Only
+     the client hint names a CPU, and because it arrives after paint it does
+     so by marking the matching tiles (data-arch), which changes a border and
+     draws a positioned badge: nothing moves. The namemap below already says
+     how to find out without a hint. e2e/tests/download-layout.spec.js holds
+     the hint back, and withholds it entirely, to prove each case. #}
   <script>
   (function () {
     var banner = document.getElementById('dl-detect');
@@ -82,23 +89,21 @@
       os = 'source'; osName = 'Windows';
       osNote = 'There is no native Windows build — run sipnab under WSL, or build from source.';
     }
-    var arch = /aarch64|arm64/i.test(ua) ? 'ARM (aarch64 / arm64)'
-             : (/x86_64|x64|amd64|Win64|Intel Mac/i.test(ua) ? 'Intel/AMD (x86_64 / amd64)' : null);
-
-    function render() {
-      document.getElementById('dl-detect-plat').textContent = osName + (arch && !osNote ? ' · ' + arch : '');
-      document.getElementById('dl-detect-note').textContent = osNote || (arch ? '' : 'CPU unknown from this browser — run uname -m to check.');
-    }
+    document.getElementById('dl-detect-plat').textContent = osName;
+    document.getElementById('dl-detect-note').textContent = osNote || '';
     banner.setAttribute('data-os', os);
-    render();
     banner.hidden = false;
 
-    // Chromium's client hints upgrade the CPU answer after the fact.
+    // Chromium's client hint is the only source that knows the CPU.
     if (navigator.userAgentData && navigator.userAgentData.getHighEntropyValues) {
       navigator.userAgentData.getHighEntropyValues(['architecture']).then(function (h) {
-        var hinted = h.architecture === 'arm' ? 'ARM (aarch64 / arm64)'
-                   : (h.architecture === 'x86' ? 'Intel/AMD (x86_64 / amd64)' : arch);
-        if (hinted !== arch) { arch = hinted; render(); }
+        if (h.architecture !== 'arm' && h.architecture !== 'x86') { return; }
+        function mark() {
+          document.querySelectorAll('.dl-tile[data-arch="' + h.architecture + '"]').forEach(function (t) {
+            t.classList.add('dl-tile--cpu');
+          });
+        }
+        if (document.readyState === 'loading') { document.addEventListener('DOMContentLoaded', mark); } else { mark(); }
       }, function () {});
     }
   })();
@@ -168,12 +173,12 @@
     <div class="dl-direct">
       <span class="dl-direct-label">Prefer a raw binary?</span>
       <div class="dl-tiles">
-        <a class="dl-tile" href="{{ rel }}/sipnab-{{ v }}-aarch64-apple-darwin.tar.gz">
+        <a data-arch="arm" class="dl-tile" href="{{ rel }}/sipnab-{{ v }}-aarch64-apple-darwin.tar.gz">
           <span class="dl-tile-ico"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M17.05 12.04c-.03-2.6 2.13-3.85 2.23-3.91-1.22-1.78-3.11-2.02-3.78-2.05-1.61-.16-3.14.95-3.96.95-.81 0-2.07-.93-3.4-.9-1.75.03-3.36 1.02-4.26 2.58-1.82 3.16-.47 7.84 1.3 10.39.86 1.25 1.89 2.66 3.24 2.61 1.3-.05 1.79-.84 3.36-.84 1.57 0 2.01.84 3.39.81 1.4-.02 2.28-1.28 3.14-2.54.99-1.45 1.4-2.85 1.42-2.93-.03-.01-2.73-1.05-2.76-4.16zM14.5 4.7c.72-.87 1.2-2.08 1.07-3.28-1.03.04-2.28.69-3.02 1.56-.66.77-1.24 2-1.08 3.18 1.15.09 2.32-.58 3.03-1.46z"/></svg></span>
           <span class="dl-tile-txt"><span class="dl-tile-name">Apple Silicon</span><span class="dl-tile-sub">arm64 &middot; tar.gz</span></span>
           <span class="dl-tile-dl"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg></span>
         </a>
-        <a class="dl-tile" href="{{ rel }}/sipnab-{{ v }}-x86_64-apple-darwin.tar.gz">
+        <a data-arch="x86" class="dl-tile" href="{{ rel }}/sipnab-{{ v }}-x86_64-apple-darwin.tar.gz">
           <span class="dl-tile-ico"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M17.05 12.04c-.03-2.6 2.13-3.85 2.23-3.91-1.22-1.78-3.11-2.02-3.78-2.05-1.61-.16-3.14.95-3.96.95-.81 0-2.07-.93-3.4-.9-1.75.03-3.36 1.02-4.26 2.58-1.82 3.16-.47 7.84 1.3 10.39.86 1.25 1.89 2.66 3.24 2.61 1.3-.05 1.79-.84 3.36-.84 1.57 0 2.01.84 3.39.81 1.4-.02 2.28-1.28 3.14-2.54.99-1.45 1.4-2.85 1.42-2.93-.03-.01-2.73-1.05-2.76-4.16zM14.5 4.7c.72-.87 1.2-2.08 1.07-3.28-1.03.04-2.28.69-3.02 1.56-.66.77-1.24 2-1.08 3.18 1.15.09 2.32-.58 3.03-1.46z"/></svg></span>
           <span class="dl-tile-txt"><span class="dl-tile-name">Intel</span><span class="dl-tile-sub">x86-64 &middot; tar.gz</span></span>
           <span class="dl-tile-dl"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg></span>
@@ -196,12 +201,12 @@
     <div class="dl-direct">
       <span class="dl-direct-label">1 &middot; Download the .deb</span>
       <div class="dl-tiles">
-        <a class="dl-tile" href="{{ rel }}/sipnab_{{ v }}_amd64.deb">
+        <a data-arch="x86" class="dl-tile" href="{{ rel }}/sipnab_{{ v }}_amd64.deb">
           <span class="dl-tile-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg></span>
           <span class="dl-tile-txt"><span class="dl-tile-name">x86-64</span><span class="dl-tile-sub">amd64 &middot; .deb</span></span>
           <span class="dl-tile-dl"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg></span>
         </a>
-        <a class="dl-tile" href="{{ rel }}/sipnab_{{ v }}_arm64.deb">
+        <a data-arch="arm" class="dl-tile" href="{{ rel }}/sipnab_{{ v }}_arm64.deb">
           <span class="dl-tile-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg></span>
           <span class="dl-tile-txt"><span class="dl-tile-name">ARM64</span><span class="dl-tile-sub">arm64 &middot; .deb</span></span>
           <span class="dl-tile-dl"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg></span>
@@ -224,12 +229,12 @@
     <div class="dl-direct">
       <span class="dl-direct-label">1 &middot; Download the .rpm</span>
       <div class="dl-tiles">
-        <a class="dl-tile" href="{{ rel }}/sipnab-{{ v }}-1.x86_64.rpm">
+        <a data-arch="x86" class="dl-tile" href="{{ rel }}/sipnab-{{ v }}-1.x86_64.rpm">
           <span class="dl-tile-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg></span>
           <span class="dl-tile-txt"><span class="dl-tile-name">x86-64</span><span class="dl-tile-sub">x86_64 &middot; .rpm</span></span>
           <span class="dl-tile-dl"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg></span>
         </a>
-        <a class="dl-tile" href="{{ rel }}/sipnab-{{ v }}-1.aarch64.rpm">
+        <a data-arch="arm" class="dl-tile" href="{{ rel }}/sipnab-{{ v }}-1.aarch64.rpm">
           <span class="dl-tile-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg></span>
           <span class="dl-tile-txt"><span class="dl-tile-name">ARM64</span><span class="dl-tile-sub">aarch64 &middot; .rpm</span></span>
           <span class="dl-tile-dl"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg></span>
@@ -255,12 +260,12 @@
     <p class="dl-lead">musl-linked and fully self-contained &mdash; runs on any distro, any glibc version, Alpine included. Download, extract, run. This is the safe choice when you&rsquo;re not sure &mdash; the two things it leaves out are TUI audio playback and WASM plugin loading, so this binary has no <code>--plugin</code> flag at all.</p>
     <div class="dl-direct">
       <div class="dl-tiles">
-        <a class="dl-tile" href="{{ rel }}/sipnab-{{ v }}-x86_64-unknown-linux-musl.tar.gz">
+        <a data-arch="x86" class="dl-tile" href="{{ rel }}/sipnab-{{ v }}-x86_64-unknown-linux-musl.tar.gz">
           <span class="dl-tile-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg></span>
           <span class="dl-tile-txt"><span class="dl-tile-name">x86-64</span><span class="dl-tile-sub">musl static &middot; tar.gz</span></span>
           <span class="dl-tile-dl"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg></span>
         </a>
-        <a class="dl-tile" href="{{ rel }}/sipnab-{{ v }}-aarch64-unknown-linux-musl.tar.gz">
+        <a data-arch="arm" class="dl-tile" href="{{ rel }}/sipnab-{{ v }}-aarch64-unknown-linux-musl.tar.gz">
           <span class="dl-tile-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg></span>
           <span class="dl-tile-txt"><span class="dl-tile-name">ARM64</span><span class="dl-tile-sub">musl static &middot; tar.gz</span></span>
           <span class="dl-tile-dl"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg></span>
@@ -270,11 +275,11 @@
     <div class="dl-direct">
       <span class="dl-direct-label">glibc build (adds audio playback and WASM plugins &mdash; needs glibc &ge; {{ config.extra.glibc_floor }} ({{ config.extra.glibc_floor_distros }}) and libpcap)</span>
       <div class="dl-tiles">
-        <a class="dl-tile dl-tile--sm" href="{{ rel }}/sipnab-{{ v }}-x86_64-unknown-linux-gnu.tar.gz">
+        <a data-arch="x86" class="dl-tile dl-tile--sm" href="{{ rel }}/sipnab-{{ v }}-x86_64-unknown-linux-gnu.tar.gz">
           <span class="dl-tile-txt"><span class="dl-tile-name">x86-64</span><span class="dl-tile-sub">glibc &middot; tar.gz</span></span>
           <span class="dl-tile-dl"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg></span>
         </a>
-        <a class="dl-tile dl-tile--sm" href="{{ rel }}/sipnab-{{ v }}-aarch64-unknown-linux-gnu.tar.gz">
+        <a data-arch="arm" class="dl-tile dl-tile--sm" href="{{ rel }}/sipnab-{{ v }}-aarch64-unknown-linux-gnu.tar.gz">
           <span class="dl-tile-txt"><span class="dl-tile-name">ARM64</span><span class="dl-tile-sub">glibc &middot; tar.gz</span></span>
           <span class="dl-tile-dl"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg></span>
         </a>

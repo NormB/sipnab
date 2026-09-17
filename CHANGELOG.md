@@ -12,6 +12,17 @@ entry that carries them.
 
 ### Fixed
 
+- **The download page no longer tells ARM users they have an Intel CPU.** The
+  platform banner read the CPU out of the browser's user agent, which cannot
+  know it: Chromium's reduced user agent is `X11; Linux x86_64` on every Linux
+  machine and `Macintosh; Intel Mac OS X 10_15_7` on every Mac, ARM included,
+  and Firefox and Safari have no client hint to correct a guess. So "Detected:
+  Linux · Intel/AMD (x86_64 / amd64)" greeted ARM readers in Chrome until the
+  hint arrived, and wherever no hint could. The banner now names only the
+  operating system. Where the
+  browser can report the real CPU (Chromium's client hints), the matching
+  download tiles are outlined and badged "your CPU", which changes nothing's
+  position on the page.
 - **The download page no longer jumps when it detects your platform.** The
   "Detected: macOS · Intel/AMD" banner painted empty and was filled in only after
   the browser answered an asynchronous CPU-architecture query; the filled text
