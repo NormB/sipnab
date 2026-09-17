@@ -140,6 +140,14 @@ entry that carries them.
   Call-ID for the display-filter string and shell-quotes the whole command
   through the same helpers the MCP tool already used; the filename is
   shell-quoted too.
+- **A crafted STIR/SHAKEN `iat` cannot overflow the freshness check.** The
+  RFC 8224 §4.4 freshness test computed `(now_unix - iat).abs()` on `iat`, an
+  attacker-supplied JWT claim reachable over the wire with `--stir-shaken`. An
+  `iat` of `i64::MIN` overflowed the subtraction — a panic in a debug build, a
+  wrapped and wrong `VerificationStatus` in a release build — and `.abs()` would
+  itself panic on `i64::MIN`. The check now uses `saturating_sub` and
+  `unsigned_abs`, so an absurd `iat` saturates to a huge age and reads as
+  `Expired`.
 
 ## [0.5.177] - 2026-09-17
 

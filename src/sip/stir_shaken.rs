@@ -210,7 +210,12 @@ pub fn parse_identity_header(header_value: &str, now_unix: i64) -> Result<StirSh
     // the field as `None` — callers can treat absence as suspicious.
     let verified = match claims.iat {
         Some(iat) => {
-            if (now_unix - iat).abs() > 60 {
+            // `iat` is an attacker-supplied JWT claim, so `now_unix - iat`
+            // could overflow (panic in debug, wrap in release) and `.abs()`
+            // would panic on `i64::MIN`. Saturating subtraction and
+            // `unsigned_abs` cannot: an absurd `iat` saturates to a huge age
+            // and reads as Expired, which is the honest verdict.
+            if now_unix.saturating_sub(iat).unsigned_abs() > 60 {
                 VerificationStatus::Expired
             } else {
                 VerificationStatus::NotChecked
@@ -463,6 +468,26 @@ mod tests {
         assert_eq!(info.iat, Some(1_700_000_000));
         // iat is from 2023 — well beyond the 60s freshness window
         assert_eq!(info.verified, VerificationStatus::Expired);
+    }
+
+    /// A crafted `iat` cannot overflow the freshness check. `iat = i64::MIN`
+    /// made `now_unix - iat` overflow — a panic in a debug build and a wrapped,
+    /// wrong VerificationStatus in a release build (both reachable from the wire
+    /// via `--stir-shaken`, since `iat` is an attacker-supplied JWT claim). The
+    /// check now uses saturating arithmetic, so an absurd iat is Expired.
+    #[test]
+    fn a_crafted_iat_does_not_overflow_the_freshness_check() {
+        for iat in [i64::MIN, i64::MAX, i64::MIN + 1, i64::MAX - 1] {
+            let payload = format!(r#"{{"attest":"A","iat":{iat},"orig":{{"tn":"1"}}}}"#);
+            let header = build_identity_header(&payload);
+            let info = parse_identity_header(&header, LONG_AFTER_IAT)
+                .expect("should parse without panicking");
+            assert_eq!(
+                info.verified,
+                VerificationStatus::Expired,
+                "an iat of {iat} is far outside the 60s window and must read as Expired"
+            );
+        }
     }
 
     /// A dest claim with multiple `tn` entries (RFC 8225 Section 5.2.1)
