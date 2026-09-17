@@ -1500,6 +1500,16 @@ fn parse_value(input: &str, field: Field, op: Operator) -> IResult<&str, Value, 
 
     // Try number
     let (rest, num) = double(input)?;
+    // `double` accepts `nan`/`inf`/`infinity`. A non-finite literal is a typo,
+    // not a threshold: every comparison against NaN is false (it would silently
+    // match nothing), and an infinity matches everything or nothing depending
+    // on the operator. Reject it at parse rather than mislead the operator.
+    if !num.is_finite() {
+        return Err(nom::Err::Failure(nom::error::Error::new(
+            input,
+            nom::error::ErrorKind::Verify,
+        )));
+    }
     Ok((rest, Value::Num(num)))
 }
 
@@ -1833,13 +1843,18 @@ fn compare_num(field_val: f64, op: &Operator, value: &Value) -> bool {
         Value::Num(n) => *n,
         _ => return false,
     };
+    // One equality notion drives every operator: two values within
+    // `NUM_EQ_TOLERANCE` are equal. The ordering operators used exact `f64`
+    // comparison, so a value could read as `== 30` AND `> 30` while `<= 30`
+    // was false — a self-contradiction on the tolerance boundary.
+    let eq = (field_val - rhs).abs() < NUM_EQ_TOLERANCE;
     match op {
-        Operator::Eq => (field_val - rhs).abs() < NUM_EQ_TOLERANCE,
-        Operator::Ne => (field_val - rhs).abs() >= NUM_EQ_TOLERANCE,
-        Operator::Lt => field_val < rhs,
-        Operator::Gt => field_val > rhs,
-        Operator::Le => field_val <= rhs,
-        Operator::Ge => field_val >= rhs,
+        Operator::Eq => eq,
+        Operator::Ne => !eq,
+        Operator::Lt => !eq && field_val < rhs,
+        Operator::Gt => !eq && field_val > rhs,
+        Operator::Le => eq || field_val < rhs,
+        Operator::Ge => eq || field_val > rhs,
         // Neither applies to a number: a regex has no numeric meaning and a
         // CIDR block is an address range, not a value range.
         Operator::Regex | Operator::InSubnet => false,
@@ -3798,6 +3813,35 @@ mod tests {
         assert!(compare_num(3.0, &Operator::Ge, &Value::Num(3.0)));
         // Regex is never applicable to numbers.
         assert!(!compare_num(3.0, &Operator::Regex, &Value::Num(3.0)));
+    }
+
+    /// The ordering operators agree with equality on the tolerance boundary. A
+    /// value within `NUM_EQ_TOLERANCE` of the literal is equal, so `<=` and `>=`
+    /// hold while `<` and `>` do not — the exact-comparison ordering made a
+    /// value read as both `== 30` and `> 30`.
+    #[test]
+    fn compare_num_ordering_agrees_with_equality_at_the_boundary() {
+        let v = 30.000_4; // within 5e-4 of 30
+        assert!(compare_num(v, &Operator::Eq, &Value::Num(30.0)));
+        assert!(compare_num(v, &Operator::Le, &Value::Num(30.0)));
+        assert!(compare_num(v, &Operator::Ge, &Value::Num(30.0)));
+        assert!(!compare_num(v, &Operator::Gt, &Value::Num(30.0)));
+        assert!(!compare_num(v, &Operator::Lt, &Value::Num(30.0)));
+        // A clearly larger value still orders correctly.
+        assert!(compare_num(35.0, &Operator::Gt, &Value::Num(30.0)));
+        assert!(!compare_num(35.0, &Operator::Le, &Value::Num(30.0)));
+    }
+
+    /// A non-finite numeric literal (`nan`, `inf`, `infinity`) is rejected at
+    /// parse rather than silently matching nothing (every comparison against
+    /// NaN is false) or everything.
+    #[test]
+    fn a_non_finite_numeric_literal_is_rejected() {
+        assert!(FilterExpr::parse("msg_count == nan").is_err());
+        assert!(FilterExpr::parse("rtp.mos > inf").is_err());
+        assert!(FilterExpr::parse("rtp.loss < infinity").is_err());
+        // A finite number still parses.
+        assert!(FilterExpr::parse("msg_count == 5").is_ok());
     }
 
     /// compare_num returns false for non-numeric literals.

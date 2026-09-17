@@ -172,6 +172,16 @@ entry that carries them.
 - **The SIPREC `boundary` parameter name is matched case-insensitively.**
   `BOUNDARY=` was missed (RFC 2045 §5.1 makes parameter names case-insensitive),
   so the multipart body did not split and the recording metadata was lost.
+- **Filter-DSL ordering operators agree with equality on the tolerance
+  boundary.** The DSL treated two numbers within `NUM_EQ_TOLERANCE` as equal for
+  `==`/`!=` but compared `< > <= >=` exactly, so a stream with jitter 30.0004
+  read as both `rtp.jitter == 30` and `rtp.jitter > 30` while `rtp.jitter <= 30`
+  was false — a self-contradiction. All six operators now share one equality
+  notion.
+- **A non-finite filter-DSL numeric literal is rejected at parse.** `nan`, `inf`,
+  and `infinity` parsed as filter values, and since every comparison against NaN
+  is false, a filter like `msg_count == nan` silently matched nothing. Such a
+  literal is now a parse error.
 
 ### Security
 
