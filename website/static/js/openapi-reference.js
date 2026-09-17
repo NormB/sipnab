@@ -33,7 +33,7 @@
 //             readers is not something this site ships.
 //   withDefaultFonts
 //             Defaults to ON, and pulls a webfont from https://fonts.scalar.com.
-//             `font-src 'self' https://fonts.bunny.net` blocks it; turning it
+//             `font-src 'self'` blocks it; turning it
 //             off is what makes the page render as designed rather than as a
 //             fallback stack after a blocked request.
 (function () {

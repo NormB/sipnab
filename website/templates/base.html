@@ -33,7 +33,7 @@
        so nothing legitimate is lost. Removing 'unsafe-inline' outright needs
        the inline scripts externalized to .js files first; see
        ops/cloudflare/README.md. -->
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; script-src-attr 'none'; style-src 'self' 'unsafe-inline' https://fonts.bunny.net; font-src 'self' https://fonts.bunny.net; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; upgrade-insecure-requests">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; script-src-attr 'none'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; upgrade-insecure-requests">
   <meta name="referrer" content="strict-origin-when-cross-origin">
   <title>{% block title %}{{ config.title }}{% endblock title %}</title>
   <meta name="description" content="{% block description %}{{ config.description }}{% endblock description %}">
@@ -96,9 +96,26 @@
        and a glyph that small resolves to a smudge. -->
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='4' fill='%230a0e14'/><path d='M9.6 5.5h4.1c.7 0 1.3.5 1.4 1.2l.7 3.4c.1.6-.1 1.2-.6 1.5l-2.1 1.4c1.3 2.9 3.6 5.2 6.5 6.5l1.4-2.1c.3-.5.9-.7 1.5-.6l3.4.7c.7.1 1.2.7 1.2 1.4v4.1c0 .9-.7 1.6-1.6 1.5C15.3 25.7 6.3 16.7 5.5 7.1c-.1-.9.6-1.6 1.5-1.6z' fill='%23ffcc66'/></svg>">
 
-  <!-- Fonts -->
-  <link rel="preconnect" href="https://fonts.bunny.net">
-  <link href="https://fonts.bunny.net/css?family=inter:400,500,600,700|jetbrains-mono:400,500&display=swap" rel="stylesheet">
+  <!-- Fonts: self-hosted, `font-display: optional` (see the Web fonts section of
+       style.scss). The @font-face rules are only discovered once style.css is
+       parsed and text is laid out, which is late enough to miss optional's
+       ~100ms block period on a first visit; preloading starts the fetch while
+       the head is still being read. `crossorigin` is not optional: a font is
+       always fetched in CORS mode, and a preload without it does not match,
+       so the file downloads twice. Latin only -- every page's text is latin,
+       and a preload the page never uses is a wasted fetch and a console
+       warning. -->
+  <link rel="preload" href="{{ get_url(path='fonts/inter/inter-latin-400-normal.woff2') }}" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="{{ get_url(path='fonts/inter/inter-latin-500-normal.woff2') }}" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="{{ get_url(path='fonts/jetbrains-mono/jetbrains-mono-latin-400-normal.woff2') }}" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="{{ get_url(path='fonts/jetbrains-mono/jetbrains-mono-latin-500-normal.woff2') }}" as="font" type="font/woff2" crossorigin>
+  {#- The heading weights. /analyze/ renders none of them on load (measured
+      2026-09-17: it requests Inter 400/500 and JetBrains Mono 400/500 only),
+      so analyze.html empties this block. -#}
+  {% block font_preloads_headings %}
+  <link rel="preload" href="{{ get_url(path='fonts/inter/inter-latin-600-normal.woff2') }}" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="{{ get_url(path='fonts/inter/inter-latin-700-normal.woff2') }}" as="font" type="font/woff2" crossorigin>
+  {% endblock font_preloads_headings %}
 
   <!-- Styles -->
   <!-- Content-hash buster: the URL changes whenever the CSS does, so site-only

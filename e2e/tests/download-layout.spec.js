@@ -17,7 +17,8 @@
 //    identical in every run. The same bug showed readers without JavaScript an
 //    empty "Detected: -- the highlighted choice below is the one you want."
 //
-// 2. The web-font swap (fonts.bunny.net, `display=swap`) reflowing paragraphs.
+// 2. The web-font swap (then fonts.bunny.net, `display=swap`) reflowing
+//    paragraphs. web-fonts.spec.js covers that one now.
 //    That one is timing-dependent, which is why a single Lighthouse number could
 //    not tell the two apart.
 //
@@ -31,6 +32,7 @@
 // contribute a shift and make the first look present or absent by accident.
 
 const { test, expect } = require('@playwright/test');
+const { settle, layoutBoxes } = require('./layout-probe');
 
 // Lighthouse 12's desktop preset (lighthouse/core/config/constants.js), which
 // is the configuration e2e/lighthouserc.json measures. The Mac UA matters: it is
@@ -107,45 +109,6 @@ function installControlledHintAndShiftRecorder({ platform, hints }) {
   };
 }
 
-// Two animation frames: one for the DOM change to be laid out, one for the
-// layout-shift entry it produced to be queued where takeRecords() can see it.
-async function settle(page) {
-  await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
-}
-
-// The layout box of every element on the page, keyed by position in the DOM.
-// This is the direct form of "moves nothing". The Layout Instability API is not
-// enough on its own: a badge put back into the tile's flex row pushed each
-// download icon 70px sideways and it reported no shift at all (checked
-// 2026-09-17 by mutation), while a reader would watch the icon jump.
-//
-// offset* rather than getBoundingClientRect(), because the panels animate in
-// with a transform and a transform is not layout -- but summed up the whole
-// offsetParent chain. A single offsetLeft is relative to the nearest positioned
-// ancestor, so marking a tile `position: relative` changed every child's
-// offsetLeft without moving a pixel, and the first version of this check
-// failed the correct implementation. Borders are added back for the same
-// reason (see the loop).
-async function layoutBoxes(page) {
-  return page.evaluate(() =>
-    Array.from(document.body.querySelectorAll('*'))
-      .filter((e) => e instanceof HTMLElement)
-      .map((e, i) => {
-        let x = 0;
-        let y = 0;
-        for (let n = e; n; n = n.offsetParent) {
-          // offsetLeft starts at the parent's PADDING edge, so its border
-          // (clientLeft) has to be added back or a 1px-bordered tile becoming
-          // positioned reads as its children moving 1px.
-          x += n.offsetLeft + (n.offsetParent ? n.offsetParent.clientLeft : 0);
-          y += n.offsetTop + (n.offsetParent ? n.offsetParent.clientTop : 0);
-        }
-        const cls = typeof e.className === 'string' && e.className ? `.${e.className.split(' ')[0]}` : '';
-        return `${i} ${e.tagName.toLowerCase()}${e.id ? `#${e.id}` : ''}${cls} ${x},${y} ${e.offsetWidth}x${e.offsetHeight}`;
-      }),
-  );
-}
-
 test.describe('without JavaScript', () => {
   test.use({ javaScriptEnabled: false });
 
@@ -160,7 +123,7 @@ test.describe('platform detection under the Lighthouse desktop preset', () => {
   test.use(LIGHTHOUSE_DESKTOP);
 
   test.beforeEach(async ({ page }) => {
-    await page.route(/fonts\.bunny\.net/, (route) => route.abort());
+    await page.route('**/*', (route) => (route.request().resourceType() === 'font' ? route.abort() : route.continue()));
     await page.addInitScript(installControlledHintAndShiftRecorder, { platform: 'macOS', hints: true });
   });
 
@@ -202,7 +165,7 @@ test.describe('the CPU is named only by a browser that knows it', () => {
   test.use(FROZEN_LINUX_CHROME);
 
   test.beforeEach(async ({ page }) => {
-    await page.route(/fonts\.bunny\.net/, (route) => route.abort());
+    await page.route('**/*', (route) => (route.request().resourceType() === 'font' ? route.abort() : route.continue()));
   });
 
   test('a user agent alone names no CPU', async ({ page }) => {

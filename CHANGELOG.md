@@ -12,6 +12,18 @@ entry that carries them.
 
 ### Fixed
 
+- **Pages no longer shift when the web fonts finish loading, and the fonts are
+  served by sipnab.com itself.** Inter and JetBrains Mono came from
+  fonts.bunny.net with `display=swap`, which draws text in a fallback font and
+  re-lays the page out when the real one arrives; on the download page that
+  moved the platform tiles, 0.062–0.065 of Lighthouse's layout-shift score on
+  CI. The same font files (byte-identical to what Bunny served) now ship under
+  `/fonts/` with `font-display: optional` and the text faces preloaded, and
+  every page measures 0 layout shift locally. The trade-off is deliberate: on
+  a connection too slow to deliver the font within about 100 ms of first
+  paint, that one page view uses the system font instead of switching partway
+  through. Visitors' browsers no longer contact a third-party font host, and
+  the site's Content-Security-Policy no longer names one.
 - **The download page no longer tells ARM users they have an Intel CPU.** The
   platform banner read the CPU out of the browser's user agent, which cannot
   know it: Chromium's reduced user agent is `X11; Linux x86_64` on every Linux

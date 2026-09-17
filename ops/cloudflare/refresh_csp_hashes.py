@@ -134,8 +134,8 @@ def csp(script_hashes):
         "default-src 'self'; "
         "script-src 'self' 'wasm-unsafe-eval' %s; "
         # ~141 style= attributes on the site require 'unsafe-inline' here
-        "style-src 'self' 'unsafe-inline' https://fonts.bunny.net; "
-        "font-src 'self' https://fonts.bunny.net; img-src 'self' data:; "
+        "style-src 'self' 'unsafe-inline'; "
+        "font-src 'self'; img-src 'self' data:; "
         "connect-src 'self'; object-src 'none'; base-uri 'self'; "
         "form-action 'self'; upgrade-insecure-requests; frame-ancestors 'none'"
     ) % " ".join(sorted(script_hashes))

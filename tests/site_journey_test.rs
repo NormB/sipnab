@@ -8452,6 +8452,172 @@ fn the_site_csp_grants_no_unsafe_inline_and_no_new_origin() {
     );
 }
 
+/// The site's web fonts are its own files, all present, and never swapped in.
+///
+/// Until 2026-09-17 base.html loaded Inter and JetBrains Mono from
+/// fonts.bunny.net with `display=swap`. Swap re-lays text out in the real font
+/// whenever it arrives, and on /download/ that moved the platform tiles by
+/// 0.049-0.094 of cumulative layout shift on CI. The same 40 faces now ship
+/// under website/static/fonts/ with `font-display: optional`, which has no swap
+/// period, and the latin faces are preloaded so the font is usually ready in
+/// time to be used at all.
+///
+/// Every half of that is one careless edit from undone, and none of the undoing
+/// fails a build: a face whose file is missing, or a CSP that blocks font-src,
+/// just leaves readers on the fallback stack; a `swap` pasted back in from a
+/// font vendor's snippet brings the shift back only for slow connections; a
+/// preload without `crossorigin` downloads every font twice.
+/// e2e/tests/web-fonts.spec.js checks the same things in a browser.
+#[test]
+fn web_fonts_are_self_hosted_and_never_swap() {
+    const FOREIGN_FONT_HOSTS: [&str; 3] = [
+        "fonts.bunny.net",
+        "fonts.googleapis.com",
+        "fonts.gstatic.com",
+    ];
+
+    // 1. Nothing that renders, serves or publishes the site names a font host.
+    let mut sources: Vec<String> = vec![
+        "website/sass/style.scss".into(),
+        "website/static/_headers".into(),
+        "ops/cloudflare/refresh_csp_hashes.py".into(),
+    ];
+    for entry in std::fs::read_dir(repo().join("website/templates")).expect("templates dir") {
+        let path = entry.expect("entry").path();
+        if path.extension().and_then(|e| e.to_str()) == Some("html") {
+            let name = path
+                .file_name()
+                .expect("name")
+                .to_string_lossy()
+                .into_owned();
+            sources.push(format!("website/templates/{name}"));
+        }
+    }
+    let foreign: Vec<String> = sources
+        .iter()
+        .flat_map(|f| {
+            let text = read(f);
+            FOREIGN_FONT_HOSTS
+                .iter()
+                .filter(|h| text.contains(*h))
+                .map(|h| format!("{f}: {h}"))
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    assert!(
+        foreign.is_empty(),
+        "a third-party font host is named again:\n  {}\nThe faces are served \
+         from website/static/fonts/; a vendor stylesheet brings back both the \
+         extra origin in the CSP and `display=swap`",
+        foreign.join("\n  ")
+    );
+
+    // 2. Every @font-face is `optional` and points at a file that exists.
+    let scss = read("website/sass/style.scss");
+    let url = regex::Regex::new(r#"url\('([^']+)'\)"#).unwrap();
+    let faces: Vec<&str> = scss.split("@font-face").skip(1).collect();
+    assert_eq!(
+        faces.len(),
+        40,
+        "expected 40 @font-face rules -- Inter 400/500/600/700 and JetBrains \
+         Mono 400/500, each in every subset @fontsource 5.3.0 ships for them \
+         (seven and six). A missing rule is a script whose text falls back"
+    );
+    let mut problems: Vec<String> = Vec::new();
+    for face in &faces {
+        let block = &face[..face.find('}').unwrap_or(face.len())];
+        let urls: Vec<&str> = url
+            .captures_iter(block)
+            .map(|c| c.get(1).unwrap().as_str())
+            .collect();
+        if !block.contains("font-display: optional;") {
+            problems.push(format!("not `font-display: optional`: {urls:?}"));
+        }
+        if urls.len() != 1 || !urls[0].ends_with(".woff2") {
+            problems.push(format!("expected exactly one woff2 url, found {urls:?}"));
+        }
+        for u in urls {
+            if !repo().join("website/static").join(u).is_file() {
+                problems.push(format!("{u} does not exist under website/static/"));
+            }
+        }
+    }
+    assert!(
+        problems.is_empty(),
+        "@font-face rules:\n  {}",
+        problems.join("\n  ")
+    );
+
+    // 3. The fonts' license travels with them (SIL OFL 1.1 requires it).
+    for dir in ["inter", "jetbrains-mono"] {
+        let license = read(&format!("website/static/fonts/{dir}/OFL.txt"));
+        assert!(
+            license.contains("SIL OPEN FONT LICENSE Version 1.1"),
+            "website/static/fonts/{dir}/OFL.txt is not the SIL Open Font License"
+        );
+    }
+
+    // 4. font-src grants this site and nothing else, in every copy of the policy.
+    let headers = read("website/static/_headers");
+    let policy = headers
+        .lines()
+        .find(|l| l.trim_start().starts_with("Content-Security-Policy:"))
+        .expect("website/static/_headers carries no CSP line")
+        .split_once(':')
+        .expect("a header line has a colon")
+        .1
+        .to_string();
+    let meta = meta_csp("website/templates/base.html");
+    for (which, pol) in [
+        ("_headers", policy.as_str()),
+        ("base.html meta", meta.as_str()),
+    ] {
+        assert_eq!(
+            csp_directive(pol, "font-src"),
+            Some(vec!["'self'"]),
+            "{which}: font-src must be 'self' alone now that the fonts are"
+        );
+    }
+    assert!(
+        read("ops/cloudflare/refresh_csp_hashes.py").contains("font-src 'self'; "),
+        "refresh_csp_hashes.py publishes the production CSP, and its font-src is \
+         no longer 'self' alone"
+    );
+
+    // 5. Preloads name real files and are fetched in CORS mode. A font request
+    // is always CORS; a preload without `crossorigin` does not match it, so the
+    // browser downloads the file a second time and warns that the preload went
+    // unused.
+    let base = read("website/templates/base.html");
+    let preload = regex::Regex::new(r#"<link rel="preload"[^>]*as="font"[^>]*>"#).unwrap();
+    let path = regex::Regex::new(r#"path='([^']+)'"#).unwrap();
+    let links: Vec<&str> = preload.find_iter(&base).map(|m| m.as_str()).collect();
+    assert!(
+        links.len() >= 4,
+        "base.html preloads {} font(s); the latin Inter 400/500 and JetBrains \
+         Mono 400/500 faces are used on every page",
+        links.len()
+    );
+    for link in links {
+        assert!(
+            link.contains("crossorigin"),
+            "font preload without crossorigin: {link}"
+        );
+        assert!(
+            link.contains(r#"type="font/woff2""#),
+            "font preload without its type: {link}"
+        );
+        let file = path
+            .captures(link)
+            .unwrap_or_else(|| panic!("font preload without a get_url(path=...): {link}"))[1]
+            .to_string();
+        assert!(
+            repo().join("website/static").join(&file).is_file(),
+            "font preload names {file}, which is not under website/static/"
+        );
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Website Phase 3: the accessibility and performance gates.
 //
@@ -8621,7 +8787,7 @@ fn quality_workflow_runs_the_accessibility_and_lighthouse_gates() {
 
     let journeys = workflow_step_body(
         ".github/workflows/quality.yml",
-        "Browser journeys (smoke, demo disclosure)",
+        "Browser journeys (smoke, demo disclosure, web fonts)",
     );
 
     // No runner step may be conditional or forgiving. `assert_step_enforces`
@@ -8631,7 +8797,10 @@ fn quality_workflow_runs_the_accessibility_and_lighthouse_gates() {
         ("axe-core (WCAG 2 A/AA, serious + critical)", &axe),
         ("Lighthouse budgets", &lh),
         ("Download page layout stability", &layout),
-        ("Browser journeys (smoke, demo disclosure)", &journeys),
+        (
+            "Browser journeys (smoke, demo disclosure, web fonts)",
+            &journeys,
+        ),
     ] {
         assert!(
             !body.contains("continue-on-error"),

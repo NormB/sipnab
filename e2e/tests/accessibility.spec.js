@@ -193,8 +193,18 @@ test('the site under test serves its own assets (a CSS-less page cannot fail a c
   });
   await page.goto('/', { waitUntil: 'networkidle' });
 
-  const { sheets, bg, nodes } = await page.evaluate(() => ({
-    sheets: document.styleSheets.length,
+  const { ownSheets, bg, nodes } = await page.evaluate(() => ({
+    // Sheets from this origin whose rules the browser actually parsed. A
+    // blocked or failed <link> can leave an entry in document.styleSheets, but
+    // not one with rules in it.
+    ownSheets: Array.from(document.styleSheets).filter((sheet) => {
+      if (!sheet.href || new URL(sheet.href).origin !== location.origin) return false;
+      try {
+        return sheet.cssRules.length > 0;
+      } catch (e) {
+        return false;
+      }
+    }).length,
     bg: getComputedStyle(document.body).backgroundColor,
     nodes: document.querySelectorAll('*').length,
   }));
@@ -215,7 +225,12 @@ and its own CSP blocked them; rebuild with \
     'rgba(0, 0, 0, 0)',
   );
   expect(bg).not.toBe('rgb(255, 255, 255)');
-  expect(sheets, 'stylesheets attached to the homepage').toBeGreaterThanOrEqual(2);
+  // This used to count every attached sheet and want two: the site's own and
+  // the fonts.bunny.net font stylesheet. Since the fonts moved into style.css
+  // (2026-09-17) a correctly styled homepage has exactly one, so the count
+  // stopped distinguishing styled from unstyled; asking for the site's own
+  // sheet, with its rules parsed, still does.
+  expect(ownSheets, "the site's own stylesheet, with its rules parsed").toBeGreaterThanOrEqual(1);
   // 460 measured on 2026-08-28; a floor well under it catches a template that
   // rendered its shell and nothing else.
   expect(nodes, 'DOM elements on the homepage').toBeGreaterThan(200);

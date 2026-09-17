@@ -667,9 +667,13 @@ jobs:
       # and a version check could not match a version written with a `v`.
       # site_journey_test's every_e2e_spec_runs_in_the_quality_workflow fails a
       # spec that no step names.
-      - name: Browser journeys (smoke, demo disclosure)
+      #
+      # web-fonts.spec.js joins them: it holds the self-hosted fonts back and
+      # releases them after first paint, which is the deterministic form of the
+      # font half of the Lighthouse CLS budget.
+      - name: Browser journeys (smoke, demo disclosure, web fonts)
         working-directory: e2e
-        run: npx playwright test ./tests/smoke.spec.js ./tests/demo-disclosure.spec.js
+        run: npx playwright test ./tests/smoke.spec.js ./tests/demo-disclosure.spec.js ./tests/web-fonts.spec.js
 
       # A failed accessibility run should say WHICH element on WHICH page, and
       # the trace is how that is read without reproducing the run locally.
