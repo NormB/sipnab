@@ -809,8 +809,24 @@ pub struct TfpsStatus {
     pub mode: Option<String>,
     /// The interface enforcement applies to; `null` when unknown.
     pub interface: Option<String>,
+    /// Which enforcement plane TFPS is editing, in its own words -- `own map
+    /// id 59`, `pinned map <path>`, `shared map <path>`. `null` when no map
+    /// could be opened. This is the one enforcement fact `tfps_ctl` can see
+    /// for itself: it opens the block map, not the XDP program, which is why
+    /// `mode` and `interface` above are usually `null` beside it.
+    pub map: Option<String>,
     /// Sources blocked at this moment.
     pub blocked_now: u64,
+    /// Learned pairs at the last checkpoint; `null` when the database could
+    /// not be read. Equal to `peers` on a released TFPS -- `Store::totals`
+    /// counts one column twice -- so do not read them as two facts.
+    pub pairs: Option<u32>,
+    /// Learned peers at the last checkpoint; `null` when unreadable. See
+    /// `pairs`.
+    pub peers: Option<u32>,
+    /// Epoch seconds of the newest learned row, so a reader can judge how
+    /// stale the snapshot is; `null` before the first checkpoint.
+    pub last_checkpoint: Option<u32>,
     /// The database TFPS answered from.
     pub db: String,
     /// The TFPS version.
@@ -825,16 +841,18 @@ pub struct TfpsStatus {
 pub struct TfpsBanned {
     /// The condemned source.
     pub ip: String,
-    /// The TFPS rule that condemned it; `null` when the block predates the
-    /// audit row that would say.
-    pub rule: Option<String>,
-    /// What the rule saw. For `user-agent` this is the sender's own text.
+    /// Why it was condemned, in TFPS's own vocabulary -- the `block_log`
+    /// column, the `REASON` its human view prints. `apiban` with detail
+    /// `feed` when the address came from the feed rather than the perimeter;
+    /// `null` when the block predates the audit row that would say.
+    pub reason: Option<String>,
+    /// What the reason saw. For `user-agent` this is the sender's own text.
     /// `null` when unknown.
     pub detail: Option<String>,
-    /// When the ban began, RFC 3339; `null` when unknown.
-    pub first_seen: Option<String>,
-    /// When it lapses, RFC 3339; `null` for a ban that does not.
-    pub expires: Option<String>,
+    /// When the ban began, epoch seconds; `null` when unknown.
+    pub first_seen: Option<u64>,
+    /// When it lapses, epoch seconds; `null` for a ban that does not.
+    pub expires: Option<u64>,
     /// Whether the firewall holds it, or TFPS is only observing.
     pub enforced: bool,
 }
@@ -870,11 +888,12 @@ pub struct TfpsDropped {
 #[cfg_attr(feature = "mcp", schemars(crate = "rmcp::schemars"))]
 #[cfg_attr(feature = "api", derive(utoipa::ToSchema))]
 pub struct TfpsLabel {
-    /// The source the verdict is about.
+    /// The source the disposition is about.
     pub ip: String,
-    /// The rule that reached it.
-    pub rule: String,
-    /// What the rule saw.
+    /// Why it was reached, in TFPS's own vocabulary -- the `block_log`
+    /// column, the `REASON` its human view prints.
+    pub reason: String,
+    /// What the reason saw.
     pub detail: String,
     /// Unix seconds when the verdict was reached.
     pub first_seen: u64,
@@ -885,8 +904,10 @@ pub struct TfpsLabel {
     pub unbanned_at: Option<u64>,
     /// Whether the firewall held it.
     pub enforced: bool,
-    /// `blocked`, `would-block` or `exempt`.
-    pub verdict: String,
+    /// What TFPS did about it, from `CONTEXT.md`'s disposition vocabulary:
+    /// `ignore`, `exempt`, `would-block`, `block`. A released TFPS only ever
+    /// writes `block`, because `block_log` has no column for the rest.
+    pub disposition: String,
 }
 
 /// `tfps_ctl ban --json`, `unban --json`, and every line `ingest` answers
@@ -902,12 +923,14 @@ pub struct TfpsAction {
     pub action: String,
     /// Whether the firewall was written. False for a refusal and a dry run.
     pub applied: bool,
-    /// Why not: `self`, `ignoreip`, `not-blocked`, `invalid`; `null` when it
-    /// was applied.
+    /// Why not, in TFPS's own vocabulary: `local` (an address of the host
+    /// itself), `declared` (an operator `ignoreip` entry), `kernel` (the map
+    /// write failed -- enforcement is broken, not policy), `not-blocked` for
+    /// an unban that found nothing. `null` when it was applied.
     pub refused: Option<String>,
-    /// When the block lapses, RFC 3339; `null` for never, for an unban, and
-    /// for anything refused.
-    pub expires: Option<String>,
+    /// When the block lapses, epoch seconds; `null` for never, for an unban,
+    /// and for anything refused.
+    pub expires: Option<u64>,
     /// Who asked: `operator` for the two commands, `sipnab` for `ingest`.
     pub source: String,
 }

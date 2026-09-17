@@ -52,8 +52,17 @@ pub struct TfpsCache {
     pub rx: Option<Receiver<TfpsReply>>,
 }
 
+/// Epoch seconds to a compact UTC instant for display. TFPS reports a ban's
+/// times as epoch seconds; a person reads a time, not a count of seconds. An
+/// out-of-range value falls back to the number itself rather than vanishing.
+fn fmt_epoch(secs: u64) -> String {
+    chrono::DateTime::from_timestamp(secs as i64, 0)
+        .map(|t| t.format("%Y-%m-%dT%H:%M:%SZ").to_string())
+        .unwrap_or_else(|| secs.to_string())
+}
+
 /// Compose the banned-sources text from a `tfps_ctl banned` result. Pure, so it
-/// is tested without the peer or a thread. A source's rule evidence and its
+/// is tested without the peer or a thread. A source's reason evidence and its
 /// last request are the peer's own words, shown raw for a human reader.
 #[must_use]
 pub fn compose_tfps_banned(result: Result<Reply<Vec<TfpsBanned>>, TfpsError>) -> String {
@@ -82,17 +91,18 @@ pub fn compose_tfps_banned(result: Result<Reply<Vec<TfpsBanned>>, TfpsError>) ->
     for b in &rows {
         let _ = writeln!(out);
         let held = if b.enforced { "enforced" } else { "observing" };
-        let rule = b.rule.as_deref().unwrap_or("—");
-        let _ = writeln!(out, "  {}  [{held}]  rule: {rule}", b.ip);
-        // Raw: a rule's evidence and the times are the peer's own words.
+        let reason = b.reason.as_deref().unwrap_or("—");
+        let _ = writeln!(out, "  {}  [{held}]  reason: {reason}", b.ip);
+        // Raw: the reason's evidence is the peer's own words. The peer speaks
+        // epoch seconds; a person reads a time, so the instants are shown UTC.
         if let Some(detail) = &b.detail {
             let _ = writeln!(out, "    saw: {detail}");
         }
-        if let Some(since) = &b.first_seen {
-            let _ = writeln!(out, "    since: {since}");
+        if let Some(since) = b.first_seen {
+            let _ = writeln!(out, "    since: {}", fmt_epoch(since));
         }
-        if let Some(expires) = &b.expires {
-            let _ = writeln!(out, "    expires: {expires}");
+        if let Some(expires) = b.expires {
+            let _ = writeln!(out, "    expires: {}", fmt_epoch(expires));
         }
     }
     out

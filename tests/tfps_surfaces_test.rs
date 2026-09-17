@@ -105,7 +105,7 @@ fn every_tfps_tool_answers_over_the_mcp_wire_with_the_flag_wired_through() {
     assert_eq!(dropped["rows"][0]["dropped"], 30, "{dropped}");
 
     let labels = ok_payload(&session.call("tfps_labels", serde_json::json!({"limit": 3})));
-    assert_eq!(labels["total"], 5, "{labels}");
+    assert_eq!(labels["total"], 3, "{labels}");
 
     let ban = ok_payload(&session.call(
         "tfps_ban",
@@ -158,7 +158,7 @@ fn every_tfps_route_answers_over_http_with_the_flag_wired_through() {
         "REST returns the text verbatim: {banned}"
     );
     assert_eq!(
-        banned["rows"][2]["rule"],
+        banned["rows"][2]["reason"],
         serde_json::Value::Null,
         "null survives: {banned}"
     );
@@ -167,7 +167,7 @@ fn every_tfps_route_answers_over_http_with_the_flag_wired_through() {
     assert_eq!(dropped["rows"][0]["events"], 4, "{dropped}");
 
     let labels = srv.get_bearer("/v1/tfps/labels?limit=2", KEY).json();
-    assert_eq!(labels["total"], 5, "{labels}");
+    assert_eq!(labels["total"], 3, "{labels}");
 
     let ban = srv.post_json_bearer(
         "/v1/tfps/ban",

@@ -11204,7 +11204,7 @@ mod tests {
             "REST returns the sender's text verbatim; fencing is the MCP door's rule"
         );
         assert_eq!(
-            v["rows"][2]["rule"],
+            v["rows"][2]["reason"],
             Value::Null,
             "null survives the round trip"
         );
@@ -11239,7 +11239,7 @@ mod tests {
                 .expect("oneshot"),
         )
         .await;
-        assert_eq!(v["total"], 5);
+        assert_eq!(v["total"], 3);
         assert_eq!(v["returned"], 2);
         assert_eq!(v["truncated"], true);
     }
@@ -11271,7 +11271,7 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::OK);
         let v = json_of(resp).await;
         assert_eq!(v["action"]["applied"], false);
-        assert_eq!(v["action"]["refused"], "self");
+        assert_eq!(v["action"]["refused"], "local");
     }
 
     /// An address that is not one, or a body with a key the route does not

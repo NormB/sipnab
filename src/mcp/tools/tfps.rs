@@ -466,7 +466,7 @@ mod tests {
         );
         assert_eq!(p["status"]["enforcement"], "active");
         assert_eq!(p["status"]["blocked_now"], 3);
-        assert_eq!(p["status"]["version"], "0.1.0");
+        assert_eq!(p["status"]["version"], "0.2.1");
         assert_eq!(fake.argv(), ["status", "--json"]);
     }
 
@@ -483,7 +483,7 @@ mod tests {
             p["rows"][0]["ip"], "198.51.100.10",
             "addresses stay verbatim"
         );
-        assert_eq!(p["rows"][0]["rule"], "user-agent");
+        assert_eq!(p["rows"][0]["reason"], "user-agent");
         let detail = p["rows"][0]["detail"].as_str().expect("detail");
         assert_eq!(
             detail,
@@ -527,7 +527,7 @@ mod tests {
                 .await
                 .expect("labels"),
         );
-        assert_eq!(p["total"], 5);
+        assert_eq!(p["total"], 3);
         assert_eq!(
             p["rows"][0]["detail"],
             crate::mcp::shape::fence_field("sipvicious")
@@ -557,7 +557,7 @@ mod tests {
                 .await
                 .expect("labels"),
         );
-        assert_eq!(p["total"], 5);
+        assert_eq!(p["total"], 3);
         assert_eq!(p["returned"], 2);
         assert_eq!(p["truncated"], true);
     }
@@ -604,7 +604,7 @@ mod tests {
             .expect("a refusal is a result");
         let p = payload(&r);
         assert_eq!(p["action"]["applied"], false);
-        assert_eq!(p["action"]["refused"], "self");
+        assert_eq!(p["action"]["refused"], "local");
     }
 
     #[tokio::test]

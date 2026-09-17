@@ -46,12 +46,12 @@ const PINNED: &[(&str, &str, &str)] = &[
     (
         "tfps-status-golden.json",
         STATUS,
-        "c76e766dc5c22168d3f9e1664d349a335d65bde63c80e6ee76b2f2f41f65fa30",
+        "815424e6ee4a4b2668c145bba039650480f929224a16fa60b864b777de45b6ba",
     ),
     (
         "tfps-banned-golden.jsonl",
         BANNED,
-        "4f403f3f2041b97d32b4967f25b06fb358a326296be959675e9b23e4a7cbe8dd",
+        "4ad2cef31de83b0f7ceacee1471d32e9be9b4980957f21bb01590586a15f11da",
     ),
     (
         "tfps-dropped-golden.jsonl",
@@ -61,17 +61,17 @@ const PINNED: &[(&str, &str, &str)] = &[
     (
         "tfps-ban-golden.jsonl",
         BAN,
-        "af81111bf89a4f83b1dd472f39bdd26615796dee8df2e84d7683c52306dcb063",
+        "06fec15aa71a3a665b7c2e79276e7c9146e98f11f8ae066d9a4c274bc3e5139b",
     ),
     (
         "tfps-unban-golden.jsonl",
         UNBAN,
-        "29917eece1896890cb096e5bb288ac906aaddc855a5fb0febbfcf049ee60f443",
+        "2511f25adb6d19fda7f7bf51495b61e7366345fcc695e68e7cae8285f2c0f5f9",
     ),
     (
         "tfps-labels-golden.jsonl",
         LABELS,
-        "ec8fffee3651a2006d8e9a44f8a807c4238578abdba42f814097c9779a77c892",
+        "37b4cccc253e0e3230949a2356f72b533f391fc75f81bd18eb1a7702a821e10e",
     ),
     (
         "sipnab-evidence-golden.jsonl",
@@ -81,7 +81,7 @@ const PINNED: &[(&str, &str, &str)] = &[
     (
         "sipnab-evidence-result-golden.jsonl",
         EVIDENCE_RESULT,
-        "af23df77e635d6c8b43774e09fc8e343d1257f8f11ddd1f29b97c6984931ac61",
+        "b31b2611670b369db616667bbd43bf25071a58b73dea2eb16b3553f8f9a47b3a",
     ),
 ];
 
@@ -171,7 +171,7 @@ fn set(expected: &[&str]) -> BTreeSet<String> {
     expected.iter().map(|s| (*s).to_string()).collect()
 }
 
-// ── The fixtures are the TFPS emitter's, byte for byte ───────────────
+// ── The fixtures are what the emitter really prints ──────────────────
 
 #[test]
 fn every_shared_fixture_is_byte_identical_with_the_tfps_copy() {
@@ -183,9 +183,11 @@ fn every_shared_fixture_is_byte_identical_with_the_tfps_copy() {
             .collect();
         assert_eq!(
             &digest, expected,
-            "tests/fixtures/{name} no longer matches the TFPS tree's copy. The \
-             fixtures are TFPS's emitter output, copied verbatim; edit them \
-             there, re-copy, and re-pin -- never by hand here."
+            "tests/fixtures/{name} changed. These fixtures are what a released \
+             `tfps_ctl --json` actually emits, verified by running it -- not a \
+             shape anyone chose here. Change one only after the emitter \
+             changes, re-derive it from real output, and re-pin the digest in \
+             the same commit."
         );
     }
     assert_eq!(PINNED.len(), 8, "every shared fixture is pinned");
@@ -197,25 +199,36 @@ fn every_shared_fixture_is_byte_identical_with_the_tfps_copy() {
 fn the_status_fixture_parses_and_carries_every_agreed_field() {
     let s: TfpsStatus = serde_json::from_str(STATUS).expect("status parses");
     assert_eq!(s.enforcement, "active");
-    assert_eq!(s.mode.as_deref(), Some("native"));
-    assert_eq!(s.interface.as_deref(), Some("eth0"));
+    // A released `tfps_ctl` opens the block map, not the XDP program, so it
+    // cannot see either of these and always answers null. `map` is the one
+    // enforcement fact it does have.
+    assert_eq!(s.mode, None);
+    assert_eq!(s.interface, None);
+    assert_eq!(s.map.as_deref(), Some("own map id 7"));
     assert_eq!(s.blocked_now, 3);
+    assert_eq!(s.pairs, Some(120));
+    assert_eq!(s.peers, Some(4));
+    assert_eq!(s.last_checkpoint, Some(1_756_800_500));
     assert_eq!(s.db, "/var/lib/tfps/tfps.db");
-    assert_eq!(s.version, "0.1.0");
+    assert_eq!(s.version, "0.2.1");
     assert_eq!(
         keys_of_every_line(STATUS),
         set(&[
             "enforcement",
             "mode",
             "interface",
+            "map",
             "blocked_now",
+            "pairs",
+            "peers",
+            "last_checkpoint",
             "db",
             "version"
         ])
     );
     // `null` where TFPS could not look, per its own contract.
     let inactive: TfpsStatus = serde_json::from_str(
-        r#"{"enforcement":"inactive","mode":null,"interface":null,"blocked_now":0,"db":"/x","version":"0.1.0"}"#,
+        r#"{"enforcement":"inactive","mode":null,"interface":null,"map":null,"blocked_now":0,"pairs":null,"peers":null,"last_checkpoint":null,"db":"/x","version":"0.2.1"}"#,
     )
     .expect("an inactive status parses");
     assert_eq!(inactive.mode, None);
@@ -231,25 +244,34 @@ fn the_banned_fixture_parses_and_carries_every_agreed_field() {
         .collect();
     assert_eq!(rows.len(), 3);
     assert_eq!(rows[0].ip, "198.51.100.10");
-    assert_eq!(rows[0].rule.as_deref(), Some("user-agent"));
+    assert_eq!(rows[0].reason.as_deref(), Some("user-agent"));
     assert_eq!(rows[0].detail.as_deref(), Some("pplsip"));
-    assert_eq!(rows[0].first_seen.as_deref(), Some("2026-09-03T16:40:00Z"));
-    assert_eq!(rows[0].expires.as_deref(), Some("2026-09-03T17:40:00Z"));
+    // Epoch seconds, not RFC 3339: a released TFPS renders every time this
+    // way and leaves presentation to the reader.
+    assert_eq!(rows[0].first_seen, Some(1_756_917_600));
+    assert_eq!(rows[0].expires, Some(1_756_921_200));
     assert!(rows[0].enforced);
-    assert_eq!(rows[1].rule.as_deref(), Some("apiban"));
+    assert_eq!(rows[1].reason.as_deref(), Some("apiban"));
     assert_eq!(rows[1].first_seen, None, "a feed entry has no first_seen");
     assert_eq!(
         (
-            rows[2].rule.as_deref(),
+            rows[2].reason.as_deref(),
             rows[2].detail.as_deref(),
-            rows[2].expires.as_deref()
+            rows[2].expires
         ),
         (None, None, None),
         "a block with no audit row is all null but the address"
     );
     assert_eq!(
         keys_of_every_line(BANNED),
-        set(&["ip", "rule", "detail", "first_seen", "expires", "enforced"])
+        set(&[
+            "ip",
+            "reason",
+            "detail",
+            "first_seen",
+            "expires",
+            "enforced"
+        ])
     );
 }
 
@@ -300,15 +322,21 @@ fn the_ban_fixture_parses_every_outcome() {
     );
     assert_eq!(rows[0].ip.as_deref(), Some("198.51.100.20"));
     assert!(rows[0].applied && rows[0].refused.is_none());
-    assert_eq!(rows[0].expires.as_deref(), Some("2026-09-03T17:40:10Z"));
+    assert_eq!(rows[0].expires, Some(1_756_921_210));
     assert!(rows[1].applied && rows[1].expires.is_none(), "forever");
     let refusals: Vec<&str> = rows[2..]
         .iter()
         .filter_map(|r| r.refused.as_deref())
         .collect();
-    assert_eq!(refusals, ["self", "ignoreip", "invalid"]);
+    // TFPS's own glossary: `local` is an address of the host, `declared` an
+    // operator ignoreip entry, `kernel` a failed map write -- which is
+    // enforcement broken, not policy, and must stay its own term.
+    assert_eq!(refusals, ["local", "declared", "kernel"]);
     assert!(rows[2..].iter().all(|r| !r.applied));
-    assert_eq!(rows[4].ip, None, "an invalid input names no address");
+    // There is no `invalid` row: a released `tfps_ctl ban` parses its
+    // addresses with `?` before any per-address work, so an unparseable one
+    // aborts the whole command instead of producing a line.
+    assert!(rows.iter().all(|r| r.ip.is_some()));
     assert_eq!(
         keys_of_every_line(BAN),
         set(&["ip", "action", "applied", "refused", "expires", "source"])
@@ -321,14 +349,15 @@ fn the_unban_fixture_parses_every_outcome() {
         .lines()
         .map(|l| serde_json::from_str(l).expect("unban row parses"))
         .collect();
-    assert_eq!(rows.len(), 3);
+    assert_eq!(rows.len(), 2);
     assert!(
         rows.iter()
             .all(|r| r.action == "unban" && r.expires.is_none())
     );
     assert!(rows[0].applied);
     assert_eq!(rows[1].refused.as_deref(), Some("not-blocked"));
-    assert_eq!(rows[2].refused.as_deref(), Some("invalid"));
+    // No `invalid` row: `unban` parses with `?` too, so an unparseable address
+    // aborts the command rather than producing a line.
     assert_eq!(
         keys_of_every_line(UNBAN),
         set(&["ip", "action", "applied", "refused", "expires", "source"])
@@ -344,9 +373,12 @@ fn the_labels_fixture_parses_into_the_typed_row() {
         .lines()
         .map(|l| serde_json::from_str(l).expect("label row parses"))
         .collect();
-    assert_eq!(rows.len(), 5);
-    let verdicts: BTreeSet<&str> = rows.iter().map(|r| r.verdict.as_str()).collect();
-    assert_eq!(verdicts, ["blocked", "would-block", "exempt"].into());
+    assert_eq!(rows.len(), 3);
+    // A released TFPS writes only `block`: `block_log` has four columns and no
+    // way to record the exempt or would-block classes. The vocabulary is
+    // CONTEXT.md's, so this is the glossary term, not the past tense.
+    let dispositions: BTreeSet<&str> = rows.iter().map(|r| r.disposition.as_str()).collect();
+    assert_eq!(dispositions, ["block"].into());
     assert!(
         rows.iter().any(|r| r.expires == Some(0))
             && rows.iter().any(|r| r.expires.is_none())
@@ -669,7 +701,7 @@ fn a_refused_ban_exits_one_and_is_still_an_answer() {
     match reply {
         Reply::Answered { value, .. } => {
             assert!(!value.applied);
-            assert_eq!(value.refused.as_deref(), Some("self"));
+            assert_eq!(value.refused.as_deref(), Some("local"));
         }
         other => panic!("expected an answer, got {other:?}"),
     }
@@ -823,7 +855,7 @@ fn the_typed_readers_reach_every_shape() {
         .explicit()
         .labels(None)
         .expect("labels");
-    assert!(matches!(labels, Reply::Answered { value, .. } if value.len() == 5));
+    assert!(matches!(labels, Reply::Answered { value, .. } if value.len() == 3));
 
     let ban = FakeCtl::echoing(first_line(BAN))
         .explicit()
@@ -903,7 +935,7 @@ fn a_list_answer_is_bounded_by_the_row_cap_and_says_so() {
         value: rows.clone(),
     };
     let bounded = TfpsListAnswer::bounded(reply, 2);
-    assert_eq!(bounded.total, Some(5));
+    assert_eq!(bounded.total, Some(3));
     assert_eq!(bounded.returned, Some(2));
     assert_eq!(bounded.truncated, Some(true));
     assert_eq!(bounded.rows.as_ref().map(Vec::len), Some(2));
@@ -913,8 +945,8 @@ fn a_list_answer_is_bounded_by_the_row_cap_and_says_so() {
         value: rows,
     };
     let whole = TfpsListAnswer::bounded(reply, 50);
-    assert_eq!(whole.total, Some(5));
-    assert_eq!(whole.returned, Some(5));
+    assert_eq!(whole.total, Some(3));
+    assert_eq!(whole.returned, Some(3));
     assert_eq!(
         whole.truncated,
         Some(false),

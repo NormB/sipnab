@@ -127,20 +127,27 @@ fn parse_labels(src: &str) -> Result<Vec<Label>, String> {
                 .map(str::to_string)
                 .ok_or_else(|| format!("label line {}: no {k:?}", i + 1))
         };
-        let verdict = match get("verdict")?.as_str() {
-            "blocked" => Verdict::Blocked,
+        let verdict = match get("disposition")?.as_str() {
+            // CONTEXT.md's disposition vocabulary. A released TFPS writes only
+            // `block`, because `block_log` has four columns and no room for the
+            // rest; the others are understood so a later TFPS that records them
+            // does not need this reader changed.
+            "block" => Verdict::Blocked,
             "would-block" => Verdict::WouldBlock,
-            "exempt" => Verdict::Exempt,
+            "exempt" | "ignore" => Verdict::Exempt,
             // Refused rather than assumed. A verdict this reader does not know
             // is a newer TFPS, and guessing would put the source on one side of
             // the score with nothing behind the choice.
             other => {
-                return Err(format!("label line {}: unknown verdict {other:?}", i + 1));
+                return Err(format!(
+                    "label line {}: unknown disposition {other:?}",
+                    i + 1
+                ));
             }
         };
         out.push(Label {
             ip: get("ip")?,
-            rule: get("rule")?,
+            rule: get("reason")?,
             verdict,
             // Absent and null are both "no lift"; the exporter writes null.
             unbanned_at: v
@@ -239,15 +246,50 @@ const GOLDEN: &str = include_str!("fixtures/tfps-labels-golden.jsonl");
 mod tests {
     use super::*;
 
+    /// Labels covering every class this reader must understand.
+    ///
+    /// Deliberately NOT the golden fixture: that is what a *released* TFPS
+    /// emits, and a released TFPS only ever writes `block`. The scoring logic
+    /// below still has to handle the exempt and would-block classes, because a
+    /// later TFPS that records them must not need this reader rewritten — so
+    /// the logic is driven from here and the contract from the fixture.
+    const ALL_CLASSES: &str = concat!(
+        r#"{"ip":"198.51.100.10","reason":"scanner","detail":"sipvicious","first_seen":1756800000,"expires":1756803600,"unbanned_at":null,"enforced":true,"disposition":"block"}"#,
+        "\n",
+        r#"{"ip":"198.51.100.11","reason":"injection","detail":"'","first_seen":1756800100,"expires":0,"unbanned_at":1756804000,"enforced":true,"disposition":"block"}"#,
+        "\n",
+        r#"{"ip":"198.51.100.12","reason":"reg-scan","detail":"no-success","first_seen":1756800200,"expires":null,"unbanned_at":null,"enforced":false,"disposition":"would-block"}"#,
+        "\n",
+        r#"{"ip":"192.0.2.5","reason":"10.0.0.0/8","detail":"scanner: sipvicious","first_seen":1756800300,"expires":null,"unbanned_at":null,"enforced":false,"disposition":"exempt"}"#,
+        "\n",
+        r#"{"ip":"192.0.2.6","reason":"registered-peer","detail":"auth-failed: rejected","first_seen":1756800400,"expires":null,"unbanned_at":null,"enforced":false,"disposition":"exempt"}"#,
+        "\n",
+    );
+
     #[test]
     fn the_agreed_format_is_accepted() {
         let labels = parse_labels(GOLDEN).expect("the golden fixture must parse");
-        assert_eq!(labels.len(), 5, "every line is a label");
+        assert_eq!(labels.len(), 3, "every line is a label");
         let verdicts: BTreeSet<Verdict> = labels.iter().map(|l| l.verdict).collect();
         assert_eq!(
             verdicts,
-            BTreeSet::from([Verdict::Blocked, Verdict::WouldBlock, Verdict::Exempt]),
-            "all three verdicts must be understood"
+            BTreeSet::from([Verdict::Blocked]),
+            "a released TFPS writes only `block`: block_log has no column for \
+             the exempt or would-block classes, so the corpus it exports today \
+             carries no hard negatives"
+        );
+    }
+
+    /// The reader must still understand the classes a released TFPS cannot
+    /// write, or a later one that records them needs this file rewritten.
+    #[test]
+    fn every_disposition_class_is_understood() {
+        let labels = parse_labels(ALL_CLASSES).expect("the synthetic set must parse");
+        assert_eq!(labels.len(), 5);
+        let verdicts: BTreeSet<Verdict> = labels.iter().map(|l| l.verdict).collect();
+        assert_eq!(
+            verdicts,
+            BTreeSet::from([Verdict::Blocked, Verdict::WouldBlock, Verdict::Exempt])
         );
     }
 
@@ -263,20 +305,22 @@ mod tests {
         );
     }
 
-    /// An unknown verdict is the shape a future TFPS release takes. Guessing
-    /// would put a source on the wrong side of the score.
+    /// An unknown disposition is the shape a future TFPS release takes. Guessing
+    /// would put a source on the wrong side of the score. The line is otherwise
+    /// well formed, so the refusal is about the disposition value and not a
+    /// missing field.
     #[test]
-    fn an_unknown_verdict_is_refused_rather_than_guessed() {
-        let line = r#"{"ip":"192.0.2.1","rule":"x","detail":"d","first_seen":1,"expires":null,"unbanned_at":null,"enforced":false,"verdict":"quarantined"}"#;
+    fn an_unknown_disposition_is_refused_rather_than_guessed() {
+        let line = r#"{"ip":"192.0.2.1","reason":"x","detail":"d","first_seen":1,"expires":null,"unbanned_at":null,"enforced":false,"disposition":"quarantined"}"#;
         assert!(
             parse_labels(line).is_err(),
-            "an unknown verdict must not be assumed benign"
+            "an unknown disposition must not be assumed benign"
         );
     }
 
     #[test]
     fn a_condemnation_is_hostile_and_an_exemption_is_benign() {
-        let t = ground_truth(&parse_labels(GOLDEN).unwrap());
+        let t = ground_truth(&parse_labels(ALL_CLASSES).unwrap());
         assert_eq!(t.get("198.51.100.10"), Some(&Ground::Hostile), "blocked");
         assert_eq!(
             t.get("198.51.100.12"),
@@ -299,7 +343,7 @@ mod tests {
     /// whole reason the operator unban is recorded.
     #[test]
     fn an_operator_lift_turns_a_condemnation_into_a_benign_source() {
-        let t = ground_truth(&parse_labels(GOLDEN).unwrap());
+        let t = ground_truth(&parse_labels(ALL_CLASSES).unwrap());
         assert_eq!(
             t.get("198.51.100.11"),
             Some(&Ground::Benign),
@@ -309,7 +353,7 @@ mod tests {
 
     /// Every hostile and benign source of the fixture is in the corpus.
     fn everyone_present() -> BTreeSet<String> {
-        ground_truth(&parse_labels(GOLDEN).unwrap())
+        ground_truth(&parse_labels(ALL_CLASSES).unwrap())
             .keys()
             .cloned()
             .collect()
@@ -320,7 +364,7 @@ mod tests {
     /// source was caught and a human guessed which, and guessed backwards.
     #[test]
     fn the_score_separates_recall_from_false_positives() {
-        let t = ground_truth(&parse_labels(GOLDEN).unwrap());
+        let t = ground_truth(&parse_labels(ALL_CLASSES).unwrap());
         let flagged = BTreeSet::from([
             "198.51.100.10".to_string(), // hostile, caught
             "192.0.2.5".to_string(),     // benign, flagged anyway
@@ -351,7 +395,7 @@ mod tests {
     /// failure.
     #[test]
     fn a_hostile_source_absent_from_the_corpus_is_not_a_miss() {
-        let t = ground_truth(&parse_labels(GOLDEN).unwrap());
+        let t = ground_truth(&parse_labels(ALL_CLASSES).unwrap());
         // Only one of the two hostile sources ever sent a packet.
         let present = BTreeSet::from(["198.51.100.10".to_string()]);
         let s = score(&t, &BTreeSet::new(), &present);
@@ -375,7 +419,7 @@ mod tests {
     /// and every hostile source in the corpus is then a named miss.
     #[test]
     fn flagging_nothing_scores_no_recall_rather_than_no_error() {
-        let t = ground_truth(&parse_labels(GOLDEN).unwrap());
+        let t = ground_truth(&parse_labels(ALL_CLASSES).unwrap());
         let s = score(&t, &BTreeSet::new(), &everyone_present());
         assert!(s.recalled.is_empty());
         assert!(s.false_positives.is_empty());
@@ -397,7 +441,7 @@ mod tests {
     /// having to remember to look.
     #[test]
     fn the_rule_breakdown_is_reported() {
-        let b = rule_breakdown(&parse_labels(GOLDEN).unwrap());
+        let b = rule_breakdown(&parse_labels(ALL_CLASSES).unwrap());
         assert_eq!(b.get("scanner"), Some(&1));
         assert_eq!(b.get("injection"), Some(&1));
         assert_eq!(b.get("reg-scan"), Some(&1));
@@ -582,13 +626,13 @@ fn nothing_configured_is_a_skip_and_not_a_failure() {
 fn the_contract_fixture_carries_every_agreed_field() {
     const FIELDS: &[&str] = &[
         "ip",
-        "rule",
+        "reason",
         "detail",
         "first_seen",
         "expires",
         "unbanned_at",
         "enforced",
-        "verdict",
+        "disposition",
     ];
     let rows: Vec<serde_json::Value> = GOLDEN
         .lines()

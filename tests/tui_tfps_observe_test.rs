@@ -15,29 +15,30 @@ use std::path::PathBuf;
 use sipnab::security::tfps::{Reply, TfpsBanned, TfpsDropped};
 use sipnab::tui::tfps_observe::{compose_tfps_banned, compose_tfps_dropped};
 
-/// A banned answer lists each condemned source with the rule that condemned it,
-/// what the rule saw (the sender's own text, raw), whether the firewall holds
-/// it, and the count — so an operator can tell an enforced ban from an
-/// observation.
+/// A banned answer lists each condemned source with the reason it was
+/// condemned, what the reason saw (the sender's own text, raw), whether the
+/// firewall holds it, and the count — so an operator can tell an enforced ban
+/// from an observation. The peer reports the times as epoch seconds, and the
+/// view shows them as a UTC instant a person can read.
 #[test]
-fn banned_lists_sources_rules_and_enforcement() {
+fn banned_lists_sources_reasons_and_enforcement() {
     let reply = Reply::Answered {
         ctl: PathBuf::from("/usr/bin/tfps_ctl"),
         value: vec![
             TfpsBanned {
                 ip: "10.0.0.5".to_string(),
-                rule: Some("user-agent".to_string()),
+                reason: Some("user-agent".to_string()),
                 detail: Some("friendly-scanner".to_string()),
-                first_seen: Some("2026-01-01T00:00:00Z".to_string()),
+                first_seen: Some(1_767_225_600), // 2026-01-01T00:00:00Z
                 expires: None,
                 enforced: true,
             },
             TfpsBanned {
                 ip: "10.0.0.6".to_string(),
-                rule: Some("rate".to_string()),
+                reason: Some("rate".to_string()),
                 detail: None,
                 first_seen: None,
-                expires: Some("2026-01-02T00:00:00Z".to_string()),
+                expires: Some(1_767_312_000), // 2026-01-02T00:00:00Z
                 enforced: false,
             },
         ],
@@ -48,8 +49,16 @@ fn banned_lists_sources_rules_and_enforcement() {
         "both banned sources are listed:\n{text}"
     );
     assert!(
+        text.contains("user-agent"),
+        "the reason that condemned the source is named:\n{text}"
+    );
+    assert!(
         text.contains("friendly-scanner"),
-        "the rule's evidence (the sender's own text) is shown:\n{text}"
+        "the reason's evidence (the sender's own text) is shown:\n{text}"
+    );
+    assert!(
+        text.contains("2026-01-01T00:00:00Z"),
+        "the epoch first-seen is rendered as a readable UTC instant:\n{text}"
     );
     assert!(
         text.to_lowercase().contains("enforced"),

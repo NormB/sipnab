@@ -207,6 +207,21 @@ entry that carries them.
   `top_talkers` tool, which now fences the `ua` keys and renders the shared
   result. This closes the `top_talkers` REST gap, leaving 32 named gaps.
 
+### Changed
+
+- **TFPS surface aligned to the released peer's vocabulary (breaking).** The
+  fields sipnab reports for the TFPS peer now match what `tfps_ctl` actually
+  emits: a ban's and a label's `rule` is `reason` (the peer's `block_log`
+  column); a label's `verdict` is `disposition` (`ignore`/`exempt`/
+  `would-block`/`block`, of which a released TFPS writes only `block`); ban,
+  label and action times are epoch seconds rather than RFC 3339 strings (the
+  TUI shows them as UTC); a refusal's reasons are `local`/`declared`/`kernel`
+  rather than `self`/`ignoreip`/`invalid`; and `TfpsStatus` gains `map`,
+  `pairs`, `peers`, and `last_checkpoint`. This is a breaking change to the
+  REST and MCP output shape, taken while sipnab is pre-1.0: `openapi.json` is
+  regenerated from the schema, and a program keying on the old names must move
+  to the new ones.
+
 ## [0.5.176] - 2026-09-16
 
 ### Added

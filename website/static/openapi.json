@@ -4189,9 +4189,11 @@
             "type": "boolean"
           },
           "expires": {
-            "description": "When the block lapses, RFC 3339; `null` for never, for an unban, and\nfor anything refused.",
+            "description": "When the block lapses, epoch seconds; `null` for never, for an unban,\nand for anything refused.",
+            "format": "int64",
+            "minimum": 0,
             "type": [
-              "string",
+              "integer",
               "null"
             ]
           },
@@ -4203,7 +4205,7 @@
             ]
           },
           "refused": {
-            "description": "Why not: `self`, `ignoreip`, `not-blocked`, `invalid`; `null` when it\nwas applied.",
+            "description": "Why not, in TFPS's own vocabulary: `local` (an address of the host\nitself), `declared` (an operator `ignoreip` entry), `kernel` (the map\nwrite failed -- enforcement is broken, not policy), `not-blocked` for\nan unban that found nothing. `null` when it was applied.",
             "type": [
               "string",
               "null"
@@ -4286,7 +4288,7 @@
         "description": "One row of `tfps_ctl banned --json`.",
         "properties": {
           "detail": {
-            "description": "What the rule saw. For `user-agent` this is the sender's own text.\n`null` when unknown.",
+            "description": "What the reason saw. For `user-agent` this is the sender's own text.\n`null` when unknown.",
             "type": [
               "string",
               "null"
@@ -4297,16 +4299,20 @@
             "type": "boolean"
           },
           "expires": {
-            "description": "When it lapses, RFC 3339; `null` for a ban that does not.",
+            "description": "When it lapses, epoch seconds; `null` for a ban that does not.",
+            "format": "int64",
+            "minimum": 0,
             "type": [
-              "string",
+              "integer",
               "null"
             ]
           },
           "first_seen": {
-            "description": "When the ban began, RFC 3339; `null` when unknown.",
+            "description": "When the ban began, epoch seconds; `null` when unknown.",
+            "format": "int64",
+            "minimum": 0,
             "type": [
-              "string",
+              "integer",
               "null"
             ]
           },
@@ -4314,8 +4320,8 @@
             "description": "The condemned source.",
             "type": "string"
           },
-          "rule": {
-            "description": "The TFPS rule that condemned it; `null` when the block predates the\naudit row that would say.",
+          "reason": {
+            "description": "Why it was condemned, in TFPS's own vocabulary -- the `block_log`\ncolumn, the `REASON` its human view prints. `apiban` with detail\n`feed` when the address came from the feed rather than the perimeter;\n`null` when the block predates the audit row that would say.",
             "type": [
               "string",
               "null"
@@ -4378,7 +4384,11 @@
         "description": "One row of `tfps_ctl log --json`: a verdict about one source.\n\nThe same shape `tests/fixtures/tfps-labels-golden.jsonl` pins for the\nlabel harness, which reads it structurally rather than through this type\nfor the reason its header gives.",
         "properties": {
           "detail": {
-            "description": "What the rule saw.",
+            "description": "What the reason saw.",
+            "type": "string"
+          },
+          "disposition": {
+            "description": "What TFPS did about it, from `CONTEXT.md`'s disposition vocabulary:\n`ignore`, `exempt`, `would-block`, `block`. A released TFPS only ever\nwrites `block`, because `block_log` has no column for the rest.",
             "type": "string"
           },
           "enforced": {
@@ -4400,11 +4410,11 @@
             "type": "integer"
           },
           "ip": {
-            "description": "The source the verdict is about.",
+            "description": "The source the disposition is about.",
             "type": "string"
           },
-          "rule": {
-            "description": "The rule that reached it.",
+          "reason": {
+            "description": "Why it was reached, in TFPS's own vocabulary -- the `block_log`\ncolumn, the `REASON` its human view prints.",
             "type": "string"
           },
           "unbanned_at": {
@@ -4415,19 +4425,15 @@
               "integer",
               "null"
             ]
-          },
-          "verdict": {
-            "description": "`blocked`, `would-block` or `exempt`.",
-            "type": "string"
           }
         },
         "required": [
           "ip",
-          "rule",
+          "reason",
           "detail",
           "first_seen",
           "enforced",
-          "verdict"
+          "disposition"
         ],
         "type": "object"
       },
@@ -4459,7 +4465,7 @@
               "description": "One row of `tfps_ctl banned --json`.",
               "properties": {
                 "detail": {
-                  "description": "What the rule saw. For `user-agent` this is the sender's own text.\n`null` when unknown.",
+                  "description": "What the reason saw. For `user-agent` this is the sender's own text.\n`null` when unknown.",
                   "type": [
                     "string",
                     "null"
@@ -4470,16 +4476,20 @@
                   "type": "boolean"
                 },
                 "expires": {
-                  "description": "When it lapses, RFC 3339; `null` for a ban that does not.",
+                  "description": "When it lapses, epoch seconds; `null` for a ban that does not.",
+                  "format": "int64",
+                  "minimum": 0,
                   "type": [
-                    "string",
+                    "integer",
                     "null"
                   ]
                 },
                 "first_seen": {
-                  "description": "When the ban began, RFC 3339; `null` when unknown.",
+                  "description": "When the ban began, epoch seconds; `null` when unknown.",
+                  "format": "int64",
+                  "minimum": 0,
                   "type": [
-                    "string",
+                    "integer",
                     "null"
                   ]
                 },
@@ -4487,8 +4497,8 @@
                   "description": "The condemned source.",
                   "type": "string"
                 },
-                "rule": {
-                  "description": "The TFPS rule that condemned it; `null` when the block predates the\naudit row that would say.",
+                "reason": {
+                  "description": "Why it was condemned, in TFPS's own vocabulary -- the `block_log`\ncolumn, the `REASON` its human view prints. `apiban` with detail\n`feed` when the address came from the feed rather than the perimeter;\n`null` when the block predates the audit row that would say.",
                   "type": [
                     "string",
                     "null"
@@ -4665,7 +4675,11 @@
               "description": "One row of `tfps_ctl log --json`: a verdict about one source.\n\nThe same shape `tests/fixtures/tfps-labels-golden.jsonl` pins for the\nlabel harness, which reads it structurally rather than through this type\nfor the reason its header gives.",
               "properties": {
                 "detail": {
-                  "description": "What the rule saw.",
+                  "description": "What the reason saw.",
+                  "type": "string"
+                },
+                "disposition": {
+                  "description": "What TFPS did about it, from `CONTEXT.md`'s disposition vocabulary:\n`ignore`, `exempt`, `would-block`, `block`. A released TFPS only ever\nwrites `block`, because `block_log` has no column for the rest.",
                   "type": "string"
                 },
                 "enforced": {
@@ -4687,11 +4701,11 @@
                   "type": "integer"
                 },
                 "ip": {
-                  "description": "The source the verdict is about.",
+                  "description": "The source the disposition is about.",
                   "type": "string"
                 },
-                "rule": {
-                  "description": "The rule that reached it.",
+                "reason": {
+                  "description": "Why it was reached, in TFPS's own vocabulary -- the `block_log`\ncolumn, the `REASON` its human view prints.",
                   "type": "string"
                 },
                 "unbanned_at": {
@@ -4702,19 +4716,15 @@
                     "integer",
                     "null"
                   ]
-                },
-                "verdict": {
-                  "description": "`blocked`, `would-block` or `exempt`.",
-                  "type": "string"
                 }
               },
               "required": [
                 "ip",
-                "rule",
+                "reason",
                 "detail",
                 "first_seen",
                 "enforced",
-                "verdict"
+                "disposition"
               ],
               "type": "object"
             },
@@ -4775,10 +4785,44 @@
               "null"
             ]
           },
+          "last_checkpoint": {
+            "description": "Epoch seconds of the newest learned row, so a reader can judge how\nstale the snapshot is; `null` before the first checkpoint.",
+            "format": "int32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "map": {
+            "description": "Which enforcement plane TFPS is editing, in its own words -- `own map\nid 59`, `pinned map <path>`, `shared map <path>`. `null` when no map\ncould be opened. This is the one enforcement fact `tfps_ctl` can see\nfor itself: it opens the block map, not the XDP program, which is why\n`mode` and `interface` above are usually `null` beside it.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "mode": {
             "description": "How the firewall is driven, in TFPS's vocabulary (`native`, ...);\n`null` when it could not look.",
             "type": [
               "string",
+              "null"
+            ]
+          },
+          "pairs": {
+            "description": "Learned pairs at the last checkpoint; `null` when the database could\nnot be read. Equal to `peers` on a released TFPS -- `Store::totals`\ncounts one column twice -- so do not read them as two facts.",
+            "format": "int32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "peers": {
+            "description": "Learned peers at the last checkpoint; `null` when unreadable. See\n`pairs`.",
+            "format": "int32",
+            "minimum": 0,
+            "type": [
+              "integer",
               "null"
             ]
           },

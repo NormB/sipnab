@@ -1,1 +1,1 @@
-{"enforcement":"active","mode":"native","interface":"eth0","blocked_now":3,"db":"/var/lib/tfps/tfps.db","version":"0.1.0"}
+{"enforcement":"active","mode":null,"interface":null,"map":"own map id 7","blocked_now":3,"pairs":120,"peers":4,"last_checkpoint":1756800500,"db":"/var/lib/tfps/tfps.db","version":"0.2.1"}
