@@ -1351,7 +1351,8 @@ pub struct OutputArgs {
         help_heading = "Output",
         long = "lint-max-per-rule",
         value_name = "N",
-        requires = "lint"
+        requires = "lint",
+        value_parser = clap::value_parser!(u64).range(1..)
     )]
     pub lint_max_per_rule: Option<u64>,
 
@@ -1465,7 +1466,13 @@ pub struct DialogArgs {
     /// The eviction count IS reported wherever a dialog count appears (#68),
     /// so a run that hits this says so rather than quietly answering from a
     /// truncated store.
-    #[arg(help_heading = "Dialog", short = 'l', long = "limit", value_name = "N")]
+    #[arg(
+        help_heading = "Dialog",
+        short = 'l',
+        long = "limit",
+        value_name = "N",
+        value_parser = clap::value_parser!(u64).range(1..)
+    )]
     pub limit: Option<u64>,
 
     /// Evict the oldest dialog when the `--limit` capacity is reached (LRU).
@@ -1867,7 +1874,8 @@ pub struct SecurityArgs {
     #[arg(
         help_heading = "Security",
         long = "reg-flood-threshold",
-        value_name = "N"
+        value_name = "N",
+        value_parser = clap::value_parser!(u32).range(1..)
     )]
     pub reg_flood_threshold: Option<u32>,
 
@@ -1916,7 +1924,8 @@ pub struct SecurityArgs {
     #[arg(
         help_heading = "Security",
         long = "fraud-short-call",
-        value_name = "SECS"
+        value_name = "SECS",
+        value_parser = clap::value_parser!(u64).range(1..)
     )]
     pub fraud_short_call_secs: Option<u64>,
 
@@ -1925,7 +1934,8 @@ pub struct SecurityArgs {
     #[arg(
         help_heading = "Security",
         long = "fraud-wangiri-calls",
-        value_name = "N"
+        value_name = "N",
+        value_parser = clap::value_parser!(u32).range(1..)
     )]
     pub fraud_wangiri_calls: Option<u32>,
 
@@ -1934,7 +1944,8 @@ pub struct SecurityArgs {
     #[arg(
         help_heading = "Security",
         long = "fraud-sequential-calls",
-        value_name = "N"
+        value_name = "N",
+        value_parser = clap::value_parser!(u64).range(1..)
     )]
     pub fraud_sequential_calls: Option<u64>,
 
@@ -1943,7 +1954,8 @@ pub struct SecurityArgs {
     #[arg(
         help_heading = "Security",
         long = "fraud-volume-multiplier",
-        value_name = "N"
+        value_name = "N",
+        value_parser = clap::value_parser!(u32).range(1..)
     )]
     pub fraud_volume_multiplier: Option<u32>,
 
@@ -1986,7 +1998,8 @@ pub struct SecurityArgs {
     #[arg(
         help_heading = "Security",
         long = "fraud-volume-min-calls",
-        value_name = "N"
+        value_name = "N",
+        value_parser = clap::value_parser!(u32).range(1..)
     )]
     pub fraud_volume_min_calls: Option<u32>,
 
@@ -7855,6 +7868,52 @@ mod tests {
             .expect_err("0 must be refused");
             assert!(
                 err.to_string().contains("0"),
+                "{flag} must refuse 0 and say so: {err}"
+            );
+        }
+    }
+
+    /// `0` is refused by clap on the fraud, registration-flood, dialog-limit
+    /// and lint-cap flags, so the permissive reading each config key already
+    /// refuses (`SecurityConfig`/`LimitsConfig::validate`) cannot be reached
+    /// from the command line either. The `scanner_*` siblings were hardened
+    /// this way; these were left as the lenient way in — the flag accepted a
+    /// `0` that silently disabled or inverted the detector it configures
+    /// (`--fraud-short-call 0` counts no call as short, so wangiri never fires;
+    /// `--reg-flood-threshold 0` reports every REGISTER as a flood).
+    #[test]
+    fn zero_is_refused_on_fraud_reg_flood_and_cap_flags() {
+        // (flag, extra args the flag needs before it can parse)
+        let cases: &[(&str, &[&str])] = &[
+            ("--reg-flood-threshold", &[]),
+            ("--fraud-short-call", &[]),
+            ("--fraud-wangiri-calls", &[]),
+            ("--fraud-sequential-calls", &[]),
+            ("--fraud-volume-multiplier", &[]),
+            ("--fraud-volume-min-calls", &[]),
+            ("--limit", &[]),
+            ("--lint-max-per-rule", &["--lint"]),
+        ];
+        for &(flag, extra) in cases {
+            // A positive value must parse — otherwise the refusal below could be
+            // vacuous (the base invocation, not the `0`, being rejected).
+            let mut ok = vec!["sipnab", "-N", "-I", "x.pcap"];
+            ok.extend_from_slice(extra);
+            ok.push(flag);
+            ok.push("5");
+            assert!(
+                Cli::try_parse_from(ok.iter().copied()).is_ok(),
+                "{flag} with a positive value must parse, or this test is vacuous"
+            );
+
+            let mut zero = vec!["sipnab", "-N", "-I", "x.pcap"];
+            zero.extend_from_slice(extra);
+            zero.push(flag);
+            zero.push("0");
+            let err = Cli::try_parse_from(zero.iter().copied())
+                .expect_err("0 must be refused by clap, as the config file refuses it");
+            assert!(
+                err.to_string().contains('0'),
                 "{flag} must refuse 0 and say so: {err}"
             );
         }

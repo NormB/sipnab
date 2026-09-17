@@ -28,6 +28,17 @@ entry that carries them.
   case-sensitively, so a spec-legal `Authorization: bearer <token>` was rejected
   with 401 — while the standalone metrics server's Basic check was already
   case-insensitive. The scheme now matches without regard to case.
+- **Fraud, registration-flood, dialog-limit and lint-cap flags reject `0`.** The
+  `--reg-flood-threshold`, `--fraud-short-call`, `--fraud-wangiri-calls`,
+  `--fraud-sequential-calls`, `--fraud-volume-multiplier`,
+  `--fraud-volume-min-calls`, `--limit` and `--lint-max-per-rule` flags accepted
+  `0` from the command line while the matching config-file keys refuse it. A `0`
+  there silently disabled or inverted the detector the flag configures:
+  `--fraud-short-call 0` counts no call as short, so wangiri detection never
+  fires; `--reg-flood-threshold 0` reports every REGISTER as a flood; `--limit 0`
+  tracks no dialogs; `--lint-max-per-rule 0` uncaps the lint report. Each now
+  carries a `1..` range parser, matching the `scanner_*` flags and closing the
+  "the file cannot be the lenient way in" gap from the command-line side.
 
 ### Security
 
