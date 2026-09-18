@@ -25,8 +25,9 @@
 //! * Write-back tools (approved, `docs/design/mcp-write-back.md`) need a
 //!   compare-and-set token: [`CaptureEtag`] is that token, and
 //!   [`CaptureEtag::from_str`] parses one back off the wire.
-//! * Packet-level provenance (`docs/design/deferred-and-declined.md` §1) needs
-//!   a capture-instance identity to bind a packet reference to. That is
+//! * Packet-level provenance
+//!   ([`docs/design/deferred-and-declined.md` section 1, "TUI multi-session / multi-capture comparison"](https://github.com/NormB/sipnab/blob/main/docs/design/deferred-and-declined.md#1-tui-multi-session--multi-capture-comparison))
+//!   needs a capture-instance identity to bind a packet reference to. That is
 //!   [`CaptureEtag::instance`], which stays stable for the life of one loaded
 //!   capture while the generations move under it.
 //!

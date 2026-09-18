@@ -1,9 +1,13 @@
 # Making `PACKET_FANOUT` reachable
 
 **Status:** WIRED. `--cores N` on a live device now asks for N capture sockets
-([`bootstrap.rs:1958`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L1958)), so §1's "no caller" table
-row and §2's flag argument are history rather than proposals. What remains open
-is §5, the experiment that would say whether the sockets help. §6 is closed:
+([`bootstrap.rs:1958`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L1958)), so the "no caller" table
+row in [section 1, "What exists, and the one thing that does not"](#1-what-exists-and-the-one-thing-that-does-not)
+and the flag argument in [section 2, "The flag surface"](#2-the-flag-surface)
+are history rather than proposals. What remains open is
+[section 5, "The experiment, and the result that means 'do not ship'"](#5-the-experiment-and-the-result-that-means-do-not-ship),
+the experiment that would say whether the sockets help.
+[Section 6, "CT11: measured, and refused"](#6-ct11-measured-and-refused) is closed:
 CT11 was measured and refused.
 **Verified against:** `8c03a453`, working tree.
 **Backlog:** [`backlog.md`](backlog.md) **CT4** (`:749`) and **CT11** (`:792`).
@@ -22,13 +26,13 @@ verifies a narrower proposition than the sentence it sits under is how a false
 claim survives a gate designed to catch false claims, and correcting the
 sentence while leaving the command is how it survives being caught once.
 
-**§6 is measured; nothing else on this page is.** The repo's standing caveat
+**[Section 6](#6-ct11-measured-and-refused) is measured; nothing else on this page is.** The repo's standing caveat
 still applies to every throughput and sizing claim here —
 [`capture-tuning-tasks.md:22`](https://github.com/NormB/sipnab/blob/main/docs/design/capture-tuning-tasks.md#L22): *"Nothing on
 this page has been measured on a live NIC. Every throughput claim is reasoned
 from syscall counts and ring arithmetic. Do not upgrade a reasoned claim to a
-measured one without the measurement."* §5 is about turning that sentence off
-for the throughput question and has not been run. §6 turned it off for the
+measured one without the measurement."* [Section 5](#5-the-experiment-and-the-result-that-means-do-not-ship) is about turning that sentence off
+for the throughput question and has not been run. [Section 6](#6-ct11-measured-and-refused) turned it off for the
 correlation question only, and says on which link and with what corpus.
 
 ## 1. What exists, and the one thing that does not
@@ -57,10 +61,12 @@ it: `sipnab -d <veth> --cores 4` logs *"capturing on 4 sockets, fanout group
 
 So the remaining work is not "build fanout" and no longer "wire one call site".
 It is only the third thing this page named — **prove the sockets were worth
-wiring** — and §5, which is that proof, has still not been run. §2 and §7 below
-argue for decisions that have since been taken; they are kept because §7's
-sequencing was not followed and a reader deciding whether to run §5 should see
-what the page asked for.
+wiring** — and [section 5](#5-the-experiment-and-the-result-that-means-do-not-ship), which is that proof, has still not been run.
+[Section 2, "The flag surface"](#2-the-flag-surface) and
+[section 7, "Recommendation"](#7-recommendation) below argue for decisions that
+have since been taken; they are kept because the sequencing in section 7 was not
+followed and a reader deciding whether to run section 5 should see what the page
+asked for.
 
 ## 2. The flag surface
 
@@ -117,7 +123,7 @@ that is a log line and a help-text sentence, not a second noun.
    thread either way, live".
 2. **`cores_ignored_warning` loses its live branch and keeps its
    `--multi-device` branch.** The `--multi-device` reason
-   ([`bootstrap.rs:2993`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L2993)) stays true; see §2.1.
+   ([`bootstrap.rs:2993`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L2993)) stays true; see [section 2.1, "The resource change nobody would expect"](#21-the-resource-change-nobody-would-expect).
    `cores_warning_is_the_exact_complement_of_the_paths_that_honor_it` must be rewritten
    in the same commit, not after — it is currently the gate that would catch the
    two conditions drifting, and a half-updated complement is worse than none.
@@ -150,7 +156,8 @@ sockets that each silently got less ring than asked.
 
 **Open:** whether `--cores N` should divide `buffer_mb` across sockets rather
 than multiply it. Dividing preserves the total and surprises nobody; multiplying
-is what actually helps a burst. Not decidable from the code — it needs §5.
+is what actually helps a burst. Not decidable from the code — it needs the
+experiment in [section 5](#5-the-experiment-and-the-result-that-means-do-not-ship).
 
 ### 2.2 `--multi-device` composes badly and should stay refused
 
@@ -300,7 +307,8 @@ to answer is what replaces `final_sweep`'s single well-defined moment.
 `KERNEL_DROPPED` / `IFACE_DROPPED`
 ([`live.rs:857`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L857)) are the loss counters;
 `sipnab_capture_queue_depth_packets` and
-`sipnab_capture_backpressure_blocks_total` are the regime discriminator (§3).
+`sipnab_capture_backpressure_blocks_total` are the regime discriminator
+([section 3, "What widening CAPTURE buys, exactly"](#3-what-widening-capture-buys-exactly)).
 Both are read from the same process under test, which is why the controls below
 are not optional.
 
@@ -347,7 +355,7 @@ above it every configuration is failing.
 | `--cores 1` drops with queue depth at capacity and backpressure climbing | Processor-bound. Fanout cannot help. **Do not ship.** Record it in V1 and close CT4 as measured-and-refuted |
 | `--cores 4` reduces `kernel_dropped` by less than the spread of five `--cores 1` runs | No demonstrated benefit. **Do not ship** |
 | `--cores 1` never drops at the harness's maximum offered rate | There is no problem in reach of the harness. **Do not ship yet** — the correct output is a note under V1 that the netns cannot generate the load, and the question moves to a real NIC |
-| `--cores 4` cuts `kernel_dropped` materially with queue depth low | Drainer-bound and fanout works. Ship, with §2's three obligations |
+| `--cores 4` cuts `kernel_dropped` materially with queue depth low | Drainer-bound and fanout works. Ship, with the three obligations in [section 2](#the-case-for-reusing-it-which-is-stronger) |
 
 ### And then the real NIC
 
@@ -356,8 +364,8 @@ The netns veth is not a driver, and
 *"Everything sipnab knows about its own capture path has been measured on
 synthetic traffic: a `veth` pair in a namespace, or a file replayed from disk.
 Neither exercises a real driver carrying real calls."* A netns result is
-necessary and not sufficient; V1 is not closed by it. That is why §3's
-`capture_health` gap matters — the field script reads counters over MCP, and
+necessary and not sufficient; V1 is not closed by it. That is why the
+`capture_health` gap in [section 3](#3-what-widening-capture-buys-exactly) matters — the field script reads counters over MCP, and
 today it cannot read the two that decide this question.
 
 ## 6. CT11: measured, and refused
@@ -382,7 +390,8 @@ therefore share an address pair and differ only in ports, which is the case
 because the namespace emits its own IPv6 link-local frames when the links come
 up; those are not IPv4 UDP and enter no per-call figure.
 
-A veth is not a driver, so §5's closing caveat applies here too. It bites the
+A veth is not a driver, so the caveat that closes section 5,
+["And then the real NIC"](#and-then-the-real-nic), applies here too. It bites the
 fourth finding below and not the first three, which are about which socket a
 packet reaches rather than how fast it gets there.
 
@@ -420,7 +429,8 @@ ran rather than falling back.
 costs zero because the workers do not exist: every socket feeds one channel and
 one store, so `HASH`'s inability to co-locate a call's SIP with its media is
 invisible to everything downstream. CT11's premise is a processing pool, which
-§4 recommends against building.
+[section 4, "Fanning out PROCESSING is a different design, not a bigger CT4"](#4-fanning-out-processing-is-a-different-design-not-a-bigger-ct4)
+recommends against building.
 
 ### CT11's own program makes the split 100%, not 0%
 
@@ -505,7 +515,7 @@ separates SIP from media. So the cBPF shape that would match the engine sipnab
 already has is a symmetric hash over the ADDRESS PAIR with the ports ignored —
 not "pin 5060 to worker 0". Unbuilt and unmeasured, written down only so the
 next reader does not start from CT11's program. It would still leave both of
-§4's problems standing: the proxied dialog on two host pairs, and the carrier
+the problems in [section 4](#4-fanning-out-processing-is-a-different-design-not-a-bigger-ct4) standing: the proxied dialog on two host pairs, and the carrier
 that anchors media on a third address.
 
 ### Recommendation
@@ -513,9 +523,10 @@ that anchors media on a third address.
 **CT11 is refused on measurement, not deferred.** Its condition was tested and
 came back zero; its program widens the gap it was written to close; and it
 trades away the symmetric hash that CT4's RTP stickiness depends on. If a live
-processing pool is ever built, this page's §4 is the prerequisite and CT11 is
-not the follow-on — a new entry would be, written against whatever §4's
-successor decides a worker is.
+processing pool is ever built, this page's
+[section 4](#4-fanning-out-processing-is-a-different-design-not-a-bigger-ct4) is
+the prerequisite and CT11 is not the follow-on — a new entry would be, written
+against whatever a successor to section 4 decides a worker is.
 
 ## 7. Recommendation
 
@@ -523,15 +534,19 @@ successor decides a worker is.
    independently useful, and without it the field measurement cannot be taken.
 2. **Add a per-thread packet counter to `capture_live_group`.** Needed as the
    third control; without it "fanout worked" is unfalsifiable.
-3. **Run §5.** In the netns first, then via `field-report.sh` on a real NIC.
+3. **Run the experiment in [section 5](#5-the-experiment-and-the-result-that-means-do-not-ship).**
+   In the netns first, then via `field-report.sh` on a real NIC.
    **Still not run.**
-4. **Wire `--cores` into the `Live` arm only if §5 says drainer-bound**, with
-   §2's three obligations and §2.1's buffer question answered by the same data.
-   **Shipped in CT4 ahead of §5**, with the obligations met (the log line names
+4. **Wire `--cores` into the `Live` arm only if section 5 says drainer-bound**, with
+   the three obligations in [section 2](#the-case-for-reusing-it-which-is-stronger)
+   and the buffer question in [section 2.1](#21-the-resource-change-nobody-would-expect)
+   answered by the same data.
+   **Shipped in CT4 ahead of section 5**, with the obligations met (the log line names
    the socket count, the total ring and that processing stays on one thread) and
-   §2.1's multiply-or-divide question still answered by "multiply, and say so"
+   the multiply-or-divide question from section 2.1 still answered by "multiply, and say so"
    rather than by data.
-5. ~~**Leave CT11 filed as blocked**~~ — **refused on measurement**, see §6.
+5. ~~**Leave CT11 filed as blocked**~~ — **refused on measurement**, see
+   [section 6, "CT11: measured, and refused"](#6-ct11-measured-and-refused).
    Live processing fan-out stays unbuilt.
 
 ## 8. Open questions
@@ -541,9 +556,11 @@ not mistake them for settled.
 
 - **Does one fanout group accept sockets bound to different interfaces?**
   Unverified. Decides whether `--cores` can ever compose with `--multi-device`,
-  and whether `fanout_group_id` must become per-device (§2.2).
+  and whether `fanout_group_id` must become per-device
+  ([section 2.2](#22---multi-device-composes-badly-and-should-stay-refused)).
 - **Should `--cores N` multiply or divide `buffer_mb`?** Not decidable from the
-  code; §5's data decides it (§2.1).
+  code; the data from [section 5](#5-the-experiment-and-the-result-that-means-do-not-ship)
+  decides it ([section 2.1](#21-the-resource-change-nobody-would-expect)).
 - **What offered rate can the netns harness actually reach?** Unknown. If it
   cannot make `--cores 1` drop, the whole experiment relocates to a real NIC and
   the netns result is a control, not a measurement.

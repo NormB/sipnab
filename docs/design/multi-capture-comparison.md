@@ -3,17 +3,19 @@
 **Status:** DESIGN. Nothing here is implemented, and section 7 recommends
 implementing only the first of five parts.
 **Verified against:** `63b771b`, working tree.
-**Relationship to [`deferred-and-declined.md`](deferred-and-declined.md) §1.**
+**Relationship to [`deferred-and-declined.md` section 1, *TUI multi-session / multi-capture comparison*](deferred-and-declined.md#1-tui-multi-session--multi-capture-comparison).**
 That page re-scoped the side-by-side view rather than building it as specified,
 and named the blocker:
 sipnab retains no record of which capture anything came from, so the comparison
 column has no field to read. This page accepts that finding and does not re-argue
-it. It answers the question §1 left open — *what is this feature, exactly, if the
+it. It answers the question [that section](deferred-and-declined.md#1-tui-multi-session--multi-capture-comparison) left open — *what is this feature, exactly, if the
 provenance prerequisite ever lands* — and it spends most of its length on the
-part §1 identified but did not specify: correlation. The layout is the easy half
+part [that section](deferred-and-declined.md#1-tui-multi-session--multi-capture-comparison) identified but did not specify: correlation. The layout is the easy half
 and gets one section.
 **Check:** `grep -rn 'capture_id' src/sip/dialog.rs` exits 1 — a dialog still carries no
-record of WHICH capture it came from, which is the prerequisite §3 names and the
+record of WHICH capture it came from, which is the prerequisite
+[section 3, "The prerequisite, restated in one line"](#3-the-prerequisite-restated-in-one-line)
+names and the
 reason the comparison column would have no field to read. This replaces a check on
 [`src/cli.rs`](https://github.com/NormB/sipnab/blob/main/src/cli.rs), which proved only that no FLAG exists: a built-but-unwired comparison
 would have passed it while the claim above was false. (`compare` alone is no good
@@ -138,7 +140,8 @@ follows from that.
 ## 3. The prerequisite, restated in one line
 
 Nothing in section 2 is reachable today, for the reason
-[`deferred-and-declined.md`](deferred-and-declined.md) §1 established: there is no
+[`deferred-and-declined.md` section 1, *TUI multi-session / multi-capture comparison*](deferred-and-declined.md#1-tui-multi-session--multi-capture-comparison)
+established: there is no
 capture provenance anywhere in the data model. `Packet.interface`
 ([`packet.rs:50`](https://github.com/NormB/sipnab/blob/main/src/capture/packet.rs#L50)) is the only source-identifying
 field and the file reader hard-codes it to `None`; `ParsedPacket` does not carry
@@ -147,8 +150,8 @@ resolves a whole set into **one** store, and `warn_on_overlap`
 ([`input_set.rs:585`](https://github.com/NormB/sipnab/blob/main/src/capture/input_set.rs#L585)) exists specifically to warn
 operators away from feeding it two captures of the same traffic.
 
-This document assumes an interned `u16` capture index reaching `SipDialog` — §1's
-own suggested shape, chosen because a per-message `String` label would regress
+This document assumes an interned `u16` capture index reaching `SipDialog` —
+[`deferred-and-declined.md` section 1](deferred-and-declined.md#1-tui-multi-session--multi-capture-comparison)'s own suggested shape, chosen because a per-message `String` label would regress
 the zero-copy spine that `process_message` is written around. Everything below
 is void without it.
 
@@ -238,7 +241,8 @@ store and the Call-ID-keyed merge folds each proxied call into a single dialog
 whose message list is the concatenation and whose state machine has been re-run
 over the union. The comparison view then renders one row and reports the merged
 verdict as agreement. Measured, in
-[`deferred-and-declined.md`](deferred-and-declined.md) §1: two byte-identical
+[`deferred-and-declined.md` section 1, *TUI multi-session / multi-capture comparison*](deferred-and-declined.md#1-tui-multi-session--multi-capture-comparison):
+two byte-identical
 copies of one fixture read as one `-I` set produced an unchanged dialog count,
 double the messages per dialog, double the RTP packets per stream, and a PCMU
 stream reported at 128 kbps over an unchanged 8-second span — a rate G.711

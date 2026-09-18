@@ -208,19 +208,29 @@ fn repo_paths_in_docs_are_clickable() {
 }
 
 /// A citation naming a section must link to that section.
+///
+/// Both spellings count: "RFC 3261 section 7.3.1", which is how this tree
+/// writes one now, and the older "RFC 3261 §7.3.1". The pattern is the same
+/// one `scripts/rfc-links.py` rewrites, so the gate and its fixer cannot
+/// disagree about what a citation is.
 #[test]
 fn rfc_section_citations_are_linked() {
-    let cite = regex::Regex::new(r"(?:^|[^\[])\bRFC ?(\d{3,5}) ?§ ?(\d+(?:\.\d+)*)").unwrap();
+    let cite =
+        regex::Regex::new(r"(?:^|[^\[])\bRFC ?(\d{3,5}) ?(?:§ ?|section )(\d+(?:\.\d+)*)").unwrap();
 
     let mut offenders = Vec::new();
     let mut total = 0usize;
     for f in markdown_files() {
         let text = std::fs::read_to_string(&f).expect("read");
         for (lineno, line) in prose_lines(&text) {
-            for c in cite.captures_iter(line) {
+            // Outside code spans only, as the fixer does: a span quotes a
+            // command or a program's output, and a link inside backticks
+            // renders as literal brackets.
+            let prose: String = line.split('`').step_by(2).collect::<Vec<_>>().join(" ");
+            for c in cite.captures_iter(&prose) {
                 total += 1;
                 offenders.push(format!(
-                    "{}:{lineno}: RFC {} §{} is not linked",
+                    "{}:{lineno}: RFC {} section {} is not linked",
                     f.strip_prefix(repo()).unwrap().display(),
                     &c[1],
                     &c[2]

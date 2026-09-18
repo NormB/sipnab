@@ -211,9 +211,9 @@ Write what a reader can act on:
 | Instead of | Write | Why |
 |---|---|---|
 | a hostname (`thor-02`, `opensips-1`) | what the machine IS -- `the aarch64 self-hosted runner`, `Jetson AGX Thor, 14 cores` | A benchmark needs the hardware; it never needs the box's name. |
-| your LAN (`10.0.0.40`) | RFC 5737 -- `192.0.2.0/24`, `198.51.100.0/24`, `203.0.113.0/24` | Reserved for documentation, and a reader can tell at a glance it is an example. |
-| a global IPv6 address | RFC 3849 -- `2001:db8::/32` | Same reason. |
-| a real domain (`corp.example-isp.com`) | RFC 2606 -- `example.com`, or a `.test` / `.invalid` name | An address at a real domain reaches a real person. |
+| your LAN (`10.0.0.40`) | [RFC 5737](https://www.rfc-editor.org/rfc/rfc5737) -- `192.0.2.0/24`, `198.51.100.0/24`, `203.0.113.0/24` | Reserved for documentation, and a reader can tell at a glance it is an example. |
+| a global IPv6 address | [RFC 3849](https://www.rfc-editor.org/rfc/rfc3849) -- `2001:db8::/32` | Same reason. |
+| a real domain (`corp.example-isp.com`) | [RFC 2606](https://www.rfc-editor.org/rfc/rfc2606) -- `example.com`, or a `.test` / `.invalid` name | An address at a real domain reaches a real person. |
 | `/home/you/pcaps` | `$HOME`, `/srv/pcaps`, or a path relative to the repo | An absolute home path names your account and runs on one machine. |
 | a gate log or a scratch file | nothing -- do not commit it, and add the pattern to `.gitignore` | A transcript carries the paths of the machine that produced it. |
 

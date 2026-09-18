@@ -31,7 +31,7 @@
 //!
 //! # The documented deviation
 //!
-//! §4.3 of `draft-ietf-vcon-vcon-core` says "it is possible to have a Dialog
+//! [Section 4.3 of `draft-ietf-vcon-vcon-core-03`](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-4.3) says "it is possible to have a Dialog
 //! Object with no parameters in it", the working group agreed that shape in
 //! issue #20 after IETF 124, and the draft's own Appendix B schema rejects it:
 //! `start` is required on every Dialog Object. sipnab emits one — the
@@ -373,7 +373,7 @@ fn outgrown(unimplemented: &BTreeSet<String>, schema_id: String) -> SchemaReport
 /// Re-label the findings that are the documented deviation.
 ///
 /// Narrow on purpose. ONLY a Dialog Object with no members at all is the shape
-/// §4.3 blesses; a `transfer` object that happens to be missing `start` is the
+/// [draft-ietf-vcon-vcon-core-03 section 4.3](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-4.3) blesses; a `transfer` object that happens to be missing `start` is the
 /// real defect the corpus pass found, and folding the two together would hide
 /// it behind the exemption.
 fn classify_deviations(container: &Value, findings: &mut [SchemaFinding]) {
@@ -664,7 +664,7 @@ fn is_uuid(text: &str) -> bool {
             .all(|g| g.bytes().all(|b| b.is_ascii_hexdigit()))
 }
 
-/// A URI reference with a scheme, per RFC 3986 §3.1.
+/// A URI reference with a scheme, per [RFC 3986 section 3.1](https://www.rfc-editor.org/rfc/rfc3986#section-3.1).
 fn is_uri(text: &str) -> bool {
     let Some((scheme, rest)) = text.split_once(':') else {
         return false;

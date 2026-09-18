@@ -98,8 +98,8 @@ mod tests {
     ///
     /// # The rule
     ///
-    /// RFC 3551 §6 leaves payload types 64-95 unassigned precisely so RTCP
-    /// packet types 192-223 remain distinguishable, and RFC 5761 §4 makes that
+    /// [RFC 3551 section 6](https://www.rfc-editor.org/rfc/rfc3551#section-6) leaves payload types 64-95 unassigned precisely so RTCP
+    /// packet types 192-223 remain distinguishable, and [RFC 5761 section 4](https://www.rfc-editor.org/rfc/rfc5761#section-4) makes that
     /// explicit for multiplexed sessions. Nothing legitimate sends RTP on
     /// those types.
     #[test]

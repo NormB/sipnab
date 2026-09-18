@@ -2071,7 +2071,7 @@ const HOMEPAGE_STANDARDS: &[CanonicalStandard] = &[
                 title: "Round-trip time",
                 code: ("src/rtp/rtcp.rs", "pub fn rtt_from_sender_report_echo("),
                 field: "round_trip_ms",
-                claims: &[("\u{00a7}6.4.1", "src/rtp/rtcp.rs")],
+                claims: &[("section 6.4.1", "src/rtp/rtcp.rs")],
             },
             CanonicalItem {
                 title: "Reception reports",
@@ -2311,7 +2311,7 @@ fn canonical_url(id: &str) -> Option<String> {
 fn specific_claims(desc: &str) -> Vec<String> {
     regex::Regex::new(concat!(
         r"Annex [A-Z]\b|Appendix [IVX]+\b|Tables? [IVX0-9]+(?:\.[0-9]+)?(?: and [0-9]+)?",
-        r"|PT=?\s?[0-9]+|\u{00a7}[0-9]+(?:\.[0-9]+)*|Section [0-9]+(?:\.[0-9]+)*|BT=[0-9]+",
+        r"|PT=?\s?[0-9]+|\u{00a7}[0-9]+(?:\.[0-9]+)*|[Ss]ection [0-9]+(?:\.[0-9]+)*|BT=[0-9]+",
         r"|\[[0-9.]+, [0-9.]+\]|[0-9]+ ms|[0-9]+\.[0-9]+|Eq\.? ?\(?[0-9A-Z-]+\)?",
     ))
     .unwrap()

@@ -204,7 +204,7 @@ pub fn track_transfer(timeline: &mut Vec<SdpExchange>, msg: &SipMessage) {
 /// - Requests (INVITE, UPDATE) normally carry offers.
 /// - Responses (200 OK, 183, etc.) normally carry answers.
 ///
-/// Two delayed-offer exceptions (RFC 3261 §13.2.1) override the type-based
+/// Two delayed-offer exceptions ([RFC 3261 section 13.2.1](https://www.rfc-editor.org/rfc/rfc3261#section-13.2.1)) override the type-based
 /// default, because an offerless INVITE carries no SDP and so never produces a
 /// timeline entry — the offer/answer roles then land on the response and ACK:
 ///

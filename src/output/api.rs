@@ -9098,7 +9098,7 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::OK);
     }
 
-    /// The auth-scheme is case-insensitive (RFC 7235 section 2.1), so a
+    /// The auth-scheme is case-insensitive ([RFC 7235 section 2.1](https://www.rfc-editor.org/rfc/rfc7235#section-2.1)), so a
     /// lowercase `bearer` prefix on an otherwise-correct key authenticates.
     /// The scheme match compared `Bearer` case-sensitively, so a spec-legal
     /// `bearer <token>` client (the standalone metrics server's Basic check is

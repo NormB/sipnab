@@ -77,7 +77,7 @@ stream as though they were SIP. The parser then lost framing alignment and
 dropped the next message.
 
 Filtering on the inner content type fixed it.
-[RFC 8446 §5.2](https://www.rfc-editor.org/rfc/rfc8446#section-5.2) says this
+[RFC 8446 section 5.2](https://www.rfc-editor.org/rfc/rfc8446#section-5.2) says this
 plainly. The code simply had not asked.
 
 ## The framing fix that mattered more than any of them
@@ -110,7 +110,7 @@ that the mirror usually arrives first, because the proxy mirrors as it
 processes while the wire copy takes a network hop. Any "first one wins" rule
 therefore makes the proxy authoritative, which is the one thing the wire
 capture exists to check. sipnab pairs copies by transaction identity
-([RFC 3261 §17.1.3](https://www.rfc-editor.org/rfc/rfc3261#section-17.1.3)),
+([RFC 3261 section 17.1.3](https://www.rfc-editor.org/rfc/rfc3261#section-17.1.3)),
 never by arrival order.
 
 ## Bounds

@@ -3487,7 +3487,7 @@ impl HepSender {
     /// 32=RTP` — and only the sender never emitted it.
     ///
     /// RTP is deliberately NOT forwarded. RTCP is a control channel that
-    /// RFC 3550 §6.2 holds to a small fraction of session bandwidth
+    /// [RFC 3550 section 6.2](https://www.rfc-editor.org/rfc/rfc3550#section-6.2) holds to a small fraction of session bandwidth
     /// (conventionally 5%, with a minimum reporting interval), so it carries
     /// the quality summary at a rate a WAN link and a UDP feed can absorb.
     /// Media itself is the opposite on both counts, and forwarding it would

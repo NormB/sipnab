@@ -2546,7 +2546,7 @@ pub struct CaptureQualityJson {
     /// Candidate pairs where both ICE agents claimed the same role, or where
     /// one answered `487 Role Conflict`.
     ///
-    /// Also about the NETWORK. RFC 8445 §7.3.1.1 lets ICE resolve this
+    /// Also about the NETWORK. [RFC 8445 section 7.3.1.1](https://www.rfc-editor.org/rfc/rfc8445#section-7.3.1.1) lets ICE resolve this
     /// itself, so it is not always fatal — but it is a real
     /// misconfiguration, and where it did NOT resolve it is a candidate cause
     /// of media that never started, which an agent asked "why is there no
@@ -13277,7 +13277,7 @@ mod tests {
     /// `lint_dialog` returns the citation as data, not folded into prose.
     ///
     /// The whole reason `rfc` and `section` are fields is that an agent can
-    /// cite RFC 3261 §8.1.1.6 instead of inventing a section that reads
+    /// cite [RFC 3261 section 8.1.1.6](https://www.rfc-editor.org/rfc/rfc3261#section-8.1.1.6) instead of inventing a section that reads
     /// plausibly. Flattening them into the explanation would leave the tool
     /// working and the guarantee gone.
     #[tokio::test]
@@ -13591,7 +13591,7 @@ mod tests {
     /// satisfies "every finding carries a pointer" without exercising a line
     /// of the projection.
     ///
-    /// `BRANCH_COOKIE` (RFC 3261 §8.1.1.7) is the rule chosen because it is
+    /// `BRANCH_COOKIE` ([RFC 3261 section 8.1.1.7](https://www.rfc-editor.org/rfc/rfc3261#section-8.1.1.7)) is the rule chosen because it is
     /// message-scoped — `validate_message` reads one message alone, so a
     /// dialog- or media-scoped rule would not run at all — and because a
     /// branch without the `z9hG4bK` prefix is a one-header edit that cannot
@@ -15111,7 +15111,7 @@ mod tests {
     /// reports its own name, flags itself as an identifier match, and does NOT
     /// rank or read like the timing guess.
     ///
-    /// The last assertion is the privacy one: RFC 7315 §4.6's own suggested
+    /// The last assertion is the privacy one: [RFC 7315 section 4.6](https://www.rfc-editor.org/rfc/rfc7315#section-4.6)'s own suggested
     /// construction embeds the generating proxy's hostname or address in the
     /// icid, so like every other strategy here the response carries the
     /// strategy's NAME and never the value it matched on.

@@ -78,8 +78,8 @@ sipnab -I tls-capture.pcap --keylog /tmp/sip-keys.log
 ```
 
 The full recipes, including exporting a decrypted pcap for Wireshark and
-keeping keys off disk entirely, are cookbook
-[§7a–7f](examples.md#7-decrypt-siptls-via-sslkeylogfile).
+keeping keys off disk entirely, are cookbook recipes 7a to 7f, under
+[recipe 7, "Decrypt SIP/TLS via SSLKEYLOGFILE"](examples.md#7-decrypt-siptls-via-sslkeylogfile).
 
 ## 2. Check what you have before going further
 
@@ -191,8 +191,8 @@ sipnab says which of these happened, with counts. The fix is at capture time
 either way: bounce the connection, or the far end, while capturing, so the
 capture catches the stream from its handshake and its first record.
 
-Cookbook [§7e](examples.md#7e-decrypt-traffic-from-a-daemon-you-cannot-restart) has the full
-sequence, and [§7f](examples.md#7f-decrypt-without-writing-the-keys-to-disk) shows
+Cookbook [recipe 7e, "Decrypt traffic from a daemon you cannot restart"](examples.md#7e-decrypt-traffic-from-a-daemon-you-cannot-restart) has the full
+sequence, and [recipe 7f, "Decrypt without writing the keys to disk"](examples.md#7f-decrypt-without-writing-the-keys-to-disk) shows
 feeding keys through a pipe so they never reach disk.
 
 ## 6. The old RSA case
@@ -215,7 +215,7 @@ SRTP keys arrive two ways, and sipnab reads both:
   media with it. Nothing extra to do.
 - **DTLS-SRTP** — a DTLS handshake carries the keys. Point `--dtls-keylog` at an
   NSS-format key log and sipnab runs the [RFC 5764](https://www.rfc-editor.org/rfc/rfc5764) exporter over it to reach the
-  SRTP keys, cookbook [§7d](examples.md#7d-decrypt-srtp-from-a-dtls-keylog).
+  SRTP keys, cookbook [recipe 7d, "Decrypt SRTP from a DTLS keylog"](examples.md#7d-decrypt-srtp-from-a-dtls-keylog).
 
 `--dtls-keylog` is a separate flag from `--keylog` because the two name
 different handshakes. If you already hold SRTP master keys rather than a

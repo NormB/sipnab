@@ -10,7 +10,7 @@
 //!
 //! Taking the payload rather than `(frame, offset)` is deliberate. Ethernet
 //! pads short frames out to 60 octets, so the frame's tail is *not* the
-//! datagram's tail: a NAT-keepalive (RFC 3948 §2.3, exactly one octet of
+//! datagram's tail: a NAT-keepalive ([RFC 3948 section 2.3](https://www.rfc-editor.org/rfc/rfc3948#section-2.3), exactly one octet of
 //! payload) inside IPv4/UDP inside Ethernet is 43 octets on the wire and 60
 //! in the capture. A decoder that measured "how much payload is left" from
 //! `frame.len()` would see 18 octets where the sender wrote 1, and every
@@ -22,12 +22,12 @@
 //! specified as a *destination* port; the matching source port is, in each
 //! spec, explicitly a locally-chosen or hash-derived ephemeral value:
 //!
-//! - GTP-U — TS 29.281 §4.4.2.3: "The UDP Destination Port number shall be
+//! - GTP-U — [3GPP TS 29.281](https://portal.3gpp.org/desktopmodules/Specifications/SpecificationDetails.aspx?specificationId=1699) clause 4.4.2.3: "The UDP Destination Port number shall be
 //!   2152 ... The UDP Source Port is a locally allocated port number".
-//! - VXLAN — RFC 7348 §5: source port "calculated using a hash of fields from
+//! - VXLAN — [RFC 7348 section 5](https://www.rfc-editor.org/rfc/rfc7348#section-5): source port "calculated using a hash of fields from
 //!   the inner packet ... RECOMMENDED that the value be in the
 //!   dynamic/private port range 49152-65535".
-//! - Geneve — RFC 8926 §3.3: "the entire 16-bit range MAY be used to maximize
+//! - Geneve — [RFC 8926 section 3.3](https://www.rfc-editor.org/rfc/rfc8926#section-3.3): "the entire 16-bit range MAY be used to maximize
 //!   entropy" for the source port.
 //!
 //! So an ordinary RTP stream can and does carry 2152, 4789 or 6081 as its
@@ -45,7 +45,7 @@
 //! `None`.
 //!
 //! One pleasing consequence, worth stating because it is what the RTP
-//! rejection tests actually exercise: RFC 3550 §5.1 fixes the top two bits of
+//! rejection tests actually exercise: [RFC 3550 section 5.1](https://www.rfc-editor.org/rfc/rfc3550#section-5.1) fixes the top two bits of
 //! an RTP packet's first octet to `10` (version 2). Those same two bits are
 //! fixed to something else by *five of the six* encapsulations here — VXLAN's
 //! flags octet must be `0x08`, Geneve's version must be 0, GTP-U's version
@@ -57,22 +57,22 @@ use super::Inner;
 
 // ── Well-known destination ports ──────────────────────────────────────
 
-/// L2TP, RFC 2661 §8.1: "L2TP uses the registered UDP port 1701".
+/// L2TP, [RFC 2661 section 8.1](https://www.rfc-editor.org/rfc/rfc2661#section-8.1): "L2TP uses the registered UDP port 1701".
 const PORT_L2TP: u16 = 1701;
-/// GTP-U, TS 29.281 §4.4.2.3: "The UDP Destination Port number shall be 2152.
+/// GTP-U, [3GPP TS 29.281](https://portal.3gpp.org/desktopmodules/Specifications/SpecificationDetails.aspx?specificationId=1699) clause 4.4.2.3: "The UDP Destination Port number shall be 2152.
 /// It is the registered port number for GTP-U."
 const PORT_GTPU: u16 = 2152;
-/// Teredo, RFC 4380 §2.7: "The UDP port number at which Teredo servers are
+/// Teredo, [RFC 4380 section 2.7](https://www.rfc-editor.org/rfc/rfc4380#section-2.7): "The UDP port number at which Teredo servers are
 /// waiting for packets. The value of this port is 3544."
 const PORT_TEREDO: u16 = 3544;
-/// UDP-encapsulated ESP / IKE, RFC 3948 §2.2 ("IKE Header Format for Port
+/// UDP-encapsulated ESP / IKE, [RFC 3948 section 2.2](https://www.rfc-editor.org/rfc/rfc3948#section-2.2) ("IKE Header Format for Port
 /// 4500").
 const PORT_ESP_IN_UDP: u16 = 4500;
-/// VXLAN, RFC 7348 §5: "IANA has assigned the value 4789 for the VXLAN UDP
+/// VXLAN, [RFC 7348 section 5](https://www.rfc-editor.org/rfc/rfc7348#section-5): "IANA has assigned the value 4789 for the VXLAN UDP
 /// port, and this value SHOULD be used by default as the destination UDP
 /// port."
 const PORT_VXLAN: u16 = 4789;
-/// Geneve, RFC 8926 §3.3: "IANA has assigned port 6081 as the fixed well-known
+/// Geneve, [RFC 8926 section 3.3](https://www.rfc-editor.org/rfc/rfc8926#section-3.3): "IANA has assigned port 6081 as the fixed well-known
 /// destination port for Geneve."
 const PORT_GENEVE: u16 = 6081;
 
@@ -114,7 +114,7 @@ pub(crate) fn decap(payload: &[u8], base: usize, dst_port: u16) -> Option<Inner>
 // ── GTP-U (3GPP TS 29.281) ────────────────────────────────────────────
 
 /// Mandatory part of the GTP-U header: flags, message type, length, TEID.
-/// TS 29.281 §5.1: "The GTP-U header is a variable length header whose
+/// [3GPP TS 29.281](https://portal.3gpp.org/desktopmodules/Specifications/SpecificationDetails.aspx?specificationId=1699) clause 5.1: "The GTP-U header is a variable length header whose
 /// minimum length is 8 bytes."
 const GTPU_HEADER_MIN: usize = 8;
 /// The optional block — Sequence Number (2), N-PDU Number (1), Next Extension
@@ -143,7 +143,7 @@ const GTPU_FLAG_E: u8 = 0x04;
 const GTPU_FLAG_S: u8 = 0x02;
 /// N-PDU number flag (PN), octet 1 bit 1.
 const GTPU_FLAG_PN: u8 = 0x01;
-/// Message Type 255. Table 6.1-1 and §7.3: "A G-PDU is a packet including a
+/// Message Type 255. [3GPP TS 29.281](https://portal.3gpp.org/desktopmodules/Specifications/SpecificationDetails.aspx?specificationId=1699) Table 6.1-1 and clause 7.1: "A G-PDU is a packet including a
 /// GTP-U header and a T-PDU." Every other user-plane type — Echo Request (1),
 /// Echo Response (2), Error Indication (26), Supported Extension Headers
 /// Notification (31), End Marker (254) — carries information elements or
@@ -155,7 +155,7 @@ const GTPU_MSG_G_PDU: u8 = 255;
 /// is checked against the buffer — so this is not what stops a runaway. It
 /// stops a *plausible* runaway: a 1500-octet payload of attacker-chosen
 /// length bytes can chain ~370 four-octet extensions, all in bounds, and burn
-/// that work on every packet. TS 29.281 §5.2.1 defines two user-plane
+/// that work on every packet. [3GPP TS 29.281](https://portal.3gpp.org/desktopmodules/Specifications/SpecificationDetails.aspx?specificationId=1699) clause 5.2.1 defines two user-plane
 /// extension header types; real traffic stacks one.
 const GTPU_MAX_EXTENSION_HEADERS: usize = 8;
 
@@ -170,7 +170,7 @@ const GTPU_MAX_EXTENSION_HEADERS: usize = 8;
 /// The header is variable-length, driven by the E/S/PN flags and then by a
 /// chain of extension headers whose lengths are attacker-controlled input.
 /// Every read is bounds-checked and the chain walk is capped; anything that
-/// disagrees with §5.1 or §5.2.1 yields `None`.
+/// disagrees with [3GPP TS 29.281](https://portal.3gpp.org/desktopmodules/Specifications/SpecificationDetails.aspx?specificationId=1699) clause 5.1 or clause 5.2.1 yields `None`.
 pub(crate) fn gtpu(payload: &[u8], base: usize) -> Option<Inner> {
     let first = *payload.first()?;
     if first & GTPU_VERSION_PT_SPARE_MASK != GTPU_VERSION_1_PT_GTP {
@@ -251,12 +251,12 @@ pub(crate) fn gtpu(payload: &[u8], base: usize) -> Option<Inner> {
 
 // ── VXLAN (RFC 7348) ──────────────────────────────────────────────────
 
-/// The fixed 8-octet VXLAN header (RFC 7348 §5).
+/// The fixed 8-octet VXLAN header ([RFC 7348 section 5](https://www.rfc-editor.org/rfc/rfc7348#section-5)).
 const VXLAN_HEADER_LEN: usize = 8;
 /// The only conforming value of the VXLAN flags octet: the I flag set, the
 /// seven R bits clear.
 ///
-/// RFC 7348 §5: "the I flag MUST be set to 1 for a valid VXLAN Network ID
+/// [RFC 7348 section 5](https://www.rfc-editor.org/rfc/rfc7348#section-5): "the I flag MUST be set to 1 for a valid VXLAN Network ID
 /// (VNI). The other 7 bits (designated "R") are reserved fields and MUST be
 /// set to zero on transmission and ignored on receipt."
 ///
@@ -271,7 +271,7 @@ const VXLAN_HEADER_LEN: usize = 8;
 /// positions is exactly what makes an RTP payload look like a VXLAN header.
 const VXLAN_FLAGS_I_ONLY: u8 = 0x08;
 
-/// Decapsulate VXLAN (RFC 7348 §5), returning where the inner Ethernet frame
+/// Decapsulate VXLAN ([RFC 7348 section 5](https://www.rfc-editor.org/rfc/rfc7348#section-5)), returning where the inner Ethernet frame
 /// starts.
 ///
 /// The payload is a complete Ethernet II frame, not a packet, so the result
@@ -303,7 +303,7 @@ pub(crate) fn vxlan(payload: &[u8], base: usize) -> Option<Inner> {
 
 /// The fixed 8-octet Geneve tunnel header, before any options.
 const GENEVE_HEADER_MIN: usize = 8;
-/// Ver, the top 2 bits of octet 0. RFC 8926 §3.4: "The current version number
+/// Ver, the top 2 bits of octet 0. [RFC 8926 section 3.4](https://www.rfc-editor.org/rfc/rfc8926#section-3.4): "The current version number
 /// is 0. Packets received by a tunnel endpoint with an unknown version MUST
 /// be dropped."
 const GENEVE_VER_MASK: u8 = 0xC0;
@@ -317,7 +317,7 @@ const GENEVE_FLAG_O: u8 = 0x80;
 /// The C bit (0x40) is deliberately *not* in this mask: it means "one or more
 /// options has the critical bit set", which obliges a tunnel *endpoint* to
 /// parse the options. A passive observer that skips options by Opt Len is
-/// unaffected, and RFC 8926 §3.4 is explicit that "Transit devices MUST NOT
+/// unaffected, and [RFC 8926 section 3.4](https://www.rfc-editor.org/rfc/rfc8926#section-3.4) is explicit that "Transit devices MUST NOT
 /// drop packets on the basis of this bit."
 const GENEVE_RSVD_MASK: u8 = 0x3F;
 /// A Geneve option's fixed header: Option Class (2), Type (1), R+Length (1).
@@ -328,7 +328,7 @@ const GENEVE_OPTION_R_MASK: u8 = 0xE0;
 /// A Geneve option's Length, the low 5 bits of its fourth octet, "expressed
 /// in 4-byte multiples, excluding the option header".
 const GENEVE_OPTION_LEN_MASK: u8 = 0x1F;
-/// Protocol Type for an Ethernet payload. RFC 8926 §3.4 describes the field
+/// Protocol Type for an Ethernet payload. [RFC 8926 section 3.4](https://www.rfc-editor.org/rfc/rfc8926#section-3.4) describes the field
 /// as following "the Ethertype convention, with Ethernet itself being
 /// represented by the value 0x6558" (Trans Ether Bridging).
 const GENEVE_PROTO_ETHERNET: u16 = 0x6558;
@@ -342,7 +342,7 @@ const GENEVE_CONTROL_LABEL: &str = "Geneve control packet";
 ///
 /// The variable-length options are not merely skipped by Opt Len — they are
 /// walked, and their lengths must sum to exactly the region Opt Len declares.
-/// That is a requirement, not a heuristic: RFC 8926 §3.5 says "Packets in
+/// That is a requirement, not a heuristic: [RFC 8926 section 3.5](https://www.rfc-editor.org/rfc/rfc8926#section-3.5) says "Packets in
 /// which the total length of all options is not equal to the 'Opt Len' in the
 /// base header are invalid and MUST be silently dropped if received by a
 /// tunnel endpoint that processes the options." It also happens to be the
@@ -408,30 +408,30 @@ pub(crate) fn geneve(payload: &[u8], base: usize) -> Option<Inner> {
 
 // ── Teredo (RFC 4380) ─────────────────────────────────────────────────
 
-/// The origin indication encapsulation, "an 8-octet element" (RFC 4380
-/// §5.1.1): the `00 00` marker, an obfuscated port, an obfuscated IPv4
+/// The origin indication encapsulation, "an 8-octet element"
+/// ([RFC 4380 section 5.1.1](https://www.rfc-editor.org/rfc/rfc4380#section-5.1.1)): the `00 00` marker, an obfuscated port, an obfuscated IPv4
 /// address.
 const TEREDO_ORIGIN_LEN: usize = 8;
 /// The fixed part of the authentication encapsulation: the `00 01` marker,
 /// ID-len and AU-len (4), then — after the two variable fields — "an 8-octet
 /// nonce, and ... a confirmation byte" (9).
 const TEREDO_AUTH_FIXED_LEN: usize = 13;
-/// The Global Teredo IPv6 Service Prefix, RFC 4380 §2.6: "An IPv6 addressing
+/// The Global Teredo IPv6 Service Prefix, [RFC 4380 section 2.6](https://www.rfc-editor.org/rfc/rfc4380#section-2.6): "An IPv6 addressing
 /// prefix whose value is 2001:0000:/32."
 const TEREDO_PREFIX: [u8; 4] = [0x20, 0x01, 0x00, 0x00];
 /// The IPv6 link-local prefix a qualifying Teredo client sources from.
 ///
-/// RFC 4380 §5.1: "In some cases, Teredo nodes use link-local addresses.
+/// [RFC 4380 section 5.1](https://www.rfc-editor.org/rfc/rfc4380#section-5.1): "In some cases, Teredo nodes use link-local addresses.
 /// These addresses contain a link-local prefix (FE80::/64) and a 64-bit
 /// identifier" — so the whole first half of the address is fixed, not just
-/// the ten bits of the fe80::/10 block RFC 4291 §2.5.6 reserves.
+/// the ten bits of the fe80::/10 block [RFC 4291 section 2.5.6](https://www.rfc-editor.org/rfc/rfc4291#section-2.5.6) reserves.
 const IPV6_TEREDO_LINK_LOCAL_PREFIX: [u8; 8] = [0xFE, 0x80, 0, 0, 0, 0, 0, 0];
 /// The link-local scope all-routers multicast address FF02::2, the
 /// destination of the Router Solicitation a Teredo client sends while
-/// qualifying (RFC 4380 §5.2.1).
+/// qualifying ([RFC 4380 section 5.2.1](https://www.rfc-editor.org/rfc/rfc4380#section-5.2.1)).
 const IPV6_ALL_ROUTERS: [u8; 16] = [0xFF, 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x02];
 
-/// Decapsulate Teredo (RFC 4380 §5.1.1), returning where the IPv6 packet
+/// Decapsulate Teredo ([RFC 4380 section 5.1.1](https://www.rfc-editor.org/rfc/rfc4380#section-5.1.1)), returning where the IPv6 packet
 /// starts.
 ///
 /// The UDP payload is an IPv6 packet, optionally behind an authentication
@@ -444,7 +444,7 @@ const IPV6_ALL_ROUTERS: [u8; 16] = [0xFF, 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
 /// # What this deliberately does not match
 ///
 /// Only traffic *to* UDP 3544 is decapsulated, and 3544 is the port "at which
-/// Teredo servers are waiting for packets" (§2.7) — so this sees the
+/// Teredo servers are waiting for packets" ([RFC 4380 section 2.7](https://www.rfc-editor.org/rfc/rfc4380#section-2.7)) — so this sees the
 /// client→server leg and nothing else. Server→client traffic (source 3544,
 /// destination the client's ephemeral port) and client↔client bubbles (no
 /// 3544 at either end) are invisible here. Reaching them would mean trusting
@@ -477,7 +477,7 @@ pub(crate) fn teredo(payload: &[u8], base: usize) -> Option<Inner> {
 /// on a Teredo server's port.
 ///
 /// This is the check that makes the Teredo decoder safe on a port with only
-/// four bits of protocol shape to offer. RFC 4380 §5.2.3 lists exactly what a
+/// four bits of protocol shape to offer. [RFC 4380 section 5.2.3](https://www.rfc-editor.org/rfc/rfc4380#section-5.2.3) lists exactly what a
 /// server accepts on 3544, and every accepted case names a Teredo or
 /// link-local address:
 ///
@@ -506,26 +506,26 @@ fn teredo_addressed(ip6: &[u8]) -> bool {
 
 /// Smallest payload that can be an ESP packet: a 4-octet SPI, a 4-octet
 /// Sequence Number, and one 4-octet word to hold — at minimum — the Pad
-/// Length and Next Header fields that RFC 4303 §2.4 requires to be "right
+/// Length and Next Header fields that [RFC 4303 section 2.4](https://www.rfc-editor.org/rfc/rfc4303#section-2.4) requires to be "right
 /// aligned within a 4-byte word". Any real SA adds an IV and an ICV on top.
 const ESP_MIN_LEN: usize = 12;
 /// Label reported for an ESP payload.
 const ESP_LABEL: &str = "UDP-encapsulated ESP";
 
 /// Classify a UDP payload on port 4500 as ESP, IKE, or a NAT-keepalive
-/// (RFC 3948 §2).
+/// ([RFC 3948 section 2](https://www.rfc-editor.org/rfc/rfc3948#section-2)).
 ///
 /// Port 4500 multiplexes three things, and RFC 3948 gives an exact
 /// discriminator for each:
 ///
-/// - IKE (§2.2) is preceded by a Non-ESP Marker, "4 zero-valued bytes
+/// - IKE ([RFC 3948 section 2.2](https://www.rfc-editor.org/rfc/rfc3948#section-2.2)) is preceded by a Non-ESP Marker, "4 zero-valued bytes
 ///   aligning with the SPI field of an ESP packet". It is key exchange, not a
 ///   tunnel, and carries no user packet — `None`.
-/// - A NAT-keepalive (§2.3) is "a one-octet-long payload with the value
+/// - A NAT-keepalive ([RFC 3948 section 2.3](https://www.rfc-editor.org/rfc/rfc3948#section-2.3)) is "a one-octet-long payload with the value
 ///   0xFF". It carries nothing — `None`, rather than being counted as a
 ///   tunnel whose contents could not be read.
 /// - Anything else is ESP, whose "SPI field ... MUST NOT be a zero value"
-///   (§2.1) — which is precisely what makes the marker unambiguous.
+///   ([RFC 3948 section 2.1](https://www.rfc-editor.org/rfc/rfc3948#section-2.1)) — which is precisely what makes the marker unambiguous.
 ///
 /// ESP returns [`Inner::Opaque`], never an offset. The payload is encrypted;
 /// there is no honest way to report what is inside it. "IPsec-encrypted, not
@@ -536,8 +536,8 @@ const ESP_LABEL: &str = "UDP-encapsulated ESP";
 ///
 /// Every other decapsulator in this module refuses a media packet on
 /// structure. ESP cannot: past the SPI, every octet is ciphertext by design,
-/// so there is nothing left to check beyond a length floor and RFC 4303
-/// §2.4's 4-octet alignment — and a 20 ms G.711 frame is 172 octets, which
+/// so there is nothing left to check beyond a length floor and the
+/// 4-octet alignment of [RFC 4303 section 2.4](https://www.rfc-editor.org/rfc/rfc4303#section-2.4) — and a 20 ms G.711 frame is 172 octets, which
 /// satisfies both. An RTP stream sent *to* port 4500 is therefore reported as
 /// ESP.
 ///
@@ -572,7 +572,7 @@ pub(crate) fn esp_in_udp(payload: &[u8]) -> Option<Inner> {
 
 /// Ver, the low 4 bits of octet 1 of the L2TP header.
 const L2TP_VER_MASK: u8 = 0x0F;
-/// RFC 2661 §3.1: "Ver MUST be 2 ... The value 1 is reserved to permit
+/// [RFC 2661 section 3.1](https://www.rfc-editor.org/rfc/rfc2661#section-3.1): "Ver MUST be 2 ... The value 1 is reserved to permit
 /// detection of L2F packets should they arrive intermixed with L2TP packets.
 /// Packets received with an unknown Ver field MUST be discarded."
 const L2TP_VERSION_2: u8 = 2;
@@ -591,9 +591,9 @@ const L2TP_FLAG_O: u8 = 0x02;
 const L2TP_RESERVED_OCTET0: u8 = 0x34;
 /// The x bits of octet 1, ahead of the Ver nibble.
 const L2TP_RESERVED_OCTET1: u8 = 0xF0;
-/// PPP Address field, RFC 1662 §3.1: the all-stations address 0xFF.
+/// PPP Address field, [RFC 1662 section 3.1](https://www.rfc-editor.org/rfc/rfc1662#section-3.1): the all-stations address 0xFF.
 const PPP_ADDRESS: u8 = 0xFF;
-/// PPP Control field, RFC 1662 §3.1: Unnumbered Information, 0x03.
+/// PPP Control field, [RFC 1662 section 3.1](https://www.rfc-editor.org/rfc/rfc1662#section-3.1): Unnumbered Information, 0x03.
 const PPP_CONTROL: u8 = 0x03;
 /// PPP Protocol field for IPv4.
 ///
@@ -616,9 +616,9 @@ const PPP_PROTO_IPV6: u16 = 0x0057;
 ///
 /// - **L2TPv2 control messages** (T = 1) carry AVPs, not a PPP frame.
 ///   Rejected.
-/// - **L2TPv3 over UDP** (Ver = 3, RFC 3931 §4.1.2.1) is rejected outright,
+/// - **L2TPv3 over UDP** (Ver = 3, [RFC 3931 section 4.1.2.1](https://www.rfc-editor.org/rfc/rfc3931#section-4.1.2.1)) is rejected outright,
 ///   and this is the important one. Its data header is followed by a Cookie
-///   of 0, 4 or 8 octets, and RFC 3931 §4.1 is unambiguous about where that
+///   of 0, 4 or 8 octets, and [RFC 3931 section 4.1](https://www.rfc-editor.org/rfc/rfc3931#section-4.1) is unambiguous about where that
 ///   length comes from: "The Session ID alone provides the necessary context
 ///   for all further packet processing, including the presence, size, and
 ///   value of the Cookie." That context lives in the control channel, which
@@ -630,14 +630,14 @@ const PPP_PROTO_IPV6: u16 = 0x0057;
 ///   decapsulator invents a flow, so L2TPv3 stays unimplemented until
 ///   somebody wires control-channel state into it.
 /// - **L2F** (Ver = 1) shares this port and is rejected by the version check.
-/// - **L2TP over IP** (protocol 115, RFC 3931 §4.1.1) is not a UDP tunnel and
+/// - **L2TP over IP** (protocol 115, [RFC 3931 section 4.1.1](https://www.rfc-editor.org/rfc/rfc3931#section-4.1.1)) is not a UDP tunnel and
 ///   is out of this module's scope entirely.
 /// - **Non-IP PPP payloads** — LCP, IPCP, MPLS-over-PPP, bridging — are
 ///   rejected: they are real traffic, but none of them is an IP datagram.
 ///
 /// # Direction
 ///
-/// Only traffic to UDP 1701 is matched. RFC 2661 §8.1 lets the far end reply
+/// Only traffic to UDP 1701 is matched. [RFC 2661 section 8.1](https://www.rfc-editor.org/rfc/rfc2661#section-8.1) lets the far end reply
 /// from an arbitrary port — "The recipient picks a free port on its own
 /// system (which may or may not be 1701)" — so on such a tunnel only the
 /// initiator→responder half is decoded. Implementations overwhelmingly use
@@ -716,7 +716,7 @@ pub(crate) fn l2tp(payload: &[u8], base: usize) -> Option<Inner> {
 
 /// Offset of the IP header inside the PPP frame beginning at `ppp_off`.
 ///
-/// RFC 2661 §5.3 has the LAC forward PPP frames "stripped of CRC, link
+/// [RFC 2661 section 5.3](https://www.rfc-editor.org/rfc/rfc2661#section-5.3) has the LAC forward PPP frames "stripped of CRC, link
 /// framing, and transparency bytes", which removes RFC 1662's HDLC flags,
 /// escapes and FCS but not the frame's own Address and Control octets, so
 /// they are skipped when present. A peer that negotiated ACFC omits them and
@@ -751,9 +751,9 @@ fn ppp_ip_offset(d: &[u8], ppp_off: usize) -> Option<usize> {
 const ETHERTYPE_IPV4: u16 = 0x0800;
 /// EtherType for IPv6.
 const ETHERTYPE_IPV6: u16 = 0x86DD;
-/// Smallest IPv4 header, RFC 791 §3.1 (IHL 5, no options).
+/// Smallest IPv4 header, [RFC 791 section 3.1](https://www.rfc-editor.org/rfc/rfc791#section-3.1) (IHL 5, no options).
 const IPV4_HEADER_MIN: usize = 20;
-/// The IPv6 fixed header, RFC 8200 §3.
+/// The IPv6 fixed header, [RFC 8200 section 3](https://www.rfc-editor.org/rfc/rfc8200#section-3).
 const IPV6_HEADER_LEN: usize = 40;
 
 /// EtherTypes an inner Ethernet frame is allowed to carry.
@@ -787,7 +787,7 @@ fn plausible_inner_ip(d: &[u8]) -> bool {
     plausible_inner_ipv4(d) || plausible_inner_ipv6(d)
 }
 
-/// Whether `d` plausibly begins an IPv4 packet (RFC 791 §3.1).
+/// Whether `d` plausibly begins an IPv4 packet ([RFC 791 section 3.1](https://www.rfc-editor.org/rfc/rfc791#section-3.1)).
 ///
 /// A bare IPv4 header is not much structure — roughly thirteen bits' worth —
 /// so this is a sanity check on top of a tunnel header that has already been
@@ -832,7 +832,7 @@ fn plausible_inner_ipv4(d: &[u8]) -> bool {
     d.get(8).is_some_and(|&ttl| ttl != 0)
 }
 
-/// Whether `d` plausibly begins an IPv6 packet (RFC 8200 §3).
+/// Whether `d` plausibly begins an IPv6 packet ([RFC 8200 section 3](https://www.rfc-editor.org/rfc/rfc8200#section-3)).
 fn plausible_inner_ipv6(d: &[u8]) -> bool {
     // As for IPv4: the 40-octet fixed header must be present in full.
     if d.len() < IPV6_HEADER_LEN {
@@ -888,8 +888,8 @@ mod tests {
 
     // ── builders ──────────────────────────────────────────────────────
 
-    /// A realistic RTP packet: the RFC 3550 §5.1 fixed header (V=2, P=0, X=0,
-    /// CC=0, M=0, PT=0 — PCMU, RFC 3551 §6) followed by 160 octets of G.711
+    /// A realistic RTP packet: the [RFC 3550 section 5.1](https://www.rfc-editor.org/rfc/rfc3550#section-5.1) fixed header (V=2, P=0, X=0,
+    /// CC=0, M=0, PT=0 — PCMU, [RFC 3551 section 6](https://www.rfc-editor.org/rfc/rfc3551#section-6)) followed by 160 octets of G.711
     /// µ-law, i.e. one 20 ms frame at 8 kHz. This is the single most common
     /// payload on a VoIP wire and the thing every decoder here must refuse.
     fn rtp_pcmu() -> Vec<u8> {
@@ -929,7 +929,7 @@ mod tests {
     }
 
     /// A Teredo client's IPv6 packet: source inside the Global Teredo IPv6
-    /// Service Prefix 2001:0000::/32 (RFC 4380 §2.6).
+    /// Service Prefix 2001:0000::/32 ([RFC 4380 section 2.6](https://www.rfc-editor.org/rfc/rfc4380#section-2.6)).
     fn ipv6_from_teredo(payload: usize) -> Vec<u8> {
         let mut p = ipv6(payload);
         p[8..12].copy_from_slice(&[0x20, 0x01, 0x00, 0x00]);
@@ -938,7 +938,7 @@ mod tests {
 
     /// An Ethernet II frame carrying `ethertype` over `payload` octets.
     /// Source MAC 02:…:02 is locally administered and individual, so its
-    /// Group bit (RFC 7042 §2.1 — the bottom bit of the first octet) is 0.
+    /// Group bit ([RFC 7042 section 2.1](https://www.rfc-editor.org/rfc/rfc7042#section-2.1) — the bottom bit of the first octet) is 0.
     fn eth(ethertype: u16, payload: &[u8]) -> Vec<u8> {
         let mut f = vec![0x02, 0, 0, 0, 0, 0x01, 0x02, 0, 0, 0, 0, 0x02];
         f.extend_from_slice(&ethertype.to_be_bytes());
@@ -949,7 +949,7 @@ mod tests {
     /// Assemble a GTP-U PDU. `first` is octet 1 (Version/PT/spare/E/S/PN),
     /// `msg` the Message Type, `after` everything the flags call for (the
     /// 4-octet optional block plus any extension headers), and `inner` the
-    /// T-PDU. Length is filled in per TS 29.281 §5.1: "the length in octets
+    /// T-PDU. Length is filled in per [3GPP TS 29.281](https://portal.3gpp.org/desktopmodules/Specifications/SpecificationDetails.aspx?specificationId=1699) clause 5.1: "the length in octets
     /// of the payload, i.e. the rest of the packet following the mandatory
     /// part of the GTP header (that is the first 8 octets)".
     fn gtpu_pdu(first: u8, msg: u8, teid: u32, after: &[u8], inner: &[u8]) -> Vec<u8> {
@@ -969,7 +969,7 @@ mod tests {
         gtpu_pdu(0x30, 255, 0x1234_5678, &[], inner)
     }
 
-    /// Assemble a VXLAN PDU (RFC 7348 §5).
+    /// Assemble a VXLAN PDU ([RFC 7348 section 5](https://www.rfc-editor.org/rfc/rfc7348#section-5)).
     fn vxlan_pdu(flags: u8, rsvd24: [u8; 3], vni: [u8; 3], rsvd8: u8, inner: &[u8]) -> Vec<u8> {
         let mut p = vec![flags];
         p.extend_from_slice(&rsvd24);
@@ -984,7 +984,7 @@ mod tests {
         vxlan_pdu(0x08, [0, 0, 0], [0, 0x30, 0x39], 0, inner)
     }
 
-    /// Assemble a Geneve PDU (RFC 8926 §3.1). `ver_optlen` is octet 0
+    /// Assemble a Geneve PDU ([RFC 8926 section 3.1](https://www.rfc-editor.org/rfc/rfc8926#section-3.1)). `ver_optlen` is octet 0
     /// (Ver in the top 2 bits, Opt Len in the low 6), `flags` is octet 1
     /// (O, C, then 6 reserved bits).
     fn geneve_pdu(ver_optlen: u8, flags: u8, proto: u16, options: &[u8], inner: &[u8]) -> Vec<u8> {
@@ -1001,7 +1001,7 @@ mod tests {
         vec![0x01, 0x02, 0x03, 0x00]
     }
 
-    /// Assemble a Teredo authentication encapsulation (RFC 4380 §5.1.1):
+    /// Assemble a Teredo authentication encapsulation ([RFC 4380 section 5.1.1](https://www.rfc-editor.org/rfc/rfc4380#section-5.1.1)):
     /// `00 01 ID-len AU-len`, then the client id, the authentication value,
     /// an 8-octet nonce and a confirmation byte.
     fn teredo_auth(id_len: u8, au_len: u8) -> Vec<u8> {
@@ -1013,7 +1013,7 @@ mod tests {
         p
     }
 
-    /// A Teredo origin indication (RFC 4380 §5.1.1): 8 octets beginning
+    /// A Teredo origin indication ([RFC 4380 section 5.1.1](https://www.rfc-editor.org/rfc/rfc4380#section-5.1.1)): 8 octets beginning
     /// `00 00`.
     fn teredo_origin() -> Vec<u8> {
         vec![0x00, 0x00, 0xFE, 0xAE, 0xFE, 0xFD, 0xFC, 0xFB]
@@ -1033,7 +1033,7 @@ mod tests {
         offset_pad: Option<u16>,
     }
 
-    /// Assemble an L2TPv2 message (RFC 2661 §3.1). The Length field, when the
+    /// Assemble an L2TPv2 message ([RFC 2661 section 3.1](https://www.rfc-editor.org/rfc/rfc2661#section-3.1)). The Length field, when the
     /// L bit is set, is filled in as the total message length.
     fn l2tpv2(shape: L2tpShape, tunnel: u16, session: u16, body: &[u8]) -> Vec<u8> {
         let mut flags: u16 = 2; // Ver = 2

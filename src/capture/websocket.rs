@@ -14,9 +14,9 @@ use anyhow::{Result, bail};
 /// Maximum allowed WebSocket frame payload size (D17 limit: 64 KB).
 const MAX_FRAME_SIZE: u64 = 65_536;
 
-/// WebSocket text-frame opcode (RFC 6455 section 5.2).
+/// WebSocket text-frame opcode ([RFC 6455 section 5.2](https://www.rfc-editor.org/rfc/rfc6455#section-5.2)).
 const OPCODE_TEXT: u8 = 1;
-/// WebSocket binary-frame opcode (RFC 6455 section 5.2).
+/// WebSocket binary-frame opcode ([RFC 6455 section 5.2](https://www.rfc-editor.org/rfc/rfc6455#section-5.2)).
 const OPCODE_BINARY: u8 = 2;
 
 /// Ports where SIP-over-WebSocket traffic is expected when the operator has
@@ -100,7 +100,7 @@ pub fn ws_ports_description() -> String {
 /// Whether `declared` is expressible in a shorter length form than `len7`
 /// chose.
 ///
-/// RFC 6455 §5.2: *"the minimal number of bytes MUST be used to encode the
+/// [RFC 6455 section 5.2](https://www.rfc-editor.org/rfc/rfc6455#section-5.2): *"the minimal number of bytes MUST be used to encode the
 /// length, for example, the length of a 124-byte-long string can't be encoded
 /// as the sequence 126, 0, 124."* The RFC gives the example because the
 /// encoding is otherwise ambiguous, and an ambiguity a decoder accepts is
@@ -379,7 +379,7 @@ mod tests {
         frame
     }
 
-    /// RFC 6455 section 5.2: *"the minimal number of bytes MUST be used to
+    /// [RFC 6455 section 5.2](https://www.rfc-editor.org/rfc/rfc6455#section-5.2): *"the minimal number of bytes MUST be used to
     /// encode the length, for example, the length of a 124-byte-long string
     /// can't be encoded as the sequence 126, 0, 124."*
     ///

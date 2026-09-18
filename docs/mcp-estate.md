@@ -521,11 +521,11 @@ identity the wire never established.
 
 > **For IMS and carrier readers: sipnab reads `P-Charging-Vector` in two
 > strategies, and the difference between them decides whether it helps you.**
-> [RFC 7315 §4.6](https://www.rfc-editor.org/rfc/rfc7315#section-4.6) says the ICID identifies *a dialog*, and a B2BUA is two
+> [RFC 7315 section 4.6](https://www.rfc-editor.org/rfc/rfc7315#section-4.6) says the ICID identifies *a dialog*, and a B2BUA is two
 > dialogs — so a conformant B2BUA emits a **different** `icid-value` on each
 > side, and plain `icid-value` equality does **not** solve the re-origination
 > case. What crosses that hop is the separate `related-icid` parameter
-> (§4.6.4.1), whose value is the icid of the original dialog, and which the
+> ([RFC 7315 section 4.6.4.1](https://www.rfc-editor.org/rfc/rfc7315#section-4.6.4.1)), whose value is the icid of the original dialog, and which the
 > B2BUA *MAY* emit rather than must. So:
 >
 > * `charging_vector_related_icid` (95) — the intermediary declared the link.
@@ -535,9 +535,10 @@ identity the wire never established.
 >   identifier onto a second dialog; no RFC grants that.
 >
 > Two further limits, both from the RFC rather than from the implementation.
-> The first proxy generates the icid (§5.6), so the leg arriving from an
-> endpoint carries none and this is useless at the access edge. And §4.6.2.2
-> permits the next hop to *"modify the contents"*, which §6.6 calls normal
+> The first proxy generates the icid ([RFC 7315 section 5.6](https://www.rfc-editor.org/rfc/rfc7315#section-5.6)), so the leg arriving from an
+> endpoint carries none and this is useless at the access edge. And
+> [RFC 7315 section 4.6.2.2](https://www.rfc-editor.org/rfc/rfc7315#section-4.6.2.2) permits the next hop to *"modify the contents"*, which
+> [RFC 7315 section 6.6](https://www.rfc-editor.org/rfc/rfc7315#section-6.6) calls normal
 > behavior — there is no end-to-end constancy requirement of any kind, so this
 > is not a substitute for `Session-ID`. Full argument, including what is still
 > unverified: [`docs/design/icid-correlation.md`](design/icid-correlation.md).

@@ -257,7 +257,7 @@ pub fn is_unroutable_publicly(ip: IpAddr) -> bool {
 /// `{ip}:{port}` is ambiguous for IPv6: an endpoint renders as
 /// `2001:db8::1:5060`, which no parser can split back into an address and a
 /// port, and which a reader cannot tell from an address that simply ends in
-/// `:5060`. RFC 3986 section 3.2.2 gives the bracketed form for exactly this
+/// `:5060`. [RFC 3986 section 3.2.2](https://www.rfc-editor.org/rfc/rfc3986#section-3.2.2) gives the bracketed form for exactly this
 /// reason, and `SocketAddr`'s own `Display` uses it.
 ///
 /// This string is the participant IDENTITY in an exported sequence diagram,

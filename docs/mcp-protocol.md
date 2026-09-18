@@ -29,11 +29,11 @@ For the tools themselves — and for the error codes and response bounds — see
   see [auth.md](auth.md).
 - **Every `401` says what it wants.** The rejection carries
   `WWW-Authenticate: Bearer realm="sipnab"`, as
-  [RFC 9110](https://www.rfc-editor.org/rfc/rfc9110.html) §15.5.2 requires of
+  [RFC 9110 section 15.5.2](https://www.rfc-editor.org/rfc/rfc9110#section-15.5.2) requires of
   any `401`, plus `error="invalid_token"`
-  ([RFC 6750](https://www.rfc-editor.org/rfc/rfc6750.html) §3.1) when a token
+  ([RFC 6750 section 3.1](https://www.rfc-editor.org/rfc/rfc6750#section-3.1)) when
   the client presented a token and it failed. Presenting nothing carries no error code, which is
-  what §3.1 asks for and what lets an operator tell a misconfigured client from
+  what [RFC 6750 section 3.1](https://www.rfc-editor.org/rfc/rfc6750#section-3.1) asks for and what lets an operator tell a misconfigured client from
   a wrong token. Every rejected credential produces the same challenge: telling
   expired from revoked from forged would make the header an oracle.
 - **Discovery is available; sipnab is not an authorization server.**
@@ -47,7 +47,7 @@ For the tools themselves — and for the error codes and response bounds — see
   because sipnab issues and validates no OAuth tokens and a client sent to
   fetch one elsewhere would return holding a credential this server rejects.
   The operator names the URL rather than sipnab deriving it: behind a TLS-terminating proxy
-  sipnab cannot see the scheme a client used, and [RFC 9728 §3.3](https://www.rfc-editor.org/rfc/rfc9728#section-3.3) makes a client
+  sipnab cannot see the scheme a client used, and [RFC 9728 section 3.3](https://www.rfc-editor.org/rfc/rfc9728#section-3.3) makes a client
   discard a document whose `resource` does not match the URL it requested.
 - **Host header allowlist.** rmcp's DNS-rebind protection runs by
   default (`localhost`/`127.0.0.1`/`::1`); extend with

@@ -2,13 +2,13 @@
 
 //! LLMNR message parser (RFC 4795).
 //!
-//! The wire format is DNS (RFC 1035 §4): a 12-byte header, then question,
+//! The wire format is DNS ([RFC 1035 section 4](https://www.rfc-editor.org/rfc/rfc1035#section-4)): a 12-byte header, then question,
 //! answer, authority and additional sections of length-prefixed labels. Only
 //! the two sections that carry the inventory signal are decoded — the question
 //! (what name was looked up) and the answer (who claims it, at which address).
 //! Authority and additional are skipped by length.
 //!
-//! Names are decoded as UTF-8 (RFC 4795 §3.1 specifies UTF-8, unlike DNS's
+//! Names are decoded as UTF-8 ([RFC 4795 section 3.1](https://www.rfc-editor.org/rfc/rfc4795#section-3.1) specifies UTF-8, unlike DNS's
 //! preferred-name syntax), lossily: a hostname is evidence about a host, and a
 //! non-conformant byte in it is not a reason to lose the record.
 
@@ -48,7 +48,7 @@ pub struct LlmnrMessage {
     pub id: u16,
     /// `true` for a response, `false` for a query.
     pub is_response: bool,
-    /// The C bit: the responder found a name conflict (RFC 4795 §2.1.1).
+    /// The C bit: the responder found a name conflict ([RFC 4795 section 2.1.1](https://www.rfc-editor.org/rfc/rfc4795#section-2.1.1)).
     pub conflict: bool,
     /// The TC bit: the message was truncated.
     pub truncated: bool,
@@ -62,14 +62,14 @@ pub struct LlmnrMessage {
     pub answers: Vec<LlmnrAnswer>,
 }
 
-/// Longest name this parser will assemble, per RFC 1035 §2.3.4.
+/// Longest name this parser will assemble, per [RFC 1035 section 2.3.4](https://www.rfc-editor.org/rfc/rfc1035#section-2.3.4).
 const MAX_NAME_LEN: usize = 255;
 
-/// Longest single label, per RFC 1035 §2.3.4.
+/// Longest single label, per [RFC 1035 section 2.3.4](https://www.rfc-editor.org/rfc/rfc1035#section-2.3.4).
 const MAX_LABEL_LEN: usize = 63;
 
 /// Compression pointers a single name may follow before the message is
-/// treated as hostile. RFC 4795 §2.4 forbids compression in LLMNR entirely,
+/// treated as hostile. [RFC 4795 section 2.4](https://www.rfc-editor.org/rfc/rfc4795#section-2.4) forbids compression in LLMNR entirely,
 /// so any budget at all is generous; a small non-zero one keeps a
 /// non-conformant responder readable without letting a crafted message loop
 /// this parser forever.

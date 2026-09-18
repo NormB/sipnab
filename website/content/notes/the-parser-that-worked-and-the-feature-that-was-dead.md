@@ -7,7 +7,7 @@ description = "SIPREC metadata had a parser, unit tests and a field on the dialo
 kind = "postmortem"
 +++
 
-sipnab has parsed SIPREC recording metadata (RFC 7866) for a long time. There
+sipnab has parsed SIPREC recording metadata ([RFC 7866](https://www.rfc-editor.org/rfc/rfc7866)) for a long time. There
 is a parser, `src/sip/siprec.rs`. It has unit tests, and they pass. A
 field on the dialog, `siprec_metadata`, holds the result, and code fills it.
 

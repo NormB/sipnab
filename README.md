@@ -79,8 +79,8 @@ analysis, and an MCP server an AI agent can drive.
 - **Security analysis** -- scanner detection, registration flood, digest leak, STIR/SHAKEN, fraud heuristics
 - **Event execution** -- run commands on dialog state changes or quality drops
 - **HEP v3** -- send and receive Homer Encapsulation Protocol over UDP, TCP or TLS. Each side names its own transport (`--hep-send-transport`, `--hep-listen-transport`), both default to `udp`, and a TLS sender verifies the collector before it reports the feed up
-- **SIPREC** -- reads the recording metadata (RFC 7866) an SRC sends: session, mode, participants, and which recorded stream belongs to whom. sipnab reads SIPREC and does not speak it -- it is not a recording client or server
-- **TLS/SRTP decryption** -- SSLKEYLOGFILE (TLS 1.2/1.3), RSA private key (`--tls-key`, TLS 1.2 RSA-kx only — not ECDHE/PFS), SRTP media (`--srtp-keys` + SDES `a=crypto`, AES-CM), and DTLS-SRTP key extraction (`--dtls-keylog`, RFC 5764)
+- **SIPREC** -- reads the recording metadata ([RFC 7866](https://www.rfc-editor.org/rfc/rfc7866)) an SRC sends: session, mode, participants, and which recorded stream belongs to whom. sipnab reads SIPREC and does not speak it -- it is not a recording client or server
+- **TLS/SRTP decryption** -- SSLKEYLOGFILE (TLS 1.2/1.3), RSA private key (`--tls-key`, TLS 1.2 RSA-kx only — not ECDHE/PFS), SRTP media (`--srtp-keys` + SDES `a=crypto`, AES-CM), and DTLS-SRTP key extraction (`--dtls-keylog`, [RFC 5764](https://www.rfc-editor.org/rfc/rfc5764))
 - **Privilege separation** -- drop to unprivileged user after capture device open
 - **pcap I/O** -- read/write pcap and pcapng, file rotation and splitting
 - **MCP server mode** -- expose analysis (dialogs, streams, RTP, security findings) as 68 Model Context Protocol tools an AI agent can call. No tool edits the analysis in place; file export, capture swapping and shutdown stay off unless you enable them. Stdio + HTTP transports. See [`docs/mcp.md`](./docs/mcp.md).

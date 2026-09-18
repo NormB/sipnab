@@ -5,23 +5,23 @@
 //! Reached three ways, all of which hand this module the offset of the first
 //! label stack entry:
 //!
-//! * EtherType `0x8847` or `0x8848` on Ethernet. RFC 5332 §4 **replaced**
-//!   RFC 3032 §5's unicast/multicast split: `0x8847` now marks "an MPLS packet"
+//! * EtherType `0x8847` or `0x8848` on Ethernet. [RFC 5332 section 4](https://www.rfc-editor.org/rfc/rfc5332#section-4) **replaced**
+//!   [RFC 3032 section 5](https://www.rfc-editor.org/rfc/rfc3032#section-5)'s unicast/multicast split: `0x8847` now marks "an MPLS packet"
 //!   generally, and `0x8848` is "used only when an MPLS packet whose top label
 //!   is upstream-assigned is carried in a multicast ethernet frame". The older
 //!   "MPLS multicast" gloss — still what the IEEE RA listing prints — describes
 //!   a semantic that has not been current since 2008. Either codepoint
 //!   introduces the same label stack encoding, which is all this module cares
 //!   about.
-//! * IP protocol number 137 (MPLS-in-IP, RFC 4023). RFC 5332 §7 amended
+//! * IP protocol number 137 (MPLS-in-IP, RFC 4023). [RFC 5332 section 7](https://www.rfc-editor.org/rfc/rfc5332#section-7) amended
 //!   RFC 4023 so that 137 is used "whether or not the encapsulated MPLS packet
 //!   is an MPLS multicast packet" — there is no second protocol number to
 //!   handle.
-//! * NSH Next Protocol `0x5` (RFC 8300 §2.2), via [`super::nsh`].
+//! * NSH Next Protocol `0x5` ([RFC 8300 section 2.2](https://www.rfc-editor.org/rfc/rfc8300#section-2.2)), via [`super::nsh`].
 //!
 //! # The hard part: an MPLS payload does not say what it is
 //!
-//! RFC 3032 §2.2 is explicit: "the label stack does not contain any field
+//! [RFC 3032 section 2.2](https://www.rfc-editor.org/rfc/rfc3032#section-2.2) is explicit: "the label stack does not contain any field
 //! which explicitly identifies the network layer protocol. This means that the
 //! identity of the network layer protocol must be inferable from the value of
 //! the label which is popped from the bottom of the stack, possibly along with
@@ -33,15 +33,16 @@
 //! The discrimination rule implemented here is the one the deployed MPLS data
 //! plane already runs on, and the reason the IETF made it safe to run on:
 //!
-//! * RFC 4928 §2 records the existing hardware behavior — "by inspecting the
+//! * [RFC 4928 section 2](https://www.rfc-editor.org/rfc/rfc4928#section-2) records the existing hardware behavior — "by inspecting the
 //!   first nibble beyond the label stack, existing equipment infers that a
 //!   packet is not IPv4 or IPv6 if the value of the nibble ... is not 0x4 or
 //!   0x6 respectively", and "most deployed LSRs will treat a packet whose
 //!   first nibble is equal to 0x4 as if the payload were IPv4".
-//! * RFC 4385 §2 turns that into a normative constraint on everyone else: "PW
+//! * [RFC 4385 section 2](https://www.rfc-editor.org/rfc/rfc4385#section-2) turns that into a normative constraint on everyone else: "PW
 //!   packets carried over an MPLS PSN MUST NOT start with the value 4 (IPv4)
 //!   or the value 6 (IPv6) in the first nibble", and assigns first-nibble 0 to
-//!   the PW control word (§3) and 1 to the PW associated channel (§5).
+//!   the PW control word ([RFC 4385 section 3](https://www.rfc-editor.org/rfc/rfc4385#section-3)) and 1 to the PW associated channel
+//!   ([RFC 4385 section 5](https://www.rfc-editor.org/rfc/rfc4385#section-5)).
 //!
 //! So the nibble is not a guess this code invented; it is the discriminator
 //! the encapsulations were designed around. What this module adds on top is
@@ -58,12 +59,12 @@
 
 use super::Inner;
 
-/// Bytes in one label stack entry (RFC 3032 §2.1: "Each label stack entry is
+/// Bytes in one label stack entry ([RFC 3032 section 2.1](https://www.rfc-editor.org/rfc/rfc3032#section-2.1): "Each label stack entry is
 /// represented by 4 octets").
 const LABEL_STACK_ENTRY: usize = 4;
 
 /// Bit mask of the S (Bottom of Stack) bit within a big-endian label stack
-/// entry: RFC 3032 §2.1 puts Label in bits 0–19, Exp in 20–22, S in bit 23,
+/// entry: [RFC 3032 section 2.1](https://www.rfc-editor.org/rfc/rfc3032#section-2.1) puts Label in bits 0–19, Exp in 20–22, S in bit 23,
 /// TTL in 24–31, so S is bit 8 of the low half-word.
 const S_BIT: u32 = 0x0000_0100;
 
@@ -81,29 +82,29 @@ const LABEL_SHIFT: u32 = 12;
 /// half-decoded.
 pub(crate) const MAX_LABEL_STACK_DEPTH: usize = 16;
 
-/// IPv4 Explicit NULL (RFC 3032 §2.1 / RFC 7274 §3): the payload is IPv4.
+/// IPv4 Explicit NULL ([RFC 3032 section 2.1](https://www.rfc-editor.org/rfc/rfc3032#section-2.1) / [RFC 7274 section 3](https://www.rfc-editor.org/rfc/rfc7274#section-3)): the payload is IPv4.
 const LABEL_IPV4_EXPLICIT_NULL: u32 = 0;
-/// IPv6 Explicit NULL (RFC 3032 §2.1 / RFC 7274 §3): the payload is IPv6.
+/// IPv6 Explicit NULL ([RFC 3032 section 2.1](https://www.rfc-editor.org/rfc/rfc3032#section-2.1) / [RFC 7274 section 3](https://www.rfc-editor.org/rfc/rfc7274#section-3)): the payload is IPv6.
 const LABEL_IPV6_EXPLICIT_NULL: u32 = 2;
-/// Implicit NULL (RFC 3032 §2.1): an LSR "would never actually [push] a label
+/// Implicit NULL ([RFC 3032 section 2.1](https://www.rfc-editor.org/rfc/rfc3032#section-2.1)): an LSR "would never actually [push] a label
 /// whose value is 3", so this value never legitimately appears on the wire.
 const LABEL_IMPLICIT_NULL: u32 = 3;
-/// Router Alert (RFC 3032 §2.1): "legal anywhere in the label stack except at
+/// Router Alert ([RFC 3032 section 2.1](https://www.rfc-editor.org/rfc/rfc3032#section-2.1)): "legal anywhere in the label stack except at
 /// the bottom", so finding it at the bottom means the stack was misread.
 const LABEL_ROUTER_ALERT: u32 = 1;
-/// Entropy Label Indicator (RFC 6790 §4.2): an ELI is always followed by the
+/// Entropy Label Indicator ([RFC 6790 section 4.2](https://www.rfc-editor.org/rfc/rfc6790#section-4.2)): an ELI is always followed by the
 /// Entropy Label itself, so it cannot be the bottom entry.
 const LABEL_ENTROPY_INDICATOR: u32 = 7;
-/// Generic Associated Channel Label (RFC 5586 §4.2): at the bottom of the
+/// Generic Associated Channel Label ([RFC 5586 section 4.2](https://www.rfc-editor.org/rfc/rfc5586#section-4.2)): at the bottom of the
 /// stack it "MUST always be followed by an ACH", never by a user packet.
 const LABEL_GAL: u32 = 13;
 
-/// Smallest legal IPv4 IHL, in 32-bit words (RFC 791 §3.1).
+/// Smallest legal IPv4 IHL, in 32-bit words ([RFC 791 section 3.1](https://www.rfc-editor.org/rfc/rfc791#section-3.1)).
 const IPV4_MIN_IHL: usize = 5;
 /// Octets of IPv4 header that must be captured before the packet is worth
 /// reporting: the addresses end at octet 20.
 const IPV4_FIXED_HEADER: usize = 20;
-/// Octets in the IPv6 fixed header (RFC 8200 §3).
+/// Octets in the IPv6 fixed header ([RFC 8200 section 3](https://www.rfc-editor.org/rfc/rfc8200#section-3)).
 const IPV6_FIXED_HEADER: usize = 40;
 
 /// The result of walking a label stack to its bottom entry.
@@ -234,7 +235,7 @@ pub(crate) fn decap(d: &[u8], off: usize) -> Option<Inner> {
 ///
 /// The nibble alone is four bits, and four bits show up by chance roughly once
 /// every sixteen frames in any byte an attacker or a bare Ethernet pseudowire
-/// puts under the bottom label. Two more facts from RFC 791 §3.1 are free:
+/// puts under the bottom label. Two more facts from [RFC 791 section 3.1](https://www.rfc-editor.org/rfc/rfc791#section-3.1) are free:
 ///
 /// * IHL is "the length of the internet header in 32 bit words, and thus
 ///   points to the beginning of the data. Note that the minimum value for a
@@ -268,7 +269,7 @@ fn ipv4_is_self_consistent(d: &[u8], at: usize) -> Option<()> {
 /// Require that a whole IPv6 fixed header was captured.
 ///
 /// The name is the whole story, and that is the point: IPv6 gives a decoder
-/// far less to work with than IPv4. RFC 8200 §3 removed the header checksum
+/// far less to work with than IPv4. [RFC 8200 section 3](https://www.rfc-editor.org/rfc/rfc8200#section-3) removed the header checksum
 /// and the header-length field and left no field whose value constrains
 /// another; Payload Length cannot be checked against the captured length for
 /// the snaplen reason given above; and every Traffic Class, Flow Label and Hop
@@ -286,7 +287,7 @@ fn ipv6_header_captured(d: &[u8], at: usize) -> Option<()> {
     Some(())
 }
 
-/// A first nibble of 0 means a PW MPLS Control Word (RFC 4385 §3).
+/// A first nibble of 0 means a PW MPLS Control Word ([RFC 4385 section 3](https://www.rfc-editor.org/rfc/rfc4385#section-3)).
 ///
 /// The generic form constrains exactly one thing — "Bits 0..3 differ from the
 /// first four bits of an IP packet and hence provide the necessary MPLS
@@ -295,7 +296,7 @@ fn ipv6_header_captured(d: &[u8], at: usize) -> Option<()> {
 /// puts no value out of range, so there is nothing further to validate beyond
 /// the control word actually having been captured.
 ///
-/// What follows the control word is not knowable here: RFC 4385 §2 has the PW
+/// What follows the control word is not knowable here: [RFC 4385 section 2](https://www.rfc-editor.org/rfc/rfc4385#section-2) has the PW
 /// set-up protocol decide the payload type, and LDP signaling is not in the
 /// capture. Returning [`Inner::Opaque`] says precisely that.
 fn pw_control_word(d: &[u8], at: usize) -> Option<Inner> {
@@ -304,15 +305,15 @@ fn pw_control_word(d: &[u8], at: usize) -> Option<Inner> {
     Some(Inner::Opaque("mpls-pseudowire"))
 }
 
-/// A first nibble of 1 means a PW Associated Channel Header (RFC 4385 §5),
+/// A first nibble of 1 means a PW Associated Channel Header ([RFC 4385 section 5](https://www.rfc-editor.org/rfc/rfc4385#section-5)),
 /// generalized to the Generic Associated Channel by RFC 5586.
 ///
 /// "Bits 0..3 MUST be 0001. This allows the packet to be distinguished from an
 /// IP packet and from a PW data packet." The Version field is the one other
-/// checkable value: RFC 4385 §5 "defines version 0", so anything else is a
+/// checkable value: [RFC 4385 section 5](https://www.rfc-editor.org/rfc/rfc4385#section-5) "defines version 0", so anything else is a
 /// format this decoder has never seen.
 ///
-/// The 8-bit Reserved field is deliberately not checked. RFC 4385 §5 says it
+/// The 8-bit Reserved field is deliberately not checked. [RFC 4385 section 5](https://www.rfc-editor.org/rfc/rfc4385#section-5) says it
 /// "MUST be sent as 0, and ignored on reception" — enforcing a field the
 /// standard tells receivers to ignore would reject conforming traffic the
 /// moment anything ever puts it to use.
@@ -338,7 +339,7 @@ mod tests {
     /// measured from the wrong base fails instead of coincidentally passing.
     const OFF: usize = 14;
 
-    /// One label stack entry, encoded per RFC 3032 §2.1 Figure 1
+    /// One label stack entry, encoded per [RFC 3032 section 2.1](https://www.rfc-editor.org/rfc/rfc3032#section-2.1) Figure 1
     /// (Label 20 bits, Exp 3, S 1, TTL 8).
     fn lse(label: u32, exp: u8, bottom: bool, ttl: u8) -> [u8; 4] {
         (((label & 0x000F_FFFF) << 12)

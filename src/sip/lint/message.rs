@@ -25,39 +25,39 @@ use super::finding::{
     URI_BRACKETS, URI_PARAM_DEMOTED, VIA_BRANCH_DUPLICATE,
 };
 
-/// The five header fields RFC 3261 §8.1.1 makes mandatory in every request and
-/// §8.2.6.2 makes mandatory in every response.
+/// The five header fields [RFC 3261 section 8.1.1](https://www.rfc-editor.org/rfc/rfc3261#section-8.1.1) makes mandatory in every request and
+/// [section 8.2.6.2](https://www.rfc-editor.org/rfc/rfc3261#section-8.2.6.2) makes mandatory in every response.
 ///
-/// `Max-Forwards` is the sixth in §8.1.1 and is absent from this list on
+/// `Max-Forwards` is the sixth in [RFC 3261 section 8.1.1](https://www.rfc-editor.org/rfc/rfc3261#section-8.1.1) and is absent from this list on
 /// purpose: it applies to requests only, so it carries its own rule and its own
 /// identifier, and an operator can suppress one without losing the other.
 const MANDATORY_HEADERS: [&str; 5] = ["Call-ID", "CSeq", "From", "To", "Via"];
 
-/// The header fields whose value RFC 3261 §20 says carries a URI.
+/// The header fields whose value [RFC 3261 section 20](https://www.rfc-editor.org/rfc/rfc3261#section-20) says carries a URI.
 const URI_HEADERS: [&str; 3] = ["Contact", "From", "To"];
 
-/// The six parameter names RFC 3261 §19.1.1 defines as URI parameters.
+/// The six parameter names [RFC 3261 section 19.1.1](https://www.rfc-editor.org/rfc/rfc3261#section-19.1.1) defines as URI parameters.
 ///
 /// Outside angle brackets each one silently becomes a header parameter, which
 /// is a different message with the same bytes.
 const URI_PARAMETERS: [&str; 6] = ["transport", "user", "method", "ttl", "maddr", "lr"];
 
-/// The RFC 3261 §8.1.1.7 magic cookie every compliant branch begins with.
+/// The [RFC 3261 section 8.1.1.7](https://www.rfc-editor.org/rfc/rfc3261#section-8.1.1.7) magic cookie every compliant branch begins with.
 const BRANCH_MAGIC_COOKIE: &str = "z9hG4bK";
 
-/// The `Max-Forwards` value RFC 3261 §20.22 recommends as the initial one.
+/// The `Max-Forwards` value [RFC 3261 section 20.22](https://www.rfc-editor.org/rfc/rfc3261#section-20.22) recommends as the initial one.
 const RECOMMENDED_MAX_FORWARDS: u32 = 70;
 
 /// The header fields RFC 3261 defines with a single value, so a second row of
-/// the same name breaks §7.3.1.
+/// the same name breaks [section 7.3.1](https://www.rfc-editor.org/rfc/rfc3261#section-7.3.1).
 ///
-/// Every entry's ABNF in §25.1 is `header HCOLON <one value>` with no
-/// `*(COMMA ...)` tail, which is the exact test §7.3.1 states. The list is
+/// Every entry's ABNF in [RFC 3261 section 25.1](https://www.rfc-editor.org/rfc/rfc3261#section-25.1) is `header HCOLON <one value>` with no
+/// `*(COMMA ...)` tail, which is the exact test [section 7.3.1](https://www.rfc-editor.org/rfc/rfc3261#section-7.3.1) states. The list is
 /// deliberately short of the full registry: a name whose grammar this comment
 /// cannot vouch for is left out, because a false positive on a header an
 /// operator has never thought about is how a linter loses its reader.
 ///
-/// **The four authentication header fields are absent on purpose.** §7.3.1
+/// **The four authentication header fields are absent on purpose.** [RFC 3261 section 7.3.1](https://www.rfc-editor.org/rfc/rfc3261#section-7.3.1)
 /// names `WWW-Authenticate`, `Authorization`, `Proxy-Authenticate` and
 /// `Proxy-Authorization` as its own exception: multiple rows "MAY be present in
 /// a message", they simply may not be joined with commas. Listing them here
@@ -83,7 +83,7 @@ const SINGULAR_HEADERS: [&str; 17] = [
     "To",
 ];
 
-/// The loose-routing parameter RFC 3261 §19.1.1 defines and §16.6 item 4
+/// The loose-routing parameter [RFC 3261 section 19.1.1](https://www.rfc-editor.org/rfc/rfc3261#section-19.1.1) defines and [section 16.6](https://www.rfc-editor.org/rfc/rfc3261#section-16.6) item 4
 /// requires in a `Record-Route` URI.
 const LOOSE_ROUTE_PARAM: &str = "lr";
 
@@ -228,7 +228,7 @@ pub(crate) fn lint(msg: &SipMessage, index: usize, sink: &mut FindingSink<'_>) {
     via_branch_duplicates(msg, index, sink);
 }
 
-/// RFC 3261 §7.3.1 — a single-valued header field gets one row.
+/// [RFC 3261 section 7.3.1](https://www.rfc-editor.org/rfc/rfc3261#section-7.3.1) — a single-valued header field gets one row.
 fn singular_headers(msg: &SipMessage, index: usize, sink: &mut FindingSink<'_>) {
     if !sink.wants(&SINGULAR_HEADER_REPEATED) {
         return;
@@ -263,7 +263,7 @@ fn singular_headers(msg: &SipMessage, index: usize, sink: &mut FindingSink<'_>) 
 /// splitting one route into two: `"Smith, John" <sip:p1.example.com;lr>` is one
 /// entry, and a comma split reads it as two of which neither parses.
 ///
-/// A row with no angle brackets at all yields nothing. RFC 3261 §20 requires
+/// A row with no angle brackets at all yields nothing. [RFC 3261 section 20](https://www.rfc-editor.org/rfc/rfc3261#section-20) requires
 /// the brackets around any URI carrying a semicolon, and every route URI worth
 /// checking carries `lr` — so a bracketless row is a different defect, already
 /// reported by [`URI_BRACKETS`] and not restated here.
@@ -296,7 +296,7 @@ fn has_loose_route_param(uri: &str) -> bool {
         .any(|p| param_name(p).eq_ignore_ascii_case(LOOSE_ROUTE_PARAM))
 }
 
-/// RFC 3261 §16.6 item 4 — a recorded route URI is a loose route.
+/// [RFC 3261 section 16.6](https://www.rfc-editor.org/rfc/rfc3261#section-16.6) item 4 — a recorded route URI is a loose route.
 fn record_route_loose(msg: &SipMessage, index: usize, sink: &mut FindingSink<'_>) {
     if !sink.wants(&RECORD_ROUTE_NOT_LOOSE) {
         return;
@@ -324,7 +324,7 @@ fn record_route_loose(msg: &SipMessage, index: usize, sink: &mut FindingSink<'_>
 
 /// Every `branch` in the message's `Via` stack, in stack order.
 ///
-/// One `Via` row may carry several values (§7.3.1 makes `Via` a
+/// One `Via` row may carry several values ([RFC 3261 section 7.3.1](https://www.rfc-editor.org/rfc/rfc3261#section-7.3.1) makes `Via` a
 /// comma-separated list), so the rows are split before the branches are read.
 fn via_branches(msg: &SipMessage) -> Vec<&str> {
     let mut out = Vec::new();
@@ -346,10 +346,10 @@ fn via_branches(msg: &SipMessage) -> Vec<&str> {
     out
 }
 
-/// RFC 3261 §8.1.1.7 — one branch identifies one transaction, once.
+/// [RFC 3261 section 8.1.1.7](https://www.rfc-editor.org/rfc/rfc3261#section-8.1.1.7) — one branch identifies one transaction, once.
 ///
 /// Requests only, and for the same reason [`branch_cookie`] is: a response
-/// copies the request's whole `Via` stack (§8.2.6.2), so reporting both would
+/// copies the request's whole `Via` stack ([RFC 3261 section 8.2.6.2](https://www.rfc-editor.org/rfc/rfc3261#section-8.2.6.2)), so reporting both would
 /// count one element's defect twice for every message it provoked.
 fn via_branch_duplicates(msg: &SipMessage, index: usize, sink: &mut FindingSink<'_>) {
     if !msg.is_request || !sink.wants(&VIA_BRANCH_DUPLICATE) {
@@ -388,7 +388,7 @@ fn answers_invite(msg: &SipMessage) -> bool {
             .is_some_and(|(_, m)| m.eq_ignore_ascii_case("INVITE"))
 }
 
-/// RFC 3261 §12.1.1 — a 2xx to `INVITE` has to name where the dialog lives.
+/// [RFC 3261 section 12.1.1](https://www.rfc-editor.org/rfc/rfc3261#section-12.1.1) — a 2xx to `INVITE` has to name where the dialog lives.
 fn dialog_target(msg: &SipMessage, index: usize, sink: &mut FindingSink<'_>) {
     if !answers_invite(msg)
         || !msg.status_code.is_some_and(|c| (200..300).contains(&c))
@@ -407,7 +407,7 @@ fn dialog_target(msg: &SipMessage, index: usize, sink: &mut FindingSink<'_>) {
     );
 }
 
-/// RFC 3262 §3 — a provisional that demands 100rel has to carry an `RSeq`.
+/// [RFC 3262 section 3](https://www.rfc-editor.org/rfc/rfc3262#section-3) — a provisional that demands 100rel has to carry an `RSeq`.
 fn reliable_provisional(msg: &SipMessage, index: usize, sink: &mut FindingSink<'_>) {
     if !requires_100rel(msg) || msg.header("RSeq").is_some() {
         return;
@@ -543,7 +543,7 @@ fn session_timers(msg: &SipMessage, index: usize, sink: &mut FindingSink<'_>) {
     }
 }
 
-/// RFC 3261 §8.1.1 — the five header fields no SIP message may omit.
+/// [RFC 3261 section 8.1.1](https://www.rfc-editor.org/rfc/rfc3261#section-8.1.1) — the five header fields no SIP message may omit.
 fn mandatory_headers(msg: &SipMessage, index: usize, sink: &mut FindingSink<'_>) {
     if !sink.wants(&MANDATORY_HEADER_MISSING) {
         return;
@@ -568,7 +568,7 @@ fn mandatory_headers(msg: &SipMessage, index: usize, sink: &mut FindingSink<'_>)
     }
 }
 
-/// RFC 3261 §20.16 — `CSeq` is a decimal number and a method.
+/// [RFC 3261 section 20.16](https://www.rfc-editor.org/rfc/rfc3261#section-20.16) — `CSeq` is a decimal number and a method.
 fn cseq_shape(msg: &SipMessage, index: usize, sink: &mut FindingSink<'_>) {
     if !cseq_unparseable(msg) {
         return;
@@ -583,7 +583,7 @@ fn cseq_shape(msg: &SipMessage, index: usize, sink: &mut FindingSink<'_>) {
     );
 }
 
-/// RFC 3261 §20.14 — `Content-Length` counts the octets actually sent.
+/// [RFC 3261 section 20.14](https://www.rfc-editor.org/rfc/rfc3261#section-20.14) — `Content-Length` counts the octets actually sent.
 fn content_length(msg: &SipMessage, index: usize, sink: &mut FindingSink<'_>) {
     let Some(declared) = content_length_overrun(msg) else {
         return;
@@ -599,7 +599,7 @@ fn content_length(msg: &SipMessage, index: usize, sink: &mut FindingSink<'_>) {
     );
 }
 
-/// RFC 3261 §25.1 — a header value holds text, not control bytes.
+/// [RFC 3261 section 25.1](https://www.rfc-editor.org/rfc/rfc3261#section-25.1) — a header value holds text, not control bytes.
 fn control_bytes(msg: &SipMessage, index: usize, sink: &mut FindingSink<'_>) {
     if !sink.wants(&HEADER_CONTROL_BYTE) {
         return;
@@ -616,7 +616,7 @@ fn control_bytes(msg: &SipMessage, index: usize, sink: &mut FindingSink<'_>) {
     }
 }
 
-/// RFC 3261 §20 and §19.1.1 — angle brackets, and what happens without them.
+/// [RFC 3261 section 20](https://www.rfc-editor.org/rfc/rfc3261#section-20) and [RFC 3261 section 19.1.1](https://www.rfc-editor.org/rfc/rfc3261#section-19.1.1) — angle brackets, and what happens without them.
 fn uri_brackets(msg: &SipMessage, index: usize, sink: &mut FindingSink<'_>) {
     for name in URI_HEADERS {
         for value in msg.headers_by_name(name) {
@@ -666,7 +666,7 @@ fn uri_brackets(msg: &SipMessage, index: usize, sink: &mut FindingSink<'_>) {
     }
 }
 
-/// RFC 3261 §8.1.1.6 and §20.22 — `Max-Forwards` presence and range.
+/// [RFC 3261 section 8.1.1.6](https://www.rfc-editor.org/rfc/rfc3261#section-8.1.1.6) and [RFC 3261 section 20.22](https://www.rfc-editor.org/rfc/rfc3261#section-20.22) — `Max-Forwards` presence and range.
 fn max_forwards(msg: &SipMessage, index: usize, sink: &mut FindingSink<'_>) {
     if !msg.is_request {
         return;
@@ -719,9 +719,9 @@ fn max_forwards(msg: &SipMessage, index: usize, sink: &mut FindingSink<'_>) {
     }
 }
 
-/// RFC 3261 §8.1.1.7 — the branch parameter's magic cookie.
+/// [RFC 3261 section 8.1.1.7](https://www.rfc-editor.org/rfc/rfc3261#section-8.1.1.7) — the branch parameter's magic cookie.
 ///
-/// Requests only. A response copies the request's `Via` verbatim (§8.2.6.2), so
+/// Requests only. A response copies the request's `Via` verbatim ([RFC 3261 section 8.2.6.2](https://www.rfc-editor.org/rfc/rfc3261#section-8.2.6.2)), so
 /// reporting both would count one endpoint's defect once per message it
 /// provoked.
 fn branch_cookie(msg: &SipMessage, index: usize, sink: &mut FindingSink<'_>) {
@@ -748,7 +748,7 @@ fn branch_cookie(msg: &SipMessage, index: usize, sink: &mut FindingSink<'_>) {
     );
 }
 
-/// RFC 3261 §8.1.1.5 — the CSeq method matches the request method.
+/// [RFC 3261 section 8.1.1.5](https://www.rfc-editor.org/rfc/rfc3261#section-8.1.1.5) — the CSeq method matches the request method.
 fn cseq_method(msg: &SipMessage, index: usize, sink: &mut FindingSink<'_>) {
     if !msg.is_request {
         return;
@@ -779,7 +779,7 @@ fn cseq_method(msg: &SipMessage, index: usize, sink: &mut FindingSink<'_>) {
 // ── RFC 7989 Session-ID ─────────────────────────────────────────────────
 
 /// The production both `Session-ID` rules hold a half to, quoted from the
-/// RFC 7989 §5 ABNF so the `expected` field is the grammar itself rather than a
+/// [RFC 7989 section 5](https://www.rfc-editor.org/rfc/rfc7989#section-5) ABNF so the `expected` field is the grammar itself rather than a
 /// paraphrase of it.
 const SESS_UUID_ABNF: &str = "sess-uuid = 32(DIGIT / %x61-66) — 32 lowercase hex characters";
 
@@ -795,14 +795,14 @@ const MALFORMED_CONSEQUENCE: &str = "§5's ABNF admits exactly 32 characters of 
      nothing left tying the two legs together. A call that did cross the border is then reported \
      as two unrelated calls.";
 
-/// RFC 7989 §5 — each `Session-ID` half is 32 lowercase hexadecimal characters.
+/// [RFC 7989 section 5](https://www.rfc-editor.org/rfc/rfc7989#section-5) — each `Session-ID` half is 32 lowercase hexadecimal characters.
 ///
 /// The classification comes from [`SessionId::deviations`], which is what makes
 /// this a wiring of that detector rather than a second opinion about the same
 /// bytes: the rule raises exactly what the parser reported and nothing else, so
 /// a header the parser accepts as conforming can never produce a finding here.
 ///
-/// §5 calls `Session-ID` a single-instance header field, so only the first one
+/// [RFC 7989 section 5](https://www.rfc-editor.org/rfc/rfc7989#section-5) calls `Session-ID` a single-instance header field, so only the first one
 /// is read. A message carrying two is a different defect, and claiming it under
 /// this identifier would make the finding unsuppressible without also losing
 /// the ABNF check.
@@ -884,7 +884,7 @@ fn session_identifier(msg: &SipMessage, index: usize, sink: &mut FindingSink<'_>
     }
 }
 
-/// The halves that departed from the ABNF: the name RFC 7989 §5 gives each, and
+/// The halves that departed from the ABNF: the name [RFC 7989 section 5](https://www.rfc-editor.org/rfc/rfc7989#section-5) gives each, and
 /// how many characters it carried, in the order [`SessionId::deviations`]
 /// reports them.
 ///
@@ -1093,8 +1093,8 @@ mod tests {
     /// The refresher rule is confined to 2xx answers to INVITE.
     ///
     /// The guard that keeps this rule off most of a capture. A request carries
-    /// no refresher by rule -- §9 puts the obligation on the UAS response --
-    /// and a 200 to REGISTER or a 180 Ringing is not the message §9 governs.
+    /// no refresher by rule -- [RFC 4028 section 9](https://www.rfc-editor.org/rfc/rfc4028#section-9) puts the obligation on the UAS response --
+    /// and a 200 to REGISTER or a 180 Ringing is not the message section 9 governs.
     /// Without these three checks the rule fires on ordinary conformant
     /// traffic, which is how a linter gets switched off in week one.
     #[test]
@@ -1150,7 +1150,7 @@ mod tests {
     /// The Contact rule is confined to 2xx answers to INVITE.
     ///
     /// A 2xx to REGISTER or BYE creates no dialog, and a provisional is not
-    /// the response §12.1.1 governs. Without these guards the rule fires on
+    /// the response [RFC 3261 section 12.1.1](https://www.rfc-editor.org/rfc/rfc3261#section-12.1.1) governs. Without these guards the rule fires on
     /// ordinary conformant traffic.
     #[test]
     fn the_contact_rule_ignores_other_responses() {
@@ -1283,7 +1283,7 @@ mod tests {
 
     /// A control byte inside a header value is reported.
     ///
-    /// The §25.1 grammar admits no C0 byte other than the tab of LWS, so this
+    /// The [RFC 3261 section 25.1](https://www.rfc-editor.org/rfc/rfc3261#section-25.1) grammar admits no C0 byte other than the tab of LWS, so this
     /// is a crafted message rather than a phone that got something wrong.
     #[test]
     fn control_byte_in_a_header_is_reported() {
@@ -1292,7 +1292,7 @@ mod tests {
     }
 
     /// A `Contact` URI holding a question mark outside brackets breaks the
-    /// §20 MUST and reports as one.
+    /// [RFC 3261 section 20](https://www.rfc-editor.org/rfc/rfc3261#section-20) MUST and reports as one.
     #[test]
     fn bare_uri_with_question_mark_is_a_must_violation() {
         let raw = clean_invite().replace(
@@ -1655,8 +1655,8 @@ mod tests {
     ///
     /// The mutation guard for every test above: a rule that fired on the mere
     /// presence of the header would pass all of them and fail this one. `nil`
-    /// is in here because it is what every initial INVITE carries — RFC 7989
-    /// §5 expects it before the far end has contributed a UUID — so reporting
+    /// is in here because it is what every initial INVITE carries —
+    /// [RFC 7989 section 5](https://www.rfc-editor.org/rfc/rfc7989#section-5) expects it before the far end has contributed a UUID — so reporting
     /// it would fire on the first message of practically every conformant call.
     #[test]
     fn a_conforming_session_id_raises_no_finding() {
@@ -1705,7 +1705,7 @@ mod tests {
         );
     }
 
-    /// The finding carries RFC 7989 §5 as data, and quotes the ABNF it holds
+    /// The finding carries [RFC 7989 section 5](https://www.rfc-editor.org/rfc/rfc7989#section-5) as data, and quotes the ABNF it holds
     /// the value to.
     ///
     /// A lint rule that cannot name the clause it enforces is an opinion, and
@@ -1747,7 +1747,7 @@ mod tests {
 
     /// A second `To` row is reported, and the count is named.
     ///
-    /// The count matters because §7.3.1's whole objection is that a receiver
+    /// The count matters because the whole objection of [RFC 3261 section 7.3.1](https://www.rfc-editor.org/rfc/rfc3261#section-7.3.1) is that a receiver
     /// has to pick, and "2 To header field rows" tells the operator how many
     /// candidates two elements could disagree about.
     #[test]
@@ -1766,7 +1766,7 @@ mod tests {
 
     /// A compact row and its long form are two rows of one header field.
     ///
-    /// The parser expands compact names at parse (RFC 3261 §7.3.3), so `i:`
+    /// The parser expands compact names at parse ([RFC 3261 section 7.3.3](https://www.rfc-editor.org/rfc/rfc3261#section-7.3.3)), so `i:`
     /// beside `Call-ID:` is the same field name twice — and it is the shape a
     /// header-smuggling attempt takes, because a parser that reads only one
     /// spelling sees a message with one `Call-ID`.
@@ -1783,7 +1783,7 @@ mod tests {
         );
     }
 
-    /// Two `Authorization` rows are the exception §7.3.1 writes down, not a
+    /// Two `Authorization` rows are the exception [RFC 3261 section 7.3.1](https://www.rfc-editor.org/rfc/rfc3261#section-7.3.1) writes down, not a
     /// finding.
     ///
     /// This is the mutation that matters for this rule: adding the four
@@ -1840,7 +1840,7 @@ mod tests {
     /// A loose route is silent, and so is the `lr=on` spelling some stacks
     /// emit.
     ///
-    /// §19.1.1 defines `lr` as a flag parameter, and equipment that writes it
+    /// [RFC 3261 section 19.1.1](https://www.rfc-editor.org/rfc/rfc3261#section-19.1.1) defines `lr` as a flag parameter, and equipment that writes it
     /// with a value is still loose-routing. Reporting that spelling would send
     /// an operator to change a proxy that is behaving correctly.
     #[test]
@@ -1932,7 +1932,7 @@ mod tests {
 
     /// A response carrying the same duplicated stack is not reported.
     ///
-    /// §8.2.6.2 makes the response copy the request's Via values verbatim, so
+    /// [RFC 3261 section 8.2.6.2](https://www.rfc-editor.org/rfc/rfc3261#section-8.2.6.2) makes the response copy the request's Via values verbatim, so
     /// reporting the response would count one element's defect once more for
     /// every message the loop provoked.
     #[test]
@@ -1952,7 +1952,7 @@ mod tests {
     /// One row carrying two comma-separated Via values with one branch is
     /// still a duplicate.
     ///
-    /// §7.3.1 makes `Via` a comma-separated list, so a stack written on one row
+    /// [RFC 3261 section 7.3.1](https://www.rfc-editor.org/rfc/rfc3261#section-7.3.1) makes `Via` a comma-separated list, so a stack written on one row
     /// is the same stack. Reading rows without splitting them is the shape that
     /// lets a loop hide from this rule.
     #[test]

@@ -930,8 +930,8 @@ impl QuotedMediaKind {
 /// * **RTCP** must have version 2 *and* a packet type in the assigned range
 ///   *and* a length field that fits inside the datagram. That is roughly 19
 ///   bits of agreement, and it is what the corpus's media errors actually are.
-/// * **RTP** must have version 2, a payload type outside 64–95 (which RFC 5761
-///   §4 reserves so RTP and RTCP can be told apart on one port), no padding
+/// * **RTP** must have version 2, a payload type outside 64–95 (which
+///   [RFC 5761 section 4](https://www.rfc-editor.org/rfc/rfc5761#section-4) reserves so RTP and RTCP can be told apart on one port), no padding
 ///   claim it cannot support, and twelve bytes to hold a header.
 ///
 /// Even then the answer only ever *labels* a quote. It never creates a stream
@@ -2756,7 +2756,7 @@ mod quiet_bad_parse_tests {
     /// The strict multi-packet heuristic would have rejected every one, but it
     /// never ran: the payload-only branch returns first. So a system port
     /// (below 1024) now has to satisfy the heuristic instead of being taken on
-    /// the payload's word. Real RTP is unaffected — RFC 3550 §11 puts it in
+    /// the payload's word. Real RTP is unaffected — [RFC 3550 section 11](https://www.rfc-editor.org/rfc/rfc3550#section-11) puts it in
     /// the dynamic range, and nothing legitimately carries media on port 53.
     #[test]
     fn a_dns_response_is_not_an_rtp_stream() {
@@ -2859,7 +2859,7 @@ mod quiet_bad_parse_tests {
 
     /// A media description with port zero is not a stream.
     ///
-    /// RFC 3264 section 6 states it as a MUST: *"To reject an offered stream,
+    /// [RFC 3264 section 6](https://www.rfc-editor.org/rfc/rfc3264#section-6) states it as a MUST: *"To reject an offered stream,
     /// the port number in the corresponding stream in the answer MUST be set to
     /// zero."* Section 5.1 generalizes it — *"a port number of zero indicates
     /// that the media stream is not wanted"* — and section 8 uses the same
@@ -2964,7 +2964,7 @@ mod quiet_bad_parse_tests {
 
     /// A compound whose FIRST sub-packet claims padding, on a muxed port.
     ///
-    /// RFC 3550 section 6.1 permits padding only on the last packet of a
+    /// [RFC 3550 section 6.1](https://www.rfc-editor.org/rfc/rfc3550#section-6.1) permits padding only on the last packet of a
     /// compound, so a first sub-packet that does not fill the datagram cannot
     /// carry the bit. `rtp::rtcp::looks_like_rtcp` has applied that rule since
     /// 0.5.164 — and the classifier an operator's traffic actually reaches is
@@ -3504,7 +3504,7 @@ mod quoted_media_tests {
         assert_eq!(quoted_media_kind(&dns), QuotedMediaKind::NotMedia);
     }
 
-    /// RFC 5761 §4 reserves payload types 64-95 so RTP and RTCP can share one
+    /// [RFC 5761 section 4](https://www.rfc-editor.org/rfc/rfc5761#section-4) reserves payload types 64-95 so RTP and RTCP can share one
     /// port unambiguously. A "version 2" datagram using one is not RTP, and
     /// claiming it is would let a whole class of traffic pass the check on two
     /// bits of agreement.

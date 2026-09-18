@@ -37,7 +37,7 @@
 pub mod parser;
 pub mod store;
 
-/// The IANA-assigned LLMNR port, for both UDP and TCP (RFC 4795 §2).
+/// The IANA-assigned LLMNR port, for both UDP and TCP ([RFC 4795 section 2](https://www.rfc-editor.org/rfc/rfc4795#section-2)).
 pub const PORT: u16 = 5355;
 
 /// Fixed DNS/LLMNR header length: ID(2) + flags(2) + four section counts(8).
@@ -51,9 +51,9 @@ pub const HEADER_LEN: usize = 12;
 /// name lookup:
 ///
 ///   * the header must fit;
-///   * the opcode must be 0, the only one LLMNR defines (RFC 4795 §2.1.1);
+///   * the opcode must be 0, the only one LLMNR defines ([RFC 4795 section 2.1.1](https://www.rfc-editor.org/rfc/rfc4795#section-2.1.1));
 ///   * the Z field is reserved and must be zero (ibid.);
-///   * a query must ask exactly one question (RFC 4795 §2.1.1: "senders MUST
+///   * a query must ask exactly one question ([RFC 4795 section 2.1.1](https://www.rfc-editor.org/rfc/rfc4795#section-2.1.1): "senders MUST
 ///     send LLMNR queries with QDCOUNT set to one");
 ///   * a query must carry RCODE zero (ibid.: "In an LLMNR query, the sender
 ///     MUST set RCODE to zero");
@@ -163,7 +163,7 @@ mod tests {
         assert!(!is_llmnr_packet(&data, 51391, PORT));
     }
 
-    /// RFC 4795 section 2.1.1: *"In an LLMNR query, the sender MUST set RCODE
+    /// [RFC 4795 section 2.1.1](https://www.rfc-editor.org/rfc/rfc4795#section-2.1.1): *"In an LLMNR query, the sender MUST set RCODE
     /// to zero"*.
     ///
     /// Four more bits that are zero in every conformant query, on a decoder
@@ -184,7 +184,7 @@ mod tests {
         }
     }
 
-    /// RFC 4795 section 2.1.1: *"The 'TC' bit MUST NOT be set in an LLMNR
+    /// [RFC 4795 section 2.1.1](https://www.rfc-editor.org/rfc/rfc4795#section-2.1.1): *"The 'TC' bit MUST NOT be set in an LLMNR
     /// query"*.
     ///
     /// One more bit, and unlike RCODE this one is a positive prohibition

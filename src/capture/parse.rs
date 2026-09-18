@@ -17,7 +17,7 @@
 //!   Session (RFC 2516) behind Ethernet *and* inside Linux cooked capture
 //!   (SLL / SLL2, what `-i any` on a BNG writes), MPLS (RFC 3032 / RFC 5332),
 //!   NSH (RFC 8300), MACsec (IEEE Std 802.1AE) and the Provider Backbone
-//!   Bridge I-TAG (IEEE Std 802.1Q §9.7).
+//!   Bridge I-TAG ([IEEE Std 802.1Q-2014](https://standards.ieee.org/ieee/802.1Q/5801/) section 9.7).
 //! * **Network layer** — IP-in-IP (protocol 4), 6in4 (41), GRE (47) including
 //!   Transparent Ethernet Bridging, MPLS-in-IP (137, RFC 4023) and the
 //!   Authentication Header (51, RFC 4302), which authenticates without
@@ -220,7 +220,7 @@ pub struct ParsedPacket {
     /// The IP protocol number of the payload (for fragment reassembly key).
     pub ip_protocol: u8,
     /// The six-bit Differentiated Services Code Point of the innermost IP
-    /// header ([RFC 2474](https://www.rfc-editor.org/rfc/rfc2474) §3): the
+    /// header ([RFC 2474 section 3](https://www.rfc-editor.org/rfc/rfc2474#section-3)): the
     /// IPv4 `TOS` byte or the IPv6 `Traffic Class` byte, shifted past the two
     /// ECN bits.
     ///
@@ -391,7 +391,8 @@ pub struct IcmpQuote {
 impl IcmpQuote {
     /// Plain-language rendering of this error's type and code.
     ///
-    /// Static strings from RFC 792 §Destination Unreachable / RFC 4443 §3, so
+    /// Static strings from the "Destination Unreachable Message" description in
+    /// [RFC 792](https://www.rfc-editor.org/rfc/rfc792#page-4) / [RFC 4443 section 3](https://www.rfc-editor.org/rfc/rfc4443#section-3), so
     /// a finding can quote the network's own words instead of a bare `3/1`.
     pub fn description(&self) -> &'static str {
         let (t, c) = (self.icmp_type, self.icmp_code);
@@ -908,7 +909,7 @@ enum LinkType {
     BsdNull,
     /// OpenBSD loopback — `DLT_LOOP`, address family in network order.
     BsdLoop,
-    /// PPP — `DLT_PPP`, with or without RFC 1662 §3.1 HDLC-like framing.
+    /// PPP — `DLT_PPP`, with or without [RFC 1662 section 3.1](https://www.rfc-editor.org/rfc/rfc1662#section-3.1) HDLC-like framing.
     Ppp,
     /// PPP in HDLC-like framing — `DLT_PPP_SERIAL`.
     PppSerial,
@@ -1017,7 +1018,7 @@ const ETHERTYPE_QINQ: u16 = 0x88A8;
 /// Legacy double-tagging TPID, walked as a VLAN tag on purpose.
 ///
 /// **0x9100 is unregistered, and that is not an oversight.** EtherTypes are
-/// assigned by the IEEE Registration Authority, not by IANA — RFC 9542 §2 says
+/// assigned by the IEEE Registration Authority, not by IANA — [RFC 9542 section 2](https://www.rfc-editor.org/rfc/rfc9542#section-2) says
 /// exactly that, and IANA's own `ieee-802-numbers` registry is informational.
 /// 0x9100 does not appear anywhere in the IEEE RA's public EtherType listing:
 /// no assignee, no protocol text. The registered tag TPIDs are 0x8100
@@ -1049,26 +1050,27 @@ const ETHERTYPE_VLAN_LEGACY: u16 = 0x9100;
 /// 64 KB frame of nothing but 0x8100 costs ~16k iterations over
 /// attacker-controlled bytes, per packet, on the capture hot path.
 const MAX_VLAN_TAGS: usize = 3;
-/// EtherType for the PPPoE **Session** stage (RFC 2516 §6: "The ETHER_TYPE
+/// EtherType for the PPPoE **Session** stage ([RFC 2516 section 6](https://www.rfc-editor.org/rfc/rfc2516#section-6): "The ETHER_TYPE
 /// field is set to 0x8864").
 ///
-/// PPPoE Discovery is a *different* EtherType, 0x8863 (RFC 2516 §5), and is
+/// PPPoE Discovery is a *different* EtherType, 0x8863 ([RFC 2516 section 5](https://www.rfc-editor.org/rfc/rfc2516#section-5)), and is
 /// deliberately not decapsulated anywhere in this file: a Discovery frame's
 /// payload is TLV tags, so reading it as an IP header would report addresses
 /// and ports that the wire never carried.
 const ETHERTYPE_PPPOE_SESSION: u16 = 0x8864;
 
-/// MPLS unicast (RFC 3032 §3: "the Ethertype value 8847 hex is used").
+/// MPLS unicast ([RFC 3032 section 3](https://www.rfc-editor.org/rfc/rfc3032#section-3): "the Ethertype value 8847 hex is used").
 const ETHERTYPE_MPLS_UNICAST: u16 = 0x8847;
-/// The second MPLS EtherType (RFC 3032 §3: 8848 hex), reassigned by RFC 5332
-/// §3 to "MPLS with upstream-assigned label" — which is why it is walked with
+/// The second MPLS EtherType ([RFC 3032 section 3](https://www.rfc-editor.org/rfc/rfc3032#section-3): 8848 hex), reassigned by
+/// [RFC 5332 section 4](https://www.rfc-editor.org/rfc/rfc5332#section-4) and named "MPLS with
+/// upstream-assigned label" in [RFC 5332 section 9](https://www.rfc-editor.org/rfc/rfc5332#section-9) — which is why it is walked with
 /// exactly the same label-stack code and not treated as a different protocol.
 const ETHERTYPE_MPLS_UPSTREAM: u16 = 0x8848;
-/// Network Service Header (RFC 8300 §2.2 / IEEE RA assignment 0x894F).
+/// Network Service Header ([RFC 8300 section 2.2](https://www.rfc-editor.org/rfc/rfc8300#section-2.2) / IEEE RA assignment 0x894F).
 const ETHERTYPE_NSH: u16 = 0x894F;
-/// MACsec SecTAG (IEEE Std 802.1AE-2018 §9.3).
+/// MACsec SecTAG ([IEEE Std 802.1AE-2018](https://standards.ieee.org/ieee/802.1AE/7154/) section 9.3).
 const ETHERTYPE_MACSEC: u16 = 0x88E5;
-/// Provider Backbone Bridge I-TAG (IEEE Std 802.1Q-2014 §9.7).
+/// Provider Backbone Bridge I-TAG ([IEEE Std 802.1Q-2014](https://standards.ieee.org/ieee/802.1Q/5801/) section 9.7).
 const ETHERTYPE_PBB_ITAG: u16 = 0x88E7;
 
 /// What an unreadable MACsec frame is called in the diagnosis.
@@ -1078,9 +1080,9 @@ const ETHERTYPE_PBB_ITAG: u16 = 0x88E7;
 /// its SecTAG validated; what is missing is the key, not the decoder.
 const MACSEC_OPAQUE: &str = "MACsec-encrypted frame";
 
-/// PPPoE VER/TYPE octet — RFC 2516 §4 fixes VER at 0x1 and TYPE at 0x1.
+/// PPPoE VER/TYPE octet — [RFC 2516 section 4](https://www.rfc-editor.org/rfc/rfc2516#section-4) fixes VER at 0x1 and TYPE at 0x1.
 const PPPOE_VER_TYPE: u8 = 0x11;
-/// PPPoE CODE for a session-stage packet (RFC 2516 §6: "The PPPoE CODE MUST be
+/// PPPoE CODE for a session-stage packet ([RFC 2516 section 6](https://www.rfc-editor.org/rfc/rfc2516#section-6): "The PPPoE CODE MUST be
 /// set to 0x00").
 const PPPOE_CODE_SESSION: u8 = 0x00;
 /// PPP Protocol field for IPv4.
@@ -1095,7 +1097,7 @@ const PPP_PROTO_IPV6: u16 = 0x0057;
 /// Offset of the IP header inside a PPPoE Session frame.
 ///
 /// `pppoe_off` is the offset of the PPPoE header itself, i.e. the first byte
-/// after the 0x8864 EtherType. RFC 2516 §4 lays that header out as:
+/// after the 0x8864 EtherType. [RFC 2516 section 4](https://www.rfc-editor.org/rfc/rfc2516#section-4) lays that header out as:
 ///
 /// ```text
 ///  0                   1                   2                   3
@@ -1107,7 +1109,7 @@ const PPP_PROTO_IPV6: u16 = 0x0057;
 /// +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 /// ```
 ///
-/// and §6 says the session payload "contains a PPP frame. The frame begins
+/// and [RFC 2516 section 6](https://www.rfc-editor.org/rfc/rfc2516#section-6) says the session payload "contains a PPP frame. The frame begins
 /// with the PPP Protocol-ID", so the IP header sits 6 + 1-or-2 bytes in.
 ///
 /// Returns `None` — never a panic, never a read past `d` — for a truncated
@@ -1138,7 +1140,7 @@ fn pppoe_ip_offset(d: &[u8], pppoe_off: usize) -> Option<usize> {
 /// field — begins at `ppp_off`.
 ///
 /// Split out of [`pppoe_ip_offset`] because the PPP Protocol field is the same
-/// field wherever PPP is carried: RFC 2516 §6 says a PPPoE session payload
+/// field wherever PPP is carried: [RFC 2516 section 6](https://www.rfc-editor.org/rfc/rfc2516#section-6) says a PPPoE session payload
 /// "contains a PPP frame. The frame begins with the PPP Protocol-ID", and the
 /// PPP link types (DLT_PPP, DLT_PPP_SERIAL) put that same field at the start
 /// of the captured frame. One implementation, so the two cannot drift about
@@ -1172,7 +1174,7 @@ fn ppp_ip_offset(d: &[u8], ppp_off: usize) -> Option<usize> {
 }
 
 /// HDLC-like framing's Address (0xFF, "All-Stations") and Control (0x03,
-/// Unnumbered Information) octets — RFC 1662 §3.1.
+/// Unnumbered Information) octets — [RFC 1662 section 3.1](https://www.rfc-editor.org/rfc/rfc1662#section-3.1).
 const PPP_HDLC_ADDRESS_CONTROL: [u8; 2] = [0xFF, 0x03];
 
 /// Offset of the IP header inside a frame whose *link layer* is PPP, or
@@ -1188,8 +1190,8 @@ const PPP_HDLC_ADDRESS_CONTROL: [u8; 2] = [0xFF, 0x03];
 ///   flag octets, with the PPP header following the address and control
 ///   fields, otherwise it's PPP without framing, and the packet begins with
 ///   the PPP header." Both shapes are accepted, exactly as written. The two
-///   cannot be confused: 0xFF03 is not a legal PPP Protocol number (RFC 1661
-///   §2 requires an even most-significant octet), and read as a *compressed*
+///   cannot be confused: 0xFF03 is not a legal PPP Protocol number
+///   ([RFC 1661 section 2](https://www.rfc-editor.org/rfc/rfc1661#section-2) requires an even most-significant octet), and read as a *compressed*
 ///   Protocol field 0xFF is not IP either.
 /// * **DLT_PPP_SERIAL (50)** — the frames "include the address and control
 ///   fields as specified by Section 3.1 of RFC1662", so a frame without them
@@ -1200,7 +1202,7 @@ const PPP_HDLC_ADDRESS_CONTROL: [u8; 2] = [0xFF, 0x03];
 ///
 /// Not handled, and named rather than left to look like an oversight: a
 /// DLT_PPP_SERIAL frame in **Cisco HDLC** framing (first octet 0x0F or 0x8F,
-/// RFC 1547 §4.3.1). That is a different header — address, control, then a
+/// [RFC 1547 section 4.3.1](https://www.rfc-editor.org/rfc/rfc1547#section-4.3.1)). That is a different header — address, control, then a
 /// two-byte EtherType — and the current libpcap description of this link type
 /// does not mention it, so decoding it here would be reading a layout the
 /// spec sipnab cites does not describe. Such a frame is counted and named as
@@ -1417,7 +1419,7 @@ const SLL_ARPHRD_WITHOUT_ETHERTYPE: [u16; 5] = [770, 778, 803, 823, 824];
 /// What it follows, and why each is here rather than being a fixed skip:
 ///
 /// * **PPPoE Session (0x8864).** `tcpdump -i any` on a BNG/BRAS writes exactly
-///   this: cooked header, then RFC 2516 §4's PPPoE header, then the PPP
+///   this: cooked header, then [RFC 2516 section 4](https://www.rfc-editor.org/rfc/rfc2516#section-4)'s PPPoE header, then the PPP
 ///   Protocol field, then IP. Skipping a flat header length landed the slicer
 ///   on the PPPoE header, whose first nibble is 1, and the frame came back
 ///   "unsupported IP version 1" or "not IP" — a whole access network's traffic
@@ -1638,7 +1640,7 @@ const ETHERTYPE_IPV4: u16 = 0x0800;
 const ETHERTYPE_IPV6: u16 = 0x86DD;
 /// GRE Protocol Type for Transparent Ethernet Bridging.
 ///
-/// RFC 7637 §3.2: "The Protocol Type field in the GRE header is set to 0x6558
+/// [RFC 7637 section 3.2](https://www.rfc-editor.org/rfc/rfc7637#section-3.2): "The Protocol Type field in the GRE header is set to 0x6558
 /// (Transparent Ethernet Bridging)". That is the current normative statement
 /// of this value, and it references RFC 2784 for the GRE header itself.
 /// **Not** RFC 1701, which is Informational, describes a different (pre-2784)
@@ -1709,7 +1711,7 @@ struct SctpDataChunkRef {
 /// seq, PPID); the application payload is the chunk value after that data
 /// header. A chunk with both the B (beginning) and E (ending) flags set is a
 /// complete, unfragmented message; any other combination is a fragment of a
-/// message split across chunks/packets (RFC 4960 §3.3.1).
+/// message split across chunks/packets ([RFC 4960 section 3.3.1](https://www.rfc-editor.org/rfc/rfc4960#section-3.3.1)).
 ///
 /// When `complete_only` is `true` this returns the first complete (B+E) chunk
 /// (the single-packet fast path); when `false` it returns the first *fragment*
@@ -1862,7 +1864,7 @@ const MAX_SCTP_REASSEMBLY: usize = 65_536;
 
 /// Reassembly key: the SCTP association (5-tuple; proto is implicitly SCTP)
 /// plus the Stream Identifier and Stream Sequence Number that all fragments of
-/// one user message share (RFC 4960 §3.3.1).
+/// one user message share ([RFC 4960 section 3.3.1](https://www.rfc-editor.org/rfc/rfc4960#section-3.3.1)).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct SctpStreamKey {
     /// Source socket (association endpoint).
@@ -1883,7 +1885,7 @@ struct SctpPartial {
     buf: Vec<u8>,
 }
 
-/// Cross-packet SCTP DATA fragment reassembler (RFC 4960 §3.3.1).
+/// Cross-packet SCTP DATA fragment reassembler ([RFC 4960 section 3.3.1](https://www.rfc-editor.org/rfc/rfc4960#section-3.3.1)).
 ///
 /// A message split across DATA chunks — a B (beginning) fragment, zero or more
 /// middle fragments, then an E (ending) fragment sharing one (association, SID,
@@ -2317,7 +2319,7 @@ fn slice_link_layer<'a>(
 ///   a re-inserted VLAN tag inside either — the protocol type is read at
 ///   offset 14 on SLL and offset 0 on SLL2, and only where the frame's
 ///   ARPHRD_ type makes it an EtherType at all
-/// - PPP as a link layer: DLT_PPP (9) with or without RFC 1662 §3.1 HDLC
+/// - PPP as a link layer: DLT_PPP (9) with or without [RFC 1662 section 3.1](https://www.rfc-editor.org/rfc/rfc1662#section-3.1) HDLC
 ///   address/control octets, DLT_PPP_SERIAL (50) with them, and
 ///   DLT_PPP_ETHER (51), which is a bare PPPoE session packet
 /// - Raw IP: DLT_RAW (12) for either version, DLT_IPV4 (228) and DLT_IPV6
@@ -2542,7 +2544,7 @@ impl Budget {
     }
 }
 
-/// IANA IP protocol 137, MPLS-in-IP (RFC 4023 §3: "IANA has assigned the IP
+/// IANA IP protocol 137, MPLS-in-IP ([RFC 4023 section 3](https://www.rfc-editor.org/rfc/rfc4023#section-3): "IANA has assigned the IP
 /// protocol number 137 for MPLS-in-IP"). The label stack begins at the first
 /// byte after the IP header.
 const IP_PROTO_MPLS_IN_IP: IpNumber = IpNumber(137);
@@ -2762,15 +2764,17 @@ fn parse_encapsulated_ethernet(
 
 /// Octets of AH that are present regardless of the ICV: Next Header (1),
 /// Payload Len (1), RESERVED (2), SPI (4) and Sequence Number (4)
-/// (RFC 4302 §2).
+/// ([RFC 4302 section 2](https://www.rfc-editor.org/rfc/rfc4302#section-2)).
 const AH_FIXED_LEN: usize = 12;
 
 /// Octets per unit of AH's Payload Len field.
 ///
-/// RFC 4302 §2.2 defines Payload Len as "the length of this Authentication
+/// [RFC 4302 section 2.2](https://www.rfc-editor.org/rfc/rfc4302#section-2.2) defines Payload Len as "the length of this Authentication
 /// Header in 4-octet units, minus 2" — the IPv6 extension-header convention
-/// (RFC 8200 §4.2), which AH follows even over IPv4. So a 24-octet AH (the
-/// 12 fixed octets plus a 96-bit ICV, "the default length" of §2.6) writes 4,
+/// ([RFC 8200 section 4.2](https://www.rfc-editor.org/rfc/rfc8200#section-4.2)), which AH follows even over IPv4. So a 24-octet AH (the
+/// 12 fixed octets plus a 96-bit ICV — the ICV length in the worked example of
+/// [RFC 4302 section 2.2](https://www.rfc-editor.org/rfc/rfc4302#section-2.2), and "the default authenticator length" per
+/// [RFC 2404 section 2](https://www.rfc-editor.org/rfc/rfc2404#section-2)) writes 4,
 /// not 6 and not 24. Reading the field as octets, or forgetting the bias,
 /// lands the walk in the middle of the ICV.
 const AH_LEN_UNIT: usize = 4;
@@ -2782,7 +2786,7 @@ const AH_LEN_BIAS: usize = 2;
 /// The UDP header (RFC 768): source and destination ports, Length, Checksum.
 const UDP_HEADER_LEN: usize = 8;
 
-/// The TCP header without options (RFC 9293 §3.1), i.e. a Data Offset of 5.
+/// The TCP header without options ([RFC 9293 section 3.1](https://www.rfc-editor.org/rfc/rfc9293#section-3.1)), i.e. a Data Offset of 5.
 const TCP_HEADER_MIN: usize = 20;
 
 /// The protected payload of one Authentication Header: its Next Header value
@@ -2809,7 +2813,7 @@ fn ah_payload(ah: &[u8]) -> Option<(u8, &[u8])> {
 /// protect.
 ///
 /// AH provides "connectionless integrity, data origin authentication, and an
-/// optional anti-replay service" (RFC 4302 §1) and **no confidentiality**, so
+/// optional anti-replay service" ([RFC 4302 section 1](https://www.rfc-editor.org/rfc/rfc4302#section-1)) and **no confidentiality**, so
 /// unlike ESP the protected payload is sitting in the capture in plain text.
 /// Throwing it away loses signaling that is legible.
 ///
@@ -3546,7 +3550,7 @@ mod tests {
         pkt
     }
 
-    /// Re-wrap an Ethernet frame's payload in a PPPoE header (RFC 2516 §4).
+    /// Re-wrap an Ethernet frame's payload in a PPPoE header ([RFC 2516 section 4](https://www.rfc-editor.org/rfc/rfc2516#section-4)).
     ///
     /// `base` is a frame from [`build_eth_ipv4_udp`] / [`build_eth_ipv6_udp`];
     /// its 14-byte Ethernet header is kept but the EtherType is replaced by
@@ -3556,7 +3560,7 @@ mod tests {
     /// tests can craft a frame that is well-formed everywhere except the one
     /// field under test.
     ///
-    /// LENGTH is set honestly (PPP Protocol field + payload, per RFC 2516 §4:
+    /// LENGTH is set honestly (PPP Protocol field + payload, per [RFC 2516 section 4](https://www.rfc-editor.org/rfc/rfc2516#section-4):
     /// it counts the PPPoE payload and excludes the Ethernet and PPPoE
     /// headers); [`pppoe_lying_length`] exists for the case where it is not.
     fn wrap_in_pppoe(
@@ -3580,7 +3584,7 @@ mod tests {
     }
 
     /// A conforming PPPoE **Session** frame (EtherType 0x8864, VER/TYPE 0x11,
-    /// CODE 0x00) carrying `ppp_proto` — RFC 2516 §6.
+    /// CODE 0x00) carrying `ppp_proto` — [RFC 2516 section 6](https://www.rfc-editor.org/rfc/rfc2516#section-6).
     fn pppoe_session(base: &[u8], ppp_proto: &[u8]) -> Vec<u8> {
         wrap_in_pppoe(base, 0x8864, 0x11, 0x00, ppp_proto)
     }
@@ -4278,9 +4282,9 @@ mod tests {
 
     /// A 1-byte (protocol-field-compressed) PPP Protocol field is accepted.
     ///
-    /// RFC 2516 §7 makes PFC "NOT RECOMMENDED" on PPPoE — discouraged, not
+    /// [RFC 2516 section 7](https://www.rfc-editor.org/rfc/rfc2516#section-7) makes PFC "NOT RECOMMENDED" on PPPoE — discouraged, not
     /// forbidden, unlike ACFC which is a MUST NOT — so a conforming-but-unusual
-    /// peer can still send it. RFC 1661 §2 makes the discrimination exact and
+    /// peer can still send it. [RFC 1661 section 2](https://www.rfc-editor.org/rfc/rfc1661#section-2) makes the discrimination exact and
     /// free: a Protocol field's least significant octet is always odd and its
     /// most significant octet always even, so an odd first byte means a 1-byte
     /// field and nothing else can alias it.
@@ -4345,7 +4349,7 @@ mod tests {
 
     /// A PPPoE **Discovery** frame is never treated as session data.
     ///
-    /// RFC 2516 §5 gives Discovery its own EtherType (0x8863) and its payload
+    /// [RFC 2516 section 5](https://www.rfc-editor.org/rfc/rfc2516#section-5) gives Discovery its own EtherType (0x8863) and its payload
     /// is TLV tags, not a PPP frame. This frame is byte-identical to a valid
     /// session frame apart from that EtherType, so nothing but the EtherType
     /// check can reject it — and if it were accepted, sipnab would report a
@@ -4371,7 +4375,8 @@ mod tests {
 
     /// A session-EtherType frame whose PPPoE header is malformed is rejected.
     ///
-    /// RFC 2516 §4 fixes VER and TYPE at 0x1 each and §6 requires CODE 0x00 for
+    /// [RFC 2516 section 4](https://www.rfc-editor.org/rfc/rfc2516#section-4) fixes VER and TYPE at 0x1 each and
+    /// [RFC 2516 section 6](https://www.rfc-editor.org/rfc/rfc2516#section-6) requires CODE 0x00 for
     /// the session stage. A non-zero CODE means the payload is TAGs (a PADT or
     /// a mis-tagged PADI), not a PPP frame; decoding those as IP would invent a
     /// flow. The LENGTH field is attacker-controlled and snaplen truncation
@@ -5170,13 +5175,13 @@ mod tests {
         pkt
     }
 
-    /// One MPLS label stack entry (RFC 3032 §2.1): 20-bit label, 3-bit TC,
+    /// One MPLS label stack entry ([RFC 3032 section 2.1](https://www.rfc-editor.org/rfc/rfc3032#section-2.1)): 20-bit label, 3-bit TC,
     /// the S bit, then TTL.
     fn mpls_label(label: u32, bottom: bool) -> [u8; 4] {
         ((label << 12) | (u32::from(bottom) << 8) | 64).to_be_bytes()
     }
 
-    /// An NSH MD Type 1 header (RFC 8300 §2.2): Base + Service Path + the
+    /// An NSH MD Type 1 header ([RFC 8300 section 2.2](https://www.rfc-editor.org/rfc/rfc8300#section-2.2)): Base + Service Path + the
     /// mandatory 16 octets of fixed context, so Length is exactly 0x6.
     fn nsh_md1_header(version: u8, md_type: u8, next_proto: u8) -> Vec<u8> {
         let mut h = vec![version << 6, 0x06, md_type, next_proto];
@@ -5186,12 +5191,13 @@ mod tests {
     }
 
     /// Wrap a complete Ethernet frame in a Provider Backbone Bridge I-TAG
-    /// (IEEE Std 802.1Q-2014 §9.7): backbone MACs, EtherType 0x88E7, then the
+    /// ([IEEE Std 802.1Q-2014](https://standards.ieee.org/ieee/802.1Q/5801/) section 9.7): backbone MACs, EtherType 0x88E7, then the
     /// flags octet and I-SID — the rest of the 16-octet I-TAG TCI *is* the
     /// customer frame's own C-DA and C-SA.
     ///
     /// The customer frame is passed through [`with_individual_source_mac`]
-    /// because §9.7 h) / §20.33.1 make a group-addressed C-SA a discard
+    /// because IEEE Std 802.1Q-2014 section 9.7 item h) and section 20.33.1 make
+    /// a group-addressed C-SA a discard
     /// condition.
     fn wrap_in_itag(customer: &[u8], isid: [u8; 3]) -> Vec<u8> {
         let inner = with_individual_source_mac(customer);
@@ -5204,7 +5210,7 @@ mod tests {
         pkt
     }
 
-    /// Insert a MACsec SecTAG (IEEE Std 802.1AE-2018 §9.3) between the source
+    /// Insert a MACsec SecTAG ([IEEE Std 802.1AE-2018](https://standards.ieee.org/ieee/802.1AE/7154/) section 9.3) between the source
     /// MAC and the EtherType that was there before — the transparent
     /// insertion the standard describes, with no SCI.
     fn wrap_in_macsec(base: &[u8], tci_an: u8) -> Vec<u8> {
@@ -5217,7 +5223,7 @@ mod tests {
         pkt
     }
 
-    /// A VXLAN header (RFC 7348 §5): I flag set, everything reserved zero.
+    /// A VXLAN header ([RFC 7348 section 5](https://www.rfc-editor.org/rfc/rfc7348#section-5)): I flag set, everything reserved zero.
     fn vxlan_header(vni: u32) -> [u8; 8] {
         let mut h = [0u8; 8];
         h[0] = 0x08;
@@ -5225,7 +5231,9 @@ mod tests {
         h
     }
 
-    /// A GTP-U G-PDU header (3GPP TS 29.281 §5.1) with no optional block.
+    /// A GTP-U G-PDU header
+    /// ([3GPP TS 29.281](https://portal.3gpp.org/desktopmodules/Specifications/SpecificationDetails.aspx?specificationId=1699)
+    /// section 5.1, "General format") with no optional block.
     fn gtpu_header(teid: u32, payload_len: usize) -> Vec<u8> {
         let mut h = vec![0x30, 255]; // version 1, PT 1; message type G-PDU
         h.extend_from_slice(&(payload_len as u16).to_be_bytes());
@@ -5233,7 +5241,7 @@ mod tests {
         h
     }
 
-    /// An RFC 4302 §2 Authentication Header.
+    /// An [RFC 4302 section 2](https://www.rfc-editor.org/rfc/rfc4302#section-2) Authentication Header.
     ///
     /// Payload Len is "the length of this Authentication Header in 4-octet
     /// units, minus 2" — the IPv6 extension-header convention, which is why
@@ -5273,7 +5281,7 @@ mod tests {
         eth
     }
 
-    /// A GRE header (RFC 2784 §2.1) with every optional field absent.
+    /// A GRE header ([RFC 2784 section 2.1](https://www.rfc-editor.org/rfc/rfc2784#section-2.1)) with every optional field absent.
     fn gre_header(protocol_type: u16) -> Vec<u8> {
         let mut gre = vec![0x00, 0x00]; // C and reserved0 clear, version 0
         gre.extend_from_slice(&protocol_type.to_be_bytes());
@@ -5362,7 +5370,7 @@ mod tests {
     }
 
     /// The Implicit NULL label (3) "should never actually appear in the
-    /// encapsulation" (RFC 3032 §2.1), so a stack containing it is not a
+    /// encapsulation" ([RFC 3032 section 2.1](https://www.rfc-editor.org/rfc/rfc3032#section-2.1)), so a stack containing it is not a
     /// label stack and must not be walked.
     #[test]
     fn parse_mpls_implicit_null_label_is_refused() {
@@ -5382,7 +5390,7 @@ mod tests {
         assert_invite_recovered(&parsed);
     }
 
-    /// RFC 8300 §2.2 reserves version 01b precisely because it would alias
+    /// [RFC 8300 section 2.2](https://www.rfc-editor.org/rfc/rfc8300#section-2.2) reserves version 01b precisely because it would alias
     /// IPv4's first nibble; a non-zero version is refused.
     #[test]
     fn parse_nsh_nonzero_version_is_refused() {
@@ -5440,7 +5448,7 @@ mod tests {
 
     /// MACsec is a transparent insertion, so the walk that resumes after the
     /// SecTAG must be the SAME walk — VLAN tags inside the Secure Data are
-    /// ordinary tags (IEEE Std 802.1AE-2018 §6.2), not a second dialect.
+    /// ordinary tags ([IEEE Std 802.1AE-2018](https://standards.ieee.org/ieee/802.1AE/7154/) section 6.2), not a second dialect.
     #[test]
     fn parse_macsec_over_inner_vlan_recovers_invite() {
         let tagged = prepend_vlan_tag(&invite_frame(), ETHERTYPE_VLAN, 0x0064);
@@ -5575,7 +5583,7 @@ mod tests {
     }
 
     /// A Payload Len describing a header shorter than AH's own mandatory
-    /// fields would move the walk backwards. RFC 4302 §2 fixes those fields at
+    /// fields would move the walk backwards. [RFC 4302 section 2](https://www.rfc-editor.org/rfc/rfc4302#section-2) fixes those fields at
     /// 12 octets, so Payload Len 0 (an 8-octet AH) cannot be one.
     #[test]
     fn parse_nested_ah_undersized_header_is_refused() {
@@ -5680,8 +5688,8 @@ mod tests {
         );
     }
 
-    /// GRE Protocol Type 0x6558 is Transparent Ethernet Bridging (RFC 7637
-    /// §3.2): the payload is a whole Ethernet frame, so the Ethernet walk is
+    /// GRE Protocol Type 0x6558 is Transparent Ethernet Bridging
+    /// ([RFC 7637 section 3.2](https://www.rfc-editor.org/rfc/rfc7637#section-3.2)): the payload is a whole Ethernet frame, so the Ethernet walk is
     /// re-entered rather than the IP walk.
     #[test]
     fn parse_gre_teb_recovers_invite() {
@@ -6072,7 +6080,7 @@ mod tests {
     // the operator produces — PPPoE inside a cooked-capture frame — reached
     // the IP slicer at the PPPoE header and came back "not IP".
 
-    /// The RFC 7042 §2.1.2 documentation MAC, in the 8-byte SLL address field.
+    /// The [RFC 7042 section 2.1.2](https://www.rfc-editor.org/rfc/rfc7042#section-2.1.2) documentation MAC, in the 8-byte SLL address field.
     const SLL_ADDRESS: [u8; 8] = [0x00, 0x00, 0x5E, 0x00, 0x53, 0x01, 0x00, 0x00];
 
     /// ARPHRD_ETHER — the type an `-i any` capture of an Ethernet-backed

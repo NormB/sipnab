@@ -203,7 +203,8 @@ Real output from that fixture, elided only where the message trace repeats
 itself. Every value below came off a run against the committed capture.
 
 **One reading convention, stated once.** Every `body` is a JSON-encoded
-*string* on the wire — §2.3.2 of the draft allows nothing else, and a store
+*string* on the wire —
+[section 2.3.2 of the core draft](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-2.3.2) allows nothing else, and a store
 normalizes it to one anyway. The blocks below show each `body` **decoded**, as
 an object, because an escaped one-line string is unreadable on a page. What
 sipnab actually writes for the first one is `"body": "{\"messages\":[…]}"`,
@@ -366,7 +367,7 @@ and where no value is true it names none:
 | no content, no observed failure | absent | absent |
 | no content, an observed final failure | `incomplete` | the reason, always |
 
-The empty row is the one §4.3 of the core draft provides for: "it is possible
+The empty row is the one [section 4.3 of the core draft](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-4.3) provides for: "it is possible
 to have a Dialog Object with no parameters in it". Reaching for `incomplete`
 there is the mistake sipnab shipped until 0.5.128, and it is not a matter of
 taste — it made every container for a call that answered assert a setup failure
@@ -376,8 +377,9 @@ not there, and a conserver chain link that selects `type == "recording"` reads
 `dialog["url"]` unguarded — it raises, and the conserver dead-letters the
 **whole** container rather than the one step.
 
-The last two rows move together. §4.3.1 makes `disposition` a MUST on an
-incomplete object, and no value in the closed set of §4.3.11 means "not
+The last two rows move together. [Section 4.3.1 of the core draft](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-4.3.1)
+makes `disposition` a MUST on an incomplete object, and no value in the closed
+set of [section 4.3.11](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-4.3.11) means "not
 observed", so one decision fixes both fields. `disposition` names a failure
 **only** when sipnab saw the final response that caused it, and its absence
 never means "the call succeeded".
@@ -453,7 +455,8 @@ reader who cannot tell them apart goes looking for a fault that does not exist.
 `--content-deny-header` suppresses the whole dialog, not merely its content, and
 the default is the conservative reading: a denied dialog leaves this process
 entirely. `--content-deny-tombstone` makes the narrower reading available — an
-identity-only container carrying a §4.1 `redacted` object, with no message
+identity-only container carrying a `redacted` object
+([section 4.1.8 of the core draft](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-4.1.8)), with no message
 trace, no media and no bodies. The trade is explicit, because a tombstone
 reveals that the call existed. Leave it off when the header means "this call
 must leave no trace".

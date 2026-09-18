@@ -56,7 +56,7 @@ pub struct DtmfEvent {
 ///
 /// # Why this is needed
 ///
-/// RFC 4733 §2.5.1.4 requires a sender to transmit the final packet of an
+/// [RFC 4733 section 2.5.1.4](https://www.rfc-editor.org/rfc/rfc4733#section-2.5.1.4) requires a sender to transmit the final packet of an
 /// event **three times**, and to keep the E bit set on every one of them. A
 /// reader that reports an event per E-bit packet therefore counts one keypress
 /// three times — which it did, visibly, on every capture carrying DTMF.
@@ -94,7 +94,7 @@ impl DtmfDedupe {
     /// * `ssrc` — the stream's synchronization source.
     /// * `rtp_timestamp` — the packet's RTP timestamp, which for a
     ///   telephone-event is the event's start and is identical across the
-    ///   RFC 4733 §2.5.1.4 retransmissions.
+    ///   [RFC 4733 section 2.5.1.4](https://www.rfc-editor.org/rfc/rfc4733#section-2.5.1.4) retransmissions.
     /// * `event` — the event code from the payload's first octet.
     ///
     /// # Returns
@@ -248,7 +248,7 @@ fn event_to_digit(event: u8) -> Option<char> {
 mod tests {
     /// One keypress reports one event, not three.
     ///
-    /// RFC 4733 §2.5.1.4: "The final packet for each event and for each
+    /// [RFC 4733 section 2.5.1.4](https://www.rfc-editor.org/rfc/rfc4733#section-2.5.1.4): "The final packet for each event and for each
     /// segment SHOULD be sent a total of three times at the interval used by
     /// the source for updates", and "Once the sender has set the E bit for a
     /// packet, it MUST continue to set the E bit for any further

@@ -74,9 +74,12 @@ heavier than wasmi's 15 crates and 1.56 MB.
 
 ## What to build instead
 
-> **Correction, 2026-08-13.** Two of these three are now declined. §1 and §3
+> **Correction, 2026-08-13.** Two of these three are now declined.
+> [Section 1, "Population baselines"](#1-population-baselines) and
+> [section 3, "Seasonality, only where it earns its place"](#3-seasonality-only-where-it-earns-its-place)
 > both put the comparison set outside the capture, which is the defect
-> objection 2 above rejects the model for — see the decision. §2 survives
+> objection 2 above rejects the model for — see the decision.
+> [Section 2, "Peer comparison"](#2-peer-comparison) survives
 > intact, and is the only part of this page that should ever be written.
 
 **Statistical baselining with named, checkable outputs.** Same operator value,
@@ -144,14 +147,14 @@ This is the real reason it is not next:
 
 > **Superseded 2026-08-13 by the decision below.** It was right to refuse the
 > model and right that the honest version is not machine learning. It was wrong
-> about which part to keep: §1 is the part that cannot be built in position,
-> and §2 is the part that can.
+> about which part to keep: [section 1, "Population baselines"](#1-population-baselines) is the part that cannot be
+> built in position, and [section 2, "Peer comparison"](#2-peer-comparison) is the part that can.
 
 **Do not schedule this.** It is correctly a P5. The prerequisites — persistent
 state above all — are individually larger than the feature, and the honest
 version of it is not machine learning.
 
-If it is ever picked up, take population baselining (§1) alone. It is the whole
+If it is ever picked up, take population baselining ([section 1, "Population baselines"](#1-population-baselines)) alone. It is the whole
 operator value, it needs no model, and every finding it produces can name its
 evidence — which is the bar every other detection in this tool already clears.
 
@@ -188,7 +191,7 @@ Labels alone change nothing if the statistics already win.
 
 ### 2. Cross-run population baselines: declined, on this page's own objection
 
-§1 proposed rolling baselines per grouping key as the honest replacement for
+[Section 1, "Population baselines"](#1-population-baselines), above, proposed rolling baselines per grouping key as the honest replacement for
 the model. That recommendation does not survive objection 2.
 
 Objection 2 rejects the model because a capture analyzed twice must give the
@@ -207,16 +210,20 @@ That reclassifies prerequisite 1. Persistence across runs is not the thing this
 feature waits for, it is the thing that rules it out. A store has to be
 created, located, sized, expired and migrated when its shape changes, and
 reasoned about when it goes stale — which is what it means for software to be
-operated. [`positioning.md`](positioning.md) §4 forbids it and names the
+operated. [`positioning.md` section 4, "What the position forbids"](positioning.md#4-what-the-position-forbids)
+forbids it and names the
 mechanism: "the moment there is a schema to migrate, somebody owns a service."
 
-§7 of that page named this argument in advance, as one of three things that
+[`positioning.md` section 7, "What would falsify this"](positioning.md#7-what-would-falsify-this)
+named this argument in advance, as one of three things that
 would falsify the position: *retention keeps growing... treat the second such
 argument as the signal, not the fifth.* A baseline over the previous 2000 calls
-is that argument, and it arrives before the bounded retention positioning §3
+is that argument, and it arrives before the bounded retention that
+[`positioning.md` section 3, "What the position demands"](positioning.md#3-what-the-position-demands)
 asks for has shipped at all.
 
-§3 above — seasonality — is the same argument one step further out. Comparing
+[Section 3, "Seasonality, only where it earns its place"](#3-seasonality-only-where-it-earns-its-place)
+above is the same argument one step further out. Comparing
 this Tuesday against previous Tuesdays needs weeks, which is Homer's window.
 Declined for the same reason, with less room to argue it.
 
@@ -240,7 +247,7 @@ per source address, folded one window at a time by `sample_baseline`
 so the average stays slower than the burst it exists to catch. A volume spike
 is reported when a source exceeds the rate it established itself, and the alert
 prints both sides — "12 calls in 60s (baseline: 2.4/min)" — which is the
-sentence shape §1 proposed, produced with no store, no model and no history.
+sentence shape [section 1, "Population baselines"](#1-population-baselines) proposed, produced with no store, no model and no history.
 
 So "is statistical baselining in position?" is already answered by the tree:
 yes, when the baseline is established inside the capture.
@@ -269,7 +276,7 @@ Failure mix before ASR, because ASR summarizes the failure mix and shows less.
 Failure mix before PDD, because percentiles need a sketch, and that is more
 machinery than a first component should carry.
 
-**One thing §1 asks for that this must not do: print a p-value.** The example
+**One thing [section 1, "Population baselines"](#1-population-baselines) asks for that this must not do: print a p-value.** The example
 output reads "p < 0.01, chi-square". A p-value over one capture's dialogs
 shrinks as the capture runs longer, and the operator chooses how long to
 capture — so a long enough capture makes every real difference "significant",
@@ -298,7 +305,7 @@ floor reports `ungrounded_excluded` rather than filtering silently.
 
 ### Where it sits
 
-Behind the three items positioning §5 ranks: RTCP over `--hep-send`, multi-node
+Behind the three items [`positioning.md` section 5, "Order"](positioning.md#5-order) ranks: RTCP over `--hep-send`, multi-node
 correlation, bounded on-disk retention. Nothing here jumps that queue. What
 this decision changes is status, not priority — it stops being blocked on an
 architectural decision nobody is going to take, and becomes a small piece of

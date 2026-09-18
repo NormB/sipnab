@@ -3,8 +3,10 @@
 **Status:** STAGES 0, 1 AND 2 SHIPPED, and SRC2 on top of them. `-d <iface>` with
 `-L <addr>` runs both in one process, every source numbers its own frames, a
 stream says whether its dialog crossed sources, and a call whose two witnesses
-told different stories says so — see §10. Stage 3 (multi-node) remains open —
-see §7.
+told different stories says so — see
+[section 10, "SRC2 — comparing the two witnesses"](#10-src2--comparing-the-two-witnesses).
+Stage 3 (multi-node) remains open — see
+[section 7, "Stage 3 — Multi-node"](#stage-3--multi-node--open).
 **Verified against:** `94fad2de` (0.5.117) when written; stage 1 landed on
 `8c03a453` (0.5.118); stage 2 landed on top of 0.5.120.
 **Backlog:** [`docs/design/backlog.md`](https://github.com/NormB/sipnab/blob/main/docs/design/backlog.md) **SRC1** (`:447`).
@@ -178,7 +180,7 @@ Ordered by how much each tie actually proves:
 | --- | --- | --- |
 | SDP `c=` / `m=` endpoint | Strong | The offer/answer names the exact socket; RTP either arrives there or does not |
 | SSRC named in an RTCP report | Strong, narrow | Ties a report to a stream sipnab measured; useless before any RTP exists |
-| RTCP companion port | Moderate | [RFC 3550 §11](https://www.rfc-editor.org/rfc/rfc3550#section-11) pairing, one port above an even media port |
+| RTCP companion port | Moderate | [RFC 3550 section 11](https://www.rfc-editor.org/rfc/rfc3550#section-11) pairing, one port above an even media port |
 | Call-ID | Zero, across sources | Media carries none. It ties HEP dialogs to each other, never a dialog to a stream |
 | Timing | Weak | Argued against below |
 
@@ -212,8 +214,9 @@ flows to the relay's rewritten address. If HEP carried only the received message
 the map entry and the observed socket would never meet and every stream would
 come out orphaned (`RtpStream::orphaned`, [`src/rtp/stream.rs:478`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream.rs#L478)).
 
-§8 said to answer that before writing code. It was answered — see
-[§8.1](#81-the-measurement-f1) for the run — and the answer is that OpenSIPS's
+[Section 8, "What would make this not worth doing"](#8-what-would-make-this-not-worth-doing)
+said to answer that before writing code. It was answered — see
+[section 8.1, "The measurement (F1)"](#81-the-measurement-f1) for the run — and the answer is that OpenSIPS's
 `tracer` module mirrors **both** the received and the sent copy of every message
 it traces, so the rtpengine-rewritten SDP is in the HEP stream too. Measured
 against OpenSIPS 3.6.7 with rtpengine 12.5.1 anchoring the media, the set of
@@ -248,7 +251,7 @@ for — a stale entry can outlive its call and claim the next stream on that
 socket. A wall-clock TTL on `sdp_endpoints` is the fix, and it belongs to this
 feature rather than to some later one. **SHIPPED in stage two** — on the CAPTURE
 clock rather than wall time, so a replay reaches the same answer as the live run
-that produced it, and grounded on [RFC 3261 §16.8](https://www.rfc-editor.org/rfc/rfc3261#section-16.8) Timer C, the longest a
+that produced it, and grounded on [RFC 3261 section 16.8](https://www.rfc-editor.org/rfc/rfc3261#section-16.8) Timer C, the longest a
 compliant proxy keeps an unanswered INVITE transaction alive.
 
 **F4 — Clock disagreement.** A HEP v3 packet's timestamp comes from the
@@ -306,7 +309,7 @@ the tiers are not equally strong. A reader deciding whether to act on a finding
 needs to know which of those they have."*
 
 A cross-source binding is a weaker tie than a same-source one, for the reasons in
-§3.3, and the output should say so rather than present both as "associated". The
+[section 3.3, "Failure modes, stated as failures"](#33-failure-modes-stated-as-failures), and the output should say so rather than present both as "associated". The
 minimum honest form is one field on a stream recording that its dialog arrived
 over a different source than its media. That is cheap, and it is what lets an
 operator discount a suspicious attribution instead of trusting it.
@@ -338,7 +341,7 @@ shipped mechanism rather than new mechanism.
 **SHIPPED in stage two**, so the paragraph above describes the state up to
 0.5.120 rather than today's. Both readers now stamp an ordinal — one counter per
 device, one per HEP *sender* — and `input_origin` reaches `SipMessage`,
-`SipDialog` and `RtpStream`. See [§7](#stage-2--provenance-and-honest-limits--shipped).
+`SipDialog` and `RtpStream`. See [section 7, "Stage 2 — Provenance and honest limits"](#stage-2--provenance-and-honest-limits--shipped).
 
 **Leg correlation: adjacent, and deliberately separate.**
 [`docs/design/icid-correlation.md`](https://github.com/NormB/sipnab/blob/main/docs/design/icid-correlation.md) and the seven strategies at
@@ -370,8 +373,8 @@ guarantee that does not already hold.
 ### 5.2 What breaks
 
 **Packet ordering.** Already unordered across producers, and the pipeline already
-tolerates it: the SDP-endpoint map is order-independent by construction (§3.3,
-F5). What changes is the *magnitude* of the skew — a HEP hop is a network delay,
+tolerates it: the SDP-endpoint map is order-independent by construction (F5 in
+[section 3.3, "Failure modes, stated as failures"](#33-failure-modes-stated-as-failures)). What changes is the *magnitude* of the skew — a HEP hop is a network delay,
 not a scheduler delay — which strengthens the case for the TTL in F3, since a
 map keyed by insertion order behaves differently when insertions arrive out of
 time order.
@@ -486,7 +489,7 @@ sipnab -N -d eth0 -L 127.0.0.1:9060 udp portrange 10000-20000
 - **`--multi-device` with `-L`.** `--multi-device` reinterprets the `-d` string as
   a comma-separated list ([`src/app/bootstrap.rs:936`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L936)). Composing a list with a
   HEP member is reasonable and should wait for stage three.
-- **`-O` with a composite.** §5.2.
+- **`-O` with a composite.** See [section 5.2, "What breaks"](#52-what-breaks).
 - **`--cores > 1`.** Already warned, offline-only, no change.
 
 ### 6.3 What the operator gets told
@@ -529,12 +532,15 @@ longer needs a warning — it composes. The silent precedence that remains is
 than on the flags, so a new arm added to the chain cannot reintroduce a silent
 drop without failing
 `hep_listen_warning_fires_where_a_uprobe_run_swallows_the_listener`. `-I` with
-`-L` is refused outright instead of warned, for the security reason in §6.2.
+`-L` is refused outright instead of warned, for the security reason in
+[section 6.2, "What stays refused"](#62-what-stays-refused).
 
 ### Stage 1 — `CaptureSource::Composite` for `Live` + `Hep` — **SHIPPED**
 
 **Value alone:** the whole feature for the single-node deployment. HEP supplies
-signaling, the NIC supplies RTP, and §3.1 means dialog-to-stream binding works
+signaling, the NIC supplies RTP, and
+[section 3.1, "The dialog-to-stream binding is already source-agnostic"](#31-the-dialog-to-stream-binding-is-already-source-agnostic)
+means dialog-to-stream binding works
 with no new correlation code.
 
 **Scope:** a `Composite(Vec<CaptureSource>)` variant; `plan` builds it when `-d`
@@ -545,9 +551,9 @@ disjunctive and cannot be widened by adding a member.
 
 **Explicitly NOT in stage one:**
 
-- No `File` member. §6.2.
+- No `File` member. See [section 6.2, "What stays refused"](#62-what-stays-refused).
 - No `Uprobe` member.
-- No `-O`. §5.2.
+- No `-O`. See [section 5.2, "What breaks"](#52-what-breaks).
 - No cross-source correlation heuristic. Nothing keyed on timing, nothing keyed
   on Call-ID reaching media. The SDP endpoint map is the whole mechanism.
 - No TUI changes. Two reasons, and the second is the stronger one:
@@ -695,7 +701,7 @@ Six departures from the plan above, each for a reason:
    per socket would mint `eth0#0` from each of them — the same collision as (5)
    in the live reader. A grouped socket therefore stamps nothing, which is
    `--cores`' pre-stage-two behavior rather than a regression. See
-   [`docs/design/live-fanout.md`](https://github.com/NormB/sipnab/blob/main/docs/design/live-fanout.md) §2.3.
+   [`docs/design/live-fanout.md` section 2.3, "A grouped socket cannot number its own frames"](https://github.com/NormB/sipnab/blob/main/docs/design/live-fanout.md#23-a-grouped-socket-cannot-number-its-own-frames).
 
 **What this stage did not close.** `capture_live_fanout` needs a real device and
 `CAP_NET_RAW`, so no test drives its loop: the live ordinal is covered by the
@@ -800,7 +806,8 @@ mitigation is help text and one line of guidance; if it turns out not to be
 enough, a duplicate detector is a larger piece of work than the feature it
 protects.
 
-**4. Only the transmit-guard interaction is delicate.** §6.2 is the one place
+**4. Only the transmit-guard interaction is delicate.** [section 6.2, "What stays refused"](#62-what-stays-refused)
+is the one place
 this feature could weaken a security property, and it does so only if the permit
 rule is written as "any member is live". Written conjunctively it is stronger
 than today's, because it forces every future member to justify itself. Cheap to
@@ -826,13 +833,14 @@ better than today because today the limitation is *silent*:
 Things this design could not settle from the code alone.
 
 - ~~**Does the mirrored SDP match the wire in a real OpenSIPS deployment?**~~
-  **Answered** — §8.1. Yes at tracer scope `"t"`, exactly and in both the relayed
+  **Answered** — see [section 8.1, "The measurement (F1)"](#81-the-measurement-f1). Yes at tracer scope `"t"`, exactly and in both the relayed
   and direct topologies; no at scope `"m"`, where F1 reproduces.
-- **Does a delayed-offer call's SDP answer survive the mirror?** New, from §8.1
-  caveat 3: the ACK is end-to-end and outside the INVITE server transaction, so
+- **Does a delayed-offer call's SDP answer survive the mirror?** New, from caveat 3 in
+  [section 8.1, "The measurement (F1)"](#81-the-measurement-f1): the ACK is end-to-end and outside the INVITE server transaction, so
   the tracer never sees it. A call whose answer rides on the ACK would advertise
   only the offer, and half the media would be unattributable. Unmeasured.
-- **Do `a=rtcp:` ports need reading?** New, from §8.1 caveat 4: rtpengine
+- **Do `a=rtcp:` ports need reading?** New, from caveat 4 in
+  [section 8.1, "The measurement (F1)"](#81-the-measurement-f1): rtpengine
   advertises the RTCP socket only there, and `extract_sdp_links` reads `m=`/`c=`.
   Whether that produces real orphans is unconfirmed — no RTCP flowed in the runs.
 - **Does OpenSIPS mirror RTCP over HEP in practice?** `HepProtocol`
@@ -840,8 +848,8 @@ Things this design could not settle from the code alone.
   report has nothing to attach to. Whether it becomes attachable once the NIC
   supplies the stream depends on whether the HEP path reaches RTCP ingestion at
   all, which this design did not trace.
-- **How much HEP loss does a shared slot pool cause under a live burst?** §5.2
-  establishes that nothing counts it. Unmeasured, and this page follows the
+- **How much HEP loss does a shared slot pool cause under a live burst?**
+  [section 5.2, "What breaks"](#52-what-breaks) establishes that nothing counts it. Unmeasured, and this page follows the
   repo's standing rule against upgrading a reasoned claim to a measured one.
 - **What should the TUI show for two sources?** `capture_mode`
   ([`src/tui/mod.rs:157`](https://github.com/NormB/sipnab/blob/main/src/tui/mod.rs#L157)) is one string rendered by
@@ -873,7 +881,8 @@ inconvenience to reconcile.
 
 The HEP mirror is usually FIRST. The proxy mirrors as it processes, while the
 copy on the wire takes a network hop and a kernel queue to reach the same
-process — the same inversion §3.3 F5 describes for media. So any rule shaped
+process — the same inversion F5 in
+[section 3.3, "Failure modes, stated as failures"](#33-failure-modes-stated-as-failures) describes for media. So any rule shaped
 "first one wins" silently makes the proxy's account authoritative, and checking
 that account is the entire reason the wire capture exists.
 
@@ -882,8 +891,9 @@ Three properties of `detect_source_disagreement`
 convention a later edit can quietly drop:
 
 1. **The pairing key is content, never position.** Two copies pair on
-   `(request?, status, method, CSeq, top-`Via` branch)` — [RFC 3261](https://www.rfc-editor.org/rfc/rfc3261) §17.1.3 and
-   §17.2.3 transaction identity. Which copy the pipeline saw first cannot change
+   `(request?, status, method, CSeq, top-`Via` branch)` —
+   [RFC 3261 section 17.1.3](https://www.rfc-editor.org/rfc/rfc3261#section-17.1.3) and
+   [RFC 3261 section 17.2.3](https://www.rfc-editor.org/rfc/rfc3261#section-17.2.3) transaction identity. Which copy the pipeline saw first cannot change
    which copies pair, or whether they pair at all.
 2. **Both accounts are reported by name.** `SdpDivergence` carries `mirror` AND
    `wire`. There is no `expected` field for a surface to render as the truth and

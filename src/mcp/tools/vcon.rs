@@ -118,7 +118,7 @@ pub struct OmissionRow {
 ///
 /// RV7. The same facts the container carries in its completeness attachment,
 /// in the tool's OWN response — because the attachment's body is a JSON string
-/// per §2.3, and an agent that has to parse a document out of a document to
+/// per [draft-ietf-vcon-vcon-core-03 section 2.3](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-2.3), and an agent that has to parse a document out of a document to
 /// learn that the audio was refused will not do it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
@@ -1148,7 +1148,7 @@ mod tests {
     ///
     /// Not a second sentence written beside it. The container already carries
     /// the completeness note, inside an attachment whose body is JSON TEXT per
-    /// §2.3 -- so an agent would have to parse a document out of a document to
+    /// [draft-ietf-vcon-vcon-core-03 section 2.3](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-2.3) -- so an agent would have to parse a document out of a document to
     /// read it. This is the SAME string, lifted, and the assertion is that it
     /// is the same one rather than a paraphrase that can drift.
     #[cfg(feature = "vcon")]

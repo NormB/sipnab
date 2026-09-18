@@ -28,8 +28,8 @@ transaction identifier.
 
 | mode | groups by | unit |
 |---|---|---|
-| `call-id` (default) | Call-ID | dialog ([RFC 3261 §12](https://www.rfc-editor.org/rfc/rfc3261#section-12)) |
-| `branch` | Call-ID + top-Via branch | transaction ([RFC 3261 §17](https://www.rfc-editor.org/rfc/rfc3261#section-17)) |
+| `call-id` (default) | Call-ID | dialog ([RFC 3261 section 12](https://www.rfc-editor.org/rfc/rfc3261#section-12)) |
+| `branch` | Call-ID + top-Via branch | transaction ([RFC 3261 section 17](https://www.rfc-editor.org/rfc/rfc3261#section-17)) |
 
 `branch` composes *with* Call-ID rather than replacing it. A branch is only
 required to be unique within a transaction; keying on it alone would merge
@@ -41,7 +41,9 @@ which is worse than the problem being solved.
 A single call does **not** have one branch. RFC 3261 requires:
 
 - the INVITE transaction to carry one branch,
-- the ACK to a 2xx to carry a **new** branch (§17.1.1.3),
+- the ACK to a 2xx to carry a **new** branch ([RFC 3261 section 8.1.1.7](https://www.rfc-editor.org/rfc/rfc3261#section-8.1.1.7)
+  exempts only CANCEL and the ACK to a non-2xx, which
+  [section 17.1.1.3](https://www.rfc-editor.org/rfc/rfc3261#section-17.1.1.3) builds on the INVITE's own Via),
 - the BYE, being a separate transaction, to carry another.
 
 So under `branch`, one ordinary call becomes **three or more** tracked units,

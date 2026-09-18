@@ -372,7 +372,7 @@ pub fn auth_tag_len(suite: &SrtpSuite) -> usize {
     }
 }
 
-/// RFC 3711 §4.3.3 AES-CM key-derivation PRF.
+/// [RFC 3711 section 4.3.3](https://www.rfc-editor.org/rfc/rfc3711#section-4.3.3) AES-CM key-derivation PRF.
 ///
 /// Builds the 128-bit initial counter from the master salt with `label` mixed
 /// in at the `2^48` octet (per `key_id = label || r`, `r = 0` with
@@ -449,7 +449,7 @@ fn aes_cm_prf(
 }
 
 /// Build the 128-bit AES-CM input block for SRTP payload encryption
-/// (RFC 3711 §4.1.1):
+/// ([RFC 3711 section 4.1.1](https://www.rfc-editor.org/rfc/rfc3711#section-4.1.1)):
 ///
 /// ```text
 /// IV = (session_salt ‖ 0x0000) XOR (SSRC * 2^64) XOR (packet_index * 2^16)
@@ -483,7 +483,7 @@ fn srtp_cipher_iv(session_salt: &[u8], ssrc: u32, packet_index: u64) -> [u8; 16]
 
 /// Generate `len` bytes of AES-CM keystream from `session_key`, starting at
 /// counter block `iv` and incrementing the full 128-bit block big-endian for
-/// each successive block (RFC 3711 §4.1.1). The session key is 16 or 32 bytes.
+/// each successive block ([RFC 3711 section 4.1.1](https://www.rfc-editor.org/rfc/rfc3711#section-4.1.1)). The session key is 16 or 32 bytes.
 ///
 /// # Errors
 ///
@@ -655,7 +655,7 @@ fn decrypt_srtp_payload_with_session(
     Ok(plaintext)
 }
 
-/// Derive an SRTP session key (RFC 3711 §4.3.1) via the spec AES-CM PRF
+/// Derive an SRTP session key ([RFC 3711 section 4.3.1](https://www.rfc-editor.org/rfc/rfc3711#section-4.3.1)) via the spec AES-CM PRF
 /// (`aes_cm_prf`), so the result interoperates with real SRTP endpoints.
 ///
 /// * `label` — 0x00 cipher, 0x01 auth, 0x02 salt (SRTP); 0x03/0x04/0x05 SRTCP.
@@ -683,7 +683,7 @@ const SRTP_AUTH_KEY_LEN: usize = 20;
 /// packets); longer sessions need stateful per-SSRC ROC tracking.
 ///
 /// The session authentication key is derived from the master key and salt via
-/// the RFC 3711 §4.3.1 AES-CM KDF (`derive_session_key`, label 0x01), so it
+/// the [RFC 3711 section 4.3.1](https://www.rfc-editor.org/rfc/rfc3711#section-4.3.1) AES-CM KDF (`derive_session_key`, label 0x01), so it
 /// interoperates with standard SRTP endpoints when built with the `tls`
 /// feature.
 ///
@@ -787,7 +787,7 @@ struct RocState {
     s_l: u16,
 }
 
-/// Estimate the ROC for an incoming sequence number (RFC 3711 §3.3.1), given
+/// Estimate the ROC for an incoming sequence number ([RFC 3711 section 3.3.1](https://www.rfc-editor.org/rfc/rfc3711#section-3.3.1)), given
 /// the locally maintained `roc` and highest-seen sequence `s_l`.
 ///
 /// Returns `roc` unchanged for in-epoch packets, `roc + 1` when the
@@ -814,7 +814,7 @@ fn estimate_roc(roc: u32, s_l: u16, seq: u16) -> u32 {
 /// per SSRC, so streams longer than 65536 packets verify correctly.
 ///
 /// The ROC for each packet is estimated from the stored highest sequence number
-/// (RFC 3711 §3.3.1) and advanced when the sequence number wraps. The first
+/// ([RFC 3711 section 3.3.1](https://www.rfc-editor.org/rfc/rfc3711#section-3.3.1)) and advanced when the sequence number wraps. The first
 /// packet seen for an SSRC is assumed to start at ROC 0 (joining a stream
 /// mid-session with a non-zero ROC cannot be detected from the wire and will
 /// not verify — an inherent limitation of passive analysis).
@@ -963,7 +963,7 @@ impl SrtpRocTracker {
     }
 }
 
-/// Session keys derived from one master key/salt (RFC 3711 §4.3.1), memoized so
+/// Session keys derived from one master key/salt ([RFC 3711 section 4.3.1](https://www.rfc-editor.org/rfc/rfc3711#section-4.3.1)), memoized so
 /// the AES-CM KDF runs once per key material instead of twice (cipher + salt)
 /// plus once (auth) on every packet.
 ///
@@ -1618,7 +1618,7 @@ mod tests {
     /// (alert #87): the `[0u8; 16]` buffer inside `srtp_cipher_iv` is a
     /// zero-initialized scratch block that is fully overwritten with the
     /// per-stream session salt and XOR'd with the per-packet SSRC and SRTP
-    /// index (RFC 3711 §4.1.1). It is therefore NOT a hard-coded IV — the
+    /// index ([RFC 3711 section 4.1.1](https://www.rfc-editor.org/rfc/rfc3711#section-4.1.1)). It is therefore NOT a hard-coded IV — the
     /// produced IV must vary with the salt, the SSRC, and the packet index.
     /// This test proves that property so the value can never silently collapse
     /// to a constant.

@@ -52,7 +52,8 @@ That is the failure mode worth naming. A test written from the implementation's
 premise cannot find a wrong premise. It can only confirm that the
 implementation is consistent with itself, which it always is.
 
-What eventually surfaced it was reading §4.3.1 as prose, in full, rather than
+What eventually surfaced it was reading
+[section 4.3.1 of `draft-ietf-vcon-vcon-core-03`](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-4.3.1) as prose, in full, rather than
 grepping it for the rule at hand.
 
 ## The part that made it durable
@@ -64,7 +65,8 @@ wrong. The CDR is right. The claim it contradicts is the one nobody has any
 reason to doubt, because it arrives in a standard format and looks
 authoritative.
 
-The object also omitted `disposition`, which §4.3.1 makes mandatory on an
+The object also omitted `disposition`, which
+[section 4.3.1](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-4.3.1) makes mandatory on an
 incomplete dialog — because no failure had occurred, so there was no reason to
 name. So the container broke a MUST *and* stated something false, and the
 second was the expensive half.

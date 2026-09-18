@@ -73,9 +73,12 @@ struct MessageJson<'a> {
     /// backward compatibility under schema_version 1. Prefer `cseq`.
     #[serde(skip_serializing_if = "Option::is_none")]
     response_context: Option<String>,
-    /// Structural-malformation diagnostics (SNB-0003, spec §5.2): present and
+    /// Structural-malformation diagnostics (backlog item SNB-0003, section 5.2
+    /// of its spec, which is not in this repository): present and
     /// non-empty only when the message is malformed (missing mandatory header,
     /// content-length mismatch, control bytes, …). A well-formed message omits it.
+    /// [`docs/output-formats.md`, "NDJSON (`--json`)"](https://github.com/NormB/sipnab/blob/main/docs/output-formats.md#ndjson---json)
+    /// documents the field for users.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     malformed: Vec<String>,
     /// Every header this projection does NOT already carry, in wire form
@@ -516,7 +519,7 @@ struct DialogJson {
     #[serde(skip_serializing_if = "Option::is_none")]
     final_status_code: Option<u16>,
     /// The reason phrase carried beside `final_status_code`, verbatim from the
-    /// wire. Free text per RFC 3261 §7.2 — a sender may write anything, so
+    /// wire. Free text per [RFC 3261 section 7.2](https://www.rfc-editor.org/rfc/rfc3261#section-7.2) — a sender may write anything, so
     /// `500 Service Unavailable` is legal and common. Match on the code, not
     /// this. `None` when there is no final response.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -622,7 +625,7 @@ struct DialogJson {
 /// Header names [`MessageJson`] already carries as their own fields.
 ///
 /// The one place the exclusion is written down. Matched case-insensitively,
-/// because RFC 3261 §7.3.1 makes header names case-insensitive and a sender
+/// because [RFC 3261 section 7.3.1](https://www.rfc-editor.org/rfc/rfc3261#section-7.3.1) makes header names case-insensitive and a sender
 /// that writes `call-id` must not get a second copy of it.
 ///
 /// Compact forms are not listed: the parser expands every registered one to

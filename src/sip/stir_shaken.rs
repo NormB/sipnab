@@ -17,7 +17,7 @@
 //!
 //! # The freshness window is measured against CAPTURE time
 //!
-//! RFC 8224 §4.4 gives the `iat` claim a ±60 s window, and the only clock that
+//! [RFC 8224 section 6.2](https://www.rfc-editor.org/rfc/rfc8224#section-6.2), Step 4, gives the `iat` claim a ±60 s window, and the only clock that
 //! window may be read against is the timestamp of the packet that carried the
 //! header. sipnab analyzes files: a capture taken last Tuesday is read today,
 //! and against the wall clock every Identity header in it is minutes, days or
@@ -157,7 +157,7 @@ struct ShakenPayload {
 ///
 /// * `header_value` — the raw `Identity` header value (JWT plus optional
 ///   `;`-separated parameters).
-/// * `now_unix` — the clock the RFC 8224 §4.4 freshness window is measured
+/// * `now_unix` — the clock the [RFC 8224 section 6.2](https://www.rfc-editor.org/rfc/rfc8224#section-6.2), Step 4, freshness window is measured
 ///   against, in Unix epoch seconds. This is the **capture timestamp** of the
 ///   packet that carried the header, never `chrono::Utc::now()`: an offline
 ///   capture read a minute after it was taken would otherwise report every
@@ -256,7 +256,7 @@ impl StirShakenInfo {
 impl SipMessage {
     /// Extract STIR/SHAKEN information from the `Identity` header, if present.
     ///
-    /// The RFC 8224 §4.4 freshness window is measured against **this message's
+    /// The [RFC 8224 section 6.2](https://www.rfc-editor.org/rfc/rfc8224#section-6.2), Step 4, freshness window is measured against **this message's
     /// capture timestamp**, not the wall clock. `--stir-shaken -I capture.pcap`
     /// therefore answers "was the token fresh when it was sent", which is the
     /// only question the capture can answer; reading the wall clock would
@@ -275,7 +275,7 @@ impl SipMessage {
     ///
     /// # Why more than one
     ///
-    /// RFC 8224 §4: "Note that unlike the prior specification in RFC 4474,
+    /// [RFC 8224 section 4](https://www.rfc-editor.org/rfc/rfc8224#section-4): "Note that unlike the prior specification in RFC 4474,
     /// the Identity header field is now allowed to appear more than one time
     /// in a SIP request." A diverted call under RFC 8946 carries two — a
     /// `ppt=shaken` PASSporT and a `ppt=div` one — and reading only the first
@@ -308,7 +308,7 @@ impl SipMessage {
 mod tests {
     /// Every `Identity` header is read, not just the first.
     ///
-    /// RFC 8224 §4, first paragraph: "Note that unlike the prior
+    /// [RFC 8224 section 4](https://www.rfc-editor.org/rfc/rfc8224#section-4), first paragraph: "Note that unlike the prior
     /// specification in [RFC4474], the Identity header field is now allowed to
     /// appear more than one time in a SIP request." The diverted-call shape of
     /// RFC 8946 is exactly that — a `ppt=shaken` PASSporT plus a `ppt=div`
@@ -837,7 +837,7 @@ mod tests {
     /// wall clock answers a question nobody asked — "is this pcap younger than
     /// a minute" — and under it every Identity header in every stored capture
     /// reports `Expired`, including the ones a carrier signed correctly. The
-    /// packet's own timestamp answers the question RFC 8224 §4.4 actually
+    /// packet's own timestamp answers the question [RFC 8224 section 6.2](https://www.rfc-editor.org/rfc/rfc8224#section-6.2), Step 4, actually
     /// poses. Both readings are computed here so the test names what it is
     /// choosing between rather than merely asserting the good one.
     #[test]

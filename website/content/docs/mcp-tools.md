@@ -1971,7 +1971,7 @@ quarters of a healthy fleet.
 
 | Field | Type | Description |
 |---|---|---|
-| `observation.contact_host` | string? | The host the `Contact` named, as written. Absent for `Contact: *`, which [RFC 3261 §10.2.2](https://www.rfc-editor.org/rfc/rfc3261#section-10.2.2) defines as every binding and which names no host |
+| `observation.contact_host` | string? | The host the `Contact` named, as written. Absent for `Contact: *`, which [RFC 3261 section 10.2.2](https://www.rfc-editor.org/rfc/rfc3261#section-10.2.2) defines as every binding and which names no host |
 | `observation.contact_host_private` | bool? | Whether that host is one the public internet does not route to. Absent when the `Contact` names a domain: a name resolves somewhere the capture cannot see, and judging it either way would be a guess |
 | `observation.source_public` | bool | Whether the REGISTER arrived from a public address |
 | `observation.rewrite_required` | bool | The two together — the shape that calls for a NAT rewrite |
@@ -1995,7 +1995,7 @@ registrar sent to the private `Contact` carries no address belonging to the
 endpoint — that is exactly what going to the wrong host means — so nothing
 address-based can find it. The tie is the user part in the request URI and
 `To`, matched case-sensitively per
-[RFC 3261 §19.1.4](https://www.rfc-editor.org/rfc/rfc3261#section-19.1.4).
+[RFC 3261 section 19.1.4](https://www.rfc-editor.org/rfc/rfc3261#section-19.1.4).
 
 [`diagnose_registration`](#diagnose-registration) reports the observation for a
 single call. The corroborated finding lives here, because settling it needs
@@ -2012,7 +2012,7 @@ handling. The banner cannot tell them apart. The syntax can.
 
 | Field | Type | Description |
 |---|---|---|
-| `branch_cookie` | string? | The `Via` branch's cookie: the mandatory `z9hG4bK` ([RFC 3261 §8.1.1.7](https://www.rfc-editor.org/rfc/rfc3261#section-8.1.1.7)) plus any vendor extension before the per-transaction part. Echoed from the wire, bounded to `MAX_FINGERPRINT_CHARS` (32) |
+| `branch_cookie` | string? | The `Via` branch's cookie: the mandatory `z9hG4bK` ([RFC 3261 section 8.1.1.7](https://www.rfc-editor.org/rfc/rfc3261#section-8.1.1.7)) plus any vendor extension before the per-transaction part. Echoed from the wire, bounded to `MAX_FINGERPRINT_CHARS` (32) |
 | `branch_shape` | string? | What follows the cookie: `uuid`, `as-hex`, `hex` or `other` |
 | `tag_shape` | string? | The same vocabulary, for the `From` tag |
 | `callid_has_host` | bool? | Whether the `Call-ID` carries an `@host` part |
@@ -2054,7 +2054,7 @@ record alone would silently drop them, and the dropped ones are exactly the
 transfers and hand-offs an operator is looking for.
 
 **A `user` matches the From or To user part EXACTLY.** [RFC 3261
-§19.1.4](https://www.rfc-editor.org/rfc/rfc3261#section-19.1.4) makes the user
+section 19.1.4](https://www.rfc-editor.org/rfc/rfc3261#section-19.1.4) makes the user
 part case-sensitive, so `Alice` and `alice` name two URIs, and folding the case
 here would file one endpoint's traffic under the name of a second.
 
@@ -2085,8 +2085,8 @@ straight into [`diagnose_registration`](#diagnose-registration).
 
 `user_agents` attributes a banner to whoever wrote it: `User-Agent` off requests
 the address SENT and `Server` off responses it sent, per [RFC 3261
-§20.41](https://www.rfc-editor.org/rfc/rfc3261#section-20.41) and
-[§20.35](https://www.rfc-editor.org/rfc/rfc3261#section-20.35). Reading them off
+section 20.41](https://www.rfc-editor.org/rfc/rfc3261#section-20.41) and
+[RFC 3261 section 20.35](https://www.rfc-editor.org/rfc/rfc3261#section-20.35). Reading them off
 received messages would file the far end's software under this endpoint. For a
 `user` only `User-Agent` on requests whose From user matches counts, the one
 case where the URI identifies the party that wrote the header. Values arrive
@@ -2327,19 +2327,20 @@ the same claim:
 | `timing_heuristic` | Same endpoint, close in time | Not an identifier at all |
 
 **The two `P-Charging-Vector` rows are one header and two different claims.**
-[RFC 7315 §4.6](https://www.rfc-editor.org/rfc/rfc7315#section-4.6) says the ICID identifies *a dialog*, so a conformant B2BUA emits
+[RFC 7315 section 4.6](https://www.rfc-editor.org/rfc/rfc7315#section-4.6) says the ICID identifies *a dialog*, so a conformant B2BUA emits
 a different `icid-value` on each side and `charging_vector_icid` is silent
 across it — a match there means some intermediary copied a per-dialog
 identifier onto a second dialog, which no RFC grants. The parameter that
-addresses the hop is `related-icid` (§4.6.4.1), and it is optional. Two limits
+addresses the hop is `related-icid`
+([RFC 7315 section 4.6.4.1](https://www.rfc-editor.org/rfc/rfc7315#section-4.6.4.1)), and it is optional. Two limits
 worth knowing before you rely on either: the first proxy generates the icid
-(§5.6), so a leg arriving from an endpoint carries none and this is useless at
-the access edge. And §4.6.2.2 lets the next hop *"modify the contents"*, which
-§6.6 calls normal behavior, so unlike `Session-ID` there is no end-to-end
+([RFC 7315 section 5.6](https://www.rfc-editor.org/rfc/rfc7315#section-5.6)), so a leg arriving from an endpoint carries none and this is useless at
+the access edge. And [RFC 7315 section 4.6.2.2](https://www.rfc-editor.org/rfc/rfc7315#section-4.6.2.2) lets the next hop *"modify the contents"*, which
+[RFC 7315 section 6.6](https://www.rfc-editor.org/rfc/rfc7315#section-6.6) calls normal behavior, so unlike `Session-ID` there is no end-to-end
 constancy requirement at all. Full argument:
 [`docs/design/icid-correlation.md`](https://github.com/NormB/sipnab/blob/main/docs/design/icid-correlation.md).
 
-Neither strategy puts the matched value in the response. [RFC 7315 §4.6](https://www.rfc-editor.org/rfc/rfc7315#section-4.6)'s own
+Neither strategy puts the matched value in the response. [RFC 7315 section 4.6](https://www.rfc-editor.org/rfc/rfc7315#section-4.6)'s own
 suggested construction embeds the generating proxy's hostname or address in the
 icid, so it is operator-internal rather than opaque, and `strategy` names the
 strategy and nothing else.
@@ -3172,7 +3173,7 @@ honest reading and not a fault ruled out.
 
 | Field | Type | Description |
 |---|---|---|
-| `contact_host` | string? | The host the `Contact` named, as written. Absent for `Contact: *`, which [RFC 3261 §10.2.2](https://www.rfc-editor.org/rfc/rfc3261#section-10.2.2) defines as every binding and which names no host |
+| `contact_host` | string? | The host the `Contact` named, as written. Absent for `Contact: *`, which [RFC 3261 section 10.2.2](https://www.rfc-editor.org/rfc/rfc3261#section-10.2.2) defines as every binding and which names no host |
 | `contact_host_private` | bool? | Whether that host is one the public internet does not route to. Absent when the `Contact` names a domain, which resolves somewhere the capture cannot see |
 | `source_public` | bool | Whether the REGISTER arrived from a public address |
 | `rewrite_required` | bool | The two together |
@@ -3685,8 +3686,8 @@ packets in one:
 ```
 
 `rfc` and `section` stay separate fields rather than prose inside the
-explanation, and that is the whole point of the shape. An agent quotes RFC 3264
-§6.1 out of the data instead of inventing a section number that reads
+explanation, and that is the whole point of the shape. An agent quotes
+[RFC 3264 section 6.1](https://www.rfc-editor.org/rfc/rfc3264#section-6.1) out of the data instead of inventing a section number that reads
 plausibly, and `explain_rule` turns the identifier back into the citation and
 the link.
 
@@ -5330,7 +5331,9 @@ Give one, never both.
 | `valid-except-documented-deviation` | Every finding is a shape sipnab emits on purpose that the schema rejects. `deviations` names each one and `explanations` says why |
 | `invalid` | At least one finding is an ordinary defect. `errors` carries it |
 
-The middle verdict carries the whole point. §4.3 of the draft says "it is
+The middle verdict carries the whole point.
+[Section 4.3 of draft-ietf-vcon-vcon-core-03](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-4.3)
+says "it is
 possible to have a Dialog Object with no parameters in it", the working group
 agreed that shape in issue #20 after IETF 124, and the draft's own Appendix B
 schema forbids it, because every Dialog Object requires a `start`. sipnab emits
@@ -5497,7 +5500,7 @@ A call with no final response in the capture asserts nothing about the outcome �
 the scenario sends the request and waits. For an INVITE the scenario sends an ACK either
 way, with the Via that RFC 3261 calls for in each case: a fresh branch on a 2xx,
 because that ACK is a new transaction, and `[last_Via:]` on a non-2xx, because
-[§17.1.1.3](https://www.rfc-editor.org/rfc/rfc3261#section-17.1.1.3) makes it
+[RFC 3261 section 17.1.1.3](https://www.rfc-editor.org/rfc/rfc3261#section-17.1.1.3) makes it
 part of the INVITE transaction.
 
 Twelve headers the scenario always owns come from the template whatever the

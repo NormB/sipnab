@@ -427,7 +427,7 @@ mod rfc_8224_naming_tests {
 
     /// 437's reason phrase is `Unsupported Credential`.
     ///
-    /// RFC 8224 §6.2.2 renamed it: *"The 437 'Unsupported Credential' response
+    /// [RFC 8224 section 6.2.2](https://www.rfc-editor.org/rfc/rfc8224#section-6.2.2) renamed it: *"The 437 'Unsupported Credential' response
     /// (previously 'Unsupported Certificate'; see Section 13.2)"*. The old name
     /// survived here while `docs/sip-response-codes.md` carried the new one, so
     /// the reference page and the running program disagreed about what an

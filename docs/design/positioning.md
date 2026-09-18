@@ -4,13 +4,15 @@
 features, not to describe them — if it only ever ratifies what was already
 built, it has failed at its job.
 **Verified against:** `fcabc436`, working tree. First taken against `c3befb9`;
-the §2 facts and every line citation were re-verified 2026-09-02.
-**Backlog:** the four items this page authorizes are tracked separately; §5
-ranks them and §6 lists what it refuses.
+the facts in [section 2, "What already fits, verified"](#2-what-already-fits-verified) and every line citation were re-verified 2026-09-02.
+**Backlog:** the four items this page authorizes are tracked separately;
+[section 5, "Order"](#5-order) ranks them and
+[section 4, "What the position forbids"](#4-what-the-position-forbids) lists what it refuses.
 
-**No claim on this page is a measurement.** The capability facts in §2 are
+**No claim on this page is a measurement.** The capability facts in [section 2, "What already fits, verified"](#2-what-already-fits-verified) are
 verified against the source and cited to file and line. The market judgements
-in §1 and §7 are judgements. Do not upgrade one to the other by restating it
+in [section 1, "The gap"](#1-the-gap) and
+[section 7, "What would falsify this"](#7-what-would-falsify-this) are judgements. Do not upgrade one to the other by restating it
 somewhere with fewer qualifiers — the same rule
 [`capture-tuning-tasks.md:22`](https://github.com/NormB/sipnab/blob/main/docs/design/capture-tuning-tasks.md#L22) applies to throughput
 claims.
@@ -65,7 +67,8 @@ touches production.
 **Media quality at the HEP receiver.** Without media quality a remote viewer is
 *worse than the terminal viewer run locally*, because the terminal viewer sees
 RTP and this would not. The sender-side half of this closed in 0.5.92: RTCP
-travels over `--hep-send` as protocol type 5 (§2). The receiver-side half is
+travels over `--hep-send` as protocol type 5 (see the "Sender-side HEP" row in
+[section 2, "What already fits, verified"](#2-what-already-fits-verified)). The receiver-side half is
 open, and it is what decides whether the remote viewer shows a MOS at all.
 `--hep-send` never forwards RTP, and `StreamStore::process_rtcp`
 ([`stream_store.rs:925`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L925)) files a report only
@@ -107,9 +110,11 @@ The end state of that path is a worse Homer.
 ## 5. Order
 
 1. Media quality from RTCP alone at the HEP receiver — the sender half shipped
-   in 0.5.92; the receiver files a report only against media it has seen (§3).
+   in 0.5.92; the receiver files a report only against media it has seen
+   ([section 3, "What the position demands"](#3-what-the-position-demands)).
    The prerequisite for judging the rest in real use
-2. Multi-node correlation — the differentiator; shares provenance with §3
+2. Multi-node correlation — the differentiator; shares the provenance prerequisite
+   that [section 3, "What the position demands"](#3-what-the-position-demands) describes
 3. Bounded on-disk retention — the "this shift" primitive
 
 ## 6. Consequence for the published materials
@@ -127,7 +132,8 @@ the evidence for reach, not a benchmark win to be enjoyed on its own.
 
 Stated so the position can lose rather than absorb every outcome:
 
-- **Nobody uses the remote path.** If the HEP-listener workflow of §2 sees no
+- **Nobody uses the remote path.** If the HEP-listener workflow of
+  [section 2, "What already fits, verified"](#2-what-already-fits-verified) sees no
   real use over a few months of availability, the gap is theoretical and the
   honest response is to stop building for it, not to build harder.
 - **Retention keeps growing.** If "minutes to hours" is repeatedly argued up
@@ -136,4 +142,5 @@ Stated so the position can lose rather than absorb every outcome:
   argument as the signal, not the fifth.
 - **The analysis is not the reason people choose it.** If users want it purely
   as a faster the terminal viewer and ignore lint, triage and correlation, then the local
-  tool position is the real one and §6 is wrong.
+  tool position is the real one and
+  [section 6, "Consequence for the published materials"](#6-consequence-for-the-published-materials) is wrong.

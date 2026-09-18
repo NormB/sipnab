@@ -42,7 +42,7 @@ impl RtpHeader {
     ///
     /// # Why this exists
     ///
-    /// RFC 3550 §5.1: "If the padding bit is set, the packet contains one or
+    /// [RFC 3550 section 5.1](https://www.rfc-editor.org/rfc/rfc3550#section-5.1): "If the padding bit is set, the packet contains one or
     /// more additional padding octets at the end which are not part of the
     /// payload. The last octet of the padding contains a count of how many
     /// padding octets should be ignored, including itself."
@@ -204,7 +204,7 @@ pub fn parse_rtp_header(data: &[u8]) -> Result<RtpHeader, ParseError> {
 mod tests {
     /// Padding octets are not payload.
     ///
-    /// RFC 3550 §5.1: "If the padding bit is set, the packet contains one or
+    /// [RFC 3550 section 5.1](https://www.rfc-editor.org/rfc/rfc3550#section-5.1): "If the padding bit is set, the packet contains one or
     /// more additional padding octets at the end which are not part of the
     /// payload. The last octet of the padding contains a count of how many
     /// padding octets should be ignored, including itself."
@@ -262,7 +262,8 @@ mod tests {
 
     /// A padding count of zero is impossible and is treated as no payload.
     ///
-    /// §5.1 counts the length octet itself, so the minimum legal value is 1.
+    /// [RFC 3550 section 5.1](https://www.rfc-editor.org/rfc/rfc3550#section-5.1) counts the length octet itself, so the
+    /// minimum legal value is 1.
     /// Zero is malformed; refusing to trust it keeps the arithmetic total.
     #[test]
     fn a_zero_padding_count_is_malformed_and_yields_nothing() {

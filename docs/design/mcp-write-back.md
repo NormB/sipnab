@@ -4,16 +4,16 @@
 accepted for managing the MCP server; section 7 records what has to be true.
 **Verified against:** `63b771b`, working tree. Every file:line below was read at
 that revision.
-**Relationship to [`deferred-and-declined.md`](deferred-and-declined.md) §2.**
+**Relationship to [section 2, "Write-back MCP tools"](deferred-and-declined.md#2-write-back-mcp-tools) of [`deferred-and-declined.md`](deferred-and-declined.md).**
 That page argued against write-back on one point: silent divergence between what
 an agent did and what an operator sees. This page does not repeat it. It exists
 because the request came back asking for the *pros and cons*, and a verdict with
 only the cons written down is the kind of decision that gets re-litigated every
 quarter. So section 2 argues the other side properly, section 6 costs the four
 middle options nobody had priced, and section 5 supplies evidence that did not
-exist when §2 was written — two shipped fixes for tools that did to a capture
+exist when [section 2, "Write-back MCP tools"](deferred-and-declined.md#2-write-back-mcp-tools) of `deferred-and-declined.md` was written — two shipped fixes for tools that did to a capture
 exactly what a badly-scoped write tool would do. The conclusion is the same. The
-reasoning is different, and one claim in §2 has since gone stale (section 8).
+reasoning is different, and one claim in [section 2, "Write-back MCP tools"](deferred-and-declined.md#2-write-back-mcp-tools) of `deferred-and-declined.md` has since gone stale (section 8).
 
 ## 1. The invariant, quoted from all four places it lives
 
@@ -22,7 +22,7 @@ fourth is not documentation — it is a promise sipnab transmits to every client
 at handshake.
 
 **As an invariant.** [`docs/internals/invariants.md`](../internals/invariants.md)
-§7, in full:
+[section 7, "MCP tools never edit the analysis, and every response has a ceiling"](../internals/invariants.md#7-mcp-tools-never-edit-the-analysis-and-every-response-has-a-ceiling), in full:
 
 > ## 7. MCP tools never mutate, and every response has a ceiling
 >
@@ -184,7 +184,7 @@ operator's live screen" but not narrow enough to dismiss.
 
 ## 5. The two fixes this session shipped, and why they settle it
 
-This is the evidence that did not exist when §2 of
+This is the evidence that did not exist when [section 2, "Write-back MCP tools"](deferred-and-declined.md#2-write-back-mcp-tools) of
 [`deferred-and-declined.md`](deferred-and-declined.md) was written, and it is
 decisive because in both cases the tool was doing something a reasonable person
 had asked it to do.
@@ -335,8 +335,8 @@ touching the analysis at all.
   read-only access to *dialogs, streams, diagnostics and findings* remains a
   true description of what the tools return.
 
-This is the same conclusion [`deferred-and-declined.md`](deferred-and-declined.md)
-§2 reached by a different route — its build requirement 2 asks for "an
+This is the same conclusion that [section 2, "Write-back MCP tools"](deferred-and-declined.md#2-write-back-mcp-tools) of
+[`deferred-and-declined.md`](deferred-and-declined.md) reached by a different route — its build requirement 2 asks for "an
 annotation store that a tool may edit and that no analysis reads". A file that
 nothing reads back is the cheapest possible instance of that, and it needs no
 store, no schema migration and no wire-visible generation counter.
@@ -362,14 +362,14 @@ them. Neither is a behavior change.
 sentence is ungrammatical and false.** "No tool mutates the dialog/stream/alert
 stores" is exactly true. "systemd owns the capture lifecycle, or the CLI flags,
 not by the LLM" contradicts `--mcp-allow-shutdown`, which hands the capture
-lifecycle to precisely the LLM. `deferred-and-declined.md` §2 flagged this and
+lifecycle to precisely the LLM. [Section 2, "Write-back MCP tools"](deferred-and-declined.md#2-write-back-mcp-tools) of `deferred-and-declined.md` flagged this and
 proposed the repair — that the guarantee is *no tool alters the analysis an
 operator is reading while leaving them reading it*. The repair has still not
 been made, and the same wording drift affects
 [`src/mcp/mod.rs:5`](https://github.com/NormB/sipnab/blob/main/src/mcp/mod.rs#L5) and the handshake string at
 [`server.rs:2365`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L2365).
 
-**`deferred-and-declined.md` §2 has itself gone stale on one claim.** It states
+**[Section 2, "Write-back MCP tools"](deferred-and-declined.md#2-write-back-mcp-tools) of `deferred-and-declined.md` has itself gone stale on one claim.** It states
 that the prompt-injection rule for tool descriptions "is convention, not
 enforcement", because [`src/mcp/server.rs:10`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L10) cited
 `scripts/check-tool-descriptions.sh` and no such file existed. That is no longer
@@ -380,9 +380,9 @@ exists and carries two tests —
 asserts that any gate named in the module doc is real, closing the loop that
 produced the phantom in the first place. The module doc
 ([`server.rs:6-13`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L6-L13)) now names the test and records the
-history. The rule is enforced. That page's §2 should be corrected by whoever
+history. The rule is enforced. That page's [section 2, "Write-back MCP tools"](deferred-and-declined.md#2-write-back-mcp-tools) should be corrected by whoever
 owns it; this page does not edit it.
 
-Line numbers in §2 have also drifted with the tree — it cites `export_capture`
+Line numbers in [section 2, "Write-back MCP tools"](deferred-and-declined.md#2-write-back-mcp-tools) of `deferred-and-declined.md` have also drifted with the tree — it cites `export_capture`
 at `server.rs:2136` where `63b771b` has `:2177` — which is the ordinary cost of
 citing lines and not a defect. The tool *names* it cites are all still correct.

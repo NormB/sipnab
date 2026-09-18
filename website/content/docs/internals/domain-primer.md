@@ -125,7 +125,7 @@ seconds of silence.
 ### Offer/answer, and the delayed-offer inversion
 
 Normally the request carries the SDP **offer** and the response carries the
-**answer**. [RFC 3261 §13.2.1](https://www.rfc-editor.org/rfc/rfc3261#section-13.2.1) allows an offerless INVITE, and then the roles
+**answer**. [RFC 3261 section 13.2.1](https://www.rfc-editor.org/rfc/rfc3261#section-13.2.1) allows an offerless INVITE, and then the roles
 invert: the 200 OK carries the offer and the ACK carries the answer.
 
 [`determine_offer_answer()`](https://github.com/NormB/sipnab/blob/main/src/sip/sdp_timeline.rs) encodes exactly
@@ -194,7 +194,7 @@ these five messages. Open on the `CANCEL` or the `487` and the caller gave up.
 Open on the `200` and nothing yet says how the call ended — same family, same
 code that establishes a call one line above, opposite meaning. The sibling case
 runs the other way: a `2xx` answering a `BYE` *is* evidence the session ended
-([RFC 3261 §15.1.2](https://www.rfc-editor.org/rfc/rfc3261#section-15.1.2)), so
+([RFC 3261 section 15.1.2](https://www.rfc-editor.org/rfc/rfc3261#section-15.1.2)), so
 a call whose `BYE` fell outside the capture still leaves `InCall`.
 
 <pre class="mermaid">
@@ -290,7 +290,7 @@ halves or doubles every derived duration.
 
 ### Jitter is a signed transit delta, not a variance
 
-[RFC 3550 §6.4.1](https://www.rfc-editor.org/rfc/rfc3550#section-6.4.1) defines interarrival jitter as a smoothed mean of the
+[RFC 3550 section 6.4.1](https://www.rfc-editor.org/rfc/rfc3550#section-6.4.1) defines interarrival jitter as a smoothed mean of the
 *difference in transit time* between consecutive packets:
 `J(i) = J(i-1) + (|D(i-1,i)| - J(i-1)) / 16`. `stream.rs` computes the transit
 delta as a **signed** `i32` before taking the absolute value — with unsigned

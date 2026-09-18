@@ -634,7 +634,7 @@ an endpoint's, and `round_trip_source` says which kind:
 | `round_trip_source` | What it is |
 |---|---|
 | `xr_voip_metrics` | The reporting endpoint's own round trip between the two RTP interfaces, from an [RFC 3611](https://www.rfc-editor.org/rfc/rfc3611) XR block. This is the quantity [ITU-T G.114](https://www.itu.int/rec/T-REC-G.114) sets its guidance against. Accurate, and rare — most stacks never emit an XR |
-| `sender_report_echo` | Derived from a receiver report's `LSR`/`DLSR` pair per [RFC 3550 §6.4.1](https://www.rfc-editor.org/rfc/rfc3550#section-6.4.1), anchored on when sipnab saw the report. The full round trip when the capture point sits with the sender of the SR, and a **lower bound** otherwise, because the leg beyond the tap is not in it. Available on almost every call |
+| `sender_report_echo` | Derived from a receiver report's `LSR`/`DLSR` pair per [RFC 3550 section 6.4.1](https://www.rfc-editor.org/rfc/rfc3550#section-6.4.1), anchored on when sipnab saw the report. The full round trip when the capture point sits with the sender of the SR, and a **lower bound** otherwise, because the leg beyond the tap is not in it. Available on almost every call |
 
 **Both keys are absent when nobody reported a round trip**, and that is not the
 same as zero. A stream with clean jitter, no loss and no `round_trip_ms` is a
@@ -2274,7 +2274,7 @@ describes went wrong on the wire:
 | `unanswered_nat_requests` | STUN and TURN transactions that went out and never came back — the signal behind a one-way-audio complaint. An endpoint that cannot learn its reflexive address (the public `address:port` a NAT gives it, which STUN exists to discover) advertises its private address in SDP, and the far end then sends media somewhere the internet cannot route, while the signaling looks healthy. Silence rather than a refusal points at something in the path discarding UDP it does not recognize, most often a firewall, IPS or secure web gateway. A refusal counts as answered: the server was reachable and said no, which is a different fault |
 | `lapsed_turn_allocations` | TURN allocations still carrying traffic past the lifetime the server last granted them, with no Refresh seen in between. The one fault here with no other symptom anywhere — the relay tears the allocation down the moment its lifetime lapses, the relayed media stops with it mid-call, and no SIP message says why. A deliberate release (a Refresh with `LIFETIME` 0) never counts, because the client asked for the teardown |
 | `lapsed_turn_allocation_streams` | Media streams crossing an allocation that had already lapsed. The scale beside the key above, and the reason that key is worth paging on: an allocation that lapsed with nothing on it cost nobody a call, and one carrying four streams cut off four conversations mid-sentence |
-| `ice_role_conflicts` | Candidate pairs where both ICE agents claimed the same role, or where one answered `487 Role Conflict` ([RFC 8445](https://www.rfc-editor.org/rfc/rfc8445) §7.3.1.1). ICE resolves this itself, so a single conflict is not always fatal — which is why it belongs on a dashboard rather than only in an alert. Where no pair between the two ever won nomination, the conflict is a candidate cause of media that never started |
+| `ice_role_conflicts` | Candidate pairs where both ICE agents claimed the same role, or where one answered `487 Role Conflict` ([RFC 8445 section 7.3.1.1](https://www.rfc-editor.org/rfc/rfc8445#section-7.3.1.1)). ICE resolves this itself, so a single conflict is not always fatal — which is why it belongs on a dashboard rather than only in an alert. Where no pair between the two ever won nomination, the conflict is a candidate cause of media that never started |
 
 All four fall as well as rise. A late answer, a Refresh that arrives afterwards
 or a later nomination each removes one, so read them as current readings rather
@@ -2601,7 +2601,7 @@ The same facets the MCP `describe_endpoint` tool reports.
 - `ip` (one of `ip`/`user`) — the endpoint's IP address. An address that does
   not parse is a `400`.
 - `user` (one of `ip`/`user`) — a SIP URI user part, e.g. `alice`. Matched
-  case-sensitively, per [RFC 3261 §19.1.4](https://www.rfc-editor.org/rfc/rfc3261#section-19.1.4).
+  case-sensitively, per [RFC 3261 section 19.1.4](https://www.rfc-editor.org/rfc/rfc3261#section-19.1.4).
 - `limit` (optional) — the most recent-dialog summaries to return, clamped to the
   server's row cap. The counts always describe every match, not this page.
 

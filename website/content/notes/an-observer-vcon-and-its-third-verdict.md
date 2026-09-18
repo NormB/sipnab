@@ -46,7 +46,7 @@ a caller's `name` reads `PCMU/8000`. Treat the field as personal data, and key
 any redaction step on `name` **and** `sip_display_name`.
 
 The one identifier sipnab does supply is `tel`, and only when the SIP user part
-is unambiguously a telephone number: `+` followed by digits, an RFC 3966 global
+is unambiguously a telephone number: `+` followed by digits, an [RFC 3966](https://www.rfc-editor.org/rfc/rfc3966) global
 number. A bare `1001` is an extension, and indexing it as a telephone number
 would put a wrong answer in a search index rather than no answer.
 

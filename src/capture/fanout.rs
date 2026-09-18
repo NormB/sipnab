@@ -39,8 +39,9 @@
 //! toward that. CT11 proposed steering the 70% away with a classic-BPF program;
 //! it was measured and refused — the program pins all signaling to worker 0,
 //! which takes that 70% to 100%, and `PACKET_FANOUT_CBPF` replaces the
-//! symmetric hash rather than adding to it. See §6 of
-//! `docs/design/live-fanout.md` before reaching for either.
+//! symmetric hash rather than adding to it. See
+//! [`docs/design/live-fanout.md` section 6, "CT11: measured, and refused"](https://github.com/NormB/sipnab/blob/main/docs/design/live-fanout.md#6-ct11-measured-and-refused)
+//! before reaching for either.
 //!
 //! `ROLLOVER` is set alongside `HASH` so a socket whose ring is momentarily
 //! full spills to another member instead of dropping — which is the whole point
@@ -184,8 +185,9 @@ mod tests {
     /// The sibling claim that entry flagged as unverified — that
     /// `bpf_prog_create_from_user()` gates on nothing but `SOCK_FILTER_LOCKED`,
     /// so cBPF fanout steering needs no `CAP_BPF` — has since been confirmed
-    /// the same two ways, source and running kernel, and recorded in §6 of
-    /// `docs/design/live-fanout.md`. There is no test for it here because
+    /// the same two ways, source and running kernel, and recorded in
+    /// [`docs/design/live-fanout.md` section 6, "The capability caveat: CONFIRMED, both ways"](https://github.com/NormB/sipnab/blob/main/docs/design/live-fanout.md#the-capability-caveat-confirmed-both-ways).
+    /// There is no test for it here because
     /// nothing here uses it: CT11 was refused on other grounds in the same
     /// measurement.
     ///

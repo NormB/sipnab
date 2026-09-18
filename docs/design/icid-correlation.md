@@ -18,8 +18,8 @@ kept for the reasoning behind the scores, which the implementation adopted
 unchanged, and not as a description of what is missing.
 **Recommendation:** section 9 — **adopt with caveats**, in a shape that is not
 the obvious one, and behind one measurement that has not been taken.
-**Upstream argument:** [`multi-capture-comparison.md`](multi-capture-comparison.md)
-§2, which establishes that a correlator that is quietly wrong *manufactures the
+**Upstream argument:** [`multi-capture-comparison.md` section 2, *What "the same call in two captures" means, and why no single key works*](multi-capture-comparison.md#2-what-the-same-call-in-two-captures-means-and-why-no-single-key-works),
+which establishes that a correlator that is quietly wrong *manufactures the
 bug it was built to find*. That constraint governs every ranking decision below
 and is not re-argued here.
 
@@ -52,7 +52,9 @@ first match wins:
 
 The middle two rows are what this document proposed, and they are here because
 it was adopted. Evaluation order follows score, so `related-icid` sits ABOVE
-`sdp_origin` rather than below it as §4 sketched — the one divergence from the
+`sdp_origin` rather than below it as
+[section 4, "Ranking, and whether it is `identifier_match: true`"](#4-ranking-and-whether-it-is-identifier_match-true)
+sketched — the one divergence from the
 plan, and it is the plan's own scoring that produced it.
 
 The `identifier_match` column is assigned in one place, the exhaustive match at
@@ -96,8 +98,8 @@ obsoletes and errata applies to all of them:
 | [RFC 7976](https://www.rfc-editor.org/rfc/rfc7976) | Updates 7315 | Obsoleted by [RFC 9878](https://www.rfc-editor.org/rfc/rfc9878); superseded, do not cite |
 | RFC 9878 | Updates 7315, obsoletes 7976 | Yes — where the header may appear |
 
-RFC 9878's change is about **placement, not semantics**. It replaces RFC 7315
-§5.7's *"The P-Charging-Vector header field can appear in all SIP methods except
+RFC 9878's change is about **placement, not semantics**. It replaces
+[RFC 7315 section 5.7](https://www.rfc-editor.org/rfc/rfc7315#section-5.7)'s *"The P-Charging-Vector header field can appear in all SIP methods except
 CANCEL"* with *"The P-Charging-Vector header field can appear in all SIP
 requests and the associated non-100 responses, except in CANCEL requests, CANCEL
 responses, and ACK requests triggered by non-2xx responses."* Nothing in RFC
@@ -112,8 +114,9 @@ the mechanism that addresses a B2BUA.
 **Errata: four reported, none verified.** The RFC 7315 errata list shows IDs
 4474, 4540, 4447 and 4448, all in state *Reported*. Two of them (4447, 4448,
 both filed by an author of the RFC) correct wrong section cross-references
-inside §4.6 — §4.6.3.1 and §4.6.4.2 each point at §4.5.2.2 where they mean
-§4.6.2.2. Section 3.4 below concerns a third instance of the same copy-paste
+inside [RFC 7315 section 4.6](https://www.rfc-editor.org/rfc/rfc7315#section-4.6) — [sections 4.6.3.1](https://www.rfc-editor.org/rfc/rfc7315#section-4.6.3.1) and
+[4.6.4.2](https://www.rfc-editor.org/rfc/rfc7315#section-4.6.4.2) each point at [section 4.5.2.2](https://www.rfc-editor.org/rfc/rfc7315#section-4.5.2.2) where they mean
+[section 4.6.2.2](https://www.rfc-editor.org/rfc/rfc7315#section-4.6.2.2). Section 3.4 below concerns a third instance of the same copy-paste
 defect for which **no erratum has been filed**, and it is flagged there as this
 page's own reading rather than as an accepted correction.
 
@@ -127,7 +130,7 @@ is the ordinary way a gap like this stays invisible.
 
 ### 3.1 What it is, and who puts it there
 
-The ABNF, [RFC 7315 §5.6](https://www.rfc-editor.org/rfc/rfc7315#section-5.6), verbatim:
+The ABNF, [RFC 7315 section 5.6](https://www.rfc-editor.org/rfc/rfc7315#section-5.6), verbatim:
 
 ```text
 P-Charging-Vector  = "P-Charging-Vector" HCOLON icid-value
@@ -143,19 +146,19 @@ related-icid              = "related-icid" EQUAL gen-value
 related-icid-gen-addr     = "related-icid-generated-at" EQUAL host
 ```
 
-`icid-value` is mandatory — §5.6: *"The P-Charging-Vector header field contains
+`icid-value` is mandatory — [RFC 7315 section 5.6](https://www.rfc-editor.org/rfc/rfc7315#section-5.6): *"The P-Charging-Vector header field contains
 icid-value as a mandatory parameter."* Its value is `gen-value`, which in RFC
 3261's grammar is `token / host / quoted-string`. **There is no format
 constraint sipnab could use to tell a well-formed icid from a degenerate one**,
 which matters in section 7.
 
-Who generates it, §5.6: *"The first proxy that receives the request generates
-this value."* §4.6.2.2 softens that for any later proxy: one that receives a
+Who generates it, [RFC 7315 section 5.6](https://www.rfc-editor.org/rfc/rfc7315#section-5.6): *"The first proxy that receives the request generates
+this value."* [RFC 7315 section 4.6.2.2](https://www.rfc-editor.org/rfc/rfc7315#section-4.6.2.2) softens that for any later proxy: one that receives a
 request without the header *"MAY insert"* one.
 
 ### 3.2 Uniqueness is a MUST, and it is the strongest thing on this page
 
-[RFC 7315 §4.6](https://www.rfc-editor.org/rfc/rfc7315#section-4.6), verbatim:
+[RFC 7315 section 4.6](https://www.rfc-editor.org/rfc/rfc7315#section-4.6), verbatim:
 
 > ICID is a charging value that identifies a dialog or a transaction outside a
 > dialog.  It is used to correlate charging records.  ICID MUST be a globally
@@ -170,7 +173,8 @@ internal hostname or IP inside the value**.
 
 ### 3.3 It identifies a dialog, not a session — and that is the whole problem
 
-Read the first sentence of §4.6 again: ICID *"identifies a dialog or a
+Read again the first sentence of the [RFC 7315 section 4.6](https://www.rfc-editor.org/rfc/rfc7315#section-4.6) passage quoted in
+section 3.2: ICID *"identifies a dialog or a
 transaction outside a dialog"*. RFC 7989's `Session-ID` identifies the
 end-to-end communication session. **These are different granularities, and the
 difference lands exactly on the hop this proposal is meant to help.**
@@ -178,7 +182,7 @@ difference lands exactly on the hop this proposal is meant to help.**
 A B2BUA terminates one dialog and originates another. Two dialogs, by
 definition. An ICID that identifies a dialog therefore *should* differ across a
 B2BUA if both sides are conformant. RFC 7315 does not leave that implicit — it
-provides a separate parameter for the case, §4.6.4.1:
+provides a separate parameter for the case, [RFC 7315 section 4.6.4.1](https://www.rfc-editor.org/rfc/rfc7315#section-4.6.4.1):
 
 > The UAS acting as a B2BUA MAY add the related-icid into the P-Charging-Vector
 > header field into SIP request or SIP responses.  For example, the UAS can
@@ -187,7 +191,7 @@ provides a separate parameter for the case, §4.6.4.1:
 > of the related-icid is the icid value of the original dialog towards the
 > remote end.
 
-and §5.6:
+and [RFC 7315 section 5.6](https://www.rfc-editor.org/rfc/rfc7315#section-5.6):
 
 > The related-icid parameter contains the icid-value of a related charging
 > record when more than one call leg is associated with one session.  This
@@ -218,7 +222,7 @@ guarantees.
 
 ### 3.4 Survival: the RFC never says the header is forwarded unchanged
 
-This is where the pitch weakens most. §4.6.2.2, verbatim:
+This is where the pitch weakens most. [RFC 7315 section 4.6.2.2](https://www.rfc-editor.org/rfc/rfc7315#section-4.6.2.2), verbatim:
 
 > If a proxy that supports this extension receives a request or response with
 > the P-Charging-Vector header field, it MAY retrieve the information from the
@@ -231,7 +235,7 @@ This is where the pitch weakens most. §4.6.2.2, verbatim:
 > Per local application-specific logic, the proxy MAY modify the contents of the
 > P-Charging-Vector header field prior to sending the message.
 
-and the security considerations, §6.6:
+and the security considerations, [RFC 7315 section 6.6](https://www.rfc-editor.org/rfc/rfc7315#section-6.6):
 
 > It is expected as normal behavior that proxies within a closed network will
 > modify the values of the P-Charging-Vector header field and insert it into a
@@ -243,33 +247,33 @@ purpose is that the identifier stays constant end to end. **`icid-value` has no
 end-to-end constancy requirement of any kind.** Anything sipnab correlates on it
 is correlating on a value the RFC explicitly permits the next hop to rewrite.
 
-**The boundary sentence in §4.6.2.2 names the wrong header.** In the middle of
+**The boundary sentence in [RFC 7315 section 4.6.2.2](https://www.rfc-editor.org/rfc/rfc7315#section-4.6.2.2) names the wrong header.** In the middle of
 the P-Charging-Vector section it says the proxy *"MAY remove the
-P-Charging-Function-Addresses header field"*. §4.5.2.2, the P-Charging-Function-
+P-Charging-Function-Addresses header field"*. [Section 4.5.2.2](https://www.rfc-editor.org/rfc/rfc7315#section-4.5.2.2), the P-Charging-Function-
 Addresses section, says of the same situation: *"if the next hop for the message
 is outside the administrative domain of the proxy, then the proxy MUST remove
-the P-Charging-Function-Addresses header field."* §4.6.2.2 reads as a copy of
-§4.5.2.2 with the header name not updated — the same class of defect as the two
-cross-reference errata already filed against §4.6.3.1 and §4.6.4.2.
+the P-Charging-Function-Addresses header field."* [Section 4.6.2.2](https://www.rfc-editor.org/rfc/rfc7315#section-4.6.2.2) reads as a copy of
+[section 4.5.2.2](https://www.rfc-editor.org/rfc/rfc7315#section-4.5.2.2) with the header name not updated — the same class of defect as the two
+cross-reference errata already filed against [sections 4.6.3.1](https://www.rfc-editor.org/rfc/rfc7315#section-4.6.3.1) and [4.6.4.2](https://www.rfc-editor.org/rfc/rfc7315#section-4.6.4.2).
 
 **This reading is this page's own, not an accepted correction.** No erratum has
-been filed against §4.6.2.2; the four on record are 4474 (§5.4), 4540 (§5.1),
-4447 (§4.6.3.1) and 4448 (§4.6.4.2), all *Reported*, none *Verified*. Two
+been filed against [RFC 7315 section 4.6.2.2](https://www.rfc-editor.org/rfc/rfc7315#section-4.6.2.2); the four on record are 4474 ([section 5.4](https://www.rfc-editor.org/rfc/rfc7315#section-5.4)), 4540 ([section 5.1](https://www.rfc-editor.org/rfc/rfc7315#section-5.1)),
+4447 ([section 4.6.3.1](https://www.rfc-editor.org/rfc/rfc7315#section-4.6.3.1)) and 4448 ([section 4.6.4.2](https://www.rfc-editor.org/rfc/rfc7315#section-4.6.4.2)), all *Reported*, none *Verified*. Two
 possible readings follow and sipnab cannot choose between them:
 
 - the sentence was meant to say "MAY remove the P-Charging-Vector header field",
   in which case removal at the boundary is permitted but not required; or
 - it is simply misplaced text, in which case **RFC 7315 contains no normative
   rule at all about removing `P-Charging-Vector` at a trust-domain boundary**,
-  and only the non-normative applicability statement in §4.6.1 speaks to it:
+  and only the non-normative applicability statement in [RFC 7315 section 4.6.1](https://www.rfc-editor.org/rfc/rfc7315#section-4.6.1) speaks to it:
   *"The P-Charging-Vector header field is not included in a SIP message sent to
   another network if there is no trust relationship."*
 
 Either way the operational answer is the same and it is the one the spec has to
 carry: **whether `P-Charging-Vector` survives a given boundary is local policy,
-not something an RFC decides.** A Trust Domain is defined in [RFC 3324 §2.3](https://www.rfc-editor.org/rfc/rfc3324#section-2.3) as
+not something an RFC decides.** A Trust Domain is defined in [RFC 3324 section 2.3](https://www.rfc-editor.org/rfc/rfc3324#section-2.3) as
 *"a set of SIP nodes (UAC, UAS, proxies or other network intermediaries) that
-are trusted to exchange Network Asserted Identity information"*, and §2.4 makes
+are trusted to exchange Network Asserted Identity information"*, and [RFC 3324 section 2.4](https://www.rfc-editor.org/rfc/rfc3324#section-2.4) makes
 the governing document Spec(T) — a per-deployment agreement, not an IETF
 document. [RFC 3325](https://www.rfc-editor.org/rfc/rfc3325)'s normative stripping rules ("proxies MUST remove all the
 P-Asserted-Identity header fields") bind `P-Asserted-Identity` and say nothing
@@ -277,8 +281,8 @@ about the charging vector.
 
 ### 3.5 The asymmetry that decides where this helps
 
-Combine §5.6's *"The first proxy that receives the request generates this
-value"* with §4.6.1's applicability inside a trust domain, and the header's
+Combine [RFC 7315 section 5.6](https://www.rfc-editor.org/rfc/rfc7315#section-5.6)'s *"The first proxy that receives the request generates this
+value"* with [section 4.6.1](https://www.rfc-editor.org/rfc/rfc7315#section-4.6.1)'s applicability inside a trust domain, and the header's
 distribution over the motivating topology falls out:
 
 | Hop | Header present on both sides? | Useful? |
@@ -286,7 +290,7 @@ distribution over the motivating topology falls out:
 | Endpoint to SBC (access edge) | **No** — if the SBC is the first proxy, it generates the icid, so the inbound leg has none | Useless: nothing to compare |
 | SBC to proxy (inside the trust domain) | Likely yes | Useful when the intermediary forwards or emits `related-icid` |
 | Proxy to PBX (inside the trust domain) | Likely yes | Same |
-| Any hop out to a peer with no trust relationship | Unknown, local policy (§3.4) | Cannot be relied on |
+| Any hop out to a peer with no trust relationship | Unknown, local policy ([section 3.4, "Survival: the RFC never says the header is forwarded unchanged"](#34-survival-the-rfc-never-says-the-header-is-forwarded-unchanged)) | Cannot be relied on |
 
 **So icid is useless at exactly the hop where the operator has least control,
 and potentially useful at the internal hops.** That is not the pitch's claim —
@@ -305,7 +309,9 @@ reporting it as `false` would put it in a bucket whose defining property —
 `heuristic_only` flag would correctly stay `false` on an icid-only match.
 
 That is a separate question from *how much it is worth*, which is what the score
-carries. **Two reasons, not one**, because §3.3 shows they are different claims:
+carries. **Two reasons, not one**, because
+[section 3.3, "It identifies a dialog, not a session — and that is the whole problem"](#33-it-identifies-a-dialog-not-a-session--and-that-is-the-whole-problem)
+shows they are different claims:
 
 | Proposed reason | Proposed score | What a match means | Survives a B2BUA? |
 |---|---|---|---|
@@ -351,11 +357,11 @@ three of its parameters are *designed* to name infrastructure.
 
 | Parameter | What it reveals | Rule |
 |---|---|---|
-| `icid-generated-at` | *"the hostname or IP address of the proxy that generated the icid-value"* (§5.6) — internal topology | **Never surfaced.** Used, if at all, only inside the matcher |
+| `icid-generated-at` | *"the hostname or IP address of the proxy that generated the icid-value"* ([RFC 7315 section 5.6](https://www.rfc-editor.org/rfc/rfc7315#section-5.6)) — internal topology | **Never surfaced.** Used, if at all, only inside the matcher |
 | `orig-ioi`, `term-ioi` | Operator identities on each side of the session | **Never surfaced** — commercially sensitive interconnect data |
 | `transit-ioi` | The ordered list of transit operators, or `void` where policy hides one | **Never surfaced** — same, and the `void` convention exists precisely because operators consider this secret |
 | `related-icid-gen-addr` | Hostname or IP of the proxy that generated the `related-icid` | **Never surfaced** |
-| `icid-value` | Opaque — but §4.6's own suggested construction embeds *"the hostname or IP address of the SIP proxy that generated the locally unique value"* | **Never surfaced.** Treat as sensitive, not as opaque |
+| `icid-value` | Opaque — but [RFC 7315 section 4.6](https://www.rfc-editor.org/rfc/rfc7315#section-4.6)'s own suggested construction embeds *"the hostname or IP address of the SIP proxy that generated the locally unique value"* | **Never surfaced.** Treat as sensitive, not as opaque |
 
 The last row is the one that gets waved through, and it should not be. The RFC's
 recommended way to make an icid globally unique is to concatenate a local value
@@ -375,7 +381,7 @@ added to any response, hint, finding, log line or rendered ladder.
 Three concrete follow-ons:
 
 - **This document contains no captured value.** The only icid literal anywhere
-  near it is [RFC 7315 §4.6.2.3](https://www.rfc-editor.org/rfc/rfc7315#section-4.6.2.3)'s own example, and it is not reproduced here
+  near it is [RFC 7315 section 4.6.2.3](https://www.rfc-editor.org/rfc/rfc7315#section-4.6.2.3)'s own example, and it is not reproduced here
   because it is not needed. Fixtures in section 7 must use synthetic values, and
   any address in a fixture or a doc must come from [RFC 5737](https://www.rfc-editor.org/rfc/rfc5737)'s documentation
   ranges. (RFC 7315's own example uses `192.0.6.8`, which is **not** a
@@ -504,7 +510,7 @@ is not known to work.** Four, each stating what it would catch:
    Expect no match. Without this, an implementation that compares whole header
    values or falls back to the generating address correlates every call the same
    proxy touched — the confidently-wrong answer
-   [`multi-capture-comparison.md`](multi-capture-comparison.md) §6 describes.
+   [`multi-capture-comparison.md` section 6, *What goes wrong if someone builds it anyway*](multi-capture-comparison.md#6-what-goes-wrong-if-someone-builds-it-anyway) describes.
 
 **A fifth test that is a design decision, not a test.** A degenerate generator —
 one emitting a constant or low-entropy icid — would correlate every dialog in
@@ -546,13 +552,13 @@ answerable only with access this page did not have.
 
 3. **Whether 3GPP TS 24.229 requires an IBCF or equivalent to remove
    `P-Charging-Vector` at a network boundary.** **UNCHECKED** — TS 24.229 was not
-   fetched or read. [RFC 7315 §4.6.1](https://www.rfc-editor.org/rfc/rfc7315#section-4.6.1) says only that the header *"is not included
+   fetched or read. [RFC 7315 section 4.6.1](https://www.rfc-editor.org/rfc/rfc7315#section-4.6.1) says only that the header *"is not included
    in a SIP message sent to another network if there is no trust relationship"*,
    which is an applicability statement without an [RFC 2119](https://www.rfc-editor.org/rfc/rfc2119) keyword. If TS 24.229
    does impose a strip, the boundary behavior is stricter than section 3.4
    concludes, and section 3.5's last row becomes a firm "no" rather than an
    "unknown".
-4. **Whether the §4.6.2.2 wrong-header reading in section 3.4 is correct.** It
+4. **Whether the [RFC 7315 section 4.6.2.2](https://www.rfc-editor.org/rfc/rfc7315#section-4.6.2.2) wrong-header reading in section 3.4 is correct.** It
    is this page's own reading. No erratum exists. It should be checked against
    RFC 3455's corresponding section before anyone relies on it — RFC 3455 was
    fetched here but that specific comparison was not made.
@@ -566,7 +572,7 @@ answerable only with access this page did not have.
 6. **The cardinality threshold** for the degenerate-generator guard (section 7).
    No measurement exists to ground it, and a guessed default would be worse than
    an explicit gap.
-7. **Whether `related-icid` matching should be direction-aware.** §4.6.4.1
+7. **Whether `related-icid` matching should be direction-aware.** [RFC 7315 section 4.6.4.1](https://www.rfc-editor.org/rfc/rfc7315#section-4.6.4.1)
    describes the B2BUA adding it to the *new* leg pointing at the *original*.
    Matching both directions is simpler and finds more; matching one direction
    preserves information about which leg came first. Not decided.
@@ -574,7 +580,7 @@ answerable only with access this page did not have.
    Call-IDs are equal.** Today the candidate loop skips same-Call-ID dialogs at
    [`:989`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L989) and the store merges them anyway, so
    the question is theoretical until capture provenance exists —
-   [`multi-capture-comparison.md`](multi-capture-comparison.md) §3.
+   [`multi-capture-comparison.md` section 3, *The prerequisite, restated in one line*](multi-capture-comparison.md#3-the-prerequisite-restated-in-one-line).
 9. **Whether the two reasons should be one.** This page argues two because they
    are different claims with different survival properties. A reviewer who
    thinks the MCP surface should stay small could reasonably argue for one

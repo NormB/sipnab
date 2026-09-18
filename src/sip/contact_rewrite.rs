@@ -145,7 +145,7 @@ pub fn host_address(host: &str) -> Option<std::net::IpAddr> {
 /// carries display names, angle brackets and header parameters that a
 /// general parse would have to be told to ignore anyway.
 ///
-/// Returns `None` for `Contact: *`, which RFC 3261 §10.2.2 defines as "every
+/// Returns `None` for `Contact: *`, which [RFC 3261 section 10.2.2](https://www.rfc-editor.org/rfc/rfc3261#section-10.2.2) defines as "every
 /// binding" on a de-registration and names no host at all.
 #[must_use]
 pub fn contact_host(header: &str) -> Option<&str> {
@@ -236,7 +236,7 @@ mod tests {
     /// A bracketed decoy URI inside a quoted display name does not win the
     /// host. `split_once('<')` took the first `<`, which is inside the quotes,
     /// so a NATed endpoint could read its public decoy back and suppress the
-    /// contact-rewrite / NAT detection. RFC 3261 §25.1 admits `<` and `>` in a
+    /// contact-rewrite / NAT detection. [RFC 3261 section 25.1](https://www.rfc-editor.org/rfc/rfc3261#section-25.1) admits `<` and `>` in a
     /// `quoted-string`; the addr-spec after the display name is the real one.
     #[test]
     fn a_bracketed_decoy_in_the_display_name_does_not_win_the_host() {

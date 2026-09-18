@@ -37,7 +37,7 @@ pub struct SdpMedia {
     pub port: u16,
     /// Number of consecutive port PAIRS, from the `m=` line's `/count` form.
     ///
-    /// RFC 8866 §5.14: `m=video 49170/2 RTP/AVP 31` means ports 49170 and
+    /// [RFC 8866 section 5.14](https://www.rfc-editor.org/rfc/rfc8866#section-5.14): `m=video 49170/2 RTP/AVP 31` means ports 49170 and
     /// 49171 form one RTP/RTCP pair and 49172 and 49173 form the second.
     /// `None` when the offer used the plain form — which is a different fact
     /// from an explicit count of one, and is kept distinguishable for that
@@ -61,16 +61,16 @@ pub struct SdpMedia {
     pub crypto: Vec<SdpCrypto>,
     /// ICE candidate lines from `a=candidate` attributes.
     pub ice_candidates: Vec<String>,
-    /// Whether this media description carries `a=rtcp-mux` (RFC 5761 §5.1.1).
+    /// Whether this media description carries `a=rtcp-mux` ([RFC 5761 section 5.1.1](https://www.rfc-editor.org/rfc/rfc5761#section-5.1.1)).
     ///
     /// In an offer it requests RTP and RTCP on one port; in an answer it agrees.
-    /// The pair matters: RFC 5761 §5.1.1 makes an offerer whose answer stayed
+    /// The pair matters: [RFC 5761 section 5.1.1](https://www.rfc-editor.org/rfc/rfc5761#section-5.1.1) makes an offerer whose answer stayed
     /// silent send RTCP on the separate port after all, so an offer and an
     /// answer are two different facts and a `bool` per description holds both.
     pub rtcp_mux: bool,
-    /// Explicit RTCP port from `a=rtcp:<port>` (RFC 3605 §2.1), when present.
+    /// Explicit RTCP port from `a=rtcp:<port>` ([RFC 3605 section 2.1](https://www.rfc-editor.org/rfc/rfc3605#section-2.1)), when present.
     ///
-    /// Without it RTCP goes to the RTP port plus one (RFC 3264 §6.1), which is
+    /// Without it RTCP goes to the RTP port plus one ([RFC 3264 section 6.1](https://www.rfc-editor.org/rfc/rfc3264#section-6.1)), which is
     /// what makes "RTCP arrived somewhere else" a decidable observation.
     pub rtcp_port: Option<u16>,
 }
@@ -120,7 +120,7 @@ pub struct SdpCrypto {
 ///
 /// # Why a tuple and not `sess-id`
 ///
-/// RFC 8866 §5.2 (which obsoletes RFC 4566) is explicit that
+/// [RFC 8866 section 5.2](https://www.rfc-editor.org/rfc/rfc8866#section-5.2) (which obsoletes RFC 4566) is explicit that
 /// "the tuple of `<username>`, `<sess-id>`, `<nettype>`, `<addrtype>`, and
 /// `<unicast-address>` forms a globally unique identifier for the session".
 ///
@@ -348,8 +348,8 @@ pub fn effective_address(media: &SdpMedia, session: &SdpSession) -> Option<Strin
 /// Encoding name for a payload type statically assigned by RFC 3551, or
 /// `None` for the dynamic and unassigned range.
 ///
-/// An `a=rtpmap` is only *required* for the dynamic types (96-127). RFC 3551
-/// §6 binds the numbers below permanently, so `m=audio 8000 RTP/AVP 0 8` is a
+/// An `a=rtpmap` is only *required* for the dynamic types (96-127).
+/// [RFC 3551 section 6](https://www.rfc-editor.org/rfc/rfc3551#section-6) binds the numbers below permanently, so `m=audio 8000 RTP/AVP 0 8` is a
 /// complete offer of G.711 µ-law and A-law with nothing further to state —
 /// which is exactly what most SBCs and hardware phones send for plain G.711.
 ///
@@ -599,7 +599,7 @@ mod tests {
 
     /// `m=video 49170/2 RTP/AVP 31` is conformant and must parse.
     ///
-    /// RFC 8866 §9: `media-field = %s"m" "=" media SP port ["/" integer] SP
+    /// [RFC 8866 section 9](https://www.rfc-editor.org/rfc/rfc8866#section-9): `media-field = %s"m" "=" media SP port ["/" integer] SP
     /// proto 1*(SP fmt) CRLF`. §5.14 works the example through: ports 49170
     /// and 49171 form one RTP/RTCP pair, 49172 and 49173 the second.
     #[test]
@@ -699,7 +699,7 @@ mod tests {
 
     /// A session-level direction applies to a media section that declares none.
     ///
-    /// RFC 8866 §6.7: "If none appears in a media description, then the one
+    /// [RFC 8866 section 6.7](https://www.rfc-editor.org/rfc/rfc8866#section-6.7): "If none appears in a media description, then the one
     /// from session level, if any, applies to that media description."
     #[test]
     fn a_session_level_direction_applies_to_media_that_declares_none() {
@@ -726,7 +726,7 @@ mod tests {
         assert_eq!(sdp.media[0].direction, SdpDirection::SendRecv);
     }
 
-    /// RFC 8866 §6.7's own worked example, verbatim.
+    /// [RFC 8866 section 6.7](https://www.rfc-editor.org/rfc/rfc8866#section-6.7)'s own worked example, verbatim.
     ///
     /// The RFC states the expected result in prose immediately below it:
     /// the first stream is sendrecv, the other two inherit `inactive`. Using
@@ -760,7 +760,7 @@ mod tests {
     /// With no session-level attribute the default stays `sendrecv`.
     ///
     /// The negative case: the session-level rule must not change what an
-    /// ordinary offer means. RFC 8866 §6.7 makes `sendrecv` the default when
+    /// ordinary offer means. [RFC 8866 section 6.7](https://www.rfc-editor.org/rfc/rfc8866#section-6.7) makes `sendrecv` the default when
     /// nothing is said at either level.
     #[test]
     fn absent_direction_at_both_levels_is_still_sendrecv() {
@@ -828,7 +828,7 @@ mod tests {
 
     /// `a=rtcp-mux` and `a=rtcp:` are read, and their absence stays absent.
     ///
-    /// Both were parsed as unknown attributes and dropped. RFC 5761 §5.1.1
+    /// Both were parsed as unknown attributes and dropped. [RFC 5761 section 5.1.1](https://www.rfc-editor.org/rfc/rfc5761#section-5.1.1)
     /// makes the offer/answer pair decide which port RTCP lands on, so a tool
     /// that cannot see the attribute cannot tell a conformant capture from one
     /// where RTCP went somewhere nobody agreed to.

@@ -590,7 +590,7 @@ count: a relay torn down with nothing on it cost nobody a call.
 ICE gives one agent the **controlling** role and the other **controlled**, and
 the controlling one picks the candidate pair. When both claim the same role, the
 agent that notices answers `487 Role Conflict`
-([RFC 8445 §7.3.1.1](https://www.rfc-editor.org/rfc/rfc8445#section-7.3.1.1)),
+([RFC 8445 section 7.3.1.1](https://www.rfc-editor.org/rfc/rfc8445#section-7.3.1.1)),
 one side switches role and repeats every check it had already sent.
 
 Often ICE fixes this itself and the call costs a round trip. Where it does not,

@@ -5,8 +5,8 @@ Verified against `main` at 70b95f9.
 
 Two primitives landed together with `open_capture`, and both were written to be
 reused rather than to serve that one tool.
-[`deferred-and-declined.md` §4](deferred-and-declined.md) named them as build
-requirements; this page is the part a future consumer needs — what they are,
+[`deferred-and-declined.md` section 4, "The `open_capture` MCP tool"](deferred-and-declined.md#4-the-open_capture-mcp-tool)
+named them as build requirements; this page is the part a future consumer needs — what they are,
 what they promise, and where the edges are.
 
 | Primitive | Lives in | Answers |
@@ -95,7 +95,7 @@ Two approved features are expected to consume this rather than mint their own:
   never saw. `CaptureEtag` is that token, and `FromStr` refuses a mangled one
   rather than defaulting to generation zero — a silent default would make every
   stale write succeed.
-- **Packet-level provenance** ([`deferred-and-declined.md` §1](deferred-and-declined.md))
+- **Packet-level provenance** ([`deferred-and-declined.md` section 1, "TUI multi-session / multi-capture comparison"](deferred-and-declined.md#1-tui-multi-session--multi-capture-comparison))
   needs a capture-instance identity to bind a packet reference to.
   `CaptureEtag::instance` is stable for the life of one loaded capture while the
   generations move under it, which is exactly the lifetime a reference needs.

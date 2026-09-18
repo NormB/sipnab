@@ -25,7 +25,7 @@
 
 use serde::Serialize;
 
-/// The magic cookie [RFC 3261 §8.1.1.7](https://www.rfc-editor.org/rfc/rfc3261#section-8.1.1.7) requires every compliant branch to
+/// The magic cookie [RFC 3261 section 8.1.1.7](https://www.rfc-editor.org/rfc/rfc3261#section-8.1.1.7) requires every compliant branch to
 /// begin with.
 ///
 /// Not a fingerprint on its own — it is mandatory, so its presence says only

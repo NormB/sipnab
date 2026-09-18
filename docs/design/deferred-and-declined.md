@@ -1,10 +1,14 @@
 # Deferred and declined: five feature decisions, and five technologies
 
-**Status:** §§1–4 decided 2026-08-01; §2 and §4 approved to move forward
-2026-08-02. §1 and §3 remain unscheduled. Verified against `main` at 1998303.
-**§5 (declined capture technologies) added 2026-08-03**, verified against the
+**Status:** sections 1–4 (the four feature requests below) decided 2026-08-01;
+[section 2, "Write-back MCP tools"](#2-write-back-mcp-tools) and
+[section 4, "The `open_capture` MCP tool"](#4-the-open_capture-mcp-tool) approved to move forward
+2026-08-02. [Section 1, "TUI multi-session / multi-capture comparison"](#1-tui-multi-session--multi-capture-comparison)
+and [section 3, "Automated threat-mitigation hooks"](#3-automated-threat-mitigation-hooks)
+remain unscheduled. Verified against `main` at 1998303.
+**[Section 5, "Declined capture technologies"](#5-declined-capture-technologies) added 2026-08-03**, verified against the
 tree at that date.
-**Updated 2026-08-05: §2 and §4 have both shipped.** Each section keeps the
+**Updated 2026-08-05: sections 2 and 4 have both shipped.** Each section keeps the
 analysis that decided it, in the tense it was written in, and ends with a
 "What shipped" table rather than being rewritten — the reasoning is the point of
 this page, and a decision doc that silently back-edits itself teaches nothing.
@@ -21,12 +25,14 @@ A note on method, because it changed several of the answers below. Every claim
 was re-checked against the current tree rather than carried over from the review
 that raised it, and three inherited framings did not survive:
 
-- that the recent `-I` multi-file work gives sipnab a cross-capture story §1
-  could be built on — it is the opposite operation, and §1 measures the damage;
+- that the recent `-I` multi-file work gives sipnab a cross-capture story
+  [section 1 (multi-capture comparison)](#1-tui-multi-session--multi-capture-comparison)
+  could be built on — it is the opposite operation, and section 1 measures the damage;
 - that `shutdown_server` is an exception to the read-only invariant — it is not,
-  and §2 shows what actually broke instead;
-- the recorded rationale against `open_capture`, which §4 rebuilt from scratch
-  rather than repairing — and which §4 has since withdrawn.
+  and [section 2 (write-back MCP tools)](#2-write-back-mcp-tools) shows what actually broke instead;
+- the recorded rationale against `open_capture`, which
+  [section 4 (the `open_capture` MCP tool)](#4-the-open_capture-mcp-tool) rebuilt from scratch
+  rather than repairing — and which section 4 has since withdrawn.
 
 Where a conclusion still holds it holds on different evidence, and this page
 shows the work rather than the verdict.
@@ -34,12 +40,13 @@ shows the work rather than the verdict.
 | # | Request | Decision |
 |---|---|---|
 | 1 | TUI multi-session / multi-capture comparison | **Re-scoped.** The want is real; the specification is not buildable and the `-I` set does not substitute for it |
-| 2 | Write-back MCP tools | **Shipped.** Approved to move forward 2026-08-02; `save_findings` and `CaptureEtag` landed against the requirements §2 set, and Invariant 7 was amended in the same change |
+| 2 | Write-back MCP tools | **Shipped.** Approved to move forward 2026-08-02; `save_findings` and `CaptureEtag` landed against the requirements [section 2's decision](#decision-on-write-back-and-what-would-change-it) set, and Invariant 7 was amended in the same change |
 | 3 | Automated threat-mitigation hooks | **Fixes extracted and shipped; the action ledger deferred** on a named prerequisite |
-| 4 | `open_capture` MCP tool | **Approved to move forward** (2026-08-02). §4 records what has to change first |
+| 4 | `open_capture` MCP tool | **Approved to move forward** (2026-08-02). [Section 4, "The `open_capture` MCP tool"](#4-the-open_capture-mcp-tool) records what has to change first |
 
-**§5 is a different kind of entry, and it is why this page exists.** §§1–4 are
-*feature* requests. §5 records *technologies* that were evaluated as ways to
+**[Section 5, "Declined capture technologies"](#5-declined-capture-technologies)
+is a different kind of entry, and it is why this page exists.** Sections 1–4 are
+*feature* requests. Section 5 records *technologies* that were evaluated as ways to
 make capture faster and rejected — process forking, PF_RING, DPDK, AF_XDP and
 XDP-as-a-filter. Each had a real advocate and each has one decisive fact
 against it. They were missing from this page entirely until 2026-08-03, which
@@ -270,7 +277,8 @@ change meaning without saying so."* It goes on to name the one write:
 *"One tool accepts a WRITE: `save_findings`, behind
 `--mcp-allow-save-findings`."* The old quotation is kept above because the
 analysis that follows was reasoned against it and reads wrong without it. Where
-the two differ, [`invariants.md`](../internals/invariants.md) §7 governs.
+the two differ, invariant 7 in `invariants.md`,
+["MCP tools never edit the analysis, and every response has a ceiling"](../internals/invariants.md#7-mcp-tools-never-edit-the-analysis-and-every-response-has-a-ceiling), governs.
 
 There were 24 MCP tools when this analysis was written
 ([`server.rs`](../../src/mcp/server.rs), `#[tool(name = …)]` attributes); the
@@ -449,7 +457,8 @@ requirement to satisfy rather than a reason to stop.
    underneath it. `DialogStore::generation` already exists internally
    ([`dialog_store.rs:709`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L709)) and is bumped by every
    mutating method; exposing it is small. Without it, "who changed this" has no
-   answer at any layer. §4 needs the same primitive, so it is built once.
+   answer at any layer. [Section 4 (`open_capture`)](#4-the-open_capture-mcp-tool)
+   needs the same primitive, so it is built once.
 2. **The write-back state is separate from the analysis** — an annotation store
    that a tool may edit and that no analysis reads. A note attached to a Call-ID
    in a side-car map changes no derived verdict, so nothing an operator is
@@ -467,9 +476,9 @@ a stated invariant the code has quietly stopped honoring.
 
 | Requirement | Built as |
 |---|---|
-| 1. Wire-visible store identity | [`src/provenance.rs`](../../src/provenance.rs): a `CaptureEtag` carrying a capture-instance id plus both store generations, stamped on `capture_status` and every paged whole-store response. §4 consumes the same primitive, as planned — it was built once |
+| 1. Wire-visible store identity | [`src/provenance.rs`](../../src/provenance.rs): a `CaptureEtag` carrying a capture-instance id plus both store generations, stamped on `capture_status` and every paged whole-store response. [Section 4 (`open_capture`)](#4-the-open_capture-mcp-tool) consumes the same primitive, as planned — it was built once |
 | 2. Write-back state separate from the analysis | [`src/mcp/findings.rs`](../../src/mcp/findings.rs), reached by `save_findings` behind `--mcp-allow-save-findings` (off by default: `allow_save_findings` at [`server.rs:74`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L74), `false` in `new()` at `:161`, set only by `with_save_findings()` at `:233`) |
-| Invariant 7 amended in the same change | [`invariants.md`](../internals/invariants.md) §7 is retitled and now names `save_findings` explicitly, so nobody has to discover the write by reading the tool list |
+| Invariant 7 amended in the same change | Invariant 7 of [`invariants.md`](../internals/invariants.md#7-mcp-tools-never-edit-the-analysis-and-every-response-has-a-ceiling) is retitled "MCP tools never edit the analysis, and every response has a ceiling" and now names `save_findings` explicitly, so nobody has to discover the write by reading the tool list |
 
 The annotation store went further than requirement 2 asked, and the reason is
 worth recording because it is not the obvious build. There **is** no annotation
@@ -482,7 +491,8 @@ end is enforced by the compiler rather than by prose — the annotation types ar
 `pub(in crate::mcp)`, so no analysis path can name them, and widening that
 visibility is the change a reviewer should treat as breaking the invariant.
 
-The REST half of requirement 1 is still open, the same gap §4 records: `/v1/dialogs`
+The REST half of requirement 1 is still open, the same gap
+[section 4 (`open_capture`)](#4-the-open_capture-mcp-tool) records: `/v1/dialogs`
 carries no etag.
 
 ---
@@ -500,7 +510,8 @@ defects were the part with a bounded scope, and every one of them is now in the
 tree.
 
 **Kill-target source spoofing.**
-[`kill-target-spoofing-spec.md`](kill-target-spoofing-spec.md) §10 records the
+[`kill-target-spoofing-spec.md`](kill-target-spoofing-spec.md), in section 10,
+["Decisions (resolved) — implemented"](kill-target-spoofing-spec.md#10-decisions-resolved--implemented), records the
 decisions as *"Fully implemented (P1–P5)"*, and the code matches claim for
 claim: the pure builders `build_ipv4_udp` / `build_ipv6_udp`
 ([`kill_packet.rs:34`, `:98`](../../src/security/kill_packet.rs)), the raw
@@ -633,7 +644,9 @@ behind two prerequisites, in this order:**
    a ledger to be written to.
 
 **Reopen when** persistence lands for any reason — population baselining
-(`ml-anomaly-detection.md` §1 names the same prerequisite), historical trending,
+(persistence across runs is prerequisite 1 in
+["Prerequisites, none of which exist yet"](ml-anomaly-detection.md#prerequisites-none-of-which-exist-yet)
+of `ml-anomaly-detection.md`), historical trending,
 or an operator requirement for retention. At that point the ledger is a schema
 and a writer over data that already exists in memory, and the estimate changes
 by an order of magnitude.
@@ -737,7 +750,8 @@ mutating method and is exposed nowhere: not in `DialogSummary`
 ([`api.rs:204-211`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L204-L211), all `GET`), not in any MCP payload.
 A `/v1/dialogs` poller would see the dialog set change completely between two
 requests with nothing indicating that it is now reading a different capture. This
-is the same missing primitive that §2 requires, which is not a coincidence.
+is the same missing primitive that [section 2 (write-back MCP tools)](#2-write-back-mcp-tools)
+requires, which is not a coincidence.
 
 ### The decisive one, as it was argued
 
@@ -754,7 +768,9 @@ worse version of something already free.
 That leaves persistent HTTP, where a restart is genuinely disruptive. But there
 `-I` now takes a whole directory, a glob, or a repeated set
 ([`cli.rs:234-247`](https://github.com/NormB/sipnab/blob/main/src/cli.rs#L234-L247)), so the corpus can be loaded at start —
-subject, and this is the honest caveat, to §1's finding that the load is a union
+subject, and this is the honest caveat, to the finding in
+[section 1 (multi-capture comparison)](#1-tui-multi-session--multi-capture-comparison)
+that the load is a union
 and not a set of separable captures.
 
 So the feature is worth building only for an operator who runs sipnab as a
@@ -776,7 +792,8 @@ captures will switch captures, and the transcript of an investigation stops bein
 a record of one thing examined from several angles and becomes a sequence of
 observations about an unnamed sequence of files. Every tool response would need a
 capture identity for that transcript to be reconstructable — and that identity
-does not exist, at any layer, for the same reason §1 is blocked.
+does not exist, at any layer, for the same reason
+[section 1 (multi-capture comparison)](#1-tui-multi-session--multi-capture-comparison) is blocked.
 
 ### Decision on `open_capture`, and what would change it
 
@@ -806,7 +823,8 @@ decision was taken, not as it stands now:
 2. **Capture identity must be visible on the wire.** `DialogStore::generation`
    ([`dialog_store.rs:709`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L709)) is bumped by every
    mutating method and exposed nowhere, so a `/v1/dialogs` poller cannot tell the
-   dataset changed underneath it. This is the same primitive §2 requires;
+   dataset changed underneath it. This is the same primitive
+   [section 2 (write-back MCP tools)](#2-write-back-mcp-tools) requires;
    building it once settles both.
 3. **The load must not run inside the handler.** A synchronous read stops the
    server answering for its duration. The shape that works is the TUI's
@@ -823,7 +841,7 @@ builder and first-statement refusal
 | Requirement | Built as |
 |---|---|
 | 1. Shared `CaptureContext` | `CaptureState` behind one `Arc<RwLock<..>>` on `SipnabMcp`, holding the identity, the description and the in-flight load together, with the lock order written down |
-| 2. Wire-visible identity | [`src/provenance.rs`](../../src/provenance.rs): a capture-instance id plus both store generations, stamped on `capture_status` and every paged whole-store response. §2's write-back tools consume the same `CaptureEtag` |
+| 2. Wire-visible identity | [`src/provenance.rs`](../../src/provenance.rs): a capture-instance id plus both store generations, stamped on `capture_status` and every paged whole-store response. The write-back tools of [section 2](#2-write-back-mcp-tools) consume the same `CaptureEtag` |
 | 3. Non-blocking load | [`src/mcp/load.rs`](../../src/mcp/load.rs): an `mcp-pcap-load` thread the runtime never waits on, polled through `capture_status.load` |
 
 The REST half of requirement 2 is still open: `/v1/dialogs` carries no etag, for
@@ -863,8 +881,11 @@ survive measurement either: what caps `--cores` is the single sequential pcap
 reader, not lock contention.
 
 Detail, including the fault- and memory-isolation arguments taken at their
-strongest: [`process-isolation-and-hot-path-cost.md`](process-isolation-and-hot-path-cost.md)
-§§2–4. **One exception survives** — scanner-kill, which transmits and has no
+strongest: [`process-isolation-and-hot-path-cost.md`](process-isolation-and-hot-path-cost.md),
+sections 2 to 4:
+["What forking would actually buy"](process-isolation-and-hot-path-cost.md#2-what-forking-would-actually-buy),
+["What forking would cost"](process-isolation-and-hot-path-cost.md#3-what-forking-would-cost) and
+["Verdict"](process-isolation-and-hot-path-cost.md#4-verdict). **One exception survives** — scanner-kill, which transmits and has no
 shared state, tracked as **`PI2`** in
 [`backlog.md`](backlog.md) at P5 and conditional on `--kill-scanner` ceasing
 to be niche. That is the whole of the surviving case; it is not a license to
@@ -919,7 +940,8 @@ surviving eBPF use was `PACKET_FANOUT_EBPF`/`_CBPF` for fanout steering, a
 different mechanism at a fraction of the cost — and that use, `CT11`, has since
 been **measured and refused**: the correlation it would fix costs nothing while
 live capture has one processing thread, and its program widens the SIP/media
-split rather than closing it (§6 of [`live-fanout.md`](live-fanout.md)). So no
+split rather than closing it (section 6 of [`live-fanout.md`](live-fanout.md),
+["CT11: measured, and refused"](live-fanout.md#6-ct11-measured-and-refused)). So no
 eBPF use survives on the capture path today. Full verdict:
 [`backlog.md`](backlog.md) **`CT12`**.
 
@@ -940,7 +962,8 @@ GnuTLS and NSS. ecapture carries roughly forty version-specific objects for
 exactly this. That is a permanent maintenance obligation on a project whose
 [positioning](positioning.md) is that it is *run*, not *operated*.
 
-**And the thing it buys is already bought, twice.** [`examples.md`](https://github.com/NormB/sipnab/blob/main/docs/examples.md) §7e
+**And the thing it buys is already bought, twice.** [`examples.md`](https://github.com/NormB/sipnab/blob/main/docs/examples.md), recipe 7e,
+["Decrypt traffic from a daemon you cannot restart"](https://github.com/NormB/sipnab/blob/main/docs/examples.md#7e-decrypt-traffic-from-a-daemon-you-cannot-restart),
 documents `ecapture tls -m keylog` feeding `--keylog`, measured on a daemon with
 no `SSLKEYLOGFILE` anywhere. `TK4`'s `--keylog-fd` takes the same secrets over a
 pipe so they never reach disk. A native extractor would duplicate a mature
@@ -1105,7 +1128,8 @@ sipnab ships a `.deb`, a Docker image and static tarballs. Every one of those
 is a distribution of a binary, and a bundled decoder puts whoever publishes
 them in the licensee's seat on all three at once — under a per-unit or
 per-channel rate on a project that has no units, no channels and no revenue to
-count them against. That is the same shape that declined PF_RING in §5c: not a
+count them against. That is the same shape that declined PF_RING in
+[section 5c, "PF_RING — declined, on licensing"](#5c-pf_ring--declined-on-licensing): not a
 technical objection, a redistribution one.
 
 **Declined:** no AMR, AMR-WB or EVS decoder in any shipped artifact.
@@ -1136,18 +1160,19 @@ closed the ML anomaly entry.
 
 | Decision | Condition |
 |---|---|
-| §1 Multi-capture comparison | Reopens when per-dialog capture provenance exists for another reason (most likely multi-device attribution reaching `SipDialog`) |
-| §2 Write-back MCP tools | Approved. **Both** a wire-visible store generation/etag *and* an annotation store no analysis reads are build requirements — see §2 |
-| §3 Threat-mitigation ledger | Reopens when sipnab gains durable cross-run state — and only after the three blind spots in §3 are closed as ordinary defects |
-| §4 `open_capture` | **Built 2026-08-02.** The three build requirements shipped with it; the REST etag is the one piece still open — see §4 |
-| §5a Forking as an architecture | Does not reopen. The one surviving fork candidate is scanner-kill (`PI2`), and only if `--kill-scanner` stops being niche |
-| §5b DPDK | Does not reopen. The module is deleted upstream and absent from every libpcap sipnab links |
-| §5c PF_RING | Reopens only if ntop relicenses the `libpfring` blobs compatibly with MIT-OR-Apache-2.0. Not otherwise |
-| §5d AF_XDP | Reopens only if the kernel grows a tee (`clone_redirect` in `xdp_func_proto`) **and** an egress path. Both, not either |
-| §5e XDP as a capture filter | Does not reopen. It is on the wrong side of the tap; no permission change affects that |
-| §6 Native TLS secret extraction (`TK6`) | **Reversed 2026-08-15 — approved and being built.** The offset cost is accepted; offsets derive from OpenSSL's Apache-2.0 sources, never from GPL prior art |
-| §7 AMR / AMR-WB / EVS decoding | Reopens ONLY as a build-from-source, non-default link against a decoder the operator installed. Bundling into the `.deb`, the image or the tarballs does not reopen |
+| [Section 1: multi-capture comparison](#1-tui-multi-session--multi-capture-comparison) | Reopens when per-dialog capture provenance exists for another reason (most likely multi-device attribution reaching `SipDialog`) |
+| [Section 2: write-back MCP tools](#2-write-back-mcp-tools) | Approved. **Both** a wire-visible store generation/etag *and* an annotation store no analysis reads are build requirements — see ["Decision on write-back, and what would change it"](#decision-on-write-back-and-what-would-change-it) |
+| [Section 3: threat-mitigation ledger](#3-automated-threat-mitigation-hooks) | Reopens when sipnab gains durable cross-run state — and only after the three blind spots in ["What the ledger would be, and the three gaps it would close"](#what-the-ledger-would-be-and-the-three-gaps-it-would-close) are closed as ordinary defects |
+| [Section 4: `open_capture`](#4-the-open_capture-mcp-tool) | **Built 2026-08-02.** The three build requirements shipped with it; the REST etag is the one piece still open — see ["Decision on `open_capture`, and what would change it"](#decision-on-open_capture-and-what-would-change-it) |
+| [Section 5a: forking as an architecture](#5a-forking-as-an-architecture--declined) | Does not reopen. The one surviving fork candidate is scanner-kill (`PI2`), and only if `--kill-scanner` stops being niche |
+| [Section 5b: DPDK](#5b-dpdk--declined) | Does not reopen. The module is deleted upstream and absent from every libpcap sipnab links |
+| [Section 5c: PF_RING](#5c-pf_ring--declined-on-licensing) | Reopens only if ntop relicenses the `libpfring` blobs compatibly with MIT-OR-Apache-2.0. Not otherwise |
+| [Section 5d: AF_XDP](#5d-af_xdp--declined) | Reopens only if the kernel grows a tee (`clone_redirect` in `xdp_func_proto`) **and** an egress path. Both, not either |
+| [Section 5e: XDP as a capture filter](#5e-xdp-as-a-capture-filter--declined-on-architecture) | Does not reopen. It is on the wrong side of the tap; no permission change affects that |
+| [Section 6: native TLS secret extraction (`TK6`)](#6-native-tls-secret-extraction-tk6--reversed-approved-2026-08-15) | **Reversed 2026-08-15 — approved and being built.** The offset cost is accepted; offsets derive from OpenSSL's Apache-2.0 sources, never from GPL prior art |
+| [Section 7: AMR / AMR-WB / EVS decoding](#7-decoding-amr-amr-wb-and-evs--declined-for-the-shipped-artifacts-2026-09-09) | Reopens ONLY as a build-from-source, non-default link against a decoder the operator installed. Bundling into the `.deb`, the image or the tarballs does not reopen |
 
-The two feature decisions still open, §1 and §3, do not move on "someone asked
-again"; they move on the facts named above. The §5 technologies do not move on
+The two feature decisions still open, sections 1 and 3 (multi-capture comparison
+and the threat-mitigation ledger), do not move on "someone asked
+again"; they move on the facts named above. The section 5 technologies do not move on
 a benchmark either — every one of them fails before throughput is reached.

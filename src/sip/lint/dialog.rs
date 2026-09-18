@@ -91,7 +91,7 @@ pub(crate) fn offer_answer_pairs(dialog: &SipDialog) -> Vec<OfferAnswer> {
 
 /// The media descriptions of an offer and an answer, lined up by position.
 ///
-/// RFC 3264 §6 makes the answer's `m=` lines correspond to the offer's one for
+/// [RFC 3264 section 6](https://www.rfc-editor.org/rfc/rfc3264#section-6) makes the answer's `m=` lines correspond to the offer's one for
 /// one and in order, so position is the pairing, not media type.
 fn paired_media(pair: &OfferAnswer) -> impl Iterator<Item = (usize, &SdpMedia, &SdpMedia)> {
     pair.offer
@@ -123,13 +123,13 @@ pub(crate) fn lint(dialog: &SipDialog, sink: &mut FindingSink<'_>) {
     opus_rtpmap(dialog, sink);
 }
 
-/// RFC 3261 §17.1.1.3 — an `ACK` to a non-2xx stays on the `INVITE`'s branch.
+/// [RFC 3261 section 17.1.1.3](https://www.rfc-editor.org/rfc/rfc3261#section-17.1.1.3) — an `ACK` to a non-2xx stays on the `INVITE`'s branch.
 ///
 /// # Why the 2xx case is excluded rather than merely uninteresting
 ///
-/// §17.1.1.3 opens "A UAC core that generates an ACK for 2xx MUST instead
+/// [RFC 3261 section 17.1.1.3](https://www.rfc-editor.org/rfc/rfc3261#section-17.1.1.3) opens "A UAC core that generates an ACK for 2xx MUST instead
 /// follow the rules described in Section 13". An ACK to a 2xx is a NEW
-/// transaction and §8.1.1.7 makes it carry a NEW branch, so a rule that read
+/// transaction and [RFC 3261 section 8.1.1.7](https://www.rfc-editor.org/rfc/rfc3261#section-8.1.1.7) makes it carry a NEW branch, so a rule that read
 /// every ACK would report the correct behavior as a violation on every
 /// successful call in every capture — the single largest false-positive source
 /// available in SIP.
@@ -194,7 +194,7 @@ fn ack_branch(dialog: &SipDialog, sink: &mut FindingSink<'_>) {
     }
 }
 
-/// RFC 3261 §12.1.1 — a dialog-establishing response reproduces the request's
+/// [RFC 3261 section 12.1.1](https://www.rfc-editor.org/rfc/rfc3261#section-12.1.1) — a dialog-establishing response reproduces the request's
 /// `Record-Route`, in order.
 ///
 /// # What this compares, and what it deliberately does not
@@ -209,7 +209,7 @@ fn ack_branch(dialog: &SipDialog, sink: &mut FindingSink<'_>) {
 /// "the response has more than the request" would fire on every proxy-side
 /// capture in existence. Only the other direction is reported — a value the
 /// request carried and the response dropped, or one whose position moved —
-/// because that is what §12.1.1's copy-and-maintain-order sentence forbids and
+/// because that is what the copy-and-maintain-order sentence in [RFC 3261 section 12.1.1](https://www.rfc-editor.org/rfc/rfc3261#section-12.1.1) forbids and
 /// what breaks the caller's route set.
 fn record_route_copied(dialog: &SipDialog, sink: &mut FindingSink<'_>) {
     if !sink.wants(&RECORD_ROUTE_NOT_COPIED) {
@@ -267,7 +267,7 @@ fn record_route_uris(msg: &SipMessage) -> Vec<String> {
         .collect()
 }
 
-/// RFC 3262 §4 — a reliable provisional has to draw a `PRACK`.
+/// [RFC 3262 section 4](https://www.rfc-editor.org/rfc/rfc3262#section-4) — a reliable provisional has to draw a `PRACK`.
 ///
 /// # Why this is guarded three ways
 ///
@@ -328,14 +328,14 @@ fn prack_for_reliable_provisionals(dialog: &SipDialog, sink: &mut FindingSink<'_
     );
 }
 
-/// RFC 3261 §8.1.1.2 — a request outside a dialog carries no `To` tag.
+/// [RFC 3261 section 8.1.1.2](https://www.rfc-editor.org/rfc/rfc3261#section-8.1.1.2) — a request outside a dialog carries no `To` tag.
 ///
 /// Two shapes settle it, and nothing else does:
 ///
 /// - A `REGISTER` carrying a `To` tag. REGISTER never sits inside a dialog
-///   (§10), so the tag is wrong wherever the capture started.
+///   ([RFC 3261 section 10](https://www.rfc-editor.org/rfc/rfc3261#section-10)), so the tag is wrong wherever the capture started.
 /// - A dialog whose first message is a request with a `To` tag, whose own
-///   *transaction* answered with a **different** `To` tag. §8.2.6.2 makes a UAS
+///   *transaction* answered with a **different** `To` tag. [RFC 3261 section 8.2.6.2](https://www.rfc-editor.org/rfc/rfc3261#section-8.2.6.2) makes a UAS
 ///   echo the request's tag when the request had one, so a UAS that supplied its
 ///   own is telling us the request's tag identified no dialog it knew about.
 ///
@@ -351,7 +351,7 @@ fn prack_for_reliable_provisionals(dialog: &SipDialog, sink: &mut FindingSink<'_
 /// correctly carries the *subscriber's* tag, which is not the tag the
 /// `SUBSCRIBE` addressed. Every one of those 2,160 was the rule reading a
 /// perfectly conformant dialog backwards. Matching on the top `Via` branch —
-/// the RFC 3261 §8.1.1.7 transaction identifier — restricts the comparison to
+/// the [RFC 3261 section 8.1.1.7](https://www.rfc-editor.org/rfc/rfc3261#section-8.1.1.7) transaction identifier — restricts the comparison to
 /// the answer that actually answered this request.
 fn to_tag_in_initial_request(dialog: &SipDialog, sink: &mut FindingSink<'_>) {
     if !sink.wants(&TO_TAG_IN_INITIAL_REQUEST) {
@@ -412,7 +412,7 @@ fn to_tag_in_initial_request(dialog: &SipDialog, sink: &mut FindingSink<'_>) {
     );
 }
 
-/// RFC 3261 §17.1.1.3 — an `ACK` reuses its `INVITE`'s sequence number.
+/// [RFC 3261 section 17.1.1.3](https://www.rfc-editor.org/rfc/rfc3261#section-17.1.1.3) — an `ACK` reuses its `INVITE`'s sequence number.
 ///
 /// Only fires when the capture holds at least one `INVITE`, so a dialog whose
 /// `INVITE` was never captured raises nothing rather than raising everything.
@@ -452,14 +452,14 @@ fn ack_cseq(dialog: &SipDialog, sink: &mut FindingSink<'_>) {
     }
 }
 
-/// RFC 3264 §6.1 — what the answer may and may not list.
+/// [RFC 3264 section 6.1](https://www.rfc-editor.org/rfc/rfc3264#section-6.1) — what the answer may and may not list.
 ///
 /// Two findings, deliberately separate. An answer sharing no format with the
 /// offer breaks a MUST. An answer listing an *extra* format breaks nothing —
-/// §6.1 permits it in as many words — but the answerer cannot send with it, so
+/// [RFC 3264 section 6.1](https://www.rfc-editor.org/rfc/rfc3264#section-6.1) permits it in as many words — but the answerer cannot send with it, so
 /// every reader who takes it for a negotiated codec is misled.
 ///
-/// A stream the answerer declined carries port zero (§6), and a declined stream
+/// A stream the answerer declined carries port zero ([RFC 3264 section 6](https://www.rfc-editor.org/rfc/rfc3264#section-6)), and a declined stream
 /// lists whatever the offer did. Neither finding applies there.
 fn answer_formats(pair: &OfferAnswer, sink: &mut FindingSink<'_>) {
     for (m_index, offer, answer) in paired_media(pair) {
@@ -511,7 +511,7 @@ fn answer_formats(pair: &OfferAnswer, sink: &mut FindingSink<'_>) {
     }
 }
 
-/// RFC 3264 §6.1 — the direction an answer is allowed to take.
+/// [RFC 3264 section 6.1](https://www.rfc-editor.org/rfc/rfc3264#section-6.1) — the direction an answer is allowed to take.
 ///
 /// A `sendonly` offer admits `recvonly` or `inactive`; a `recvonly` offer admits
 /// `sendonly` or `inactive`; an `inactive` offer admits `inactive` alone. A
@@ -564,9 +564,9 @@ fn direction_name(direction: SdpDirection) -> &'static str {
     }
 }
 
-/// RFC 3264 §8.4 — hold signaled by blanking the connection address.
+/// [RFC 3264 section 8.4](https://www.rfc-editor.org/rfc/rfc3264#section-8.4) — hold signaled by blanking the connection address.
 ///
-/// §8.4 keeps one legitimate use: an *initial* offer from an agent that does not
+/// [RFC 3264 section 8.4](https://www.rfc-editor.org/rfc/rfc3264#section-8.4) keeps one legitimate use: an *initial* offer from an agent that does not
 /// yet know its own address. The first SDP in the dialog is therefore exempt,
 /// and a later one is not. A port of zero is a declined stream rather than a
 /// held one, so it is exempt too.
@@ -625,7 +625,7 @@ fn declares_telephone_event(media: &SdpMedia) -> bool {
         .any(|m| m.encoding.eq_ignore_ascii_case(TELEPHONE_EVENT))
 }
 
-/// RFC 3264 §7 — an offered format the answer omits is not negotiated.
+/// [RFC 3264 section 7](https://www.rfc-editor.org/rfc/rfc3264#section-7) — an offered format the answer omits is not negotiated.
 ///
 /// Restricted to `telephone-event` on an accepted audio stream, because that is
 /// the one omission whose consequence is invisible until somebody presses a
@@ -634,9 +634,9 @@ fn declares_telephone_event(media: &SdpMedia) -> bool {
 ///
 /// # Why this is not a MUST, and why it is not RFC 4733
 ///
-/// RFC 4733 states no offer/answer rule at all — §2.5.1.1 says negotiation
+/// RFC 4733 states no offer/answer rule at all — [section 2.5.1.1](https://www.rfc-editor.org/rfc/rfc4733#section-2.5.1.1) says negotiation
 /// happens "by out-of-band means, using SDP, for example" and stops there. The
-/// binding text is RFC 3264 §7, and it is a MAY: the offerer *may* cease
+/// binding text is [RFC 3264 section 7](https://www.rfc-editor.org/rfc/rfc3264#section-7), and it is a MAY: the offerer *may* cease
 /// listening for a format the answer omitted. So nothing here breaks, and the
 /// interop failure is real anyway, because plenty of equipment sends
 /// `telephone-event` on the payload type it offered regardless of the answer.
@@ -707,18 +707,18 @@ fn retained_attributes(media: &SdpMedia) -> Vec<&'static str> {
     out
 }
 
-/// RFC 3264 §8.2 — a stream declined with port zero may drop its attributes.
+/// [RFC 3264 section 8.2](https://www.rfc-editor.org/rfc/rfc3264#section-8.2) — a stream declined with port zero may drop its attributes.
 ///
-/// Reported at notice and as interop because §8.2 is a MAY in both directions:
+/// Reported at notice and as interop because [RFC 3264 section 8.2](https://www.rfc-editor.org/rfc/rfc3264#section-8.2) is a MAY in both directions:
 /// "the answer MAY omit all attributes present previously, and MAY list just a
 /// single media format". Keeping them is legal. What makes it worth a line is
 /// the `a=crypto` case — SRTP key material published for a stream neither side
 /// will ever use — and equipment that reads the attributes of a port-zero
 /// stream and allocates for it anyway.
 ///
-/// The offer half is not reported. An offer at port zero is §8.2's own
+/// The offer half is not reported. An offer at port zero is [RFC 3264 section 8.2](https://www.rfc-editor.org/rfc/rfc3264#section-8.2)'s own
 /// mechanism for removing an existing stream, so its attributes are what the
-/// stream had; only the answer is the place §8.2 addresses.
+/// stream had; only the answer is the place section 8.2 addresses.
 fn rejected_stream_attributes(pair: &OfferAnswer, sink: &mut FindingSink<'_>) {
     if !sink.wants(&REJECTED_STREAM_ATTRIBUTES) {
         return;
@@ -750,19 +750,19 @@ fn rejected_stream_attributes(pair: &OfferAnswer, sink: &mut FindingSink<'_>) {
     }
 }
 
-/// The dynamic RTP payload types, RFC 3551 §6: 96 through 127.
+/// The dynamic RTP payload types, [RFC 3551 section 6](https://www.rfc-editor.org/rfc/rfc3551#section-6): 96 through 127.
 const DYNAMIC_PT_RANGE: std::ops::RangeInclusive<u8> = 96..=127;
 
-/// RFC 3264 §8.3.2 — a dynamic payload type keeps its codec for the session.
+/// [RFC 3264 section 8.3.2](https://www.rfc-editor.org/rfc/rfc3264#section-8.3.2) — a dynamic payload type keeps its codec for the session.
 ///
 /// # Why the binding is tracked per media stream and not per session
 ///
-/// §8.3.2 scopes it in its own words: "the mapping from a particular dynamic
+/// [RFC 3264 section 8.3.2](https://www.rfc-editor.org/rfc/rfc3264#section-8.3.2) scopes it in its own words: "the mapping from a particular dynamic
 /// payload type number to a particular codec **within that media stream** MUST
 /// NOT change for the duration of a session". A call whose audio `m=` line uses
 /// 96 for `opus` and whose video `m=` line uses 96 for `H264` breaks nothing,
 /// and a session-wide table would report every such call. The key here is
-/// therefore the `m=` line's position, which is also how RFC 3264 §6 pairs
+/// therefore the `m=` line's position, which is also how [RFC 3264 section 6](https://www.rfc-editor.org/rfc/rfc3264#section-6) pairs
 /// offers with answers.
 fn dynamic_payload_types(dialog: &SipDialog, sink: &mut FindingSink<'_>) {
     if !sink.wants(&DYNAMIC_PT_REBOUND) {
@@ -816,22 +816,23 @@ fn dynamic_payload_types(dialog: &SipDialog, sink: &mut FindingSink<'_>) {
     }
 }
 
-/// The clock rate RFC 7587 §7 requires in an opus `a=rtpmap`.
+/// The clock rate [RFC 7587 section 7](https://www.rfc-editor.org/rfc/rfc7587#section-7) requires in an opus `a=rtpmap`.
 const OPUS_CLOCK_RATE: u32 = 48000;
 
-/// The channel count RFC 7587 §7 requires in an opus `a=rtpmap`.
+/// The channel count [RFC 7587 section 7](https://www.rfc-editor.org/rfc/rfc7587#section-7) requires in an opus `a=rtpmap`.
 const OPUS_CHANNELS: u32 = 2;
 
 /// The `a=rtpmap` encoding name RFC 7587 registers.
 const OPUS_ENCODING: &str = "opus";
 
-/// RFC 7587 §7 — an opus `a=rtpmap` reads `opus/48000/2`, always.
+/// [RFC 7587 section 7](https://www.rfc-editor.org/rfc/rfc7587#section-7) — an opus `a=rtpmap` reads `opus/48000/2`, always.
 ///
 /// # Why the clock rate is a signaling rule here and not an observation
 ///
-/// RFC 7587 §4.1 states the wire fact — "The RTP timestamp is incremented with
+/// [RFC 7587 section 4.1](https://www.rfc-editor.org/rfc/rfc7587#section-4.1) states the wire fact — "The RTP timestamp is incremented with
 /// a 48000 Hz clock rate for all modes of Opus and all sampling rates" — and it
-/// is deliberately not the citation. §4.1 is not RFC 2119 language, and §7's
+/// is deliberately not the citation. [RFC 7587 section 4.1](https://www.rfc-editor.org/rfc/rfc7587#section-4.1) is not RFC 2119 language, and
+/// [RFC 7587 section 7](https://www.rfc-editor.org/rfc/rfc7587#section-7)'s
 /// SDP bullet is: "The RTP clock rate in "a=rtpmap" MUST be 48000, and the
 /// number of channels MUST be 2."
 ///
@@ -844,9 +845,9 @@ const OPUS_ENCODING: &str = "opus";
 /// be derived from it. A rule that reported legal Opus CBR as a defect would be
 /// switched off in week one, and this one is decidable from the SDP alone.
 ///
-/// A channel count RFC 4566 §6 makes default to one is a violation as much as
+/// A channel count [RFC 4566 section 6](https://www.rfc-editor.org/rfc/rfc4566#section-6) makes default to one is a violation as much as
 /// an explicit `/1` is: `opus/48000` and `opus/48000/1` are the same
-/// declaration, and §7's MUST admits neither.
+/// declaration, and the MUST in [RFC 7587 section 7](https://www.rfc-editor.org/rfc/rfc7587#section-7) admits neither.
 fn opus_rtpmap(dialog: &SipDialog, sink: &mut FindingSink<'_>) {
     if !sink.wants(&OPUS_RTPMAP_RATE) {
         return;
@@ -1159,7 +1160,7 @@ mod tests {
     /// An answer adding a format the offer lacked is legal, and reports as
     /// interop rather than as a broken MUST.
     ///
-    /// §6.1 permits the extra listing outright. A tool that called this illegal
+    /// [RFC 3264 section 6.1](https://www.rfc-editor.org/rfc/rfc3264#section-6.1) permits the extra listing outright. A tool that called this illegal
     /// would be citing a rule that says the opposite.
     #[test]
     fn answer_with_an_extra_format_is_interop_not_must() {
@@ -1247,7 +1248,7 @@ mod tests {
 
     /// An *initial* offer with a blanked address is silent.
     ///
-    /// §8.4 keeps that use: an agent that does not yet know its own address.
+    /// [RFC 3264 section 8.4](https://www.rfc-editor.org/rfc/rfc3264#section-8.4) keeps that use: an agent that does not yet know its own address.
     /// Reporting it would fire on every third-party call control flow.
     #[test]
     fn blanked_address_in_the_first_offer_is_silent() {
@@ -1511,8 +1512,8 @@ mod tests {
 
     /// An ACK to a 2xx on a NEW branch is correct and must stay silent.
     ///
-    /// This is the mutation that matters. §17.1.1.3 opens by sending the 2xx
-    /// case to §13, where the ACK is its own transaction and §8.1.1.7 requires
+    /// This is the mutation that matters. [RFC 3261 section 17.1.1.3](https://www.rfc-editor.org/rfc/rfc3261#section-17.1.1.3) opens by sending the 2xx
+    /// case to [section 13](https://www.rfc-editor.org/rfc/rfc3261#section-13), where the ACK is its own transaction and [section 8.1.1.7](https://www.rfc-editor.org/rfc/rfc3261#section-8.1.1.7) requires
     /// a new branch — so dropping the non-2xx guard would report the correct
     /// behavior on every answered call in every capture.
     #[test]
@@ -1557,7 +1558,7 @@ mod tests {
 
     /// A 2xx that reverses the order is reported.
     ///
-    /// §12.1.1 makes the UAS "maintain the order of those values", and §12.1.2
+    /// [RFC 3261 section 12.1.1](https://www.rfc-editor.org/rfc/rfc3261#section-12.1.1) makes the UAS "maintain the order of those values", and [section 12.1.2](https://www.rfc-editor.org/rfc/rfc3261#section-12.1.2)
     /// has the caller read the response's list in reverse — so a reversal
     /// silently sends every in-dialog request through the path backwards.
     #[test]
@@ -1707,7 +1708,7 @@ mod tests {
 
     /// A stream the OFFER already removed is not this rule's finding.
     ///
-    /// §8.2 removes an existing stream by re-offering it at port zero, and the
+    /// [RFC 3264 section 8.2](https://www.rfc-editor.org/rfc/rfc3264#section-8.2) removes an existing stream by re-offering it at port zero, and the
     /// answer then MUST mark it zero too. Reporting that pair would fire on
     /// every conformant stream teardown.
     #[test]
@@ -1753,7 +1754,7 @@ mod tests {
     /// Payload type 96 meaning different things in two different `m=` lines is
     /// silent.
     ///
-    /// §8.3.2 scopes the binding "within that media stream". A session-wide
+    /// [RFC 3264 section 8.3.2](https://www.rfc-editor.org/rfc/rfc3264#section-8.3.2) scopes the binding "within that media stream". A session-wide
     /// table would report every call whose audio and video streams both start
     /// their dynamic numbering at 96, which is most of them.
     #[test]
@@ -1773,8 +1774,8 @@ mod tests {
 
     /// A static payload type is outside the rule's range.
     ///
-    /// 0 through 95 are assigned by RFC 3551, not negotiated, so §8.3.2's
-    /// sentence about "a particular dynamic payload type number" does not
+    /// 0 through 95 are assigned by RFC 3551, not negotiated, so the sentence in
+    /// [RFC 3264 section 8.3.2](https://www.rfc-editor.org/rfc/rfc3264#section-8.3.2) about "a particular dynamic payload type number" does not
     /// reach them.
     #[test]
     fn a_static_payload_type_is_outside_the_dynamic_range() {
@@ -1803,7 +1804,7 @@ mod tests {
     }
 
     /// `opus/48000` with no channel count is the same declaration as
-    /// `opus/48000/1`, and §7 admits neither.
+    /// `opus/48000/1`, and [RFC 7587 section 7](https://www.rfc-editor.org/rfc/rfc7587#section-7) admits neither.
     #[test]
     fn an_opus_rtpmap_without_a_channel_count_is_reported() {
         for encoding in ["opus/48000", "opus/48000/1"] {

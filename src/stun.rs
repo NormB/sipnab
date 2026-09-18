@@ -283,11 +283,13 @@ pub fn channel_data_payload(payload: &[u8]) -> Option<&[u8]> {
     channel_data_payload_framed(payload, ChannelDataFraming::Datagram)
 }
 
-/// GTP-C, 3GPP TS 29.274 §4.1: "The UDP Destination Port number for GTPv2
-/// messages shall be 2123."
+/// GTP-C, [3GPP TS 29.274](https://portal.3gpp.org/desktopmodules/Specifications/SpecificationDetails.aspx?specificationId=1692)
+/// section 4.2.1.1, "Initial Messages": "The UDP Destination Port number for
+/// GTPv2 Initial messages shall be 2123."
 const PORT_GTP_C: u16 = 2123;
-/// GTP-U, 3GPP TS 29.281 §4.4.2.3: "The UDP Destination Port number shall be
-/// 2152." Named here for the same reason as GTP-C, not because a G-PDU is
+/// GTP-U, [3GPP TS 29.281](https://portal.3gpp.org/desktopmodules/Specifications/SpecificationDetails.aspx?specificationId=1699)
+/// section 4.4.2.3, "Encapsulated T-PDUs": "The UDP Destination Port number
+/// shall be 2152." Named here for the same reason as GTP-C, not because a G-PDU is
 /// currently mistakable for a relay frame.
 const PORT_GTP_U: u16 = 2152;
 
@@ -298,7 +300,7 @@ const PORT_GTP_U: u16 = 2152;
 /// A GTPv2-C control message and a TURN ChannelData frame have the same header
 /// shape, field for field:
 ///
-/// | bytes | ChannelData (RFC 5766 §11.4) | GTPv2-C (TS 29.274 §5.5)       |
+/// | bytes | ChannelData ([RFC 5766 section 11.4](https://www.rfc-editor.org/rfc/rfc5766#section-11.4)) | GTPv2-C ([TS 29.274](https://portal.3gpp.org/desktopmodules/Specifications/SpecificationDetails.aspx?specificationId=1692) section 5.5) |
 /// |-------|------------------------------|--------------------------------|
 /// | 0..2  | channel number, `0x4000..=0x4FFF` | flags then message type   |
 /// | 2..4  | length of the application data | message length, likewise excluding the first four octets |
@@ -352,7 +354,7 @@ pub fn channel_data_payload_on_port(payload: &[u8], src_port: u16, dst_port: u16
 /// the channel-number window. See [`is_channel_data_framed`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChannelDataFraming {
-    /// UDP: one frame per datagram. RFC 5766 §11.5 makes the padding to a
+    /// UDP: one frame per datagram. [RFC 5766 section 11.5](https://www.rfc-editor.org/rfc/rfc5766#section-11.5) makes the padding to a
     /// four-byte boundary optional over a datagram transport, so the frame is
     /// required to end either exactly at the data or exactly at the padded end
     /// of it — and either way to account for the WHOLE datagram.
@@ -406,7 +408,7 @@ pub fn is_channel_data(payload: &[u8]) -> bool {
 /// side.
 ///
 /// Requiring the frame to account for the entire datagram (padded or not, per
-/// RFC 5766 §11.5) removes it by construction: a stray packet now has to land
+/// [RFC 5766 section 11.5](https://www.rfc-editor.org/rfc/rfc5766#section-11.5)) removes it by construction: a stray packet now has to land
 /// in the window AND carry a length field that describes its own size. A
 /// declared length of zero is refused for the same reason — it is the one
 /// shape where any four-byte datagram in the window would otherwise satisfy
@@ -722,7 +724,7 @@ fn plain_address(value: &[u8]) -> Option<SocketAddr> {
     }
 }
 
-/// Decode `XOR-MAPPED-ADDRESS` (RFC 5389 §15.2), whose address is XOR'd with
+/// Decode `XOR-MAPPED-ADDRESS` ([RFC 5389 section 15.2](https://www.rfc-editor.org/rfc/rfc5389#section-15.2)), whose address is XOR'd with
 /// the cookie — and, for IPv6, with the transaction ID as well.
 ///
 /// The obfuscation exists because some NATs rewrite anything that looks like an
@@ -764,7 +766,8 @@ mod tests {
     /// A channel number RFC 8656 reserves is not ChannelData.
     ///
     /// RFC 8656 (which obsoletes RFC 5766) Table 3 narrows the window:
-    /// `0x4000-0x4FFF` is allowed, `0x5000-0xFFFF` is **Reserved**, and §12.6
+    /// `0x4000-0x4FFF` is allowed, `0x5000-0xFFFF` is **Reserved**, and
+    /// [RFC 8656 section 12.6](https://www.rfc-editor.org/rfc/rfc8656#section-12.6)
     /// says of the reserved range "the message is silently discarded". The
     /// reservation exists so ChannelData cannot collide with DTLS-SRTP
     /// multiplexing (RFC 7983).
@@ -820,7 +823,7 @@ mod tests {
 
     /// FINGERPRINT still verifies when the datagram carries trailing octets.
     ///
-    /// RFC 8489 §14.7 defines the CRC over "the STUN message up to (but
+    /// [RFC 8489 section 14.7](https://www.rfc-editor.org/rfc/rfc8489#section-14.7) defines the CRC over "the STUN message up to (but
     /// excluding) the FINGERPRINT attribute itself", so the span is measured
     /// from the message, not from the datagram. `attr_start` was computed as
     /// `payload.len() - body.len()`, and the body is clamped to the DECLARED
@@ -848,7 +851,7 @@ mod tests {
 
     /// The FIRST occurrence of a repeated attribute wins.
     ///
-    /// RFC 8489 §14: "Any attribute type MAY appear more than once... only the
+    /// [RFC 8489 section 14](https://www.rfc-editor.org/rfc/rfc8489#section-14): "Any attribute type MAY appear more than once... only the
     /// first occurrence needs to be processed by a receiver." Taking the last
     /// is attacker-reachable: MESSAGE-INTEGRITY covers only the bytes before
     /// it, so an attribute appended AFTER it is unauthenticated — and that was
@@ -932,7 +935,8 @@ mod tests {
     ///
     /// GTPv2's first octet is `0x48` whenever the TEID flag is set, which puts
     /// every such message inside the `0x4000..=0x4FFF` channel window. And
-    /// GTPv2 §5.5 defines Length the same way RFC 5766 §11.4 does — the octets
+    /// GTPv2 ([3GPP TS 29.274](https://portal.3gpp.org/desktopmodules/Specifications/SpecificationDetails.aspx?specificationId=1692) section 5.5, "Usage of the
+    /// GTPv2-C Header") defines Length the same way [RFC 5766 section 11.4](https://www.rfc-editor.org/rfc/rfc5766#section-11.4) does — the octets
     /// after the first four — so the whole-datagram length check passes too.
     /// Nothing in the four bytes distinguishes them, which is why the port has
     /// to.
@@ -1282,7 +1286,7 @@ pub struct StunTransaction {
     /// The `PRIORITY` the request carried, when it carried one.
     ///
     /// Kept because it is half of what separates an ICE CONNECTIVITY CHECK
-    /// from a plain server-reflexive probe: RFC 8445 §7.2.1 requires a check
+    /// from a plain server-reflexive probe: [RFC 8445 section 7.2.1](https://www.rfc-editor.org/rfc/rfc8445#section-7.2.1) requires a check
     /// to carry `PRIORITY` and a role attribute, and a Binding Request sent to
     /// a STUN server to learn a reflexive address carries neither. See
     /// [`Self::is_ice_check`] — without that discriminator, "ICE never
@@ -1324,7 +1328,7 @@ impl StunTransaction {
     /// Whether this is an ICE CONNECTIVITY CHECK rather than a plain
     /// server-reflexive probe.
     ///
-    /// RFC 8445 §7.2.1 requires a check to carry `PRIORITY` and one of
+    /// [RFC 8445 section 7.2.1](https://www.rfc-editor.org/rfc/rfc8445#section-7.2.1) requires a check to carry `PRIORITY` and one of
     /// `ICE-CONTROLLING`/`ICE-CONTROLLED`; a Binding Request aimed at a STUN
     /// server carries neither. That is the whole discriminator, and it needs
     /// no SDP to apply — which matters, because the two failures look
@@ -1624,7 +1628,7 @@ struct Tracker {
     /// STUN messages processed, including retransmissions and the ones whose
     /// transaction was later evicted. Exact where `transactions` is capped.
     packets: u64,
-    /// Indications processed. Counted rather than tracked: RFC 5766 §10 sends
+    /// Indications processed. Counted rather than tracked: [RFC 5766 section 10](https://www.rfc-editor.org/rfc/rfc5766#section-10) sends
     /// them fire-and-forget, so a transaction row for one would read as a
     /// failure that never happened.
     indications: u64,
@@ -2351,7 +2355,7 @@ pub struct NominatedPair {
     /// it is the 5-tuple a follow-up capture filter has to match.
     pub remote: SocketAddr,
     /// The role the nominating agent claimed. Only a controlling agent may
-    /// nominate (RFC 8445 §8.1.1), so anything else here is worth seeing.
+    /// nominate ([RFC 8445 section 8.1.1](https://www.rfc-editor.org/rfc/rfc8445#section-8.1.1)), so anything else here is worth seeing.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub role: Option<IceRole>,
     /// The `PRIORITY` the check carried, reported and never recomputed —
@@ -2368,7 +2372,7 @@ pub struct NominatedPair {
 /// Two ICE agents that disagreed about which of them was in charge.
 ///
 /// A real misconfiguration, and one whose only other symptom is media that
-/// takes a long time to start or never starts at all: RFC 8445 §7.3.1.1 has
+/// takes a long time to start or never starts at all: [RFC 8445 section 7.3.1.1](https://www.rfc-editor.org/rfc/rfc8445#section-7.3.1.1) has
 /// the agent that detects it answer `487 Role Conflict`, and one side then
 /// switches role and repeats every check it had already sent.
 ///
@@ -2405,7 +2409,7 @@ pub struct IceRoleConflict {
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize)]
 pub struct IceSummary {
     /// Connectivity checks seen — Binding Requests carrying the ICE
-    /// attributes RFC 8445 §7.2.1 requires, which is what tells them from a
+    /// attributes [RFC 8445 section 7.2.1](https://www.rfc-editor.org/rfc/rfc8445#section-7.2.1) requires, which is what tells them from a
     /// plain server-reflexive probe to a STUN server.
     pub checks: u64,
     /// How many of those drew an answer of either kind.
@@ -2579,7 +2583,7 @@ mod message_length_tests {
         m
     }
 
-    /// RFC 8489 section 5: the last two bits of the message length are always
+    /// [RFC 8489 section 5](https://www.rfc-editor.org/rfc/rfc8489#section-5): the last two bits of the message length are always
     /// zero, and the RFC names that as a way to tell STUN from other
     /// protocols.
     ///
@@ -3224,7 +3228,7 @@ mod channel_framing_tests {
         assert!(channel_data_payload(&stray).is_none());
     }
 
-    /// The optional padding RFC 5766 §11.5 allows over a datagram transport
+    /// The optional padding [RFC 5766 section 11.5](https://www.rfc-editor.org/rfc/rfc5766#section-11.5) allows over a datagram transport
     /// must still be accepted, or a conformant sender's media disappears.
     #[test]
     fn the_optional_datagram_padding_is_accepted() {
@@ -3430,7 +3434,7 @@ mod allocation_tracking_tests {
         reset();
     }
 
-    /// A Refresh with `LIFETIME` 0 is a deliberate RELEASE (RFC 5766 §7). The
+    /// A Refresh with `LIFETIME` 0 is a deliberate RELEASE ([RFC 5766 section 7](https://www.rfc-editor.org/rfc/rfc5766#section-7)). The
     /// client asked for the teardown, so the teardown is not a fault — and a
     /// stray packet arriving afterwards must not turn it into one.
     #[test]
@@ -3739,7 +3743,7 @@ mod ice_state_tests {
         reset();
     }
 
-    /// RFC 8445 §7.3.1.1 has the losing agent SWITCH roles and repeat its
+    /// [RFC 8445 section 7.3.1.1](https://www.rfc-editor.org/rfc/rfc8445#section-7.3.1.1) has the losing agent SWITCH roles and repeat its
     /// checks, so a resolved conflict leaves BOTH roles on record for one
     /// agent. Comparing last-seen roles would miss it entirely; the sets must
     /// still intersect, and the nomination that followed must mark it

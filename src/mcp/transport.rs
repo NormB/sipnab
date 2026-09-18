@@ -95,29 +95,29 @@ mod http {
     use super::SipnabMcp;
     use crate::auth::{TokenVerifier, VerifierConfig};
 
-    /// The well-known URI path suffix RFC 9728 §3 registers for OAuth 2.0
+    /// The well-known URI path suffix [RFC 9728 section 3](https://www.rfc-editor.org/rfc/rfc9728#section-3) registers for OAuth 2.0
     /// protected-resource metadata, with its leading `/.well-known/`.
     ///
-    /// Not configurable. §3 permits an application to register its own suffix,
+    /// Not configurable. [RFC 9728 section 3](https://www.rfc-editor.org/rfc/rfc9728#section-3) permits an application to register its own suffix,
     /// but also says the default "is the right choice for general-purpose OAuth
     /// protected resources", and a client that has to be told which suffix to
     /// try has learned nothing discovery did not already owe it.
     const WELL_KNOWN_PREFIX: &str = "/.well-known/oauth-protected-resource";
 
-    /// The protection space named in every challenge (RFC 9110 §11.5).
+    /// The protection space named in every challenge ([RFC 9110 section 11.5](https://www.rfc-editor.org/rfc/rfc9110#section-11.5)).
     ///
     /// A constant, and deliberately uninformative: the realm is echoed to an
     /// unauthenticated caller, so it names the program and nothing about the
     /// deployment, the capture, or the credential.
     const REALM: &str = "sipnab";
 
-    /// RFC 6750 §3.1 error code for a credential that was presented and failed
+    /// [RFC 6750 section 3.1](https://www.rfc-editor.org/rfc/rfc6750#section-3.1) error code for a credential that was presented and failed
     /// verification — expired, revoked, forged, or minted for the other
     /// audience. One code for all of them on purpose: telling an attacker
     /// *which* turns the challenge into an oracle.
     const ERROR_INVALID_TOKEN: &str = "invalid_token";
 
-    /// Human-readable companion to [`ERROR_INVALID_TOKEN`] (RFC 6750 §3.1
+    /// Human-readable companion to [`ERROR_INVALID_TOKEN`] ([RFC 6750 section 3.1](https://www.rfc-editor.org/rfc/rfc6750#section-3.1)
     /// `error_description`, US-ASCII). Constant, so it can carry no detail
     /// about the presented token.
     const ERROR_DESCRIPTION: &str = "The access token is invalid or has expired";
@@ -134,13 +134,13 @@ mod http {
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub struct ProtectedResource {
         /// RFC 9728 `resource`: the normalized resource identifier, with any
-        /// terminating slash removed per §3.1.
+        /// terminating slash removed per [RFC 9728 section 3.1](https://www.rfc-editor.org/rfc/rfc9728#section-3.1).
         resource: String,
         /// Path the metadata document is published at, e.g.
         /// `/.well-known/oauth-protected-resource/mcp`.
         path: String,
         /// Absolute URL of that document — the `resource_metadata` value
-        /// RFC 9728 §5.1 puts in the challenge.
+        /// [RFC 9728 section 5.1](https://www.rfc-editor.org/rfc/rfc9728#section-5.1) puts in the challenge.
         metadata_url: String,
     }
 
@@ -232,17 +232,17 @@ mod http {
             Ok(probe)
         }
 
-        /// The metadata document RFC 9728 §2 describes, as JSON.
+        /// The metadata document [RFC 9728 section 2](https://www.rfc-editor.org/rfc/rfc9728#section-2) describes, as JSON.
         ///
         /// Served unauthenticated, so the interesting question is what it
         /// leaves out. It names no bind address, no `Host` allowlist, no token,
         /// no signing-key material, no capture and no version — nothing an
         /// unauthenticated caller could not already state itself, except the
-        /// scope names, which §7.2 exists to permit ("the list of scopes the
+        /// scope names, which [RFC 9728 section 7.2](https://www.rfc-editor.org/rfc/rfc9728#section-7.2) exists to permit ("the list of scopes the
         /// resource server is willing to disclose that it supports").
         ///
         /// `authorization_servers` is absent, and its absence is a decision
-        /// rather than an omission: §2 makes the field OPTIONAL precisely for
+        /// rather than an omission: [RFC 9728 section 2](https://www.rfc-editor.org/rfc/rfc9728#section-2) makes the field OPTIONAL precisely for
         /// resources whose authorization servers "will not be enumerable", and
         /// sipnab has none — it validates its own bearer tokens, so a client
         /// sent to fetch one elsewhere would return holding a credential this
@@ -271,10 +271,10 @@ mod http {
     /// The `WWW-Authenticate` value used when no resource identifier is
     /// configured.
     ///
-    /// Still a complete challenge: RFC 9110 §15.5.2 makes the header mandatory
-    /// on any 401, and RFC 6750 §3 requires the `Bearer` scheme to be "followed
+    /// Still a complete challenge: [RFC 9110 section 15.5.2](https://www.rfc-editor.org/rfc/rfc9110#section-15.5.2) makes the header mandatory
+    /// on any 401, and [RFC 6750 section 3](https://www.rfc-editor.org/rfc/rfc6750#section-3) requires the `Bearer` scheme to be "followed
     /// by one or more auth-param values" — so `realm` is emitted even when
-    /// there is nothing to discover. RFC 6750 §3.1 is why `error` is optional
+    /// there is nothing to discover. [RFC 6750 section 3.1](https://www.rfc-editor.org/rfc/rfc6750#section-3.1) is why `error` is optional
     /// here rather than always present: a request that "lacks any
     /// authentication information" SHOULD NOT be answered with an error code.
     fn bare_challenge(error: Option<&str>) -> String {
@@ -391,7 +391,7 @@ mod http {
     /// is required but missing, malformed, expired, or revoked.
     ///
     /// Every rejection carries a `WWW-Authenticate` challenge, and the two
-    /// rejections are told apart the way RFC 6750 §3.1 tells them apart: a
+    /// rejections are told apart the way [RFC 6750 section 3.1](https://www.rfc-editor.org/rfc/rfc6750#section-3.1) tells them apart: a
     /// request with no bearer credentials at all "lacks any authentication
     /// information" and SHOULD NOT be answered with an error code, while one
     /// that presented a token which failed verification is `invalid_token`.
@@ -798,7 +798,7 @@ mod http {
             }
         }
 
-        /// RFC 9728 §3.1's two worked examples, verbatim.
+        /// [RFC 9728 section 3.1](https://www.rfc-editor.org/rfc/rfc9728#section-3.1)'s two worked examples, verbatim.
         ///
         /// The spec gives the answers, so this asserts against THEM rather
         /// than against the derivation: `https://resource.example.com` is
@@ -824,7 +824,7 @@ mod http {
             assert_eq!(with_path.resource, "https://resource.example.com/resource1");
         }
 
-        /// §3.1: "any terminating slash (/) following the host component MUST
+        /// [RFC 9728 section 3.1](https://www.rfc-editor.org/rfc/rfc9728#section-3.1): "any terminating slash (/) following the host component MUST
         /// be removed before inserting /.well-known/". Both the identifier and
         /// the derived path have to lose it, and a slash after a real path
         /// segment is the case that would otherwise leave an empty segment in
@@ -851,7 +851,7 @@ mod http {
 
         /// The scheme and host are normalized to lowercase, so the identifier
         /// this server publishes is the canonical form a client compares
-        /// against (RFC 9728 §6 string operations; the MCP canonical-URI rules
+        /// against ([RFC 9728 section 6](https://www.rfc-editor.org/rfc/rfc9728#section-6) string operations; the MCP canonical-URI rules
         /// say the same).
         #[test]
         fn the_identifier_is_normalized_to_lowercase_scheme_and_host() {
@@ -888,7 +888,7 @@ mod http {
             }
         }
 
-        /// The published document carries what RFC 9728 §2 asks of it and
+        /// The published document carries what [RFC 9728 section 2](https://www.rfc-editor.org/rfc/rfc9728#section-2) asks of it and
         /// nothing that would betray the deployment.
         ///
         /// `resource` is REQUIRED; `scopes_supported` is RECOMMENDED and is
@@ -924,8 +924,8 @@ mod http {
         /// The challenge on a request that presented nothing, with and without
         /// a published identifier.
         ///
-        /// RFC 6750 §3 requires at least one auth-param, which is why `realm`
-        /// survives the unconfigured case; §3.1 is why neither carries an
+        /// [RFC 6750 section 3](https://www.rfc-editor.org/rfc/rfc6750#section-3) requires at least one auth-param, which is why `realm`
+        /// survives the unconfigured case; [RFC 6750 section 3.1](https://www.rfc-editor.org/rfc/rfc6750#section-3.1) is why neither carries an
         /// error code.
         #[tokio::test]
         async fn a_credential_less_request_is_challenged_without_an_error_code() {
@@ -997,7 +997,7 @@ mod http {
         /// An `Authorization` header in some other scheme is "lacks any
         /// authentication information", not a bad token.
         ///
-        /// RFC 6750 §3.1 puts an unsupported authentication method in the same
+        /// [RFC 6750 section 3.1](https://www.rfc-editor.org/rfc/rfc6750#section-3.1) puts an unsupported authentication method in the same
         /// bucket as no credentials at all, and it matters here because a
         /// `Basic` header is what a browser or a misconfigured proxy sends —
         /// answering it with `invalid_token` would tell the operator to go look

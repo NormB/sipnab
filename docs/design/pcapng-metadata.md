@@ -36,9 +36,11 @@ Relevant blocks/options:
   resolution), `if_filter`, `if_os`, …
 - **Enhanced Packet Block (EPB) options** — `opt_comment` (packet comment),
   `epb_flags`, `epb_hash`, `epb_dropcount`.
-- **Name Resolution Block (NRB)** — block type **`0x00000004`**. ← this doc, §2.
+- **Name Resolution Block (NRB)** — block type **`0x00000004`**. ← this doc,
+  [section 2, "Name Resolution Block (NRB) — spec"](#2-name-resolution-block-nrb--spec).
 - **Interface Statistics Block (ISB)** — type `0x00000005` (capture stats).
-- **Decryption Secrets Block (DSB)** — type `0x0000000A`. ← this doc, §3.
+- **Decryption Secrets Block (DSB)** — type `0x0000000A`. ← this doc,
+  [section 3, "Decryption Secrets Block (DSB) — engineering analysis"](#3-decryption-secrets-block-dsb--engineering-analysis).
 - **Custom Block / Custom Options** — vendor data under a Private Enterprise
   Number, for structured proprietary metadata beyond comments.
 
@@ -111,7 +113,8 @@ optional option TLV stream follows.
 
 On opening a pcapng, parse its NRB(s) via `pcap-file` and load names into the
 resolver as a new **`File`** source, ranked **below manual mappings**. Treat
-file-sourced names as **untrusted hints** (§2.9); never overwrite an operator's
+file-sourced names as **untrusted hints**
+([section 2.9, "Security & privacy"](#29-security--privacy)); never overwrite an operator's
 manual mapping. This is what makes the feature feel complete (open a shared file
 → names already resolved).
 
@@ -165,7 +168,8 @@ corrupted files in the wild. Fuzz the parser.)
 7. **Target not writable / perm denied / dir missing** → fail before touching the
    original (temp create fails cleanly).
 8. **Oversized name set** → split across records/NRBs.
-9. **Untrusted/malformed NRB on read** → validated & skipped per §2.6; shown
+9. **Untrusted/malformed NRB on read** → validated & skipped per
+   [section 2.6, "Validation"](#26-validation); shown
    low-trust.
 10. **Timestamp precision** → preserve source resolution on pcap→pcapng (don't
     silently downgrade ns→µs); set `if_tsresol` to match.
@@ -345,7 +349,8 @@ re-implemented:
 - **Strip/delete secrets:** no command to remove DSBs from a file yet.
 - **Alerts:** no banner when a loaded file contains a DSB, and no explicit
   consequence-confirmation before writing one (`encrypted+dsb` is silent).
-- **NRB names:** entirely new (this doc, §2).
+- **NRB names:** entirely new (this doc,
+  [section 2, "Name Resolution Block (NRB) — spec"](#2-name-resolution-block-nrb--spec)).
 
 ## 4. Tracks (revised to reflect the audit)
 
@@ -360,7 +365,8 @@ re-implemented:
    never in-place by default) and "this file contains decryption secrets"
    markers; a consequence-confirmation before `encrypted+dsb`.
 4. **(Existing) Store secrets** — `--pcap-export-mode encrypted+dsb` already
-   embeds a DSB; harden it with the §3.6 safeguards (0600 perms, provenance
+   embeds a DSB; harden it with the safeguards in
+   [section 3.6, "Required behavior (decided)"](#36-required-behavior-decided) (0600 perms, provenance
    comment, confirmation) rather than rebuild it.
 
 ## 5. References
@@ -375,6 +381,7 @@ wnpa-sec-2011-03, wnpa-sec-2018-11, CVE-2011-0024; TraceWrangler; Packet-Foo
 `tempfile`/`std::fs::rename`. Conversion gotchas: Netresec PcapNG HowTo;
 Wireshark timestamps section.
 
-> The DSB section (§3) was written from established domain knowledge plus the
+> The DSB section
+> ([section 3, "Decryption Secrets Block (DSB) — engineering analysis"](#3-decryption-secrets-block-dsb--engineering-analysis)) was written from established domain knowledge plus the
 > format facts confirmed during research; its dedicated web-research pass failed
 > on a transient API overload, so pin fresh citations before publishing externally.

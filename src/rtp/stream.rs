@@ -220,9 +220,9 @@ pub const DSCP_VOICE_ADMIT: u8 = 44;
 ///
 /// Covers the codepoints [IANA's DSCP registry](https://www.iana.org/assignments/dscp-registry/dscp-registry.xhtml)
 /// names — the class selectors of
-/// [RFC 2474](https://www.rfc-editor.org/rfc/rfc2474) §4.2.2, the
+/// [RFC 2474 section 4.2.2](https://www.rfc-editor.org/rfc/rfc2474#section-4.2.2), the
 /// assured-forwarding classes of
-/// [RFC 2597](https://www.rfc-editor.org/rfc/rfc2597) §6, EF, VOICE-ADMIT and
+/// [RFC 2597 section 6](https://www.rfc-editor.org/rfc/rfc2597#section-6), EF, VOICE-ADMIT and
 /// LE ([RFC 8622](https://www.rfc-editor.org/rfc/rfc8622)).
 ///
 /// Everything else returns `"unassigned"` rather than a fabricated name. Half

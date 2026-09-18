@@ -190,7 +190,7 @@ silently mix two listening contexts inside one equation.
 `AMR-WB` alone spans `Ie,WB` 1 to 41 — roughly 4.49 down to 3.51. Two ways to
 pin it:
 
-1. **SDP `a=fmtp` `mode-set` naming exactly one mode.** [RFC 4867 §8.1](https://www.rfc-editor.org/rfc/rfc4867#section-8.1) numbers
+1. **SDP `a=fmtp` `mode-set` naming exactly one mode.** [RFC 4867 section 8.1](https://www.rfc-editor.org/rfc/rfc4867#section-8.1) numbers
    the modes 0–8 in ascending bitrate, so `mode-set=2` is 12.65 kbit/s.
    A multi-mode set says what the stream *may* do, not what it did — senders
    switch mode per frame under congestion.
@@ -266,7 +266,7 @@ drags the diotic assumption across with it.
   a superseded Eq (7-6) written in terms of a quantity the wideband model never
   defines.
 - **ITU-T G.107.2 (03/2023)** for the fullband scale.
-- **[RFC 4867 §8.1](https://www.rfc-editor.org/rfc/rfc4867#section-8.1)** for AMR / AMR-WB payload format and `mode-set`.
+- **[RFC 4867 section 8.1](https://www.rfc-editor.org/rfc/rfc4867#section-8.1)** for AMR / AMR-WB payload format and `mode-set`.
 
 One caveat that belongs in any operator-facing report built on these numbers:
 <!-- The two phrases below quote G.113 verbatim; rewording them to satisfy the

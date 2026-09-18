@@ -598,7 +598,7 @@ mod tests {
     }
 
     /// `-c` rejects a lowercase `invite` request line. SIP method tokens are
-    /// case-sensitive per RFC 3261 §7.1, so `invite` is NOT an INVITE — it
+    /// case-sensitive per [RFC 3261 section 7.1](https://www.rfc-editor.org/rfc/rfc3261#section-7.1), so `invite` is NOT an INVITE — it
     /// parses to `SipMethod::Custom("invite")`. This pins the matcher to the
     /// same case-sensitive semantics as `SipMethod::parse`.
     #[test]

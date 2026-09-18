@@ -8,8 +8,8 @@
 //! implemented here.
 //!
 //! That citation is **stale, not wrong**, and the distinction matters to
-//! anyone auditing this module. draft-18 §2.2 Figure 2 is byte-for-byte
-//! identical to RFC 8300 §2.2 Figure 3 — same 6-bit TTL, same 6-bit Length,
+//! anyone auditing this module. [draft-ietf-sfc-nsh-18 section 2.2](https://datatracker.ietf.org/doc/html/draft-ietf-sfc-nsh-18#section-2.2) Figure 2 is byte-for-byte
+//! identical to [RFC 8300 section 2.2](https://www.rfc-editor.org/rfc/rfc8300#section-2.2) Figure 3 — same 6-bit TTL, same 6-bit Length,
 //! same four unassigned bits above a 4-bit MD Type — and draft-18 carries the
 //! same TTL paragraph the RFC does. The two Length rules differ only in
 //! wording ("MUST be of value 0x6" versus "MUST be 0x6"), an editorial
@@ -29,7 +29,7 @@
 //!
 //! NSH is a fixed 4-octet Base Header followed by a 4-octet Service Path
 //! Header and then metadata whose shape the MD Type selects. Everything this
-//! module needs is in the Base Header (RFC 8300 §2.2, Figure 3):
+//! module needs is in the Base Header ([RFC 8300 section 2.2](https://www.rfc-editor.org/rfc/rfc8300#section-2.2), Figure 3):
 //!
 //! ```text
 //!  0                   1                   2                   3
@@ -54,27 +54,27 @@ use super::{Inner, mpls};
 
 /// Octets in the NSH Base Header + Service Path Header, the part that is
 /// present regardless of MD Type ("The format of the Base Header and the
-/// Service Path Header is invariant and not affected by MD Type", §2.2).
+/// Service Path Header is invariant and not affected by MD Type", [RFC 8300 section 2.2](https://www.rfc-editor.org/rfc/rfc8300#section-2.2)).
 const NSH_FIXED: usize = 8;
 
-/// Octets per unit of the Length field (§2.2: "The total length, in 4-byte
+/// Octets per unit of the Length field ([RFC 8300 section 2.2](https://www.rfc-editor.org/rfc/rfc8300#section-2.2): "The total length, in 4-byte
 /// words, of the NSH").
 const LENGTH_WORD: usize = 4;
 
 /// The only NSH version this decoder — or any decoder — may accept.
 ///
-/// §2.2: "It MUST be set to 0x0 by the sender, in this first revision of the
+/// [RFC 8300 section 2.2](https://www.rfc-editor.org/rfc/rfc8300#section-2.2): "It MUST be set to 0x0 by the sender, in this first revision of the
 /// NSH. If a packet presumed to carry an NSH header is received at an SFF, and
 /// the SFF does not understand the version of the protocol ... the packet MUST
 /// be discarded."
 const NSH_VERSION: u8 = 0;
 
-/// MD Type 0x1: fixed-length context header, and §2.2 pins the size exactly —
+/// MD Type 0x1: fixed-length context header, and [RFC 8300 section 2.2](https://www.rfc-editor.org/rfc/rfc8300#section-2.2) pins the size exactly —
 /// "The length MUST be 0x6 for MD Type 0x1", i.e. 4 + 4 + 16 = 24 octets.
 const MD_TYPE_FIXED: u8 = 0x1;
 /// Length, in 4-byte words, that MD Type 0x1 mandates.
 const MD_FIXED_LENGTH: u8 = 0x6;
-/// MD Type 0x2: optional variable-length context headers; §2.2 requires the
+/// MD Type 0x2: optional variable-length context headers; [RFC 8300 section 2.2](https://www.rfc-editor.org/rfc/rfc8300#section-2.2) requires the
 /// length "MUST be 0x2 or greater", where exactly 0x2 means no context
 /// headers at all.
 const MD_TYPE_VARIABLE: u8 = 0x2;
@@ -94,7 +94,7 @@ const NEXT_PROTO_MPLS: u8 = 0x5;
 
 /// Minimum octets that must have been captured at the returned offset for the
 /// payload kind being claimed: the IPv4 fixed header, whose addresses end at
-/// octet 20 (RFC 791 §3.1); the IPv6 fixed header (RFC 8200 §3); and an
+/// octet 20 ([RFC 791 section 3.1](https://www.rfc-editor.org/rfc/rfc791#section-3.1)); the IPv6 fixed header ([RFC 8200 section 3](https://www.rfc-editor.org/rfc/rfc8200#section-3)); and an
 /// Ethernet II header through its EtherType.
 ///
 /// These bound nothing about the *wire* — Total Length and Payload Length are
@@ -104,7 +104,7 @@ const NEXT_PROTO_MPLS: u8 = 0x5;
 /// cut off before its addresses is an offset nothing downstream can use, and
 /// returning one converts a clean miss into a parse failure further along.
 const IPV4_FIXED_HEADER: usize = 20;
-/// Octets in the IPv6 fixed header (RFC 8200 §3); see [`IPV4_FIXED_HEADER`].
+/// Octets in the IPv6 fixed header ([RFC 8200 section 3](https://www.rfc-editor.org/rfc/rfc8200#section-3)); see [`IPV4_FIXED_HEADER`].
 const IPV6_FIXED_HEADER: usize = 40;
 /// Octets in an Ethernet II header through the EtherType; see
 /// [`IPV4_FIXED_HEADER`].

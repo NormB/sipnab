@@ -477,7 +477,7 @@ A composite run therefore reports, per call:
 | Differing SDP | Both saw the message and disagree about the media endpoint, so the report carries both accounts side by side |
 
 Neither account carries the label expected or actual. sipnab pairs copies by
-transaction identity ([RFC 3261 §17.1.3](https://www.rfc-editor.org/rfc/rfc3261#section-17.1.3) and §17.2.3), never by arrival order,
+transaction identity ([RFC 3261 section 17.1.3](https://www.rfc-editor.org/rfc/rfc3261#section-17.1.3) and [RFC 3261 section 17.2.3](https://www.rfc-editor.org/rfc/rfc3261#section-17.2.3)), never by arrival order,
 because the mirror usually arrives FIRST — the proxy mirrors as it processes
 while the wire copy takes a network hop, so any "first one wins" rule would
 quietly make the suspect authoritative.
@@ -2148,7 +2148,7 @@ STIR/SHAKEN: attest=A orig=+15551234567 dest=["+15559876543"] verified=NotChecke
 **What to look for:**
 
 - `attest=A` means the originator **claimed** full attestation. Nothing here confirms the claim, and a forged Identity header decodes exactly like a genuine one — so this is evidence about what the originator claimed, never grounds for trusting a calling number.
-- `verified=Expired` is the one check sipnab applies locally: [RFC 8224 §4.4](https://www.rfc-editor.org/rfc/rfc8224#section-4.4) `iat` freshness, against the capture timestamp of the packet carrying the header. An old pcap therefore reports the tokens that were still fresh at the moment they crossed the tap.
+- `verified=Expired` is the one check sipnab applies locally: [RFC 8224 section 6.2](https://www.rfc-editor.org/rfc/rfc8224#section-6.2), Step 4, `iat` freshness, against the capture timestamp of the packet carrying the header. An old pcap therefore reports the tokens that were still fresh at the moment they crossed the tap.
 - No `STIR/SHAKEN:` line at all means no `Identity` header reached the capture point. On an inbound trunk that is itself the finding.
 
 **Pitfalls:**
@@ -2762,7 +2762,7 @@ Pass a container somebody else produced — one a store already rejected — as 
 
 **What to look for:**
 
-- **There are three verdicts, and the middle one carries the point.** `valid-except-documented-deviation` means every finding is a shape sipnab emits deliberately that the schema rejects: §4.3 of the draft says a Dialog Object with no parameters is possible, the working group agreed that shape in issue #20 after IETF 124, and the draft's own Appendix B schema forbids it because every Dialog Object requires a `start`. sipnab emits one — the consultative leg of an attended transfer, which the observed leg never saw.
+- **There are three verdicts, and the middle one carries the point.** `valid-except-documented-deviation` means every finding is a shape sipnab emits deliberately that the schema rejects: [section 4.3 of draft-ietf-vcon-vcon-core-03](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-4.3) says a Dialog Object with no parameters is possible, the working group agreed that shape in issue #20 after IETF 124, and the draft's own Appendix B schema forbids it because every Dialog Object requires a `start`. sipnab emits one — the consultative leg of an attended transfer, which the observed leg never saw.
 - The exemption is **narrow**. Only a Dialog Object with no members at all counts. A typed object missing `start` is an ordinary error, and it is exactly the defect the corpus pass found; folding the two together would teach a producer that a missing `start` is fine.
 - A container that disagrees with the schema is an **answer**, not a tool error. The call fails only when the request is wrong: neither argument, both, an unknown Call-ID, or a `container` that is not a JSON object.
 

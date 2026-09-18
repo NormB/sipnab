@@ -1956,7 +1956,7 @@ mod tests {
     ///
     /// RTF1. `--hep-allow 198.51.100.0/24` admits an agent whose packets
     /// arrive as `::ffff:198.51.100.7`, because `CidrRange::contains` maps an
-    /// IPv4-mapped IPv6 address to its v4 form first — RFC 4291 §2.5.5.2 makes
+    /// IPv4-mapped IPv6 address to its v4 form first — [RFC 4291 section 2.5.5.2](https://www.rfc-editor.org/rfc/rfc4291#section-2.5.5.2) makes
     /// `::ffff:0:0/96` the representation OF a v4 address, not a different
     /// family. `ip_in_cidr` had its own rule and refused the same address, so
     /// a filter over the traffic sipnab had just admitted selected none of it.

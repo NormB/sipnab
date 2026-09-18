@@ -53,8 +53,9 @@ pub struct DescribeEndpointParams {
 #[schemars(crate = "rmcp::schemars")]
 pub struct EndpointBanner {
     /// Which header carried it — `User-Agent` on a request, `Server` on a
-    /// response. Kept apart because they identify different roles: RFC 3261
-    /// §20.41 has the UAC naming itself, §20.35 has the UAS.
+    /// response. Kept apart because they identify different roles:
+    /// [RFC 3261 section 20.41](https://www.rfc-editor.org/rfc/rfc3261#section-20.41) has the UAC naming itself,
+    /// [section 20.35](https://www.rfc-editor.org/rfc/rfc3261#section-20.35) has the UAS.
     pub header: String,
     /// The banner text, fenced: it is a string the sender chose.
     pub value: String,
@@ -321,15 +322,15 @@ impl SipnabMcp {
     /// hand-offs an operator is looking for.
     ///
     /// A `user` selector matches the dialog's From or To user part, compared
-    /// EXACTLY. RFC 3261 §19.1.4 makes the user part of a SIP URI
+    /// EXACTLY. [RFC 3261 section 19.1.4](https://www.rfc-editor.org/rfc/rfc3261#section-19.1.4) makes the user part of a SIP URI
     /// case-sensitive, so `Alice` and `alice` are two URIs, and case-folding
     /// them here would report one endpoint's traffic under another's name.
     ///
     /// # What a banner is attributed to
     ///
     /// For an `ip`, `User-Agent` is read off requests the address SENT and
-    /// `Server` off responses it sent — both name the sender (RFC 3261 §20.41,
-    /// §20.35), so reading them off received messages would attribute the far
+    /// `Server` off responses it sent — both name the sender ([RFC 3261 section 20.41](https://www.rfc-editor.org/rfc/rfc3261#section-20.41),
+    /// [section 20.35](https://www.rfc-editor.org/rfc/rfc3261#section-20.35)), so reading them off received messages would attribute the far
     /// end's software to this endpoint. For a `user`, only `User-Agent` on
     /// requests whose From user matches, which is the one case where the URI
     /// identifies the party that wrote the header.
@@ -469,8 +470,8 @@ impl SipnabMcp {
     ///   rather than off the dialog, for the reason `describe_endpoint`
     ///   records.
     /// * `ua` — every `User-Agent` a request carried and every `Server` a
-    ///   response carried, both of which name their own sender (RFC 3261
-    ///   §20.41, §20.35). Software present on the wire, not software that
+    ///   response carried, both of which name their own sender
+    ///   ([RFC 3261 section 20.41](https://www.rfc-editor.org/rfc/rfc3261#section-20.41), [section 20.35](https://www.rfc-editor.org/rfc/rfc3261#section-20.35)). Software present on the wire, not software that
     ///   opened calls.
     /// * `prefix` — the leading digits of the dialed number, from the To user
     ///   part. The toll-fraud and routing question: a destination range
@@ -1300,7 +1301,7 @@ mod tests {
         );
     }
 
-    /// The user part is case-sensitive per RFC 3261 §19.1.4, so a differently
+    /// The user part is case-sensitive per [RFC 3261 section 19.1.4](https://www.rfc-editor.org/rfc/rfc3261#section-19.1.4), so a differently
     /// cased name is a different endpoint.
     #[tokio::test]
     async fn describe_endpoint_by_user_matches_the_uri_case_exactly() {

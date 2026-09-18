@@ -344,7 +344,7 @@ Signaling Issues:
 
 **What it means.** `retransmits: 10` is not a measure of loss. Eleven
 transmissions over 31.5 s is the complete non-INVITE client transaction ladder
-of [RFC 3261 §17.1.2.2](https://www.rfc-editor.org/rfc/rfc3261#section-17.1.2.2):
+of [RFC 3261 section 17.1.2.2](https://www.rfc-editor.org/rfc/rfc3261#section-17.1.2.2):
 T1, 2×T1, 4×T1, then T2 (4 s) repeatedly until Timer F fires at 64×T1 = 32 s. A
 transaction that reaches that count did not lose packets — it ran to completion
 against a peer that answered nothing. The number tells you the timer expired,
@@ -943,7 +943,7 @@ second hop. The access hop carries all twelve offending requests, so narrowing
 to it changes nothing. Those 12 are real: twelve requests entered the network with
 no [Max-Forwards](https://www.rfc-editor.org/rfc/rfc3261#section-8.1.1.6) header
 at all. `SDP-7587-7-OPUS-RTPMAP-RATE` is real too — a device declaring
-`opus/48000/1` where [RFC 7587 §7](https://www.rfc-editor.org/rfc/rfc7587#section-7)
+`opus/48000/1` where [RFC 7587 section 7](https://www.rfc-editor.org/rfc/rfc7587#section-7)
 requires `opus/48000/2` — and the whole ring holds 24 of them.
 
 **What to do next.** Lint one hop at a time. Add a BPF expression naming the
@@ -1038,7 +1038,7 @@ sipnab -N -I pbx.pcap4 --portrange 1-65535 --json-dialogs --no-cli-print --quiet
 
 Four challenges, and the attacker sent **one** INVITE. The intervals between the
 401s are 0.499 s, 1.001 s and 2.000 s — the INVITE server transaction's Timer G
-ladder from [RFC 3261 §17.2.1](https://www.rfc-editor.org/rfc/rfc3261#section-17.2.1),
+ladder from [RFC 3261 section 17.2.1](https://www.rfc-editor.org/rfc/rfc3261#section-17.2.1),
 doubling from T1 up to T2. The PBX retransmitted its own final response because
 nothing ever acknowledged it. `timing.retransmits: 3` says so in the same
 record: 4 challenges minus 3 retransmissions is one challenge.

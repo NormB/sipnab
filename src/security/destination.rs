@@ -19,7 +19,9 @@
 //! failure**: a number that matches no prefix is out of scope and passes; the reference
 //! records that denying everything unclassifiable became 39% of a predecessor's rejections.
 
-/// Maximum digits in an E.164 number, without the `+` (ITU-T E.164 §6.2.1).
+/// Maximum digits in an E.164 number, without the `+`
+/// ([ITU-T Recommendation E.164](https://www.itu.int/rec/T-REC-E.164/) section 6.1,
+/// "International E.164 number length").
 const E164_MAX_DIGITS: usize = 15;
 /// Smallest plausible international number: calling code plus a subscriber part.
 const E164_MIN_DIGITS: usize = 7;

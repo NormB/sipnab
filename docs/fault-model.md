@@ -127,7 +127,8 @@ Audited, found sound (true-positive findings: none):
 - **Live loop** (`capture/live.rs`): device-open and BPF-compile
   failures return clean errors via the ready channel; receiver-dropped
   breaks cleanly. A transient `recv()` error is currently fatal to the
-  capture thread — acceptable, but untested (see §5 gaps). The thread
+  capture thread — acceptable, but untested (see the gaps in
+  [section 5, "Known gaps (deliberate / lower priority)"](#5-known-gaps-deliberate--lower-priority)). The thread
   ends by returning the error rather than panicking; the run that joins
   it then logs at error level and exits non-zero, because a capture that
   stopped early leaves every report above it resting on a partial read.

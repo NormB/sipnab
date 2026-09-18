@@ -141,8 +141,9 @@ order*.
   was written to close. The *unverified* caveat is now **confirmed** both from
   `net/core/filter.c` and against the running kernel: `setsockopt` succeeded
   after a full drop to an unprivileged uid with an empty capability set.
-  Numbers, method and the veth caveat: §6 of
-  [`live-fanout.md`](live-fanout.md).
+  Numbers, method and the veth caveat: section 6 of
+  [`live-fanout.md`](live-fanout.md),
+  ["CT11: measured, and refused"](live-fanout.md#6-ct11-measured-and-refused).
 - [ ] **CT3 — `--snaplen` capture profiles.** Not a bare default change:
   truncation breaks audio reconstruction and degrades `-O` re-emit. Ship named
   profiles, refuse/warn on the incompatible combinations, and surface
@@ -197,7 +198,8 @@ alone.
   frequent operation in the process. This is the premise every later contention
   judgement rests on. Correct it in place, per the repo's own "refute your own
   claims in place" norm. *(= G2)*
-- [x] **D2 — `invariants.md` §2 contradicts the batch applier.** It states
+- [x] **D2 — [section 2 of `invariants.md`](../internals/invariants.md#2-dialog-before-stream-then-alerts--one-consistent-order)
+  (the store lock-order rule) contradicts the batch applier.** It states
   "Never hold both write locks simultaneously" and then claims the batch
   applier "holds their stores by `&mut` and so have no ordering to get wrong" —
   but `batch.rs` takes both `write()` guards. Either restate the rule as
@@ -223,7 +225,9 @@ alone.
   and resolve each to shipped, dropped, or still-open. *Partly done:* the
   capture-tuning pages are clean. Still carrying it:
   `threat-mitigation-hooks.md` (its header pins the whole page to "`63b771b`
-  plus an uncommitted in-flight change", and §119 repeats it) and
+  plus an uncommitted in-flight change", and its section 4,
+  ["What a defensible signature looks like"](threat-mitigation-hooks.md#4-what-a-defensible-signature-looks-like),
+  repeats it) and
   `backlog.md:874`. Neither is capture work, which is why they were left rather
   than swept blind.
 - [ ] **D7 — Sweep the two implementation plans** (`implementation-plan-v6.md`

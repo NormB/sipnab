@@ -1,7 +1,7 @@
 +++
 title = "What 0.5.128 added to the vCon exporter"
 date = 2026-08-27
-description = "Seven fields the format defines and sipnab was not emitting, transfer objects for observed REFERs, a configurable media ceiling, tombstones for withheld dialogs, and RFC 9457 errors. What each one is for."
+description = "Seven fields the format defines and sipnab was not emitting, transfer objects for observed REFERs, a configurable media ceiling, tombstones for withheld dialogs, and [RFC 9457](https://www.rfc-editor.org/rfc/rfc9457) errors. What each one is for."
 
 [extra]
 kind = "feature"
@@ -27,13 +27,13 @@ caller's `name` reads `PCMU/8000`. sipnab reports it faithfully because that is
 what the wire said, and the `validation` field beside it is the signal against
 reading it as an identity.
 
-**`party.stir`** carries an observed RFC 8224 PASSporT — the JWS alone, without
+**`party.stir`** carries an observed [RFC 8224](https://www.rfc-editor.org/rfc/rfc8224) PASSporT — the JWS alone, without
 the `info`, `alg` and `ppt` parameters, because a consumer handed the whole
 header value cannot parse it as a token. It rides on the caller, since that is
 who the `Identity` header authenticates. sipnab fetches no certificate and
 checks no signature, so it is evidence a consumer may verify, never a verdict.
 
-**`session_id`** carries the RFC 7989 pair. This is the identifier that
+**`session_id`** carries the [RFC 7989](https://www.rfc-editor.org/rfc/rfc7989) pair. This is the identifier that
 survives a B2BUA where `Call-ID` does not, and it is the draft's own
 leg-correlation mechanism. sipnab drops a `nil` or malformed half rather than
 transcribing it: a correlation key that matches nothing is worse than an absent

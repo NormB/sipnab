@@ -255,6 +255,28 @@ def blob_url(target: str) -> str:
     return f"{BLOB}/{'/'.join(prefix + parts)}"
 
 
+# `docs/`, for reading the headings a link's anchor points into.
+DOCS_DIR = Path(__file__).resolve().parent.parent / "docs"
+_ANCHORS: dict[str, dict[str, str]] = {}
+
+
+def _xlate(page: str, anchor: str) -> str:
+    """`#github-slug` -> `#zola-slug` for `page`, a path relative to `docs/`.
+
+    The source pages are written for GitHub, whose slug keeps a double hyphen
+    where a heading has an em dash; Zola's collapses it. The site pages
+    generator has translated its links this way all along. This one passed
+    anchors through, which went unnoticed until a developer page linked to a
+    heading with an em dash in it.
+    """
+    if not anchor:
+        return anchor
+    if page not in _ANCHORS:
+        path = DOCS_DIR / page
+        _ANCHORS[page] = anchor_map(path.read_text(encoding="utf-8")) if path.exists() else {}
+    return "#" + _ANCHORS[page].get(anchor[1:], anchor[1:])
+
+
 def rewrite_link(m: re.Match) -> str:
     target, anchor = m.group(1), (m.group(2) or "")
     if target.startswith(("http://", "https://")):
@@ -263,15 +285,18 @@ def rewrite_link(m: re.Match) -> str:
     # Sibling developer page -> Zola internal link.
     if "/" not in target:
         if target == INDEX_SRC:
-            return f"](@/docs/internals/_index.md{anchor})"
+            return f"](@/docs/internals/_index.md{_xlate('internals/' + target, anchor)})"
         if target in SRC_TO_SLUG:
-            return f"](@/docs/internals/{SRC_TO_SLUG[target]}{anchor})"
+            return (
+                f"](@/docs/internals/{SRC_TO_SLUG[target]}"
+                f"{_xlate('internals/' + target, anchor)})"
+            )
 
     # Operator doc one level up that has a site page.
     if target.startswith("../") and "/" not in target[3:]:
         site = DOCS_TO_SITE.get(target[3:])
         if site:
-            return f"](@/docs/{site}{anchor})"
+            return f"](@/docs/{site}{_xlate(target[3:], anchor)})"
 
     return f"]({blob_url(target)}{anchor})"
 

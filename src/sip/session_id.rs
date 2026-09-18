@@ -276,9 +276,9 @@ impl SessionId {
 mod tests {
     /// The `remote` parameter name is case-insensitive.
     ///
-    /// RFC 3261 §7.3.1: "field values, parameter names, and parameter values
-    /// are case-insensitive", and RFC 7989 §5 states no exception. ABNF string
-    /// literals are case-insensitive by RFC 5234 §2.3, so `remote-param =
+    /// [RFC 3261 section 7.3.1](https://www.rfc-editor.org/rfc/rfc3261#section-7.3.1): "field values, parameter names, and parameter values
+    /// are case-insensitive", and [RFC 7989 section 5](https://www.rfc-editor.org/rfc/rfc7989#section-5) states no exception. ABNF string
+    /// literals are case-insensitive by [RFC 5234 section 2.3](https://www.rfc-editor.org/rfc/rfc5234#section-2.3), so `remote-param =
     /// "remote" EQUAL remote-uuid` matches `Remote=` too.
     ///
     /// The defect: `strip_prefix("remote")` matched one spelling. A conformant
@@ -306,8 +306,8 @@ mod tests {
 
     /// A `;` inside a quoted generic-param does not split the parameter list.
     ///
-    /// RFC 7989 §5: `sess-id-param = remote-param / generic-param`, and
-    /// RFC 3261 §25.1 puts `;` (%x3B) inside `qdtext`. So a quoted value may
+    /// [RFC 7989 section 5](https://www.rfc-editor.org/rfc/rfc7989#section-5): `sess-id-param = remote-param / generic-param`, and
+    /// [RFC 3261 section 25.1](https://www.rfc-editor.org/rfc/rfc3261#section-25.1) puts `;` (%x3B) inside `qdtext`. So a quoted value may
     /// contain one and it must not be read as a separator.
     ///
     /// The defect was remotely triggerable: anyone on the signaling path could
@@ -343,8 +343,8 @@ mod tests {
 
     /// A duplicate `remote` takes the FIRST, and the RFC forbids the second.
     ///
-    /// RFC 7989 §5: "The Session-ID header field MUST NOT have more than one
-    /// 'remote' parameter." RFC 3261 §7.3.1 says the same generally. Taking
+    /// [RFC 7989 section 5](https://www.rfc-editor.org/rfc/rfc7989#section-5): "The Session-ID header field MUST NOT have more than one
+    /// 'remote' parameter." [RFC 3261 section 7.3.1](https://www.rfc-editor.org/rfc/rfc3261#section-7.3.1) says the same generally. Taking
     /// the last let a later parameter override an earlier one; taking the
     /// first at least matches RFC 8489's rule for the analogous case and is
     /// the half an attacker cannot append to.

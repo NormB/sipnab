@@ -19,9 +19,9 @@ is why that gate asserts SURVIVAL rather than a denial. **An allowlist is
 per-HOST**, and a list compiled into a binary is one derived somewhere its
 operator has never been.
 **`--seccomp log` is not a control** and denies nothing. What sipnab *does* have
-besides is weaker and is not nothing — §0 tabulates it.
+besides is weaker and is not nothing — [section 0, "What is in place today"](#0-what-is-in-place-today) tabulates it.
 **Check:** `grep -c 'SECCOMP_RET_KILL_PROCESS' src/seccomp.rs` returns 7 — the killing action exists now, in one module, reached only by `--seccomp enforce`. The check moved from asserting its ABSENCE to counting its occurrences when step 4 shipped; an absence check left in place would have gone on passing by matching nothing, which is the failure this page's own history is full of.
-**Check:** `grep -c 'libc::prctl\|libc::setrlimit\|libc::chroot\|libc::setuid\|libc::setgroups' src/privilege.rs` returns 7 — the calls §0 tabulates; the gate running this line proves the set is non-empty, and the 7 was counted by hand. It was 6 until `set_no_new_privs` began reading its own flag back with `PR_GET_NO_NEW_PRIVS`.
+**Check:** `grep -c 'libc::prctl\|libc::setrlimit\|libc::chroot\|libc::setuid\|libc::setgroups' src/privilege.rs` returns 7 — the calls that [section 0, "What is in place today"](#0-what-is-in-place-today) tabulates; the gate running this line proves the set is non-empty, and the 7 was counted by hand. It was 6 until `set_no_new_privs` began reading its own flag back with `PR_GET_NO_NEW_PRIVS`.
 The seccomp check was once written `grep -rn 'seccomp\|landlock\|unshare'`,
 which matched one hit — the prose "(unshared)" in the TUI, added months before
 this document. The verdict was right and the evidence was too broad, so the
@@ -44,12 +44,12 @@ an unknown right left out of `handled_access_fs` is a right the ruleset does
 not govern, and ungoverned is the safe direction to be wrong in. `REFER` and
 `IOCTL_DEV` are deliberately ungoverned, each for a reason in the source.
 Sockets are not bounded at any ABI. The install happens at the END of
-`bootstrap`, not where §4 proposed — see the correction below.
+`bootstrap`, not where [section 4, "Where the filter installs"](#4-where-the-filter-installs) proposed — see the correction below.
 
 **Backlog:** [`backlog.md`](backlog.md) **G5** (`:1719`).
 **Upstream argument:**
-[`process-isolation-and-hot-path-cost.md`](process-isolation-and-hot-path-cost.md)
-§2b, which is where the threat is established and where forking was declined in
+[`process-isolation-and-hot-path-cost.md`](process-isolation-and-hot-path-cost.md),
+[section 2b, "Memory isolation — narrow, but this is the strongest argument"](process-isolation-and-hot-path-cost.md#2b-memory-isolation--narrow-but-this-is-the-strongest-argument), which is where the threat is established and where forking was declined in
 favor of this.
 
 Most of this page is about **how to derive an allowlist**, not what the
@@ -81,7 +81,7 @@ The plugin row is the one most likely to be mistaken for this page's subject.
 It is a genuine sandbox and it is airtight in its own scope — a module that
 imports anything at all fails to instantiate, and `wasmi` interprets rather than
 JITs, so the host maps no writable-executable page. It governs **plugin** code.
-It has no bearing on libpcap, which is the code §1 is about, and which runs in
+It has no bearing on libpcap, which is the code [section 1, "The threat, and why it is not the usual one"](#1-the-threat-and-why-it-is-not-the-usual-one) is about, and which runs in
 the host with the host's full authority. [`wasm-plugin-api.md`](wasm-plugin-api.md)
 owns that argument and states its own limits.
 
@@ -120,7 +120,7 @@ never drops a capability itself — `grep -rn 'capset\|PR_CAPBSET_DROP' src/`
 exits 1 — and `verify_dropped` reads back uid and gid only, not the capability
 sets. So "capabilities are gone after the drop" is true, inherited from
 `setuid` semantics rather than asserted by this code, and it is one more thing
-the readback in §4 could cover and does not.
+the readback in [section 4, "Where the filter installs"](#4-where-the-filter-installs) could cover and does not.
 
 **`--no-priv-drop` turns off row one by request**
 ([`src/privilege.rs:34-37`](https://github.com/NormB/sipnab/blob/main/src/privilege.rs#L34-L37)), and on macOS a root run without
@@ -136,14 +136,14 @@ asking to be spared, and cannot be undone once set.
 dumps core, and that core carries packet payloads.
 
 **Two of the four used to report success they did not achieve.** *Fixed
-2026-08-14; the finding is kept because it is what set §6's priority.*
+2026-08-14; the finding is kept because it is what set the priority of [section 6, "Degradation, and saying so"](#6-degradation-and-saying-so).*
 `set_no_new_privs` warned and returned `Ok` when the `prctl` failed, and
 `disable_core_dumps` did the same, then logged `"Core dumps disabled
 (decryption active)"` unconditionally on the way out. A failed
 `PR_SET_DUMPABLE` therefore produced a warning line *and* a confident success
 line, and the caller's `exit(1)` on error was unreachable. This is the same
-silence-as-failure-mode §6 is built to avoid, and it was already present in the
-controls that exist — so §6's reporting surface was a fix for shipped
+silence-as-failure-mode that [section 6, "Degradation, and saying so"](#6-degradation-and-saying-so) is built to avoid, and it was already present in the
+controls that exist — so the reporting surface in [section 6, "Degradation, and saying so"](#6-degradation-and-saying-so) was a fix for shipped
 behavior, not only a requirement on new behavior.
 
 Both now return the failure. What is done with it differs per call, and
@@ -171,7 +171,7 @@ disk**. Not one of them constrains what the sipnab process may ask the kernel
 for while running as itself.
 
 So a libpcap compromise that never tries to become another user, never execs a
-setuid binary and never leaves the chroot keeps everything §1 lists with all
+setuid binary and never leaves the chroot keeps everything [section 1, "The threat, and why it is not the usual one"](#1-the-threat-and-why-it-is-not-the-usual-one) lists with all
 four controls in force: it reads the TLS keys out of this process's memory,
 opens the keylog through this process's own credentials, sends on the
 `CAP_NET_RAW` socket the drop deliberately preserved, `connect`s outward,
@@ -185,11 +185,11 @@ to close it without killing a production capture in the process.
 
 ## 1. The threat, and why it is not the usual one
 
-sipnab's own parsers are 100% safe Rust; `process-isolation-and-hot-path-cost.md`
-§2b establishes that *"none in `sip/`, `rtp/parser.rs`, `capture/parse.rs` or
+sipnab's own parsers are 100% safe Rust; [section 2b, "Memory isolation — narrow, but this is the strongest argument"](process-isolation-and-hot-path-cost.md#2b-memory-isolation--narrow-but-this-is-the-strongest-argument) of `process-isolation-and-hot-path-cost.md`
+establishes that *"none in `sip/`, `rtp/parser.rs`, `capture/parse.rs` or
 `sdp.rs`"* carry an `unsafe` block. **libpcap is the exception, and it is the
 first thing to touch every untrusted byte**, on both the live and the offline
-path. §2b enumerates what shares its address space:
+path. [The same section 2b](process-isolation-and-hot-path-cost.md#2b-memory-isolation--narrow-but-this-is-the-strongest-argument) enumerates what shares its address space:
 
 - TLS key material (`--tls-key`, keylog secrets),
 - MCP and REST bearer tokens ([`auth.rs`](../../src/auth.rs)),
@@ -203,10 +203,10 @@ code executing inside this process from reading this process's own memory,
 opening this process's own keylog, or sending on the `CAP_NET_RAW` socket that
 survived the drop by design.
 
-§2b's own conclusion is worth carrying forward, because it names the shape of
+The conclusion of [section 2b, "Memory isolation — narrow, but this is the strongest argument"](process-isolation-and-hot-path-cost.md#2b-memory-isolation--narrow-but-this-is-the-strongest-argument) is worth carrying forward, because it names the shape of
 the fix: *"it argues for isolating **the libpcap reader**, not for forking N
-analysis workers. And §5 has a cheaper answer that closes more of the same
-path."* This page is that cheaper answer.
+analysis workers. And a cheaper answer closes more of the same path: a syscall
+filter installed after the privilege drop."* This page is that cheaper answer.
 
 ## 2. Why the allowlist cannot be written by hand
 
@@ -272,7 +272,7 @@ Verified by running it: `which strace ltrace bpftrace` returns nothing —
 is not currently possible here. `auditctl` is present at `/usr/sbin/auditctl`,
 and `perf` at `/usr/bin/perf`. `grep Seccomp /proc/self/status` returns both
 `Seccomp:` and `Seccomp_filters:` fields, so `CONFIG_SECCOMP` is compiled in and
-the kernel exposes the readback surface §6 needs. Kernel is `6.8.12-rt-tegra`
+the kernel exposes the readback surface that [section 6, "Degradation, and saying so"](#6-degradation-and-saying-so) needs. Kernel is `6.8.12-rt-tegra`
 (aarch64).
 
 ### Route A — `SECCOMP_RET_LOG`, the recommended one
@@ -392,9 +392,9 @@ shapes stopped finding calls, not that no shape would.
 
 ### The procedure
 
-1. **Write the candidate set from §2's table**, from the code surface, not from
+1. **Write the candidate set from the table in [section 2, "Why the allowlist cannot be written by hand"](#2-why-the-allowlist-cannot-be-written-by-hand)**, from the code surface, not from
    a guess about libc.
-2. **Build with `--seccomp=log`** and run the exercise corpus (§3.1).
+2. **Build with `--seccomp=log`** and run the exercise corpus ([section 3.1, "The corpus that has to be exercised"](#31-the-corpus-that-has-to-be-exercised)).
 3. **Union the logged set in**, per target triple, with each addition carrying a
    one-line note saying which run produced it. A syscall in the list that nobody
    can attribute is a syscall nobody can later remove.
@@ -438,14 +438,14 @@ textually IDENTICAL to a capture that was read perfectly"*
 ([`src/capture/mod.rs:107-112`](https://github.com/NormB/sipnab/blob/main/src/capture/mod.rs#L107-L112)).
 
 `SECCOMP_RET_KILL_PROCESS` produces a death with a syscall number attached. That
-is diagnosable, it is loud, and it is the only action that makes §6's proof
+is diagnosable, it is loud, and it is the only action that makes the proof in [section 7.2, "The behavioral proof, which is the one that matters"](#72-the-behavioral-proof-which-is-the-one-that-matters)
 possible: a filter whose denial is observable is a filter a test can prove is
 active.
 
 The cost is real and must be stated in the docs rather than hidden: **an
-under-derived allowlist kills a production capture.** That cost is why §3's
-procedure is a derivation and not a guess, why LOG mode ships, and why §5's
-degradation rule exists.
+under-derived allowlist kills a production capture.** That cost is why the
+procedure in [section 3, "Deriving the allowlist"](#3-deriving-the-allowlist) is a derivation and not a guess, why LOG mode ships, and why the
+degradation rule in [section 5, "Landlock: weaker, cheaper, and the one to ship first"](#5-landlock-weaker-cheaper-and-the-one-to-ship-first) exists.
 
 ## 4. Where the filter installs
 
@@ -463,9 +463,9 @@ Verified ordering today:
 
 The first row runs on **every** start — that is the point of where it sits, and
 it is why it is first. Rows two and three run **only on a root start**, and the
-fifth only when decryption keys are loaded, per §0.1. The install point below is
+fifth only when decryption keys are loaded, per [section 0.1, "Four caveats, because the table above is the optimistic reading"](#01-four-caveats-because-the-table-above-is-the-optimistic-reading). The install point below is
 chosen against the ordering, which holds either way; what changes without root
-is how much is already in force by the time the filter goes in, which is why §6
+is how much is already in force by the time the filter goes in, which is why [section 6, "Degradation, and saying so"](#6-degradation-and-saying-so)
 reports the whole posture rather than the filter alone.
 
 **Install point: immediately after `start_servers` returns, before the receive
@@ -501,16 +501,16 @@ routine case on the configuration most users run.
 syscalls, but the writer needs `link_type`, which comes from the first packet
 ([`src/app/batch.rs:2242`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L2242)). Re-architecting that to tighten a
 syscall list is the wrong trade. Instead: seccomp permits the file syscalls,
-and **Landlock bounds where they may point** (§5). That division of labor is
+and **Landlock bounds where they may point** ([section 5, "Landlock: weaker, cheaper, and the one to ship first"](#5-landlock-weaker-cheaper-and-the-one-to-ship-first)). That division of labor is
 what G5 means by Landlock being *"additionally"* useful, and it is why the two
 are one piece of work rather than two.
 
-**Corrected 2026-09-10, by checking the ordering rather than reading it.** §4
+**Corrected 2026-09-10, by checking the ordering rather than reading it.** [section 4, "Where the filter installs"](#4-where-the-filter-installs)
 puts the install after `start_servers`, and for Landlock that is too late.
 `landlock_restrict_self` enforces on the CALLING THREAD; threads created
 afterwards inherit the domain and threads that already exist do not. The
 capture thread is spawned at `bootstrap` step 15, well before the servers
-start, so installing where §4 says would have left the thread running libpcap
+start, so installing where [section 4, "Where the filter installs"](#4-where-the-filter-installs) says would have left the thread running libpcap
 outside the sandbox — the one thread the whole page is about.
 
 The shipped install is at the end of `bootstrap`, after the privilege drop,
@@ -526,7 +526,7 @@ inside the domain.
 ## 5. Landlock: weaker, cheaper, and the one to ship first
 
 Landlock bounds **paths**, not syscalls. It needs no syscall enumeration, so it
-carries none of §3's derivation risk, and it closes the largest single hole:
+carries none of the derivation risk that [section 3, "Deriving the allowlist"](#3-deriving-the-allowlist) describes, and it closes the largest single hole:
 after it is installed, a libpcap RCE cannot open the keylog of another run,
 cannot read `/etc/shadow`, and cannot write outside the output directory.
 
@@ -592,12 +592,12 @@ So degradation is paired with reporting:
 Reporting means three things:
 
 1. A startup log line naming what is active and what is not, and *why not* —
-   covering **the §0 controls as well as the two new ones**. A run under
+   covering **the controls in [section 0, "What is in place today"](#0-what-is-in-place-today) as well as the two new ones**. A run under
    `--setup-caps` today logs nothing about having skipped the privilege drop
    beyond one `debug!` line, and no-new-privs succeeding is also only a
    `debug!`, so an operator reading `info` cannot tell that posture from a root
    run apart. (What it can no longer do is claim a control it does not have —
-   see §0.1.) Reporting the two new
+   see [section 0.1, "Four caveats, because the table above is the optimistic reading"](#01-four-caveats-because-the-table-above-is-the-optimistic-reading).) Reporting the two new
    controls and staying silent about the four that were already there would
    leave the same gap this page opened by being read as "nothing is
    implemented".
@@ -607,7 +607,7 @@ Reporting means three things:
 3. **`--require-sandbox`**, which turns degradation into a refusal. Opt-in,
    never the default, for the operator who would rather not capture than capture
    unsandboxed. Without this flag there is no way to express that preference; with
-   it as a default, §6's rule is violated.
+   it as a default, the rule in [section 6, "Degradation, and saying so"](#6-degradation-and-saying-so) is violated.
 
 **macOS: declined, and not guessed at.** There is no seccomp. `sandbox_init(3)`
 is deprecated and its profile language is not a documented interface.
@@ -619,8 +619,8 @@ macOS reports "no filter" and the docs say so.
 its own default seccomp profile. Filters compose — the most restrictive wins — so
 adding one inside is not a conflict. **Unverified:** whether Docker's default
 profile permits the `seccomp(2)`/`prctl(PR_SET_SECCOMP)` call itself under the
-configurations sipnab is run in. If it does not, the install fails and §6's
-degradation path handles it — which is the point of having one.
+configurations sipnab is run in. If it does not, the install fails and the
+degradation path in [section 6, "Degradation, and saying so"](#6-degradation-and-saying-so) handles it — which is the point of having one.
 
 ## 7. Testing, and proving the filter is actually there
 
@@ -646,7 +646,7 @@ Assert the **effect**, not the predicate:
 
 - **seccomp.** After install, a child attempts a syscall that must be denied and
   the parent requires it to die by `SIGSYS`. Under `KILL_PROCESS` that is the
-  observable, which is a second reason §3.2 chose it over `ERRNO`.
+  observable, which is a second reason [section 3.2, "The default action: KILL, not ERRNO"](#32-the-default-action-kill-not-errno) chose it over `ERRNO`.
 - **Landlock.** A child opens a path outside the ruleset and must get `EACCES`;
   the same child opens a path inside the ruleset and must succeed. Both halves,
   because a child that cannot open anything would pass the first assertion for
@@ -687,7 +687,7 @@ the reason the wasm memory-cap test was rewritten after it *"caught it by passin
 
 ### 7.4 Coverage, so the list is not narrower than the shipped build
 
-A gate that runs the enforce-mode binary over §3.1's corpus and requires
+A gate that runs the enforce-mode binary over the corpus in [section 3.1, "The corpus that has to be exercised"](#31-the-corpus-that-has-to-be-exercised) and requires
 byte-identical output to the unfiltered run. This is the assertion that would
 have caught an allowlist derived on a build that had no `--api`, or on x86_64 and
 shipped for aarch64. It runs per target triple, because the list is per target
@@ -695,12 +695,12 @@ triple.
 
 ## 8. Recommendation
 
-1. **Landlock first**, best-effort ABI, with the ruleset in §5. It carries no
+1. **Landlock first**, best-effort ABI, with the ruleset in [section 5, "Landlock: weaker, cheaper, and the one to ship first"](#5-landlock-weaker-cheaper-and-the-one-to-ship-first). It carries no
    derivation risk, its failure mode is a weaker ruleset, and it closes the
    largest hole on its own.
 2. **The reporting surface second** — startup log line, summary field,
    `capture_health` code, and `--require-sandbox`. Without it neither control can
-   be shown to be present, and §7's gates have nothing to read.
+   be shown to be present, and the gates in [section 7, "Testing, and proving the filter is actually there"](#7-testing-and-proving-the-filter-is-actually-there) have nothing to read.
 3. **`--seccomp=log` third**, shipped, so the derivation is reproducible by
    someone on a platform the maintainer does not have. **Done 2026-09-10** as
    `--seccomp log`, spelled without the `=` to match every other value flag.
@@ -710,8 +710,8 @@ triple.
    holds at most `MAX_ALLOWLIST` (254) syscall numbers; one more is refused
    rather than encoded, because a truncated offset emits a jump to a real
    instruction and simply the wrong one.
-4. **The derived filter last**, per target triple, enforce mode, with §7's four
-   gates.
+4. **The derived filter last**, per target triple, enforce mode, with the four
+   gates in [section 7, "Testing, and proving the filter is actually there"](#7-testing-and-proving-the-filter-is-actually-there).
 
 Steps 1 and 2 are independently valuable and the sequence stops cleanly after
 either.

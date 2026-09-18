@@ -246,13 +246,14 @@ impl SipMessage {
             .collect()
     }
 
-    /// Detect structural malformations (SNB-0003, spec §5.2): defects that make
+    /// Detect structural malformations (backlog item SNB-0003, section 5.2 of
+    /// its spec, which is not in this repository): defects that make
     /// this a crafted/broken message rather than valid SIP. Returns a list of
     /// human-readable reasons (empty for a well-formed message). The doctrine is
     /// "detect & highlight" — surface the anomaly, never silently accept it.
     ///
     /// Checks: missing mandatory headers (`Call-ID`/`CSeq`/`From`/`To`/`Via`,
-    /// RFC 3261 §8.1.1/§8.2), an unparseable `CSeq`, a `Content-Length` larger
+    /// [RFC 3261 section 8.1.1](https://www.rfc-editor.org/rfc/rfc3261#section-8.1.1)/[RFC 3261 section 8.2](https://www.rfc-editor.org/rfc/rfc3261#section-8.2)), an unparseable `CSeq`, a `Content-Length` larger
     /// than the body actually present (truncated/lying length), and control/NUL
     /// bytes in a header name or value (injection / parser-abuse). Tab (LWS) is
     /// allowed; CR/LF cannot survive line parsing.
@@ -328,7 +329,7 @@ impl SipMessage {
 
 /// Strip a leading quoted display name, returning what follows it.
 ///
-/// RFC 3261 § 25.1: `display-name = *(token LWS) / quoted-string`, and a
+/// [RFC 3261 section 25.1](https://www.rfc-editor.org/rfc/rfc3261#section-25.1): `display-name = *(token LWS) / quoted-string`, and a
 /// `quoted-string` may hold any octet except an unescaped `"` — including `<`,
 /// `>` and a complete decoy URI, with `\` forming a `quoted-pair`.
 ///
@@ -388,7 +389,7 @@ pub(crate) fn addr_spec(header_value: &str) -> &str {
 
 /// Extract the user part from a SIP URI inside a header value.
 ///
-/// Handles both `<sip:user@host>` and bare `sip:user@host` forms (RFC 3261 § 20.20).
+/// Handles both `<sip:user@host>` and bare `sip:user@host` forms ([RFC 3261 section 20.20](https://www.rfc-editor.org/rfc/rfc3261#section-20.20)).
 /// Returns `None` when no `sip:`/`sips:` URI is found, when the URI has no
 /// `@` (host-only), or when the user part is empty.
 pub(crate) fn extract_uri_user(header_value: &str) -> Option<String> {
@@ -413,7 +414,7 @@ pub(crate) fn extract_uri_user(header_value: &str) -> Option<String> {
 ///
 /// Handles `<sip:user@host:port;params>`, bare `sip:host`, and bracketed IPv6
 /// hosts (`sip:user@[2001:db8::1]:5060`). Returns `None` for non-SIP URIs (e.g.
-/// `tel:`) or when no host is present (RFC 3261 § 19.1).
+/// `tel:`) or when no host is present ([RFC 3261 section 19.1](https://www.rfc-editor.org/rfc/rfc3261#section-19.1)).
 fn extract_uri_host_port(header_value: &str) -> Option<String> {
     // The SAME isolation extract_uri_user uses. This function used to scan the
     // raw header for a scheme anywhere -- `find("<sip:")`, then three fallbacks
@@ -542,7 +543,7 @@ fn extract_tag(header_value: &str) -> Option<&str> {
 mod tests {
     /// The TOP Via value is the first via-parm, not the first Via row.
     ///
-    /// RFC 3261 §20.42: `Via = ( "Via" / "v" ) HCOLON via-parm *(COMMA
+    /// [RFC 3261 section 20.42](https://www.rfc-editor.org/rfc/rfc3261#section-20.42): `Via = ( "Via" / "v" ) HCOLON via-parm *(COMMA
     /// via-parm)`, and §7.3.1 permits multiple rows to be combined into one
     /// comma-separated row without changing the message. So the topmost Via
     /// VALUE may be the first of several inside one row.
@@ -598,15 +599,15 @@ mod tests {
 
     /// `; tag = x` is conformant and must yield the tag.
     ///
-    /// RFC 3261 §25.1: `SEMI = SWS ";" SWS`, `EQUAL = SWS "=" SWS`,
+    /// [RFC 3261 section 25.1](https://www.rfc-editor.org/rfc/rfc3261#section-25.1): `SEMI = SWS ";" SWS`, `EQUAL = SWS "=" SWS`,
     /// `SWS = [LWS]` — whitespace on either side of both separators is legal
-    /// and may be a fold. RFC 4475 §3.1.1.1 (`wsinv`) carries exactly this
+    /// and may be a fold. [RFC 4475 section 3.1.1.1](https://www.rfc-editor.org/rfc/rfc4475#section-3.1.1.1) (`wsinv`) carries exactly this
     /// shape and says "All elements should treat this as a well-formed
     /// request".
     ///
     /// The defect: `extract_tag` searched for the byte literal `";tag="`, so
     /// any conformant spacing lost the tag entirely — and the dialog
-    /// identifier is Call-ID plus both tags (§12.1.1).
+    /// identifier is Call-ID plus both tags ([RFC 3261 section 12.1.1](https://www.rfc-editor.org/rfc/rfc3261#section-12.1.1)).
     #[test]
     fn a_tag_with_conformant_whitespace_is_found() {
         for value in [
@@ -626,7 +627,7 @@ mod tests {
 
     /// The parameter name is case-insensitive.
     ///
-    /// RFC 3261 §7.3.1: "field values, parameter names, and parameter values
+    /// [RFC 3261 section 7.3.1](https://www.rfc-editor.org/rfc/rfc3261#section-7.3.1): "field values, parameter names, and parameter values
     /// are case-insensitive", with `ExPiReS` given as the worked example.
     #[test]
     fn the_tag_parameter_name_is_case_insensitive() {
@@ -641,7 +642,7 @@ mod tests {
 
     /// A decoy inside a quoted display name does not become the tag.
     ///
-    /// RFC 3261 §25.1 puts `>` (%x3E) and `;` (%x3B) inside `qdtext`, so both
+    /// [RFC 3261 section 25.1](https://www.rfc-editor.org/rfc/rfc3261#section-25.1) puts `>` (%x3E) and `;` (%x3B) inside `qdtext`, so both
     /// are legal within a display name and neither ends it. `extract_tag`
     /// anchored on the first `>` anywhere in the value, including one the
     /// sender wrote inside the quotes — so the caller chose the From tag, and
@@ -662,7 +663,7 @@ mod tests {
     /// An escaped DQUOTE does not end the display name.
     ///
     /// `quoted-pair = "\\" (%x00-09 / %x0B-0C / %x0E-7F)`, so `\"` is a
-    /// literal quote inside the string. RFC 4475 §3.1.1.1 uses this too.
+    /// literal quote inside the string. [RFC 4475 section 3.1.1.1](https://www.rfc-editor.org/rfc/rfc4475#section-3.1.1.1) uses this too.
     #[test]
     fn an_escaped_quote_does_not_end_the_display_name() {
         assert_eq!(
@@ -1019,8 +1020,8 @@ mod tests {
 
     // ── extract_uri_host_port ────────────────────────────────────────
 
-    /// A quoted display name may legally contain a complete URI — RFC 3261
-    /// § 25.1 lets a `quoted-string` hold any octet except an unescaped `"`,
+    /// A quoted display name may legally contain a complete URI —
+    /// [RFC 3261 section 25.1](https://www.rfc-editor.org/rfc/rfc3261#section-25.1) lets a `quoted-string` hold any octet except an unescaped `"`,
     /// including `<`, `>` and a scheme. Neither the user nor the host may ever
     /// be read from one, or a caller chooses what it is reported as.
     #[test]

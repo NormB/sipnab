@@ -1086,7 +1086,7 @@ pub struct OutputArgs {
     /// only safe answer to "I do not understand this deny flag" is to deny.
     ///
     /// Matched case-insensitively, because SIP header names are
-    /// case-insensitive on the wire (RFC 3261 section 7.3.1) and a filter
+    /// case-insensitive on the wire ([RFC 3261 section 7.3.1](https://www.rfc-editor.org/rfc/rfc3261#section-7.3.1)) and a filter
     /// keyed on exact case is one an ordinary peer walks through.
     ///
     /// DENY ONLY. A header asking sipnab to RECORD is an assertion by whoever
@@ -1113,9 +1113,10 @@ pub struct OutputArgs {
     ///
     /// Turn it on when a consumer needs to know a call happened and was
     /// deliberately withheld. The container carries the dialog's identity and
-    /// a §4.1 `redacted` object saying content was withheld with no unredacted
-    /// instance to point at. It carries no message trace, no media and no
-    /// bodies.
+    /// a `redacted` object
+    /// ([draft-ietf-vcon-vcon-core-03 section 4.1.8](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-4.1.8))
+    /// saying content was withheld with no unredacted instance to point at. It
+    /// carries no message trace, no media and no bodies.
     ///
     /// The trade is explicit: a tombstone reveals that the call EXISTED. If
     /// the header means "this call must leave no trace", leave this off.
@@ -2893,7 +2894,7 @@ pub struct McpArgs {
     ///
     /// Setting it turns on discovery: the `401` challenge gains a
     /// `resource_metadata` parameter, and the metadata document is served
-    /// unauthenticated at the well-known path RFC 9728 §3.1 derives from this
+    /// unauthenticated at the well-known path [RFC 9728 section 3.1](https://www.rfc-editor.org/rfc/rfc9728#section-3.1) derives from this
     /// value — `https://sipnab.example.com/mcp` publishes at
     /// `/.well-known/oauth-protected-resource/mcp`. Leave it unset and the
     /// challenge still appears; only the metadata half is off.
@@ -2902,7 +2903,7 @@ pub struct McpArgs {
     /// proxy this deployment expects, sipnab sees a cleartext request and no
     /// scheme, so anything it derived from the socket or the `Host` header
     /// would name `http://` for a resource the client reached over `https://`
-    /// — and RFC 9728 §3.3 makes a client that finds that mismatch discard the
+    /// — and [RFC 9728 section 3.3](https://www.rfc-editor.org/rfc/rfc9728#section-3.3) makes a client that finds that mismatch discard the
     /// document. A forwarded header is not an answer either: sipnab does not
     /// trust `X-Forwarded-*` anywhere (see `--api` rate limiting).
     ///
@@ -3743,7 +3744,8 @@ pub enum SandboxModeArg {
 /// asking for a sandbox had asked for a syscall filter too.
 ///
 /// There is no enforcing variant, and its absence is the design rather than an
-/// omission: `docs/design/syscall-sandbox.md` §8 puts the derived filter last
+/// omission: `docs/design/syscall-sandbox.md`
+/// [section 8, "Recommendation"](https://github.com/NormB/sipnab/blob/main/docs/design/syscall-sandbox.md#8-recommendation) puts the derived filter last
 /// because a mis-derived allowlist kills the process on a capture box during
 /// the incident the capture was started for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, clap::ValueEnum)]

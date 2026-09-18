@@ -378,7 +378,7 @@ pub fn one_way_delay_from_rtt_ms(round_trip_delay_ms: u16) -> Option<f64> {
 /// the figure
 /// [`rtt_from_sender_report_echo`](crate::rtp::rtcp::rtt_from_sender_report_echo)
 /// computes from an RR's `LSR`/`DLSR` pair. It takes an `f64` because that
-/// derivation produces one — RFC 3550 §6.4.1's units are 1/65536 s, not whole
+/// derivation produces one — [RFC 3550 section 6.4.1](https://www.rfc-editor.org/rfc/rfc3550#section-6.4.1)'s units are 1/65536 s, not whole
 /// milliseconds — and the two are kept as separate entry points rather than one
 /// generic halver so a caller cannot pass an echo figure where the wire field
 /// was meant, or the reverse.
@@ -430,7 +430,7 @@ pub enum DelaySource {
     /// operator's own figure.
     ReportedByEndpoint,
     /// Halved from a round trip SIPNAB DERIVED from an RR's `LSR`/`DLSR` pair,
-    /// per RFC 3550 §6.4.1.
+    /// per [RFC 3550 section 6.4.1](https://www.rfc-editor.org/rfc/rfc3550#section-6.4.1).
     ///
     /// A different provenance CLASS from
     /// [`ReportedByEndpoint`](Self::ReportedByEndpoint), not a weaker sample of

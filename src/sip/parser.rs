@@ -18,7 +18,7 @@ use super::method::SipMethod;
 use crate::net::TransportProto;
 
 /// Mapping from single-character compact header names to canonical long
-/// forms. RFC 3261 §7.3.3 allows a compact form to substitute for the long
+/// forms. [RFC 3261 section 7.3.3](https://www.rfc-editor.org/rfc/rfc3261#section-7.3.3) allows a compact form to substitute for the long
 /// name at any time; the authoritative list is the IANA SIP Header Fields
 /// registry (19 registered forms) — add new registrations here.
 const COMPACT_HEADERS: &[(u8, &str)] = &[
@@ -47,7 +47,7 @@ const COMPACT_HEADERS: &[(u8, &str)] = &[
 
 /// Longest request method this sniffer will consider.
 ///
-/// RFC 3261 §7.1 puts no length bound on `extension-method = token`, but a
+/// [RFC 3261 section 7.1](https://www.rfc-editor.org/rfc/rfc3261#section-7.1) puts no length bound on `extension-method = token`, but a
 /// bound is what keeps [`starts_sip_message`] from scanning far into a binary
 /// payload that happens to open with token-legal bytes. The longest method in
 /// the IANA registry is `SUBSCRIBE` (9); real extensions are shorter still
@@ -82,7 +82,7 @@ const fn is_token_byte(b: u8) -> bool {
 ///
 /// Recognizing a method is not the discriminator here and never was; the
 /// ` SIP/2.0` version token terminating the first line is. So this checks the
-/// shape RFC 3261 §7.1 actually specifies, `Method SP Request-URI SP
+/// shape [RFC 3261 section 7.1](https://www.rfc-editor.org/rfc/rfc3261#section-7.1) actually specifies, `Method SP Request-URI SP
 /// SIP-Version`, and requires:
 ///
 /// - a non-empty method of at most `MAX_METHOD_LEN` token bytes,
@@ -903,10 +903,10 @@ mod find_crlf_tests {
 mod tests {
     /// A response with an empty Reason-Phrase parses.
     ///
-    /// RFC 3261 §25.1: `Status-Line = SIP-Version SP Status-Code SP
+    /// [RFC 3261 section 25.1](https://www.rfc-editor.org/rfc/rfc3261#section-25.1): `Status-Line = SIP-Version SP Status-Code SP
     /// Reason-Phrase CRLF` and `Reason-Phrase = *(reserved / unreserved /
     /// escaped / UTF8-NONASCII / UTF8-CONT / SP / HTAB)` — the `*` permits
-    /// zero characters. RFC 4475 §3.1.1.13 leaves nothing to interpretation:
+    /// zero characters. [RFC 4475 section 3.1.1.13](https://www.rfc-editor.org/rfc/rfc4475#section-3.1.1.13) leaves nothing to interpretation:
     /// "This well-formed response contains no reason phrase. A parser must
     /// accept this message. The space character after the reason code is
     /// required."
@@ -954,7 +954,7 @@ mod tests {
 
     /// A UTF-8 reason phrase survives, empty-phrase handling notwithstanding.
     ///
-    /// RFC 4475 §3.1.1.12 (`unreason`) carries a Cyrillic phrase, and
+    /// [RFC 4475 section 3.1.1.12](https://www.rfc-editor.org/rfc/rfc4475#section-3.1.1.12) (`unreason`) carries a Cyrillic phrase, and
     /// `Reason-Phrase` admits `UTF8-NONASCII`. Slicing by byte index near a
     /// multi-byte character is exactly where a fix like this goes wrong.
     #[test]
@@ -965,8 +965,8 @@ mod tests {
 
     /// `COMPACT_HEADERS` matches the IANA registry exactly.
     ///
-    /// Nineteen header fields have a registered single-letter alias, and RFC
-    /// 3261 §7.3.3 makes the two forms exactly equivalent. A parser that knows
+    /// Nineteen header fields have a registered single-letter alias, and
+    /// [RFC 3261 section 7.3.3](https://www.rfc-editor.org/rfc/rfc3261#section-7.3.3) makes the two forms exactly equivalent. A parser that knows
     /// only the long form does not merely miss a header — it can be walked past
     /// deliberately, which is the `y:` STIR/SHAKEN evasion this project already
     /// documents in `docs/design/compact-headers-spec.md`.
@@ -1492,7 +1492,7 @@ Subject: first-part\r\n continued-tail";
         );
     }
 
-    /// A SP-folded Via header (RFC 3261 §7.3.1) is unfolded into one value.
+    /// A SP-folded Via header ([RFC 3261 section 7.3.1](https://www.rfc-editor.org/rfc/rfc3261#section-7.3.1)) is unfolded into one value.
     #[test]
     fn header_folding() {
         // RFC 3261 SS7.3.1: continuation line starts with SP
@@ -1821,7 +1821,7 @@ Content-Length: 0\r\n\
         assert_eq!(sip.user_agent(), Some("sipnab/0.1"));
     }
 
-    /// An HTAB-folded header (RFC 3261 §7.3.1) is unfolded like SP.
+    /// An HTAB-folded header ([RFC 3261 section 7.3.1](https://www.rfc-editor.org/rfc/rfc3261#section-7.3.1)) is unfolded like SP.
     #[test]
     fn header_folding_with_tab() {
         // RFC 3261 SS7.3.1: continuation line starts with HTAB

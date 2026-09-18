@@ -271,7 +271,7 @@ struct PacketCounters {
     dtmf_count: u64,
     /// Which telephone-event end packets have already been counted.
     ///
-    /// RFC 4733 §2.5.1.4 makes a sender transmit the final packet of an event
+    /// [RFC 4733 section 2.5.1.4](https://www.rfc-editor.org/rfc/rfc4733#section-2.5.1.4) makes a sender transmit the final packet of an event
     /// three times, so one keypress arrived as three events and was counted
     /// three times.
     dtmf_seen: rtp::dtmf::DtmfDedupe,
@@ -1514,7 +1514,7 @@ fn report_lapsed_allocations() {
 ///
 /// Reported beside the lapsed allocations rather than under `--stun` alone for
 /// the reason that finding is: a capture read WITHOUT the flag must still say
-/// it. RFC 8445 §7.3.1.1 lets ICE resolve a role conflict itself, so this is
+/// it. [RFC 8445 section 7.3.1.1](https://www.rfc-editor.org/rfc/rfc8445#section-7.3.1.1) lets ICE resolve a role conflict itself, so this is
 /// not always fatal — and the line says which of the two it was, because
 /// warning at full weight about a conflict the agents fixed in one round trip
 /// is how a reader learns to skip the warning that matters.

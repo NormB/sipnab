@@ -405,7 +405,7 @@ impl SipDialog {
 /// one — a capture beginning on a `BYE` or a `CANCEL` is an INVITE dialog seen
 /// from its middle, not a dialog of a new kind. The arriving message's
 /// **transaction** is its own method when it is a request and its CSeq method
-/// when it is a response (RFC 3261 §8.1.1.5), which is what separates a `2xx`
+/// when it is a response ([RFC 3261 section 8.1.1.5](https://www.rfc-editor.org/rfc/rfc3261#section-8.1.1.5)), which is what separates a `2xx`
 /// that answers the call from a `2xx` that acknowledges the `CANCEL` ending it.
 ///
 /// A message that supplies neither — a response with no CSeq, a request with
@@ -985,7 +985,7 @@ mod tests {
 
     /// A 487 with no CANCEL in the capture still marks the dialog Canceled.
     ///
-    /// RFC 3261 §21.4.25: a 487 means the request "was terminated by a BYE or
+    /// [RFC 3261 section 21.4.25](https://www.rfc-editor.org/rfc/rfc3261#section-21.4.25): a 487 means the request "was terminated by a BYE or
     /// CANCEL request". The 487 alone is the proof; seeing the CANCEL is not a
     /// precondition for believing it. A CANCEL can take a different path from
     /// the response, a capture can start mid-dialog, and sampling can drop it.
@@ -1018,7 +1018,7 @@ mod tests {
 
     /// A 487 arriving after the call was answered does NOT cancel it.
     ///
-    /// The 2xx wins the race (RFC 3261 §9, §15): once a final 2xx is sent the
+    /// The 2xx wins the race ([RFC 3261 section 9](https://www.rfc-editor.org/rfc/rfc3261#section-9), [RFC 3261 section 15](https://www.rfc-editor.org/rfc/rfc3261#section-15)): once a final 2xx is sent the
     /// CANCEL has no effect. Guarding the transition on Trying/Ringing/Canceled
     /// is what keeps a late or duplicated 487 from rewriting an established
     /// call, and mirrors the guard the 2xx arm uses.
@@ -1338,7 +1338,7 @@ mod tests {
 
     /// A 3xx moves the dialog to `Redirected`, not `Failed` and not `Trying`.
     ///
-    /// RFC 3261 §21.3: a redirect names a Contact the UAC should try instead.
+    /// [RFC 3261 section 21.3](https://www.rfc-editor.org/rfc/rfc3261#section-21.3): a redirect names a Contact the UAC should try instead.
     /// The dialog ended, the call did not fail, and the retry is a new dialog
     /// with a new Call-ID. Before `Redirected` existed, no handler matched 3xx
     /// at all and the dialog kept its pre-answer state — a redirected call was
@@ -1836,7 +1836,7 @@ mod tests {
 
     /// A NOTIFY whose `Subscription-State` merely *starts with* "terminated"
     /// (e.g. `terminatedfoo`) must NOT end the transfer — only the exact
-    /// `terminated` value token does (RFC 6665 §8.4).
+    /// `terminated` value token does ([RFC 6665 section 8.4](https://www.rfc-editor.org/rfc/rfc6665#section-8.4)).
     #[test]
     fn notify_terminatedfoo_does_not_return_to_incall() {
         let invite = make_invite();

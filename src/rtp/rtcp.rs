@@ -225,13 +225,13 @@ pub struct ReceptionReport {
     /// SSRC of the source being reported about.
     pub ssrc: u32,
     /// Packets lost since the previous report, as an 8-bit binary fraction:
-    /// the loss rate times 256, per RFC 3550 §6.4.1. This — not
+    /// the loss rate times 256, per [RFC 3550 section 6.4.1](https://www.rfc-editor.org/rfc/rfc3550#section-6.4.1). This — not
     /// [`Self::cumulative_lost`] — is the field that expresses a *rate*, and
     /// even then it is the rate over the reporting interval, on the path from
     /// the source to whoever sent the report.
     pub fraction_lost: u8,
     /// Cumulative number of packets lost — a 24-bit *signed* value per
-    /// RFC 3550 §6.4.1 (negative when duplicates outnumber losses),
+    /// [RFC 3550 section 6.4.1](https://www.rfc-editor.org/rfc/rfc3550#section-6.4.1) (negative when duplicates outnumber losses),
     /// sign-extended into an `i32`.
     ///
     /// Three properties make this number dangerous to reuse as if it were a
@@ -269,8 +269,9 @@ pub enum RttSource {
     /// about, and the only one that describes the call rather than a path
     /// segment. Rare on real traffic — most stacks never emit an XR.
     XrVoipMetrics,
-    /// Derived here from an RR's `last_sr`/`delay_since_sr` per RFC 3550
-    /// §6.4.1, anchored on when SIPNAB SAW the report. See
+    /// Derived here from an RR's `last_sr`/`delay_since_sr` per
+    /// [RFC 3550 section 6.4.1](https://www.rfc-editor.org/rfc/rfc3550#section-6.4.1),
+    /// anchored on when SIPNAB SAW the report. See
     /// [`rtt_from_sender_report_echo`] for what that does and does not measure.
     /// Available on almost every call, because plain RRs are mandatory.
     SenderReportEcho,
@@ -317,7 +318,7 @@ pub fn compact_ntp_for_test(at: chrono::DateTime<chrono::Utc>) -> u32 {
     compact_ntp(at)
 }
 
-/// Round-trip time derived from an RR's SR echo, per RFC 3550 §6.4.1.
+/// Round-trip time derived from an RR's SR echo, per [RFC 3550 section 6.4.1](https://www.rfc-editor.org/rfc/rfc3550#section-6.4.1).
 ///
 /// # What this measures, and what it does not
 ///
@@ -349,7 +350,7 @@ pub fn compact_ntp_for_test(at: chrono::DateTime<chrono::Utc>) -> u32 {
 /// zero and must stay different all the way to the operator:
 ///
 /// - `last_sr == 0`: the reporter has received no SR yet, so there is nothing
-///   to measure against. RFC 3550 §6.4.1 makes this explicit.
+///   to measure against. [RFC 3550 section 6.4.1](https://www.rfc-editor.org/rfc/rfc3550#section-6.4.1) makes this explicit.
 /// - The subtraction runs backwards, or exceeds [`MAX_PLAUSIBLE_RTT_MS`]. Both
 ///   mean the two clocks disagree by more than the quantity being measured, so
 ///   the arithmetic produced a number rather than a measurement.
@@ -484,7 +485,7 @@ pub struct VoipMetrics {
     pub mos_lq: u8,
     /// MOS for conversational quality (x10).
     pub mos_cq: u8,
-    /// RFC 3611 §4.7.6 receiver configuration: packet-loss-concealment type
+    /// [RFC 3611 section 4.7.6](https://www.rfc-editor.org/rfc/rfc3611#section-4.7.6) receiver configuration: packet-loss-concealment type
     /// in bits 7-6, jitter-buffer adaptive in 5-4, JB rate in 3-0.
     ///
     /// Carried because "is this buffer adaptive" is the first question the
@@ -1037,7 +1038,7 @@ mod tests {
     ///
     /// # The defect
     ///
-    /// RFC 3611 §4.7 lays the block body out as: … MOS-CQ at 23, then **RX
+    /// [RFC 3611 section 4.7](https://www.rfc-editor.org/rfc/rfc3611#section-4.7) lays the block body out as: … MOS-CQ at 23, then **RX
     /// config at 24**, **reserved at 25**, **JB nominal at 26-27**, **JB
     /// maximum at 28-29**, **JB abs max at 30-31**. sipnab read `jb_nominal`
     /// from 24-25 — the RX-config and reserved octets — and every field after
@@ -1046,15 +1047,16 @@ mod tests {
     /// read at all. Those three numbers are rendered to an operator in the TUI
     /// stream detail as measurements.
     ///
-    /// `jb_abs_max_is_capped` compounded it: RFC 3611 §4.7.7 puts the 65535 ms
+    /// `jb_abs_max_is_capped` compounded it: [RFC 3611 section 4.7.7](https://www.rfc-editor.org/rfc/rfc3611#section-4.7.7) puts the 65535 ms
     /// ceiling on JB abs max, and the accessor was testing it against the field
     /// that actually held JB maximum.
     ///
     /// # Why the existing test did not catch it
     ///
     /// `parse_xr_voip_metrics` builds its fixture in the PARSER's order and
-    /// then appends two octets it calls padding — but §4.7's body is 32 octets
-    /// of defined fields with no padding. The fixture was self-consistent with
+    /// then appends two octets it calls padding — but the body
+    /// [RFC 3611 section 4.7](https://www.rfc-editor.org/rfc/rfc3611#section-4.7)
+    /// defines is 32 octets of defined fields with no padding. The fixture was self-consistent with
     /// the bug. This test builds the block from the RFC's layout instead, with
     /// a distinct value in every field so no two can be confused.
     #[test]
@@ -1085,7 +1087,7 @@ mod tests {
 
     /// The 65535 ceiling is tested against JB abs max, the field the RFC caps.
     ///
-    /// RFC 3611 §4.7.7: "If this value exceeds 65535 milliseconds, then this
+    /// [RFC 3611 section 4.7.7](https://www.rfc-editor.org/rfc/rfc3611#section-4.7.7): "If this value exceeds 65535 milliseconds, then this
     /// field SHALL convey the value 65535." That sentence is about JB abs max.
     /// With the offsets shifted, the accessor was reading JB maximum, so a
     /// buffer whose absolute maximum was genuinely capped reported `false` and
@@ -1112,7 +1114,7 @@ mod tests {
     /// RX config is carried rather than silently consumed.
     ///
     /// It was being read as half of `jb_nominal`, so its PLC and
-    /// jitter-buffer-adaptive bits reached no surface at all. RFC 3611 §4.7.6
+    /// jitter-buffer-adaptive bits reached no surface at all. [RFC 3611 section 4.7.6](https://www.rfc-editor.org/rfc/rfc3611#section-4.7.6)
     /// defines them, and "is the buffer adaptive" is the first question a
     /// jitter-buffer number raises.
     #[test]
@@ -1593,7 +1595,7 @@ mod tests {
         assert!(!looks_like_rtcp(&[0x80, 203, 0, 0, 0, 0, 0, 0]));
     }
 
-    /// RFC 3550 section 6.1: *"padding MUST only be added to the last
+    /// [RFC 3550 section 6.1](https://www.rfc-editor.org/rfc/rfc3550#section-6.1): *"padding MUST only be added to the last
     /// individual packet, and if padding is added to that packet, the padding
     /// bit MUST be set only on that packet."*
     ///
@@ -1860,7 +1862,7 @@ mod tests {
 
     /// No SR seen by the reporter is NOT a round trip of zero.
     ///
-    /// RFC 3550 §6.4.1 says `last_sr` is zero when no SR has arrived. Reporting
+    /// [RFC 3550 section 6.4.1](https://www.rfc-editor.org/rfc/rfc3550#section-6.4.1) says `last_sr` is zero when no SR has arrived. Reporting
     /// that as 0 ms would make the worst case — a reporter that has heard
     /// nothing — read as the best possible network.
     #[test]

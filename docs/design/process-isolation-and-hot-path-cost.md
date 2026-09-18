@@ -119,7 +119,8 @@ in production code, the always-on
 and fifteen coverage-guided targets in
 [`fuzz/fuzz_targets/`](../../fuzz/fuzz_targets). A process boundary would be a
 *fourth* layer under three that already work, bought at the cost of
-re-architecting every store read in the tool (§3).
+re-architecting every store read in the tool
+([section 3, "What forking would cost"](#3-what-forking-would-cost)).
 
 ### 2b. Memory isolation — narrow, but this is the strongest argument
 
@@ -144,7 +145,9 @@ address space that also holds:
 
 This is the one argument that survives scrutiny. Note what it argues for: it
 argues for isolating **the libpcap reader**, not for forking N analysis
-workers. And §5 has a cheaper answer that closes more of the same path.
+workers. And a cheaper answer closes more of the same path: a syscall filter
+installed after the privilege drop, designed in
+[`syscall-sandbox.md`, "seccomp and Landlock"](syscall-sandbox.md).
 
 ### 2c. Per-process pcap handles — no
 
@@ -307,7 +310,7 @@ niche. If it becomes a headline feature, this moves up.
 - **Per-capture-source processes.** Fragments the merged view that is the
   deliverable.
 - **REST API in a child (D16's other half).** The store reads are the entire
-  API. See §3.
+  API. See [section 3, "What forking would cost"](#3-what-forking-would-cost).
 
 ---
 
@@ -406,4 +409,6 @@ Stated plainly, because guessing here would be worse than the gap.
 - **Whether out-of-order arrival within a `--cores` worker changes
   reconstruction.** The blocker for R4; see above.
 - **The libpcap version and CVE exposure of the shipped artifacts.** Not audited
-  here. §2b's argument stands or falls on it.
+  here. The argument of
+[section 2b, "Memory isolation — narrow, but this is the strongest argument"](#2b-memory-isolation--narrow-but-this-is-the-strongest-argument)
+stands or falls on it.

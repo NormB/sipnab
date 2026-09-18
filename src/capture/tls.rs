@@ -510,8 +510,8 @@ mod tests {
         r
     }
 
-    /// RFC 5246 §6.2.1: *"Implementations MUST NOT send zero-length fragments
-    /// of Handshake, Alert, or ChangeCipherSpec content types."* RFC 8446 §5.1
+    /// [RFC 5246 section 6.2.1](https://www.rfc-editor.org/rfc/rfc5246#section-6.2.1): *"Implementations MUST NOT send zero-length fragments
+    /// of Handshake, Alert, or ChangeCipherSpec content types."* [RFC 8446 section 5.1](https://www.rfc-editor.org/rfc/rfc8446#section-5.1)
     /// repeats it for Handshake and says an Alert record *"MUST contain exactly
     /// one message"*.
     ///

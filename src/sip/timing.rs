@@ -388,8 +388,8 @@ mod tests {
 
     /// Build an in-dialog re-INVITE: an INVITE that carries a To-tag.
     ///
-    /// RFC 3261 §8.1.1.2 — a request outside a dialog MUST NOT contain a To
-    /// tag; §12.2.1.1 — an in-dialog request carries the peer's tag. The tag
+    /// [RFC 3261 section 8.1.1.2](https://www.rfc-editor.org/rfc/rfc3261#section-8.1.1.2) — a request outside a dialog MUST NOT contain a To
+    /// tag; [RFC 3261 section 12.2.1.1](https://www.rfc-editor.org/rfc/rfc3261#section-12.2.1.1) — an in-dialog request carries the peer's tag. The tag
     /// is what separates a call's one initial INVITE from every later
     /// re-INVITE, and it is stated on the message itself, so it holds however
     /// late the capture started.
@@ -423,7 +423,7 @@ mod tests {
     /// Reproduces a real capture. Recording started after the call was up, so
     /// the dialog's first message was the 200 OK of an INVITE transaction that
     /// had already completed, and 28 s later the *callee* sent a re-INVITE.
-    /// Each side numbers its own CSeq space (RFC 3261 §12.2.1.1), so the
+    /// Each side numbers its own CSeq space ([RFC 3261 section 12.2.1.1](https://www.rfc-editor.org/rfc/rfc3261#section-12.2.1.1)), so the
     /// callee's re-INVITE was also CSeq 102 and matched by number.
     /// `invite_sent` was then taken from that re-INVITE while `answered_at`
     /// came from the earlier transaction, and the call report read

@@ -412,8 +412,8 @@ pub struct CaptureQuality {
     /// Candidate pairs where both ICE agents claimed the same role, or where
     /// one answered `487 Role Conflict`.
     ///
-    /// The third series here about the NETWORK rather than the capture. RFC
-    /// 8445 §7.3.1.1 has ICE resolve this itself, so it is not always fatal —
+    /// The third series here about the NETWORK rather than the capture.
+    /// [RFC 8445 section 7.3.1.1](https://www.rfc-editor.org/rfc/rfc8445#section-7.3.1.1) has ICE resolve this itself, so it is not always fatal —
     /// which is exactly why it belongs on a dashboard rather than only in an
     /// alert: a fleet where it happens constantly is misconfigured whether or
     /// not any single call survived it.
@@ -507,7 +507,7 @@ impl CaptureQuality {
 
 /// SIP response classes, as label values for `sipnab_responses_total{code}`.
 ///
-/// Closed set (RFC 3261 §7.2), so a scrape can initialize every one of them
+/// Closed set ([RFC 3261 section 7.2](https://www.rfc-editor.org/rfc/rfc3261#section-7.2)), so a scrape can initialize every one of them
 /// to zero. That matters more than it looks: an empty labeled family is
 /// omitted from the exposition entirely, and a rule over a series that does
 /// not exist is no-data, not zero — an alert on "5xx responses appeared"

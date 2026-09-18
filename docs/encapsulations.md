@@ -171,7 +171,7 @@ what the walk does not follow.
 |---|---|---|---|
 | IP-in-IP / 6-in-4 | IP proto 4 / 41 | [RFC 2003](https://www.rfc-editor.org/rfc/rfc2003) / [RFC 4213](https://www.rfc-editor.org/rfc/rfc4213) | decoded |
 | GRE | IP proto 47 | [RFC 2784](https://www.rfc-editor.org/rfc/rfc2784) | decoded |
-| GRE Transparent Ethernet Bridging | GRE proto `0x6558` | [RFC 7637 §3.2](https://www.rfc-editor.org/rfc/rfc7637#section-3.2) | decoded |
+| GRE Transparent Ethernet Bridging | GRE proto `0x6558` | [RFC 7637 section 3.2](https://www.rfc-editor.org/rfc/rfc7637#section-3.2) | decoded |
 | MPLS-in-IP | IP proto 137 | [RFC 4023](https://www.rfc-editor.org/rfc/rfc4023) | decoded |
 | AH | IP proto 51 | [RFC 4302](https://www.rfc-editor.org/rfc/rfc4302) | **traversed** — AH authenticates without encrypting, so the payload is readable |
 | ESP | IP proto 50 | [RFC 4303](https://www.rfc-editor.org/rfc/rfc4303) | encrypted — sipnab names it, never guesses |
@@ -183,7 +183,7 @@ what the walk does not follow.
 | L2TPv2 | UDP 1701 | [RFC 2661](https://www.rfc-editor.org/rfc/rfc2661) | data messages only |
 | L2TPv3 over UDP | UDP 1701 | [RFC 3931](https://www.rfc-editor.org/rfc/rfc3931) | **refused** — see below |
 
-**L2TPv3 over UDP is deliberately not decoded.** [RFC 3931 §4.1](https://www.rfc-editor.org/rfc/rfc3931#section-4.1) says:
+**L2TPv3 over UDP is deliberately not decoded.** [RFC 3931 section 4.1](https://www.rfc-editor.org/rfc/rfc3931#section-4.1) says:
 
 <!-- vale off -->
 > The Session ID alone provides the necessary context for all further packet

@@ -9,8 +9,8 @@
 //!
 //! # The two coordinates a SIP response actually has
 //!
-//! **Which machine.** A `BYE` or a `CANCEL` cannot open a dialog (RFC 3261
-//! §9.1, §15.1), so a dialog seeded by one is an INVITE dialog seen from its
+//! **Which machine.** A `BYE` or a `CANCEL` cannot open a dialog
+//! ([RFC 3261 section 9.1](https://www.rfc-editor.org/rfc/rfc3261#section-9.1), [RFC 3261 section 15.1](https://www.rfc-editor.org/rfc/rfc3261#section-15.1)), so a dialog seeded by one is an INVITE dialog seen from its
 //! middle. Dispatching on the seed sent those to a handler that inspects only
 //! responses and has no rule for either request, and the call reported `Trying`
 //! forever. [`family_of_seed`] is that correction, and it is the whole of it:
@@ -27,7 +27,7 @@
 //! means "the call you already ended is ended". Route by family alone and
 //! `200 OK (CSeq 1 CANCEL)` lands in the arm that establishes a call — so a
 //! canceled call reports `InCall`, counted as a live channel. The response's
-//! CSeq method names its transaction (RFC 3261 §8.1.1.5) and that is the
+//! CSeq method names its transaction ([RFC 3261 section 8.1.1.5](https://www.rfc-editor.org/rfc/rfc3261#section-8.1.1.5)) and that is the
 //! coordinate [`Arrival::Response`] carries.
 //!
 //! # What "total" means here, and why there is no "cannot occur"
@@ -57,17 +57,17 @@ use super::response_codes::{ResponseClass, response_class};
 /// never from the arriving message: the family says which rules apply, while
 /// the arriving message says which transaction it belongs to. Both are needed,
 /// and a `NOTIFY` is the message that proves it — the same request ends a
-/// transfer inside an INVITE dialog (RFC 3515 §2.4.6) and activates a
-/// subscription inside a SUBSCRIBE one (RFC 6665 §4.1.2), and nothing on the
+/// transfer inside an INVITE dialog ([RFC 3515 section 2.4.6](https://www.rfc-editor.org/rfc/rfc3515#section-2.4.6)) and activates a
+/// subscription inside a SUBSCRIBE one ([RFC 6665 section 4.1.2](https://www.rfc-editor.org/rfc/rfc6665#section-4.1.2)), and nothing on the
 /// message distinguishes the two.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Family {
     /// An INVITE dialog: a call being set up, up, or torn down. Carries
     /// INVITE, ACK, CANCEL, BYE and PRACK transactions.
     Invite,
-    /// A REGISTER binding (RFC 3261 §10).
+    /// A REGISTER binding ([RFC 3261 section 10](https://www.rfc-editor.org/rfc/rfc3261#section-10)).
     Register,
-    /// A subscription (RFC 6665 §4), carrying SUBSCRIBE and NOTIFY.
+    /// A subscription ([RFC 6665 section 4](https://www.rfc-editor.org/rfc/rfc6665#section-4)), carrying SUBSCRIBE and NOTIFY.
     Subscribe,
     /// Everything with no dialog machine of its own: OPTIONS, MESSAGE,
     /// PUBLISH, INFO, UPDATE, REFER, standalone NOTIFY, extension methods.
@@ -82,7 +82,7 @@ pub(crate) enum Family {
 /// making, one arm at a time.
 #[derive(Debug)]
 pub(crate) enum Arrival<'a> {
-    /// A request, with the `Subscription-State` value token (RFC 6665 §8.4)
+    /// A request, with the `Subscription-State` value token ([RFC 6665 section 8.4](https://www.rfc-editor.org/rfc/rfc6665#section-8.4))
     /// when it carries one. Only `NOTIFY` reads it.
     Request {
         /// The request's own method — the transaction it opens.
@@ -101,7 +101,7 @@ pub(crate) enum Arrival<'a> {
         code: u16,
         /// The registration interval this response GRANTS, when it states one.
         ///
-        /// RFC 3261 §10.3 step 8 has the registrar list the resulting bindings
+        /// [RFC 3261 section 10.3](https://www.rfc-editor.org/rfc/rfc3261#section-10.3) step 8 has the registrar list the resulting bindings
         /// in its 2xx with their expiry, so the answer says how long the
         /// binding it just created will live -- and `0` says it created none.
         /// Only `Family::Register` reads it.
@@ -122,8 +122,8 @@ pub(crate) enum Cell {
 /// Which machine a dialog opened by `method` belongs to.
 ///
 /// Five methods map to [`Family::Invite`]. `INVITE` opens the dialog; `ACK`
-/// (RFC 3261 §13.2.2.4), `BYE` (§15.1), `CANCEL` (§9.1) and `PRACK` (RFC 3262
-/// §4) each presuppose one and cannot open anything, so seeing one first means
+/// ([RFC 3261 section 13.2.2.4](https://www.rfc-editor.org/rfc/rfc3261#section-13.2.2.4)), `BYE` ([RFC 3261 section 15.1](https://www.rfc-editor.org/rfc/rfc3261#section-15.1)), `CANCEL` ([RFC 3261 section 9.1](https://www.rfc-editor.org/rfc/rfc3261#section-9.1)) and `PRACK` ([RFC 3262 section 4](https://www.rfc-editor.org/rfc/rfc3262#section-4))
+/// each presuppose one and cannot open anything, so seeing one first means
 /// the capture began mid-dialog rather than that a new kind of dialog started.
 ///
 /// `UPDATE`, `INFO`, `REFER` and `NOTIFY` stay in [`Family::Standalone`] even
@@ -199,8 +199,8 @@ fn invite_live(state: &DialogState) -> bool {
 /// May a final response to the INVITE still decide this call?
 ///
 /// [`invite_undecided`] plus `Canceled`: a `2xx` beats a `CANCEL` because
-/// once the UAS has sent a final `2xx` the `CANCEL` has no effect (RFC 3261
-/// §9.1, §15), and a `487` re-confirms a cancellation the `CANCEL` already
+/// once the UAS has sent a final `2xx` the `CANCEL` has no effect
+/// ([RFC 3261 section 9.1](https://www.rfc-editor.org/rfc/rfc3261#section-9.1), [RFC 3261 section 15](https://www.rfc-editor.org/rfc/rfc3261#section-15)), and a `487` re-confirms a cancellation the `CANCEL` already
 /// recorded.
 fn invite_answerable(state: &DialogState) -> bool {
     match state {
@@ -565,8 +565,8 @@ mod tests {
         606, 607, 608,
     ];
 
-    /// The `Subscription-State` value tokens a NOTIFY can carry (RFC 6665
-    /// §8.4), plus the absent case.
+    /// The `Subscription-State` value tokens a NOTIFY can carry
+    /// ([RFC 6665 section 8.4](https://www.rfc-editor.org/rfc/rfc6665#section-8.4)), plus the absent case.
     const SUB_STATES: [Option<&str>; 4] =
         [None, Some("active"), Some("pending"), Some("terminated")];
 
@@ -576,7 +576,7 @@ mod tests {
     /// The registration/subscription intervals the sweep walks.
     ///
     /// `None` (the response states no interval), a real one, and zero -- the
-    /// value RFC 3261 §10.2.2 and RFC 6665 §4.2.1 both give the meaning
+    /// value [RFC 3261 section 10.2.2](https://www.rfc-editor.org/rfc/rfc3261#section-10.2.2) and [RFC 6665 section 4.2.1](https://www.rfc-editor.org/rfc/rfc6665#section-4.2.1) both give the meaning
     /// "remove this binding" rather than "renew it".
     const EXPIRIES: [Option<u32>; 3] = [None, Some(3600), Some(0)];
 
@@ -734,11 +734,11 @@ mod tests {
     /// The rule the four `cseq_method == "INVITE"` comparisons were each
     /// expressing separately, stated once and stated more exactly than they
     /// managed. A response is evidence about its OWN transaction: a `2xx` to a
-    /// `BYE` proves the session ended (RFC 3261 §15.1.2), which is why
+    /// `BYE` proves the session ended ([RFC 3261 section 15.1.2](https://www.rfc-editor.org/rfc/rfc3261#section-15.1.2)), which is why
     /// `Completed` is the one destination allowed here — but no response
     /// outside the INVITE transaction may ring the call, answer it, fail it or
     /// redirect it. A `200` to a `CANCEL` is exactly that trap: it means the
-    /// cancellation was received and nothing more (§9.1), and a dispatch keyed
+    /// cancellation was received and nothing more ([RFC 3261 section 9.1](https://www.rfc-editor.org/rfc/rfc3261#section-9.1)), and a dispatch keyed
     /// on family alone reads it as the callee picking up.
     #[test]
     fn only_the_invite_transaction_decides_how_a_call_was_answered() {
@@ -844,7 +844,7 @@ mod tests {
         }
     }
 
-    /// The 2xx-versus-CANCEL race resolves the way RFC 3261 §9.1 says.
+    /// The 2xx-versus-CANCEL race resolves the way [RFC 3261 section 9.1](https://www.rfc-editor.org/rfc/rfc3261#section-9.1) says.
     ///
     /// A `2xx` to the INVITE from `Canceled` reaches `InCall` — the callee
     /// picked up before the cancellation landed — and no `487` may then move
@@ -889,7 +889,7 @@ mod tests {
     /// The mid-dialog defect in one assertion: these two requests are the ones
     /// a capture of a busy server sees first, and both were reaching a handler
     /// with no rule for them.
-    /// RFC 6665 §4.1.3: `Subscription-State` decides, not the method.
+    /// [RFC 6665 section 4.1.3](https://www.rfc-editor.org/rfc/rfc6665#section-4.1.3): `Subscription-State` decides, not the method.
     ///
     /// A NOTIFY carries one of three values -- `pending`, `active`,
     /// `terminated` -- and the arm mapped every NOTIFY to `Active` without
@@ -936,7 +936,7 @@ mod tests {
         );
     }
 
-    /// RFC 6665 §4.2.1: an un-SUBSCRIBE is a SUBSCRIBE with `Expires: 0`.
+    /// [RFC 6665 section 4.2.1](https://www.rfc-editor.org/rfc/rfc6665#section-4.2.1): an un-SUBSCRIBE is a SUBSCRIBE with `Expires: 0`.
     ///
     /// The registrar analogue of the REGISTER case. A 200 answering a
     /// zero-interval SUBSCRIBE confirms the subscription is gone, and reading
@@ -971,7 +971,7 @@ mod tests {
         );
     }
 
-    /// RFC 3261 §10.2.2: a zero-interval REGISTER removes the binding.
+    /// [RFC 3261 section 10.2.2](https://www.rfc-editor.org/rfc/rfc3261#section-10.2.2): a zero-interval REGISTER removes the binding.
     ///
     /// `DialogState::Expired` is documented as "registration expired or
     /// de-registered" and nothing could reach it: every 2xx to a REGISTER

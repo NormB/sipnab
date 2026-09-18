@@ -917,7 +917,7 @@ pub struct PacketProcessor {
     /// Cap on tracked `tcp_sip_leftover` sessions; when full, the
     /// least-recently-updated entry is evicted to keep memory bounded.
     max_sessions: usize,
-    /// Cross-packet SCTP DATA fragment reassembler (RFC 4960 §3.3.1): buffers a
+    /// Cross-packet SCTP DATA fragment reassembler ([RFC 4960 section 3.3.1](https://www.rfc-editor.org/rfc/rfc4960#section-3.3.1)): buffers a
     /// SIP message split across B/middle/E DATA chunks until the E fragment
     /// arrives. Bounded, least-recently-updated eviction.
     sctp_reassembler: parse::SctpReassembler,

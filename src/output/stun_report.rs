@@ -805,8 +805,9 @@ mod tests {
         );
     }
 
-    /// An ICE check, which is a Binding Request carrying the attributes RFC
-    /// 8445 §7.2.1 requires. Built as a modification of `tx` so the two cannot
+    /// An ICE check, which is a Binding Request carrying the attributes
+    /// [RFC 8445 section 7.1](https://www.rfc-editor.org/rfc/rfc8445#section-7.1)
+    /// requires (PRIORITY, ICE-CONTROLLING, and USE-CANDIDATE to nominate). Built as a modification of `tx` so the two cannot
     /// drift apart in any field the ICE code does not care about.
     fn ice_check(id: &str, answered: bool, nominates: bool) -> StunTransaction {
         StunTransaction {

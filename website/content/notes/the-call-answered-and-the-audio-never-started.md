@@ -141,7 +141,7 @@ worth checking early because they end the argument:
   that the relay is running and that the port its SDP advertised is the port it
   bound.
 - **`Answered INVITE never acknowledged`** — a `2xx` answered the INVITE and no
-  ACK confirmed it ([RFC 3261 §13.3.1.4](https://www.rfc-editor.org/rfc/rfc3261#section-13.3.1.4)),
+  ACK confirmed it ([RFC 3261 section 13.3.1.4](https://www.rfc-editor.org/rfc/rfc3261#section-13.3.1.4)),
   so the far end retransmitted until Timer H and then tore the call down. Audio
   usually stops within seconds of the answer, which matches the complaint
   exactly. `--ack-timeout` sets how long sipnab waits before calling it a fault

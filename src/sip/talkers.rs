@@ -190,8 +190,8 @@ fn prefix_key(to_user: Option<&str>, digits: usize) -> String {
 
 /// The banner one message carries about ITS OWN sender, if any.
 ///
-/// `User-Agent` on a request and `Server` on a response, per RFC 3261 §20.41
-/// and §20.35. A request's `Server` header and a response's `User-Agent`
+/// `User-Agent` on a request and `Server` on a response, per [RFC 3261 section 20.41](https://www.rfc-editor.org/rfc/rfc3261#section-20.41)
+/// and [RFC 3261 section 20.35](https://www.rfc-editor.org/rfc/rfc3261#section-20.35). A request's `Server` header and a response's `User-Agent`
 /// describe the other direction, so reading them here would file the far end's
 /// software under this endpoint.
 ///

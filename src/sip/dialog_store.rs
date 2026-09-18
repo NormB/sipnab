@@ -66,7 +66,7 @@ pub enum CorrelationReason {
     XCallId,
     /// One leg's RFC 7315 `related-icid` names the other leg's `icid-value`.
     ///
-    /// The B2BUA case, in the parameter the RFC provides for it. §4.6.4.1: a
+    /// The B2BUA case, in the parameter the RFC provides for it. [RFC 7315 section 4.6.4.1](https://www.rfc-editor.org/rfc/rfc7315#section-4.6.4.1): a
     /// UAS acting as a B2BUA *MAY* add `related-icid`, whose *"value is the
     /// icid value of the original dialog towards the remote end"*. So a match
     /// here is an intermediary DECLARING the link rather than sipnab inferring
@@ -77,12 +77,12 @@ pub enum CorrelationReason {
     /// intersection; `X-Call-ID` only exists because an operator deliberately
     /// configured a header to mean "this is the other leg". `related-icid` is
     /// standardized, which beats a vendor convention, but it is optional, it is
-    /// a one-way pointer, and it lives in a header §4.6.2.2 explicitly permits
+    /// a one-way pointer, and it lives in a header that [RFC 7315 section 4.6.2.2](https://www.rfc-editor.org/rfc/rfc7315#section-4.6.2.2) explicitly permits
     /// the next hop to modify.
     ChargingVectorRelatedIcid,
     /// Two legs carry the same RFC 7315 `icid-value`.
     ///
-    /// An identifier comparison — §4.6 requires the value to be globally
+    /// An identifier comparison — [RFC 7315 section 4.6](https://www.rfc-editor.org/rfc/rfc7315#section-4.6) requires the value to be globally
     /// unique, a real normative MUST — but read what it identifies: *"a dialog
     /// or a transaction outside a dialog"*. A B2BUA is two dialogs, so a
     /// CONFORMANT one emits two different icids and this strategy is silent
@@ -254,7 +254,7 @@ pub enum DialogTracking {
     /// Group by Call-ID + top-Via branch — one tracked unit per transaction.
     ///
     /// A single call becomes several units: RFC 3261 gives the ACK to a 2xx a
-    /// new branch (§17.1.1.3) and the BYE another. That is the transaction view
+    /// new branch ([RFC 3261 section 17.1.1.3](https://www.rfc-editor.org/rfc/rfc3261#section-17.1.1.3)) and the BYE another. That is the transaction view
     /// working as intended, not a bug.
     Branch,
 }
@@ -4132,7 +4132,7 @@ mod tests {
         );
     }
 
-    /// The B2BUA case, in the parameter RFC 7315 §4.6.4.1 provides for it: the
+    /// The B2BUA case, in the parameter [RFC 7315 section 4.6.4.1](https://www.rfc-editor.org/rfc/rfc7315#section-4.6.4.1) provides for it: the
     /// new leg's `related-icid` names the original dialog's `icid-value`.
     #[test]
     fn related_icid_correlates_the_leg_it_points_at() {

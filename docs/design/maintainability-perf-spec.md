@@ -12,8 +12,9 @@ each grounded in file:line evidence.
 > record — their counts (11 fuzz targets, ~2,200 tests) and "to build" framing
 > describe the state *at review time*, not today. Tree at 2026-07-20: 15 fuzz
 > targets, 2,569 tests — itself a dated observation, not a running total, and
-> the test count has moved since. The only live section is **WS8** (§10, perf
-> follow-ups), tracked against current `main`; see [`CHANGELOG.md`](https://github.com/NormB/sipnab/blob/main/CHANGELOG.md) for what
+> the test count has moved since. The only live section is
+> [**WS8**, "0.5.16 benchmark re-validation follow-ups"](#ws8--0516-benchmark-re-validation-follow-ups-2026-07-20-aarch64)
+> (perf follow-ups, the last section on this page), tracked against current `main`; see [`CHANGELOG.md`](https://github.com/NormB/sipnab/blob/main/CHANGELOG.md) for what
 > each workstream landed in.
 
 ---

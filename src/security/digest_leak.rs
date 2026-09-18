@@ -20,7 +20,7 @@ const MAX_NONCE_ENTRIES: usize = 10_000;
 /// The transaction a challenge was issued in: its Call-ID, CSeq number and
 /// top `Via` branch.
 ///
-/// RFC 3261 section 17.2.2 requires a non-INVITE server transaction to answer
+/// [RFC 3261 section 17.2.2](https://www.rfc-editor.org/rfc/rfc3261#section-17.2.2) requires a non-INVITE server transaction to answer
 /// a retransmitted request with the same final response it already sent. A
 /// 401 lost on UDP therefore arrives a second time carrying the same nonce,
 /// and the only thing that tells that copy from a second challenge is the
@@ -56,7 +56,7 @@ enum NonceSighting {
     /// Never seen before.
     First,
     /// Seen before on this same transaction: the registrar retransmitted its
-    /// final response, as RFC 3261 section 17.2.2 requires.
+    /// final response, as [RFC 3261 section 17.2.2](https://www.rfc-editor.org/rfc/rfc3261#section-17.2.2) requires.
     Retransmission,
     /// Seen before on another transaction: the registrar issued it twice.
     Reuse,
@@ -254,7 +254,7 @@ impl Default for DigestLeakDetector {
 /// Whether `header`'s auth-scheme is `Digest`.
 ///
 /// The scheme is the first whitespace-delimited token, compared without regard
-/// to case: RFC 7235 section 2.1 makes the auth-scheme case-insensitive, so
+/// to case: [RFC 7235 section 2.1](https://www.rfc-editor.org/rfc/rfc7235#section-2.1) makes the auth-scheme case-insensitive, so
 /// `Digest`, `digest` and `DIGEST` are one scheme. Matching only `Digest` and
 /// `digest` let an uppercase spelling slip past every check below.
 fn is_digest_scheme(header: &str) -> bool {
@@ -570,7 +570,7 @@ mod tests {
     }
 
     /// The failure this shipped with. A REGISTER over lossy UDP: the 401 is
-    /// lost, the client retransmits, and RFC 3261 section 17.2.2 REQUIRES the
+    /// lost, the client retransmits, and [RFC 3261 section 17.2.2](https://www.rfc-editor.org/rfc/rfc3261#section-17.2.2) REQUIRES the
     /// registrar to answer the retransmission with the same final response --
     /// the same 401, carrying the same nonce. One set of nonces with no
     /// notion of a transaction read that second copy as a second challenge
@@ -766,7 +766,7 @@ mod tests {
         .expect("parse REGISTER")
     }
 
-    /// The auth-scheme is case-insensitive (RFC 7235 section 2.1), so an
+    /// The auth-scheme is case-insensitive ([RFC 7235 section 2.1](https://www.rfc-editor.org/rfc/rfc7235#section-2.1)), so an
     /// uppercase `DIGEST` challenge must still be analyzed. The scheme guard
     /// only matched `Digest`/`digest`, so a challenge that spelled the scheme
     /// any other way slipped past every check -- a one-character evasion of the

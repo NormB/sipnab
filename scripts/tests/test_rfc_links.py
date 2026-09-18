@@ -95,7 +95,11 @@ def test_a_section_citation_is_linked_and_a_repeated_bare_rfc_is_not():
     )
 
     assert sections == 1, out
-    assert "https://www.rfc-editor.org/rfc/rfc3261#section-7.3.1" in out, out
+    assert (
+        "[RFC 3261 section 7.3.1](https://www.rfc-editor.org/rfc/rfc3261#section-7.3.1)"
+        in out
+    ), out
+    assert "\u00a7" not in out, "a bare section sign survived:\n" + out
 
     assert bare == 1, (
         "a bare RFC is linked on first mention only; a page citing one RFC "
@@ -115,8 +119,85 @@ def test_an_already_linked_citation_is_left_alone():
     `[[RFC 3261](...)](...)` and fights its gate forever.
     """
     linked = (
-        "See [RFC 3261 \u00a77.3.1](https://www.rfc-editor.org/rfc/rfc3261"
+        "See [RFC 3261 section 7.3.1](https://www.rfc-editor.org/rfc/rfc3261"
         "#section-7.3.1) for the rule.\n"
     )
     out, sections, bare = convert()(linked)
     assert (out, sections, bare) == (linked, 0, 0), out
+
+
+def test_a_section_sign_link_is_relabeled_and_keeps_its_target():
+    """A reader cannot locate "§7.3.1"; they can locate "section 7.3.1".
+
+    The tree's older links carry the sign in their text. The target was always
+    right, so it is kept; only the label changes.
+    """
+    old = (
+        "See [RFC 3261 \u00a77.3.1](https://www.rfc-editor.org/rfc/rfc3261"
+        "#section-7.3.1) for the rule.\n"
+    )
+    out, sections, _ = convert()(old)
+    assert out == (
+        "See [RFC 3261 section 7.3.1](https://www.rfc-editor.org/rfc/rfc3261"
+        "#section-7.3.1) for the rule.\n"
+    ), out
+    assert sections == 1, out
+
+
+def test_an_unlinked_section_citation_in_words_is_linked_too():
+    out, sections, _ = convert()("Per RFC 3550 section 6.4.1, the report says so.\n")
+    assert (
+        "[RFC 3550 section 6.4.1](https://www.rfc-editor.org/rfc/rfc3550#section-6.4.1)"
+        in out
+    ), out
+    assert sections == 1, out
+
+
+def test_a_continued_list_keeps_its_rfc():
+    """"RFC 3261 \u00a721.5, \u00a721.6": the second number belongs to the same
+    RFC, and a bare "\u00a721.6" left behind is exactly the reference this
+    rule exists to remove."""
+    out, sections, _ = convert()("A server failure (RFC 3261 \u00a721.5, \u00a721.6).\n")
+    assert out == (
+        "A server failure ([RFC 3261 section 21.5](https://www.rfc-editor.org/rfc/"
+        "rfc3261#section-21.5), [RFC 3261 section 21.6](https://www.rfc-editor.org/"
+        "rfc/rfc3261#section-21.6)).\n"
+    ), out
+    assert sections == 2, out
+
+
+def test_an_appendix_links_to_the_appendix_anchor():
+    out, _, _ = convert()("See RFC 3550 \u00a7A.1.\n")
+    assert (
+        "[RFC 3550 appendix A.1](https://www.rfc-editor.org/rfc/rfc3550#appendix-A.1)"
+        in out
+    ), out
+
+
+def test_inline_code_is_never_rewritten():
+    """A code span quotes something -- a command, a program's output -- and a
+    link inside backticks renders as literal brackets."""
+    text = "The lint prints `(RFC 3261 \u00a78.1.1)` for this.\n"
+    out, sections, _ = convert()(text)
+    assert (out, sections) == (text, 0), out
+
+
+def test_rust_doc_comments_get_the_same_rule_and_code_does_not():
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("rfc_links", SCRIPTS / "rfc-links.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    src = (
+        "/// Retransmits per RFC 3261 \u00a717.1.1.2.\n"
+        "// An internal note on RFC 3261 \u00a717.1.1.2 stays as it is.\n"
+        "let s = \"(RFC 3261 \u00a78.1.1)\";\n"
+    )
+    out, sections = module.convert_rust(src)
+    lines = out.split("\n")
+    assert lines[0] == (
+        "/// Retransmits per [RFC 3261 section 17.1.1.2](https://www.rfc-editor.org/"
+        "rfc/rfc3261#section-17.1.1.2)."
+    ), out
+    assert lines[1:] == src.split("\n")[1:], out
+    assert sections == 1, out

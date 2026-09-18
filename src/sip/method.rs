@@ -89,7 +89,7 @@ impl SipMethod {
     /// # Arguments
     ///
     /// * `s` — method token exactly as it appears on the request line
-    ///   (matching is case-sensitive, per RFC 3261 §7.1).
+    ///   (matching is case-sensitive, per [RFC 3261 section 7.1](https://www.rfc-editor.org/rfc/rfc3261#section-7.1)).
     ///
     /// # Returns
     ///

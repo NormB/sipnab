@@ -4,11 +4,13 @@
 //!
 //! # Why only logging, and why that is the useful half
 //!
-//! [`docs/design/syscall-sandbox.md`](../../docs/design/syscall-sandbox.md)
-//! §8 sequences the syscall sandbox in four steps and puts the *enforcing*
+//! [`docs/design/syscall-sandbox.md`](../../docs/design/syscall-sandbox.md),
+//! in [section 8, "Recommendation"](https://github.com/NormB/sipnab/blob/main/docs/design/syscall-sandbox.md#8-recommendation),
+//! sequences the syscall sandbox in four steps and puts the *enforcing*
 //! filter last, for one reason: an allowlist has to be derived from a real
 //! run, and a mis-derived list kills the process on a capture box during the
-//! incident the capture was started for. §3 sets out the derivation and §9
+//! incident the capture was started for. [Section 3, "Deriving the allowlist"](https://github.com/NormB/sipnab/blob/main/docs/design/syscall-sandbox.md#3-deriving-the-allowlist)
+//! sets out the derivation and [section 9, "Open questions"](https://github.com/NormB/sipnab/blob/main/docs/design/syscall-sandbox.md#9-open-questions)
 //! left one question open — whether the kernel's own logging route is usable
 //! on an ordinary host, or whether it needs an audit daemon nobody has
 //! installed.
@@ -57,7 +59,8 @@
 //! nine ways to kill the process the list was built for.
 //!
 //! So a derivation streams, and it unions a corpus of run shapes rather than
-//! trusting one — `docs/design/syscall-sandbox.md` §3.1 asks for exactly that,
+//! trusting one — `docs/design/syscall-sandbox.md`
+//! [section 3.1, "The corpus that has to be exercised"](https://github.com/NormB/sipnab/blob/main/docs/design/syscall-sandbox.md#31-the-corpus-that-has-to-be-exercised) asks for exactly that,
 //! and two runs of the same shape here produced different sets.
 //!
 //! # The cost, stated rather than hidden
@@ -560,7 +563,8 @@ pub enum SeccompMode {
     /// Refuse every syscall outside the derived allowlist, fatally.
     ///
     /// The only mode that is a control, and the only one that can end a run.
-    /// `SECCOMP_RET_KILL_PROCESS` is what `docs/design/syscall-sandbox.md` §3.2
+    /// `SECCOMP_RET_KILL_PROCESS` is what `docs/design/syscall-sandbox.md`
+    /// [section 3.2, "The default action: KILL, not ERRNO"](https://github.com/NormB/sipnab/blob/main/docs/design/syscall-sandbox.md#32-the-default-action-kill-not-errno)
     /// chose over `ERRNO`, and the reason is that an `EPERM` from `openat` on
     /// the output path produces a run that captures happily and writes nothing
     /// — a confident wrong answer, which is the failure this codebase has
@@ -747,7 +751,8 @@ pub fn install(mode: SeccompMode) -> SeccompStatus {
 /// `prctl(PR_GET_SECCOMP)` answers 0 for none, 1 for strict mode and 2 for a
 /// filter. Necessary and not sufficient, as
 /// [`docs/design/syscall-sandbox.md`](../../docs/design/syscall-sandbox.md)
-/// §7.1 puts it: it proves a filter exists, never that the filter is the one
+/// [section 7.1, "Readback, which is necessary and not sufficient"](https://github.com/NormB/sipnab/blob/main/docs/design/syscall-sandbox.md#71-readback-which-is-necessary-and-not-sufficient)
+/// puts it: it proves a filter exists, never that the filter is the one
 /// that was asked for.
 #[cfg(target_os = "linux")]
 #[must_use]

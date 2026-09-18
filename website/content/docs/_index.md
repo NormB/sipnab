@@ -109,7 +109,7 @@ agents — no daemon, no database, no runtime to install.
 **Capture and decode.** Live interfaces, pcap/pcapng files, or a
 [HEP/EEP](/docs/cookbook/) listener fed by Kamailio, OpenSIPS, or FreeSWITCH.
 sipnab parses SIP over UDP, TCP, TLS, SCTP, and WebSocket, including IP
-fragmentation and TCP stream reassembly. All 19 RFC 3261 and IANA compact
+fragmentation and TCP stream reassembly. All 19 [RFC 3261](https://www.rfc-editor.org/rfc/rfc3261) and IANA compact
 header forms all resolve, so a message using `f:`/`t:`/`i:` is not a blind
 spot.
 
@@ -127,9 +127,9 @@ flow, and per-message detail.
 
 **Analyze media.** sipnab finds RTP streams in the packets themselves, so
 media is still analyzed when the signaling was never captured. sipnab computes
-interarrival jitter (the RFC 3550 algorithm), loss, MOS estimates, and a
+interarrival jitter (the [RFC 3550](https://www.rfc-editor.org/rfc/rfc3550) algorithm), loss, MOS estimates, and a
 sequence-space loss map that distinguishes bursty loss from diffuse loss.
-It decodes RFC 4733 DTMF, and exports G.711 (PCMU/PCMA) and Opus streams as audio.
+It decodes [RFC 4733](https://www.rfc-editor.org/rfc/rfc4733) DTMF, and exports G.711 (PCMU/PCMA) and Opus streams as audio.
 
 **Decrypt.** With a TLS key log, sipnab decrypts TLS-carried SIP and SRTP
 in place, so encrypted captures stay readable without terminating the session

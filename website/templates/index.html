@@ -370,7 +370,7 @@ sipnab -N --json -I capture.pcap --problems</code></pre>
           <tr><td><a href="{{ get_url(path='@/docs/metrics.md') }}">Prometheus metrics</a></td><td>Counters and gauges about sipnab itself: what it captured, what it lost, what it could not read.</td></tr>
           <tr><td><a href="{{ get_url(path='@/docs/mcp.md') }}">MCP server</a></td><td>Drive sipnab from an AI agent (Claude Code, Claude Desktop, …) over stdio or HTTP. 68 tools cover dialogs, RTP, diagnostics, and security findings. 56 are read-only; the twelve that write — file and audio export, evidence packages, repro scripts, capture swap, findings, TLS capture, shutdown, and two toll-fraud actions — each stay off until you enable them server-side.</td></tr>
           <tr><td><a href="{{ get_url(path='@/analyze/_index.md') }}">Browser analysis</a></td><td>Analyze pcap files in the browser via WASM. Zero upload, zero install.</td></tr>
-          <tr><td><a href="{{ get_url(path='@/docs/build.md') }}">Built in Rust</a></td><td>Rust everywhere except the OS boundary: 88 <code>unsafe</code> blocks, all of them FFI, and the build rejects any block that does not state its own soundness argument. 8981 automated tests. Under 16 MB static binary.</td></tr>
+          <tr><td><a href="{{ get_url(path='@/docs/build.md') }}">Built in Rust</a></td><td>Rust everywhere except the OS boundary: 88 <code>unsafe</code> blocks, all of them FFI, and the build rejects any block that does not state its own soundness argument. 8983 automated tests. Under 16 MB static binary.</td></tr>
         </tbody>
       </table>
     </div>
@@ -414,7 +414,7 @@ sipnab -N --json -I capture.pcap --problems</code></pre>
         <ul class="metric-list">
           <li><strong>Jitter</strong> &mdash; interarrival jitter per stream by the running estimator the specification defines, grounded only when the clock rate is known.</li>
           <li><strong>Packet loss</strong> &mdash; lost versus expected packets from sequence-number gaps, with the lost sequence numbers kept for the loss map.</li>
-          <li><strong>Round-trip time</strong> &mdash; from a receiver report's LSR and DLSR fields (&sect;6.4.1), anchored on when sipnab saw the report, with <code>round_trip_source</code> saying so.</li>
+          <li><strong>Round-trip time</strong> &mdash; from a receiver report's LSR and DLSR fields (<a href="https://www.rfc-editor.org/rfc/rfc3550#section-6.4.1">section 6.4.1</a>), anchored on when sipnab saw the report, with <code>round_trip_source</code> saying so.</li>
           <li><strong>Reception reports</strong> &mdash; the far end's own fraction lost, cumulative loss and jitter from SR and RR blocks, kept under <code>endpoint_reported</code> and never fed to the MOS.</li>
         </ul>
       </div>
@@ -549,7 +549,7 @@ sipnab -N --json -I capture.pcap --problems</code></pre>
         <span class="arch-label">Headroom to take a whole estate's HEP feed on one box, with no collector tier &mdash; offline reconstruction, four cores (measured v0.5.160)</span>
       </a>
       <a class="arch-item fade-in-up" href="{{ config.extra.github_url }}/actions/workflows/ci.yml">
-        <span class="arch-stat" data-count="8981" data-suffix="">8981</span>
+        <span class="arch-stat" data-count="8983" data-suffix="">8983</span>
         <span class="arch-label">Automated tests</span>
       </a>
     </div>

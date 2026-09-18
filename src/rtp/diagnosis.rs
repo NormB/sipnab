@@ -80,7 +80,7 @@ pub enum StunSdpMismatchReason {
     /// relay and then left it out of the SDP.
     RelayIgnored,
     /// The client's Binding Request drew no response at all, so it never
-    /// learned a public address to advertise. RFC 5389 §7.2.1 retransmits only
+    /// learned a public address to advertise. [RFC 5389 section 7.2.1](https://www.rfc-editor.org/rfc/rfc5389#section-7.2.1) retransmits only
     /// on timeout, so a retransmitted request is itself proof of the silence —
     /// the shape a firewall dropping UDP to the STUN port makes.
     Unanswered,

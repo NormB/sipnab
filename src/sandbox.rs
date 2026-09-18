@@ -14,8 +14,10 @@
 //!
 //! # Why Landlock and not seccomp, and why not yet both
 //!
-//! [`docs/design/syscall-sandbox.md`](../../docs/design/syscall-sandbox.md)
-//! §8 sequences the two, and the reason is the failure mode. A seccomp filter
+//! [`docs/design/syscall-sandbox.md`](../../docs/design/syscall-sandbox.md),
+//! in section 8,
+//! ["Recommendation"](https://github.com/NormB/sipnab/blob/main/docs/design/syscall-sandbox.md#8-recommendation),
+//! sequences the two, and the reason is the failure mode. A seccomp filter
 //! needs a syscall allowlist derived from a real run, and a mis-derived list
 //! kills the process — on a capture box, during the incident the capture was
 //! started for. Landlock needs no enumeration at all: it names paths, its

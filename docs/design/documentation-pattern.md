@@ -38,12 +38,15 @@ splitting *without* giving one page ownership, which rule 3 below forbids.
 were written without doing so completely, and the audit found three more:
 
 - **`codebase-improvement-review-2026-08-16.md` DOC-01 through DOC-07**, all
-  triaged `accepted` in `backlog.md` §CR (1945-1963) and none of them done.
+  triaged `accepted` in the backlog's section "CR — codebase improvement review
+  intake" (lines 1945-1963 of `backlog.md` when this was written; the backlog is
+  now the local file that [`backlog.md`](https://github.com/NormB/sipnab/blob/main/docs/design/backlog.md)
+  describes) and none of them done.
   DOC-04, *"Split and refresh the MCP learning path"*, IS the work this record
   describes — with a numeric acceptance criterion (beginner path under ~200
   lines) that `mcp.md` at 111 happens to meet. This record was written two days
   after that review and does not cite it. Anyone extending this pattern should
-  reconcile against §CR first, so the pattern and the accepted backlog are one
+  reconcile against that CR section first, so the pattern and the accepted backlog are one
   plan and not two.
 - **DOC-02** names the corpus's worst reader problem, and it is not structural:
   `tui-walkthrough.md` is the tutorial [`docs/README.md`](https://github.com/NormB/sipnab/blob/main/docs/README.md) sends new readers to,
@@ -53,7 +56,7 @@ were written without doing so completely, and the audit found three more:
   "The pattern" below.
 
 **The lesson stands, sharpened: read `docs/design/` first, and read
-`backlog.md` §CR with it.** A page that looks badly organized may be the
+the backlog's CR section with it.** A page that looks badly organized may be the
 deliberate outcome of a decision that is still sound, and the work you are
 about to propose may already be accepted and waiting under a different name.
 

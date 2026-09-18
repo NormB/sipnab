@@ -1,7 +1,8 @@
 # The mid-dialog state machine
 
 **Status:** IMPLEMENTED. The table lives in
-[`src/sip/dialog_state_machine.rs`](../../src/sip/dialog_state_machine.rs); §0
+[`src/sip/dialog_state_machine.rs`](../../src/sip/dialog_state_machine.rs);
+[section 0, "What shipped, and where this page was wrong"](#0-what-shipped-and-where-this-page-was-wrong)
 records what shipped, what did not, and the three places this page was wrong.
 **Written against:** `3267b08`. **Re-verified and implemented against:**
 `4651932`.
@@ -28,7 +29,11 @@ creation-branch call site in
 Three claims below did not survive re-verification. Two are stale facts, and
 the third would have shipped a worse defect than the one it closes.
 
-**§3's central proposal is wrong, and §5 contradicts it.** §3 says dispatching
+**The central proposal of
+[section 3, "The central design decision: the dispatch key is wrong"](#3-the-central-design-decision-the-dispatch-key-is-wrong)
+is wrong, and
+[section 5, "How completeness is proven, rather than asserted"](#5-how-completeness-is-proven-rather-than-asserted)
+contradicts it.** Section 3 says dispatching
 on the arriving message's *family* makes the four `cseq_method == "INVITE"`
 tests "disappear from the response arms because dispatch has already
 established the family". It does not, because family is not the coordinate
@@ -37,19 +42,27 @@ belong to the INVITE family and four of them carry responses of their own, so a
 family-only dispatch routes `200 OK (CSeq 1 CANCEL)` into the arm that
 establishes a call: a canceled call then reports `InCall`, counted as a
 channel in use. That is strictly worse than the `Trying` it replaces, and it is
-what a reader implementing §3 literally would have built. §5's own `Arrival`
-type carries the CSeq **method**, not its family, so the type was right and the
+what a reader implementing [section 3](#3-the-central-design-decision-the-dispatch-key-is-wrong)
+literally would have built. The `Arrival` type that
+[section 5](#5-how-completeness-is-proven-rather-than-asserted) itself defines
+carries the CSeq **method**, not its family, so the type was right and the
 prose beside it was not. `a_200_to_the_cancel_does_not_answer_the_call` pins
 the cell.
 
-**§7's fourth open question has an answer, and it is "yes".** The dialog's own
+**The open question in [section 7, "Open questions"](#7-open-questions) that
+asks whether the dialog's own family needs inferring has an answer, and it is
+"yes".** The dialog's own
 family is needed, not only the arrival's. `NOTIFY` is the counterexample: the
-same request ends a transfer inside an INVITE dialog ([RFC 3515 §2.4.6](https://www.rfc-editor.org/rfc/rfc3515#section-2.4.6)) and
-activates a subscription inside a SUBSCRIBE one ([RFC 6665 §4.1.2](https://www.rfc-editor.org/rfc/rfc6665#section-4.1.2)), and nothing
+same request ends a transfer inside an INVITE dialog ([RFC 3515 section 2.4.6](https://www.rfc-editor.org/rfc/rfc3515#section-2.4.6)) and
+activates a subscription inside a SUBSCRIBE one ([RFC 6665 section 4.1.2](https://www.rfc-editor.org/rfc/rfc6665#section-4.1.2)), and nothing
 on the message distinguishes the two. `transition` therefore keeps the
-`family` parameter §5 gave it.
+`family` parameter that
+[section 5, "How completeness is proven, rather than asserted"](#5-how-completeness-is-proven-rather-than-asserted)
+gave it.
 
-**§1's cost claim is now half true.** "Counted in `active_dialog_count`
+**The cost claim in
+[section 1, "The defect, in four lines of code"](#1-the-defect-in-four-lines-of-code)
+is now half true.** "Counted in `active_dialog_count`
 forever" was accurate at `3267b08` and is not at HEAD: `ACTIVE_IDLE_WINDOW`
 bounds that gauge to an hour since the dialog was last touched, so a stuck
 dialog ages out rather than growing with uptime. The other half stands — the
@@ -60,18 +73,25 @@ report and filter, and still outside both fraud detectors.
 `(family, arrival, state)`, wildcard-free at the family and class level, with
 every non-move carrying a reason. `family_of_seed` maps `ACK`, `BYE`, `CANCEL`
 and `PRACK` to the INVITE family — the four that presuppose an INVITE and
-cannot open a dialog — and `dialog.method` is untouched, as §3 intended. One
+cannot open a dialog — and `dialog.method` is untouched, as
+[section 3, "The central design decision: the dispatch key is wrong"](#3-the-central-design-decision-the-dispatch-key-is-wrong)
+intended. One
 cell arrived that this page never named: a `2xx` answering a `BYE` is proof the
-session ended ([RFC 3261 §15.1.2](https://www.rfc-editor.org/rfc/rfc3261#section-15.1.2)), so a call whose `BYE` fell outside the
+session ended ([RFC 3261 section 15.1.2](https://www.rfc-editor.org/rfc/rfc3261#section-15.1.2)), so a call whose `BYE` fell outside the
 capture now leaves `InCall` instead of being counted as a live channel until it
 ages out. Its sibling is the trap above — a `2xx` answering a `CANCEL` proves
-only that the cancellation arrived (§9.1) — and the two together are why the
+only that the cancellation arrived
+([RFC 3261 section 9.1](https://www.rfc-editor.org/rfc/rfc3261#section-9.1) and
+[RFC 3261 section 9.2](https://www.rfc-editor.org/rfc/rfc3261#section-9.2)) — and the two together are why the
 transaction is a coordinate and the family is not enough.
 
 **What did not ship, deliberately.** `UPDATE`, `INFO`, `REFER` and `NOTIFY`
 keep their own family. Moving them would also decide what a dialog seeded by
-one *starts* as, which is §7's second open question and is not answerable from
-the code. The two fraud detectors stay off for mid-dialog-seeded calls (§6),
+one *starts* as, which is the open question in
+[section 7, "Open questions"](#7-open-questions) about what state a dialog
+seeded mid-dialog should start in, and is not answerable from the code. The two
+fraud detectors stay off for mid-dialog-seeded calls
+([section 6, "What this does not fix"](#6-what-this-does-not-fix)),
 and that remains a known defect this change does not close.
 
 ## 1. The defect, in four lines of code
@@ -118,7 +138,8 @@ wants."*
 *Half of that stopped being true after this page was written, and every line
 number in it moved. `ACTIVE_IDLE_WINDOW` now bounds `active_dialog_count` to an
 hour since the dialog was last touched, so a stuck dialog ages out instead of
-growing with uptime; the invisibility to `active_call_count` stands. See §0.*
+growing with uptime; the invisibility to `active_call_count` stands. See
+[section 0, "What shipped, and where this page was wrong"](#0-what-shipped-and-where-this-page-was-wrong).*
 
 And two security detectors are **silently off** for every such call.
 `record_if_short_call` — wangiri detection — takes an early `return None` unless
@@ -128,7 +149,9 @@ the dialog is `Completed | Canceled`
 ([`:324`](https://github.com/NormB/sipnab/blob/main/src/security/fraud_detect.rs#L324)). A wrong state does not merely
 mislabel a row; it turns off two detectors with no error anywhere.
 
-**Both gates have a second clause that §6 has to come back to:**
+**Both gates have a second clause that
+[section 6, "What this does not fix"](#6-what-this-does-not-fix) has to come
+back to:**
 
 ```rust
 if dialog.method != crate::sip::SipMethod::Invite
@@ -149,7 +172,7 @@ and `Pending` ([`timeline.rs:472`](https://github.com/NormB/sipnab/blob/main/src
 ## 2. Why the obvious fix failed five times
 
 The obvious fix is to dispatch on the method a request *implies* — a BYE or a
-CANCEL cannot open a dialog ([RFC 3261 §9](https://www.rfc-editor.org/rfc/rfc3261#section-9), §15), so it belongs to an INVITE. The
+CANCEL cannot open a dialog ([RFC 3261 section 9](https://www.rfc-editor.org/rfc/rfc3261#section-9), [RFC 3261 section 15](https://www.rfc-editor.org/rfc/rfc3261#section-15)), so it belongs to an INVITE. The
 backlog is right that this *"is almost certainly the right shape"*. Here is why
 routing to `update_invite_state` on its own makes things worse.
 
@@ -225,21 +248,23 @@ and `update_state` dispatches on `family(msg)`, not on `dialog.method`. The four
 `cseq_method == "INVITE"` tests then disappear from the response arms because
 dispatch has already established the family.
 
-**The paragraph above is wrong, and §0 says why.** Family is coarser than the
+**The paragraph above is wrong, and
+[section 0, "What shipped, and where this page was wrong"](#0-what-shipped-and-where-this-page-was-wrong)
+says why.** Family is coarser than the
 transaction, so collapsing the two hands `200 OK (CSeq 1 CANCEL)` to the arm
 that answers a call. What shipped keeps the transaction as its own coordinate:
 the dialog's family selects the machine, and the arriving message's CSeq method
 selects which of that machine's transactions the response speaks for. The
 string comparisons are gone; the distinction they were making is not.
 
-What §3 got right is the rest of it — that the guards which stay behind in
+What this section got right is the rest of it — that the guards which stay behind in
 those arms are the part that was always the real content, the **state** guards:
 
 ```rust
 matches!(dialog.state, DialogState::Trying | DialogState::Ringing | DialogState::Canceled)
 ```
 
-That is the [RFC 3261 §9](https://www.rfc-editor.org/rfc/rfc3261#section-9)/§15 rule the domain primer already documents
+That is the [RFC 3261 section 9](https://www.rfc-editor.org/rfc/rfc3261#section-9)/[RFC 3261 section 15](https://www.rfc-editor.org/rfc/rfc3261#section-15) rule the domain primer already documents
 ([`domain-primer.md:168-180`](https://github.com/NormB/sipnab/blob/main/docs/internals/domain-primer.md#L168-L180)): once a final 2xx
 has established the call, a CANCEL has no effect, so a late 487 must not
 un-answer it.
@@ -302,7 +327,9 @@ buy nothing this page's own argument does not already supply. A response with
 no CSeq reaches the table as `Arrival::Response { cseq_method: None, .. }` and
 gets a stated reason like every other cell, which is a claim a reader can
 disagree with — where "no input can reach this cell" is a claim about the world,
-and §4's opening paragraph is an argument for not making those. The count
+and the opening paragraph of this section, under
+["Cannot occur" is almost always the wrong claim in a capture tool](#cannot-occur-is-almost-always-the-wrong-claim-in-a-capture-tool),
+is an argument for not making those. The count
 assertion survives as `the_sweep_covers_every_declared_cell`.
 
 ### The coordinate is wrong on two axes, not one
@@ -381,7 +408,9 @@ work.
 
 ### O2. Widen the prover before touching the machine
 
-Add both axes from §4 to
+Add both axes from
+[section 4, "The coordinate is wrong on two axes, not one"](#the-coordinate-is-wrong-on-two-axes-not-one)
+to
 `every_method_and_class_has_a_declared_transition` **first**, with the current
 implementation unchanged. It will fail, and the cells it fails on are the
 specification of the fix. That ordering is this project's TDD rule and it is also
@@ -409,7 +438,8 @@ coordinate started outside a pre-answer state. The bitmap is
 
 ### O3. Do not rebuild the differential that failed
 
-§2 established that the prover is a differential between two hand-written tables
+[Section 2, "The deeper reason there was a different cell each time"](#the-deeper-reason-there-was-a-different-cell-each-time)
+established that the prover is a differential between two hand-written tables
 and that the fix moves one of them. Rebuilding that arrangement at a wider
 coordinate reproduces the failure at greater expense.
 
@@ -421,14 +451,15 @@ it. Properties, each a quantified statement over every cell:
   differs from the dialog's may move `Completed`, `Canceled`, `Failed`,
   `Expired` or `Terminated`. This is the rule the four `cseq_method == "INVITE"`
   guards were expressing, stated once instead of four times. *Shipped in a
-  sharper form, because family was the wrong unit (§0):
+  sharper form, because family was the wrong unit
+  ([section 0, "What shipped, and where this page was wrong"](#0-what-shipped-and-where-this-page-was-wrong)):
   `only_the_invite_transaction_decides_how_a_call_was_answered` allows exactly
   one destination outside the INVITE transaction — `Completed`, from a `2xx`
   answering a `BYE` — and names why.*
 - **No cell moves an answered call back to a pre-answer state.** Nothing may take
   `InCall` to `Trying` or `Ringing`.
 - **The 2xx/CANCEL race resolves one way.** A 2xx in the INVITE family from
-  `Canceled` reaches `InCall`; no 487 may move `InCall`. [RFC 3261 §9](https://www.rfc-editor.org/rfc/rfc3261#section-9) and §15,
+  `Canceled` reaches `InCall`; no 487 may move `InCall`. [RFC 3261 section 9](https://www.rfc-editor.org/rfc/rfc3261#section-9) and [RFC 3261 section 15](https://www.rfc-editor.org/rfc/rfc3261#section-15),
   and [`domain-primer.md:168-180`](https://github.com/NormB/sipnab/blob/main/docs/internals/domain-primer.md#L168-L180).
 - **Provisional and Challenge never decide an outcome.**
   `ResponseClass::Provisional` and `ResponseClass::Challenge` may only produce
@@ -473,7 +504,9 @@ there before, and four buckets move:
 
 Every movement is attributable to a declared cell, and every one runs the same
 way — a canceled call now says it was canceled. `InCall` does not move, which
-is the number that matters most here: the family-only fix §0 rejects would have
+is the number that matters most here: the family-only fix that
+[section 0, "What shipped, and where this page was wrong"](#0-what-shipped-and-where-this-page-was-wrong)
+rejects would have
 moved dialogs *into* it.
 
 ### O5. The arrival-order gate closes with the fix
@@ -496,7 +529,9 @@ machine sees the messages."*
 ## 6. What this does not fix
 
 - **`dialog.method` still says `BYE` for a call that was an INVITE dialog.** The
-  label is deliberately left alone (§3), following the first narrowing's
+  label is deliberately left alone
+  ([section 3, "The central design decision: the dispatch key is wrong"](#3-the-central-design-decision-the-dispatch-key-is-wrong)),
+  following the first narrowing's
   instinct. That looked like a cosmetic deferral when this page was drafted. The
   third bullet below shows it is not.
 - **Operator-visible numbers move.** `active_dialog_count` falls and
@@ -506,14 +541,16 @@ machine sees the messages."*
 - **The two fraud detectors stay off, and that is a defect this change does not
   close.** Both gates open with `dialog.method != SipMethod::Invite`
   ([`fraud_detect.rs:268`](https://github.com/NormB/sipnab/blob/main/src/security/fraud_detect.rs#L268),
-  [`:324`](https://github.com/NormB/sipnab/blob/main/src/security/fraud_detect.rs#L324)). §3 deliberately leaves
+  [`:324`](https://github.com/NormB/sipnab/blob/main/src/security/fraud_detect.rs#L324)).
+  [Section 3, "The central design decision: the dispatch key is wrong"](#3-the-central-design-decision-the-dispatch-key-is-wrong)
+  deliberately leaves
   `dialog.method` reading `BYE` or `CANCEL` on a mid-dialog-seeded call, so those
   calls fail the *first* clause however correct their state becomes. Wangiri and
   sequential-scan detection remain silently disabled for exactly the population
   this page is about.
 
   That makes "should `dialog.method` be corrected" load-bearing rather than
-  cosmetic (§7). Three ways out, none free: relabel `dialog.method` once the
+  cosmetic ([section 7, "Open questions"](#7-open-questions)). Three ways out, none free: relabel `dialog.method` once the
   dialog's family is known and accept a user-visible change plus whatever the
   first narrowing was avoiding by not doing it; give `SipDialog` a separate
   `family` field and re-gate the detectors on that; or leave both and record the
@@ -524,8 +561,9 @@ machine sees the messages."*
   `15b6337` warned about, one layer out.
 - **`DialogState` is public API.** It is re-exported at
   [`lib.rs:110`](https://github.com/NormB/sipnab/blob/main/src/lib.rs#L110) and is `serde::Serialize`, so any new variant
-  is a semver event. `#[non_exhaustive]` leaves room to add one; §7 has the
-  question of whether one is needed.
+  is a semver event. `#[non_exhaustive]` leaves room to add one;
+  [section 7, "Open questions"](#7-open-questions) has the question of whether
+  one is needed.
 
 ## 7. Open questions
 
@@ -543,11 +581,13 @@ question is left standing rather than deleted so the reasoning survives.
   stay where they were, because moving them also decides the second question
   below, which is still open.
 - **ANSWERED — no.** *Should `expected()` survive at all?* It did not. The
-  differential is gone and no per-cell rule needed keeping, so the §2 trap does
-  not reopen anywhere.
+  differential is gone and no per-cell rule needed keeping, so the trap in
+  [section 2, "The deeper reason there was a different cell each time"](#the-deeper-reason-there-was-a-different-cell-each-time)
+  does not reopen anywhere.
 
-- **Does `dialog.method` have to be corrected after all, and if so how?** §6's
-  third bullet turns this from a presentation choice into a correctness one: two
+- **Does `dialog.method` have to be corrected after all, and if so how?** The
+  third bullet of [section 6, "What this does not fix"](#6-what-this-does-not-fix)
+  turns this from a presentation choice into a correctness one: two
   fraud detectors gate on it, and leaving it alone leaves them off for the
   population this change exists to fix. Relabelling is what the first of the five
   narrowings deliberately avoided, and the record does not say what it was
@@ -568,8 +608,9 @@ question is left standing rather than deleted so the reasoning survives.
   today. NOTIFY, REFER, UPDATE, PUBLISH, INFO and MESSAGE are not obviously
   assigned by anything in the current code — the existing `_` arm has never had
   to decide. Each needs an RFC citation, not a preference.
-- **How many of the widened cells are genuinely reachable?** The count in §4 is
-  arithmetic, not a claim about traffic. The coverage bitmap in O2 answers a
+- **How many of the widened cells are genuinely reachable?** The count in
+  [section 4, "The coordinate is wrong on two axes, not one"](#the-coordinate-is-wrong-on-two-axes-not-one)
+  is arithmetic, not a claim about traffic. The coverage bitmap in O2 answers a
   weaker version of it — every state the table can reach is reached, and nine of
   the thirteen are destinations — and the table stayed hand-written, so the
   question of whether it would have to be generated never arose. What the bitmap

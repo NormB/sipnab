@@ -244,7 +244,7 @@ form does for you.
 
 `final_status_code` is the response that decided the outcome, with auth
 challenges excluded: a call challenged and then answered reports 200, not the
-401. `final_status_reason` is the phrase from the wire, which [RFC 3261 §7.2](https://www.rfc-editor.org/rfc/rfc3261#section-7.2)
+401. `final_status_reason` is the phrase from the wire, which [RFC 3261 section 7.2](https://www.rfc-editor.org/rfc/rfc3261#section-7.2)
 leaves as free text — `500 Service Unavailable` is legal and common, so match on
 the code.
 
@@ -342,7 +342,7 @@ than as a second finding.
 | `server` | The STUN or TURN server it went to. The box to check when the reason is `unanswered`. |
 | `mapped_address` / `relayed_address` | The reachable address the server returned and the client did not use. Absent on `unanswered`, where there is none — that is the point of it. |
 | `advertised` | The unroutable address the SDP named instead. |
-| `request_count` | Requests sent for that transaction. Above one is a retransmission, which [RFC 5389 §7.2.1](https://www.rfc-editor.org/rfc/rfc5389#section-7.2.1) sends only on timeout — so it is itself proof the earlier attempts drew silence. |
+| `request_count` | Requests sent for that transaction. Above one is a retransmission, which [RFC 5389 section 7.2.1](https://www.rfc-editor.org/rfc/rfc5389#section-7.2.1) sends only on timeout — so it is itself proof the earlier attempts drew silence. |
 | `observed_offset_secs` | Seconds from the start of this dialog to the STUN evidence; negative when the probe came first, which is the ordinary case. Absent when either time is unknown. |
 
 `observed_offset_secs` exists because the correlation is by **client IP alone**.
@@ -466,7 +466,7 @@ does. `ssrcs_dropped` is the same statement one level down.
 
 An `ice` record appears once, and only on a capture holding ICE connectivity
 checks — Binding Requests carrying the `PRIORITY` and role attributes
-[RFC 8445 §7.2.1](https://www.rfc-editor.org/rfc/rfc8445#section-7.2.1) requires,
+[RFC 8445 section 7.2.1](https://www.rfc-editor.org/rfc/rfc8445#section-7.2.1) requires,
 which is what tells them from a plain server-reflexive probe to a STUN server:
 
 | Field | Meaning |

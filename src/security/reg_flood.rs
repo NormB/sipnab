@@ -14,8 +14,10 @@
 //! trunk to the firewall. A count of requests says nothing about whether the
 //! registrar accepted them, so it decides nothing here; only a challenge
 //! answering a REGISTER that already carried credentials is a failure, and any
-//! successful registration clears the count. `docs/design/threat-mitigation-hooks.md`
-//! §5 is the rule this follows.
+//! successful registration clears the count. Section 5 of
+//! `docs/design/threat-mitigation-hooks.md`,
+//! ["The evidence threshold: act, or tell a human"](https://github.com/NormB/sipnab/blob/main/docs/design/threat-mitigation-hooks.md#5-the-evidence-threshold-act-or-tell-a-human),
+//! is the rule this follows.
 
 use std::net::IpAddr;
 

@@ -9,7 +9,7 @@ corpus seeded. Kept for the determination record.
 
 ## 1. What the standard requires
 
-[RFC 3261 §7.3.3](https://www.rfc-editor.org/rfc/rfc3261#section-7.3.3) ("Compact Form"):
+[RFC 3261 section 7.3.3](https://www.rfc-editor.org/rfc/rfc3261#section-7.3.3) ("Compact Form"):
 
 > SIP provides a mechanism to represent common header field names in an
 > abbreviated form. This may be useful when messages would otherwise become
@@ -19,7 +19,7 @@ corpus seeded. Kept for the determination record.
 > for the longer form of a header field name at any time without changing
 > the semantics of the message.
 
-Plus §7.3.1: header field names are always compared **case-insensitively**
+Plus [RFC 3261 section 7.3.1](https://www.rfc-editor.org/rfc/rfc3261#section-7.3.1): header field names are always compared **case-insensitively**
 (so `I:`, `i:`, `V:`, `v:` are all valid compact forms). Long and compact
 forms may be mixed freely within one message.
 
@@ -162,7 +162,7 @@ handling of the core ten. **Decision: keep normalizing; no config knob.**
 
 ## 4. TDD plan (mandatory order)
 
-Write these failing tests first, run RED, then apply §3.1:
+Write these failing tests first, run RED, then apply [section 3.1, "Parser table (the fix)"](#31-parser-table-the-fix):
 
 1. **Parser expansion** ([`src/sip/parser.rs`](https://github.com/NormB/sipnab/blob/main/src/sip/parser.rs) tests): a message using all
    nine extension compact forms (mixed upper/lower case, e.g. `R:`/`y:`)

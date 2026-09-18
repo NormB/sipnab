@@ -76,7 +76,7 @@ pub struct Termination {
 
 /// Parse one `Reason` header value into its `reason-value` list.
 ///
-/// [RFC 3326](https://www.rfc-editor.org/rfc/rfc3326) §2:
+/// [RFC 3326 section 2](https://www.rfc-editor.org/rfc/rfc3326#section-2):
 ///
 /// ```text
 /// Reason        = "Reason" HCOLON reason-value *(COMMA reason-value)
@@ -89,7 +89,7 @@ pub struct Termination {
 /// A comma inside the quoted `text` is text: splitting on every comma would
 /// cut one value in half and invent a second protocol named after the rest of
 /// the sentence. Parameter names are matched case-insensitively and linear
-/// whitespace is allowed around `;` and `=`, both per RFC 3261 §7.3.1.
+/// whitespace is allowed around `;` and `=`, both per [RFC 3261 section 7.3.1](https://www.rfc-editor.org/rfc/rfc3261#section-7.3.1).
 ///
 /// An unparsable `cause` is reported ABSENT rather than as zero. Zero is a
 /// real Q.850 cause and appears in the private corpus, so coercing a parse
@@ -343,7 +343,7 @@ mod tests {
         .expect("fixture parses")
     }
 
-    /// The two protocols RFC 3326 §2 names are not interchangeable, and a
+    /// The two protocols [RFC 3326 section 2](https://www.rfc-editor.org/rfc/rfc3326#section-2) names are not interchangeable, and a
     /// `cause_code` without one is ambiguous: `16` is normal clearing in
     /// Q.850 and is not a SIP status code at all.
     #[test]
@@ -355,7 +355,7 @@ mod tests {
         assert_eq!(got[0].text.as_deref(), Some("Normal Clearing"));
     }
 
-    /// RFC 3326 §2 permits several reason-values in one header field,
+    /// [RFC 3326 section 2](https://www.rfc-editor.org/rfc/rfc3326#section-2) permits several reason-values in one header field,
     /// comma-separated, and a message MAY carry more than one `Reason` header.
     #[test]
     fn several_reason_values_in_one_field_are_all_read() {
@@ -390,8 +390,9 @@ mod tests {
         assert_eq!(got[0].text, None);
     }
 
-    /// RFC 3261 §7.3.1 allows linear whitespace around `;` and `=`, and
-    /// §7.3.1 makes parameter names case-insensitive. A parser that demands
+    /// [RFC 3261 section 25.1](https://www.rfc-editor.org/rfc/rfc3261#section-25.1) allows linear whitespace around `;` and `=`
+    /// (`SEMI`, `EQUAL`), and [section 7.3.1](https://www.rfc-editor.org/rfc/rfc3261#section-7.3.1) makes parameter names
+    /// case-insensitive. A parser that demands
     /// one spelling reports "no cause" on a message that carries one.
     #[test]
     fn whitespace_and_parameter_case_do_not_hide_a_cause() {

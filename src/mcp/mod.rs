@@ -17,7 +17,8 @@
 //! rewriting the evidence underneath someone mid-incident is, and a swap
 //! rotates the capture instance every answer carries
 //! ([`crate::provenance`]) so the rewrite cannot be silent. See
-//! `docs/internals/invariants.md` §7.
+//! [invariant 7, "MCP tools never edit the analysis, and every response has a ceiling"](https://github.com/NormB/sipnab/blob/main/docs/internals/invariants.md#7-mcp-tools-never-edit-the-analysis-and-every-response-has-a-ceiling)
+//! in `docs/internals/invariants.md`.
 //!
 //! # Output mode parity
 //!

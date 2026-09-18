@@ -85,7 +85,7 @@ pub fn is_sip_message(data: &[u8]) -> bool {
 /// One reader would have been enough until `Expired` turned out to be a state
 /// nothing could reach.
 ///
-/// RFC 3261 §10.2.1.1 allows the interval to arrive two ways: an `Expires`
+/// [RFC 3261 section 10.2.1.1](https://www.rfc-editor.org/rfc/rfc3261#section-10.2.1.1) allows the interval to arrive two ways: an `Expires`
 /// header, or an `expires` parameter on the `Contact`. The parameter wins where
 /// both appear, because it is the per-binding value and the header is only the
 /// default for bindings that do not carry one.
@@ -178,8 +178,8 @@ mod tests {
 
     /// A URI parameter is not the binding lifetime.
     ///
-    /// RFC 3261 §25.1 puts everything between `<` and `>` in
-    /// `uri-parameters`; §10.2.1.1 puts the binding lifetime on the Contact
+    /// [RFC 3261 section 25.1](https://www.rfc-editor.org/rfc/rfc3261#section-25.1) puts everything between `<` and `>` in
+    /// `uri-parameters`; [RFC 3261 section 10.2.1.1](https://www.rfc-editor.org/rfc/rfc3261#section-10.2.1.1) puts the binding lifetime on the Contact
     /// HEADER parameter. Reading the raw value took the URI's `expires` and
     /// reported a registration granted for 60s against 3600s requested — a
     /// finding fabricated from a parameter about the URI.
@@ -193,7 +193,7 @@ mod tests {
     /// parameter. `find('>')` matched the `>` inside the quotes, so a crafted
     /// display name reported the decoy `expires` — masking a de-registration
     /// (`;expires=0`) as a normal registration, or fabricating a shortened
-    /// grant. RFC 3261 §25.1 admits `>` and `;` inside a `quoted-string`.
+    /// grant. [RFC 3261 section 25.1](https://www.rfc-editor.org/rfc/rfc3261#section-25.1) admits `>` and `;` inside a `quoted-string`.
     #[test]
     fn a_quoted_display_name_does_not_steal_the_registration_expiry() {
         let msg = contact_msg(r#""x>;expires=99;y" <sip:alice@10.0.0.1>;expires=3600"#);
@@ -213,7 +213,8 @@ mod tests {
 
     /// The header parameter still wins over the `Expires` header.
     ///
-    /// The regression guard for §10.2.1.1's precedence rule, which the fix
+    /// The regression guard for the precedence rule in
+    /// [RFC 3261 section 10.2.1.1](https://www.rfc-editor.org/rfc/rfc3261#section-10.2.1.1), which the fix
     /// must not invert.
     #[test]
     fn the_contact_header_parameter_still_beats_the_expires_header() {
@@ -223,7 +224,7 @@ mod tests {
 
     /// A bare addr-spec carries header parameters directly.
     ///
-    /// RFC 3261 §20.10 forbids a Contact without angle brackets from carrying
+    /// [RFC 3261 section 20.10](https://www.rfc-editor.org/rfc/rfc3261#section-20.10) forbids a Contact without angle brackets from carrying
     /// URI parameters, so every `;` in it is a header parameter. Skipping to
     /// after a `>` that is not there must not skip the whole value.
     #[test]

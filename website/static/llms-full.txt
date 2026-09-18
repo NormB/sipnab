@@ -483,7 +483,7 @@ A composite run therefore reports, per call:
 | Differing SDP | Both saw the message and disagree about the media endpoint, so the report carries both accounts side by side |
 
 Neither account carries the label expected or actual. sipnab pairs copies by
-transaction identity ([RFC 3261 §17.1.3](https://www.rfc-editor.org/rfc/rfc3261#section-17.1.3) and §17.2.3), never by arrival order,
+transaction identity ([RFC 3261 section 17.1.3](https://www.rfc-editor.org/rfc/rfc3261#section-17.1.3) and [RFC 3261 section 17.2.3](https://www.rfc-editor.org/rfc/rfc3261#section-17.2.3)), never by arrival order,
 because the mirror usually arrives FIRST — the proxy mirrors as it processes
 while the wire copy takes a network hop, so any "first one wins" rule would
 quietly make the suspect authoritative.
@@ -2154,7 +2154,7 @@ STIR/SHAKEN: attest=A orig=+15551234567 dest=["+15559876543"] verified=NotChecke
 **What to look for:**
 
 - `attest=A` means the originator **claimed** full attestation. Nothing here confirms the claim, and a forged Identity header decodes exactly like a genuine one — so this is evidence about what the originator claimed, never grounds for trusting a calling number.
-- `verified=Expired` is the one check sipnab applies locally: [RFC 8224 §4.4](https://www.rfc-editor.org/rfc/rfc8224#section-4.4) `iat` freshness, against the capture timestamp of the packet carrying the header. An old pcap therefore reports the tokens that were still fresh at the moment they crossed the tap.
+- `verified=Expired` is the one check sipnab applies locally: [RFC 8224 section 6.2](https://www.rfc-editor.org/rfc/rfc8224#section-6.2), Step 4, `iat` freshness, against the capture timestamp of the packet carrying the header. An old pcap therefore reports the tokens that were still fresh at the moment they crossed the tap.
 - No `STIR/SHAKEN:` line at all means no `Identity` header reached the capture point. On an inbound trunk that is itself the finding.
 
 **Pitfalls:**
@@ -2768,7 +2768,7 @@ Pass a container somebody else produced — one a store already rejected — as 
 
 **What to look for:**
 
-- **There are three verdicts, and the middle one carries the point.** `valid-except-documented-deviation` means every finding is a shape sipnab emits deliberately that the schema rejects: §4.3 of the draft says a Dialog Object with no parameters is possible, the working group agreed that shape in issue #20 after IETF 124, and the draft's own Appendix B schema forbids it because every Dialog Object requires a `start`. sipnab emits one — the consultative leg of an attended transfer, which the observed leg never saw.
+- **There are three verdicts, and the middle one carries the point.** `valid-except-documented-deviation` means every finding is a shape sipnab emits deliberately that the schema rejects: [section 4.3 of draft-ietf-vcon-vcon-core-03](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-4.3) says a Dialog Object with no parameters is possible, the working group agreed that shape in issue #20 after IETF 124, and the draft's own Appendix B schema forbids it because every Dialog Object requires a `start`. sipnab emits one — the consultative leg of an attended transfer, which the observed leg never saw.
 - The exemption is **narrow**. Only a Dialog Object with no members at all counts. A typed object missing `start` is an ordinary error, and it is exactly the defect the corpus pass found; folding the two together would teach a producer that a missing `start` is fine.
 - A container that disagrees with the schema is an **answer**, not a tool error. The call fails only when the request is wrong: neither argument, both, an unknown Call-ID, or a `container` that is not a JSON object.
 
@@ -3396,7 +3396,7 @@ Metric names emitted by [`src/output/prometheus.rs`](https://github.com/NormB/si
 | `sipnab_nat_unanswered_requests` | gauge | STUN and TURN transactions that went out and never came back — the signal behind a one-way-audio complaint. **The only capture-quality series about the network rather than about the capture:** these frames arrived perfectly, and the reply to them did not. A gauge and not a counter because a late answer removes one, which a monotonic counter could never record. An endpoint that cannot learn its reflexive address advertises its private address in SDP, and the far end then sends media to an address the internet cannot route, while signaling looks healthy. Silence rather than a refusal points at something in the path discarding the packets — on school, campus and corporate networks most often a security appliance (web filter, secure web gateway, firewall or IPS) dropping UDP it does not recognize. A refusal counts as answered: the server was reachable and said no, which is a different fault. |
 | `sipnab_nat_lapsed_turn_allocations` | gauge | TURN allocations still carrying traffic past the lifetime the server last granted them, with no Refresh seen in between. The second capture-quality series about the NETWORK rather than about the capture, and the only condition sipnab reports that has **no other symptom anywhere**: a relay tears an allocation down the moment its lifetime lapses, the relayed media stops with it mid-call, and no SIP message says why — the signaling shows a healthy call that went quiet. A gauge and not a counter because a Refresh seen later moves the expiry and unsays it, which a monotonic counter could never record. The wording is "no Refresh SEEN" rather than "none sent", because a capture that started late or lost a packet cannot tell those apart. A deliberate release (a Refresh with `LIFETIME` 0) is never counted — the client asked for the teardown. |
 | `sipnab_nat_lapsed_turn_allocation_streams` | gauge | Media streams observed crossing a TURN allocation that had already lapsed. The scale beside `sipnab_nat_lapsed_turn_allocations`, and the reason that series is worth paging on: an allocation that lapsed with nothing on it cost nobody a call, while one carrying four streams cut off four conversations mid-sentence — and without relayed media attributable to the allocation that carried it, the two render identically. Counted by distinct SSRC seen inside the ChannelData frames on the allocation's channels, so RTCP does not inflate it. A gauge for the same reason the series above is: a Refresh seen later moves the expiry and takes the streams back out of this number. |
-| `sipnab_nat_ice_role_conflicts` | gauge | Candidate pairs where both ICE agents claimed the same role, or where one answered `487 Role Conflict` ([RFC 8445](https://www.rfc-editor.org/rfc/rfc8445) §7.3.1.1). The third capture-quality series about the NETWORK rather than about the capture. ICE resolves this itself — the losing agent switches role and repeats every check it had already sent — so a single conflict is not always fatal, which is exactly why it belongs on a dashboard rather than only in an alert: a fleet where it happens constantly is misconfigured whether or not any individual call survived it. Where no pair between the two was ever nominated, the conflict is a candidate cause of media that never started. The usual source is two endpoints configured with the same role, or a B2BUA relaying one side's role attribute to the other. A gauge because a later nomination on the same pair unsays the severity of it. |
+| `sipnab_nat_ice_role_conflicts` | gauge | Candidate pairs where both ICE agents claimed the same role, or where one answered `487 Role Conflict` ([RFC 8445 section 7.3.1.1](https://www.rfc-editor.org/rfc/rfc8445#section-7.3.1.1)). The third capture-quality series about the NETWORK rather than about the capture. ICE resolves this itself — the losing agent switches role and repeats every check it had already sent — so a single conflict is not always fatal, which is exactly why it belongs on a dashboard rather than only in an alert: a fleet where it happens constantly is misconfigured whether or not any individual call survived it. Where no pair between the two was ever nominated, the conflict is a candidate cause of media that never started. The usual source is two endpoints configured with the same role, or a B2BUA relaying one side's role attribute to the other. A gauge because a later nomination on the same pair unsays the severity of it. |
 | `sipnab_capture_undecoded_fraction` | gauge | Share of captured frames sipnab could not decode, `0`–`1`, emitted on **every** scrape including clean ones. This is the series that separates "this capture holds no SIP" from "sipnab could not read this capture" — both of which otherwise show `sipnab_messages_total` at zero and look identical. At `1` nothing in the rest of the scrape describes traffic sipnab read. A non-zero but small value is normal: ARP and other non-IP background is undecodable by definition on any Ethernet link, which is exactly why this is a proportion and not a flag. |
 | `sipnab_capture_quality_degraded` | gauge | `1` when any of the three *loss* counters above exceeds zero, `0` otherwise. Undecodable frames are deliberately **not** folded in: ARP makes them non-zero on nearly every capture, so a flag including them would always be `1` and carry no information — use `sipnab_capture_undecoded_fraction` with a threshold instead. The one series to put on a dashboard or an alert rule to know whether the rest of the scrape describes the whole capture. `0` means nothing **surfaced** as wrong, not that the capture provably saw every packet: loss upstream of the capture point — an oversubscribed SPAN port, a tap mirroring one direction, a filter that excluded the traffic — is invisible to all three counters. |
 | `sipnab_capture_queue_depth_packets` | gauge | Packets currently queued between the capture reader and the processing thread (standalone `--metrics` server). |
@@ -4100,7 +4100,7 @@ an endpoint's, and `round_trip_source` says which kind:
 | `round_trip_source` | What it is |
 |---|---|
 | `xr_voip_metrics` | The reporting endpoint's own round trip between the two RTP interfaces, from an [RFC 3611](https://www.rfc-editor.org/rfc/rfc3611) XR block. This is the quantity [ITU-T G.114](https://www.itu.int/rec/T-REC-G.114) sets its guidance against. Accurate, and rare — most stacks never emit an XR |
-| `sender_report_echo` | Derived from a receiver report's `LSR`/`DLSR` pair per [RFC 3550 §6.4.1](https://www.rfc-editor.org/rfc/rfc3550#section-6.4.1), anchored on when sipnab saw the report. The full round trip when the capture point sits with the sender of the SR, and a **lower bound** otherwise, because the leg beyond the tap is not in it. Available on almost every call |
+| `sender_report_echo` | Derived from a receiver report's `LSR`/`DLSR` pair per [RFC 3550 section 6.4.1](https://www.rfc-editor.org/rfc/rfc3550#section-6.4.1), anchored on when sipnab saw the report. The full round trip when the capture point sits with the sender of the SR, and a **lower bound** otherwise, because the leg beyond the tap is not in it. Available on almost every call |
 
 **Both keys are absent when nobody reported a round trip**, and that is not the
 same as zero. A stream with clean jitter, no loss and no `round_trip_ms` is a
@@ -5740,7 +5740,7 @@ describes went wrong on the wire:
 | `unanswered_nat_requests` | STUN and TURN transactions that went out and never came back — the signal behind a one-way-audio complaint. An endpoint that cannot learn its reflexive address (the public `address:port` a NAT gives it, which STUN exists to discover) advertises its private address in SDP, and the far end then sends media somewhere the internet cannot route, while the signaling looks healthy. Silence rather than a refusal points at something in the path discarding UDP it does not recognize, most often a firewall, IPS or secure web gateway. A refusal counts as answered: the server was reachable and said no, which is a different fault |
 | `lapsed_turn_allocations` | TURN allocations still carrying traffic past the lifetime the server last granted them, with no Refresh seen in between. The one fault here with no other symptom anywhere — the relay tears the allocation down the moment its lifetime lapses, the relayed media stops with it mid-call, and no SIP message says why. A deliberate release (a Refresh with `LIFETIME` 0) never counts, because the client asked for the teardown |
 | `lapsed_turn_allocation_streams` | Media streams crossing an allocation that had already lapsed. The scale beside the key above, and the reason that key is worth paging on: an allocation that lapsed with nothing on it cost nobody a call, and one carrying four streams cut off four conversations mid-sentence |
-| `ice_role_conflicts` | Candidate pairs where both ICE agents claimed the same role, or where one answered `487 Role Conflict` ([RFC 8445](https://www.rfc-editor.org/rfc/rfc8445) §7.3.1.1). ICE resolves this itself, so a single conflict is not always fatal — which is why it belongs on a dashboard rather than only in an alert. Where no pair between the two ever won nomination, the conflict is a candidate cause of media that never started |
+| `ice_role_conflicts` | Candidate pairs where both ICE agents claimed the same role, or where one answered `487 Role Conflict` ([RFC 8445 section 7.3.1.1](https://www.rfc-editor.org/rfc/rfc8445#section-7.3.1.1)). ICE resolves this itself, so a single conflict is not always fatal — which is why it belongs on a dashboard rather than only in an alert. Where no pair between the two ever won nomination, the conflict is a candidate cause of media that never started |
 
 All four fall as well as rise. A late answer, a Refresh that arrives afterwards
 or a later nomination each removes one, so read them as current readings rather
@@ -6067,7 +6067,7 @@ The same facets the MCP `describe_endpoint` tool reports.
 - `ip` (one of `ip`/`user`) — the endpoint's IP address. An address that does
   not parse is a `400`.
 - `user` (one of `ip`/`user`) — a SIP URI user part, e.g. `alice`. Matched
-  case-sensitively, per [RFC 3261 §19.1.4](https://www.rfc-editor.org/rfc/rfc3261#section-19.1.4).
+  case-sensitively, per [RFC 3261 section 19.1.4](https://www.rfc-editor.org/rfc/rfc3261#section-19.1.4).
 - `limit` (optional) — the most recent-dialog summaries to return, clamped to the
   server's row cap. The counts always describe every match, not this page.
 
@@ -8817,7 +8817,7 @@ count: a relay torn down with nothing on it cost nobody a call.
 ICE gives one agent the **controlling** role and the other **controlled**, and
 the controlling one picks the candidate pair. When both claim the same role, the
 agent that notices answers `487 Role Conflict`
-([RFC 8445 §7.3.1.1](https://www.rfc-editor.org/rfc/rfc8445#section-7.3.1.1)),
+([RFC 8445 section 7.3.1.1](https://www.rfc-editor.org/rfc/rfc8445#section-7.3.1.1)),
 one side switches role and repeats every check it had already sent.
 
 Often ICE fixes this itself and the call costs a round trip. Where it does not,
@@ -10967,7 +10967,7 @@ Shortcut flags that expand to predefined filter DSL expressions. See [filter-dsl
 | `--tag` | `<TAG>` | -- | Filter dialogs by tag value |
 
 > **`branch` counts transactions, not calls.** RFC 3261 gives the ACK to a 2xx a
-> new branch (§17.1.1.3) and the BYE another, so one ordinary call appears as
+> new branch ([RFC 3261 section 17.1.1.3](https://www.rfc-editor.org/rfc/rfc3261#section-17.1.1.3)) and the BYE another, so one ordinary call appears as
 > three or more units. That is the transaction view working as intended. Use it
 > when a capture reuses one Call-ID across many transactions — load generators,
 > proxies under test — and note that `--limit` then counts transactions too.
@@ -11332,8 +11332,8 @@ filtering by transport finds a TCP trunk under TCP.
 
 RTCP travels as HEP protocol type 5, which is what lets a remote collector
 report media quality — loss, jitter, MOS — rather than only whether calls
-connect. **RTP is never forwarded.** RTCP is a control channel that [RFC 3550](https://www.rfc-editor.org/rfc/rfc3550)
-§6.2 holds to a small fraction of session bandwidth, so it carries the quality
+connect. **RTP is never forwarded.** RTCP is a control channel that [RFC 3550 section 6.2](https://www.rfc-editor.org/rfc/rfc3550#section-6.2)
+holds to a small fraction of session bandwidth, so it carries the quality
 summary at a rate a WAN link and a UDP feed can absorb. The media itself is the
 opposite on both counts, and forwarding it would make this a call recorder
 pointed at the collector.
@@ -11397,7 +11397,7 @@ it. See [MCP Server](mcp.md) for the full guide. [Network Listeners](#network-li
 | `--mcp-sampling-budget` | `<PER_HOUR>` | off | Requests per hour sipnab may ask the CLIENT's model to narrate. Off unless set, because client support for the sampling primitive is thin and uneven and nothing here may depend on a narration arriving; a client that did not advertise the capability is never asked and gets structured evidence instead. Requests dedupe by finding signature before they spend from this budget, so a rule a scanner trips five hundred times costs one narration. `0` means NONE, not unlimited: elsewhere a zero limit removes a ceiling, but this one spends the operator's money and the client's rate limit, so zero reads restrictively. sipnab forwards named fields only -- control characters stripped, length clamped, under a system prompt stating every value is untrusted observation -- and never raw message text. Feature: `mcp` |
 | `--mcp-rate-limit-per-peer` | `<N>` | `100` | Maximum tool calls one peer may make per second (`0` = unlimited). The other half of `--mcp-max-concurrent`: that caps calls *in flight*, this caps their *arrival rate*, and without it an agent that stays under the concurrency cap while looping as fast as sipnab answers has no bound at all. A call over the cap gets the same retry-shortly error, never a queue slot. A peer is the source IP over HTTP (the address, not the socket, so reconnecting mints no fresh allowance) and the pipe itself over stdio. Shares its per-peer accounting with `--hep-rate-limit-per-peer`. Feature: `mcp` |
 | `--mcp-allowed-host` | `<HOST>` | -- | Additional `Host` header values the HTTP MCP server accepts (repeatable). rmcp's DNS-rebind protection defaults to `localhost`, `127.0.0.1`, `::1` only — add the public hostname or bind IP when clients connect via that name. Use `*` to disable host checking entirely (not recommended; pair the resulting open binding with a network-level source-IP allowlist). Feature: `mcp-http` |
-| `--mcp-resource-url` | `<URL>` | -- | Public URL clients reach this MCP server at, published as the OAuth 2.0 protected-resource identifier ([RFC 9728](https://www.rfc-editor.org/rfc/rfc9728.html)). Setting it turns on discovery: the `401` challenge gains a `resource_metadata` parameter and sipnab serves the metadata document unauthenticated at the path [RFC 9728 §3.1](https://www.rfc-editor.org/rfc/rfc9728#section-3.1) derives from this value, so `https://sipnab.example.com/mcp` publishes at `/.well-known/oauth-protected-resource/mcp`. Leave it unset and the challenge still appears — only the metadata half is off. The operator names it rather than sipnab guessing: behind the TLS-terminating proxy this deployment expects, sipnab sees a cleartext request and no scheme, and anything derived from the socket or the `Host` header would name `http://` for a resource the client reached over `https://` — which [RFC 9728 §3.3](https://www.rfc-editor.org/rfc/rfc9728#section-3.3) makes a conformant client discard. Discovery only: sipnab issues and validates no OAuth tokens, so the document advertises no `authorization_servers`, and the bearer tokens it accepts are still its own. Must be absolute, `http` or `https`, with no userinfo, query or fragment; a rejected value is a startup error. Feature: `mcp-http` |
+| `--mcp-resource-url` | `<URL>` | -- | Public URL clients reach this MCP server at, published as the OAuth 2.0 protected-resource identifier ([RFC 9728](https://www.rfc-editor.org/rfc/rfc9728.html)). Setting it turns on discovery: the `401` challenge gains a `resource_metadata` parameter and sipnab serves the metadata document unauthenticated at the path [RFC 9728 section 3.1](https://www.rfc-editor.org/rfc/rfc9728#section-3.1) derives from this value, so `https://sipnab.example.com/mcp` publishes at `/.well-known/oauth-protected-resource/mcp`. Leave it unset and the challenge still appears — only the metadata half is off. The operator names it rather than sipnab guessing: behind the TLS-terminating proxy this deployment expects, sipnab sees a cleartext request and no scheme, and anything derived from the socket or the `Host` header would name `http://` for a resource the client reached over `https://` — which [RFC 9728 section 3.3](https://www.rfc-editor.org/rfc/rfc9728#section-3.3) makes a conformant client discard. Discovery only: sipnab issues and validates no OAuth tokens, so the document advertises no `authorization_servers`, and the bearer tokens it accepts are still its own. Must be absolute, `http` or `https`, with no userinfo, query or fragment; a rejected value is a startup error. Feature: `mcp-http` |
 | `--mcp-file-root` | `<DIR>` | -- | Directory the MCP file tools (`export_capture`, `export_audio`, `list_captures`) may read and write. Without it those tools refuse to run. They take a bare FILENAME, never a path — an agent cannot escape this directory. Feature: `mcp` |
 | `--mcp-evidence-ring` | `<MIB>` | -- | Retain this many MiB of raw frames so a provenance pointer into a LIVE capture resolves. A reader can seek a capture file again and needs none of this; a device or a HEP listener offers no second read, because sipnab holds parsed messages and not frames. The ring keeps frames only from a source nothing can read twice. A pointer it cannot answer names which kind of miss it hit — the ring dropped that frame, the ring has not reached that ordinal, or the ring keeps nothing for that source — because only one of those means "use a bigger ring". A frame it does answer carries the label `retained` rather than resolved: those bytes come from this process's own buffer, and no second reader can confirm them. Feature: `mcp` |
 | `--mcp-allow-shutdown` | -- | off | Permit the `shutdown_server` MCP tool to stop this process. Off by default, so an agent cannot stop a stock server. Even enabled, the tool dry-runs unless told otherwise and refuses to discard an unsaved live capture. Feature: `mcp` |
@@ -11865,7 +11865,7 @@ because then it was the outcome.
 Notes:
 - Boolean fields only support `==` and `!=`.
 - Regex (`=~`) is not applicable to numeric or boolean fields.
-- `in_subnet` takes a CIDR literal on the right and an address-valued field on the left (`src.ip`, `dst.ip`). It uses the same rule as `--hep-allow`, so IPv4, IPv6 and IPv4-mapped IPv6 addresses ([RFC 4291 §2.5.5.2](https://www.rfc-editor.org/rfc/rfc4291#section-2.5.5.2)) all compare as the allowlist compares them, and a bare address with no prefix reads as a host route. An unparseable address or block matches nothing rather than matching everything.
+- `in_subnet` takes a CIDR literal on the right and an address-valued field on the left (`src.ip`, `dst.ip`). It uses the same rule as `--hep-allow`, so IPv4, IPv6 and IPv4-mapped IPv6 addresses ([RFC 4291 section 2.5.5.2](https://www.rfc-editor.org/rfc/rfc4291#section-2.5.5.2)) all compare as the allowlist compares them, and a bare address with no prefix reads as a host route. An unparseable address or block matches nothing rather than matching everything.
 - Numeric equality uses epsilon comparison for floating-point precision. For computed values (`duration`, `pdd`, `rtp.mos`) prefer range operators (`>=`, `<`) over `==` — an exact match on a derived float rarely hits.
 
 > **Note:** String comparisons are case-sensitive. `state` values must exactly match one of the 13 values listed under [String Fields](#string-fields) above (`'Failed'`, not `'failed'`). Use `=~` with a case-insensitive regex pattern if you need case-insensitive matching: `state =~ '(?i)failed'`.
@@ -12206,7 +12206,7 @@ register the rest.
 
 ## Compact forms
 
-Nineteen fields have a single-letter alias. [RFC 3261 §7.3.3](https://www.rfc-editor.org/rfc/rfc3261#section-7.3.3) makes them exactly
+Nineteen fields have a single-letter alias. [RFC 3261 section 7.3.3](https://www.rfc-editor.org/rfc/rfc3261#section-7.3.3) makes them exactly
 equivalent to the long form, so a parser that misses one misreads the message —
 and an attacker who knows which ones a tool ignores can hide a header in plain
 sight. `COMPACT_HEADERS` in [`src/sip/parser.rs`](../src/sip/parser.rs) carries
@@ -12237,7 +12237,7 @@ table.
 
 ## All header fields
 
-The Description column quotes [RFC 3261 §20](https://www.rfc-editor.org/rfc/rfc3261#section-20) for the fields it defines. A field
+The Description column quotes [RFC 3261 section 20](https://www.rfc-editor.org/rfc/rfc3261#section-20) for the fields it defines. A field
 registered by a later RFC carries its reference without a description, because
 no single section defines them all — follow the link.
 
@@ -12247,40 +12247,40 @@ no single section defines them all — follow the link.
 
 | Header field | Compact | Defined in | Description |
 |---|---|---|---|
-| Accept |  | [RFC 3261 §20.1](https://www.rfc-editor.org/rfc/rfc3261#section-20.1) | The Accept header field follows the syntax defined in [H14.1]. |
+| Accept |  | [RFC 3261 section 20.1](https://www.rfc-editor.org/rfc/rfc3261#section-20.1) | The Accept header field follows the syntax defined in [H14.1]. |
 | Accept-Contact | `a` | [RFC 3841](https://www.rfc-editor.org/rfc/rfc3841) |  |
-| Accept-Encoding |  | [RFC 3261 §20.2](https://www.rfc-editor.org/rfc/rfc3261#section-20.2) | The Accept-Encoding header field is similar to Accept, but restricts the content-codings [H3.5] that are acceptable in the response. |
-| Accept-Language |  | [RFC 3261 §20.3](https://www.rfc-editor.org/rfc/rfc3261#section-20.3) | The Accept-Language header field is used in requests to indicate the preferred languages for reason phrases, session descriptions, or status responses carried as message bodies in the response. |
+| Accept-Encoding |  | [RFC 3261 section 20.2](https://www.rfc-editor.org/rfc/rfc3261#section-20.2) | The Accept-Encoding header field is similar to Accept, but restricts the content-codings [H3.5] that are acceptable in the response. |
+| Accept-Language |  | [RFC 3261 section 20.3](https://www.rfc-editor.org/rfc/rfc3261#section-20.3) | The Accept-Language header field is used in requests to indicate the preferred languages for reason phrases, session descriptions, or status responses carried as message bodies in the response. |
 | Accept-Resource-Priority |  | [RFC 4412](https://www.rfc-editor.org/rfc/rfc4412) |  |
 | Additional-Identity |  | [3GPP TS 24.229 v16.7.0](https://portal.3gpp.org/desktopmodules/Specifications/SpecificationDetails.aspx?specificationId=1055) |  |
-| Alert-Info |  | [RFC 3261 §20.4](https://www.rfc-editor.org/rfc/rfc3261#section-20.4) | When present in an INVITE request, the Alert-Info header field specifies an alternative ring tone to the UAS. |
+| Alert-Info |  | [RFC 3261 section 20.4](https://www.rfc-editor.org/rfc/rfc3261#section-20.4) | When present in an INVITE request, the Alert-Info header field specifies an alternative ring tone to the UAS. |
 | AlertMsg-Error |  | [RFC 8876](https://www.rfc-editor.org/rfc/rfc8876) |  |
-| Allow |  | [RFC 3261 §20.5](https://www.rfc-editor.org/rfc/rfc3261#section-20.5) | The Allow header field lists the set of methods supported by the UA generating the message. |
+| Allow |  | [RFC 3261 section 20.5](https://www.rfc-editor.org/rfc/rfc3261#section-20.5) | The Allow header field lists the set of methods supported by the UA generating the message. |
 | Allow-Events | `u` | [RFC 6665](https://www.rfc-editor.org/rfc/rfc6665) |  |
 | Answer-Mode |  | [RFC 5373](https://www.rfc-editor.org/rfc/rfc5373) |  |
 | Attestation-Info |  | [3GPP TS 24.229 v15.11.0](https://portal.3gpp.org/desktopmodules/Specifications/SpecificationDetails.aspx?specificationId=1055) |  |
-| Authentication-Info |  | [RFC 3261 §20.6](https://www.rfc-editor.org/rfc/rfc3261#section-20.6) | The Authentication-Info header field provides for mutual authentication with HTTP Digest. |
-| Authorization |  | [RFC 3261 §20.7](https://www.rfc-editor.org/rfc/rfc3261#section-20.7) | The Authorization header field contains authentication credentials of a UA. |
-| Call-ID | `i` | [RFC 3261 §20.8](https://www.rfc-editor.org/rfc/rfc3261#section-20.8) | The Call-ID header field uniquely identifies a particular invitation or all registrations of a particular client. |
-| Call-Info |  | [RFC 3261 §20.9](https://www.rfc-editor.org/rfc/rfc3261#section-20.9) | The Call-Info header field provides additional information about the caller or callee, depending on whether it is found in a request or response. |
+| Authentication-Info |  | [RFC 3261 section 20.6](https://www.rfc-editor.org/rfc/rfc3261#section-20.6) | The Authentication-Info header field provides for mutual authentication with HTTP Digest. |
+| Authorization |  | [RFC 3261 section 20.7](https://www.rfc-editor.org/rfc/rfc3261#section-20.7) | The Authorization header field contains authentication credentials of a UA. |
+| Call-ID | `i` | [RFC 3261 section 20.8](https://www.rfc-editor.org/rfc/rfc3261#section-20.8) | The Call-ID header field uniquely identifies a particular invitation or all registrations of a particular client. |
+| Call-Info |  | [RFC 3261 section 20.9](https://www.rfc-editor.org/rfc/rfc3261#section-20.9) | The Call-Info header field provides additional information about the caller or callee, depending on whether it is found in a request or response. |
 | Cellular-Network-Info |  | [3GPP TS 24.229 v13.9.0](https://portal.3gpp.org/desktopmodules/Specifications/SpecificationDetails.aspx?specificationId=1055) |  |
-| Contact | `m` | [RFC 3261 §20.10](https://www.rfc-editor.org/rfc/rfc3261#section-20.10) | A Contact header field value provides a URI whose meaning depends on the type of request or response it is in. |
-| Content-Disposition |  | [RFC 3261 §20.11](https://www.rfc-editor.org/rfc/rfc3261#section-20.11) | The Content-Disposition header field describes how the message body or, for multipart messages, a message body part is to be interpreted by the UAC or UAS. |
-| Content-Encoding | `e` | [RFC 3261 §20.12](https://www.rfc-editor.org/rfc/rfc3261#section-20.12) | The Content-Encoding header field is used as a modifier to the "media-type". |
+| Contact | `m` | [RFC 3261 section 20.10](https://www.rfc-editor.org/rfc/rfc3261#section-20.10) | A Contact header field value provides a URI whose meaning depends on the type of request or response it is in. |
+| Content-Disposition |  | [RFC 3261 section 20.11](https://www.rfc-editor.org/rfc/rfc3261#section-20.11) | The Content-Disposition header field describes how the message body or, for multipart messages, a message body part is to be interpreted by the UAC or UAS. |
+| Content-Encoding | `e` | [RFC 3261 section 20.12](https://www.rfc-editor.org/rfc/rfc3261#section-20.12) | The Content-Encoding header field is used as a modifier to the "media-type". |
 | Content-ID |  | [RFC 8262](https://www.rfc-editor.org/rfc/rfc8262) |  |
-| Content-Language |  | [RFC 3261 §20.13](https://www.rfc-editor.org/rfc/rfc3261#section-20.13) | See [H14.12]. |
-| Content-Length | `l` | [RFC 3261 §20.14](https://www.rfc-editor.org/rfc/rfc3261#section-20.14) | The Content-Length header field indicates the size of the message- body, in decimal number of octets, sent to the recipient. |
-| Content-Type | `c` | [RFC 3261 §20.15](https://www.rfc-editor.org/rfc/rfc3261#section-20.15) | The Content-Type header field indicates the media type of the message-body sent to the recipient. |
-| CSeq |  | [RFC 3261 §20.16](https://www.rfc-editor.org/rfc/rfc3261#section-20.16) | A CSeq header field in a request contains a single decimal sequence number and the request method. |
-| Date |  | [RFC 3261 §20.17](https://www.rfc-editor.org/rfc/rfc3261#section-20.17) | The Date header field contains the date and time. |
+| Content-Language |  | [RFC 3261 section 20.13](https://www.rfc-editor.org/rfc/rfc3261#section-20.13) | See [H14.12]. |
+| Content-Length | `l` | [RFC 3261 section 20.14](https://www.rfc-editor.org/rfc/rfc3261#section-20.14) | The Content-Length header field indicates the size of the message- body, in decimal number of octets, sent to the recipient. |
+| Content-Type | `c` | [RFC 3261 section 20.15](https://www.rfc-editor.org/rfc/rfc3261#section-20.15) | The Content-Type header field indicates the media type of the message-body sent to the recipient. |
+| CSeq |  | [RFC 3261 section 20.16](https://www.rfc-editor.org/rfc/rfc3261#section-20.16) | A CSeq header field in a request contains a single decimal sequence number and the request method. |
+| Date |  | [RFC 3261 section 20.17](https://www.rfc-editor.org/rfc/rfc3261#section-20.17) | The Date header field contains the date and time. |
 | DC-Info |  | [3GPP TS 24.229 v19.4.1](https://portal.3gpp.org/desktopmodules/Specifications/SpecificationDetails.aspx?specificationId=1055) |  |
 | Encryption (Deprecated) |  | [RFC 3261](https://www.rfc-editor.org/rfc/rfc3261) |  |
-| Error-Info |  | [RFC 3261 §20.18](https://www.rfc-editor.org/rfc/rfc3261#section-20.18) | The Error-Info header field provides a pointer to additional information about the error status response. |
+| Error-Info |  | [RFC 3261 section 20.18](https://www.rfc-editor.org/rfc/rfc3261#section-20.18) | The Error-Info header field provides a pointer to additional information about the error status response. |
 | Event | `o` | [RFC 6665](https://www.rfc-editor.org/rfc/rfc6665), [RFC 6446](https://www.rfc-editor.org/rfc/rfc6446) |  |
-| Expires |  | [RFC 3261 §20.19](https://www.rfc-editor.org/rfc/rfc3261#section-20.19) | The Expires header field gives the relative time after which the message (or content) expires. |
+| Expires |  | [RFC 3261 section 20.19](https://www.rfc-editor.org/rfc/rfc3261#section-20.19) | The Expires header field gives the relative time after which the message (or content) expires. |
 | Feature-Caps |  | [RFC 6809](https://www.rfc-editor.org/rfc/rfc6809) |  |
 | Flow-Timer |  | [RFC 5626](https://www.rfc-editor.org/rfc/rfc5626) |  |
-| From | `f` | [RFC 3261 §20.20](https://www.rfc-editor.org/rfc/rfc3261#section-20.20) | The From header field indicates the initiator of the request. |
+| From | `f` | [RFC 3261 section 20.20](https://www.rfc-editor.org/rfc/rfc3261#section-20.20) | The From header field indicates the initiator of the request. |
 | Geolocation |  | [RFC 6442](https://www.rfc-editor.org/rfc/rfc6442) |  |
 | Geolocation-Error |  | [RFC 6442](https://www.rfc-editor.org/rfc/rfc6442) |  |
 | Geolocation-Routing |  | [RFC 6442](https://www.rfc-editor.org/rfc/rfc6442) |  |
@@ -12288,15 +12288,15 @@ no single section defines them all — follow the link.
 | History-Info |  | [RFC 7044](https://www.rfc-editor.org/rfc/rfc7044) |  |
 | Identity | `y` | [RFC 8224](https://www.rfc-editor.org/rfc/rfc8224) |  |
 | Identity-Info (deprecated by [RFC8224]) |  | [RFC 8224](https://www.rfc-editor.org/rfc/rfc8224) |  |
-| In-Reply-To |  | [RFC 3261 §20.21](https://www.rfc-editor.org/rfc/rfc3261#section-20.21) | The In-Reply-To header field enumerates the Call-IDs that this call references or returns. |
+| In-Reply-To |  | [RFC 3261 section 20.21](https://www.rfc-editor.org/rfc/rfc3261#section-20.21) | The In-Reply-To header field enumerates the Call-IDs that this call references or returns. |
 | Info-Package |  | [RFC 6086](https://www.rfc-editor.org/rfc/rfc6086) |  |
 | Join |  | [RFC 3911](https://www.rfc-editor.org/rfc/rfc3911) |  |
 | Max-Breadth |  | [RFC 5393](https://www.rfc-editor.org/rfc/rfc5393) |  |
-| Max-Forwards |  | [RFC 3261 §20.22](https://www.rfc-editor.org/rfc/rfc3261#section-20.22) | The Max-Forwards header field must be used with any SIP method to limit the number of proxies or gateways that can forward the request to the next downstream server. |
-| MIME-Version |  | [RFC 3261 §20.24](https://www.rfc-editor.org/rfc/rfc3261#section-20.24) | See [H19.4.1]. |
-| Min-Expires |  | [RFC 3261 §20.23](https://www.rfc-editor.org/rfc/rfc3261#section-20.23) | The Min-Expires header field conveys the minimum refresh interval supported for soft-state elements managed by that server. |
+| Max-Forwards |  | [RFC 3261 section 20.22](https://www.rfc-editor.org/rfc/rfc3261#section-20.22) | The Max-Forwards header field must be used with any SIP method to limit the number of proxies or gateways that can forward the request to the next downstream server. |
+| MIME-Version |  | [RFC 3261 section 20.24](https://www.rfc-editor.org/rfc/rfc3261#section-20.24) | See [H19.4.1]. |
+| Min-Expires |  | [RFC 3261 section 20.23](https://www.rfc-editor.org/rfc/rfc3261#section-20.23) | The Min-Expires header field conveys the minimum refresh interval supported for soft-state elements managed by that server. |
 | Min-SE |  | [RFC 4028](https://www.rfc-editor.org/rfc/rfc4028) |  |
-| Organization |  | [RFC 3261 §20.25](https://www.rfc-editor.org/rfc/rfc3261#section-20.25) | The Organization header field conveys the name of the organization to which the SIP element issuing the request or response belongs. |
+| Organization |  | [RFC 3261 section 20.25](https://www.rfc-editor.org/rfc/rfc3261#section-20.25) | The Organization header field conveys the name of the organization to which the SIP element issuing the request or response belongs. |
 | Origination-Id |  | [3GPP TS 24.229 v15.11.0](https://portal.3gpp.org/desktopmodules/Specifications/SpecificationDetails.aspx?specificationId=1055) |  |
 | P-Access-Network-Info |  | [RFC 7315](https://www.rfc-editor.org/rfc/rfc7315) |  |
 | P-Answer-State |  | [RFC 4964](https://www.rfc-editor.org/rfc/rfc4964) |  |
@@ -12326,18 +12326,18 @@ no single section defines them all — follow the link.
 | Permission-Missing |  | [RFC 5360](https://www.rfc-editor.org/rfc/rfc5360) |  |
 | Policy-Contact |  | [RFC 6794](https://www.rfc-editor.org/rfc/rfc6794) |  |
 | Policy-ID |  | [RFC 6794](https://www.rfc-editor.org/rfc/rfc6794) |  |
-| Priority |  | [RFC 3261 §20.26](https://www.rfc-editor.org/rfc/rfc3261#section-20.26) | The Priority header field indicates the urgency of the request as perceived by the client. |
+| Priority |  | [RFC 3261 section 20.26](https://www.rfc-editor.org/rfc/rfc3261#section-20.26) | The Priority header field indicates the urgency of the request as perceived by the client. |
 | Priority-Share |  | [3GPP TS 24.229 v13.16.0](https://portal.3gpp.org/desktopmodules/Specifications/SpecificationDetails.aspx?specificationId=1055) |  |
 | Priority-Verstat |  | [3GPP TS 24.229](https://portal.3gpp.org/desktopmodules/Specifications/SpecificationDetails.aspx?specificationId=1055) |  |
 | Priv-Answer-Mode |  | [RFC 5373](https://www.rfc-editor.org/rfc/rfc5373) |  |
 | Privacy |  | [RFC 3323](https://www.rfc-editor.org/rfc/rfc3323) |  |
-| Proxy-Authenticate |  | [RFC 3261 §20.27](https://www.rfc-editor.org/rfc/rfc3261#section-20.27) | A Proxy-Authenticate header field value contains an authentication challenge. |
-| Proxy-Authorization |  | [RFC 3261 §20.28](https://www.rfc-editor.org/rfc/rfc3261#section-20.28) | The Proxy-Authorization header field allows the client to identify itself (or its user) to a proxy that requires authentication. |
-| Proxy-Require |  | [RFC 3261 §20.29](https://www.rfc-editor.org/rfc/rfc3261#section-20.29) | The Proxy-Require header field is used to indicate proxy-sensitive features that must be supported by the proxy. |
+| Proxy-Authenticate |  | [RFC 3261 section 20.27](https://www.rfc-editor.org/rfc/rfc3261#section-20.27) | A Proxy-Authenticate header field value contains an authentication challenge. |
+| Proxy-Authorization |  | [RFC 3261 section 20.28](https://www.rfc-editor.org/rfc/rfc3261#section-20.28) | The Proxy-Authorization header field allows the client to identify itself (or its user) to a proxy that requires authentication. |
+| Proxy-Require |  | [RFC 3261 section 20.29](https://www.rfc-editor.org/rfc/rfc3261#section-20.29) | The Proxy-Require header field is used to indicate proxy-sensitive features that must be supported by the proxy. |
 | RAck |  | [RFC 3262](https://www.rfc-editor.org/rfc/rfc3262) |  |
 | Reason |  | [RFC 3326](https://www.rfc-editor.org/rfc/rfc3326) |  |
 | Reason-Phrase |  | [RFC 6873](https://www.rfc-editor.org/rfc/rfc6873) |  |
-| Record-Route |  | [RFC 3261 §20.30](https://www.rfc-editor.org/rfc/rfc3261#section-20.30) | The Record-Route header field is inserted by proxies in a request to force future requests in the dialog to be routed through the proxy. |
+| Record-Route |  | [RFC 3261 section 20.30](https://www.rfc-editor.org/rfc/rfc3261#section-20.30) | The Record-Route header field is inserted by proxies in a request to force future requests in the dialog to be routed through the proxy. |
 | Recv-Info |  | [RFC 6086](https://www.rfc-editor.org/rfc/rfc6086) |  |
 | Refer-Events-At |  | [RFC 7614](https://www.rfc-editor.org/rfc/rfc7614) |  |
 | Refer-Sub |  | [RFC 4488](https://www.rfc-editor.org/rfc/rfc4488) |  |
@@ -12346,41 +12346,41 @@ no single section defines them all — follow the link.
 | Reject-Contact | `j` | [RFC 3841](https://www.rfc-editor.org/rfc/rfc3841) |  |
 | Relayed-Charge |  | [3GPP TS 24.229 v12.14.0](https://portal.3gpp.org/desktopmodules/Specifications/SpecificationDetails.aspx?specificationId=1055) |  |
 | Replaces |  | [RFC 3891](https://www.rfc-editor.org/rfc/rfc3891) |  |
-| Reply-To |  | [RFC 3261 §20.31](https://www.rfc-editor.org/rfc/rfc3261#section-20.31) | The Reply-To header field contains a logical return URI that may be different from the From header field. |
+| Reply-To |  | [RFC 3261 section 20.31](https://www.rfc-editor.org/rfc/rfc3261#section-20.31) | The Reply-To header field contains a logical return URI that may be different from the From header field. |
 | Request-Disposition | `d` | [RFC 3841](https://www.rfc-editor.org/rfc/rfc3841) |  |
-| Require |  | [RFC 3261 §20.32](https://www.rfc-editor.org/rfc/rfc3261#section-20.32) | The Require header field is used by UACs to tell UASs about options that the UAC expects the UAS to support in order to process the request. |
+| Require |  | [RFC 3261 section 20.32](https://www.rfc-editor.org/rfc/rfc3261#section-20.32) | The Require header field is used by UACs to tell UASs about options that the UAC expects the UAS to support in order to process the request. |
 | Resource-Priority |  | [RFC 4412](https://www.rfc-editor.org/rfc/rfc4412) |  |
 | Resource-Share |  | [3GPP TS 24.229 v13.7.0](https://portal.3gpp.org/desktopmodules/Specifications/SpecificationDetails.aspx?specificationId=1055) |  |
 | Response-Key (Deprecated) |  | [RFC 3261](https://www.rfc-editor.org/rfc/rfc3261) |  |
 | Response-Source |  | [3GPP TS 24.229 v15.11.0](https://portal.3gpp.org/desktopmodules/Specifications/SpecificationDetails.aspx?specificationId=1055) |  |
 | Restoration-Info |  | [3GPP TS 24.229 v12.14.0](https://portal.3gpp.org/desktopmodules/Specifications/SpecificationDetails.aspx?specificationId=1055) |  |
-| Retry-After |  | [RFC 3261 §20.33](https://www.rfc-editor.org/rfc/rfc3261#section-20.33) | The Retry-After header field can be used with a 500 (Server Internal Error) or 503 (Service Unavailable) response to indicate how long the service is expected to be unavailable to the requesting client and with |
-| Route |  | [RFC 3261 §20.34](https://www.rfc-editor.org/rfc/rfc3261#section-20.34) | The Route header field is used to force routing for a request through the listed set of proxies. |
+| Retry-After |  | [RFC 3261 section 20.33](https://www.rfc-editor.org/rfc/rfc3261#section-20.33) | The Retry-After header field can be used with a 500 (Server Internal Error) or 503 (Service Unavailable) response to indicate how long the service is expected to be unavailable to the requesting client and with |
+| Route |  | [RFC 3261 section 20.34](https://www.rfc-editor.org/rfc/rfc3261#section-20.34) | The Route header field is used to force routing for a request through the listed set of proxies. |
 | RSeq |  | [RFC 3262](https://www.rfc-editor.org/rfc/rfc3262) |  |
 | Security-Client |  | [RFC 3329](https://www.rfc-editor.org/rfc/rfc3329) |  |
 | Security-Server |  | [RFC 3329](https://www.rfc-editor.org/rfc/rfc3329) |  |
 | Security-Verify |  | [RFC 3329](https://www.rfc-editor.org/rfc/rfc3329) |  |
-| Server |  | [RFC 3261 §20.35](https://www.rfc-editor.org/rfc/rfc3261#section-20.35) | The Server header field contains information about the software used by the UAS to handle the request. |
+| Server |  | [RFC 3261 section 20.35](https://www.rfc-editor.org/rfc/rfc3261#section-20.35) | The Server header field contains information about the software used by the UAS to handle the request. |
 | Service-Interact-Info |  | [3GPP TS 24.229 v13.18.0](https://portal.3gpp.org/desktopmodules/Specifications/SpecificationDetails.aspx?specificationId=1055) |  |
 | Service-Route |  | [RFC 3608](https://www.rfc-editor.org/rfc/rfc3608) |  |
 | Session-Expires | `x` | [RFC 4028](https://www.rfc-editor.org/rfc/rfc4028) |  |
 | Session-ID |  | [RFC 7989](https://www.rfc-editor.org/rfc/rfc7989) |  |
 | SIP-ETag |  | [RFC 3903](https://www.rfc-editor.org/rfc/rfc3903) |  |
 | SIP-If-Match |  | [RFC 3903](https://www.rfc-editor.org/rfc/rfc3903) |  |
-| Subject | `s` | [RFC 3261 §20.36](https://www.rfc-editor.org/rfc/rfc3261#section-20.36) | The Subject header field provides a summary or indicates the nature of the call, allowing call filtering without having to parse the session description. |
+| Subject | `s` | [RFC 3261 section 20.36](https://www.rfc-editor.org/rfc/rfc3261#section-20.36) | The Subject header field provides a summary or indicates the nature of the call, allowing call filtering without having to parse the session description. |
 | Subscription-State |  | [RFC 6665](https://www.rfc-editor.org/rfc/rfc6665) |  |
-| Supported | `k` | [RFC 3261 §20.37](https://www.rfc-editor.org/rfc/rfc3261#section-20.37) | The Supported header field enumerates all the extensions supported by the UAC or UAS. |
+| Supported | `k` | [RFC 3261 section 20.37](https://www.rfc-editor.org/rfc/rfc3261#section-20.37) | The Supported header field enumerates all the extensions supported by the UAC or UAS. |
 | Suppress-If-Match |  | [RFC 5839](https://www.rfc-editor.org/rfc/rfc5839) |  |
 | Target-Dialog |  | [RFC 4538](https://www.rfc-editor.org/rfc/rfc4538) |  |
-| Timestamp |  | [RFC 3261 §20.38](https://www.rfc-editor.org/rfc/rfc3261#section-20.38) | The Timestamp header field describes when the UAC sent the request to the UAS. |
-| To | `t` | [RFC 3261 §20.39](https://www.rfc-editor.org/rfc/rfc3261#section-20.39) | The To header field specifies the logical recipient of the request. |
+| Timestamp |  | [RFC 3261 section 20.38](https://www.rfc-editor.org/rfc/rfc3261#section-20.38) | The Timestamp header field describes when the UAC sent the request to the UAS. |
+| To | `t` | [RFC 3261 section 20.39](https://www.rfc-editor.org/rfc/rfc3261#section-20.39) | The To header field specifies the logical recipient of the request. |
 | Trigger-Consent |  | [RFC 5360](https://www.rfc-editor.org/rfc/rfc5360) |  |
-| Unsupported |  | [RFC 3261 §20.40](https://www.rfc-editor.org/rfc/rfc3261#section-20.40) | The Unsupported header field lists the features not supported by the UAS. |
-| User-Agent |  | [RFC 3261 §20.41](https://www.rfc-editor.org/rfc/rfc3261#section-20.41) | The User-Agent header field contains information about the UAC originating the request. |
+| Unsupported |  | [RFC 3261 section 20.40](https://www.rfc-editor.org/rfc/rfc3261#section-20.40) | The Unsupported header field lists the features not supported by the UAS. |
+| User-Agent |  | [RFC 3261 section 20.41](https://www.rfc-editor.org/rfc/rfc3261#section-20.41) | The User-Agent header field contains information about the UAC originating the request. |
 | User-to-User |  | [RFC 7433](https://www.rfc-editor.org/rfc/rfc7433) |  |
-| Via | `v` | [RFC 3261 §20.42](https://www.rfc-editor.org/rfc/rfc3261#section-20.42) | The Via header field indicates the path taken by the request so far and indicates the path that should be followed in routing responses. |
-| Warning |  | [RFC 3261 §20.43](https://www.rfc-editor.org/rfc/rfc3261#section-20.43) | The Warning header field is used to carry additional information about the status of a response. |
-| WWW-Authenticate |  | [RFC 3261 §20.44](https://www.rfc-editor.org/rfc/rfc3261#section-20.44) | A WWW-Authenticate header field value contains an authentication challenge. |
+| Via | `v` | [RFC 3261 section 20.42](https://www.rfc-editor.org/rfc/rfc3261#section-20.42) | The Via header field indicates the path taken by the request so far and indicates the path that should be followed in routing responses. |
+| Warning |  | [RFC 3261 section 20.43](https://www.rfc-editor.org/rfc/rfc3261#section-20.43) | The Warning header field is used to carry additional information about the status of a response. |
+| WWW-Authenticate |  | [RFC 3261 section 20.44](https://www.rfc-editor.org/rfc/rfc3261#section-20.44) | A WWW-Authenticate header field value contains an authentication challenge. |
 
 <!-- vale on -->
 
@@ -12407,17 +12407,17 @@ right for a private extension and wrong for a registered one nobody noticed.
 
 sipnab dispatches on the method that opened the dialog, corrected for the four
 methods that cannot open one. `ACK`, `BYE`, `CANCEL` and `PRACK` each
-presuppose an INVITE ([RFC 3261 §13.2.2.4](https://www.rfc-editor.org/rfc/rfc3261#section-13.2.2.4),
-[§15.1](https://www.rfc-editor.org/rfc/rfc3261#section-15.1),
-[§9.1](https://www.rfc-editor.org/rfc/rfc3261#section-9.1),
-[RFC 3262 §4](https://www.rfc-editor.org/rfc/rfc3262#section-4)), so a capture
+presuppose an INVITE ([RFC 3261 section 13.2.2.4](https://www.rfc-editor.org/rfc/rfc3261#section-13.2.2.4),
+[RFC 3261 section 15.1](https://www.rfc-editor.org/rfc/rfc3261#section-15.1),
+[RFC 3261 section 9.1](https://www.rfc-editor.org/rfc/rfc3261#section-9.1),
+[RFC 3262 section 4](https://www.rfc-editor.org/rfc/rfc3262#section-4)), so a capture
 that opens on one is an INVITE dialog seen from its middle and runs through the
 INVITE machine. Two more methods get their own machine and the rest share a
 generic one.
 
 Which machine handles a message is one question. Which *transaction* the
 message belongs to is another. A response answers the transaction its `CSeq`
-method names ([RFC 3261 §8.1.1.5](https://www.rfc-editor.org/rfc/rfc3261#section-8.1.1.5)).
+method names ([RFC 3261 section 8.1.1.5](https://www.rfc-editor.org/rfc/rfc3261#section-8.1.1.5)).
 So a `200 OK` in an INVITE dialog means the callee picked up only when that
 `CSeq` says `INVITE`. The same code answering a `CANCEL` means the cancellation
 arrived, and nothing more.
@@ -12442,25 +12442,25 @@ zero seconds. `Redirected` is a 3xx, which every machine can draw.
 
 | Method | Machine | Defined in | Description |
 |---|---|---|---|
-| `ACK` | INVITE | [RFC 3261 §17.1.1.3](https://www.rfc-editor.org/rfc/rfc3261#section-17.1.1.3) | This section specifies the construction of ACK requests sent within the client transaction. A UAC core that generates an ACK for 2xx MUST instead follow the rules described in Section 13. |
-| `BYE` | INVITE | [RFC 3261 §15.1](https://www.rfc-editor.org/rfc/rfc3261#section-15.1) | A BYE request is constructed as would any other request within a dialog, as described in Section 12. Once the BYE is constructed, the UAC core creates a new non-INVITE client transaction, and passes it the BYE request. |
-| `CANCEL` | INVITE | [RFC 3261 §9](https://www.rfc-editor.org/rfc/rfc3261#section-9) | The previous section has discussed general UA behavior for generating requests and processing responses for requests of all methods. In this section, we discuss a general purpose method, called CANCEL. |
-| `INFO` | generic | [RFC 6086 §4](https://www.rfc-editor.org/rfc/rfc6086#section-4) | The INFO method provides a mechanism for transporting application level information that can further enhance a SIP application. Section 8 gives more details on the types of applications for which the use of INFO is appropriate. |
-| `INVITE` | INVITE | [RFC 3261 §13](https://www.rfc-editor.org/rfc/rfc3261#section-13) | When a user agent client desires to initiate a session (for example, audio, video, or a game), it formulates an INVITE request. The INVITE request asks a server to establish a session. |
-| `MESSAGE` | generic | [RFC 3428 §3](https://www.rfc-editor.org/rfc/rfc3428#section-3) | When one user wishes to send an instant message to another, the sender formulates and issues a SIP request using the new MESSAGE method defined by this document. |
-| `NOTIFY` | generic | [RFC 6665 §3.2](https://www.rfc-editor.org/rfc/rfc6665#section-3.2) | NOTIFY requests are sent to inform subscribers of changes in state to which the subscriber has a subscription. Subscriptions are created using the SUBSCRIBE method. |
-| `OPTIONS` | generic | [RFC 3261 §11](https://www.rfc-editor.org/rfc/rfc3261#section-11) | The SIP method OPTIONS allows a UA to query another UA or a proxy server as to its capabilities. This allows a client to discover information about the supported methods, content types, extensions, codecs, etc. |
-| `PRACK` | INVITE | [RFC 3262 §6](https://www.rfc-editor.org/rfc/rfc3262#section-6) | This specification defines a new SIP method, PRACK. The semantics of this method are described above. |
-| `PUBLISH` | generic | [RFC 3903 §3](https://www.rfc-editor.org/rfc/rfc3903#section-3) | This document defines a new SIP method, PUBLISH, for publishing event state. PUBLISH is similar to REGISTER in that it allows a user to create, modify, and remove state in another entity which manages this state on behalf of the user. |
-| `REFER` | generic | [RFC 3515 §2](https://www.rfc-editor.org/rfc/rfc3515#section-2) | REFER is a SIP method as defined by RFC 3261 [1]. The REFER method indicates that the recipient (identified by the Request-URI) should contact a third party using the contact information provided in the request. |
-| `REGISTER` | REGISTER | [RFC 3261 §10](https://www.rfc-editor.org/rfc/rfc3261#section-10) | SIP offers a discovery capability. If a user wants to initiate a session with another user, SIP must discover the current host(s) at which the destination user is reachable. |
-| `SUBSCRIBE` | SUBSCRIBE | [RFC 6665 §3.1](https://www.rfc-editor.org/rfc/rfc6665#section-3.1) | The SUBSCRIBE method is used to request current state and state updates from a remote node. SUBSCRIBE requests are target refresh requests, as that term is defined in [RFC3261]. |
-| `UPDATE` | generic | [RFC 3311 §3](https://www.rfc-editor.org/rfc/rfc3311#section-3) | Operation of this extension is straightforward. The caller begins with an INVITE transaction, which proceeds normally. |
+| `ACK` | INVITE | [RFC 3261 section 17.1.1.3](https://www.rfc-editor.org/rfc/rfc3261#section-17.1.1.3) | This section specifies the construction of ACK requests sent within the client transaction. A UAC core that generates an ACK for 2xx MUST instead follow the rules described in Section 13. |
+| `BYE` | INVITE | [RFC 3261 section 15.1](https://www.rfc-editor.org/rfc/rfc3261#section-15.1) | A BYE request is constructed as would any other request within a dialog, as described in Section 12. Once the BYE is constructed, the UAC core creates a new non-INVITE client transaction, and passes it the BYE request. |
+| `CANCEL` | INVITE | [RFC 3261 section 9](https://www.rfc-editor.org/rfc/rfc3261#section-9) | The previous section has discussed general UA behavior for generating requests and processing responses for requests of all methods. In this section, we discuss a general purpose method, called CANCEL. |
+| `INFO` | generic | [RFC 6086 section 4](https://www.rfc-editor.org/rfc/rfc6086#section-4) | The INFO method provides a mechanism for transporting application level information that can further enhance a SIP application. Section 8 gives more details on the types of applications for which the use of INFO is appropriate. |
+| `INVITE` | INVITE | [RFC 3261 section 13](https://www.rfc-editor.org/rfc/rfc3261#section-13) | When a user agent client desires to initiate a session (for example, audio, video, or a game), it formulates an INVITE request. The INVITE request asks a server to establish a session. |
+| `MESSAGE` | generic | [RFC 3428 section 3](https://www.rfc-editor.org/rfc/rfc3428#section-3) | When one user wishes to send an instant message to another, the sender formulates and issues a SIP request using the new MESSAGE method defined by this document. |
+| `NOTIFY` | generic | [RFC 6665 section 3.2](https://www.rfc-editor.org/rfc/rfc6665#section-3.2) | NOTIFY requests are sent to inform subscribers of changes in state to which the subscriber has a subscription. Subscriptions are created using the SUBSCRIBE method. |
+| `OPTIONS` | generic | [RFC 3261 section 11](https://www.rfc-editor.org/rfc/rfc3261#section-11) | The SIP method OPTIONS allows a UA to query another UA or a proxy server as to its capabilities. This allows a client to discover information about the supported methods, content types, extensions, codecs, etc. |
+| `PRACK` | INVITE | [RFC 3262 section 6](https://www.rfc-editor.org/rfc/rfc3262#section-6) | This specification defines a new SIP method, PRACK. The semantics of this method are described above. |
+| `PUBLISH` | generic | [RFC 3903 section 3](https://www.rfc-editor.org/rfc/rfc3903#section-3) | This document defines a new SIP method, PUBLISH, for publishing event state. PUBLISH is similar to REGISTER in that it allows a user to create, modify, and remove state in another entity which manages this state on behalf of the user. |
+| `REFER` | generic | [RFC 3515 section 2](https://www.rfc-editor.org/rfc/rfc3515#section-2) | REFER is a SIP method as defined by RFC 3261 [1]. The REFER method indicates that the recipient (identified by the Request-URI) should contact a third party using the contact information provided in the request. |
+| `REGISTER` | REGISTER | [RFC 3261 section 10](https://www.rfc-editor.org/rfc/rfc3261#section-10) | SIP offers a discovery capability. If a user wants to initiate a session with another user, SIP must discover the current host(s) at which the destination user is reachable. |
+| `SUBSCRIBE` | SUBSCRIBE | [RFC 6665 section 3.1](https://www.rfc-editor.org/rfc/rfc6665#section-3.1) | The SUBSCRIBE method is used to request current state and state updates from a remote node. SUBSCRIBE requests are target refresh requests, as that term is defined in [RFC3261]. |
+| `UPDATE` | generic | [RFC 3311 section 3](https://www.rfc-editor.org/rfc/rfc3311#section-3) | Operation of this extension is straightforward. The caller begins with an INVITE transaction, which proceeds normally. |
 
 <!-- vale on -->
 
 Registry references beyond the defining RFC, where a later document updates the
-method: `INVITE` [RFC3261][RFC6026].
+method: `INVITE` [RFC3261][[RFC 6026](https://www.rfc-editor.org/rfc/rfc6026)].
 
 ---
 
@@ -12995,7 +12995,7 @@ silently mix two listening contexts inside one equation.
 `AMR-WB` alone spans `Ie,WB` 1 to 41 — roughly 4.49 down to 3.51. Two ways to
 pin it:
 
-1. **SDP `a=fmtp` `mode-set` naming exactly one mode.** [RFC 4867 §8.1](https://www.rfc-editor.org/rfc/rfc4867#section-8.1) numbers
+1. **SDP `a=fmtp` `mode-set` naming exactly one mode.** [RFC 4867 section 8.1](https://www.rfc-editor.org/rfc/rfc4867#section-8.1) numbers
    the modes 0–8 in ascending bitrate, so `mode-set=2` is 12.65 kbit/s.
    A multi-mode set says what the stream *may* do, not what it did — senders
    switch mode per frame under congestion.
@@ -13071,7 +13071,7 @@ drags the diotic assumption across with it.
   a superseded Eq (7-6) written in terms of a quantity the wideband model never
   defines.
 - **ITU-T G.107.2 (03/2023)** for the fullband scale.
-- **[RFC 4867 §8.1](https://www.rfc-editor.org/rfc/rfc4867#section-8.1)** for AMR / AMR-WB payload format and `mode-set`.
+- **[RFC 4867 section 8.1](https://www.rfc-editor.org/rfc/rfc4867#section-8.1)** for AMR / AMR-WB payload format and `mode-set`.
 
 One caveat that belongs in any operator-facing report built on these numbers:
 <!-- The two phrases below quote G.113 verbatim; rewording them to satisfy the
@@ -13121,20 +13121,20 @@ defines it, and how sipnab classifies it.
 
 **Source.** <https://www.iana.org/assignments/sip-parameters/sip-parameters-7.csv>
 — the IANA *Response Codes* registry, retrieved 2026-07-30. IANA is the registry
-of record: [RFC 3261 §21](https://www.rfc-editor.org/rfc/rfc3261#section-21) defines 50 of these and later RFCs register the other 25,
+of record: [RFC 3261 section 21](https://www.rfc-editor.org/rfc/rfc3261#section-21) defines 50 of these and later RFCs register the other 25,
 so no single RFC carries the whole list. A blank `Reference` in that CSV means
-RFC 3261, which is why those 50 line up exactly with [RFC 3261 §21](https://www.rfc-editor.org/rfc/rfc3261#section-21).
+RFC 3261, which is why those 50 line up exactly with [RFC 3261 section 21](https://www.rfc-editor.org/rfc/rfc3261#section-21).
 
 **Wikipedia disagrees with the registry, so prefer this table.** Its list differs
 in five phrases and carries two codes that no registry has. 437 is *Unsupported
-Credential*, not *Unsupported Certificate* — [RFC 8224 §6.2.2] names the latter as
+Credential*, not *Unsupported Certificate* — [[RFC 8224 section 6.2.2](https://www.rfc-editor.org/rfc/rfc8224#section-6.2.2)] names the latter as
 the previous name. 500 is *Server Internal Error*, not *Internal Server Error*.
 202 reads *Accepted (Deprecated)*. 409 *Conflict* and 411 *Length Required* come from
 [RFC 2543](https://www.rfc-editor.org/rfc/rfc2543), which RFC 3261 obsoleted.
 
-[RFC 8224 §6.2.2]: https://www.rfc-editor.org/rfc/rfc8224#section-6.2.2
+[[RFC 8224 section 6.2.2](https://www.rfc-editor.org/rfc/rfc8224#section-6.2.2)]: https://www.rfc-editor.org/rfc/rfc8224#section-6.2.2
 
-**Reason phrases on the wire are free text.** [RFC 3261 §7.2](https://www.rfc-editor.org/rfc/rfc3261#section-7.2) lets a sender write
+**Reason phrases on the wire are free text.** [RFC 3261 section 7.2](https://www.rfc-editor.org/rfc/rfc3261#section-7.2) lets a sender write
 anything after the code, so a capture showing `500 Service Unavailable` or `487
 Request Canceled` is legal, and both are common in the field. The phrase in this
 table is the canonical one. Match on the code, never on the text.
@@ -13169,12 +13169,12 @@ The request is in progress. Never an outcome.
 
 | Code | Reason phrase | Defined in | Description |
 |---|---|---|---|
-| `100` | Trying | [RFC 3261 §21.1.1](https://www.rfc-editor.org/rfc/rfc3261#section-21.1.1) | This response indicates that the request has been received by the next-hop server and that some unspecified action is being taken on behalf of this call (for example, a database is being consulted). This response, like all other provisional responses, stops retransmissions of an INVITE by a UAC. |
-| `180` | Ringing | [RFC 3261 §21.1.2](https://www.rfc-editor.org/rfc/rfc3261#section-21.1.2) | The UA receiving the INVITE is trying to alert the user. This response MAY be used to initiate local ringback. |
-| `181` | Call Is Being Forwarded | [RFC 3261 §21.1.3](https://www.rfc-editor.org/rfc/rfc3261#section-21.1.3) | A server MAY use this status code to indicate that the call is being forwarded to a different set of destinations. |
-| `182` | Queued | [RFC 3261 §21.1.4](https://www.rfc-editor.org/rfc/rfc3261#section-21.1.4) | The called party is temporarily unavailable, but the server has decided to queue the call rather than reject it. When the callee becomes available, it will return the appropriate final status response. |
-| `183` | Session Progress | [RFC 3261 §21.1.5](https://www.rfc-editor.org/rfc/rfc3261#section-21.1.5) | The 183 (Session Progress) response is used to convey information about the progress of the call that is not otherwise classified. The Reason-Phrase, header fields, or message body MAY be used to convey more details about the call progress. |
-| `199` | Early Dialog Terminated | [RFC 6228 §9.1](https://www.rfc-editor.org/rfc/rfc6228#section-9.1) | Figure 1 shows an example where a proxy (P1) forks an INVITE received from a UAC. The forked INVITE reaches UAS_2, UAS_3, and UAS_4, which send 18x provisional responses in order to establish early dialogs between themselves and the UAC. |
+| `100` | Trying | [RFC 3261 section 21.1.1](https://www.rfc-editor.org/rfc/rfc3261#section-21.1.1) | This response indicates that the request has been received by the next-hop server and that some unspecified action is being taken on behalf of this call (for example, a database is being consulted). This response, like all other provisional responses, stops retransmissions of an INVITE by a UAC. |
+| `180` | Ringing | [RFC 3261 section 21.1.2](https://www.rfc-editor.org/rfc/rfc3261#section-21.1.2) | The UA receiving the INVITE is trying to alert the user. This response MAY be used to initiate local ringback. |
+| `181` | Call Is Being Forwarded | [RFC 3261 section 21.1.3](https://www.rfc-editor.org/rfc/rfc3261#section-21.1.3) | A server MAY use this status code to indicate that the call is being forwarded to a different set of destinations. |
+| `182` | Queued | [RFC 3261 section 21.1.4](https://www.rfc-editor.org/rfc/rfc3261#section-21.1.4) | The called party is temporarily unavailable, but the server has decided to queue the call rather than reject it. When the callee becomes available, it will return the appropriate final status response. |
+| `183` | Session Progress | [RFC 3261 section 21.1.5](https://www.rfc-editor.org/rfc/rfc3261#section-21.1.5) | The 183 (Session Progress) response is used to convey information about the progress of the call that is not otherwise classified. The Reason-Phrase, header fields, or message body MAY be used to convey more details about the call progress. |
+| `199` | Early Dialog Terminated | [RFC 6228 section 1](https://www.rfc-editor.org/rfc/rfc6228#section-1) | This specification defines a new SIP response code, 199 Early Dialog Terminated. A forking proxy can send a 199 provisional response to inform upstream SIP entities that an early dialog has been terminated. A UAS can send a 199 response code, prior to sending a non-2xx final response, for the same purpose. |
 
 ## 2xx success
 
@@ -13182,9 +13182,9 @@ The request succeeded.
 
 | Code | Reason phrase | Defined in | Description |
 |---|---|---|---|
-| `200` | OK | [RFC 3261 §21.2.1](https://www.rfc-editor.org/rfc/rfc3261#section-21.2.1) | The request has succeeded. The information returned with the response depends on the method used in the request. |
-| `202` | Accepted (Deprecated) | [RFC 6665 §8.3.1](https://www.rfc-editor.org/rfc/rfc6665#section-8.3.1) | For historical purposes, the 202 (Accepted) response code is added to the "Success" header field definition. This document does not specify the use of the 202 response code in conjunction with the SUBSCRIBE or NOTIFY methods. |
-| `204` | No Notification | [RFC 5839 §7.1](https://www.rfc-editor.org/rfc/rfc5839#section-7.1) | The 204 (No Notification) response code indicates that the request was successful, but the notification associated with the request will not be sent. It is valid only in response to a SUBSCRIBE message sent within an established dialog. |
+| `200` | OK | [RFC 3261 section 21.2.1](https://www.rfc-editor.org/rfc/rfc3261#section-21.2.1) | The request has succeeded. The information returned with the response depends on the method used in the request. |
+| `202` | Accepted (Deprecated) | [RFC 6665 section 8.3.1](https://www.rfc-editor.org/rfc/rfc6665#section-8.3.1) | For historical purposes, the 202 (Accepted) response code is added to the "Success" header field definition. This document does not specify the use of the 202 response code in conjunction with the SUBSCRIBE or NOTIFY methods. |
+| `204` | No Notification | [RFC 5839 section 7.1](https://www.rfc-editor.org/rfc/rfc5839#section-7.1) | The 204 (No Notification) response code indicates that the request was successful, but the notification associated with the request will not be sent. It is valid only in response to a SUBSCRIBE message sent within an established dialog. |
 
 ## 3xx redirect
 
@@ -13192,11 +13192,11 @@ The request needs different routing. Not a failure of the call, and not an answe
 
 | Code | Reason phrase | Defined in | Description |
 |---|---|---|---|
-| `300` | Multiple Choices | [RFC 3261 §21.3.1](https://www.rfc-editor.org/rfc/rfc3261#section-21.3.1) | The address in the request resolved to several choices, each with its own specific location, and the user (or UA) can select a preferred communication end point and redirect its request to that location. |
-| `301` | Moved Permanently | [RFC 3261 §21.3.2](https://www.rfc-editor.org/rfc/rfc3261#section-21.3.2) | The user can no longer be found at the address in the Request-URI, and the requesting client SHOULD retry at the new address given by the Contact header field (Section 20.10). |
-| `302` | Moved Temporarily | [RFC 3261 §21.3.3](https://www.rfc-editor.org/rfc/rfc3261#section-21.3.3) | The requesting client SHOULD retry the request at the new address(es) given by the Contact header field (Section 20.10). The Request-URI of the new request uses the value of the Contact header field in the response. |
-| `305` | Use Proxy | [RFC 3261 §21.3.4](https://www.rfc-editor.org/rfc/rfc3261#section-21.3.4) | The requested resource MUST be accessed through the proxy given by the Contact field. The Contact field gives the URI of the proxy. |
-| `380` | Alternative Service | [RFC 3261 §21.3.5](https://www.rfc-editor.org/rfc/rfc3261#section-21.3.5) | The call was not successful, but alternative services are possible. The alternative services are described in the message body of the response. |
+| `300` | Multiple Choices | [RFC 3261 section 21.3.1](https://www.rfc-editor.org/rfc/rfc3261#section-21.3.1) | The address in the request resolved to several choices, each with its own specific location, and the user (or UA) can select a preferred communication end point and redirect its request to that location. |
+| `301` | Moved Permanently | [RFC 3261 section 21.3.2](https://www.rfc-editor.org/rfc/rfc3261#section-21.3.2) | The user can no longer be found at the address in the Request-URI, and the requesting client SHOULD retry at the new address given by the Contact header field (Section 20.10). |
+| `302` | Moved Temporarily | [RFC 3261 section 21.3.3](https://www.rfc-editor.org/rfc/rfc3261#section-21.3.3) | The requesting client SHOULD retry the request at the new address(es) given by the Contact header field (Section 20.10). The Request-URI of the new request uses the value of the Contact header field in the response. |
+| `305` | Use Proxy | [RFC 3261 section 21.3.4](https://www.rfc-editor.org/rfc/rfc3261#section-21.3.4) | The requested resource MUST be accessed through the proxy given by the Contact field. The Contact field gives the URI of the proxy. |
+| `380` | Alternative Service | [RFC 3261 section 21.3.5](https://www.rfc-editor.org/rfc/rfc3261#section-21.3.5) | The call was not successful, but alternative services are possible. The alternative services are described in the message body of the response. |
 
 ## Challenge
 
@@ -13204,9 +13204,9 @@ The server wants credentials or a security agreement, and the client retries. In
 
 | Code | Reason phrase | Defined in | Description |
 |---|---|---|---|
-| `401` | Unauthorized | [RFC 3261 §21.4.2](https://www.rfc-editor.org/rfc/rfc3261#section-21.4.2) | The request requires user authentication. This response is issued by UASs and registrars, while 407 (Proxy Authentication Required) is used by proxy servers. |
-| `407` | Proxy Authentication Required | [RFC 3261 §21.4.8](https://www.rfc-editor.org/rfc/rfc3261#section-21.4.8) | This code is similar to 401 (Unauthorized), but indicates that the client MUST first authenticate itself with the proxy. SIP access authentication is explained in Sections 26 and 22.3. |
-| `494` | Security Agreement Required | [RFC 3329 §6.5](https://www.rfc-editor.org/rfc/rfc3329#section-6.5) | the client with a 494 (Security Agreement Required) response. The server MUST add a Security-Server header field to this response listing the security mechanisms that the server supports. |
+| `401` | Unauthorized | [RFC 3261 section 21.4.2](https://www.rfc-editor.org/rfc/rfc3261#section-21.4.2) | The request requires user authentication. This response is issued by UASs and registrars, while 407 (Proxy Authentication Required) is used by proxy servers. |
+| `407` | Proxy Authentication Required | [RFC 3261 section 21.4.8](https://www.rfc-editor.org/rfc/rfc3261#section-21.4.8) | This code is similar to 401 (Unauthorized), but indicates that the client MUST first authenticate itself with the proxy. SIP access authentication is explained in Sections 26 and 22.3. |
+| `494` | Security Agreement Required | [RFC 3329 section 6.5](https://www.rfc-editor.org/rfc/rfc3329#section-6.5) | the client with a 494 (Security Agreement Required) response. The server MUST add a Security-Server header field to this response listing the security mechanisms that the server supports. |
 
 ## Canceled
 
@@ -13214,7 +13214,7 @@ The caller gave up before a final response. Abandonment, not failure.
 
 | Code | Reason phrase | Defined in | Description |
 |---|---|---|---|
-| `487` | Request Terminated | [RFC 3261 §21.4.25](https://www.rfc-editor.org/rfc/rfc3261#section-21.4.25) | The request was terminated by a BYE or CANCEL request. This response is never returned for a CANCEL request itself. |
+| `487` | Request Terminated | [RFC 3261 section 21.4.25](https://www.rfc-editor.org/rfc/rfc3261#section-21.4.25) | The request was terminated by a BYE or CANCEL request. This response is never returned for a CANCEL request itself. |
 
 ## Declined
 
@@ -13222,11 +13222,11 @@ The call reached the callee or an intermediary, which refused it. A human or a p
 
 | Code | Reason phrase | Defined in | Description |
 |---|---|---|---|
-| `486` | Busy Here | [RFC 3261 §21.4.24](https://www.rfc-editor.org/rfc/rfc3261#section-21.4.24) | The callee's end system was contacted successfully, but the callee is currently not willing or able to take additional calls at this end system. The response MAY indicate a better time to call in the Retry-After header field. |
-| `600` | Busy Everywhere | [RFC 3261 §21.6.1](https://www.rfc-editor.org/rfc/rfc3261#section-21.6.1) | The callee's end system was contacted successfully but the callee is busy and does not wish to take the call at this time. The response MAY indicate a better time to call in the Retry-After header field. |
-| `603` | Decline | [RFC 3261 §21.6.2](https://www.rfc-editor.org/rfc/rfc3261#section-21.6.2) | The callee's machine was successfully contacted but the user explicitly does not wish to or cannot participate. The response MAY indicate a better time to call in the Retry-After header field. |
-| `607` | Unwanted | [RFC 8197 §?](https://www.rfc-editor.org/rfc/rfc8197#section-?) | This document defines the 607 (Unwanted) SIP response code, allowing called parties to indicate that the call or message was unwanted. SIP entities may use this information to adjust how future calls from this calling party are handled for the called party or more broadly. |
-| `608` | Rejected | [RFC 8688 §?](https://www.rfc-editor.org/rfc/rfc8688#section-?) | This document defines the 608 (Rejected) Session Initiation Protocol (SIP) response code. This response code enables calling parties to learn that an intermediary rejected their call attempt. |
+| `486` | Busy Here | [RFC 3261 section 21.4.24](https://www.rfc-editor.org/rfc/rfc3261#section-21.4.24) | The callee's end system was contacted successfully, but the callee is currently not willing or able to take additional calls at this end system. The response MAY indicate a better time to call in the Retry-After header field. |
+| `600` | Busy Everywhere | [RFC 3261 section 21.6.1](https://www.rfc-editor.org/rfc/rfc3261#section-21.6.1) | The callee's end system was contacted successfully but the callee is busy and does not wish to take the call at this time. The response MAY indicate a better time to call in the Retry-After header field. |
+| `603` | Decline | [RFC 3261 section 21.6.2](https://www.rfc-editor.org/rfc/rfc3261#section-21.6.2) | The callee's machine was successfully contacted but the user explicitly does not wish to or cannot participate. The response MAY indicate a better time to call in the Retry-After header field. |
+| `607` | Unwanted | [RFC 8197 section 5.1](https://www.rfc-editor.org/rfc/rfc8197#section-5.1) | This document defines the 607 (Unwanted) SIP response code, allowing called parties to indicate that the call or message was unwanted. SIP entities may use this information to adjust how future calls from this calling party are handled for the called party or more broadly. |
+| `608` | Rejected | [RFC 8688 section 5.1](https://www.rfc-editor.org/rfc/rfc8688#section-5.1) | This document defines the 608 (Rejected) Session Initiation Protocol (SIP) response code. This response code enables calling parties to learn that an intermediary rejected their call attempt. |
 
 ## Failure
 
@@ -13234,58 +13234,58 @@ The call attempt failed.
 
 | Code | Reason phrase | Defined in | Description |
 |---|---|---|---|
-| `400` | Bad Request | [RFC 3261 §21.4.1](https://www.rfc-editor.org/rfc/rfc3261#section-21.4.1) | The request could not be understood due to malformed syntax. The Reason-Phrase SHOULD identify the syntax problem in more detail, for example, "Missing Call-ID header field". |
-| `402` | Payment Required | [RFC 3261 §21.4.3](https://www.rfc-editor.org/rfc/rfc3261#section-21.4.3) | Reserved for future use. |
-| `403` | Forbidden | [RFC 3261 §21.4.4](https://www.rfc-editor.org/rfc/rfc3261#section-21.4.4) | The server understood the request, but is refusing to fulfill it. Authorization will not help, and the request SHOULD NOT be repeated. |
-| `404` | Not Found | [RFC 3261 §21.4.5](https://www.rfc-editor.org/rfc/rfc3261#section-21.4.5) | The server has definitive information that the user does not exist at the domain specified in the Request-URI. This status is also returned if the domain in the Request-URI does not match any of the domains handled by the recipient of the request. |
-| `405` | Method Not Allowed | [RFC 3261 §21.4.6](https://www.rfc-editor.org/rfc/rfc3261#section-21.4.6) | The method specified in the Request-Line is understood, but not allowed for the address identified by the Request-URI. The response MUST include an Allow header field containing a list of valid methods for the indicated address. |
-| `406` | Not Acceptable | [RFC 3261 §21.4.7](https://www.rfc-editor.org/rfc/rfc3261#section-21.4.7) | The resource identified by the request is only capable of generating response entities that have content characteristics not acceptable according to the Accept header field sent in the request. |
-| `408` | Request Timeout | [RFC 3261 §21.4.9](https://www.rfc-editor.org/rfc/rfc3261#section-21.4.9) | The server could not produce a response within a suitable amount of time, for example, if it could not determine the location of the user in time. The client MAY repeat the request without modifications at any later time. |
-| `410` | Gone | [RFC 3261 §21.4.10](https://www.rfc-editor.org/rfc/rfc3261#section-21.4.10) | The requested resource is no longer available at the server and no forwarding address is known. This condition is expected to be considered permanent. |
-| `412` | Conditional Request Failed | [RFC 3903 §11.2.1](https://www.rfc-editor.org/rfc/rfc3903#section-11.2.1) | The 412 (Conditional Request Failed) response is added to the "Client-Error" header field definition. 412 (Conditional Request Failed) is used to indicate that the precondition given for the request has failed. |
-| `413` | Request Entity Too Large | [RFC 3261 §21.4.11](https://www.rfc-editor.org/rfc/rfc3261#section-21.4.11) | The server is refusing to process a request because the request entity-body is larger than the server is willing or able to process. The server MAY close the connection to prevent the client from continuing the request. |
-| `414` | Request-URI Too Long | [RFC 3261 §21.4.12](https://www.rfc-editor.org/rfc/rfc3261#section-21.4.12) | The server is refusing to service the request because the Request-URI is longer than the server is willing to interpret. |
-| `415` | Unsupported Media Type | [RFC 3261 §21.4.13](https://www.rfc-editor.org/rfc/rfc3261#section-21.4.13) | The server is refusing to service the request because the message body of the request is in a format not supported by the server for the requested method. The server MUST return a list of acceptable formats using the Accept, Accept-Encoding, or Accept-Language header field, depending on the specific problem with the content. |
-| `416` | Unsupported URI Scheme | [RFC 3261 §21.4.14](https://www.rfc-editor.org/rfc/rfc3261#section-21.4.14) | The server cannot process the request because the scheme of the URI in the Request-URI is unknown to the server. Client processing of this response is described in Section 8.1.3.5. |
-| `417` | Unknown Resource-Priority | [RFC 4412 §12.4](https://www.rfc-editor.org/rfc/rfc4412#section-12.4) | RFC number: 4412 Response code: 417 Default reason phrase: Unknown Resource-Priority |
-| `420` | Bad Extension | [RFC 3261 §21.4.15](https://www.rfc-editor.org/rfc/rfc3261#section-21.4.15) | The server did not understand the protocol extension specified in a Proxy-Require (Section 20.29) or Require (Section 20.32) header field. The server MUST include a list of the unsupported extensions in an Unsupported header field in the response. |
-| `421` | Extension Required | [RFC 3261 §21.4.16](https://www.rfc-editor.org/rfc/rfc3261#section-21.4.16) | The UAS needs a particular extension to process the request, but this extension is not listed in a Supported header field in the request. Responses with this status code MUST contain a Require header field listing the required extensions. |
-| `422` | Session Interval Too Small | [RFC 4028 §6](https://www.rfc-editor.org/rfc/rfc4028#section-6) | This extension introduces the 422 (Session Interval Too Small) response code. It is generated by a UAS or proxy when a request contains a Session-Expires header field with a duration below the minimum timer for the server. |
-| `423` | Interval Too Brief | [RFC 3261 §21.4.17](https://www.rfc-editor.org/rfc/rfc3261#section-21.4.17) | The server is rejecting the request because the expiration time of the resource refreshed by the request is too short. This response can be used by a registrar to reject a registration whose Contact header field expiration time was too small. |
-| `424` | Bad Location Information | [RFC 6442 §4.3](https://www.rfc-editor.org/rfc/rfc6442#section-4.3) | This SIP extension creates a new location-specific response code, defined as follows: 424 (Bad Location Information) The 424 (Bad Location Information) response code is a rejection of the request due to its location contents, indicating location information that was malformed or not satisfactory for the recipient's purpose or could not be dereferenced. |
-| `425` | Bad Alert Message | [RFC 8876 §5.1](https://www.rfc-editor.org/rfc/rfc8876#section-5.1) | This SIP extension creates a new response code defined as follows: 425 (Bad Alert Message) The 425 response code is a rejection of the request, indicating that it was malformed enough that no reasonable emergency response to the alert can be determined. |
-| `428` | Use Identity Header | [RFC 8224 §6.2](https://www.rfc-editor.org/rfc/rfc8224#section-6.2) | then a 428 "Use Identity Header" response MUST be sent in the backwards direction. For more on this and other verifier responses, see Section 6.2.2. |
-| `429` | Provide Referrer Identity | [RFC 3892 §5](https://www.rfc-editor.org/rfc/rfc3892#section-5) | The 429 client error response code is used by a refer target to indicate that the referee must provide a valid Referred-By token. As discussed in the behavior section, the referee will forward this error response to the referrer in a NOTIFY as the result of the REFER. |
-| `430` | Flow Failed | [RFC 5626 §11.5](https://www.rfc-editor.org/rfc/rfc5626#section-11.5) | This document registers a new SIP response code (430 Flow Failed), as per the guidelines in Section 27.4 of [RFC3261]. This response code is used by an edge proxy to indicate to the Authoritative Proxy that a specific flow to a UA instance has failed. |
-| `433` | Anonymity Disallowed | [RFC 5079 §5](https://www.rfc-editor.org/rfc/rfc5079#section-5) | This response indicates that the server refused to fulfill the request because the requestor was anonymous. Its default reason phrase is "Anonymity Disallowed". |
-| `436` | Bad Identity Info | [RFC 8224 §6.2.2](https://www.rfc-editor.org/rfc/rfc8224#section-6.2.2) | The 436 "Bad Identity Info" response code indicates an inability to acquire the credentials needed by the verification service for validating the signature in an Identity header field. |
-| `437` | Unsupported Credential | [RFC 8224 §6.2.2](https://www.rfc-editor.org/rfc/rfc8224#section-6.2.2) | The 437 "Unsupported Credential" response (previously "Unsupported Certificate"; see Section 13.2) is sent when a verification service can acquire, or already holds, the credential represented by the "info" parameter of at least one Identity header field in the request but does not support said credential(s), for reasons such as failing to trust the issuing certification authority (CA) or failing to support the algorithm with which the credential was signed. |
-| `438` | Invalid Identity Header | [RFC 8224 §6.2.2](https://www.rfc-editor.org/rfc/rfc8224#section-6.2.2) | the backwards direction, such as a 438 ("Invalid Identity Header") response indicating a verification failure. |
-| `439` | First Hop Lacks Outbound Support | [RFC 5626 §11.6](https://www.rfc-editor.org/rfc/rfc5626#section-11.6) | This document registers a new SIP response code (439 First Hop Lacks Outbound Support), as per the guidelines in Section 27.4 of [RFC3261]. |
-| `440` | Max-Breadth Exceeded | [RFC 5393 §6.2](https://www.rfc-editor.org/rfc/rfc5393#section-6.2) | This information appears in the Response Codes sub-registry of the SIP Parameters registry. Response code: 440 Default Reason Phrase: Max-Breadth Exceeded |
-| `469` | Bad Info Package | [RFC 6086 §11.6](https://www.rfc-editor.org/rfc/rfc6086#section-11.6) | IANA registered the following new response code in the "Session Initiation Protocol (SIP) Parameters" -- "Response Codes" registry. Response Code: 469 Default Reason Phrase: Bad Info Package Reference: RFC6086 |
-| `470` | Consent Needed | [RFC 5360 §5.9.2](https://www.rfc-editor.org/rfc/rfc5360#section-5.9.2) | A 470 (Consent Needed) response indicates that the request that triggered the response contained a URI list with at least one URI for which the relay had no permissions. A user agent server generating a 470 (Consent Needed) response SHOULD include a Permission-Missing header field in it. |
-| `480` | Temporarily Unavailable | [RFC 3261 §21.4.18](https://www.rfc-editor.org/rfc/rfc3261#section-21.4.18) | The callee's end system was contacted successfully but the callee is currently unavailable (for example, is not logged in, logged in but in a state that precludes communication with the callee, or has activated the "do not disturb" feature). The response MAY indicate a better time to call in the Retry-After header field. |
-| `481` | Call/Transaction Does Not Exist | [RFC 3261 §21.4.19](https://www.rfc-editor.org/rfc/rfc3261#section-21.4.19) | This status indicates that the UAS received a request that does not match any existing dialog or transaction. |
-| `482` | Loop Detected | [RFC 3261 §21.4.20](https://www.rfc-editor.org/rfc/rfc3261#section-21.4.20) | The server has detected a loop (Section 16.3 Item 4). |
-| `483` | Too Many Hops | [RFC 3261 §21.4.21](https://www.rfc-editor.org/rfc/rfc3261#section-21.4.21) | The server received a request that contains a Max-Forwards (Section 20.22) header field with the value zero. |
-| `484` | Address Incomplete | [RFC 3261 §21.4.22](https://www.rfc-editor.org/rfc/rfc3261#section-21.4.22) | The server received a request with a Request-URI that was incomplete. Additional information SHOULD be provided in the reason phrase. |
-| `485` | Ambiguous | [RFC 3261 §21.4.23](https://www.rfc-editor.org/rfc/rfc3261#section-21.4.23) | The Request-URI was ambiguous. The response MAY contain a listing of possible unambiguous addresses in Contact header fields. |
-| `488` | Not Acceptable Here | [RFC 3261 §21.4.26](https://www.rfc-editor.org/rfc/rfc3261#section-21.4.26) | The response has the same meaning as 606 (Not Acceptable), but only applies to the specific resource addressed by the Request-URI and the request may succeed elsewhere. |
-| `489` | Bad Event | [RFC 6665 §8.3.2](https://www.rfc-editor.org/rfc/rfc6665#section-8.3.2) | The 489 event response is added to the "Client-Error" header field definition. 489 (Bad Event) is used to indicate that the server did not understand the event package specified in a "Event" header field. |
-| `491` | Request Pending | [RFC 3261 §21.4.27](https://www.rfc-editor.org/rfc/rfc3261#section-21.4.27) | The request was received by a UAS that had a pending request within the same dialog. Section 14.2 describes how such "glare" situations are resolved. |
-| `493` | Undecipherable | [RFC 3261 §21.4.28](https://www.rfc-editor.org/rfc/rfc3261#section-21.4.28) | The request was received by a UAS that contained an encrypted MIME body for which the recipient does not possess or will not provide an appropriate decryption key. This response MAY have a single body containing an appropriate public key that should be used to encrypt MIME bodies sent to this UA. |
-| `500` | Server Internal Error | [RFC 3261 §21.5.1](https://www.rfc-editor.org/rfc/rfc3261#section-21.5.1) | The server encountered an unexpected condition that prevented it from fulfilling the request. The client MAY display the specific error condition and MAY retry the request after several seconds. |
-| `501` | Not Implemented | [RFC 3261 §21.5.2](https://www.rfc-editor.org/rfc/rfc3261#section-21.5.2) | The server does not support the functionality required to fulfill the request. This is the appropriate response when a UAS does not recognize the request method and is not capable of supporting it for any user. |
-| `502` | Bad Gateway | [RFC 3261 §21.5.3](https://www.rfc-editor.org/rfc/rfc3261#section-21.5.3) | The server, while acting as a gateway or proxy, received an invalid response from the downstream server it accessed in attempting to fulfill the request. |
-| `503` | Service Unavailable | [RFC 3261 §21.5.4](https://www.rfc-editor.org/rfc/rfc3261#section-21.5.4) | The server is temporarily unable to process the request due to a temporary overloading or maintenance of the server. The server MAY indicate when the client should retry the request in a Retry-After header field. |
-| `504` | Server Time-out | [RFC 3261 §21.5.5](https://www.rfc-editor.org/rfc/rfc3261#section-21.5.5) | The server did not receive a timely response from an external server it accessed in attempting to process the request. 408 (Request Timeout) should be used instead if there was no response within the period specified in the Expires header field from the upstream server. |
-| `505` | Version Not Supported | [RFC 3261 §21.5.6](https://www.rfc-editor.org/rfc/rfc3261#section-21.5.6) | The server does not support, or refuses to support, the SIP protocol version that was used in the request. The server is indicating that it is unable or unwilling to complete the request using the same major version as the client, other than with this error message. |
-| `513` | Message Too Large | [RFC 3261 §21.5.7](https://www.rfc-editor.org/rfc/rfc3261#section-21.5.7) | The server was unable to process the request since the message length exceeded its capabilities. 21.6 Global Failures 6xx 6xx responses indicate that a server has definitive information about a particular user, not just the particular instance indicated in the Request-URI. |
-| `555` | Push Notification Service Not Supported | [RFC 8599 §8.1](https://www.rfc-editor.org/rfc/rfc8599#section-8.1) | The 555 response code is added to the "Server-Error" Status-Code definition. 555 (Push Notification Service Not Supported) is used to indicate that the server does not support the push notification service identified in a 'pn-provider' SIP URI parameter. |
-| `580` | Precondition Failure | [RFC 3312 §8](https://www.rfc-editor.org/rfc/rfc3312#section-8) | Server-Error = "580" ;Precondition Failure When a UAS, acting as an answerer, cannot or is not willing to meet the preconditions in the offer, it SHOULD reject the offer by returning a 580 (Precondition-Failure) response. |
-| `604` | Does Not Exist Anywhere | [RFC 3261 §21.6.3](https://www.rfc-editor.org/rfc/rfc3261#section-21.6.3) | The server has authoritative information that the user indicated in the Request-URI does not exist anywhere. |
-| `606` | Not Acceptable | [RFC 3261 §21.6.4](https://www.rfc-editor.org/rfc/rfc3261#section-21.6.4) | The user's agent was contacted successfully but some aspects of the session description such as the requested media, bandwidth, or addressing style were not acceptable. A 606 (Not Acceptable) response means that the user wishes to communicate, but cannot adequately support the session described. |
+| `400` | Bad Request | [RFC 3261 section 21.4.1](https://www.rfc-editor.org/rfc/rfc3261#section-21.4.1) | The request could not be understood due to malformed syntax. The Reason-Phrase SHOULD identify the syntax problem in more detail, for example, "Missing Call-ID header field". |
+| `402` | Payment Required | [RFC 3261 section 21.4.3](https://www.rfc-editor.org/rfc/rfc3261#section-21.4.3) | Reserved for future use. |
+| `403` | Forbidden | [RFC 3261 section 21.4.4](https://www.rfc-editor.org/rfc/rfc3261#section-21.4.4) | The server understood the request, but is refusing to fulfill it. Authorization will not help, and the request SHOULD NOT be repeated. |
+| `404` | Not Found | [RFC 3261 section 21.4.5](https://www.rfc-editor.org/rfc/rfc3261#section-21.4.5) | The server has definitive information that the user does not exist at the domain specified in the Request-URI. This status is also returned if the domain in the Request-URI does not match any of the domains handled by the recipient of the request. |
+| `405` | Method Not Allowed | [RFC 3261 section 21.4.6](https://www.rfc-editor.org/rfc/rfc3261#section-21.4.6) | The method specified in the Request-Line is understood, but not allowed for the address identified by the Request-URI. The response MUST include an Allow header field containing a list of valid methods for the indicated address. |
+| `406` | Not Acceptable | [RFC 3261 section 21.4.7](https://www.rfc-editor.org/rfc/rfc3261#section-21.4.7) | The resource identified by the request is only capable of generating response entities that have content characteristics not acceptable according to the Accept header field sent in the request. |
+| `408` | Request Timeout | [RFC 3261 section 21.4.9](https://www.rfc-editor.org/rfc/rfc3261#section-21.4.9) | The server could not produce a response within a suitable amount of time, for example, if it could not determine the location of the user in time. The client MAY repeat the request without modifications at any later time. |
+| `410` | Gone | [RFC 3261 section 21.4.10](https://www.rfc-editor.org/rfc/rfc3261#section-21.4.10) | The requested resource is no longer available at the server and no forwarding address is known. This condition is expected to be considered permanent. |
+| `412` | Conditional Request Failed | [RFC 3903 section 11.2.1](https://www.rfc-editor.org/rfc/rfc3903#section-11.2.1) | The 412 (Conditional Request Failed) response is added to the "Client-Error" header field definition. 412 (Conditional Request Failed) is used to indicate that the precondition given for the request has failed. |
+| `413` | Request Entity Too Large | [RFC 3261 section 21.4.11](https://www.rfc-editor.org/rfc/rfc3261#section-21.4.11) | The server is refusing to process a request because the request entity-body is larger than the server is willing or able to process. The server MAY close the connection to prevent the client from continuing the request. |
+| `414` | Request-URI Too Long | [RFC 3261 section 21.4.12](https://www.rfc-editor.org/rfc/rfc3261#section-21.4.12) | The server is refusing to service the request because the Request-URI is longer than the server is willing to interpret. |
+| `415` | Unsupported Media Type | [RFC 3261 section 21.4.13](https://www.rfc-editor.org/rfc/rfc3261#section-21.4.13) | The server is refusing to service the request because the message body of the request is in a format not supported by the server for the requested method. The server MUST return a list of acceptable formats using the Accept, Accept-Encoding, or Accept-Language header field, depending on the specific problem with the content. |
+| `416` | Unsupported URI Scheme | [RFC 3261 section 21.4.14](https://www.rfc-editor.org/rfc/rfc3261#section-21.4.14) | The server cannot process the request because the scheme of the URI in the Request-URI is unknown to the server. Client processing of this response is described in Section 8.1.3.5. |
+| `417` | Unknown Resource-Priority | [RFC 4412 section 12.4](https://www.rfc-editor.org/rfc/rfc4412#section-12.4) | RFC number: 4412 Response code: 417 Default reason phrase: Unknown Resource-Priority |
+| `420` | Bad Extension | [RFC 3261 section 21.4.15](https://www.rfc-editor.org/rfc/rfc3261#section-21.4.15) | The server did not understand the protocol extension specified in a Proxy-Require (Section 20.29) or Require (Section 20.32) header field. The server MUST include a list of the unsupported extensions in an Unsupported header field in the response. |
+| `421` | Extension Required | [RFC 3261 section 21.4.16](https://www.rfc-editor.org/rfc/rfc3261#section-21.4.16) | The UAS needs a particular extension to process the request, but this extension is not listed in a Supported header field in the request. Responses with this status code MUST contain a Require header field listing the required extensions. |
+| `422` | Session Interval Too Small | [RFC 4028 section 6](https://www.rfc-editor.org/rfc/rfc4028#section-6) | This extension introduces the 422 (Session Interval Too Small) response code. It is generated by a UAS or proxy when a request contains a Session-Expires header field with a duration below the minimum timer for the server. |
+| `423` | Interval Too Brief | [RFC 3261 section 21.4.17](https://www.rfc-editor.org/rfc/rfc3261#section-21.4.17) | The server is rejecting the request because the expiration time of the resource refreshed by the request is too short. This response can be used by a registrar to reject a registration whose Contact header field expiration time was too small. |
+| `424` | Bad Location Information | [RFC 6442 section 4.3](https://www.rfc-editor.org/rfc/rfc6442#section-4.3) | This SIP extension creates a new location-specific response code, defined as follows: 424 (Bad Location Information) The 424 (Bad Location Information) response code is a rejection of the request due to its location contents, indicating location information that was malformed or not satisfactory for the recipient's purpose or could not be dereferenced. |
+| `425` | Bad Alert Message | [RFC 8876 section 5.1](https://www.rfc-editor.org/rfc/rfc8876#section-5.1) | This SIP extension creates a new response code defined as follows: 425 (Bad Alert Message) The 425 response code is a rejection of the request, indicating that it was malformed enough that no reasonable emergency response to the alert can be determined. |
+| `428` | Use Identity Header | [RFC 8224 section 6.2](https://www.rfc-editor.org/rfc/rfc8224#section-6.2) | then a 428 "Use Identity Header" response MUST be sent in the backwards direction. For more on this and other verifier responses, see Section 6.2.2. |
+| `429` | Provide Referrer Identity | [RFC 3892 section 5](https://www.rfc-editor.org/rfc/rfc3892#section-5) | The 429 client error response code is used by a refer target to indicate that the referee must provide a valid Referred-By token. As discussed in the behavior section, the referee will forward this error response to the referrer in a NOTIFY as the result of the REFER. |
+| `430` | Flow Failed | [RFC 5626 section 11.5](https://www.rfc-editor.org/rfc/rfc5626#section-11.5) | This document registers a new SIP response code (430 Flow Failed), as per the guidelines in Section 27.4 of [RFC3261]. This response code is used by an edge proxy to indicate to the Authoritative Proxy that a specific flow to a UA instance has failed. |
+| `433` | Anonymity Disallowed | [RFC 5079 section 5](https://www.rfc-editor.org/rfc/rfc5079#section-5) | This response indicates that the server refused to fulfill the request because the requestor was anonymous. Its default reason phrase is "Anonymity Disallowed". |
+| `436` | Bad Identity Info | [RFC 8224 section 6.2.2](https://www.rfc-editor.org/rfc/rfc8224#section-6.2.2) | The 436 "Bad Identity Info" response code indicates an inability to acquire the credentials needed by the verification service for validating the signature in an Identity header field. |
+| `437` | Unsupported Credential | [RFC 8224 section 6.2.2](https://www.rfc-editor.org/rfc/rfc8224#section-6.2.2) | The 437 "Unsupported Credential" response (previously "Unsupported Certificate"; see Section 13.2) is sent when a verification service can acquire, or already holds, the credential represented by the "info" parameter of at least one Identity header field in the request but does not support said credential(s), for reasons such as failing to trust the issuing certification authority (CA) or failing to support the algorithm with which the credential was signed. |
+| `438` | Invalid Identity Header | [RFC 8224 section 6.2.2](https://www.rfc-editor.org/rfc/rfc8224#section-6.2.2) | the backwards direction, such as a 438 ("Invalid Identity Header") response indicating a verification failure. |
+| `439` | First Hop Lacks Outbound Support | [RFC 5626 section 11.6](https://www.rfc-editor.org/rfc/rfc5626#section-11.6) | This document registers a new SIP response code (439 First Hop Lacks Outbound Support), as per the guidelines in Section 27.4 of [RFC3261]. |
+| `440` | Max-Breadth Exceeded | [RFC 5393 section 6.2](https://www.rfc-editor.org/rfc/rfc5393#section-6.2) | This information appears in the Response Codes sub-registry of the SIP Parameters registry. Response code: 440 Default Reason Phrase: Max-Breadth Exceeded |
+| `469` | Bad Info Package | [RFC 6086 section 11.6](https://www.rfc-editor.org/rfc/rfc6086#section-11.6) | IANA registered the following new response code in the "Session Initiation Protocol (SIP) Parameters" -- "Response Codes" registry. Response Code: 469 Default Reason Phrase: Bad Info Package Reference: RFC6086 |
+| `470` | Consent Needed | [RFC 5360 section 5.9.2](https://www.rfc-editor.org/rfc/rfc5360#section-5.9.2) | A 470 (Consent Needed) response indicates that the request that triggered the response contained a URI list with at least one URI for which the relay had no permissions. A user agent server generating a 470 (Consent Needed) response SHOULD include a Permission-Missing header field in it. |
+| `480` | Temporarily Unavailable | [RFC 3261 section 21.4.18](https://www.rfc-editor.org/rfc/rfc3261#section-21.4.18) | The callee's end system was contacted successfully but the callee is currently unavailable (for example, is not logged in, logged in but in a state that precludes communication with the callee, or has activated the "do not disturb" feature). The response MAY indicate a better time to call in the Retry-After header field. |
+| `481` | Call/Transaction Does Not Exist | [RFC 3261 section 21.4.19](https://www.rfc-editor.org/rfc/rfc3261#section-21.4.19) | This status indicates that the UAS received a request that does not match any existing dialog or transaction. |
+| `482` | Loop Detected | [RFC 3261 section 21.4.20](https://www.rfc-editor.org/rfc/rfc3261#section-21.4.20) | The server has detected a loop (Section 16.3 Item 4). |
+| `483` | Too Many Hops | [RFC 3261 section 21.4.21](https://www.rfc-editor.org/rfc/rfc3261#section-21.4.21) | The server received a request that contains a Max-Forwards (Section 20.22) header field with the value zero. |
+| `484` | Address Incomplete | [RFC 3261 section 21.4.22](https://www.rfc-editor.org/rfc/rfc3261#section-21.4.22) | The server received a request with a Request-URI that was incomplete. Additional information SHOULD be provided in the reason phrase. |
+| `485` | Ambiguous | [RFC 3261 section 21.4.23](https://www.rfc-editor.org/rfc/rfc3261#section-21.4.23) | The Request-URI was ambiguous. The response MAY contain a listing of possible unambiguous addresses in Contact header fields. |
+| `488` | Not Acceptable Here | [RFC 3261 section 21.4.26](https://www.rfc-editor.org/rfc/rfc3261#section-21.4.26) | The response has the same meaning as 606 (Not Acceptable), but only applies to the specific resource addressed by the Request-URI and the request may succeed elsewhere. |
+| `489` | Bad Event | [RFC 6665 section 8.3.2](https://www.rfc-editor.org/rfc/rfc6665#section-8.3.2) | The 489 event response is added to the "Client-Error" header field definition. 489 (Bad Event) is used to indicate that the server did not understand the event package specified in a "Event" header field. |
+| `491` | Request Pending | [RFC 3261 section 21.4.27](https://www.rfc-editor.org/rfc/rfc3261#section-21.4.27) | The request was received by a UAS that had a pending request within the same dialog. Section 14.2 describes how such "glare" situations are resolved. |
+| `493` | Undecipherable | [RFC 3261 section 21.4.28](https://www.rfc-editor.org/rfc/rfc3261#section-21.4.28) | The request was received by a UAS that contained an encrypted MIME body for which the recipient does not possess or will not provide an appropriate decryption key. This response MAY have a single body containing an appropriate public key that should be used to encrypt MIME bodies sent to this UA. |
+| `500` | Server Internal Error | [RFC 3261 section 21.5.1](https://www.rfc-editor.org/rfc/rfc3261#section-21.5.1) | The server encountered an unexpected condition that prevented it from fulfilling the request. The client MAY display the specific error condition and MAY retry the request after several seconds. |
+| `501` | Not Implemented | [RFC 3261 section 21.5.2](https://www.rfc-editor.org/rfc/rfc3261#section-21.5.2) | The server does not support the functionality required to fulfill the request. This is the appropriate response when a UAS does not recognize the request method and is not capable of supporting it for any user. |
+| `502` | Bad Gateway | [RFC 3261 section 21.5.3](https://www.rfc-editor.org/rfc/rfc3261#section-21.5.3) | The server, while acting as a gateway or proxy, received an invalid response from the downstream server it accessed in attempting to fulfill the request. |
+| `503` | Service Unavailable | [RFC 3261 section 21.5.4](https://www.rfc-editor.org/rfc/rfc3261#section-21.5.4) | The server is temporarily unable to process the request due to a temporary overloading or maintenance of the server. The server MAY indicate when the client should retry the request in a Retry-After header field. |
+| `504` | Server Time-out | [RFC 3261 section 21.5.5](https://www.rfc-editor.org/rfc/rfc3261#section-21.5.5) | The server did not receive a timely response from an external server it accessed in attempting to process the request. 408 (Request Timeout) should be used instead if there was no response within the period specified in the Expires header field from the upstream server. |
+| `505` | Version Not Supported | [RFC 3261 section 21.5.6](https://www.rfc-editor.org/rfc/rfc3261#section-21.5.6) | The server does not support, or refuses to support, the SIP protocol version that was used in the request. The server is indicating that it is unable or unwilling to complete the request using the same major version as the client, other than with this error message. |
+| `513` | Message Too Large | [RFC 3261 section 21.5.7](https://www.rfc-editor.org/rfc/rfc3261#section-21.5.7) | The server was unable to process the request since the message length exceeded its capabilities. 21.6 Global Failures 6xx 6xx responses indicate that a server has definitive information about a particular user, not just the particular instance indicated in the Request-URI. |
+| `555` | Push Notification Service Not Supported | [RFC 8599 section 8.1](https://www.rfc-editor.org/rfc/rfc8599#section-8.1) | The 555 response code is added to the "Server-Error" Status-Code definition. 555 (Push Notification Service Not Supported) is used to indicate that the server does not support the push notification service identified in a 'pn-provider' SIP URI parameter. |
+| `580` | Precondition Failure | [RFC 3312 section 8](https://www.rfc-editor.org/rfc/rfc3312#section-8) | Server-Error = "580" ;Precondition Failure When a UAS, acting as an answerer, cannot or is not willing to meet the preconditions in the offer, it SHOULD reject the offer by returning a 580 (Precondition-Failure) response. |
+| `604` | Does Not Exist Anywhere | [RFC 3261 section 21.6.3](https://www.rfc-editor.org/rfc/rfc3261#section-21.6.3) | The server has authoritative information that the user indicated in the Request-URI does not exist anywhere. |
+| `606` | Not Acceptable | [RFC 3261 section 21.6.4](https://www.rfc-editor.org/rfc/rfc3261#section-21.6.4) | The user's agent was contacted successfully but some aspects of the session description such as the requested media, bandwidth, or addressing style were not acceptable. A 606 (Not Acceptable) response means that the user wishes to communicate, but cannot adequately support the session described. |
 
 <!-- vale on -->
 
@@ -13534,7 +13534,7 @@ form does for you.
 
 `final_status_code` is the response that decided the outcome, with auth
 challenges excluded: a call challenged and then answered reports 200, not the
-401. `final_status_reason` is the phrase from the wire, which [RFC 3261 §7.2](https://www.rfc-editor.org/rfc/rfc3261#section-7.2)
+401. `final_status_reason` is the phrase from the wire, which [RFC 3261 section 7.2](https://www.rfc-editor.org/rfc/rfc3261#section-7.2)
 leaves as free text — `500 Service Unavailable` is legal and common, so match on
 the code.
 
@@ -13632,7 +13632,7 @@ than as a second finding.
 | `server` | The STUN or TURN server it went to. The box to check when the reason is `unanswered`. |
 | `mapped_address` / `relayed_address` | The reachable address the server returned and the client did not use. Absent on `unanswered`, where there is none — that is the point of it. |
 | `advertised` | The unroutable address the SDP named instead. |
-| `request_count` | Requests sent for that transaction. Above one is a retransmission, which [RFC 5389 §7.2.1](https://www.rfc-editor.org/rfc/rfc5389#section-7.2.1) sends only on timeout — so it is itself proof the earlier attempts drew silence. |
+| `request_count` | Requests sent for that transaction. Above one is a retransmission, which [RFC 5389 section 7.2.1](https://www.rfc-editor.org/rfc/rfc5389#section-7.2.1) sends only on timeout — so it is itself proof the earlier attempts drew silence. |
 | `observed_offset_secs` | Seconds from the start of this dialog to the STUN evidence; negative when the probe came first, which is the ordinary case. Absent when either time is unknown. |
 
 `observed_offset_secs` exists because the correlation is by **client IP alone**.
@@ -13756,7 +13756,7 @@ does. `ssrcs_dropped` is the same statement one level down.
 
 An `ice` record appears once, and only on a capture holding ICE connectivity
 checks — Binding Requests carrying the `PRIORITY` and role attributes
-[RFC 8445 §7.2.1](https://www.rfc-editor.org/rfc/rfc8445#section-7.2.1) requires,
+[RFC 8445 section 7.2.1](https://www.rfc-editor.org/rfc/rfc8445#section-7.2.1) requires,
 which is what tells them from a plain server-reflexive probe to a STUN server:
 
 | Field | Meaning |
@@ -16239,7 +16239,7 @@ HEP mirroring and sipnab lives elsewhere.
 ## Security implications
 
 What the design already gives you (details in
-[MCP protocol § Security model](mcp-protocol.md#security-model)):
+[the MCP protocol page, "Security model"](mcp-protocol.md#security-model)):
 
 - **No control plane, and no tool sends SIP.** No MCP tool puts a packet on
   the wire, so a compromised or confused agent can disclose data rather than
@@ -16510,7 +16510,7 @@ sipnab --mcp -N --mcp-transport http \
        -I capture.pcap
 ```
 
-The challenge now carries the metadata URL, which is the value [RFC 9728 §3.1](https://www.rfc-editor.org/rfc/rfc9728#section-3.1)
+The challenge now carries the metadata URL, which is the value [RFC 9728 section 3.1](https://www.rfc-editor.org/rfc/rfc9728#section-3.1)
 derives by inserting `/.well-known/oauth-protected-resource` between the host
 and the path:
 
@@ -16538,7 +16538,7 @@ curl -s https://capture.example.com/.well-known/oauth-protected-resource/mcp
 **Give the URL, do not expect sipnab to work it out.** Behind the nginx that
 terminates TLS, sipnab sees a cleartext request and no scheme; anything it
 derived from its own socket would say `http://` for a resource the client
-reached over `https://`, and [RFC 9728 §3.3](https://www.rfc-editor.org/rfc/rfc9728#section-3.3) tells a conformant client to
+reached over `https://`, and [RFC 9728 section 3.3](https://www.rfc-editor.org/rfc/rfc9728#section-3.3) tells a conformant client to
 discard a document whose `resource` does not match the URL it used. sipnab
 does not read `X-Forwarded-Proto` here for the same reason it ignores
 `X-Forwarded-For` when rate limiting: a header the client sets is not
@@ -17503,11 +17503,11 @@ identity the wire never established.
 
 > **For IMS and carrier readers: sipnab reads `P-Charging-Vector` in two
 > strategies, and the difference between them decides whether it helps you.**
-> [RFC 7315 §4.6](https://www.rfc-editor.org/rfc/rfc7315#section-4.6) says the ICID identifies *a dialog*, and a B2BUA is two
+> [RFC 7315 section 4.6](https://www.rfc-editor.org/rfc/rfc7315#section-4.6) says the ICID identifies *a dialog*, and a B2BUA is two
 > dialogs — so a conformant B2BUA emits a **different** `icid-value` on each
 > side, and plain `icid-value` equality does **not** solve the re-origination
 > case. What crosses that hop is the separate `related-icid` parameter
-> (§4.6.4.1), whose value is the icid of the original dialog, and which the
+> ([RFC 7315 section 4.6.4.1](https://www.rfc-editor.org/rfc/rfc7315#section-4.6.4.1)), whose value is the icid of the original dialog, and which the
 > B2BUA *MAY* emit rather than must. So:
 >
 > * `charging_vector_related_icid` (95) — the intermediary declared the link.
@@ -17517,9 +17517,10 @@ identity the wire never established.
 >   identifier onto a second dialog; no RFC grants that.
 >
 > Two further limits, both from the RFC rather than from the implementation.
-> The first proxy generates the icid (§5.6), so the leg arriving from an
-> endpoint carries none and this is useless at the access edge. And §4.6.2.2
-> permits the next hop to *"modify the contents"*, which §6.6 calls normal
+> The first proxy generates the icid ([RFC 7315 section 5.6](https://www.rfc-editor.org/rfc/rfc7315#section-5.6)), so the leg arriving from an
+> endpoint carries none and this is useless at the access edge. And
+> [RFC 7315 section 4.6.2.2](https://www.rfc-editor.org/rfc/rfc7315#section-4.6.2.2) permits the next hop to *"modify the contents"*, which
+> [RFC 7315 section 6.6](https://www.rfc-editor.org/rfc/rfc7315#section-6.6) calls normal
 > behavior — there is no end-to-end constancy requirement of any kind, so this
 > is not a substitute for `Session-ID`. Full argument, including what is still
 > unverified: [`docs/design/icid-correlation.md`](design/icid-correlation.md).
@@ -19513,7 +19514,7 @@ quarters of a healthy fleet.
 
 | Field | Type | Description |
 |---|---|---|
-| `observation.contact_host` | string? | The host the `Contact` named, as written. Absent for `Contact: *`, which [RFC 3261 §10.2.2](https://www.rfc-editor.org/rfc/rfc3261#section-10.2.2) defines as every binding and which names no host |
+| `observation.contact_host` | string? | The host the `Contact` named, as written. Absent for `Contact: *`, which [RFC 3261 section 10.2.2](https://www.rfc-editor.org/rfc/rfc3261#section-10.2.2) defines as every binding and which names no host |
 | `observation.contact_host_private` | bool? | Whether that host is one the public internet does not route to. Absent when the `Contact` names a domain: a name resolves somewhere the capture cannot see, and judging it either way would be a guess |
 | `observation.source_public` | bool | Whether the REGISTER arrived from a public address |
 | `observation.rewrite_required` | bool | The two together — the shape that calls for a NAT rewrite |
@@ -19537,7 +19538,7 @@ registrar sent to the private `Contact` carries no address belonging to the
 endpoint — that is exactly what going to the wrong host means — so nothing
 address-based can find it. The tie is the user part in the request URI and
 `To`, matched case-sensitively per
-[RFC 3261 §19.1.4](https://www.rfc-editor.org/rfc/rfc3261#section-19.1.4).
+[RFC 3261 section 19.1.4](https://www.rfc-editor.org/rfc/rfc3261#section-19.1.4).
 
 [`diagnose_registration`](#diagnose_registration) reports the observation for a
 single call. The corroborated finding lives here, because settling it needs
@@ -19554,7 +19555,7 @@ handling. The banner cannot tell them apart. The syntax can.
 
 | Field | Type | Description |
 |---|---|---|
-| `branch_cookie` | string? | The `Via` branch's cookie: the mandatory `z9hG4bK` ([RFC 3261 §8.1.1.7](https://www.rfc-editor.org/rfc/rfc3261#section-8.1.1.7)) plus any vendor extension before the per-transaction part. Echoed from the wire, bounded to `MAX_FINGERPRINT_CHARS` (32) |
+| `branch_cookie` | string? | The `Via` branch's cookie: the mandatory `z9hG4bK` ([RFC 3261 section 8.1.1.7](https://www.rfc-editor.org/rfc/rfc3261#section-8.1.1.7)) plus any vendor extension before the per-transaction part. Echoed from the wire, bounded to `MAX_FINGERPRINT_CHARS` (32) |
 | `branch_shape` | string? | What follows the cookie: `uuid`, `as-hex`, `hex` or `other` |
 | `tag_shape` | string? | The same vocabulary, for the `From` tag |
 | `callid_has_host` | bool? | Whether the `Call-ID` carries an `@host` part |
@@ -19596,7 +19597,7 @@ record alone would silently drop them, and the dropped ones are exactly the
 transfers and hand-offs an operator is looking for.
 
 **A `user` matches the From or To user part EXACTLY.** [RFC 3261
-§19.1.4](https://www.rfc-editor.org/rfc/rfc3261#section-19.1.4) makes the user
+section 19.1.4](https://www.rfc-editor.org/rfc/rfc3261#section-19.1.4) makes the user
 part case-sensitive, so `Alice` and `alice` name two URIs, and folding the case
 here would file one endpoint's traffic under the name of a second.
 
@@ -19627,8 +19628,8 @@ straight into [`diagnose_registration`](#diagnose_registration).
 
 `user_agents` attributes a banner to whoever wrote it: `User-Agent` off requests
 the address SENT and `Server` off responses it sent, per [RFC 3261
-§20.41](https://www.rfc-editor.org/rfc/rfc3261#section-20.41) and
-[§20.35](https://www.rfc-editor.org/rfc/rfc3261#section-20.35). Reading them off
+section 20.41](https://www.rfc-editor.org/rfc/rfc3261#section-20.41) and
+[RFC 3261 section 20.35](https://www.rfc-editor.org/rfc/rfc3261#section-20.35). Reading them off
 received messages would file the far end's software under this endpoint. For a
 `user` only `User-Agent` on requests whose From user matches counts, the one
 case where the URI identifies the party that wrote the header. Values arrive
@@ -19869,19 +19870,20 @@ the same claim:
 | `timing_heuristic` | Same endpoint, close in time | Not an identifier at all |
 
 **The two `P-Charging-Vector` rows are one header and two different claims.**
-[RFC 7315 §4.6](https://www.rfc-editor.org/rfc/rfc7315#section-4.6) says the ICID identifies *a dialog*, so a conformant B2BUA emits
+[RFC 7315 section 4.6](https://www.rfc-editor.org/rfc/rfc7315#section-4.6) says the ICID identifies *a dialog*, so a conformant B2BUA emits
 a different `icid-value` on each side and `charging_vector_icid` is silent
 across it — a match there means some intermediary copied a per-dialog
 identifier onto a second dialog, which no RFC grants. The parameter that
-addresses the hop is `related-icid` (§4.6.4.1), and it is optional. Two limits
+addresses the hop is `related-icid`
+([RFC 7315 section 4.6.4.1](https://www.rfc-editor.org/rfc/rfc7315#section-4.6.4.1)), and it is optional. Two limits
 worth knowing before you rely on either: the first proxy generates the icid
-(§5.6), so a leg arriving from an endpoint carries none and this is useless at
-the access edge. And §4.6.2.2 lets the next hop *"modify the contents"*, which
-§6.6 calls normal behavior, so unlike `Session-ID` there is no end-to-end
+([RFC 7315 section 5.6](https://www.rfc-editor.org/rfc/rfc7315#section-5.6)), so a leg arriving from an endpoint carries none and this is useless at
+the access edge. And [RFC 7315 section 4.6.2.2](https://www.rfc-editor.org/rfc/rfc7315#section-4.6.2.2) lets the next hop *"modify the contents"*, which
+[RFC 7315 section 6.6](https://www.rfc-editor.org/rfc/rfc7315#section-6.6) calls normal behavior, so unlike `Session-ID` there is no end-to-end
 constancy requirement at all. Full argument:
 [`docs/design/icid-correlation.md`](design/icid-correlation.md).
 
-Neither strategy puts the matched value in the response. [RFC 7315 §4.6](https://www.rfc-editor.org/rfc/rfc7315#section-4.6)'s own
+Neither strategy puts the matched value in the response. [RFC 7315 section 4.6](https://www.rfc-editor.org/rfc/rfc7315#section-4.6)'s own
 suggested construction embeds the generating proxy's hostname or address in the
 icid, so it is operator-internal rather than opaque, and `strategy` names the
 strategy and nothing else.
@@ -20714,7 +20716,7 @@ honest reading and not a fault ruled out.
 
 | Field | Type | Description |
 |---|---|---|
-| `contact_host` | string? | The host the `Contact` named, as written. Absent for `Contact: *`, which [RFC 3261 §10.2.2](https://www.rfc-editor.org/rfc/rfc3261#section-10.2.2) defines as every binding and which names no host |
+| `contact_host` | string? | The host the `Contact` named, as written. Absent for `Contact: *`, which [RFC 3261 section 10.2.2](https://www.rfc-editor.org/rfc/rfc3261#section-10.2.2) defines as every binding and which names no host |
 | `contact_host_private` | bool? | Whether that host is one the public internet does not route to. Absent when the `Contact` names a domain, which resolves somewhere the capture cannot see |
 | `source_public` | bool | Whether the REGISTER arrived from a public address |
 | `rewrite_required` | bool | The two together |
@@ -21227,8 +21229,8 @@ packets in one:
 ```
 
 `rfc` and `section` stay separate fields rather than prose inside the
-explanation, and that is the whole point of the shape. An agent quotes RFC 3264
-§6.1 out of the data instead of inventing a section number that reads
+explanation, and that is the whole point of the shape. An agent quotes
+[RFC 3264 section 6.1](https://www.rfc-editor.org/rfc/rfc3264#section-6.1) out of the data instead of inventing a section number that reads
 plausibly, and `explain_rule` turns the identifier back into the citation and
 the link.
 
@@ -22872,7 +22874,9 @@ Give one, never both.
 | `valid-except-documented-deviation` | Every finding is a shape sipnab emits on purpose that the schema rejects. `deviations` names each one and `explanations` says why |
 | `invalid` | At least one finding is an ordinary defect. `errors` carries it |
 
-The middle verdict carries the whole point. §4.3 of the draft says "it is
+The middle verdict carries the whole point.
+[Section 4.3 of draft-ietf-vcon-vcon-core-03](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-4.3)
+says "it is
 possible to have a Dialog Object with no parameters in it", the working group
 agreed that shape in issue #20 after IETF 124, and the draft's own Appendix B
 schema forbids it, because every Dialog Object requires a `start`. sipnab emits
@@ -23039,7 +23043,7 @@ A call with no final response in the capture asserts nothing about the outcome �
 the scenario sends the request and waits. For an INVITE the scenario sends an ACK either
 way, with the Via that RFC 3261 calls for in each case: a fresh branch on a 2xx,
 because that ACK is a new transaction, and `[last_Via:]` on a non-2xx, because
-[§17.1.1.3](https://www.rfc-editor.org/rfc/rfc3261#section-17.1.1.3) makes it
+[RFC 3261 section 17.1.1.3](https://www.rfc-editor.org/rfc/rfc3261#section-17.1.1.3) makes it
 part of the INVITE transaction.
 
 Twelve headers the scenario always owns come from the template whatever the
@@ -23656,11 +23660,11 @@ For the tools themselves — and for the error codes and response bounds — see
   see [auth.md](auth.md).
 - **Every `401` says what it wants.** The rejection carries
   `WWW-Authenticate: Bearer realm="sipnab"`, as
-  [RFC 9110](https://www.rfc-editor.org/rfc/rfc9110.html) §15.5.2 requires of
+  [RFC 9110 section 15.5.2](https://www.rfc-editor.org/rfc/rfc9110#section-15.5.2) requires of
   any `401`, plus `error="invalid_token"`
-  ([RFC 6750](https://www.rfc-editor.org/rfc/rfc6750.html) §3.1) when a token
+  ([RFC 6750 section 3.1](https://www.rfc-editor.org/rfc/rfc6750#section-3.1)) when
   the client presented a token and it failed. Presenting nothing carries no error code, which is
-  what §3.1 asks for and what lets an operator tell a misconfigured client from
+  what [RFC 6750 section 3.1](https://www.rfc-editor.org/rfc/rfc6750#section-3.1) asks for and what lets an operator tell a misconfigured client from
   a wrong token. Every rejected credential produces the same challenge: telling
   expired from revoked from forged would make the header an oracle.
 - **Discovery is available; sipnab is not an authorization server.**
@@ -23674,7 +23678,7 @@ For the tools themselves — and for the error codes and response bounds — see
   because sipnab issues and validates no OAuth tokens and a client sent to
   fetch one elsewhere would return holding a credential this server rejects.
   The operator names the URL rather than sipnab deriving it: behind a TLS-terminating proxy
-  sipnab cannot see the scheme a client used, and [RFC 9728 §3.3](https://www.rfc-editor.org/rfc/rfc9728#section-3.3) makes a client
+  sipnab cannot see the scheme a client used, and [RFC 9728 section 3.3](https://www.rfc-editor.org/rfc/rfc9728#section-3.3) makes a client
   discard a document whose `resource` does not match the URL it requested.
 - **Host header allowlist.** rmcp's DNS-rebind protection runs by
   default (`localhost`/`127.0.0.1`/`::1`); extend with
@@ -24270,8 +24274,8 @@ capture held, what the section calls for, and why the difference matters.
 
 The RFC number and the section are data, not prose inside a sentence. That
 choice caught a mistake while this module was still new: three sources place
-the angle-bracket rule for a `Contact` URI in [RFC 3261 §20.10](https://www.rfc-editor.org/rfc/rfc3261#section-20.10), and the sentence
-actually sits in the preamble of Section 20, above §20.1. A citation nothing
+the angle-bracket rule for a `Contact` URI in [RFC 3261 section 20.10](https://www.rfc-editor.org/rfc/rfc3261#section-20.10), and the sentence
+actually sits in the preamble of [RFC 3261 section 20](https://www.rfc-editor.org/rfc/rfc3261#section-20), above [section 20.1](https://www.rfc-editor.org/rfc/rfc3261#section-20.1). A citation nothing
 can read is a citation nothing can check.
 
 ## Severity and basis are separate axes
@@ -24377,12 +24381,12 @@ RTCP that sipnab attributed to the dialog.
 
 | Rule | Severity | Cites | Fires when |
 |---|---|---|---|
-| `OBS-3264-6.1-PT-UNDECLARED` | error | [RFC 3264 §6.1](https://www.rfc-editor.org/rfc/rfc3264#section-6.1) | The wire carries an RTP payload type that no offer or answer in the dialog declared. Comfort noise stays exempt on payload type 13 ([RFC 3389](https://www.rfc-editor.org/rfc/rfc3389)) and on the reserved payload type 19 that earlier profiles used for it, because equipment sends both without ever listing them. |
-| `OBS-4566-5.14-MEDIA-PORT-MISMATCH` | warning | [RFC 4566 §5.14](https://www.rfc-editor.org/rfc/rfc4566#section-5.14) | RTP arrives at a declared media address on a port nobody advertised. The RTCP port one higher stays exempt. |
-| `OBS-3264-6.1-DIRECTION-UNMET` | warning | [RFC 3264 §6.1](https://www.rfc-editor.org/rfc/rfc3264#section-6.1) | Both ends negotiated `sendrecv`, media flowed, and one negotiated endpoint received none of it. |
-| `OBS-4566-6-PTIME-MISMATCH` | notice | [RFC 4566 §6](https://www.rfc-editor.org/rfc/rfc4566#section-6) | The packetization on the wire differs from `a=ptime` by more than half. |
-| `OBS-5761-5.1.1-RTCP-MUX-UNANSWERED` | error | [RFC 5761 §5.1.1](https://www.rfc-editor.org/rfc/rfc5761#section-5.1.1) | An offer asked for `a=rtcp-mux`, the answer stayed silent, and RTCP arrived on the RTP port regardless. |
-| `OBS-3551-4.2-FRAME-SIZE-IMPOSSIBLE` | warning | [RFC 3551 §4.2](https://www.rfc-editor.org/rfc/rfc3551#section-4.2) | The payload size implies more media per packet than §4.2 asks a receiver to accept, or more media than the elapsed time between packets. |
+| `OBS-3264-6.1-PT-UNDECLARED` | error | [RFC 3264 section 6.1](https://www.rfc-editor.org/rfc/rfc3264#section-6.1) | The wire carries an RTP payload type that no offer or answer in the dialog declared. Comfort noise stays exempt on payload type 13 ([RFC 3389](https://www.rfc-editor.org/rfc/rfc3389)) and on the reserved payload type 19 that earlier profiles used for it, because equipment sends both without ever listing them. |
+| `OBS-4566-5.14-MEDIA-PORT-MISMATCH` | warning | [RFC 4566 section 5.14](https://www.rfc-editor.org/rfc/rfc4566#section-5.14) | RTP arrives at a declared media address on a port nobody advertised. The RTCP port one higher stays exempt. |
+| `OBS-3264-6.1-DIRECTION-UNMET` | warning | [RFC 3264 section 6.1](https://www.rfc-editor.org/rfc/rfc3264#section-6.1) | Both ends negotiated `sendrecv`, media flowed, and one negotiated endpoint received none of it. |
+| `OBS-4566-6-PTIME-MISMATCH` | notice | [RFC 4566 section 6](https://www.rfc-editor.org/rfc/rfc4566#section-6) | The packetization on the wire differs from `a=ptime` by more than half. |
+| `OBS-5761-5.1.1-RTCP-MUX-UNANSWERED` | error | [RFC 5761 section 5.1.1](https://www.rfc-editor.org/rfc/rfc5761#section-5.1.1) | An offer asked for `a=rtcp-mux`, the answer stayed silent, and RTCP arrived on the RTP port regardless. |
+| `OBS-3551-4.2-FRAME-SIZE-IMPOSSIBLE` | warning | [RFC 3551 section 4.2](https://www.rfc-editor.org/rfc/rfc3551#section-4.2) | The payload size implies more media per packet than [RFC 3551 section 4.2](https://www.rfc-editor.org/rfc/rfc3551#section-4.2) asks a receiver to accept, or more media than the elapsed time between packets. |
 
 ### One-sided thresholds
 
@@ -24421,28 +24425,28 @@ These read one message on its own.
 
 | Rule | Severity | Basis | Cites | Fires when |
 |---|---|---|---|---|
-| `SIP-3261-8.1.1-MANDATORY-HEADER-MISSING` | error | must | [RFC 3261 §8.1.1](https://www.rfc-editor.org/rfc/rfc3261#section-8.1.1) | One of `Call-ID`, `CSeq`, `From`, `To` or `Via` is absent. |
-| `SIP-3261-20.16-CSEQ-MALFORMED` | error | must | [RFC 3261 §20.16](https://www.rfc-editor.org/rfc/rfc3261#section-20.16) | A `CSeq` arrives that nothing can read as a number and a method. |
-| `SIP-3261-20.14-CONTENT-LENGTH-MISMATCH` | error | must | [RFC 3261 §20.14](https://www.rfc-editor.org/rfc/rfc3261#section-20.14) | `Content-Length` exceeds the body that arrived. |
-| `SIP-3261-25.1-HEADER-CONTROL-BYTE` | error | must | [RFC 3261 §25.1](https://www.rfc-editor.org/rfc/rfc3261#section-25.1) | A header name or value holds a control byte other than tab. |
-| `SIP-3261-20-URI-BRACKETS` | error | must | [RFC 3261 §20](https://www.rfc-editor.org/rfc/rfc3261#section-20) | A `Contact`, `From` or `To` URI holds a comma or a question mark outside angle brackets. |
-| `SIP-3261-19.1.1-URI-PARAM-DEMOTED` | warning | interop | [RFC 3261 §19.1.1](https://www.rfc-editor.org/rfc/rfc3261#section-19.1.1) | A URI parameter — `transport`, `user`, `method`, `ttl`, `maddr` or `lr` — sits outside the angle brackets, where the receiver reads it as a header parameter. |
-| `SIP-3261-8.1.1.6-MAX-FORWARDS-MISSING` | warning | must | [RFC 3261 §8.1.1.6](https://www.rfc-editor.org/rfc/rfc3261#section-8.1.1.6) | A request carries no `Max-Forwards`. |
-| `SIP-3261-20.22-MAX-FORWARDS-RANGE` | notice | should | [RFC 3261 §20.22](https://www.rfc-editor.org/rfc/rfc3261#section-20.22) | `Max-Forwards` reads zero, exceeds the recommended 70, or holds no integer. |
-| `SIP-3261-8.1.1.7-BRANCH-COOKIE` | warning | must | [RFC 3261 §8.1.1.7](https://www.rfc-editor.org/rfc/rfc3261#section-8.1.1.7) | A request's top `Via` branch lacks the `z9hG4bK` magic cookie, or carries no branch at all. |
-| `SIP-3261-8.1.1.5-CSEQ-METHOD-MISMATCH` | error | must | [RFC 3261 §8.1.1.5](https://www.rfc-editor.org/rfc/rfc3261#section-8.1.1.5) | The `CSeq` method disagrees with the request line. |
-| `SIP-3261-12.1.1-CONTACT-MISSING-IN-2XX` | error | must | [RFC 3261 §12.1.1](https://www.rfc-editor.org/rfc/rfc3261#section-12.1.1) | A 2xx answer to `INVITE` carries no `Contact`, so the dialog it creates has no remote target for the `ACK` or the `BYE`. |
-| `SIP-3262-3-RELIABLE-PROVISIONAL-WITHOUT-RSEQ` | error | must | [RFC 3262 §3](https://www.rfc-editor.org/rfc/rfc3262#section-3) | A provisional demands `100rel` and carries no `RSeq`, so the receiver has to acknowledge a response it cannot name. |
-| `SIP-4028-7.1-SESSION-EXPIRES-BELOW-MIN-SE` | error | must | [RFC 4028 §7.1](https://www.rfc-editor.org/rfc/rfc4028#section-7.1) | One message carries a `Session-Expires` smaller than the `Min-SE` beside it, so it asks for a refresh interval it has already declared too short. |
-| `SIP-4028-4-SESSION-EXPIRES-TOO-SMALL` | warning | must | [RFC 4028 §4](https://www.rfc-editor.org/rfc/rfc4028#section-4) | `Session-Expires` sits below the 90-second absolute minimum. |
-| `SIP-4028-5-MIN-SE-TOO-SMALL` | warning | must | [RFC 4028 §5](https://www.rfc-editor.org/rfc/rfc4028#section-5) | `Min-SE` sits below 90 seconds, wherever it appears. |
-| `SIP-4028-9-REFRESHER-MISSING` | warning | must | [RFC 4028 §9](https://www.rfc-editor.org/rfc/rfc4028#section-9) | A 2xx answer to `INVITE` negotiates `Session-Expires` and names no `refresher`. |
-| `SIP-7989-5-SESSION-ID-MALFORMED` | error | must | [RFC 7989 §5](https://www.rfc-editor.org/rfc/rfc7989#section-5) | A `Session-ID` half is not 32 characters of `[0-9a-f]`, so it is not a `sess-uuid` at all. Correlation drops the half, and across a B2BUA there may be nothing well formed left to match one leg to the other. |
-| `SIP-7989-5-SESSION-ID-UPPERCASE` | warning | must | [RFC 7989 §5](https://www.rfc-editor.org/rfc/rfc7989#section-5) | A `Session-ID` UUID arrives in uppercase hexadecimal. sipnab compares case-insensitively and still correlates on it; any peer, SBC or log pipeline comparing the header byte for byte sees two identifiers for one session. |
-| `SIP-7989-11-SESSION-ID-LEGACY-FORM` | notice | interop | [RFC 7989 §11](https://www.rfc-editor.org/rfc/rfc7989#section-11) | A `Session-ID` carries no `remote` parameter, the obsoleted [RFC 7329](https://www.rfc-editor.org/rfc/rfc7329) single-UUID form. §5 makes `remote` a MUST with a §11 exception for interworking with that older form, which one message cannot confirm — so this names the peer as an interop observation rather than asserting a violation. Correlation then works in one direction only. |
-| `SIP-3261-7.3.1-SINGULAR-HEADER-REPEATED` | error | must | [RFC 3261 §7.3.1](https://www.rfc-editor.org/rfc/rfc3261#section-7.3.1) | A header field whose value is not defined as a comma-separated list arrives on more than one row. §7.3.1 names `WWW-Authenticate`, `Authorization`, `Proxy-Authenticate` and `Proxy-Authorization` as its own exception, so the rule skips those four. |
-| `SIP-3261-16.6-RECORD-ROUTE-NOT-LOOSE` | error | must | [RFC 3261 §16.6](https://www.rfc-editor.org/rfc/rfc3261#section-16.6) | A `Record-Route` URI carries no `lr` parameter, so the hop it records is a strict route. |
-| `SIP-3261-8.1.1.7-VIA-BRANCH-DUPLICATE` | error | must | [RFC 3261 §8.1.1.7](https://www.rfc-editor.org/rfc/rfc3261#section-8.1.1.7) | Two `Via` header field values in one request carry the same `branch`. Requests only: a response copies the request's stack verbatim (§8.2.6.2). |
+| `SIP-3261-8.1.1-MANDATORY-HEADER-MISSING` | error | must | [RFC 3261 section 8.1.1](https://www.rfc-editor.org/rfc/rfc3261#section-8.1.1) | One of `Call-ID`, `CSeq`, `From`, `To` or `Via` is absent. |
+| `SIP-3261-20.16-CSEQ-MALFORMED` | error | must | [RFC 3261 section 20.16](https://www.rfc-editor.org/rfc/rfc3261#section-20.16) | A `CSeq` arrives that nothing can read as a number and a method. |
+| `SIP-3261-20.14-CONTENT-LENGTH-MISMATCH` | error | must | [RFC 3261 section 20.14](https://www.rfc-editor.org/rfc/rfc3261#section-20.14) | `Content-Length` exceeds the body that arrived. |
+| `SIP-3261-25.1-HEADER-CONTROL-BYTE` | error | must | [RFC 3261 section 25.1](https://www.rfc-editor.org/rfc/rfc3261#section-25.1) | A header name or value holds a control byte other than tab. |
+| `SIP-3261-20-URI-BRACKETS` | error | must | [RFC 3261 section 20](https://www.rfc-editor.org/rfc/rfc3261#section-20) | A `Contact`, `From` or `To` URI holds a comma or a question mark outside angle brackets. |
+| `SIP-3261-19.1.1-URI-PARAM-DEMOTED` | warning | interop | [RFC 3261 section 19.1.1](https://www.rfc-editor.org/rfc/rfc3261#section-19.1.1) | A URI parameter — `transport`, `user`, `method`, `ttl`, `maddr` or `lr` — sits outside the angle brackets, where the receiver reads it as a header parameter. |
+| `SIP-3261-8.1.1.6-MAX-FORWARDS-MISSING` | warning | must | [RFC 3261 section 8.1.1.6](https://www.rfc-editor.org/rfc/rfc3261#section-8.1.1.6) | A request carries no `Max-Forwards`. |
+| `SIP-3261-20.22-MAX-FORWARDS-RANGE` | notice | should | [RFC 3261 section 20.22](https://www.rfc-editor.org/rfc/rfc3261#section-20.22) | `Max-Forwards` reads zero, exceeds the recommended 70, or holds no integer. |
+| `SIP-3261-8.1.1.7-BRANCH-COOKIE` | warning | must | [RFC 3261 section 8.1.1.7](https://www.rfc-editor.org/rfc/rfc3261#section-8.1.1.7) | A request's top `Via` branch lacks the `z9hG4bK` magic cookie, or carries no branch at all. |
+| `SIP-3261-8.1.1.5-CSEQ-METHOD-MISMATCH` | error | must | [RFC 3261 section 8.1.1.5](https://www.rfc-editor.org/rfc/rfc3261#section-8.1.1.5) | The `CSeq` method disagrees with the request line. |
+| `SIP-3261-12.1.1-CONTACT-MISSING-IN-2XX` | error | must | [RFC 3261 section 12.1.1](https://www.rfc-editor.org/rfc/rfc3261#section-12.1.1) | A 2xx answer to `INVITE` carries no `Contact`, so the dialog it creates has no remote target for the `ACK` or the `BYE`. |
+| `SIP-3262-3-RELIABLE-PROVISIONAL-WITHOUT-RSEQ` | error | must | [RFC 3262 section 3](https://www.rfc-editor.org/rfc/rfc3262#section-3) | A provisional demands `100rel` and carries no `RSeq`, so the receiver has to acknowledge a response it cannot name. |
+| `SIP-4028-7.1-SESSION-EXPIRES-BELOW-MIN-SE` | error | must | [RFC 4028 section 7.1](https://www.rfc-editor.org/rfc/rfc4028#section-7.1) | One message carries a `Session-Expires` smaller than the `Min-SE` beside it, so it asks for a refresh interval it has already declared too short. |
+| `SIP-4028-4-SESSION-EXPIRES-TOO-SMALL` | warning | must | [RFC 4028 section 4](https://www.rfc-editor.org/rfc/rfc4028#section-4) | `Session-Expires` sits below the 90-second absolute minimum. |
+| `SIP-4028-5-MIN-SE-TOO-SMALL` | warning | must | [RFC 4028 section 5](https://www.rfc-editor.org/rfc/rfc4028#section-5) | `Min-SE` sits below 90 seconds, wherever it appears. |
+| `SIP-4028-9-REFRESHER-MISSING` | warning | must | [RFC 4028 section 9](https://www.rfc-editor.org/rfc/rfc4028#section-9) | A 2xx answer to `INVITE` negotiates `Session-Expires` and names no `refresher`. |
+| `SIP-7989-5-SESSION-ID-MALFORMED` | error | must | [RFC 7989 section 5](https://www.rfc-editor.org/rfc/rfc7989#section-5) | A `Session-ID` half is not 32 characters of `[0-9a-f]`, so it is not a `sess-uuid` at all. Correlation drops the half, and across a B2BUA there may be nothing well formed left to match one leg to the other. |
+| `SIP-7989-5-SESSION-ID-UPPERCASE` | warning | must | [RFC 7989 section 5](https://www.rfc-editor.org/rfc/rfc7989#section-5) | A `Session-ID` UUID arrives in uppercase hexadecimal. sipnab compares case-insensitively and still correlates on it; any peer, SBC or log pipeline comparing the header byte for byte sees two identifiers for one session. |
+| `SIP-7989-11-SESSION-ID-LEGACY-FORM` | notice | interop | [RFC 7989 section 11](https://www.rfc-editor.org/rfc/rfc7989#section-11) | A `Session-ID` carries no `remote` parameter, the obsoleted [RFC 7329](https://www.rfc-editor.org/rfc/rfc7329) single-UUID form. [RFC 7989 section 5](https://www.rfc-editor.org/rfc/rfc7989#section-5) makes `remote` a MUST with a [section 11](https://www.rfc-editor.org/rfc/rfc7989#section-11) exception for interworking with that older form, which one message cannot confirm — so this names the peer as an interop observation rather than asserting a violation. Correlation then works in one direction only. |
+| `SIP-3261-7.3.1-SINGULAR-HEADER-REPEATED` | error | must | [RFC 3261 section 7.3.1](https://www.rfc-editor.org/rfc/rfc3261#section-7.3.1) | A header field whose value is not defined as a comma-separated list arrives on more than one row. [RFC 3261 section 7.3.1](https://www.rfc-editor.org/rfc/rfc3261#section-7.3.1) names `WWW-Authenticate`, `Authorization`, `Proxy-Authenticate` and `Proxy-Authorization` as its own exception, so the rule skips those four. |
+| `SIP-3261-16.6-RECORD-ROUTE-NOT-LOOSE` | error | must | [RFC 3261 section 16.6](https://www.rfc-editor.org/rfc/rfc3261#section-16.6) | A `Record-Route` URI carries no `lr` parameter, so the hop it records is a strict route. |
+| `SIP-3261-8.1.1.7-VIA-BRANCH-DUPLICATE` | error | must | [RFC 3261 section 8.1.1.7](https://www.rfc-editor.org/rfc/rfc3261#section-8.1.1.7) | Two `Via` header field values in one request carry the same `branch`. Requests only: a response copies the request's stack verbatim ([RFC 3261 section 8.2.6.2](https://www.rfc-editor.org/rfc/rfc3261#section-8.2.6.2)). |
 
 ### What the corpus can and cannot vouch for
 
@@ -24464,11 +24468,11 @@ produce the same row, and only this note tells them apart.
 ### Session timers, and the section number that is easy to get wrong
 
 RFC 4028 numbers its behavior sections 7 UAC, **8 Proxy, 9 UAS** — and the
-refresher obligation belongs to the UAS, so it cites §9. Recalling it as §8
+refresher obligation belongs to the UAS, so it cites [RFC 4028 section 9](https://www.rfc-editor.org/rfc/rfc4028#section-9). Recalling it as [section 8](https://www.rfc-editor.org/rfc/rfc4028#section-8)
 sends a reader to the proxy's rules, which say something different about the
 same header field. The citation here came from the table of contents in RFC
 4028 rather than from memory, for the same reason the angle-bracket rule cites the
-Section 20 preamble instead of §20.10.
+[RFC 3261 section 20](https://www.rfc-editor.org/rfc/rfc3261#section-20) preamble instead of [section 20.10](https://www.rfc-editor.org/rfc/rfc3261#section-20.10).
 
 All four session-timer rules read one message on its own. Two header fields
 that contradict each other sit in the same request, a floor is a fixed number,
@@ -24485,14 +24489,14 @@ nothing to find produce the same row — so a probe took it apart. The corpus ho
 `INVITE`, and every one of those 471 names a refresher. The rule reaches its
 own code path 471 times and declines each time, which is silence with evidence
 behind it rather than a rule that cannot fire. The 358 values in the corpus
-that carry no refresher are all requests, where a UAC proposes a timer and §9
+that carry no refresher are all requests, where a UAC proposes a timer and [RFC 4028 section 9](https://www.rfc-editor.org/rfc/rfc4028#section-9)
 places no obligation. No `Session-Expires` anywhere in the corpus sits below
 90, so both floor rules are quiet for the same checkable reason. A request offering a timer is the UAC
-proposing rather than answering, and §9 puts the obligation on the answer.
+proposing rather than answering, and [RFC 4028 section 9](https://www.rfc-editor.org/rfc/rfc4028#section-9) puts the obligation on the answer.
 
 ### Why the bracket rules split in two
 
-[RFC 3261 §20](https://www.rfc-editor.org/rfc/rfc3261#section-20) gives one sentence for three characters, and the three do not
+[RFC 3261 section 20](https://www.rfc-editor.org/rfc/rfc3261#section-20) gives one sentence for three characters, and the three do not
 behave alike.
 
 A comma or a question mark in a bare URI breaks the MUST outright: the receiver
@@ -24516,24 +24520,24 @@ These read a dialog's messages against each other.
 
 | Rule | Severity | Basis | Cites | Fires when |
 |---|---|---|---|---|
-| `SIP-3261-8.1.1.2-TO-TAG-IN-INITIAL-REQUEST` | warning | must | [RFC 3261 §8.1.1.2](https://www.rfc-editor.org/rfc/rfc3261#section-8.1.1.2) | A `REGISTER` carries a `To` tag, or the dialog's first request carries one and its own transaction answers with a different tag. |
-| `SIP-3261-17.1.1.3-ACK-CSEQ-MISMATCH` | error | must | [RFC 3261 §17.1.1.3](https://www.rfc-editor.org/rfc/rfc3261#section-17.1.1.3) | An `ACK` carries a sequence number belonging to no `INVITE` in the dialog. |
-| `SDP-3264-6.1-ANSWER-NO-COMMON-FORMAT` | error | must | [RFC 3264 §6.1](https://www.rfc-editor.org/rfc/rfc3264#section-6.1) | An answer shares no media format with the offer, on a stream it did not decline. |
-| `SDP-3264-6.1-ANSWER-EXTRA-FORMAT` | info | interop | [RFC 3264 §6.1](https://www.rfc-editor.org/rfc/rfc3264#section-6.1) | An answer lists a format the offer never carried. |
-| `SDP-3264-6.1-ANSWER-DIRECTION-ILLEGAL` | error | must | [RFC 3264 §6.1](https://www.rfc-editor.org/rfc/rfc3264#section-6.1) | The answer's direction attribute contradicts what the offer's admits. |
-| `SIP-3262-4-PRACK-MISSING` | warning | must | [RFC 3262 §4](https://www.rfc-editor.org/rfc/rfc3262#section-4) | A reliable provisional went unacknowledged in a dialog whose `INVITE` reached a final response, so the `PRACK` is absent rather than merely off the end of the capture. |
-| `SDP-3264-8.4-HOLD-CONNECTION-ZERO` | warning | should | [RFC 3264 §8.4](https://www.rfc-editor.org/rfc/rfc3264#section-8.4) | A re-offer blanks the connection address to signal hold. |
-| `SIP-3261-17.1.1.3-ACK-BRANCH-MISMATCH` | error | must | [RFC 3261 §17.1.1.3](https://www.rfc-editor.org/rfc/rfc3261#section-17.1.1.3) | An `ACK` to a **non-2xx** carries a `branch` other than its `INVITE`'s. A 2xx `ACK` is exempt and must be — see below. |
-| `SIP-3261-12.1.1-RECORD-ROUTE-NOT-COPIED` | error | must | [RFC 3261 §12.1.1](https://www.rfc-editor.org/rfc/rfc3261#section-12.1.1) | A 2xx to the dialog-forming request drops or reorders a `Record-Route` value the request carried. |
-| `SDP-3264-8.3.2-DYNAMIC-PT-REBOUND` | error | must | [RFC 3264 §8.3.2](https://www.rfc-editor.org/rfc/rfc3264#section-8.3.2) | A dynamic payload type (96-127) means one codec in one body and a different codec in a later body of the same `m=` line. |
-| `SDP-3264-7-TELEPHONE-EVENT-ONE-WAY` | warning | interop | [RFC 3264 §7](https://www.rfc-editor.org/rfc/rfc3264#section-7) | An offer declares `telephone-event` on an audio stream the answer accepted and shares a codec with, and the answer omits it. |
-| `SDP-3264-8.2-REJECTED-STREAM-ATTRIBUTES` | notice | interop | [RFC 3264 §8.2](https://www.rfc-editor.org/rfc/rfc3264#section-8.2) | A stream the answer declined with port zero still carries `a=rtpmap`, `a=fmtp`, `a=crypto`, `a=candidate`, `a=ptime`, `a=rtcp-mux` or `a=rtcp`. |
-| `SDP-7587-7-OPUS-RTPMAP-RATE` | error | must | [RFC 7587 §7](https://www.rfc-editor.org/rfc/rfc7587#section-7) | An `a=rtpmap` names `opus` at a clock rate other than 48000, or with a channel count other than 2. |
+| `SIP-3261-8.1.1.2-TO-TAG-IN-INITIAL-REQUEST` | warning | must | [RFC 3261 section 8.1.1.2](https://www.rfc-editor.org/rfc/rfc3261#section-8.1.1.2) | A `REGISTER` carries a `To` tag, or the dialog's first request carries one and its own transaction answers with a different tag. |
+| `SIP-3261-17.1.1.3-ACK-CSEQ-MISMATCH` | error | must | [RFC 3261 section 17.1.1.3](https://www.rfc-editor.org/rfc/rfc3261#section-17.1.1.3) | An `ACK` carries a sequence number belonging to no `INVITE` in the dialog. |
+| `SDP-3264-6.1-ANSWER-NO-COMMON-FORMAT` | error | must | [RFC 3264 section 6.1](https://www.rfc-editor.org/rfc/rfc3264#section-6.1) | An answer shares no media format with the offer, on a stream it did not decline. |
+| `SDP-3264-6.1-ANSWER-EXTRA-FORMAT` | info | interop | [RFC 3264 section 6.1](https://www.rfc-editor.org/rfc/rfc3264#section-6.1) | An answer lists a format the offer never carried. |
+| `SDP-3264-6.1-ANSWER-DIRECTION-ILLEGAL` | error | must | [RFC 3264 section 6.1](https://www.rfc-editor.org/rfc/rfc3264#section-6.1) | The answer's direction attribute contradicts what the offer's admits. |
+| `SIP-3262-4-PRACK-MISSING` | warning | must | [RFC 3262 section 4](https://www.rfc-editor.org/rfc/rfc3262#section-4) | A reliable provisional went unacknowledged in a dialog whose `INVITE` reached a final response, so the `PRACK` is absent rather than merely off the end of the capture. |
+| `SDP-3264-8.4-HOLD-CONNECTION-ZERO` | warning | should | [RFC 3264 section 8.4](https://www.rfc-editor.org/rfc/rfc3264#section-8.4) | A re-offer blanks the connection address to signal hold. |
+| `SIP-3261-17.1.1.3-ACK-BRANCH-MISMATCH` | error | must | [RFC 3261 section 17.1.1.3](https://www.rfc-editor.org/rfc/rfc3261#section-17.1.1.3) | An `ACK` to a **non-2xx** carries a `branch` other than its `INVITE`'s. A 2xx `ACK` is exempt and must be — see below. |
+| `SIP-3261-12.1.1-RECORD-ROUTE-NOT-COPIED` | error | must | [RFC 3261 section 12.1.1](https://www.rfc-editor.org/rfc/rfc3261#section-12.1.1) | A 2xx to the dialog-forming request drops or reorders a `Record-Route` value the request carried. |
+| `SDP-3264-8.3.2-DYNAMIC-PT-REBOUND` | error | must | [RFC 3264 section 8.3.2](https://www.rfc-editor.org/rfc/rfc3264#section-8.3.2) | A dynamic payload type (96-127) means one codec in one body and a different codec in a later body of the same `m=` line. |
+| `SDP-3264-7-TELEPHONE-EVENT-ONE-WAY` | warning | interop | [RFC 3264 section 7](https://www.rfc-editor.org/rfc/rfc3264#section-7) | An offer declares `telephone-event` on an audio stream the answer accepted and shares a codec with, and the answer omits it. |
+| `SDP-3264-8.2-REJECTED-STREAM-ATTRIBUTES` | notice | interop | [RFC 3264 section 8.2](https://www.rfc-editor.org/rfc/rfc3264#section-8.2) | A stream the answer declined with port zero still carries `a=rtpmap`, `a=fmtp`, `a=crypto`, `a=candidate`, `a=ptime`, `a=rtcp-mux` or `a=rtcp`. |
+| `SDP-7587-7-OPUS-RTPMAP-RATE` | error | must | [RFC 7587 section 7](https://www.rfc-editor.org/rfc/rfc7587#section-7) | An `a=rtpmap` names `opus` at a clock rate other than 48000, or with a channel count other than 2. |
 
 ### An answer listing an extra codec stays legal
 
 A widely repeated claim holds that an answer containing a codec absent from the
-offer breaks RFC 3264. It does not. §6.1 permits the extra listing in as many
+offer breaks RFC 3264. It does not. [RFC 3264 section 6.1](https://www.rfc-editor.org/rfc/rfc3264#section-6.1) permits the extra listing in as many
 words, and explains why it rarely helps: the answerer cannot send with a format
 the offer never listed.
 
@@ -24545,12 +24549,12 @@ drops, which is worth knowing and is not a broken MUST.
 
 ### Hold by blanking the address
 
-sipnab has always found hold through `a=sendonly` and `a=inactive`. RFC 3264
-§8.4 describes a third mechanism that [RFC 2543](https://www.rfc-editor.org/rfc/rfc2543) defined and §8.4 discourages:
+sipnab has always found hold through `a=sendonly` and `a=inactive`.
+[RFC 3264 section 8.4](https://www.rfc-editor.org/rfc/rfc3264#section-8.4) describes a third mechanism that [RFC 2543](https://www.rfc-editor.org/rfc/rfc2543) defined and section 8.4 discourages:
 setting the connection address to `0.0.0.0`. Until this rule, a call held that
 way looked to sipnab like a call that simply stopped.
 
-§8.4 keeps one legitimate use — an *initial* offer from an agent that does not
+[RFC 3264 section 8.4](https://www.rfc-editor.org/rfc/rfc3264#section-8.4) keeps one legitimate use — an *initial* offer from an agent that does not
 yet know its own address — so the first SDP body in a dialog stays exempt and a
 later one does not. A stream declined with port zero stays exempt as well.
 
@@ -24562,7 +24566,7 @@ mid-call, which is most captures.
 
 Two shapes settle it. A `REGISTER` never sits inside a dialog, so a `To` tag
 there is wrong wherever the capture started. Otherwise the rule needs the
-answer to that same transaction, matched on the §8.1.1.7 branch, to carry a
+answer to that same transaction, matched on the `Via` branch that [RFC 3261 section 8.1.1.7](https://www.rfc-editor.org/rfc/rfc3261#section-8.1.1.7) defines, to carry a
 *different* tag — proof that the responder treated the request as new and chose
 its own.
 
@@ -24596,17 +24600,17 @@ see the same caveat for the RFC 3262 rules above.
 
 ### Why the ACK branch rule covers only non-2xx
 
-[RFC 3261 §17.1.1.3](https://www.rfc-editor.org/rfc/rfc3261#section-17.1.1.3) says an `ACK` "MUST contain a single Via header field,
+[RFC 3261 section 17.1.1.3](https://www.rfc-editor.org/rfc/rfc3261#section-17.1.1.3) says an `ACK` "MUST contain a single Via header field,
 and this MUST be equal to the top Via header field of the original request".
 Reused verbatim, that sentence would report the correct behavior on every
 answered call in every capture ever taken — because the same section opens by
 sending the 2xx case somewhere else: "A UAC core that generates an ACK for 2xx
 MUST instead follow the rules described in Section 13."
 
-An `ACK` to a 2xx is a **new transaction**. [§13.2.2.4](https://www.rfc-editor.org/rfc/rfc3261#section-13.2.2.4) builds it from the dialog's
-route set, and [§8.1.1.7](https://www.rfc-editor.org/rfc/rfc3261#section-8.1.1.7) requires a new branch for it. An `ACK` to a non-2xx is
+An `ACK` to a 2xx is a **new transaction**. [RFC 3261 section 13.2.2.4](https://www.rfc-editor.org/rfc/rfc3261#section-13.2.2.4) builds it from the dialog's
+route set, and [section 8.1.1.7](https://www.rfc-editor.org/rfc/rfc3261#section-8.1.1.7) requires a new branch for it. An `ACK` to a non-2xx is
 hop-by-hop, absorbed by the same INVITE server transaction, and shares that
-transaction's branch — which §8.1.1.7 names as one of exactly two exceptions to
+transaction's branch — which [RFC 3261 section 8.1.1.7](https://www.rfc-editor.org/rfc/rfc3261#section-8.1.1.7) names as one of exactly two exceptions to
 branch uniqueness, alongside `CANCEL`.
 
 So the rule reports only where the capture has already shown a final response
@@ -24615,9 +24619,9 @@ carried settles nothing, so sipnab skips it.
 
 ### Why the Record-Route rule compares a suffix and not a list
 
-[RFC 3261 §12.1.1](https://www.rfc-editor.org/rfc/rfc3261#section-12.1.1) makes the UAS "copy all Record-Route header field values from
+[RFC 3261 section 12.1.1](https://www.rfc-editor.org/rfc/rfc3261#section-12.1.1) makes the UAS "copy all Record-Route header field values from
 the request into the response" and "MUST maintain the order of those values",
-and [§12.1.2](https://www.rfc-editor.org/rfc/rfc3261#section-12.1.2) has the caller build its route set from the *response*, in
+and [section 12.1.2](https://www.rfc-editor.org/rfc/rfc3261#section-12.1.2) has the caller build its route set from the *response*, in
 reverse. A value the response dropped is a proxy removed from a path it recorded
 itself into. A value reordered sends every in-dialog request through the hops
 backwards. Both fail after the call is up, which is why they arrive as a network
@@ -24634,17 +24638,17 @@ list going missing from the tail of the response's.
 
 The widely held belief is that [RFC 4733](https://www.rfc-editor.org/rfc/rfc4733) requires both ends to agree a
 `telephone-event` payload type. It does not. RFC 4733 contains no offer/answer
-rule at all: §2.5.1.1 says negotiation happens "by out-of-band means, using SDP,
+rule at all: [section 2.5.1.1](https://www.rfc-editor.org/rfc/rfc4733#section-2.5.1.1) says negotiation happens "by out-of-band means, using SDP,
 for example" and never says what an omitted `telephone-event` means. This
 rule's author read the document end to end, and the only sender-side obligation
 in it is about the `events` parameter.
 
-<!-- The paragraph below quotes [RFC 3264 §7](https://www.rfc-editor.org/rfc/rfc3264#section-7) verbatim. Rewording "that were
+<!-- The paragraph below quotes [RFC 3264 section 7](https://www.rfc-editor.org/rfc/rfc3264#section-7) verbatim. Rewording "that were
      listed in the initial offer" to satisfy the passive-voice rule would
      misquote the standard this rule cites. -->
 <!-- vale Google.Passive = NO -->
 
-The binding text is [RFC 3264 §7](https://www.rfc-editor.org/rfc/rfc3264#section-7): "The offerer MAY immediately cease listening
+The binding text is [RFC 3264 section 7](https://www.rfc-editor.org/rfc/rfc3264#section-7): "The offerer MAY immediately cease listening
 for media formats that were listed in the initial offer, but not present in the
 answer." A **MAY**, so nothing here breaks — which is why the rule reports as
 `interop` and not as a MUST violation, and why it cites RFC 3264.
@@ -24661,14 +24665,14 @@ The rule needs the stream accepted (port non-zero) and sharing at least one
 audio format. A declined stream negotiated nothing, and a stream with no common
 format is already `SDP-3264-6.1-ANSWER-NO-COMMON-FORMAT`.
 
-### A declined stream that kept its attributes cites §8.2, not §6
+### A declined stream that kept its attributes cites section 8.2 of RFC 3264, not section 6
 
-<!-- The paragraph below reproduces §6's whole statement about a rejected
+<!-- The paragraph below reproduces [RFC 3264 section 6](https://www.rfc-editor.org/rfc/rfc3264#section-6)'s whole statement about a rejected
      stream verbatim, which is the point being made about it. Rewording "MUST be
      set to zero" or "are ignored" would misquote the standard. -->
 <!-- vale Google.Passive = NO -->
 
-[RFC 3264 §6](https://www.rfc-editor.org/rfc/rfc3264#section-6) is where this is usually attributed, and §6 does not say it. Its
+[RFC 3264 section 6](https://www.rfc-editor.org/rfc/rfc3264#section-6) is where this is usually attributed, and section 6 does not say it. Its
 whole statement about a rejected stream is: "To reject an offered stream, the
 port number in the corresponding stream in the answer MUST be set to zero. Any
 media formats listed are ignored. At least one MUST be present, as specified by
@@ -24676,7 +24680,7 @@ SDP." Nothing about attributes.
 
 <!-- vale Google.Passive = YES -->
 
-The attribute sentence is in [§8.2](https://www.rfc-editor.org/rfc/rfc3264#section-8.2): "the answer MAY omit all attributes present
+The attribute sentence is in [RFC 3264 section 8.2](https://www.rfc-editor.org/rfc/rfc3264#section-8.2): "the answer MAY omit all attributes present
 previously, and MAY list just a single media format." A **MAY** — so keeping
 them is legal, and the rule reports at `notice` under `interop`.
 
@@ -24686,28 +24690,28 @@ stream that never carries a packet. And equipment that reads attributes before
 it reads the port allocates a relay leg and a transcoder for a stream nobody
 answered.
 
-A stream the *offer* already removed at port zero is exempt: that is §8.2's own
+A stream the *offer* already removed at port zero is exempt: that is [RFC 3264 section 8.2](https://www.rfc-editor.org/rfc/rfc3264#section-8.2)'s own
 mechanism for tearing a stream down, and the answer marking it zero too is what
-§8.2 requires.
+section 8.2 requires.
 
 ### Opus: the decidable half, and the half that is not
 
-[RFC 7587 §7](https://www.rfc-editor.org/rfc/rfc7587#section-7) is unambiguous: "The RTP clock rate in `a=rtpmap` MUST be 48000,
+[RFC 7587 section 7](https://www.rfc-editor.org/rfc/rfc7587#section-7) is unambiguous: "The RTP clock rate in `a=rtpmap` MUST be 48000,
 and the number of channels MUST be 2." Every example in the RFC writes
 `opus/48000/2`, including the one titled "16000 Hz clock rate" — an endpoint
 signals the narrower band with `maxplaybackrate` in `a=fmtp`, never in the
-rtpmap. An `a=rtpmap` carrying no channel count is `opus/48000/1` by [RFC 4566 §6](https://www.rfc-editor.org/rfc/rfc4566#section-6)'s default,
-and §7 admits neither.
+rtpmap. An `a=rtpmap` carrying no channel count is `opus/48000/1` by [RFC 4566 section 6](https://www.rfc-editor.org/rfc/rfc4566#section-6)'s default,
+and [RFC 7587 section 7](https://www.rfc-editor.org/rfc/rfc7587#section-7) admits neither.
 
-<!-- The paragraph below quotes [RFC 7587 §4.1](https://www.rfc-editor.org/rfc/rfc7587#section-4.1) verbatim, and the exact wording is
-     the argument: §4.1 is a statement of fact, not [RFC 2119](https://www.rfc-editor.org/rfc/rfc2119) language. Rewording
+<!-- The paragraph below quotes [RFC 7587 section 4.1](https://www.rfc-editor.org/rfc/rfc7587#section-4.1) verbatim, and the exact wording is
+     the argument: [RFC 7587 section 4.1](https://www.rfc-editor.org/rfc/rfc7587#section-4.1) is a statement of fact, not [RFC 2119](https://www.rfc-editor.org/rfc/rfc2119) language. Rewording
      it would destroy the distinction the rule turns on. -->
 <!-- vale Google.Passive = NO -->
 
-The rule cites §7 and not §4.1. §4.1 states the same 48 kHz clock as a fact
+The rule cites [RFC 7587 section 7](https://www.rfc-editor.org/rfc/rfc7587#section-7) and not [section 4.1](https://www.rfc-editor.org/rfc/rfc7587#section-4.1). Section 4.1 states the same 48 kHz clock as a fact
 about the wire — "The RTP timestamp is incremented with a 48000 Hz clock rate
 for all modes of Opus and all sampling rates" — and it is not RFC 2119 language.
-§7's SDP bullet is the only place the requirement is a MUST.
+The SDP bullet in [RFC 7587 section 7](https://www.rfc-editor.org/rfc/rfc7587#section-7) is the only place the requirement is a MUST.
 
 <!-- vale Google.Passive = YES -->
 
@@ -24719,9 +24723,9 @@ cadence, and the stream store keeps a last timestamp and no first one, so
 nothing in it yields a clock rate. A rule that reported legal Opus CBR as a
 defect would not survive week one, and this one is decidable from the SDP alone.
 
-### The four header fields §7.3.1 exempts
+### The four header fields that section 7.3.1 of RFC 3261 exempts
 
-<!-- The paragraph below quotes [RFC 3261 §7.3.1](https://www.rfc-editor.org/rfc/rfc3261#section-7.3.1) verbatim; the rule is named for
+<!-- The paragraph below quotes [RFC 3261 section 7.3.1](https://www.rfc-editor.org/rfc/rfc3261#section-7.3.1) verbatim; the rule is named for
      that sentence, so rewording "is defined as a comma-separated list" would
      misquote the clause the rule implements. -->
 <!-- vale Google.Passive = NO -->
@@ -24738,24 +24742,24 @@ The same paragraph writes down its own exception: `WWW-Authenticate`,
 several rows, and no sender may combine them with commas. A `407` carrying two
 challenges is ordinary traffic, so the rule's list omits all four.
 
-The compact forms count. The parser expands them at parse ([§7.3.3](https://www.rfc-editor.org/rfc/rfc3261#section-7.3.3)), so `i:`
+The compact forms count. The parser expands them at parse ([RFC 3261 section 7.3.3](https://www.rfc-editor.org/rfc/rfc3261#section-7.3.3)), so `i:`
 beside `Call-ID:` is two rows of one field — which is exactly the shape a
 header-smuggling attempt takes, because a parser that reads only one spelling
 sees a message with one `Call-ID`.
 
 ### Two branches, one stack
 
-<!-- The paragraph below quotes [RFC 3261 §16.6](https://www.rfc-editor.org/rfc/rfc3261#section-16.6) item 8 verbatim; "will be
+<!-- The paragraph below quotes [RFC 3261 section 16.6](https://www.rfc-editor.org/rfc/rfc3261#section-16.6) item 8 verbatim; "will be
      different" is the standard's own wording, not a future tense this file
      chose. -->
 <!-- vale Google.Will = NO -->
 
-[RFC 3261 §8.1.1.7](https://www.rfc-editor.org/rfc/rfc3261#section-8.1.1.7) makes a branch "unique across space and time", and §16.6
+[RFC 3261 section 8.1.1.7](https://www.rfc-editor.org/rfc/rfc3261#section-8.1.1.7) makes a branch "unique across space and time", and [section 16.6](https://www.rfc-editor.org/rfc/rfc3261#section-16.6)
 item 8 spells out what that means for a proxy: "the branch parameter will be
 different for different instances of a spiraled or looped request through a
 proxy." Two identical branches in one `Via` stack therefore say the request
 returned to an element that failed to re-derive its own value — the loop
-[§16.3](https://www.rfc-editor.org/rfc/rfc3261#section-16.3)'s loop-detection step exists to catch, running unbounded until
+[RFC 3261 section 16.3](https://www.rfc-editor.org/rfc/rfc3261#section-16.3)'s loop-detection step exists to catch, running unbounded until
 `Max-Forwards` stops it.
 
 <!-- vale Google.Will = YES -->
@@ -24796,7 +24800,7 @@ let linter = Linter::new(config);
 `ObservedMedia::from_streams` projects the RTP the stream store attributed to
 the dialog. RTCP arrives separately through `with_rtcp`, because the stream
 store folds reception reports into the stream they describe and keeps no record
-of which port they landed on — which is the question [RFC 5761 §5.1.1](https://www.rfc-editor.org/rfc/rfc5761#section-5.1.1) asks.
+of which port they landed on — which is the question [RFC 5761 section 5.1.1](https://www.rfc-editor.org/rfc/rfc5761#section-5.1.1) asks.
 
 See [Library API](library.md) for the wider crate surface.
 
@@ -24843,8 +24847,8 @@ Live capture on 'eth0' finished: 4821003 packets, no drops
 
 | Counter | libpcap field | What it means | What fixes it |
 |---|---|---|---|
-| **kernel buffer** | `ps_drop` | The ring was full when the packet arrived. sipnab was not draining fast enough. | §2 (`-B`), §3 (BPF), §4 (`--snaplen`), §5 (device) |
-| **interface/driver** | `ps_ifdrop` | The NIC or its driver discarded the packet before libpcap ever saw it. | §7 — **a bigger buffer cannot fix this** |
+| **kernel buffer** | `ps_drop` | The ring was full when the packet arrived. sipnab was not draining fast enough. | [section 2](#2-the-kernel-capture-buffer--b----buffer) (`-B`), [section 3](#3-capture-less-bpf-filters) (BPF), [section 4](#4-snapshot-length---snaplen--and-why-it-decides-your-ring-capacity) (`--snaplen`), [section 5](#5-which-interfaces-any-versus-named) (device) |
+| **interface/driver** | `ps_ifdrop` | The NIC or its driver discarded the packet before libpcap ever saw it. | [section 7, "Interface and driver drops"](#7-interface-and-driver-drops) — **a bigger buffer cannot fix this** |
 
 That distinction is the single most useful thing on this page. Operators
 routinely respond to *any* drop by raising `-B`, which does nothing at all for
@@ -24862,7 +24866,7 @@ The difference changes what a zero means and what a total covers.
   neither run can read the other's.
 - **One run can hold several handles.** `--multi-device` opens one per named
   interface, and `--cores N` on a live device opens N sockets on one interface
-  (§8). sipnab adds each handle's increment to one process-wide pair, so the
+  ([section 8, "On a live device it means capture sockets, not workers"](#on-a-live-device-it-means-capture-sockets-not-workers)). sipnab adds each handle's increment to one process-wide pair, so the
   totals cover the whole run rather than any single socket. The first-drop
   warning names the device that dropped, which is what tells you where to act.
 - **The packet count beside them is sipnab's own tally**, not a libpcap
@@ -24926,7 +24930,7 @@ sudo sipnab -N -d eth0 -B 8
 > fixed-size slots whose size comes from `--snaplen`, so how many *packets*
 > 64 MiB holds depends on the snapshot length and on whether NIC offloads are
 > on — anywhere from ~1,000 to ~41,000 — and on whether you named an interface
-> at all. Read §4 and §5 before concluding that a bigger `-B` did not help; the
+> at all. Read [section 4, "Snapshot length"](#4-snapshot-length---snaplen--and-why-it-decides-your-ring-capacity) and [section 5, "Which interfaces: `any` versus named"](#5-which-interfaces-any-versus-named) before concluding that a bigger `-B` did not help; the
 > three settings multiply.
 
 Rules of thumb:
@@ -24936,7 +24940,7 @@ Rules of thumb:
   absorbs.
 - **Do not raise it** when the drops persist and a core is at 100%. A bigger ring
   buys a longer burst, not more throughput — you are not keeping up on average,
-  and no buffer size fixes that. Go to §3.
+  and no buffer size fixes that. Go to [section 3, "Capture less: BPF filters"](#3-capture-less-bpf-filters).
 - **Lower it** on `--multi-device` runs. The cost is **per device**: eight
   interfaces at the default reserve half a gigabyte of kernel memory.
 
@@ -25092,7 +25096,7 @@ from 2 MiB, that same arithmetic gave **31 slots**.
 
 Note what this means: naming an interface explicitly *and* disabling offloads is
 worth far more than either alone, because only that combination reaches the
-clamp. **§5 is the decision guide for the device half of that** — what leaving
+clamp. **[Section 5, "Which interfaces: `any` versus named"](#5-which-interfaces-any-versus-named) is the decision guide for the device half of that** — what leaving
 `any` gains you, what it costs, and how to check you did not drop a call leg on
 the way.
 
@@ -25104,10 +25108,10 @@ sudo sipnab -N -d eth0 --snaplen 1600
 Three ways out, and they compose:
 
 1. **Cap the snaplen** (above) — immediate, no root beyond capture.
-2. **Name the interface** (§5) — the only way to reach `DLT_EN10MB` at all, and
-   the prerequisite for the clamp below. It is a coverage trade, so read §5
+2. **Name the interface** ([section 5, "Which interfaces: `any` versus named"](#5-which-interfaces-any-versus-named)) — the only way to reach `DLT_EN10MB` at all, and
+   the prerequisite for the clamp below. It is a coverage trade, so read [section 5](#5-which-interfaces-any-versus-named)
    before making it.
-3. **Turn the offloads off** (§7) — which is independently correct for capture
+3. **Turn the offloads off** ([section 7, "Interface and driver drops"](#7-interface-and-driver-drops)) — which is independently correct for capture
    fidelity, because GRO/LRO hand you reassembled super-frames that were never
    on the wire.
 
@@ -25205,7 +25209,7 @@ That is a real hazard, not a hypothetical one. A B2BUA talking to a registrar
 over `127.0.0.1`, a containerized stack bridging SIP across `docker0`, a proxy
 handing calls to a media server over a veth pair — capture `eth0` alone and
 those legs are simply absent. A dialog missing one leg does not come back
-smaller, it comes back **wrong**, exactly as §1 describes for dropped packets.
+smaller, it comes back **wrong**, exactly as [section 1, "Are you dropping packets?"](#1-are-you-dropping-packets) describes for dropped packets.
 `any` is the setting that does not lose calls.
 
 It is also the slowest and least capable device sipnab can open, on four
@@ -25215,7 +25219,7 @@ other way.
 ### What `any` costs you
 
 **1. It forfeits about 40x of your ring capacity — on the V2 ring, so on the
-TUI.** §4 has the mechanism and the run-mode rule that scopes it:
+TUI.** [Section 4, "Snapshot length"](#4-snapshot-length---snaplen--and-why-it-decides-your-ring-capacity) has the mechanism and the run-mode rule that scopes it:
 libpcap's `create_ring()` sizes each TPACKET_V2 slot from the snaplen, and the
 clamp that cuts a slot down to MTU+18 sits behind
 `if (handle->linktype == DLT_EN10MB)`. **`any` reports `DLT_LINUX_SLL2`, so
@@ -25239,7 +25243,7 @@ correctness cost, and it points the opposite way from the loopback argument —
 which spawns one coordinator thread plus **one capture thread per interface**
 (`start_multi_capture()` in [`src/capture/native.rs`](https://github.com/NormB/sipnab/blob/main/src/capture/native.rs)), each with its own ring and
 its own drain loop. `any` is one device, so it is one thread and one ring no
-matter how many interfaces the traffic actually arrives on. `--cores N` (§8) is
+matter how many interfaces the traffic actually arrives on. `--cores N` ([section 8, "On a live device it means capture sockets, not workers"](#on-a-live-device-it-means-capture-sockets-not-workers)) is
 the other way to get more than one socket, and it works on a single device
 rather than on a list.
 
@@ -25254,7 +25258,7 @@ ring the traffic you *do* want is competing for.
 |---|---|---|
 | **Loopback / container legs** | Captured | **Missed unless you name those interfaces too** |
 | **Link type** | `DLT_LINUX_SLL2` | `DLT_EN10MB` |
-| **Snaplen slot clamp (§4)** | **Never runs** | Runs once offloads are off |
+| **Snaplen slot clamp ([section 4](#4-snapshot-length---snaplen--and-why-it-decides-your-ring-capacity))** | **Never runs** | Runs once offloads are off |
 | **64 MiB ring holds** | ~1,000 packets | ~41,000 with offloads off (~1,000 with them on) |
 | **Promiscuous mode** | **Unavailable** | On by default; `--no-promisc` to disable |
 | **Capture threads** | 1 | 1 per named device under `--multi-device` |
@@ -25268,12 +25272,12 @@ ring the traffic you *do* want is competing for.
 - You do not yet know which interface carries the traffic.
 - SIP genuinely crosses loopback or container bridges and you have not
   enumerated those interfaces.
-- The drop counters from §1 read `no drops`. If it is not dropping, it is not
+- The drop counters from [section 1, "Are you dropping packets?"](#1-are-you-dropping-packets) read `no drops`. If it is not dropping, it is not
   costing you anything worth this trade.
 
 **Name your interfaces** when any of these hold:
 
-- §1 shows sustained `kernel buffer` drops.
+- [Section 1, "Are you dropping packets?"](#1-are-you-dropping-packets) shows sustained `kernel buffer` drops.
 - You are running a long-lived headless capture on a known topology.
 - You need promiscuous mode because the switch mirrors the traffic to you
   rather than addressing it to you.
@@ -25301,7 +25305,7 @@ MTU+18 so the same 64 MiB holds tens of thousands of packets instead of ~1,000,
 promiscuous mode is back, there is one capture thread per interface, and
 nothing goes to `docker0`. Neither half works alone — `any` cannot reach
 the clamp however you set `ethtool`, and a named device with offloads on is
-still stuck at ~65 KB slots (§4).
+still stuck at ~65 KB slots ([section 4, "Snapshot length"](#4-snapshot-length---snaplen--and-why-it-decides-your-ring-capacity)).
 
 **Verify you did not lose a leg.** This is a deliberate trade of coverage for
 throughput, and the failure mode is silent — calls do not error, they just stop
@@ -25313,7 +25317,7 @@ ip -brief address
 
 If any SIP endpoint answers on `127.0.0.1` or a container bridge, add `lo` or
 `docker0` to the `-d` list rather than accepting the gap. `--multi-device`
-costs `-B` **per device** (§2), so eight interfaces at the default reserve half
+costs `-B` **per device** ([section 2, "The kernel capture buffer"](#2-the-kernel-capture-buffer--b----buffer)), so eight interfaces at the default reserve half
 a gigabyte — name what you need and no more.
 
 ---
@@ -25399,9 +25403,9 @@ Three things to know before reaching for it.
 sudo sipnab -N -d eth0 --cores 4 -B 32 "port 5060 or port 5061"
 ```
 
-Reach for it when §1 shows sustained `kernel buffer` drops on ONE busy
-interface and §2 through §5 have not cleared them. Several interfaces is
-`--multi-device` (§5) instead.
+Reach for it when [section 1, "Are you dropping packets?"](#1-are-you-dropping-packets) shows sustained `kernel buffer` drops on ONE busy
+interface and [section 2](#2-the-kernel-capture-buffer--b----buffer) through [section 5](#5-which-interfaces-any-versus-named) have not cleared them. Several interfaces is
+`--multi-device` ([section 5, "Which interfaces: `any` versus named"](#5-which-interfaces-any-versus-named)) instead.
 
 ---
 
@@ -25415,13 +25419,13 @@ sudo sipnab -N -d eth0 \
   --report
 ```
 
-Note that this already makes the §5 choice: it names `eth0` rather than taking
+Note that this already makes the interface choice from [section 5, "Which interfaces: `any` versus named"](#5-which-interfaces-any-versus-named): it names `eth0` rather than taking
 `any`, so confirm no SIP leg lives on loopback or a container bridge before
 adopting it.
 
 Then read the drop line at the end. If it says `no drops`, stop there — and
 you can walk the settings *back* to recover fidelity. If it does not, work down
-§2 → §3 → §5 → §6 → §7 in that order, and re-measure after each change rather
+[section 2](#2-the-kernel-capture-buffer--b----buffer) (buffer) → [section 3](#3-capture-less-bpf-filters) (BPF) → [section 5](#5-which-interfaces-any-versus-named) (interfaces) → [section 6](#6-give-sipnab-less-work) (less work) → [section 7](#7-interface-and-driver-drops) (interface and driver drops) in that order, and re-measure after each change rather
 than applying all of them at once.
 
 ---
@@ -26394,7 +26398,8 @@ Real output from that fixture, elided only where the message trace repeats
 itself. Every value below came off a run against the committed capture.
 
 **One reading convention, stated once.** Every `body` is a JSON-encoded
-*string* on the wire — §2.3.2 of the draft allows nothing else, and a store
+*string* on the wire —
+[section 2.3.2 of the core draft](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-2.3.2) allows nothing else, and a store
 normalizes it to one anyway. The blocks below show each `body` **decoded**, as
 an object, because an escaped one-line string is unreadable on a page. What
 sipnab actually writes for the first one is `"body": "{\"messages\":[…]}"`,
@@ -26557,7 +26562,7 @@ and where no value is true it names none:
 | no content, no observed failure | absent | absent |
 | no content, an observed final failure | `incomplete` | the reason, always |
 
-The empty row is the one §4.3 of the core draft provides for: "it is possible
+The empty row is the one [section 4.3 of the core draft](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-4.3) provides for: "it is possible
 to have a Dialog Object with no parameters in it". Reaching for `incomplete`
 there is the mistake sipnab shipped until 0.5.128, and it is not a matter of
 taste — it made every container for a call that answered assert a setup failure
@@ -26567,8 +26572,9 @@ not there, and a conserver chain link that selects `type == "recording"` reads
 `dialog["url"]` unguarded — it raises, and the conserver dead-letters the
 **whole** container rather than the one step.
 
-The last two rows move together. §4.3.1 makes `disposition` a MUST on an
-incomplete object, and no value in the closed set of §4.3.11 means "not
+The last two rows move together. [Section 4.3.1 of the core draft](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-4.3.1)
+makes `disposition` a MUST on an incomplete object, and no value in the closed
+set of [section 4.3.11](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-4.3.11) means "not
 observed", so one decision fixes both fields. `disposition` names a failure
 **only** when sipnab saw the final response that caused it, and its absence
 never means "the call succeeded".
@@ -26644,7 +26650,8 @@ reader who cannot tell them apart goes looking for a fault that does not exist.
 `--content-deny-header` suppresses the whole dialog, not merely its content, and
 the default is the conservative reading: a denied dialog leaves this process
 entirely. `--content-deny-tombstone` makes the narrower reading available — an
-identity-only container carrying a §4.1 `redacted` object, with no message
+identity-only container carrying a `redacted` object
+([section 4.1.8 of the core draft](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-4.1.8)), with no message
 trace, no media and no bodies. The trade is explicit, because a tombstone
 reveals that the call existed. Leave it off when the header means "this call
 must leave no trace".
@@ -26989,7 +26996,7 @@ what the walk does not follow.
 |---|---|---|---|
 | IP-in-IP / 6-in-4 | IP proto 4 / 41 | [RFC 2003](https://www.rfc-editor.org/rfc/rfc2003) / [RFC 4213](https://www.rfc-editor.org/rfc/rfc4213) | decoded |
 | GRE | IP proto 47 | [RFC 2784](https://www.rfc-editor.org/rfc/rfc2784) | decoded |
-| GRE Transparent Ethernet Bridging | GRE proto `0x6558` | [RFC 7637 §3.2](https://www.rfc-editor.org/rfc/rfc7637#section-3.2) | decoded |
+| GRE Transparent Ethernet Bridging | GRE proto `0x6558` | [RFC 7637 section 3.2](https://www.rfc-editor.org/rfc/rfc7637#section-3.2) | decoded |
 | MPLS-in-IP | IP proto 137 | [RFC 4023](https://www.rfc-editor.org/rfc/rfc4023) | decoded |
 | AH | IP proto 51 | [RFC 4302](https://www.rfc-editor.org/rfc/rfc4302) | **traversed** — AH authenticates without encrypting, so the payload is readable |
 | ESP | IP proto 50 | [RFC 4303](https://www.rfc-editor.org/rfc/rfc4303) | encrypted — sipnab names it, never guesses |
@@ -27001,7 +27008,7 @@ what the walk does not follow.
 | L2TPv2 | UDP 1701 | [RFC 2661](https://www.rfc-editor.org/rfc/rfc2661) | data messages only |
 | L2TPv3 over UDP | UDP 1701 | [RFC 3931](https://www.rfc-editor.org/rfc/rfc3931) | **refused** — see below |
 
-**L2TPv3 over UDP is deliberately not decoded.** [RFC 3931 §4.1](https://www.rfc-editor.org/rfc/rfc3931#section-4.1) says:
+**L2TPv3 over UDP is deliberately not decoded.** [RFC 3931 section 4.1](https://www.rfc-editor.org/rfc/rfc3931#section-4.1) says:
 
 <!-- vale off -->
 > The Session ID alone provides the necessary context for all further packet
@@ -27460,7 +27467,7 @@ Signaling Issues:
 
 **What it means.** `retransmits: 10` is not a measure of loss. Eleven
 transmissions over 31.5 s is the complete non-INVITE client transaction ladder
-of [RFC 3261 §17.1.2.2](https://www.rfc-editor.org/rfc/rfc3261#section-17.1.2.2):
+of [RFC 3261 section 17.1.2.2](https://www.rfc-editor.org/rfc/rfc3261#section-17.1.2.2):
 T1, 2×T1, 4×T1, then T2 (4 s) repeatedly until Timer F fires at 64×T1 = 32 s. A
 transaction that reaches that count did not lose packets — it ran to completion
 against a peer that answered nothing. The number tells you the timer expired,
@@ -28059,7 +28066,7 @@ second hop. The access hop carries all twelve offending requests, so narrowing
 to it changes nothing. Those 12 are real: twelve requests entered the network with
 no [Max-Forwards](https://www.rfc-editor.org/rfc/rfc3261#section-8.1.1.6) header
 at all. `SDP-7587-7-OPUS-RTPMAP-RATE` is real too — a device declaring
-`opus/48000/1` where [RFC 7587 §7](https://www.rfc-editor.org/rfc/rfc7587#section-7)
+`opus/48000/1` where [RFC 7587 section 7](https://www.rfc-editor.org/rfc/rfc7587#section-7)
 requires `opus/48000/2` — and the whole ring holds 24 of them.
 
 **What to do next.** Lint one hop at a time. Add a BPF expression naming the
@@ -28154,7 +28161,7 @@ sipnab -N -I pbx.pcap4 --portrange 1-65535 --json-dialogs --no-cli-print --quiet
 
 Four challenges, and the attacker sent **one** INVITE. The intervals between the
 401s are 0.499 s, 1.001 s and 2.000 s — the INVITE server transaction's Timer G
-ladder from [RFC 3261 §17.2.1](https://www.rfc-editor.org/rfc/rfc3261#section-17.2.1),
+ladder from [RFC 3261 section 17.2.1](https://www.rfc-editor.org/rfc/rfc3261#section-17.2.1),
 doubling from T1 up to T2. The PBX retransmitted its own final response because
 nothing ever acknowledged it. `timing.retransmits: 3` says so in the same
 record: 4 challenges minus 3 retransmissions is one challenge.
@@ -28411,7 +28418,7 @@ seconds of silence.
 ### Offer/answer, and the delayed-offer inversion
 
 Normally the request carries the SDP **offer** and the response carries the
-**answer**. [RFC 3261 §13.2.1](https://www.rfc-editor.org/rfc/rfc3261#section-13.2.1) allows an offerless INVITE, and then the roles
+**answer**. [RFC 3261 section 13.2.1](https://www.rfc-editor.org/rfc/rfc3261#section-13.2.1) allows an offerless INVITE, and then the roles
 invert: the 200 OK carries the offer and the ACK carries the answer.
 
 [`determine_offer_answer()`](../../src/sip/sdp_timeline.rs) encodes exactly
@@ -28480,7 +28487,7 @@ these five messages. Open on the `CANCEL` or the `487` and the caller gave up.
 Open on the `200` and nothing yet says how the call ended — same family, same
 code that establishes a call one line above, opposite meaning. The sibling case
 runs the other way: a `2xx` answering a `BYE` *is* evidence the session ended
-([RFC 3261 §15.1.2](https://www.rfc-editor.org/rfc/rfc3261#section-15.1.2)), so
+([RFC 3261 section 15.1.2](https://www.rfc-editor.org/rfc/rfc3261#section-15.1.2)), so
 a call whose `BYE` fell outside the capture still leaves `InCall`.
 
 ```mermaid
@@ -28576,7 +28583,7 @@ halves or doubles every derived duration.
 
 ### Jitter is a signed transit delta, not a variance
 
-[RFC 3550 §6.4.1](https://www.rfc-editor.org/rfc/rfc3550#section-6.4.1) defines interarrival jitter as a smoothed mean of the
+[RFC 3550 section 6.4.1](https://www.rfc-editor.org/rfc/rfc3550#section-6.4.1) defines interarrival jitter as a smoothed mean of the
 *difference in transit time* between consecutive packets:
 `J(i) = J(i-1) + (|D(i-1,i)| - J(i-1)) / 16`. `stream.rs` computes the transit
 delta as a **signed** `i32` before taking the absolute value — with unsigned
@@ -29071,8 +29078,7 @@ first MCP tool or REST handler that reads an alert and *then* a dialog creates
 recreates `stores → alerts`. Either alone is harmless, and both together
 deadlock the capture thread. Written down here because nothing else says it.
 Background: `LK1` in [`backlog.md`](../design/backlog.md), analyzed as R2 in
-[`process-isolation-and-hot-path-cost.md`](../design/process-isolation-and-hot-path-cost.md)
-§4.
+[`process-isolation-and-hot-path-cost.md` section 4, "Verdict"](../design/process-isolation-and-hot-path-cost.md#4-verdict).
 
 **The sub-rule `LK1` leaves behind: decide under the guard, perform after it.**
 Nothing that can block runs under a store guard — no `fork`/`exec`, no
@@ -29486,7 +29492,7 @@ No test enforces them, which is precisely why this page writes them down.
 recommendation it implements. The
 [pull-request template](../../.github/PULL_REQUEST_TEMPLATE.md) asks for it
 directly: *"Any new analysis claim is honest and backed by the implementation
-(cite the RFC/ITU standard where relevant)."* Jitter is [RFC 3550 §6.4.1](https://www.rfc-editor.org/rfc/rfc3550#section-6.4.1) signed
+(cite the RFC/ITU standard where relevant)."* Jitter is [RFC 3550 section 6.4.1](https://www.rfc-editor.org/rfc/rfc3550#section-6.4.1) signed
 transit deltas, not a variance. MOS is an E-model estimate, not a measurement.
 Saying which one you implemented is the difference between a tool an engineer
 can trust and one they have to re-derive.
@@ -31156,7 +31162,7 @@ flow's packets share a host pair and therefore a worker.
   Until that change the batch loop took the alert engine's write lock nested
   inside both store guards — a third lock deep in the hot path, with a
   `posix_spawn` beside it. The full rule and what would re-create that edge are
-  in [Invariants](invariants.md) §2.
+  in [Invariants, section 2, "Dialog before stream, then alerts — one consistent order"](invariants.md#2-dialog-before-stream-then-alerts--one-consistent-order).
 - **The TUI never blocks:** all render-side store access is `try_read()`.
   On contention the frame renders with the previous data (counts may be one
   frame stale — this is deliberate; an adaptive 10 fps active / 2 fps idle
@@ -32160,7 +32166,7 @@ Everything here is `tracefs` and `perf_event_open`. There is no BPF program
 and no `bpf-linker`, which is what makes it build on stable Rust and run on a
 kernel without BTF — the **BPF Type Format**, the kernel's description of its
 own structs and where each member sits. See
-[§7](#7-what-tracefs-cannot-do) for the one thing that costs.
+[section 7, "What tracefs cannot do"](#7-what-tracefs-cannot-do) for the one thing that costs.
 
 ---
 
@@ -32326,7 +32332,8 @@ map. That gap is exactly the 5-tuple: `SSL_write` knows nothing about the
 socket beneath, and recovering the peer means hooking `tcp_sendmsg`, reading
 `struct sock`, and matching per thread across two hooks.
 
-That is what the **BPF backend** does — `--uprobe-backend bpf`, §7a.
+That is what the **BPF backend** does — `--uprobe-backend bpf`, described in
+[section 7a, "The BPF backend, and what it costs"](#7a-the-bpf-backend-and-what-it-costs).
 [The backlog](../design/backlog.md) records the live verification and the three
 silent failures that turned up producing it.
 
@@ -32655,7 +32662,8 @@ the reference implementation rather than from what looked natural in Rust. Both
 were wrong in the first cut, and a hand-written test agreed with the wrong
 answer, because the same misreading produced both.
 
-**`body` is a String, never an object.** §2.3.2 says so, and
+**`body` is a String, never an object.**
+[Section 2.3.2 of the core draft](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-2.3.2) says so, and
 `vcon-server`'s own model enforces it: hand its `Vcon` a `dict` and it
 JSON-encodes the value before anything else sees the attachment. So
 [`json_text()`](../../src/output/vcon.rs) serializes every structured body to
@@ -32664,10 +32672,12 @@ as `serde_json::Value` round-trips fine through `serde_json` and fails against a
 real store, which is exactly the class of defect a local test cannot see.
 
 **Two separate defects in the draft meet on this one field.** The first is a
-vocabulary gap: none of the five §4.3.1 type values describes a conversation
+vocabulary gap: none of the five type values in
+[section 4.3.1 of the core draft](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-4.3.1) describes a conversation
 known to have occurred whose content the container does not carry or
 reference, which is the ordinary result for an observer that retains no media.
-The second is a prose/schema inconsistency: §4.3 says "it is possible to have a
+The second is a prose/schema inconsistency:
+[section 4.3 of the core draft](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-4.3) says "it is possible to have a
 Dialog Object with no parameters in it", and the schema published beside that
 sentence requires `type` AND `start`, so it forbids that shape twice over.
 
@@ -32681,7 +32691,8 @@ cannot distinguish from a producer that simply omitted it. `start`, `party`
 and `dialog` stay mandatory on every attachment.
 
 **The `type` follows the CONTENT, not the call — and an object carrying nothing
-names no type at all.** Of the five values §4.3.1 defines, none is true of a
+names no type at all.** Of the five values
+[section 4.3.1 of the core draft](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-4.3.1) defines, none is true of a
 signaling-only object: four promise content it does not hold, and `incomplete`
 names a call that "failed to be setup", which is a claim about the
 CONVERSATION. sipnab emitted `incomplete` there until 0.5.128, so every
@@ -32689,7 +32700,9 @@ signaling-only export of a successful call shipped a container reporting a
 setup failure — read months later beside a switch's CDR showing a connected
 ninety-second call, the container is the thing that looks wrong. sipnab now keeps `incomplete`
 for a dialog whose final response it OBSERVED to be a failure, and `dialog_object()` decides the type and the disposition in one
-expression because §4.3.1 couples them: an incomplete object MUST name a
+expression because
+[section 4.3.1 of the core draft](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-4.3.1)
+couples them: an incomplete object MUST name a
 disposition, and a disposition is only nameable when sipnab saw a failure. The
 media path types the object `recording` when audio actually arrives, and clears
 `disposition` with it. Typing an object `recording` when it carries no
@@ -32791,7 +32804,7 @@ of one dialog days apart therefore share a uuid and differ in `created_at`, and
 on the node ALONE, spending 62 of the 74 available bits on a value identical
 for every dialog on the box. Two dialogs opening in the same
 millisecond on one node had 12 bits between them, so roughly one pair in 4096
-collided — and §4.1.2 makes the uuid globally unique because a store KEYS on
+collided — and [section 4.1.2 of the core draft](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-4.1.2) makes the uuid globally unique because a store KEYS on
 it. A collision raises nothing. It overwrites the record already there, losing
 one capture with no error anywhere.
 

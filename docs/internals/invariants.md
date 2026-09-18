@@ -104,8 +104,7 @@ first MCP tool or REST handler that reads an alert and *then* a dialog creates
 recreates `stores → alerts`. Either alone is harmless, and both together
 deadlock the capture thread. Written down here because nothing else says it.
 Background: `LK1` in [`backlog.md`](../design/backlog.md), analyzed as R2 in
-[`process-isolation-and-hot-path-cost.md`](../design/process-isolation-and-hot-path-cost.md)
-§4.
+[`process-isolation-and-hot-path-cost.md` section 4, "Verdict"](../design/process-isolation-and-hot-path-cost.md#4-verdict).
 
 **The sub-rule `LK1` leaves behind: decide under the guard, perform after it.**
 Nothing that can block runs under a store guard — no `fork`/`exec`, no
@@ -519,7 +518,7 @@ No test enforces them, which is precisely why this page writes them down.
 recommendation it implements. The
 [pull-request template](../../.github/PULL_REQUEST_TEMPLATE.md) asks for it
 directly: *"Any new analysis claim is honest and backed by the implementation
-(cite the RFC/ITU standard where relevant)."* Jitter is [RFC 3550 §6.4.1](https://www.rfc-editor.org/rfc/rfc3550#section-6.4.1) signed
+(cite the RFC/ITU standard where relevant)."* Jitter is [RFC 3550 section 6.4.1](https://www.rfc-editor.org/rfc/rfc3550#section-6.4.1) signed
 transit deltas, not a variance. MOS is an E-model estimate, not a measurement.
 Saying which one you implemented is the difference between a tool an engineer
 can trust and one they have to re-derive.

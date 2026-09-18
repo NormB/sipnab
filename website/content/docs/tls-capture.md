@@ -85,8 +85,8 @@ sipnab -I tls-capture.pcap --keylog /tmp/sip-keys.log
 ```
 
 The full recipes, including exporting a decrypted pcap for Wireshark and
-keeping keys off disk entirely, are cookbook
-[§7a–7f](@/docs/cookbook.md#7-decrypt-sip-tls-via-sslkeylogfile).
+keeping keys off disk entirely, are cookbook recipes 7a to 7f, under
+[recipe 7, "Decrypt SIP/TLS via SSLKEYLOGFILE"](@/docs/cookbook.md#7-decrypt-sip-tls-via-sslkeylogfile).
 
 ## 2. Check what you have before going further
 
@@ -186,8 +186,8 @@ sipnab says which of these happened, with counts. The fix is at capture time
 either way: bounce the connection, or the far end, while capturing, so the
 capture catches the stream from its handshake and its first record.
 
-Cookbook [§7e](@/docs/cookbook.md#7e-decrypt-traffic-from-a-daemon-you-cannot-restart) has the full
-sequence, and [§7f](@/docs/cookbook.md#7f-decrypt-without-writing-the-keys-to-disk) shows
+Cookbook [recipe 7e, "Decrypt traffic from a daemon you cannot restart"](@/docs/cookbook.md#7e-decrypt-traffic-from-a-daemon-you-cannot-restart) has the full
+sequence, and [recipe 7f, "Decrypt without writing the keys to disk"](@/docs/cookbook.md#7f-decrypt-without-writing-the-keys-to-disk) shows
 feeding keys through a pipe so they never reach disk.
 
 ## 6. The old RSA case
@@ -209,7 +209,7 @@ SRTP keys arrive two ways, and sipnab reads both:
 - **SDES** — keys travel in the SDP, so decrypting the signaling decrypts the
   media with it. Nothing extra to do.
 - **DTLS-SRTP** — a DTLS handshake carries the keys, so supply the keylog
-  the same way, cookbook [§7d](@/docs/cookbook.md#7d-decrypt-srtp-from-a-dtls-keylog).
+  the same way, cookbook [recipe 7d, "Decrypt SRTP from a DTLS keylog"](@/docs/cookbook.md#7d-decrypt-srtp-from-a-dtls-keylog).
 
 ## When the keys arrive after the call starts
 

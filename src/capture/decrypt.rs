@@ -198,9 +198,9 @@ struct TlsSessionKey {
 
 /// TLS record-layer version for a session — selects the AEAD record framing.
 ///
-/// TLS 1.2 GCM (RFC 5246 §6.2.3.3, RFC 5288): a 4-byte fixed (implicit) IV plus
+/// TLS 1.2 GCM ([RFC 5246 section 6.2.3.3](https://www.rfc-editor.org/rfc/rfc5246#section-6.2.3.3), RFC 5288): a 4-byte fixed (implicit) IV plus
 /// an 8-byte explicit nonce carried in each record, with a 13-byte AAD that
-/// includes the 64-bit sequence number. TLS 1.3 (RFC 8446 §5.2): a 12-byte
+/// includes the 64-bit sequence number. TLS 1.3 ([RFC 8446 section 5.2](https://www.rfc-editor.org/rfc/rfc8446#section-5.2)): a 12-byte
 /// per-record nonce derived as `write_iv XOR seq`, a 5-byte AAD, and an inner
 /// content-type byte appended to the plaintext.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -554,7 +554,7 @@ fn parse_client_hello_random(handshake_data: &[u8]) -> Option<[u8; 32]> {
 ///
 /// Layout: `msg_type(1)=16 ‖ length(3) ‖ EncryptedPreMasterSecret`, where the
 /// `EncryptedPreMasterSecret` is itself `uint16 length ‖ opaque[length]`
-/// (RFC 5246 §7.4.7.1). Returns the ciphertext bytes.
+/// ([RFC 5246 section 7.4.7.1](https://www.rfc-editor.org/rfc/rfc5246#section-7.4.7.1)). Returns the ciphertext bytes.
 fn parse_client_key_exchange_rsa(handshake_data: &[u8]) -> Option<&[u8]> {
     if handshake_data.first() != Some(&16) {
         return None;
@@ -1854,7 +1854,7 @@ const SEQ_RESYNC_WINDOW: u64 = 16;
 /// A capture started against a connection that was already running joins the
 /// record stream part-way through, and nothing on the wire carries the record
 /// number: both TLS versions derive their per-record nonce from a counter the
-/// two endpoints keep privately (RFC 8446 §5.3). Seeing the handshake would
+/// two endpoints keep privately ([RFC 8446 section 5.3](https://www.rfc-editor.org/rfc/rfc8446#section-5.3)). Seeing the handshake would
 /// not help either — the counter is a function of how many records have gone
 /// by, not of anything in the ClientHello. The only way to recover it is to
 /// try, and the AEAD tag makes trying safe: a wrong sequence number cannot
@@ -2197,7 +2197,7 @@ fn try_decrypt_with_session(
     None
 }
 
-/// Decrypt a TLS 1.3 AEAD record (RFC 8446 §5.2), searching forward from
+/// Decrypt a TLS 1.3 AEAD record ([RFC 8446 section 5.2](https://www.rfc-editor.org/rfc/rfc8446#section-5.2)), searching forward from
 /// `seq_start` across `window` sequence numbers.
 ///
 /// The nonce is `write_iv XOR seq` and the additional data is the record
@@ -2239,7 +2239,7 @@ fn decrypt_tls13_record(
     None
 }
 
-/// Decrypt a TLS 1.2 AES-GCM record (RFC 5246 §6.2.3.3, RFC 5288).
+/// Decrypt a TLS 1.2 AES-GCM record ([RFC 5246 section 6.2.3.3](https://www.rfc-editor.org/rfc/rfc5246#section-6.2.3.3), RFC 5288).
 ///
 /// The record payload is `explicit_nonce(8) ‖ ciphertext ‖ tag(16)`. The AEAD
 /// nonce is `fixed_iv(4) ‖ explicit_nonce(8)` and the additional data is
@@ -3495,7 +3495,7 @@ mod tests {
     }
 
     /// A TLS 1.3 KeyUpdate rotates the traffic secret and resets the record
-    /// counter to zero — RFC 8446 §5.3, "The 64-bit sequence number is reset
+    /// counter to zero — [RFC 8446 section 5.3](https://www.rfc-editor.org/rfc/rfc8446#section-5.3), "The 64-bit sequence number is reset
     /// to zero at each key change".
     ///
     /// Until this was handled, a rekey ended decryption for the rest of the
@@ -3506,7 +3506,8 @@ mod tests {
     /// the counter returns to zero at the rekey.
     ///
     /// The peer's new secret is derived, not extracted:
-    /// `HKDF-Expand-Label(secret, "traffic upd", "", Hash.length)` (§4.6.3).
+    /// `HKDF-Expand-Label(secret, "traffic upd", "", Hash.length)` ([RFC 8446 section 7.2](https://www.rfc-editor.org/rfc/rfc8446#section-7.2),
+    /// which the KeyUpdate message of [section 4.6.3](https://www.rfc-editor.org/rfc/rfc8446#section-4.6.3) points to).
     #[cfg(feature = "tls")]
     #[test]
     fn a_key_update_ratchets_the_secret_and_resets_the_counter() {
@@ -4357,7 +4358,7 @@ mod tests {
     /// test could see it. That suite is OpenSSL's FIRST TLS 1.3 preference, so
     /// it was the common case rather than an exotic one.
     ///
-    /// Vectors computed independently from RFC 8446 §7.1 HKDF-Expand-Label.
+    /// Vectors computed independently from [RFC 8446 section 7.1](https://www.rfc-editor.org/rfc/rfc8446#section-7.1) HKDF-Expand-Label.
     #[test]
     fn derive_key_iv_uses_the_hash_the_suite_names() {
         let crypto = crate::crypto::default_backend();

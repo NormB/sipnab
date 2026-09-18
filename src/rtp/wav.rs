@@ -95,9 +95,10 @@ pub fn write_wav_with_provenance(
 /// [`write_wav_with_provenance`], rendered to memory instead of to a path.
 ///
 /// The one place the RIFF layout is written. A vCon carries its media INLINE —
-/// `docs/design/vcon.md` §2.5 refuses a by-reference `url` because sipnab hosts
-/// nothing — so the exporter needs the same bytes without a file to put them
-/// in. Building them with a second writer would be two encoders of one format,
+/// `docs/design/vcon.md`
+/// [section 2.5, "Never host artefacts"](https://github.com/NormB/sipnab/blob/main/docs/design/vcon.md#25-never-host-artefacts)
+/// refuses a by-reference `url` because sipnab hosts nothing — so the exporter
+/// needs the same bytes without a file to put them in. Building them with a second writer would be two encoders of one format,
 /// and the failure that invites is not a crash: it is a container whose
 /// `content_hash` verifies against audio that differs from the `.wav` an
 /// operator exported beside it, which reads as tampering rather than as drift.

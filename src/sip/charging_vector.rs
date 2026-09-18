@@ -18,19 +18,19 @@
 //!
 //! # What the two parameters are, and what a match actually proves
 //!
-//! §5.6 makes `icid-value` mandatory in the header and says *"The first proxy
-//! that receives the request generates this value"*. §4.6 requires it to be
+//! [RFC 7315 section 5.6](https://www.rfc-editor.org/rfc/rfc7315#section-5.6) makes `icid-value` mandatory in the header and says *"The first proxy
+//! that receives the request generates this value"*. [RFC 7315 section 4.6](https://www.rfc-editor.org/rfc/rfc7315#section-4.6) requires it to be
 //! globally unique — a real normative MUST, and the reason comparing two of
 //! them is an identifier comparison rather than a guess.
 //!
-//! But §4.6's first sentence also says ICID *"identifies a dialog or a
+//! But the first sentence of [RFC 7315 section 4.6](https://www.rfc-editor.org/rfc/rfc7315#section-4.6) also says ICID *"identifies a dialog or a
 //! transaction outside a dialog"*, and a B2BUA is by definition two dialogs.
 //! **A conformant B2BUA therefore emits a DIFFERENT `icid-value` on each side.**
 //! Plain `icid-value` equality across two differing Call-IDs is evidence that
 //! some intermediary copied a per-dialog identifier onto a second dialog. It
 //! happens, and it is useful when it does, but no RFC grants it.
 //!
-//! The parameter the RFC provides for that hop is `related-icid`, §4.6.4.1:
+//! The parameter the RFC provides for that hop is `related-icid`, [RFC 7315 section 4.6.4.1](https://www.rfc-editor.org/rfc/rfc7315#section-4.6.4.1):
 //!
 //! > The UAS acting as a B2BUA MAY add the related-icid into the
 //! > P-Charging-Vector header field into SIP request or SIP responses. […] The
@@ -44,8 +44,8 @@
 //!
 //! # What this module does NOT claim
 //!
-//! * **Not end to end.** §4.6.2.2 says a proxy *SHOULD* include the header
-//!   towards a trusted next hop and *MAY modify the contents*, and §6.6 calls
+//! * **Not end to end.** [RFC 7315 section 4.6.2.2](https://www.rfc-editor.org/rfc/rfc7315#section-4.6.2.2) says a proxy *SHOULD* include the header
+//!   towards a trusted next hop and *MAY modify the contents*, and [RFC 7315 section 6.6](https://www.rfc-editor.org/rfc/rfc7315#section-6.6) calls
 //!   modification *"normal behavior"*. There is no constancy requirement of any
 //!   kind. This is the opposite of RFC 7989's guarantee and the docs must never
 //!   let the two read alike.
@@ -99,7 +99,7 @@
 //!
 //! # Privacy: what is read and what is never surfaced
 //!
-//! `icid-generated-at` and `related-icid-generated-at` are, per §5.6, the
+//! `icid-generated-at` and `related-icid-generated-at` are, per [RFC 7315 section 5.6](https://www.rfc-editor.org/rfc/rfc7315#section-5.6), the
 //! hostname or IP of the generating proxy; `orig-ioi`, `term-ioi` and
 //! `transit-ioi` name the operators on each side of an interconnect. **This
 //! module never reads any of them and nothing may match on them** — an
@@ -107,7 +107,7 @@
 //! every call one proxy touched.
 //!
 //! `icid-value` itself is treated as sensitive rather than as opaque, because
-//! §4.6's own suggested construction concatenates a local value with *"the
+//! the construction that [RFC 7315 section 4.6](https://www.rfc-editor.org/rfc/rfc7315#section-4.6) itself suggests concatenates a local value with *"the
 //! hostname or IP address of the SIP proxy that generated"* it. Nothing here
 //! returns a value into a report, a log line or a rendered ladder: the store
 //! compares values and reports only the NAME of the strategy that matched.
@@ -129,7 +129,7 @@ pub fn icid_value(value: &str) -> Option<Cow<'_, str>> {
 
 /// The `related-icid` of ONE `P-Charging-Vector` header value.
 ///
-/// Optional per §4.6.4.1, and a pointer at the icid of the *other* dialog —
+/// Optional per [RFC 7315 section 4.6.4.1](https://www.rfc-editor.org/rfc/rfc7315#section-4.6.4.1), and a pointer at the icid of the *other* dialog —
 /// never at this one's.
 #[must_use]
 pub fn related_icid(value: &str) -> Option<Cow<'_, str>> {
@@ -310,7 +310,7 @@ mod tests {
 
     /// The full ABNF: `SEMI`/`EQUAL` admit *any* amount of whitespace.
     ///
-    /// RFC 3261 §25.1 defines `EQUAL = SWS "=" SWS` and `SEMI = SWS ";" SWS`,
+    /// [RFC 3261 section 25.1](https://www.rfc-editor.org/rfc/rfc3261#section-25.1) defines `EQUAL = SWS "=" SWS` and `SEMI = SWS ";" SWS`,
     /// where `SWS = [LWS]` and `LWS = [*WSP CRLF] 1*WSP` with `WSP = SP / HTAB`.
     /// Read literally that permits, around either separator: nothing at all;
     /// one or more spaces; one or more tabs; any mix of the two; and a fold —

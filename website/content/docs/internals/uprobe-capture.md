@@ -17,7 +17,7 @@ Everything here is `tracefs` and `perf_event_open`. There is no BPF program
 and no `bpf-linker`, which is what makes it build on stable Rust and run on a
 kernel without BTF — the **BPF Type Format**, the kernel's description of its
 own structs and where each member sits. See
-[§7](#7-what-tracefs-cannot-do) for the one thing that costs.
+[section 7, "What tracefs cannot do"](#7-what-tracefs-cannot-do) for the one thing that costs.
 
 ---
 
@@ -183,7 +183,8 @@ map. That gap is exactly the 5-tuple: `SSL_write` knows nothing about the
 socket beneath, and recovering the peer means hooking `tcp_sendmsg`, reading
 `struct sock`, and matching per thread across two hooks.
 
-That is what the **BPF backend** does — `--uprobe-backend bpf`, §7a.
+That is what the **BPF backend** does — `--uprobe-backend bpf`, described in
+[section 7a, "The BPF backend, and what it costs"](#7a-the-bpf-backend-and-what-it-costs).
 [The backlog](https://github.com/NormB/sipnab/blob/main/docs/design/backlog.md) records the live verification and the three
 silent failures that turned up producing it.
 

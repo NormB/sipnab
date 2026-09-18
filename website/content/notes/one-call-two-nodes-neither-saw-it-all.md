@@ -80,7 +80,7 @@ identically and mean completely different things.
 The strategies that survive a B2BUA by design are few. `session_id` matches an
 [RFC 7989](https://www.rfc-editor.org/rfc/rfc7989) `Session-ID`, which exists
 for exactly this. `charging_vector_related_icid` matches when one leg's
-[RFC 7315 §4.6.4.1](https://www.rfc-editor.org/rfc/rfc7315#section-4.6.4.1)
+[RFC 7315 section 4.6.4.1](https://www.rfc-editor.org/rfc/rfc7315#section-4.6.4.1)
 `related-icid` names the other's `icid-value`, and a B2BUA emits that only when
 it chose to. Everything else survives a proxy and not a re-origination.
 

@@ -108,7 +108,7 @@ const HOST_PREFIX: &str = "h-";
 
 /// Suffix on a pseudonymized host name.
 ///
-/// [RFC 2606](https://www.rfc-editor.org/rfc/rfc2606) §2 reserves `.invalid`
+/// [RFC 2606 section 2](https://www.rfc-editor.org/rfc/rfc2606#section-2) reserves `.invalid`
 /// precisely so that a name built for illustration can never resolve. A
 /// pseudonymized hostname that looked resolvable is one somebody eventually
 /// puts in a DNS query.
@@ -355,7 +355,7 @@ pub struct Redactor<'a> {
 /// Split a header value at COMMAs that separate values, not at commas inside a
 /// quoted string or inside a `<...>` addr-spec.
 ///
-/// RFC 3261 §25.1: `qdtext` includes `,` (%x2C), and `quoted-pair` lets a
+/// [RFC 3261 section 25.1](https://www.rfc-editor.org/rfc/rfc3261#section-25.1): `qdtext` includes `,` (%x2C), and `quoted-pair` lets a
 /// backslash escape the closing DQUOTE. A URI inside angle brackets may also
 /// carry a comma in a header parameter. Both are commas that must not split.
 fn split_top_level_commas(value: &str) -> Vec<&str> {
@@ -365,7 +365,7 @@ fn split_top_level_commas(value: &str) -> Vec<&str> {
 /// Split a parameter list at SEMICOLONs that separate parameters, not at ones
 /// inside a quoted value or inside a `<...>` addr-spec.
 ///
-/// `;` is as legal inside `quoted-string` as `,` is — RFC 3261 §25.1 puts both
+/// `;` is as legal inside `quoted-string` as `,` is — [RFC 3261 section 25.1](https://www.rfc-editor.org/rfc/rfc3261#section-25.1) puts both
 /// in `qdtext` — and a `+sip.instance` or `icid-value` that carries one was
 /// torn in half by a bare `split(';')`, with the tail emitted verbatim.
 fn split_top_level_semicolons(value: &str) -> Vec<&str> {
@@ -410,7 +410,7 @@ fn split_top_level(value: &str, delim: u8) -> Vec<&str> {
 /// Byte offset of the DQUOTE that closes a quoted string, given the text that
 /// follows the opening one.
 ///
-/// RFC 3261 §25.1: `quoted-pair = "\\" (%x00-09 / %x0B-0C / %x0E-7F)`, so a
+/// [RFC 3261 section 25.1](https://www.rfc-editor.org/rfc/rfc3261#section-25.1): `quoted-pair = "\\" (%x00-09 / %x0B-0C / %x0E-7F)`, so a
 /// backslash escapes the next byte and `\\"` does NOT close the string. Scanning
 /// for the first bare `"` let a sender end the display name early and carry
 /// every following byte — the real URI included — past the rewriter.
@@ -495,7 +495,7 @@ impl<'a> Redactor<'a> {
     ///
     /// `Call-ID`, the SDP `o=` session id, `icid-value`. Every one of them is
     /// documented as meaningless and every one of them routinely embeds a
-    /// hostname: [RFC 7315](https://www.rfc-editor.org/rfc/rfc7315) §4.6's own
+    /// hostname: [RFC 7315 section 4.6](https://www.rfc-editor.org/rfc/rfc7315#section-4.6)'s own
     /// suggested `icid-value` construction concatenates a local value with
     /// "the hostname or IP address of the SIP proxy that generated" it, and SIP
     /// stacks have written `<random>@<fqdn>` into `Call-ID` since RFC 2543.
@@ -518,8 +518,8 @@ impl<'a> Redactor<'a> {
 
     /// A pseudonym for an interconnect operator identifier.
     ///
-    /// `orig-ioi`, `term-ioi` and each element of `transit-ioi`. RFC 7315
-    /// §5.6 makes these the names of the operators on each side of an
+    /// `orig-ioi`, `term-ioi` and each element of `transit-ioi`.
+    /// [RFC 7315 section 5.6](https://www.rfc-editor.org/rfc/rfc7315#section-5.6) makes these the names of the operators on each side of an
     /// interconnect, and the `void` convention exists in the same section
     /// precisely because operators treat the transit list as commercially
     /// secret. `void` is passed through unchanged: it is the spec's own way of
@@ -543,7 +543,7 @@ impl<'a> Redactor<'a> {
     ///
     /// The unspecified address is returned unchanged, and that exemption is
     /// load-bearing rather than tidy: `0.0.0.0` and `::` in an SDP `c=` line
-    /// are the RFC 2543 hold signal (RFC 3264 §8.4), not anybody's address.
+    /// are the RFC 2543 hold signal ([RFC 3264 section 8.4](https://www.rfc-editor.org/rfc/rfc3264#section-8.4)), not anybody's address.
     /// Rewriting them would delete a call state from the export and take
     /// `SDP-3264-8.4-HOLD-CONNECTION-ZERO` with it.
     #[must_use]
@@ -757,10 +757,11 @@ impl<'a> Redactor<'a> {
     ///
     /// [`Self::name_addr`] parses exactly ONE value and returns whatever
     /// follows it untouched. Every header in the identity and routing families
-    /// is `value *(COMMA value)` — RFC 3325 §9.1 for `P-Asserted-Identity`,
+    /// is `value *(COMMA value)` — [RFC 3325 section 9.1](https://www.rfc-editor.org/rfc/rfc3325#section-9.1) for `P-Asserted-Identity`,
     /// where two values, one `sip:` and one `tel:`, is the ordinary IMS shape;
-    /// RFC 3327 §4 for `Path`; RFC 7044 §5 for `History-Info`; RFC 3261
-    /// §20.10/§20.30 for `Contact` and `Record-Route`. So a two-value header
+    /// [RFC 3327 section 4](https://www.rfc-editor.org/rfc/rfc3327#section-4) for `Path`; [RFC 7044 section 5](https://www.rfc-editor.org/rfc/rfc7044#section-5) for `History-Info`;
+    /// [RFC 3261 section 20.10](https://www.rfc-editor.org/rfc/rfc3261#section-20.10) and
+    /// [section 20.30](https://www.rfc-editor.org/rfc/rfc3261#section-20.30) for `Contact` and `Record-Route`. So a two-value header
     /// came out of `--redact` with its first value pseudonymized and its
     /// second **verbatim**: a real E.164 subscriber number, a display name, or
     /// an operator's core hostname, sitting in a container the tool calls
@@ -768,7 +769,7 @@ impl<'a> Redactor<'a> {
     ///
     /// # Why splitting is not simply `split(',')`
     ///
-    /// RFC 3261 §25.1 puts `,` (%x2C) inside `qdtext`, so `"Doe, John"` is one
+    /// [RFC 3261 section 25.1](https://www.rfc-editor.org/rfc/rfc3261#section-25.1) puts `,` (%x2C) inside `qdtext`, so `"Doe, John"` is one
     /// display name rather than two header values, and a URI header parameter
     /// inside `<...>` may carry one too. The scan tracks the quoted string —
     /// honoring `quoted-pair` so a `\` does not let the DQUOTE close — and the
@@ -879,10 +880,10 @@ impl<'a> Redactor<'a> {
     /// rather than one, and redacting `Call-ID` and the SDP origin while
     /// leaving it intact would remove the two lesser sources of the same leak
     /// and not the greater. `icid-generated-at` and `related-icid-generated-at`
-    /// are §5.6's hostname or IP of the generating proxy; `orig-ioi`,
+    /// are [RFC 7315 section 5.6](https://www.rfc-editor.org/rfc/rfc7315#section-5.6)'s hostname or IP of the generating proxy; `orig-ioi`,
     /// `term-ioi` and `transit-ioi` name the operators; and `icid-value` is
-    /// opaque only in theory, since §4.6's own suggested construction ends in
-    /// a proxy's hostname.
+    /// opaque only in theory, since [RFC 7315 section 4.6](https://www.rfc-editor.org/rfc/rfc7315#section-4.6)'s own suggested
+    /// construction ends in a proxy's hostname.
     #[must_use]
     pub fn charging_vector(&self, value: &str) -> String {
         // The quote-aware walker from `sip::charging_vector`, not a second
@@ -990,12 +991,12 @@ impl<'a> Redactor<'a> {
 
     /// Rewrite the `sent-by` host of one `Via` header field.
     ///
-    /// [RFC 3261 §20.42](https://www.rfc-editor.org/rfc/rfc3261#section-20.42): `Via = ( "Via" / "v" ) HCOLON via-parm
+    /// [RFC 3261 section 20.42](https://www.rfc-editor.org/rfc/rfc3261#section-20.42): `Via = ( "Via" / "v" ) HCOLON via-parm
     /// *(COMMA via-parm)`, where `via-parm = sent-protocol LWS sent-by
     /// *( SEMI via-params )` and `sent-by = host [ COLON port ]`.
     ///
     /// The `branch` parameter is KEPT. It is the transaction identifier a
-    /// reader follows a request and its responses by, RFC 3261 §8.1.1.7
+    /// reader follows a request and its responses by, [RFC 3261 section 8.1.1.7](https://www.rfc-editor.org/rfc/rfc3261#section-8.1.1.7)
     /// requires it to be globally unique and to begin `z9hG4bK`, and
     /// tokenizing it would delete the transaction correlation from the export
     /// to hide nothing — the value is a magic cookie and a random suffix.
@@ -1584,7 +1585,7 @@ mod tests {
 
     /// The unspecified address is a protocol signal, not an address.
     ///
-    /// RFC 3264 §8.4 hold is `c=IN IP4 0.0.0.0`. Pseudonymizing it deletes a
+    /// [RFC 3264 section 8.4](https://www.rfc-editor.org/rfc/rfc3264#section-8.4) hold is `c=IN IP4 0.0.0.0`. Pseudonymizing it deletes a
     /// call state from the export and takes the hold lint rule with it.
     #[test]
     fn the_unspecified_address_is_left_alone() {
@@ -1615,8 +1616,8 @@ mod tests {
 
     /// A quoted `icid-value` containing a `;` is not split.
     ///
-    /// RFC 7315 §5.6 gives `icid-value = "icid-value" EQUAL gen-value`, and
-    /// RFC 3261 §25.1 makes `gen-value` admit a `quoted-string` whose `qdtext`
+    /// [RFC 7315 section 5.6](https://www.rfc-editor.org/rfc/rfc7315#section-5.6) gives `icid-value = "icid-value" EQUAL gen-value`, and
+    /// [RFC 3261 section 25.1](https://www.rfc-editor.org/rfc/rfc3261#section-25.1) makes `gen-value` admit a `quoted-string` whose `qdtext`
     /// includes `;` (%x3B). The redactor had its OWN `split(';')` — a second
     /// P-Charging-Vector parser beside `src/sip/charging_vector.rs`, which
     /// gets this right and whose module docs describe this exact attack.
@@ -1643,7 +1644,7 @@ mod tests {
     ///
     /// `EQUAL = SWS "=" SWS`, so `transit-ioi = "a.1, b.2"` is conformant.
     /// The quoted-ness test read the UNTRIMMED value, so a leading space made
-    /// it read as unquoted and the mandatory DQUOTEs of RFC 7315 §5.6's
+    /// it read as unquoted and the mandatory DQUOTEs of [RFC 7315 section 5.6](https://www.rfc-editor.org/rfc/rfc7315#section-5.6)'s
     /// `transit-ioi-list` were dropped — leaving embedded COMMAs that any
     /// downstream parser reads as a header-value separator.
     #[test]
@@ -1707,7 +1708,7 @@ mod tests {
 
     /// A two-value `P-Asserted-Identity` redacts BOTH values.
     ///
-    /// RFC 3325 §9.1: `PAssertedID = "P-Asserted-Identity" HCOLON
+    /// [RFC 3325 section 9.1](https://www.rfc-editor.org/rfc/rfc3325#section-9.1): `PAssertedID = "P-Asserted-Identity" HCOLON
     /// PAssertedID-value *(COMMA PAssertedID-value)`, and the same section says
     /// that when there are two, one MUST be a sip/sips URI and the other a tel
     /// URI. That two-value form is the ordinary shape in an IMS core, not an
@@ -1736,7 +1737,7 @@ mod tests {
     /// A display name may end in an ESCAPED quote, and the URI after it must
     /// still be redacted.
     ///
-    /// RFC 3261 §25.1: `quoted-string = DQUOTE *(qdtext / quoted-pair) DQUOTE`
+    /// [RFC 3261 section 25.1](https://www.rfc-editor.org/rfc/rfc3261#section-25.1): `quoted-string = DQUOTE *(qdtext / quoted-pair) DQUOTE`
     /// and `quoted-pair = "\\" (%x00-09 / %x0B-0C / %x0E-7F)`, so `\"` inside a
     /// quoted string does not close it. `split_top_level_commas` in this file
     /// already honors that; `name_addr_one` scanned for the first bare `"` and

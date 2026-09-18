@@ -5,10 +5,11 @@
 [`src/security/scanner_detect.rs`](https://github.com/NormB/sipnab/blob/main/src/security/scanner_detect.rs) that section 4 describes and deliberately does
 not cite by line, because it was moving. Every line citation on this page was
 re-anchored against `fcabc436` on 2026-09-02; the prose was not re-verified then.
-**Relationship to [`deferred-and-declined.md`](deferred-and-declined.md) §3.**
+**Relationship to section 3 of [`deferred-and-declined.md`](deferred-and-declined.md),
+["Automated threat-mitigation hooks"](deferred-and-declined.md#3-automated-threat-mitigation-hooks).**
 That page covered the *action ledger* — a durable record of what sipnab did — and
 deferred it behind a decision about cross-run persistence. This page is about the
-question that comes before a ledger: **when may sipnab act at all.** §3 says the
+question that comes before a ledger: **when may sipnab act at all.** That section says the
 record is missing. This page says the evidence bar is missing, and that the bar
 is the more urgent of the two, because a ledger of wrong bans is still a list of
 wrong bans.
@@ -229,8 +230,9 @@ changing that, and nothing should.
 
 ## 6. Three blind spots that make the tiers unverifiable
 
-[`deferred-and-declined.md`](deferred-and-declined.md) §3 filed these as ordinary
-defects to be closed independently of any ledger. They are restated here with
+Section 3 of [`deferred-and-declined.md`](deferred-and-declined.md), in
+["Decision on the mitigation ledger, and what would change it"](deferred-and-declined.md#decision-on-the-mitigation-ledger-and-what-would-change-it),
+filed these as ordinary defects to be closed independently of any ledger. They are restated here with
 their current state, because a threshold nobody can audit is not a threshold.
 
 **Per-event outcomes are unobserved in production.** The kill worker produces a
@@ -334,7 +336,8 @@ committed *and* measured against a real corpus for both false positives and
 recall. Section 2 is what happens otherwise, twice.
 
 **Then, and only then, consider the ledger** — on the terms
-[`deferred-and-declined.md`](deferred-and-declined.md) §3 already set, which
+section 3 of [`deferred-and-declined.md`](deferred-and-declined.md) already set in
+["Decision on the mitigation ledger, and what would change it"](deferred-and-declined.md#decision-on-the-mitigation-ledger-and-what-would-change-it), which
 require a decision about durable cross-run state first. That ordering is not
 arbitrary. A ledger's whole value is that an absent entry means the action did
 not happen; built today, it would faithfully record sends and silently omit

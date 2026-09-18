@@ -419,9 +419,9 @@ Capture threads own their reassembly state — no shared mutable state between c
 > which is the correct thing to reason about, and is not what "write-rare"
 > would predict. Measured detail, including why the serial pcap reader (not
 > this lock) is what caps `--cores`, is in
-> [`process-isolation-and-hot-path-cost.md`](process-isolation-and-hot-path-cost.md)
-> §2d; the lock-ordering rules the batch path actually follows are in
-> [`invariants.md`](../internals/invariants.md) §2.
+> [`process-isolation-and-hot-path-cost.md` section 2d, "Bypassing a shared-lock bottleneck"](process-isolation-and-hot-path-cost.md#2d-bypassing-a-shared-lock-bottleneck--no-and-this-is-measured);
+> the lock-ordering rules the batch path actually follows are in
+> [`invariants.md` section 2, "Dialog before stream, then alerts — one consistent order"](../internals/invariants.md#2-dialog-before-stream-then-alerts--one-consistent-order).
 
 This eliminates a global `capture_lock` mutex that would block the capture thread during every TUI redraw.
 
@@ -1332,7 +1332,7 @@ sipnab accepts the full conventional flag set. When invoked without `-N`, it lau
   - `l` = Content-Length, `c` = Content-Type, `e` = Content-Encoding
   - `k` = Supported, `s` = Subject
   - Carriers and B2BUAs use these in production; without support, sipnab misses headers
-- [ ] **Header folding** — headers continued on the next line with leading whitespace (SP or HTAB per [RFC 3261 §7.3.1](https://www.rfc-editor.org/rfc/rfc3261#section-7.3.1)) must be unfolded before value extraction
+- [ ] **Header folding** — headers continued on the next line with leading whitespace (SP or HTAB per [RFC 3261 section 7.3.1](https://www.rfc-editor.org/rfc/rfc3261#section-7.3.1)) must be unfolded before value extraction
 - [ ] **Multiple headers with same name** — Via, Record-Route, Route can appear multiple times; parser returns all instances, not just the first
 - [ ] Header extraction (lazy, on-demand):
   - Call-ID, X-Call-ID
@@ -2606,7 +2606,7 @@ SDP a=crypto (SDES)  ──► SRTP master key ──► decrypt RTP headers + p
 
 **Exit criteria — Phase 6 is done when:**
 - [ ] REST API serves dialog list, detail, and pcap export with correct JSON
-- [ ] **API runs in isolated child process** (D16), verified by PID check — **UNSATISFIABLE, AND DECLINED (2026-08-03).** The REST API is a detached OS thread hosting a tokio runtime ([`servers.rs`](../../src/app/servers.rs)) and reads the shared stores directly. Forking it is not deferred, it is declined: the store reads *are* the API, so isolation would turn every read into a wire protocol. See the D16 annotation and [`process-isolation-and-hot-path-cost.md`](process-isolation-and-hot-path-cost.md) §3–4.
+- [ ] **API runs in isolated child process** (D16), verified by PID check — **UNSATISFIABLE, AND DECLINED (2026-08-03).** The REST API is a detached OS thread hosting a tokio runtime ([`servers.rs`](../../src/app/servers.rs)) and reads the shared stores directly. Forking it is not deferred, it is declined: the store reads *are* the API, so isolation would turn every read into a wire protocol. See the D16 annotation and [`process-isolation-and-hot-path-cost.md` section 3, "What forking would cost"](process-isolation-and-hot-path-cost.md#3-what-forking-would-cost) and [section 4, "Verdict"](process-isolation-and-hot-path-cost.md#4-verdict).
 - [ ] **API binds to localhost by default** (D18)
 - [ ] **API with non-loopback bind + no TLS prints warning**
 - [ ] WebSocket stream delivers events within 100ms of capture

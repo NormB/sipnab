@@ -83,7 +83,7 @@ The difference is not subtle or corpus-specific, and the packet mix says why.
 Of `tg`'s 3,406,114 packets, 2,846,542 (83.6%) classified as RTP and 82,324
 (2.4%) as SIP; of `direct-01`'s 1,126,158, 742,241 (65.9%) were RTP and 2,558
 (0.2%) SIP. Capture files are overwhelmingly media, and media is bounded per
-call: G.711 at 8,000 Hz ([RFC 3551 §4.5.14](https://www.rfc-editor.org/rfc/rfc3551#section-4.5.14)) packetized at 20 ms is 50
+call: G.711 at 8,000 Hz ([RFC 3551 section 4.5.14](https://www.rfc-editor.org/rfc/rfc3551#section-4.5.14)) packetized at 20 ms is 50
 packets/second/direction, which is what the `--report` stream table shows —
 1,827 packets over 37 s and 3,407 over 68 s, both 49–50 pps. Signaling is a
 handful of packets per call regardless of how long the call runs. **Bytes on

@@ -10,7 +10,7 @@
 //! explanation. Nothing could read them, so nothing could check them, and a
 //! wrong section number reads exactly like a right one at review time. Writing
 //! this module found one: the angle-bracket rule for a `Contact` URI carrying
-//! parameters lives in the **preamble of Section 20**, not in §20.10, which is
+//! parameters lives in the **preamble of [RFC 3261 section 20](https://www.rfc-editor.org/rfc/rfc3261#section-20)**, not in [section 20.10](https://www.rfc-editor.org/rfc/rfc3261#section-20.10), which is
 //! where three separate sources place it.
 //!
 //! [`RuleMeta`] therefore carries `rfc: u32` and `section: &'static str` as
@@ -65,8 +65,8 @@ impl Severity {
 /// What kind of claim a rule makes.
 ///
 /// The whole point of the enum is the first variant standing alone. A tool that
-/// reports "your Contact header breaks Cisco" beside "your ACK violates RFC 3261
-/// §17.1.1.3" under one word teaches the reader to discount the second.
+/// reports "your Contact header breaks Cisco" beside "your ACK violates
+/// [RFC 3261 section 17.1.1.3](https://www.rfc-editor.org/rfc/rfc3261#section-17.1.1.3)" under one word teaches the reader to discount the second.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Basis {
@@ -322,7 +322,7 @@ pub const URI_BRACKETS: RuleMeta = RuleMeta {
 /// The semicolon half of the Section 20 sentence, split off because it is a
 /// different kind of claim. `Contact: sip:a@b;transport=tcp` parses as perfectly
 /// legal SIP — it simply means something the sender did not intend, since
-/// `transport` is a URI parameter (§19.1.1) and outside the brackets it lands on
+/// `transport` is a URI parameter ([RFC 3261 section 19.1.1](https://www.rfc-editor.org/rfc/rfc3261#section-19.1.1)) and outside the brackets it lands on
 /// the header instead. Nothing on the wire breaks a MUST, so this rule stays out
 /// of the `must` ruleset. What it breaks is routing, which is why it is the
 /// defect most often found at the bottom of a "calls go to the wrong trunk"
@@ -528,7 +528,7 @@ pub const DYNAMIC_PT_REBOUND: RuleMeta = RuleMeta {
 /// `telephone-event` offered on an accepted stream and absent from the answer.
 ///
 /// Cited to RFC 3264 rather than to RFC 4733, deliberately. RFC 4733 carries no
-/// offer/answer rule at all: §2.5.1.1 says negotiation happens "by out-of-band
+/// offer/answer rule at all: [section 2.5.1.1](https://www.rfc-editor.org/rfc/rfc4733#section-2.5.1.1) says negotiation happens "by out-of-band
 /// means, using SDP, for example", and the document never states what an
 /// omitted `telephone-event` means. The binding statement is RFC 3264's, and it
 /// is a MAY — which is why this reports as interop rather than as a violation.
@@ -699,11 +699,11 @@ pub const SESSION_ID_UPPERCASE: RuleMeta = RuleMeta {
 
 /// A `Session-ID` carrying no `remote` parameter — the obsoleted RFC 7329 form.
 ///
-/// RFC 7989 §5 states it as a MUST with a named exception: "Except for
+/// [RFC 7989 section 5](https://www.rfc-editor.org/rfc/rfc7989#section-5) states it as a MUST with a named exception: "Except for
 /// backwards compatibility with RFC 7329, the 'remote' parameter MUST be
-/// present." §11 details that compatibility case.
+/// present." [RFC 7989 section 11](https://www.rfc-editor.org/rfc/rfc7989#section-11) details that compatibility case.
 ///
-/// Cited to §11 and raised as INTEROP rather than MUST, deliberately. One
+/// Cited to [RFC 7989 section 11](https://www.rfc-editor.org/rfc/rfc7989#section-11) and raised as INTEROP rather than MUST, deliberately. One
 /// message cannot distinguish a peer genuinely interworking with an RFC 7329
 /// stack — which the RFC permits — from one that simply omits the parameter.
 /// Reporting a MUST violation would assert the second when only the first is
@@ -738,7 +738,7 @@ pub const ANSWER_NO_COMMON_FORMAT: RuleMeta = RuleMeta {
 
 /// An answer listing a format the offer never carried.
 ///
-/// Widely reported as illegal. It is not: §6.1 permits it in as many words. The
+/// Widely reported as illegal. It is not: [RFC 3264 section 6.1](https://www.rfc-editor.org/rfc/rfc3264#section-6.1) permits it in as many words. The
 /// answerer simply cannot send with that format, so the listing misleads every
 /// reader who takes it for a negotiated codec.
 pub const ANSWER_EXTRA_FORMAT: RuleMeta = RuleMeta {
@@ -1033,10 +1033,10 @@ mod tests {
         );
     }
 
-    /// The angle-bracket rule cites Section 20, not §20.10.
+    /// The angle-bracket rule cites [RFC 3261 section 20](https://www.rfc-editor.org/rfc/rfc3261#section-20), not [section 20.10](https://www.rfc-editor.org/rfc/rfc3261#section-20.10).
     ///
     /// Pinned deliberately. The sentence sits in the preamble of Section 20,
-    /// above §20.1, and three separate sources place it in §20.10 — which is
+    /// above [section 20.1](https://www.rfc-editor.org/rfc/rfc3261#section-20.1), and three separate sources place it in [section 20.10](https://www.rfc-editor.org/rfc/rfc3261#section-20.10) — which is
     /// the Contact header field's own subsection and says nothing about
     /// brackets. Stringly-typed citations are how that survives review.
     #[test]

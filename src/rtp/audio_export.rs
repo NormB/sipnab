@@ -153,7 +153,8 @@ pub struct DialogAudio {
     ///
     /// The signal that the file is shorter than the call it came from, which
     /// is the one gap vCon can state in its own vocabulary
-    /// (`docs/design/vcon.md` §4b).
+    /// (section 4b of `docs/design/vcon.md`,
+    /// ["Media: a `recording` Dialog Object is not a recording"](https://github.com/NormB/sipnab/blob/main/docs/design/vcon.md#4b-media-a-recording-dialog-object-is-not-a-recording)).
     pub ring_wrapped: bool,
     /// The streams on the file's channels, in channel order.
     ///

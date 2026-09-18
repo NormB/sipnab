@@ -61,7 +61,7 @@ without a `2xx` is the signal.
 
 ### 3. Retransmission storm / no-response transaction
 
-A request retransmitted per [RFC 3261 §17](https://www.rfc-editor.org/rfc/rfc3261#section-17) timers with no response — the classic
+A request retransmitted per [RFC 3261 section 17](https://www.rfc-editor.org/rfc/rfc3261#section-17) timers with no response — the classic
 signature of a one-way network path or a dead peer. Detected by CSeq plus
 identical branch on repeated requests.
 
@@ -70,8 +70,8 @@ diagnostic and "retransmissions detected" is not.
 
 ### 4. ACK never received
 
-**Built.** A `200 OK` to an `INVITE` with no matching `ACK` within Timer H. RFC
-3261 §17.1.1 makes this a definite fault, and it is invisible without
+**Built.** A `200 OK` to an `INVITE` with no matching `ACK` within Timer H.
+[RFC 3261 section 13.3.1.4](https://www.rfc-editor.org/rfc/rfc3261#section-13.3.1.4) makes this a definite fault, and it is invisible without
 correlation: both sides look fine in isolation.
 
 Two guards were added during implementation, each because the naive version
@@ -79,7 +79,7 @@ fired on healthy traffic:
 
 - **The observation window must exceed Timer H.** A `2xx` at the end of a
   capture has an `ACK` nobody recorded, not a missing one.
-- **A `BYE` after the answer suppresses it entirely.** [RFC 3261 §15](https://www.rfc-editor.org/rfc/rfc3261#section-15) has a UA
+- **A `BYE` after the answer suppresses it entirely.** [RFC 3261 section 15](https://www.rfc-editor.org/rfc/rfc3261#section-15) has a UA
   not sending `BYE` on a confirmed dialog until it has the `ACK` for its `2xx`,
   so a hangup proves the `ACK` arrived. Without this, an ordinary
   `INVITE`/`180`/`200`/`BYE` capture that happened to miss one packet reported
@@ -95,8 +95,8 @@ likely to lie if written carelessly.
 **Bounded by Timer C, which this spec did not ask for.** Reporting every
 unanswered `INVITE` means reporting every call in flight when the capture
 stopped, which on a busy capture is a warning against healthy traffic — and a
-warning that fires on healthy traffic teaches the reader to skip warnings. RFC
-3261 §16.6 bullet 11 introduces Timer C with the words "in order to handle the
+warning that fires on healthy traffic teaches the reader to skip warnings. [RFC
+3261 section 16.6](https://www.rfc-editor.org/rfc/rfc3261#section-16.6) bullet 11 introduces Timer C with the words "in order to handle the
 case where an INVITE request never generates a final response", which is this
 case exactly, and sets it larger than 3 minutes. Past that, a proxy in the path
 would itself have given up.
@@ -107,7 +107,7 @@ would itself have given up.
 responses are a routing problem the caller experiences as dead air.
 
 Default 11.0 s, from Table 2/E.721 — the 95th-percentile post-selection delay
-target for an international connection at normal load. E.721 §2.2(b) defines
+target for an international connection at normal load. [ITU-T E.721](https://www.itu.int/rec/T-REC-E.721) section 2.2(b) defines
 post-selection delay as the interval from the initial `SETUP` to the first
 message indicating call disposition (`ALERTING`), which is `INVITE` to first
 `18x` under different names.
@@ -115,7 +115,7 @@ message indicating call disposition (`ALERTING`), which is `INVITE` to first
 International rather than local (6.0 s) or toll (8.0 s) because a capture does
 not say which kind of call it holds, so the most permissive target is the only
 one whose finding holds regardless. `100 Trying` is excluded: it is hop-by-hop
-([RFC 3261 §8.2.6](https://www.rfc-editor.org/rfc/rfc3261#section-8.2.6)), inaudible to the caller, and counting it measures the first
+([RFC 3261 section 8.2.6](https://www.rfc-editor.org/rfc/rfc3261#section-8.2.6)), inaudible to the caller, and counting it measures the first
 proxy's reflexes rather than the call's.
 
 Worth recording: this spec said to ground the figure "the way
@@ -133,7 +133,7 @@ fail?".
 
 **No "too short" constant, deliberately.** The spec asked for an expiry "so
 short the endpoint will re-register immediately", and any number answering that
-literally would be chosen for looking reasonable. [RFC 3261 §10.2.1.1](https://www.rfc-editor.org/rfc/rfc3261#section-10.2.1.1) already
+literally would be chosen for looking reasonable. [RFC 3261 section 10.2.1.1](https://www.rfc-editor.org/rfc/rfc3261#section-10.2.1.1) already
 supplies a non-arbitrary comparison: the endpoint states what it wants and the
 registrar states what it granted, so "shorter than requested" is a fact about
 the exchange rather than a judgement imposed on it. Both numbers are reported

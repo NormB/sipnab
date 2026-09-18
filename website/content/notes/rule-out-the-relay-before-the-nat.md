@@ -118,7 +118,7 @@ like from the inside.
 ```
 
 A retransmission is the proof rather than a guess.
-[RFC 5389 §7.2.1](https://www.rfc-editor.org/rfc/rfc5389#section-7.2.1)
+[RFC 5389 section 7.2.1](https://www.rfc-editor.org/rfc/rfc5389#section-7.2.1)
 retransmits a Binding Request only on timeout, so a second copy on the wire
 means the first one drew silence.
 

@@ -42,8 +42,8 @@ Live capture on 'eth0' finished: 4821003 packets, no drops
 
 | Counter | libpcap field | What it means | What fixes it |
 |---|---|---|---|
-| **kernel buffer** | `ps_drop` | The ring was full when the packet arrived. sipnab was not draining fast enough. | §2 (`-B`), §3 (BPF), §4 (`--snaplen`), §5 (device) |
-| **interface/driver** | `ps_ifdrop` | The NIC or its driver discarded the packet before libpcap ever saw it. | §7 — **a bigger buffer cannot fix this** |
+| **kernel buffer** | `ps_drop` | The ring was full when the packet arrived. sipnab was not draining fast enough. | [section 2](#2-the-kernel-capture-buffer-b-buffer) (`-B`), [section 3](#3-capture-less-bpf-filters) (BPF), [section 4](#4-snapshot-length-snaplen-and-why-it-decides-your-ring-capacity) (`--snaplen`), [section 5](#5-which-interfaces-any-versus-named) (device) |
+| **interface/driver** | `ps_ifdrop` | The NIC or its driver discarded the packet before libpcap ever saw it. | [section 7, "Interface and driver drops"](#7-interface-and-driver-drops) — **a bigger buffer cannot fix this** |
 
 That distinction is the single most useful thing on this page. Operators
 routinely respond to *any* drop by raising `-B`, which does nothing at all for
@@ -61,7 +61,7 @@ The difference changes what a zero means and what a total covers.
   neither run can read the other's.
 - **One run can hold several handles.** `--multi-device` opens one per named
   interface, and `--cores N` on a live device opens N sockets on one interface
-  (§8). sipnab adds each handle's increment to one process-wide pair, so the
+  ([section 8, "On a live device it means capture sockets, not workers"](#on-a-live-device-it-means-capture-sockets-not-workers)). sipnab adds each handle's increment to one process-wide pair, so the
   totals cover the whole run rather than any single socket. The first-drop
   warning names the device that dropped, which is what tells you where to act.
 - **The packet count beside them is sipnab's own tally**, not a libpcap
@@ -125,7 +125,7 @@ sudo sipnab -N -d eth0 -B 8
 > fixed-size slots whose size comes from `--snaplen`, so how many *packets*
 > 64 MiB holds depends on the snapshot length and on whether NIC offloads are
 > on — anywhere from ~1,000 to ~41,000 — and on whether you named an interface
-> at all. Read §4 and §5 before concluding that a bigger `-B` did not help; the
+> at all. Read [section 4, "Snapshot length"](#4-snapshot-length-snaplen-and-why-it-decides-your-ring-capacity) and [section 5, "Which interfaces: `any` versus named"](#5-which-interfaces-any-versus-named) before concluding that a bigger `-B` did not help; the
 > three settings multiply.
 
 Rules of thumb:
@@ -135,7 +135,7 @@ Rules of thumb:
   absorbs.
 - **Do not raise it** when the drops persist and a core is at 100%. A bigger ring
   buys a longer burst, not more throughput — you are not keeping up on average,
-  and no buffer size fixes that. Go to §3.
+  and no buffer size fixes that. Go to [section 3, "Capture less: BPF filters"](#3-capture-less-bpf-filters).
 - **Lower it** on `--multi-device` runs. The cost is **per device**: eight
   interfaces at the default reserve half a gigabyte of kernel memory.
 
@@ -291,7 +291,7 @@ from 2 MiB, that same arithmetic gave **31 slots**.
 
 Note what this means: naming an interface explicitly *and* disabling offloads is
 worth far more than either alone, because only that combination reaches the
-clamp. **§5 is the decision guide for the device half of that** — what leaving
+clamp. **[Section 5, "Which interfaces: `any` versus named"](#5-which-interfaces-any-versus-named) is the decision guide for the device half of that** — what leaving
 `any` gains you, what it costs, and how to check you did not drop a call leg on
 the way.
 
@@ -303,10 +303,10 @@ sudo sipnab -N -d eth0 --snaplen 1600
 Three ways out, and they compose:
 
 1. **Cap the snaplen** (above) — immediate, no root beyond capture.
-2. **Name the interface** (§5) — the only way to reach `DLT_EN10MB` at all, and
-   the prerequisite for the clamp below. It is a coverage trade, so read §5
+2. **Name the interface** ([section 5, "Which interfaces: `any` versus named"](#5-which-interfaces-any-versus-named)) — the only way to reach `DLT_EN10MB` at all, and
+   the prerequisite for the clamp below. It is a coverage trade, so read [section 5](#5-which-interfaces-any-versus-named)
    before making it.
-3. **Turn the offloads off** (§7) — which is independently correct for capture
+3. **Turn the offloads off** ([section 7, "Interface and driver drops"](#7-interface-and-driver-drops)) — which is independently correct for capture
    fidelity, because GRO/LRO hand you reassembled super-frames that were never
    on the wire.
 
@@ -404,7 +404,7 @@ That is a real hazard, not a hypothetical one. A B2BUA talking to a registrar
 over `127.0.0.1`, a containerized stack bridging SIP across `docker0`, a proxy
 handing calls to a media server over a veth pair — capture `eth0` alone and
 those legs are simply absent. A dialog missing one leg does not come back
-smaller, it comes back **wrong**, exactly as §1 describes for dropped packets.
+smaller, it comes back **wrong**, exactly as [section 1, "Are you dropping packets?"](#1-are-you-dropping-packets) describes for dropped packets.
 `any` is the setting that does not lose calls.
 
 It is also the slowest and least capable device sipnab can open, on four
@@ -414,7 +414,7 @@ other way.
 ### What `any` costs you
 
 **1. It forfeits about 40x of your ring capacity — on the V2 ring, so on the
-TUI.** §4 has the mechanism and the run-mode rule that scopes it:
+TUI.** [Section 4, "Snapshot length"](#4-snapshot-length-snaplen-and-why-it-decides-your-ring-capacity) has the mechanism and the run-mode rule that scopes it:
 libpcap's `create_ring()` sizes each TPACKET_V2 slot from the snaplen, and the
 clamp that cuts a slot down to MTU+18 sits behind
 `if (handle->linktype == DLT_EN10MB)`. **`any` reports `DLT_LINUX_SLL2`, so
@@ -438,7 +438,7 @@ correctness cost, and it points the opposite way from the loopback argument —
 which spawns one coordinator thread plus **one capture thread per interface**
 (`start_multi_capture()` in [`src/capture/native.rs`](https://github.com/NormB/sipnab/blob/main/src/capture/native.rs)), each with its own ring and
 its own drain loop. `any` is one device, so it is one thread and one ring no
-matter how many interfaces the traffic actually arrives on. `--cores N` (§8) is
+matter how many interfaces the traffic actually arrives on. `--cores N` ([section 8, "On a live device it means capture sockets, not workers"](#on-a-live-device-it-means-capture-sockets-not-workers)) is
 the other way to get more than one socket, and it works on a single device
 rather than on a list.
 
@@ -453,7 +453,7 @@ ring the traffic you *do* want is competing for.
 |---|---|---|
 | **Loopback / container legs** | Captured | **Missed unless you name those interfaces too** |
 | **Link type** | `DLT_LINUX_SLL2` | `DLT_EN10MB` |
-| **Snaplen slot clamp (§4)** | **Never runs** | Runs once offloads are off |
+| **Snaplen slot clamp ([section 4](#4-snapshot-length-snaplen-and-why-it-decides-your-ring-capacity))** | **Never runs** | Runs once offloads are off |
 | **64 MiB ring holds** | ~1,000 packets | ~41,000 with offloads off (~1,000 with them on) |
 | **Promiscuous mode** | **Unavailable** | On by default; `--no-promisc` to disable |
 | **Capture threads** | 1 | 1 per named device under `--multi-device` |
@@ -467,12 +467,12 @@ ring the traffic you *do* want is competing for.
 - You do not yet know which interface carries the traffic.
 - SIP genuinely crosses loopback or container bridges and you have not
   enumerated those interfaces.
-- The drop counters from §1 read `no drops`. If it is not dropping, it is not
+- The drop counters from [section 1, "Are you dropping packets?"](#1-are-you-dropping-packets) read `no drops`. If it is not dropping, it is not
   costing you anything worth this trade.
 
 **Name your interfaces** when any of these hold:
 
-- §1 shows sustained `kernel buffer` drops.
+- [Section 1, "Are you dropping packets?"](#1-are-you-dropping-packets) shows sustained `kernel buffer` drops.
 - You are running a long-lived headless capture on a known topology.
 - You need promiscuous mode because the switch mirrors the traffic to you
   rather than addressing it to you.
@@ -500,7 +500,7 @@ MTU+18 so the same 64 MiB holds tens of thousands of packets instead of ~1,000,
 promiscuous mode is back, there is one capture thread per interface, and
 nothing goes to `docker0`. Neither half works alone — `any` cannot reach
 the clamp however you set `ethtool`, and a named device with offloads on is
-still stuck at ~65 KB slots (§4).
+still stuck at ~65 KB slots ([section 4, "Snapshot length"](#4-snapshot-length-snaplen-and-why-it-decides-your-ring-capacity)).
 
 **Verify you did not lose a leg.** This is a deliberate trade of coverage for
 throughput, and the failure mode is silent — calls do not error, they just stop
@@ -512,7 +512,7 @@ ip -brief address
 
 If any SIP endpoint answers on `127.0.0.1` or a container bridge, add `lo` or
 `docker0` to the `-d` list rather than accepting the gap. `--multi-device`
-costs `-B` **per device** (§2), so eight interfaces at the default reserve half
+costs `-B` **per device** ([section 2, "The kernel capture buffer"](#2-the-kernel-capture-buffer-b-buffer)), so eight interfaces at the default reserve half
 a gigabyte — name what you need and no more.
 
 ---
@@ -598,9 +598,9 @@ Three things to know before reaching for it.
 sudo sipnab -N -d eth0 --cores 4 -B 32 "port 5060 or port 5061"
 ```
 
-Reach for it when §1 shows sustained `kernel buffer` drops on ONE busy
-interface and §2 through §5 have not cleared them. Several interfaces is
-`--multi-device` (§5) instead.
+Reach for it when [section 1, "Are you dropping packets?"](#1-are-you-dropping-packets) shows sustained `kernel buffer` drops on ONE busy
+interface and [section 2](#2-the-kernel-capture-buffer-b-buffer) through [section 5](#5-which-interfaces-any-versus-named) have not cleared them. Several interfaces is
+`--multi-device` ([section 5, "Which interfaces: `any` versus named"](#5-which-interfaces-any-versus-named)) instead.
 
 ---
 
@@ -614,13 +614,13 @@ sudo sipnab -N -d eth0 \
   --report
 ```
 
-Note that this already makes the §5 choice: it names `eth0` rather than taking
+Note that this already makes the interface choice from [section 5, "Which interfaces: `any` versus named"](#5-which-interfaces-any-versus-named): it names `eth0` rather than taking
 `any`, so confirm no SIP leg lives on loopback or a container bridge before
 adopting it.
 
 Then read the drop line at the end. If it says `no drops`, stop there — and
 you can walk the settings *back* to recover fidelity. If it does not, work down
-§2 → §3 → §5 → §6 → §7 in that order, and re-measure after each change rather
+[section 2](#2-the-kernel-capture-buffer-b-buffer) (buffer) → [section 3](#3-capture-less-bpf-filters) (BPF) → [section 5](#5-which-interfaces-any-versus-named) (interfaces) → [section 6](#6-give-sipnab-less-work) (less work) → [section 7](#7-interface-and-driver-drops) (interface and driver drops) in that order, and re-measure after each change rather
 than applying all of them at once.
 
 ---

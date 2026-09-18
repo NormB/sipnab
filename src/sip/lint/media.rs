@@ -44,18 +44,18 @@ use super::finding::{
 /// own, so an undeclared payload type of 13 says nothing about conformance.
 const COMFORT_NOISE_PT: u8 = 13;
 
-/// The RFC 3551 §6 reserved payload type earlier profiles used for comfort
+/// The [RFC 3551 section 6](https://www.rfc-editor.org/rfc/rfc3551#section-6) reserved payload type earlier profiles used for comfort
 /// noise. Same exemption, same reason.
 const RESERVED_CN_PT: u8 = 19;
 
 /// Packets a stream needs before a duration derived from it means anything.
 ///
 /// Below this the mean is dominated by whichever packet the capture happened to
-/// start and end on. Fifty packets is one second of media at the RFC 3551 §4.2
+/// start and end on. Fifty packets is one second of media at the [RFC 3551 section 4.2](https://www.rfc-editor.org/rfc/rfc3551#section-4.2)
 /// default packetization.
 const MIN_PACKETS_FOR_TIMING: u64 = 50;
 
-/// The longest packet RFC 3551 §4.2 asks a receiver to accept, in milliseconds:
+/// The longest packet [RFC 3551 section 4.2](https://www.rfc-editor.org/rfc/rfc3551#section-4.2) asks a receiver to accept, in milliseconds:
 /// "A receiver SHOULD accept packets representing between 0 and 200 ms of audio
 /// data."
 const MAX_PACKET_MS: f64 = 200.0;
@@ -376,7 +376,7 @@ pub(crate) fn lint(dialog: &SipDialog, media: &ObservedMedia, sink: &mut Finding
     rtcp_mux_unanswered(&declared, media, sink);
 }
 
-/// RFC 3264 §6.1 — the wire carries a payload type nobody declared.
+/// [RFC 3264 section 6.1](https://www.rfc-editor.org/rfc/rfc3264#section-6.1) — the wire carries a payload type nobody declared.
 ///
 /// The headline case: SDP names PCMU on payload type 0, the far end sends
 /// payload type 8, and every text linter in existence reports a clean call.
@@ -426,7 +426,7 @@ fn payload_type_undeclared(
     }
 }
 
-/// RFC 4566 §5.14 — RTP arrived at an address that was declared, on a port that
+/// [RFC 4566 section 5.14](https://www.rfc-editor.org/rfc/rfc4566#section-5.14) — RTP arrived at an address that was declared, on a port that
 /// was not.
 ///
 /// Only fires when the destination address itself was declared. A stream to some
@@ -467,7 +467,7 @@ fn media_port_mismatch(declared: &[Declared], media: &ObservedMedia, sink: &mut 
     }
 }
 
-/// RFC 3264 §6.1 — `sendrecv` was negotiated and the media went one way.
+/// [RFC 3264 section 6.1](https://www.rfc-editor.org/rfc/rfc3264#section-6.1) — `sendrecv` was negotiated and the media went one way.
 ///
 /// Needs both sides declared and at least one of them carrying media: a dialog
 /// with no media at all is a call that never started, not a one-way call.
@@ -526,7 +526,7 @@ fn direction_unmet(declared: &[Declared], media: &ObservedMedia, sink: &mut Find
     );
 }
 
-/// RFC 4566 §6 and RFC 3551 §4.2 — how much media each packet actually carries.
+/// [RFC 4566 section 6](https://www.rfc-editor.org/rfc/rfc4566#section-6) and [RFC 3551 section 4.2](https://www.rfc-editor.org/rfc/rfc3551#section-4.2) — how much media each packet actually carries.
 ///
 /// Two findings from one measurement, because they answer different questions.
 /// [`PTIME_MISMATCH`] says the far end packetized differently from what it
@@ -602,7 +602,7 @@ fn packetization(declared: &[Declared], media: &ObservedMedia, sink: &mut Findin
     }
 }
 
-/// RFC 5761 §5.1.1 — multiplexing used after the answer declined to agree.
+/// [RFC 5761 section 5.1.1](https://www.rfc-editor.org/rfc/rfc5761#section-5.1.1) — multiplexing used after the answer declined to agree.
 ///
 /// "If the answer does not contain an 'a=rtcp-mux' attribute, the offerer MUST
 /// NOT multiplex RTP and RTCP packets on a single port." The evidence is RTCP
@@ -1178,7 +1178,7 @@ mod tests {
     }
 
     /// RTCP on the separate port after an unanswered offer is correct and
-    /// silent — the offerer did what §5.1.1 requires.
+    /// silent — the offerer did what [RFC 5761 section 5.1.1](https://www.rfc-editor.org/rfc/rfc5761#section-5.1.1) requires.
     #[test]
     fn rtcp_on_the_separate_port_is_silent() {
         let dialog = negotiated("0", "a=sendrecv\r\na=rtcp-mux\r\n", "a=sendrecv\r\n");

@@ -873,7 +873,12 @@ fn wiki_intra_docs_links_resolve() {
     // linking a page that no longer holds them. One link, in one file, removed
     // by that edit and nothing else -- a DROP is otherwise the alarm this
     // number exists for.
-    const EXPECTED_WIKI_LINKS: usize = 725;
+    // 725 -> 759: the bare-section-sign rewrite. A reference like "§5a" became
+    // a link to that section BY TITLE, e.g. `[the "AF_XDP -- declined" section
+    // of deferred-and-declined.md](...)`. Measured over docs/: that change
+    // added 71 relative .md links and removed 36 (net +35 by a plain regex);
+    // this extractor, which counts links between wiki pages only, reads +34.
+    const EXPECTED_WIKI_LINKS: usize = 759;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe 6d in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

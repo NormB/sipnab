@@ -205,7 +205,7 @@ flow's packets share a host pair and therefore a worker.
   Until that change the batch loop took the alert engine's write lock nested
   inside both store guards — a third lock deep in the hot path, with a
   `posix_spawn` beside it. The full rule and what would re-create that edge are
-  in [Invariants](@/docs/internals/invariants.md) §2.
+  in [Invariants, section 2, "Dialog before stream, then alerts — one consistent order"](@/docs/internals/invariants.md#2-dialog-before-stream-then-alerts-one-consistent-order).
 - **The TUI never blocks:** all render-side store access is `try_read()`.
   On contention the frame renders with the previous data (counts may be one
   frame stale — this is deliberate; an adaptive 10 fps active / 2 fps idle

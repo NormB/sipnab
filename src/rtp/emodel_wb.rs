@@ -461,7 +461,7 @@ pub fn score_amr_wb(
 
 /// The single AMR-WB mode an SDP `a=fmtp` line pins, if it pins exactly one.
 ///
-/// RFC 4867 §8.1 defines `mode-set` as a comma-separated list of permitted
+/// [RFC 4867 section 8.1](https://www.rfc-editor.org/rfc/rfc4867#section-8.1) defines `mode-set` as a comma-separated list of permitted
 /// mode numbers, indexing [`AMR_WB_MODES_KBPS`]. A single-entry list fixes the
 /// bitrate for the session and makes the stream scorable.
 ///

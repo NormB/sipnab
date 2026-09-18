@@ -14,8 +14,9 @@
 //! it. Both put the server into a long-lived relationship with a client: a
 //! registry, per-client filters, delivery state, and a lifecycle for a
 //! subscriber that goes away without saying so.
-//! [`positioning.md`](https://github.com/NormB/sipnab/blob/main/docs/design/positioning.md)
-//! §4 states the test as a verb — *if a feature requires sipnab to be operated
+//! Section 4 of `positioning.md`,
+//! ["What the position forbids"](https://github.com/NormB/sipnab/blob/main/docs/design/positioning.md#4-what-the-position-forbids),
+//! states the test as a verb — *if a feature requires sipnab to be operated
 //! rather than run, it is out of position* — and a subscription service is the
 //! thing that has to be operated.
 //!

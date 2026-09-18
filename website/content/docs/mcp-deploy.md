@@ -1366,7 +1366,7 @@ HEP mirroring and sipnab lives elsewhere.
 ## Security implications
 
 What the design already gives you (details in
-[MCP protocol § Security model](@/docs/mcp-protocol.md#security-model)):
+[the MCP protocol page, "Security model"](@/docs/mcp-protocol.md#security-model)):
 
 - **No control plane, and no tool sends SIP.** No MCP tool puts a packet on
   the wire, so a compromised or confused agent can disclose data rather than
@@ -1637,7 +1637,7 @@ sipnab --mcp -N --mcp-transport http \
        -I capture.pcap
 ```
 
-The challenge now carries the metadata URL, which is the value [RFC 9728 §3.1](https://www.rfc-editor.org/rfc/rfc9728#section-3.1)
+The challenge now carries the metadata URL, which is the value [RFC 9728 section 3.1](https://www.rfc-editor.org/rfc/rfc9728#section-3.1)
 derives by inserting `/.well-known/oauth-protected-resource` between the host
 and the path:
 
@@ -1665,7 +1665,7 @@ curl -s https://capture.example.com/.well-known/oauth-protected-resource/mcp
 **Give the URL, do not expect sipnab to work it out.** Behind the nginx that
 terminates TLS, sipnab sees a cleartext request and no scheme; anything it
 derived from its own socket would say `http://` for a resource the client
-reached over `https://`, and [RFC 9728 §3.3](https://www.rfc-editor.org/rfc/rfc9728#section-3.3) tells a conformant client to
+reached over `https://`, and [RFC 9728 section 3.3](https://www.rfc-editor.org/rfc/rfc9728#section-3.3) tells a conformant client to
 discard a document whose `resource` does not match the URL it used. sipnab
 does not read `X-Forwarded-Proto` here for the same reason it ignores
 `X-Forwarded-For` when rate limiting: a header the client sets is not

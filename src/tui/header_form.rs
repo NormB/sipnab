@@ -39,7 +39,7 @@ impl HeaderFormMode {
     }
 }
 
-/// The IANA-registered SIP compact header forms (RFC 3261 §20 plus the
+/// The IANA-registered SIP compact header forms ([RFC 3261 section 20](https://www.rfc-editor.org/rfc/rfc3261#section-20) plus the
 /// registered extensions), as (compact, full) pairs.
 const COMPACT_FORMS: &[(char, &str)] = &[
     ('a', "Accept-Contact"),

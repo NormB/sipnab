@@ -235,7 +235,7 @@ because then it was the outcome.
 Notes:
 - Boolean fields only support `==` and `!=`.
 - Regex (`=~`) is not applicable to numeric or boolean fields.
-- `in_subnet` takes a CIDR literal on the right and an address-valued field on the left (`src.ip`, `dst.ip`). It uses the same rule as `--hep-allow`, so IPv4, IPv6 and IPv4-mapped IPv6 addresses ([RFC 4291 §2.5.5.2](https://www.rfc-editor.org/rfc/rfc4291#section-2.5.5.2)) all compare as the allowlist compares them, and a bare address with no prefix reads as a host route. An unparseable address or block matches nothing rather than matching everything.
+- `in_subnet` takes a CIDR literal on the right and an address-valued field on the left (`src.ip`, `dst.ip`). It uses the same rule as `--hep-allow`, so IPv4, IPv6 and IPv4-mapped IPv6 addresses ([RFC 4291 section 2.5.5.2](https://www.rfc-editor.org/rfc/rfc4291#section-2.5.5.2)) all compare as the allowlist compares them, and a bare address with no prefix reads as a host route. An unparseable address or block matches nothing rather than matching everything.
 - Numeric equality uses epsilon comparison for floating-point precision. For computed values (`duration`, `pdd`, `rtp.mos`) prefer range operators (`>=`, `<`) over `==` — an exact match on a derived float rarely hits.
 
 > **Note:** String comparisons are case-sensitive. `state` values must exactly match one of the 13 values listed under [String Fields](#string-fields) above (`'Failed'`, not `'failed'`). Use `=~` with a case-insensitive regex pattern if you need case-insensitive matching: `state =~ '(?i)failed'`.

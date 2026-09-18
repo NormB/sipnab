@@ -288,8 +288,9 @@ const DEFAULT_EXEC_PER_SECOND: u32 = 10;
 /// source IP.
 ///
 /// This is the kill path's `MAX_PER_DST_PER_MINUTE`, and the reason is the
-/// one `docs/design/threat-mitigation-hooks.md` §5(c) gives for it: the
-/// failure that actually happens is *one* peer being misidentified, and a
+/// one that condition (c), "The action is proportionate and self-limiting", in
+/// [`docs/design/threat-mitigation-hooks.md` section 5, "Tier 2 — act automatically"](https://github.com/NormB/sipnab/blob/main/docs/design/threat-mitigation-hooks.md#tier-2--act-automatically-four-conditions-all-required)
+/// gives for it: the failure that actually happens is *one* peer being misidentified, and a
 /// global-only limiter would spend its whole budget on that one peer and stay
 /// silent about everything else. Bounding per source bounds the blast radius
 /// to the peer the signature was wrong about.

@@ -22,11 +22,11 @@ use super::tls::{KeyLogEntry, parse_keylog_file};
 use crate::crypto::{CryptoBackend, HashAlg};
 use crate::rtp::srtp::{SrtpKeyMaterial, SrtpSuite};
 
-/// RFC 5705 exporter label for DTLS-SRTP (RFC 5764 §4.2).
+/// RFC 5705 exporter label for DTLS-SRTP ([RFC 5764 section 4.2](https://www.rfc-editor.org/rfc/rfc5764#section-4.2)).
 const EXPORTER_LABEL: &[u8] = b"EXTRACTOR-dtls_srtp";
 
 /// SRTP protection profile negotiated by the DTLS `use_srtp` extension
-/// (RFC 5764 §4.1.2). Only AES-CM profiles (decryptable by this tool) are
+/// ([RFC 5764 section 4.1.2](https://www.rfc-editor.org/rfc/rfc5764#section-4.1.2)). Only AES-CM profiles (decryptable by this tool) are
 /// represented; other codes map to `None` when parsed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
@@ -45,7 +45,7 @@ impl SrtpProfile {
     /// the length does not vary across the supported profiles.
     const KEY_LEN: usize = 16;
 
-    /// SRTP master salt length in bytes — always 14 for AES-CM (RFC 3711 §8.2),
+    /// SRTP master salt length in bytes — always 14 for AES-CM ([RFC 3711 section 8.2](https://www.rfc-editor.org/rfc/rfc3711#section-8.2)),
     /// independent of profile (see [`SrtpProfile::KEY_LEN`]).
     const SALT_LEN: usize = 14;
 
@@ -71,14 +71,14 @@ impl SrtpProfile {
 
 /// Octets in a DTLSPlaintext header, ahead of the fragment.
 ///
-/// RFC 6347 section 4.1: `type(1) version(2) epoch(2) sequence_number(6)
+/// [RFC 6347 section 4.1](https://www.rfc-editor.org/rfc/rfc6347#section-4.1): `type(1) version(2) epoch(2) sequence_number(6)
 /// length(2)`.
 const DTLS_HEADER_LEN: usize = 13;
 
 /// The widest a DTLS record's length field may legally be.
 ///
-/// RFC 6347 section 4.1 defines the field as *"Identical to the length field in
-/// a TLS 1.2 record"*, and RFC 5246 section 6.2.3 states the widest legal case
+/// [RFC 6347 section 4.1](https://www.rfc-editor.org/rfc/rfc6347#section-4.1) defines the field as *"Identical to the length field in
+/// a TLS 1.2 record"*, and [RFC 5246 section 6.2.3](https://www.rfc-editor.org/rfc/rfc5246#section-6.2.3) states the widest legal case
 /// as a MUST: TLSCiphertext's *"length MUST NOT exceed 2^14 + 2048"* — the
 /// plaintext limit of 2^14 plus the room a cipher may add. Plaintext and
 /// compressed records are bounded tighter still, so nothing legal declares
@@ -208,7 +208,7 @@ fn server_hello_srtp_profile(body: &[u8]) -> Option<SrtpProfile> {
 }
 
 /// Run the RFC 5705 exporter (label `EXTRACTOR-dtls_srtp`, no context) and split
-/// the output into per-direction SRTP master key + salt (RFC 5764 §4.2).
+/// the output into per-direction SRTP master key + salt ([RFC 5764 section 4.2](https://www.rfc-editor.org/rfc/rfc5764#section-4.2)).
 /// Returns `(client_to_server, server_to_client)` key material.
 pub fn derive_srtp_keys(
     crypto: &dyn CryptoBackend,
@@ -441,7 +441,7 @@ mod tests {
 
     /// A record claiming more bytes than the datagram holds is not DTLS.
     ///
-    /// RFC 6347 section 4.1.1 states it without qualification: *"Each DTLS
+    /// [RFC 6347 section 4.1.1](https://www.rfc-editor.org/rfc/rfc6347#section-4.1.1) states it without qualification: *"Each DTLS
     /// record MUST fit within a single datagram."* The detector never checked,
     /// so any datagram whose first three bytes happened to read as a content
     /// type and a DTLS version was consumed whatever its length field claimed.
@@ -483,8 +483,8 @@ mod tests {
 
     /// A length past what any TLS record may declare is not DTLS.
     ///
-    /// RFC 6347 section 4.1 defines the field as *"Identical to the length
-    /// field in a TLS 1.2 record"*, and RFC 5246 section 6.2.3 gives the widest
+    /// [RFC 6347 section 4.1](https://www.rfc-editor.org/rfc/rfc6347#section-4.1) defines the field as *"Identical to the length
+    /// field in a TLS 1.2 record"*, and [RFC 5246 section 6.2.3](https://www.rfc-editor.org/rfc/rfc5246#section-6.2.3) gives the widest
     /// legal case: TLSCiphertext's *"length MUST NOT exceed 2^14 + 2048"*. No
     /// legal record of any kind declares more, so refusing more can never
     /// refuse a real one.

@@ -18,18 +18,18 @@ use super::Inner;
 
 /// Octets of I-TAG TCI before the encapsulated customer frame begins.
 ///
-/// IEEE Std 802.1Q-2014 §9.7 Figure 9-2 lays the 16-octet I-TAG TCI out as
+/// [IEEE Std 802.1Q-2014](https://standards.ieee.org/ieee/802.1Q/5801/) clause 9.7, Figure 9-2 lays the 16-octet I-TAG TCI out as
 /// octet 1 of flags, octets 2–4 of I-SID, octets 5–10 of C-DA and octets
 /// 11–16 of C-SA. C-DA *is* the customer frame's destination MAC, so the
 /// encapsulated Ethernet II frame starts at octet 5 — four octets in.
 const ITAG_FLAGS_AND_ISID: usize = 4;
 
-/// Full length of the I-TAG TCI (§9.7: "The I-TAG TCI field is 16 octets in
+/// Full length of the I-TAG TCI ([IEEE Std 802.1Q-2014](https://standards.ieee.org/ieee/802.1Q/5801/) clause 9.7: "The I-TAG TCI field is 16 octets in
 /// length"). Required to be present so the customer source address is not
 /// half-captured.
 const ITAG_TCI_LEN: usize = 16;
 
-/// Mask of the Res2 field in I-TCI octet 1: bits 2..1 (§9.7 Figure 9-2).
+/// Mask of the Res2 field in I-TCI octet 1: bits 2..1 ([IEEE Std 802.1Q-2014](https://standards.ieee.org/ieee/802.1Q/5801/) clause 9.7, Figure 9-2).
 const ITAG_RES2_MASK: u8 = 0x03;
 
 /// The null I-SID (Table 9-3): reserved for implementation use and "shall not
@@ -39,11 +39,11 @@ const ISID_NULL: u32 = 0x00_0000;
 /// never transmitted.
 const ISID_WILDCARD: u32 = 0xFF_FFFF;
 
-/// Offset of C-SA octet 1 within the I-TAG TCI (§9.7 Figure 9-2: C-SA is
+/// Offset of C-SA octet 1 within the I-TAG TCI ([IEEE Std 802.1Q-2014](https://standards.ieee.org/ieee/802.1Q/5801/) clause 9.7, Figure 9-2: C-SA is
 /// octets 11–16).
 const ITAG_CSA: usize = 10;
 
-/// The I/G bit: IEEE Std 802.1Q-2014 §9.7 h) says the C-SA field holds "the
+/// The I/G bit: [IEEE Std 802.1Q-2014](https://standards.ieee.org/ieee/802.1Q/5801/) clause 9.7 h) says the C-SA field holds "the
 /// octet containing the I/G bit in the lowest numbered octet", and IEEE Std
 /// 802 assigns that bit 0 for an individual address and 1 for a group address.
 const MAC_GROUP_BIT: u8 = 0x01;
@@ -57,7 +57,7 @@ const ETHERNET_II_HEADER: usize = 14;
 /// Decapsulate a Provider Backbone Bridge I-TAG and report the customer frame.
 ///
 /// `off` is the offset of the I-TAG TCI — the byte after the `0x88E7`
-/// EtherType. Yields [`Inner::Ethernet`], because §9.7 g)/h) put the
+/// EtherType. Yields [`Inner::Ethernet`], because [IEEE Std 802.1Q-2014](https://standards.ieee.org/ieee/802.1Q/5801/) clause 9.7 g) and h) put the
 /// encapsulated customer destination and source MAC addresses inside the tag
 /// itself: what follows the I-SID is a complete Ethernet II frame, tags and
 /// all, not a bare network-layer packet.
@@ -66,7 +66,7 @@ const ETHERNET_II_HEADER: usize = 14;
 /// tag, a non-zero Res2, or a reserved I-SID.
 ///
 /// The 802.1ah feature that defined this tag was folded into IEEE Std 802.1Q
-/// in the 2011 revision; §9.7 is quoted from 802.1Q-2014 here, which is the
+/// in the 2011 revision; clause 9.7 is quoted from IEEE Std 802.1Q-2014 here, which is the
 /// current home of the normative text.
 pub(crate) fn itag_decap(d: &[u8], off: usize) -> Option<Inner> {
     let end = off.checked_add(ITAG_TCI_LEN)?;
@@ -129,11 +129,11 @@ pub(crate) fn itag_decap(d: &[u8], off: usize) -> Option<Inner> {
 // ── MACsec (IEEE Std 802.1AE, EtherType 0x88E5) ───────────────────────
 
 /// SecTAG octets that always follow the MACsec EtherType: TCI/AN, SL and the
-/// 32 least significant bits of the PN (IEEE Std 802.1AE-2018 §9.3
+/// 32 least significant bits of the PN ([IEEE Std 802.1AE-2018](https://standards.ieee.org/ieee/802.1AE/7154/) clause 9.3,
 /// Figure 9-2). The SecTAG is 8 octets counting the EtherType, so 6 here.
 const SECTAG_MIN: usize = 6;
 
-/// Octets the SCI adds when the SC bit is set (§9.9: the SCI "is encoded in
+/// Octets the SCI adds when the SC bit is set ([IEEE Std 802.1AE-2018](https://standards.ieee.org/ieee/802.1AE/7154/) clause 9.9: the SCI "is encoded in
 /// octets 9 through 16 of the SecTAG"), taking the SecTAG to 16 octets.
 const SECTAG_SCI: usize = 8;
 
@@ -150,7 +150,7 @@ const SECTAG_SCI: usize = 8;
 // Table C-1, and Table C-32 ("Confidentiality protection") carries 0x2E with
 // the Secure Data cipher-dependent. 0x2E ^ 0x22 == 0x0C, so bits 4 and 3
 // together are what confidentiality sets. The 2006 layout is implemented.
-/// V (version), TCI bit 8. §9.5: "The version number shall be 0".
+/// V (version), TCI bit 8. [IEEE Std 802.1AE-2018](https://standards.ieee.org/ieee/802.1AE/7154/) clause 9.5: "The version number shall be 0".
 const TCI_V: u8 = 0x80;
 /// ES (End Station), TCI bit 7: the SCI is derived from the source MAC.
 const TCI_ES: u8 = 0x40;
@@ -159,14 +159,14 @@ const TCI_SC: u8 = 0x20;
 /// SCB (EPON Single Copy Broadcast), TCI bit 5.
 const TCI_SCB: u8 = 0x10;
 /// E (Encryption), TCI bit 4: set "if and only if confidentiality is being
-/// provided" (§9.5).
+/// provided" ([IEEE Std 802.1AE-2018](https://standards.ieee.org/ieee/802.1AE/7154/) clause 9.5).
 const TCI_E: u8 = 0x08;
 /// C (Changed Text), TCI bit 3: clear "if and only if the Secure Data is
-/// exactly the same as the User Data and the ICV is 16 octets long" (§9.5).
+/// exactly the same as the User Data and the ICV is 16 octets long" ([IEEE Std 802.1AE-2018](https://standards.ieee.org/ieee/802.1AE/7154/) clause 9.5).
 const TCI_C: u8 = 0x04;
 
-/// Mask of the reserved pair in the SL octet: §9.7 "Bits 7 and 8 of octet 4
-/// shall be zero", restated as validity condition §9.12 e).
+/// Mask of the reserved pair in the SL octet: [IEEE Std 802.1AE-2018](https://standards.ieee.org/ieee/802.1AE/7154/) clause 9.7: "Bits 7 and 8 of octet 4
+/// shall be zero", restated as validity condition clause 9.12 e).
 const SL_RESERVED: u8 = 0xC0;
 
 /// A validated MACsec SecTAG: where its payload starts, and whether that
@@ -191,7 +191,7 @@ pub(crate) struct SecTag {
 ///
 /// This is the entry point a link-layer walk wants, and the only one this
 /// module offers: MACsec is a transparent insertion between the source MAC and
-/// the EtherType that was there before (§6.2, Figure 6-2), so a caller that is
+/// the EtherType that was there before ([IEEE Std 802.1AE-2018](https://standards.ieee.org/ieee/802.1AE/7154/) clause 6.2, Figure 6-2), so a caller that is
 /// already walking an EtherType chain only needs to know how many octets to
 /// step over and whether stepping is worthwhile. Unlike the other tunnels
 /// here, MACsec produces no inner *frame* — the original destination and
@@ -201,8 +201,9 @@ pub(crate) struct SecTag {
 ///
 /// A sibling `macsec_decap` did once resolve the User Data's EtherType itself
 /// and yield [`Inner::Ip`]. It was deleted rather than kept beside this
-/// function, because resolving that EtherType means walking any VLAN tags §6.2
-/// places "within the Secure Data portion of the MACsec frame" — and that walk
+/// function, because resolving that EtherType means walking any VLAN tags that
+/// IEEE Std 802.1AE-2018 clause 6.2 places "within the Secure Data portion of
+/// the MACsec frame" — and that walk
 /// is arithmetic `eth_payload_offset` in `parse.rs` already owns, under a
 /// doc comment that says so: "One copy of this arithmetic on purpose: two
 /// would be two places for an encapsulated packet's start offset to drift."
