@@ -3291,7 +3291,10 @@ fn no_documentation_table_repeats_a_row() {
     // 218 -> 219 by the PAR2 surface-capability matrix
     // (surface-capability-matrix.md), the authored capability-to-surface JOIN.
     // One new file in docs/design/, no website mirror.
-    const EXPECTED_MARKDOWN_FILES: usize = 219;
+    // 219 -> 220 by crates/sipnab-bpf-types/README.md, the crates.io page of
+    // the published sipnab-bpf-types crate. `git diff --cached --diff-filter=A`
+    // lists exactly that one new .md path. No website mirror.
+    const EXPECTED_MARKDOWN_FILES: usize = 220;
     /// How many tables this gate expects to walk.
     ///
     /// Named rather than written twice. The count and the failure message
@@ -3666,7 +3669,9 @@ fn no_documentation_table_repeats_a_row() {
     // and it went from 31 table starts to 1. A DROP is normally the alarm this
     // gate exists for — the detection silently matching less — which is why the
     // count is stated here against the file that lost them.
-    const EXPECTED_TABLES: usize = 924;
+    // 924 -> 925 by crates/sipnab-bpf-types/README.md, a new file with exactly
+    // one table (what the crate contains).
+    const EXPECTED_TABLES: usize = 925;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

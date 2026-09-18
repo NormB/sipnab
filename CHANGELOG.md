@@ -8,6 +8,21 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Fixed
+
+- **`sipnab-bpf-types` went to crates.io without a README or its license
+  texts.** Its crates.io page said the crate "appears to have no README.md
+  file", and a crate licensed "MIT OR Apache-2.0" carried neither license.
+  0.1.1 adds both license files and a README that says what the crate is,
+  and that you almost certainly want `sipnab` instead. crates.io versions
+  cannot be changed, so 0.1.0 stays as it was. `sipnab` 0.5.179 depends on
+  it as `^0.1.0`, so new installs take 0.1.1.
+  `every_published_crate_ships_its_readme_and_both_licenses` now requires
+  both from every published crate. It also requires the crate's license
+  copies to match the root ones byte for byte, so the two cannot drift.
+
 ## [0.5.179] - 2026-09-18
 
 ### Added

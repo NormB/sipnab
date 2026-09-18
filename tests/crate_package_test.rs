@@ -4,7 +4,7 @@
 //! sipnab was advertised as `cargo install sipnab` in seven places for months
 //! while `cargo package` refused to run: `sipnab-bpf-types` was a path
 //! dependency with no `version` and `publish = false`, and the file set cargo
-//! would have shipped compressed to 10,499,471 bytes against crates.io's
+//! would have shipped compressed to 10,452,860 bytes, 32,900 under crates.io's
 //! 10,485,760-byte limit. Nothing noticed, because nothing ever packaged it.
 //!
 //! This gate runs `cargo package --no-verify` itself instead of re-deriving
@@ -218,4 +218,43 @@ fn cargo_install_puts_only_sipnab_on_the_path() {
         "the published manifest declares these binaries; `cargo install sipnab` \
          installs every one of them"
     );
+}
+
+/// crates.io shows a crate's README as its page, and a crate without one as
+/// "appears to have no README.md file". `sipnab-bpf-types` 0.1.0 went up that
+/// way on 2026-09-18, and nothing here asked. Every published crate also
+/// carries both license texts: the manifest names "MIT OR Apache-2.0", and
+/// the MIT terms ask for the notice to travel with every copy.
+#[test]
+fn every_published_crate_ships_its_readme_and_both_licenses() {
+    let dir = package();
+    for (name, version) in [
+        ("sipnab", env!("CARGO_PKG_VERSION").to_string()),
+        ("sipnab-bpf-types", bpf_types_version()),
+    ] {
+        let path = crate_file(&dir, name, &version);
+        let entries = crate_entries(&path);
+        for file in ["README.md", "LICENSE-MIT", "LICENSE-APACHE"] {
+            assert!(
+                entries.contains(file),
+                "{name} {version} would be published without {file}"
+            );
+        }
+        let manifest = crate_member(&path, &format!("{name}-{version}"), "Cargo.toml");
+        assert!(
+            manifest.lines().any(|l| l == "readme = \"README.md\""),
+            "{name}'s published manifest does not name its README, so crates.io \
+             shows none"
+        );
+    }
+    // One license text, not two that drift: the crate's copies are the root's.
+    for file in ["LICENSE-MIT", "LICENSE-APACHE"] {
+        let root = std::fs::read(repo().join(file)).expect("root license");
+        let copy =
+            std::fs::read(repo().join("crates/sipnab-bpf-types").join(file)).unwrap_or_default();
+        assert!(
+            root == copy,
+            "crates/sipnab-bpf-types/{file} differs from the root {file}"
+        );
+    }
 }
