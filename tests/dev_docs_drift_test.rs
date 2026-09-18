@@ -1862,9 +1862,17 @@ fn site_pages_mirror_is_current() {
     let _ = std::fs::remove_dir_all(&tmp);
     std::fs::create_dir_all(&tmp).expect("temp dir");
 
+    // argv[2], not just argv[1]. The generator defaults its llms.txt and
+    // llms-full.txt output to the REAL website/static/, so passing only the
+    // pages directory rewrote two committed files on every `cargo test` --
+    // including the ones `llms_aggregates_are_current` exists to police, which
+    // therefore compared the generator against output this test had just
+    // written and could never fail. It passed in CI on 2026-09-17 over an
+    // llms-full.txt whose eBPF ledger was missing a row.
     let out = std::process::Command::new("python3")
         .arg(repo().join("scripts/build-site-pages.py"))
-        .arg(&tmp)
+        .arg(tmp.join("pages"))
+        .arg(tmp.join("static"))
         .current_dir(repo())
         .output()
         .expect("run scripts/build-site-pages.py — python3 must be on PATH");
@@ -1876,7 +1884,10 @@ fn site_pages_mirror_is_current() {
 
     let mut produced = Vec::new();
     let mut stale = Vec::new();
-    for entry in std::fs::read_dir(&tmp).expect("generated pages").flatten() {
+    for entry in std::fs::read_dir(tmp.join("pages"))
+        .expect("generated pages")
+        .flatten()
+    {
         let name = entry.file_name().to_string_lossy().into_owned();
         produced.push(name.clone());
         let fresh = std::fs::read_to_string(entry.path()).expect("generated page");

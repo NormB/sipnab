@@ -10,6 +10,15 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`llms-full.txt` lost an eBPF load-verification row and mislabeled another.**
+  The 0.5.178 advertise commit renamed the ledger's 0.5.177 row instead of
+  adding one, so the published aggregate claimed 0.5.178 had been verified on
+  0.5.177's kernel with 0.5.177's library count, and 0.5.177's own row was gone.
+  The markdown sources were always right; only the generated aggregate was
+  wrong. Regenerated from them.
+
 ### Internal
 
 - **The backlog records what publishing sipnab to crates.io would cost.** The
