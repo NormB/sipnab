@@ -28,17 +28,22 @@ entry that carries them.
   All 1,041 RFC section links now in the tree point at a section that exists.
   Each one was checked against the RFC's own HTML. The check turned up
   citations that pointed at the wrong section:
-  - `iat` freshness is RFC 8224 section 6.2, not 4.4, which does not exist
+  - `iat` freshness is [RFC 8224 section 6.2](https://www.rfc-editor.org/rfc/rfc8224#section-6.2), not 4.4, which does not exist
     (6 places).
-  - The TLS 1.3 key-update formula is RFC 8446 section 7.2, not 4.6.3.
-  - The UAS's wait for an ACK is RFC 3261 section 13.3.1.4, not Timer H's
-    17.2.1. The ACK to a 2xx takes a new branch under section 8.1.1.7, not
-    17.1.1.3.
-  - A G-PDU is 3GPP TS 29.281 clause 7.1, not 7.3.
-  - vCon's `redacted` object is section 4.1.8 of the vCon core draft, not 4.1.
-  - Response codes 607 and 608 cited `§?`; they are RFC 8197 section 5.1 and
-    RFC 8688 section 5.1. Code 199 cited an example flow in RFC 6228 (section
-    9.1); it is defined in section 1.
+  - The TLS 1.3 key-update formula is [RFC 8446 section 7.2](https://www.rfc-editor.org/rfc/rfc8446#section-7.2), not 4.6.3.
+  - The UAS's wait for an ACK is [RFC 3261 section 13.3.1.4](https://www.rfc-editor.org/rfc/rfc3261#section-13.3.1.4), not Timer H's
+    17.2.1. The ACK to a 2xx takes a new branch under
+    [RFC 3261 section 8.1.1.7](https://www.rfc-editor.org/rfc/rfc3261#section-8.1.1.7),
+    not 17.1.1.3.
+  - A G-PDU is [3GPP TS 29.281](https://portal.3gpp.org/desktopmodules/Specifications/SpecificationDetails.aspx?specificationId=1699)
+    clause 7.1, not 7.3.
+  - vCon's `redacted` object is
+    [draft-ietf-vcon-vcon-core-03 section 4.1.8](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-4.1.8),
+    not 4.1.
+  - Response codes 607 and 608 cited `§?`; they are [RFC 8197 section 5.1](https://www.rfc-editor.org/rfc/rfc8197#section-5.1) and
+    [RFC 8688 section 5.1](https://www.rfc-editor.org/rfc/rfc8688#section-5.1). Code 199 cited an example flow in [RFC 6228](https://www.rfc-editor.org/rfc/rfc6228) (section
+    9.1); it is defined in
+    [RFC 6228 section 1](https://www.rfc-editor.org/rfc/rfc6228#section-1).
 
   `scripts/rfc-links.py` now writes the new form, rewrites the old one, keeps
   the RFC across a list (`§21.5, §21.6`), links appendixes, never touches a
