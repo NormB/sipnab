@@ -154,16 +154,22 @@ fn label_and_anchor_agree_across_the_documentation_tree() {
     // 781 examined, 781 carrying both halves, across 159 pages. The floors sit
     // ~10% under that: far enough not to churn, close enough that a scanner
     // reading half the tree cannot clear them.
+    //
+    // Re-measured 2026-09-17 when the backlog became a local, gitignored file:
+    // 664 examined, 664 with both halves, across 197 pages. Attributed by
+    // experiment, not arithmetic: putting the old backlog content back at its
+    // tracked path returns 790, so all 126 citations the count lost lived in
+    // that one file. The floors move to 600 on the same ~10% rule.
     let examined = field(&report, "examined");
     let both = field(&report, "both_halves");
     assert!(
-        examined >= 700,
+        examined >= 600,
         "the label/anchor scan examined only {examined} line citation(s); this \
-         tree holds ~781, so the extraction narrowed and the gate below is \
+         tree holds ~664, so the extraction narrowed and the gate below is \
          checking almost nothing:\n{report}"
     );
     assert!(
-        both >= 700,
+        both >= 600,
         "only {both} of {examined} line citation(s) carry BOTH a label line and \
          an `#L` fragment. The agreement rule can only see citations that have \
          two halves, so stripping fragments is the way to make it vacuous:\n{report}"
@@ -193,26 +199,22 @@ fn label_and_anchor_agree_across_the_documentation_tree() {
 /// walk here, so a page set that silently shrinks back to `docs/` fails.
 #[test]
 fn the_scan_reaches_every_page_the_documentation_is_published_from() {
+    // TRACKED markdown under `rel`, as the checker reads it. A directory walk
+    // counted the gitignored docs/design/backlog.local.md as a page on the one
+    // machine that holds it -- 198 against the checker's 197 -- so this test
+    // failed there and passed in CI over the same commit.
     fn md_under(rel: &str) -> Vec<PathBuf> {
-        let root = repo().join(rel);
-        let mut out = Vec::new();
-        let mut stack = vec![root];
-        while let Some(d) = stack.pop() {
-            let Ok(entries) = std::fs::read_dir(&d) else {
-                continue;
-            };
-            for e in entries.flatten() {
-                let p = e.path();
-                if p.is_dir() {
-                    stack.push(p);
-                } else if p.extension().and_then(|x| x.to_str()) == Some("md")
-                    && !p.to_string_lossy().contains("superpowers")
-                {
-                    out.push(p);
-                }
-            }
-        }
-        out
+        let listed = std::process::Command::new("git")
+            .args(["ls-files", "-z", "--", &format!(":(glob){rel}/**/*.md")])
+            .current_dir(repo())
+            .output()
+            .expect("git ls-files");
+        assert!(listed.status.success(), "git ls-files failed");
+        String::from_utf8_lossy(&listed.stdout)
+            .split('\0')
+            .filter(|r| !r.is_empty() && !r.contains("superpowers"))
+            .map(|r| repo().join(r))
+            .collect()
     }
 
     let docs_only = md_under("docs").len();

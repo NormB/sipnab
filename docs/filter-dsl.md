@@ -542,7 +542,9 @@ measurements only. No filter DSL field matches an XR value.
   deeply repetitive expression drove the parser into a stack overflow that
   aborts the process rather than returning an error. A filter over the cap is
   refused by `validate_filter` and by every flag that takes one.
-- Maximum parenthesis nesting depth: **50 levels**
+- Maximum parenthesis nesting depth: **50 levels** (`MAX_NESTING_DEPTH`).
+  It bounds recursion in the parser itself; how large the resulting tree may
+  grow is the separate node bound above.
 - Maximum regex pattern size: **1 MB** (1,000,000 bytes)
 - Empty expressions produce a parse error
 - Trailing unparsed input produces a parse error with position

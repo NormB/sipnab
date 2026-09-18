@@ -70,6 +70,18 @@ fn markdown_files() -> Vec<PathBuf> {
             }
         }
     }
+    // Only what git tracks. The walk above also finds the gitignored
+    // docs/design/backlog.local.md on the one machine that holds it, and this
+    // gate then failed there over bare paths in a private list CI never sees --
+    // the same commit green in CI and red locally. A link gate polices what is
+    // published, which is what is committed.
+    let tracked = tracked();
+    files.retain(|p| {
+        p.strip_prefix(repo())
+            .ok()
+            .and_then(|r| r.to_str())
+            .is_some_and(|r| tracked.contains(r))
+    });
     files.sort();
     files
 }

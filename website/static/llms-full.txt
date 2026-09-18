@@ -2248,6 +2248,10 @@ Or name the port the gateway actually listens on:
 sipnab -N -I capture.pcap --ws-portrange 5066-5066 --report --no-cli-print
 ```
 
+sipnab refuses a WebSocket frame whose payload exceeds 64 KiB (65,536 bytes,
+`MAX_FRAME_SIZE`) rather than reassembling it: no SIP message comes close, so a frame that
+large is either not SIP or not well-formed.
+
 **What to look for:**
 
 - sipnab tallies the SIP-over-WebSocket it declined to unwrap and names the ports it was on, so a run with the default set still tells you where the traffic is.
@@ -3399,7 +3403,7 @@ Metric names emitted by [`src/output/prometheus.rs`](https://github.com/NormB/si
 | `sipnab_capture_backpressure_blocks_total` | counter | Times the capture reader blocked on a full queue (standalone `--metrics` server). |
 | `sipnab_diagnosis_total{type}` | counter | Tracked dialogs whose media diagnosis raises each finding. A dialog with two findings counts under both. **Seven label values, in three groups an alert rule has to keep apart.** `one_way_audio`, `nat_mismatch` and `no_media` appear on every scrape, at `0` where nothing raises them, so a rule watching for the first one reads zero rather than no-data. `private_media_address` — the SDP `c=` line offered an address the far end cannot route back to — and `private_media_address_confirmed` — the subset where STUN evidence also shows nothing rewrote that address — appear only once a dialog raises them, so both series stay absent until the first one does. The ratio of the second to the first is how much of the fleet's warning the capture confirms. `dead_air` and `clipping` are the third group: they are amplitude measurements on the decoded audio, so they tick only on a run started with `--retain-audio` and stay absent otherwise. Absent means the run kept no samples, never that the calls were fine — an alert rule that treats a missing `dead_air` series as a healthy fleet is reading a capture setting as a finding. Both servers run the diagnosis during the scrape, so scrape cost grows with the number of tracked dialogs (capped by `-l`/`--limit`). |
 | `sipnab_security_alerts_total{type}` | counter | Security alerts by the detector that fired: `scanner`, `fraud`, `digest`, `reg_flood`. Only types that have fired appear, so the family is absent before the first alert. A rule name can come from packet data, so sipnab caps the family at 128 distinct names and folds everything past the cap into `type="other"` — the total stays right even where the breakdown cannot. |
-| `sipnab_mcp_tool_calls_total{tool,outcome}` | counter | MCP tool calls, by the tool asked for and how the call ended: `ok`, `tool_error` (the tool answered and said the answer is an error), or `refused` (the rate limit, the concurrency cap, a scope check, unknown arguments, or a name no tool answers to). The name comes from the CLIENT, so a name no tool answers to still counts — probing is what this series is for — and sipnab caps the distinct names, folding everything past the cap into `tool="other"` so a peer looping over invented names cannot grow the series set. Absent until the first tool call, like `sipnab_security_alerts_total`. sipnab counts at the same point it writes the `mcp_audit` log line, so the two always agree. |
+| `sipnab_mcp_tool_calls_total{tool,outcome}` | counter | MCP tool calls, by the tool asked for and how the call ended: `ok`, `tool_error` (the tool answered and said the answer is an error), or `refused` (the rate limit, the concurrency cap, a scope check, unknown arguments, or a name no tool answers to). The name comes from the CLIENT, so a name no tool answers to still counts — probing is what this series is for — and sipnab caps the distinct names at 256 (`MAX_TOOLS`), well above the tool surface, folding everything past the cap into `tool="other"` so a peer looping over invented names cannot grow the series set. Absent until the first tool call, like `sipnab_security_alerts_total`. sipnab counts at the same point it writes the `mcp_audit` log line, so the two always agree. |
 | `sipnab_mcp_tool_duration_seconds{tool}` | histogram | How long each MCP tool takes to answer, in seconds, from the same instant the audit line's `elapsed_ms` measures. Fixed boundaries at 1/5/10/25/50/100/250/500ms and 1/2.5/5/10s — unlike the four capture histograms these have no operator threshold to derive from, because they measure sipnab answering rather than the calls it observed. Emits `_bucket{tool,le}`, `_count{tool}`, `_sum{tool}`. |
 | `sipnab_mcp_tool_response_bytes_total{tool}` | counter | Text content bytes each MCP tool has returned. The payload an agent reads, not the framed wire size: the JSON-RPC envelope and its escaping are outside this figure. Divide by `sipnab_mcp_tool_duration_seconds_count{tool}` for the average answer size, which is the number to look at when a client's context window is the constraint — see `--mcp-max-rows` and `--mcp-max-body-bytes`. A refused call returns no content, so it moves the call counter and leaves this one where it was. |
 | `sipnab_pdd_seconds` | histogram | Post-dial delay distribution. Boundaries come from `[diagnosis] post_dial_delay_secs` rather than a fixed list: a resolution ladder at 0.5/1/2/3/5s, then the threshold itself and twice it (11s and 22s at the shipped setting), so a query here reproduces the finding sipnab raises. Emits `sipnab_pdd_seconds_bucket{le}`, `_count`, `_sum`. **`--api` only**, as with the three quality histograms below it — see [Which server fills which series](#which-server-fills-which-series). |
@@ -3718,7 +3722,7 @@ sipnab -d eth0 --api 127.0.0.1:8080 --api-key "secret"
 
 The base URL is whatever you pass to `--api` (e.g., `http://127.0.0.1:8080`). All network listeners bind to loopback by default. Bind a routable address (e.g. `0.0.0.0:8080`) only behind a token and a reverse proxy. Data endpoints use a `/v1/` prefix, and utility endpoints (`/health`, `/metrics`) have none.
 
-`--api-max-conn` (default `100`) caps concurrent API connections to prevent resource exhaustion. Requests are additionally rate-limited to 100 per second per source IP. Requests rejected by the rate limiter or connection cap return **`503 Service Unavailable`** (not 429).
+`--api-max-conn` (default `100`) caps concurrent API connections to prevent resource exhaustion. The API refuses a request body larger than 1 MiB (`MAX_REQUEST_BODY_BYTES`) with HTTP 413 before any handler sees it — defense in depth, since every route is `GET` today. Requests are additionally rate-limited to 100 per second per source IP. Requests rejected by the rate limiter or connection cap return **`503 Service Unavailable`** (not 429).
 
 ## OpenAPI specification
 
@@ -11386,7 +11390,7 @@ it. See [MCP Server](mcp.md) for the full guide. [Network Listeners](#network-li
 | `--keylog-fd` | `<N>` | -- | Read NSS keylog lines from an already-open descriptor, for a privileged producer that hands secrets over a pipe rather than a file. **Implies `--keylog-watch`**, and conflicts with `--keylog` — pass one, never both. sipnab **cannot start that producer itself**: it sets `PR_SET_NO_NEW_PRIVS` at startup and every child inherits it, so a child can never acquire the `CAP_BPF` an eBPF extractor needs. Start it from a supervisor and pass the read end here. Feature: `tls` |
 | `--keylog-watch` | -- | off | Watch the key log for new entries (live decryption). Feature: `tls` |
 | `--tls-lockon-window` | `<RECORDS>` | 1048576 | How far into an established TLS connection a capture may start and still be readable. No TLS version puts the record number on the wire, so a capture that joined a running connection searches for it, widening only as records fail to open — raising this costs nothing on a connection captured from its handshake, because the search stops at the first candidate that authenticates. Raise it for a carrier trunk held open for days; lower it where key material for unrelated connections is common. Feature: `tls` |
-| `--dtls-keylog` | `<FILE>` | -- | DTLS key log (NSS `SSLKEYLOGFILE`); extracts SRTP keys from DTLS-SRTP handshakes ([RFC 5764](https://www.rfc-editor.org/rfc/rfc5764) exporter, AES-CM profiles). Feature: `tls` |
+| `--dtls-keylog` | `<FILE>` | -- | DTLS key log (NSS `SSLKEYLOGFILE`); extracts SRTP keys from DTLS-SRTP handshakes ([RFC 5764](https://www.rfc-editor.org/rfc/rfc5764) exporter, AES-CM profiles). sipnab does not treat a record declaring more than 2^14 + 2048 bytes as DTLS (`MAX_RECORD_LEN`, the ciphertext limit TLS sets and DTLS inherits). Feature: `tls` |
 | `--srtp-keys` | `<FILE>` | -- | SRTP master-keys file for media decryption (AES-CM, [RFC 3711](https://www.rfc-editor.org/rfc/rfc3711)); also honors SDES `a=crypto` keys from SDP. Feature: `tls` |
 | `--pcap-export-mode` | `<MODE>` | `decrypted` | Pcap export mode for encrypted traffic: `decrypted` (plaintext payloads, no DSB), `raw` (original encrypted bytes, no DSB), `encrypted+dsb` (original encrypted bytes + Decryption Secrets Block so Wireshark can decrypt) |
 | `--allow-coredump` | -- | off | Allow core dumps (do not call `prctl` to disable them) |
@@ -12142,7 +12146,9 @@ measurements only. No filter DSL field matches an XR value.
   deeply repetitive expression drove the parser into a stack overflow that
   aborts the process rather than returning an error. A filter over the cap is
   refused by `validate_filter` and by every flag that takes one.
-- Maximum parenthesis nesting depth: **50 levels**
+- Maximum parenthesis nesting depth: **50 levels** (`MAX_NESTING_DEPTH`).
+  It bounds recursion in the parser itself; how large the resulting tree may
+  grow is the separate node bound above.
 - Maximum regex pattern size: **1 MB** (1,000,000 bytes)
 - Empty expressions produce a parse error
 - Trailing unparsed input produces a parse error with position
@@ -14265,7 +14271,7 @@ Address name-resolution settings (display `host:port` instead of `ip:port`).
 | `reverse_dns` | boolean | `false` | Also use reverse DNS (PTR) lookups |
 | `hosts_file` | string | -- | `/etc/hosts`-format file of IP → name mappings to preload |
 | `persist_to_config` | boolean | `false` | When set, in-TUI `N` edits are also written into the `[names.manual]` table below, preserving the rest of this file |
-| `dns_cache_entries` | integer | `4096` | Reverse-DNS results (positive and negative) held at once. Past the cap sipnab drops the oldest entry, so a capture touching more hosts than this -- a carrier edge, a peering point, or any long `--reverse-dns` window -- keeps re-looking-up addresses it already resolved. Nothing reports that: a dropped lookup only shows as an address displayed unresolved, so the symptom is names that flicker. The worker queue's depth follows this figure; sipnab derives it rather than taking a second number. `--dns-cache-entries` overrides it |
+| `dns_cache_entries` | integer | `4096` | Reverse-DNS results (positive and negative) held at once (default `MAX_DNS_CACHE_ENTRIES`). Past the cap sipnab drops the oldest entry, so a capture touching more hosts than this -- a carrier edge, a peering point, or any long `--reverse-dns` window -- keeps re-looking-up addresses it already resolved. Nothing reports that: a dropped lookup only shows as an address displayed unresolved, so the symptom is names that flicker. The worker queue's depth follows this figure; sipnab derives it rather than taking a second number. `--dns-cache-entries` overrides it |
 | `manual` | table | -- | Inline `"IP" = "name"` mappings, loaded at startup (highest-priority manual layer) |
 
 ```toml

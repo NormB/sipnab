@@ -2306,7 +2306,13 @@ fn line_citations_point_at_the_code_they_name() {
     // (quality.rs:540). Six new resolvable citations, none removed; measured
     // per page against HEAD: positioning.md 0 -> 6, and the sibling
     // threat-mitigation-hooks.md, re-anchored in the same change, 2 -> 2.
-    let expected = 210;
+    // 210 -> 172: the backlog became a local, gitignored document. Its 38
+    // symbol-bearing line citations left the tracked tree with it -- and the
+    // checker had to stop reading it too: it globbed docs/**/*.md ON DISK, so a
+    // machine holding the local file counted 212 and passed while CI counted
+    // 172 and failed (main, 2026-09-17). check-line-drift.py now reads only
+    // what `git ls-files` returns, so this number is the same everywhere.
+    let expected = 172;
     assert_eq!(
         checked, expected,
         "the drift checker examined {checked} citations, not the {expected} \

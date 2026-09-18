@@ -262,3 +262,50 @@ def test_applying_twice_changes_nothing_the_second_time(tmp_path):
         "what the fixer leaves behind must satisfy the gate that demands it, "
         "or the instruction to run it is a loop with no exit"
     )
+
+
+# ── which pages it reads ────────────────────────────────
+
+def _isolate_from_the_hook(monkeypatch):
+    """Drop every GIT_* variable the calling git exported.
+
+    `git commit` runs the pre-commit hook with GIT_DIR and GIT_INDEX_FILE set,
+    and every child git inherits them -- `git -C <tmp>` included, because the
+    environment wins over -C's discovery. Without this the fixture's `git add`
+    wrote a phantom `docs/public.md` into the REAL repository's index on
+    2026-09-17, and only this test failing kept it out of a commit.
+    """
+    import os
+    for key in list(os.environ):
+        if key.startswith("GIT_"):
+            monkeypatch.delenv(key)
+
+
+def _repo_with(tmp_path, tracked: dict, untracked: dict):
+    import subprocess
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    for rel, body in {**tracked, **untracked}.items():
+        f = tmp_path / rel
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text(body)
+    subprocess.run(["git", "-C", str(tmp_path), "add", *tracked], check=True)
+    return tmp_path
+
+
+def test_an_untracked_page_under_docs_is_not_read(tmp_path, monkeypatch):
+    """The gate must read what is COMMITTED, not whatever happens to be on disk.
+
+    It globbed docs/**/*.md, so the gitignored local backlog -- 40 line
+    citations that exist on one machine only -- counted locally and not in CI.
+    The pre-commit hook said 212 and passed; CI said 172 and turned main red on
+    2026-09-17, over a verdict the local run could not have reproduced.
+    """
+    _isolate_from_the_hook(monkeypatch)
+    root = _repo_with(
+        tmp_path,
+        tracked={"docs/public.md": "see `src/main.rs:1`\n"},
+        untracked={"docs/design/backlog.local.md": "see `src/main.rs:2`\n"},
+    )
+    monkeypatch.setattr(drift, "REPO", root)
+    names = sorted(p.relative_to(root).as_posix() for p in drift.anchor_pages())
+    assert names == ["docs/public.md"]

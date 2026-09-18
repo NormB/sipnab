@@ -53,20 +53,27 @@ fn source() -> String {
     out
 }
 
-/// Every `.md` file under `docs/`, plus the root policy documents.
+/// Every TRACKED `.md` file under `docs/`, plus the root policy documents.
+///
+/// Tracked, not every file on disk. `docs/design/backlog.local.md` is
+/// gitignored and exists on one machine: walking the directory counted the six
+/// bounds it named as documented there and nowhere else, so this gate passed
+/// locally and failed in CI over the same commit. A bound a caller can hit has
+/// to be named somewhere they can read.
 fn documentation() -> String {
     let mut out = String::new();
-    let mut stack = vec![repo().join("docs")];
-    while let Some(dir) = stack.pop() {
-        for e in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
-            let p = e.path();
-            if p.is_dir() {
-                stack.push(p);
-            } else if p.extension().is_some_and(|x| x == "md") {
-                out.push_str(&std::fs::read_to_string(&p).unwrap_or_default());
-                out.push('\n');
-            }
+    let listed = std::process::Command::new("git")
+        .args(["ls-files", "-z", "--", ":(glob)docs/**/*.md"])
+        .current_dir(repo())
+        .output()
+        .expect("git ls-files docs/");
+    assert!(listed.status.success(), "git ls-files failed");
+    for rel in String::from_utf8_lossy(&listed.stdout).split('\0') {
+        if rel.is_empty() {
+            continue;
         }
+        out.push_str(&std::fs::read_to_string(repo().join(rel)).unwrap_or_default());
+        out.push('\n');
     }
     for f in ["README.md", "SECURITY.md", "CHANGELOG.md"] {
         out.push_str(&std::fs::read_to_string(repo().join(f)).unwrap_or_default());

@@ -2242,6 +2242,10 @@ Or name the port the gateway actually listens on:
 sipnab -N -I capture.pcap --ws-portrange 5066-5066 --report --no-cli-print
 ```
 
+sipnab refuses a WebSocket frame whose payload exceeds 64 KiB (65,536 bytes,
+`MAX_FRAME_SIZE`) rather than reassembling it: no SIP message comes close, so a frame that
+large is either not SIP or not well-formed.
+
 **What to look for:**
 
 - sipnab tallies the SIP-over-WebSocket it declined to unwrap and names the ports it was on, so a run with the default set still tells you where the traffic is.

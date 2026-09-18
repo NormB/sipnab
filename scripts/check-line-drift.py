@@ -61,6 +61,7 @@ citation in opposite directions.
 """
 
 import pathlib
+import subprocess
 import re
 import sys
 
@@ -69,6 +70,23 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from lib_markdown import fence_mask  # noqa: E402
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
+
+
+def tracked(pattern: str) -> list[pathlib.Path]:
+    """Markdown git TRACKS under REPO matching `pattern`, sorted.
+
+    Never a filesystem glob. docs/design/backlog.local.md is gitignored and
+    exists on one machine only; globbing picked up its 40 line citations, so
+    this checker reported 212 where CI -- which has no such file -- reported
+    172, and a pre-commit run passed over a verdict CI then refused. A gate
+    reads what is committed.
+    """
+    out = subprocess.run(
+        ["git", "-C", str(REPO), "ls-files", "-z", "--", f":(glob){pattern}"],
+        capture_output=True,
+        check=True,
+    ).stdout.decode()
+    return sorted(REPO / rel for rel in out.split("\0") if rel)
 
 # [`src/foo.rs:123`](url#L123) -- the link is captured because the label alone
 # does not say which file is meant. See `source_for`.
@@ -280,7 +298,7 @@ def check(apply: bool, pages: list[pathlib.Path] | None = None) -> int:
     """
     problems, fixed, checked = [], 0, 0
 
-    for md in sorted(REPO.glob("docs/**/*.md")) if pages is None else pages:
+    for md in tracked("docs/**/*.md") if pages is None else pages:
         if "superpowers" in str(md):
             continue
         text = md.read_text()
@@ -386,8 +404,8 @@ def anchor_pages() -> list[pathlib.Path]:
     the point: a page set chosen by where citations happen to be today is one
     that misses the first one written tomorrow.
     """
-    pages = [p for p in sorted(REPO.glob("docs/**/*.md")) if "superpowers" not in str(p)]
-    pages += sorted(REPO.glob("website/content/**/*.md"))
+    pages = [p for p in tracked("docs/**/*.md") if "superpowers" not in str(p)]
+    pages += tracked("website/content/**/*.md")
     readme = REPO / "README.md"
     if readme.is_file():
         pages.append(readme)
