@@ -12,6 +12,28 @@ entry that carries them.
 
 ### Fixed
 
+- **The crate's front page on docs.rs shows five examples that run.** The
+  0.5.179 Quick Start was marked `no_run`, imported `parse_sip` and
+  `parse_packet` without calling either, and looped over a capture's packets
+  doing nothing. Now five examples run as tests on every `cargo test`, and
+  each checks what it shows: parsing a SIP message and its SDP, following a
+  call from INVITE to BYE through `DialogStore`, choosing calls with the
+  filter language, reading a capture down to its SIP messages, and parsing an
+  RTP header and scoring MOS. `tests/crate_front_page_test.rs` fails if an
+  example stops running (`no_run`, `ignore`), asserts nothing, or if the page
+  stops covering those parts of the crate.
+- **The front page no longer promises a semver contract.** It said "the
+  documented public API is the semver contract" while `docs/library.md`
+  declared the library API unstable. The 0.5.179 notes also claimed
+  `docs/library.md` was that front page. It is not: it is compiled as
+  doctests and never rendered. The front page now carries the same
+  stability statement.
+- **"Zero-copy SIP parsing" was not true.** The crate description, and the
+  `sip` module's, claimed zero-copy parsing and lazy header extraction.
+  `parse_sip` copies a borrowed slice once, and every header value is decoded
+  into an owned `String` when the message is parsed. What is shared is the
+  payload: `parse_sip_bytes` keeps a message's raw bytes and body as views
+  of the capture buffer. Both descriptions now say exactly that.
 - **`sipnab-bpf-types` went to crates.io without a README or its license
   texts.** Its crates.io page said the crate "appears to have no README.md
   file", and a crate licensed "MIT OR Apache-2.0" carried neither license.
@@ -101,8 +123,8 @@ entry that carries them.
 
 ### Changed
 
-- **The library API is declared unstable.** [`docs/library.md`](docs/library.md),
-  which is also the crate's front page on docs.rs, now says so up front:
+- **The library API is declared unstable.** [`docs/library.md`](docs/library.md)
+  now says so up front:
   sipnab releases often, any release including a patch release can change a
   public item, and a library dependent should pin the exact release with `=`.
   The supported interface is the program. Measured across the last ten

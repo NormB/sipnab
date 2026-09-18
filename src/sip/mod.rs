@@ -2,9 +2,10 @@
 
 //! SIP protocol parsing, dialog state tracking, and filter DSL.
 //!
-//! Provides zero-copy SIP message parsing, lazy header extraction,
-//! response code intelligence, dialog state tracking, and a declarative
-//! filter DSL for matching calls.
+//! Provides SIP message parsing (a message's raw bytes and body share the
+//! capture buffer; header values are decoded into owned strings when it is
+//! parsed), response code intelligence, dialog state tracking, and a
+//! declarative filter DSL for matching calls.
 //!
 //! Core types: [`SipMessage`], [`SipDialog`](dialog::SipDialog),
 //! [`DialogState`](dialog::DialogState), [`SipMethod`],
