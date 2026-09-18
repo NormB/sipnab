@@ -1,14 +1,30 @@
 # Using sipnab as a library
 
-sipnab is primarily a CLI/TUI tool, but its analysis engine is a
-published Rust crate. The curated public API is re-exported at the crate
+sipnab is primarily a CLI/TUI tool, and its analysis engine is also a Rust
+library on crates.io. The curated public API is re-exported at the crate
 root. Anything under a `#[doc(hidden)]` module (`cli`, `tui`, `privilege`,
-…) is binary-internal and carries **no** semver guarantee.
+…) is binary-internal.
+
+## Stability
+
+**The library API is not stable.** The supported way to use sipnab is the
+program, `cargo install sipnab`. sipnab releases often, and any release,
+including a patch release, can rename, move or remove a public item.
+
+That matters because of how cargo reads a version. A requirement of `"0.5"`
+means "any 0.5.x release", so `cargo update` can move your build to a release
+that no longer compiles against your code. Pin the exact release you built
+against, with `=`:
 
 ```toml
 [dependencies]
-sipnab = { version = "0.5", default-features = false, features = ["native"] }
+# Replace N with the patch number of the release you tested.
+sipnab = { version = "=0.5.N", default-features = false, features = ["native"] }
 ```
+
+Then upgrade on purpose: change the pin, rebuild, and read the
+[changelog](https://github.com/NormB/sipnab/blob/main/CHANGELOG.md) for what
+moved.
 
 ## Crate-root surface
 

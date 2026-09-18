@@ -5533,7 +5533,11 @@ fn packaging_scripts_reference_existing_paths() {
     // `.github/workflows/cert-expiry.yml`: the step that runs it and the
     // `paths:` glob that makes a change to it trigger the workflow. No other
     // file gained a path reference.
-    const EXPECTED_REFERENCES: usize = 98;
+    // 98 -> 99: one, in `.github/workflows/ci.yml`, from the new
+    // `crate-package` job, whose comment names `tests/crate_package_test.rs`.
+    // Attributed by measurement: with HEAD's ci.yml swapped back in, the scan
+    // reads 98.
+    const EXPECTED_REFERENCES: usize = 99;
     assert_eq!(
         checked, EXPECTED_REFERENCES,
         "packaging path scan saw {checked} references, expected \

@@ -89,7 +89,7 @@ These offer a copyleft option alongside permissive ones. sipnab elects the permi
 | cc | 1.2.59 | MIT OR Apache-2.0 |
 | cfg-if | 1.0.4 | MIT OR Apache-2.0 |
 | cfg_aliases | 0.2.1 | MIT |
-| chacha20 | 0.10.0 | MIT OR Apache-2.0 |
+| chacha20 | 0.10.2 | MIT OR Apache-2.0 |
 | chrono | 0.4.45 | MIT OR Apache-2.0 |
 | cipher | 0.5.2 | MIT OR Apache-2.0 |
 | clap | 4.6.3 | MIT OR Apache-2.0 |
@@ -329,7 +329,7 @@ These offer a copyleft option alongside permissive ones. sipnab elects the permi
 | slab | 0.4.12 | MIT |
 | smallvec | 1.16.0 | MIT OR Apache-2.0 |
 | socket2 | 0.6.3 | MIT OR Apache-2.0 |
-| spin | 0.9.8 | MIT |
+| spin | 0.9.9 | MIT |
 | spki | 0.7.3 | Apache-2.0 OR MIT |
 | sse-stream | 0.2.5 | MIT OR Apache-2.0 |
 | static_assertions | 1.1.0 | MIT OR Apache-2.0 |

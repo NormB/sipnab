@@ -41,10 +41,53 @@ homepage = "https://sipnab.com"
 default-run = "sipnab"
 keywords = ["sip", "rtp", "voip", "pcap", "network"]
 categories = ["network-programming", "command-line-utilities"]
-exclude = ["website/", "demos/", "fuzz/", ".githooks/", "tests/pcap-samples/"]
+# What `cargo publish` ships, stated rather than subtracted. The old `exclude`
+# list shipped 1,042 files compressing to within 33 KB of crates.io's 10 MiB
+# limit. It also shipped `src/bin/gen_fixture.rs`, so `cargo install sipnab`
+# put the test-fixture generator on every user's PATH. Beyond `src/`, only the
+# files the code embeds with `include_str!`/`include_bytes!` are needed.
+# `tests/crate_package_test.rs` fails when one is missing.
+include = [
+  "/src/**",
+  "!/src/bin/gen_fixture.rs",
+  "/build.rs",
+  "/Cargo.toml",
+  "/Cargo.lock",
+  "/README.md",
+  "/LICENSE-APACHE",
+  "/LICENSE-MIT",
+  "/LICENSES/**",
+  "/CHANGELOG.md",
+  "/contrib/fail2ban/sipnab-scanner.conf",
+  "/contrib/observability/prometheus/rules/sipnab-alerts.yml",
+  "/contrib/prometheus/sipnab-alerts.yml",
+  "/contrib/sipnabrc.example",
+  "/docs/design/wasm-plugin-api.md",
+  "/docs/filter-dsl.md",
+  "/docs/library.md",
+  "/docs/mos-and-codecs.md",
+  "/docs/plugins.md",
+  "/docs/sip-response-codes.md",
+  "/tests/fixtures/rtpengine/query-reply-12.5.1.bin",
+  "/tests/fixtures/tfps-*",
+  "/tests/fixtures/tls_rsa/**",
+  "/tests/schemas/vcon.schema.json",
+]
+
+# docs.rs: the documented `full` build, on the one target sipnab is built for
+# everywhere it runs. Not `all-features`: that pulls in `bpf`, whose build
+# script reaches for a nightly toolchain docs.rs does not have, and `wasm`,
+# which is a different build of the crate altogether. The docs.rs image
+# carries libpcap-dev, libssl-dev and pkg-config (rust-lang/crates-build-env,
+# linux/packages.txt), which `native` and `tls` need.
+[package.metadata.docs.rs]
+features = ["full"]
+targets = ["x86_64-unknown-linux-gnu"]
 
 [dependencies]
-sipnab-bpf-types = { path = "crates/sipnab-bpf-types" }
+# `version` as well as `path`: crates.io resolves the published dependency by
+# version, and `cargo package` refuses a path dependency without one.
+sipnab-bpf-types = { version = "0.1.0", path = "crates/sipnab-bpf-types" }
 # Fast, DoS-resistant (random-seeded, AES-based) hasher for the per-packet
 # stores. Replaces the default SipHash on the hot path — every RTP packet does a
 # StreamStore key lookup — while keeping flood resistance for attacker-controlled

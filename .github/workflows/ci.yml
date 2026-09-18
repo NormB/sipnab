@@ -502,6 +502,40 @@ jobs:
         if: matrix.features == 'native,hep,api,mcp,mcp-http'
         run: cargo test --no-default-features --features "${{ matrix.features }}"
 
+  # What `cargo publish` would upload, built from its own files alone.
+  # `tests/crate_package_test.rs` packages without compiling, so it catches a
+  # missing dependency version, the size limit, an embedded file left out of
+  # `include`, and a second binary. This job runs the VERIFYING package, which
+  # unpacks each .crate and builds it with default features. So anything the
+  # build reads that the allowlist does not ship fails here, not at
+  # `cargo publish`. Both crates in one command, so the path dependency is
+  # resolved against the freshly packaged sipnab-bpf-types rather than
+  # crates.io.
+  crate-package:
+    # Bounds how long this job can hold the main-branch concurrency
+    # group, which never supersedes. A cold default-feature build.
+    timeout-minutes: 40
+    name: Crate package (cargo package, verified)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # Do not leave GITHUB_TOKEN in .git/config for later steps or
+          # third-party actions to read. Nothing here pushes with it:
+          # wiki-sync and release pass the token explicitly via GH_TOKEN.
+          persist-credentials: false
+      - name: Free disk space
+        uses: ./.github/actions/free-disk
+
+      - name: Install system deps
+        uses: ./.github/actions/system-deps
+        with:
+          packages: libpcap-dev libasound2-dev
+
+      - uses: dtolnay/rust-toolchain@ce678459e9fc7500d337468f904b95f1b5c10b5e # 1.98.1
+      - name: Package and verify both crates
+        run: cargo package --locked -p sipnab-bpf-types -p sipnab
+
   audit:
     # Bounds how long this job can hold the main-branch concurrency
     # group, which never supersedes. Observed: 0.6 min.
@@ -605,7 +639,7 @@ jobs:
 
   ci-success:
     # Bounds how long this job can hold the main-branch concurrency
-    # group, which never supersedes. Observed: 0.0 min, but it waits on 11 needs.
+    # group, which never supersedes. Observed: 0.0 min, but it waits on 12 needs.
     timeout-minutes: 10
     name: CI success
     if: always()
@@ -615,8 +649,8 @@ jobs:
     # so install-sh and deb-package could both fail with the one required
     # check on main still green.
     needs: [check, install-sh, deb-package, rpm-packaging, homebrew-formula,
-            tsan-verdict, bench-scripts, features, audit, fuzz-check,
-            code-scanning-clean]
+            tsan-verdict, bench-scripts, features, crate-package, audit,
+            fuzz-check, code-scanning-clean]
     runs-on: ubuntu-latest
     steps:
       - name: Verify all required jobs succeeded

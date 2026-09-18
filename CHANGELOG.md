@@ -10,6 +10,40 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Added
+
+- **sipnab is published on crates.io, so `cargo install sipnab --features full`
+  works.** The download page, the install guide and five other pages have
+  advertised that command for months, and it failed for everyone who copied
+  it: the crate had never been published, and `cargo package` refused to run.
+  `sipnab-bpf-types`, the record layout shared with the eBPF program, was a
+  path dependency with no `version` and `publish = false`. It is now published
+  alongside sipnab, and the dependency names its version.
+- **The published crate ships only what a build needs.** `Cargo.toml` now lists
+  what goes in (`include`) instead of what stays out. The old list shipped
+  1,042 files compressing to 10,452,860 bytes, 32,900 bytes under crates.io's
+  10 MiB limit, so the next screenshot would have made publishing impossible.
+  The new one ships `src/`, the manifests, README, licenses, CHANGELOG and the
+  22 files the code embeds with `include_str!`/`include_bytes!`, and the
+  `.crate` is 3,918,333 bytes. It also leaves out `src/bin/gen_fixture.rs`. Without that,
+  `cargo install sipnab` would have put the test-fixture generator on every
+  user's `PATH` next to sipnab.
+- **docs.rs builds the documented `full` feature set** for
+  `x86_64-unknown-linux-gnu` (`[package.metadata.docs.rs]`). It deliberately
+  excludes `bpf`, whose build script needs a nightly toolchain, and `wasm`,
+  which is a different build of the crate.
+
+### Changed
+
+- **The library API is declared unstable.** [`docs/library.md`](docs/library.md),
+  which is also the crate's front page on docs.rs, now says so up front:
+  sipnab releases often, any release including a patch release can change a
+  public item, and a library dependent should pin the exact release with `=`.
+  The supported interface is the program. Measured across the last ten
+  releases, three removed or rewrote lines declaring public items, so a plain
+  `"0.5"` requirement would have broken a dependent's build on
+  `cargo update`.
+
 ### Fixed
 
 - **`llms-full.txt` lost an eBPF load-verification row and mislabeled another.**
@@ -21,6 +55,15 @@ entry that carries them.
 
 ### Internal
 
+- **A gate packages the crate on every test run.** `tests/crate_package_test.rs`
+  runs `cargo package --no-verify` itself instead of copying cargo's include
+  rules. It fails when a dependency has no version, when the `.crate` passes
+  the upload limit, when a file the code embeds is missing from it, or when it
+  would install a second binary. A new `crate-package` CI job, required by
+  `CI success`, runs the verifying `cargo package`, which builds each unpacked
+  crate from its own files.
+- **Two yanked crates left `Cargo.lock`:** `chacha20` 0.10.0 → 0.10.2 and
+  `spin` 0.9.8 → 0.9.9.
 - **The backlog records what publishing sipnab to crates.io would cost.** The
   download page and six other places advertise `cargo install sipnab --features
   full`, and the crate has never been published, so that command fails for

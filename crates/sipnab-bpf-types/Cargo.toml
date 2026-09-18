@@ -13,7 +13,8 @@ rust-version = "1.98"
 license = "MIT OR Apache-2.0"
 description = "Record layout shared between sipnab and its eBPF program"
 repository = "https://github.com/NormB/sipnab"
-publish = false
+# Published: sipnab depends on it unconditionally, so it has to exist on
+# crates.io before sipnab can.
 
 [dependencies]
 

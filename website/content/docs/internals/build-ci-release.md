@@ -232,10 +232,10 @@ by design.
 
 ### What actually gates a merge
 
-`ci-success` requires every other job in `ci.yml` — eleven of them: **`check`,
+`ci-success` requires every other job in `ci.yml` — twelve of them: **`check`,
 `install-sh`, `deb-package`, `rpm-packaging`, `homebrew-formula`,
-`tsan-verdict`, `bench-scripts`, `features`, `audit`, `fuzz-check`,
-`code-scanning-clean`**. `ci_success_gates_every_job` in
+`tsan-verdict`, `bench-scripts`, `features`, `crate-package`, `audit`,
+`fuzz-check`, `code-scanning-clean`**. `ci_success_gates_every_job` in
 [`site_journey_test`](https://github.com/NormB/sipnab/blob/main/tests/site_journey_test.rs) holds the list to that,
 because it once named only the four below while the comment above it claimed
 "every other job" — so `install-sh` and `deb-package` could both fail with the
@@ -304,11 +304,17 @@ Branch protection sets `required_status_checks.strict: true`, so a green pull
 request shows `BEHIND` whenever `main` moves. Arm auto-merge per pull request
 rather than racing a manual rebase against your own pushes.
 
-**`install-sh` and `deb-package` are not in that list.** They run on every push
+**`install-sh` and `deb-package` are in that list.** They run on every push
 — the installer test suite plus shellcheck, and the `.deb` build for both the
-full and `noaudio` variants — but a failure in either does **not** block a
-merge. If you touch [`website/static/install.sh`](https://github.com/NormB/sipnab/blob/main/website/static/install.sh) or [`packaging/deb/`](https://github.com/NormB/sipnab/blob/main/packaging/deb), read their
-logs yourself. Nothing else makes you.
+full and `noaudio` variants — and a failure in either turns `CI success` red,
+so it blocks a merge like any other job. This paragraph used to say the
+opposite, written before `ci_success_gates_every_job` added them.
+
+**`crate-package`** runs `cargo package -p sipnab-bpf-types -p sipnab`, which
+builds each crate from its own `.crate` file, so a file the build reads but
+the `include` allowlist in `Cargo.toml` does not ship fails here rather than
+at `cargo publish`. [`tests/crate_package_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/crate_package_test.rs) is the fast half: it
+packages without compiling on every test run.
 
 ## Hooks
 
@@ -649,8 +655,8 @@ locally:
 
 | Location | Form |
 |---|---|
-| `ci.yml` (3 jobs), `quality.yml` (3 jobs), `release.yml` | `dtolnay/rust-toolchain@<sha> # 1.98.1` |
-| `Cargo.toml`, [`crates/sipnab-audio/Cargo.toml`](https://github.com/NormB/sipnab/blob/main/crates/sipnab-audio/Cargo.toml) | `rust-version = "1.98"` (MSRV) |
+| `ci.yml` (5 jobs), `quality.yml` (3 jobs), `release.yml` | `dtolnay/rust-toolchain@<sha> # 1.98.1` |
+| `Cargo.toml`, [`crates/sipnab-audio/Cargo.toml`](https://github.com/NormB/sipnab/blob/main/crates/sipnab-audio/Cargo.toml), [`crates/sipnab-bpf-types/Cargo.toml`](https://github.com/NormB/sipnab/blob/main/crates/sipnab-bpf-types/Cargo.toml) | `rust-version = "1.98"` (MSRV) |
 | `Dockerfile`, [`harness/sipnab/Dockerfile`](https://github.com/NormB/sipnab/blob/main/harness/sipnab/Dockerfile) | `FROM rust:1.98-slim-trixie@sha256:<digest>` |
 
 A commit SHA pins the action, so the **version lives in the trailing
