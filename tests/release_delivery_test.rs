@@ -44,6 +44,14 @@ fn read(rel: &str) -> String {
     std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()))
 }
 
+/// The working backlog, which is local and gitignored (see
+/// `docs/design/backlog.md`, the tracked stub). `None` in any clone that has no
+/// local copy — CI included — and a gate that cannot read it must skip rather
+/// than invent a verdict about work it cannot see.
+fn local_backlog() -> Option<String> {
+    std::fs::read_to_string(repo().join("docs/design/backlog.local.md")).ok()
+}
+
 /// Run a git command in the repository and return stdout, or `None` when git
 /// itself could not answer.
 ///
@@ -721,7 +729,9 @@ fn a_version_bump_carries_its_changelog_entry() {
 /// problem is gone; while it sits untagged it is gone only here.
 #[test]
 fn a_p0_marked_done_is_released_or_declared() {
-    let backlog = read("docs/design/backlog.md");
+    let Some(backlog) = local_backlog() else {
+        return;
+    };
     let p0_start = backlog
         .find("## P0 — panics & security")
         .expect("backlog has a P0 section");

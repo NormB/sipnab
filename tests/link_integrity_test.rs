@@ -868,7 +868,12 @@ fn wiki_intra_docs_links_resolve() {
     // 725 -> 726 by ST-D2's "Relay statistics" section in docs/rtpengine.md,
     // which links the cookbook's relay-statistics recipes rather than restating
     // them. One link, one page; the mirror is outside the extractor's walk.
-    const EXPECTED_WIKI_LINKS: usize = 726;
+    // 726 -> 725 by the backlog becoming local: docs/internals/README.md's
+    // "P0-P5 tiers in [backlog.md](...)" sentence now names the tiers without
+    // linking a page that no longer holds them. One link, in one file, removed
+    // by that edit and nothing else -- a DROP is otherwise the alarm this
+    // number exists for.
+    const EXPECTED_WIKI_LINKS: usize = 725;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe 6d in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

@@ -84,3 +84,6 @@ e2e/playwright-report/
 # tracked: it is the budget. The measurements behind it are recorded in that
 # file's `_measured` block rather than by committing the reports.
 e2e/.lighthouseci/
+
+# The working backlog is local, never committed.
+docs/design/backlog.local.md

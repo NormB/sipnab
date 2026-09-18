@@ -2943,6 +2943,103 @@ fn scanned_markdown() -> Vec<std::path::PathBuf> {
         .collect()
 }
 
+/// Open work is tracked in ONE file, and no second tracker appears.
+///
+/// That file is `docs/design/backlog.local.md`: gitignored, never pushed, and
+/// the single list of every item in every state. `docs/design/backlog.md` is a
+/// tracked stub describing the convention, so the links pointing at it keep
+/// resolving. A clone without the local copy — CI, or a fresh checkout — can
+/// still enforce the half that matters here: that nothing ELSE in this tree
+/// becomes a second todo list. Everything else that carries `- [ ]`
+/// today is a historical record — acceptance criteria and plan steps written
+/// before the work shipped, and never ticked afterwards: `implementation-plan-v6`
+/// has 851 unticked boxes and ZERO ticked ones, over items like "Live capture
+/// from a device works with BPF filters" and "`sipnab --mcp` starts a Model
+/// Context Protocol server using stdio transport", both of which shipped long
+/// ago. Importing those into the backlog would bury its real items under
+/// fifteen hundred false ones; retro-ticking them would corrupt the record, for
+/// the same reason `scanned_markdown` skips these trees.
+///
+/// So they are named here, with the count each held when this gate was written,
+/// and the gate fails when a file NOT on the list starts carrying open boxes.
+/// That is the part that rots otherwise: a new plan document quietly becomes a
+/// second todo list, and "where is the backlog" stops having one answer.
+#[test]
+fn only_the_backlog_tracks_open_work() {
+    // Historical planning records. The count is what each carried on
+    // 2026-09-17; it may shrink as work is recorded elsewhere, and a file that
+    // reaches zero should lose its entry rather than sit here at 0.
+    const HISTORICAL: &[(&str, usize)] = &[
+        ("docs/design/implementation-plan-v6.md", 851),
+        ("docs/design/implementation-plan-phases-8-10.md", 515),
+        (
+            "docs/superpowers/plans/2026-07-25-developer-documentation.md",
+            101,
+        ),
+        ("docs/design/conditional-content-persistence.md", 19),
+        ("docs/research/capture-performance.md", 14),
+        ("docs/design/capture-tuning-tasks.md", 13),
+    ];
+    // A form the PR author ticks, not a tracker of open work.
+    const FORMS: &[&str] = &[".github/PULL_REQUEST_TEMPLATE.md"];
+
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let out = std::process::Command::new("git")
+        .args(["ls-files", "*.md"])
+        .current_dir(root)
+        .output()
+        .expect("git ls-files");
+    assert!(out.status.success(), "git ls-files failed");
+
+    let mut new_trackers: Vec<String> = Vec::new();
+    let mut grown: Vec<String> = Vec::new();
+    for rel in String::from_utf8_lossy(&out.stdout).lines() {
+        let text = std::fs::read_to_string(root.join(rel)).unwrap_or_default();
+        let open = text
+            .lines()
+            .filter(|l| l.trim_start().starts_with("- [ ] "))
+            .count();
+        if open == 0 || FORMS.contains(&rel) {
+            continue;
+        }
+        if let Some((_, was)) = HISTORICAL.iter().find(|(f, _)| *f == rel) {
+            if open > *was {
+                grown.push(format!("{rel}: {open} open, was {was}"));
+            }
+        } else {
+            new_trackers.push(format!("{rel}: {open} open"));
+        }
+    }
+
+    // Where the local backlog exists, prove the scanner recognizes an item at
+    // all: without this the gate could pass by matching nothing.
+    if let Ok(local) = std::fs::read_to_string(root.join("docs/design/backlog.local.md")) {
+        let open = local
+            .lines()
+            .filter(|l| l.trim_start().starts_with("- [ ] "))
+            .count();
+        assert!(
+            open >= 5,
+            "docs/design/backlog.local.md reports {open} open items — the scan is broken"
+        );
+    }
+    assert!(
+        new_trackers.is_empty(),
+        "these files carry open checkbox items and are not the backlog:\n  {}\n\n\
+         Open work belongs in the local docs/design/backlog.local.md, which is \
+         historical plan whose boxes were never a tracker, add it to HISTORICAL \
+         with its count and say why.",
+        new_trackers.join("\n  ")
+    );
+    assert!(
+        grown.is_empty(),
+        "a historical planning record gained open items:\n  {}\n\n\
+         These files are records of what was planned, not lists of what is left. \
+         New work goes in the local backlog.",
+        grown.join("\n  ")
+    );
+}
+
 /// A fenced shell block must hand the reader exactly one command, unless it
 /// declares itself an ordered procedure.
 #[test]
@@ -3562,7 +3659,14 @@ fn no_documentation_table_repeats_a_row() {
     // (docs/design/surface-capability-matrix.md) has one `| Surface | Detail |`
     // table per capability, 61 in all. A design doc under docs/design/ has no
     // website mirror, so each is counted once, not twice.
-    const EXPECTED_TABLES: usize = 952;
+    // 952 -> 924 by the backlog becoming local. `docs/design/backlog.md` is now
+    // a tracked stub describing the convention; every item, and with them every
+    // table of items, moved to the gitignored `docs/design/backlog.local.md`.
+    // Attributed to that one file: it is the only markdown this change touches,
+    // and it went from 31 table starts to 1. A DROP is normally the alarm this
+    // gate exists for — the detection silently matching less — which is why the
+    // count is stated here against the file that lost them.
+    const EXPECTED_TABLES: usize = 924;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

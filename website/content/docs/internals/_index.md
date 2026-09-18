@@ -78,7 +78,7 @@ reading the wrong one as current is the main trap here.
 |---|---|
 | [`../architecture.md`](https://github.com/NormB/sipnab/blob/main/docs/architecture.md) | The codemap: module layout, data flow, and the design decisions that still hold. Maintained; a phantom flag in it fails `docs_drift_test`. |
 | [`../design/maintainability-perf-spec.md`](https://github.com/NormB/sipnab/blob/main/docs/design/maintainability-perf-spec.md) | The rationale behind the current shape of the code — why one pipeline replaced four, why `main.rs` broke up into [`src/app/`](https://github.com/NormB/sipnab/blob/main/src/app). Sections 0–9 are the 2026-07-03 review of v0.4.18 and read as history; §10 (WS8) is the only live section — read it before any performance work. |
-| [`docs/design/backlog.md`](https://github.com/NormB/sipnab/blob/main/docs/design/backlog.md) | The open backlog, priority-ranked P0–P5. The working list — start here for "what needs doing". |
+| [`docs/design/backlog.md`](https://github.com/NormB/sipnab/blob/main/docs/design/backlog.md) | How the backlog works, and the four states an item can be in. The working list itself is local and uncommitted (`docs/design/backlog.local.md`), so this page carries the convention rather than the items. |
 | [`../design/lessons.md`](https://github.com/NormB/sipnab/blob/main/docs/design/lessons.md) | Four defects that reached a release, each with the rule derived from it: TUI state no renderer read, feature flags gating nothing, config parsed and never used, and the 2026-05-05 audit that found four blocking and ~17 major doc drifts accumulated since 0.3.1. Its cheap-regression greps still hold, though one of them carries a field count that has drifted: it calls 30 current, while `FIELD_NAMES` in [`../../src/sip/dsl.rs`](https://github.com/NormB/sipnab/blob/main/src/sip/dsl.rs) lists 33 and `parse_field` accepts every one of them. Count the constant, not the comment. |
 | [`../research/codex-analysis.md`](https://github.com/NormB/sipnab/blob/main/docs/research/codex-analysis.md) | Adversarial security review of `698585e` (2026-07-22). Findings SN-01/02/03, all fixed; the analysis of *why* each was reachable is still the best description of the HEP trust boundary. |
 | [`../research/capture-performance.md`](https://github.com/NormB/sipnab/blob/main/docs/research/capture-performance.md) | The packet-capture throughput roadmap: four phases ordered cheapest-first, each after the first carrying an explicit trigger condition so the complexity is only paid once the previous phase proves insufficient. Research, not committed work — one item carries a done mark, the auto-grow capture channel. Its baseline section names symbols rather than line numbers, and says why: the ranges it cited had all rotted by the time the work below it landed. |
@@ -133,7 +133,8 @@ performance work; WS6–WS7 hardened the API surface. WS0–WS7 shipped in v0.5.
 
 WS8 (performance) is the only live section.
 
-**P0–P5 — backlog priority tiers** in [`docs/design/backlog.md`](https://github.com/NormB/sipnab/blob/main/docs/design/backlog.md):
+**P0–P5 — backlog priority tiers**, used by the local backlog and by the
+identifiers in commit messages:
 P0 panics and security, P1 wrong results in real use, P2 robustness and
 efficiency, P3 code health, P4 test quality, P5 features and exploratory work.
 A "P1" in a commit message means the commit fixed something that produced a

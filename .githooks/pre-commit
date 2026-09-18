@@ -569,7 +569,9 @@ fi
 # readable and the aggregate is not, so a generated table answers "what is left
 # in this section" without scrolling. Generated, because a hand-kept count is
 # wrong the first time somebody ticks a box.
-if git diff --cached --name-only | grep -q "^docs/design/backlog.md$"; then
+# The local backlog is gitignored, so it never appears in the index: trigger on
+# the file existing instead of on it being staged.
+if [ -f "docs/design/backlog.local.md" ]; then
     echo -n "  Backlog status... "
     if python3 scripts/backlog-status.py >/dev/null 2>&1; then
         echo -e "${GREEN}OK${NC}"
