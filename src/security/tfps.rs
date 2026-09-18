@@ -64,8 +64,8 @@ pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Most bytes of standard output sipnab reads back from one invocation.
 ///
-/// `tfps_labels` with no limit asks for the whole verdict log, which is large
-/// on a long-lived installation and still far under this. A peer that streams
+/// No list sipnab asks for is anywhere near this: `tfps_labels` asks for at
+/// most a page and one row ([`labels_request`]). A peer that streams
 /// past it is reported rather than read into memory without bound.
 pub const MAX_OUTPUT_BYTES: usize = 64 * 1024 * 1024;
 
@@ -242,14 +242,14 @@ impl TfpsLocator {
         self.ask(&TfpsCommand::Dropped, parse_lines)
     }
 
-    /// `tfps_ctl log --json [--limit N]`: the verdict log the label harness
-    /// scores against. `None` is the whole log, which is TFPS's own default
-    /// for the export.
+    /// `tfps_ctl log --json --limit N`: the audit log the label harness
+    /// scores against, newest first. The surfaces choose `limit` with
+    /// [`labels_request`], so no more than a page is ever asked for.
     ///
     /// # Errors
     ///
     /// As [`Self::status`].
-    pub fn labels(&self, limit: Option<u64>) -> Result<Reply<Vec<TfpsLabel>>, TfpsError> {
+    pub fn labels(&self, limit: u64) -> Result<Reply<Vec<TfpsLabel>>, TfpsError> {
         self.ask(&TfpsCommand::Labels { limit }, parse_lines)
     }
 
@@ -332,10 +332,10 @@ pub enum TfpsCommand {
     Banned,
     /// `dropped --json`.
     Dropped,
-    /// `log --json [--limit N]`; `None` is the whole log.
+    /// `log --json --limit N`. Always a limit: see [`labels_request`].
     Labels {
-        /// Rows TFPS may return, newest first; `None` for all of them.
-        limit: Option<u64>,
+        /// Rows TFPS may return, newest first.
+        limit: u64,
     },
     /// `ban <ip> --json [--ttl N]`. TFPS's `ban` takes no reason.
     Ban {
@@ -390,10 +390,8 @@ impl TfpsCommand {
         match self {
             Self::Status | Self::Banned | Self::Dropped => {}
             Self::Labels { limit } => {
-                if let Some(n) = limit {
-                    out.push("--limit".into());
-                    out.push(n.to_string().into());
-                }
+                out.push("--limit".into());
+                out.push(limit.to_string().into());
             }
             Self::Ban { ip, ttl_secs } => {
                 out.push(ip.to_string().into());
@@ -503,6 +501,93 @@ pub enum TfpsError {
     },
 }
 
+/// Parse the address a ban or unban names, refusing what TFPS cannot hold.
+///
+/// TFPS keys its block map by IPv4 address. `tfps_ctl ban 2001:db8::1` does
+/// not refuse the address, it fails: `error: 2001:db8::1: invalid IPv4
+/// address syntax`, exit 1 and no JSON (sippulse/tfps `master` at `984577dc`,
+/// run 2026-09-18). Refusing here makes it the caller's mistake, answered as
+/// one with the reason, instead of a peer failure. The REST routes and the MCP
+/// tools both parse through this, so the two surfaces cannot disagree.
+///
+/// # Errors
+/// A message naming what was wrong: not an address at all, or an IPv6 one.
+pub fn tfps_address(s: &str) -> Result<IpAddr, String> {
+    match s.trim().parse::<IpAddr>() {
+        Ok(ip @ IpAddr::V4(_)) => Ok(ip),
+        Ok(IpAddr::V6(_)) => Err(format!(
+            "ip must be an IPv4 address: TFPS blocks IPv4 only, got {s:?}"
+        )),
+        Err(_) => Err(format!("ip must be an IPv4 address, got {s:?}")),
+    }
+}
+
+/// The `--limit` sipnab sends `tfps_ctl log` for a caller's `limit`.
+///
+/// A caller never receives more than one page (`cap`: `--api-max-rows` or
+/// `--mcp-max-rows`), so TFPS is never asked for more. A `limit` a page
+/// holds is sent as is. Absent, `0` (the default, as on every list surface)
+/// or more than a page asks for the page and one row: that one row is how
+/// the answer's `truncated` knows rows were withheld.
+///
+/// Always an explicit limit, because TFPS has no value for "every row":
+/// `tfps_ctl log --json` without `--limit` answers its default of 50 rows,
+/// `--limit 0` answers none and `-1` is refused (sippulse/tfps `984577dc`,
+/// run 2026-09-18). And never the whole log: `tfps_ctl` collects every row
+/// before it prints one, which on a million-row log took 179 MB and 12.7 s
+/// (debug build) to fill a page of 1,000.
+#[must_use]
+pub fn labels_request(limit: Option<u64>, cap: usize) -> u64 {
+    let page = u64::try_from(cap).unwrap_or(u64::MAX);
+    match limit {
+        Some(n) if n > 0 && n <= page => n,
+        _ => page.saturating_add(1),
+    }
+}
+
+/// What an operator is told when `tfps_ctl` has no JSON mode.
+///
+/// sipnab asks every question with `--json`. TFPS gained that mode in
+/// sippulse/tfps#6, merged into `master` on 2026-09-18 (merge commit
+/// `984577dc`), and no tagged release carries it yet: v0.2.1 rejects the flag
+/// with `error: unknown option: --json` and exit 2. When a release ships it,
+/// this text, the peer notes in the docs and `RELEASED_FLAGS` in
+/// `tests/peer_release_honesty_test.rs` change together.
+pub const JSON_MODE_HINT: &str = "this tfps_ctl has no JSON mode: TFPS gained --json in \
+    sippulse/tfps#6, merged into master on 2026-09-18 and in no tagged release yet \
+    (v0.2.1 rejects it); build TFPS from master, https://github.com/sippulse/tfps";
+
+/// What an operator is told when `tfps_ctl` has no `dropped` subcommand.
+///
+/// No TFPS build has one: `master` at `984577dc` answers
+/// `error: unknown command: dropped` and exit 1, and no release has it
+/// either. The kernel-drop question cannot be answered yet by any peer.
+pub const DROPPED_HINT: &str = "no TFPS build has a dropped subcommand yet, released or on \
+    sippulse/tfps master, so no TFPS can report its kernel drops to sipnab";
+
+/// The hint for a peer that refused a question because it lacks the
+/// capability sipnab asked for, or `None` for any other failure.
+///
+/// # Arguments
+/// * `subcommand` - The subcommand sipnab ran, as [`TfpsCommand::subcommand`]
+///   names it.
+/// * `stderr` - The peer's standard error, verbatim.
+///
+/// # Returns
+/// [`JSON_MODE_HINT`] when the peer rejected `--json`, [`DROPPED_HINT`] when
+/// it does not know `dropped`, and `None` otherwise. The peer's own words stay
+/// in the error either way; this only adds what to do about them, and only for
+/// the two gaps it can name, so a hint never points at the wrong cause.
+pub fn peer_capability_hint(subcommand: &str, stderr: &str) -> Option<&'static str> {
+    if stderr.contains("unknown option: --json") {
+        Some(JSON_MODE_HINT)
+    } else if subcommand == "dropped" && stderr.contains("unknown command: dropped") {
+        Some(DROPPED_HINT)
+    } else {
+        None
+    }
+}
+
 impl fmt::Display for TfpsError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -517,12 +602,14 @@ impl fmt::Display for TfpsError {
             } => {
                 let status =
                     status.map_or_else(|| "a signal".to_string(), |s| format!("status {s}"));
-                write!(
-                    f,
-                    "{} {subcommand} exited with {status}: {}",
-                    ctl.display(),
-                    stderr.trim_end()
-                )
+                write!(f, "{} {subcommand} exited with {status}", ctl.display())?;
+                // Before the peer's own words, not after: a tfps_ctl without
+                // --json follows its one-line error with the whole usage text,
+                // and a hint after that is the line nobody reads.
+                if let Some(hint) = peer_capability_hint(subcommand, stderr) {
+                    write!(f, " ({hint})")?;
+                }
+                write!(f, ": {}", stderr.trim_end())
             }
             Self::Unparseable {
                 ctl,
@@ -1001,7 +1088,8 @@ pub struct TfpsListAnswer<T> {
     /// The rows, at most the door's row cap of them.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rows: Option<Vec<T>>,
-    /// Rows the peer returned before the cap.
+    /// Rows the peer returned before the cap. For `tfps_labels` that is at
+    /// most a page and one row, not the size of the log.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub total: Option<usize>,
     /// Rows in `rows`.

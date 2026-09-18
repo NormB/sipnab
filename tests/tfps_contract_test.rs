@@ -2,11 +2,15 @@
 
 //! The TFPS contract, enforced on this side.
 //!
-//! Every fixture under `tests/fixtures/tfps-*` and `sipnab-evidence-*` is a
-//! byte-for-byte copy of the TFPS emitter's own, and the first test here pins
-//! each file's SHA-256 so an edit to either copy fails on this side, the way
-//! `tfps_label_corpus_test` already holds the label export to its agreed
-//! fields. The rest prove each fixture parses into the type sipnab reads it
+//! Every fixture under `tests/fixtures/tfps-*` carries exactly the keys, in
+//! order, that `tfps_ctl --json` emits at sippulse/tfps `master` `984577dc`,
+//! the merge of sippulse/tfps#6 -- checked 2026-09-18 by running that binary.
+//! Upstream ships no fixture files, so these are sipnab's own; the first test
+//! pins each file's SHA-256 so an edit is deliberate, and
+//! `upstreams_own_goldens_read_through_sipnabs_readers` holds them to the
+//! JSON lines upstream's own unit tests assert. The two `sipnab-evidence-*`
+//! fixtures are byte-identical to the copies on the fork's unmerged
+//! `05-evidence-ingest` branch, the only TFPS code that reads them. The rest prove each fixture parses into the type sipnab reads it
 //! through, and pin the argument shapes sipnab sends, in `tfps_ctl`'s own
 //! grammar.
 //!
@@ -40,8 +44,8 @@ const LABELS: &str = include_str!("fixtures/tfps-labels-golden.jsonl");
 const EVIDENCE: &str = include_str!("fixtures/sipnab-evidence-golden.jsonl");
 const EVIDENCE_RESULT: &str = include_str!("fixtures/sipnab-evidence-result-golden.jsonl");
 
-/// Every fixture the two projects share, with the digest of the TFPS copy
-/// as of `r4-evidence-ingest`. A byte moved on either side fails here.
+/// Every fixture, with the digest of the bytes verified against the peer. A
+/// byte moved here fails until the fixture is re-derived and re-pinned.
 const PINNED: &[(&str, &str, &str)] = &[
     (
         "tfps-status-golden.json",
@@ -174,7 +178,7 @@ fn set(expected: &[&str]) -> BTreeSet<String> {
 // ── The fixtures are what the emitter really prints ──────────────────
 
 #[test]
-fn every_shared_fixture_is_byte_identical_with_the_tfps_copy() {
+fn every_fixture_is_pinned_to_its_verified_bytes() {
     use sha2::{Digest, Sha256};
     for (name, text, expected) in PINNED {
         let digest: String = Sha256::digest(text.as_bytes())
@@ -191,6 +195,160 @@ fn every_shared_fixture_is_byte_identical_with_the_tfps_copy() {
         );
     }
     assert_eq!(PINNED.len(), 8, "every shared fixture is pinned");
+}
+
+/// The `--json` lines upstream's own unit tests assert, copied verbatim from
+/// `crates/tfps/src/bin/tfps_ctl.rs` at sippulse/tfps `984577dc` (line numbers
+/// at that commit). Only the subcommands sipnab asks are here.
+const UPSTREAM_STATUS_ACTIVE: &str = r#"{"enforcement":"active","mode":null,"interface":null,"map":"own map id 7","blocked_now":3,"pairs":120,"peers":4,"last_checkpoint":1756800000,"db":"/var/lib/tfps/tfps.db","version":"0.1.0"}"#; // :2102
+const UPSTREAM_STATUS_INACTIVE: &str = r#"{"enforcement":"inactive","mode":null,"interface":null,"map":null,"blocked_now":0,"pairs":120,"peers":4,"last_checkpoint":1756800000,"db":"/x","version":"0.1.0"}"#; // :2122
+const UPSTREAM_BANNED_ATTRIBUTED: &str = r#"{"ip":"198.51.100.10","reason":"user-agent","detail":"pplsip","first_seen":1756917600,"expires":1756921200,"enforced":true}"#; // :2221
+const UPSTREAM_BANNED_UNATTRIBUTED: &str = r#"{"ip":"198.51.100.12","reason":null,"detail":null,"first_seen":null,"expires":null,"enforced":true}"#; // :2232
+const UPSTREAM_LOG: &str = r#"{"ip":"198.51.100.10","reason":"scanner","detail":"sipvicious","first_seen":1756800000,"expires":1756803600,"unbanned_at":null,"enforced":true,"disposition":"block"}"#; // :2429
+const UPSTREAM_BAN: &str = r#"{"ip":"198.51.100.20","action":"ban","applied":true,"refused":null,"expires":1756921210,"source":"operator"}"#; // :2678
+
+/// Upstream's own goldens, through the code path sipnab reads a live peer
+/// with, and read into the right fields: a renamed key on either side leaves
+/// an `Option` field `None` and still parses, so the VALUES are asserted.
+#[test]
+fn upstreams_own_goldens_read_through_sipnabs_readers() {
+    fn answered<T>(reply: Reply<T>) -> T {
+        match reply {
+            Reply::Answered { value, .. } => value,
+            Reply::NotInstalled { reason } => panic!("an explicit fake is installed: {reason}"),
+        }
+    }
+
+    let s = answered(
+        FakeCtl::echoing(UPSTREAM_STATUS_ACTIVE)
+            .explicit()
+            .status()
+            .expect("status"),
+    );
+    assert_eq!(
+        (
+            s.enforcement.as_str(),
+            s.map.as_deref(),
+            s.blocked_now,
+            s.pairs,
+            s.peers,
+            s.last_checkpoint
+        ),
+        (
+            "active",
+            Some("own map id 7"),
+            3,
+            Some(120),
+            Some(4),
+            Some(1_756_800_000)
+        )
+    );
+    assert_eq!(
+        (s.mode, s.interface),
+        (None, None),
+        "upstream never fills these"
+    );
+    let s = answered(
+        FakeCtl::echoing(UPSTREAM_STATUS_INACTIVE)
+            .explicit()
+            .status()
+            .expect("status"),
+    );
+    assert_eq!(
+        (s.enforcement.as_str(), s.map, s.blocked_now),
+        ("inactive", None, 0)
+    );
+
+    let banned = answered(
+        FakeCtl::echoing(&format!(
+            "{UPSTREAM_BANNED_ATTRIBUTED}\n{UPSTREAM_BANNED_UNATTRIBUTED}"
+        ))
+        .explicit()
+        .banned()
+        .expect("banned"),
+    );
+    assert_eq!(banned.len(), 2);
+    assert_eq!(
+        (
+            banned[0].reason.as_deref(),
+            banned[0].detail.as_deref(),
+            banned[0].first_seen,
+            banned[0].expires
+        ),
+        (
+            Some("user-agent"),
+            Some("pplsip"),
+            Some(1_756_917_600),
+            Some(1_756_921_200)
+        )
+    );
+    assert_eq!(
+        (
+            banned[1].reason.as_deref(),
+            banned[1].first_seen,
+            banned[1].expires,
+            banned[1].enforced
+        ),
+        (None, None, None, true)
+    );
+
+    let log = answered(
+        FakeCtl::echoing(UPSTREAM_LOG)
+            .explicit()
+            .labels(50)
+            .expect("log"),
+    );
+    assert_eq!(
+        (
+            log[0].reason.as_str(),
+            log[0].detail.as_str(),
+            log[0].expires,
+            log[0].disposition.as_str()
+        ),
+        ("scanner", "sipvicious", Some(1_756_803_600), "block")
+    );
+
+    let ban = answered(
+        FakeCtl::echoing(UPSTREAM_BAN)
+            .explicit()
+            .ban(the_ip(), Some(3600))
+            .expect("ban"),
+    );
+    assert_eq!(
+        (
+            ban.action.as_str(),
+            ban.applied,
+            ban.refused.as_deref(),
+            ban.expires,
+            ban.source.as_str()
+        ),
+        ("ban", true, None, Some(1_756_921_210), "operator")
+    );
+}
+
+/// Where a fixture line and an upstream golden describe the same case they
+/// are the same bytes, so the fixtures cannot drift from what upstream asserts.
+#[test]
+fn the_fixtures_repeat_upstreams_goldens_byte_for_byte() {
+    for (fixture, name, golden) in [
+        (
+            BANNED,
+            "tfps-banned-golden.jsonl",
+            UPSTREAM_BANNED_ATTRIBUTED,
+        ),
+        (
+            BANNED,
+            "tfps-banned-golden.jsonl",
+            UPSTREAM_BANNED_UNATTRIBUTED,
+        ),
+        (LABELS, "tfps-labels-golden.jsonl", UPSTREAM_LOG),
+        (BAN, "tfps-ban-golden.jsonl", UPSTREAM_BAN),
+    ] {
+        assert!(
+            fixture.lines().any(|l| l == golden),
+            "tests/fixtures/{name} no longer carries upstream's golden {golden}"
+        );
+    }
 }
 
 // ── Each fixture parses into the type, and carries exactly the agreed keys ──
@@ -473,6 +631,39 @@ fn the_flag_wins_over_the_config_file() {
 
 /// Every argv, exactly. `tfps_ctl` parses `--flag value` as two elements and
 /// nothing else, and its export prints everything unless `--limit` is given.
+/// A caller can never receive more than one page, so sipnab never asks TFPS
+/// for more: the caller's `limit` when a page holds it, and otherwise the
+/// page plus one row, which is how `truncated` knows rows were withheld.
+/// Asking for the whole log to show a page cost `tfps_ctl` 179 MB and 12.7 s
+/// on a million-row log (debug build, 2026-09-18). And there is no "every
+/// row" value to send instead: TFPS reads `--limit 0` as zero rows.
+#[test]
+fn the_labels_request_never_asks_for_more_than_a_page() {
+    use sipnab::security::tfps::labels_request;
+    assert_eq!(
+        labels_request(None, 1000),
+        1001,
+        "absent: a page and one row"
+    );
+    assert_eq!(
+        labels_request(Some(0), 1000),
+        1001,
+        "0 is the default, as elsewhere"
+    );
+    assert_eq!(
+        labels_request(Some(250), 1000),
+        250,
+        "a limit a page holds is sent as is"
+    );
+    assert_eq!(labels_request(Some(1000), 1000), 1000, "exactly a page");
+    assert_eq!(
+        labels_request(Some(5000), 1000),
+        1001,
+        "more than a page is a page"
+    );
+    assert_eq!(labels_request(None, 2), 3);
+}
+
 #[test]
 fn every_command_has_the_agreed_argv() {
     let argv = |cmd: &TfpsCommand, db: Option<&Path>| -> Vec<String> {
@@ -485,12 +676,7 @@ fn every_command_has_the_agreed_argv() {
     assert_eq!(argv(&TfpsCommand::Banned, None), ["banned", "--json"]);
     assert_eq!(argv(&TfpsCommand::Dropped, None), ["dropped", "--json"]);
     assert_eq!(
-        argv(&TfpsCommand::Labels { limit: None }, None),
-        ["log", "--json"],
-        "no --limit is the whole log, which is the export's own default"
-    );
-    assert_eq!(
-        argv(&TfpsCommand::Labels { limit: Some(250) }, None),
+        argv(&TfpsCommand::Labels { limit: 250 }, None),
         ["log", "--json", "--limit", "250"]
     );
     assert_eq!(
@@ -533,7 +719,7 @@ fn every_command_has_the_agreed_argv() {
         .refusal_carries_a_result()
             && TfpsCommand::Unban { ip: the_ip() }.refusal_carries_a_result()
             && !TfpsCommand::Status.refusal_carries_a_result()
-            && !TfpsCommand::Labels { limit: None }.refusal_carries_a_result(),
+            && !TfpsCommand::Labels { limit: 50 }.refusal_carries_a_result(),
         "only the two actions answer a refusal with a result"
     );
 }
@@ -691,6 +877,94 @@ fn a_non_zero_exit_is_an_error_carrying_stderr_verbatim() {
 /// TFPS's `ban` exits 1 when the request was refused and still prints the
 /// structured line. That is the peer answering, and it is reported as an
 /// answer: `applied: false`, `refused: "self"`.
+/// A `tfps_ctl` from a tagged TFPS release rejects `--json` in its argument
+/// parser: `error: unknown option: --json`, the usage text, exit 2. Read from
+/// `crates/tfps/src/bin/tfps_ctl.rs` at v0.2.1, the newest tag on 2026-09-18.
+/// JSON output reached sippulse/tfps `master` in #6 (merge commit `984577dc`)
+/// and no tag carries it yet, so this is what an operator with a packaged
+/// TFPS meets on every question sipnab asks. They get the peer's own words
+/// AND what to install.
+#[test]
+fn a_released_peer_without_json_is_told_where_json_is() {
+    let fake = FakeCtl::with_body(
+        "printf 'error: unknown option: --json\\n\\nUSAGE: tfps_ctl <command> [options]\\n' >&2\nexit 2",
+    );
+    let msg = fake
+        .explicit()
+        .status()
+        .expect_err("a tfps_ctl without --json cannot answer")
+        .to_string();
+    assert!(
+        msg.contains("unknown option: --json"),
+        "the peer's own words must survive: {msg}"
+    );
+    assert!(
+        msg.contains("sippulse/tfps#6") && msg.contains("master") && msg.contains("v0.2.1"),
+        "the operator must be told where --json is and that no release has it: {msg}"
+    );
+}
+
+/// `dropped` is on no TFPS build: upstream `master` at `984577dc` answers
+/// `error: unknown command: dropped` and exit 1 (run 2026-09-18), and v0.2.1
+/// has no such arm either. An operator asking sipnab for kernel drops is told
+/// that no TFPS can answer yet, not only that this one failed.
+#[test]
+fn a_peer_without_dropped_is_told_no_build_has_it() {
+    let fake = FakeCtl::with_body("echo 'error: unknown command: dropped' >&2\nexit 1");
+    let msg = fake
+        .explicit()
+        .dropped()
+        .expect_err("no TFPS build has dropped")
+        .to_string();
+    assert!(
+        msg.contains("unknown command: dropped"),
+        "the peer's own words must survive: {msg}"
+    );
+    assert!(
+        msg.contains("no TFPS build has"),
+        "the operator must be told that no TFPS answers this yet: {msg}"
+    );
+}
+
+/// The hints are for the two capability gaps and nothing else. A failure
+/// that is the operator's to fix -- here the database path -- keeps the
+/// peer's words alone, so a hint never points at the wrong cause.
+#[test]
+fn an_ordinary_peer_failure_carries_no_capability_hint() {
+    let fake = FakeCtl::with_body(
+        "echo 'error: opening /var/lib/tfps/tfps.db read-only: unable to open database file' >&2\nexit 1",
+    );
+    let msg = fake
+        .explicit()
+        .labels(50)
+        .expect_err("an unreadable database is a failure")
+        .to_string();
+    assert!(msg.contains("unable to open database file"), "{msg}");
+    assert!(
+        !msg.contains("sippulse/tfps#6") && !msg.contains("no TFPS build has"),
+        "a database error must not be dressed up as a missing capability: {msg}"
+    );
+}
+
+/// The `dropped` hint names one missing subcommand, so it is given for that
+/// one alone. A `tfps_ctl` that does not know some other subcommand has a
+/// different gap, and telling its operator that no TFPS reports kernel drops
+/// would send them after the wrong thing.
+#[test]
+fn another_missing_subcommand_is_not_reported_as_the_dropped_gap() {
+    let fake = FakeCtl::with_body("echo 'error: unknown command: log' >&2\nexit 1");
+    let msg = fake
+        .explicit()
+        .labels(50)
+        .expect_err("a tfps_ctl without log cannot answer")
+        .to_string();
+    assert!(msg.contains("unknown command: log"), "{msg}");
+    assert!(
+        !msg.contains("no TFPS build has"),
+        "a missing log subcommand is not the dropped gap: {msg}"
+    );
+}
+
 #[test]
 fn a_refused_ban_exits_one_and_is_still_an_answer() {
     let fake = FakeCtl::echoing_then_exiting(line(BAN, 3), 1, "error: 1 of 1 refused");
@@ -853,7 +1127,7 @@ fn the_typed_readers_reach_every_shape() {
 
     let labels = FakeCtl::echoing(LABELS)
         .explicit()
-        .labels(None)
+        .labels(50)
         .expect("labels");
     assert!(matches!(labels, Reply::Answered { value, .. } if value.len() == 3));
 

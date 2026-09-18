@@ -4524,7 +4524,7 @@
             ]
           },
           "total": {
-            "description": "Rows the peer returned before the cap.",
+            "description": "Rows the peer returned before the cap. For `tfps_labels` that is at\nmost a page and one row, not the size of the log.",
             "minimum": 0,
             "type": [
               "integer",
@@ -4627,7 +4627,7 @@
             ]
           },
           "total": {
-            "description": "Rows the peer returned before the cap.",
+            "description": "Rows the peer returned before the cap. For `tfps_labels` that is at\nmost a page and one row, not the size of the log.",
             "minimum": 0,
             "type": [
               "integer",
@@ -4741,7 +4741,7 @@
             ]
           },
           "total": {
-            "description": "Rows the peer returned before the cap.",
+            "description": "Rows the peer returned before the cap. For `tfps_labels` that is at\nmost a page and one row, not the size of the log.",
             "minimum": 0,
             "type": [
               "integer",
@@ -7640,7 +7640,7 @@
         "operationId": "get_tfps_labels",
         "parameters": [
           {
-            "description": "Rows TFPS returns; `0` or absent asks for the whole log. The server's\n`--api-max-rows` then bounds the page.",
+            "description": "Rows TFPS returns, newest first. `0` or absent is one page of the\nserver's `--api-max-rows`, which also bounds a larger limit.",
             "in": "query",
             "name": "limit",
             "required": false,

@@ -11,12 +11,17 @@
 //! -- applies its own ignore list, its own duration and its own audit to it.
 //!
 //! ```text
-//! sipnab -d eth0 -N --kill-scanner --evidence-out - | tfps_ctl ingest
+//! sipnab -d eth0 -N --kill-scanner --evidence-out - | <a reader of JSON Lines>
 //! ```
 //!
+//! TFPS's reader for it, `ingest`, is on the `05-evidence-ingest` branch of
+//! the NormB/tfps fork and in no TFPS build: neither sippulse/tfps `master`
+//! nor any tag has it (checked 2026-09-18 at `984577dc`).
+//!
 //! The shape is fixed by `tests/fixtures/sipnab-evidence-golden.jsonl`, which
-//! is byte-identical to the copy in the TFPS repository: one JSON object per
-//! line, `src_ip`, `rule`, `evidence`, and `ts` when the finding carries a
+//! is byte-identical to the copy on that branch
+//! (`crates/tfps/tests/fixtures/sipnab-evidence-golden.jsonl`): one JSON object
+//! per line, `src_ip`, `rule`, `evidence`, and `ts` when the finding carries a
 //! timestamp. A reader that cannot parse a line reports it and reads the next.
 
 use std::io::Write;
@@ -59,7 +64,7 @@ impl Evidence {
 /// written is an operator's mistake, and reporting it an hour into a capture,
 /// after the first scanner arrives, wastes the capture and the finding.
 pub enum EvidenceSink {
-    /// `-`: the pipe, for `| tfps_ctl ingest`.
+    /// `-`: standard output, for a pipe into whatever reads the lines.
     Stdout,
     /// A file, opened for append so a restart adds to the record.
     File(std::fs::File),

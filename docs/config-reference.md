@@ -237,13 +237,19 @@ alert_exec = "/usr/local/bin/sipnab-alert.sh"
 
 ### `[tfps]`
 
-> **The peer this needs.** These read TFPS through its `tfps_ctl` program in a
-> JSON mode no released [TFPS](https://github.com/sippulse/tfps) carries yet:
-> the NormB/tfps fork carries it, and
-> [sippulse/tfps#6](https://github.com/sippulse/tfps/pull/6) proposes it
-> upstream, though no tagged release has it. Against a released
-> TFPS these report a peer they cannot read, which is the honest answer
-> rather than a fault. sipnab's side waits for the other.
+> **The peer this needs.** These read [TFPS](https://github.com/sippulse/tfps)
+> through its `tfps_ctl` program in JSON mode, the `--json` flag. TFPS gained
+> that mode in [sippulse/tfps#6](https://github.com/sippulse/tfps/pull/6),
+> merged on 2026-09-18, and no tagged release carries it yet: v0.2.1, the
+> newest, rejects `--json`. Until the next release, build TFPS from its
+> `master` branch. To check the `tfps_ctl` you have, run
+> `tfps_ctl status --json`. One line of JSON means it is ready, and
+> `unknown option: --json` means it predates the mode. Against an older
+> `tfps_ctl` these answer with that error and name what to install.
+>
+> The kernel-drop question (`GET /v1/tfps/dropped`, the `tfps_dropped` MCP
+> tool) is the exception: it needs a `dropped` subcommand that no TFPS build
+> has, released or on `master`.
 
 Where the toll-fraud prevention system (TFPS) is, when one runs on this host.
 

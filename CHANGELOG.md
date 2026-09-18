@@ -12,6 +12,57 @@ entry that carries them.
 
 ### Added
 
+- **sipnab reads TFPS through the JSON mode now merged upstream, and says
+  what to install when it is missing.** [TFPS](https://github.com/sippulse/tfps)
+  gained `tfps_ctl --json` in
+  [sippulse/tfps#6](https://github.com/sippulse/tfps/pull/6), merged into
+  `master` on 2026-09-18. No tagged release carries it yet: v0.2.1 rejects
+  `--json`. A `tfps_ctl` without it used to surface only
+  `unknown option: --json`. Now the REST routes, the MCP tools and the TUI
+  put where `--json` is, and that TFPS has to be built from `master` until the
+  next release, ahead of TFPS's own words. `GET /v1/tfps/dropped` and
+  `tfps_dropped` say that no TFPS build has a `dropped` subcommand yet,
+  released or on `master`. Checked against real binaries: `tfps_ctl` built from
+  `master` at `984577dc` answers `status`, `log`, `ban`, `banned` and `unban`
+  in exactly the keys sipnab's fixtures carry, including all three `ban`
+  refusals and `unban`'s `not-blocked`, and a real v0.2.1 produces the JSON
+  hint end to end. `tests/tfps_real_peer_test.rs` reruns the parts that need
+  no root against any `tfps_ctl` named in `SIPNAB_TFPS_CTL`.
+
+### Fixed
+
+- **The TFPS labels page asks TFPS for one page, and says so.**
+  `tfps_labels` and `GET /v1/tfps/labels` promised the whole audit log when
+  `limit` is `0` or absent, and sent no `--limit`. But `tfps_ctl log --json`
+  without `--limit` answers its default of 50 rows, so the promise was false,
+  and `truncated` could not see what TFPS had not sent. Asking for the whole
+  log instead would have been worse: `tfps_ctl` collects every row before it
+  prints one, which on a million-row log took 179 MB and 12.7 s (debug build)
+  to fill a page of 1,000. There is no "every row" value either: `--limit 0`
+  is zero rows and `-1` is refused. sipnab now asks for exactly what a caller
+  can receive: their `limit` when a page holds it, and otherwise the page and
+  one row more (`--api-max-rows` or `--mcp-max-rows`, 1,000 by default), so
+  `truncated` is right and the work TFPS does is bounded by the page, not the
+  log. `total` is therefore how many TFPS returned, at most a page and one
+  row. The whole log is `tfps_ctl log --json --limit N` on the TFPS host.
+- **An IPv6 address is refused before TFPS is asked.** TFPS's block map is
+  IPv4, and `tfps_ctl ban 2001:db8::1` does not refuse the address: it fails
+  with `invalid IPv4 address syntax` and no JSON. So an IPv6 `ban` or `unban`
+  turned the caller's mistake into a `502` or an MCP `internal_error`. It is
+  now `400` or `invalid_params` (-32602), through one rule both surfaces share.
+- **The TFPS examples in the REST and MCP references show what sipnab sends.**
+  They still showed the draft sipnab replaced: `rule` for `reason`,
+  `verdict: "blocked"` for `disposition: "block"`, RFC 3339 strings for epoch
+  seconds, a six-field status, and refusals called `self`, `ignoreip` and
+  `invalid` where TFPS says `local`, `declared`, `kernel` and `not-blocked`.
+  They are rewritten from sipnab's real answers against the upstream
+  contract. A new gate, `tests/tfps_docs_examples_test.rs`, holds every
+  documented TFPS answer to the keys and value types sipnab's own types
+  serialize, and every refusal to TFPS's words.
+- **`--evidence-out` no longer tells readers to pipe into `tfps_ctl ingest`.**
+  No TFPS build has `ingest`; it is on an unmerged branch of the NormB/tfps
+  fork. `peer_release_honesty_test` now reads sipnab's own `--help` as well as
+  `docs/`, which is how the help text escaped it.
 - **sipnab is published on crates.io, so `cargo install sipnab --features full`
   works.** The download page, the install guide and five other pages have
   advertised that command for months, and it failed for everyone who copied
@@ -43,8 +94,6 @@ entry that carries them.
   releases, three removed or rewrote lines declaring public items, so a plain
   `"0.5"` requirement would have broken a dependent's build on
   `cargo update`.
-
-### Fixed
 
 - **`llms-full.txt` lost an eBPF load-verification row and mislabeled another.**
   The 0.5.178 advertise commit renamed the ledger's 0.5.177 row instead of

@@ -55,9 +55,8 @@ use serde::Deserialize;
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
 pub struct TfpsLabelsParams {
-    /// Rows TFPS returns, newest first. `0` or absent asks for the whole log,
-    /// which is TFPS's own default for the export; the server's row cap
-    /// (`--mcp-max-rows`) then bounds what comes back.
+    /// Rows TFPS returns, newest first. `0` or absent is one page: the
+    /// server's row cap (`--mcp-max-rows`), which also bounds a larger limit.
     pub limit: Option<u64>,
 }
 
@@ -65,9 +64,8 @@ pub struct TfpsLabelsParams {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
 pub struct TfpsBanParams {
-    /// The source to condemn, as an IPv4 address. TFPS's block map is IPv4;
-    /// an IPv6 address is refused by TFPS as `invalid`, and that refusal is
-    /// reported.
+    /// The source to condemn, as an IPv4 address. TFPS's block map is IPv4,
+    /// so an IPv6 address is `invalid_params` and TFPS is never asked.
     pub ip: String,
     /// How long the ban lasts, in seconds; `0` is forever. Absent takes
     /// TFPS's default of an hour.
@@ -78,7 +76,8 @@ pub struct TfpsBanParams {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
 pub struct TfpsUnbanParams {
-    /// The source to release.
+    /// The source to release, as an IPv4 address. An IPv6 address is
+    /// `invalid_params`: TFPS's block map cannot hold one.
     pub ip: String,
 }
 
@@ -86,22 +85,20 @@ pub struct TfpsUnbanParams {
 ///
 /// `internal_error`, not `invalid_params`: nothing the caller passed caused a
 /// non-zero exit or unreadable output. The message is the peer's own stderr,
-/// verbatim, because that is the only diagnosis there is.
+/// verbatim, because that is the only diagnosis there is, followed by what to
+/// install when the peer lacks the capability asked for
+/// ([`crate::security::tfps::peer_capability_hint`]).
 fn peer_error(e: TfpsError) -> rmcp::ErrorData {
     rmcp::ErrorData::internal_error(e.to_string(), None)
 }
 
-/// Parse an address argument, refusing anything that is not one.
+/// Parse an address argument, refusing anything TFPS cannot hold.
 ///
 /// Refused before the peer is asked, so the positional slot of `tfps_ctl
-/// ban` can only ever hold an address.
+/// ban` can only ever hold an IPv4 address. The rule is
+/// [`crate::security::tfps::tfps_address`], shared with the REST routes.
 fn parse_ip(s: &str) -> Result<IpAddr, rmcp::ErrorData> {
-    s.trim().parse().map_err(|_| {
-        rmcp::ErrorData::invalid_params(
-            format!("ip must be an IPv4 or IPv6 address, got {s:?}"),
-            None,
-        )
-    })
+    crate::security::tfps::tfps_address(s).map_err(|why| rmcp::ErrorData::invalid_params(why, None))
 }
 
 /// Run one blocking question to the peer off the async runtime.
@@ -229,14 +226,15 @@ impl SipnabMcp {
     /// As `tfps_status`.
     #[tool(
         name = "tfps_labels",
-        description = "TFPS's verdict log, one row per decision about a \
-                       source: blocked, would-block (observing only) or \
-                       exempt, with the rule, what it saw, when, and whether \
-                       an operator later lifted the block. The same export \
+        description = "TFPS's audit log, one row per block it enforced: the \
+                       source, the rule that condemned it (reason), what that \
+                       rule saw, and when. TFPS records only enforced blocks \
+                       today, so disposition is always block. The same export \
                        the label corpus harness scores sipnab's scanner \
                        detector against. limit caps the rows TFPS returns; \
-                       0 or absent is the whole log. --mcp-max-rows bounds \
-                       the page. Answers {installed: false, reason} without \
+                       0 or absent is one page of --mcp-max-rows, which also \
+                       bounds a larger limit, and truncated says whether TFPS \
+                       held more. Answers {installed: false, reason} without \
                        TFPS.",
         output_schema = schema_for_output::<TfpsListAnswer<TfpsLabel>>(),
         annotations(read_only_hint = true, open_world_hint = false)
@@ -245,9 +243,9 @@ impl SipnabMcp {
         &self,
         Parameters(params): Parameters<TfpsLabelsParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        // `0` means the default, as on every other tool on this surface --
-        // and the export's default is everything, so no `--limit` is sent.
-        let limit = params.limit.filter(|n| *n > 0);
+        // No more than a page is ever asked for; `0` is the default, as on
+        // every other tool on this surface.
+        let limit = crate::security::tfps::labels_request(params.limit, self.row_cap);
         let reply = ask(self.tfps.clone(), move |l| l.labels(limit)).await?;
         let mut page = TfpsListAnswer::bounded(reply, self.row_cap);
         fence_rows(&mut page, |r: &mut TfpsLabel| Some(&mut r.detail));
@@ -514,15 +512,17 @@ mod tests {
         assert_eq!(p["rows"][1]["last_request"], serde_json::Value::Null);
     }
 
-    /// `limit` is `--limit N` when given and nothing when absent or `0`,
-    /// because the export's own default is the whole log. Proved on the
-    /// wire: the fake records its argv.
+    /// `limit` reaches TFPS as `--limit N` when a page holds it; absent,
+    /// `0` or more than a page asks for the page and one row more
+    /// ([`crate::security::tfps::labels_request`]). Proved on the wire: the
+    /// fake records its argv.
     #[tokio::test]
-    async fn labels_pass_a_limit_through_only_when_one_is_given() {
+    async fn labels_ask_tfps_for_no_more_than_a_page() {
         let fake = Fake::recording(LABELS);
         let p = payload(
             &fake
                 .server()
+                .with_row_cap(1000)
                 .tfps_labels(Parameters(TfpsLabelsParams { limit: Some(250) }))
                 .await
                 .expect("labels"),
@@ -534,16 +534,17 @@ mod tests {
         );
         assert_eq!(fake.argv(), ["log", "--json", "--limit", "250"]);
 
-        for limit in [None, Some(0)] {
+        for limit in [None, Some(0), Some(5000)] {
             let _ = fake
                 .server()
+                .with_row_cap(1000)
                 .tfps_labels(Parameters(TfpsLabelsParams { limit }))
                 .await
                 .expect("labels");
             assert_eq!(
                 fake.argv(),
-                ["log", "--json"],
-                "{limit:?} is the whole log, which needs no --limit"
+                ["log", "--json", "--limit", "1001"],
+                "{limit:?} asks for one page and one row more"
             );
         }
     }

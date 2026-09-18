@@ -3282,8 +3282,8 @@ struct TfpsUnbanRequest {
 #[derive(Debug, Deserialize, utoipa::IntoParams)]
 #[into_params(parameter_in = Query)]
 pub struct TfpsLabelsQuery {
-    /// Rows TFPS returns; `0` or absent asks for the whole log. The server's
-    /// `--api-max-rows` then bounds the page.
+    /// Rows TFPS returns, newest first. `0` or absent is one page of the
+    /// server's `--api-max-rows`, which also bounds a larger limit.
     pub limit: Option<u64>,
 }
 
@@ -3291,7 +3291,9 @@ pub struct TfpsLabelsQuery {
 ///
 /// `502`: the request was understood and this server is fine; the program it
 /// asked on the client's behalf is what did not answer. `detail` is the
-/// peer's own standard error, verbatim, because that is the diagnosis.
+/// peer's own standard error, verbatim, because that is the diagnosis, followed
+/// by what to install when the peer lacks the capability asked for
+/// ([`crate::security::tfps::peer_capability_hint`]).
 fn tfps_problem(e: crate::security::tfps::TfpsError) -> Problem {
     Problem::detailed(StatusCode::BAD_GATEWAY, e.to_string())
 }
@@ -3331,17 +3333,14 @@ fn object_body<T: serde::de::DeserializeOwned>(
     serde_json::from_value(raw).map_err(|_| Problem::new(StatusCode::BAD_REQUEST))
 }
 
-/// Parse an address out of a request, refusing anything that is not one.
+/// Parse an address out of a request, refusing anything TFPS cannot hold.
 ///
 /// Refused before the peer is asked, so the positional slot of `tfps_ctl
-/// ban` can only ever hold an address.
+/// ban` can only ever hold an IPv4 address. The rule is
+/// [`crate::security::tfps::tfps_address`], shared with the MCP tools.
 fn tfps_ip(s: &str) -> Result<IpAddr, Problem> {
-    s.trim().parse().map_err(|_| {
-        Problem::detailed(
-            StatusCode::BAD_REQUEST,
-            format!("ip must be an IPv4 or IPv6 address, got {s:?}"),
-        )
-    })
+    crate::security::tfps::tfps_address(s)
+        .map_err(|why| Problem::detailed(StatusCode::BAD_REQUEST, why))
 }
 
 /// `GET /v1/tfps/status` — whether TFPS is installed, and what it reports.
@@ -3448,9 +3447,9 @@ async fn get_tfps_labels(
     Query(query): Query<TfpsLabelsQuery>,
 ) -> Result<impl IntoResponse, Problem> {
     guard(&state, &headers, addr.ip())?;
-    // `0` means the default, as on the MCP door -- and the export's default
-    // is everything, so no `--limit` is sent.
-    let limit = query.limit.filter(|n| *n > 0);
+    // No more than a page is ever asked for; `0` is the default, as on the
+    // MCP door.
+    let limit = crate::security::tfps::labels_request(query.limit, state.max_rows);
     let reply = ask_tfps(&state, move |l| l.labels(limit)).await?;
     Ok(Json(crate::security::tfps::TfpsListAnswer::bounded(
         reply,
@@ -11292,6 +11291,45 @@ mod tests {
         assert_eq!(v["action"]["applied"], true);
     }
 
+    /// The labels route asks TFPS for no more than a page: the page and one
+    /// row when no limit fits in it, the caller's limit when one does.
+    #[tokio::test]
+    async fn the_labels_route_asks_tfps_for_no_more_than_a_page() {
+        use std::os::unix::fs::PermissionsExt;
+        const LABELS: &str = include_str!("../../tests/fixtures/tfps-labels-golden.jsonl");
+        let dir = tempfile::tempdir().expect("tempdir");
+        let log = dir.path().join("argv");
+        let path = dir.path().join("tfps_ctl");
+        std::fs::write(
+            &path,
+            format!(
+                "#!/bin/sh\necho \"$@\" > '{}'\ncat <<'EOF'\n{LABELS}EOF\n",
+                log.display()
+            ),
+        )
+        .expect("write");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        for (query, sent) in [
+            ("", "log --json --limit 3"),
+            ("?limit=0", "log --json --limit 3"),
+            ("?limit=1", "log --json --limit 1"),
+            ("?limit=99", "log --json --limit 3"),
+        ] {
+            let mut state = state_with_tfps(&dir);
+            state.max_rows = 2;
+            let resp = build_router(state)
+                .oneshot(test_get_with_key(
+                    &format!("/v1/tfps/labels{query}"),
+                    TFPS_KEY,
+                ))
+                .await
+                .expect("oneshot");
+            assert_eq!(resp.status(), StatusCode::OK, "{query}");
+            let argv = std::fs::read_to_string(&log).expect("the fake recorded its argv");
+            assert_eq!(argv.trim(), sent, "{query}");
+        }
+    }
+
     /// The row cap applies here as it does to every list route.
     #[tokio::test]
     async fn a_tfps_list_is_bounded_by_the_api_row_cap() {
@@ -11352,6 +11390,10 @@ mod tests {
             r#"{"ip":"198.51.100.20","reason":"tfps has no reason option"}"#,
             r#"{}"#,
             r#"{"ip":"198.51.100.20; rm -rf /"}"#,
+            // TFPS's block map is IPv4: tfps_ctl answers an IPv6 address with
+            // `invalid IPv4 address syntax`, exit 1 and no JSON, so asking
+            // would turn the caller's mistake into a 502.
+            r#"{"ip":"2001:db8::1"}"#,
         ] {
             for route in ["/v1/tfps/ban", "/v1/tfps/unban"] {
                 let resp = build_router(state_with_tfps(&dir))

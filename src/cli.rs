@@ -1834,8 +1834,9 @@ pub struct SecurityArgs {
     pub fraud_detect: bool,
 
     /// Publish every finding that names a source as JSON Lines, for a system that
-    /// decides what to do with it. `-` is standard output, for
-    /// `| tfps_ctl ingest`; a path is appended to. sipnab still bans nothing.
+    /// decides what to do with it. `-` is standard output, for a pipe; a path is
+    /// appended to. sipnab still bans nothing. No TFPS build reads these lines
+    /// yet: its `ingest` subcommand is on an unmerged branch of the NormB/tfps fork.
     #[arg(
         help_heading = "Security",
         long = "evidence-out",

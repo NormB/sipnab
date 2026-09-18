@@ -1207,13 +1207,19 @@ answer to whether a capture is recording.
 
 ---
 
-> **The peer this needs.** These read TFPS through its `tfps_ctl` program in a
-> JSON mode no released [TFPS](https://github.com/sippulse/tfps) carries yet:
-> the NormB/tfps fork carries it, and
-> [sippulse/tfps#6](https://github.com/sippulse/tfps/pull/6) proposes it
-> upstream, though no tagged release has it. Against a released
-> TFPS these report a peer they cannot read, which is the honest answer
-> rather than a fault. sipnab's side waits for the other.
+> **The peer this needs.** These read [TFPS](https://github.com/sippulse/tfps)
+> through its `tfps_ctl` program in JSON mode, the `--json` flag. TFPS gained
+> that mode in [sippulse/tfps#6](https://github.com/sippulse/tfps/pull/6),
+> merged on 2026-09-18, and no tagged release carries it yet: v0.2.1, the
+> newest, rejects `--json`. Until the next release, build TFPS from its
+> `master` branch. To check the `tfps_ctl` you have, run
+> `tfps_ctl status --json`. One line of JSON means it is ready, and
+> `unknown option: --json` means it predates the mode. Against an older
+> `tfps_ctl` these answer with that error and name what to install.
+>
+> `GET /v1/tfps/dropped` is the exception: it needs a `dropped` subcommand
+> that no TFPS build has, released or on `master`, so it answers with
+> TFPS's own `unknown command: dropped` and says so.
 
 ### GET /v1/tfps/status
 
@@ -1250,21 +1256,31 @@ its status:
   "tfps_ctl": "/usr/local/bin/tfps_ctl",
   "status": {
     "enforcement": "active",
-    "mode": "native",
-    "interface": "eth0",
-    "blocked_now": 3,
+    "mode": null,
+    "interface": null,
+    "map": "own map id 7",
+    "blocked_now": 2,
+    "pairs": 4,
+    "peers": 4,
+    "last_checkpoint": 1758200500,
     "db": "/var/lib/tfps/tfps.db",
-    "version": "0.1.0"
+    "version": "0.2.1"
   }
 }
 ```
 
-Every field is present on every answer and `null` when TFPS does not know it:
-`enforcement` is `inactive` when TFPS could open no block map, and `mode` and
-`interface` are then `null`. A `tfps_ctl` that exits non-zero, hangs past ten
-seconds, or prints something other than the agreed JSON answers `502 Bad
-Gateway` as `application/problem+json`, with its standard error verbatim in
-`detail`.
+Every field is present on every answer and `null` when TFPS does not know it.
+`map` names the block map TFPS read: `own map id N` for the one its daemon
+loaded, `pinned map <path>` for a pinned one. It is `null`, with `enforcement`
+`inactive` and `blocked_now` `0`, when TFPS could open none. `mode` and
+`interface` are always `null`: TFPS's JSON mode does not fill them yet.
+`pairs` and `peers` count what TFPS has learned and are `null` when TFPS
+cannot read its database. TFPS currently reports the same number for both.
+`last_checkpoint` is Unix seconds, `null` before the first. A `tfps_ctl` that
+exits non-zero, hangs past ten seconds, or prints something other than the
+agreed JSON answers `502 Bad Gateway` as `application/problem+json`, with its
+standard error verbatim in `detail`. When the cause is a `tfps_ctl` without
+JSON mode, `detail` also says where `--json` is.
 
 ---
 
@@ -1284,15 +1300,15 @@ curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" \
   "rows": [
     {
       "ip": "198.51.100.10",
-      "rule": "user-agent",
+      "reason": "user-agent",
       "detail": "pplsip",
-      "first_seen": "2026-09-03T16:40:00Z",
-      "expires": "2026-09-03T17:40:00Z",
+      "first_seen": 1758200000,
+      "expires": 1789748119,
       "enforced": true
     },
     {
       "ip": "198.51.100.12",
-      "rule": null,
+      "reason": null,
       "detail": null,
       "first_seen": null,
       "expires": null,
@@ -1306,10 +1322,12 @@ curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" \
 ```
 
 `rows` holds at most `--api-max-rows` entries. `total` is how many TFPS
-returned, and `truncated` says whether the cap withheld any. `detail` is what
-the rule saw — for `user-agent`, the `User-Agent` the scanner sent, verbatim.
-`rule`, `detail` and `first_seen` are `null` for a block that predates any
-audit row, and `expires` is `null` for a ban that does not lapse.
+returned, and `truncated` says whether the cap withheld any. `reason` is the
+rule that condemned the source and `detail` is what it saw — for
+`user-agent`, the `User-Agent` the scanner sent, verbatim. `reason`, `detail`
+and `first_seen` are `null` for a block no audit row explains, such as one an
+operator made by hand. `first_seen` and `expires` are Unix seconds, and
+`expires` is `null` for a ban that does not lapse.
 
 ---
 
@@ -1356,7 +1374,7 @@ against.
 
 | Query parameter | Meaning |
 |---|---|
-| `limit` | Rows TFPS returns, newest first, passed through as `--limit N`. `0` or absent sends none, and TFPS answers with the whole log, which is its own default for the export; `--api-max-rows` then bounds the page. |
+| `limit` | Rows TFPS returns, newest first, passed through as `--limit N` when a page holds them. `0` or absent is one page of `--api-max-rows`, which also bounds a larger `limit`. |
 
 ```bash
 curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" \
@@ -1369,14 +1387,14 @@ curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" \
   "tfps_ctl": "/usr/local/bin/tfps_ctl",
   "rows": [
     {
-      "ip": "198.51.100.10",
-      "rule": "scanner",
+      "ip": "198.51.100.11",
+      "reason": "scanner",
       "detail": "sipvicious",
-      "first_seen": 1756800000,
-      "expires": 1756803600,
+      "first_seen": 1758200100,
+      "expires": null,
       "unbanned_at": null,
       "enforced": true,
-      "verdict": "blocked"
+      "disposition": "block"
     }
   ],
   "total": 1,
@@ -1385,10 +1403,16 @@ curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" \
 }
 ```
 
-`verdict` is `blocked` (condemned and enforced), `would-block` (condemned while
-observing only) or `exempt` (tripped a rule and TFPS trusted it anyway).
-`expires` is Unix seconds: `0` for never, `null` when TFPS blocked nothing.
-`unbanned_at` carries a value only when an operator lifted the block.
+sipnab never asks TFPS for more than a page: the page and one row more, which
+is how `truncated` knows TFPS held more. So `total` here is how many TFPS
+returned, at most a page and one row, not the size of the log. For the whole
+log, run `tfps_ctl log --json --limit N` on the TFPS host, or raise
+`--api-max-rows` on purpose.
+
+TFPS's audit log records only the blocks it enforced, so today every row has
+`disposition` `block` and `enforced` `true`. The log has no columns for a ban's
+end yet, so `expires` and `unbanned_at` are always `null`. `first_seen` is
+Unix seconds.
 
 ---
 
@@ -1419,15 +1443,15 @@ curl -s -X POST -H "Authorization: Bearer $SIPNAB_API_KEY" \
     "action": "ban",
     "applied": true,
     "refused": null,
-    "expires": "2026-09-03T17:40:10Z",
+    "expires": 1789746010,
     "source": "operator"
   }
 }
 ```
 
-**Body shape:** a JSON object with `ip`, required and an IPv4 address, because
-the TFPS block map is IPv4 and TFPS answers `refused: "invalid"` to anything
-else. `ttl_secs` is optional: seconds the ban lasts, `0` for forever, and the
+**Body shape:** a JSON object with `ip`, required and an IPv4 address. The
+TFPS block map is IPv4, and `tfps_ctl` fails outright on an IPv6 address
+rather than refusing it, so sipnab answers `400` for one and never asks. `ttl_secs` is optional: seconds the ban lasts, `0` for forever, and the
 TFPS default of an hour when absent. The TFPS `ban` command records no
 free-text reason, so the body carries none. Anything else — a missing or malformed
 `ip`, an unknown key, an array — answers `400` and TFPS is never asked. The
@@ -1435,18 +1459,20 @@ address and the duration reach `tfps_ctl` as arguments and never through a
 shell.
 
 A ban TFPS refuses is `200` with `applied: false` and `refused` saying why in
-the words TFPS uses — `self`, `ignoreip` or `invalid` — even though `tfps_ctl`
-signals the refusal with exit 1. That is the answer TFPS gave, not an error:
+the words TFPS uses, even though `tfps_ctl` signals the refusal with exit 1:
+`local` for one of the host's own addresses, `declared` for one its
+`ignoreip` exempts, and `kernel` when it could not write the block map. That
+is the answer TFPS gave, not an error:
 
 ```json
 {
   "installed": true,
   "tfps_ctl": "/usr/local/bin/tfps_ctl",
   "action": {
-    "ip": "192.0.2.1",
+    "ip": "127.0.0.1",
     "action": "ban",
     "applied": false,
-    "refused": "self",
+    "refused": "local",
     "expires": null,
     "source": "operator"
   }
@@ -1482,9 +1508,9 @@ curl -s -X POST -H "Authorization: Bearer $SIPNAB_API_KEY" \
 }
 ```
 
-**Body shape:** a JSON object with exactly `ip`. Anything else answers `400`.
-A source that was not blocked comes back `200` with `applied: false` and
-`refused: "not-blocked"`.
+**Body shape:** a JSON object with exactly `ip`, an IPv4 address. Anything
+else answers `400`. A source that was not blocked comes back `200` with
+`applied: false` and `refused: "not-blocked"`.
 
 All six `/v1/tfps/` routes sit behind the same authentication as every other
 `/v1/` route. What a firewall is dropping is not a public fact, and a route

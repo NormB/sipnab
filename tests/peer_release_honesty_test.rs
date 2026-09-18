@@ -20,11 +20,12 @@ use std::path::Path;
 
 /// Subcommands a released `tfps_ctl` accepts.
 ///
-/// Read from the fork's default branch, which tracks sippulse/tfps:
-/// `git show origin/master:crates/tfps/src/bin/tfps_ctl.rs` at `18b1441`,
-/// checked 2026-09-03. Absent from it, and so absent here: `dropped` and
-/// `ingest`. When a change reaches a released TFPS, add it here in the same
-/// commit that documents it.
+/// Read from sippulse/tfps's default branch:
+/// `git show sippulse/master:crates/tfps/src/bin/tfps_ctl.rs` at `984577dc`,
+/// checked 2026-09-18, and confirmed by running the binary built from it.
+/// Absent from it, and so absent here: `dropped` and `ingest`. When a change
+/// reaches TFPS's default branch, add it here in the same commit that
+/// documents it.
 const RELEASED_SUBCOMMANDS: &[&str] = &[
     "status",
     "stats",
@@ -39,14 +40,23 @@ const RELEASED_SUBCOMMANDS: &[&str] = &[
     "forget",
 ];
 
-/// Flags a released `tfps_ctl` accepts. `--json` is deliberately absent.
+/// Flags a released `tfps_ctl` accepts, from the same source.
+///
+/// `--json` joined on 2026-09-18, when sippulse/tfps#6 merged into `master`.
+/// No tag carries it yet (v0.2.1 is the newest and rejects it), so every page
+/// that tells a reader to use it also says to build TFPS from `master`.
+/// `--a` and `--config` were accepted by v0.2.1 already and had been missing
+/// from this list.
 const RELEASED_FLAGS: &[&str] = &[
+    "--a",
     "--all",
     "--bogus",
+    "--config",
     "--country",
     "--db",
     "--help",
     "--ip",
+    "--json",
     "--limit",
     "--map",
     "--peer",
@@ -152,13 +162,57 @@ fn the_reader_reports_unreleased_commands_and_leaves_released_ones_alone() {
         ["subcommand `ingest`"]
     );
     assert_eq!(
-        unreleased_claims("`tfps_ctl log --json`"),
-        ["flag `--json`"]
+        unreleased_claims("`tfps_ctl log --since 3600`"),
+        ["flag `--since`"]
     );
     assert!(unreleased_claims("`tfps_ctl banned --limit 5`").is_empty());
+    assert!(
+        unreleased_claims("`tfps_ctl status --json`").is_empty(),
+        "--json is on sippulse/tfps master since #6"
+    );
     assert!(unreleased_claims("`tfps_ctl status`").is_empty());
     assert!(
         unreleased_claims("point --tfps-ctl at the tfps_ctl program").is_empty(),
         "prose naming the program is not an instruction"
+    );
+}
+
+/// sipnab's own `--help` instructs too, and it is the page a reader meets
+/// first. `--evidence-out` told readers to pipe into `tfps_ctl ingest`, a
+/// subcommand no TFPS build has, and the document scan above never saw it:
+/// it reads `docs/` alone, and the help text lives in `src/cli.rs`.
+#[cfg(feature = "native")]
+#[test]
+fn no_cli_help_instructs_a_tfps_command_the_released_peer_lacks() {
+    use clap::CommandFactory;
+    let cmd = sipnab::cli::Cli::command();
+    let mut problems = Vec::new();
+    let mut scanned = 0usize;
+    for arg in cmd.get_arguments() {
+        let name = arg.get_long().unwrap_or(arg.get_id().as_str());
+        for help in [arg.get_help(), arg.get_long_help()].into_iter().flatten() {
+            scanned += 1;
+            // One string per help text: a code span the renderer wrapped
+            // across lines is still one command.
+            let text = help.to_string().replace('\n', " ");
+            for claim in unreleased_claims(&text) {
+                problems.push(format!("--{name}: {claim}"));
+            }
+        }
+    }
+    assert!(
+        scanned > 200
+            && cmd
+                .get_arguments()
+                .any(|a| a.get_long() == Some("tfps-ctl")),
+        "scanned {scanned} help texts without reaching --tfps-ctl; the walk has \
+         stopped seeing the flags and this gate proves nothing"
+    );
+    problems.sort();
+    problems.dedup();
+    assert!(
+        problems.is_empty(),
+        "sipnab's --help instructs peer commands no released TFPS has:\n{}",
+        problems.join("\n")
     );
 }

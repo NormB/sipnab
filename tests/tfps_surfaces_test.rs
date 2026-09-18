@@ -130,6 +130,12 @@ fn a_bad_address_is_refused_over_the_wire_before_the_peer_is_asked() {
     let mut session = McpSession::start(PCAP, &["--tfps-ctl", &path]);
     let reply = session.call("tfps_ban", serde_json::json!({"ip": "not an address"}));
     assert_eq!(reply["error"]["code"], -32602, "{reply}");
+    // An IPv6 address is an address TFPS cannot hold: its block map is IPv4,
+    // and tfps_ctl fails on one outright rather than refusing it.
+    for tool in ["tfps_ban", "tfps_unban"] {
+        let reply = session.call(tool, serde_json::json!({"ip": "2001:db8::1"}));
+        assert_eq!(reply["error"]["code"], -32602, "{tool}: {reply}");
+    }
     assert!(
         !fake.argv_log().contains("ban"),
         "the fake must not have been asked: {}",

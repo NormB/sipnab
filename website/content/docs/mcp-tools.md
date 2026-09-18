@@ -94,13 +94,19 @@ ordinary update.
 **[Security](#security)**
 
 
-> **The peer this needs.** These read TFPS through its `tfps_ctl` program in a
-> JSON mode no released [TFPS](https://github.com/sippulse/tfps) carries yet:
-> the NormB/tfps fork carries it, and
-> [sippulse/tfps#6](https://github.com/sippulse/tfps/pull/6) proposes it
-> upstream, though no tagged release has it. Against a released
-> TFPS these report a peer they cannot read, which is the honest answer
-> rather than a fault. sipnab's side waits for the other.
+> **The peer this needs.** These read [TFPS](https://github.com/sippulse/tfps)
+> through its `tfps_ctl` program in JSON mode, the `--json` flag. TFPS gained
+> that mode in [sippulse/tfps#6](https://github.com/sippulse/tfps/pull/6),
+> merged on 2026-09-18, and no tagged release carries it yet: v0.2.1, the
+> newest, rejects `--json`. Until the next release, build TFPS from its
+> `master` branch. To check the `tfps_ctl` you have, run
+> `tfps_ctl status --json`. One line of JSON means it is ready, and
+> `unknown option: --json` means it predates the mode. Against an older
+> `tfps_ctl` these answer with that error and name what to install.
+>
+> `tfps_dropped` is the exception: it needs a `dropped` subcommand that no
+> TFPS build has, released or on `master`, so it answers with TFPS's own
+> `unknown command: dropped` and says so.
 
 | Tool | Parameters | Returns |
 |---|---|---|
@@ -4192,18 +4198,25 @@ With TFPS installed (`--tfps-ctl /usr/local/bin/tfps_ctl`, or `tfps_ctl` on
   "tfps_ctl": "/usr/local/bin/tfps_ctl",
   "status": {
     "enforcement": "active",
-    "mode": "native",
-    "interface": "eth0",
-    "blocked_now": 3,
+    "mode": null,
+    "interface": null,
+    "map": "own map id 7",
+    "blocked_now": 2,
+    "pairs": 4,
+    "peers": 4,
+    "last_checkpoint": 1758200500,
     "db": "/var/lib/tfps/tfps.db",
-    "version": "0.1.0"
+    "version": "0.2.1"
   }
 }
 ```
 
-`enforcement` is `inactive` when TFPS could open no block map, and `mode` and
-`interface` are `null` when it could not look — every field is present on
-every answer, `null` when unknown. sipnab looks for `tfps_ctl` only when a
+Every field is present on every answer, `null` when unknown. `map` names the
+block map TFPS read, `own map id N` or `pinned map <path>`. It is `null`,
+with `enforcement` `inactive`, when TFPS could open none. `mode` and
+`interface` are always `null`: TFPS's JSON mode does not fill them yet.
+`pairs` and `peers` count what TFPS has learned, and TFPS currently reports
+the same number for both. `last_checkpoint` is Unix seconds. sipnab looks for `tfps_ctl` only when a
 `tfps_*` tool runs: it probes nothing at startup, and a machine without TFPS
 logs nothing about it. A peer that exits non-zero, hangs past ten
 seconds, or prints something other than the agreed JSON is an `internal_error`
@@ -4226,15 +4239,15 @@ TFPS returned, and `truncated` says whether the cap withheld any.
   "rows": [
     {
       "ip": "198.51.100.10",
-      "rule": "user-agent",
+      "reason": "user-agent",
       "detail": "⟦untrusted-capture-data⟧pplsip⟦/untrusted-capture-data⟧",
-      "first_seen": "2026-09-03T16:40:00Z",
-      "expires": "2026-09-03T17:40:00Z",
+      "first_seen": 1758200000,
+      "expires": 1789748119,
       "enforced": true
     },
     {
       "ip": "198.51.100.12",
-      "rule": null,
+      "reason": null,
       "detail": null,
       "first_seen": null,
       "expires": null,
@@ -4249,9 +4262,11 @@ TFPS returned, and `truncated` says whether the cap withheld any.
 
 `detail` is the sender's own text — here the `User-Agent` a scanner chose —
 and arrives fenced the way `security_findings` fences its `detail`. Addresses,
-rules and timestamps are verbatim. `rule`, `detail` and `first_seen` are
-`null` for a block that predates any audit row, and `expires` is `null` for a
-ban that does not lapse.
+rules and timestamps are verbatim. `reason` is the rule that condemned the
+source. `reason`, `detail` and `first_seen` are `null` for a block no audit
+row explains, such as one an operator made by hand. `first_seen` and
+`expires` are Unix seconds, and `expires` is `null` for a ban that does not
+lapse.
 
 ### `tfps_dropped`
 
@@ -4293,11 +4308,13 @@ without a shell on the box.
 
 | Parameter | Type | Legal values | If omitted |
 |---|---|---|---|
-| `limit` | integer | a positive count of rows, newest first. `0` means the default | the whole log, which is the TFPS default for the export |
+| `limit` | integer | a positive count of rows, newest first. `0` means the default | one page of `--mcp-max-rows` |
 
-A positive `limit` passes through to TFPS as `--limit N`. `0` or absent sends
-none, and TFPS answers with every row. `--mcp-max-rows` then bounds the page,
-and `total` and `truncated` say what the cap withheld.
+A `limit` that fits in a page passes through to TFPS as `--limit N`. `0`,
+absent or more than a page asks TFPS for the page and one row more, which is
+how `truncated` knows TFPS held more. So `total` here is how many TFPS
+returned, at most a page and one row, not the size of the log. For the whole
+log, run `tfps_ctl log --json --limit N` on the TFPS host.
 
 ```jsonc
 // tfps_labels { "limit": 250 }
@@ -4306,14 +4323,14 @@ and `total` and `truncated` say what the cap withheld.
   "tfps_ctl": "/usr/local/bin/tfps_ctl",
   "rows": [
     {
-      "ip": "198.51.100.10",
-      "rule": "scanner",
+      "ip": "198.51.100.11",
+      "reason": "scanner",
       "detail": "⟦untrusted-capture-data⟧sipvicious⟦/untrusted-capture-data⟧",
-      "first_seen": 1756800000,
-      "expires": 1756803600,
+      "first_seen": 1758200100,
+      "expires": null,
       "unbanned_at": null,
       "enforced": true,
-      "verdict": "blocked"
+      "disposition": "block"
     }
   ],
   "total": 1,
@@ -4322,11 +4339,10 @@ and `total` and `truncated` say what the cap withheld.
 }
 ```
 
-`verdict` is `blocked` (condemned and enforced), `would-block` (condemned while
-observing only) or `exempt` (tripped a rule and TFPS trusted it anyway).
-`expires` is Unix seconds: `0` for never, `null` when TFPS blocked nothing.
-`unbanned_at` carries a value only when an operator lifted the block, which is
-the strongest negative in the log. `detail` arrives fenced.
+TFPS's audit log records only the blocks it enforced, so today every row has
+`disposition` `block` and `enforced` `true`. The log has no columns for a
+ban's end yet, so `expires` and `unbanned_at` are always `null`. `first_seen`
+is Unix seconds. `detail` arrives fenced.
 
 ### `tfps_ban`
 
@@ -4339,7 +4355,7 @@ sipnab detects ever comes through this tool.
 
 | Parameter | Type | Legal values | If omitted |
 |---|---|---|---|
-| `ip` | string | an IPv4 address (the TFPS block map is IPv4, so an IPv6 address comes back `refused: "invalid"`) | required. Anything that is not an address is `invalid_params` (-32602) before sipnab asks TFPS |
+| `ip` | string | an IPv4 address. The TFPS block map is IPv4, and `tfps_ctl` fails outright on an IPv6 address, so sipnab refuses one itself | required. Anything that is not an IPv4 address is `invalid_params` (-32602) before sipnab asks TFPS |
 | `ttl_secs` | integer | seconds the ban lasts. `0` is forever | the TFPS default of an hour |
 
 The TFPS `ban` command records no free-text reason, so this tool takes none. The
@@ -4356,27 +4372,27 @@ shell.
     "action": "ban",
     "applied": true,
     "refused": null,
-    "expires": "2026-09-03T17:40:10Z",
+    "expires": 1789746010,
     "source": "operator"
   }
 }
 ```
 
 A ban TFPS refuses is not an error, even though `tfps_ctl` signals it with
-exit 1: `applied` is `false` and `refused` says why in the words TFPS uses — `self`
-for one of the host's own addresses, `ignoreip` for an exempt one, `invalid`
-for input that named no address (and then `ip` is `null`):
+exit 1: `applied` is `false` and `refused` says why in the words TFPS uses —
+`local` for one of the host's own addresses, `declared` for one its
+`ignoreip` exempts, and `kernel` when it could not write the block map:
 
 ```jsonc
-// tfps_ban { "ip": "192.0.2.1" }
+// tfps_ban { "ip": "127.0.0.1" }
 {
   "installed": true,
   "tfps_ctl": "/usr/local/bin/tfps_ctl",
   "action": {
-    "ip": "192.0.2.1",
+    "ip": "127.0.0.1",
     "action": "ban",
     "applied": false,
-    "refused": "self",
+    "refused": "local",
     "expires": null,
     "source": "operator"
   }
@@ -4394,7 +4410,7 @@ other direction, reported as given.
 
 | Parameter | Type | Legal values | If omitted |
 |---|---|---|---|
-| `ip` | string | an IPv4 or IPv6 address | required; anything else is `invalid_params` (-32602) |
+| `ip` | string | an IPv4 address | required; anything else, an IPv6 address included, is `invalid_params` (-32602) |
 
 ```jsonc
 // tfps_unban { "ip": "198.51.100.20" }
