@@ -29,6 +29,11 @@ Tiers:
   Outside the P0-P5 scale because it is a capability sipnab lacked rather than
   a defect in one it had; `NAT1`/`NAT2` shipped the day the section was
   written, and `NAT3`/`NAT4` are what they left open.
+- **EX — examples: scenarios, languages and gates**: the 2026-09-17 plan for
+  what the examples demonstrate, in which languages, and what keeps each one
+  honest. Ranked `EX1`..`EX9` by dependency order rather than severity; nothing
+  here is a defect in shipped behavior, but `EX3` covers 432 lines of tests
+  that no workflow runs.
 - **P0 — panics & security**: crashes reachable from real input,
   injection, auth/limit bypass, key-material hygiene.
 - **P1 — wrong results in real use**: incorrect exports/metrics/state,
@@ -44,7 +49,7 @@ Tiers:
 
 ## Status
 
-**24 open, 520 done** across 38 sections.
+**33 open, 520 done** across 39 sections.
 Regenerate with `python3 scripts/backlog-status.py --apply`.
 
 | Section | Open | Done | Progress |
@@ -82,6 +87,7 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
 | Shipped (audit-period features, kept for context) | 0 | 6 | `##########` |
 | DUP | 0 | 8 | `##########` |
 | OBS-FOLLOWUP | 0 | 4 | `##########` |
+| EX | 9 | 0 | `..........` |
 
 <!-- /BACKLOG-STATUS -->
 
@@ -8950,6 +8956,115 @@ and the capture meter — are fixed in 0.5.156; these are the rest.
   side only; `every_publishable_bpl_is_positive` closes the other, driving all
   nine modes through both listening contexts and pinning that G.113 Table IV.4
   publishes exactly three.
+
+## EX — examples: scenarios, languages and gates (added 2026-09-17)
+
+**Norm, 2026-09-17:** examples should be organized by what they demonstrate, not
+by which API they happen to touch — (1) sipnab-specific features, (2) common
+tasks a real operator does, (3) AI-related tasks a real operator does — each with
+several programs, and each program written in the supported languages. Plus:
+every cookbook recipe should also exist as a program that runs it — IN ADDITION
+TO the recipe an operator reads and retypes, never instead of it. The prose
+recipe is what a human uses at 2am; the program is what proves it still works.
+
+**What exists today, measured 2026-09-17.** Six Rust programs in
+[`examples/`](https://github.com/NormB/sipnab/blob/main/examples), compiled by clippy `--all-targets` and described in
+[`docs/library.md`](https://github.com/NormB/sipnab/blob/main/docs/library.md). A 165 KB cookbook,
+[`docs/examples.md`](https://github.com/NormB/sipnab/blob/main/docs/examples.md), published as `/docs/cookbook/`: 68 sections
+carrying 139 `sipnab` invocations across 104 distinct flags, none of them
+executed by anything. Three Python clients (642 lines) with their own pytest
+suite (432 lines) under `harness/clients/`, run by no workflow — only by a
+pre-commit step, and only when those files are staged and pytest happens to be
+installed. Fenced snippets in other languages that nothing compiles: 8 Go, 8
+JavaScript, 10 Python. 38 pcap fixtures under `tests/pcap-samples/` and 13
+`trycmd` cases already wired through [`tests/cli_goldens.rs`](https://github.com/NormB/sipnab/blob/main/tests/cli_goldens.rs).
+
+**The rule that keeps this affordable:** parity across languages applies to ONE
+lifecycle program per category, not to the catalog. Six languages times twelve
+programs is 72 artifacts, each needing a gate or it becomes decoration — the
+cross-product mistake `HX3` already rejected for the harness.
+
+**Every program is CI-gated against a fixture, or explicitly lab-only with its
+analysis half gated.** An example nothing runs is a claim, and this repository
+has already shipped two browser specs that were red on main for weeks because no
+workflow named them.
+
+- [ ] **EX1 — declare the languages, and the parity rule.** Rust, Python, Go,
+  JavaScript, C and C++. Today only Python has real programs; Go and JavaScript
+  exist as 8 unchecked fences each, and the 3 C fences are libpcap internals
+  quoted in [`docs/tuning-capture.md`](https://github.com/NormB/sipnab/blob/main/docs/tuning-capture.md), not sipnab usage. One lifecycle program per
+  category — start with a config, capture, read the data, issue a command,
+  process the result, stop the server — in every declared language; everything
+  else stays canonical-language. A test asserts each declared language has each
+  lifecycle program or a declared gap, in the `EXPECTED_GAPS` shape the surface
+  parity work already uses, so a missing Go program is visible rather than
+  implied.
+
+- [ ] **EX2 — publish the index, and stop the two 404s.** [`docs/library.md`](https://github.com/NormB/sipnab/blob/main/docs/library.md) is
+  not in the `PAGES` registry of [`scripts/build-site-pages.py`](https://github.com/NormB/sipnab/blob/main/scripts/build-site-pages.py), so
+  `https://sipnab.com/docs/library/` returns 404 while the download page
+  advertises installing the crate; `/docs/examples/` 404s too, because the
+  cookbook is published at `/docs/cookbook/` (a URL deliberately kept: 51 links
+  and the wiki point at it). Add `library.md` and a new examples index listing
+  every runnable program — language, what it does, how to run it.
+
+- [ ] **EX3 — move `harness/clients/` to `clients/python/` and run its tests in
+  CI.** `harness/` is the test-harness home; three client programs with their own
+  pytest suite are examples wearing a harness's clothes. 432 lines of tests
+  currently run in no workflow. This is the cheapest item here and the only one
+  that converts existing tests from decorative to load-bearing.
+
+- [ ] **EX4 — a minimum bar per language, enforced in CI.** `python -m
+  py_compile`, `node --check`, `gofmt -e`, and `cc -Wall -Wextra -Werror` for C
+  and C++ — plus a smoke run against a fixture wherever one exists. Extract the
+  fenced Go, JavaScript and Python snippets out of [`docs/rest-api.md`](https://github.com/NormB/sipnab/blob/main/docs/rest-api.md),
+  [`docs/prometheus-metrics.md`](https://github.com/NormB/sipnab/blob/main/docs/prometheus-metrics.md) and [`docs/mcp-deploy.md`](https://github.com/NormB/sipnab/blob/main/docs/mcp-deploy.md) into files under
+  `clients/<lang>/`, and have the prose include them, with a gate asserting the
+  fence matches the file. A snippet nobody compiles is a claim, not an example.
+
+- [ ] **EX5 — category 1: sipnab-specific capability.** Two-node leg correlation
+  (one call seen at proxy and relay, stitched; cookbook section 27, and
+  `leg_correlate.py` already does the analysis) — CI, two instances on loopback
+  against fixture replay. TLS read without keys, via the uprobe/BPF backend —
+  lab-only on a host with BTF, with the analysis half gated in CI. vCon export
+  validated against the publisher's schema — CI, fixture. HEP fan-in, sipnab as
+  collector with a peer sending — CI, loopback sender.
+
+- [ ] **EX6 — category 2: common operator tasks, mapped to cookbook recipes.**
+  One program per MULTI-STEP recipe; single commands stay recipes and are covered
+  by `EX8`. Triage a pcap to a machine verdict (sections 1 and 16). Find why a
+  call failed, grouped by response code (3, 30). One-way audio, and whose loss it
+  is (4, 11, 22). Scanner detected, banned through `POST /v1/tfps/ban`, banned
+  list verified (10, 23). Rotated captures collected, one customer's calls
+  exported, opened in Wireshark (39, 32, 40).
+
+- [ ] **EX7 — category 3: AI tasks an operator performs.** The MCP surface is 67
+  tools. Agent triage over MCP stdio — `list_dialogs`, `get_capture_report`,
+  summary — gated in CI because stdio needs no network, and `mcp_probe.py`
+  already speaks it. MCP over HTTP with a signing key, the shape the production
+  boxes run. An evidence package and repro script handed to an agent, checked for
+  determinism. Filter DSL into `aggregate_dialogs` into bounded JSON for a model,
+  which is where a thesis-length cap belongs.
+
+- [ ] **EX8 — cover every cookbook recipe with an executable golden.** The 139
+  invocations gain `trycmd` cases against the 38 fixtures, in batches, reusing
+  [`tests/cli_goldens.rs`](https://github.com/NormB/sipnab/blob/main/tests/cli_goldens.rs) rather than inventing a runner. The recipes
+  themselves stay exactly as they read today: this adds coverage beside the
+  page an operator works from, it does not replace it. This is where flag drift
+  actually hides — a renamed flag currently breaks 139 documented commands with
+  every gate green — and it needs no language bindings at all.
+
+- [ ] **EX9 — (blocked) a C ABI, so C and C++ can link sipnab in-process.**
+  `EX1` puts C and C++ on the wire surfaces (REST with libcurl, MCP JSON-RPC,
+  or spawning the CLI), which needs nothing from sipnab. Linking the library is a
+  different thing and does not exist: `crate-type` is `["cdylib", "rlib"]` for the
+  WASM build, only `libsipnab_audio` ships as a `.so`, and the crate exports zero
+  `pub extern "C"` functions and no header. Doing it means choosing a small ABI
+  subset, generating a header with cbindgen, defining who frees what, catching
+  panics at the boundary so none unwinds into C, and soname/symbol versioning.
+  **Blocked on the crates.io decision in P2**: a C ABI is a second public
+  compatibility surface, and promising two before the first is settled is how
+  both become unkeepable.
 
 ## Standing decisions
 
