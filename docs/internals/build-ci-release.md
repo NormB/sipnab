@@ -721,11 +721,11 @@ This is crates.io trusted publishing, and crates.io checks two things. The
 workflow file must be the one that STARTED the run, so a workflow that waits
 for this one through `workflow_run` cannot publish: crates.io refuses those
 outright. The environment must match too. The job runs in the `crates-io`
-GitHub environment. That environment takes deployments from `v*` tags only,
-and each one waits for the owner to approve it under the run's "Review
-deployments". Each crate carries this trusted-publisher entry on crates.io
-(Settings, Trusted Publishing), and crates.io refuses a token that does not
-match it:
+GitHub environment. That environment takes deployments from `v*` tags only
+and has no required reviewer, so the publish follows a successful release
+without anyone approving it: pushing the tag is the decision. Each crate
+carries this trusted-publisher entry on crates.io (Settings, Trusted
+Publishing), and crates.io refuses a token that does not match it:
 
 | Field | Value |
 |---|---|

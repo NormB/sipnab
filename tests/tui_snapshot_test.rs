@@ -576,6 +576,76 @@ mod tui_snapshots {
         );
     }
 
+    /// The call list's timing column is headed by what it shows, and the
+    /// header follows `t` through every timestamp mode.
+    ///
+    /// It was a fixed "Date" (reported 2026-09-19): the default mode prints
+    /// `+N.NNNs` since the previous dialog, and the absolute mode prints only
+    /// the start time `HH:MM:SS`, so no mode ever showed a date. The data
+    /// check ties each header to the values under it, so a header that
+    /// changed while the column did not would still fail.
+    #[test]
+    fn the_timing_column_header_names_the_timestamp_mode() {
+        let mut app = test_app_with_dialogs();
+        // The default, then each press of `t`. Scaled has no call-list
+        // rendering of its own and prints the previous-dialog delta, so it
+        // carries that header.
+        let expected = [
+            ("+Prev", "default"),
+            ("+First", "after 1 x t"),
+            ("+Prev", "after 2 x t (Scaled)"),
+            ("Start", "after 3 x t"),
+            ("+Prev", "after 4 x t"),
+        ];
+        for (presses, (label, when)) in expected.iter().enumerate() {
+            if presses > 0 {
+                app.handle_key(KeyCode::Char('t'));
+            }
+            let mut terminal = Terminal::new(TestBackend::new(130, 40)).unwrap();
+            terminal.draw(|frame| app.render(frame)).unwrap();
+            let screen = buffer_to_string(&terminal);
+            let header = screen
+                .lines()
+                .find(|l| l.contains("Msgs"))
+                .unwrap_or_else(|| panic!("no call-list header row:\n{screen}"));
+            assert!(
+                header.split_whitespace().any(|w| w == *label),
+                "{when}: the timing column must be headed {label}:\n{header}"
+            );
+            assert!(
+                !header.contains("Date"),
+                "{when}: no timestamp mode shows a date:\n{header}"
+            );
+            let is_clock = |w: &str| {
+                w.len() == 8
+                    && w.chars().enumerate().all(|(i, c)| {
+                        if i == 2 || i == 5 {
+                            c == ':'
+                        } else {
+                            c.is_ascii_digit()
+                        }
+                    })
+            };
+            let is_delta = |w: &str| w.starts_with('+') && w.ends_with('s');
+            let rows: Vec<&str> = screen.lines().filter(|l| l.contains("INVITE")).collect();
+            assert!(
+                !rows.is_empty(),
+                "fixture dialogs must be listed:\n{screen}"
+            );
+            for row in rows {
+                let shape_ok = if *label == "Start" {
+                    row.split_whitespace().any(is_clock)
+                } else {
+                    row.split_whitespace().any(is_delta)
+                };
+                assert!(
+                    shape_ok,
+                    "{when}: a {label} column must hold matching values:\n{row}"
+                );
+            }
+        }
+    }
+
     /// Snapshot: empty stream list.
     #[test]
     fn stream_list_empty() {

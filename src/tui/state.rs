@@ -82,6 +82,19 @@ impl TimestampMode {
         }
     }
 
+    /// Header for the call list's timing column, which shows a dialog's start
+    /// time or a delta depending on the mode. Scaled has no call-list
+    /// rendering of its own and shows the previous-dialog delta, so it shares
+    /// that header. Six characters at most: the column is eight cells wide and
+    /// the sort indicator takes two.
+    pub(in crate::tui) fn call_list_column_label(self) -> &'static str {
+        match self {
+            Self::Absolute => "Start",
+            Self::DeltaPrev | Self::Scaled => "+Prev",
+            Self::DeltaFirst => "+First",
+        }
+    }
+
     /// Human-readable label for the status bar.
     pub(in crate::tui) fn label(self) -> &'static str {
         match self {

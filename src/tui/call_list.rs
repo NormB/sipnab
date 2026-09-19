@@ -653,12 +653,18 @@ pub fn render_call_list(
     } else {
         " \u{25bc}"
     };
-    // Header labels are exactly COLUMN_LABELS, except the index column is
+    // Header labels are COLUMN_LABELS with two exceptions. The index column is
     // padded (" # " vs "#") so its lone glyph isn't cramped against the
-    // checkbox in the first cell. Derive from COLUMN_LABELS so the two lists
-    // can't drift apart.
+    // checkbox in the first cell. The timing column is headed by what its
+    // cells show in the current timestamp mode: "Date" is only the column's
+    // persisted name, which `visible_columns` configs refer to, and no mode
+    // shows a date. Derive from COLUMN_LABELS so the two lists can't drift
+    // apart.
     let mut base_labels = COLUMN_LABELS;
     base_labels[0] = " # ";
+    if let Some(timing) = ALL_COLUMNS.iter().position(|c| *c == SortColumn::Date) {
+        base_labels[timing] = timestamp_mode.call_list_column_label();
+    }
     let header_cells: Vec<Cell> = vis_indices
         .iter()
         .map(|&i| {

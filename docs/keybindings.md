@@ -388,8 +388,8 @@ browse your own files.
 
 Press `t` in the Call List or Call Flow to cycle through the timestamp modes (both views share the mode):
 
-1. **Absolute** (default) -- `HH:MM:SS.mmm` wall-clock time
-2. **Delta-prev** -- `+N.NNNs` time since previous entry. Color-coded in call flow:
+1. **Absolute** -- `HH:MM:SS.mmm` wall-clock time
+2. **Delta-prev** (default) -- `+N.NNNs` time since previous entry. Color-coded in call flow:
    - Green: < 100 ms
    - Yellow: 100 ms - 1 s
    - Red: 1 s - 5 s
@@ -398,6 +398,14 @@ Press `t` in the Call List or Call Flow to cycle through the timestamp modes (bo
 4. **Scaled** -- delta-prev timestamps plus time-proportional spacer rows, so
    quiet gaps are visible in the ladder. The set of visible messages is
    identical in every mode — only the presentation changes.
+
+In the Call List the timing column's header names the mode, because the
+column shows different data in each: **Start** in Absolute (the dialog's
+start time, `HH:MM:SS`), **+Prev** in Delta-prev (time since the dialog above
+it, in the list's current sort order), and **+First** in Delta-first (time
+since the first dialog). The spacer rows of Scaled belong to the ladder, so
+the Call List shows Scaled as **+Prev**. The F10 column selector and the
+`visible_columns` setting still call this column `Date`.
 
 <div class="terminal">
 <div class="terminal-bar">
@@ -474,7 +482,7 @@ The call list is the main view when sipnab starts. It shows all tracked SIP dial
 <pre class="terminal-body"><span class="t-header"> Current Mode: Online (eth0)   Dialogs: 47 (47 displayed)  [A]</span>
 <span class="t-muted"> Match Expression:             BPF Filter: port 5060</span>
 <span class="t-muted"> Time: Delta-prev</span>
-<span class="t-muted">  #  Method     From           To             Src IP         Dst IP         State        Msgs  Date        PDD</span>
+<span class="t-muted">  #  Method     From           To             Src IP         Dst IP         State        Msgs  +Prev       PDD</span>
 <span class="t-selected">▸</span><span class="t-accent"> 1  INVITE     alice          bob            192.0.2.1      192.0.2.2      </span><span class="t-good">InCall</span><span class="t-accent">         12  +0.000s     847ms</span>
   <span class="t-accent">2  INVITE     charlie        dave           192.0.2.3      192.0.2.4      </span><span class="t-warn">Ringing</span><span class="t-accent">         6  +1.234s     --</span>
   <span class="t-accent">3  REGISTER   admin          --             192.0.2.5      192.0.2.1      </span><span class="t-good">Registered</span><span class="t-accent">      4  +0.012s     --</span>

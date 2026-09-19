@@ -1475,10 +1475,32 @@ mod tests {
     #[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
     #[test]
     fn a_relay_with_no_stream_transport_fails_the_wider_ask() {
-        // Bound on the datagram transport only: the address exists, nothing
-        // accepts a connection there.
-        let sock = std::net::UdpSocket::bind("127.0.0.1:0").expect("bind");
-        let addr = sock.local_addr().expect("addr");
+        // Answering on the datagram transport only: the address exists, and
+        // nothing accepts a connection there. The TCP port number is HELD,
+        // bound but never listening, because the UDP socket alone does not
+        // reserve it: TCP and UDP number their ports separately, and a
+        // listener from a test running alongside once sat on the same number
+        // and accepted ("no complete reply from 127.0.0.1:33799 within
+        // 500ms", 2026-09-19). A bound, non-listening socket refuses every
+        // connection, keeps anything else from listening there, and keeps the
+        // kernel from picking the port as the client's own source port.
+        let (held, sock, addr) = (0..50)
+            .find_map(|_| {
+                let tcp = socket2::Socket::new(socket2::Domain::IPV4, socket2::Type::STREAM, None)
+                    .expect("tcp socket");
+                let any: std::net::SocketAddr = "127.0.0.1:0".parse().expect("addr");
+                tcp.bind(&any.into()).expect("bind tcp");
+                let addr = tcp.local_addr().ok()?.as_socket()?;
+                // The same number may already be taken on UDP; try another.
+                let udp = std::net::UdpSocket::bind(addr).ok()?;
+                Some((tcp, udp, addr))
+            })
+            .expect("a port free on both TCP and UDP");
+        assert_eq!(
+            std::net::TcpListener::bind(addr).err().map(|e| e.kind()),
+            Some(std::io::ErrorKind::AddrInUse),
+            "while this test holds the port, nothing else may listen on it"
+        );
 
         let client = ControlClient::new(addr, Duration::from_millis(500));
         let err = client
@@ -1489,7 +1511,7 @@ mod tests {
             "the operator must be told the connection is what failed, since \
              the fix is to enable one: {err:#}"
         );
-        drop(sock);
+        drop((held, sock));
     }
 
     /// A stream answer past the read ceiling is refused rather than read

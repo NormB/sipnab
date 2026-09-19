@@ -258,6 +258,10 @@ tokio = { version = "1", features = ["rt", "macros"] }
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
 libc = "0.2"
+# Holds a TCP port bound but NOT listening, which std cannot do: a test that
+# needs a connection refused must own the port number, or a listener from a
+# concurrently running test can take it. Already in the tree through tokio.
+socket2 = "0.6"
 # Serializes security tests that touch process-global state (the SIPNAB_API_KEY
 # env var and the test crate's allocation counter) so they are not raced by
 # concurrent tests.

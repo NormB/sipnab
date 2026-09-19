@@ -8,6 +8,25 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Changed
+
+- **A release tag publishes to crates.io without waiting for approval.**
+  The `crates-io` environment keeps its `v*`-tag-only deployment policy and
+  no longer has a required reviewer, so the `crates-io` job runs as soon as
+  the GitHub release exists.
+
+### Fixed
+
+- **The call list's timing column is headed by what it shows.** It read
+  "Date" in every mode, and no mode shows a date. The header now follows `t`:
+  `Start` (the dialog's start time), `+Prev` (time since the dialog above;
+  the default, and Scaled), `+First` (time since the first dialog). The column
+  keeps the name `Date` in the F10 selector and in `visible_columns`, so saved
+  layouts still apply. The keybindings page also named Absolute as the default
+  mode; the default is Delta-prev.
+
 ## [0.5.181] - 2026-09-19
 
 ### Fixed
