@@ -534,7 +534,9 @@ conclude from one, which matters more here than the field list.
 
 `-O <file>` writes captured packets, and `--pcapng` selects PCAP-NG. With TLS
 decryption, `--pcap-export-mode` controls whether decryption secrets
-(DSBs) travel with the file for Wireshark. Rotation: `--split filesize:N` /
+(DSBs) travel with the file for Wireshark. The default `raw` mode embeds no
+keys. `encrypted+dsb` opts into key-bearing PCAP-NG. Plaintext `decrypted`
+export is not supported. Rotation: `--split filesize:N` /
 `--split duration:N`, or SIGUSR1 on demand.
 
 pcapng timestamps are nanosecond-resolution, declared via `if_tsresol=9`

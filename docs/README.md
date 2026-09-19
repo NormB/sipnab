@@ -127,6 +127,7 @@ through.
 - [MCP deployment](mcp-deploy.md) — remote servers, live captures, running it as a service.
 - [MCP tool reference](mcp-tools.md) — every tool, its arguments and its response.
 - [MCP protocol](mcp-protocol.md) — the wire contract, security model and error semantics.
+- [Runnable client examples](client-examples.md) — Python clients and their regression tests.
 - [Library API](library.md) — using sipnab as a Rust crate.
 
 ## Explanation

@@ -161,7 +161,7 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             "website/content/docs/internals/build-ci-release.md",
         ],
     ),
-    // `--audio` belongs to `harness/clients/vcon_view.py`, the small reader the
+    // `--audio` belongs to `clients/python/vcon_view.py`, the small reader the
     // capture-stack page uses to extract a stored container's WAV. It is a
     // harness client rather than sipnab, and naming it here is what keeps this
     // gate from reading every tool a page demonstrates as sipnab's own.
@@ -282,6 +282,7 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             // against this crate, so `--features native` is the one thing
             // between them and a compile error.
             "docs/library.md",
+            "website/content/docs/library.md",
             // `vcon` is NON-DEFAULT, so a reader following the walkthrough has
             // no export at all without naming it. The whole point of the page
             // is a runnable sequence, and a stock binary silently lacking the
@@ -345,7 +346,10 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
     // commands target `examples/*.rs` rather than the `sipnab` binary.
     // Scoped there: written anywhere else it would read as a sipnab flag
     // and must still fail this guard.
-    ("example", &["docs/library.md"]),
+    (
+        "example",
+        &["docs/library.md", "website/content/docs/library.md"],
+    ),
     // `--undefined-only` is binutils `nm`, and `--keylogfile` is eCapture's.
     // The TLS chooser names both because the commands it gives have to be
     // runnable as written: one finds which symbol a daemon actually calls,
@@ -3294,7 +3298,9 @@ fn no_documentation_table_repeats_a_row() {
     // 219 -> 220 by crates/sipnab-bpf-types/README.md, the crates.io page of
     // the published sipnab-bpf-types crate. `git diff --cached --diff-filter=A`
     // lists exactly that one new .md path. No website mirror.
-    const EXPECTED_MARKDOWN_FILES: usize = 220;
+    // 220 -> 223: docs/client-examples.md and its site mirror, plus the new
+    // site mirror of docs/library.md. Measured by this gate on 2026-09-19.
+    const EXPECTED_MARKDOWN_FILES: usize = 223;
     /// How many tables this gate expects to walk.
     ///
     /// Named rather than written twice. The count and the failure message
@@ -3674,7 +3680,9 @@ fn no_documentation_table_repeats_a_row() {
     // 925 -> 927 by the crates.io trusted-publisher table in
     // docs/internals/build-ci-release.md, counted once in docs/ and once in
     // its site mirror.
-    const EXPECTED_TABLES: usize = 927;
+    // 927 -> 932: the client-examples table and its site mirror, plus three
+    // tables in the new library site mirror. Measured by this gate.
+    const EXPECTED_TABLES: usize = 932;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

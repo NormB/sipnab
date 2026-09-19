@@ -77,13 +77,13 @@ line-by-line comparison. `Esc` returns to the ladder.
 ## 6. Search and filter
 
 - `/` searches the current view (Call List, Raw Message, or RTP Streams).
-- `F7` opens the **Filter dialog**, which accepts the full [Filter DSL](filter-dsl.md) plus quick From/To fields and checkboxes. Try `state == 'Failed'` to keep only calls that never established, or `rtp.mos < 3.0` for poor audio.
+- `F7` opens the **Filter dialog**, which offers From/To, source/destination, payload, time bounds and method fields. These fields build a filter; there is no free-form expression field. Pass the full [Filter DSL](filter-dsl.md) through CLI `--filter`, for example `rtp.mos < 3.0`.
 - `F9` clears the active filter; `i` prunes the dialogs that do *not* match, keeping only the matches, and `I` prunes the ones that do.
 
 ## 7. Inspect RTP quality
 
 Press `Tab` to switch from the Call List to the **RTP Streams** view: every
-media stream with codec, packet count, jitter, loss, and MOS. Streams flagged
+media stream with codec, packet count, jitter and loss. Streams flagged
 `orphan` have no matching SIP dialog (often a NAT/ALG symptom).
 
 Press `Enter` on a stream -- or on an `██ RTP ██` bar back in the Call Flow --

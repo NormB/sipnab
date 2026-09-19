@@ -174,7 +174,7 @@ compiles as part of the build, so it cannot drift from the API the way a
 fragment on a page can.
 
 In your own program: read the capture into a `DialogStore` the ordinary way —
-the [library page](https://github.com/NormB/sipnab/blob/main/docs/library.md) covers that part — then hand one dialog and the
+the [library page](@/docs/library.md) covers that part — then hand one dialog and the
 run's own counters to `export_dialog`:
 
 ```rust
@@ -627,4 +627,4 @@ Stated here rather than discovered later.
 - [vCon internals](https://github.com/NormB/sipnab/blob/main/docs/internals/vcon.md) — for anyone changing the exporter
 - [Output formats](@/docs/output-formats.md) — the NDJSON and report surfaces the
   message trace shares its projection with
-- [Library API](https://github.com/NormB/sipnab/blob/main/docs/library.md) — filling a `DialogStore` from a capture
+- [Library API](@/docs/library.md) — filling a `DialogStore` from a capture

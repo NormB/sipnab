@@ -245,8 +245,8 @@ pub fn stream_matches_search(stream: &RtpStream, query_lower: &str) -> bool {
 /// * `search_query` - Raw (not yet lowercased) search text.
 /// * `delay` - One-way-delay evidence for `rtp.mos`. This list judges each
 ///   stream against its own dialog, so a `rtp.mos` filter here decides which
-///   ROWS appear beside the MOS column; the two must be scored on one delay or
-///   the list hides streams whose displayed score satisfies the filter.
+///   rows appear. Use the same delay as Stream Detail so filtering and the
+///   score shown after opening a stream agree.
 ///
 /// # Returns
 /// References to the streams that pass both the search and the filter, in

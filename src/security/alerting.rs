@@ -6,7 +6,7 @@
 //! parameters and deduplicates alerts per (source IP, rule name) pair.
 //!
 //! Rule grammar: `<metric>:<threshold>/<window>[:<cooldown>]`
-//! - `5xx-rate:10/1m` — 10 events in 1 minute, cooldown auto (2 minutes)
+//! - `scanner:10/1m` — 10 events in 1 minute, cooldown auto (2 minutes)
 //! - `reg-flood:50/10s:5m` — 50 events in 10 seconds, cooldown 5 minutes
 //! - Window suffixes: `s` (seconds), `m` (minutes), `h` (hours)
 //! - Default cooldown: window x 2
@@ -24,7 +24,7 @@ use tracing::warn;
 /// A single alerting rule with threshold, window, and cooldown.
 #[derive(Debug, Clone)]
 pub struct AlertRule {
-    /// Rule name (e.g., `"5xx-rate"`, `"reg-flood"`).
+    /// Rule name (e.g., `"scanner"`, `"reg-flood"`).
     pub name: String,
     /// Number of events required to trigger within the window.
     pub threshold: u32,
@@ -42,8 +42,8 @@ impl AlertRule {
     /// ```
     /// use sipnab::security::AlertRule;
     ///
-    /// let rule = AlertRule::parse("5xx-rate:10/1m").unwrap();
-    /// assert_eq!(rule.name, "5xx-rate");
+    /// let rule = AlertRule::parse("scanner:10/1m").unwrap();
+    /// assert_eq!(rule.name, "scanner");
     /// assert_eq!(rule.threshold, 10);
     /// ```
     ///
@@ -103,7 +103,12 @@ impl AlertRule {
         };
 
         Ok(AlertRule {
-            name: name.to_string(),
+            name: if name == "reg-flood" {
+                "reg_flood"
+            } else {
+                name
+            }
+            .to_string(),
             threshold,
             window,
             cooldown,
@@ -1099,8 +1104,8 @@ mod tests {
     /// A basic rule parses name/threshold/window and defaults cooldown to 2x.
     #[test]
     fn parse_rule_basic() {
-        let rule = AlertRule::parse("5xx-rate:10/1m").expect("should parse");
-        assert_eq!(rule.name, "5xx-rate");
+        let rule = AlertRule::parse("scanner:10/1m").expect("should parse");
+        assert_eq!(rule.name, "scanner");
         assert_eq!(rule.threshold, 10);
         assert_eq!(rule.window, Duration::from_secs(60));
         assert_eq!(
@@ -1114,7 +1119,7 @@ mod tests {
     #[test]
     fn parse_rule_with_cooldown() {
         let rule = AlertRule::parse("reg-flood:50/10s:5m").expect("should parse");
-        assert_eq!(rule.name, "reg-flood");
+        assert_eq!(rule.name, "reg_flood");
         assert_eq!(rule.threshold, 50);
         assert_eq!(rule.window, Duration::from_secs(10));
         assert_eq!(rule.cooldown, Duration::from_secs(300));

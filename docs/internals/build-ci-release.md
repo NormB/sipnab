@@ -237,7 +237,9 @@ describes are the ones whose contents are worth spelling out.
 - **`check`** (per-OS matrix) — `cargo build --all-features`, `cargo test
   --all-features`, `cargo clippy --workspace --all-features --all-targets -D warnings`,
   `cargo fmt --check`, `cargo doc --no-deps --all-features --workspace`, plus
-  the `--ignored` PTY TUI end-to-end tests.
+  the `--ignored` PTY TUI end-to-end tests. On Linux it also compiles the
+  Python clients under `clients/python/` and runs `pytest` over their tests
+  and `scripts/tests`.
 - **`features`** — `cargo check --no-default-features --features X --tests`
   across thirteen feature sets: each of `native`, `tls`, `api`, `mcp`, `hep`,
   `metrics`, then `tls,api`, `native,tui,audio`, `native,tui,tls,hep,api`,

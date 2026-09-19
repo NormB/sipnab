@@ -489,7 +489,7 @@ pub fn run_tui_mode(
                 });
             let mut writer: Option<PcapWriter> = None;
             let tui_export_mode = PcapExportMode::parse_mode(&cli_clone.tls_args.pcap_export_mode)
-                .unwrap_or(PcapExportMode::Decrypted);
+                .unwrap_or(PcapExportMode::Raw);
             // Wall time for a live device, the capture's own timeline for
             // `-I`: the TUI reads files too, and there the packet clock and
             // `Utc::now()` are unrelated. See `batch::SweepClock`.

@@ -6,6 +6,8 @@ This file indexes the documentation as plain text. `llms-full.txt` beside it car
 
 ## Docs
 
+- [Library API](https://sipnab.com/docs/library/): Use the Rust parser and analysis types from an external application.
+- [Runnable Examples](https://sipnab.com/docs/examples/): Run Python clients for correlation, MCP queries and vCon inspection, with local regression tests.
 - [Examples & Recipes](https://sipnab.com/docs/cookbook/): Worked examples with real output: triage, filtering, HEP, TLS decryption, MCP, observability, security and audio export, each one a command you can paste and the result it produces.
 - [Prometheus Metrics](https://sipnab.com/docs/metrics/): Every metric family sipnab emits, what each one means, which are counters and which are gauges, and the scrape config -- split out of the REST API page, which a scrape target's reader never needs.
 - [REST API](https://sipnab.com/docs/api/): sipnab's REST API: authentication, every endpoint with its response shape, status codes, curl recipes, and the security model. Metric names and their meaning are on the Prometheus metrics page.

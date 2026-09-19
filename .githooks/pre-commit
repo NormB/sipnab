@@ -608,15 +608,15 @@ if git diff --cached --name-only | grep -qE "^scripts/"; then
     fi
 fi
 
-if git diff --cached --name-only | grep -q "^harness/clients/"; then
-    echo -n "  Harness clients... "
+if git diff --cached --name-only | grep -q "^clients/python/"; then
+    echo -n "  Python clients... "
     if command -v python3 >/dev/null 2>&1 && python3 -c "import pytest" 2>/dev/null; then
-        if PYTEST_OUT=$(cd harness && python3 -m pytest clients/tests/ -q 2>&1); then
+        if PYTEST_OUT=$(python3 -m pytest clients/python/tests/ -q 2>&1); then
             echo -e "${GREEN}OK${NC} ($(echo "$PYTEST_OUT" | tail -1))"
         else
             echo -e "${RED}FAIL${NC}"
             echo "$PYTEST_OUT" | tail -12 | sed 's/^/    /'
-            echo "  Reproduce: cd harness && python3 -m pytest clients/tests/"
+            echo "  Reproduce: python3 -m pytest clients/python/tests/"
             exit 1
         fi
     else

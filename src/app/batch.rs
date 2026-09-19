@@ -2521,7 +2521,7 @@ impl BatchRunner {
         let writer: Option<PcapWriter> = None;
         let use_pcapng = cli.capture_args.pcapng;
         let export_mode = PcapExportMode::parse_mode(&cli.tls_args.pcap_export_mode)
-            .unwrap_or(PcapExportMode::Decrypted);
+            .unwrap_or(PcapExportMode::Raw);
 
         // 16a. Initialize HEP sender if --hep-send is set
         #[cfg(feature = "hep")]

@@ -67,8 +67,7 @@ pub struct SipMessage {
     /// view of the same buffer as `raw`.
     pub body: bytes::Bytes,
     /// `true` if the message was only partially parseable.
-    #[allow(dead_code)] // Read in parser tests and available for future use
-    pub(crate) parse_error: bool,
+    pub parse_error: bool,
     /// Capture timestamp.
     pub timestamp: DateTime<Utc>,
     /// Source IP address from the network layer.

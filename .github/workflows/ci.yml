@@ -94,6 +94,16 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
+      - name: Test Python examples and documentation tooling
+        if: runner.os == 'Linux'
+        run: |
+          python3 -m venv .venv-client-tests
+          . .venv-client-tests/bin/activate
+          python3 -m pip install pytest==8.4.2
+          python3 -m compileall -q clients/python
+          python3 -m pytest clients/python/tests -q
+          python3 -m pytest scripts/tests -q
+
       - name: Build
         run: cargo build --all-features
 

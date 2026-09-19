@@ -3221,7 +3221,8 @@ mod tests {
             selected: Some("blue".to_string()),
             ..Default::default()
         };
-        let theme = Theme::from_config(&config);
+        // Exercise config precedence independently of the runner's NO_COLOR.
+        let theme = Theme::from_config_with_no_color(&config, false);
         assert_eq!(theme.selected, Color::Blue); // selected wins over highlight
     }
 
@@ -3233,7 +3234,8 @@ mod tests {
             highlight: Some("red".to_string()),
             ..Default::default()
         };
-        let theme = Theme::from_config(&config);
+        // Exercise the alias independently of the runner's NO_COLOR.
+        let theme = Theme::from_config_with_no_color(&config, false);
         assert_eq!(theme.selected, Color::Red); // highlight applies when selected is None
     }
 

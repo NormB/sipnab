@@ -29,9 +29,8 @@ use crate::signals;
 
 /// Controls how encrypted traffic is written to output pcap files.
 ///
-/// - `Decrypted`: Include DSB (Decryption Secrets Block) so Wireshark can
-///   decrypt inline. In a future version this may write synthetic decrypted
-///   frames; today it behaves identically to `EncryptedWithDsb`.
+/// - `Decrypted`: Reserved for synthetic plaintext frames; refused until
+///   implemented. It never authorizes embedding TLS secrets.
 /// - `EncryptedWithDsb`: Write original (encrypted) frames and include DSBs
 ///   containing the TLS key material so Wireshark can decrypt on load.
 /// - `Raw`: Write original (encrypted) frames with no DSBs. The output file
@@ -39,7 +38,7 @@ use crate::signals;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum PcapExportMode {
-    /// Default. Include DSBs; future: may write decrypted frames.
+    /// Reserved plaintext export mode; writer construction returns an error.
     Decrypted,
     /// Write encrypted frames + DSBs for Wireshark decryption.
     EncryptedWithDsb,
@@ -63,7 +62,7 @@ impl PcapExportMode {
 
     /// Whether this mode should include DSB blocks in the output.
     pub fn include_dsb(self) -> bool {
-        matches!(self, Self::Decrypted | Self::EncryptedWithDsb)
+        matches!(self, Self::EncryptedWithDsb)
     }
 }
 
@@ -250,7 +249,7 @@ impl PcapWriter {
     ///
     /// The file is created immediately with the specified link-layer type.
     /// Rotation parameters are optional; pass `None` to disable automatic rotation.
-    /// Uses standard pcap format and `Decrypted` export mode.
+    /// Uses standard pcap format and `Raw` export mode.
     ///
     /// Warns if the path contains `..` components, which may indicate path
     /// traversal. The file is still opened (user may have legitimate reasons).
@@ -266,7 +265,7 @@ impl PcapWriter {
             max_file_bytes,
             max_file_duration,
             false,
-            PcapExportMode::Decrypted,
+            PcapExportMode::Raw,
         )
     }
 
@@ -353,6 +352,9 @@ impl PcapWriter {
         interface: Option<&str>,
         provenance: Option<String>,
     ) -> Result<Self> {
+        if export_mode == PcapExportMode::Decrypted {
+            anyhow::bail!("decrypted export is not supported; use raw or encrypted+dsb");
+        }
         // M5: Warn on path traversal components
         if path
             .components()
@@ -721,7 +723,7 @@ impl PcapWriter {
     ///
     /// Reads the SSLKEYLOGFILE at `keylog_path` and embeds its content as a
     /// Decryption Secrets Block. No-ops if:
-    /// - The export mode is `Raw` (no key material should be embedded)
+    /// - The export mode is not `EncryptedWithDsb`
     /// - A DSB has already been written to the current file
     /// - The keylog file cannot be read (logs a warning)
     /// - The backend is standard pcap (DSBs require PCAP-NG)
@@ -1556,8 +1558,8 @@ mod tests {
     #[test]
     fn pcap_export_mode_include_dsb() {
         assert!(
-            PcapExportMode::Decrypted.include_dsb(),
-            "Decrypted mode should include DSB"
+            !PcapExportMode::Decrypted.include_dsb(),
+            "Decrypted mode must not authorize embedding secrets"
         );
         assert!(
             PcapExportMode::EncryptedWithDsb.include_dsb(),
@@ -1589,7 +1591,7 @@ mod tests {
             let path = dir.path().join("out.pcap");
 
             let mut w = PcapWriter::new(&path, 1, None, None).unwrap();
-            assert_eq!(w.export_mode(), PcapExportMode::Decrypted);
+            assert_eq!(w.export_mode(), PcapExportMode::Raw);
             for i in 0..3u8 {
                 w.write(&pkt(i, 50)).unwrap();
             }

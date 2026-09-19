@@ -83,9 +83,9 @@ enum Plan {
     ShellProgram,
     /// Not run: it acts on the HOST. `--on-dialog-exec` / `--on-quality-exec`
     /// run a command of their own; `--uprobe-tls` attaches to the kernel;
-    /// `--setup-caps` re-invokes through sudo and runs `setcap` on the binary;
-    /// `--wireshark` launches a GUI. A documentation gate must not `curl` a
-    /// stranger's endpoint, load probes, escalate privilege, or open a window
+    /// `--setup-caps` re-invokes through sudo and runs `setcap` on the binary.
+    /// A documentation gate must not `curl` a stranger's endpoint, load probes,
+    /// or escalate privilege
     /// on whatever machine runs the suite. `--setup-caps` was missed at first,
     /// and the gate ran `sudo setcap` four times before this caught it.
     SideEffects,
@@ -184,7 +184,7 @@ fn documented_invocations() -> Vec<Invocation> {
 fn classify(cmd: &str) -> Plan {
     // Never run, whatever else it says.
     let side_effects = regex::Regex::new(
-        r"(^|\s)(--on-[a-z-]+-exec|--uprobe-tls|--uprobe-backend|--setup-caps|--wireshark)(\s|=|$)",
+        r"(^|\s)(--on-[a-z-]+-exec|--uprobe-tls|--uprobe-backend|--setup-caps)(\s|=|$)",
     )
     .expect("regex");
     if side_effects.is_match(cmd) {
@@ -1181,20 +1181,16 @@ fn a_profile_flag_is_not_mistaken_for_a_path() {
     }
 }
 
-/// A command that escalates privilege or opens a GUI is never run.
+/// A command that escalates privilege is never run.
 ///
 /// `--setup-caps` re-invokes sipnab through sudo and runs `setcap
-/// cap_net_raw,cap_net_admin+ep` on the binary; `--wireshark` launches a GUI.
-/// Both were classified `Reads` at first, and on a host with passwordless sudo
+/// cap_net_raw,cap_net_admin+ep` on the binary.
+/// This was classified `Reads` at first, and on a host with passwordless sudo
 /// the gate ran `sudo setcap` four times -- granting the debug binary the very
 /// capability whose absence the capture-probe tests then measured.
 #[test]
-fn a_privilege_escalation_or_gui_launch_is_never_run() {
-    for cmd in [
-        "sipnab --setup-caps",
-        "sudo sipnab --setup-caps",
-        "sipnab -N -I capture.pcap --wireshark",
-    ] {
+fn privilege_escalation_is_never_run_but_printing_a_filter_is() {
+    for cmd in ["sipnab --setup-caps", "sudo sipnab --setup-caps"] {
         assert_eq!(
             classify(cmd),
             Plan::SideEffects,
@@ -1203,4 +1199,9 @@ fn a_privilege_escalation_or_gui_launch_is_never_run() {
     }
     // An ordinary read beside them is not swept up.
     assert_eq!(classify("sipnab -N -I capture.pcap --report"), Plan::Reads);
+    assert_eq!(
+        classify("sipnab -N -I capture.pcap --wireshark"),
+        Plan::Reads,
+        "--wireshark prints a display filter without opening a GUI"
+    );
 }

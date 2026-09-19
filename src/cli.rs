@@ -823,7 +823,7 @@ pub struct MatchingArgs {
     #[arg(help_heading = "Matching", short = 'w', long = "word")]
     pub word: bool,
 
-    /// Treat multi-line SIP headers as a single line for matching.
+    /// Prevent '.' from matching newlines in payload regexes.
     #[arg(help_heading = "Matching", long)]
     pub single_line: bool,
 
@@ -1304,7 +1304,7 @@ pub struct OutputArgs {
     #[arg(help_heading = "Output", long = "no-cli-print")]
     pub no_cli_print: bool,
 
-    /// Launch Wireshark with a display filter for the current capture.
+    /// Print a Wireshark display filter for the current capture.
     #[arg(help_heading = "Output", long)]
     pub wireshark: bool,
 
@@ -2147,6 +2147,9 @@ pub struct SecurityArgs {
     pub digest_leak: bool,
 
     /// Alert channels (repeatable: "syslog", "json", "exec").
+    /// Also accepts `name:threshold/window[:cooldown]` rules for scanner,
+    /// fraud, digest and reg-flood (or reg_flood); unknown rule names fail
+    /// startup.
     #[arg(help_heading = "Security", long, value_name = "CHANNEL")]
     pub alert: Vec<String>,
 
@@ -2527,8 +2530,7 @@ pub struct McpArgs {
     #[arg(
         help_heading = "MCP (Model Context Protocol)",
         long = "mcp-token",
-        value_name = "TOKEN",
-        env = "SIPNAB_MCP_TOKEN"
+        value_name = "TOKEN"
     )]
     pub mcp_token: Option<String>,
 
@@ -3367,7 +3369,7 @@ pub struct TlsArgs {
         help_heading = "TLS / Decryption",
         long,
         value_name = "MODE",
-        default_value = "decrypted",
+        default_value = "raw",
         value_parser =
             clap::builder::PossibleValuesParser::new(["decrypted", "encrypted+dsb", "raw"])
     )]
@@ -4905,6 +4907,12 @@ impl Cli {
     /// `crate::Error::CliValidation` with a user-facing message for each
     /// rejected combination. Pure — no side effects.
     pub fn validate(&self) -> Result<(), crate::Error> {
+        if self.tls_args.pcap_export_mode == "decrypted" {
+            return Err(crate::Error::CliValidation(
+                "--pcap-export-mode decrypted is not supported: use raw for original packets without keys, or encrypted+dsb to explicitly embed TLS keys in PCAP-NG".to_string(),
+            ));
+        }
+
         // Two keylog sources are ambiguous, and picking one silently is the
         // failure this whole area exists to remove: the run would decrypt
         // nothing the operator expected and report nothing wrong.
@@ -6036,7 +6044,7 @@ mod tests {
         assert_eq!(cli.mcp_args.mcp_rate_limit_per_peer, 100);
         assert_eq!(cli.hep_args.hep_rate_limit, None);
         assert_eq!(cli.hep_rate_limit_resolved(&cfg), 50_000);
-        assert_eq!(cli.tls_args.pcap_export_mode, "decrypted");
+        assert_eq!(cli.tls_args.pcap_export_mode, "raw");
         assert_eq!(cli.limits_args.max_reassembly, None);
         assert_eq!(cli.max_reassembly_limit(&cfg), 10_000);
         assert_eq!(cli.limits_args.cores, 1, "single-threaded by default");

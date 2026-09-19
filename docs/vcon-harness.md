@@ -226,7 +226,7 @@ curl -s -X POST "http://127.0.0.1:8000/vcon?ingress_lists=sipnab" -H "x-conserve
 Read it back with its audio:
 
 ```bash
-python3 clients/vcon_view.py <uuid> --audio call.wav
+python3 ../clients/python/vcon_view.py <uuid> --audio call.wav
 ```
 
 ## User guide
@@ -281,19 +281,19 @@ curl -s -X POST "http://127.0.0.1:8000/vcon?ingress_lists=sipnab" -H "x-conserve
 List the containers the store holds:
 
 ```bash
-python3 clients/vcon_view.py
+python3 ../clients/python/vcon_view.py
 ```
 
 Show one container's parties, dialog and recording:
 
 ```bash
-python3 clients/vcon_view.py <uuid>
+python3 ../clients/python/vcon_view.py <uuid>
 ```
 
 Extract its audio to a WAV:
 
 ```bash
-python3 clients/vcon_view.py <uuid> --audio c.wav
+python3 ../clients/python/vcon_view.py <uuid> --audio c.wav
 ```
 
 ### Answer "did we capture this call properly?"
@@ -534,9 +534,9 @@ Both run on the host, outside the containers. Read-only.
 
 | Client | Door | What it proves |
 |---|---|---|
-| [`clients/leg_correlate.py`](https://github.com/NormB/sipnab/blob/main/harness/clients/leg_correlate.py) | REST 8080 / 8081 | Joins proxy dialogs to relay streams on `associated_dialog`; reports unnamed media rather than dropping it |
-| [`clients/mcp_probe.py`](https://github.com/NormB/sipnab/blob/main/harness/clients/mcp_probe.py) | MCP 8731 / 8732 | Drives the door an agent uses; compares both nodes' answers |
-| [`clients/vcon_view.py`](https://github.com/NormB/sipnab/blob/main/harness/clients/vcon_view.py) | conserver 8000 | Lists stored vCons, renders one, extracts its audio as WAV |
+| [`../clients/python/leg_correlate.py`](https://github.com/NormB/sipnab/blob/main/clients/python/leg_correlate.py) | REST 8080 / 8081 | Joins proxy dialogs to relay streams on `associated_dialog`; reports unnamed media rather than dropping it |
+| [`../clients/python/mcp_probe.py`](https://github.com/NormB/sipnab/blob/main/clients/python/mcp_probe.py) | MCP 8731 / 8732 | Drives the door an agent uses; compares both nodes' answers |
+| [`../clients/python/vcon_view.py`](https://github.com/NormB/sipnab/blob/main/clients/python/vcon_view.py) | conserver 8000 | Lists stored vCons, renders one, extracts its audio as WAV |
 
 The two capture clients refuse to report on one node reached twice — `leg_correlate.py` compares capture instances, `mcp_probe.py` compares `capture_identity.instance`. Point them both at the same URL and they exit rather than present a node agreeing with itself as corroboration. `vcon_view.py` reads the conserver instead, so the check does not apply to it.
 

@@ -572,23 +572,24 @@ Later — minutes or months — decrypt it using the keylog the UA wrote during 
 sipnab -I encrypted.pcap --keylog /tmp/sipua.keylog
 ```
 
-### 7c. Export decrypted pcap for Wireshark
+### 7c. Export encrypted packets for Wireshark
 
-The default mode writes decrypted plaintext payloads to the output pcap:
-
-```bash
-sipnab -I encrypted.pcap --keylog /tmp/sipua.keylog \
-       -O decrypted.pcap --pcap-export-mode decrypted
-```
-
-The `encrypted+dsb` mode instead keeps the encrypted bytes and adds a Decryption Secrets Block, so Wireshark itself can decrypt:
+The default `raw` mode writes original packets without embedding TLS keys:
 
 ```bash
 sipnab -I encrypted.pcap --keylog /tmp/sipua.keylog \
-       -O wireshark-friendly.pcap --pcap-export-mode encrypted+dsb
+       -O original.pcap --pcap-export-mode raw
 ```
 
-Accepted values for `--pcap-export-mode`: `decrypted` (default), `encrypted+dsb`, `raw`.
+To let Wireshark decrypt the original bytes, explicitly embed a Decryption
+Secrets Block in PCAP-NG. This file contains TLS keys:
+
+```bash
+sipnab -I encrypted.pcap --keylog /tmp/sipua.keylog \
+       --pcapng -O wireshark-friendly.pcapng --pcap-export-mode encrypted+dsb
+```
+
+`decrypted` plaintext-frame export is not supported. Requesting it exits 2.
 
 ### 7d. Decrypt SRTP from a DTLS keylog
 
@@ -1147,7 +1148,7 @@ sudo sipnab -N -d eth0 \
             --json
 ```
 
-`--kill-scanner` actively responds to known scanner User-Agents (uses the isolated kill-child process). The response code defaults to **200**. Pass `--kill-response 403` (or any 100–699 code) to change it. `--alert syslog` writes alerts to `LOCAL0` so you can pick them up from `/var/log/syslog` (`--syslog` is the equivalent boolean form).
+`--kill-scanner` actively responds to known scanner User-Agents (uses a scanner-kill worker thread). The response code defaults to **200**. Pass `--kill-response 403` (or any 100–699 code) to change it. `--alert syslog` writes alerts to `LOCAL0` so you can pick them up from `/var/log/syslog` (`--syslog` is the equivalent boolean form).
 
 ### 10b. Wire to fail2ban
 
@@ -1306,7 +1307,7 @@ The hook is rate-limited (`--exec-rate-limit 10` default) and runs in a sandboxe
 
 **Pitfalls:**
 
-- The kill-child process needs `CAP_NET_RAW` to forge SIP responses. Run sipnab as root or with capabilities — privilege drop happens after the kill-child starts.
+- The scanner-kill worker needs `CAP_NET_RAW` to forge SIP responses. Run sipnab as root or with capabilities — privilege drop happens after the worker opens its raw socket.
 - `--kill-ua "<regex>"` adds a custom User-Agent pattern beyond the built-in scanner list.
 
 ---
@@ -1358,7 +1359,7 @@ From an MCP client, multiple alias names go through `find_problems` instead: `to
 **Pitfalls:**
 
 - `sipnab -N --filter '<expr>' --json` emits **per-message** records for every message of every matching dialog. Pipe through `jq -s 'unique_by(.call_id)'` if you want one record per affected call.
-- The `diagnosis` block in CLI `--json` output and in the REST API today only exposes `one_way_audio`, `nat_mismatch`, `no_media`, and free-form `hints`. The five asymmetry booleans are filterable via the DSL but aren't in the JSON shape — if you need them in your output, generate a `--call-report` per dialog (which does include them) or use the MCP `find_problems` tool.
+- The `diagnosis` block in CLI `--json` output and in the REST API today only exposes `one_way_audio`, `nat_mismatch`, `no_media`, and free-form `hints`. The five asymmetry booleans are filterable via the DSL but aren't in the JSON shape — if you need them in your output, use the MCP `find_problems` tool. JSON `--call-report` uses the same dialog projection and does not add them.
 
 ---
 
@@ -2392,11 +2393,11 @@ sipnab -N -I capture.pcap --tshark-filter 'sip.Call-ID == "abc123@host"' --no-cl
 
 - Pair it with recipe 20. A frame pointer names one frame and a digest proves it is the same file; the tshark command puts that frame in front of somebody who wants to see the whole stack under it.
 - The printed command is text. Read it, edit the filter, and run it yourself — sipnab does not run it for you.
-- `sipnab -N -I capture.pcap --wireshark` is the same idea for the GUI: it builds a display filter naming every Call-ID in the capture and hands it to Wireshark.
+- `sipnab -N -I capture.pcap --wireshark` is the same idea for the GUI: it builds a display filter naming every Call-ID in the capture and prints it for you to paste into Wireshark.
 
 **Pitfalls:**
 
-- `--wireshark` needs Wireshark installed and a display. On a capture host it usually has neither, which is why `--tshark-filter` prints a command instead of trying.
+- `--wireshark` only prints text, so it needs neither Wireshark nor a display on the capture host. Open the capture in Wireshark separately and paste the printed filter.
 - A tshark display filter is not sipnab's filter DSL and not a BPF expression. All three languages appear in this cookbook, and none of them accepts the syntax of the other two.
 
 ---
@@ -2631,7 +2632,7 @@ sudo sipnab -N -d eth0 --user sipnab --chroot /var/empty
 
 - **`setcap` does not survive a new binary.** Every upgrade, every rebuild, every package update drops it, and the failure looks like a permissions problem that appeared from nowhere. Re-run `--setup-caps` after an upgrade.
 - sipnab opens anything it must reach by path — a keylog FIFO, an output file, a config — **before** the drop and the chroot. A path under `/run` is unreachable afterwards (recipe 7f).
-- `--no-priv-drop` keeps the privileges. It exists for the cases that genuinely need them, such as the kill-child forging responses, and it is not the way to fix a permissions error.
+- `--no-priv-drop` keeps the privileges. It exists for the cases that genuinely need them, such as the scanner-kill worker forging responses, and it is not the way to fix a permissions error.
 
 ---
 

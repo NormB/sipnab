@@ -878,7 +878,9 @@ fn wiki_intra_docs_links_resolve() {
     // of deferred-and-declined.md](...)`. Measured over docs/: that change
     // added 71 relative .md links and removed 36 (net +35 by a plain regex);
     // this extractor, which counts links between wiki pages only, reads +34.
-    const EXPECTED_WIKI_LINKS: usize = 759;
+    // 759 -> 763: the index link to client-examples.md and that page's three
+    // links to the harness, library and cookbook. Measured by this gate.
+    const EXPECTED_WIKI_LINKS: usize = 763;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe 6d in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file
@@ -2053,7 +2055,8 @@ fn every_docs_page_is_linked_from_the_index() {
     // numeric ceilings needed so a caller meeting one has something to read.
     // Attributed with `git status --short docs/` before the number moved: one
     // added file, no others.
-    const EXPECTED_DOCS_PAGES: usize = 52;
+    // 52 -> 53: docs/client-examples.md, linked from the documentation index.
+    const EXPECTED_DOCS_PAGES: usize = 53;
     // Links are extracted from PROSE, not from the file's bytes. A raw
     // `contains("](backers.md")` counted a link that had been wrapped in an
     // HTML comment: the substring was still there, the page was reachable from

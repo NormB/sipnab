@@ -957,13 +957,13 @@ fn default_srtp_keys_is_none() {
     );
 }
 
-/// `pcap_export_mode` defaults to the string `decrypted`.
+/// `pcap_export_mode` defaults to the string `raw`.
 #[test]
 fn default_pcap_export_mode() {
     let cli = defaults();
     assert_eq!(
-        cli.tls_args.pcap_export_mode, "decrypted",
-        "default pcap_export_mode should be decrypted"
+        cli.tls_args.pcap_export_mode, "raw",
+        "default pcap_export_mode should be raw"
     );
 }
 

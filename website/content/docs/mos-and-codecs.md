@@ -282,7 +282,7 @@ the R-to-MOS conversion itself — is normative.
 ## Using the model in code
 
 `sipnab::rtp::emodel_wb` exposes the wideband model to anyone
-[using sipnab as a library](https://github.com/NormB/sipnab/blob/main/docs/library.md#crate-root-surface):
+[using sipnab as a library](@/docs/library.md#crate-root-surface):
 
 ```rust
 use sipnab::rtp::emodel_wb::{amr_wb_mos, amr_wb_kbps_from_fmtp, ListeningContext};

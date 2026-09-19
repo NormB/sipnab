@@ -5281,8 +5281,9 @@ fn packaging_scripts_reference_existing_paths() {
         //
         // So every top-level directory must appear in one list or the other,
         // and a new one fails until someone decides which.
-        const ROOTS: [&str; 16] = [
+        const ROOTS: [&str; 17] = [
             "bpf/",
+            "clients/",
             ".clusterfuzzlite/",
             "examples/",
             ".vale/",
@@ -5542,7 +5543,9 @@ fn packaging_scripts_reference_existing_paths() {
     // comment names `docs/internals/build-ci-release.md` too, and `docs/` is
     // not a scanned prefix. Attributed by measurement: with HEAD's release.yml
     // swapped back in, the scan reads 99.
-    const EXPECTED_REFERENCES: usize = 100;
+    // 100 -> 103: ci.yml now names clients/python, clients/python/tests and
+    // scripts/tests in its Python-example gate. Measured by this scan.
+    const EXPECTED_REFERENCES: usize = 103;
     assert_eq!(
         checked, EXPECTED_REFERENCES,
         "packaging path scan saw {checked} references, expected \

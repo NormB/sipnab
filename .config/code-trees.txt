@@ -32,6 +32,7 @@ LICENSES
 bench
 benches
 bpf
+clients
 contrib
 crates
 demos

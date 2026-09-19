@@ -5,6 +5,17 @@ from conftest import load
 
 bs = load("backlog-status")
 
+
+@pytest.mark.parametrize("line, state", [
+    ("- [x] ✅ Diagnosis shows no media (❌)", "done"),
+    ("- [ ] Document the 🟡 indicator", "open"),
+    ("- [ ] 🟡 I Implement the indicator", "doing"),
+    ("- [x] ❌ REJECTED — no operator need", "rejected"),
+])
+def test_only_the_leading_status_marker_changes_the_state(line, state):
+    """Quoted UI icons in the item body do not change its work status."""
+    assert bs.classify(line) == state
+
 # The four states docs/design/backlog.md documents: open, in progress (amber
 # circle), complete, and rejected (red cross, box ticked so it leaves the open
 # list). The emoji are the marker -- a renderer draws no third checkbox.

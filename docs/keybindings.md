@@ -590,7 +590,7 @@ The filter popup lets you build filter expressions with text fields and checkbox
 <span class="t-muted"> │</span>                                                <span class="t-muted">│</span>
 <span class="t-muted"> │</span>  <span class="t-header">From:</span>     <span class="t-selected">[alice                       ]</span>      <span class="t-muted">│</span>
 <span class="t-muted"> │</span>  <span class="t-header">To:</span>       [                            ]      <span class="t-muted">│</span>
-<span class="t-muted"> │</span>  <span class="t-header">Filter:</span>   [method == 'INVITE'          ]      <span class="t-muted">│</span>
+<span class="t-muted"> │</span>  <span class="t-header">Payload:</span>  [INVITE                      ]      <span class="t-muted">│</span>
 <span class="t-muted"> │</span>                                                <span class="t-muted">│</span>
 <span class="t-muted"> │</span>  <span class="t-good">[x]</span> Case insensitive                          <span class="t-muted">│</span>
 <span class="t-muted"> │</span>  <span class="t-muted">[ ]</span> Invert match                              <span class="t-muted">│</span>

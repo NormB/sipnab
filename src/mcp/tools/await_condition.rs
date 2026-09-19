@@ -9,16 +9,11 @@
 //!
 //! # Why this is a tool call and not a subscription
 //!
-//! The obvious fix is to invert the flow — `subscribe(filter)`, or
-//! `notifications/resources/updated` — and `docs/design/backlog.md` DECLINES
-//! it. Both put the server into a long-lived relationship with a client: a
-//! registry, per-client filters, delivery state, and a lifecycle for a
-//! subscriber that goes away without saying so.
-//! Section 4 of `positioning.md`,
-//! ["What the position forbids"](https://github.com/NormB/sipnab/blob/main/docs/design/positioning.md#4-what-the-position-forbids),
-//! states the test as a verb — *if a feature requires sipnab to be operated
-//! rather than run, it is out of position* — and a subscription service is the
-//! thing that has to be operated.
+//! Resource subscriptions also ship: `notifications/resources/updated`
+//! reports changes to subscribed resources. This tool instead waits for a
+//! filter predicate and returns its matching evidence or a deadline verdict.
+//! It is useful when a client wants one bounded request rather than a stream
+//! of resource-change notifications.
 //!
 //! The deadline is not a detail, it is the whole reason this version fits.
 //! Everything this call allocates dies when it returns: no registry, no task,

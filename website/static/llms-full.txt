@@ -2,6 +2,226 @@
 
 Every published page, concatenated, in docs-nav order. Generated from the same source the website is built from; see llms.txt for an index.
 
+<!-- source: docs/library.md -->
+
+# Using sipnab as a library
+
+sipnab is primarily a CLI/TUI tool, and its analysis engine is also a Rust
+library on crates.io. The curated public API is re-exported at the crate
+root. Anything under a `#[doc(hidden)]` module (`cli`, `tui`, `privilege`,
+…) is binary-internal.
+
+## Stability
+
+**The library API is not stable.** The supported way to use sipnab is the
+program, `cargo install sipnab`. sipnab releases often, and any release,
+including a patch release, can rename, move or remove a public item.
+
+That matters because of how cargo reads a version. A requirement of `"0.5"`
+means "any 0.5.x release", so `cargo update` can move your build to a release
+that no longer compiles against your code. Pin the exact release you built
+against, with `=`:
+
+```toml
+[dependencies]
+# Replace N with the patch number of the release you tested.
+sipnab = { version = "=0.5.N", default-features = false, features = ["native"] }
+```
+
+Then upgrade on purpose: change the pin, rebuild, and read the
+[changelog](https://github.com/NormB/sipnab/blob/main/CHANGELOG.md) for what
+moved.
+
+## Public parser types
+
+`sipnab::bytes` and `sipnab::chrono` re-export the buffer and timestamp types
+used in public signatures. An application can import
+`sipnab::{bytes::Bytes, chrono::Utc}` without adding matching dependency
+versions. After parsing, `SipMessage::parse_error` reports whether the
+message was only partially parseable, including a truncated declared body.
+
+## Crate-root surface
+
+| Item | What it is |
+|---|---|
+| `PcapReader` | Pure-Rust pcap/pcapng reader (iterator of packets) |
+| `decompress_capture` | Transparent, bounded gunzip for gzip-compressed captures |
+| `sip::parser::parse_sip` / `parse_sip_bytes` | Parse raw bytes → `SipMessage` |
+| `capture::parse::parse_packet` | Decode a captured `Packet` → `ParsedPacket` |
+| `rtp::parser::parse_rtp_header` | Parse an RTP header |
+| `sip::sdp::parse_sdp` | Parse an SDP body |
+| `DialogStore` / `StreamStore` | Capped, indexed dialog / RTP-stream stores (both `Debug`) |
+| `SipMessage`, `SipDialog`, `RtpStream` | Core value types |
+| `SipMethod`, `DialogState` | The method and dialog-state enums those types report in. Both `#[non_exhaustive]` — see [Error handling](#error-handling) |
+| `StreamKey` | What a `StreamStore` indexes by: SSRC plus the source and destination sockets, so one SSRC arriving on two paths stays two streams |
+| `FilterExpr` | Compiled filter-DSL expression |
+| `estimate_mos` | E-model MOS from jitter/loss/codec |
+
+`PcapReader` yields the capture file's own records. `parse_packet` decodes a
+`Packet`, which is the same frame plus the facts only the caller can supply —
+the timestamp at full resolution, the captured-vs-wire lengths, and the link
+type, which a multi-interface pcapng varies **per packet** rather than per
+file. Building that bridge is the one step between a path and a parsed frame:
+
+```rust
+use sipnab::PcapReader;
+use sipnab::capture::Packet;
+use sipnab::capture::parse::parse_packet;
+
+fn payload_bytes(path: &str) -> Result<usize, Box<dyn std::error::Error>> {
+    let data = std::fs::read(path)?;
+    let mut total = 0;
+
+    for pkt in PcapReader::new(&data)? {
+        let timestamp = sipnab::chrono::DateTime::from_timestamp(
+            pkt.timestamp_secs as i64,
+            pkt.timestamp_usecs * 1000,
+        )
+        .unwrap_or_default();
+        let caplen = pkt.data.len();
+        let origlen = pkt.orig_len as usize;
+        let link_type = pkt.link_type as i32;
+
+        let frame =
+            Packet::new(timestamp, pkt.data, caplen, origlen, pkt.interface, link_type);
+
+        // A capture holds frames sipnab does not decode — ARP, a truncated
+        // header, an unsupported link type. That is an `Err` per frame, not a
+        // failed read: skipping it silently is how a partial result comes to
+        // look like a clean one.
+        if let Ok(parsed) = parse_packet(&frame) {
+            total += parsed.payload.len();
+        }
+    }
+
+    Ok(total)
+}
+```
+
+## Error handling
+
+The parsing and capture entry points return **typed, matchable** error
+enums — not `anyhow::Result`. All three are `#[non_exhaustive]`
+`thiserror` enums (`std::error::Error`), so you can propagate them into
+`anyhow`/`Box<dyn Error>` unchanged, or match on their variants.
+
+| Function | Returns |
+|---|---|
+| `parse_sip`, `parse_sip_bytes`, `parse_rtp_header`, `parse_sdp` | `Result<_, ParseError>` |
+| `parse_packet`, `PcapReader::new` | `Result<_, CaptureError>` |
+| `config::Config::load`, address/rule/CIDR parsing | `Result<_, Error>` |
+
+- **`ParseError`** — protocol parsers. Variants include
+  `Empty { what }`, `TooShort { what, need, got }`, `InvalidUtf8 { what }`,
+  `MissingCrlf`, `NotSip { line }`, `InvalidStatusCode { code }`,
+  `BadRtpVersion { version }`, `SdpMissingVersion`,
+  `BadSdpVersion { version }`.
+- **`CaptureError`** — capture-file / packet decode. Variants include
+  `TooShort { what, need, got }`, `UnsupportedLinkType(i32)`,
+  `EncapTooDeep { kind, limit }`, `NotIp { what }`, `NoTransport`,
+  `Icmp`, `NetMonFormat`, `UnknownFormat { magic }`.
+- **`Error`** — config/CLI/validation surface. `ConfigRead` /
+  `ConfigParse` chain the underlying `std::io::Error` / `toml::de::Error`
+  via `#[source]`.
+
+Match on variants rather than message text:
+
+```rust
+use sipnab::ParseError;
+use sipnab::rtp::parser::parse_rtp_header;
+
+match parse_rtp_header(&[0x80, 0x00]) {
+    Err(ParseError::TooShort { need, got, .. }) => {
+        eprintln!("need {need} bytes, got {got}");
+    }
+    Ok(header) => { /* use header */ }
+    Err(e) => eprintln!("parse failed: {e}"),
+}
+```
+
+Because every one of these enums is `#[non_exhaustive]`, a downstream
+`match` **must** include a wildcard arm — sipnab can add a variant in a
+minor release without it being a breaking change. Twenty-four other public
+enums (`TransportProto`, `RtcpPacket`, `FraudType`, `CipherSuite`, …) carry
+`#[non_exhaustive]` for the same reason, as do three public structs
+(`BurstGapAnalysis`, `RemoteReceptionReport`, `RemoteVoipMetrics`), which a
+downstream literal therefore cannot construct.
+
+## Worked examples
+
+Four of the six programs in [`examples/`](../examples/) take the library path:
+they run against a real capture and print a real answer. Each exists because
+it demonstrates something a doctest on this page structurally cannot — state
+accumulated across a whole file. (The other two, `uprobe_discover` and
+`uprobe_sock_offsets`, report on the host rather than a capture.)
+
+| Example | Run it against | What it is for |
+|---|---|---|
+| [`call_summary.rs`](../examples/call_summary.rs) | any capture with SIP | The path above carried to its end: file → frame → message → **call**. Dialog state is what you learn from every packet in order, so one INVITE in a doctest can only ever print `Trying`. |
+| [`rtp_quality.rs`](../examples/rtp_quality.rs) | `rtp-protocol.pcap`, then `invite-opus-bye.pcap` | Jitter, loss and MOS per stream — none of which exist in a packet. The second capture shows `StreamStore` **declining to score** a stream whose clock rate no `a=rtpmap` grounded. |
+| [`filter_dialogs.rs`](../examples/filter_dialogs.rs) | any capture, plus an expression | `FilterExpr::parse` once, then `select_dialogs` — the join across both stores that `--report` and `--json-dialogs` also go through, and the reason those two never disagree about a capture. |
+| [`export_vcon.rs`](../examples/export_vcon.rs) | any capture with SIP | The same four steps plus a fifth: one reconstructed call out as a [vCon](vcon.md) container a conserver accepts. Needs `--features vcon`, which the default build omits. |
+
+```sh
+cargo run --features native --example call_summary -- tests/pcap-samples/register-invite-reinvite-bye.pcap
+```
+
+One difference bites before any other: the **binary** defaults to
+`--portrange 5060-5061`, and the **library** applies no port policy at all.
+Nothing in `parse_packet` or `parse_sip` filters by port. A capture signaling
+on 5080 gives the library twelve SIP messages and the tool "No SIP signaling
+found" until you pass `--portrange 1-65535`. Neither is wrong — they answer
+different questions, and knowing that is cheaper than rediscovering it against
+a capture you care about.
+
+## Features
+
+The crate is heavily feature-gated (see [`Cargo.toml`](https://github.com/NormB/sipnab/blob/main/Cargo.toml)). For pure parsing
+you only need `native`. `tls`, `hep`, `api` and `mcp` pull in their respective
+subsystems. See the feature table in
+[install.md](install.md#feature-flags).
+
+---
+
+<!-- source: docs/client-examples.md -->
+
+# Runnable client examples
+
+These Python clients demonstrate multi-step operator tasks. Run commands from
+the repository root with Python 3. The programs use its standard library.
+Their parsing and analysis tests run in CI without a lab. A complete live run
+requires the services described in the [capture harness](vcon-harness.md).
+
+| Program | What it does | Live prerequisites |
+|---|---|---|
+| [leg_correlate.py](../clients/python/leg_correlate.py) | Joins proxy dialogs and relay streams; refuses to treat one instance as two witnesses | Two sipnab REST endpoints |
+| [mcp_probe.py](../clients/python/mcp_probe.py) | Queries both capture nodes over MCP and compares their identities | Two HTTP MCP endpoints |
+| [vcon_view.py](../clients/python/vcon_view.py) | Lists stored vCons, renders one and extracts WAV audio | The harness conserver backend |
+
+Inspect each program's options before a live run:
+
+- `python3 clients/python/leg_correlate.py --help`
+- `python3 clients/python/mcp_probe.py --help`
+- `python3 clients/python/vcon_view.py --help`
+
+Run the local regression suite:
+
+```bash
+# Run all of these, in order.
+python3 -m venv .venv-client-tests
+. .venv-client-tests/bin/activate
+python3 -m pip install pytest==8.4.2
+python3 -m compileall -q clients/python
+python3 -m pytest clients/python/tests -q
+```
+
+For Rust, see the [library API](library.md) and its executable rustdoc examples.
+For individual CLI commands, use the [cookbook](examples.md). Go, JavaScript,
+C and C++ lifecycle examples remain gaps. Snippets in reference pages do not
+establish runnable client coverage for those languages.
+
+---
+
 <!-- source: docs/examples.md -->
 
 # Examples & Recipes
@@ -570,23 +790,24 @@ Later — minutes or months — decrypt it using the keylog the UA wrote during 
 sipnab -I encrypted.pcap --keylog /tmp/sipua.keylog
 ```
 
-### 7c. Export decrypted pcap for Wireshark
+### 7c. Export encrypted packets for Wireshark
 
-The default mode writes decrypted plaintext payloads to the output pcap:
-
-```bash
-sipnab -I encrypted.pcap --keylog /tmp/sipua.keylog \
-       -O decrypted.pcap --pcap-export-mode decrypted
-```
-
-The `encrypted+dsb` mode instead keeps the encrypted bytes and adds a Decryption Secrets Block, so Wireshark itself can decrypt:
+The default `raw` mode writes original packets without embedding TLS keys:
 
 ```bash
 sipnab -I encrypted.pcap --keylog /tmp/sipua.keylog \
-       -O wireshark-friendly.pcap --pcap-export-mode encrypted+dsb
+       -O original.pcap --pcap-export-mode raw
 ```
 
-Accepted values for `--pcap-export-mode`: `decrypted` (default), `encrypted+dsb`, `raw`.
+To let Wireshark decrypt the original bytes, explicitly embed a Decryption
+Secrets Block in PCAP-NG. This file contains TLS keys:
+
+```bash
+sipnab -I encrypted.pcap --keylog /tmp/sipua.keylog \
+       --pcapng -O wireshark-friendly.pcapng --pcap-export-mode encrypted+dsb
+```
+
+`decrypted` plaintext-frame export is not supported. Requesting it exits 2.
 
 ### 7d. Decrypt SRTP from a DTLS keylog
 
@@ -1145,7 +1366,7 @@ sudo sipnab -N -d eth0 \
             --json
 ```
 
-`--kill-scanner` actively responds to known scanner User-Agents (uses the isolated kill-child process). The response code defaults to **200**. Pass `--kill-response 403` (or any 100–699 code) to change it. `--alert syslog` writes alerts to `LOCAL0` so you can pick them up from `/var/log/syslog` (`--syslog` is the equivalent boolean form).
+`--kill-scanner` actively responds to known scanner User-Agents (uses a scanner-kill worker thread). The response code defaults to **200**. Pass `--kill-response 403` (or any 100–699 code) to change it. `--alert syslog` writes alerts to `LOCAL0` so you can pick them up from `/var/log/syslog` (`--syslog` is the equivalent boolean form).
 
 ### 10b. Wire to fail2ban
 
@@ -1304,7 +1525,7 @@ The hook is rate-limited (`--exec-rate-limit 10` default) and runs in a sandboxe
 
 **Pitfalls:**
 
-- The kill-child process needs `CAP_NET_RAW` to forge SIP responses. Run sipnab as root or with capabilities — privilege drop happens after the kill-child starts.
+- The scanner-kill worker needs `CAP_NET_RAW` to forge SIP responses. Run sipnab as root or with capabilities — privilege drop happens after the worker opens its raw socket.
 - `--kill-ua "<regex>"` adds a custom User-Agent pattern beyond the built-in scanner list.
 
 ---
@@ -1356,7 +1577,7 @@ From an MCP client, multiple alias names go through `find_problems` instead: `to
 **Pitfalls:**
 
 - `sipnab -N --filter '<expr>' --json` emits **per-message** records for every message of every matching dialog. Pipe through `jq -s 'unique_by(.call_id)'` if you want one record per affected call.
-- The `diagnosis` block in CLI `--json` output and in the REST API today only exposes `one_way_audio`, `nat_mismatch`, `no_media`, and free-form `hints`. The five asymmetry booleans are filterable via the DSL but aren't in the JSON shape — if you need them in your output, generate a `--call-report` per dialog (which does include them) or use the MCP `find_problems` tool.
+- The `diagnosis` block in CLI `--json` output and in the REST API today only exposes `one_way_audio`, `nat_mismatch`, `no_media`, and free-form `hints`. The five asymmetry booleans are filterable via the DSL but aren't in the JSON shape — if you need them in your output, use the MCP `find_problems` tool. JSON `--call-report` uses the same dialog projection and does not add them.
 
 ---
 
@@ -2390,11 +2611,11 @@ sipnab -N -I capture.pcap --tshark-filter 'sip.Call-ID == "abc123@host"' --no-cl
 
 - Pair it with recipe 20. A frame pointer names one frame and a digest proves it is the same file; the tshark command puts that frame in front of somebody who wants to see the whole stack under it.
 - The printed command is text. Read it, edit the filter, and run it yourself — sipnab does not run it for you.
-- `sipnab -N -I capture.pcap --wireshark` is the same idea for the GUI: it builds a display filter naming every Call-ID in the capture and hands it to Wireshark.
+- `sipnab -N -I capture.pcap --wireshark` is the same idea for the GUI: it builds a display filter naming every Call-ID in the capture and prints it for you to paste into Wireshark.
 
 **Pitfalls:**
 
-- `--wireshark` needs Wireshark installed and a display. On a capture host it usually has neither, which is why `--tshark-filter` prints a command instead of trying.
+- `--wireshark` only prints text, so it needs neither Wireshark nor a display on the capture host. Open the capture in Wireshark separately and paste the printed filter.
 - A tshark display filter is not sipnab's filter DSL and not a BPF expression. All three languages appear in this cookbook, and none of them accepts the syntax of the other two.
 
 ---
@@ -2629,7 +2850,7 @@ sudo sipnab -N -d eth0 --user sipnab --chroot /var/empty
 
 - **`setcap` does not survive a new binary.** Every upgrade, every rebuild, every package update drops it, and the failure looks like a permissions problem that appeared from nowhere. Re-run `--setup-caps` after an upgrade.
 - sipnab opens anything it must reach by path — a keylog FIFO, an output file, a config — **before** the drop and the chroot. A path under `/run` is unreachable afterwards (recipe 7f).
-- `--no-priv-drop` keeps the privileges. It exists for the cases that genuinely need them, such as the kill-child forging responses, and it is not the way to fix a permissions error.
+- `--no-priv-drop` keeps the privileges. It exists for the cases that genuinely need them, such as the scanner-kill worker forging responses, and it is not the way to fix a permissions error.
 
 ---
 
@@ -9284,13 +9505,13 @@ line-by-line comparison. `Esc` returns to the ladder.
 ## 6. Search and filter
 
 - `/` searches the current view (Call List, Raw Message, or RTP Streams).
-- `F7` opens the **Filter dialog**, which accepts the full [Filter DSL](filter-dsl.md) plus quick From/To fields and checkboxes. Try `state == 'Failed'` to keep only calls that never established, or `rtp.mos < 3.0` for poor audio.
+- `F7` opens the **Filter dialog**, which offers From/To, source/destination, payload, time bounds and method fields. These fields build a filter; there is no free-form expression field. Pass the full [Filter DSL](filter-dsl.md) through CLI `--filter`, for example `rtp.mos < 3.0`.
 - `F9` clears the active filter; `i` prunes the dialogs that do *not* match, keeping only the matches, and `I` prunes the ones that do.
 
 ## 7. Inspect RTP quality
 
 Press `Tab` to switch from the Call List to the **RTP Streams** view: every
-media stream with codec, packet count, jitter, loss, and MOS. Streams flagged
+media stream with codec, packet count, jitter and loss. Streams flagged
 `orphan` have no matching SIP dialog (often a NAT/ALG symptom).
 
 Press `Enter` on a stream -- or on an `██ RTP ██` bar back in the Call Flow --
@@ -9931,7 +10152,7 @@ The filter popup lets you build filter expressions with text fields and checkbox
 <span class="t-muted"> │</span>                                                <span class="t-muted">│</span>
 <span class="t-muted"> │</span>  <span class="t-header">From:</span>     <span class="t-selected">[alice                       ]</span>      <span class="t-muted">│</span>
 <span class="t-muted"> │</span>  <span class="t-header">To:</span>       [                            ]      <span class="t-muted">│</span>
-<span class="t-muted"> │</span>  <span class="t-header">Filter:</span>   [method == 'INVITE'          ]      <span class="t-muted">│</span>
+<span class="t-muted"> │</span>  <span class="t-header">Payload:</span>  [INVITE                      ]      <span class="t-muted">│</span>
 <span class="t-muted"> │</span>                                                <span class="t-muted">│</span>
 <span class="t-muted"> │</span>  <span class="t-good">[x]</span> Case insensitive                          <span class="t-muted">│</span>
 <span class="t-muted"> │</span>  <span class="t-muted">[ ]</span> Invert match                              <span class="t-muted">│</span>
@@ -10412,10 +10633,10 @@ sudo sipnab -N -d eth0 --kill-scanner --fraud-detect --reg-flood \
 
 ### Export for Wireshark analysis
 
-Hand the capture to Wireshark with a display filter already applied.
+Print a display filter to paste into Wireshark after opening the capture.
 
 ```bash
-sipnab -I capture.pcap --wireshark
+sipnab -N -I capture.pcap --wireshark
 ```
 
 Or print a tshark-compatible filter string, when the next step is a shell
@@ -10772,7 +10993,7 @@ stop log lines corrupting the alternate screen, so redirect stderr if you do.
 | `-i`, `--ignore-case` | -- | off | Case-insensitive matching for header filters and patterns |
 | `-v`, `--invert` | -- | off | Invert the match: show messages that do NOT match |
 | `-w`, `--word` | -- | off | Match whole words only |
-| `--single-line` | -- | off | Treat multi-line SIP headers as a single line for matching |
+| `--single-line` | -- | off | Prevent `.` from matching newlines in payload regexes; does not unfold headers |
 | `--from` | `<PATTERN>` | -- | Filter by SIP From header (regex pattern) |
 | `--to` | `<PATTERN>` | -- | Filter by SIP To header (regex pattern) |
 | `--contact` | `<PATTERN>` | -- | Filter by SIP Contact header (regex pattern) |
@@ -10782,10 +11003,10 @@ stop log lines corrupting the alternate screen, so redirect stderr if you do.
 **Examples**
 
 - `sipnab -N -I capture.pcap --match "alice@example.com" --ignore-case` — show every dialog that mentions alice@example.com, case-insensitively (dialog-following payload match)
-- `sipnab -N -I capture.pcap --match "486 Busy Here" --word --single-line` — whole-word match for 486 rejections, folding multi-line headers into one line before matching
+- `sipnab -N -I capture.pcap --match "486 Busy Here" --word --single-line` — whole-word match for 486 rejections, preventing `.` from spanning header lines
 - `sudo sipnab -d eth0 --match "REGISTER" --invert` — live view of everything except REGISTER traffic (inverted match)
 - `sudo sipnab -d eth0 --ua "friendly-scanner" --contact "203\.0\.113\." --ignore-case` — flag scanner traffic live: a known scanner User-Agent (any case) with a Contact pointing into 203.0.113.0/24
-- `sipnab -N -I capture.pcap --ua "sipcli" --contact "192\.0\.2\." --single-line` — filter a pcap by User-Agent and a Contact in 192.0.2.0/24, matching even when headers span folded lines
+- `sipnab -N -I capture.pcap --ua "sipcli" --contact "192\.0\.2\." --single-line` — filter a pcap by User-Agent and a Contact in 192.0.2.0/24, restricting payload regex dots to a single line
 - `sipnab -N -I capture.pcap --match "OPTIONS" --word --invert` — suppress keep-alive noise: show messages that do not contain the whole word OPTIONS
 
 
@@ -10846,6 +11067,10 @@ Shortcut flags that expand to predefined filter DSL expressions. See [filter-dsl
 | `--one-way` | -- | off | Show calls with potential one-way audio issues |
 | `--nat-issues` | -- | off | Show calls whose RTP arrived from an address no SDP advertised (NAT-rewritten media source) |
 
+Multiple diagnostic flags combine with OR. Adding `--filter` ANDs its
+expression with that selection: `--problems --filter "from.user == '1001'"`
+selects only problem calls from user 1001.
+
 **Examples**
 
 - `sipnab -N -I capture.pcap --short-calls --one-way` — flag completed calls under 3 seconds and calls with suspected one-way audio in a capture
@@ -10891,7 +11116,7 @@ Shortcut flags that expand to predefined filter DSL expressions. See [filter-dsl
 | `--payload-limit` | `<BYTES>` | -- | Maximum payload bytes to display |
 | `-T`, `--text-dump` | -- | off | Dump raw SIP message text (like the CLI matcher `-T`) |
 | `--no-cli-print` | -- | off | Suppress per-message CLI output (useful with `--report` / `--call-report` so only the post-capture summary reaches stdout) |
-| `--wireshark` | -- | off | Launch Wireshark with a display filter for the current capture |
+| `--wireshark` | -- | off | Print a display filter for the current capture to paste into Wireshark; use with `-N` |
 | `--tshark-filter` | `<EXPR>` | -- | Generate a tshark-compatible display filter string |
 | `--fail2ban` | -- | off | Switch the per-message stream to fail2ban-readable log lines. Requires `-N`. It selects a **format**, not a detection: only two events ever reach it, and each needs its own detector armed beside it — `--kill-scanner` (or `--kill-ua`) produces `scanner_detected`, `--reg-flood` produces `reg_flood`. On its own it emits nothing, and warns on stderr about the coming silence, because an empty jail log reads as "nothing attacked me". Detections carried by HEP input (`--hep-listen`, `--hep-parse`) never reach it without `--hep-allow-kill`: the inner addresses are the sender's claim, a jail line would ban whatever address the sender chose, and the run says so once at startup |
 | `--lint` | -- | off | Run the RFC conformance linter over every dialog and print each finding with its rule identifier and the RFC section it reads from. The linter compares what the capture holds against what the cited section calls for, so a finding names a section rather than an opinion. Informational on its own: it changes what gets printed and never the exit code. Pair it with `--lint-fail-on` to make a pipeline stop. The rule catalog is in [sip-lint-rules.md](sip-lint-rules.md), and over MCP as `explain_rule` |
@@ -10930,7 +11155,7 @@ Shortcut flags that expand to predefined filter DSL expressions. See [filter-dsl
 - `sudo sipnab -d eth0 -N --match REGISTER --after 2 --text-dump --line-buffer --color always` — follow live REGISTER traffic in real time, printing raw text plus 2 messages of context after each match
 - `sipnab -N -I capture.pcap --show-empty --delta-time --hexdump --group-by call-id` — review a capture with per-message delta times, empty-bodied messages included, and hex dumps grouped per call
 - `sudo sipnab -d eth0 -N --match OPTIONS --after 5 --show-empty --proto-number --payload-limit 256` — inspect OPTIONS keepalives with 5 messages of trailing context, empty bodies shown, and display capped at 256 payload bytes
-- `sudo sipnab -d eth0 --from-to-mode host-port --wireshark` — watch the live TUI with host:port From/To columns and hand the capture to Wireshark with a matching display filter
+- `sudo sipnab -N -d eth0 --from-to-mode host-port --wireshark` — capture live with host:port From/To columns and print a Wireshark display filter when capture ends
 - `sipnab -I capture.pcap --from-to-mode user-host-port` — browse an existing capture in the TUI with full user@host:port From/To columns
 - `sipnab -N -I busy-day.pcap --group-by call-id --max-groups 250000 --no-cli-print` — group a capture holding more calls than the shipped 100000-key cap, instead of taking the first hundred thousand and a warning naming how many keys sipnab turned away
 - `sipnab -N -I busy-day.pcap --group-by from --max-grouped-messages 2000000 --json` — regroup a large capture by caller with room for every message, keeping the output one valid JSON object per line
@@ -11142,18 +11367,20 @@ report a healthy network in the middle of an outage.
 | `--tfps-ctl` | `<PATH>` | -- | Where the toll-fraud prevention system's `tfps_ctl` program is, for the `tfps_*` MCP tools and the `/v1/tfps/` REST routes. TFPS is optional peer software that condemns sources and enforces the decision in the firewall; sipnab asks it and never bans anything itself. Absent: sipnab looks for `tfps_ctl` on `PATH` only the moment a TFPS tool runs, and a machine without one answers `installed: false` rather than failing. Config: `[tfps] ctl`; the database goes in `[tfps] db` |
 | `--recommend-block` | `<DIALECT>` | -- | Print a firewall rule for every source the detectors accused: `fail2ban`, `nftables`, `iptables` or `all`. **sipnab recommends and does not apply** — the rule is text on stdout, and nothing here reaches a firewall or holds a credential. Each block carries its evidence (how many findings named the address, which rules they tripped, and when) and its COUNTER-evidence beside it: a source that also completed a registration or a call is one a block would disconnect, so the address-specific dialects comment their commands out for it and the fail2ban dialect puts it in `ignoreip`. Needs a detector armed beside it; with none, nothing is ever accused and the empty output says which silence that is rather than reading as an all-clear. Requires `-N` |
 | `--findings-history` | `<N>` | `1000` | Security findings kept in memory for later retrieval. `0` keeps none. Config: `[security] findings_history` |
-| `--alert` | `<CHANNEL>` | -- | Alert channels (repeatable): `syslog`, `json`, `exec` |
+| `--alert` | `<CHANNEL>` | -- | Repeatable alert channel (`syslog`, `json`, `exec`) or rule (`<name>:<threshold>/<window>[:<cooldown>]`) |
 | `--alert-exec` | `<CMD>` | -- | Execute this command when an alert fires |
 | `--alert-json` | -- | off | Emit each security alert as a structured JSON line on stderr (in addition to the human `[ALERT]` line) |
 | `--stir-shaken` | -- | off | Report STIR/SHAKEN Identity claims — decodes the PASSporT, does NOT verify the signature |
 | `--run-provenance-file` | `<FILE>` | -- | Record the command that started this run, as one JSON line appended to FILE (`seq`, `ts`, `record`, `argv`, `cwd`, `uid`, `user`, `pid`, `started`, `version`, `features`, `capture`). A report, a vCon container or an exported pcap says what sipnab concluded and nothing in it says which invocation produced it — which capture, which filter, which port range, which retention caps. `--portrange` alone changes what a run can see, so a report produced under a narrow range is afterwards indistinguishable from one that examined everything. `capture` is the same instance token the MCP and REST surfaces stamp on their answers, which is what joins a record to an artefact. sipnab writes it once, at startup, before it loads the config and before it opens any capture device. Opened `O_APPEND` and never truncated, so successive runs accumulate; created mode `0600` when absent, because argv holds capture paths and a path holds a customer name. **A record sipnab cannot write stops the run**, because a best-effort line would leave its own absence ambiguous between "not enabled" and "the disk was full". Leave it off and nothing changes |
 | `--tui-audit-file` | `<FILE>` | -- | Record what the operator did in the TUI, one JSON line per action appended to FILE (`seq`, `ts`, `record`, `action`, `target`, `format`, `caller`, `outcome`, `error`). Actions, not keystrokes: the capture opened, the capture swapped, a filter applied or cleared, an export and its destination — including one sipnab refused. A keystroke log of the TUI bindings would be mostly navigation, unreadable at review time, and a privacy hazard of its own, so **the search field is never recorded**, neither the query nor the fact that the operator typed one. Same writer and same file shape as `--mcp-audit-file`: append-only, never truncated, one sequence number per record so a gap is a lost record, created mode `0600`. A path sipnab cannot open stops the run before sipnab takes the terminal, and sipnab refuses `-N` rather than accepting it with nothing to record. **A write that fails mid-session does NOT stop the TUI** — an operator holding a live capture that exists nowhere else must not lose it because a log partition filled; the lost record leaves a permanent hole in the numbering, the status line says the trail is incomplete, and the closing `session_end` record and the exit message on standard error name the count. Leave it off and nothing changes. Feature: `tui` |
 
-> **`--alert` takes a channel name, not a rule.** `syslog`, `json` or `exec`.
+> **`--alert` accepts a channel or a threshold rule.** Channels are `syslog`, `json` or `exec`.
 > `--syslog` and `--alert-json` are the equivalent boolean forms; naming the
 > channel here does the same thing. A value containing `:` is instead parsed as
 > an alert rule (`<name>:<threshold>/<window>[:<cooldown>]`, window needs an
-> `s`/`m`/`h` suffix). An unrecognized bare word draws a warning naming the
+> `s`/`m`/`h` suffix). Rule names are `scanner`, `fraud`, `digest` and
+> `reg-flood` (also `reg_flood`); an unknown rule name exits 2 at startup.
+> A rule counts detector findings, not raw packets. An unrecognized bare word draws a warning naming the
 > valid channels. It used to fail silently, so a documented `--alert syslog`
 > enabled nothing at all.
 
@@ -11380,7 +11607,7 @@ it. See [MCP Server](mcp.md) for the full guide. [Network Listeners](#network-li
 | `--mcp` | -- | off | Run sipnab as an MCP server. Requires `-N`/`--no-tui` (stdout carries the JSON-RPC wire) — sipnab exits with an error without it — and rejects stdout-writing flags (`--json`, `--report`, …). Feature: `mcp` (or `mcp-http` for HTTP transport). See [`mcp.md`](./mcp.md). |
 | `--mcp-transport` | `stdio\|http` | `stdio` | MCP transport: `stdio` (default) or `http` (requires the `mcp-http` feature). Feature: `mcp` |
 | `--mcp-bind` | `<ADDR>` | -- (defaults to `127.0.0.1:8731` at runtime when `--mcp-transport http` appears without an explicit bind) | HTTP MCP bind address. Non-loopback requires `--mcp-token`. Feature: `mcp-http` |
-| `--mcp-token` | `<TOKEN>` | -- | Bearer token for HTTP MCP; required for non-loopback binds. Also reads `$SIPNAB_MCP_TOKEN`. Feature: `mcp-http` |
+| `--mcp-token` | `<TOKEN>` | -- | Bearer token for HTTP MCP; required for non-loopback binds. Precedence: explicit flag, token file, then `$SIPNAB_MCP_TOKEN`. Feature: `mcp-http` |
 | `--mcp-token-file` | `<FILE>` | -- | Read bearer token from file (preferred over env in systemd units). Feature: `mcp-http` |
 | `--mcp-signing-key` | `<KEY>` | -- | HMAC signing key for MCP bearer tokens, taken as raw bytes (any string — not hex-decoded). Repeatable: the first mints, verification accepts every one. Also reads `$SIPNAB_MCP_SIGNING_KEY`. See [`auth.md`](./auth.md). Feature: `mcp-http` |
 | `--mcp-signing-key-file` | `<FILE>` | -- | Read an MCP signing key from a file (contents trimmed); it becomes the minting key. Feature: `mcp-http` |
@@ -11418,7 +11645,7 @@ it. See [MCP Server](mcp.md) for the full guide. [Network Listeners](#network-li
 | `--tls-lockon-window` | `<RECORDS>` | 1048576 | How far into an established TLS connection a capture may start and still be readable. No TLS version puts the record number on the wire, so a capture that joined a running connection searches for it, widening only as records fail to open — raising this costs nothing on a connection captured from its handshake, because the search stops at the first candidate that authenticates. Raise it for a carrier trunk held open for days; lower it where key material for unrelated connections is common. Feature: `tls` |
 | `--dtls-keylog` | `<FILE>` | -- | DTLS key log (NSS `SSLKEYLOGFILE`); extracts SRTP keys from DTLS-SRTP handshakes ([RFC 5764](https://www.rfc-editor.org/rfc/rfc5764) exporter, AES-CM profiles). sipnab does not treat a record declaring more than 2^14 + 2048 bytes as DTLS (`MAX_RECORD_LEN`, the ciphertext limit TLS sets and DTLS inherits). Feature: `tls` |
 | `--srtp-keys` | `<FILE>` | -- | SRTP master-keys file for media decryption (AES-CM, [RFC 3711](https://www.rfc-editor.org/rfc/rfc3711)); also honors SDES `a=crypto` keys from SDP. Feature: `tls` |
-| `--pcap-export-mode` | `<MODE>` | `decrypted` | Pcap export mode for encrypted traffic: `decrypted` (plaintext payloads, no DSB), `raw` (original encrypted bytes, no DSB), `encrypted+dsb` (original encrypted bytes + Decryption Secrets Block so Wireshark can decrypt) |
+| `--pcap-export-mode` | `<MODE>` | `raw` | `raw` writes original packets without TLS keys. `encrypted+dsb` explicitly embeds TLS keys in PCAP-NG for Wireshark. `decrypted` is not supported and exits 2 before capture starts |
 | `--allow-coredump` | -- | off | Allow core dumps (do not call `prctl` to disable them) |
 | `--uprobe-tls` | -- | off | Read SIP plaintext straight out of the TLS libraries this host is running, using kernel uprobes. **No certificate, no private key, no keylog and no restart** of the process it observes. Probes **every** mapped TLS library rather than one, because an ordinary host runs OpenSSL and wolfSSL together. Needs root (or `CAP_SYS_ADMIN` + `CAP_PERFMON`) and a mounted `tracefs`. Linux only. **Read [the walkthrough](uprobe-walkthrough.md) before using this**: it reads the plaintext of every SIP session on the host, and states what that means. Feature: `native` |
 | `--uprobe-library` | `<PATH>` | discovered | Probe this library instead of discovering them; repeatable. Bypasses discovery, so it also reaches a library nothing has mapped **yet**. For a process inside a container, give the path as sipnab sees it: `/proc/<pid>/root/usr/lib/libssl.so.3`. Feature: `native` |
@@ -11929,7 +12156,9 @@ The dedicated flag, the `--filter <alias>` spelling and the MCP `kinds` entry
 are three names for one expression: `sipnab --short-calls`,
 `sipnab --filter short-calls` and
 `sipnab --filter "duration < 3.0 AND state == 'Completed'"` all select the same
-dialogs. Combining several flags ORs their expansions together.
+dialogs. Combining several flags ORs their expansions together. If `--filter`
+is also present, its expression is ANDed with that result. For example,
+`--problems --filter "from.user == '1001'"` keeps problem calls from user 1001.
 
 `--nat-issues` / `--filter nat-issues` selects the calls whose RTP arrived from
 an address the SDP never advertised. The boolean-field note above says what that
@@ -13824,7 +14053,9 @@ conclude from one, which matters more here than the field list.
 
 `-O <file>` writes captured packets, and `--pcapng` selects PCAP-NG. With TLS
 decryption, `--pcap-export-mode` controls whether decryption secrets
-(DSBs) travel with the file for Wireshark. Rotation: `--split filesize:N` /
+(DSBs) travel with the file for Wireshark. The default `raw` mode embeds no
+keys. `encrypted+dsb` opts into key-bearing PCAP-NG. Plaintext `decrypted`
+export is not supported. Rotation: `--split filesize:N` /
 `--split duration:N`, or SIGUSR1 on demand.
 
 pcapng timestamps are nanosecond-resolution, declared via `if_tsresol=9`
@@ -16566,9 +16797,10 @@ sipnab --mcp -N --mcp-transport http --mcp-bind 0.0.0.0:8731 \
 
 ### Start it at boot with systemd
 
-`/etc/systemd/system/sipnab-mcp.service` (a packaged variant ships in
-[`packaging/sipnab.service`](https://github.com/NormB/sipnab/blob/main/packaging/sipnab.service)),
-here fed by a HEP listener — common on a capture host:
+Create `/etc/systemd/system/sipnab-mcp.service` using this example, fed by a
+HEP listener. The packaged
+[`packaging/sipnab.service`](https://github.com/NormB/sipnab/blob/main/packaging/sipnab.service)
+starts REST and metrics, not MCP:
 
 ```ini
 [Unit]
@@ -25669,7 +25901,7 @@ curl -s -X POST "http://127.0.0.1:8000/vcon?ingress_lists=sipnab" -H "x-conserve
 Read it back with its audio:
 
 ```bash
-python3 clients/vcon_view.py <uuid> --audio call.wav
+python3 ../clients/python/vcon_view.py <uuid> --audio call.wav
 ```
 
 ## User guide
@@ -25724,19 +25956,19 @@ curl -s -X POST "http://127.0.0.1:8000/vcon?ingress_lists=sipnab" -H "x-conserve
 List the containers the store holds:
 
 ```bash
-python3 clients/vcon_view.py
+python3 ../clients/python/vcon_view.py
 ```
 
 Show one container's parties, dialog and recording:
 
 ```bash
-python3 clients/vcon_view.py <uuid>
+python3 ../clients/python/vcon_view.py <uuid>
 ```
 
 Extract its audio to a WAV:
 
 ```bash
-python3 clients/vcon_view.py <uuid> --audio c.wav
+python3 ../clients/python/vcon_view.py <uuid> --audio c.wav
 ```
 
 ### Answer "did we capture this call properly?"
@@ -25977,9 +26209,9 @@ Both run on the host, outside the containers. Read-only.
 
 | Client | Door | What it proves |
 |---|---|---|
-| [`clients/leg_correlate.py`](https://github.com/NormB/sipnab/blob/main/harness/clients/leg_correlate.py) | REST 8080 / 8081 | Joins proxy dialogs to relay streams on `associated_dialog`; reports unnamed media rather than dropping it |
-| [`clients/mcp_probe.py`](https://github.com/NormB/sipnab/blob/main/harness/clients/mcp_probe.py) | MCP 8731 / 8732 | Drives the door an agent uses; compares both nodes' answers |
-| [`clients/vcon_view.py`](https://github.com/NormB/sipnab/blob/main/harness/clients/vcon_view.py) | conserver 8000 | Lists stored vCons, renders one, extracts its audio as WAV |
+| [`../clients/python/leg_correlate.py`](https://github.com/NormB/sipnab/blob/main/clients/python/leg_correlate.py) | REST 8080 / 8081 | Joins proxy dialogs to relay streams on `associated_dialog`; reports unnamed media rather than dropping it |
+| [`../clients/python/mcp_probe.py`](https://github.com/NormB/sipnab/blob/main/clients/python/mcp_probe.py) | MCP 8731 / 8732 | Drives the door an agent uses; compares both nodes' answers |
+| [`../clients/python/vcon_view.py`](https://github.com/NormB/sipnab/blob/main/clients/python/vcon_view.py) | conserver 8000 | Lists stored vCons, renders one, extracts its audio as WAV |
 
 The two capture clients refuse to report on one node reached twice — `leg_correlate.py` compares capture instances, `mcp_probe.py` compares `capture_identity.instance`. Point them both at the same URL and they exit rather than present a node agreeing with itself as corroboration. `vcon_view.py` reads the conserver instead, so the check does not apply to it.
 
@@ -30223,7 +30455,9 @@ describes are the ones whose contents are worth spelling out.
 - **`check`** (per-OS matrix) — `cargo build --all-features`, `cargo test
   --all-features`, `cargo clippy --workspace --all-features --all-targets -D warnings`,
   `cargo fmt --check`, `cargo doc --no-deps --all-features --workspace`, plus
-  the `--ignored` PTY TUI end-to-end tests.
+  the `--ignored` PTY TUI end-to-end tests. On Linux it also compiles the
+  Python clients under `clients/python/` and runs `pytest` over their tests
+  and `scripts/tests`.
 - **`features`** — `cargo check --no-default-features --features X --tests`
   across thirteen feature sets: each of `native`, `tls`, `api`, `mcp`, `hep`,
   `metrics`, then `tls,api`, `native,tui,audio`, `native,tui,tls,hep,api`,

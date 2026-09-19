@@ -11,8 +11,8 @@ import urllib.error
 
 import pytest
 
-HARNESS = pathlib.Path(__file__).resolve().parent.parent.parent
-CLIENTS = HARNESS / "clients"
+CLIENTS = pathlib.Path(__file__).resolve().parent.parent
+HARNESS = CLIENTS.parent.parent / "harness"
 
 
 def _load(name: str):

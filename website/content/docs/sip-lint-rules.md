@@ -566,4 +566,4 @@ the dialog. RTCP arrives separately through `with_rtcp`, because the stream
 store folds reception reports into the stream they describe and keeps no record
 of which port they landed on — which is the question [RFC 5761 section 5.1.1](https://www.rfc-editor.org/rfc/rfc5761#section-5.1.1) asks.
 
-See [Library API](https://github.com/NormB/sipnab/blob/main/docs/library.md) for the wider crate surface.
+See [Library API](@/docs/library.md) for the wider crate surface.

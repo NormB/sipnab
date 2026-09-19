@@ -45,7 +45,10 @@ const KNOWN_UNTESTED: &[&str] = &[
     // `doc_commands_run_test` writes an empty file for the flag and RUNS the
     // documented command, which references the `--srtp-keys` token. It does
     // not decrypt anything -- that still needs an SRTP pcap and key material.
-    "pcap-export-mode", // encrypted-traffic export mode — pairs with the above
+    // `pcap-export-mode` left this list on 2026-09-19:
+    // review_regressions_test runs `--pcap-export-mode decrypted` and asserts
+    // the exit-2 refusal, and parses PCAP-NG files PcapWriter wrote for DSB
+    // blocks under the flag's default, `raw` and `encrypted+dsb`.
     // ── Root / system services (cannot run in the sandbox) ──────────────────
     // `chroot` was here for needing root to succeed. Its FAILURE path needs no
     // root at all, and that is the path worth testing: it is one of the fatal

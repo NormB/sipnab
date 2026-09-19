@@ -832,8 +832,8 @@ pub fn resolve_mcp_verifier_config(cli: &Cli) -> crate::auth::VerifierConfig {
         }
     }
 
-    // Static secret: --mcp-token > --mcp-token-file > SIPNAB_MCP_TOKEN (env is
-    // folded into --mcp-token by clap). Trim file contents.
+    // Static secret: --mcp-token > --mcp-token-file > SIPNAB_MCP_TOKEN.
+    // Read the environment here so clap cannot hide its lower precedence.
     let mut static_keys: Vec<String> = Vec::new();
     if let Some(t) = cli.mcp_args.mcp_token.as_ref() {
         let t = t.trim();
@@ -852,6 +852,11 @@ pub fn resolve_mcp_verifier_config(cli: &Cli) -> crate::auth::VerifierConfig {
                 tracing::error!("--mcp-token-file '{path}': {e}");
                 std::process::exit(2);
             }
+        }
+    } else if let Ok(token) = std::env::var("SIPNAB_MCP_TOKEN") {
+        let token = token.trim();
+        if !token.is_empty() {
+            static_keys.push(token.to_string());
         }
     }
 

@@ -37,6 +37,16 @@ from lib_markdown import code_link_re, sub_outside_code  # noqa: E402
 # (docs source, site filename, expected H1, title, weight, description)
 PAGES: list[tuple[str, str, str, str, int, str]] = [
     (
+        "docs/library.md", "library.md", "Using sipnab as a library",
+        "Library API", 70,
+        "Use the Rust parser and analysis types from an external application.",
+    ),
+    (
+        "docs/client-examples.md", "examples.md", "Runnable client examples",
+        "Runnable Examples", 71,
+        "Run Python clients for correlation, MCP queries and vCon inspection, with local regression tests.",
+    ),
+    (
         "docs/examples.md",
         # URL deliberately unchanged. `/docs/cookbook/` is linked from 51
         # places that were just repaired, and from the wiki; renaming it to

@@ -169,7 +169,7 @@ INDEX_DESCRIPTION = (
 SRC_TO_SLUG = {src: slug for src, slug, _, _, _ in PAGES}
 
 # Operator docs that have a site page. `docs/<key>.md` -> `@/docs/<value>`.
-# Anything not listed (auth.md, library.md, fault-model.md, and everything
+# Anything not listed (auth.md, fault-model.md, and everything
 # under docs/design/) has no site page and becomes a blob URL, which is
 # correct: the reader still gets the document, just on GitHub.
 #
@@ -188,6 +188,8 @@ SRC_TO_SLUG = {src: slug for src, slug, _, _, _ in PAGES}
 # An earlier version of this comment claimed every entry was generator-written,
 # which was false for exactly that one and checked by nothing.
 DOCS_TO_SITE = {
+    "library.md": "library.md",
+    "client-examples.md": "examples.md",
     "install.md": "install.md",
     "prometheus-metrics.md": "metrics.md",
     "examples.md": "cookbook.md",

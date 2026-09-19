@@ -329,7 +329,7 @@ fn pcapng_roundtrip_and_magic() {
             None,
             None,
             true, // pcapng
-            PcapExportMode::Decrypted,
+            PcapExportMode::Raw,
         )
         .expect("create pcapng writer");
         for pkt in &packets {

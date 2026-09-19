@@ -33,8 +33,8 @@
 //! # Examples
 //!
 //! Every example below runs as a test on every `cargo test`, and checks what
-//! it shows. The timestamps come from [`chrono`], which a caller needs as a
-//! dependency of its own.
+//! it shows. [`bytes`] and [`chrono`] are re-exported so callers can use the
+//! same buffer and timestamp types without separately pinning dependencies.
 //!
 //! ## Parse a SIP message and its SDP
 //!
@@ -343,6 +343,11 @@ pub mod test_material;
 
 #[cfg(feature = "plugins")]
 pub mod plugin;
+/// Byte buffers used by the public parsing API.
+pub use bytes;
+/// Timestamps used by public messages and capture records.
+pub use chrono;
+
 pub use error::{CaptureError, Error, ParseError};
 pub mod clock;
 #[cfg(feature = "mcp")]

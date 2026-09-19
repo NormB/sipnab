@@ -332,6 +332,29 @@ fn plan_hep_source(cli: &Cli, config: &Config) -> Result<CaptureSource, PlanErro
 /// pattern, `--filter`/diagnostic/config filter expression, or `--metrics`
 /// address.
 pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
+    let alert_sources = if cli.security_args.alert.is_empty() {
+        config.security.alert.as_deref().unwrap_or(&[])
+    } else {
+        &cli.security_args.alert
+    };
+    for source in alert_sources {
+        let source = source.trim();
+        if source.contains(':') {
+            let rule = crate::security::AlertRule::parse(source)
+                .map_err(|e| PlanError::arg(e.to_string()))?;
+            // The kinds the detectors fire under, from the one shared list: a
+            // rule naming anything else parses and then never binds.
+            let kinds = crate::security::findings::SECURITY_FINDING_KINDS;
+            if !kinds.contains(&rule.name.as_str()) {
+                return Err(PlanError::arg(format!(
+                    "Unknown alert rule '{}': expected one of {} (reg-flood is accepted for reg_flood)",
+                    rule.name,
+                    kinds.join(", ")
+                )));
+            }
+        }
+    }
+
     // FIRST, before anything can mint an identity. `set_node_name` writes a
     // process-global `OnceLock` and the first writer wins, so a later call
     // would be silently ignored and answers would carry the hostname while the
@@ -2833,17 +2856,15 @@ pub(crate) fn parse_autostop(
 /// expanded diagnostic alias, or the config-file expression fails to parse.
 /// Returning (rather than exiting) keeps planning testable and composable.
 fn build_filter_expr(cli: &Cli, config: &Config) -> Result<Option<FilterExpr>, PlanError> {
-    // Explicit --filter takes precedence. Try alias expansion first
-    // (so `--filter codec-asym` works the same as MCP find_problems'
-    // kinds shorthand); fall back to raw DSL parsing.
-    if let Some(ref expr) = cli.matching_args.filter {
-        let thresholds = cli.alias_thresholds(config);
-        let resolved =
-            crate::sip::dsl::expand_alias(expr, &thresholds).unwrap_or_else(|| expr.clone());
-        return match FilterExpr::parse(&resolved) {
-            Ok(f) => Ok(Some(f)),
-            Err(e) => Err(PlanError::arg(format!("Invalid --filter expression: {e}"))),
-        };
+    // An explicit expression narrows the diagnostic flags. Parse it even
+    // when aliases are enabled, so an invalid expression is never hidden.
+    let thresholds = cli.alias_thresholds(config);
+    let explicit = cli.matching_args.filter.as_ref().map(|expr| {
+        crate::sip::dsl::expand_alias(expr, &thresholds).unwrap_or_else(|| expr.clone())
+    });
+    if let Some(expr) = &explicit {
+        FilterExpr::parse(expr)
+            .map_err(|e| PlanError::arg(format!("Invalid --filter expression: {e}")))?;
     }
 
     // Diagnostic alias expansion, through the SAME table `--filter <name>`
@@ -2854,7 +2875,6 @@ fn build_filter_expr(cli: &Cli, config: &Config) -> Result<Option<FilterExpr>, P
     // where the documented `duration < 5.0 AND state == 'Completed'` selected
     // 1681, and `--slow-setup` measured `setup_time` where the alias measures
     // `pdd`. Two spellings of one flag cannot disagree if there is only one.
-    let thresholds = cli.alias_thresholds(config);
     let mut parts: Vec<String> = Vec::new();
     for (enabled, alias) in [
         (cli.alias_args.problems, "problems"),
@@ -2876,12 +2896,22 @@ fn build_filter_expr(cli: &Cli, config: &Config) -> Result<Option<FilterExpr>, P
             .map(|p| format!("({p})"))
             .collect::<Vec<_>>()
             .join(" OR ");
+        let combined = match &explicit {
+            Some(expr) => format!("({combined}) AND ({expr})"),
+            None => combined,
+        };
         return match FilterExpr::parse(&combined) {
             Ok(f) => Ok(Some(f)),
             Err(e) => Err(PlanError::arg(format!(
                 "Internal error building diagnostic filter: {e}"
             ))),
         };
+    }
+
+    if let Some(expr) = explicit {
+        return FilterExpr::parse(&expr)
+            .map(Some)
+            .map_err(|e| PlanError::arg(format!("Invalid --filter expression: {e}")));
     }
 
     // Fall back to config file expression

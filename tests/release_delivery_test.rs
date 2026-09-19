@@ -740,13 +740,13 @@ fn a_p0_marked_done_is_released_or_declared() {
         .map(|i| p0_start + i)
         .unwrap_or(backlog.len());
     let p0 = &backlog[p0_start..p0_end];
-    let closed = p0.matches("- [x] **").count();
+    let closed = p0.lines().filter(|line| line.starts_with("- [x] ")).count();
     assert!(
         closed >= 5,
         "only {closed} closed P0 item(s) found; the scan has stopped matching \
          and this gate proves nothing"
     );
-    let open = p0.matches("- [ ] **").count();
+    let open = p0.lines().filter(|line| line.starts_with("- [ ] ")).count();
     if open > 0 {
         // Open P0s are a different problem and are not this gate's business.
         return;

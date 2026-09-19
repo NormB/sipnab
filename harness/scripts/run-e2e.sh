@@ -49,12 +49,12 @@ sleep 6
 
 echo
 echo "== REST: joining the two nodes"
-python3 "$HERE/clients/leg_correlate.py" --proxy "$PROXY_API" --relay "$RELAY_API" \
+python3 "$HERE/../clients/python/leg_correlate.py" --proxy "$PROXY_API" --relay "$RELAY_API" \
   | tee "$HERE/results/.rest.$$"
 
 echo
 echo "== MCP: the same question at both doors"
-python3 "$HERE/clients/mcp_probe.py" | tee "$HERE/results/.mcp.$$"
+python3 "$HERE/../clients/python/mcp_probe.py" | tee "$HERE/results/.mcp.$$"
 
 {
   echo "# sipnab two-node end-to-end run"

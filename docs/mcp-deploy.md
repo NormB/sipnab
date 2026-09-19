@@ -1685,9 +1685,10 @@ sipnab --mcp -N --mcp-transport http --mcp-bind 0.0.0.0:8731 \
 
 ### Start it at boot with systemd
 
-`/etc/systemd/system/sipnab-mcp.service` (a packaged variant ships in
-[`packaging/sipnab.service`](https://github.com/NormB/sipnab/blob/main/packaging/sipnab.service)),
-here fed by a HEP listener — common on a capture host:
+Create `/etc/systemd/system/sipnab-mcp.service` using this example, fed by a
+HEP listener. The packaged
+[`packaging/sipnab.service`](https://github.com/NormB/sipnab/blob/main/packaging/sipnab.service)
+starts REST and metrics, not MCP:
 
 ```ini
 [Unit]

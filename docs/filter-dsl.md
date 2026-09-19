@@ -299,7 +299,9 @@ The dedicated flag, the `--filter <alias>` spelling and the MCP `kinds` entry
 are three names for one expression: `sipnab --short-calls`,
 `sipnab --filter short-calls` and
 `sipnab --filter "duration < 3.0 AND state == 'Completed'"` all select the same
-dialogs. Combining several flags ORs their expansions together.
+dialogs. Combining several flags ORs their expansions together. If `--filter`
+is also present, its expression is ANDed with that result. For example,
+`--problems --filter "from.user == '1001'"` keeps problem calls from user 1001.
 
 `--nat-issues` / `--filter nat-issues` selects the calls whose RTP arrived from
 an address the SDP never advertised. The boolean-field note above says what that

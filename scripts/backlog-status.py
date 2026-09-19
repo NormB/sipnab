@@ -50,9 +50,9 @@ REJECTED = "\u274C"  # red cross
 def classify(line: str) -> str | None:
     """open / doing / done / rejected, or None when the line is not an item."""
     if line.startswith("- [ ]"):
-        return "doing" if IN_PROGRESS in line else "open"
+        return "doing" if line[6:].lstrip().startswith(IN_PROGRESS) else "open"
     if line.startswith("- [x]"):
-        return "rejected" if REJECTED in line else "done"
+        return "rejected" if line[6:].lstrip().startswith(REJECTED) else "done"
     return None
 
 

@@ -10,7 +10,32 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Pcap export no longer embeds TLS keys by default (breaking change).**
+  `raw` is now the default. Select `encrypted+dsb` with `--pcapng` to include
+  keys for Wireshark. The unimplemented `decrypted` plaintext mode now exits
+  2 before capture starts instead of exporting encrypted packets with keys.
+- **Explicit MCP credentials follow their documented precedence:**
+  `--mcp-token`, then `--mcp-token-file`, then `SIPNAB_MCP_TOKEN`.
+- **Registration-flood alert rules bind to the detector.** Both `reg-flood`
+  and `reg_flood` name it; unknown rule names fail startup, including rules
+  supplied through configuration.
+- **Diagnostic flags combine with explicit filters.** Diagnostic flags remain
+  OR-combined with each other, then AND-combined with `--filter`.
+- **Operator documentation describes the shipped behavior.** `--single-line`
+  restricts regex dots to a line, `--wireshark` prints a filter, the TUI filter
+  has structured fields, and MOS is in Stream Detail. Scanner-kill uses a
+  thread; the packaged service starts REST and metrics. Backlog counts now
+  recognize status markers only at the start of an item's text.
+
 ### Added
+
+- **Runnable client examples have a published index and a CI gate.** Python
+  clients live under `clients/python/`; their regression suite and the
+  documentation-tool tests run in CI. The library guide is published on the
+  site, and the public Rust API re-exports `bytes` and `chrono` and exposes
+  partial-parse status to external callers.
 
 - **A release tag publishes to crates.io, after the GitHub release exists.**
   Until now each crates.io upload was run by hand from a clean checkout of the
