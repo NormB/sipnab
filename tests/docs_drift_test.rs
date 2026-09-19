@@ -161,6 +161,16 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             "website/content/docs/internals/build-ci-release.md",
         ],
     ),
+    // `--require-hashes` is pip's. The runnable-examples page installs the
+    // clients' test dependencies the way CI does, from a requirements file
+    // pinned by hash, so the documented command and CI's cannot drift apart.
+    (
+        "require-hashes",
+        &[
+            "docs/client-examples.md",
+            "website/content/docs/examples.md",
+        ],
+    ),
     // `--audio` belongs to `clients/python/vcon_view.py`, the small reader the
     // capture-stack page uses to extract a stored container's WAV. It is a
     // harness client rather than sipnab, and naming it here is what keeps this

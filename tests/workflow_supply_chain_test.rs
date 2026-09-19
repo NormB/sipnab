@@ -177,6 +177,73 @@ fn every_pinned_checksum_is_a_full_sha256() {
     }
 }
 
+/// `pip install pytest==8.4.2` is the movable-label problem again: PyPI serves
+/// whatever file sits under that version, and pip resolves the dependencies
+/// unpinned. OpenSSF Scorecard's Pinned-Dependencies check reports it, and
+/// ci.yml's `code-scanning-clean` job turns that open alert into a red main,
+/// which is how 3ada003c found out. `--require-hashes` makes pip refuse any
+/// file, dependency included, whose SHA-256 the requirements file does not
+/// list. Scorecard runs only in CI; this is the local copy of its rule.
+#[test]
+fn every_pip_install_requires_hashes() {
+    let mut installs = 0;
+    for (name, body) in workflows() {
+        for (i, line) in body.lines().enumerate() {
+            let cmd = line.trim();
+            if cmd.starts_with('#') || !cmd.contains("pip install") && !cmd.contains("pip3 install")
+            {
+                continue;
+            }
+            installs += 1;
+            let at = format!("{name}:{}", i + 1);
+            assert!(
+                cmd.contains("--require-hashes"),
+                "{at}: `{cmd}` installs without --require-hashes"
+            );
+            let words: Vec<&str> = cmd.split_whitespace().collect();
+            let req = words
+                .iter()
+                .position(|w| *w == "-r")
+                .and_then(|p| words.get(p + 1))
+                .unwrap_or_else(|| panic!("{at}: `{cmd}` names no -r requirements file"));
+            let text = std::fs::read_to_string(repo().join(req))
+                .unwrap_or_else(|e| panic!("{at}: read {req}: {e}"));
+            // pip's own format: `name==version \` then `--hash=sha256:...` lines.
+            let mut packages = 0;
+            for entry in text.split('\n').filter(|l| {
+                let l = l.trim_start();
+                !l.is_empty() && !l.starts_with('#') && !l.starts_with("--hash")
+            }) {
+                packages += 1;
+                assert!(
+                    entry.contains("=="),
+                    "{req}: `{entry}` is not pinned to a version"
+                );
+            }
+            let hashes: Vec<&str> = text
+                .split_whitespace()
+                .filter_map(|w| w.strip_prefix("--hash=sha256:"))
+                .collect();
+            assert!(packages > 0, "{req}: lists no packages");
+            assert!(
+                hashes.len() >= packages,
+                "{req}: fewer hashes than packages"
+            );
+            for h in hashes {
+                assert!(
+                    h.len() == 64 && h.chars().all(|c| c.is_ascii_hexdigit()),
+                    "{req}: `{h}` is not a full SHA-256"
+                );
+            }
+        }
+    }
+    assert!(
+        installs > 0,
+        "no pip install found in any workflow: either the matcher broke, or the \
+         last one was removed and this test should go with it"
+    );
+}
+
 /// Zola is installed by two different workflows. Both must agree on version and
 /// hash, or one of them is quietly building the site with a different binary.
 #[test]

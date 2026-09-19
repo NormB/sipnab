@@ -5545,7 +5545,10 @@ fn packaging_scripts_reference_existing_paths() {
     // swapped back in, the scan reads 99.
     // 100 -> 103: ci.yml now names clients/python, clients/python/tests and
     // scripts/tests in its Python-example gate. Measured by this scan.
-    const EXPECTED_REFERENCES: usize = 103;
+    // 103 -> 104: ci.yml installs pytest from
+    // clients/python/requirements-test.txt, pinned by hash. Attributed by
+    // measurement: with HEAD's ci.yml swapped back in, the scan reads 103.
+    const EXPECTED_REFERENCES: usize = 104;
     assert_eq!(
         checked, EXPECTED_REFERENCES,
         "packaging path scan saw {checked} references, expected \
