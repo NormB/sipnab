@@ -8,7 +8,7 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
-## [Unreleased]
+## [0.5.181] - 2026-09-19
 
 ### Fixed
 
@@ -35,7 +35,8 @@ entry that carries them.
   clients live under `clients/python/`; their regression suite and the
   documentation-tool tests run in CI. The library guide is published on the
   site, and the public Rust API re-exports `bytes` and `chrono` and exposes
-  partial-parse status to external callers.
+  partial-parse status to external callers. Their test dependencies install
+  from `clients/python/requirements-test.txt`, pinned by hash.
 
 - **A release tag publishes to crates.io, after the GitHub release exists.**
   Until now each crates.io upload was run by hand from a clean checkout of the
