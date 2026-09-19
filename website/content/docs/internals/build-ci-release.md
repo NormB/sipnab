@@ -710,6 +710,45 @@ attestation, a GHCR image, and a Homebrew formula — twenty-three release asset
 all. The order is therefore: land the release commit, wait for CI, then tag the
 commit that passed.
 
+**crates.io gets the release from the `crates-io` job in `release.yml`, after
+the GitHub release exists.** A tag push starts every tag workflow at once, and a
+crates.io version is permanent: `cargo yank` only stops new dependency
+resolution from choosing it, and nothing removes it. So the job `needs: release`, and a tag
+whose build fails never reaches crates.io. It runs
+[`scripts/publish-crates.py`](https://github.com/NormB/sipnab/blob/main/scripts/publish-crates.py). The script
+checks the tag against `Cargo.toml` and asks crates.io about every publishable
+crate before uploading any. It uploads only the versions crates.io answers 404
+for, `sipnab-bpf-types` first because `sipnab` depends on it. A re-run after a
+partial or hand-made publish therefore uploads only what is missing.
+
+The job holds no stored credential. `rust-lang/crates-io-auth-action` trades
+the job's OIDC identity for a crates.io token and revokes it when the job ends.
+This is crates.io trusted publishing, and crates.io checks two things. The
+workflow file must be the one that STARTED the run, so a workflow that waits
+for this one through `workflow_run` cannot publish: crates.io refuses those
+outright. The environment must match too. The job runs in the `crates-io`
+GitHub environment. That environment takes deployments from `v*` tags only,
+and each one waits for the owner to approve it under the run's "Review
+deployments". Each crate carries this trusted-publisher entry on crates.io
+(Settings, Trusted Publishing), and crates.io refuses a token that does not
+match it:
+
+| Field | Value |
+|---|---|
+| Repository owner | `NormB` |
+| Repository name | `sipnab` |
+| Workflow filename | `release.yml` |
+| Environment | `crates-io` |
+
+[`tests/crates_io_publish_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/crates_io_publish_test.rs) holds
+this table to the workflow, so renaming the workflow or the environment fails
+the suite until this table, and the entry on crates.io, change with it.
+Reading crates.io's entry back needs the owner's login, so a change made only
+there shows up when crates.io refuses the next release's job. To publish by hand, for
+instance while that entry is missing, run
+`python3 scripts/publish-crates.py --tag v<version>` from a clean checkout of
+the tag. It needs a token in `~/.cargo/credentials.toml`.
+
 **The site says whether a release landed, and one command says why it has
 not.** A green deploy is not the same fact: on 2026-09-11 the origin
 certificate expired, the CDN refused an origin it could not validate, and every

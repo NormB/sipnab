@@ -694,7 +694,13 @@ fn linked_code_targets_exist() {
     // commands rather than only checking that the flags they name exist.
     // Attributed by counting every page under `docs/internals/` against HEAD:
     // testing.md moved 95 -> 96 and no other page changed.
-    const EXPECTED_CODE_LINKS: usize = 429;
+    // 429 -> 431: two, in `docs/internals/build-ci-release.md`, where the
+    // release section gains the paragraph on publishing to crates.io from the
+    // tag. It links `scripts/publish-crates.py` and the test that holds the
+    // trusted-publisher table to the workflow. Attributed by counting every
+    // page under `docs/internals/` against HEAD: build-ci-release.md moved
+    // 47 -> 49 and no other page changed.
+    const EXPECTED_CODE_LINKS: usize = 431;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \

@@ -951,6 +951,60 @@ jobs:
             artifacts/*.cdx.json
             artifacts/SHA256SUMS.txt
 
+  crates-io:
+    # Bounds a wedged job: an unbounded one holds its concurrency group
+    # indefinitely. `cargo publish` verifies each crate with the cold
+    # default-feature build ci.yml's crate-package job runs, observed at 1.9
+    # to 5.3 min over four runs on 2026-09-18, then waits for the index.
+    timeout-minutes: 40
+    name: Publish to crates.io
+    # After the GitHub release exists. A tag push starts every tag workflow at
+    # once, and a crates.io version can never be replaced, so an upload running
+    # beside a build that then failed would publish a version the release
+    # never gets.
+    needs: release
+    # workflow_dispatch builds without releasing, and must not publish either.
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    # crates.io trusted publishing matches this workflow's file name and this
+    # environment against the config recorded in
+    # docs/internals/build-ci-release.md. It refuses a token from a
+    # workflow_run, so this job cannot move to a workflow of its own that
+    # waits for this one.
+    environment: crates-io
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # Do not leave GITHUB_TOKEN in .git/config for later steps or
+          # third-party actions to read. Nothing here pushes with it:
+          # wiki-sync and release pass the token explicitly via GH_TOKEN.
+          persist-credentials: false
+      - name: Free disk space
+        uses: ./.github/actions/free-disk
+
+      - name: Install system deps
+        uses: ./.github/actions/system-deps
+        with:
+          packages: libpcap-dev libasound2-dev
+
+      - uses: dtolnay/rust-toolchain@ce678459e9fc7500d337468f904b95f1b5c10b5e # 1.98.1
+      # Exchanges this job's OIDC identity for a crates.io token, and revokes
+      # the token when the job ends. No crates.io credential is stored in the
+      # repository.
+      - name: Authenticate with crates.io
+        id: auth
+        uses: rust-lang/crates-io-auth-action@c6f97d42243bad5fab37ca0427f495c86d5b1a18 # v1.0.5
+      # Checks the tag against Cargo.toml and asks crates.io about every crate
+      # before uploading any; sipnab-bpf-types goes up only when its version
+      # is new.
+      - name: Publish what crates.io does not have yet
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+        run: python3 scripts/publish-crates.py --tag "${GITHUB_REF_NAME}"
+
   tap:
     # Bounds a wedged job: an unbounded one holds its
     # concurrency group indefinitely. Observed: 16.7 min slowest (aarch64-apple-darwin build).

@@ -383,6 +383,8 @@ fn a_job_permissions_block_grants_what_its_steps_need() {
         ("deploy-pages", "pages", "write"),
         ("deploy-pages", "id-token", "write"),
         ("action-gh-release", "contents", "write"),
+        // Exchanges the job's OIDC token for a crates.io one.
+        ("crates-io-auth-action", "id-token", "write"),
     ];
     // Conditional on `push: true`, so it is resolved per job rather than here.
     const PUSH_MARKER: &str = "build-push-action";

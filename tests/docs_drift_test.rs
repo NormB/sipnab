@@ -3671,7 +3671,10 @@ fn no_documentation_table_repeats_a_row() {
     // count is stated here against the file that lost them.
     // 924 -> 925 by crates/sipnab-bpf-types/README.md, a new file with exactly
     // one table (what the crate contains).
-    const EXPECTED_TABLES: usize = 925;
+    // 925 -> 927 by the crates.io trusted-publisher table in
+    // docs/internals/build-ci-release.md, counted once in docs/ and once in
+    // its site mirror.
+    const EXPECTED_TABLES: usize = 927;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

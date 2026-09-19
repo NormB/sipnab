@@ -5537,7 +5537,12 @@ fn packaging_scripts_reference_existing_paths() {
     // `crate-package` job, whose comment names `tests/crate_package_test.rs`.
     // Attributed by measurement: with HEAD's ci.yml swapped back in, the scan
     // reads 98.
-    const EXPECTED_REFERENCES: usize = 99;
+    // 99 -> 100: one, in `.github/workflows/release.yml`, from the new
+    // `crates-io` job, whose `run:` line names `scripts/publish-crates.py`. Its
+    // comment names `docs/internals/build-ci-release.md` too, and `docs/` is
+    // not a scanned prefix. Attributed by measurement: with HEAD's release.yml
+    // swapped back in, the scan reads 99.
+    const EXPECTED_REFERENCES: usize = 100;
     assert_eq!(
         checked, EXPECTED_REFERENCES,
         "packaging path scan saw {checked} references, expected \

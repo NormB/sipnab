@@ -8,6 +8,29 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Added
+
+- **A release tag publishes to crates.io, after the GitHub release exists.**
+  Until now each crates.io upload was run by hand from a clean checkout of the
+  tag. The new `crates-io` job in `release.yml` runs after the release job,
+  because a crates.io version can never be replaced and a tag whose build fails
+  must not reach it. It holds no stored credential: crates.io trusted publishing
+  trades the job's identity for a token that is revoked when the job ends. It
+  runs in a `crates-io` environment that only `v*` tags may use, and each
+  publish waits for the owner's approval.
+  [`scripts/publish-crates.py`](scripts/publish-crates.py) makes every decision
+  before any upload:
+  - it checks the tag against `Cargo.toml`;
+  - it asks crates.io about each crate and uploads only the versions crates.io
+    lacks, so `sipnab-bpf-types` goes up only when it changes;
+  - it stops on any answer other than "published" or "not published".
+
+  The trusted-publisher entry each crate needs on crates.io is recorded in
+  [the build and release notes](docs/internals/build-ci-release.md#releases),
+  and a test holds that record to the workflow.
+
 ## [0.5.180] - 2026-09-18
 
 ### Fixed
