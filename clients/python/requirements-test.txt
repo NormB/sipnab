@@ -1,8 +1,10 @@
 # Test-only dependencies for the Python clients (clients/python/tests)
 # and the documentation tooling tests (scripts/tests), pinned by hash so
 # pip refuses any file whose bytes differ: `--require-hashes -r` this file.
-# pytest 8.4.2 and its dependency set as pip resolves it on Linux with
-# Python 3.12 (CI's ubuntu-latest); regenerate every hash on a bump.
+# pytest and the dependency set pip resolves for it on Linux with Python
+# 3.12 (CI's ubuntu-latest). OSV-Scanner reads this file in CI, so a
+# vulnerable pin turns main red; Dependabot security updates propose the
+# fix with fresh hashes (dependabot.yml has no pip entry for routine bumps).
 
 iniconfig==2.3.0 \
     --hash=sha256:f631c04d2c48c52b84d0d0549c99ff3859c98df65b3101406327ecc7d53fbf12 \
