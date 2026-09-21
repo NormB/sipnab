@@ -33,11 +33,21 @@ FROM ghcr.io/cross-rs/x86_64-unknown-linux-musl:main@sha256:b7452ab0229ccaf49fd1
 #             download.
 ARG LIBPCAP_VERSION=1.10.6
 ARG LIBPCAP_SHA256=ec97d1206bdd19cb6bdd043eaa9f0037aa732262ec68e070fd7c7b5f834d5dfc
-# luigirizzo/netmap tag v13.0.
-ARG NETMAP_COMMIT=6d3a00936a7dfae50d97b9f90d5f05bff235c86c
-ARG NETMAP_H_SHA256=169a5c7b0c75f0e77d9525dc465b3306c30c1f786d7ce5130edca82f6e06de28
-ARG NETMAP_USER_H_SHA256=16ffbe85c2734a361e04111ba6747926df5c16dc86c6daa1bab4702e9f7d1887
-ARG NETMAP_LEGACY_H_SHA256=8e29140cd3330b3d86e1ee15fc1ff9d5753fec21e0b8cdaee86886d42a3d80a0
+# luigirizzo/netmap master at 389daea (2026-08-08), NETMAP_API 14. It was
+# tag v13.0 (2019, API 13) through 0.5.183, and that pin made the backend
+# unusable: measured 2026-09-21 on kernel 6.12, v13.0 does not compile against
+# the kernel's skb_frag_t, and the netmap that does build refuses API 13
+# ("Minimum supported API is 14 (requested 13)"), so `--device netmap:` failed
+# with NIOCREGIF EINVAL on every host able to load netmap at all. libpcap 1.10.6
+# built against these API-14 headers captured through `netmap:` on that host.
+# There is no newer tag; a commit is the pin. NETMAP_API is checked against the
+# fetched header below, and tests/netmap_pin_test.rs holds it at or above the
+# minimum current netmap accepts.
+ARG NETMAP_COMMIT=389daeaf498e4928e2070e5002590108c84e2f39
+ARG NETMAP_API=14
+ARG NETMAP_H_SHA256=b215220ce3a199041a3221417561e49908ad1db922b6d2ef1b8df1b6f00f8dd1
+ARG NETMAP_USER_H_SHA256=ca78c975ee3bb635afa321bf2ec101e11b66bd606c5fc15ce315be5e0b357ff5
+ARG NETMAP_LEGACY_H_SHA256=5a83a2971c4611f62c28c3502b7513d96768ce57995af25dbbbc3217c6185de0
 ARG MUSL_PREFIX=/usr/local/x86_64-linux-musl
 
 # EVERYTHING BELOW IS SPLIT INTO ONE RUN PER STAGE, AND THAT IS THE POINT.
@@ -123,7 +133,9 @@ RUN { \
 RUN mkdir -p "${MUSL_PREFIX}/include/net" \
     && fetch-pinned "https://raw.githubusercontent.com/luigirizzo/netmap/${NETMAP_COMMIT}/sys/net/netmap.h" "${MUSL_PREFIX}/include/net/netmap.h" "${NETMAP_H_SHA256}" \
     && fetch-pinned "https://raw.githubusercontent.com/luigirizzo/netmap/${NETMAP_COMMIT}/sys/net/netmap_user.h" "${MUSL_PREFIX}/include/net/netmap_user.h" "${NETMAP_USER_H_SHA256}" \
-    && fetch-pinned "https://raw.githubusercontent.com/luigirizzo/netmap/${NETMAP_COMMIT}/sys/net/netmap_legacy.h" "${MUSL_PREFIX}/include/net/netmap_legacy.h" "${NETMAP_LEGACY_H_SHA256}"
+    && fetch-pinned "https://raw.githubusercontent.com/luigirizzo/netmap/${NETMAP_COMMIT}/sys/net/netmap_legacy.h" "${MUSL_PREFIX}/include/net/netmap_legacy.h" "${NETMAP_LEGACY_H_SHA256}" \
+    && { grep -Eq "^#define[[:space:]]+NETMAP_API[[:space:]]+${NETMAP_API}([[:space:]]|$)" "${MUSL_PREFIX}/include/net/netmap.h" \
+         || { echo "netmap.h at ${NETMAP_COMMIT} is not NETMAP_API ${NETMAP_API}; bump the ARG with the pin" >&2; exit 1; }; }
 
 RUN fetch-pinned "https://www.tcpdump.org/release/libpcap-${LIBPCAP_VERSION}.tar.xz" "/tmp/libpcap-${LIBPCAP_VERSION}.tar.xz" "${LIBPCAP_SHA256}"
 

@@ -73,6 +73,18 @@ entry that carries them.
   "2 packets" where the default reader read 3, and put that frame at "1 of 2",
   the share at which the NOT DECODED line calls a run mostly blind.
 
+- **The netmap capture backend in the static musl builds can be used.** Their
+  libpcap was compiled against netmap headers pinned to tag v13.0, which
+  requests netmap API 13. No netmap module that builds on a current kernel
+  accepts that: measured on Debian 13 with kernel 6.12, v13.0 does not compile,
+  and current netmap refuses the request ("Minimum supported API is 14"), so
+  `--device netmap:<iface>` failed with `NIOCREGIF ... Invalid argument`. The
+  headers are now pinned to netmap master at 389daea (API 14), the image build
+  refuses a header that is not the declared API, and a test holds that API at
+  or above what current netmap accepts. libpcap 1.10.6 built against those
+  headers captured through `netmap:` on that host. 0.5.183 and earlier carry
+  the API-13 build.
+
 ### Internal
 
 - **The published test count is satisfiable again.** Nine tests landed in
