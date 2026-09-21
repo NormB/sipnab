@@ -293,8 +293,8 @@ These offer a copyleft option alongside permissive ones. sipnab elects the permi
 | regex-automata | 0.4.16 | MIT OR Apache-2.0 |
 | regex-syntax | 0.8.11 | MIT OR Apache-2.0 |
 | ring | 0.17.14 | Apache-2.0 AND ISC |
-| rmcp | 3.3.0 | Apache-2.0 |
-| rmcp-macros | 3.3.0 | Apache-2.0 |
+| rmcp | 3.4.0 | Apache-2.0 |
+| rmcp-macros | 3.4.0 | Apache-2.0 |
 | rsa | 0.9.10 | MIT OR Apache-2.0 |
 | rustc_version | 0.4.1 | MIT OR Apache-2.0 |
 | rustix | 1.1.4 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
@@ -327,8 +327,8 @@ These offer a copyleft option alongside permissive ones. sipnab elects the permi
 | simd-adler32 | 0.3.9 | MIT |
 | siphasher | 1.0.2 | MIT/Apache-2.0 |
 | slab | 0.4.12 | MIT |
-| smallvec | 1.16.0 | MIT OR Apache-2.0 |
-| socket2 | 0.6.3 | MIT OR Apache-2.0 |
+| smallvec | 1.16.1 | MIT OR Apache-2.0 |
+| socket2 | 0.6.5 | MIT OR Apache-2.0 |
 | spin | 0.9.9 | MIT |
 | spki | 0.7.3 | Apache-2.0 OR MIT |
 | sse-stream | 0.2.5 | MIT OR Apache-2.0 |

@@ -26,7 +26,7 @@ use parking_lot::RwLock;
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::tool::{Extension, schema_for_output};
 use rmcp::handler::server::wrapper::Parameters;
-use rmcp::model::{CallToolResult, ContentBlock, Implementation, ServerCapabilities, ServerInfo};
+use rmcp::model::{CallToolResult, ContentBlock, Implementation, ServerCapabilities, ServerConfig};
 use rmcp::schemars::JsonSchema;
 use rmcp::{ServerHandler, tool, tool_handler, tool_router};
 use serde::{Deserialize, Serialize};
@@ -9141,8 +9141,8 @@ impl ServerHandler for SipnabMcp {
     }
     /// Advertise server capabilities (tools only) and the human-readable
     /// instructions string shown to MCP clients.
-    fn get_info(&self) -> ServerInfo {
-        let mut info = ServerInfo::new(
+    fn get_info(&self) -> ServerConfig {
+        let mut info = ServerConfig::new(
             ServerCapabilities::builder()
                 .enable_tools()
                 // Resources are read-only by protocol construction, so a
@@ -10174,7 +10174,7 @@ mod tests {
 
     /// The handshake must name sipnab, not whichever MCP crate we build on.
     ///
-    /// `ServerInfo::new` fills `server_info` from `Implementation::default()`,
+    /// `ServerConfig::new` fills `server_info` from `Implementation::default()`,
     /// which is `from_build_env()`, whose `env!("CARGO_CRATE_NAME")` expands
     /// when *rmcp* compiles. So the default is literally the string "rmcp" plus
     /// rmcp's own version, and it moved on its own during the 2.2.0 -> 3.0.1
