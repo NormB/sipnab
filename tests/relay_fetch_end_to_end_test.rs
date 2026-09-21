@@ -33,6 +33,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
+include!("support/timeout.rs");
+include!("support/teardown.rs");
+
 /// The Call-ID every per-call question names.
 const CALL_ID: &str = "1-4242@192.0.2.10";
 
@@ -258,21 +261,9 @@ impl Run {
 
     /// SIGTERM the run and collect everything it printed.
     fn finish(mut self) -> Finished {
-        let pid = libc::pid_t::try_from(self.child.id()).expect("pid fits pid_t");
-        // SAFETY: signaling a child this test spawned and still owns.
-        unsafe { libc::kill(pid, libc::SIGTERM) };
-        let deadline = Instant::now() + WAIT;
-        let code = loop {
-            if let Ok(Some(status)) = self.child.try_wait() {
-                break status.code();
-            }
-            if Instant::now() > deadline {
-                let _ = self.child.kill();
-                let _ = self.child.wait();
-                break None;
-            }
-            std::thread::sleep(Duration::from_millis(50));
-        };
+        let code = terminate_within(&mut self.child, WAIT)
+            .ok()
+            .and_then(|status| status.code());
         while let Ok(line) = self.stdout.recv_timeout(Duration::from_millis(300)) {
             self.out.push(line);
         }
@@ -292,10 +283,7 @@ impl Run {
 /// A child `finish` already reaped is past `try_wait`, so this is a no-op then.
 impl Drop for Run {
     fn drop(&mut self) {
-        if matches!(self.child.try_wait(), Ok(None)) {
-            let _ = self.child.kill();
-            let _ = self.child.wait();
-        }
+        let _ = terminate(&mut self.child);
     }
 }
 

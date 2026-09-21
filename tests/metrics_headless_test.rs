@@ -24,6 +24,9 @@ use std::io::{BufRead, BufReader};
 use std::process::{Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 
+include!("support/timeout.rs");
+include!("support/teardown.rs");
+
 /// Ask the OS for a free port, then release it.
 ///
 /// `--metrics 127.0.0.1:0` would let sipnab pick, but the port it chose is only
@@ -93,8 +96,7 @@ fn metrics_binds_and_answers_in_headless_mode() {
         }
     }
 
-    let _ = child.kill();
-    let _ = child.wait();
+    let _ = terminate(&mut child);
 
     assert!(
         !body.is_empty(),
@@ -240,8 +242,7 @@ fn scrape_with(extra: &[&str]) -> String {
             }
         }
     }
-    let _ = child.kill();
-    let _ = child.wait();
+    let _ = terminate(&mut child);
     let stderr = child
         .stderr
         .take()

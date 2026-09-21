@@ -23,6 +23,9 @@ use sipnab::rtp::stream_store::StreamStore;
 use sipnab::sip::dialog_store::DialogStore;
 use std::sync::Arc;
 
+include!("support/timeout.rs");
+include!("support/teardown.rs");
+
 /// A server with the given profile applied.
 fn server(profile: ToolProfile) -> SipnabMcp {
     SipnabMcp::new(
@@ -230,8 +233,7 @@ fn advertised_tools(profile: &str) -> Vec<String> {
             Err(_) => break,
         }
     }
-    let _ = child.kill();
-    let _ = child.wait();
+    let _ = terminate(&mut child);
 
     names.unwrap_or_else(|| panic!("`sipnab --mcp-tools {profile}` never answered tools/list"))
 }

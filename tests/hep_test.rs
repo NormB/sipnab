@@ -29,6 +29,7 @@ use chrono::Utc;
 use sipnab::capture::hep::{HepEndpoint, HepProtocol, build_hep_v3, parse_hep};
 
 include!("support/timeout.rs");
+include!("support/teardown.rs");
 
 /// Call-ID embedded in the synthetic INVITE; tests grep stdout for it.
 const CALL_ID: &str = "hep-test-call-1@127.0.0.1";
@@ -79,8 +80,8 @@ impl HepListener {
     /// scraping the actual bound UDP port from the startup log.
     ///
     /// # Side effects
-    /// Spawns the sipnab binary (killed on drop), which binds an ephemeral
-    /// loopback UDP port; panics if no port is reported within 10s.
+    /// Spawns the sipnab binary (stopped on drop with `terminate`), which binds
+    /// an ephemeral loopback UDP port; panics if no port is reported within 10s.
     fn spawn(extra_args: &[&str]) -> HepListener {
         Self::spawn_with_log("info", extra_args)
     }
@@ -89,9 +90,6 @@ impl HepListener {
     /// rate-limit drop is logged at `debug`, so that test needs `debug`).
     fn spawn_with_log(log: &str, extra_args: &[&str]) -> HepListener {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_sipnab"));
-        // This listener is torn down with Child::kill() (SIGKILL), which leaves
-        // a truncated .profraw under coverage.
-        support::discard_coverage_profile(&mut cmd);
         cmd.args(["-N", "--hep-listen", "127.0.0.1:0", "--json", "--quiet"]);
         cmd.args(extra_args);
         cmd.env("SIPNAB_LOG", log);
@@ -152,6 +150,11 @@ impl HepListener {
             .expect("send HEP");
     }
 
+    /// Stop the listener the way `Drop` does and return how it exited.
+    fn stop(mut self) -> std::process::ExitStatus {
+        terminate(&mut self.child).expect("reap sipnab --hep-listen")
+    }
+
     /// Wait up to `wait` for a stdout JSON line containing `needle`.
     ///
     /// # Returns
@@ -187,8 +190,7 @@ impl HepListener {
 
 impl Drop for HepListener {
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        let _ = terminate(&mut self.child);
     }
 }
 
@@ -227,6 +229,29 @@ fn hep_listener_ingests_synthetic_hep3() {
     let msg: serde_json::Value = serde_json::from_str(&line).expect("ndjson");
     assert_eq!(msg["method"], "INVITE");
     assert_eq!(msg["call_id"], CALL_ID);
+}
+
+/// The harness stops a listener that has done its work with SIGTERM, and the
+/// listener exits 0 on its own -- it is not SIGKILLed.
+///
+/// A SIGKILLed child never writes its coverage profile, so every line the
+/// listener ran under this harness went unrecorded. The exit status is the
+/// observable half of that: `signal: 9` here is the profile being thrown away.
+#[test]
+fn the_listener_harness_stops_sipnab_with_a_clean_exit() {
+    let srv = HepListener::spawn(&["--hep-allow", "127.0.0.1/32"]);
+    srv.send(&hep3_sip(&invite_bytes()));
+    assert!(
+        srv.wait_for_stdout(CALL_ID, test_timeout(5)).is_some(),
+        "control: the listener must ingest a datagram before it is stopped"
+    );
+
+    let status = srv.stop();
+    assert_eq!(
+        status.code(),
+        Some(0),
+        "the listener must exit on SIGTERM, not be killed: {status}"
+    );
 }
 
 /// With `--hep-allow 10.0.0.0/8`, a loopback-sourced datagram is rejected by
@@ -403,7 +428,6 @@ fn hep_send_forwards_captured_sip_as_hep3() {
         env!("CARGO_MANIFEST_DIR")
     );
     let mut sender = Command::new(env!("CARGO_BIN_EXE_sipnab"));
-    support::discard_coverage_profile(&mut sender);
     let mut child = sender
         .args(["-N", "-I", &pcap, "--hep-send", &target, "--quiet"])
         .env("SIPNAB_LOG", "warn")
@@ -420,8 +444,7 @@ fn hep_send_forwards_captured_sip_as_hep3() {
     assert!(n >= 6, "datagram too short to be HEP3");
     assert_eq!(&buf[..4], b"HEP3", "forwarded datagram must be HEP3");
 
-    let _ = child.kill();
-    let _ = child.wait();
+    let _ = terminate(&mut child);
 }
 
 /// `--hep-send` on a TCP trunk stamps every SIP datagram with IP protocol
@@ -447,7 +470,6 @@ fn hep_send_stamps_tcp_sip_as_ip_protocol_6() {
     );
 
     let mut sender = Command::new(env!("CARGO_BIN_EXE_sipnab"));
-    support::discard_coverage_profile(&mut sender);
     let mut child = sender
         .args([
             "-N",
@@ -487,8 +509,7 @@ fn hep_send_stamps_tcp_sip_as_ip_protocol_6() {
         "control: no SIP datagram reached the collector, so nothing above was checked"
     );
 
-    let _ = child.kill();
-    let _ = child.wait();
+    let _ = terminate(&mut child);
 }
 
 // ── -d and -L in one process (SRC1) ────────────────────────────────────
@@ -523,7 +544,6 @@ fn can_live_capture() -> Option<bool> {
 #[test]
 fn a_live_device_and_a_hep_listener_run_in_one_process() {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_sipnab"));
-    support::discard_coverage_profile(&mut cmd);
     cmd.args([
         "-N",
         "-d",
@@ -652,6 +672,5 @@ fn a_live_device_and_a_hep_listener_run_in_one_process() {
         ),
     }
 
-    let _ = child.kill();
-    let _ = child.wait();
+    let _ = terminate(&mut child);
 }

@@ -90,6 +90,14 @@ entry that carries them.
   mutation of the code it covers. Behaviour-preserving extractions made the
   privileged and device-bound paths testable without root, and the TUI's
   clipboard test no longer writes to the developer's real clipboard.
+- **Servers the tests start now count toward coverage.** The spawn harnesses
+  (`ApiServer`, `McpSession`, `HepListener` and the per-file ones) stopped the
+  binary with SIGKILL, and a process killed that way never writes its coverage
+  profile, so every line those servers ran was missing from the report. They
+  now share one teardown: SIGTERM, a bounded wait, and SIGKILL only for a child
+  still running after it. Across the 40 test binaries that use them, covered
+  lines rose from 14,772 to 26,434; `src/output/api.rs` went from 216 to 1,747
+  of its 2,166 lines.
 
 ## [0.5.183] - 2026-09-21
 

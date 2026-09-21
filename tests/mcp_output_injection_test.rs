@@ -22,6 +22,7 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 include!("support/timeout.rs");
+include!("support/teardown.rs");
 
 /// The instruction an attacker writes into a header sipnab will report.
 ///
@@ -315,11 +316,7 @@ impl Drop for Server {
         if let Some(stdin) = self.child.stdin.take() {
             drop(stdin);
         }
-        // SAFETY: kill(2) with the PID of a child we spawned; touches no memory.
-        unsafe {
-            libc::kill(self.child.id() as i32, libc::SIGTERM);
-        }
-        let _ = self.child.wait();
+        let _ = terminate(&mut self.child);
     }
 }
 

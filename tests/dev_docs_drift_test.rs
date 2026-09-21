@@ -700,7 +700,12 @@ fn linked_code_targets_exist() {
     // trusted-publisher table to the workflow. Attributed by counting every
     // page under `docs/internals/` against HEAD: build-ci-release.md moved
     // 47 -> 49 and no other page changed.
-    const EXPECTED_CODE_LINKS: usize = 431;
+    // 431 -> 432: one, in `docs/internals/testing.md`, where the support table
+    // gains a row for `tests/support/teardown.rs` -- the single teardown every
+    // spawn harness uses, so a SIGKILLed child no longer drops its coverage.
+    // Attributed by counting every page under `docs/internals/` against HEAD:
+    // testing.md moved 96 -> 97 and no other page changed.
+    const EXPECTED_CODE_LINKS: usize = 432;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \

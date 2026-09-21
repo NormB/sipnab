@@ -46,9 +46,9 @@ pub fn deterministic_env(cmd: &mut Command) -> &mut Command {
 /// Send a spawned child's coverage profile somewhere it will not be merged.
 ///
 /// Tests that kill the binary they spawned — `crash_test` (SIGABRT via the
-/// `core = true` policy), `hep_test` and `parse_path_test` (`Child::kill()`,
-/// i.e. SIGKILL) — leave behind a truncated `.profraw`, because a process
-/// killed by a signal never flushes its profile. Under `cargo llvm-cov` those
+/// `core = true` policy) and `parse_path_test` (`Child::kill()`, i.e. SIGKILL,
+/// on a timeout) — can leave behind a truncated `.profraw`, because a process
+/// killed by a signal never finishes its profile. Under `cargo llvm-cov` those
 /// land in `target/llvm-cov-target/` beside the good ones and
 /// `llvm-profdata merge` fails the entire Coverage job with
 /// "invalid instrumentation profile data (file header is corrupt)".
@@ -64,6 +64,13 @@ pub fn deterministic_env(cmd: &mut Command) -> &mut Command {
 /// Apply this to every spawn whose child may be signaled, not only the ones
 /// that always are — `parse_path_test` only SIGKILLs on a timeout, so its
 /// corrupt profile appears just on the slow runs that are hardest to reproduce.
+///
+/// A child that is merely being torn down does not belong here. The spawn
+/// harnesses stop theirs with `terminate` (`support/teardown.rs`): SIGTERM,
+/// which sipnab turns into an ordinary exit that writes a whole profile, and
+/// SIGKILL only for a child still running once a grace period ends.
+/// `hep_test` used to discard its listener's profile because the listener was
+/// SIGKILLed; it is no longer, and that coverage now counts.
 pub fn discard_coverage_profile(cmd: &mut Command) -> &mut Command {
     let dir = std::env::temp_dir().join(format!("sipnab-discarded-cov-{}", std::process::id()));
     let _ = std::fs::create_dir_all(&dir);

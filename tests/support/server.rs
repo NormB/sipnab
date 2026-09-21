@@ -5,8 +5,9 @@
 //! Spawns a real `sipnab --api 127.0.0.1:0` process against the canonical
 //! fixture pcap, scrapes its log for the *actual* bound port (port 0 ⇒ the OS
 //! assigns an ephemeral one — so CI runs never collide), and drives it with a
-//! tiny `TcpStream` HTTP/1.1 client. The child is killed on `Drop`, so a
-//! panicking test never leaks the process or the port.
+//! tiny `TcpStream` HTTP/1.1 client. The child is stopped on `Drop` with
+//! SIGTERM (see `teardown.rs`), so a panicking test never leaks the process or
+//! the port, and the server's own coverage profile is written.
 //!
 //! A raw socket client (rather than `reqwest`) is deliberate: it matches the
 //! existing `mcp_http_test`, needs no TLS backend (API HTTPS is unimplemented —
@@ -22,6 +23,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 include!("timeout.rs");
+include!("teardown.rs");
 
 /// A minimal HTTP response: status code, body, and the `Content-Type` header.
 ///
@@ -245,12 +247,21 @@ impl ApiServer {
     pub fn post_json_bearer(&self, path: &str, body: &str, token: &str) -> Resp {
         http_post(&self.addr, path, body, Some(&format!("Bearer {token}")))
     }
+
+    /// The server's process id.
+    pub fn pid(&self) -> u32 {
+        self.child.id()
+    }
+
+    /// Stop the server the way `Drop` does and return how it exited.
+    pub fn stop(mut self) -> std::process::ExitStatus {
+        terminate(&mut self.child).expect("reap sipnab --api")
+    }
 }
 
 impl Drop for ApiServer {
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        let _ = terminate(&mut self.child);
     }
 }
 
@@ -342,7 +353,7 @@ fn http_post(addr: &str, path: &str, body: &str, auth: Option<&str>) -> Resp {
 }
 
 /// Spawn `sipnab --api` with the given args, collect stderr for `wait`, then
-/// kill the process and return what it logged. For *failure-path* tests (e.g.
+/// stop the process and return what it logged. For *failure-path* tests (e.g.
 /// unimplemented TLS) where the server never reaches a listening state — the
 /// capture process keeps running, so it must be reaped.
 pub fn run_and_capture_stderr(extra_args: &[&str], wait: Duration) -> String {
@@ -374,7 +385,6 @@ pub fn run_and_capture_stderr(extra_args: &[&str], wait: Duration) -> String {
             out.push('\n');
         }
     }
-    let _ = child.kill();
-    let _ = child.wait();
+    let _ = terminate(&mut child);
     out
 }

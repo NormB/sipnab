@@ -6,11 +6,11 @@
 //!
 //! # Why the binary-driven cases stop their child with SIGTERM
 //!
-//! The shared spawn harnesses tear their child down with `Child::kill()`, and a
-//! process killed by SIGKILL never writes its coverage profile. SIGTERM is the
-//! signal sipnab handles (`signals::install_handlers`): the keep-alive loop
+//! A process killed by SIGKILL never writes its coverage profile. SIGTERM is
+//! the signal sipnab handles (`signals::install_handlers`): the keep-alive loop
 //! sees the shutdown flag, the run exits through its ordinary path, and the
-//! exit status itself becomes something to assert.
+//! exit status itself becomes something to assert. The stopping is the shared
+//! `terminate` rule in `support/teardown.rs`, which every spawn harness uses.
 
 #![cfg(feature = "full")]
 
@@ -27,6 +27,9 @@ use sipnab::cli::Cli;
 use sipnab::rtp::stream_store::StreamStore;
 use sipnab::security::AlertEngine;
 use sipnab::sip::dialog_store::DialogStore;
+
+include!("support/timeout.rs");
+include!("support/teardown.rs");
 
 /// A selection that asks for the metrics server alone, with every ceiling at
 /// its shipped default.
@@ -179,21 +182,9 @@ impl Spawned {
 
     /// Send SIGTERM and wait for the exit code, SIGKILLing only on a hang.
     fn terminate(mut self) -> (Option<i32>, String) {
-        let pid = libc::pid_t::try_from(self.child.id()).expect("pid fits pid_t");
-        // SAFETY: signaling a child this test spawned and still owns.
-        unsafe { libc::kill(pid, libc::SIGTERM) };
-        let deadline = Instant::now() + Duration::from_secs(20);
-        let code = loop {
-            if let Ok(Some(status)) = self.child.try_wait() {
-                break status.code();
-            }
-            if Instant::now() > deadline {
-                let _ = self.child.kill();
-                let _ = self.child.wait();
-                break None;
-            }
-            std::thread::sleep(Duration::from_millis(50));
-        };
+        let code = terminate(&mut self.child)
+            .ok()
+            .and_then(|status| status.code());
         while let Ok(line) = self.stderr.recv_timeout(Duration::from_millis(200)) {
             self.seen.push(line);
         }
@@ -205,10 +196,7 @@ impl Spawned {
 /// leaves no server behind. A child already reaped is past `try_wait`.
 impl Drop for Spawned {
     fn drop(&mut self) {
-        if matches!(self.child.try_wait(), Ok(None)) {
-            let _ = self.child.kill();
-            let _ = self.child.wait();
-        }
+        let _ = terminate(&mut self.child);
     }
 }
 

@@ -21,6 +21,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 include!("timeout.rs");
+include!("teardown.rs");
 
 /// A minimal HTTP response: status code, response headers, and body.
 ///
@@ -79,7 +80,7 @@ pub fn fixture(path: &str) -> std::path::PathBuf {
 ///
 /// # Side effects
 /// Spawns the sipnab binary (binding an ephemeral HTTP port) plus a stderr
-/// reader thread; on failure paths the child is SIGTERMed and waited.
+/// reader thread; on failure paths the child is stopped with `terminate`.
 pub fn spawn_http(extra_args: &[&str]) -> Option<(Child, String)> {
     let binary = env!("CARGO_BIN_EXE_sipnab");
     let pcap = fixture("sip_call.pcap");
@@ -120,22 +121,14 @@ pub fn spawn_http(extra_args: &[&str]) -> Option<(Child, String)> {
                 return Some((child, addr.trim().to_string()));
             }
             if line.contains("refuses to start") {
-                // SAFETY: kill(2) with the PID of a child we spawned; touches no memory.
-                unsafe {
-                    libc::kill(child.id() as i32, libc::SIGTERM);
-                }
-                let _ = child.wait();
+                let _ = terminate(&mut child);
                 return None;
             }
         } else if let Ok(Some(_)) = child.try_wait() {
             return None;
         }
     }
-    // SAFETY: kill(2) with the PID of a child we spawned; touches no memory.
-    unsafe {
-        libc::kill(child.id() as i32, libc::SIGTERM);
-    }
-    let _ = child.wait();
+    let _ = terminate(&mut child);
     None
 }
 
@@ -150,13 +143,10 @@ pub fn spawn_http_loopback(extra_args: &[&str]) -> Option<(Child, String)> {
 /// SIGTERMs a spawned sipnab child and waits for it to exit.
 ///
 /// # Side effects
-/// Sends SIGTERM to the child process and reaps it.
+/// Sends SIGTERM to the child process and reaps it, SIGKILLing it only if it
+/// is still running once the grace period ends (see `terminate`).
 pub fn shutdown(mut child: Child) {
-    // SAFETY: kill(2) with the PID of a child we spawned; touches no memory.
-    unsafe {
-        libc::kill(child.id() as i32, libc::SIGTERM);
-    }
-    let _ = child.wait();
+    let _ = terminate(&mut child);
 }
 
 /// The canonical JSON-RPC `initialize` request body.
@@ -399,6 +389,11 @@ impl McpSession {
         ok_payload(&msg)
     }
 
+    /// Stop the server the way `Drop` does and return how it exited.
+    pub fn stop(mut self) -> std::process::ExitStatus {
+        terminate(&mut self.child).expect("reap sipnab --mcp")
+    }
+
     /// The tool names this server advertises, sorted.
     ///
     /// Registration and permission are separate questions here: a tool the
@@ -443,8 +438,7 @@ impl McpSession {
 
 impl Drop for McpSession {
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        let _ = terminate(&mut self.child);
     }
 }
 

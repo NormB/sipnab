@@ -28,6 +28,9 @@ use serde_json::{Value, json};
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdout, Command, Stdio};
 
+include!("support/timeout.rs");
+include!("support/teardown.rs");
+
 /// A capture with one dialog and RTP.
 const PCAP: &str = "tests/pcap-samples/sip-rtp-g711.pcap";
 
@@ -256,8 +259,7 @@ impl Wire {
 
 impl Drop for Wire {
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        let _ = terminate(&mut self.child);
     }
 }
 
