@@ -49,7 +49,7 @@ mod release_logic;
 
 use release_logic::{
     ADVERTISEMENT_PATHS, DEPENDENCY_PATHS, advertisement_path, dependency_path, is_advertisement,
-    is_dependency_bump,
+    is_advertisement_beside_dependency_bumps, is_dependency_bump,
 };
 
 /// The delivery gate whose refusal blocked the six pull requests.
@@ -435,6 +435,44 @@ fn the_advertisement_and_dependency_exemptions_disagree_in_both_directions() {
         "every dependency path is also an advertisement path; the two \
          exemptions have stopped being distinct rules and one of them can be \
          deleted without any test noticing"
+    );
+}
+
+/// The delivery gate reaches the exemption for both kinds at once.
+///
+/// Phase two of 0.5.182 landed after two Dependabot merges, so the diff past
+/// the tag held an advertisement AND dependency bumps. Each sibling refuses a
+/// changeset carrying the other's paths, and the pre-push hook refused the
+/// release's own advertisement. The predicate for the mixture is pinned in
+/// `tests/gate_logic_test.rs`; this pins the other half, that the gate returns
+/// early on it rather than merely importing it.
+#[test]
+fn the_delivery_gate_reaches_the_mixture_exemption() {
+    let tag = (1, 2, 3);
+    assert!(
+        is_advertisement_beside_dependency_bumps(
+            &changeset(&[".github/workflows/ci.yml", "website/config.toml"]),
+            tag,
+            tag
+        ),
+        "a workflow bump beside the newest tag's advertisement is refused, so \
+         phase two cannot be pushed once a Dependabot merge lands after the tag"
+    );
+
+    let src = read(GATE_FILE);
+    let names = reaching_names(&src, "is_advertisement_beside_dependency_bumps");
+    assert!(
+        names.len() >= 2,
+        "found only {} name(s) reaching is_advertisement_beside_dependency_bumps \
+         in {GATE_FILE}; the gate never consults the mixture exemption",
+        names.len()
+    );
+    let gate = function_body(&src, GATE_FN);
+    assert!(
+        guarded_early_return(&gate, &names),
+        "fn {GATE_FN} never returns early on the mixture exemption (looked for \
+         {names:?}), so an advertisement pushed after a Dependabot merge is \
+         refused as undeclared work"
     );
 }
 

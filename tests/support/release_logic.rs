@@ -194,3 +194,29 @@ pub fn is_dependency_bump(changed: &[String]) -> bool {
     }
     changed.iter().all(|f| dependency_path(f))
 }
+
+/// Whether a changeset is the newest tag's advertisement plus dependency
+/// bumps, and nothing else.
+///
+/// Both siblings ask whether EVERY path is of their own kind, and the delivery
+/// gate asks them about the whole diff since the tag, not commit by commit. So
+/// when Dependabot merges land between a tag and its phase two, the diff holds
+/// both kinds and neither predicate accepts it: the pre-push hook refused the
+/// 0.5.182 advertisement for exactly that, although every path in it was
+/// exempt.
+///
+/// Composed from the two siblings rather than restated, so it can never be
+/// wider than their union: the dependency half must be non-empty, and what is
+/// left must pass [`is_advertisement`] for the newest tag, which also keeps
+/// that predicate's refusal of an empty rest and of a site that is behind.
+/// Neither sibling changes, so the two exemptions stay distinct.
+#[must_use]
+pub fn is_advertisement_beside_dependency_bumps(
+    changed: &[String],
+    published: (u32, u32, u32),
+    newest_tag: (u32, u32, u32),
+) -> bool {
+    let (bumps, rest): (Vec<String>, Vec<String>) =
+        changed.iter().cloned().partition(|f| dependency_path(f));
+    !bumps.is_empty() && is_advertisement(&rest, published, newest_tag)
+}

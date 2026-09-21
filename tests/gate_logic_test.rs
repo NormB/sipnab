@@ -47,7 +47,8 @@ mod release_logic;
 
 use release_logic::{
     ADVERTISEMENT_PATHS, LOAD_VERIFICATION_RECORD, advertisement_path, debounce_ceiling,
-    dependency_path, is_advertisement, is_dependency_bump, parse_version,
+    dependency_path, is_advertisement, is_advertisement_beside_dependency_bumps,
+    is_dependency_bump, parse_version,
 };
 
 /// The repository root.
@@ -649,4 +650,77 @@ fn a_name_that_merely_begins_like_a_manifest_is_not_one() {
     }
     assert!(dependency_path(".github/workflows/ci.yml"));
     assert!(dependency_path("Cargo.lock"));
+}
+
+/// Phase two landing after Dependabot merges declares nothing either.
+///
+/// Each exemption asks whether EVERY path is of its own kind, over the whole
+/// diff since the tag. So the one history that is both -- 0.5.182 was tagged,
+/// the `github-actions` and `fuzz` groups merged, and then the advertisement
+/// commit landed -- matched neither, and the pre-push hook refused phase two
+/// of a release as undeclared work. Every path in it was exempt; only their
+/// mixture was not.
+#[test]
+fn an_advertisement_beside_dependency_bumps_declares_nothing() {
+    let changed: Vec<String> = [
+        ".github/workflows/ci.yml",
+        "fuzz/Cargo.lock",
+        "website/config.toml",
+        "docs/install.md",
+        "website/content/docs/install.md",
+        "website/static/llms-full.txt",
+        LOAD_VERIFICATION_RECORD,
+    ]
+    .iter()
+    .map(|s| (*s).to_string())
+    .collect();
+    assert!(
+        !is_advertisement(&changed, TAG, TAG) && !is_dependency_bump(&changed),
+        "fixture no longer reproduces the mixture: one sibling predicate \
+         accepts it on its own, so this test would pass without the new one"
+    );
+    assert!(
+        is_advertisement_beside_dependency_bumps(&changed, TAG, TAG),
+        "the newest tag's advertisement beside dependency bumps is refused, \
+         so phase two cannot be pushed once a Dependabot merge lands after the tag"
+    );
+}
+
+/// The mixture exemption keeps both siblings' refusals.
+///
+/// It is the union of two narrow rules, not a wider third one: the dependency
+/// half must be real, the rest must advertise THIS tag, and anything that is
+/// neither is work.
+#[test]
+fn the_mixture_exemption_keeps_both_siblings_refusals() {
+    let v = |paths: &[&str]| -> Vec<String> { paths.iter().map(|s| (*s).to_string()).collect() };
+    let behind = (TAG.0, TAG.1, TAG.2 - 1);
+    // What the case is, its changeset, and the version the site advertises.
+    type Case = (&'static str, Vec<String>, (u32, u32, u32));
+    let cases: &[Case] = &[
+        (
+            "a site behind the newest tag",
+            v(&["Cargo.lock", "website/config.toml"]),
+            behind,
+        ),
+        (
+            "a source file beside both",
+            v(&["Cargo.lock", "website/config.toml", "src/lib.rs"]),
+            TAG,
+        ),
+        (
+            "a name that merely begins like an advertisement file",
+            v(&["Cargo.lock", "website/config.tomlx"]),
+            TAG,
+        ),
+        ("dependency bumps alone", v(&["Cargo.lock"]), TAG),
+        ("an advertisement alone", v(&["website/config.toml"]), TAG),
+        ("an empty changeset", Vec::new(), TAG),
+    ];
+    for (what, changed, published) in cases {
+        assert!(
+            !is_advertisement_beside_dependency_bumps(changed, *published, TAG),
+            "{what} was accepted as an advertisement beside dependency bumps"
+        );
+    }
 }
