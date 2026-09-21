@@ -46,6 +46,14 @@ entry that carries them.
   from zero on every 20 ms drain, so each sweep minted `#0` again and one
   process's messages named each other's frames. The ordinal now belongs to the
   reader and saturates rather than wrapping, as the BPF back end's does.
+- **`--calls-only` shows the whole call.** It printed only the INVITE request
+  of each call, dropping the responses, the ACK and the BYE, although the help
+  and the CLI reference promise "SIP dialogs (calls), not standalone
+  messages". The flag was applied to each message inside the header matcher,
+  where it could only keep INVITE requests; it is now asked of the dialog, so
+  every message of an INVITE dialog is shown and REGISTER, OPTIONS and
+  SUBSCRIBE dialogs are not. A script that counted `-c` output as one line
+  per call now sees every message of each call.
 - **A `--cores N` capture on a device that will not open no longer blames the
   kernel.** The fanout probe logged "the kernel refused PACKET_FANOUT" for
   every failure, including a mistyped interface name. It now says the probe

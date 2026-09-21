@@ -444,14 +444,121 @@ fn single_line_stops_dot_matching_newline() {
 //  CALLS-ONLY & DIALOG FLAGS (-c, --no-dialog, -R, -l)
 // ═══════════════════════════════════════════════════════════════════════
 
-/// `-c` (calls-only) emits exactly one message and it is the INVITE.
+/// `-c` (calls-only) emits the whole call: the fixture is one INVITE dialog,
+/// so all seven of its messages, starting with the INVITE.
 #[test]
 fn calls_only() {
     let (stdout, _, code) = run_json(&["-c"]);
     assert_eq!(code, 0);
-    assert_eq!(json_line_count(&stdout), 1, "calls-only shows 1 INVITE");
+    assert_eq!(
+        json_line_count(&stdout),
+        7,
+        "calls-only shows the whole call"
+    );
     let parsed: serde_json::Value = serde_json::from_str(stdout.lines().next().unwrap()).unwrap();
     assert_eq!(parsed["method"], "INVITE");
+}
+
+/// One SIP message as a UDP frame, `from` the caller's side or the callee's.
+fn sip_frame(outbound: bool, text: &str) -> Vec<u8> {
+    let (src, dst) = if outbound {
+        ([10, 0, 0, 1], [10, 0, 0, 2])
+    } else {
+        ([10, 0, 0, 2], [10, 0, 0, 1])
+    };
+    pcap_build::udp_frame(src, dst, 5060, 5060, text.as_bytes())
+}
+
+/// A request or response with the headers a dialog is keyed on.
+fn sip_text(start: &str, call_id: &str, cseq: &str) -> String {
+    format!(
+        "{start}\r\nVia: SIP/2.0/UDP 10.0.0.1:5060;branch=z9hG4bK-{call_id}-{cseq}\r\n\
+         From: <sip:1001@example.com>;tag=a\r\nTo: <sip:1002@example.com>\r\n\
+         Call-ID: {call_id}\r\nCSeq: {cseq}\r\nContent-Length: 0\r\n\r\n"
+    )
+}
+
+/// `-c` keeps every message of the INVITE dialog and drops the dialogs that
+/// are not calls, on a capture that holds both. The fixture capture is one
+/// call and nothing else, so it cannot tell "the whole call" from "every
+/// message"; this one can.
+#[test]
+fn calls_only_keeps_the_call_and_drops_dialogs_that_are_not_calls() {
+    let call = "cov7-call@example.com";
+    let mut frames = vec![
+        sip_frame(
+            true,
+            &sip_text("INVITE sip:1002@example.com SIP/2.0", call, "1 INVITE"),
+        ),
+        sip_frame(false, &sip_text("SIP/2.0 100 Trying", call, "1 INVITE")),
+        sip_frame(false, &sip_text("SIP/2.0 180 Ringing", call, "1 INVITE")),
+        sip_frame(false, &sip_text("SIP/2.0 200 OK", call, "1 INVITE")),
+        sip_frame(
+            true,
+            &sip_text("ACK sip:1002@example.com SIP/2.0", call, "1 ACK"),
+        ),
+        sip_frame(
+            true,
+            &sip_text("BYE sip:1002@example.com SIP/2.0", call, "2 BYE"),
+        ),
+        sip_frame(false, &sip_text("SIP/2.0 200 OK", call, "2 BYE")),
+    ];
+    for (id, method, uri) in [
+        ("cov7-reg@example.com", "REGISTER", "sip:example.com"),
+        ("cov7-opt@example.com", "OPTIONS", "sip:1002@example.com"),
+        ("cov7-sub@example.com", "SUBSCRIBE", "sip:1002@example.com"),
+    ] {
+        let cseq = format!("1 {method}");
+        frames.push(sip_frame(
+            true,
+            &sip_text(&format!("{method} {uri} SIP/2.0"), id, &cseq),
+        ));
+        frames.push(sip_frame(false, &sip_text("SIP/2.0 200 OK", id, &cseq)));
+    }
+    let notify = "cov7-sub@example.com";
+    frames.push(sip_frame(
+        false,
+        &sip_text("NOTIFY sip:1001@example.com SIP/2.0", notify, "1 NOTIFY"),
+    ));
+    frames.push(sip_frame(
+        true,
+        &sip_text("SIP/2.0 200 OK", notify, "1 NOTIFY"),
+    ));
+
+    let dir = tempfile::tempdir().unwrap();
+    let pcap = dir.path().join("call-and-others.pcap");
+    pcap_build::write_pcap(&pcap, &frames);
+    let path = pcap.to_str().unwrap();
+
+    let call_ids = |stdout: &str| -> Vec<String> {
+        stdout
+            .lines()
+            .filter(|l| l.starts_with('{'))
+            .map(|l| {
+                let v: serde_json::Value = serde_json::from_str(l).unwrap();
+                v["call_id"].as_str().unwrap_or("").to_string()
+            })
+            .collect()
+    };
+
+    // Guard: without -c every message is emitted, so the fixture really
+    // carries the three non-call dialogs this test is about.
+    let (all, _, code) = run(&["-N", "-I", path, "--json"]);
+    assert_eq!(code, 0);
+    assert_eq!(
+        call_ids(&all).len(),
+        15,
+        "the capture holds 15 messages: {all}"
+    );
+
+    let (calls, _, code) = run(&["-N", "-I", path, "--json", "-c"]);
+    assert_eq!(code, 0);
+    let ids = call_ids(&calls);
+    assert_eq!(ids.len(), 7, "-c shows every message of the call: {calls}");
+    assert!(
+        ids.iter().all(|id| id == call),
+        "-c shows nothing from the REGISTER, OPTIONS or SUBSCRIBE dialogs: {ids:?}"
+    );
 }
 
 /// `--no-dialog` still emits all 7 messages (dialog tracking off, output unchanged).

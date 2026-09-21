@@ -192,19 +192,31 @@ fn from_filter_rejects_nonmatching_messages() {
 
 // ── Calls-only filter ───────────────────────────────────────────────
 
-/// `-c` (calls-only) emits exactly one message and it is the INVITE.
+/// `-c` (calls-only) emits the whole call, not just its INVITE: the fixture
+/// is one INVITE dialog of seven messages, all sharing its Call-ID.
 #[test]
-fn calls_only_shows_invite_only() {
+fn calls_only_shows_the_whole_call() {
     let fixture = sip_call_fixture();
     let (stdout, _stderr, code) =
         run_sipnab(&["-N", "-I", fixture.to_str().unwrap(), "--json", "-c"]);
 
     assert_eq!(code, 0);
     let json_lines: Vec<&str> = stdout.lines().filter(|l| l.starts_with('{')).collect();
-    assert_eq!(json_lines.len(), 1, "calls-only should show 1 INVITE");
+    assert_eq!(
+        json_lines.len(),
+        7,
+        "calls-only should show all 7 messages of the call"
+    );
 
-    let parsed: serde_json::Value = serde_json::from_str(json_lines[0]).unwrap();
-    assert_eq!(parsed["method"], "INVITE");
+    let parsed: Vec<serde_json::Value> = json_lines
+        .iter()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    assert_eq!(parsed[0]["method"], "INVITE");
+    assert!(
+        parsed.iter().all(|m| m["call_id"] == parsed[0]["call_id"]),
+        "every message belongs to the one call"
+    );
 }
 
 // ── Summary line ────────────────────────────────────────────────────

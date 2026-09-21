@@ -4471,16 +4471,14 @@ fn process_parsed_packet(
                 }
             }
 
-            // I5: --calls-only: skip non-INVITE dialogs from output
+            // I5: --calls-only keeps every message of an INVITE dialog and
+            // drops dialogs that are not calls. One rule, asked of the dialog.
             let calls_only_pass = if cli.mode_args.calls_only {
-                if let Some(call_id) = sip_msg.call_id()
-                    && let Some(dialog) = dialog_store.get(call_id)
-                {
-                    dialog.method == crate::sip::SipMethod::Invite
-                } else {
-                    // No dialog tracked — only show if it's an INVITE request
-                    sip_msg.method.as_ref() == Some(&crate::sip::SipMethod::Invite)
-                }
+                let dialog = sip_msg.call_id().and_then(|id| dialog_store.get(id));
+                crate::sip::matcher::calls_only_admits(
+                    dialog.as_ref().map(|d| &d.method),
+                    sip_msg.method.as_ref(),
+                )
             } else {
                 true
             };

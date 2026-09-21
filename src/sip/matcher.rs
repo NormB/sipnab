@@ -48,8 +48,6 @@ pub struct SipMatcher {
     ua_regex: Option<Regex>,
     /// Negate the final match result (`-v` / `--invert`).
     invert: bool,
-    /// Only match INVITE requests (`-c` / `--calls-only`).
-    calls_only: bool,
 }
 
 impl SipMatcher {
@@ -133,19 +131,21 @@ impl SipMatcher {
             contact_regex,
             ua_regex,
             invert: cli.matching_args.invert,
-            calls_only: cli.mode_args.calls_only,
         })
     }
 
     /// Evaluate whether a SIP message matches all active criteria.
     ///
     /// The evaluation order is:
-    /// 1. `calls_only` — reject non-INVITE messages
-    /// 2. `payload_regex` — test against full raw message bytes (copy-free)
-    /// 3. `from_regex` — test against the From header (full value, then user part)
-    /// 4. `to_regex` — test against the To header (full value, then user part)
-    /// 5. `contact_regex` — test against the Contact header
-    /// 6. `ua_regex` — test against the User-Agent (or Server) header
+    /// 1. `payload_regex` — test against full raw message bytes (copy-free)
+    /// 2. `from_regex` — test against the From header (full value, then user part)
+    /// 3. `to_regex` — test against the To header (full value, then user part)
+    /// 4. `contact_regex` — test against the Contact header
+    /// 5. `ua_regex` — test against the User-Agent (or Server) header
+    ///
+    /// `-c` / `--calls-only` is not here: it is a property of the DIALOG a
+    /// message belongs to, so it is [`calls_only_admits`], applied where the
+    /// dialog is known.
     ///
     /// All active criteria must match (AND logic). If `invert` is set, the
     /// final boolean is negated.
@@ -164,28 +164,16 @@ impl SipMatcher {
             || self.contact_regex.is_some()
             || self.ua_regex.is_some()
             || self.invert
-            || self.calls_only
     }
 
     /// Positive (non-inverted) match evaluation.
     ///
-    /// Tests `msg` against each configured criterion in order (calls-only,
-    /// payload, From, To, Contact, User-Agent) and returns `false` at the
+    /// Tests `msg` against each configured criterion in order (payload,
+    /// From, To, Contact, User-Agent) and returns `false` at the
     /// first failure; missing headers are treated as empty strings. Returns
     /// `true` when every active criterion matches (vacuously true with no
     /// filters). Pure — `invert` is applied by the caller.
     fn matches_positive(&self, msg: &SipMessage) -> bool {
-        // calls_only: reject anything that isn't an INVITE request. Method
-        // tokens are case-sensitive per RFC 3261 §7.1 (INVITE ≠ invite on the
-        // wire), matching SipMethod::parse — a lowercase "invite" parses to
-        // SipMethod::Custom and is correctly rejected here.
-        if self.calls_only {
-            let is_invite = msg.method.as_ref() == Some(&SipMethod::Invite);
-            if !is_invite {
-                return false;
-            }
-        }
-
         // payload_regex: test against full raw message bytes (copy-free — no
         // lossy UTF-8 allocation, and non-UTF-8 payloads match faithfully)
         if let Some(ref re) = self.payload_regex
@@ -329,6 +317,30 @@ fn compile_pattern_bytes(
 /// Tests for filter compilation and matching: per-header filters, AND
 /// combination, invert, calls-only, case/word modes, payload regexes, and
 /// the regex safety limits.
+/// Whether `-c` / `--calls-only` admits a message.
+///
+/// A call is a dialog that an INVITE started, and every message in it belongs
+/// to the call: the responses, the ACK, the BYE, a re-INVITE. So the question
+/// is asked of the DIALOG (`dialog_method`, the method that created it), not
+/// of the message. It used to be asked of the message, inside the matcher,
+/// which dropped everything but the INVITE request and made `-c` print a lone
+/// INVITE for a complete call -- while the help and the CLI reference promise
+/// "SIP dialogs (calls), not standalone messages".
+///
+/// With no dialog tracked (`--no-dialog`, or a Call-ID nothing recorded) the
+/// only message recognizable as a call on its own is an INVITE request; a
+/// response cannot say what it answers. Method tokens compare exactly, so a
+/// lowercase `invite` is not one ([RFC 3261 section 7.1](https://www.rfc-editor.org/rfc/rfc3261#section-7.1)).
+pub fn calls_only_admits(
+    dialog_method: Option<&SipMethod>,
+    message_method: Option<&SipMethod>,
+) -> bool {
+    match dialog_method {
+        Some(method) => method == &SipMethod::Invite,
+        None => message_method == Some(&SipMethod::Invite),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -564,60 +576,31 @@ mod tests {
         assert!(matcher.matches(&msg));
     }
 
-    // ── -c calls_only ────────────────────────────────────────────────
+    // ── -c is not a per-message filter ───────────────────────────────
 
-    /// `-c` accepts an INVITE request.
+    /// `-c` leaves the matcher alone: a REGISTER and a response both pass it,
+    /// because whether a message is part of a call is decided by its dialog
+    /// ([`calls_only_admits`]). Rejecting them here dropped every response,
+    /// ACK and BYE of every call.
     #[test]
-    fn calls_only_accepts_invite() {
+    fn calls_only_is_not_a_per_message_filter() {
         let cli = Cli::parse_from_args(["sipnab", "-c"]);
         let matcher = SipMatcher::new(&cli, None).expect("should build");
 
-        let msg = make_test_invite("1001", "1002", "TestUA/1.0", "10.0.0.5");
-        assert!(matcher.matches(&msg));
-    }
-
-    /// `-c` rejects a REGISTER request.
-    #[test]
-    fn calls_only_rejects_register() {
-        let cli = Cli::parse_from_args(["sipnab", "-c"]);
-        let matcher = SipMatcher::new(&cli, None).expect("should build");
-
-        let msg = make_test_register("1001");
-        assert!(!matcher.matches(&msg));
-    }
-
-    /// `-c` accepts a canonical uppercase INVITE (pins the case-SENSITIVE
-    /// behavior — the matching half that must keep working).
-    #[test]
-    fn calls_only_accepts_uppercase_invite() {
-        let cli = Cli::parse_from_args(["sipnab", "-c"]);
-        let matcher = SipMatcher::new(&cli, None).expect("should build");
-
-        let msg = make_test_invite("1001", "1002", "TestUA/1.0", "10.0.0.5");
-        assert!(matcher.matches(&msg));
-    }
-
-    /// `-c` rejects a lowercase `invite` request line. SIP method tokens are
-    /// case-sensitive per [RFC 3261 section 7.1](https://www.rfc-editor.org/rfc/rfc3261#section-7.1), so `invite` is NOT an INVITE — it
-    /// parses to `SipMethod::Custom("invite")`. This pins the matcher to the
-    /// same case-sensitive semantics as `SipMethod::parse`.
-    #[test]
-    fn calls_only_rejects_lowercase_invite() {
-        let cli = Cli::parse_from_args(["sipnab", "-c"]);
-        let matcher = SipMatcher::new(&cli, None).expect("should build");
-
+        assert!(matcher.matches(&make_test_invite("1001", "1002", "TestUA/1.0", "10.0.0.5")));
+        assert!(matcher.matches(&make_test_register("1001")));
         let raw = build_sip(
-            "invite sip:1002@example.com SIP/2.0",
+            "SIP/2.0 200 OK",
             &[
-                "From: <sip:1001@example.com>;tag=lc1",
-                "To: <sip:1002@example.com>",
-                "Call-ID: lowercase-invite@example.com",
-                "CSeq: 1 invite",
+                "From: <sip:1001@example.com>;tag=r1",
+                "To: <sip:1002@example.com>;tag=r2",
+                "Call-ID: resp-test@example.com",
+                "CSeq: 1 INVITE",
                 "Content-Length: 0",
             ],
             b"",
         );
-        let msg = parse_sip(
+        let response = parse_sip(
             &raw,
             ts(),
             localhost(),
@@ -627,13 +610,7 @@ mod tests {
             TransportProto::Udp,
         )
         .expect("should parse");
-        // Sanity: it really is a request whose method is not the INVITE variant.
-        assert!(msg.is_request);
-        assert_ne!(msg.method.as_ref(), Some(&SipMethod::Invite));
-        assert!(
-            !matcher.matches(&msg),
-            "lowercase 'invite' is not INVITE (RFC 3261 §7.1 case-sensitive)"
-        );
+        assert!(matcher.matches(&response));
     }
 
     // ── -i case insensitive ──────────────────────────────────────────
@@ -896,44 +873,69 @@ mod tests {
         assert!(matcher.is_active());
     }
 
-    /// `-c` alone counts as an active filter.
+    /// `-c` alone configures no matcher criterion; it is applied per dialog.
     #[test]
-    fn is_active_with_calls_only() {
+    fn calls_only_alone_leaves_the_matcher_inactive() {
         let cli = Cli::parse_from_args(["sipnab", "-c"]);
         let matcher = SipMatcher::new(&cli, None).expect("should build");
-        assert!(matcher.is_active());
+        assert!(!matcher.is_active());
+    }
+}
+
+#[cfg(test)]
+mod calls_only_admits_tests {
+    use super::calls_only_admits;
+    use crate::sip::SipMethod;
+
+    const INVITE: Option<&SipMethod> = Some(&SipMethod::Invite);
+
+    /// The INVITE that starts a call is a call.
+    #[test]
+    fn the_invite_that_starts_a_call_is_admitted() {
+        assert!(calls_only_admits(INVITE, INVITE));
     }
 
-    // ── Response message with calls_only ─────────────────────────────
-
-    /// `-c` rejects responses (even a 200 OK to INVITE).
+    /// `--calls-only` shows the CALL, and a call is more than its INVITE: the
+    /// provisional and final responses, the ACK and the BYE belong to it. The
+    /// flag used to be applied per message, so every one of them was dropped
+    /// and `-c` printed a lone INVITE for a complete call.
     #[test]
-    fn calls_only_rejects_response() {
-        let cli = Cli::parse_from_args(["sipnab", "-c"]);
-        let matcher = SipMatcher::new(&cli, None).expect("should build");
+    fn every_message_of_an_invite_dialog_is_admitted() {
+        assert!(calls_only_admits(INVITE, None), "a response has no method");
+        for m in [
+            SipMethod::Ack,
+            SipMethod::Bye,
+            SipMethod::Cancel,
+            SipMethod::Invite,
+        ] {
+            assert!(calls_only_admits(INVITE, Some(&m)), "{m:?} inside a call");
+        }
+    }
 
-        let raw = build_sip(
-            "SIP/2.0 200 OK",
-            &[
-                "From: <sip:1001@example.com>;tag=r1",
-                "To: <sip:1002@example.com>;tag=r2",
-                "Call-ID: resp-test@example.com",
-                "CSeq: 1 INVITE",
-                "Content-Length: 0",
-            ],
-            b"",
-        );
-        let msg = parse_sip(
-            &raw,
-            ts(),
-            localhost(),
-            localhost(),
-            5060,
-            5060,
-            TransportProto::Udp,
-        )
-        .expect("should parse");
+    /// A dialog that did not start with INVITE is not a call, whatever passes
+    /// through it: the REGISTER, its 200, a SUBSCRIBE and its NOTIFY.
+    #[test]
+    fn a_dialog_that_did_not_start_with_invite_is_refused() {
+        let register = Some(&SipMethod::Register);
+        assert!(!calls_only_admits(register, register));
+        assert!(!calls_only_admits(register, None));
+        let subscribe = Some(&SipMethod::Subscribe);
+        assert!(!calls_only_admits(subscribe, Some(&SipMethod::Notify)));
+        let options = Some(&SipMethod::Options);
+        assert!(!calls_only_admits(options, None));
+    }
 
-        assert!(!matcher.matches(&msg));
+    /// With no dialog tracked (`--no-dialog`, or a Call-ID nothing recorded),
+    /// only an INVITE request can be recognized as a call on its own; a lone
+    /// response cannot say what it answers.
+    #[test]
+    fn without_a_dialog_only_an_invite_request_is_admitted() {
+        assert!(calls_only_admits(None, INVITE));
+        assert!(!calls_only_admits(None, None));
+        assert!(!calls_only_admits(None, Some(&SipMethod::Register)));
+        // Method tokens are case-sensitive (RFC 3261 section 7.1): `invite`
+        // parses to a custom method and is not a call.
+        let lowercase = SipMethod::Custom("invite".into());
+        assert!(!calls_only_admits(None, Some(&lowercase)));
     }
 }
