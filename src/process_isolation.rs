@@ -2364,4 +2364,335 @@ mod tests {
         ))));
         assert!(!is_broadcast_or_multicast(IpAddr::V6(Ipv6Addr::LOCALHOST)));
     }
+
+    // ── Routing and bookkeeping, with nothing able to transmit ───────────
+    //
+    // The raw half needs CAP_NET_RAW to open a socket and the ephemeral half
+    // puts a datagram on the wire, so neither SEND is exercised below. What
+    // is exercised is everything around the sends -- which path a request
+    // takes, what a failure falls back to, and what is booked -- with every
+    // socket absent, so a request that reached a send would have nowhere to
+    // go and would say so.
+
+    /// A worker with no sockets at all: raw optional, both UDP sockets absent.
+    fn socketless_worker(
+        raw_sock: Option<RawKillSocket>,
+    ) -> (
+        ScannerKillWorker,
+        Sender<KillRequest>,
+        Receiver<KillResponse>,
+        Arc<KillTally>,
+    ) {
+        let (tx, rx) = crossbeam_channel::bounded(4);
+        let (resp_tx, resp_rx) = crossbeam_channel::bounded(4);
+        let tally = Arc::new(KillTally::default());
+        let worker = ScannerKillWorker {
+            rx,
+            resp_tx,
+            tally: Arc::clone(&tally),
+            rate_limiter: RateLimiter::new(100),
+            per_dst_limiter: PerDstRateLimiter::new(),
+            sock_v4: None,
+            sock_v6: None,
+            raw_sock,
+            permit: live_permit(),
+        };
+        (worker, tx, resp_rx, tally)
+    }
+
+    /// A documentation-range address: nothing is ever sent to it, because no
+    /// socket exists for anything to be sent on.
+    fn test_net_v4(host: u8) -> IpAddr {
+        IpAddr::V4(Ipv4Addr::new(192, 0, 2, host))
+    }
+
+    #[cfg(target_os = "linux")]
+    fn test_net_v6(host: u16) -> IpAddr {
+        IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, host))
+    }
+
+    /// A raw socket lacking the family asked for refuses by name. It is the
+    /// same refusal a runtime send failure produces, and it is what sends the
+    /// request down the fallback path.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_raw_socket_without_the_family_refuses_rather_than_sending() {
+        let raw = RawKillSocket {
+            fd_v4: None,
+            fd_v6: None,
+        };
+        let permit = live_permit();
+        let v4 = raw
+            .send_to_v4(
+                &permit,
+                b"x",
+                SocketAddrV4::new(Ipv4Addr::new(192, 0, 2, 1), 5060),
+            )
+            .expect_err("no IPv4 raw socket");
+        assert_eq!(v4.kind(), std::io::ErrorKind::Unsupported);
+        assert!(v4.to_string().contains("no IPv4 raw socket"), "{v4}");
+        let v6 = raw
+            .send_to_v6(
+                &permit,
+                b"x",
+                std::net::SocketAddrV6::new(
+                    Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1),
+                    5060,
+                    0,
+                    0,
+                ),
+            )
+            .expect_err("no IPv6 raw socket");
+        assert!(v6.to_string().contains("no IPv6 raw socket"), "{v6}");
+    }
+
+    /// A spoofed send that fails falls through to the ephemeral path rather
+    /// than dropping the response -- and with no UDP socket either, the
+    /// outcome says there was nothing to send on, which is how this test sees
+    /// that the fallback was taken.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_failed_spoofed_send_falls_back_to_the_ephemeral_path() {
+        for (dst, src) in [
+            (test_net_v4(10), test_net_v4(20)),
+            (test_net_v6(10), test_net_v6(20)),
+        ] {
+            let raw = RawKillSocket {
+                fd_v4: None,
+                fd_v6: None,
+            };
+            let (mut worker, _tx, _rx, _tally) = socketless_worker(Some(raw));
+            let outcome = worker.process_send(dst, 5060, src, 5060, &sample_response());
+            assert_eq!(
+                outcome,
+                KillResponse::Error {
+                    message: format!("no UDP socket available for {dst}")
+                },
+                "the raw failure must reach the ephemeral path for {dst}"
+            );
+        }
+    }
+
+    /// Mixed families never occur from one packet, but if they did there is
+    /// no datagram to spoof. That is not a failure: the ephemeral path takes
+    /// the request.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn mixed_address_families_skip_spoofing_and_take_the_ephemeral_path() {
+        let raw = RawKillSocket {
+            fd_v4: None,
+            fd_v6: None,
+        };
+        let (mut worker, _tx, _rx, _tally) = socketless_worker(Some(raw));
+        let dst = test_net_v4(11);
+        let outcome = worker.process_send(dst, 5060, test_net_v6(21), 5060, &sample_response());
+        assert_eq!(
+            outcome,
+            KillResponse::Error {
+                message: format!("no UDP socket available for {dst}")
+            }
+        );
+    }
+
+    /// A request the worker could not send on any socket is booked as an
+    /// error and published as one -- counted, not silently dropped.
+    #[test]
+    fn an_unsendable_request_is_booked_as_an_error_and_published() {
+        let (worker, tx, resp_rx, tally) = socketless_worker(None);
+        tx.send(KillRequest::SendResponse {
+            dst_addr: test_net_v4(12),
+            dst_port: 5060,
+            src_addr: test_net_v4(22),
+            src_port: 5060,
+            response_bytes: sample_response(),
+        })
+        .expect("queue has room");
+        drop(tx);
+        worker.run();
+
+        let counts = tally.snapshot();
+        assert_eq!(counts.errored, 1, "{counts:?}");
+        assert_eq!(counts.outcomes(), 1);
+        assert!(matches!(resp_rx.try_recv(), Ok(KillResponse::Error { .. })));
+    }
+
+    /// The worker returns once nothing can reach it: a disconnected request
+    /// channel is an exit, not a spin and not a hang.
+    #[test]
+    fn the_worker_exits_when_no_sender_can_reach_it() {
+        let (worker, tx, _rx, _tally) = socketless_worker(None);
+        drop(tx);
+        let (done_tx, done_rx) = crossbeam_channel::bounded::<()>(1);
+        std::thread::Builder::new()
+            .name("kill-worker-disconnect-test".to_string())
+            .spawn(move || {
+                worker.run();
+                let _ = done_tx.send(());
+            })
+            .expect("spawn");
+        done_rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("the worker must return when its channel disconnects");
+    }
+
+    /// Each outcome class has its own counter, and the derived totals agree.
+    #[test]
+    fn every_outcome_class_is_booked_in_its_own_counter() {
+        let tally = KillTally::default();
+        tally.record(&KillResponse::Sent);
+        for _ in 0..2 {
+            tally.record(&KillResponse::RateLimited);
+        }
+        tally.record(&KillResponse::Rejected {
+            reason: "broadcast".to_string(),
+        });
+        for _ in 0..3 {
+            tally.record(&KillResponse::Error {
+                message: "no socket".to_string(),
+            });
+        }
+        let c = tally.snapshot();
+        assert_eq!(
+            (c.sent, c.rate_limited, c.rejected, c.errored),
+            (1, 2, 1, 3)
+        );
+        assert_eq!(c.outcomes(), 7);
+        assert!(!c.any_dropped());
+
+        tally.note_unobserved_outcome();
+        let c = tally.snapshot();
+        assert_eq!(c.unobserved_outcomes, 1);
+        assert!(c.any_dropped());
+        assert_eq!(
+            c.outcomes(),
+            7,
+            "an outcome nobody watched is still one outcome, not two"
+        );
+    }
+
+    /// The two send modes are counted apart, and the metrics accessor reads
+    /// both.
+    #[test]
+    fn kill_sends_are_counted_per_mode() {
+        let (raw_before, _) = kill_responses_sent();
+        inc_kill_response_sent(true);
+        let (raw_after, eph_mid) = kill_responses_sent();
+        assert!(raw_after > raw_before, "a spoofed send is counted as raw");
+
+        inc_kill_response_sent(false);
+        let (raw_end, eph_end) = kill_responses_sent();
+        assert!(
+            eph_end > eph_mid,
+            "an ephemeral send is counted as ephemeral"
+        );
+        // Other tests in this process send ephemerally, so only the raw
+        // counter is quiet enough to compare exactly -- and only when nothing
+        // here can open a raw socket, which is every run that is not root.
+        if !crate::privilege::is_root() {
+            assert_eq!(raw_end, raw_after, "an ephemeral send is not a raw one");
+        }
+    }
+
+    /// Once shut down, the handle refuses further requests and reports the
+    /// defense as disabled from then on -- a kill after shutdown must not
+    /// vanish as though it had been queued.
+    #[test]
+    fn a_kill_offered_after_shutdown_is_refused_and_disables_the_defense() {
+        let mut handle =
+            spawn_scanner_kill_worker(Some(10), None, live_permit()).expect("spawn worker");
+        handle.shutdown();
+        assert!(
+            !handle.defense_disabled(),
+            "an orderly stop is not a failure"
+        );
+
+        let err = handle
+            .send_kill(KillRequest::Shutdown)
+            .expect_err("no worker is left to take it");
+        assert!(matches!(
+            err,
+            TrySendError::Disconnected(KillRequest::Shutdown)
+        ));
+        assert!(handle.defense_disabled());
+        assert!(handle.send_kill(KillRequest::Shutdown).is_err());
+        assert!(handle.defense_disabled(), "and it stays disabled");
+    }
+
+    /// The global limit is per one-second window: once the window rolls over
+    /// the count starts again, and the new window is itself limited.
+    #[test]
+    fn the_global_limit_resets_when_its_window_rolls_over() {
+        let mut lim = RateLimiter::new(1);
+        assert!(lim.allow());
+        assert!(!lim.allow(), "one per window");
+        lim.window_start = Instant::now()
+            .checked_sub(std::time::Duration::from_secs(2))
+            .expect("the clock has run for two seconds");
+        assert!(lim.allow(), "a new window admits again");
+        assert!(!lim.allow(), "and is limited in turn");
+    }
+
+    /// A destination's allowance returns after its minute, counting from one.
+    #[test]
+    fn a_destinations_allowance_returns_after_its_minute() {
+        let mut lim = PerDstRateLimiter::new();
+        let dst = test_net_v4(30);
+        for _ in 0..MAX_PER_DST_PER_MINUTE {
+            assert!(lim.allow(dst));
+        }
+        assert!(!lim.allow(dst), "capped within the minute");
+
+        let a_minute_ago = Instant::now()
+            .checked_sub(std::time::Duration::from_secs(61))
+            .expect("the clock has run for a minute");
+        lim.buckets
+            .insert(dst, (a_minute_ago, MAX_PER_DST_PER_MINUTE));
+        assert!(lim.allow(dst), "a new minute admits again");
+        assert_eq!(lim.buckets[&dst].1, 1, "counting from one");
+    }
+
+    /// A read interrupted by a signal is retried, never reported as a failure
+    /// or mistaken for the end of the stream.
+    #[test]
+    fn an_interrupted_read_is_retried_rather_than_reported() {
+        use std::io::Read;
+        struct InterruptedOnce {
+            interrupted: bool,
+            inner: std::io::Cursor<Vec<u8>>,
+        }
+        impl Read for InterruptedOnce {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                if !self.interrupted {
+                    self.interrupted = true;
+                    return Err(std::io::ErrorKind::Interrupted.into());
+                }
+                self.inner.read(buf)
+            }
+        }
+        let mut pipe = Vec::new();
+        wire::write_frame(&mut pipe, &KillResponse::RateLimited).expect("encode");
+        let mut from = InterruptedOnce {
+            interrupted: false,
+            inner: std::io::Cursor::new(pipe),
+        };
+        assert_eq!(
+            wire::read_frame::<_, KillResponse>(&mut from).expect("retried"),
+            Some(KillResponse::RateLimited)
+        );
+        assert!(from.interrupted, "the interruption really happened");
+    }
+
+    /// Any other read error is the pipe failing, and is returned as it is --
+    /// not read as the clean close a `None` would mean.
+    #[test]
+    fn a_failing_read_is_an_error_not_a_clean_close() {
+        struct Broken;
+        impl std::io::Read for Broken {
+            fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+                Err(std::io::ErrorKind::BrokenPipe.into())
+            }
+        }
+        let err = wire::read_frame::<_, KillResponse>(&mut Broken).expect_err("a dead pipe");
+        assert_eq!(err.kind(), std::io::ErrorKind::BrokenPipe);
+    }
 }
