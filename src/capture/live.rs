@@ -386,6 +386,10 @@ pub fn capture_live_fanout(
 /// Why the fanout probe failed, which decides what the fallback may claim.
 enum ProbeFailure {
     /// The device would not open, so nothing was asked of the kernel's fanout.
+    #[cfg_attr(
+        all(not(target_os = "linux"), not(test)),
+        expect(dead_code, reason = "only the Linux probe opens a device")
+    )]
     Open(anyhow::Error),
     /// The device opened and the kernel refused to join the group.
     Join(anyhow::Error),
