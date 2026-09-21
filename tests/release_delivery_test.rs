@@ -31,7 +31,10 @@ use std::process::Command;
 #[path = "support/release_logic.rs"]
 mod release_logic;
 
-use release_logic::{ADVERTISEMENT_PATHS, is_advertisement, is_dependency_bump, parse_version};
+use release_logic::{
+    ADVERTISEMENT_PATHS, is_advertisement, is_advertisement_beside_dependency_bumps,
+    is_dependency_bump, parse_version,
+};
 
 /// The repository root.
 fn repo() -> PathBuf {
@@ -256,6 +259,20 @@ fn only_advertises_the_newest_tag() -> Option<bool> {
 fn only_bumps_dependencies() -> Option<bool> {
     let changed = changed_since_newest_tag()?;
     Some(is_dependency_bump(&changed))
+}
+
+/// Whether everything past the newest tag is that tag's advertisement plus
+/// dependency bumps.
+///
+/// Returns `None` when git cannot answer, which callers must treat as "cannot
+/// tell" rather than as "yes".
+fn only_advertises_beside_dependency_bumps() -> Option<bool> {
+    let changed = changed_since_newest_tag()?;
+    Some(is_advertisement_beside_dependency_bumps(
+        &changed,
+        published_version(),
+        newest_tag()?,
+    ))
 }
 
 // ── A. Unreleased work must declare itself ──────────────────────────
@@ -767,6 +784,12 @@ fn a_p0_marked_done_is_released_or_declared() {
         // the gate reported every Dependabot pull request as an undeclared
         // release and made all six unmergeable against a branch protection
         // requiring `CI success`.
+        return;
+    }
+    if only_advertises_beside_dependency_bumps() == Some(true) {
+        // Phase two landing after Dependabot merges: both arms above ask
+        // whether every path is of their kind, so the mixture passes neither,
+        // though each of its paths would.
         return;
     }
     let (_, has_unreleased) = changelog_sections();

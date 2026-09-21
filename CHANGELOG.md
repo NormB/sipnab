@@ -8,6 +8,19 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Internal
+
+- **Phase two of a release can be pushed after a Dependabot merge.** The
+  delivery gate exempted a diff past the newest tag that was only that tag's
+  advertisement, or only dependency bumps, but not both at once. When
+  Dependabot pull requests merged between the 0.5.182 tag and its
+  advertisement, the pre-push hook refused the advertisement as undeclared
+  work, though every file in it was exempt. The gate now also accepts the
+  mixture, through a predicate composed from the two existing ones, so it is
+  no wider than their union.
+
 ## [0.5.182] - 2026-09-19
 
 ### Changed
