@@ -2528,13 +2528,15 @@ impl BatchRunner {
         let hep_sender: Option<crate::capture::hep::HepSender> =
             if let Some(ref addr) = cli.hep_args.hep_send {
                 let capture_id = cli.hep_args.hep_id.unwrap_or(1);
-                let hep_auth = match cli.resolve_hep_auth() {
-                    Ok(a) => a,
-                    Err(e) => {
-                        tracing::error!("HEP auth: {e}");
-                        None
-                    }
-                };
+                // Fatal, as `-L` makes the same refusal: logging it and sending
+                // anyway forwarded the capture's signaling unauthenticated,
+                // which is the silent disabling the resolver exists to prevent.
+                let hep_auth =
+                    cli.resolve_hep_auth()
+                        .map_err(|e| crate::app::bootstrap::PlanError {
+                            exit_code: 2,
+                            message: format!("HEP auth: {e}"),
+                        })?;
                 let authenticated = hep_auth.is_some();
                 // Mint the destination here rather than inside the constructor, so
                 // the type is proven at the call site. While the constructor took a
@@ -2624,12 +2626,14 @@ impl BatchRunner {
         // is that it never polls.
         #[cfg(any(feature = "api", feature = "mcp"))]
         let relay_query_permit = batch.relay.ready.as_ref().map(|r| r.permit);
-        // Captured before the take below moves the reconciler away. The poller
-        // transmits on its own thread with its own client, exactly like
-        // `query_relay`, so it needs only the `Copy` permit -- and it must not
-        // ride the reconciler's cadence (there is none) or its transaction
-        // budget (orphan attribution must not compete with a poll).
-        let relay_poll_permit = batch.relay.ready.as_ref().map(|r| r.permit);
+        // The poller transmits on its own thread with its own client, exactly
+        // like `query_relay`, so it needs only the `Copy` permit -- and it must
+        // not ride the reconciler's cadence (there is none) or its transaction
+        // budget (orphan attribution must not compete with a poll). Taken from
+        // the SOURCE, like `transmit_permit`, not from the reconciler: that
+        // exists only when the address parsed, so a live run with a malformed
+        // address was refused as one that "reads a file".
+        let relay_poll_permit = transmit_permit;
         let (relay_orphans, relay_thread) = match batch.relay.ready.take() {
             Some(ready) => {
                 let (sink, orphan_rx) = crate::relay::reconcile::orphan_channel();
@@ -11742,5 +11746,50 @@ mod tests {
             10,
             "with nothing declared, ten findings must all be kept"
         );
+    }
+}
+
+/// The small pure helpers behind the end-of-run notices and the detector
+/// construction the TUI shares with batch mode.
+#[cfg(test)]
+mod notice_helper_tests {
+    use super::*;
+    use clap::Parser as _;
+
+    /// A list within the cap is joined whole, with nothing said about a rest.
+    #[test]
+    fn a_list_within_the_cap_is_joined_whole() {
+        assert_eq!(join_capped(&["a", "b", "c"], 3), "a, b, c");
+    }
+
+    /// A list past the cap shows the first `max` and counts the rest, so a
+    /// roster that was cut never reads as complete.
+    #[test]
+    fn a_list_past_the_cap_counts_what_it_withheld() {
+        assert_eq!(
+            join_capped(&["a", "b", "c", "d", "e"], 2),
+            "a, b, and 3 more"
+        );
+    }
+
+    /// A malformed business-hours spec that slipped past validation still
+    /// arms the fraud detector -- without the off-hours rule, and saying so --
+    /// rather than dropping every fraud detection along with it.
+    #[test]
+    fn a_malformed_business_hours_spec_still_arms_the_fraud_detector() {
+        let mut cli = Cli::parse_from(["sipnab", "--fraud-detect"]);
+        cli.security_args.business_hours = Some("nine-to-five".to_string());
+        assert!(
+            build_fraud_detector(&cli, &Config::default()).is_some(),
+            "the rest of fraud detection must survive a bad off-hours spec"
+        );
+    }
+
+    /// Without `--fraud-detect` or `[security] fraud_detect`, nothing is
+    /// built: the partner that keeps the case above from passing vacuously.
+    #[test]
+    fn no_fraud_flag_builds_no_fraud_detector() {
+        let cli = Cli::parse_from(["sipnab"]);
+        assert!(build_fraud_detector(&cli, &Config::default()).is_none());
     }
 }

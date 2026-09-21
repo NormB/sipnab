@@ -38,8 +38,11 @@ const KNOWN_UNTESTED: &[&str] = &[
 
     // ── Crypto: need a TLS/SRTP/DTLS pcap + matching keys (M5/T5.1 fixtures) ──
     "keylog-watch", // live keylog tailing — needs the same + a running source
-    "dtls-keylog",  // DTLS-SRTP key extraction — needs a DTLS pcap
     "tls-key",      // TLS private-key decrypt — needs TLS-SIP pcap + the key
+    // `dtls-keylog` left this list on 2026-09-21: batch_run_paths_test loads a
+    // two-entry keylog and asserts the run announces both entries. Narrower
+    // than behavior coverage, like `srtp-keys` below: no DTLS handshake is
+    // decrypted -- that still needs a DTLS pcap.
     // `srtp-keys` left this list on 2026-09-12, and as with `on-quality-exec`
     // the reference that retired it is NARROWER than behavior coverage:
     // `doc_commands_run_test` writes an empty file for the flag and RUNS the
