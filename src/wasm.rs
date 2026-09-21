@@ -9,8 +9,6 @@ use wasm_bindgen::prelude::*;
 #[cfg(target_arch = "wasm32")]
 use crate::capture::packet::Packet;
 #[cfg(target_arch = "wasm32")]
-use crate::capture::parse::parse_packet;
-#[cfg(target_arch = "wasm32")]
 use crate::capture::pcap_reader::PcapReader;
 #[cfg(target_arch = "wasm32")]
 use crate::rtp::stream_store::StreamStore;
@@ -108,16 +106,11 @@ impl SipnabSession {
             let link_type = pkt.link_type as i32;
             let capture_pkt = Packet::new(ts, pkt.data, caplen, orig_len, pkt.interface, link_type);
 
-            // The browser analyzer counts undecodable frames like every other
-            // entry point. A user who drags in a capture sipnab cannot read
-            // must not be shown an empty result that looks like a clean one.
-            let parsed = match parse_packet(&capture_pkt) {
-                Ok(p) => Some(p),
-                Err(e) => {
-                    crate::capture::record_undecodable(&e, crate::capture::FrameFacts::UNRECORDED);
-                    None
-                }
-            };
+            // The browser analyzer counts undecodable and snapped frames like
+            // every other entry point. A user who drags in a capture sipnab
+            // cannot read must not be shown an empty result that looks like a
+            // clean one.
+            let parsed = crate::capture::decode_captured_frame(&capture_pkt).ok();
             if let Some(parsed) = parsed {
                 if !parsed.payload.is_empty() {
                     if sip::is_sip_message(&parsed.payload) {

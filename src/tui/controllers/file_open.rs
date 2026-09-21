@@ -456,16 +456,13 @@ fn run_pcap_load(
             link_type,
         );
 
-        // Count the frames this path cannot read, exactly as the batch path
-        // does. Opening a capture in the TUI is the same question as running
-        // it headless, so "sipnab could not decode any of this" must not be a
-        // fact only the headless run gets told.
-        let parsed = match crate::capture::parse::parse_packet(&capture_pkt) {
-            Ok(p) => p,
-            Err(e) => {
-                crate::capture::record_undecodable(&e, crate::capture::FrameFacts::UNRECORDED);
-                continue;
-            }
+        // Count the frames this path cannot read, and the ones the capture
+        // cut short, exactly as the batch path does. Opening a capture in the
+        // TUI is the same question as running it headless, so "sipnab could
+        // not decode any of this" must not be a fact only the headless run
+        // gets told.
+        let Ok(parsed) = crate::capture::decode_captured_frame(&capture_pkt) else {
+            continue;
         };
         if parsed.payload.is_empty() {
             continue;
@@ -1705,5 +1702,25 @@ mod browser_tests {
         poll_pcap_load(&mut app);
         assert_eq!(app.status_error.as_deref(), Some("unrelated"));
         assert!(app.pcap_load.is_none());
+    }
+
+    /// Opening a capture in the TUI counts a snapped frame exactly as the
+    /// headless run does, so the capture-quality view has something to show.
+    #[test]
+    #[serial_test::serial(undecodable_tally)]
+    fn a_snapped_frame_is_counted_when_a_capture_is_opened() {
+        crate::capture::reset_undecodable_frames();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("snapped.pcap");
+        std::fs::write(&path, crate::test_utils::one_record_pcap(64, 1500)).unwrap();
+
+        let _ = load_into_fresh_stores(&path);
+
+        assert_eq!(
+            crate::capture::snapped_frames(),
+            1,
+            "64 of 1500 bytes is a snapped frame"
+        );
+        crate::capture::reset_undecodable_frames();
     }
 }

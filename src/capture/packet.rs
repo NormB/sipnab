@@ -596,6 +596,18 @@ impl Packet {
         })
     }
 
+    /// Whether the capture cut this frame short: it holds fewer bytes than
+    /// crossed the wire (`caplen < origlen`), which is what a snaplen does.
+    ///
+    /// A fact from the capture RECORD, not from the frame's bytes, so it is
+    /// known before any decoding and holds whether or not the frame decodes.
+    /// [`crate::capture::decode_captured_frame`] is the one place that counts
+    /// it.
+    #[must_use]
+    pub fn is_snapped(&self) -> bool {
+        self.caplen < self.origlen
+    }
+
     /// Like [`Packet::with_source`], but takes bytes that already exist.
     ///
     /// The offline reader cuts every frame from a shared block, so its bytes
@@ -619,13 +631,11 @@ impl Packet {
             "Packet::from_bytes: caplen ({caplen}) must equal data.len() ({})",
             data.len(),
         );
-        // Counted HERE because every reader — mapped, libpcap, live and the
-        // single-threaded offline path — builds its packets through this one
-        // constructor, so a new reader cannot forget to report it. The common
-        // case pays one comparison and never touches the atomic.
-        if caplen < origlen {
-            crate::capture::note_snapped_frame();
-        }
+        // A snapped frame is NOT counted here. It once was, on the belief that
+        // every reader built its packets through this constructor; only the
+        // `--cores` reader does, so every other reader counted nothing. It is
+        // counted where a captured frame is decoded, which every reader
+        // reaches — see [`crate::capture::decode_captured_frame`].
         Self {
             timestamp,
             data,

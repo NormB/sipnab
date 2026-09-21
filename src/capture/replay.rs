@@ -121,12 +121,10 @@ pub fn read_into_stores(
             None,
             link_type,
         );
-        let parsed = match crate::capture::parse::parse_packet(&packet) {
-            Ok(p) => p,
-            Err(e) => {
-                crate::capture::record_undecodable(&e, crate::capture::FrameFacts::UNRECORDED);
-                continue;
-            }
+        // Counted exactly as the `-I` reader counts: a snapped frame as
+        // snapped, a frame that produced nothing as undecodable.
+        let Ok(parsed) = crate::capture::decode_captured_frame(&packet) else {
+            continue;
         };
         if parsed.payload.is_empty() {
             continue;
@@ -194,5 +192,30 @@ mod tests {
             outcome.stopped_early,
             "zero of the file was read — the most partial read there is"
         );
+    }
+
+    /// A frame the capture cut short is counted as snapped on this reader too,
+    /// so `open_capture`, `compare_captures` and the REST compare route report
+    /// the capture quality an `-I` run of the same file reports.
+    #[test]
+    #[serial_test::serial(undecodable_tally)]
+    fn a_snapped_frame_is_counted_on_the_replay_reader() {
+        crate::capture::reset_undecodable_frames();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("snapped.pcap");
+        std::fs::write(&path, crate::test_utils::one_record_pcap(64, 1500)).expect("write");
+        let ds = Arc::new(RwLock::new(DialogStore::new(16, false)));
+        let ss = Arc::new(RwLock::new(StreamStore::new(16)));
+        let progress = AtomicU64::new(0);
+
+        let outcome = read_into_stores(&path, &ds, &ss, &progress);
+
+        assert_eq!(outcome.packets, 1, "the one record is read");
+        assert_eq!(
+            crate::capture::snapped_frames(),
+            1,
+            "64 of 1500 bytes is a snapped frame"
+        );
+        crate::capture::reset_undecodable_frames();
     }
 }

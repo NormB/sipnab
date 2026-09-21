@@ -920,3 +920,151 @@ fn an_unreadable_hep_auth_file_refuses_the_run_and_sends_nothing() {
         "no unauthenticated HEP may reach the collector"
     );
 }
+
+// ── Snapped frames and the packet count ───────────────────────────────────
+
+/// Three INVITEs on UDP 5060 with the middle one recorded `cut` bytes short of
+/// its wire length -- `incl_len` below `orig_len`, which is what a snaplen
+/// does -- or all three whole when `cut` is zero.
+fn three_invites_one_cut(path: &Path, cut: usize) {
+    let frames: Vec<Vec<u8>> = (0..3)
+        .map(|i| {
+            udp_frame(
+                [192, 0, 2, 10],
+                [192, 0, 2, 20],
+                5060,
+                5060,
+                &invite(&format!("snap-{i}@192.0.2.10"), &[]),
+            )
+        })
+        .collect();
+    let kept = frames[1].len() - cut;
+    write_raw_pcap(
+        path,
+        &[
+            (frames[0].clone(), 1_700_000_000, 0, usize::MAX),
+            (frames[1].clone(), 1_700_000_001, 0, kept),
+            (frames[2].clone(), 1_700_000_002, 0, usize::MAX),
+        ],
+    );
+}
+
+/// The default reader, then `--cores 2`, over the same capture.
+fn on_both_readers(pcap: &Path) -> [(&'static str, Outcome); 2] {
+    [
+        ("default reader", sipnab(&["-N", "-I", s(pcap)])),
+        ("--cores 2", sipnab(&["-N", "-I", s(pcap), "--cores", "2"])),
+    ]
+}
+
+/// A frame the capture cut short is reported as cut short on the default
+/// reader AND on `--cores`, and is never described as a frame that "reached
+/// sipnab intact".
+///
+/// Before, the counter lived in the one packet constructor only the `--cores`
+/// reader called, so the default reader never counted a snapped frame at all
+/// -- and both readers filed the frame, which the decoder rejects because the
+/// bytes its IP header promises were never captured, as a "decode error" that
+/// had "reached sipnab intact".
+#[test]
+fn a_snapped_frame_is_reported_as_snapped_on_every_reader() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let pcap = dir.path().join("snapped.pcap");
+    three_invites_one_cut(&pcap, 20);
+    for (reader, run) in on_both_readers(&pcap) {
+        assert_eq!(run.code, Some(0), "{reader}\n{}", run.dump());
+        assert!(
+            run.stderr
+                .contains("1 frame(s) arrived truncated by the capture's snaplen"),
+            "{reader}: the snapped frame must be counted exactly once\n{}",
+            run.dump()
+        );
+        assert!(
+            !run.stderr.contains("reached sipnab intact"),
+            "{reader}: a frame the capture cut short did not arrive intact\n{}",
+            run.dump()
+        );
+        assert!(
+            run.stderr.contains("Reasons: truncated frame (1)."),
+            "{reader}: the frame produced nothing because it was cut short, \
+             not because its format is unreadable\n{}",
+            run.dump()
+        );
+    }
+}
+
+/// The negative control: a capture with nothing cut short reports no truncated
+/// frame on either reader.
+#[test]
+fn an_intact_capture_reports_no_truncated_frame_on_either_reader() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let pcap = dir.path().join("intact.pcap");
+    three_invites_one_cut(&pcap, 0);
+    for (reader, run) in on_both_readers(&pcap) {
+        assert_eq!(run.code, Some(0), "{reader}\n{}", run.dump());
+        assert!(
+            !run.stderr.contains("arrived truncated"),
+            "{reader}: nothing was cut short\n{}",
+            run.dump()
+        );
+        assert!(
+            run.stderr.contains("sipnab: 3 packets"),
+            "{reader}\n{}",
+            run.dump()
+        );
+    }
+}
+
+/// An Ethernet ARP who-has, captured whole: a frame no decoder here turns into
+/// a parsed packet, with nothing about the capture to blame.
+fn arp_frame() -> Vec<u8> {
+    let mut f = vec![0xff; 6];
+    f.extend_from_slice(&[0x02, 0, 0, 0, 0, 1, 0x08, 0x06]);
+    f.extend_from_slice(&[0x00, 0x01, 0x08, 0x00, 6, 4, 0x00, 0x01]);
+    f.extend_from_slice(&[0x02, 0, 0, 0, 0, 1, 192, 0, 2, 10]);
+    f.extend_from_slice(&[0, 0, 0, 0, 0, 0, 192, 0, 2, 20]);
+    f
+}
+
+/// Every record a `--cores` run reads is in its packet count, exactly as on
+/// the default reader -- including a frame that produced nothing.
+///
+/// The `--cores` summary printed the count of PARSED packets, so a 3-record
+/// capture holding one undecodable frame said "2 packets" there and "3 packets"
+/// on the default reader, and put the undecodable frame at "1 of 2" -- 50%,
+/// which is the share at which the notice declares the run mostly blind.
+#[test]
+fn a_cores_run_counts_every_record_it_read_as_the_default_reader_does() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let pcap = dir.path().join("with-arp.pcap");
+    let sip = |i: u32| {
+        udp_frame(
+            [192, 0, 2, 10],
+            [192, 0, 2, 20],
+            5060,
+            5060,
+            &invite(&format!("count-{i}@192.0.2.10"), &[]),
+        )
+    };
+    write_raw_pcap(
+        &pcap,
+        &[
+            (sip(0), 1_700_000_000, 0, usize::MAX),
+            (arp_frame(), 1_700_000_001, 0, usize::MAX),
+            (sip(1), 1_700_000_002, 0, usize::MAX),
+        ],
+    );
+    for (reader, run) in on_both_readers(&pcap) {
+        assert_eq!(run.code, Some(0), "{reader}\n{}", run.dump());
+        assert!(
+            run.stderr.contains("sipnab: 3 packets"),
+            "{reader}: three records were read\n{}",
+            run.dump()
+        );
+        assert!(
+            run.stderr.contains("NOT DECODED: 1 of 3 frame(s) (33.3%)"),
+            "{reader}: the share is of frames READ\n{}",
+            run.dump()
+        );
+    }
+}

@@ -125,3 +125,60 @@ fn an_ordinary_single_interface_capture_still_reads() {
         "the ordinary path must be untouched:\n{all}"
     );
 }
+
+/// A frame the capture cut short is counted as snapped on the merged-pcapng
+/// reader too.
+///
+/// That reader builds its packets apart from the libpcap one, and the snapped
+/// counter used to live in the one packet constructor only the `--cores` reader
+/// called, so a merged capture never reported a truncated frame. Run with a
+/// private `HOME` so no user configuration is read.
+#[test]
+fn a_snapped_frame_in_a_merged_pcapng_is_reported_as_snapped() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("merged-snapped.pcapng");
+    let eth = |call_id: &str| {
+        pcap_build::udp_frame(
+            [10, 1, 0, 1],
+            [10, 2, 0, 1],
+            5060,
+            5060,
+            format!(
+                "OPTIONS sip:eth@example.net SIP/2.0\r\nCall-ID: {call_id}\r\n\
+                 CSeq: 1 OPTIONS\r\nContent-Length: 0\r\n\r\n"
+            )
+            .as_bytes(),
+        )
+    };
+    let whole = eth("merged-whole");
+    let cut = eth("merged-cut");
+    let kept = cut.len() - 20;
+    let raw = pcap_build::strip_ethernet(&eth("merged-raw"));
+    pcap_build::write_pcapng_multi_iface_cut(
+        &path,
+        &[(0, whole, usize::MAX), (0, cut, kept), (1, raw, usize::MAX)],
+    );
+
+    let home = tempfile::tempdir().unwrap();
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_sipnab"))
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .args(["-N", "-I", path.to_str().unwrap()])
+        .env("HOME", home.path())
+        .env("XDG_CONFIG_HOME", home.path())
+        .env_remove("SIPNAB_CONFIG")
+        .env("SIPNAB_LOG", "info")
+        .env("NO_COLOR", "1")
+        .output()
+        .expect("run sipnab");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+
+    assert_eq!(out.status.code(), Some(0), "{stderr}");
+    assert!(
+        stderr.contains("merged-pcapng decoder"),
+        "the fixture must reach the merged reader, or this proves nothing:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("1 frame(s) arrived truncated by the capture's snaplen"),
+        "the snapped frame must be counted:\n{stderr}"
+    );
+}

@@ -49,6 +49,17 @@ entry that carries them.
 - **`--relay-stats-interval` names a malformed relay address.** On a live run
   with an unparseable `--rtpengine-control`, it refused as though the run read
   a file.
+- **A frame the capture cut short is counted as snapped on every reader.**
+  Only the `--cores` reader counted one. The default reader, the merged-pcapng
+  reader, live capture, the TUI's file open and the capture reader behind
+  `open_capture` and the compare routes reported a snapped capture as whole. A
+  snapped frame that could not be decoded was also filed as a decode error that
+  had "reached sipnab intact". It is now a truncated frame, reported with the
+  other snapped frames.
+- **`--cores` counts every record it read.** It printed the number of packets
+  its workers parsed, so a 3-record capture holding one undecodable frame read
+  "2 packets" where the default reader read 3, and put that frame at "1 of 2",
+  the share at which the NOT DECODED line calls a run mostly blind.
 
 ### Internal
 
