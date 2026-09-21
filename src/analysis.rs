@@ -956,36 +956,42 @@ fn collect_media(
         acc.add(FindingKind::NatMismatch, path());
     }
     if let Some(ref m) = diag.stun_sdp_mismatch {
-        let ev = Evidence::for_dialog(dialog)
-            .endpoint(format!("STUN client {}", m.client))
-            .endpoint(format!("SDP advertises {}", m.advertised))
-            .count("stun_requests", u64::from(m.request_count))
-            .note(match m.reason {
-                crate::rtp::diagnosis::StunSdpMismatchReason::Ignored => format!(
-                    "STUN answered with {} and the SDP advertised {} regardless",
-                    m.mapped_address.as_deref().unwrap_or("a public address"),
-                    m.advertised
-                ),
-                crate::rtp::diagnosis::StunSdpMismatchReason::RelayIgnored => format!(
-                    "TURN allocated the relayed address {} and the SDP advertised {} regardless",
-                    m.relayed_address.as_deref().unwrap_or("a relayed address"),
-                    m.advertised
-                ),
-                crate::rtp::diagnosis::StunSdpMismatchReason::Unanswered => format!(
-                    "{} request(s) drew no STUN response, so the client never learned a public \
-                     address and advertised {}",
-                    m.request_count, m.advertised
-                ),
-            });
+        let mut note = match m.reason {
+            crate::rtp::diagnosis::StunSdpMismatchReason::Ignored => format!(
+                "STUN answered with {} and the SDP advertised {} regardless",
+                m.mapped_address.as_deref().unwrap_or("a public address"),
+                m.advertised
+            ),
+            crate::rtp::diagnosis::StunSdpMismatchReason::RelayIgnored => format!(
+                "TURN allocated the relayed address {} and the SDP advertised {} regardless",
+                m.relayed_address.as_deref().unwrap_or("a relayed address"),
+                m.advertised
+            ),
+            crate::rtp::diagnosis::StunSdpMismatchReason::Unanswered => format!(
+                "{} request(s) drew no STUN response, so the client never learned a public \
+                 address and advertised {}",
+                m.request_count, m.advertised
+            ),
+        };
         // The correlation is by client IP with no shared identifier, so STUN
         // evidence from well outside the call is an inference that the fault
         // persisted rather than something seen during setup. Same sentence the
         // dialog hint carries, from the same method — a qualification that
         // appeared on one surface and not the other would be worse than none.
-        let ev = match m.correlation_caveat() {
-            Some(caveat) => ev.note(caveat),
-            None => ev,
-        };
+        //
+        // APPENDED to the reason, as the hint does, never in place of it: the
+        // reason is the only part of this evidence that carries the address
+        // STUN offered, and replacing it dropped that address in exactly the
+        // case where the finding most needed checking.
+        if let Some(caveat) = m.correlation_caveat() {
+            note.push_str(" Note: ");
+            note.push_str(&caveat);
+        }
+        let ev = Evidence::for_dialog(dialog)
+            .endpoint(format!("STUN client {}", m.client))
+            .endpoint(format!("SDP advertises {}", m.advertised))
+            .count("stun_requests", u64::from(m.request_count))
+            .note(note);
         acc.add(FindingKind::StunSdpMismatch, ev);
     }
     if let Some(ref late) = diag.late_media {
@@ -1035,6 +1041,20 @@ fn collect_media(
 /// Fold one dialog's signaling diagnosis into the accumulator.
 fn collect_signaling(acc: &mut Accumulator, dialog: &SipDialog) {
     let diag = crate::sip::diagnosis::diagnose_signaling(&dialog.messages);
+    fold_signaling(acc, dialog, &diag);
+}
+
+/// Fold an already-computed signaling diagnosis into the accumulator.
+///
+/// Split from [`collect_signaling`] so the conversion can be driven with a
+/// diagnosis stated outright, the way [`collect_media`] already is: building a
+/// message sequence that trips each of the eight it converts would test the
+/// diagnoser, not this mapping.
+fn fold_signaling(
+    acc: &mut Accumulator,
+    dialog: &SipDialog,
+    diag: &crate::sip::diagnosis::SignalingDiagnosis,
+) {
     if diag.is_empty() {
         return;
     }
@@ -1288,7 +1308,10 @@ fn collect_capture_level(acc: &mut Accumulator, facts: &CaptureFacts) {
             facts.icmp.unattributed,
             Evidence::default().count("errors_naming_no_call", facts.icmp.unattributed),
         );
-        for endpoint in facts.icmp.endpoints.iter().take(EVIDENCE_CAP - 1) {
+        // Every endpoint goes through the accumulator, which keeps what fits
+        // under the cap and COUNTS the rest: a `take` here dropped them before
+        // the cap could see them, and the list read as complete.
+        for endpoint in &facts.icmp.endpoints {
             acc.bump(
                 FindingKind::IcmpUnreachableEndpoint,
                 0,
@@ -1325,7 +1348,12 @@ fn collect_incompleteness(acc: &mut Accumulator, facts: &CaptureFacts) {
     }
 
     // ── SIP a port gate threw away ───────────────────────────────────
-    for port in facts.portrange.ports.iter().take(EVIDENCE_CAP) {
+    //
+    // Every port is bumped, not only the ones that fit on a row: the count is
+    // exact and the accumulator caps the rows and counts what it left out.
+    // Stopping at the cap summed only the busiest ports' messages and reported
+    // that as the total.
+    for port in &facts.portrange.ports {
         acc.bump(
             FindingKind::SipDiscardedByPortRange,
             port.messages,
@@ -1334,7 +1362,7 @@ fn collect_incompleteness(acc: &mut Accumulator, facts: &CaptureFacts) {
                 .count("messages", port.messages),
         );
     }
-    for port in facts.websocket.ports.iter().take(EVIDENCE_CAP) {
+    for port in &facts.websocket.ports {
         acc.bump(
             FindingKind::SipDiscardedByWebSocketPorts,
             port.messages,
@@ -1937,5 +1965,1239 @@ mod tests {
             found.evidence[0]
         );
         assert_eq!(found.evidence[0].counts.get("requests"), Some(&2));
+    }
+
+    // ── The conversions from each diagnosis into evidence ────────────
+
+    /// The one finding of `kind`, or a panic naming what was reported instead.
+    fn only(found: &[Finding], kind: FindingKind) -> &Finding {
+        found.iter().find(|f| f.kind == kind).unwrap_or_else(|| {
+            panic!(
+                "{kind:?} was not reported; got {:?}",
+                found.iter().map(|f| f.kind).collect::<Vec<_>>()
+            )
+        })
+    }
+
+    /// The note on a finding's first evidence row.
+    fn first_note(f: &Finding) -> &str {
+        f.evidence[0]
+            .note
+            .as_deref()
+            .unwrap_or_else(|| panic!("{:?} carries no note: {:?}", f.kind, f.evidence[0]))
+    }
+
+    /// An RTP stream from `src` to `dst` that carried `packets` packets.
+    fn rtp_stream(src: &str, dst: &str, packets: u64) -> crate::rtp::stream::RtpStream {
+        let key = crate::rtp::stream::StreamKey {
+            ssrc: 0x0102_0304,
+            src: src.parse().expect("a literal socket address parses"),
+            dst: dst.parse().expect("a literal socket address parses"),
+        };
+        let hdr = crate::rtp::parser::RtpHeader {
+            version: 2,
+            padding: false,
+            extension: false,
+            csrc_count: 0,
+            marker: false,
+            payload_type: 0,
+            sequence: 1,
+            timestamp: 160,
+            ssrc: key.ssrc,
+            payload_offset: 12,
+        };
+        let mut s = crate::rtp::stream::RtpStream::new(key, &hdr, Utc::now());
+        s.packet_count = packets;
+        s
+    }
+
+    /// The report tag and the JSON tag are one word per rung. Two spellings
+    /// of the same severity is how a consumer filtering on `"critical"`
+    /// misses the rows the text report calls critical.
+    #[test]
+    fn severity_tags_are_the_words_reports_and_json_both_use() {
+        for (sev, tag) in [
+            (Severity::Blind, "blind"),
+            (Severity::Critical, "critical"),
+            (Severity::Major, "major"),
+            (Severity::Minor, "minor"),
+        ] {
+            assert_eq!(sev.as_str(), tag);
+            assert_eq!(
+                serde_json::to_value(sev).expect("a severity serializes"),
+                serde_json::Value::String(tag.to_string()),
+                "the JSON tag must be the report's tag"
+            );
+        }
+    }
+
+    /// A finding serializes its kind as the stable id, never the Rust variant
+    /// name, so renaming a variant cannot change a consumer's JSON.
+    #[test]
+    fn a_finding_kind_serializes_as_its_stable_id() {
+        let json = serde_json::to_value(finding(FindingKind::SipDiscardedByWebSocketPorts, 3))
+            .expect("a finding serializes");
+        assert_eq!(json["kind"], "sip_discarded_by_websocket_ports");
+        assert_eq!(json["severity"], "blind");
+        assert_eq!(json["occurrences"], 3);
+        assert_eq!(json["unit"], "message");
+    }
+
+    /// `at` narrows to one rung and keeps the ranked order within it.
+    #[test]
+    fn at_selects_only_the_findings_of_one_severity() {
+        let mut findings = vec![
+            finding(FindingKind::PostDialDelay, 9),
+            finding(FindingKind::AuthLoop, 1),
+            finding(FindingKind::NoMedia, 4),
+            finding(FindingKind::ServerFailure, 6),
+        ];
+        rank(&mut findings);
+        let analysis = CaptureAnalysis {
+            findings,
+            ..CaptureAnalysis::default()
+        };
+        let major: Vec<FindingKind> = analysis.at(Severity::Major).map(|f| f.kind).collect();
+        assert_eq!(
+            major,
+            vec![FindingKind::ServerFailure, FindingKind::AuthLoop],
+            "only the Major rung, busiest first"
+        );
+        assert_eq!(analysis.at(Severity::Blind).count(), 0);
+    }
+
+    /// No media, and a NAT mismatch, both carry the media path: what the SDP
+    /// asked for, what arrived, and how much of it -- the three facts an
+    /// operator checks against the capture before believing either.
+    #[test]
+    fn media_path_findings_carry_what_the_sdp_asked_for_and_what_arrived() {
+        use crate::rtp::diagnosis::MediaDiagnosis;
+        let dialog = media_dialog();
+        let a = rtp_stream("203.0.113.9:4000", "198.51.100.1:5004", 5);
+        let b = rtp_stream("198.51.100.1:5004", "203.0.113.9:4000", 7);
+        let diag = MediaDiagnosis {
+            nat_mismatch: true,
+            sdp_media: Some("198.51.100.2:5004".to_string()),
+            actual_media: Some("203.0.113.9:4000".to_string()),
+            ..MediaDiagnosis::default()
+        };
+        let mut acc = Accumulator::default();
+        collect_media(&mut acc, &dialog, &[&a, &b], &diag);
+        let found = acc.into_findings();
+
+        let nat = only(&found, FindingKind::NatMismatch);
+        let ev = &nat.evidence[0];
+        assert_eq!(
+            ev.call_id.as_deref(),
+            Some("media-findings@example.invalid")
+        );
+        assert_eq!(ev.counts.get("streams"), Some(&2));
+        assert_eq!(
+            ev.counts.get("rtp_packets"),
+            Some(&12),
+            "packets are summed across every stream of the dialog"
+        );
+        assert_eq!(
+            ev.endpoints,
+            vec![
+                "198.51.100.1:5060 -> 198.51.100.2".to_string(),
+                "SDP 198.51.100.2:5004".to_string(),
+                "RTP from 203.0.113.9:4000".to_string(),
+            ]
+        );
+
+        // No media: nothing arrived, so there is no RTP source to name.
+        let found = media_findings(MediaDiagnosis {
+            no_media: true,
+            sdp_media: Some("198.51.100.2:5004".to_string()),
+            ..MediaDiagnosis::default()
+        });
+        let none = only(&found, FindingKind::NoMedia);
+        assert_eq!(none.severity, Severity::Critical);
+        assert_eq!(none.evidence[0].counts.get("rtp_packets"), Some(&0));
+        assert!(
+            !none.evidence[0]
+                .endpoints
+                .iter()
+                .any(|e| e.starts_with("RTP from")),
+            "an RTP source nobody observed must not be invented: {:?}",
+            none.evidence[0].endpoints
+        );
+    }
+
+    /// One-way audio names the direction that DID carry audio. "One-way"
+    /// without a direction is half an answer, and the missing half is the one
+    /// that says which endpoint to go and look at.
+    #[test]
+    fn one_way_audio_names_the_direction_that_carried_audio() {
+        let dialog = media_dialog();
+        let heard = rtp_stream("203.0.113.9:4000", "198.51.100.1:5004", 250);
+        let silent = rtp_stream("198.51.100.1:5004", "203.0.113.9:4000", 3);
+        let diag = crate::rtp::diagnosis::MediaDiagnosis {
+            one_way_audio: true,
+            ..Default::default()
+        };
+        let mut acc = Accumulator::default();
+        collect_media(&mut acc, &dialog, &[&silent, &heard], &diag);
+        let found = acc.into_findings();
+
+        let note = first_note(only(&found, FindingKind::OneWayAudio));
+        assert_eq!(
+            note,
+            "203.0.113.9:4000 -> 198.51.100.1:5004 carried 250 packet(s); nothing came back \
+             the other way",
+            "the busier stream is the direction that was heard"
+        );
+    }
+
+    /// A STUN/SDP mismatch for the given reason, with one address of each kind.
+    fn stun_mismatch(
+        reason: crate::rtp::diagnosis::StunSdpMismatchReason,
+        observed_offset_secs: Option<i64>,
+    ) -> crate::rtp::diagnosis::StunSdpMismatch {
+        crate::rtp::diagnosis::StunSdpMismatch {
+            client: "10.0.0.5:50000".to_string(),
+            mapped_address: Some("203.0.113.5:61000".to_string()),
+            relayed_address: Some("198.51.100.50:49152".to_string()),
+            server: "198.51.100.20:3478".to_string(),
+            advertised: "10.0.0.5:4000".to_string(),
+            request_count: 3,
+            reason,
+            observed_offset_secs,
+        }
+    }
+
+    /// The findings a dialog raises for one STUN/SDP mismatch.
+    fn stun_findings(m: crate::rtp::diagnosis::StunSdpMismatch) -> Vec<Finding> {
+        media_findings(crate::rtp::diagnosis::MediaDiagnosis {
+            private_media_address: true,
+            stun_sdp_mismatch: Some(m),
+            ..Default::default()
+        })
+    }
+
+    /// Each of the three ways STUN contradicts an SDP is explained in its own
+    /// words, and carries the address STUN actually offered -- the one fact in
+    /// the evidence the endpoints do not already hold.
+    #[test]
+    fn each_stun_sdp_mismatch_reason_is_explained_in_its_own_words() {
+        use crate::rtp::diagnosis::StunSdpMismatchReason as Why;
+
+        let found = stun_findings(stun_mismatch(Why::Ignored, None));
+        let f = only(&found, FindingKind::StunSdpMismatch);
+        assert_eq!(f.severity, Severity::Critical);
+        assert_eq!(
+            first_note(f),
+            "STUN answered with 203.0.113.5:61000 and the SDP advertised 10.0.0.5:4000 regardless"
+        );
+        assert!(
+            f.evidence[0]
+                .endpoints
+                .contains(&"STUN client 10.0.0.5:50000".to_string())
+                && f.evidence[0]
+                    .endpoints
+                    .contains(&"SDP advertises 10.0.0.5:4000".to_string()),
+            "{:?}",
+            f.evidence[0].endpoints
+        );
+        assert_eq!(f.evidence[0].counts.get("stun_requests"), Some(&3));
+
+        let found = stun_findings(stun_mismatch(Why::RelayIgnored, None));
+        assert_eq!(
+            first_note(only(&found, FindingKind::StunSdpMismatch)),
+            "TURN allocated the relayed address 198.51.100.50:49152 and the SDP advertised \
+             10.0.0.5:4000 regardless"
+        );
+
+        let found = stun_findings(stun_mismatch(Why::Unanswered, None));
+        let note = first_note(only(&found, FindingKind::StunSdpMismatch));
+        assert!(
+            note.starts_with("3 request(s) drew no STUN response")
+                && note.ends_with("advertised 10.0.0.5:4000"),
+            "{note}"
+        );
+    }
+
+    /// A mismatch whose STUN evidence carries no address still reads as a
+    /// sentence, rather than printing an empty slot where the address was.
+    #[test]
+    fn a_stun_mismatch_with_no_recorded_address_still_reads_as_a_sentence() {
+        use crate::rtp::diagnosis::StunSdpMismatchReason as Why;
+        let mut m = stun_mismatch(Why::Ignored, None);
+        m.mapped_address = None;
+        let found = stun_findings(m);
+        assert!(
+            first_note(only(&found, FindingKind::StunSdpMismatch))
+                .starts_with("STUN answered with a public address and"),
+        );
+
+        let mut m = stun_mismatch(Why::RelayIgnored, None);
+        m.relayed_address = None;
+        let found = stun_findings(m);
+        assert!(
+            first_note(only(&found, FindingKind::StunSdpMismatch))
+                .starts_with("TURN allocated the relayed address a relayed address and"),
+        );
+    }
+
+    /// STUN evidence seen well outside the call is QUALIFIED, not replaced.
+    ///
+    /// The caveat says the correlation is by client IP alone. It qualifies the
+    /// reason -- it does not stand in for it -- and the dialog hint built from
+    /// the same method appends it to the reason for that reason. Replacing the
+    /// note dropped the mapped address, which appears nowhere else in the
+    /// evidence, exactly when the finding most needed checking.
+    #[test]
+    fn a_stun_caveat_qualifies_the_reason_rather_than_replacing_it() {
+        use crate::rtp::diagnosis::StunSdpMismatchReason as Why;
+        let found = stun_findings(stun_mismatch(Why::Ignored, Some(-600)));
+        let note = first_note(only(&found, FindingKind::StunSdpMismatch));
+        assert!(
+            note.contains("STUN answered with 203.0.113.5:61000"),
+            "the reason, and the address STUN offered, must survive the caveat: {note}"
+        );
+        assert!(
+            note.contains("10 minute(s) before this call"),
+            "and the caveat must still be said: {note}"
+        );
+
+        // Inside the correlation window there is nothing to qualify.
+        let found = stun_findings(stun_mismatch(Why::Ignored, Some(30)));
+        let note = first_note(only(&found, FindingKind::StunSdpMismatch));
+        assert!(!note.contains("minute(s)"), "{note}");
+    }
+
+    /// The findings one stated signaling diagnosis raises for the fixture
+    /// dialog.
+    fn signaling_findings(diag: crate::sip::diagnosis::SignalingDiagnosis) -> Vec<Finding> {
+        let dialog = media_dialog();
+        let mut acc = Accumulator::default();
+        fold_signaling(&mut acc, &dialog, &diag);
+        acc.into_findings()
+    }
+
+    /// A final failure on `code` with no Reason or Warning header.
+    fn failed_on(code: u16, phrase: &str) -> crate::sip::diagnosis::SignalingDiagnosis {
+        crate::sip::diagnosis::SignalingDiagnosis {
+            final_failure: Some(crate::sip::diagnosis::FinalFailure {
+                code,
+                reason_phrase: phrase.to_string(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    /// [RFC 3261 section 21](https://www.rfc-editor.org/rfc/rfc3261#section-21) splits final failures at 500: a 4xx is a request failure
+    /// that is routinely an ordinary outcome, a 5xx or 6xx is a server or a
+    /// global refusal. The boundary codes on either side prove the split sits
+    /// exactly there.
+    #[test]
+    fn a_final_failure_splits_at_500_into_request_and_server_failure() {
+        for (code, kind) in [
+            (486, FindingKind::RequestFailure),
+            (499, FindingKind::RequestFailure),
+            (500, FindingKind::ServerFailure),
+            (603, FindingKind::ServerFailure),
+        ] {
+            let found = signaling_findings(failed_on(code, "Done"));
+            assert_eq!(found.len(), 1, "{code}: {found:?}");
+            assert_eq!(found[0].kind, kind, "{code} is a {kind:?}");
+            assert_eq!(
+                found[0].evidence[0].counts.get("status_code"),
+                Some(&u64::from(code))
+            );
+        }
+    }
+
+    /// The Reason and Warning headers ride along with the reason phrase: they
+    /// are where a server says WHY, and they are otherwise invisible in a
+    /// ranked list.
+    #[test]
+    fn a_final_failure_note_carries_the_reason_and_warning_headers() {
+        let mut diag = failed_on(503, "Service Unavailable");
+        if let Some(f) = diag.final_failure.as_mut() {
+            f.reason_header = Some("Q.850;cause=34".to_string());
+            f.warning = Some("399 sbc \"trunk down\"".to_string());
+        }
+        let found = signaling_findings(diag);
+        assert_eq!(
+            first_note(only(&found, FindingKind::ServerFailure)),
+            "Service Unavailable (Reason: Q.850;cause=34) (Warning: 399 sbc \"trunk down\")"
+        );
+
+        let found = signaling_findings(failed_on(486, "Busy Here"));
+        assert_eq!(
+            first_note(only(&found, FindingKind::RequestFailure)),
+            "Busy Here",
+            "absent headers add nothing to the phrase"
+        );
+    }
+
+    /// The two authentication loops send the operator to different places --
+    /// provisioning for one, the client or a proxy for the other -- so the
+    /// note has to say which it is.
+    #[test]
+    fn an_auth_loop_names_which_of_the_two_loops_it_is() {
+        use crate::sip::diagnosis::{AuthLoop, AuthLoopKind, SignalingDiagnosis};
+        let loop_of = |kind| {
+            signaling_findings(SignalingDiagnosis {
+                auth_loop: Some(AuthLoop {
+                    kind,
+                    challenges: 4,
+                    evidence: Vec::new(),
+                }),
+                ..Default::default()
+            })
+        };
+
+        let found = loop_of(AuthLoopKind::CredentialFailure);
+        let f = only(&found, FindingKind::AuthLoop);
+        assert_eq!(f.evidence[0].counts.get("challenges"), Some(&4));
+        assert!(
+            first_note(f).contains("wrong credentials"),
+            "{}",
+            first_note(f)
+        );
+
+        let found = loop_of(AuthLoopKind::SilentDrop);
+        let note = first_note(only(&found, FindingKind::AuthLoop));
+        assert!(note.contains("never sends Authorization"), "{note}");
+    }
+
+    /// A retransmitted request reports what was sent, how often, over how
+    /// long -- and, where ICMP said why, that too.
+    #[test]
+    fn retransmissions_report_the_method_count_span_and_any_icmp_cause() {
+        use crate::sip::diagnosis::{Retransmissions, SignalingDiagnosis};
+        let retx = |icmp_cause: Option<&str>| {
+            signaling_findings(SignalingDiagnosis {
+                retransmissions: Some(Retransmissions {
+                    method: "INVITE".to_string(),
+                    count: 7,
+                    span_sec: 31.5,
+                    evidence: Vec::new(),
+                    icmp_cause: icmp_cause.map(str::to_string),
+                }),
+                ..Default::default()
+            })
+        };
+
+        let found = retx(None);
+        let f = only(&found, FindingKind::Retransmissions);
+        assert_eq!(f.evidence[0].counts.get("transmissions"), Some(&7));
+        assert_eq!(
+            first_note(f),
+            "INVITE transmitted 7 time(s) over 31.5s with no response"
+        );
+
+        let found = retx(Some("port unreachable"));
+        assert_eq!(
+            first_note(only(&found, FindingKind::Retransmissions)),
+            "INVITE transmitted 7 time(s) over 31.5s with no response; ICMP said: port unreachable"
+        );
+    }
+
+    /// An answered INVITE nobody acknowledged reports how long it waited and
+    /// how many times the answer was repeated.
+    #[test]
+    fn a_missing_ack_reports_the_wait_and_the_answer_retransmissions() {
+        let found = signaling_findings(crate::sip::diagnosis::SignalingDiagnosis {
+            ack_missing: Some(crate::sip::diagnosis::AckMissing {
+                waited_sec: 32.25,
+                answer_transmissions: 11,
+                evidence: Vec::new(),
+            }),
+            ..Default::default()
+        });
+        let f = only(&found, FindingKind::AckMissing);
+        assert_eq!(f.severity, Severity::Major);
+        assert_eq!(f.evidence[0].counts.get("answer_transmissions"), Some(&11));
+        assert_eq!(first_note(f), "32.2s elapsed with no ACK");
+    }
+
+    /// An abandoned call says whether the caller hung up or the capture
+    /// simply stopped: the second is a statement about the recording, and
+    /// reading it as a call fault sends an operator after nothing.
+    #[test]
+    fn an_abandoned_call_distinguishes_a_cancel_from_a_capture_that_stopped() {
+        use crate::sip::diagnosis::{Abandoned, AbandonedKind, SignalingDiagnosis};
+        let abandoned = |kind| {
+            signaling_findings(SignalingDiagnosis {
+                abandoned: Some(Abandoned {
+                    kind,
+                    elapsed_sec: 4.0,
+                    evidence: Vec::new(),
+                }),
+                ..Default::default()
+            })
+        };
+        let found = abandoned(AbandonedKind::Canceled);
+        assert_eq!(
+            first_note(only(&found, FindingKind::Abandoned)),
+            "CANCEL after 4.0s — the caller hung up"
+        );
+        let found = abandoned(AbandonedKind::NoFinalResponse);
+        let note = first_note(only(&found, FindingKind::Abandoned));
+        assert!(
+            note.starts_with("no final response in 4.0s") && note.contains("capture stopped"),
+            "{note}"
+        );
+    }
+
+    /// Slow ring-back reports the delay beside the threshold it broke, so a
+    /// near miss and a disaster do not read the same.
+    #[test]
+    fn post_dial_delay_reports_the_delay_against_its_threshold() {
+        let found = signaling_findings(crate::sip::diagnosis::SignalingDiagnosis {
+            post_dial_delay: Some(crate::sip::diagnosis::PostDialDelay {
+                delay_sec: 14.5,
+                threshold_sec: 11.0,
+                responded_with: 180,
+                evidence: Vec::new(),
+            }),
+            ..Default::default()
+        });
+        let f = only(&found, FindingKind::PostDialDelay);
+        assert_eq!(f.severity, Severity::Minor);
+        assert_eq!(first_note(f), "14.5s to the first 180 (threshold 11.0s)");
+    }
+
+    /// A registration failure says which of its two shapes it is, and quotes
+    /// the expiry asked for and granted whenever both are known.
+    #[test]
+    fn a_registration_failure_names_its_shape_and_what_was_asked_for() {
+        use crate::sip::diagnosis::{
+            RegistrationFailure, RegistrationFailureKind, SignalingDiagnosis,
+        };
+        let registration = |kind, code, asked, granted| {
+            signaling_findings(SignalingDiagnosis {
+                registration_failure: Some(RegistrationFailure {
+                    kind,
+                    code,
+                    requested_expiry_sec: asked,
+                    granted_expiry_sec: granted,
+                    evidence: Vec::new(),
+                }),
+                ..Default::default()
+            })
+        };
+
+        let found = registration(RegistrationFailureKind::Rejected, 403, None, None);
+        let f = only(&found, FindingKind::RegistrationFailure);
+        assert_eq!(f.evidence[0].counts.get("status_code"), Some(&403));
+        assert_eq!(first_note(f), "REGISTER rejected with 403");
+
+        let found = registration(
+            RegistrationFailureKind::ShortenedExpiry,
+            200,
+            Some(3600),
+            Some(60),
+        );
+        assert_eq!(
+            first_note(only(&found, FindingKind::RegistrationFailure)),
+            "registrar granted a shorter expiry than the endpoint asked for (asked 3600s, \
+             granted 60s)"
+        );
+
+        // Half the pair is not a pair: nothing is quoted.
+        let found = registration(
+            RegistrationFailureKind::ShortenedExpiry,
+            200,
+            Some(3600),
+            None,
+        );
+        assert_eq!(
+            first_note(only(&found, FindingKind::RegistrationFailure)),
+            "registrar granted a shorter expiry than the endpoint asked for",
+            "an expiry that was never granted cannot be quoted"
+        );
+    }
+
+    /// ICMP against a dialog's own request names the unreachable endpoint,
+    /// the router that said so, and -- where the quote reached it -- the
+    /// method it quoted.
+    #[test]
+    fn icmp_against_signaling_names_the_endpoint_the_reporter_and_the_method() {
+        use crate::sip::diagnosis::{IcmpUnreachable, SignalingDiagnosis};
+        let icmp = |method: Option<&str>| {
+            signaling_findings(SignalingDiagnosis {
+                icmp_unreachable: Some(IcmpUnreachable {
+                    description: "port unreachable".to_string(),
+                    icmp_type: 3,
+                    icmp_code: 3,
+                    unreachable_endpoint: "198.51.100.2:5060".to_string(),
+                    reported_by: "198.51.100.2".to_string(),
+                    method: method.map(str::to_string),
+                    errors: 2,
+                    truncated: false,
+                    evidence: Vec::new(),
+                }),
+                ..Default::default()
+            })
+        };
+
+        let found = icmp(Some("INVITE"));
+        let f = only(&found, FindingKind::IcmpUnreachableSignaling);
+        assert_eq!(f.severity, Severity::Critical);
+        assert_eq!(f.occurrences, 1, "one dialog, however many errors");
+        assert_eq!(f.evidence[0].counts.get("icmp_errors"), Some(&2));
+        assert!(
+            f.evidence[0]
+                .endpoints
+                .contains(&"unreachable 198.51.100.2:5060".to_string())
+                && f.evidence[0]
+                    .endpoints
+                    .contains(&"reported by 198.51.100.2".to_string()),
+            "{:?}",
+            f.evidence[0].endpoints
+        );
+        assert_eq!(
+            first_note(f),
+            "port unreachable (type 3, code 3), quoting a INVITE"
+        );
+
+        let found = icmp(None);
+        assert_eq!(
+            first_note(only(&found, FindingKind::IcmpUnreachableSignaling)),
+            "port unreachable (type 3, code 3)",
+            "a quote that stopped before the method names none"
+        );
+    }
+
+    /// A diagnosis with nothing in it raises nothing -- including a diagnosis
+    /// that carries only hints, which are prose rather than findings.
+    #[test]
+    fn a_clean_signaling_diagnosis_raises_nothing() {
+        let found = signaling_findings(crate::sip::diagnosis::SignalingDiagnosis {
+            hints: vec!["a hint is not a finding".to_string()],
+            ..Default::default()
+        });
+        assert!(found.is_empty(), "{found:?}");
+    }
+
+    /// Parse raw SIP between the two fixture hosts.
+    fn sip(raw: &str) -> crate::sip::SipMessage {
+        crate::sip::parser::parse_sip_bytes(
+            &bytes::Bytes::copy_from_slice(raw.as_bytes()),
+            Utc::now(),
+            "198.51.100.1".parse().expect("valid"),
+            "198.51.100.2".parse().expect("valid"),
+            5060,
+            5060,
+            crate::capture::parse::TransportProto::Udp,
+        )
+        .expect("the fixture parses as SIP")
+    }
+
+    /// An INVITE for `call_id`, and a final response to it.
+    fn invite_answered(call_id: &str, status: &str) -> [crate::sip::SipMessage; 2] {
+        let common = format!(
+            "Via: SIP/2.0/UDP 198.51.100.1:5060;branch=z9hG4bK-{call_id}\r\n\
+             From: <sip:alice@example.invalid>;tag=a1\r\n\
+             Call-ID: {call_id}\r\n\
+             CSeq: 1 INVITE\r\n"
+        );
+        [
+            sip(&format!(
+                "INVITE sip:bob@example.invalid SIP/2.0\r\n{common}\
+                 To: <sip:bob@example.invalid>\r\nContent-Length: 0\r\n\r\n"
+            )),
+            sip(&format!(
+                "SIP/2.0 {status}\r\n{common}\
+                 To: <sip:bob@example.invalid>;tag=b1\r\nContent-Length: 0\r\n\r\n"
+            )),
+        ]
+    }
+
+    /// The whole path, end to end: a dialog in the store that ended on a 503
+    /// comes out of `analyze_with` as a ranked server failure, counted against
+    /// the dialogs it examined.
+    #[test]
+    fn a_dialog_that_ended_on_a_503_is_ranked_as_a_server_failure() {
+        let (mut dialogs, streams) = stores();
+        for msg in invite_answered("failed@example.invalid", "503 Service Unavailable") {
+            dialogs.process_message(msg);
+        }
+        let analysis = analyze_with(&dialogs, &streams, None, &CaptureFacts::default());
+        assert_eq!(analysis.dialogs_examined, 1);
+        let f = only(&analysis.findings, FindingKind::ServerFailure);
+        assert_eq!(
+            f.evidence[0].call_id.as_deref(),
+            Some("failed@example.invalid")
+        );
+        assert_eq!(f.evidence[0].counts.get("status_code"), Some(&503));
+        assert!(
+            analysis.complete,
+            "a failed call says nothing about the read"
+        );
+    }
+
+    /// A socket address literal.
+    fn sock(s: &str) -> std::net::SocketAddr {
+        s.parse().expect("a literal socket address parses")
+    }
+
+    /// A timestamp `secs` after the epoch.
+    fn at_secs(secs: i64) -> DateTime<Utc> {
+        DateTime::from_timestamp(secs, 0).expect("a valid timestamp")
+    }
+
+    /// A TURN allocation granted `lifetime` seconds at t=0 and still carrying
+    /// traffic at t=`last_activity`.
+    fn allocation(lifetime: u32, last_activity: i64) -> crate::stun::TurnAllocation {
+        crate::stun::TurnAllocation {
+            client: sock("10.0.0.5:50000"),
+            server: sock("198.51.100.20:3478"),
+            relayed_address: None,
+            lifetime_secs: Some(lifetime),
+            allocated_at: at_secs(0),
+            refreshed_at: None,
+            refreshes: 0,
+            last_activity: at_secs(last_activity),
+            released: false,
+            channels: Vec::new(),
+            unattributed_frames: 0,
+        }
+    }
+
+    /// Analyze empty stores against `facts` alone.
+    fn facts_findings(facts: &CaptureFacts) -> CaptureAnalysis {
+        let (dialogs, streams) = stores();
+        analyze_with(&dialogs, &streams, None, facts)
+    }
+
+    /// A lapsed allocation names the relay, the lifetime it outlived, and the
+    /// media that was on it -- the step from "a relay was torn down" to the
+    /// call that went quiet.
+    #[test]
+    fn a_lapsed_turn_allocation_names_the_relay_its_lifetime_and_its_media() {
+        let mut carrying = allocation(600, 700);
+        carrying.relayed_address = Some(sock("198.51.100.50:49152"));
+        carrying.refreshes = 2;
+        carrying.channels = vec![crate::stun::RelayChannel {
+            channel: 0x4001,
+            peer: Some(sock("203.0.113.9:4000")),
+            bound: true,
+            frames: 10,
+            bytes: 1720,
+            first_seen: at_secs(1),
+            last_seen: at_secs(700),
+            ssrcs: vec![0x1234, 0x5678],
+            ssrcs_dropped: 0,
+        }];
+        let bare = allocation(600, 900);
+        // Inside its lifetime: not a finding.
+        let healthy = allocation(600, 300);
+
+        let analysis = facts_findings(&CaptureFacts {
+            stun: crate::stun::StunReport {
+                allocations: vec![carrying, bare, healthy],
+                ..Default::default()
+            },
+            ..CaptureFacts::default()
+        });
+        let f = only(&analysis.findings, FindingKind::TurnAllocationLapsed);
+        assert_eq!(
+            f.occurrences, 2,
+            "only the two that outlived their lifetime"
+        );
+
+        let ev = &f.evidence[0];
+        assert_eq!(
+            ev.at,
+            Some(at_secs(0)),
+            "stamped with when it was allocated"
+        );
+        assert_eq!(ev.counts.get("refreshes"), Some(&2));
+        assert_eq!(ev.counts.get("lifetime_secs"), Some(&600));
+        assert_eq!(ev.counts.get("relayed_streams"), Some(&2));
+        assert_eq!(
+            ev.endpoints,
+            vec![
+                "client 10.0.0.5:50000".to_string(),
+                "TURN server 198.51.100.20:3478".to_string(),
+                "relayed 198.51.100.50:49152".to_string(),
+                "media 10 frame(s) on channel 0x4001, carrying 2 stream(s) (SSRC 0x00001234, \
+                 0x00005678)"
+                    .to_string(),
+            ]
+        );
+
+        let bare_ev = &f.evidence[1];
+        assert_eq!(
+            bare_ev.counts.get("relayed_streams"),
+            None,
+            "no channel carried anything, so no stream count is claimed"
+        );
+        assert!(
+            !bare_ev
+                .endpoints
+                .iter()
+                .any(|e| e.starts_with("media") || e.starts_with("relayed")),
+            "{:?}",
+            bare_ev.endpoints
+        );
+    }
+
+    /// An ICE check between `client` and `server`, claiming `role`.
+    fn ice_check(
+        client: &str,
+        server: &str,
+        role: Option<crate::stun::IceRole>,
+    ) -> crate::stun::StunTransaction {
+        crate::stun::StunTransaction {
+            transaction_id: format!("{client}>{server}"),
+            client: sock(client),
+            server: sock(server),
+            method: 0x001,
+            method_name: "Binding".to_string(),
+            first_request: at_secs(0),
+            last_request: at_secs(0),
+            request_count: 1,
+            responded_at: Some(at_secs(0)),
+            rtt_ms: None,
+            mapped_address: None,
+            relayed_address: None,
+            peer_address: None,
+            lifetime_secs: None,
+            channel_number: None,
+            error_code: None,
+            auth_challenge: false,
+            software: None,
+            ice_role: role,
+            use_candidate: false,
+            priority: Some(1),
+            fingerprint_valid: None,
+        }
+    }
+
+    /// A role conflict says whether ICE got past it. One that resolved cost a
+    /// round trip; one that did not is a candidate cause of media that never
+    /// started, and the two must not read alike.
+    #[test]
+    fn an_ice_role_conflict_says_whether_ice_resolved_it() {
+        use crate::stun::IceRole::Controlling;
+        let (a, b) = ("192.0.2.1:5000", "192.0.2.2:6000");
+        let conflict = vec![
+            ice_check(a, b, Some(Controlling)),
+            ice_check(b, a, Some(Controlling)),
+        ];
+        let analyze_ice = |transactions: Vec<crate::stun::StunTransaction>| {
+            facts_findings(&CaptureFacts {
+                stun: crate::stun::StunReport {
+                    transactions,
+                    ..Default::default()
+                },
+                ..CaptureFacts::default()
+            })
+        };
+
+        let analysis = analyze_ice(conflict.clone());
+        let f = only(&analysis.findings, FindingKind::IceRoleConflict);
+        assert_eq!(
+            f.evidence[0].endpoints,
+            vec![
+                a.to_string(),
+                b.to_string(),
+                "both claimed controlling".to_string()
+            ]
+        );
+        assert_eq!(
+            f.evidence[0].counts.get("role_conflict_responses"),
+            Some(&0)
+        );
+        assert!(
+            first_note(f).starts_with("no candidate pair between these two was ever nominated"),
+            "{}",
+            first_note(f)
+        );
+
+        // The same conflict, and then a nominated pair: ICE resolved it.
+        let mut resolved = conflict;
+        let mut nominated = ice_check(a, b, None);
+        nominated.use_candidate = true;
+        resolved.push(nominated);
+        let analysis = analyze_ice(resolved);
+        assert!(
+            first_note(only(&analysis.findings, FindingKind::IceRoleConflict))
+                .starts_with("ICE resolved this itself"),
+        );
+
+        // A 487 with no duplicate claim names no shared role.
+        let mut answered_487 = ice_check(a, b, None);
+        answered_487.error_code = Some(487);
+        let analysis = analyze_ice(vec![answered_487]);
+        let f = only(&analysis.findings, FindingKind::IceRoleConflict);
+        assert_eq!(f.evidence[0].endpoints, vec![a.to_string(), b.to_string()]);
+        assert_eq!(
+            f.evidence[0].counts.get("role_conflict_responses"),
+            Some(&1)
+        );
+    }
+
+    /// An ICMP-against-media flow with the given payload and match.
+    fn media_flow(
+        payload: crate::pipeline::QuotedMediaKind,
+        matched: crate::rtp::stream_store::MediaMatch,
+        errors: u64,
+        call_ids: &[&str],
+    ) -> crate::pipeline::MediaIcmpFinding {
+        crate::pipeline::MediaIcmpFinding {
+            source: "198.51.100.1:5004".to_string(),
+            unreachable_endpoint: "203.0.113.9:4000".to_string(),
+            reported_by: "203.0.113.9".to_string(),
+            transport: "udp",
+            description: "port unreachable".to_string(),
+            icmp_type: 3,
+            icmp_code: 3,
+            errors,
+            payload,
+            matched,
+            streams: 1,
+            call_ids: call_ids.iter().map(|c| (*c).to_string()).collect(),
+            hint: "the media relay is not listening".to_string(),
+        }
+    }
+
+    /// ICMP against media counts every ERROR, and claims only the flows ICMP
+    /// actually ties to media. The report also holds ordinary network
+    /// failures, and calling those audio problems is the confident wrong
+    /// answer this layer exists to remove.
+    #[test]
+    fn icmp_against_media_counts_every_error_and_skips_flows_that_are_not_media() {
+        use crate::pipeline::QuotedMediaKind as Payload;
+        use crate::rtp::stream_store::MediaMatch;
+        let analysis = facts_findings(&CaptureFacts {
+            icmp_media: crate::pipeline::IcmpMediaReport {
+                flows: vec![
+                    media_flow(
+                        Payload::Rtp {
+                            ssrc: 7,
+                            payload_type: 0,
+                        },
+                        MediaMatch::Flow,
+                        40,
+                        &["call-1@x", "call-2@x"],
+                    ),
+                    // Not media and matched to nothing: a DNS lookup that
+                    // failed is not a broken call.
+                    media_flow(Payload::NotMedia, MediaMatch::None, 900, &[]),
+                    // Unreadable payload, but addressed to a negotiated media
+                    // endpoint: still media.
+                    media_flow(Payload::Unread, MediaMatch::SdpEndpoint, 2, &[]),
+                ],
+                ..Default::default()
+            },
+            ..CaptureFacts::default()
+        });
+        let f = only(&analysis.findings, FindingKind::IcmpUnreachableMedia);
+        assert_eq!(
+            f.occurrences, 42,
+            "every error on the two media flows, and none of the 900 that were not media"
+        );
+        assert_eq!(f.evidence.len(), 2);
+        let ev = &f.evidence[0];
+        assert_eq!(ev.call_id.as_deref(), Some("call-1@x"));
+        assert_eq!(ev.counts.get("icmp_errors"), Some(&40));
+        assert_eq!(ev.counts.get("streams"), Some(&1));
+        assert_eq!(ev.note.as_deref(), Some("the media relay is not listening"));
+        assert_eq!(
+            ev.endpoints,
+            vec![
+                "unreachable 203.0.113.9:4000".to_string(),
+                "sent from 198.51.100.1:5004".to_string(),
+                "reported by 203.0.113.9".to_string(),
+            ]
+        );
+        assert_eq!(
+            f.evidence[1].call_id, None,
+            "a flow tied to no call names none"
+        );
+    }
+
+    /// An unreachable endpoint no dialog explained.
+    fn unreachable(
+        addr: &str,
+        port: Option<u16>,
+        errors: u64,
+    ) -> crate::pipeline::UnreachableEndpoint {
+        crate::pipeline::UnreachableEndpoint {
+            addr: addr.parse().expect("a literal address parses"),
+            port,
+            errors,
+            description: "host unreachable",
+        }
+    }
+
+    /// ICMP that reached no dialog is counted in ERRORS, not endpoints: one
+    /// endpoint routinely accounts for all of them, and counting endpoints
+    /// would report a 3,000-error outage as a 1.
+    #[test]
+    fn icmp_that_reached_no_dialog_counts_errors_not_endpoints() {
+        let analysis = facts_findings(&CaptureFacts {
+            icmp: crate::pipeline::IcmpEvidenceReport {
+                unattributed: 3000,
+                endpoints: vec![
+                    unreachable("203.0.113.1", Some(5060), 2990),
+                    unreachable("203.0.113.2", None, 10),
+                ],
+                ..Default::default()
+            },
+            ..CaptureFacts::default()
+        });
+        let f = only(&analysis.findings, FindingKind::IcmpUnreachableEndpoint);
+        assert_eq!(f.occurrences, 3000);
+        assert_eq!(
+            f.evidence[0].counts.get("errors_naming_no_call"),
+            Some(&3000)
+        );
+        assert_eq!(
+            f.evidence[1].endpoints,
+            vec!["203.0.113.1:5060".to_string()]
+        );
+        assert_eq!(f.evidence[1].counts.get("icmp_errors"), Some(&2990));
+        assert_eq!(f.evidence[1].note.as_deref(), Some("host unreachable"));
+        assert_eq!(
+            f.evidence[2].endpoints,
+            vec!["203.0.113.2".to_string()],
+            "a quote with no port names the address alone"
+        );
+
+        // Endpoints with no unattributed errors behind them raise nothing.
+        let quiet = facts_findings(&CaptureFacts {
+            icmp: crate::pipeline::IcmpEvidenceReport {
+                endpoints: vec![unreachable("203.0.113.1", Some(5060), 1)],
+                ..Default::default()
+            },
+            ..CaptureFacts::default()
+        });
+        assert!(quiet.is_clean(), "{:?}", quiet.findings);
+    }
+
+    /// Endpoints past the evidence cap are COUNTED as omitted, not silently
+    /// dropped. A list of ten rows that says nothing about the other six reads
+    /// as complete, which is the understatement [`EVIDENCE_CAP`] promises a
+    /// finding never makes.
+    #[test]
+    fn icmp_endpoints_past_the_evidence_cap_are_counted_as_omitted() {
+        let endpoints: Vec<_> = (1..=15_u16)
+            .map(|i| unreachable("203.0.113.1", Some(5000 + i), 2))
+            .collect();
+        let analysis = facts_findings(&CaptureFacts {
+            icmp: crate::pipeline::IcmpEvidenceReport {
+                unattributed: 30,
+                endpoints,
+                ..Default::default()
+            },
+            ..CaptureFacts::default()
+        });
+        let f = only(&analysis.findings, FindingKind::IcmpUnreachableEndpoint);
+        assert_eq!(
+            f.occurrences, 30,
+            "the count is errors, whatever the rows do"
+        );
+        assert_eq!(f.evidence.len(), EVIDENCE_CAP);
+        assert_eq!(
+            f.evidence_omitted, 6,
+            "one summary row and fifteen endpoints is sixteen rows; ten shown, six omitted"
+        );
+    }
+
+    /// SIP the WebSocket port set declined is Blind, exactly as the
+    /// `--portrange` discard is: those messages are in no dialog.
+    #[test]
+    fn sip_discarded_by_the_websocket_port_set_is_a_blind_finding() {
+        let analysis = facts_findings(&CaptureFacts {
+            websocket: crate::pipeline::WsPortSkipReport {
+                messages: 20,
+                ports: vec![crate::pipeline::SkippedPort {
+                    port: 8089,
+                    messages: 20,
+                }],
+            },
+            ..CaptureFacts::default()
+        });
+        let f = only(
+            &analysis.findings,
+            FindingKind::SipDiscardedByWebSocketPorts,
+        );
+        assert_eq!(f.severity, Severity::Blind);
+        assert_eq!(f.occurrences, 20);
+        assert_eq!(f.evidence[0].endpoints, vec!["port 8089".to_string()]);
+        assert_eq!(f.evidence[0].counts.get("messages"), Some(&20));
+        assert!(!analysis.complete);
+    }
+
+    /// A port gate that discarded SIP on more ports than the evidence cap still
+    /// counts every message it discarded.
+    ///
+    /// The count is exact and the rows are capped -- the two halves
+    /// [`Finding::occurrences`] and [`Finding::evidence_omitted`] exist to keep
+    /// apart. Summing only the rows that fit reported the busiest ten ports'
+    /// messages as the total, and said nothing about the ports it left out.
+    #[test]
+    fn a_port_gate_that_discarded_sip_on_many_ports_still_counts_every_message() {
+        let ports: Vec<crate::pipeline::SkippedPort> = (0..12_u16)
+            .map(|i| crate::pipeline::SkippedPort {
+                port: 5070 + i,
+                messages: 5,
+            })
+            .collect();
+        let analysis = facts_findings(&CaptureFacts {
+            portrange: crate::pipeline::PortrangeSkipReport {
+                messages: 60,
+                ports: ports.clone(),
+            },
+            websocket: crate::pipeline::WsPortSkipReport {
+                messages: 60,
+                ports,
+            },
+            ..CaptureFacts::default()
+        });
+        for kind in [
+            FindingKind::SipDiscardedByPortRange,
+            FindingKind::SipDiscardedByWebSocketPorts,
+        ] {
+            let f = only(&analysis.findings, kind);
+            assert_eq!(
+                f.occurrences, 60,
+                "{kind:?}: every discarded message, not only those on the rows shown"
+            );
+            assert_eq!(f.evidence.len(), EVIDENCE_CAP, "{kind:?}");
+            assert_eq!(
+                f.evidence_omitted, 2,
+                "{kind:?}: the two ports left out are said"
+            );
+        }
+    }
+
+    /// Reasons the undecodable table could not retain are counted beside the
+    /// ones it did, so the reason list is not read as exhaustive.
+    #[test]
+    fn undecodable_reasons_that_were_not_retained_are_counted() {
+        let facts = |reasons_dropped| CaptureFacts {
+            frames_read: 50,
+            undecodable: crate::capture::UndecodableReport {
+                frames: 9,
+                reasons: vec![crate::capture::UndecodableTally {
+                    reason: crate::capture::UndecodableReason::NotIp(Some(0x8847)),
+                    frames: 9,
+                }],
+                reasons_dropped,
+            },
+            ..CaptureFacts::default()
+        };
+
+        let analysis = facts_findings(&facts(3));
+        let ev = &only(&analysis.findings, FindingKind::UndecodableFrames).evidence[0];
+        assert_eq!(ev.counts.get("reasons_not_retained"), Some(&3));
+        assert_eq!(ev.counts.get("frames_read"), Some(&50));
+        assert_eq!(
+            ev.note.as_deref(),
+            Some(facts(3).undecodable.reason_list().as_str())
+        );
+
+        let analysis = facts_findings(&facts(0));
+        let ev = &only(&analysis.findings, FindingKind::UndecodableFrames).evidence[0];
+        assert_eq!(
+            ev.counts.get("reasons_not_retained"),
+            None,
+            "nothing was dropped, so nothing is claimed"
+        );
+    }
+
+    /// STUN transactions past the tracking cap, and ICMP errors that found the
+    /// dialog table full, are each a retention loss with their own unit.
+    #[test]
+    fn stun_and_icmp_records_past_their_caps_are_retention_losses() {
+        let analysis = facts_findings(&CaptureFacts {
+            stun: crate::stun::StunReport {
+                dropped: 5,
+                ..Default::default()
+            },
+            icmp: crate::pipeline::IcmpEvidenceReport {
+                untracked_dialogs: 4,
+                ..Default::default()
+            },
+            ..CaptureFacts::default()
+        });
+        let f = only(&analysis.findings, FindingKind::RetentionLoss);
+        assert_eq!(f.occurrences, 9);
+        assert_eq!(f.evidence[0].counts.get("stun_transactions"), Some(&5));
+        assert_eq!(f.evidence[1].counts.get("icmp_errors"), Some(&4));
+        assert!(
+            !analysis.complete,
+            "a record thrown away is a gap in the read"
+        );
+    }
+
+    /// The retention counters are read off the dialog store, one per way it
+    /// sheds a dialog: rotation discards the oldest, no-rotate refuses the
+    /// newest.
+    #[test]
+    fn retention_counts_read_each_way_the_dialog_store_sheds_a_dialog() {
+        let fill = |rotate| {
+            let mut ds = DialogStore::new(1, rotate);
+            for id in ["one@x", "two@x", "three@x"] {
+                let [invite, _] = invite_answered(id, "200 OK");
+                ds.process_message(invite);
+            }
+            RetentionCounts::of_store(&ds)
+        };
+
+        let rotated = fill(true);
+        assert_eq!(rotated.dialogs_rotated, 2, "{rotated:?}");
+        assert_eq!(rotated.dialogs_refused, 0, "{rotated:?}");
+
+        let refused = fill(false);
+        assert_eq!(refused.dialogs_refused, 2, "{refused:?}");
+        assert_eq!(refused.dialogs_rotated, 0, "{refused:?}");
+    }
+
+    /// `analyze` carries its denominator through: the frames it was told it
+    /// read, and the dialogs and streams it examined.
+    ///
+    /// It reads process-global tallies other tests write to concurrently, so
+    /// this asserts only what those globals cannot move.
+    #[test]
+    fn analyze_carries_the_frames_it_was_told_it_read() {
+        let (mut dialogs, streams) = stores();
+        for msg in invite_answered("answered@example.invalid", "200 OK") {
+            dialogs.process_message(msg);
+        }
+        let analysis = analyze(&dialogs, &streams, None, 42);
+        assert_eq!(analysis.frames_read, 42);
+        assert_eq!(analysis.dialogs_examined, 1);
+        assert_eq!(analysis.streams_examined, 0);
+    }
+
+    /// An unanswered probe says whether it was retransmitted: a repeat is
+    /// itself proof the first request drew silence ([RFC 5389 section 7.2.1](https://www.rfc-editor.org/rfc/rfc5389#section-7.2.1)
+    /// retransmits only on timeout), and a single request proves less.
+    #[test]
+    fn an_unanswered_probe_says_whether_it_was_retransmitted() {
+        let probe = |requests| {
+            let mut tx = ice_check("192.0.2.10:50000", "198.51.100.20:3478", None);
+            tx.priority = None;
+            tx.responded_at = None;
+            tx.request_count = requests;
+            tx
+        };
+        let analysis = facts_findings(&CaptureFacts {
+            stun: crate::stun::StunReport {
+                transactions: vec![probe(1), probe(3)],
+                ..Default::default()
+            },
+            ..CaptureFacts::default()
+        });
+        let f = only(&analysis.findings, FindingKind::UnansweredStunProbe);
+        assert_eq!(f.occurrences, 2);
+        assert_eq!(f.evidence[0].note.as_deref(), Some("no response"));
+        assert_eq!(
+            f.evidence[1].note.as_deref(),
+            Some("retransmitted, which by itself proves the first request went unanswered")
+        );
+        assert_eq!(f.evidence[1].counts.get("requests"), Some(&3));
     }
 }
