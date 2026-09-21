@@ -421,9 +421,9 @@ mod tests {
 /// bytes that come back. Nothing leaves the process.
 #[cfg(test)]
 mod round_trip_tests {
+    use super::wire::connect;
     use super::*;
     use serde_json::{Value, json};
-    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, DuplexStream, ReadHalf, WriteHalf};
 
     /// A server with nothing to offer: these tests are about the channel back
     /// to the client, not about any tool.
@@ -431,79 +431,11 @@ mod round_trip_tests {
 
     impl rmcp::ServerHandler for Bare {}
 
-    /// The client's end of one session, driven by hand.
-    struct Client {
-        lines: tokio::io::Lines<BufReader<ReadHalf<DuplexStream>>>,
-        writer: WriteHalf<DuplexStream>,
-    }
-
-    impl Client {
-        /// Write one JSON-RPC message.
-        async fn send(&mut self, message: Value) {
-            let line = format!("{message}\n");
-            self.writer
-                .write_all(line.as_bytes())
-                .await
-                .expect("the pipe accepts a line");
-            self.writer.flush().await.expect("the pipe flushes");
-        }
-
-        /// Read one JSON-RPC message, bounded so a hang fails the test.
-        async fn next(&mut self) -> Value {
-            let line =
-                tokio::time::timeout(std::time::Duration::from_secs(10), self.lines.next_line())
-                    .await
-                    .expect("the server wrote nothing within 10 s")
-                    .expect("the pipe reads")
-                    .expect("the server closed the pipe");
-            serde_json::from_str(&line).expect("each line is one JSON-RPC message")
-        }
-    }
-
-    /// A session whose client declared `capabilities` at `initialize`.
-    async fn connect(
-        capabilities: Value,
-    ) -> (rmcp::service::RunningService<RoleServer, Bare>, Client) {
-        let (server_end, client_end) = tokio::io::duplex(64 * 1024);
-        let (server_read, server_write) = tokio::io::split(server_end);
-        let (client_read, client_write) = tokio::io::split(client_end);
-        let serving = tokio::spawn(async move {
-            rmcp::ServiceExt::serve(Bare, (server_read, server_write)).await
-        });
-        let mut client = Client {
-            lines: BufReader::new(client_read).lines(),
-            writer: client_write,
-        };
-        client
-            .send(json!({
-                "jsonrpc": "2.0", "id": 1, "method": "initialize",
-                "params": {
-                    "protocolVersion": "2025-06-18",
-                    "capabilities": capabilities,
-                    "clientInfo": {"name": "confirm-test", "version": "1"}
-                }
-            }))
-            .await;
-        let initialized = client.next().await;
-        assert!(
-            initialized["result"].is_object(),
-            "handshake failed: {initialized}"
-        );
-        client
-            .send(json!({"jsonrpc": "2.0", "method": "notifications/initialized"}))
-            .await;
-        let running = serving
-            .await
-            .expect("the serving task completes")
-            .expect("the handshake succeeds");
-        (running, client)
-    }
-
     /// Ask once over a session whose client can answer a form, reply with what
     /// `reply` builds from the request's id, and return the request that went
     /// out and the answer `ask` settled on.
     async fn ask_answered_with(reply: impl FnOnce(Value) -> Value) -> (Value, Answer) {
-        let (running, mut client) = connect(json!({"elicitation": {}})).await;
+        let (running, mut client) = connect(Bare, json!({"elicitation": {}})).await;
         let confirm = Confirm::to(running.peer().clone());
         assert!(
             confirm.available(),
@@ -619,7 +551,7 @@ mod round_trip_tests {
     /// A client that goes away mid-question has not said yes.
     #[tokio::test]
     async fn a_pipe_that_closes_mid_question_is_a_refusal() {
-        let (running, mut client) = connect(json!({"elicitation": {}})).await;
+        let (running, mut client) = connect(Bare, json!({"elicitation": {}})).await;
         let confirm = Confirm::to(running.peer().clone());
         let asking =
             tokio::spawn(async move { confirm.ask("Stop?", "Stop", "ends the run").await });
@@ -646,7 +578,7 @@ mod round_trip_tests {
     /// anyway would arrive first.
     #[tokio::test]
     async fn a_client_that_declared_nothing_is_never_sent_the_question() {
-        let (running, mut client) = connect(json!({})).await;
+        let (running, mut client) = connect(Bare, json!({})).await;
         let confirm = Confirm::to(running.peer().clone());
         assert!(!confirm.available());
         assert_eq!(
@@ -668,7 +600,7 @@ mod round_trip_tests {
     /// A client that can only open a URL is not reachable for a form.
     #[tokio::test]
     async fn a_url_only_client_is_not_reachable_through_the_peer() {
-        let (running, _client) = connect(json!({"elicitation": {"url": {}}})).await;
+        let (running, _client) = connect(Bare, json!({"elicitation": {"url": {}}})).await;
         let confirm = Confirm::to(running.peer().clone());
         assert!(
             !confirm.available(),
@@ -685,11 +617,94 @@ mod round_trip_tests {
             format!("{:?}", Confirm::unavailable()),
             "Confirm { available: false }"
         );
-        let (running, _client) = connect(json!({"elicitation": {"form": {}}})).await;
+        let (running, _client) = connect(Bare, json!({"elicitation": {"form": {}}})).await;
         assert_eq!(
             format!("{:?}", Confirm::to(running.peer().clone())),
             "Confirm { available: true }"
         );
         drop(running);
+    }
+}
+
+/// A hand-driven MCP client on an in-memory pipe, for tests that need a live
+/// session.
+///
+/// The server end runs rmcp's own session over a duplex pipe; the client end
+/// is written line by line, so a test chooses exactly the bytes that come
+/// back. Shared by the confirmation round trips above and by the protocol
+/// method tests in `server.rs`, so there is one way to stand a session up.
+#[cfg(test)]
+pub(crate) mod wire {
+    use serde_json::{Value, json};
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, DuplexStream, ReadHalf, WriteHalf};
+
+    /// The client's end of one session, driven by hand.
+    pub(crate) struct Client {
+        lines: tokio::io::Lines<BufReader<ReadHalf<DuplexStream>>>,
+        writer: WriteHalf<DuplexStream>,
+    }
+
+    impl Client {
+        /// Write one JSON-RPC message.
+        pub(crate) async fn send(&mut self, message: Value) {
+            let line = format!("{message}\n");
+            self.writer
+                .write_all(line.as_bytes())
+                .await
+                .expect("the pipe accepts a line");
+            self.writer.flush().await.expect("the pipe flushes");
+        }
+
+        /// Read one JSON-RPC message, bounded so a hang fails the test.
+        pub(crate) async fn next(&mut self) -> Value {
+            let line =
+                tokio::time::timeout(std::time::Duration::from_secs(10), self.lines.next_line())
+                    .await
+                    .expect("the server wrote nothing within 10 s")
+                    .expect("the pipe reads")
+                    .expect("the server closed the pipe");
+            serde_json::from_str(&line).expect("each line is one JSON-RPC message")
+        }
+    }
+
+    /// A session with `server`, whose client declared `capabilities` at
+    /// `initialize`.
+    pub(crate) async fn connect<S: rmcp::ServerHandler>(
+        server: S,
+        capabilities: Value,
+    ) -> (rmcp::service::RunningService<rmcp::RoleServer, S>, Client) {
+        let (server_end, client_end) = tokio::io::duplex(64 * 1024);
+        let (server_read, server_write) = tokio::io::split(server_end);
+        let (client_read, client_write) = tokio::io::split(client_end);
+        let serving = tokio::spawn(async move {
+            rmcp::ServiceExt::serve(server, (server_read, server_write)).await
+        });
+        let mut client = Client {
+            lines: BufReader::new(client_read).lines(),
+            writer: client_write,
+        };
+        client
+            .send(json!({
+                "jsonrpc": "2.0", "id": 1, "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-06-18",
+                    "capabilities": capabilities,
+                    "clientInfo": {"name": "in-process-test", "version": "1"}
+                }
+            }))
+            .await;
+        let initialized = client.next().await;
+        assert!(
+            initialized["result"].is_object(),
+            "handshake failed: {initialized}"
+        );
+        client
+            .send(json!({"jsonrpc": "2.0", "method": "notifications/initialized"}))
+            .await;
+        let running = serving
+            .await
+            .expect("the serving task completes")
+            .expect("the handshake succeeds");
+        (running, client)
     }
 }
