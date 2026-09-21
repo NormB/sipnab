@@ -6705,7 +6705,12 @@ mod startup_refusal_tests {
     fn minting_without_a_signing_key_names_the_flags_that_supply_one() {
         let cli = cli_from(&["--mint-token"]);
         let err = mint_token(&cli).expect_err("no key, no token");
-        assert!(err.contains("--api-signing-key"), "{err}");
+        // Not echoed on failure: the refusal is built beside the token TTL,
+        // and CodeQL reads a panic message as a log (rust/cleartext-logging).
+        assert!(
+            err.contains("--api-signing-key"),
+            "the refusal does not name --api-signing-key"
+        );
         assert_eq!(run_mint_token(&cli), Some(2));
     }
 

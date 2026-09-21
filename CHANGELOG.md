@@ -64,6 +64,15 @@ entry that carries them.
 
 ### Internal
 
+- **The published test count is satisfiable again.** Nine tests landed in
+  `src/capture/uprobe/bpf.rs`, which compiles only with the `bpf` feature, so
+  CI's `--all-features` suite counted nine more tests than the hook's
+  `--features full` suite and no homepage figure could pass both. The
+  kernel-free pieces they test (one ring event, the aligned object copy, the
+  refusal a program-less build gives, the attach-failure report) moved to
+  `bpf_record.rs` with them, and `no_test_hides_behind_a_feature_outside_full`
+  now catches a compound or negated `cfg` and a gated `mod` declaration, the
+  two shapes it had missed.
 - **370 tests for the least-covered files.** The MCP relay tools, the TUI
   controllers and panes, analysis and relay reconciliation, the uprobe readers
   and privilege handling, and the app layer. Each test group was checked by a

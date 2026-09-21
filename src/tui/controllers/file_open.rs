@@ -1671,10 +1671,12 @@ mod browser_tests {
         let path = dir.path().join("garbage.pcap");
         std::fs::write(&path, b"this is not a packet capture at all").unwrap();
         let (out, ds, ss) = load_into_fresh_stores(&path);
+        // The message is not echoed on failure: it is built beside the
+        // decryption-secrets summary, and CodeQL reads a panic message as a
+        // log (rust/cleartext-logging).
         assert!(
             out.message.starts_with("Failed to open"),
-            "got: {}",
-            out.message
+            "the load does not report an open failure"
         );
         assert_eq!(out.sip_count, 0);
         assert_eq!(out.capture_mode, "Offline (garbage.pcap)");

@@ -41,7 +41,9 @@ use aya::programs::{KProbe, UProbe};
 use aya::{Ebpf, EbpfLoader};
 use sipnab_bpf_types::{SockOffsets, TlsRecord};
 
-use super::bpf_record::{assemble, decode};
+use super::bpf_record::{
+    RingEvent, aligned_copy, attach_failed, describe_targets, refuse_without_programs, take_event,
+};
 use super::btf::Btf;
 use super::reader::Target;
 use crate::capture::channel::PacketTx;
@@ -52,30 +54,6 @@ use crate::capture::channel::PacketTx;
 /// when the `bpf` feature is on, which is the only configuration that compiles
 /// this module.
 const PROGRAM: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/sipnab-bpf"));
-
-/// The program, copied into a buffer aligned for an ELF header.
-///
-/// **`include_bytes!` yields alignment 1**, and the ELF parser underneath `aya`
-/// reads the header by casting it out of the buffer rather than copying it —
-/// so a byte-aligned buffer is refused. The refusal is
-/// `error parsing ELF data`, which reads as a corrupt object and sends you
-/// looking at the build. Measured: the same bytes load from an aligned buffer
-/// and fail from one offset by a single byte.
-///
-/// Backed by a `Vec<u64>` so the alignment is guaranteed by the type rather
-/// than by whatever the allocator happens to return for a `Vec<u8>`.
-///
-/// Takes the object as an argument rather than reading [`PROGRAM`] so the copy
-/// is testable on a build whose object is empty.
-fn aligned_copy(program: &[u8]) -> (Vec<u64>, usize) {
-    let words = program.len().div_ceil(size_of::<u64>());
-    let mut buf = vec![0u64; words];
-    // SAFETY: `buf` owns `words * 8` initialized bytes, and a `u64` slice may
-    // be viewed as bytes — the reverse direction is the one that needs care.
-    let bytes = unsafe { std::slice::from_raw_parts_mut(buf.as_mut_ptr().cast::<u8>(), words * 8) };
-    bytes[..program.len()].copy_from_slice(program);
-    (buf, program.len())
-}
 
 /// A loaded, attached BPF capture.
 ///
@@ -124,18 +102,7 @@ impl BpfReader {
     /// Separate so the refusal below is testable on EVERY build: a test that
     /// called `attach` on a build carrying the programs would try to load them.
     fn attach_program(program: &[u8], targets: &[Target]) -> io::Result<Self> {
-        // Built on a machine without `bpf-linker`: the feature is compiled, the
-        // kernel programs are not. Refused by name rather than attached to
-        // nothing, because a capture attached to nothing reads exactly like a
-        // quiet trunk.
-        if program.is_empty() {
-            return Err(io::Error::other(
-                "this binary carries the `bpf` feature but no kernel programs: it \
-                 was built on a machine without bpf-linker. Rebuild where \
-                 `cargo install bpf-linker` has run, or use --uprobe-backend \
-                 tracefs, which needs neither it nor BTF",
-            ));
-        }
+        refuse_without_programs(program)?;
 
         let offsets = Btf::from_sys_fs()
             .and_then(|btf| btf.sock_offsets())
@@ -247,6 +214,10 @@ impl BpfReader {
                 continue;
             }
             buf.for_each(|event| {
+                let event = match event {
+                    PerfEvent::Lost { count } => RingEvent::Lost(count),
+                    PerfEvent::Sample { head, tail } => RingEvent::Sample { head, tail },
+                };
                 let (s, l) = take_event(event, stitch, ordinal, tx);
                 sent += s;
                 lost += l;
@@ -254,36 +225,6 @@ impl BpfReader {
         }
         self.lost += lost;
         sent
-    }
-}
-
-/// What one ring event contributes: `(packets sent, records lost)`.
-///
-/// Pulled out of [`BpfReader::drain_once`] because the ring it iterates is an
-/// `aya` map that only a loaded program can open, while this -- the part that
-/// decides what a sample becomes -- needs nothing but the event.
-fn take_event(
-    event: PerfEvent<'_>,
-    stitch: &mut Vec<u8>,
-    ordinal: &mut u64,
-    tx: &PacketTx,
-) -> (usize, u64) {
-    match event {
-        PerfEvent::Lost { count } => (0, count),
-        PerfEvent::Sample { head, tail } => {
-            // The slices borrow the kernel mapping directly, so a sample that
-            // did not wrap decodes without copying.
-            let raw = assemble(head, tail, stitch);
-            let Some(packet) = decode(raw, *ordinal) else {
-                return (0, 0);
-            };
-            if tx.send(packet).is_ok() {
-                *ordinal += 1;
-                (1, 0)
-            } else {
-                (0, 0)
-            }
-        }
     }
 }
 
@@ -323,21 +264,11 @@ fn capture_bpf_with(
             symbol: t.symbol.clone(),
         })
         .collect();
-    let described = attach
-        .iter()
-        .map(|t| format!("{}:{}", t.library.display(), t.symbol))
-        .collect::<Vec<_>>()
-        .join(", ");
+    let described = describe_targets(targets);
 
     let mut reader = match BpfReader::attach_program(program, &attach) {
         Ok(r) => r,
-        Err(e) => {
-            let msg = format!("BPF capture on [{described}] failed: {e}");
-            if let Some(tx) = ready_tx {
-                let _ = tx.send(Err(msg.clone()));
-            }
-            anyhow::bail!(msg);
-        }
+        Err(e) => return Err(attach_failed(&described, &e, ready_tx)),
     };
     tracing::info!(
         "BPF capture attached to {} librar{} [{described}] plus tcp_sendmsg. \
@@ -364,248 +295,4 @@ fn capture_bpf_with(
         );
     }
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    //! The host half, minus the kernel.
-    //!
-    //! Loading the programs needs `CAP_BPF`, a BTF-carrying kernel and a build
-    //! with `bpf-linker`; the development host has none of the three and CI's
-    //! coverage run has neither of the first two. So what is pinned here is
-    //! everything around the load: the refusal a program-less build must give,
-    //! the failure contract of the capture entry point, the aligned copy the
-    //! ELF parser needs, and what one ring event turns into. `attach_program`
-    //! and `capture_bpf_with` take the object as an argument precisely so an
-    //! empty one can be handed in on every build -- a test that called
-    //! `attach` on a build that HAS the programs would try to load them.
-    use super::*;
-    use crate::capture::channel::packet_channel;
-    use sipnab_bpf_types::FLAG_HAS_TUPLE;
-
-    const INVITE: &[u8] = b"INVITE sip:b@example.net SIP/2.0\r\nCall-ID: x\r\n\r\n";
-
-    fn target(library: &str) -> Target {
-        Target {
-            library: std::path::PathBuf::from(library),
-            symbol: "SSL_write".to_string(),
-        }
-    }
-
-    /// One record as the kernel program emits it, every field placed at the
-    /// offset the shared type gives it -- never at a hand-counted one (see
-    /// `bpf_record`'s tests for why that matters).
-    fn record(payload: &[u8]) -> Vec<u8> {
-        use std::mem::offset_of;
-        let mut raw = vec![0u8; TlsRecord::HEADER_LEN + payload.len()];
-        let mut put = |at: usize, bytes: &[u8]| raw[at..at + bytes.len()].copy_from_slice(bytes);
-        put(offset_of!(TlsRecord, pid), &4242u32.to_ne_bytes());
-        put(offset_of!(TlsRecord, tid), &4243u32.to_ne_bytes());
-        put(
-            offset_of!(TlsRecord, len),
-            &(payload.len() as u32).to_ne_bytes(),
-        );
-        put(offset_of!(TlsRecord, flags), &FLAG_HAS_TUPLE.to_ne_bytes());
-        put(offset_of!(TlsRecord, saddr), &[203, 0, 113, 5]);
-        put(offset_of!(TlsRecord, daddr), &[198, 51, 100, 9]);
-        put(offset_of!(TlsRecord, sport), &5061u16.to_ne_bytes());
-        put(offset_of!(TlsRecord, dport), &5060u16.to_ne_bytes());
-        put(
-            offset_of!(TlsRecord, family),
-            &sipnab_bpf_types::FAMILY_IPV4.to_ne_bytes(),
-        );
-        put(offset_of!(TlsRecord, comm), b"opensips");
-        put(offset_of!(TlsRecord, data), payload);
-        raw
-    }
-
-    /// A build without `bpf-linker` carries the feature and no programs. It
-    /// must refuse by name and point at the backend that works, never attach
-    /// to nothing and read as a quiet trunk.
-    #[test]
-    fn a_build_without_kernel_programs_is_refused_by_name() {
-        let err = BpfReader::attach_program(&[], &[target("/lib/libssl.so.3")])
-            .err()
-            .expect("no programs, no capture")
-            .to_string();
-        assert!(err.contains("no kernel programs"), "{err}");
-        assert!(
-            err.contains("--uprobe-backend tracefs"),
-            "the refusal names the way forward: {err}"
-        );
-    }
-
-    /// The failure is on the readiness channel BEFORE it is returned, with
-    /// every target named: the launch sequence waits on that channel before
-    /// dropping the privileges loading BPF needs.
-    #[test]
-    fn a_failed_attach_is_reported_on_the_ready_channel_with_every_target_named() {
-        let targets = [
-            crate::capture::UprobeTarget {
-                library: "/lib/libssl.so.3".to_string(),
-                symbol: "SSL_write".to_string(),
-            },
-            crate::capture::UprobeTarget {
-                library: "/lib/libwolfssl.so.42".to_string(),
-                symbol: "wolfSSL_write".to_string(),
-            },
-        ];
-        let (tx, _rx) = packet_channel(16);
-        let (ready_tx, ready_rx) = crossbeam_channel::bounded(1);
-
-        let err = capture_bpf_with(&[], &targets, tx, Some(ready_tx))
-            .expect_err("a program-less build cannot capture")
-            .to_string();
-
-        let reported = ready_rx
-            .try_recv()
-            .expect("readiness must be answered")
-            .expect_err("and the answer is a failure");
-        assert_eq!(reported, err, "one message, both places");
-        assert!(
-            err.starts_with(
-                "BPF capture on [/lib/libssl.so.3:SSL_write, \
-                 /lib/libwolfssl.so.42:wolfSSL_write] failed:"
-            ),
-            "{err}"
-        );
-    }
-
-    /// Nobody waiting on readiness does not turn the failure into a success.
-    #[test]
-    fn a_failed_attach_without_a_ready_channel_still_fails() {
-        let (tx, _rx) = packet_channel(16);
-        let err = capture_bpf_with(&[], &[], tx, None)
-            .expect_err("still refused")
-            .to_string();
-        assert!(err.contains("no kernel programs"), "{err}");
-    }
-
-    /// The copy handed to the ELF parser is the object byte for byte, whole
-    /// words long, zero-padded, and reports the object's own length -- for
-    /// lengths on, off and either side of a word boundary.
-    #[test]
-    fn the_aligned_copy_is_the_object_byte_for_byte_on_a_word_boundary() {
-        for len in [0usize, 1, 7, 8, 9, 1001] {
-            let object: Vec<u8> = (0..len).map(|i| (i % 251) as u8 + 1).collect();
-            let (words, n) = aligned_copy(&object);
-            assert_eq!(n, len, "the object's length, not the buffer's");
-            assert_eq!(words.len(), len.div_ceil(8), "whole words, no more");
-            assert_eq!(
-                words.as_ptr() as usize % align_of::<u64>(),
-                0,
-                "the parser casts the header out of this buffer"
-            );
-            let bytes: Vec<u8> = words.iter().flat_map(|w| w.to_ne_bytes()).collect();
-            assert_eq!(&bytes[..len], &object[..], "len {len}");
-            assert!(
-                bytes[len..].iter().all(|&b| b == 0),
-                "the tail of the last word is padding, not garbage: len {len}"
-            );
-        }
-    }
-
-    // ── One ring event ───────────────────────────────────────────────────
-
-    /// A lost-records event is counted and sends nothing.
-    #[test]
-    fn a_lost_event_is_counted_and_sends_nothing() {
-        let (tx, rx) = packet_channel(16);
-        let (mut stitch, mut ordinal) = (Vec::new(), 7u64);
-        let got = take_event(PerfEvent::Lost { count: 5 }, &mut stitch, &mut ordinal, &tx);
-        assert_eq!(got, (0, 5));
-        assert_eq!(ordinal, 7, "no packet, no ordinal");
-        assert!(rx.try_iter().next().is_none());
-    }
-
-    /// A sample becomes one packet carrying the running ordinal, which then
-    /// advances -- the ordinal is the reader's, threaded across sweeps.
-    #[test]
-    fn a_sample_becomes_one_packet_carrying_the_running_ordinal() {
-        let (tx, rx) = packet_channel(16);
-        let raw = record(INVITE);
-        let (mut stitch, mut ordinal) = (Vec::new(), 41u64);
-
-        let got = take_event(
-            PerfEvent::Sample {
-                head: &raw,
-                tail: &[],
-            },
-            &mut stitch,
-            &mut ordinal,
-            &tx,
-        );
-
-        assert_eq!(got, (1, 0));
-        assert_eq!(ordinal, 42);
-        let pkt = rx.try_iter().next().expect("a packet");
-        assert_eq!(&pkt.data[..], INVITE);
-        assert_eq!(pkt.origin.map(|o| o.ordinal), Some(41));
-        assert_eq!(
-            pkt.pre_parsed.as_ref().map(|p| p.dst_port),
-            Some(5060),
-            "the tuple the kernel read out of the socket survives"
-        );
-    }
-
-    /// A sample the kernel split across the ring boundary decodes exactly as
-    /// the contiguous one does.
-    #[test]
-    fn a_split_sample_is_stitched_before_it_is_decoded() {
-        let (tx, rx) = packet_channel(16);
-        let raw = record(INVITE);
-        let (head, tail) = raw.split_at(TlsRecord::HEADER_LEN + 10);
-        let (mut stitch, mut ordinal) = (Vec::new(), 0u64);
-
-        let got = take_event(
-            PerfEvent::Sample { head, tail },
-            &mut stitch,
-            &mut ordinal,
-            &tx,
-        );
-
-        assert_eq!(got, (1, 0));
-        assert_eq!(&rx.try_iter().next().expect("a packet").data[..], INVITE);
-    }
-
-    /// A record that is not SIP sends nothing and does not consume an ordinal.
-    #[test]
-    fn a_sample_that_is_not_sip_sends_nothing_and_keeps_the_ordinal() {
-        let (tx, rx) = packet_channel(16);
-        let raw = record(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n");
-        let (mut stitch, mut ordinal) = (Vec::new(), 3u64);
-        let got = take_event(
-            PerfEvent::Sample {
-                head: &raw,
-                tail: &[],
-            },
-            &mut stitch,
-            &mut ordinal,
-            &tx,
-        );
-        assert_eq!(got, (0, 0));
-        assert_eq!(ordinal, 3);
-        assert!(rx.try_iter().next().is_none());
-    }
-
-    /// A packet nobody can receive is not numbered, so the next one that is
-    /// delivered still carries the next ordinal.
-    #[test]
-    fn a_closed_channel_sends_nothing_and_keeps_the_ordinal() {
-        let (tx, rx) = packet_channel(16);
-        drop(rx);
-        let raw = record(INVITE);
-        let (mut stitch, mut ordinal) = (Vec::new(), 9u64);
-        let got = take_event(
-            PerfEvent::Sample {
-                head: &raw,
-                tail: &[],
-            },
-            &mut stitch,
-            &mut ordinal,
-            &tx,
-        );
-        assert_eq!(got, (0, 0));
-        assert_eq!(ordinal, 9);
-    }
 }

@@ -6716,12 +6716,18 @@ fn no_test_judges_an_export_from_one_arbitrary_directory_entry() {
 /// --features full` run, and `ci.yml`'s "Enforce the published test count"
 /// against `cargo test --all-features`. One number, two suites.
 ///
-/// They agree today only because `full` and `all-features` differ by exactly
-/// one feature, `wasm`, and nothing is tested behind it. That is a coincidence
-/// with no guard on it. Add one `#[cfg(feature = "wasm")] #[test]` and the
-/// number becomes unsatisfiable BY CONSTRUCTION: the hook demands N, CI
-/// demands N+1, and no value of the homepage figure passes both. The fixer for
-/// one gate is guaranteed to break the other.
+/// They agree only while nothing is tested behind a feature `full` leaves out
+/// (`wasm` and `bpf` today). Add one such test and the number becomes
+/// unsatisfiable BY CONSTRUCTION: the hook demands N, CI demands N+1, and no
+/// value of the homepage figure passes both. The fixer for one gate is
+/// guaranteed to break the other.
+///
+/// That happened with `bpf`. Nine tests landed in `src/capture/uprobe/bpf.rs`,
+/// whose `mod` declaration carries `#[cfg(all(feature = "bpf", target_os =
+/// "linux"))]`, and this gate -- which then matched only a bare
+/// `#[cfg(feature = "x")]` directly above a test -- passed while CI went red on
+/// a count nine higher than the hook's. [`hidden_test_sites`] now reads a gate
+/// in any form, in either polarity, and follows a gated `mod` into its file.
 ///
 /// The two gates cannot simply be merged. CI runs `--all-features` because it
 /// includes `plugins`, whose test builds `crates/sipnab-plugin-example` for
@@ -6779,47 +6785,15 @@ fn no_test_hides_behind_a_feature_outside_full() {
          pre-commit and ci.yml that point at it"
     );
 
-    // The two ways a test becomes feature-gated: a crate-level attribute on an
-    // integration test file, and an attribute on a `#[test]` or `mod tests`.
-    let mut found = Vec::new();
-    for feat in &outside {
-        let crate_gate = format!("#![cfg(feature = \"{feat}\")]");
-        let item_gate = format!("#[cfg(feature = \"{feat}\")]");
-
-        for dir in ["tests", "src"] {
-            let walk = walkdir(std::path::Path::new(dir));
-            for path in walk {
-                let text = match std::fs::read_to_string(&path) {
-                    Ok(t) => t,
-                    Err(_) => continue,
-                };
-                if dir == "tests" && text.contains(&crate_gate) {
-                    found.push(format!("{} is gated on `{feat}` in full", path.display()));
-                }
-                let lines: Vec<&str> = text.lines().collect();
-                for (i, line) in lines.iter().enumerate() {
-                    if !line.trim().starts_with(&item_gate) {
-                        continue;
-                    }
-                    // Look ahead past other attributes for a test item.
-                    for next in lines.iter().skip(i + 1).take(4) {
-                        let t = next.trim();
-                        if t.starts_with("#[test]") || t.starts_with("mod tests") {
-                            found.push(format!(
-                                "{}:{} gates a test on `{feat}`",
-                                path.display(),
-                                i + 1
-                            ));
-                            break;
-                        }
-                        if !t.starts_with('#') && !t.is_empty() {
-                            break;
-                        }
-                    }
-                }
+    let mut files = Vec::new();
+    for dir in ["tests", "src"] {
+        for path in walkdir(std::path::Path::new(dir)) {
+            if let Ok(text) = std::fs::read_to_string(&path) {
+                files.push((path, text));
             }
         }
     }
+    let found = hidden_test_sites(&files, &outside);
 
     assert!(
         found.is_empty(),
@@ -6829,6 +6803,166 @@ fn no_test_hides_behind_a_feature_outside_full() {
          behind a feature `full` enables, or change both gates together so \
          they count the same command.",
         found.join("\n  ")
+    );
+}
+
+/// Every place a test is compiled under one of `outside`'s features and not
+/// under `full`, or the reverse, in `files` (path and text).
+///
+/// Pure over its inputs so the shapes it must catch can be handed to it
+/// directly; the tree only ever holds the shapes that are there today.
+fn hidden_test_sites(files: &[(std::path::PathBuf, String)], outside: &[String]) -> Vec<String> {
+    // Any `cfg` naming the feature, in any polarity or combination: `all`,
+    // `any` and `not` all make a test's presence differ between the two
+    // suites. `cfg_attr` does not decide whether an item exists, so it is not
+    // a gate.
+    let gates_on = |line: &str, feat: &str| {
+        let t = line.trim();
+        (t.starts_with("#[cfg(") || t.starts_with("#![cfg("))
+            && t.contains(&format!("feature = \"{feat}\""))
+    };
+    let has_test = |text: &str| text.contains("#[test]");
+    let by_path: std::collections::BTreeMap<&std::path::Path, &String> =
+        files.iter().map(|(p, t)| (p.as_path(), t)).collect();
+
+    let mut found = Vec::new();
+    for feat in outside {
+        for (path, text) in files {
+            let lines: Vec<&str> = text.lines().collect();
+            if path.starts_with("tests")
+                && lines
+                    .iter()
+                    .any(|l| l.trim().starts_with("#![cfg(") && gates_on(l, feat))
+            {
+                found.push(format!(
+                    "{} is gated on `{feat}` as a whole",
+                    path.display()
+                ));
+            }
+            for (i, line) in lines.iter().enumerate() {
+                if line.trim().starts_with("#![") || !gates_on(line, feat) {
+                    continue;
+                }
+                // Look ahead past other attributes for the item the gate is on.
+                for next in lines.iter().skip(i + 1).take(4) {
+                    let t = next.trim();
+                    if t.starts_with("#[test]") || t.starts_with("mod tests") {
+                        found.push(format!(
+                            "{}:{} gates a test on `{feat}`",
+                            path.display(),
+                            i + 1
+                        ));
+                        break;
+                    }
+                    // A gated `mod name;` hides every test in the file it
+                    // names, and in that module's own directory beneath it.
+                    let declared = t
+                        .trim_start_matches("pub(crate) ")
+                        .trim_start_matches("pub ")
+                        .strip_prefix("mod ")
+                        .and_then(|rest| rest.strip_suffix(';'));
+                    if let Some(name) = declared {
+                        let parent_dir = match path.file_name().and_then(|f| f.to_str()) {
+                            Some("mod.rs" | "lib.rs" | "main.rs") => {
+                                path.parent().map(std::path::Path::to_path_buf)
+                            }
+                            _ => path
+                                .parent()
+                                .map(|d| d.join(path.file_stem().unwrap_or_default())),
+                        };
+                        if let Some(dir) = parent_dir {
+                            let module_dir = dir.join(name);
+                            for (child, child_text) in &by_path {
+                                let is_module = *child == dir.join(format!("{name}.rs"))
+                                    || child.starts_with(&module_dir);
+                                if is_module && has_test(child_text) {
+                                    found.push(format!(
+                                        "{} holds tests, and its module is gated on `{feat}` \
+                                         at {}:{}",
+                                        child.display(),
+                                        path.display(),
+                                        i + 1
+                                    ));
+                                }
+                            }
+                        }
+                        break;
+                    }
+                    if !t.starts_with('#') && !t.is_empty() {
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    found
+}
+
+/// The detector catches a compound `cfg` and a negated one on a test, not
+/// only the bare `#[cfg(feature = "x")]` form. `#[cfg(all(feature = "bpf",
+/// target_os = "linux"))]` is how the one module that hid tests is gated, and
+/// a `not(...)` gate splits the two suites the other way round.
+#[test]
+fn the_hidden_test_detector_reads_compound_and_negated_gates() {
+    let outside = vec!["bpf".to_string()];
+    for gate in [
+        r#"#[cfg(all(feature = "bpf", target_os = "linux"))]"#,
+        r#"#[cfg(not(feature = "bpf"))]"#,
+        r#"#[cfg(any(feature = "bpf", feature = "wasm"))]"#,
+    ] {
+        let src = format!("{gate}\n#[test]\nfn t() {{}}\n");
+        let files = vec![(std::path::PathBuf::from("src/x.rs"), src)];
+        assert_eq!(
+            hidden_test_sites(&files, &outside).len(),
+            1,
+            "{gate} on a #[test] hides it from one of the two suites"
+        );
+    }
+    let plain = vec![(
+        std::path::PathBuf::from("src/x.rs"),
+        "#[cfg(all(feature = \"bpf\", target_os = \"linux\"))]\nfn not_a_test() {}\n".to_string(),
+    )];
+    assert!(
+        hidden_test_sites(&plain, &outside).is_empty(),
+        "no test, nothing hidden"
+    );
+}
+
+/// A test inside a module whose `mod` DECLARATION is gated is as hidden as one
+/// gated directly, and that is how `src/capture/uprobe/bpf.rs`'s nine tests got
+/// past this gate: the attribute sits on `pub mod bpf;` in the parent file,
+/// and the tests sit in the child file with no feature attribute of their own.
+#[test]
+fn the_hidden_test_detector_follows_a_gated_module_declaration() {
+    let outside = vec!["bpf".to_string()];
+    let parent = (
+        std::path::PathBuf::from("src/capture/uprobe/mod.rs"),
+        "#[cfg(all(feature = \"bpf\", target_os = \"linux\"))]\npub mod bpf;\npub mod open;\n"
+            .to_string(),
+    );
+    let tested = (
+        std::path::PathBuf::from("src/capture/uprobe/bpf.rs"),
+        "fn f() {}\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn t() {}\n}\n".to_string(),
+    );
+    let ungated = (
+        std::path::PathBuf::from("src/capture/uprobe/open.rs"),
+        "#[cfg(test)]\nmod tests {\n    #[test]\n    fn t() {}\n}\n".to_string(),
+    );
+    let found = hidden_test_sites(&[parent.clone(), tested, ungated.clone()], &outside);
+    assert_eq!(
+        found.len(),
+        1,
+        "exactly the gated module's tests: {found:?}"
+    );
+    assert!(found[0].contains("src/capture/uprobe/bpf.rs"), "{found:?}");
+
+    let untested = (
+        std::path::PathBuf::from("src/capture/uprobe/bpf.rs"),
+        "fn f() {}\n".to_string(),
+    );
+    assert!(
+        hidden_test_sites(&[parent, untested, ungated], &outside).is_empty(),
+        "a gated module with no tests hides nothing"
     );
 }
 
