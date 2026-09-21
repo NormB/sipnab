@@ -516,3 +516,167 @@ mod all_checkbox_order_tests {
         assert!(app.active_popup.is_none(), "Space on Cancel closes");
     }
 }
+
+/// Tests for the dialog's remaining keys: Enter/Space on the buttons, the
+/// backward and vertical focus moves outside the method grid, F9, and the
+/// cursor keys at the edges of a text field.
+#[cfg(test)]
+mod key_handling_tests {
+    use super::*;
+    use crossterm::event::KeyModifiers;
+
+    /// Build an unmodified `KeyEvent` for `code`.
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    /// An app with the filter dialog open at its defaults.
+    fn app_with_open_filter() -> App {
+        let mut app = App::new_test();
+        app.filter_dialog = FilterDialogState::default();
+        app.active_popup = Some(Popup::FilterDialog);
+        app
+    }
+
+    /// Enter on Cancel closes the dialog WITHOUT applying what was typed;
+    /// Enter on any other element applies it and closes.
+    #[test]
+    fn enter_on_cancel_discards_and_enter_elsewhere_applies() {
+        let mut app = app_with_open_filter();
+        app.filter_dialog.sip_from = "alice".to_string();
+        app.filter_dialog.focused_field = CANCEL_BUTTON_IDX;
+        handle_filter_popup_key(&mut app, key(KeyCode::Enter));
+        assert!(app.active_popup.is_none(), "Cancel closes");
+        assert!(app.active_filter.is_none(), "Cancel applies nothing");
+
+        app.active_popup = Some(Popup::FilterDialog);
+        app.filter_dialog.focused_field = 0;
+        handle_filter_popup_key(&mut app, key(KeyCode::Enter));
+        assert!(app.active_popup.is_none(), "applying closes");
+        assert!(app.active_filter.is_some(), "the typed From was applied");
+        assert!(
+            app.active_filter_text.contains("alice"),
+            "status text: {}",
+            app.active_filter_text
+        );
+    }
+
+    /// Space on the Filter button applies, exactly as Enter does.
+    #[test]
+    fn space_on_the_filter_button_applies() {
+        let mut app = app_with_open_filter();
+        app.filter_dialog.sip_to = "bob".to_string();
+        app.filter_dialog.focused_field = FILTER_BUTTON_IDX;
+        handle_filter_popup_key(&mut app, key(KeyCode::Char(' ')));
+        assert!(app.active_popup.is_none());
+        assert!(
+            app.active_filter_text.contains("bob"),
+            "status text: {}",
+            app.active_filter_text
+        );
+    }
+
+    /// Shift-Tab (as terminals that report the modifier send it) walks focus
+    /// backward like BackTab, and landing on a text field puts the cursor at
+    /// the end of its text.
+    #[test]
+    fn shift_tab_walks_focus_backward_and_parks_the_cursor_at_the_end() {
+        let mut app = app_with_open_filter();
+        app.filter_dialog.sip_from = "abc".to_string();
+        app.filter_dialog.focused_field = 2;
+        handle_filter_popup_key(&mut app, KeyEvent::new(KeyCode::Tab, KeyModifiers::SHIFT));
+        assert_eq!(app.filter_dialog.focused_field, 1, "Shift-Tab goes back");
+        handle_filter_popup_key(&mut app, key(KeyCode::BackTab));
+        assert_eq!(app.filter_dialog.focused_field, 0);
+        assert_eq!(app.filter_dialog.cursor_pos, 3, "cursor at end of 'abc'");
+    }
+
+    /// Outside the method grid, Down and Up move focus to the next and
+    /// previous element rather than navigating checkboxes.
+    #[test]
+    fn arrows_outside_the_method_grid_move_between_fields() {
+        let mut app = app_with_open_filter();
+        app.filter_dialog.sip_to = "xy".to_string();
+        handle_filter_popup_key(&mut app, key(KeyCode::Down));
+        assert_eq!(app.filter_dialog.focused_field, 1);
+        assert_eq!(app.filter_dialog.cursor_pos, 2, "cursor at end of 'xy'");
+        handle_filter_popup_key(&mut app, key(KeyCode::Up));
+        assert_eq!(app.filter_dialog.focused_field, 0);
+
+        app.filter_dialog.focused_field = FILTER_BUTTON_IDX;
+        handle_filter_popup_key(&mut app, key(KeyCode::Down));
+        assert_eq!(app.filter_dialog.focused_field, CANCEL_BUTTON_IDX);
+        handle_filter_popup_key(&mut app, key(KeyCode::Up));
+        assert_eq!(app.filter_dialog.focused_field, FILTER_BUTTON_IDX);
+    }
+
+    /// F9 empties every field, re-checks every method, drops the active
+    /// filter and the status error, and closes the dialog.
+    #[test]
+    fn f9_clears_the_fields_and_the_active_filter_and_closes() {
+        let mut app = app_with_open_filter();
+        app.filter_dialog.payload = "needle".to_string();
+        app.filter_dialog.methods[0] = false;
+        apply_filter_dialog(&mut app);
+        assert!(app.active_filter.is_some(), "precondition: a filter is on");
+
+        app.active_popup = Some(Popup::FilterDialog);
+        app.status_error = Some("stale".to_string());
+        handle_filter_popup_key(&mut app, key(KeyCode::F(9)));
+        assert!(app.active_popup.is_none(), "F9 closes");
+        assert!(app.status_error.is_none(), "F9 clears the status line");
+        assert!(app.active_filter.is_none(), "F9 drops the filter");
+        assert!(app.active_filter_text.is_empty());
+        assert_eq!(app.filter_dialog.payload, "", "fields emptied");
+        assert!(
+            app.filter_dialog.methods.iter().all(|&m| m),
+            "every method re-checked"
+        );
+    }
+
+    /// Home and End jump to the ends of the focused text field, and typing
+    /// inserts at the cursor rather than appending.
+    #[test]
+    fn home_and_end_jump_within_the_field_and_typing_inserts_at_the_cursor() {
+        let mut app = app_with_open_filter();
+        app.filter_dialog.sip_from = "hello".to_string();
+        app.filter_dialog.cursor_pos = 2;
+        handle_filter_popup_key(&mut app, key(KeyCode::Home));
+        assert_eq!(app.filter_dialog.cursor_pos, 0);
+        handle_filter_popup_key(&mut app, key(KeyCode::Char('X')));
+        assert_eq!(app.filter_dialog.sip_from, "Xhello");
+        assert_eq!(app.filter_dialog.cursor_pos, 1);
+        handle_filter_popup_key(&mut app, key(KeyCode::End));
+        assert_eq!(app.filter_dialog.cursor_pos, "Xhello".len());
+    }
+
+    /// At the edges of a field, Backspace at the start, Delete and Right at
+    /// the end change nothing; a key the dialog does not bind changes
+    /// nothing; and text keys on a button type nowhere.
+    #[test]
+    fn edits_past_the_field_edges_and_text_keys_on_a_button_are_no_ops() {
+        let mut app = app_with_open_filter();
+        app.filter_dialog.sip_from = "ab".to_string();
+        app.filter_dialog.cursor_pos = 0;
+        handle_filter_popup_key(&mut app, key(KeyCode::Backspace));
+        assert_eq!(app.filter_dialog.sip_from, "ab");
+        assert_eq!(app.filter_dialog.cursor_pos, 0);
+
+        app.filter_dialog.cursor_pos = 2;
+        handle_filter_popup_key(&mut app, key(KeyCode::Delete));
+        handle_filter_popup_key(&mut app, key(KeyCode::Right));
+        assert_eq!(app.filter_dialog.sip_from, "ab");
+        assert_eq!(app.filter_dialog.cursor_pos, 2);
+
+        handle_filter_popup_key(&mut app, key(KeyCode::F(3)));
+        assert_eq!(app.filter_dialog.sip_from, "ab");
+        assert_eq!(app.active_popup, Some(Popup::FilterDialog));
+
+        app.filter_dialog.focused_field = FILTER_BUTTON_IDX;
+        handle_filter_popup_key(&mut app, key(KeyCode::Char('z')));
+        handle_filter_popup_key(&mut app, key(KeyCode::Backspace));
+        assert_eq!(app.filter_dialog.sip_from, "ab", "a button is not a field");
+        assert_eq!(app.filter_dialog.focused_field, FILTER_BUTTON_IDX);
+        assert_eq!(app.active_popup, Some(Popup::FilterDialog));
+    }
+}

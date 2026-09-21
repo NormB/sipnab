@@ -227,3 +227,145 @@ mod tests {
         assert_eq!(app.current_view, View::StreamList);
     }
 }
+
+/// Tests for row navigation and its clamp, and for what Enter, `L`, and a
+/// close do, against a snapshot with a known number of rows.
+#[cfg(test)]
+mod navigation_tests {
+    use super::*;
+    use crate::tui::controllers::test_support::*;
+    use crate::tui::dashboard::{DashboardSnapshot, StreamHealth};
+
+    /// A stream key distinguished by its SSRC.
+    fn skey(ssrc: u32) -> crate::rtp::stream::StreamKey {
+        crate::rtp::stream::StreamKey {
+            ssrc,
+            src: std::net::SocketAddr::new(addr_a(), 20000),
+            dst: std::net::SocketAddr::new(addr_b(), 30000),
+        }
+    }
+
+    /// The dashboard view over `n` rows, row `i` carrying SSRC `i`.
+    fn app_with_rows(n: u32) -> App {
+        let row = |ssrc| StreamHealth {
+            key: skey(ssrc),
+            call_id: None,
+            codec: None,
+            mos: 4.0,
+            jitter_ms: 0.0,
+            loss_pct: 0.0,
+            packets: 1,
+            active: true,
+            trend: Vec::new(),
+        };
+        let mut app = App::new_test();
+        app.current_view = View::QualityDashboard;
+        app.dashboard_snapshot = Some(DashboardSnapshot {
+            rows: (0..n).map(row).collect(),
+            ..Default::default()
+        });
+        app
+    }
+
+    /// PgUp/PgDn and `L` are bound (the other bindings are pinned above).
+    #[test]
+    fn paging_and_the_loss_map_key_are_bound() {
+        use DashboardAction::*;
+        let km = Keymap::default();
+        assert_eq!(dashboard_action(&km, key(KeyCode::PageUp)), Some(PageUp));
+        assert_eq!(
+            dashboard_action(&km, key(KeyCode::PageDown)),
+            Some(PageDown)
+        );
+        assert_eq!(
+            dashboard_action(&km, key(KeyCode::Char('L'))),
+            Some(OpenLossMap)
+        );
+    }
+
+    /// Down/`j` and Up/`k` move one row and PgDn/PgUp ten, clamped to the
+    /// last row and saturating at the first; Home and End jump to the ends.
+    #[test]
+    fn row_selection_moves_by_one_and_by_ten_and_clamps_to_the_rows() {
+        let mut app = app_with_rows(12);
+        let steps: [(KeyCode, usize); 11] = [
+            (KeyCode::Down, 1),
+            (KeyCode::Char('j'), 2),
+            (KeyCode::PageDown, 11),
+            (KeyCode::Down, 11),
+            (KeyCode::PageUp, 1),
+            (KeyCode::Char('k'), 0),
+            (KeyCode::Up, 0),
+            (KeyCode::PageUp, 0),
+            (KeyCode::End, 11),
+            (KeyCode::Home, 0),
+            (KeyCode::PageDown, 10),
+        ];
+        for (code, want) in steps {
+            handle_dashboard_key(&mut app, key(code));
+            assert_eq!(app.dashboard_selected, want, "after {code:?}");
+            assert_eq!(app.current_view, View::QualityDashboard);
+        }
+    }
+
+    /// With no snapshot yet, navigation pins the selection to row 0 and
+    /// neither Enter nor `L` opens anything.
+    #[test]
+    fn with_no_rows_navigation_stays_on_row_zero_and_opens_nothing() {
+        let mut app = App::new_test();
+        app.current_view = View::QualityDashboard;
+        for code in [KeyCode::Down, KeyCode::PageDown, KeyCode::End] {
+            handle_dashboard_key(&mut app, key(code));
+            assert_eq!(app.dashboard_selected, 0, "after {code:?}");
+        }
+        handle_dashboard_key(&mut app, key(KeyCode::Enter));
+        handle_dashboard_key(&mut app, key(KeyCode::Char('L')));
+        assert_eq!(app.current_view, View::QualityDashboard);
+        assert_eq!(app.stream_detail_return_view, None);
+    }
+
+    /// Enter opens the SELECTED row's stream detail at the top, recording the
+    /// dashboard as the view its Esc returns to.
+    #[test]
+    fn enter_opens_the_selected_rows_stream_detail_and_remembers_the_dashboard() {
+        let mut app = app_with_rows(3);
+        app.dashboard_selected = 2;
+        app.stream_detail_scroll = 9;
+        handle_dashboard_key(&mut app, key(KeyCode::Enter));
+        assert_eq!(app.current_view, View::StreamDetail(skey(2)));
+        assert_eq!(app.stream_detail_scroll, 0, "the detail opens at the top");
+        assert_eq!(
+            app.stream_detail_return_view,
+            Some(View::QualityDashboard),
+            "Esc from the detail comes back here"
+        );
+    }
+
+    /// `L` resets the detail scroll it seeds, like Enter does, so the detail
+    /// the loss map returns to starts at the top.
+    #[test]
+    fn the_loss_map_seeds_a_detail_that_starts_at_the_top() {
+        let mut app = app_with_rows(2);
+        app.dashboard_selected = 1;
+        app.stream_detail_scroll = 4;
+        handle_dashboard_key(&mut app, key(KeyCode::Char('L')));
+        assert_eq!(app.current_view, View::StreamLossMap(skey(1)));
+        assert_eq!(app.stream_detail_scroll, 0);
+        assert_eq!(app.stream_detail_return_view, Some(View::QualityDashboard));
+    }
+
+    /// A key the dashboard does not bind changes nothing; the quit key closes
+    /// and, with no recorded opener, falls back to the call list.
+    #[test]
+    fn unbound_keys_are_ignored_and_close_without_an_opener_goes_to_the_call_list() {
+        let mut app = app_with_rows(2);
+        app.dashboard_selected = 1;
+        handle_dashboard_key(&mut app, key(KeyCode::Char('z')));
+        assert_eq!(app.current_view, View::QualityDashboard);
+        assert_eq!(app.dashboard_selected, 1);
+
+        assert_eq!(app.dashboard_return_view, None);
+        handle_dashboard_key(&mut app, key(KeyCode::Char('q')));
+        assert_eq!(app.current_view, View::CallList);
+    }
+}
