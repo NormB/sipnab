@@ -102,6 +102,13 @@ impl SuppressionFile {
     /// opposite of what they asked for.
     pub fn load(path: impl AsRef<Path>) -> std::io::Result<Self> {
         let path = path.as_ref();
+        // Prevent path traversal attacks by rejecting paths containing '..'.
+        if path.components().any(|c| c == std::path::Component::ParentDir) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("Invalid input: {}", path.display()),
+            ));
+        }
         let text = std::fs::read_to_string(path)?;
         let config = LintConfig::new().suppress_list(&text);
         Ok(Self {
