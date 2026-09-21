@@ -342,9 +342,9 @@ pub fn spawn_ask(
     rx
 }
 
-/// Perform one ask and compose its text. Transmits, so it is not unit-tested;
-/// the composition it delegates to IS (`compose_*`), and the wire is exercised
-/// live against the harness relay.
+/// Perform one ask and compose its text. Transmits through the relay it is
+/// handed: the unit tests hand it a scripted relay holding no socket, and the
+/// wire is exercised live against the harness relay.
 fn do_ask(
     access: &TuiRelayAccess,
     key: &AskKey,
@@ -420,5 +420,426 @@ fn do_ask(
                 Err(e) => fetch_failure(&e),
             }
         }
+    }
+}
+
+// ── Tests ───────────────────────────────────────────────────────────
+
+/// Tests for the ask itself (`do_ask` / `spawn_ask`) and the composition
+/// branches `tests/tui_relay_stats_test.rs` does not reach.
+///
+/// The view transmits, but only through the `ReadOnlyRelay` it is handed.
+/// These tests hand it a scripted relay that holds no socket — every answer is
+/// a value in memory — so which relay method each mode asks, what it passes,
+/// and how each outcome is classified are all driven without a packet leaving
+/// the process. The real client's wire is exercised live against the harness
+/// relay, not here.
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::relay::types::{Enumeration, UntrustedReply};
+    use crate::security::transmit_guard::TransmitPermit;
+    use std::sync::Mutex;
+
+    /// What the scripted relay answers: the method asked and its Call-ID in,
+    /// a reply or a fetch error out.
+    type Script = fn(&str, Option<&str>) -> anyhow::Result<ControlReply>;
+
+    /// A relay that answers from a script and records every ask. Holds no
+    /// socket, so nothing it does reaches a network.
+    struct ScriptedRelay {
+        script: Script,
+        asked: Mutex<Vec<String>>,
+    }
+
+    impl ScriptedRelay {
+        fn new(script: Script) -> Arc<Self> {
+            Arc::new(Self {
+                script,
+                asked: Mutex::new(Vec::new()),
+            })
+        }
+
+        /// Every ask so far, in order.
+        fn asked(&self) -> Vec<String> {
+            self.asked.lock().unwrap().clone()
+        }
+    }
+
+    impl ReadOnlyRelay for ScriptedRelay {
+        fn list(&self, _permit: &TransmitPermit, limit: u32) -> anyhow::Result<ControlReply> {
+            self.asked.lock().unwrap().push(format!("list {limit}"));
+            (self.script)("list", None)
+        }
+
+        fn query(&self, _permit: &TransmitPermit, call_id: &str) -> anyhow::Result<ControlReply> {
+            self.asked.lock().unwrap().push(format!("query {call_id}"));
+            (self.script)("query", Some(call_id))
+        }
+
+        fn statistics(&self, _permit: &TransmitPermit) -> anyhow::Result<ControlReply> {
+            self.asked.lock().unwrap().push("statistics".to_string());
+            (self.script)("statistics", None)
+        }
+
+        fn call_statistics(
+            &self,
+            _permit: &TransmitPermit,
+            call_id: &str,
+        ) -> anyhow::Result<ControlReply> {
+            self.asked
+                .lock()
+                .unwrap()
+                .push(format!("call_statistics {call_id}"));
+            (self.script)("call_statistics", Some(call_id))
+        }
+
+        fn describe(&self) -> String {
+            "scripted".to_string()
+        }
+    }
+
+    /// The address every answer is labeled with.
+    fn addr() -> SocketAddr {
+        "192.0.2.10:22222".parse().unwrap()
+    }
+
+    /// Access to `relay` with a permit a live source grants. Building the
+    /// permit opens no device; it is only the proof the type demands.
+    fn access(relay: &Arc<ScriptedRelay>) -> TuiRelayAccess {
+        let live = crate::capture::CaptureSource::Live {
+            device: "eth0".to_string(),
+        };
+        TuiRelayAccess {
+            relay: Arc::clone(relay) as Arc<dyn ReadOnlyRelay + Send + Sync>,
+            permit: TransmitPermit::for_source(&live).expect("a live source grants a permit"),
+            addr: addr(),
+        }
+    }
+
+    /// A statistics reply of `kv` pairs.
+    fn stats(kv: &[(&str, &str)]) -> ControlReply {
+        ControlReply::Statistics(
+            kv.iter()
+                .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+                .collect(),
+        )
+    }
+
+    /// A relay whose every statistics answer counts 9000 RTP packets, and
+    /// whose list holds two calls.
+    fn counting_relay() -> Arc<ScriptedRelay> {
+        ScriptedRelay::new(|method, _| {
+            Ok(match method {
+                "list" => ControlReply::Calls(Enumeration {
+                    call_ids: vec!["a@h".to_string(), "b@h".to_string()],
+                    truncated: false,
+                }),
+                _ => stats(&[("totals.RTP.packets", "9000")]),
+            })
+        })
+    }
+
+    /// A fixed ask time.
+    fn at() -> chrono::DateTime<chrono::Utc> {
+        chrono::TimeZone::with_ymd_and_hms(&chrono::Utc, 2026, 9, 21, 12, 0, 0).unwrap()
+    }
+
+    /// The label names the relay by its own description and address, and the
+    /// call when the ask is scoped to one.
+    #[test]
+    fn an_answer_is_labeled_with_the_relays_own_description_and_the_call() {
+        let relay = counting_relay();
+        assert_eq!(
+            answer_label(relay.as_ref(), addr(), None),
+            "relay scripted (192.0.2.10:22222)"
+        );
+        assert_eq!(
+            answer_label(relay.as_ref(), addr(), Some("c@h")),
+            "relay scripted (192.0.2.10:22222), call c@h"
+        );
+    }
+
+    /// A run that can ask has no invocation refusal to render.
+    #[test]
+    fn a_ready_state_has_no_invocation_refusal() {
+        let state = RelayQueryState::Ready(access(&counting_relay()));
+        assert_eq!(state.invocation_refusal(), None);
+    }
+
+    /// Holdings are worded for what the relay holds — none, or exactly one
+    /// (singular) — and a reply that is not a call list is suspect.
+    #[test]
+    fn holdings_are_worded_for_none_and_for_one_and_a_wrong_reply_is_suspect() {
+        let none = compose_holdings(
+            &ControlReply::Calls(Enumeration {
+                call_ids: Vec::new(),
+                truncated: false,
+            }),
+            "relay X",
+            at(),
+        );
+        assert!(none.contains("The relay holds no calls."), "{none}");
+        assert!(!none.contains("Holding"), "{none}");
+
+        let one = compose_holdings(
+            &ControlReply::Calls(Enumeration {
+                call_ids: vec!["only@h".to_string()],
+                truncated: false,
+            }),
+            "relay X",
+            at(),
+        );
+        assert!(one.contains("Holding 1 call:\n  only@h"), "{one}");
+        assert!(!one.contains("more, not shown"), "not truncated: {one}");
+
+        let wrong = compose_holdings(&stats(&[("x", "1")]), "relay X", at());
+        assert!(
+            wrong.contains(StatisticsOutcome::Suspect.as_wire_str())
+                && wrong.contains("something other than a call list"),
+            "{wrong}"
+        );
+    }
+
+    /// A comparison keeps every way a side can be missing apart: a reply that
+    /// is not statistics is suspect; the relay's own no is refused with its
+    /// reason; a relay count beside no capture count asks for the media; and
+    /// neither side having RTP is its own refusal, never a zero.
+    #[test]
+    fn a_comparison_keeps_every_missing_side_distinct() {
+        let label = "relay X, call c@h";
+        let wrong = compose_compare(
+            &ControlReply::Refused {
+                reason: "no".to_string(),
+            },
+            "c@h",
+            Some(1),
+            label,
+            at(),
+        );
+        assert!(
+            wrong.contains(StatisticsOutcome::Suspect.as_wire_str())
+                && wrong.contains("something other than statistics"),
+            "{wrong}"
+        );
+
+        let refused = compose_compare(
+            &stats(&[("result", "error"), ("error-reason", "Unknown call-id")]),
+            "c@h",
+            Some(1),
+            label,
+            at(),
+        );
+        assert!(
+            refused.contains(StatisticsOutcome::Refused.as_wire_str())
+                && refused.contains("Unknown call-id"),
+            "{refused}"
+        );
+
+        let no_media = compose_compare(
+            &stats(&[("totals.RTP.packets", "9000")]),
+            "c@h",
+            None,
+            label,
+            at(),
+        );
+        assert!(
+            no_media.contains(StatisticsOutcome::NotConfigured.as_wire_str())
+                && no_media.contains("reports 9000 RTP packet(s) for call c@h")
+                && no_media.contains("measured none"),
+            "{no_media}"
+        );
+
+        let neither = compose_compare(&stats(&[("other", "1")]), "c@h", None, label, at());
+        assert!(
+            neither.contains(StatisticsOutcome::Refused.as_wire_str())
+                && neither.contains("neither the relay nor this capture has RTP for call c@h"),
+            "{neither}"
+        );
+    }
+
+    /// Global counters ask the relay's `statistics`, carry its values under
+    /// the relay's label, and honor the polled origin.
+    #[test]
+    fn global_counters_ask_statistics_and_label_the_answer() {
+        let relay = counting_relay();
+        let text = do_ask(
+            &access(&relay),
+            &(None, RelayStatsMode::Counters),
+            None,
+            fmt::FetchOrigin::Polled { every_secs: 7 },
+        );
+        assert_eq!(relay.asked(), vec!["statistics"]);
+        assert!(text.contains("relay scripted (192.0.2.10:22222)"), "{text}");
+        assert!(text.contains("9000"), "{text}");
+        assert!(text.contains("polled"), "{text}");
+    }
+
+    /// Counters scoped to a call ask `call_statistics` for THAT call and apply
+    /// the per-call refusal rule: the relay's `result: error` is refused. The
+    /// same reply to a global ask is rendered as counters.
+    #[test]
+    fn per_call_counters_ask_for_the_call_and_apply_the_refusal_rule() {
+        let refusing = || {
+            ScriptedRelay::new(|_, _| {
+                Ok(stats(&[
+                    ("result", "error"),
+                    ("error-reason", "Unknown call-id"),
+                ]))
+            })
+        };
+        let relay = refusing();
+        let per_call = do_ask(
+            &access(&relay),
+            &(Some("c@h".to_string()), RelayStatsMode::Counters),
+            None,
+            fmt::FetchOrigin::Asked,
+        );
+        assert_eq!(relay.asked(), vec!["call_statistics c@h"]);
+        assert!(
+            per_call.contains(StatisticsOutcome::Refused.as_wire_str())
+                && per_call.contains("Unknown call-id"),
+            "{per_call}"
+        );
+
+        let relay = refusing();
+        let global = do_ask(
+            &access(&relay),
+            &(None, RelayStatsMode::Counters),
+            None,
+            fmt::FetchOrigin::Asked,
+        );
+        assert!(
+            !global.contains(StatisticsOutcome::Refused.as_wire_str()),
+            "a global ask is not read as a refusal: {global}"
+        );
+    }
+
+    /// Names are always the relay's full set: even scoped to a call they ask
+    /// the global `statistics`, list names without values, and never label
+    /// themselves polled.
+    #[test]
+    fn names_ask_the_global_statistics_even_when_scoped_to_a_call() {
+        let relay = counting_relay();
+        let text = do_ask(
+            &access(&relay),
+            &(Some("c@h".to_string()), RelayStatsMode::Names),
+            None,
+            fmt::FetchOrigin::Polled { every_secs: 7 },
+        );
+        assert_eq!(relay.asked(), vec!["statistics"]);
+        assert!(text.contains("totals.RTP.packets"), "{text}");
+        assert!(!text.contains("9000"), "names carry no values: {text}");
+        assert!(!text.contains("polled"), "names are a one-shot ask: {text}");
+    }
+
+    /// A comparison asks for the call's statistics and sets them beside this
+    /// capture's count; without a call it refuses WITHOUT asking the relay.
+    #[test]
+    fn a_comparison_asks_for_the_call_and_without_one_asks_nothing() {
+        let relay = counting_relay();
+        let text = do_ask(
+            &access(&relay),
+            &(Some("c@h".to_string()), RelayStatsMode::Compare),
+            Some(9000),
+            fmt::FetchOrigin::Asked,
+        );
+        assert_eq!(relay.asked(), vec!["call_statistics c@h"]);
+        assert!(text.contains("match"), "equal counts match: {text}");
+
+        let relay = counting_relay();
+        let text = do_ask(
+            &access(&relay),
+            &(None, RelayStatsMode::Compare),
+            Some(9000),
+            fmt::FetchOrigin::Asked,
+        );
+        assert!(relay.asked().is_empty(), "nothing is transmitted");
+        assert!(
+            text.contains(StatisticsOutcome::NotConfigured.as_wire_str())
+                && text.contains("a comparison needs a call to compare"),
+            "{text}"
+        );
+    }
+
+    /// Holdings ask the relay's `list` with the bounded default limit, even
+    /// when the view is scoped to a call, and render what it holds.
+    #[test]
+    fn holdings_ask_list_with_the_default_limit_regardless_of_the_call() {
+        let relay = counting_relay();
+        let text = do_ask(
+            &access(&relay),
+            &(Some("c@h".to_string()), RelayStatsMode::Holdings),
+            None,
+            fmt::FetchOrigin::Asked,
+        );
+        assert_eq!(
+            relay.asked(),
+            vec![format!(
+                "list {}",
+                crate::relay::reconcile::DEFAULT_LIST_LIMIT
+            )]
+        );
+        assert!(text.contains("Holding 2 calls:"), "{text}");
+    }
+
+    /// A fetch that got nothing back is `unreachable`, in every mode; one that
+    /// got a reply it could not trust is `suspect` and says the reply was
+    /// discarded — the two are never collapsed.
+    #[test]
+    fn fetch_failures_are_unreachable_or_suspect_in_every_mode() {
+        let silent = || ScriptedRelay::new(|_, _| Err(anyhow::anyhow!("timed out")));
+        let modes = [
+            (None, RelayStatsMode::Counters),
+            (Some("c@h".to_string()), RelayStatsMode::Counters),
+            (None, RelayStatsMode::Names),
+            (Some("c@h".to_string()), RelayStatsMode::Compare),
+            (None, RelayStatsMode::Holdings),
+        ];
+        for key in &modes {
+            let relay = silent();
+            let text = do_ask(&access(&relay), key, Some(1), fmt::FetchOrigin::Asked);
+            assert_eq!(relay.asked().len(), 1, "{key:?} asked once");
+            assert!(
+                text.contains(StatisticsOutcome::Unreachable.as_wire_str())
+                    && text.contains("did not answer (timed out)"),
+                "{key:?}: {text}"
+            );
+        }
+
+        let untrusted = ScriptedRelay::new(|_, _| {
+            Err(UntrustedReply {
+                reason: "cookie mismatch".to_string(),
+            }
+            .into())
+        });
+        let text = do_ask(
+            &access(&untrusted),
+            &(None, RelayStatsMode::Counters),
+            None,
+            fmt::FetchOrigin::Asked,
+        );
+        assert!(
+            text.contains(StatisticsOutcome::Suspect.as_wire_str())
+                && text.contains("cookie mismatch")
+                && text.contains("the reply was discarded and not read"),
+            "{text}"
+        );
+    }
+
+    /// The ask runs on a worker and its one answer arrives on the returned
+    /// channel, tagged with the (call, mode) it answers so a stale reply can
+    /// be told apart.
+    #[test]
+    fn a_spawned_ask_answers_on_its_channel_tagged_with_what_it_answers() {
+        let relay = counting_relay();
+        let key = (Some("c@h".to_string()), RelayStatsMode::Counters);
+        let rx = spawn_ask(access(&relay), key.clone(), None, fmt::FetchOrigin::Asked);
+        let reply = rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("the worker answers");
+        assert_eq!(reply.key, key);
+        assert!(reply.text.contains("9000"), "{}", reply.text);
+        assert_eq!(relay.asked(), vec!["call_statistics c@h"]);
     }
 }

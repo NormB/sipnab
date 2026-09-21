@@ -50,7 +50,7 @@ pub(in crate::tui) fn is_browsable_capture(name: &str) -> bool {
 /// # Side effects
 /// Reads the directory from the filesystem. On failure sets
 /// `app.file_open.error` (with a privilege-drop hint for permission
-/// errors) and leaves the previous entries; on success clears the error,
+/// errors) and lists only `..`, the way out; on success clears the error,
 /// replaces the entries (`..` first, hidden files skipped unless the
 /// filter starts with a dot, non-capture files skipped), and clamps
 /// `app.file_open.selected` to the new length.
@@ -1262,5 +1262,448 @@ mod tests {
             app.dialog_store.read().get("ws-open@test").is_some(),
             "WS-wrapped SIP must be unwrapped into the dialog store on file open"
         );
+    }
+}
+
+/// Tests for the browser and manual-path keys, the directory listing's
+/// ordering and filtering rules, and what a load reports for captures the
+/// unit tests above do not cover (unopenable, media-only). A relay's own
+/// capture is covered by `tests/tui_file_open_relay_capture_test.rs`: the
+/// relay-seam gate keeps vendor names, fixture names included, out of code
+/// under `src/tui/`.
+#[cfg(test)]
+mod browser_tests {
+    use super::*;
+    use crossterm::event::{KeyEvent, KeyModifiers};
+
+    /// Build an unmodified `KeyEvent` for `code`.
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    /// An app with the browser open on `dir` and its listing read.
+    fn browser_at(dir: &std::path::Path) -> App {
+        let mut app = App::new_test();
+        app.file_open.dir = dir.to_path_buf();
+        app.active_popup = Some(Popup::FileOpenDialog);
+        refresh_file_entries(&mut app);
+        app
+    }
+
+    /// Entry names in display order.
+    fn names(app: &App) -> Vec<String> {
+        app.file_open
+            .entries
+            .iter()
+            .map(|e| e.name.clone())
+            .collect()
+    }
+
+    /// Absolute path of a repo test fixture.
+    fn fixture(name: &str) -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures")
+            .join(name)
+    }
+
+    /// Pump `poll_pcap_load` until the background load has been applied.
+    fn drain(app: &mut App) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while app.pcap_load.is_some() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "background load never completed"
+            );
+            poll_pcap_load(app);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
+    /// Load `path` into fresh stores on this thread and return the outcome
+    /// with the stores it wrote.
+    fn load_into_fresh_stores(
+        path: &std::path::Path,
+    ) -> (
+        PcapLoadOutcome,
+        Arc<RwLock<DialogStore>>,
+        Arc<RwLock<StreamStore>>,
+    ) {
+        let progress = PcapLoadProgress::new("t");
+        let ds = Arc::new(RwLock::new(DialogStore::new(100, false)));
+        let ss = Arc::new(RwLock::new(StreamStore::new(100)));
+        let out = run_pcap_load(path, &ds, &ss, &progress, None);
+        (out, ds, ss)
+    }
+
+    /// Opening the dialog clears the previous visit's filter, manual path and
+    /// cursor, leaves manual mode, lists the directory, and opens the popup.
+    #[test]
+    fn opening_the_dialog_resets_the_browser_and_lists_the_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.pcap"), b"x").unwrap();
+        let mut app = App::new_test();
+        app.file_open.dir = dir.path().to_path_buf();
+        app.file_open.filter = "zz".to_string();
+        app.file_open.manual_mode = true;
+        app.file_open.path = "/old".to_string();
+        app.file_open.cursor = 2;
+
+        open_file_dialog(&mut app);
+
+        assert_eq!(app.active_popup, Some(Popup::FileOpenDialog));
+        assert_eq!(app.file_open.filter, "");
+        assert!(!app.file_open.manual_mode);
+        assert_eq!(app.file_open.path, "");
+        assert_eq!(app.file_open.cursor, 0);
+        assert_eq!(app.file_open.dir, dir.path());
+        assert!(
+            names(&app).contains(&"a.pcap".to_string()),
+            "{:?}",
+            names(&app)
+        );
+    }
+
+    /// When the last-browsed directory no longer exists, the dialog opens on
+    /// the working directory instead of an unreadable path.
+    #[test]
+    fn opening_the_dialog_falls_back_to_the_working_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = App::new_test();
+        app.file_open.dir = dir.path().join("gone");
+        open_file_dialog(&mut app);
+        assert_eq!(app.file_open.dir, std::env::current_dir().unwrap());
+        assert!(app.file_open.error.is_none(), "the working directory reads");
+    }
+
+    /// A directory that does not exist reports "Cannot read" WITHOUT the
+    /// privilege-drop hint (that hint is for permission errors only), and the
+    /// listing is replaced by the parent entry alone, so the user can climb
+    /// out rather than being shown a previous directory's files.
+    #[test]
+    fn a_missing_directory_reports_why_and_offers_only_the_way_up() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.pcap"), b"x").unwrap();
+        let mut app = browser_at(dir.path());
+        assert!(names(&app).contains(&"a.pcap".to_string()));
+
+        app.file_open.dir = dir.path().join("missing");
+        refresh_file_entries(&mut app);
+        let err = app.file_open.error.clone().expect("an error is shown");
+        assert!(err.contains("Cannot read"), "got: {err}");
+        assert!(!err.contains("without sudo"), "no privilege hint: {err}");
+        assert_eq!(names(&app), vec![".."], "only the way up is listed");
+        assert_eq!(app.file_open.entries[0].path, dir.path());
+    }
+
+    /// Dotfiles are hidden unless the filter itself starts with a dot, and
+    /// the filter is a case-insensitive substring match.
+    #[test]
+    fn hidden_entries_are_listed_only_when_the_filter_starts_with_a_dot() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(".hidden.pcap"), b"x").unwrap();
+        std::fs::write(dir.path().join("Shown.pcap"), b"x").unwrap();
+        let mut app = browser_at(dir.path());
+        assert_eq!(names(&app), vec!["..", "Shown.pcap"]);
+
+        app.file_open.filter = ".h".to_string();
+        refresh_file_entries(&mut app);
+        assert_eq!(names(&app), vec!["..", ".hidden.pcap"]);
+
+        app.file_open.filter = "SHOWN".to_string();
+        refresh_file_entries(&mut app);
+        assert_eq!(names(&app), vec!["..", "Shown.pcap"], "case-insensitive");
+    }
+
+    /// The listing puts `..` first, then directories, then files, each group
+    /// in case-insensitive alphabetical order.
+    #[test]
+    fn the_listing_orders_parent_then_directories_then_files_case_insensitively() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("Zdir")).unwrap();
+        std::fs::create_dir(dir.path().join("adir")).unwrap();
+        std::fs::write(dir.path().join("B.pcap"), b"x").unwrap();
+        std::fs::write(dir.path().join("a.pcap"), b"x").unwrap();
+        let app = browser_at(dir.path());
+        assert_eq!(names(&app), vec!["..", "adir", "Zdir", "a.pcap", "B.pcap"]);
+    }
+
+    /// A symlink to a directory is listed AS a directory (it can be entered),
+    /// and a dangling link falls through as a plain file entry.
+    #[cfg(unix)]
+    #[test]
+    fn a_directory_symlink_lists_as_a_directory_and_a_dangling_link_as_a_file() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("real")).unwrap();
+        std::os::unix::fs::symlink(dir.path().join("real"), dir.path().join("linkdir")).unwrap();
+        std::os::unix::fs::symlink(dir.path().join("nowhere"), dir.path().join("dangling.pcap"))
+            .unwrap();
+        let app = browser_at(dir.path());
+        let entry = |n: &str| {
+            app.file_open
+                .entries
+                .iter()
+                .find(|e| e.name == n)
+                .unwrap_or_else(|| panic!("{n} not listed: {:?}", names(&app)))
+        };
+        assert!(
+            entry("linkdir").is_dir,
+            "a directory symlink is a directory"
+        );
+        assert!(!entry("dangling.pcap").is_dir, "a dangling link is not");
+    }
+
+    /// A selection past the end of a shrunken listing is pulled back to the
+    /// last row.
+    #[test]
+    fn the_selection_is_clamped_when_the_listing_shrinks() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.pcap"), b"x").unwrap();
+        std::fs::write(dir.path().join("b.pcap"), b"x").unwrap();
+        let mut app = browser_at(dir.path());
+        app.file_open.selected = 10;
+        refresh_file_entries(&mut app);
+        assert_eq!(app.file_open.selected, 2, "clamped to the last of 3 rows");
+    }
+
+    /// Up/Down move one row, PgUp/PgDn ten, Home/End to the ends — all kept
+    /// inside the listing — and a key the browser does not bind changes
+    /// nothing.
+    #[test]
+    fn browser_navigation_keys_move_the_selection_within_the_listing() {
+        let dir = tempfile::tempdir().unwrap();
+        for i in 0..15 {
+            std::fs::write(dir.path().join(format!("f{i:02}.pcap")), b"x").unwrap();
+        }
+        let mut app = browser_at(dir.path());
+        assert_eq!(app.file_open.entries.len(), 16, "15 files and ..");
+        let steps: [(KeyCode, usize); 13] = [
+            (KeyCode::Up, 0),
+            (KeyCode::Down, 1),
+            (KeyCode::Up, 0),
+            (KeyCode::Down, 1),
+            (KeyCode::PageDown, 11),
+            (KeyCode::PageDown, 15),
+            (KeyCode::Down, 15),
+            (KeyCode::PageUp, 5),
+            (KeyCode::PageUp, 0),
+            (KeyCode::End, 15),
+            (KeyCode::Home, 0),
+            (KeyCode::End, 15),
+            (KeyCode::F(5), 15),
+        ];
+        for (code, want) in steps {
+            handle_file_open_popup_key(&mut app, key(code));
+            assert_eq!(app.file_open.selected, want, "after {code:?}");
+        }
+        assert_eq!(app.active_popup, Some(Popup::FileOpenDialog));
+        assert_eq!(app.file_open.filter, "", "navigation does not type");
+    }
+
+    /// Enter on a directory descends into it: the filter is cleared, the
+    /// selection returns to the top, and the new directory is listed.
+    #[test]
+    fn enter_on_a_directory_descends_into_it_and_clears_the_filter() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("sub")).unwrap();
+        std::fs::write(dir.path().join("sub/x.pcap"), b"x").unwrap();
+        let mut app = browser_at(dir.path());
+        handle_file_open_popup_key(&mut app, key(KeyCode::Char('s')));
+        handle_file_open_popup_key(&mut app, key(KeyCode::Char('u')));
+        assert_eq!(names(&app), vec!["..", "sub"]);
+        app.file_open.selected = 1;
+
+        handle_file_open_popup_key(&mut app, key(KeyCode::Enter));
+        assert_eq!(app.file_open.dir, dir.path().join("sub"));
+        assert_eq!(app.file_open.filter, "", "the filter is per directory");
+        assert_eq!(app.file_open.selected, 0);
+        assert_eq!(names(&app), vec!["..", "x.pcap"]);
+        assert_eq!(
+            app.active_popup,
+            Some(Popup::FileOpenDialog),
+            "still browsing"
+        );
+    }
+
+    /// Enter on a capture closes the browser and loads that file in the
+    /// background; once polled, its dialogs are in the store and the file is
+    /// what a BPF re-scan will re-read.
+    #[test]
+    fn enter_on_a_capture_loads_it_and_closes_the_browser() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("call.pcap");
+        std::fs::copy(fixture("sip_call.pcap"), &path).unwrap();
+        let mut app = browser_at(dir.path());
+        app.file_open.selected = 1;
+        assert_eq!(app.file_open.entries[1].name, "call.pcap");
+
+        handle_file_open_popup_key(&mut app, key(KeyCode::Enter));
+        assert_eq!(app.active_popup, None, "the browser closes");
+        assert!(app.pcap_load.is_some(), "the load runs in the background");
+        assert_eq!(app.rescan_path.as_deref(), Some(path.as_path()));
+        drain(&mut app);
+        assert!(!app.dialog_store.read().is_empty(), "the capture loaded");
+        assert!(
+            app.status_error
+                .as_deref()
+                .unwrap_or_default()
+                .starts_with("Loaded 7 SIP"),
+            "status: {:?}",
+            app.status_error
+        );
+    }
+
+    /// Enter with nothing listed does nothing: no load, the browser stays.
+    #[test]
+    fn enter_with_nothing_listed_does_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = browser_at(dir.path());
+        app.file_open.entries.clear();
+        handle_file_open_popup_key(&mut app, key(KeyCode::Enter));
+        assert_eq!(app.active_popup, Some(Popup::FileOpenDialog));
+        assert!(app.pcap_load.is_none());
+        assert_eq!(app.file_open.dir, dir.path());
+    }
+
+    /// Backspace trims the filter first; only with the filter empty does it
+    /// climb to the parent directory, and each step returns the selection to
+    /// the top.
+    #[test]
+    fn backspace_trims_the_filter_before_climbing_to_the_parent() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("sub")).unwrap();
+        let mut app = browser_at(&dir.path().join("sub"));
+        app.file_open.filter = "ab".to_string();
+
+        handle_file_open_popup_key(&mut app, key(KeyCode::Backspace));
+        assert_eq!(app.file_open.filter, "a");
+        assert_eq!(app.file_open.dir, dir.path().join("sub"), "no climb yet");
+        handle_file_open_popup_key(&mut app, key(KeyCode::Backspace));
+        assert_eq!(app.file_open.filter, "");
+        assert_eq!(app.file_open.dir, dir.path().join("sub"), "no climb yet");
+
+        app.file_open.selected = 1;
+        handle_file_open_popup_key(&mut app, key(KeyCode::Backspace));
+        assert_eq!(app.file_open.dir, dir.path(), "an empty filter climbs");
+        assert_eq!(app.file_open.selected, 0, "the climb starts at the top");
+        assert_eq!(names(&app), vec!["..", "sub"]);
+    }
+
+    /// Tab switches to manual entry seeded with the browsed directory and a
+    /// trailing separator (never doubled), with the cursor at the end; a path
+    /// already typed is kept. Tab in manual mode returns to the browser, and
+    /// Esc closes the dialog from either mode.
+    #[test]
+    fn tab_toggles_manual_entry_seeded_with_the_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = browser_at(dir.path());
+        handle_file_open_popup_key(&mut app, key(KeyCode::Tab));
+        let want = format!("{}{}", dir.path().display(), std::path::MAIN_SEPARATOR);
+        assert!(app.file_open.manual_mode);
+        assert_eq!(app.file_open.path, want);
+        assert_eq!(app.file_open.cursor, want.len());
+
+        handle_file_open_popup_key(&mut app, key(KeyCode::Tab));
+        assert!(!app.file_open.manual_mode, "Tab returns to the browser");
+        assert_eq!(app.file_open.path, want, "the typed path survives");
+
+        app.file_open.path = "keep".to_string();
+        app.file_open.cursor = 0;
+        handle_file_open_popup_key(&mut app, key(KeyCode::Tab));
+        assert_eq!(app.file_open.path, "keep", "an existing path is kept");
+        assert_eq!(app.file_open.cursor, 4);
+
+        handle_file_open_popup_key(&mut app, key(KeyCode::Esc));
+        assert_eq!(app.active_popup, None, "Esc closes from manual mode");
+
+        let mut root = App::new_test();
+        root.file_open.dir = std::path::PathBuf::from("/");
+        root.active_popup = Some(Popup::FileOpenDialog);
+        handle_file_open_popup_key(&mut root, key(KeyCode::Tab));
+        assert_eq!(root.file_open.path, "/", "the separator is not doubled");
+    }
+
+    /// In manual entry the cursor steps over whole characters, stops at both
+    /// ends, and typing inserts at the cursor; Backspace at the start and an
+    /// unbound key change nothing.
+    #[test]
+    fn manual_entry_cursor_steps_whole_chars_and_stops_at_the_ends() {
+        let mut app = App::new_test();
+        app.active_popup = Some(Popup::FileOpenDialog);
+        app.file_open.manual_mode = true;
+        app.file_open.path = "aé".to_string();
+        app.file_open.cursor = 3;
+        let steps: [(KeyCode, usize); 7] = [
+            (KeyCode::Left, 1),
+            (KeyCode::Left, 0),
+            (KeyCode::Left, 0),
+            (KeyCode::Right, 1),
+            (KeyCode::Right, 3),
+            (KeyCode::Right, 3),
+            (KeyCode::Home, 0),
+        ];
+        for (code, want) in steps {
+            handle_file_open_popup_key(&mut app, key(code));
+            assert_eq!(app.file_open.cursor, want, "after {code:?}");
+        }
+        handle_file_open_popup_key(&mut app, key(KeyCode::Char('x')));
+        assert_eq!(app.file_open.path, "xaé");
+        assert_eq!(app.file_open.cursor, 1);
+        handle_file_open_popup_key(&mut app, key(KeyCode::End));
+        assert_eq!(app.file_open.cursor, "xaé".len());
+        handle_file_open_popup_key(&mut app, key(KeyCode::Backspace));
+        assert_eq!(app.file_open.path, "xa", "Backspace drops the whole é");
+        assert_eq!(app.file_open.cursor, 2);
+
+        app.file_open.cursor = 0;
+        handle_file_open_popup_key(&mut app, key(KeyCode::Backspace));
+        handle_file_open_popup_key(&mut app, key(KeyCode::F(5)));
+        assert_eq!(app.file_open.path, "xa");
+        assert_eq!(app.file_open.cursor, 0);
+        assert!(app.file_open.manual_mode);
+        assert_eq!(app.active_popup, Some(Popup::FileOpenDialog));
+    }
+
+    /// A file that is not a capture reports why it could not be opened and
+    /// reads nothing, still labeled with its own name.
+    #[test]
+    fn a_file_that_is_not_a_capture_reports_why_it_failed_to_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("garbage.pcap");
+        std::fs::write(&path, b"this is not a packet capture at all").unwrap();
+        let (out, ds, ss) = load_into_fresh_stores(&path);
+        assert!(
+            out.message.starts_with("Failed to open"),
+            "got: {}",
+            out.message
+        );
+        assert_eq!(out.sip_count, 0);
+        assert_eq!(out.capture_mode, "Offline (garbage.pcap)");
+        assert!(ds.read().is_empty() && ss.read().is_empty());
+    }
+
+    /// A capture with RTP and RTCP but no SIP reports the RTCP count and
+    /// opens on the stream list, where playback and export are.
+    #[test]
+    fn a_media_only_capture_counts_rtcp_and_opens_on_the_stream_list() {
+        let mut app = App::new_test();
+        let path = fixture("turn_relay.pcap");
+        begin_pcap_load(&mut app, path.to_str().unwrap(), None);
+        drain(&mut app);
+        let msg = app.status_error.clone().unwrap_or_default();
+        assert!(
+            msg.starts_with("Loaded 0 SIP, 150 RTP, 2 RTCP"),
+            "got: {msg}"
+        );
+        assert_eq!(app.current_view, View::StreamList);
+    }
+
+    /// With no load in flight, the tick hook changes nothing.
+    #[test]
+    fn polling_with_no_load_in_flight_changes_nothing() {
+        let mut app = App::new_test();
+        app.status_error = Some("unrelated".to_string());
+        poll_pcap_load(&mut app);
+        assert_eq!(app.status_error.as_deref(), Some("unrelated"));
+        assert!(app.pcap_load.is_none());
     }
 }

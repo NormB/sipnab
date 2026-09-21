@@ -22,7 +22,7 @@ mod timeline;
 // Re-exported at `tui` scope so keybinding_drift_test can probe the
 // key→action mapping table directly (same exposure as Keymap/HELP_TEXT).
 #[cfg(test)]
-use crate::tui::clipboard::spawn_clipboard_copy;
+use crate::tui::clipboard::spawn_copy_worker;
 pub use call_flow::{
     CallFlowAction, CombinedDetailAction, MessageDiffAction, RawMessageAction, call_flow_action,
     combined_detail_action, message_diff_action, raw_message_action,
@@ -2681,21 +2681,43 @@ mod async_feedback_tests {
         assert!(app.async_messages.lock().is_empty());
     }
 
+    /// Released by the test below once it has checked the copy is still
+    /// running; the copy waits on it.
+    static COPY_GATE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+    /// A stand-in for the real copy that blocks until [`COPY_GATE`] opens (or
+    /// gives up after 10 s), so it never touches the system clipboard: the
+    /// real copy writes OSC 52 to the developer's terminal and runs xclip.
+    fn gated_copy(text: &str) -> String {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !COPY_GATE.load(std::sync::atomic::Ordering::SeqCst) {
+            if std::time::Instant::now() >= deadline {
+                return "the gate never opened".to_string();
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        format!("copied {text}")
+    }
+
     /// The clipboard copy must not run on the UI thread: a wedged xclip
     /// used to hang the whole TUI on `child.wait()`. The spawn returns
-    /// immediately and the worker reports (success or error) eventually.
+    /// while the copy is still blocked, and the worker reports once it
+    /// finishes.
     #[test]
     fn clipboard_copy_runs_detached_and_reports_eventually() {
         let app = App::new_test();
-        let started = std::time::Instant::now();
-        spawn_clipboard_copy(
+        spawn_copy_worker(
             "graph TD;".to_string(),
             std::sync::Arc::clone(&app.async_messages),
+            gated_copy,
         );
+        // Had the copy run on this thread, the spawn would have returned
+        // only after the gate timed out, with its report already queued.
         assert!(
-            started.elapsed() < std::time::Duration::from_millis(500),
-            "spawning the copy must not block"
+            app.async_messages.lock().is_empty(),
+            "the spawn returned while the copy was still blocked"
         );
+        COPY_GATE.store(true, std::sync::atomic::Ordering::SeqCst);
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         while app.async_messages.lock().is_empty() {
             assert!(
@@ -2704,6 +2726,10 @@ mod async_feedback_tests {
             );
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
+        assert_eq!(
+            *app.async_messages.lock(),
+            vec!["copied graph TD;".to_string()]
+        );
     }
 }
 
@@ -2912,5 +2938,665 @@ mod search_match_nav_tests {
             KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE),
         );
         assert_ne!(app.name_mode, crate::names::NameMode::Off);
+    }
+}
+
+/// Tests for the scroll-only panel views (statistics, talkers, carrier
+/// metrics, comparison, endpoint rollup, capture health, call volume, SDP
+/// timeline, conformance, TFPS observe, security findings, relay stats), the
+/// mode toggles two of them carry, popup routing, and the mouse wheel — each
+/// driven through `handle_key_event` / `handle_mouse_event`, the entry points
+/// the event loop calls.
+#[cfg(test)]
+mod panel_view_tests {
+    use super::*;
+    use crate::tui::controllers::test_support::*;
+    use crossterm::event::MouseEventKind;
+
+    /// One scroll-only panel: the view, the letter that closes it besides Esc
+    /// and the quit key, and the scroll offset its keys move.
+    struct Panel {
+        view: View,
+        close: char,
+        scroll: fn(&App) -> u16,
+    }
+
+    /// Every panel whose handler is the map-then-scroll shape: seven scroll
+    /// actions and a close.
+    fn panels() -> Vec<Panel> {
+        use crate::tui::tfps_observe::TfpsMode;
+        vec![
+            Panel {
+                view: View::Statistics,
+                close: 's',
+                scroll: |a| a.stats_scroll,
+            },
+            Panel {
+                view: View::Talkers,
+                close: 'g',
+                scroll: |a| a.talkers_scroll,
+            },
+            Panel {
+                view: View::CarrierMetrics,
+                close: 'm',
+                scroll: |a| a.carrier_metrics_scroll,
+            },
+            Panel {
+                view: View::CompareDialogs {
+                    a: "call-1@test".to_string(),
+                    b: "call-2@test".to_string(),
+                },
+                close: 'c',
+                scroll: |a| a.compare_scroll,
+            },
+            Panel {
+                view: View::EndpointRollup {
+                    ip: "10.0.0.1".to_string(),
+                },
+                close: 'e',
+                scroll: |a| a.endpoint_scroll,
+            },
+            Panel {
+                view: View::CaptureHealth,
+                close: 'h',
+                scroll: |a| a.capture_health_scroll,
+            },
+            Panel {
+                view: View::CallVolume,
+                close: 'b',
+                scroll: |a| a.call_volume_scroll,
+            },
+            Panel {
+                view: View::SdpTimeline {
+                    call_id: "call-1@test".to_string(),
+                },
+                close: 'o',
+                scroll: |a| a.sdp_timeline_scroll,
+            },
+            Panel {
+                view: View::Conformance {
+                    call_id: "call-1@test".to_string(),
+                },
+                close: 'f',
+                scroll: |a| a.conformance_scroll,
+            },
+            Panel {
+                view: View::TfpsObserve {
+                    mode: TfpsMode::Banned,
+                },
+                close: 'x',
+                scroll: |a| a.tfps_scroll,
+            },
+            Panel {
+                view: View::SecurityFindings,
+                close: 'a',
+                scroll: |a| a.security_scroll,
+            },
+            Panel {
+                view: View::RelayStats {
+                    call_id: None,
+                    mode: RelayStatsMode::Counters,
+                },
+                close: 'S',
+                scroll: |a| a.relay_stats_scroll,
+            },
+        ]
+    }
+
+    /// Press `code` through the top-level dispatcher.
+    fn press(app: &mut App, code: KeyCode) {
+        handle_key_event(app, key(code));
+    }
+
+    /// In every panel: Down/`j` and Up/`k` move one line, PgDn/PgUp move
+    /// twenty, the top saturates at zero, End parks on the bottom sentinel
+    /// the render pass clamps, Home returns to the top — and none of it
+    /// leaves the view.
+    #[test]
+    fn every_panel_scrolls_by_line_and_by_page_and_saturates_at_the_top() {
+        for p in panels() {
+            let mut app = App::new_test();
+            app.current_view = p.view.clone();
+            let steps: [(KeyCode, u16); 12] = [
+                (KeyCode::Down, 1),
+                (KeyCode::Char('j'), 2),
+                (KeyCode::Up, 1),
+                (KeyCode::Char('k'), 0),
+                (KeyCode::Up, 0),
+                (KeyCode::PageDown, 20),
+                (KeyCode::Down, 21),
+                (KeyCode::PageUp, 1),
+                (KeyCode::PageUp, 0),
+                (KeyCode::End, u16::MAX),
+                (KeyCode::Down, u16::MAX),
+                (KeyCode::Home, 0),
+            ];
+            for (code, want) in steps {
+                press(&mut app, code);
+                assert_eq!((p.scroll)(&app), want, "{:?} after {code:?}", p.view);
+                assert_eq!(app.current_view, p.view, "{code:?} must not leave the view");
+            }
+        }
+    }
+
+    /// Every panel closes back to the call list on Esc, on the quit key, and
+    /// on its own letter; a key the panel does not bind changes nothing.
+    #[test]
+    fn every_panel_closes_on_esc_quit_and_its_own_letter_and_ignores_the_rest() {
+        for p in panels() {
+            let quit = App::new_test().keymap.quit;
+            for code in [KeyCode::Esc, quit, KeyCode::Char(p.close)] {
+                let mut app = App::new_test();
+                app.current_view = p.view.clone();
+                press(&mut app, code);
+                assert_eq!(
+                    app.current_view,
+                    View::CallList,
+                    "{code:?} must close {:?}",
+                    p.view
+                );
+            }
+            let mut app = App::new_test();
+            app.current_view = p.view.clone();
+            press(&mut app, KeyCode::Char('z'));
+            press(&mut app, KeyCode::F(6));
+            assert_eq!(app.current_view, p.view, "an unbound key keeps the view");
+            assert_eq!((p.scroll)(&app), 0, "an unbound key does not scroll");
+        }
+    }
+
+    /// Help scrolls one line on Down/`j` and Up/`k` and TEN on PgDn/PgUp (not
+    /// the twenty the other panels use), saturates at the top, and End/Home
+    /// jump to the ends. Closing resets the offset so the next open starts at
+    /// the top.
+    #[test]
+    fn help_scrolls_ten_per_page_and_closing_resets_the_offset() {
+        let mut app = App::new_test();
+        app.current_view = View::Help;
+        let steps: [(KeyCode, u16); 9] = [
+            (KeyCode::Down, 1),
+            (KeyCode::Char('j'), 2),
+            (KeyCode::Char('k'), 1),
+            (KeyCode::PageDown, 11),
+            (KeyCode::Up, 10),
+            (KeyCode::PageUp, 0),
+            (KeyCode::PageUp, 0),
+            (KeyCode::End, u16::MAX),
+            (KeyCode::Home, 0),
+        ];
+        for (code, want) in steps {
+            handle_help_key(&mut app, key(code));
+            assert_eq!(app.help_scroll, want, "after {code:?}");
+            assert_eq!(app.current_view, View::Help);
+        }
+        app.help_scroll = 7;
+        handle_help_key(&mut app, key(KeyCode::Char('q')));
+        assert_eq!(app.current_view, View::CallList, "quit key closes help");
+        assert_eq!(app.help_scroll, 0, "closing resets the scroll");
+    }
+
+    /// Relay stats, global scope: `?` shows the names and `?` again returns
+    /// to the counters; `H` does the same for holdings; each switch resets
+    /// the scroll. `K` is refused — a global view has no call to compare —
+    /// and leaves both the mode and the scroll alone.
+    #[test]
+    fn relay_stats_toggles_names_and_holdings_and_refuses_compare_without_a_call() {
+        let mut app = App::new_test();
+        app.current_view = View::RelayStats {
+            call_id: None,
+            mode: RelayStatsMode::Counters,
+        };
+        let mode = |app: &App| match &app.current_view {
+            View::RelayStats { mode, .. } => *mode,
+            other => panic!("left the relay-stats view: {other:?}"),
+        };
+
+        app.relay_stats_scroll = 5;
+        // '?' reaches the view (it is the global help key everywhere else).
+        press(&mut app, KeyCode::Char('?'));
+        assert_eq!(mode(&app), RelayStatsMode::Names);
+        assert_eq!(app.relay_stats_scroll, 0, "a new answer starts at the top");
+        press(&mut app, KeyCode::Char('?'));
+        assert_eq!(mode(&app), RelayStatsMode::Counters, "? again returns");
+
+        app.relay_stats_scroll = 4;
+        press(&mut app, KeyCode::Char('K'));
+        assert_eq!(
+            mode(&app),
+            RelayStatsMode::Counters,
+            "K is refused without a call"
+        );
+        assert_eq!(app.relay_stats_scroll, 4, "a refused K does not reset");
+
+        press(&mut app, KeyCode::Char('H'));
+        assert_eq!(mode(&app), RelayStatsMode::Holdings);
+        assert_eq!(app.relay_stats_scroll, 0);
+        press(&mut app, KeyCode::Char('H'));
+        assert_eq!(mode(&app), RelayStatsMode::Counters, "H again returns");
+    }
+
+    /// Relay stats scoped to a call: `K` compares and keeps the call; a
+    /// different toggle from Compare goes straight to ITS mode rather than
+    /// back to the counters; the same toggle twice returns to the counters.
+    #[test]
+    fn relay_stats_compare_keeps_the_call_and_toggles_switch_directly() {
+        let mut app = App::new_test();
+        app.current_view = View::RelayStats {
+            call_id: Some("call-1@test".to_string()),
+            mode: RelayStatsMode::Counters,
+        };
+        press(&mut app, KeyCode::Char('K'));
+        assert_eq!(
+            app.current_view,
+            View::RelayStats {
+                call_id: Some("call-1@test".to_string()),
+                mode: RelayStatsMode::Compare,
+            }
+        );
+        press(&mut app, KeyCode::Char('?'));
+        assert_eq!(
+            app.current_view,
+            View::RelayStats {
+                call_id: Some("call-1@test".to_string()),
+                mode: RelayStatsMode::Names,
+            },
+            "Compare → Names directly"
+        );
+        press(&mut app, KeyCode::Char('K'));
+        press(&mut app, KeyCode::Char('K'));
+        assert_eq!(
+            app.current_view,
+            View::RelayStats {
+                call_id: Some("call-1@test".to_string()),
+                mode: RelayStatsMode::Counters,
+            },
+            "K twice returns to the counters"
+        );
+    }
+
+    /// The relay-stats toggle is a no-op from any other view (the guard that
+    /// lets it read the view's call and mode).
+    #[test]
+    fn relay_stats_toggle_outside_the_view_changes_nothing() {
+        let mut app = App::new_test();
+        app.relay_stats_scroll = 3;
+        toggle_relay_stats_mode(&mut app, RelayStatsMode::Names);
+        assert_eq!(app.current_view, View::CallList);
+        assert_eq!(app.relay_stats_scroll, 3);
+    }
+
+    /// TFPS observe: `d` switches to the drop counters and `b` back to the
+    /// bans, each resetting the scroll; the mode setter is a no-op from any
+    /// other view.
+    #[test]
+    fn tfps_observe_switches_facets_and_resets_the_scroll() {
+        use crate::tui::tfps_observe::TfpsMode;
+        let mut app = App::new_test();
+        app.current_view = View::TfpsObserve {
+            mode: TfpsMode::Banned,
+        };
+        app.tfps_scroll = 9;
+        press(&mut app, KeyCode::Char('d'));
+        assert_eq!(
+            app.current_view,
+            View::TfpsObserve {
+                mode: TfpsMode::Dropped
+            }
+        );
+        assert_eq!(app.tfps_scroll, 0, "a new facet starts at the top");
+        app.tfps_scroll = 2;
+        press(&mut app, KeyCode::Char('b'));
+        assert_eq!(
+            app.current_view,
+            View::TfpsObserve {
+                mode: TfpsMode::Banned
+            }
+        );
+        assert_eq!(app.tfps_scroll, 0);
+
+        let mut elsewhere = App::new_test();
+        elsewhere.tfps_scroll = 4;
+        set_tfps_mode(&mut elsewhere, TfpsMode::Dropped);
+        assert_eq!(elsewhere.current_view, View::CallList);
+        assert_eq!(elsewhere.tfps_scroll, 4);
+    }
+
+    /// Settings rows 1 and 4 cycle the timestamp and SDP display modes;
+    /// focus stops at both ends of the list (arrows and `j`/`k` alike); an
+    /// out-of-range focus activates nothing; an unbound key does nothing.
+    #[test]
+    fn settings_rows_cycle_their_modes_and_focus_stops_at_both_ends() {
+        let mut app = App::new_test();
+        app.active_popup = Some(Popup::SettingsDialog);
+
+        app.settings_dialog.focused_item = 1;
+        let ts = app.timestamp_mode;
+        handle_settings_popup_key(&mut app, key(KeyCode::Enter));
+        assert_ne!(app.timestamp_mode, ts, "row 1 cycles the timestamp mode");
+
+        app.settings_dialog.focused_item = 4;
+        let sdp = app.sdp_display_mode;
+        handle_settings_popup_key(&mut app, key(KeyCode::Char(' ')));
+        assert_ne!(app.sdp_display_mode, sdp, "row 4 cycles the SDP display");
+
+        app.settings_dialog.focused_item = 0;
+        handle_settings_popup_key(&mut app, key(KeyCode::Char('k')));
+        assert_eq!(app.settings_dialog.focused_item, 0, "stops at the top");
+        for _ in 0..SETTINGS_ITEM_COUNT + 2 {
+            handle_settings_popup_key(&mut app, key(KeyCode::Char('j')));
+        }
+        assert_eq!(
+            app.settings_dialog.focused_item,
+            SETTINGS_ITEM_COUNT - 1,
+            "stops at the last row"
+        );
+
+        app.settings_dialog.focused_item = SETTINGS_ITEM_COUNT;
+        let before = (
+            app.color_mode,
+            app.timestamp_mode,
+            app.call_list.autoscroll,
+            app.flow.raw_preview,
+            app.sdp_display_mode,
+            app.syntax_highlight,
+        );
+        handle_settings_popup_key(&mut app, key(KeyCode::Enter));
+        let after = (
+            app.color_mode,
+            app.timestamp_mode,
+            app.call_list.autoscroll,
+            app.flow.raw_preview,
+            app.sdp_display_mode,
+            app.syntax_highlight,
+        );
+        assert_eq!(before, after, "no row is focused, so nothing toggles");
+        assert_eq!(app.active_popup, Some(Popup::SettingsDialog));
+
+        app.settings_dialog.focused_item = 2;
+        handle_settings_popup_key(&mut app, key(KeyCode::Char('z')));
+        assert_eq!(app.settings_dialog.focused_item, 2, "unbound key: no move");
+        assert_eq!(app.active_popup, Some(Popup::SettingsDialog), "nor a close");
+    }
+
+    /// Each open popup receives the key — shown by an effect only ITS handler
+    /// has: a filter-field character, a settings focus move, a file-browser
+    /// filter character, a name-dialog cursor move, and a confirmed quit.
+    #[test]
+    fn each_popup_receives_the_key_through_the_dispatcher() {
+        let mut app = App::new_test();
+        app.active_popup = Some(Popup::FilterDialog);
+        press(&mut app, KeyCode::Char('z'));
+        assert_eq!(app.filter_dialog.text_field(0), "z", "filter dialog typed");
+
+        let mut app = App::new_test();
+        app.active_popup = Some(Popup::SettingsDialog);
+        press(&mut app, KeyCode::Down);
+        assert_eq!(app.settings_dialog.focused_item, 1, "settings focus moved");
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = App::new_test();
+        app.file_open.dir = dir.path().to_path_buf();
+        app.active_popup = Some(Popup::FileOpenDialog);
+        press(&mut app, KeyCode::Char('z'));
+        assert_eq!(app.file_open.filter, "z", "file browser filter typed");
+
+        let mut app = App::new_test();
+        app.active_popup = Some(Popup::NameAddress);
+        app.name_dialog.cursor = 3;
+        press(&mut app, KeyCode::Home);
+        assert_eq!(app.name_dialog.cursor, 0, "name dialog cursor moved");
+
+        let mut app = App::new_test();
+        app.active_popup = Some(Popup::QuitConfirm);
+        press(&mut app, KeyCode::Char('y'));
+        assert!(app.should_quit, "quit confirmation answered");
+    }
+
+    /// With no popup open the popup router does nothing, even for a key a
+    /// popup would act on.
+    #[test]
+    fn popup_router_without_a_popup_is_a_no_op() {
+        let mut app = App::new_test();
+        handle_popup_key(&mut app, key(KeyCode::Char('y')));
+        assert!(!app.should_quit);
+        assert_eq!(app.active_popup, None);
+        assert_eq!(app.current_view, View::CallList);
+    }
+
+    /// The BPF-filter editor takes the global fallback keys as text: `v`
+    /// types a `v` rather than showing the version, `n` does not cycle the
+    /// name mode. The view router reaches the editor too, and an unbound key
+    /// there changes nothing.
+    #[test]
+    fn bpf_filter_editor_takes_the_global_fallback_keys_as_text() {
+        let mut app = App::new_test();
+        app.current_view = View::BpfFilter;
+        press(&mut app, KeyCode::Char('v'));
+        press(&mut app, KeyCode::Char('n'));
+        assert_eq!(app.bpf_editor.input(), "vn");
+        assert!(app.status_error.is_none(), "no version shown");
+        assert_eq!(app.name_mode, crate::names::NameMode::Off);
+
+        dispatch_view_key(&mut app, key(KeyCode::Char('x')));
+        assert_eq!(
+            app.bpf_editor.input(),
+            "vnx",
+            "the router reaches the editor"
+        );
+
+        press(&mut app, KeyCode::F(6));
+        assert_eq!(app.bpf_editor.input(), "vnx");
+        assert_eq!(app.bpf_scroll, 0);
+        assert_eq!(app.current_view, View::BpfFilter);
+    }
+
+    /// One view with a free-scrolling offset the wheel moves three lines at a
+    /// time.
+    struct WheelView {
+        view: View,
+        offset: Box<dyn Fn(&App) -> usize>,
+    }
+
+    /// Every free-scrolling view, the panels plus the pagers.
+    fn wheel_views() -> Vec<WheelView> {
+        let mut v: Vec<WheelView> = panels()
+            .into_iter()
+            .map(|p| {
+                let scroll = p.scroll;
+                WheelView {
+                    view: p.view,
+                    offset: Box::new(move |a| usize::from(scroll(a))),
+                }
+            })
+            .collect();
+        v.push(WheelView {
+            view: View::Help,
+            offset: Box::new(|a| usize::from(a.help_scroll)),
+        });
+        v.push(WheelView {
+            view: View::RawMessage {
+                call_id: "call-1@test".to_string(),
+                message_index: 0,
+            },
+            offset: Box::new(|a| usize::from(a.raw_msg_scroll)),
+        });
+        v.push(WheelView {
+            view: View::CombinedDetail {
+                call_id: "call-1@test".to_string(),
+                indices: vec![0, 1],
+                scope: "test",
+            },
+            offset: Box::new(|a| usize::from(a.raw_msg_scroll)),
+        });
+        v.push(WheelView {
+            view: View::MessageDiff {
+                call_id: "call-1@test".to_string(),
+                msg1_idx: 0,
+                msg2_idx: 1,
+            },
+            offset: Box::new(|a| usize::from(a.diff_scroll)),
+        });
+        v.push(WheelView {
+            view: View::StreamDetail(stream_key(1)),
+            offset: Box::new(|a| a.stream_detail_scroll),
+        });
+        v
+    }
+
+    /// A stream key distinguished by its SSRC.
+    fn stream_key(ssrc: u32) -> crate::rtp::stream::StreamKey {
+        crate::rtp::stream::StreamKey {
+            ssrc,
+            src: std::net::SocketAddr::new(addr_a(), 20000),
+            dst: std::net::SocketAddr::new(addr_b(), 30000),
+        }
+    }
+
+    /// In every free-scrolling view one wheel step is three lines, down and
+    /// up, saturating at the top — and the view does not change.
+    #[test]
+    fn the_wheel_scrolls_every_free_scrolling_view_three_lines_a_step() {
+        for w in wheel_views() {
+            let mut app = App::new_test();
+            app.current_view = w.view.clone();
+            handle_mouse_event(&mut app, MouseEventKind::ScrollDown);
+            handle_mouse_event(&mut app, MouseEventKind::ScrollDown);
+            assert_eq!((w.offset)(&app), 6, "{:?} two steps down", w.view);
+            handle_mouse_event(&mut app, MouseEventKind::ScrollUp);
+            assert_eq!((w.offset)(&app), 3, "{:?} one step up", w.view);
+            handle_mouse_event(&mut app, MouseEventKind::ScrollUp);
+            handle_mouse_event(&mut app, MouseEventKind::ScrollUp);
+            assert_eq!((w.offset)(&app), 0, "{:?} saturates at the top", w.view);
+            assert_eq!(app.current_view, w.view);
+        }
+    }
+
+    /// The wheel is ignored while a popup is open, and a mouse event that is
+    /// not a wheel step (a move, a click) scrolls nothing.
+    #[test]
+    fn the_wheel_is_ignored_under_a_popup_and_non_wheel_events_do_nothing() {
+        let mut app = App::new_test();
+        app.current_view = View::Help;
+        app.active_popup = Some(Popup::SettingsDialog);
+        handle_mouse_event(&mut app, MouseEventKind::ScrollDown);
+        assert_eq!(app.help_scroll, 0, "popups own the input");
+
+        app.active_popup = None;
+        handle_mouse_event(&mut app, MouseEventKind::Moved);
+        handle_mouse_event(
+            &mut app,
+            MouseEventKind::Down(crossterm::event::MouseButton::Left),
+        );
+        assert_eq!(app.help_scroll, 0, "only wheel steps scroll");
+    }
+
+    /// In the list views the wheel moves the SELECTION one row, clamped to
+    /// the displayed rows: the call list (sized off the store), the stream
+    /// list (sized off its per-tick cache), and the quality dashboard (via
+    /// its own Up/Down so the clamp lives in one place).
+    #[test]
+    fn the_wheel_moves_the_selection_one_row_in_the_list_views() {
+        let mut app = app_with_dialogs();
+        for want in [1, 2, 2] {
+            handle_mouse_event(&mut app, MouseEventKind::ScrollDown);
+            assert_eq!(app.call_list.selected(), want, "call list down");
+        }
+        handle_mouse_event(&mut app, MouseEventKind::ScrollUp);
+        assert_eq!(app.call_list.selected(), 1, "call list up");
+
+        let mut app = App::new_test();
+        app.current_view = View::StreamList;
+        handle_mouse_event(&mut app, MouseEventKind::ScrollDown);
+        assert_eq!(app.stream_list.selected(), 0, "no rows, no movement");
+        app.stream_displayed.keys = vec![stream_key(1), stream_key(2)];
+        for want in [1, 1] {
+            handle_mouse_event(&mut app, MouseEventKind::ScrollDown);
+            assert_eq!(app.stream_list.selected(), want, "stream list down");
+        }
+        handle_mouse_event(&mut app, MouseEventKind::ScrollUp);
+        assert_eq!(app.stream_list.selected(), 0, "stream list up");
+
+        let mut app = App::new_test();
+        app.current_view = View::QualityDashboard;
+        let row = |ssrc| crate::tui::dashboard::StreamHealth {
+            key: stream_key(ssrc),
+            call_id: None,
+            codec: None,
+            mos: 4.0,
+            jitter_ms: 0.0,
+            loss_pct: 0.0,
+            packets: 1,
+            active: true,
+            trend: Vec::new(),
+        };
+        app.dashboard_snapshot = Some(crate::tui::dashboard::DashboardSnapshot {
+            rows: vec![row(1), row(2)],
+            ..Default::default()
+        });
+        for want in [1, 1] {
+            handle_mouse_event(&mut app, MouseEventKind::ScrollDown);
+            assert_eq!(app.dashboard_selected, want, "dashboard down");
+        }
+        handle_mouse_event(&mut app, MouseEventKind::ScrollUp);
+        assert_eq!(app.dashboard_selected, 0, "dashboard up");
+        assert_eq!(app.current_view, View::QualityDashboard);
+    }
+
+    /// In the call flow the wheel moves the selected message one arrow,
+    /// clamped to the cached message count, and every move resets the detail
+    /// pane's scroll; with no messages it does nothing.
+    #[test]
+    fn the_wheel_steps_the_call_flow_selection_and_resets_the_detail_scroll() {
+        let mut app = App::new_test();
+        app.current_view = View::CallFlow("call-1@test".to_string());
+        handle_mouse_event(&mut app, MouseEventKind::ScrollDown);
+        assert_eq!(app.flow.selected, 0, "no messages, no movement");
+
+        app.flow.cached_msg_count = 3;
+        app.flow.detail_scroll = 5;
+        handle_mouse_event(&mut app, MouseEventKind::ScrollDown);
+        assert_eq!(app.flow.selected, 1);
+        assert_eq!(app.flow.detail_scroll, 0, "a new message starts at the top");
+
+        handle_mouse_event(&mut app, MouseEventKind::ScrollDown);
+        app.flow.detail_scroll = 5;
+        handle_mouse_event(&mut app, MouseEventKind::ScrollDown);
+        assert_eq!(app.flow.selected, 2, "clamped to the last message");
+        assert_eq!(app.flow.detail_scroll, 5, "no move, no reset");
+
+        handle_mouse_event(&mut app, MouseEventKind::ScrollUp);
+        assert_eq!(app.flow.selected, 1);
+        assert_eq!(app.flow.detail_scroll, 0);
+        handle_mouse_event(&mut app, MouseEventKind::ScrollUp);
+        app.flow.detail_scroll = 5;
+        handle_mouse_event(&mut app, MouseEventKind::ScrollUp);
+        assert_eq!(app.flow.selected, 0, "saturates at the first message");
+        assert_eq!(app.flow.detail_scroll, 5, "no move, no reset");
+    }
+
+    /// The single-screen views — the BPF editor and the loss map — have
+    /// nothing to scroll, so the wheel leaves them exactly as they were.
+    #[test]
+    fn the_wheel_does_nothing_in_the_single_screen_views() {
+        for view in [View::BpfFilter, View::StreamLossMap(stream_key(1))] {
+            let mut app = App::new_test();
+            app.current_view = view.clone();
+            handle_mouse_event(&mut app, MouseEventKind::ScrollDown);
+            handle_mouse_event(&mut app, MouseEventKind::ScrollDown);
+            assert_eq!(app.current_view, view);
+            assert_eq!(app.bpf_scroll, 0, "{view:?}");
+            assert_eq!(app.stream_detail_scroll, 0, "{view:?}");
+            assert_eq!(app.raw_msg_scroll, 0, "{view:?}");
+        }
+    }
+
+    /// Esc in the loss map reaches the loss-map handler through the
+    /// dispatcher and returns to that stream's detail view.
+    #[test]
+    fn esc_in_the_loss_map_returns_to_the_stream_detail() {
+        let mut app = App::new_test();
+        app.current_view = View::StreamLossMap(stream_key(7));
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(app.current_view, View::StreamDetail(stream_key(7)));
     }
 }
