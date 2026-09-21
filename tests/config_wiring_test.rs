@@ -18,18 +18,16 @@ mod pcap_build;
 #[path = "support/run.rs"]
 mod run_support;
 
-/// The HEP probe spawns a listener it later kills, which corrupts the child's
-/// coverage profile; `support::discard_coverage_profile` sends that profile
-/// somewhere the merge will not read it.
-#[cfg(all(unix, feature = "hep"))]
-#[path = "support/mod.rs"]
-mod support;
-
 /// The `api_max_rows` and `api_rate_limit_per_peer` probes drive a real
 /// `--api` listener, which is what this harness spawns and reaps.
 #[cfg(feature = "api")]
 #[path = "support/server.rs"]
 mod server;
+
+// The probes that spawn a server stop it with `terminate`: SIGTERM, so the
+// child exits normally and its coverage profile is written.
+include!("support/timeout.rs");
+include!("support/teardown.rs");
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -1263,8 +1261,7 @@ fn probe_mcp_max_rows() -> (String, String) {
             }
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
-        let _ = child.kill();
-        let _ = child.wait();
+        let _ = terminate(&mut child);
         rows
     }
 
@@ -1357,8 +1354,7 @@ fn probe_mcp_max_findings() -> (String, String) {
             remaining = parsed["remaining"].as_i64().unwrap_or(-1);
             break;
         }
-        let _ = child.kill();
-        let _ = child.wait();
+        let _ = terminate(&mut child);
         remaining
     }
 
@@ -1766,8 +1762,7 @@ fn probe_mcp_max_body_bytes() -> (String, String) {
                 .unwrap_or(0);
             break;
         }
-        let _ = child.kill();
-        let _ = child.wait();
+        let _ = terminate(&mut child);
         len
     }
 
@@ -1870,8 +1865,7 @@ fn probe_mcp_max_wait_seconds() -> (String, String) {
             seconds = parsed["timeout_seconds"].as_u64().unwrap_or(0);
             break;
         }
-        let _ = child.kill();
-        let _ = child.wait();
+        let _ = terminate(&mut child);
         seconds
     }
 
@@ -2418,8 +2412,7 @@ fn probe_metrics_max_conn() -> (String, String) {
         );
 
         drop(parked);
-        let _ = child.kill();
-        let _ = child.wait();
+        let _ = terminate(&mut child);
         status
     }
 
@@ -2469,7 +2462,7 @@ fn probe_hep_rate_limit() -> (String, String) {
 /// harness exists to scrape.
 #[cfg(all(unix, feature = "hep"))]
 struct HepProbeListener {
-    /// The running process. Killed on drop, however the probe leaves.
+    /// The running process. Stopped on drop, however the probe leaves.
     child: std::process::Child,
     /// Stderr, one line per message, fed by a reader thread.
     lines: std::sync::mpsc::Receiver<String>,
@@ -2480,8 +2473,7 @@ struct HepProbeListener {
 #[cfg(all(unix, feature = "hep"))]
 impl Drop for HepProbeListener {
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        let _ = terminate(&mut self.child);
     }
 }
 
@@ -2496,7 +2488,6 @@ impl HepProbeListener {
         use std::time::{Duration, Instant};
 
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_sipnab"));
-        support::discard_coverage_profile(&mut cmd);
         cmd.args(["-N", "--hep-listen", "127.0.0.1:0", "--json", "--quiet"])
             .args(extra_args)
             .env("SIPNAB_LOG", "debug")

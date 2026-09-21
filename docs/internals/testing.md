@@ -47,6 +47,7 @@ with no `mod.rs` chain — each test binary compiles its own copy.
 | [`run.rs`](../../tests/support/run.rs) | The canonical binary-spawn helper for CLI/output/config integration tests — one place that knows how to find and invoke the built binary. |
 | [`server.rs`](../../tests/support/server.rs) | REST API spawn harness: start the server on an ephemeral port, wait for readiness, tear down. |
 | [`mcp.rs`](../../tests/support/mcp.rs) | The same for HTTP MCP, including the JSON-RPC framing. |
+| [`teardown.rs`](../../tests/support/teardown.rs) | `terminate()`, the one way a harness stops the binary it spawned: SIGTERM, a bounded wait, and SIGKILL only for a child still running after it. `Child::kill()` is SIGKILL, and a process killed that way never writes its coverage profile. Pulled in with `include!` rather than `#[path]`. |
 | [`schema.rs`](../../tests/support/schema.rs) | JSON-Schema validation against [`tests/schemas/`](../../tests/schemas). |
 | [`tui_fixtures.rs`](../../tests/support/tui_fixtures.rs) | SIP fixture builders shared by the TUI snapshot and state tests. |
 | [`fuzz.rs`](../../tests/support/fuzz.rs) | A deterministic xorshift PRNG shared by the stable-toolchain fuzzers, so a failure reproduces from its seed. |

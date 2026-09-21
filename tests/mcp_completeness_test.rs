@@ -41,6 +41,9 @@ use std::process::{Child, ChildStdout, Command, Stdio};
 
 use serde_json::{Value, json};
 
+include!("support/timeout.rs");
+include!("support/teardown.rs");
+
 #[path = "support/pcap_build.rs"]
 mod pcap_build;
 #[path = "support/source_scan.rs"]
@@ -223,8 +226,7 @@ impl Drop for Wire {
         // Close stdin first: the server exits on EOF, so the child is reaped
         // rather than left holding a pipe for the rest of the run.
         drop(self.child.stdin.take());
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        let _ = terminate(&mut self.child);
     }
 }
 

@@ -25,6 +25,7 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 include!("support/timeout.rs");
+include!("support/teardown.rs");
 
 /// A tool name no router answers to, used to prove a refusal is counted.
 ///
@@ -44,8 +45,7 @@ struct McpWithMetrics {
 
 impl Drop for McpWithMetrics {
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        let _ = terminate(&mut self.child);
     }
 }
 

@@ -26,6 +26,9 @@ use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdout, Command, Stdio};
 use std::time::{Duration, Instant};
 
+include!("support/timeout.rs");
+include!("support/teardown.rs");
+
 /// The capture the server starts on.
 const PCAP: &str = "tests/pcap-samples/sip-register.pcap";
 
@@ -220,8 +223,7 @@ impl Wire {
 
 impl Drop for Wire {
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        let _ = terminate(&mut self.child);
     }
 }
 
