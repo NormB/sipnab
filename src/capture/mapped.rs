@@ -406,7 +406,10 @@ impl MappedPcap {
 /// Falls back to 4 KiB only if the query fails, which it does not on any
 /// supported platform; a wrong value here costs the page-release hint, not
 /// correctness.
-fn page_size() -> usize {
+///
+/// Crate-visible so the uprobe perf ring's test stand-in lays its file out in
+/// the same pages the reader maps, from the one place that asks.
+pub(crate) fn page_size() -> usize {
     static PAGE: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
     *PAGE.get_or_init(|| {
         // SAFETY: `sysconf` takes an int and returns a long, touches no memory
@@ -511,5 +514,274 @@ mod tests {
         let empty = dir.path().join("empty.pcap");
         std::fs::write(&empty, b"").expect("write");
         assert!(MappedPcap::open(&empty).expect("no error").is_none());
+    }
+
+    // ── Synthetic captures, built byte by byte ───────────────────────────
+
+    /// One record: seconds, fraction, captured bytes, and the wire length.
+    struct Rec<'a> {
+        sec: u32,
+        frac: u32,
+        data: &'a [u8],
+        orig: u32,
+    }
+
+    fn rec(data: &[u8]) -> Rec<'_> {
+        Rec {
+            sec: 1_700_000_000,
+            frac: 0,
+            data,
+            orig: data.len() as u32,
+        }
+    }
+
+    /// A classic pcap in the byte order and timestamp resolution asked for.
+    fn pcap(big_endian: bool, nanos: bool, linktype: u32, records: &[Rec<'_>]) -> Vec<u8> {
+        let u32b = |v: u32| {
+            if big_endian {
+                v.to_be_bytes()
+            } else {
+                v.to_le_bytes()
+            }
+        };
+        let u16b = |v: u16| {
+            if big_endian {
+                v.to_be_bytes()
+            } else {
+                v.to_le_bytes()
+            }
+        };
+        let mut b = Vec::new();
+        b.extend_from_slice(&u32b(if nanos { 0xA1B2_3C4D } else { 0xA1B2_C3D4 }));
+        b.extend_from_slice(&u16b(2));
+        b.extend_from_slice(&u16b(4));
+        b.extend_from_slice(&u32b(0)); // thiszone
+        b.extend_from_slice(&u32b(0)); // sigfigs
+        b.extend_from_slice(&u32b(65_535)); // snaplen
+        b.extend_from_slice(&u32b(linktype));
+        for r in records {
+            b.extend_from_slice(&u32b(r.sec));
+            b.extend_from_slice(&u32b(r.frac));
+            b.extend_from_slice(&u32b(r.data.len() as u32));
+            b.extend_from_slice(&u32b(r.orig));
+            b.extend_from_slice(r.data);
+        }
+        b
+    }
+
+    /// Write `bytes` into a fresh temp directory and open the result.
+    fn open_bytes(bytes: &[u8]) -> (tempfile::TempDir, Option<MappedPcap>) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("capture.pcap");
+        std::fs::write(&path, bytes).expect("write");
+        let mapped = MappedPcap::open(&path).expect("a regular file opens");
+        (dir, mapped)
+    }
+
+    /// Smaller than a pcap header cannot be a pcap. Declined, not an error,
+    /// so the caller falls back to libpcap and lets it say what is wrong.
+    #[test]
+    fn a_file_shorter_than_a_pcap_header_is_declined() {
+        let (_dir, mapped) = open_bytes(&[0xD4, 0xC3, 0xB2, 0xA1, 0, 0, 0, 0, 0, 0]);
+        assert!(mapped.is_none());
+    }
+
+    /// pcapng, gzip and anything else that is not a classic pcap are
+    /// declined, so the libpcap path reads them.
+    #[test]
+    fn a_file_that_is_not_a_classic_pcap_is_declined() {
+        let mut pcapng = vec![0x0A, 0x0D, 0x0D, 0x0A, 28, 0, 0, 0, 0x4D, 0x3C, 0x2B, 0x1A];
+        pcapng.resize(28, 0);
+        let mut gzip = vec![0x1F, 0x8B, 0x08, 0x00];
+        gzip.resize(64, 0);
+        for bytes in [pcapng, gzip] {
+            let (_dir, mapped) = open_bytes(&bytes);
+            assert!(mapped.is_none(), "declined: {:02x?}", &bytes[..4]);
+        }
+    }
+
+    /// A link type too large to report as libpcap's `int` datalink is
+    /// declined rather than reported as a negative number.
+    #[test]
+    fn a_link_type_libpcap_cannot_report_is_declined() {
+        let (_dir, mapped) = open_bytes(&pcap(false, false, 0x8000_0000, &[rec(b"x")]));
+        assert!(mapped.is_none());
+    }
+
+    /// The file's own link type is what callers stamp frames with, and the
+    /// debug form names the mapping without dumping it.
+    #[test]
+    fn the_files_link_type_is_reported_and_the_debug_form_is_a_summary() {
+        let bytes = pcap(false, false, 113, &[rec(b"frame")]);
+        let (_dir, mapped) = open_bytes(&bytes);
+        let mapped = mapped.expect("a classic pcap maps");
+        assert_eq!(mapped.link_type(), 113, "LINUX_SLL, as the header says");
+        let debug = format!("{mapped:?}");
+        assert!(debug.starts_with("MappedPcap"), "{debug}");
+        assert!(debug.contains(&format!("len: {}", bytes.len())), "{debug}");
+        assert!(
+            debug.contains("cursor: 24"),
+            "just past the header: {debug}"
+        );
+        assert!(debug.contains("link_type: 113"), "{debug}");
+        assert!(!debug.contains("frame"), "no file contents: {debug}");
+    }
+
+    /// A nanosecond-resolution file keeps every digit of its fraction; a
+    /// microsecond one is scaled up to nanoseconds.
+    #[test]
+    fn fractions_are_read_in_the_resolution_the_magic_declares() {
+        let nano = Rec {
+            frac: 123_456_789,
+            ..rec(b"n")
+        };
+        let (_d1, mapped) = open_bytes(&pcap(false, true, 1, &[nano]));
+        let t = mapped
+            .expect("maps")
+            .next_frame()
+            .expect("a frame")
+            .timestamp;
+        assert_eq!(t.timestamp(), 1_700_000_000);
+        assert_eq!(t.timestamp_subsec_nanos(), 123_456_789);
+
+        let micro = Rec {
+            frac: 654_321,
+            ..rec(b"u")
+        };
+        let (_d2, mapped) = open_bytes(&pcap(false, false, 1, &[micro]));
+        let t = mapped
+            .expect("maps")
+            .next_frame()
+            .expect("a frame")
+            .timestamp;
+        assert_eq!(t.timestamp_subsec_nanos(), 654_321_000);
+    }
+
+    /// A fraction too large for its unit is clamped to the last nanosecond of
+    /// the second, not dropped: libpcap hands that record over, so must this.
+    #[test]
+    fn a_fraction_past_one_second_is_clamped_not_dropped() {
+        let bad = Rec {
+            frac: 2_000_000,
+            ..rec(b"late")
+        };
+        let (_dir, mapped) = open_bytes(&pcap(false, false, 1, &[bad]));
+        let frame = mapped.expect("maps").next_frame().expect("still a frame");
+        assert_eq!(frame.timestamp.timestamp(), 1_700_000_000, "same second");
+        assert_eq!(frame.timestamp.timestamp_subsec_nanos(), 999_999_999);
+        assert_eq!(&frame.data[..], b"late");
+    }
+
+    /// A snapped frame reports the wire length it was cut from.
+    #[test]
+    fn a_snapped_frame_keeps_its_wire_length() {
+        let snapped = Rec {
+            orig: 1500,
+            ..rec(&[7u8; 96])
+        };
+        let (_dir, mapped) = open_bytes(&pcap(false, false, 1, &[snapped]));
+        let frame = mapped.expect("maps").next_frame().expect("a frame");
+        assert_eq!((frame.caplen, frame.origlen), (96, 1500));
+    }
+
+    /// Reading to a clean end is not a truncation.
+    #[test]
+    fn a_clean_end_is_not_a_truncation() {
+        let (_dir, mapped) = open_bytes(&pcap(false, false, 1, &[rec(b"a"), rec(b"b")]));
+        let mut mapped = mapped.expect("maps");
+        assert!(mapped.next_frame().is_some() && mapped.next_frame().is_some());
+        assert!(mapped.next_frame().is_none());
+        assert_eq!(mapped.truncation(), None);
+    }
+
+    /// A file that ends inside a record HEADER stops cleanly and says how many
+    /// bytes were left, with no claimed length to report.
+    #[test]
+    fn a_file_cut_inside_a_record_header_reports_what_was_left() {
+        let mut bytes = pcap(false, false, 1, &[rec(b"whole")]);
+        bytes.extend_from_slice(&[0xEE; 10]);
+        let (_dir, mapped) = open_bytes(&bytes);
+        let mut mapped = mapped.expect("maps");
+        assert_eq!(
+            &mapped.next_frame().expect("the whole record").data[..],
+            b"whole"
+        );
+        assert!(mapped.next_frame().is_none(), "the fragment is not a frame");
+        assert_eq!(mapped.truncation(), Some((0, 10)));
+    }
+
+    /// A file that ends inside a record BODY reports the length the header
+    /// claimed, read in the file's own byte order, against what is there.
+    #[test]
+    fn a_file_cut_inside_a_record_body_reports_the_claimed_length_in_either_byte_order() {
+        for big_endian in [false, true] {
+            let mut bytes = pcap(big_endian, false, 1, &[rec(b"whole")]);
+            let claim = |v: u32| {
+                if big_endian {
+                    v.to_be_bytes()
+                } else {
+                    v.to_le_bytes()
+                }
+            };
+            bytes.extend_from_slice(&claim(1_700_000_001));
+            bytes.extend_from_slice(&claim(0));
+            bytes.extend_from_slice(&claim(500)); // incl_len
+            bytes.extend_from_slice(&claim(500)); // orig_len
+            bytes.extend_from_slice(&[0xEE; 20]);
+            let (_dir, mapped) = open_bytes(&bytes);
+            let mut mapped = mapped.expect("maps");
+            assert!(mapped.next_frame().is_some());
+            assert!(mapped.next_frame().is_none());
+            assert_eq!(
+                mapped.truncation(),
+                Some((500, 20)),
+                "big_endian={big_endian}"
+            );
+        }
+    }
+
+    /// A frame larger than the 64 KiB block gets a block of its own and is
+    /// read whole, and the frame after it is unaffected.
+    #[test]
+    fn a_frame_larger_than_the_block_is_read_whole() {
+        let jumbo: Vec<u8> = (0..70_000u32).map(|i| (i % 253) as u8).collect();
+        let (_dir, mapped) = open_bytes(&pcap(false, false, 1, &[rec(&jumbo), rec(b"after")]));
+        let mut mapped = mapped.expect("maps");
+        let first = mapped.next_frame().expect("the jumbo frame");
+        assert_eq!(first.data.len(), 70_000);
+        assert_eq!(&first.data[..], &jumbo[..]);
+        assert_eq!(
+            &mapped.next_frame().expect("the next frame").data[..],
+            b"after"
+        );
+    }
+
+    /// Pages the read has passed are handed back a chunk at a time, on page
+    /// boundaries, strictly behind the cursor -- and every frame read after
+    /// that is still intact, because frames are copies and never borrow the
+    /// released pages.
+    #[test]
+    fn pages_behind_the_cursor_are_released_without_disturbing_frames() {
+        let frames: Vec<Vec<u8>> = (0..140u8).map(|i| vec![i; 65_535]).collect();
+        let records: Vec<Rec<'_>> = frames.iter().map(|f| rec(f)).collect();
+        let (_dir, mapped) = open_bytes(&pcap(false, false, 1, &records));
+        let mut mapped = mapped.expect("maps");
+
+        let mut read = 0u8;
+        while let Some(frame) = mapped.next_frame() {
+            assert!(
+                frame.data.iter().all(|&b| b == read),
+                "frame {read} came back altered"
+            );
+            read += 1;
+        }
+        assert_eq!(read, 140, "every frame read");
+        assert!(
+            mapped.released >= 8 * 1024 * 1024,
+            "more than a chunk was passed, so some was released: {}",
+            mapped.released
+        );
+        assert_eq!(mapped.released % page_size(), 0, "on a page boundary");
+        assert!(mapped.released <= mapped.cursor, "never ahead of the read");
     }
 }
