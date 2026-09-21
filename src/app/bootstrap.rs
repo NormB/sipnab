@@ -6314,3 +6314,466 @@ mod capture_profile_tests {
         assert_eq!(cc.snaplen, 65535);
     }
 }
+
+/// Startup-path behavior that needs no capture device: the sandbox's path
+/// grants, the mode mappings, the HEP and uprobe planning refusals, the
+/// one-shot commands' refusals, the config sections `load_config` refuses, the
+/// privileged keylog opener and the token minter's refusals.
+#[cfg(test)]
+mod startup_refusal_tests {
+    use super::*;
+
+    /// A CLI parsed from `args`, `sipnab` included as argv[0].
+    fn cli_from(args: &[&str]) -> Cli {
+        let mut argv = vec!["sipnab"];
+        argv.extend_from_slice(args);
+        Cli::parse_from_args(argv)
+    }
+
+    // ── The path sandbox ──────────────────────────────────────────────
+
+    /// Every `-I` is granted as an input, and `-O` is granted as its
+    /// DIRECTORY: the writer opens lazily and `--split` invents siblings, so a
+    /// rule on the file would deny both.
+    #[test]
+    fn the_sandbox_grants_each_input_and_the_output_directory_not_the_file() {
+        let cli = cli_from(&["-I", "a.pcap", "-I", "caps/", "-O", "/srv/out/run.pcap"]);
+        let paths = sandbox_paths(&cli, &Config::default());
+        assert_eq!(
+            paths.inputs,
+            vec![
+                std::path::PathBuf::from("a.pcap"),
+                std::path::PathBuf::from("caps/")
+            ]
+        );
+        assert_eq!(
+            paths.output_dirs,
+            vec![std::path::PathBuf::from("/srv/out")],
+            "the output's parent directory, never the file itself"
+        );
+    }
+
+    /// A bare output filename has an empty parent, and an empty path is not a
+    /// directory to grant: nothing is added rather than a rule on "".
+    #[test]
+    fn a_bare_output_filename_adds_no_output_directory() {
+        let paths = sandbox_paths(&cli_from(&["-O", "run.pcap"]), &Config::default());
+        assert!(paths.output_dirs.is_empty(), "got {:?}", paths.output_dirs);
+    }
+
+    /// The keylog and the TLS private key are read for the life of the run,
+    /// so both are granted as read-only files.
+    #[cfg(feature = "tls")]
+    #[test]
+    fn the_keylog_and_the_tls_key_are_granted_as_files_to_read() {
+        let cli = cli_from(&["--keylog", "keys.log", "--tls-key", "server.pem"]);
+        let paths = sandbox_paths(&cli, &Config::default());
+        assert_eq!(
+            paths.read_files,
+            vec![
+                std::path::PathBuf::from("keys.log"),
+                std::path::PathBuf::from("server.pem")
+            ]
+        );
+    }
+
+    /// The crash directory granted is the one the panic hook writes to,
+    /// resolved from the same `[crash]` section.
+    #[test]
+    fn the_crash_directory_granted_is_the_configured_report_directory() {
+        let mut config = Config::default();
+        config.crash.report_dir = Some(std::path::PathBuf::from("/var/crash/sipnab"));
+        let paths = sandbox_paths(&cli_from(&[]), &config);
+        assert_eq!(
+            paths.crash_dir,
+            Some(std::path::PathBuf::from("/var/crash/sipnab"))
+        );
+    }
+
+    /// Each `--sandbox` spelling reaches the mode the sandbox module models,
+    /// and no flag is `Off` — the default no existing run changes under.
+    #[test]
+    fn each_sandbox_flag_value_maps_to_its_own_mode() {
+        use crate::sandbox::SandboxMode;
+        assert_eq!(sandbox_mode(&cli_from(&[])), SandboxMode::Off);
+        assert_eq!(
+            sandbox_mode(&cli_from(&["--sandbox", "best-effort"])),
+            SandboxMode::BestEffort
+        );
+        assert_eq!(
+            sandbox_mode(&cli_from(&["--sandbox", "required"])),
+            SandboxMode::Required
+        );
+    }
+
+    /// Each `--seccomp` spelling reaches its own mode; `enforce` is the one
+    /// that can end a run, so it must never read as `log`.
+    #[test]
+    fn each_seccomp_flag_value_maps_to_its_own_mode() {
+        use crate::seccomp::SeccompMode;
+        assert_eq!(seccomp_mode(&cli_from(&[])), SeccompMode::Off);
+        assert_eq!(
+            seccomp_mode(&cli_from(&["--seccomp", "log"])),
+            SeccompMode::Log
+        );
+        assert_eq!(
+            seccomp_mode(&cli_from(&["--seccomp", "enforce"])),
+            SeccompMode::Enforce
+        );
+    }
+
+    // ── HEP and uprobe planning ───────────────────────────────────────
+
+    /// Planning a HEP source with no `--hep-listen` is refused rather than
+    /// resolved to a bind address nobody asked for.
+    #[test]
+    fn a_hep_source_with_no_listen_address_is_refused_not_defaulted() {
+        let err = plan_hep_source(&cli_from(&[]), &Config::default())
+            .expect_err("no -L must not plan a listener");
+        assert_eq!(err.exit_code, 2);
+        assert!(err.message.contains("--hep-listen"), "{}", err.message);
+    }
+
+    /// A malformed `--hep-allow` entry is an argument error naming the entry,
+    /// not an allowlist that silently admits everyone.
+    #[cfg(feature = "hep")]
+    #[test]
+    fn a_malformed_hep_allow_entry_refuses_the_plan_and_names_it() {
+        let cli = cli_from(&["-N", "-L", "127.0.0.1:9060", "--hep-allow", "not-a-cidr"]);
+        let err = plan(&cli, &Config::default())
+            .err()
+            .expect("a malformed CIDR must refuse the run");
+        assert_eq!(err.exit_code, 2);
+        assert!(
+            err.message
+                .contains("Invalid --hep-allow CIDR 'not-a-cidr'"),
+            "{}",
+            err.message
+        );
+    }
+
+    /// An unknown uprobe flavor stops `--uprobe-list` with exit 2 before
+    /// anything is discovered. clap admits only the known spellings, so this
+    /// is the second line of the same refusal.
+    #[cfg(all(target_os = "linux", feature = "native"))]
+    #[test]
+    fn an_unknown_uprobe_flavor_is_an_argument_error_for_the_listing() {
+        let mut cli = cli_from(&["--uprobe-list"]);
+        cli.tls_args.uprobe_flavor = vec!["gnutls".to_string()];
+        assert_eq!(uprobe_list(&cli), 2);
+    }
+
+    /// The same unknown flavor refuses a `--uprobe-tls` plan, rather than
+    /// probing every library as if no flavor had been named.
+    #[cfg(all(target_os = "linux", feature = "native"))]
+    #[test]
+    fn an_unknown_uprobe_flavor_refuses_the_uprobe_plan() {
+        let mut cli = cli_from(&["-N", "--uprobe-tls"]);
+        cli.tls_args.uprobe_flavor = vec!["gnutls".to_string()];
+        let err = plan(&cli, &Config::default())
+            .err()
+            .expect("an unknown flavor must refuse the plan");
+        assert_eq!(err.exit_code, 2);
+        assert!(err.message.contains("gnutls"), "{}", err.message);
+    }
+
+    // ── One-shot commands ─────────────────────────────────────────────
+
+    /// `--strip-secrets` with nothing to read is refused with exit 1.
+    #[test]
+    fn strip_secrets_without_an_input_is_refused() {
+        assert_eq!(
+            run_startup_commands(&cli_from(&["--strip-secrets", "clean.pcapng"])),
+            Some(1)
+        );
+    }
+
+    /// The smallest pcapng a reader accepts: a Section Header Block and one
+    /// Ethernet Interface Description Block, no packets, no secrets.
+    fn empty_pcapng(path: &std::path::Path) {
+        let mut b: Vec<u8> = Vec::new();
+        // SHB: type, length 28, byte-order magic, version 1.0, unknown
+        // section length, length again.
+        b.extend_from_slice(&0x0A0D_0D0A_u32.to_le_bytes());
+        b.extend_from_slice(&28u32.to_le_bytes());
+        b.extend_from_slice(&0x1A2B_3C4D_u32.to_le_bytes());
+        b.extend_from_slice(&1u16.to_le_bytes());
+        b.extend_from_slice(&0u16.to_le_bytes());
+        b.extend_from_slice(&(-1i64).to_le_bytes());
+        b.extend_from_slice(&28u32.to_le_bytes());
+        // IDB: type 1, length 20, LINKTYPE_ETHERNET, reserved, snaplen.
+        b.extend_from_slice(&1u32.to_le_bytes());
+        b.extend_from_slice(&20u32.to_le_bytes());
+        b.extend_from_slice(&1u16.to_le_bytes());
+        b.extend_from_slice(&0u16.to_le_bytes());
+        b.extend_from_slice(&65535u32.to_le_bytes());
+        b.extend_from_slice(&20u32.to_le_bytes());
+        std::fs::write(path, b).expect("write pcapng");
+    }
+
+    /// The anti-vacuity partner of the refusals below: the same command on a
+    /// readable pcapng, with no config in the way, succeeds and writes the
+    /// sanitized copy.
+    #[test]
+    fn strip_secrets_on_a_readable_pcapng_writes_the_copy() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let input = dir.path().join("in.pcapng");
+        empty_pcapng(&input);
+        let out = dir.path().join("clean.pcapng");
+        let cli = cli_from(&[
+            "--no-config",
+            "-I",
+            input.to_str().expect("utf-8 path"),
+            "--strip-secrets",
+            out.to_str().expect("utf-8 path"),
+        ]);
+        assert_eq!(run_startup_commands(&cli), Some(0));
+        assert!(out.exists(), "the sanitized copy is written");
+    }
+
+    /// A config file that does not exist stops `--strip-secrets` with the
+    /// config loader's own exit code, before the capture is read -- on an
+    /// input the command would otherwise strip successfully.
+    #[test]
+    fn strip_secrets_stops_on_a_config_file_that_does_not_exist() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let input = dir.path().join("in.pcapng");
+        empty_pcapng(&input);
+        let missing = dir.path().join("absent.toml");
+        let out = dir.path().join("clean.pcapng");
+        let cli = cli_from(&[
+            "--config",
+            missing.to_str().expect("utf-8 path"),
+            "-I",
+            input.to_str().expect("utf-8 path"),
+            "--strip-secrets",
+            out.to_str().expect("utf-8 path"),
+        ]);
+        assert_eq!(run_startup_commands(&cli), Some(1));
+        assert!(!out.exists(), "nothing may be written after a refusal");
+    }
+
+    /// An input that does not resolve stops `--strip-secrets` with exit 1 and
+    /// writes nothing.
+    #[test]
+    fn strip_secrets_stops_on_an_input_that_does_not_resolve() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let missing = dir.path().join("absent.pcapng");
+        let out = dir.path().join("clean.pcapng");
+        let cli = cli_from(&[
+            "--no-config",
+            "-I",
+            missing.to_str().expect("utf-8 path"),
+            "--strip-secrets",
+            out.to_str().expect("utf-8 path"),
+        ]);
+        assert_eq!(run_startup_commands(&cli), Some(1));
+        assert!(!out.exists(), "nothing may be written after a refusal");
+    }
+
+    // ── Config sections load_config refuses ───────────────────────────
+
+    /// `load_config` over a config file holding `body`.
+    fn load_body(body: &str) -> Result<LoadedConfig, PlanError> {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("sipnabrc.toml");
+        std::fs::write(&path, body).expect("write config");
+        load_config(&cli_from(&["--config", path.to_str().expect("utf-8 path")]))
+    }
+
+    /// Assert `body` is refused with exit 1 and a message containing `needle`.
+    fn assert_refused(body: &str, needle: &str) {
+        match load_body(body) {
+            Ok(_) => panic!("config {body:?} must be refused"),
+            Err(e) => {
+                assert_eq!(e.exit_code, 1, "{body:?}");
+                assert!(
+                    e.message.contains(needle),
+                    "{body:?}: expected {needle:?} in {:?}",
+                    e.message
+                );
+            }
+        }
+    }
+
+    /// A zero `[sip]` correlation window is refused, as the flag refuses 0.
+    #[test]
+    fn a_zero_sip_correlation_window_in_the_config_is_refused() {
+        assert_refused(
+            "[sip]\nleg_correlation_window_ms = 0\n",
+            "leg_correlation_window_ms",
+        );
+    }
+
+    /// A zero `[security]` registration-flood threshold is refused.
+    #[test]
+    fn a_zero_security_reg_flood_threshold_in_the_config_is_refused() {
+        assert_refused(
+            "[security]\nreg_flood_threshold = 0\n",
+            "reg_flood_threshold",
+        );
+    }
+
+    /// A negative `[diagnosis]` threshold would report every call as broken.
+    #[test]
+    fn a_negative_diagnosis_threshold_in_the_config_is_refused() {
+        assert_refused(
+            "[diagnosis]\npost_dial_delay_secs = -1.0\n",
+            "post_dial_delay_secs",
+        );
+    }
+
+    /// A codec impairment at or above the E-model's ceiling is refused rather
+    /// than clamped to a number the operator did not write.
+    #[test]
+    fn an_out_of_range_codec_impairment_in_the_config_is_refused() {
+        assert_refused("[media.codec_ie]\nPCMU = 1000.0\n", "[media.codec_ie] PCMU");
+    }
+
+    /// A zero `[names]` DNS cache would evict on every insert.
+    #[test]
+    fn a_zero_names_dns_cache_in_the_config_is_refused() {
+        assert_refused("[names]\ndns_cache_entries = 0\n", "dns_cache_entries");
+    }
+
+    /// A `[quality]` warn boundary above its bad boundary leaves no value that
+    /// could ever be a warning, and the refusal says which section it is.
+    #[test]
+    fn an_unreachable_quality_band_in_the_config_is_refused() {
+        assert_refused(
+            "[quality]\njitter_warn_ms = 80.0\njitter_bad_ms = 20.0\n",
+            "[quality] jitter_warn_ms",
+        );
+    }
+
+    // ── The privileged keylog opener ──────────────────────────────────
+
+    /// An ordinary keylog file is left for the decryptor to open itself.
+    #[cfg(feature = "tls")]
+    #[test]
+    fn an_ordinary_keylog_file_is_not_opened_as_a_stream() {
+        let file = tempfile::NamedTempFile::new().expect("tempfile");
+        let cli = cli_from(&["--keylog", file.path().to_str().expect("utf-8 path")]);
+        assert!(open_privileged_keylog_source(&cli).is_none());
+    }
+
+    /// A keylog FIFO is opened now, while still privileged, as a live stream
+    /// — and opening it does not wait for a writer.
+    #[cfg(all(feature = "tls", unix))]
+    #[test]
+    fn a_keylog_fifo_is_opened_as_a_live_stream_without_a_writer() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let fifo = dir.path().join("keys.fifo");
+        // mkfifo(1) rather than libc::mkfifo: no `unsafe` block for a fixture.
+        let made = std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .expect("run mkfifo");
+        assert!(made.success(), "mkfifo failed: {made}");
+        let cli = cli_from(&["--keylog", fifo.to_str().expect("utf-8 path")]);
+        let source = open_privileged_keylog_source(&cli).expect("a FIFO is a stream");
+        assert!(!source.is_exhausted(), "a fresh stream has not reached EOF");
+    }
+
+    /// An inherited descriptor is read as a live stream.
+    #[cfg(all(feature = "tls", unix))]
+    #[test]
+    fn an_inherited_keylog_descriptor_is_read_as_a_live_stream() {
+        use std::os::fd::AsRawFd;
+        let file = tempfile::tempfile().expect("tempfile");
+        let mut cli = cli_from(&[]);
+        cli.tls_args.keylog_fd = Some(file.as_raw_fd());
+        assert!(open_privileged_keylog_source(&cli).is_some());
+    }
+
+    /// A descriptor that is not open is reported and downgraded to "no
+    /// stream" rather than killing a run that can still capture.
+    #[cfg(all(feature = "tls", unix))]
+    #[test]
+    fn a_keylog_descriptor_that_is_not_open_yields_no_stream() {
+        let mut cli = cli_from(&[]);
+        // Far beyond any open-file limit, so it cannot name a live descriptor.
+        cli.tls_args.keylog_fd = Some(i32::MAX);
+        assert!(open_privileged_keylog_source(&cli).is_none());
+    }
+
+    // ── Token minting refusals ────────────────────────────────────────
+
+    /// `--mint-token` with no signing key names the flags that supply one.
+    #[cfg(any(feature = "api", feature = "mcp"))]
+    #[test]
+    fn minting_without_a_signing_key_names_the_flags_that_supply_one() {
+        let cli = cli_from(&["--mint-token"]);
+        let err = mint_token(&cli).expect_err("no key, no token");
+        assert!(err.contains("--api-signing-key"), "{err}");
+        assert_eq!(run_mint_token(&cli), Some(2));
+    }
+
+    /// A TTL of zero would mint a token that expired as it was printed.
+    #[cfg(feature = "api")]
+    #[test]
+    fn minting_with_a_zero_ttl_is_refused() {
+        let cli = cli_from(&[
+            "--mint-token",
+            "--api-signing-key",
+            "k-0123456789abcdef0123456789abcdef",
+            "--api-token-ttl",
+            "0",
+        ]);
+        assert_eq!(
+            mint_token(&cli).expect_err("a zero TTL is refused"),
+            "token TTL must be positive, got 0"
+        );
+    }
+
+    // ── The two-clocks notice ─────────────────────────────────────────
+
+    /// A HEP listener as a composite member.
+    fn hep_member(bind: &str) -> CaptureSource {
+        CaptureSource::Hep {
+            bind_addr: bind.to_string(),
+            #[cfg(feature = "hep")]
+            allowlist: Vec::new(),
+            rate_limit: 0,
+            per_peer_rate_limit: 0,
+            max_tracked_peers: crate::cli::Cli::DEFAULT_MAX_TRACKED_PEERS,
+            auth_key: None,
+            #[cfg(feature = "hep")]
+            auth_mode: crate::cli::HepAuthMode::default(),
+            #[cfg(feature = "hep")]
+            hmac_window_secs: crate::capture::hep::DEFAULT_HMAC_WINDOW_SECS,
+            #[cfg(feature = "hep")]
+            listen_transport: crate::cli::HepTransport::default(),
+            #[cfg(feature = "hep")]
+            tls_cert: None,
+            #[cfg(feature = "hep")]
+            tls_key: None,
+        }
+    }
+
+    /// Two HEP members take every timestamp from remote senders: one kind of
+    /// clock, so there is no mixing to warn about.
+    #[test]
+    fn a_composite_of_hep_listeners_alone_mixes_no_clocks() {
+        let both = CaptureSource::Composite(vec![
+            hep_member("127.0.0.1:19060"),
+            hep_member("127.0.0.1:19061"),
+        ]);
+        assert_eq!(two_clocks_warning(Some(&both)), None);
+    }
+
+    /// Two local interfaces share this host's kernel clock, so they mix
+    /// nothing either.
+    #[test]
+    fn a_composite_of_local_interfaces_alone_mixes_no_clocks() {
+        let both = CaptureSource::Composite(vec![
+            CaptureSource::Live {
+                device: "eth0".into(),
+            },
+            CaptureSource::Live {
+                device: "eth1".into(),
+            },
+        ]);
+        assert_eq!(two_clocks_warning(Some(&both)), None);
+    }
+}

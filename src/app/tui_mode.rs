@@ -243,6 +243,193 @@ fn build_tui_relay_query(
     })
 }
 
+/// What the action trail's opening `capture_opened` record names as the
+/// session's capture.
+///
+/// Named from the same flags the capture path uses -- `-I` beats `-d`,
+/// exactly as bootstrap resolves it -- so the first record of the trail and
+/// the capture that actually opened cannot disagree. Every later record is
+/// relative to this one: a filter or an export means nothing without the
+/// capture it was applied to.
+fn capture_opened_target(cli: &Cli) -> String {
+    if cli.capture_args.input.is_empty() {
+        cli.capture_args
+            .device
+            .clone()
+            .unwrap_or_else(|| "(default interface)".to_string())
+    } else {
+        cli.capture_args.input.join(", ")
+    }
+}
+
+/// The From/To column's starting mode: the CLI flag wins, then the
+/// `[display] from_to` config value (warned about and ignored when it names
+/// no mode), else the built-in default.
+fn resolve_from_to_mode(cli: &Cli, config: &Config) -> crate::tui::FromToMode {
+    cli.name_args
+        .from_to_mode
+        .map(|a| crate::tui::FromToMode::parse(a.as_str()).unwrap_or_default())
+        .or_else(|| {
+            config.display.from_to.as_deref().and_then(|s| {
+                let m = crate::tui::FromToMode::parse(s);
+                if m.is_none() {
+                    tracing::warn!("ignoring invalid [display] from_to = {s:?}");
+                }
+                m
+            })
+        })
+        .unwrap_or_default()
+}
+
+/// The TUI's live security detectors: the same detection the batch path runs,
+/// built from the same flags (arm-for-arm with `DetectionEngines::armed_kinds`).
+///
+/// The TUI is a PASSIVE observer — it fires findings into a shared engine for
+/// the security-findings view, but never acts on the kill/jail effects a
+/// detection can also carry. A run with no detector armed builds no engine,
+/// and the view says nothing was watching rather than reading as "all clear".
+struct LiveDetectors {
+    /// `-K`/`--kill-target` directives that parsed; the malformed are dropped.
+    kill_targets: Vec<crate::security::scanner_kill::KillTarget>,
+    /// Armed by `--kill-scanner` or `[security] kill_scanner`.
+    scanner: Option<crate::security::ScannerDetector>,
+    /// Armed by `--fraud-detect` or `[security] fraud_detect`.
+    fraud: Option<crate::security::FraudDetector>,
+    /// Armed by `--digest-leak`.
+    digest: Option<crate::security::DigestLeakDetector>,
+    /// Armed by `--reg-flood`.
+    reg_flood: Option<crate::security::RegFloodDetector>,
+    /// `--hep-allow-kill`, carried into every detection's policy.
+    hep_allow_kill: bool,
+}
+
+impl LiveDetectors {
+    /// Build every detector this run's flags and config arm.
+    fn from_cli(cli: &Cli, config: &Config) -> Self {
+        let kill_targets: Vec<crate::security::scanner_kill::KillTarget> = cli
+            .security_args
+            .kill_target
+            .iter()
+            .filter_map(|s| crate::security::scanner_kill::KillTarget::parse(s).ok())
+            .collect();
+        let scanner =
+            if cli.security_args.kill_scanner || config.security.kill_scanner.unwrap_or(false) {
+                let custom = cli
+                    .security_args
+                    .kill_ua
+                    .as_deref()
+                    .map(|s| vec![s.to_string()])
+                    .unwrap_or_default();
+                Some(crate::security::ScannerDetector::with_thresholds(
+                    &custom,
+                    cli.scanner_thresholds(config),
+                ))
+            } else {
+                None
+            };
+        let fraud = crate::app::batch::build_fraud_detector(cli, config);
+        let digest = cli
+            .security_args
+            .digest_leak
+            .then(crate::security::DigestLeakDetector::new);
+        let reg_flood = cli
+            .security_args
+            .reg_flood
+            .then(|| crate::security::RegFloodDetector::new(cli.reg_flood_threshold(config)));
+        Self {
+            kill_targets,
+            scanner,
+            fraud,
+            digest,
+            reg_flood,
+            hep_allow_kill: cli.security_args.hep_allow_kill,
+        }
+    }
+
+    /// The detector kinds armed, by the name each files findings under,
+    /// sorted. Empty when nothing is watching.
+    fn armed(&self) -> Vec<String> {
+        let mut armed: Vec<String> = Vec::new();
+        if self.scanner.is_some() || !self.kill_targets.is_empty() {
+            armed.push("scanner".to_string());
+        }
+        if self.fraud.is_some() {
+            armed.push("fraud".to_string());
+        }
+        if self.digest.is_some() {
+            armed.push("digest".to_string());
+        }
+        if self.reg_flood.is_some() {
+            armed.push("reg_flood".to_string());
+        }
+        armed.sort_unstable();
+        armed
+    }
+
+    /// Run the armed detectors over one parsed packet and file every alert
+    /// into `engine`.
+    ///
+    /// Re-parses the SIP the pipeline just stored (a ParsedPacket carries
+    /// bytes, not a parsed message). Only the Alert effect is taken — the TUI
+    /// is a passive observer and never acts on a detection's kill/jail.
+    fn observe(
+        &mut self,
+        pp: &crate::capture::ParsedPacket,
+        ds: &RwLock<DialogStore>,
+        engine: &RwLock<crate::security::AlertEngine>,
+    ) {
+        let Ok(sip_msg) = crate::sip::parser::parse_sip(
+            &pp.payload,
+            pp.timestamp,
+            pp.src_addr,
+            pp.dst_addr,
+            pp.src_port,
+            pp.dst_port,
+            pp.transport,
+        ) else {
+            return;
+        };
+        let effects = {
+            let dialog_guard = ds.read();
+            let dialog = sip_msg.call_id().and_then(|id| dialog_guard.get(id));
+            let mut detectors = crate::security::detectors::Detectors {
+                scanner: self.scanner.as_mut(),
+                fraud: self.fraud.as_mut(),
+                digest: self.digest.as_mut(),
+                reg_flood: self.reg_flood.as_mut(),
+                kill_targets: &self.kill_targets,
+            };
+            let policy = crate::security::detectors::Policy {
+                fail2ban: false,
+                hep_allow_kill: self.hep_allow_kill,
+                origin: pp.input_origin,
+                kill_armed: false,
+                kill_response_code: 0,
+            };
+            crate::security::detectors::run_detectors(&mut detectors, &sip_msg, dialog, policy)
+        };
+        for effect in effects {
+            if let crate::security::detectors::Effect::Alert {
+                detector,
+                src_ip,
+                detail,
+            } = effect
+            {
+                use crate::security::detectors::DetectorKind;
+                let kind = match detector {
+                    DetectorKind::Scanner => "scanner",
+                    DetectorKind::Fraud => "fraud",
+                    DetectorKind::Digest => "digest",
+                    DetectorKind::RegFlood => "reg_flood",
+                };
+                engine
+                    .write()
+                    .fire(kind, src_ip, &detail, sip_msg.timestamp);
+            }
+        }
+    }
+}
+
 /// Heavy wiring, in order: optionally starts the standalone Prometheus
 /// metrics server; spawns the "tui-processor" thread that drains the packet
 /// channel, drives the shared pipeline into the stores, lazily opens and
@@ -301,15 +488,8 @@ pub fn run_tui_mode(
             // The first action of the session, and the one every later record
             // is relative to: a filter or an export means nothing without the
             // capture it was applied to. Named from the same flags the capture
-            // path uses -- `-I` beats `-d`, exactly as bootstrap resolves it.
-            let opened = if cli.capture_args.input.is_empty() {
-                cli.capture_args
-                    .device
-                    .clone()
-                    .unwrap_or_else(|| "(default interface)".to_string())
-            } else {
-                cli.capture_args.input.join(", ")
-            };
+            // path uses -- see `capture_opened_target`.
+            let opened = capture_opened_target(&cli);
             trail.record(&crate::tui::action_trail::ActionRecord {
                 action: "capture_opened",
                 target: &opened,
@@ -387,56 +567,10 @@ pub fn run_tui_mode(
     // confident `0` for a queue they could not see.
     let capture_meter = Some(rx.meter());
 
-    // Live security detectors: the same detection the batch path runs, built
-    // from the same flags (arm-for-arm with `DetectionEngines::armed_kinds`). The
-    // TUI is a PASSIVE observer — it fires findings into a shared engine for the
-    // security-findings view, but never acts on the kill/jail effects a
-    // detection can also carry. A run with no detector armed builds no engine,
-    // and the view says nothing was watching rather than reading as "all clear".
-    let sec_kill_targets: Vec<crate::security::scanner_kill::KillTarget> = cli
-        .security_args
-        .kill_target
-        .iter()
-        .filter_map(|s| crate::security::scanner_kill::KillTarget::parse(s).ok())
-        .collect();
-    let mut sec_scanner =
-        if cli.security_args.kill_scanner || config.security.kill_scanner.unwrap_or(false) {
-            let custom = cli
-                .security_args
-                .kill_ua
-                .as_deref()
-                .map(|s| vec![s.to_string()])
-                .unwrap_or_default();
-            Some(crate::security::ScannerDetector::with_thresholds(
-                &custom,
-                cli.scanner_thresholds(&config),
-            ))
-        } else {
-            None
-        };
-    let mut sec_fraud = crate::app::batch::build_fraud_detector(&cli, &config);
-    let mut sec_digest = cli
-        .security_args
-        .digest_leak
-        .then(crate::security::DigestLeakDetector::new);
-    let mut sec_reg_flood = cli
-        .security_args
-        .reg_flood
-        .then(|| crate::security::RegFloodDetector::new(cli.reg_flood_threshold(&config)));
-    let mut sec_armed: Vec<String> = Vec::new();
-    if sec_scanner.is_some() || !sec_kill_targets.is_empty() {
-        sec_armed.push("scanner".to_string());
-    }
-    if sec_fraud.is_some() {
-        sec_armed.push("fraud".to_string());
-    }
-    if sec_digest.is_some() {
-        sec_armed.push("digest".to_string());
-    }
-    if sec_reg_flood.is_some() {
-        sec_armed.push("reg_flood".to_string());
-    }
-    sec_armed.sort_unstable();
+    // Live security detectors: see `LiveDetectors`. The TUI never acts on a
+    // detection; it only fills the findings ring the security view reads.
+    let mut live_detectors = LiveDetectors::from_cli(&cli, &config);
+    let sec_armed = live_detectors.armed();
     // A plain accumulating engine: the TUI does not want the syslog/json/exec
     // alert channels (those are batch OUTPUT), only the findings ring the view
     // reads through `build_report`.
@@ -448,7 +582,6 @@ pub fn run_tui_mode(
             )))
         });
     let sec_engine_for_thread = security_engine.clone();
-    let sec_hep_allow_kill = cli.security_args.hep_allow_kill;
 
     // Spawn packet processing thread
     let processing_thread = std::thread::Builder::new()
@@ -607,66 +740,11 @@ pub fn run_tui_mode(
                             &mut media_decrypt,
                             relay_orphans.as_ref(),
                         );
-                        // Live security detection: re-parse the SIP the pipeline
-                        // just stored (a ParsedPacket carries bytes, not a parsed
-                        // message) and run the armed detectors, firing findings
-                        // into the shared engine the security-findings view reads.
-                        // Only the Alert effect is taken — the TUI is a passive
-                        // observer and never acts on a detection's kill/jail.
-                        if let Some(engine) = &sec_engine_for_thread
-                            && let Ok(sip_msg) = crate::sip::parser::parse_sip(
-                                &pp.payload,
-                                pp.timestamp,
-                                pp.src_addr,
-                                pp.dst_addr,
-                                pp.src_port,
-                                pp.dst_port,
-                                pp.transport,
-                            )
-                        {
-                            let effects = {
-                                let dialog_guard = ds.read();
-                                let dialog = sip_msg.call_id().and_then(|id| dialog_guard.get(id));
-                                let mut detectors = crate::security::detectors::Detectors {
-                                    scanner: sec_scanner.as_mut(),
-                                    fraud: sec_fraud.as_mut(),
-                                    digest: sec_digest.as_mut(),
-                                    reg_flood: sec_reg_flood.as_mut(),
-                                    kill_targets: &sec_kill_targets,
-                                };
-                                let policy = crate::security::detectors::Policy {
-                                    fail2ban: false,
-                                    hep_allow_kill: sec_hep_allow_kill,
-                                    origin: pp.input_origin,
-                                    kill_armed: false,
-                                    kill_response_code: 0,
-                                };
-                                crate::security::detectors::run_detectors(
-                                    &mut detectors,
-                                    &sip_msg,
-                                    dialog,
-                                    policy,
-                                )
-                            };
-                            for effect in effects {
-                                if let crate::security::detectors::Effect::Alert {
-                                    detector,
-                                    src_ip,
-                                    detail,
-                                } = effect
-                                {
-                                    use crate::security::detectors::DetectorKind;
-                                    let kind = match detector {
-                                        DetectorKind::Scanner => "scanner",
-                                        DetectorKind::Fraud => "fraud",
-                                        DetectorKind::Digest => "digest",
-                                        DetectorKind::RegFlood => "reg_flood",
-                                    };
-                                    engine
-                                        .write()
-                                        .fire(kind, src_ip, &detail, sip_msg.timestamp);
-                                }
-                            }
+                        // Live security detection: see `LiveDetectors::observe`.
+                        // Findings go into the shared engine the security-findings
+                        // view reads; nothing a detection could do is acted on.
+                        if let Some(engine) = &sec_engine_for_thread {
+                            live_detectors.observe(pp, &ds, engine);
                         }
                     }
                 }
@@ -750,20 +828,7 @@ pub fn run_tui_mode(
 
     // From/To column default: CLI flag wins, then the [display] from_to config
     // value (warned + ignored if invalid), else the built-in Default.
-    let from_to_mode = cli
-        .name_args
-        .from_to_mode
-        .map(|a| crate::tui::FromToMode::parse(a.as_str()).unwrap_or_default())
-        .or_else(|| {
-            config.display.from_to.as_deref().and_then(|s| {
-                let m = crate::tui::FromToMode::parse(s);
-                if m.is_none() {
-                    tracing::warn!("ignoring invalid [display] from_to = {s:?}");
-                }
-                m
-            })
-        })
-        .unwrap_or_default();
+    let from_to_mode = resolve_from_to_mode(&cli, &config);
 
     // Run TUI on the main thread
     if let Err(e) = crate::tui::run_tui_with_pause(
@@ -868,7 +933,7 @@ pub fn run_tui_mode(
 #[cfg(test)]
 mod tests {
     use super::{bpf_status_text, build_stores, count_and_check_limit, names_path_from};
-    use crate::capture::CaptureConfig;
+    use crate::capture::{CaptureConfig, ParsedPacket};
     use crate::cli::Cli;
     use crate::config::Config;
     use crate::sip::dialog_store::DialogTracking;
@@ -1282,5 +1347,245 @@ mod tests {
                 p.display()
             );
         }
+    }
+
+    // ── Relay-statistics view ask state ───────────────────────────────────
+
+    /// A permit as a live run would hold one. Minting it transmits nothing:
+    /// the permit is proof of a live source, and no relay is contacted by
+    /// building the view's state.
+    fn live_permit() -> crate::security::transmit_guard::TransmitPermit {
+        crate::security::transmit_guard::TransmitPermit::for_source(
+            &crate::capture::CaptureSource::Live {
+                device: "test0".to_string(),
+            },
+        )
+        .expect("a live source grants a permit")
+    }
+
+    /// No `--rtpengine-control` is `not_configured` whatever the source: a
+    /// live run with nothing named to ask still has nobody to ask.
+    #[test]
+    fn a_run_naming_no_relay_leaves_the_view_not_configured_even_when_live() {
+        use crate::tui::relay_stats::RelayQueryState;
+        let state = super::build_tui_relay_query(&cli_from(&[]), Some(live_permit()));
+        assert!(
+            matches!(state, RelayQueryState::NotConfigured),
+            "no relay named must read as not_configured"
+        );
+    }
+
+    /// A relay named on a run with no permit (a file) is `not_permitted`, the
+    /// other refusal — never collapsed into `not_configured`, because the two
+    /// send the operator to different fixes.
+    #[test]
+    fn a_named_relay_on_a_run_without_a_permit_is_not_permitted() {
+        use crate::tui::relay_stats::RelayQueryState;
+        let cli = cli_from(&["--rtpengine-control", "127.0.0.1:22222"]);
+        let state = super::build_tui_relay_query(&cli, None);
+        assert!(
+            matches!(state, RelayQueryState::NotPermitted),
+            "a relay the run may not transmit to must read as not_permitted"
+        );
+    }
+
+    /// An address that does not parse is `not_configured` even with a permit:
+    /// there is no relay to reach, and the operator's own invocation is where
+    /// to look.
+    #[test]
+    fn an_unparseable_relay_address_is_not_configured_even_with_a_permit() {
+        use crate::tui::relay_stats::RelayQueryState;
+        let cli = cli_from(&["--rtpengine-control", "relay-without-a-port"]);
+        let state = super::build_tui_relay_query(&cli, Some(live_permit()));
+        assert!(
+            matches!(state, RelayQueryState::NotConfigured),
+            "an unparseable address names no relay"
+        );
+    }
+
+    /// A parseable relay address and a permit make the view ready, pointed at
+    /// exactly the address the operator named.
+    #[test]
+    fn a_relay_and_a_permit_make_the_view_ready_to_ask_the_named_address() {
+        use crate::tui::relay_stats::RelayQueryState;
+        let cli = cli_from(&["--rtpengine-control", "127.0.0.1:22222"]);
+        match super::build_tui_relay_query(&cli, Some(live_permit())) {
+            RelayQueryState::Ready(access) => assert_eq!(
+                access.addr,
+                "127.0.0.1:22222"
+                    .parse::<std::net::SocketAddr>()
+                    .expect("valid socket address"),
+                "the view names the relay the operator pointed it at"
+            ),
+            RelayQueryState::NotConfigured => panic!("expected Ready, got NotConfigured"),
+            RelayQueryState::NotPermitted => panic!("expected Ready, got NotPermitted"),
+        }
+    }
+
+    // ── The action trail's opening record ─────────────────────────────────
+
+    /// `-I` beats `-d` in the trail's first record, as it does for the capture
+    /// that actually opens, and every input is named.
+    #[test]
+    fn the_trail_names_every_input_file_over_a_device() {
+        let cli = cli_from(&["-I", "a.pcap", "-I", "b.pcap", "-d", "eth0"]);
+        assert_eq!(super::capture_opened_target(&cli), "a.pcap, b.pcap");
+    }
+
+    /// With no input, the trail names the device the capture opened.
+    #[test]
+    fn the_trail_names_the_device_when_no_file_is_read() {
+        let cli = cli_from(&["-d", "eth0"]);
+        assert_eq!(super::capture_opened_target(&cli), "eth0");
+    }
+
+    /// Neither flag: the capture layer picks an interface, and the trail says
+    /// so instead of recording an empty target.
+    #[test]
+    fn the_trail_names_the_default_interface_when_nothing_was_named() {
+        assert_eq!(
+            super::capture_opened_target(&cli_from(&[])),
+            "(default interface)"
+        );
+    }
+
+    // ── From/To column mode ───────────────────────────────────────────────
+
+    /// `--from-to-mode` wins over the `[display] from_to` config value.
+    #[test]
+    fn the_from_to_flag_wins_over_the_config_value() {
+        let mut config = Config::default();
+        config.display.from_to = Some("user".to_string());
+        let cli = cli_from(&["--from-to-mode", "host-port"]);
+        assert_eq!(
+            super::resolve_from_to_mode(&cli, &config),
+            crate::tui::FromToMode::HostPort
+        );
+    }
+
+    /// Without the flag, a valid config value is the starting mode.
+    #[test]
+    fn a_valid_config_from_to_value_is_the_starting_mode() {
+        let mut config = Config::default();
+        config.display.from_to = Some("user-host-port".to_string());
+        assert_eq!(
+            super::resolve_from_to_mode(&cli_from(&[]), &config),
+            crate::tui::FromToMode::UserHostPort
+        );
+    }
+
+    /// A config value naming no mode is ignored rather than guessed at: the
+    /// built-in default applies, not the nearest spelling.
+    #[test]
+    fn an_invalid_config_from_to_value_falls_back_to_the_default() {
+        let mut config = Config::default();
+        config.display.from_to = Some("usr".to_string());
+        assert_eq!(
+            super::resolve_from_to_mode(&cli_from(&[]), &config),
+            crate::tui::FromToMode::Default
+        );
+    }
+
+    // ── Live security detection ───────────────────────────────────────────
+
+    /// A packet carrying `raw` as a UDP SIP payload from 192.0.2.10.
+    fn sip_packet(raw: Vec<u8>) -> ParsedPacket {
+        let mut pp = pcmu_packet();
+        pp.src_addr = std::net::IpAddr::V4(std::net::Ipv4Addr::new(192, 0, 2, 10));
+        pp.src_port = 5060;
+        pp.dst_port = 5060;
+        pp.payload = raw.into();
+        pp
+    }
+
+    /// A 401 challenge with an MD5 nonce and no `qop`: two digest weaknesses
+    /// in one message, and nothing any other detector reacts to.
+    fn weak_digest_challenge() -> Vec<u8> {
+        crate::test_utils::build_sip_message(
+            "SIP/2.0 401 Unauthorized",
+            &[
+                "Via: SIP/2.0/UDP 192.0.2.1:5060;branch=z9hG4bK-weak",
+                "From: <sip:a@example.com>;tag=1",
+                "To: <sip:a@example.com>;tag=2",
+                "Call-ID: weak-digest@example.com",
+                "CSeq: 1 REGISTER",
+                "WWW-Authenticate: Digest realm=\"example.com\", nonce=\"n1\", algorithm=MD5",
+            ],
+            b"",
+        )
+    }
+
+    /// A fresh findings engine like the one `run_tui_mode` builds.
+    fn engine() -> parking_lot::RwLock<crate::security::AlertEngine> {
+        parking_lot::RwLock::new(crate::security::AlertEngine::new(Vec::new(), None))
+    }
+
+    /// A run with no detection flag arms nothing, so the view can say nothing
+    /// was watching instead of reading as "all clear".
+    #[test]
+    fn no_detection_flag_arms_no_live_detector() {
+        let detectors = super::LiveDetectors::from_cli(&cli_from(&[]), &Config::default());
+        assert!(detectors.armed().is_empty(), "got {:?}", detectors.armed());
+    }
+
+    /// Each armed detector is listed under the name it files findings by, and
+    /// the list is sorted so the view's header does not depend on flag order.
+    #[test]
+    fn the_armed_list_names_each_detector_by_its_finding_kind_sorted() {
+        let mut config = Config::default();
+        config.security.kill_scanner = Some(true);
+        let cli = cli_from(&["--reg-flood", "--fraud-detect", "--digest-leak"]);
+        assert_eq!(
+            super::LiveDetectors::from_cli(&cli, &config).armed(),
+            vec!["digest", "fraud", "reg_flood", "scanner"]
+        );
+    }
+
+    /// An armed digest detector files what it sees under `digest`, the name
+    /// the security-findings view and `--alert` rules know it by.
+    #[test]
+    fn an_armed_digest_detector_files_a_weak_challenge_under_digest() {
+        let cli = cli_from(&["--digest-leak"]);
+        let mut detectors = super::LiveDetectors::from_cli(&cli, &Config::default());
+        let ds = parking_lot::RwLock::new(crate::sip::dialog_store::DialogStore::new(16, false));
+        let engine = engine();
+        detectors.observe(&sip_packet(weak_digest_challenge()), &ds, &engine);
+
+        let guard = engine.read();
+        let all = guard.iter_findings(&[], None, 16);
+        assert!(!all.is_empty(), "a weak challenge must produce a finding");
+        assert!(
+            all.iter().all(|f| f.rule_name == "digest"),
+            "every finding is the digest detector's: {:?}",
+            all.iter().map(|f| &f.rule_name).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            all[0].src_ip,
+            std::net::IpAddr::V4(std::net::Ipv4Addr::new(192, 0, 2, 10)),
+            "the finding is about the challenge's sender"
+        );
+    }
+
+    /// The same challenge with no detector armed files nothing: an unarmed
+    /// detector runs no check at all.
+    #[test]
+    fn an_unarmed_run_files_nothing_for_the_same_challenge() {
+        let mut detectors = super::LiveDetectors::from_cli(&cli_from(&[]), &Config::default());
+        let ds = parking_lot::RwLock::new(crate::sip::dialog_store::DialogStore::new(16, false));
+        let engine = engine();
+        detectors.observe(&sip_packet(weak_digest_challenge()), &ds, &engine);
+        assert!(engine.read().iter_findings(&[], None, 16).is_empty());
+    }
+
+    /// A payload that is not SIP is skipped, not misread: the detectors see
+    /// only what parses.
+    #[test]
+    fn a_payload_that_is_not_sip_is_skipped() {
+        let cli = cli_from(&["--digest-leak"]);
+        let mut detectors = super::LiveDetectors::from_cli(&cli, &Config::default());
+        let ds = parking_lot::RwLock::new(crate::sip::dialog_store::DialogStore::new(16, false));
+        let engine = engine();
+        detectors.observe(&sip_packet(vec![0u8; 64]), &ds, &engine);
+        assert!(engine.read().iter_findings(&[], None, 16).is_empty());
     }
 }

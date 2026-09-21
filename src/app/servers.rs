@@ -309,10 +309,13 @@ pub fn start_servers(
         && let Some(addr_str) = cli.listener_args.metrics.as_deref()
     {
         let bind_addr = crate::output::prometheus_server::parse_metrics_addr(addr_str)?;
-        let auth = cli.resolve_metrics_auth().unwrap_or_else(|e| {
-            tracing::error!("metrics auth: {e}");
-            None
-        });
+        // Propagated for the reason the resolver refuses at all: an unreadable
+        // or empty credential must fail loudly rather than silently disable
+        // authentication. Logging it and passing `None` on started a loopback
+        // endpoint with no credential and exited 0.
+        let auth = cli
+            .resolve_metrics_auth()
+            .map_err(|e| anyhow::anyhow!("metrics auth: {e}"))?;
         // Propagated, not logged. `--metrics` is an explicit request for a
         // scrape endpoint, and a run that cannot provide one has not done what
         // it was asked. Logging it and continuing meant
