@@ -313,11 +313,8 @@ pub fn capture_live_fanout(
     // refuses PACKET_FANOUT refuses it for every socket, and discovering that
     // once is cheaper — and far easier to report — than N threads each failing
     // separately after the ready signal has already been sent.
-    if let Err(e) = probe_fanout(device, config, group) {
-        tracing::warn!(
-            "'{device}': the kernel refused PACKET_FANOUT ({e}); capturing on \
-             one socket. Live capture will not scale past a single core here."
-        );
+    if let Err(failure) = probe_fanout(device, config, group) {
+        tracing::warn!("{}", fanout_fallback_warning(device, &failure));
         return capture_live(device, config, tx, ready_tx, reconfigure);
     }
 
@@ -386,25 +383,57 @@ pub fn capture_live_fanout(
     }
 }
 
+/// Why the fanout probe failed, which decides what the fallback may claim.
+enum ProbeFailure {
+    /// The device would not open, so nothing was asked of the kernel's fanout.
+    Open(anyhow::Error),
+    /// The device opened and the kernel refused to join the group.
+    Join(anyhow::Error),
+}
+
+/// The warning logged when a `--cores N` capture falls back to one socket.
+///
+/// Only a failed JOIN is the kernel refusing fanout. A failed open never got
+/// that far -- a mistyped interface or a missing privilege -- and the single
+/// socket tried next will hit the same failure and report it, so the warning
+/// says the probe could not run rather than sending the operator to the kernel.
+fn fanout_fallback_warning(device: &str, failure: &ProbeFailure) -> String {
+    match failure {
+        ProbeFailure::Open(e) => format!(
+            "'{device}': could not open the device to probe PACKET_FANOUT ({e}); \
+             trying one socket, which reports the same failure if it persists."
+        ),
+        ProbeFailure::Join(e) => format!(
+            "'{device}': the kernel refused PACKET_FANOUT ({e}); capturing on \
+             one socket. Live capture will not scale past a single core here."
+        ),
+    }
+}
+
 /// Open a handle, try to join `group`, and drop it. Answers "will this kernel
 /// fan out on this device" without disturbing a real capture.
-fn probe_fanout(device: &str, config: &CaptureConfig, group: u16) -> Result<()> {
+fn probe_fanout(device: &str, config: &CaptureConfig, group: u16) -> Result<(), ProbeFailure> {
     #[cfg(target_os = "linux")]
     {
         use std::os::unix::io::AsRawFd;
-        let cap = pcap::Capture::from_device(device)?
-            .promisc(config.promisc && device != "any")
-            .snaplen(config.snaplen as i32)
-            .timeout(read_timeout_ms(config.immediate_mode))
-            .open()?;
+        let cap = pcap::Capture::from_device(device)
+            .and_then(|c| {
+                c.promisc(config.promisc && device != "any")
+                    .snaplen(config.snaplen as i32)
+                    .timeout(read_timeout_ms(config.immediate_mode))
+                    .open()
+            })
+            .map_err(|e| ProbeFailure::Open(e.into()))?;
         super::fanout::join_fanout_group(cap.as_raw_fd(), group)
-            .map_err(|e| anyhow::anyhow!("{e}"))?;
+            .map_err(|e| ProbeFailure::Join(anyhow::anyhow!("{e}")))?;
         Ok(())
     }
     #[cfg(not(target_os = "linux"))]
     {
         let _ = (device, config, group);
-        anyhow::bail!("PACKET_FANOUT is Linux-only")
+        Err(ProbeFailure::Join(anyhow::anyhow!(
+            "PACKET_FANOUT is Linux-only"
+        )))
     }
 }
 
@@ -1855,13 +1884,18 @@ mod tests {
             .expect_err("with the failure");
         assert!(reported.contains("sipnab-no-such-dev0"), "{reported}");
         assert!(
-            logs.contains("'sipnab-no-such-dev0'") && logs.contains("capturing on one socket"),
+            logs.contains("'sipnab-no-such-dev0'") && logs.contains("one socket"),
             "the fallback is announced, naming the device: {logs}"
         );
         if cfg!(target_os = "linux") {
             assert!(
-                logs.contains("refused PACKET_FANOUT"),
-                "on Linux the fallback came from the probe: {logs}"
+                logs.contains("could not open the device to probe PACKET_FANOUT"),
+                "on Linux the fallback came from the probe, and says the probe \
+                 never reached the kernel: {logs}"
+            );
+            assert!(
+                !logs.contains("kernel refused"),
+                "a device that would not open is not the kernel refusing fanout: {logs}"
             );
         }
         assert!(
@@ -1935,5 +1969,53 @@ mod tests {
         tracing::subscriber::with_default(subscriber, f);
         let bytes = buf.0.lock().expect("log buffer").clone();
         String::from_utf8_lossy(&bytes).into_owned()
+    }
+}
+
+#[cfg(test)]
+mod fanout_fallback_warning_tests {
+    use super::{ProbeFailure, fanout_fallback_warning};
+
+    /// A device that would not open never reached the kernel's fanout, so the
+    /// warning must not blame the kernel. It used to: `--cores 4` on a missing
+    /// interface logged "the kernel refused PACKET_FANOUT", sending an operator
+    /// to kernel docs for what was a typo in the device name.
+    #[test]
+    fn a_probe_that_could_not_open_the_device_does_not_blame_the_kernel() {
+        let failure = ProbeFailure::Open(anyhow::anyhow!("No such device exists"));
+        let warning = fanout_fallback_warning("eth9", &failure);
+        assert!(
+            !warning.contains("kernel refused"),
+            "an open failure is not a fanout refusal: {warning}"
+        );
+        assert!(
+            warning.contains("could not open the device to probe PACKET_FANOUT"),
+            "the warning says the probe never got as far as fanout: {warning}"
+        );
+        assert!(
+            warning.contains("'eth9'") && warning.contains("No such device exists"),
+            "the device and the real error are both named: {warning}"
+        );
+        assert!(
+            warning.contains("one socket"),
+            "the fallback is announced: {warning}"
+        );
+    }
+
+    /// A device that opened and then refused the group IS the kernel refusing
+    /// fanout, and the warning keeps saying so, with the scaling consequence.
+    #[test]
+    fn a_probe_the_kernel_refused_says_the_kernel_refused() {
+        let failure = ProbeFailure::Join(anyhow::anyhow!("Operation not supported"));
+        let warning = fanout_fallback_warning("eth0", &failure);
+        assert!(
+            warning.contains("the kernel refused PACKET_FANOUT (Operation not supported)"),
+            "{warning}"
+        );
+        assert!(
+            warning.contains("capturing on one socket")
+                && warning.contains("will not scale past a single core"),
+            "{warning}"
+        );
     }
 }

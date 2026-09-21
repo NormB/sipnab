@@ -46,6 +46,10 @@ entry that carries them.
   from zero on every 20 ms drain, so each sweep minted `#0` again and one
   process's messages named each other's frames. The ordinal now belongs to the
   reader and saturates rather than wrapping, as the BPF back end's does.
+- **A `--cores N` capture on a device that will not open no longer blames the
+  kernel.** The fanout probe logged "the kernel refused PACKET_FANOUT" for
+  every failure, including a mistyped interface name. It now says the probe
+  could not open the device, and keeps the kernel wording for a real refusal.
 - **`--relay-stats-interval` names a malformed relay address.** On a live run
   with an unparseable `--rtpengine-control`, it refused as though the run read
   a file.
