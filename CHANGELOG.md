@@ -8,6 +8,17 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Changed
+
+- **The published binary-size ceiling is 17 MB.** The 0.5.183 x86_64-musl
+  binary is 16,498,184 bytes, which left 279,032 bytes under the 16 MB the
+  homepage and the build docs quoted, and single releases have grown by up to
+  221,184. The release build refuses a binary over the ceiling, so this is
+  raised before a release fails rather than after. 17 MB leaves 1,327,608
+  bytes of headroom.
+
 ## [0.5.183] - 2026-09-21
 
 ### Changed

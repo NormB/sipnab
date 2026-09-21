@@ -199,12 +199,20 @@ macos_floor_intel = "10.12"
 # margin, so the raise now happens at the release that gets close rather than
 # at the tag that fails.
 #
+# 16 -> 17 at 0.5.183, the first move made BEFORE a release failed rather than
+# after. 0.5.183 left 279,032 bytes under 16 MB, 16,888 above the 262,144-byte
+# THIN_MARGIN, and single releases in this record have grown by 155,776
+# (0.5.170), 131,072 (0.5.176) and 221,184 (0.5.177), so the next ordinary
+# release could have tipped. The binary grew 750,336 bytes from 0.5.160 to
+# 0.5.183, about 32,600 per release; 17 MB leaves 1,327,608 bytes of headroom
+# over the 0.5.183 measurement above, roughly forty releases at that rate.
+#
 # Shrinking was considered and rejected again, for the reason it was rejected
 # at 0.5.139: `[profile.release]` already runs `lto`, `codegen-units = 1`,
 # `strip` and `panic = "abort"`, and the only lever left is `opt-level = "z"`,
 # which trades the throughput the benchmarks page publishes. Raising a claim
 # that is no longer true beats keeping a claim that is.
-binary_size_ceiling_mb = "16"
+binary_size_ceiling_mb = "17"
 github_url = "https://github.com/NormB/sipnab"
 # `owner/repo`, for the places a bare slug is what the command wants rather than
 # a URL: `gh attestation verify --repo`, the releases API path. These were
