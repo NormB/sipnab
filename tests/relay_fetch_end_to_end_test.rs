@@ -287,6 +287,18 @@ impl Run {
     }
 }
 
+/// A run that ends in a panic -- a failing assertion before `finish` -- still
+/// reaps its child. Without this every red run left an idle listener behind.
+/// A child `finish` already reaped is past `try_wait`, so this is a no-op then.
+impl Drop for Run {
+    fn drop(&mut self) {
+        if matches!(self.child.try_wait(), Ok(None)) {
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+        }
+    }
+}
+
 /// What a finished run left behind.
 struct Finished {
     code: Option<i32>,

@@ -201,6 +201,17 @@ impl Spawned {
     }
 }
 
+/// A test that fails before `terminate` still reaps its child, so a red run
+/// leaves no server behind. A child already reaped is past `try_wait`.
+impl Drop for Spawned {
+    fn drop(&mut self) {
+        if matches!(self.child.try_wait(), Ok(None)) {
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+        }
+    }
+}
+
 /// One HTTP/1.1 GET with a bearer token; returns the status and body.
 fn http_get(addr: &str, path: &str, bearer: &str) -> (u16, String) {
     let mut stream = TcpStream::connect(addr).expect("connect to the API");
