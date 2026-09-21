@@ -166,7 +166,18 @@ impl Spawned {
     }
 
     /// Wait for a stderr line containing `needle` and return the text after it.
+    ///
+    /// Lines already read count too: the server's threads log in no fixed
+    /// order, so the line asked for second may have arrived while waiting for
+    /// the first.
     fn after(&mut self, needle: &str, wait: Duration) -> Option<String> {
+        if let Some(hit) = self
+            .seen
+            .iter()
+            .find_map(|line| line.split(needle).nth(1).map(|s| s.trim().to_string()))
+        {
+            return Some(hit);
+        }
         let deadline = Instant::now() + wait;
         while Instant::now() < deadline {
             if let Ok(line) = self.stderr.recv_timeout(Duration::from_millis(100)) {
@@ -190,6 +201,45 @@ impl Spawned {
         }
         (code, self.seen.join("\n"))
     }
+}
+
+/// `after` finds a line whichever order the server's threads logged it in.
+///
+/// The keep-alive loop logs "API server active" and the API thread logs "REST
+/// API listening on", and nothing orders the two. On a macOS CI runner the
+/// keep-alive line came first, so a wait that read only lines arriving after
+/// the listening line never saw it and timed out after 30 s. This feeds the
+/// two lines in that order and asks for them in the other.
+#[test]
+fn after_finds_a_line_that_arrived_before_the_one_waited_on_first() {
+    let child = Command::new("sleep")
+        .arg("30")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn sleep");
+    let (tx, rx) = mpsc::channel();
+    tx.send("INFO sipnab::app::batch: API server active".to_string())
+        .unwrap();
+    tx.send("INFO sipnab::output::api: REST API listening on 127.0.0.1:49650".to_string())
+        .unwrap();
+    let mut run = Spawned {
+        child,
+        stderr: rx,
+        seen: Vec::new(),
+    };
+
+    assert_eq!(
+        run.after("REST API listening on ", Duration::from_secs(5))
+            .as_deref(),
+        Some("127.0.0.1:49650")
+    );
+    assert!(
+        run.after("API server active", Duration::from_millis(300))
+            .is_some(),
+        "a line read while waiting for another is still found"
+    );
 }
 
 /// A test that fails before `terminate` still reaps its child, so a red run
