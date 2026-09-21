@@ -315,6 +315,14 @@ static TRUNCATED_FRAMES: AtomicU64 = AtomicU64::new(0);
 /// truncated 94% of them is not a clean capture, and without this counter it
 /// reported as one.
 static SNAPPED_FRAMES: AtomicU64 = AtomicU64::new(0);
+/// Of the undecodable frames, the ones the capture had cut short.
+///
+/// A frame counted here is in BOTH [`UNDECODABLE_FRAMES`] and
+/// [`SNAPPED_FRAMES`], and this is what lets a summary tell the two apart: the
+/// undecodable total alone cannot say which of its frames arrived whole, and
+/// describing a frame the snaplen cut as one that "reached sipnab intact" is a
+/// false statement about the capture.
+static SNAPPED_UNDECODABLE_FRAMES: AtomicU64 = AtomicU64::new(0);
 /// Frames a decoder rejected outright.
 static DECODE_ERRORS: AtomicU64 = AtomicU64::new(0);
 
@@ -675,14 +683,30 @@ pub fn snapped_frames() -> u64 {
     SNAPPED_FRAMES.load(Ordering::Relaxed)
 }
 
+/// Frames that were cut short by the capture's snaplen AND produced no parsed
+/// packet: the share of [`undecodable_frames`] that did not arrive intact.
+///
+/// # Returns
+///
+/// Monotonic count since the process started or the last
+/// [`reset_undecodable_frames`]. Never more than either [`snapped_frames`] or
+/// [`undecodable_frames`].
+#[must_use]
+pub fn snapped_undecodable_frames() -> u64 {
+    SNAPPED_UNDECODABLE_FRAMES.load(Ordering::Relaxed)
+}
+
 /// Record that one frame arrived cut short by the capture's snaplen.
 ///
-/// The compare is on the caller's hot path, so this is written as a branch the
-/// common case does not pay for: an unsnapped capture performs one integer
-/// comparison per frame and never touches the atomic. Only a capture that IS
-/// being truncated pays the increment, and on that capture the information is
-/// worth more than the relaxed add costs.
-pub fn note_snapped_frame() {
+/// Private, and called from [`decode_captured_frame`] alone, so there is one
+/// place a snapped frame is counted rather than one per reader — the shape
+/// that left every reader but `--cores` counting nothing. The compare is on
+/// the caller's hot path, so it is written as a branch the common case does
+/// not pay for: an unsnapped capture performs one integer comparison per frame
+/// and never touches the atomic. Only a capture that IS being truncated pays
+/// the increment, and on that capture the information is worth more than the
+/// relaxed add costs.
+fn note_snapped_frame() {
     SNAPPED_FRAMES.fetch_add(1, Ordering::Relaxed);
 }
 
@@ -752,11 +776,12 @@ pub fn undecodable_report() -> UndecodableReport {
 ///
 /// # Side effects
 ///
-/// Zeroes the total, both scalar reasons, and every slot of the three keyed
-/// tables.
+/// Zeroes the total, both scalar reasons, the two snapped counts, and every
+/// slot of the three keyed tables.
 pub fn reset_undecodable_frames() {
     UNDECODABLE_FRAMES.store(0, Ordering::Relaxed);
     SNAPPED_FRAMES.store(0, Ordering::Relaxed);
+    SNAPPED_UNDECODABLE_FRAMES.store(0, Ordering::Relaxed);
     TRUNCATED_FRAMES.store(0, Ordering::Relaxed);
     DECODE_ERRORS.store(0, Ordering::Relaxed);
     UNSUPPORTED_LINK_TYPE.reset();
@@ -786,14 +811,22 @@ pub struct FrameFacts {
     pub ethertype: Option<u16>,
     /// Protocol number of the innermost IP header the decoder reached.
     pub ip_protocol: Option<u8>,
+    /// Whether the capture cut the frame short ([`Packet::is_snapped`]).
+    ///
+    /// Not a number the decoder found, and not re-derived from the bytes: it
+    /// comes from the capture record's own two lengths, which is the one
+    /// source that knows it. It decides whether a frame that failed to decode
+    /// failed because of what the capture kept.
+    pub snapped: bool,
 }
 
 impl FrameFacts {
     /// Nothing was handed out: every reason that needs a number renders as
-    /// *not recorded*.
+    /// *not recorded*, and the frame is taken to be whole.
     pub const UNRECORDED: Self = Self {
         ethertype: None,
         ip_protocol: None,
+        snapped: false,
     };
 }
 
@@ -832,6 +865,15 @@ fn classify_undecodable(err: &CaptureError, facts: FrameFacts) -> Option<Undecod
         // The pre-parsed (HEP) path states the protocol in the error itself.
         CaptureError::UnsupportedIpProtocol(p) => UndecodableReason::NoTransport(Some(*p)),
         CaptureError::TooShort { .. } => UndecodableReason::Truncated,
+        // A frame the capture cut short fails the slicer's length check: its
+        // IP header promises bytes that were never kept. That is truncation,
+        // and "decode error" would send the operator hunting for a frame
+        // format sipnab cannot read when the remedy is `--snaplen`. Only this
+        // arm consults the snap. Every other reason names something no amount
+        // of kept bytes changes (a link type, an EtherType, a protocol, an
+        // encapsulation too deep), and blaming the snaplen for it would hide
+        // the number that names the real cause.
+        CaptureError::PacketDecode { .. } if facts.snapped => UndecodableReason::Truncated,
         CaptureError::PacketDecode { .. } | CaptureError::EncapTooDeep { .. } => {
             UndecodableReason::DecodeError
         }
@@ -857,7 +899,8 @@ fn classify_undecodable(err: &CaptureError, facts: FrameFacts) -> Option<Undecod
 ///
 /// # Side effects
 ///
-/// Bumps the process-global total and the tally for the classified reason. No
+/// Bumps the process-global total, the tally for the classified reason, and —
+/// for a frame the capture cut short — the snapped share of the total. No
 /// allocation and no lock: this runs once per undecodable frame, which on a
 /// capture sipnab cannot read is once per frame.
 pub fn record_undecodable(err: &CaptureError, facts: FrameFacts) {
@@ -865,6 +908,9 @@ pub fn record_undecodable(err: &CaptureError, facts: FrameFacts) {
         return;
     };
     UNDECODABLE_FRAMES.fetch_add(1, Ordering::Relaxed);
+    if facts.snapped {
+        SNAPPED_UNDECODABLE_FRAMES.fetch_add(1, Ordering::Relaxed);
+    }
     match reason {
         UndecodableReason::UnsupportedLinkType(dlt) => {
             UNSUPPORTED_LINK_TYPE.bump(i64::from(dlt));
@@ -882,6 +928,56 @@ pub fn record_undecodable(err: &CaptureError, facts: FrameFacts) {
             DECODE_ERRORS.fetch_add(1, Ordering::Relaxed);
         }
     }
+}
+
+/// Decode one frame READ FROM A CAPTURE, and account for it in the run's
+/// capture tallies.
+///
+/// The one place a captured frame is counted. Every reader reaches it — the
+/// default and `--cores` file readers, the merged-pcapng reader, live capture
+/// and HEP (all through [`PacketProcessor::process`]), the replay reader behind
+/// `open_capture` and the compare routes, the TUI's file open, the uprobe
+/// ingest and the browser analyzer — so a reader added later cannot forget to
+/// report a snapped or undecodable frame, and no reader can count one twice.
+/// Counting at packet construction was tried and failed on both counts: only
+/// the `--cores` reader built its packets through the counting constructor,
+/// and that reader builds on one thread and decodes on another.
+///
+/// Not for re-decoding a frame something already holds (the MCP provenance
+/// and relay resolvers): that frame was counted when it was read, and
+/// [`parse::parse_packet`] is the uncounted decode for it.
+///
+/// # Arguments
+///
+/// * `packet` — one frame as a capture recorded it, `caplen`/`origlen` intact.
+///
+/// # Returns
+///
+/// The parsed packet, or the decoder's error when the frame produced none.
+///
+/// # Errors
+///
+/// Whatever [`parse::parse_packet`] returns; the failure is already counted by
+/// [`record_undecodable`] when this returns.
+///
+/// # Side effects
+///
+/// Bumps the snapped counter when the frame was cut short, whether or not it
+/// decodes, and the undecodable tally when it does not decode.
+pub fn decode_captured_frame(packet: &Packet) -> Result<ParsedPacket, CaptureError> {
+    let snapped = packet.is_snapped();
+    if snapped {
+        note_snapped_frame();
+    }
+    parse_packet(packet).inspect_err(|e| {
+        record_undecodable(
+            e,
+            FrameFacts {
+                snapped,
+                ..FrameFacts::UNRECORDED
+            },
+        );
+    })
 }
 
 /// Output of [`PacketProcessor::process`]: the parsed packets ready from one
@@ -1049,24 +1145,24 @@ impl PacketProcessor {
     ///
     /// Mutates both reassemblers and the `tcp_sip_leftover` map (inserting,
     /// removing, and — at the `max_sessions` cap — evicting the
-    /// least-recently-updated held partial); counts every unparseable frame
-    /// into the process-global tally read by [`undecodable_report`], and logs
-    /// it at debug level.
+    /// least-recently-updated held partial); counts every snapped frame and
+    /// every unparseable one through [`decode_captured_frame`], and logs an
+    /// unparseable one at debug level.
     fn process_inner(&mut self, packet: &Packet) -> ParsedPackets {
-        let parsed = match parse_packet(packet) {
+        let parsed = match decode_captured_frame(packet) {
             Ok(p) => p,
             Err(e) => {
-                // The one place a frame can vanish. Counted before the log,
-                // because `debug!` is off by default and used to be the only
-                // trace a frame left — which is how a capture sipnab decoded
-                // 0% of reported the same totals as a clean read.
+                // The one place a frame can vanish. Counted (inside
+                // `decode_captured_frame`) before the log, because `debug!` is
+                // off by default and used to be the only trace a frame left —
+                // which is how a capture sipnab decoded 0% of reported the same
+                // totals as a clean read.
                 //
-                // `UNRECORDED`: `parse_packet` does not yet hand its
-                // link-layer EtherType or innermost IP protocol back to its
-                // caller, so those two reasons render as *not recorded* until
-                // it does. Re-walking `packet` here to recover them is the one
-                // thing this must not do — see [`FrameFacts`].
-                record_undecodable(&e, FrameFacts::UNRECORDED);
+                // Counted with no EtherType or IP protocol: `parse_packet` does
+                // not yet hand either back to its caller, so those two reasons
+                // render as *not recorded* until it does. Re-walking `packet`
+                // here to recover them is the one thing this must not do — see
+                // [`FrameFacts`].
                 tracing::debug!("Skipping unparseable packet: {e}");
                 return SmallVec::new();
             }
@@ -2627,6 +2723,113 @@ mod tests {
                 assert_eq!(reason.to_string(), sentence);
                 assert_eq!(reason.label(), label);
             }
+        }
+
+        /// `frame` recorded with its last `cut` bytes missing, on `link_type`:
+        /// what a snaplen does, stated in the record's own lengths.
+        fn cut_short(frame: Vec<u8>, cut: usize, link_type: i32) -> Packet {
+            let origlen = frame.len();
+            let kept = frame[..origlen - cut].to_vec();
+            let caplen = kept.len();
+            Packet::new(Utc::now(), kept, caplen, origlen, None, link_type)
+        }
+
+        /// The rule itself: a frame is snapped when it captured fewer bytes
+        /// than crossed the wire, and not when it captured all of them.
+        #[test]
+        fn a_frame_is_snapped_exactly_when_it_captured_less_than_the_wire_carried() {
+            let at = |caplen: usize, origlen: usize| {
+                Packet::new(Utc::now(), vec![0u8; caplen], caplen, origlen, None, 1)
+            };
+            assert!(at(96, 1500).is_snapped(), "headers only is snapped");
+            assert!(at(1499, 1500).is_snapped(), "one byte short is snapped");
+            assert!(!at(1500, 1500).is_snapped(), "a whole frame is not snapped");
+        }
+
+        /// A frame the capture cut short is counted as snapped exactly once,
+        /// whether or not it still decodes, and an intact frame is not counted.
+        ///
+        /// Driven through the processor every reader feeds. The counter used to
+        /// live in the one packet constructor that only the `--cores` reader
+        /// called, so the default reader, the merged-pcapng reader, live
+        /// capture and every replay counted nothing.
+        #[test]
+        #[serial_test::serial(undecodable_tally)]
+        fn a_snapped_frame_is_counted_once_whether_or_not_it_decodes() {
+            reset_undecodable_frames();
+            let mut proc = PacketProcessor::new();
+
+            proc.process(&packet_dlt(eth_ipv4_udp(5060, 5060, b"whole"), 1));
+            assert_eq!(snapped_frames(), 0, "an intact frame is not snapped");
+
+            // Cut inside the IP packet: the bytes its header promises are gone.
+            let lost = proc.process(&cut_short(eth_ipv4_udp(5060, 5060, b"cut short"), 5, 1));
+            assert!(
+                lost.is_empty(),
+                "a frame cut inside its datagram produces nothing"
+            );
+            assert_eq!(snapped_frames(), 1, "the undecodable snapped frame counts");
+
+            // Cut only past the IP packet, as a capture that drops the Ethernet
+            // trailer does: the datagram is whole, so it decodes.
+            let mut trailed = eth_ipv4_udp(5060, 5060, b"whole datagram");
+            trailed.extend_from_slice(&[0u8; 4]);
+            let kept = proc.process(&cut_short(trailed, 4, 1));
+            assert_eq!(kept.len(), 1, "a frame cut past its datagram still decodes");
+            assert_eq!(
+                snapped_frames(),
+                2,
+                "the decodable snapped frame counts too"
+            );
+            reset_undecodable_frames();
+        }
+
+        /// A snapped frame that produced nothing is filed as TRUNCATED, never as
+        /// a decode error.
+        ///
+        /// The decoder rejects it because its IP header promises bytes the
+        /// capture never kept. "Decode error" sends an operator hunting for a
+        /// frame format sipnab cannot read, when the remedy is `--snaplen`.
+        #[test]
+        #[serial_test::serial(undecodable_tally)]
+        fn a_snapped_frame_that_cannot_decode_is_filed_as_truncated() {
+            reset_undecodable_frames();
+            let mut proc = PacketProcessor::new();
+            proc.process(&cut_short(eth_ipv4_udp(5060, 5060, b"cut short"), 5, 1));
+            let r = undecodable_report();
+            assert_eq!(r.frames, 1);
+            assert_eq!(
+                r.reasons,
+                vec![UndecodableTally {
+                    reason: UndecodableReason::Truncated,
+                    frames: 1
+                }]
+            );
+            reset_undecodable_frames();
+        }
+
+        /// The snap is blamed only for what a snap can cause.
+        ///
+        /// A frame on a link type sipnab has no decoder for would produce
+        /// nothing however much of it was kept, so filing it as truncated would
+        /// send the operator to raise a snaplen that was never the problem, and
+        /// would hide the DLT number that names the real one.
+        #[test]
+        #[serial_test::serial(undecodable_tally)]
+        fn a_snapped_frame_keeps_a_reason_its_length_did_not_cause() {
+            reset_undecodable_frames();
+            let mut proc = PacketProcessor::new();
+            proc.process(&cut_short(vec![0u8; 64], 8, 147));
+            let r = undecodable_report();
+            assert_eq!(
+                r.reasons,
+                vec![UndecodableTally {
+                    reason: UndecodableReason::UnsupportedLinkType(147),
+                    frames: 1
+                }]
+            );
+            assert_eq!(snapped_frames(), 1, "it is still a snapped frame");
+            reset_undecodable_frames();
         }
     }
 }

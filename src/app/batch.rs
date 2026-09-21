@@ -1129,31 +1129,7 @@ pub fn run_cores_file(
             // stdout exited 0 on the --cores path while exiting 1 elsewhere.
             // No companion server runs on the --cores path, so there is no
             // gate anyone could have moved and the command line governs.
-            let reports_ok = generate_reports(
-                cli,
-                &r.dialog_store,
-                &r.stream_store,
-                filter,
-                vcon_filter,
-                r.total_count,
-                None,
-            );
-            if !cli.mode_args.quiet {
-                tracing::info!(
-                    "sipnab: {} packets, {} SIP messages, {} RTP packets across {} streams ({} cores)",
-                    r.total_count,
-                    r.sip_count,
-                    r.rtp_count,
-                    r.stream_store.len(),
-                    cli.limits_args.cores,
-                );
-                report_undecodable(r.total_count);
-                report_icmp_summary(&r.stream_store);
-                report_impossible_rates(&r.stream_store);
-                report_retention_losses(&r.dialog_store);
-                report_capture_quality();
-                report_llmnr_summary();
-            }
+            let reports_ok = report_parallel_run(cli, &r, filter, vcon_filter);
             // Same linter, same catalog, same exit code as the batch path.
             // Wired here because a gate that silently passes under `--cores` is
             // worse than no gate: a pipeline adding `--cores 8` for speed would
@@ -1178,6 +1154,66 @@ pub fn run_cores_file(
             std::process::exit(1);
         }
     }
+}
+
+/// Write a finished `--cores` run's reports and print its end-of-run summary,
+/// returning whether every report could be produced.
+///
+/// One function for both `--cores` entry points, so the two cannot describe the
+/// same run differently.
+///
+/// The packet count is `packets_read`, not `total_count`. The default reader
+/// counts every record it read; `total_count` is what the workers PARSED, which
+/// leaves out a frame no decoder could read and folds several reassembled
+/// frames into one. Printing it made a 3-record capture holding one
+/// undecodable frame read "2 packets" here and "3 packets" on the default
+/// reader, and put that frame at "1 of 2" -- the share at which the NOT DECODED
+/// notice calls a run mostly blind.
+///
+/// # Arguments
+///
+/// * `cli` — the parsed command line: the report flags and `--quiet`.
+/// * `r` — the merged result of the parallel run.
+/// * `filter` / `vcon_filter` — the compiled `--filter` expressions, as
+///   [`generate_reports`] takes them.
+///
+/// # Side effects
+///
+/// Writes the requested reports to stdout, and unless `--quiet` logs the
+/// summary line and prints the undecodable, ICMP, rate, retention,
+/// capture-quality and LLMNR notices.
+fn report_parallel_run(
+    cli: &Cli,
+    r: &crate::parallel::ReconResult,
+    filter: Option<&FilterExpr>,
+    vcon_filter: Option<&FilterExpr>,
+) -> bool {
+    let reports_ok = generate_reports(
+        cli,
+        &r.dialog_store,
+        &r.stream_store,
+        filter,
+        vcon_filter,
+        r.packets_read,
+        None,
+    );
+    if !cli.mode_args.quiet {
+        tracing::info!(
+            "sipnab: {} packets, {} SIP messages, {} RTP packets across {} streams ({} cores)",
+            r.packets_read,
+            r.sip_count,
+            r.rtp_count,
+            r.stream_store.len(),
+            cli.limits_args.cores,
+        );
+        report_undecodable(r.packets_read);
+        report_icmp_summary(&r.stream_store);
+        report_impossible_rates(&r.stream_store);
+        report_retention_losses(&r.dialog_store);
+        report_capture_quality();
+        report_llmnr_summary();
+    }
+    reports_ok
 }
 
 /// Whether this run should retain RTP payload bytes.
@@ -1577,6 +1613,12 @@ fn capture_quality_summary() -> Option<String> {
     // how MUCH of a capture arrived truncated; a run that decoded every packet
     // and snapped 94% of them is not a clean capture (CT3).
     let snapped = crate::capture::snapped_frames();
+    // The frames in BOTH of the last two channels: cut short and then
+    // undecodable. They are reported with the snapped frames, because a frame
+    // the snaplen cut did not reach sipnab intact, and the undecodable
+    // sentence below says the ones it counts did.
+    let snapped_undecodable = crate::capture::snapped_undecodable_frames();
+    let intact_undecodable = undecodable.frames.saturating_sub(snapped_undecodable);
     if dropped == 0 && if_dropped == 0 && bad_ts == 0 && undecodable.frames == 0 && snapped == 0 {
         return None;
     }
@@ -1600,27 +1642,35 @@ fn capture_quality_summary() -> Option<String> {
              with the wall clock (timing analysis is unreliable for this run)"
         ));
     }
-    if undecodable.frames > 0 {
+    if intact_undecodable > 0 {
         // Count and pointer, not the full breakdown: the NOT DECODED notice
         // prints immediately before this at every one of the three summary
         // sites, and repeating its reason list verbatim would turn a warning
         // that only fires when something is wrong into something to skim.
         parts.push(format!(
-            "{} frame(s) reached sipnab intact and could not be decoded at all, so \
-             nothing in them was analyzed (see the NOT DECODED line above for which \
-             link types, EtherTypes and IP protocols)",
-            undecodable.frames
+            "{intact_undecodable} frame(s) reached sipnab intact and could not be decoded \
+             at all, so nothing in them was analyzed (see the NOT DECODED line above for \
+             which link types, EtherTypes and IP protocols)"
         ));
     }
 
-    if snapped > 0 {
-        // Named as truncation, not loss: the frames arrived and mostly decoded.
-        // What is missing is payload, which is why the remedy is a snaplen and
-        // not a buffer.
+    if snapped > 0 && snapped_undecodable == 0 {
+        // Named as truncation, not loss: the frames arrived and decoded. What
+        // is missing is payload, which is why the remedy is a snaplen and not
+        // a buffer.
         parts.push(format!(
             "{snapped} frame(s) arrived truncated by the capture's snaplen \
              (headers kept, payload cut short — raise --snaplen if you need RTP \
              payload, audio export or a faithful -O re-emit)"
+        ));
+    } else if snapped > 0 {
+        // Some were cut too short to decode at all. "Headers kept" would be
+        // false of those, and they are in the NOT DECODED line rather than in
+        // any analysis, so the sentence says so and the remedy is the same.
+        parts.push(format!(
+            "{snapped} frame(s) arrived truncated by the capture's snaplen and \
+             {snapped_undecodable} of them were cut too short to decode at all, so \
+             nothing in those was analyzed (raise --snaplen)"
         ));
     }
 
@@ -2297,31 +2347,12 @@ pub fn run(
         let result = crate::parallel::run_offline_parallel(rx, pcfg);
         let _ = handle.thread.join();
         // As above: no companion server on this path, so no gate to consult.
-        let reports_ok = generate_reports(
+        let reports_ok = report_parallel_run(
             &cli,
-            &result.dialog_store,
-            &result.stream_store,
+            &result,
             batch.filter_expr.as_ref(),
             batch.vcon_filter_expr.as_ref(),
-            result.total_count,
-            None,
         );
-        if !cli.mode_args.quiet {
-            tracing::info!(
-                "sipnab: {} packets, {} SIP messages, {} RTP packets across {} streams ({} cores)",
-                result.total_count,
-                result.sip_count,
-                result.rtp_count,
-                result.stream_store.len(),
-                cli.limits_args.cores,
-            );
-            report_undecodable(result.total_count);
-            report_icmp_summary(&result.stream_store);
-            report_impossible_rates(&result.stream_store);
-            report_retention_losses(&result.dialog_store);
-            report_capture_quality();
-            report_llmnr_summary();
-        }
         if !reports_ok {
             std::process::exit(1);
         }
@@ -11789,5 +11820,59 @@ mod notice_helper_tests {
     fn no_fraud_flag_builds_no_fraud_detector() {
         let cli = Cli::parse_from(["sipnab"]);
         assert!(build_fraud_detector(&cli, &Config::default()).is_none());
+    }
+
+    /// A snapped frame that produced nothing is counted as SNAPPED in the
+    /// capture-quality line, and never among the frames that "reached sipnab
+    /// intact" -- the same line says it arrived truncated, and one frame cannot
+    /// be both.
+    ///
+    /// An intact frame no decoder could read is still reported as intact, so
+    /// the partition is asserted from both sides.
+    #[test]
+    #[serial_test::serial(invalid_timestamps, kernel_drop_counts, undecodable_tally)]
+    fn a_snapped_frame_is_never_said_to_have_reached_sipnab_intact() {
+        crate::capture::reset_undecodable_frames();
+        let mut proc = crate::capture::PacketProcessor::new();
+        // Intact, on a link type with no decoder.
+        proc.process(&crate::capture::Packet::new(
+            chrono::Utc::now(),
+            vec![0u8; 64],
+            64,
+            64,
+            None,
+            147,
+        ));
+        // Ethernet + IPv4 + UDP whose header promises 40 bytes, 10 of them
+        // never captured.
+        let mut frame = vec![0xAAu8; 12];
+        frame.extend_from_slice(&[0x08, 0x00, 0x45, 0x00, 0x00, 40]);
+        frame.extend_from_slice(&[0x00, 0x01, 0x40, 0x00, 64, 17, 0x00, 0x00]);
+        frame.extend_from_slice(&[10, 0, 0, 1, 10, 0, 0, 2]);
+        frame.extend_from_slice(&[0x13, 0xc4, 0x13, 0xc4, 0x00, 20, 0x00, 0x00]);
+        frame.extend_from_slice(&[b'x'; 2]);
+        let n = frame.len();
+        proc.process(&crate::capture::Packet::new(
+            chrono::Utc::now(),
+            frame,
+            n,
+            n + 10,
+            None,
+            1,
+        ));
+
+        let msg = capture_quality_summary().expect("both frames are quality findings");
+        assert!(
+            msg.contains("1 frame(s) reached sipnab intact and could not be decoded"),
+            "only the intact frame arrived intact: {msg}"
+        );
+        assert!(
+            msg.contains(
+                "1 frame(s) arrived truncated by the capture's snaplen and 1 of them \
+                 were cut too short to decode at all"
+            ),
+            "the snapped frame is reported as snapped, and as producing nothing: {msg}"
+        );
+        crate::capture::reset_undecodable_frames();
     }
 }

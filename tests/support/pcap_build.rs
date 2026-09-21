@@ -730,6 +730,24 @@ fn checksum16(data: &[u8]) -> u16 {
 /// `frames` is `(interface_index, bytes)`. Interface 0 is Ethernet at snaplen
 /// 65535; interface 1 is raw IP (DLT 12) at snaplen 2048.
 pub fn write_pcapng_multi_iface(path: &Path, frames: &[(u32, Vec<u8>)]) {
+    let whole: Vec<(u32, Vec<u8>, usize)> = frames
+        .iter()
+        .map(|(iface, data)| (*iface, data.clone(), usize::MAX))
+        .collect();
+    write_pcapng_multi_iface_cut(path, &whole);
+}
+
+/// The IP-and-up bytes of an Ethernet frame, for an interface whose link type
+/// is raw IP rather than Ethernet.
+pub fn strip_ethernet(frame: &[u8]) -> Vec<u8> {
+    frame[14..].to_vec()
+}
+
+/// As [`write_pcapng_multi_iface`], with each frame's CAPTURED length stated:
+/// `(interface_index, bytes, captured)`. A `captured` below `bytes.len()`
+/// writes an Enhanced Packet Block whose captured length is short of its
+/// original length -- the record a snaplen leaves behind.
+pub fn write_pcapng_multi_iface_cut(path: &Path, frames: &[(u32, Vec<u8>, usize)]) {
     fn block(kind: u32, body: &[u8]) -> Vec<u8> {
         let pad = (4 - body.len() % 4) % 4;
         let total = 12 + body.len() + pad;
@@ -761,23 +779,18 @@ pub fn write_pcapng_multi_iface(path: &Path, frames: &[(u32, Vec<u8>)]) {
     out.extend_from_slice(&block(0x0000_0001, &idb(1, 65535)));
     out.extend_from_slice(&block(0x0000_0001, &idb(12, 2048)));
 
-    for (iface, data) in frames {
+    for (iface, data, captured) in frames {
         let mut epb = Vec::new();
         epb.extend_from_slice(&iface.to_le_bytes());
         epb.extend_from_slice(&0u32.to_le_bytes()); // ts high
         epb.extend_from_slice(&0u32.to_le_bytes()); // ts low
+        let kept = &data[..(*captured).min(data.len())];
+        epb.extend_from_slice(&(kept.len() as u32).to_le_bytes());
         epb.extend_from_slice(&(data.len() as u32).to_le_bytes());
-        epb.extend_from_slice(&(data.len() as u32).to_le_bytes());
-        epb.extend_from_slice(data);
-        let pad = (4 - data.len() % 4) % 4;
+        epb.extend_from_slice(kept);
+        let pad = (4 - kept.len() % 4) % 4;
         epb.extend(std::iter::repeat_n(0u8, pad));
         out.extend_from_slice(&block(0x0000_0006, &epb));
     }
     std::fs::write(path, out).expect("write merged pcapng");
-}
-
-/// The IP-and-up bytes of an Ethernet frame, for an interface whose link type
-/// is raw IP rather than Ethernet.
-pub fn strip_ethernet(frame: &[u8]) -> Vec<u8> {
-    frame[14..].to_vec()
 }

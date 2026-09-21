@@ -236,12 +236,8 @@ fn ingest(
     rtp_heuristic: &mut crate::rtp::heuristic::RtpHeuristic,
     opts: &crate::pipeline::PipelineOptions,
 ) -> bool {
-    let parsed = match crate::capture::parse::parse_packet(packet) {
-        Ok(p) => p,
-        Err(e) => {
-            crate::capture::record_undecodable(&e, crate::capture::FrameFacts::UNRECORDED);
-            return false;
-        }
+    let Ok(parsed) = crate::capture::decode_captured_frame(packet) else {
+        return false;
     };
     if parsed.payload.is_empty() {
         return false;
