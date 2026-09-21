@@ -19,6 +19,46 @@ entry that carries them.
   raised before a release fails rather than after. 17 MB leaves 1,327,608
   bytes of headroom.
 
+### Security
+
+- **An unreadable or empty `--metrics-auth-file` no longer starts an open
+  metrics endpoint.** The credential error was logged and the endpoint came up
+  with no authentication, exit 0. It is now a startup error, the way the
+  `--api` and `--mcp` key files already behave.
+- **An unreadable `--hep-auth-file` no longer forwards HEP unauthenticated.**
+  `--hep-send` logged the error and sent the capture's signaling without the
+  shared secret. The run now exits 2 before sending anything, the refusal `-L`
+  already makes.
+
+### Fixed
+
+- **A STUN finding far outside its call keeps its reason.** The time caveat
+  replaced the note naming the address STUN offered instead of being appended
+  to it, and that address appears nowhere else in the evidence.
+- **Port-range, WebSocket and ICMP findings count every entry.** The loops
+  stopped at the 10-row evidence cap before counting, so SIP discarded on 12
+  ports summed only the busiest ten, and ICMP endpoints past the cap were
+  dropped without being counted as omitted.
+- **The relay reconciler no longer says "never asked" about a port it just
+  asked.** The port whose own lookup spent the last allowed transaction was
+  told the budget ran out, although the relay had fully answered "not mine".
+- **Uprobe frames keep counting across sweeps.** The reader numbered frames
+  from zero on every 20 ms drain, so each sweep minted `#0` again and one
+  process's messages named each other's frames. The ordinal now belongs to the
+  reader and saturates rather than wrapping, as the BPF back end's does.
+- **`--relay-stats-interval` names a malformed relay address.** On a live run
+  with an unparseable `--rtpengine-control`, it refused as though the run read
+  a file.
+
+### Internal
+
+- **370 tests for the least-covered files.** The MCP relay tools, the TUI
+  controllers and panes, analysis and relay reconciliation, the uprobe readers
+  and privilege handling, and the app layer. Each test group was checked by a
+  mutation of the code it covers. Behaviour-preserving extractions made the
+  privileged and device-bound paths testable without root, and the TUI's
+  clipboard test no longer writes to the developer's real clipboard.
+
 ## [0.5.183] - 2026-09-21
 
 ### Changed
