@@ -8,7 +8,13 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
-## [Unreleased]
+## [0.5.183] - 2026-09-21
+
+### Changed
+
+- **rmcp 3.4.0, smallvec 1.16.1 and socket2 0.6.5.** rmcp 3.4.0 renames the
+  handshake type `ServerInfo` to `ServerConfig`; both name the same type, so
+  what the MCP server sends in its handshake is unchanged.
 
 ### Internal
 
