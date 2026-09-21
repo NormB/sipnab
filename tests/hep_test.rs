@@ -67,6 +67,31 @@ fn hep3_sip(payload: &[u8]) -> Vec<u8> {
     build_hep_v3(&ep, Utc::now(), HepProtocol::Sip, 0, None, payload)
 }
 
+/// A HEP3 datagram like [`hep3_sip`], stamped with `capture_id` and carrying
+/// `key` as its plain-mode auth chunk.
+///
+/// # Arguments
+/// * `capture_id` — the capture-agent id (HEP chunk 0x000c) the sender claims.
+/// * `key` — the shared secret presented in the 0x000e chunk.
+/// * `payload` — the SIP message bytes to encapsulate.
+fn hep3_sip_keyed(capture_id: u32, key: &str, payload: &[u8]) -> Vec<u8> {
+    let ep = HepEndpoint {
+        src_addr: "127.0.0.1".parse().unwrap(),
+        dst_addr: "127.0.0.1".parse().unwrap(),
+        src_port: 5060,
+        dst_port: 5062,
+        transport: sipnab::net::TransportProto::Udp,
+    };
+    build_hep_v3(
+        &ep,
+        Utc::now(),
+        HepProtocol::Sip,
+        capture_id,
+        Some(key),
+        payload,
+    )
+}
+
 /// A spawned `sipnab --hep-listen` process with line-buffered stdout/stderr.
 struct HepListener {
     child: Child,
@@ -392,6 +417,58 @@ fn the_skew_warning_quotes_the_configured_window() {
     assert!(
         srv.wait_for_stderr("outside the 45s", test_timeout(5)),
         "the skew warning must quote the window this run enforces, not a constant"
+    );
+}
+
+/// A sender reaching the listener with the wrong key trips the silence
+/// warning, and the warning says why nothing got through.
+///
+/// The defect (HEP1): every datagram that ARRIVED reset the listener's idle
+/// watch, before authentication had looked at it. A sender with the wrong key
+/// kept the "no packets" warning quiet for as long as it kept sending, so the
+/// operator `docs/mcp-estate.md` tells to watch for that warning never saw it.
+/// Sent every 50 ms — faster than the listener's 100 ms read timeout — so the
+/// check must also run while refused packets keep arriving.
+#[test]
+fn a_sender_refused_on_every_packet_trips_the_silence_warning() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let key_file = dir.path().join("hep.key");
+    std::fs::write(&key_file, "the-right-key\n").expect("write key file");
+    let srv = HepListener::spawn(&[
+        "--hep-allow",
+        "127.0.0.1/32",
+        "--hep-auth-file",
+        key_file.to_str().expect("utf-8 temp path"),
+        "--hep-silence-warn",
+        "1",
+    ]);
+    let wrong = hep3_sip_keyed(7, "the-wrong-key", &invite_bytes());
+    let sock = UdpSocket::bind("127.0.0.1:0").expect("bind sender");
+
+    let deadline = Instant::now() + test_timeout(10);
+    let mut warning = None;
+    while warning.is_none() && Instant::now() < deadline {
+        sock.send_to(&wrong, ("127.0.0.1", srv.port))
+            .expect("send HEP");
+        thread::sleep(Duration::from_millis(50));
+        while let Ok(line) = srv.stderr_rx.try_recv() {
+            if line.contains("every one was refused") {
+                warning = Some(line);
+            }
+        }
+    }
+    let line = warning.expect(
+        "a sender whose every packet is refused must trip the one-second silence \
+         warning, not keep it quiet",
+    );
+    assert!(
+        line.contains("auth_mismatch") && line.contains("127.0.0.1"),
+        "the warning must name the refusal and the peer: {line}"
+    );
+    assert!(
+        srv.wait_for_stdout(CALL_ID, Duration::from_millis(200))
+            .is_none(),
+        "control: nothing with the wrong key reaches the capture"
     );
 }
 

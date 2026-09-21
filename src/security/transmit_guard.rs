@@ -175,6 +175,8 @@ mod tests {
             tls_cert: None,
             #[cfg(feature = "hep")]
             tls_key: None,
+            #[cfg(feature = "hep")]
+            silence_warn_after: crate::capture::hep_roster::HEP_IDLE_WARN_AFTER,
         };
         assert!(
             TransmitPermit::for_source(&hep).is_some(),
@@ -210,6 +212,8 @@ mod tests {
             tls_cert: None,
             #[cfg(feature = "hep")]
             tls_key: None,
+            #[cfg(feature = "hep")]
+            silence_warn_after: crate::capture::hep_roster::HEP_IDLE_WARN_AFTER,
         }
     }
 

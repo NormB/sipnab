@@ -32,6 +32,16 @@ entry that carries them.
 
 ### Fixed
 
+- **A HEP sender whose every packet is refused now trips the silence
+  warning.** The listener's "no packets for 30s" watch was reset by every
+  packet that arrived, before the allowlist, rate limit, parser or
+  authentication had looked at it, so a sender with the wrong key kept the
+  warning quiet while nothing it sent reached the capture. Only admitted
+  packets count now. When packets arrive and every one is refused, the
+  warning reads `no packets admitted for 30s`, names the refusal most of them
+  met (`auth_mismatch`, `allowlist`, `hmac_timestamp_out_of_window`, ...) and
+  a peer that sent them. `--hep-silence-warn <SECS>` sets the threshold, and
+  `0` turns the warning off.
 - **A STUN finding far outside its call keeps its reason.** The time caveat
   replaced the note naming the address STUN offered instead of being appended
   to it, and that address appears nowhere else in the evidence.

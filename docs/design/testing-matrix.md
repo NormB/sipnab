@@ -49,7 +49,7 @@ was driving all of them.
 
 | Surface | Rows | `e2e` | `parsed` | `referenced` | `none` |
 |---|---|---|---|---|---|
-| CLI flags | 272 | 139 | 53 | 79 | 1 |
+| CLI flags | 273 | 140 | 53 | 79 | 1 |
 | HTTP routes | 39 | 39 | -- | 0 | 0 |
 | MCP tools | 68 | 68 | -- | 0 | 0 |
 
@@ -318,6 +318,7 @@ behind them.
 | `--hep-auth-file` |  | `FILE` | HEP | parsed | `src/cli.rs` |  |  |
 | `--hep-auth-mode` |  |  | HEP | e2e | `tests/hep_test.rs` |  |  |
 | `--hep-hmac-window` |  | `SECS` | HEP | e2e | `tests/hep_test.rs` |  |  |
+| `--hep-silence-warn` |  | `SECS` | HEP | e2e | `tests/hep_test.rs` |  |  |
 | `--hep-parse` | `-E` |  | HEP | e2e | `tests/cli_flag_behavior_test.rs` |  |  |
 | `--hep-allow` |  | `ADDR` | HEP | e2e | `tests/config_wiring_test.rs`, `tests/doc_commands_run_test.rs` +1 |  |  |
 | `--hep-rate-limit` |  | `N` | HEP | e2e | `tests/hep_test.rs` |  |  |

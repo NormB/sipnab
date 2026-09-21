@@ -312,6 +312,8 @@ fn plan_hep_source(cli: &Cli, config: &Config) -> Result<CaptureSource, PlanErro
         tls_cert: cli.hep_args.hep_tls_cert.clone(),
         #[cfg(feature = "hep")]
         tls_key: cli.hep_args.hep_tls_key.clone(),
+        #[cfg(feature = "hep")]
+        silence_warn_after: cli.hep_silence_warn_after(),
     })
 }
 
@@ -6066,6 +6068,8 @@ mod tests {
             tls_cert: None,
             #[cfg(feature = "hep")]
             tls_key: None,
+            #[cfg(feature = "hep")]
+            silence_warn_after: crate::capture::hep_roster::HEP_IDLE_WARN_AFTER,
         }
     }
 
@@ -6753,6 +6757,8 @@ mod startup_refusal_tests {
             tls_cert: None,
             #[cfg(feature = "hep")]
             tls_key: None,
+            #[cfg(feature = "hep")]
+            silence_warn_after: crate::capture::hep_roster::HEP_IDLE_WARN_AFTER,
         }
     }
 

@@ -26,6 +26,11 @@ pub mod fanout;
 pub mod file;
 #[cfg(feature = "hep")]
 pub mod hep;
+// Not behind `hep`: the listener writes this state, but the TUI, REST and MCP
+// read it from modules of their own, and a type they could only name under
+// `hep` would put a feature gate on every field that holds it.
+#[cfg(feature = "native")]
+pub mod hep_roster;
 #[cfg(feature = "native")]
 pub mod input_set;
 
