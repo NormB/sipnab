@@ -10,6 +10,17 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Added
+
+- **sipnab names the libpcap it runs.** `sipnab --version` prints a second
+  line: `pcap_lib_version()` as the running process sees it, then the
+  alternate capture backends (netmap, DPDK, DAG, SNF) that banner names. The
+  same report is the `libpcap` block of MCP `server_capabilities` and REST
+  `GET /v1/capabilities`, and sits under the version in the TUI help. A gnu
+  build or a package reports the host's library and a musl tarball the libpcap
+  1.10.6 it embeds, so whether a `netmap:` device can work is a question for
+  sipnab rather than for `strings`. `-V` still prints the one build line.
+
 ### Changed
 
 - **The published binary-size ceiling is 17 MB.** The 0.5.183 x86_64-musl
@@ -32,6 +43,15 @@ entry that carries them.
 
 ### Fixed
 
+- **The install page covers the macOS artifacts' capture backends, and warns
+  before `netmap:`.** Its backend table had rows for the two Linux families
+  only. The `*-apple-darwin` tarballs and Homebrew on macOS load macOS's own
+  libpcap, which carries no alternate backend, and now have a row saying so.
+  The musl row no longer reads a bare "yes" for netmap: on 0.5.183 and
+  earlier its module speaks only netmap API 13, which current netmap kernel
+  modules refuse. And the
+  page now says that a `netmap:` capture takes the interface's traffic away
+  from the host for as long as it runs, so it belongs on a capture-only port.
 - **A STUN finding far outside its call keeps its reason.** The time caveat
   replaced the note naming the address STUN offered instead of being appended
   to it, and that address appears nowhere else in the evidence.

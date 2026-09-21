@@ -22,6 +22,10 @@ impl App {
         // Pin a deterministic version so help-view snapshots don't depend on
         // the build's git commit/tag/dirty state or the compiled feature set.
         app.version = "0.0.0-test".to_string();
+        // Pinned for the same reason: the real line names whichever libpcap
+        // the test host runs.
+        app.libpcap =
+            "libpcap version 0.0.0-test; alternate capture backends named: none".to_string();
         app
     }
 
@@ -29,6 +33,12 @@ impl App {
     #[doc(hidden)]
     pub fn set_version_for_test(&mut self, version: impl Into<String>) {
         self.version = version.into();
+    }
+
+    /// Override the libpcap line shown in the help view (test helper).
+    #[doc(hidden)]
+    pub fn set_libpcap_for_test(&mut self, libpcap: impl Into<String>) {
+        self.libpcap = libpcap.into();
     }
 
     /// Elapse every UI-cache churn floor ([`CHURN_REBUILD_MIN`]) so the

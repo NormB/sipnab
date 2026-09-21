@@ -8,6 +8,7 @@ expression: output
 ┌ Help (↑/↓ scroll, Esc to close) ─────────────────────────────────────────────┐
 │sipnab — Keyboard Shortcuts                                                   │
 │v0.0.0-test                                                                   │
+│libpcap version 0.0.0-test; alternate capture backends named: none            │
 │                                                                              │
 │CALL LIST:                                                                    │
 │  ↑/↓, j/k          Navigate dialogs                                          │
@@ -39,6 +40,5 @@ expression: output
 │  s                 Statistics view                                           │
 │  g                 Top talkers (busiest participants, by source IP)          │
 │  m                 Carrier metrics (ASR/NER/ACD by destination IP)           │
-│  c                 Compare two checked calls (Space to check exactly two)    │
 └──────────────────────────────────────────────────────────────────────────────┘
 Esc Back

@@ -100,6 +100,11 @@ pub struct App {
     /// the help view. Stored on the App so tests can inject a deterministic
     /// value instead of the build-dependent `cli::build_version()` output.
     version: String,
+    /// The running libpcap's summary line — the report `--version` prints —
+    /// shown under the version in the help view. Stored for the same reason
+    /// as `version`: tests pin it, because the real one names whichever
+    /// libpcap the test host happens to run.
+    libpcap: String,
     /// When data was last updated (for adaptive refresh).
     last_data_update: Instant,
     /// Dialog count at the last event-loop check; a change marks data as
@@ -413,6 +418,7 @@ impl App {
             dialog_store,
             stream_store,
             version: crate::cli::build_version(),
+            libpcap: crate::capture::libpcap::running().summary_line(),
             current_view: View::CallList,
             active_popup: None,
             call_list: CallListState::new(),
@@ -1952,6 +1958,20 @@ mod tests {
                 "width {width}: F1 Help missing from f-key bar: {items:?}"
             );
         }
+    }
+
+    /// A real App carries the running libpcap's report, from the one
+    /// `capture::libpcap::running` that `--version`, MCP and REST read, so the
+    /// help view cannot name a different library than they do.
+    #[test]
+    fn app_carries_the_running_libpcap() {
+        let ds = Arc::new(RwLock::new(DialogStore::new(100, false)));
+        let ss = Arc::new(RwLock::new(StreamStore::new(100)));
+        let app = App::new(ds, ss, Theme::default(), Keymap::default());
+        assert_eq!(
+            app.libpcap,
+            crate::capture::libpcap::running().summary_line()
+        );
     }
 
     /// A fresh App starts on the call-list view with the quit flag clear.

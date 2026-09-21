@@ -5654,6 +5654,11 @@ curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" http://127.0.0.1:8080/v1/capa
   "can_plugins": false,
   "runtime": {
     "api_allow_relay_query": false
+  },
+  "libpcap": {
+    "banner": "libpcap version 1.10.5 (with TPACKET_V3)",
+    "version": "1.10.5",
+    "named_backends": []
   }
 }
 ```
@@ -5669,9 +5674,20 @@ missing feature, and a program that blurs the two retries something that can
 never work. `api_allow_relay_query` is off unless this run may transmit a relay
 query.
 
+**`libpcap` names the library this process captures through.** It is
+`pcap_lib_version()` asked at runtime, so a gnu build or a package reports the
+host's libpcap (the sample above is Debian 13's) while a static musl build
+reports the 1.10.6 it carries. `named_backends` lists the alternate capture
+backends (`netmap`, `dpdk`, `dag`, `snf`) that the banner names, and it is
+`[]` when the banner names none. That is not proof the library has none: libpcap names netmap in
+its banner only from 1.10.6, and DPDK only in a DPDK-only build. See [which
+capture backends an artifact can
+reach](install.md#which-capture-backends-an-artifact-can-reach).
+
 The MCP tool `server_capabilities` returns the same feature set from the same
-`compiled_features` list, so the two surfaces cannot claim different builds of
-one binary.
+`compiled_features` list, and the same `libpcap` block from the same report
+the second line of `sipnab --version` prints, so the surfaces cannot claim
+different builds of one binary or different libraries behind it.
 
 ### GET /v1/stats
 
@@ -7068,12 +7084,22 @@ rustc --print deployment-target --target aarch64-apple-darwin
 libpcap selects a capture backend from the device name, and sipnab passes the
 name through: `--device netmap:eth0` reaches libpcap's netmap module when the
 libpcap behind that binary carries one. **Which artifact you installed
-decides whether it was**, and the two families differ:
+decides whether it was**, and the three families differ:
 
 | Artifact family | libpcap | netmap | DPDK | AF_XDP |
 |---|---|---|---|---|
-| `*-linux-musl.tar.gz` | statically linked, 1.10.6 | yes | no | no |
-| `*-linux-gnu.tar.gz`, `.deb`, `.rpm`, Docker image | the host's, at runtime | whatever your distribution built | almost never | no |
+| `*-linux-musl.tar.gz` | statically linked, 1.10.6 | compiled in; 0.5.183 and earlier speak only netmap API 13 (see below) | no | no |
+| `*-linux-gnu.tar.gz`, `.deb`, `.rpm`, Docker image, Homebrew on Linux | the host's, at runtime | whatever your distribution built | almost never | no |
+| `*-apple-darwin.tar.gz`, Homebrew on macOS | the one macOS ships, `/usr/lib/libpcap.A.dylib`, at runtime | no | no | no |
+
+> **Warning:** capture on a `netmap:` device only on an interface dedicated to
+> capture, such as a SPAN or mirror port, never on one the host needs.
+> libpcap's netmap module takes the interface's rings away from the kernel, so
+> the host stops receiving that interface's traffic for as long as the capture
+> runs. Measured on a veth pair: a UDP socket on the host received 0 of 5
+> datagrams during a `netmap:` capture, and 5 of 5 during an ordinary capture
+> on the same interface. Point it at the interface carrying your SIP service
+> and the service goes dark until sipnab exits.
 
 Debian and Ubuntu build libpcap without netmap, so the `.deb`, the `.rpm` and
 the Docker image answer `No such device exists` for a `netmap:` name. The
@@ -7082,10 +7108,55 @@ a different error, and the difference is the whole point: the first says the
 module is absent, the second says the module tried and your kernel has no
 netmap device.
 
-Neither family reaches DPDK, and no libpcap has an AF_XDP backend at all, so
-an `xdp:` name is never a capture path.
+**On 0.5.183 and earlier, the musl tarballs' netmap module does not work
+with a current netmap kernel module.** Those builds compiled libpcap against
+netmap's `v13.0` headers, which speak netmap API 13, and a netmap module built
+from current netmap sources accepts API 14 and later. On Debian 13
+(kernel 6.12) the open fails with
+`nm_open [948] NIOCREGIF failed: Invalid argument netmap:<iface>`, and the
+kernel log says `Minimum supported API is 14 (requested 13)`. netmap `v13.0`
+itself no longer compiles against that kernel, so there is no older module to
+pair it with. The same libpcap 1.10.6 built against current netmap headers
+captures through `netmap:` on that host. The musl build moves to those
+headers, and the fix ships in the next release. Until you run it, treat the
+musl netmap column as not usable.
 
-Check what your own binary carries:
+macOS builds libpcap on BPF alone, with netmap and DPDK both left out, and
+Homebrew on macOS installs the same darwin tarball rather than bringing a
+libpcap of its own. A `netmap:` or `dpdk:` name on a Mac reaches nothing.
+
+No artifact sipnab publishes carries DPDK, and no libpcap has an AF_XDP
+backend at all, so an `xdp:` name is never a capture path.
+
+Ask sipnab what its own binary runs. The second line of `--version` is the
+libpcap it loaded, asked of the library at runtime rather than recorded at
+build time, so on a gnu build it names your host's library:
+
+```bash
+sipnab --version
+```
+
+On a musl tarball that line reads:
+
+```text
+libpcap version 1.10.6 (64-bit time_t, with TPACKET_V3 and netmap); alternate capture backends named: netmap
+```
+
+and on Debian 13's libpcap:
+
+```text
+libpcap version 1.10.5 (with TPACKET_V3); alternate capture backends named: none
+```
+
+A backend the banner does not name remains unconfirmed rather than absent. libpcap
+puts netmap in its banner only from 1.10.6, and names DPDK only in a build
+that captures from DPDK alone. The same report is the `libpcap` block of the
+MCP [`server_capabilities`](mcp-tools.md#server_capabilities) tool and of the
+REST [`GET /v1/capabilities`](rest-api.md#get-v1capabilities) route, and it
+sits under the version in the TUI help view (F1).
+
+A sipnab that predates the report prints only the first line. For one of
+those, look for the banner yourself:
 
 ```bash
 strings "$(command -v sipnab)" | grep 'libpcap version'
@@ -7575,17 +7646,24 @@ report wants:
 sipnab -D
 ```
 
-`--version` lists the Cargo features compiled into the binary, e.g.
+`--version` lists the Cargo features compiled into the binary, and on a
+second line the libpcap it is running, e.g.
 
 ```text
 sipnab 0.5.183 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf,vcon
+libpcap version 1.10.5 (with TPACKET_V3); alternate capture backends named: none
 ```
 
 This is the fastest way to confirm a build carries the feature set
-you expected (e.g. that `mcp-http` is present on a server build).
+you expected (e.g. that `mcp-http` is present on a server build). The second
+line names the libpcap that decides whether a `netmap:` device can work — see
+[which capture backends an artifact can
+reach](#which-capture-backends-an-artifact-can-reach). `-V` prints only the
+first line.
 
 The list differs by artifact, and deliberately. The example above is a
-`*-linux-gnu` release binary: those carry `bpf`, the uprobe backend that can
+`*-linux-gnu` release binary on a Debian 13 host, whose libpcap names no
+alternate backend. Those binaries carry `bpf`, the uprobe backend that can
 report the peer address a TLS session went out to. The static musl tarballs and
 the macOS builds do not — musl has no room under the published size ceiling and
 `aya` is Linux-only — so on those, `--uprobe-tls` falls back to the `tracefs`
@@ -15238,6 +15316,7 @@ itself):
    ```bash
    sipnab --version
    # sipnab 0.5.183 (...) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,vcon,bpf
+   # libpcap version 1.10.5 (with TPACKET_V3); alternate capture backends named: none
    ```
 
    If `mcp` is missing you have a source build without features — rebuild
@@ -16400,6 +16479,10 @@ Then confirm the build can do what you are about to ask of it:
   }
 }
 ```
+
+A real answer also carries a `libpcap` block: the libpcap this server
+captures through and the alternate capture backends its banner names.
+[`server_capabilities`](mcp-tools.md#server_capabilities) walks through it.
 
 Asking for TLS decryption on a build without `tls` otherwise fails in a way
 that reads like a key problem. `features` describes the binary you are talking
@@ -17827,7 +17910,7 @@ ordinary update.
 | [`top_talkers`](#top_talkers) | `by`, `limit?`, `filter?`, `prefix_digits?` | The busiest IPs, user agents or dialled prefixes, ranked, each share stated against the population behind it |
 | [`aggregate_dialogs`](#aggregate_dialogs) | `group_by`, `filter?`, `top_n?` | Counts dialogs grouped by ONE field, in the store rather than in the model |
 | [`group_dialogs`](#group_dialogs) | `by`, `metrics?`, `filter?`, `top_n?` | Carrier metrics per group — ASR, NER, ACD, post-dial delay, MOS, retransmissions — each beside the population it rests on |
-| [`server_capabilities`](#server_capabilities) | -- | sipnab version and the optional features this binary carries |
+| [`server_capabilities`](#server_capabilities) | -- | sipnab version, the optional features this binary carries, and the libpcap it runs |
 
 **[Find — narrow to the calls that matter](#find-narrow-to-the-calls-that-matter)**
 
@@ -19280,9 +19363,10 @@ it does the same walk without computing seven metrics.
 
 ### `server_capabilities`
 
-What this binary can do and what this server permits. Ask before requesting
-decryption, HEP, a file export or a capture swap: a build without the feature,
-or a server without the flag, fails confusingly otherwise.
+What this binary can do, what this server permits, and which libpcap it
+captures through. Ask before requesting decryption, HEP, a file export or a
+capture swap: a build without the feature, or a server without the flag, fails
+confusingly otherwise.
 
 No parameters. Returns:
 
@@ -19298,7 +19382,13 @@ No parameters. Returns:
     "mcp_file_root": "/var/spool/sipnab-captures",  // null when unset
     "mcp_allow_shutdown": false,
     "mcp_allow_open_capture": true,
+    "mcp_allow_tls_capture": false,
     "mcp_allow_save_findings": false
+  },
+  "libpcap": {
+    "banner": "libpcap version 1.10.6 (64-bit time_t, with TPACKET_V3 and netmap)",
+    "version": "1.10.6",             // null when the banner carries none
+    "named_backends": ["netmap"]     // [] on a distribution libpcap
   }
 }
 ```
@@ -19309,6 +19399,19 @@ turned on — and no compile-time check can answer it. Without it an agent
 discovers the setup by calling a tool and collecting a refusal, and a refusal
 mid-investigation reads as a dead end rather than as a server it was never
 allowed to use that way.
+
+`libpcap` is a third question, answered at runtime: `pcap_lib_version()` as
+this process sees it. A gnu build or a package loads the host's libpcap, a
+static musl build carries its own, and a macOS build loads the one macOS
+ships, so the same sipnab version reports different libraries on different
+hosts. `named_backends` lists the alternate capture backends (`netmap`,
+`dpdk`, `dag`, `snf`) that the banner names. It is the report the second line
+of `sipnab --version` prints and the `libpcap` block of REST
+`GET /v1/capabilities` carries, from one function. A backend missing from it
+remains unconfirmed rather than absent: libpcap names netmap in its banner
+only from 1.10.6, and DPDK only in a DPDK-only build. [Which capture backends
+an artifact can reach](install.md#which-capture-backends-an-artifact-can-reach)
+has the per-artifact table.
 
 
 ### `reconcile_orphans`
@@ -25591,6 +25694,29 @@ irrelevant. Look outside sipnab:
 - **A tap or SPAN port that is already oversubscribed** — if the mirror source is
   dropping, nothing on the capture host can recover it.
 
+### A different capture backend: `netmap:`
+
+libpcap can read through netmap instead of the kernel's packet socket, and the
+device name selects it: `--device netmap:eth0`. The libpcap behind a binary
+decides whether it can, and that libpcap differs by artifact. [Which capture
+backends an artifact can
+reach](install.md#which-capture-backends-an-artifact-can-reach) has the table,
+and the second line of `sipnab --version` names the libpcap your binary
+runs and the alternate backends its banner names. On 0.5.183 and earlier the
+musl tarballs' netmap module speaks only netmap API 13, which current netmap
+kernel modules refuse, and the fix ships in the next release. That page has
+the details.
+
+> **Warning:** use a `netmap:` device only on an interface dedicated to
+> capture, such as a SPAN or mirror port, never on one the host needs. netmap
+> takes the interface's rings away from the kernel, so the host stops
+> receiving that interface's traffic for as long as the capture runs.
+> Measured on a veth pair: a UDP socket on the host received 0 of 5 datagrams
+> during a `netmap:` capture, and 5 of 5 during an ordinary capture on the same
+> interface. On the interface carrying your SIP service, that is an outage.
+
+No other measurement on this page went through netmap.
+
 ---
 
 ## 8. Offline: `--cores`
@@ -29023,6 +29149,14 @@ Every mode is the same six hops. Only who performs hop 5 differs.
    [`capture/hep.rs`](../../src/capture/hep.rs) produce a `Packet` whose
    `data` is a `bytes::Bytes` slice of the captured frame — no copy, here or
    anywhere downstream.
+   A live device name goes to libpcap untouched, and libpcap picks the
+   capture backend from it (`netmap:eth0` selects netmap), so which backends
+   a binary reaches is a property of the libpcap it loads, not of sipnab.
+   [`capture/libpcap.rs`](../../src/capture/libpcap.rs) asks that library at
+   runtime through `pcap_lib_version()` and reads the banner in one pure
+   function, `parse_banner`; `--version`, the TUI help, MCP
+   `server_capabilities` and REST `GET /v1/capabilities` all report its
+   `running()`, and none of them may name a backend the banner does not.
 2. **Channel.** [`capture::channel`](../../src/capture/channel.rs) moves it to
    the consumer: an unbounded crossbeam channel with a count-capped permit
    pool, so idle memory returns to ~0 while a saturated pipeline still blocks
@@ -30306,7 +30440,7 @@ compiles, which is exactly why CI has a feature matrix.
 see a data race: the tests exercise the capture thread, the channel, and the
 processing thread, but a test that passes and a test that raced are
 indistinguishable to `cargo test`. The borrow checker does not help here either
-— it stops at `unsafe`, and most of this crate's 104 `unsafe` blocks are libc
+— it stops at `unsafe`, and most of this crate's 105 `unsafe` blocks are libc
 FFI, concentrated in privilege dropping ([`privilege.rs`](../../src/privilege.rs)
 and [`process_isolation.rs`](../../src/process_isolation.rs)) and capture setup.
 Recount with `grep -rc 'unsafe {' src/` rather than trusting that figure — this

@@ -462,7 +462,11 @@ fn undocumented_numeric_ceilings_do_not_increase() {
 // and `CaptureComparisonView`, the `GET /v1/captures/compare` response.
 // Response-only, same reason. Four components. (`GET /v1/dialogs/{id}/audio`
 // added no component — its body is binary `audio/wav`, not JSON.)
-const PERMISSIVE_SCHEMA_COMPONENTS: usize = 59;
+// 59 -> 60 at CT6b, for `Libpcap`, the `libpcap` object nested in the
+// `GET /v1/capabilities` response. Response-only, same reason, pinned by the
+// same contract test. One component, attributed by counting `ToSchema`
+// derives against HEAD.
+const PERMISSIVE_SCHEMA_COMPONENTS: usize = 60;
 
 #[test]
 fn permissive_rest_schema_components_do_not_increase() {

@@ -241,6 +241,8 @@ Press Esc or F1 to close this help.";
 /// * `theme` — colors for the title, headers, keys and muted text.
 /// * `version` — version string shown under the title (truncated to the
 ///   box width).
+/// * `libpcap` — the running libpcap's summary line, shown under the version
+///   (truncated the same way).
 /// * `scroll` — vertical scroll offset in lines.
 ///
 /// # Side effects
@@ -251,6 +253,7 @@ pub fn render_help(
     area: Rect,
     theme: &super::Theme,
     version: &str,
+    libpcap: &str,
     scroll: u16,
 ) {
     // Inner width inside the bordered block (one column per side border). The
@@ -258,7 +261,7 @@ pub fn render_help(
     // (tag + commit + "-dirty" + the full feature list) cannot wrap onto a
     // second row and push the last keybinding off the bottom of the box.
     let inner_width = area.width.saturating_sub(2) as usize;
-    let lines = build_help_lines(theme, version, inner_width);
+    let lines = build_help_lines(theme, version, libpcap, inner_width);
 
     let block = Block::default()
         .borders(Borders::ALL)
@@ -273,9 +276,10 @@ pub fn render_help(
 }
 
 /// Number of rendered help lines (one per `HELP_TEXT` line, plus the version
-/// line inserted under the title). Used to clamp the scroll offset.
+/// and libpcap lines inserted under the title). Used to clamp the scroll
+/// offset.
 pub fn help_line_count() -> usize {
-    HELP_TEXT.lines().count() + 1
+    HELP_TEXT.lines().count() + 2
 }
 
 /// Build styled help lines from the help text.
@@ -284,15 +288,23 @@ pub fn help_line_count() -> usize {
 ///
 /// * `theme` — colors applied per line class (title, section, key, muted).
 /// * `version` — version string inserted under the title line.
-/// * `inner_width` — box inner width the version line is truncated to.
+/// * `libpcap` — the running libpcap's summary line, inserted under the
+///   version.
+/// * `inner_width` — box inner width the version and libpcap lines are
+///   truncated to.
 ///
 /// # Returns
 ///
-/// One styled `Line` per `HELP_TEXT` line plus the inserted version line:
-/// the title bold in the header color, section headers bold in the
-/// selected color, keybinding lines split into a padded key column and
-/// description, everything else muted.
-fn build_help_lines(theme: &super::Theme, version: &str, inner_width: usize) -> Vec<Line<'static>> {
+/// One styled `Line` per `HELP_TEXT` line plus the inserted version and
+/// libpcap lines: the title bold in the header color, section headers bold
+/// in the selected color, keybinding lines split into a padded key column
+/// and description, everything else muted.
+fn build_help_lines(
+    theme: &super::Theme,
+    version: &str,
+    libpcap: &str,
+    inner_width: usize,
+) -> Vec<Line<'static>> {
     let mut lines: Vec<Line<'static>> = Vec::new();
 
     for text_line in HELP_TEXT.lines() {
@@ -310,6 +322,13 @@ fn build_help_lines(theme: &super::Theme, version: &str, inner_width: usize) -> 
             // wrapping and pushing the last keybinding off the bottom.
             lines.push(Line::from(Span::styled(
                 truncate_to_width(&format!("v{version}"), inner_width),
+                Style::default().fg(theme.muted),
+            )));
+            // The running libpcap, the report `--version` prints, on its own
+            // row and truncated the same way: which alternate capture backends
+            // this binary can reach is decided by that library, not by sipnab.
+            lines.push(Line::from(Span::styled(
+                truncate_to_width(libpcap, inner_width),
                 Style::default().fg(theme.muted),
             )));
         } else if !text_line.starts_with(' ') && text_line.ends_with(':') {
@@ -455,15 +474,15 @@ mod tests {
     }
 
     /// The number of rendered help lines MUST equal [`help_line_count`],
-    /// which the scroll clamp trusts. This ties the hardcoded `+1` for the
-    /// synthesized version line to the actual builder: any future
-    /// `HELP_TEXT` edit (or builder change) that adds or drops a line the
-    /// count does not account for — e.g. a second synthesized line, or the
+    /// which the scroll clamp trusts. This ties the hardcoded `+2` for the
+    /// synthesized version and libpcap lines to the actual builder: any
+    /// future `HELP_TEXT` edit (or builder change) that adds or drops a line
+    /// the count does not account for — e.g. a third synthesized line, or the
     /// version line being removed — desyncs the two and fails here.
     #[test]
     fn rendered_help_line_count_matches_help_line_count() {
         let theme = crate::tui::Theme::default();
-        let lines = build_help_lines(&theme, "1.2.3", 78);
+        let lines = build_help_lines(&theme, "1.2.3", "libpcap version 1.2.3", 78);
         assert_eq!(lines.len(), help_line_count());
     }
 
@@ -471,7 +490,7 @@ mod tests {
     #[test]
     fn build_help_lines_non_empty() {
         let theme = crate::tui::Theme::default();
-        let lines = build_help_lines(&theme, "1.2.3", 78);
+        let lines = build_help_lines(&theme, "1.2.3", "libpcap version 1.2.3", 78);
         assert!(!lines.is_empty());
         assert!(lines.len() > 10);
     }
@@ -487,7 +506,12 @@ mod tests {
     #[test]
     fn build_help_lines_includes_version() {
         let theme = crate::tui::Theme::default();
-        let lines = build_help_lines(&theme, "9.9.9 (abc) features: tui", 78);
+        let lines = build_help_lines(
+            &theme,
+            "9.9.9 (abc) features: tui",
+            "libpcap version 1.2.3",
+            78,
+        );
         // The injected version appears on the line just under the title.
         let rendered: String = lines
             .iter()
@@ -497,6 +521,37 @@ mod tests {
         assert!(
             rendered.contains("9.9.9 (abc) features: tui"),
             "got: {rendered}"
+        );
+    }
+
+    /// The running libpcap sits on its own row just under the version, so an
+    /// operator at the console can see which alternate capture backends this
+    /// binary's libpcap names without leaving the TUI.
+    #[test]
+    fn build_help_lines_puts_the_libpcap_line_under_the_version() {
+        let theme = crate::tui::Theme::default();
+        let pcap = "libpcap version 1.10.6 (64-bit time_t, with TPACKET_V3 and netmap); \
+                    alternate capture backends named: netmap";
+        let lines = build_help_lines(&theme, "1.2.3", pcap, 200);
+        let text =
+            |i: usize| -> String { lines[i].spans.iter().map(|s| s.content.as_ref()).collect() };
+        assert_eq!(text(1), "v1.2.3");
+        assert_eq!(text(2), pcap);
+    }
+
+    /// Truncated to the box like the version line, so a long banner cannot
+    /// wrap onto a second row and push the keybindings down.
+    #[test]
+    fn the_libpcap_line_is_truncated_to_the_box() {
+        let theme = crate::tui::Theme::default();
+        let pcap = "libpcap version 1.10.6 (64-bit time_t, with TPACKET_V3 and netmap); \
+                    alternate capture backends named: netmap";
+        let lines = build_help_lines(&theme, "1.2.3", pcap, 20);
+        let row: String = lines[2].spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(
+            row.starts_with("libpcap version")
+                && unicode_width::UnicodeWidthStr::width(row.as_str()) <= 20,
+            "got {row:?}"
         );
     }
 
@@ -547,7 +602,7 @@ mod tests {
     #[test]
     fn the_vcon_note_reaches_the_rendered_help() {
         let theme = crate::tui::Theme::default();
-        let lines = build_help_lines(&theme, "1.2.3", 78);
+        let lines = build_help_lines(&theme, "1.2.3", "libpcap version 1.2.3", 78);
         let rendered: String = lines
             .iter()
             .flat_map(|l| l.spans.iter())

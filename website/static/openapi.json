@@ -1474,6 +1474,10 @@
             },
             "type": "array"
           },
+          "libpcap": {
+            "$ref": "#/components/schemas/Libpcap",
+            "description": "The libpcap this process runs and the alternate capture backends\nits banner names — the report `--version` prints."
+          },
           "runtime": {
             "$ref": "#/components/schemas/CapabilitiesRuntime",
             "description": "The REST server's runtime opt-ins."
@@ -1497,7 +1501,8 @@
           "can_decrypt",
           "can_hep",
           "can_plugins",
-          "runtime"
+          "runtime",
+          "libpcap"
         ],
         "type": "object"
       },
@@ -2416,6 +2421,36 @@
           "packets",
           "lost_packets",
           "codecs"
+        ],
+        "type": "object"
+      },
+      "Libpcap": {
+        "description": "The libpcap this server runs, as `pcap_lib_version()` reports it. The\nsame fields the MCP `server_capabilities` tool returns, from the one\n`capture::libpcap::running` report.",
+        "properties": {
+          "banner": {
+            "description": "`pcap_lib_version()` verbatim.",
+            "example": "libpcap version 1.10.6 (64-bit time_t, with TPACKET_V3 and netmap)",
+            "type": "string"
+          },
+          "named_backends": {
+            "description": "Alternate capture backends the banner names (`netmap`, `dpdk`,\n`dag`, `snf`). Empty means the banner names none, which does not\nprove the library has none: libpcap names DPDK only in a DPDK-only\nbuild.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "version": {
+            "description": "The version after `libpcap version`, or null when the banner has\nnone.",
+            "example": "1.10.6",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "banner",
+          "named_backends"
         ],
         "type": "object"
       },
@@ -5342,7 +5377,7 @@
     },
     "/v1/capabilities": {
       "get": {
-        "description": "The build's compiled feature set — the same canonical list `--version` and the MCP `server_capabilities` tool report — and the REST server's runtime opt-ins.\n\nA program reads this before it asks: a capability absent from `features` is one this binary cannot do, and a runtime opt-in that is off is one this run did not turn on. A mid-integration refusal would blur those two facts, and this route keeps them apart.",
+        "description": "The build's compiled feature set — the same canonical list `--version` and the MCP `server_capabilities` tool report — the REST server's runtime opt-ins, and the libpcap this process runs.\n\nA program reads this before it asks: a capability absent from `features` is one this binary cannot do, and a runtime opt-in that is off is one this run did not turn on. A mid-integration refusal would blur those two facts, and this route keeps them apart.\n\n`libpcap` is `pcap_lib_version()` as the running process sees it, with the alternate capture backends (`netmap`, `dpdk`, `dag`, `snf`) its banner names. A backend missing from `named_backends` is unconfirmed rather than absent: libpcap names DPDK only in a DPDK-only build.",
         "operationId": "get_capabilities",
         "responses": {
           "200": {
@@ -5353,7 +5388,7 @@
                 }
               }
             },
-            "description": "The build's features and the run's opt-ins."
+            "description": "The build's features, the run's opt-ins and the running libpcap."
           },
           "401": {
             "content": {

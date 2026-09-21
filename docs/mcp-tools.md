@@ -39,7 +39,7 @@ ordinary update.
 | [`top_talkers`](#top_talkers) | `by`, `limit?`, `filter?`, `prefix_digits?` | The busiest IPs, user agents or dialled prefixes, ranked, each share stated against the population behind it |
 | [`aggregate_dialogs`](#aggregate_dialogs) | `group_by`, `filter?`, `top_n?` | Counts dialogs grouped by ONE field, in the store rather than in the model |
 | [`group_dialogs`](#group_dialogs) | `by`, `metrics?`, `filter?`, `top_n?` | Carrier metrics per group — ASR, NER, ACD, post-dial delay, MOS, retransmissions — each beside the population it rests on |
-| [`server_capabilities`](#server_capabilities) | -- | sipnab version and the optional features this binary carries |
+| [`server_capabilities`](#server_capabilities) | -- | sipnab version, the optional features this binary carries, and the libpcap it runs |
 
 **[Find — narrow to the calls that matter](#find-narrow-to-the-calls-that-matter)**
 
@@ -1492,9 +1492,10 @@ it does the same walk without computing seven metrics.
 
 ### `server_capabilities`
 
-What this binary can do and what this server permits. Ask before requesting
-decryption, HEP, a file export or a capture swap: a build without the feature,
-or a server without the flag, fails confusingly otherwise.
+What this binary can do, what this server permits, and which libpcap it
+captures through. Ask before requesting decryption, HEP, a file export or a
+capture swap: a build without the feature, or a server without the flag, fails
+confusingly otherwise.
 
 No parameters. Returns:
 
@@ -1510,7 +1511,13 @@ No parameters. Returns:
     "mcp_file_root": "/var/spool/sipnab-captures",  // null when unset
     "mcp_allow_shutdown": false,
     "mcp_allow_open_capture": true,
+    "mcp_allow_tls_capture": false,
     "mcp_allow_save_findings": false
+  },
+  "libpcap": {
+    "banner": "libpcap version 1.10.6 (64-bit time_t, with TPACKET_V3 and netmap)",
+    "version": "1.10.6",             // null when the banner carries none
+    "named_backends": ["netmap"]     // [] on a distribution libpcap
   }
 }
 ```
@@ -1521,6 +1528,19 @@ turned on — and no compile-time check can answer it. Without it an agent
 discovers the setup by calling a tool and collecting a refusal, and a refusal
 mid-investigation reads as a dead end rather than as a server it was never
 allowed to use that way.
+
+`libpcap` is a third question, answered at runtime: `pcap_lib_version()` as
+this process sees it. A gnu build or a package loads the host's libpcap, a
+static musl build carries its own, and a macOS build loads the one macOS
+ships, so the same sipnab version reports different libraries on different
+hosts. `named_backends` lists the alternate capture backends (`netmap`,
+`dpdk`, `dag`, `snf`) that the banner names. It is the report the second line
+of `sipnab --version` prints and the `libpcap` block of REST
+`GET /v1/capabilities` carries, from one function. A backend missing from it
+remains unconfirmed rather than absent: libpcap names netmap in its banner
+only from 1.10.6, and DPDK only in a DPDK-only build. [Which capture backends
+an artifact can reach](install.md#which-capture-backends-an-artifact-can-reach)
+has the per-artifact table.
 
 
 ### `reconcile_orphans`

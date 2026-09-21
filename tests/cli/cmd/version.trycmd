@@ -1,4 +1,9 @@
 ```
 $ sipnab --version
 sipnab [..]
+libpcap version [..]; alternate capture backends named: [..]
+```
+```
+$ sipnab -V
+sipnab [..]
 ```

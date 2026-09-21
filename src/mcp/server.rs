@@ -2311,6 +2311,33 @@ pub struct CapabilitiesResponse {
     pub can_plugins: bool,
     /// Server-side opt-ins the operator passed at startup.
     pub runtime: RuntimeFlags,
+    /// The libpcap this process runs and the alternate capture backends its
+    /// banner names — the report `--version` prints.
+    pub libpcap: LibpcapJson,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+/// The libpcap this server runs, as `pcap_lib_version()` reports it.
+pub struct LibpcapJson {
+    /// `pcap_lib_version()` verbatim.
+    pub banner: String,
+    /// The version after `libpcap version`, or null when the banner has none.
+    pub version: Option<String>,
+    /// Alternate capture backends the banner names (`netmap`, `dpdk`, `dag`,
+    /// `snf`). Empty means the banner names none, which does not prove the
+    /// library has none: libpcap names DPDK only in a DPDK-only build.
+    pub named_backends: Vec<String>,
+}
+
+impl From<&crate::capture::libpcap::LibpcapReport> for LibpcapJson {
+    fn from(r: &crate::capture::libpcap::LibpcapReport) -> Self {
+        Self {
+            banner: r.banner.clone(),
+            version: r.version.clone(),
+            named_backends: r.named_backends.iter().map(|b| (*b).to_string()).collect(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
@@ -5735,9 +5762,11 @@ impl SipnabMcp {
     #[tool(
         name = "server_capabilities",
         description = "Returns the sipnab version, which optional features this \
-                       binary was compiled with (tls, hep, plugins, ...), and \
+                       binary was compiled with (tls, hep, plugins, ...), \
                        which server-side opt-ins are on (--mcp-file-root, \
-                       --mcp-allow-shutdown, --mcp-allow-open-capture). Call \
+                       --mcp-allow-shutdown, --mcp-allow-open-capture), and the \
+                       libpcap this process runs with the alternate capture \
+                       backends (netmap, dpdk, ...) its banner names. Call \
                        this before asking for decryption, HEP, a file export or \
                        a capture swap: a build or a server without them fails \
                        confusingly otherwise.",
@@ -5774,6 +5803,7 @@ impl SipnabMcp {
                 mcp_allow_tls_capture: self.allow_tls_capture,
                 mcp_allow_save_findings: self.allow_save_findings,
             },
+            libpcap: LibpcapJson::from(&crate::capture::libpcap::running()),
         };
         Ok(CallToolResult::success(vec![ContentBlock::json(payload)?]))
     }
@@ -13069,6 +13099,44 @@ mod tests {
                     .as_u64()
                     .unwrap_or(0),
             "the dialog generation must move: {before} then {after}"
+        );
+    }
+
+    /// `server_capabilities` names the libpcap this process runs — the same
+    /// report `--version` prints — so an agent can learn whether the library
+    /// behind this server names netmap before it asks for a `netmap:` device
+    /// and reads `No such device exists` as a typo.
+    #[tokio::test]
+    async fn server_capabilities_reports_the_running_libpcap() {
+        let v: serde_json::Value = serde_json::from_str(&text_of(
+            &empty_server().server_capabilities().await.expect("caps"),
+        ))
+        .unwrap();
+        let want = crate::capture::libpcap::running();
+        assert_eq!(v["libpcap"]["banner"], want.banner.as_str());
+        assert_eq!(v["libpcap"]["version"], serde_json::json!(want.version));
+        assert_eq!(
+            v["libpcap"]["named_backends"],
+            serde_json::json!(want.named_backends)
+        );
+    }
+
+    /// The conversion carries every field, driven by the published musl
+    /// banner so `named_backends` is non-empty: the host running this test
+    /// links a distribution libpcap that names none, and a conversion that
+    /// dropped the list would pass against it.
+    #[test]
+    fn the_libpcap_block_carries_what_the_banner_names() {
+        let report = crate::capture::libpcap::parse_banner(
+            "libpcap version 1.10.6 (64-bit time_t, with TPACKET_V3 and netmap)",
+        );
+        assert_eq!(
+            serde_json::to_value(LibpcapJson::from(&report)).unwrap(),
+            serde_json::json!({
+                "banner": "libpcap version 1.10.6 (64-bit time_t, with TPACKET_V3 and netmap)",
+                "version": "1.10.6",
+                "named_backends": ["netmap"],
+            })
         );
     }
 
