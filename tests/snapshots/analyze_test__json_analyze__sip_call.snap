@@ -1,0 +1,5 @@
+---
+source: tests/analyze_test.rs
+expression: "analyze_json_line(&path, extra)"
+---
+{"schema_version":1,"frames_read":7,"dialogs_examined":1,"streams_examined":0,"complete":true,"findings":[]}

@@ -393,3 +393,76 @@ fn a_filter_narrows_dialogs_without_deleting_capture_level_evidence() {
         "the filtered-out dialog's findings must be gone: {ranked:?}"
     );
 }
+
+// ── The JSON bytes, pinned ─────────────────────────────────────────────
+
+/// The raw `--json-analyze` line for one capture.
+fn analyze_json_line(path: &str, extra: &[&str]) -> String {
+    let mut args = vec!["-N", "-I", path, "--json-analyze", "--no-cli-print"];
+    args.extend_from_slice(extra);
+    let (stdout, stderr, code) = run(&args);
+    assert_eq!(code, 0, "sipnab should exit cleanly; stderr:\n{stderr}");
+    stdout
+        .lines()
+        .find(|l| l.starts_with('{'))
+        .unwrap_or_else(|| panic!("--json-analyze must emit one object, got:\n{stdout}"))
+        .to_string()
+}
+
+/// The exact bytes of every fixture's analysis, pinned.
+///
+/// Written before the count labels moved out of string literals scattered
+/// through `src/analysis.rs` into one table, so that refactor could be proven
+/// to change nothing a consumer reads: not a label, not a key order, not a
+/// number. The raw line is pinned rather than a parsed value, because parsing
+/// would forgive a reordered key, and diffability across runs is a property
+/// the analysis promises.
+#[test]
+fn the_json_analysis_of_every_fixture_is_pinned() {
+    for (name, path, extra) in [
+        ("stun_nat_probe", stun_only(), &[][..]),
+        ("stun_sdp_mismatch", mismatch(), &[][..]),
+        ("sip_problem_call", problem_calls(), &[][..]),
+        (
+            "sip_problem_call_portrange",
+            problem_calls(),
+            &["--portrange", "6000-6001"][..],
+        ),
+        ("sip_call", clean_call(), &[][..]),
+    ] {
+        insta::assert_snapshot!(
+            format!("json_analyze__{name}"),
+            analyze_json_line(&path, extra)
+        );
+    }
+}
+
+/// A narrowed analysis says it was narrowed, and by what.
+///
+/// `--filter` narrows the dialogs and leaves the capture-level findings whole,
+/// so a filtered `--json-analyze` object used to look exactly like a complete
+/// one with fewer calls in it: the only hint was a smaller `dialogs_examined`.
+/// `filter` carries the expression that selected the dialogs — after alias
+/// expansion, because that is the text that actually ran and the one a reader
+/// can paste back into `--filter` to reproduce it. An unfiltered run carries
+/// no `filter` at all rather than an empty one.
+#[test]
+fn a_filtered_analysis_names_the_filter_and_an_unfiltered_one_does_not() {
+    let narrowed = analyze_json(&mismatch(), &["--filter", "call_id == 'nothing-matches'"]);
+    assert_eq!(
+        narrowed["filter"], "call_id == 'nothing-matches'",
+        "the filter that narrowed the dialogs must be named: {narrowed}"
+    );
+
+    let alias = analyze_json(&mismatch(), &["--filter", "one-way"]);
+    assert_eq!(
+        alias["filter"], "one_way == true",
+        "an alias is recorded as the expression it expanded to: {alias}"
+    );
+
+    let whole = analyze_json(&mismatch(), &[]);
+    assert!(
+        whole.get("filter").is_none(),
+        "an unfiltered analysis must not carry a filter at all: {whole}"
+    );
+}

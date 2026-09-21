@@ -1586,40 +1586,276 @@
         "type": "object"
       },
       "CaptureReport": {
-        "description": "`GET /v1/report` — the whole-capture analysis.\n\nSerialized from `crate::analysis::CaptureAnalysis` itself, never\nre-parsed out of a rendered report: `print_analysis_report_as` looks\nlike it has a JSON arm and does not, and asking it for JSON is how this\nendpoint once returned 500.",
+        "additionalProperties": false,
+        "description": "Serialized form of CaptureAnalysis (src/analysis.rs): the `--json-analyze` object, the GET /v1/report body and the MCP get_capture_report `json` answer. Every finding sipnab already diagnosed, aggregated by kind and ranked worst first, with the denominators it was found in. The same analysis is exported RFC 7951-encoded against the YANG module sipnab-diagnosis; this schema describes the plain JSON encoding only.",
         "properties": {
           "complete": {
-            "description": "Whether the analysis saw the whole capture. `false` means a\nretention cap shed something, and every count above is a floor.",
+            "description": "Whether sipnab read all of its input. False whenever any `blind` finding is present, and then every count is a floor.",
             "type": "boolean"
           },
           "dialogs_examined": {
-            "description": "Dialogs the analysis looked at.",
+            "description": "Dialogs the analysis looked at, after any dialog filter.",
             "minimum": 0,
             "type": "integer"
           },
+          "filter": {
+            "description": "The filter expression that selected the dialogs examined, after alias expansion. Absent when every dialog was examined. Capture-level findings are never narrowed by it.",
+            "minLength": 1,
+            "type": "string"
+          },
           "findings": {
-            "description": "What the analysis found, across every dialog and stream.",
-            "items": {},
+            "description": "One entry per finding kind that occurred, worst first.",
+            "items": {
+              "$ref": "#/components/schemas/CaptureReport_finding"
+            },
             "type": "array"
           },
           "frames_read": {
-            "description": "Frames the capture read, from the same process-global the\nPrometheus scrape reports — so this denominator is the one every\nother number in the run is read against.",
-            "format": "int64",
+            "description": "Frames handed to the parser: the denominator every other number is read against.",
             "minimum": 0,
             "type": "integer"
           },
+          "schema_version": {
+            "const": 1,
+            "description": "Version of this object's shape."
+          },
           "streams_examined": {
-            "description": "Streams the analysis looked at.",
+            "description": "RTP streams linked to those dialogs.",
             "minimum": 0,
             "type": "integer"
           }
         },
         "required": [
+          "schema_version",
           "frames_read",
           "dialogs_examined",
           "streams_examined",
           "complete",
           "findings"
+        ],
+        "title": "sipnab capture analysis (CaptureAnalysis)",
+        "type": "object"
+      },
+      "CaptureReport_evidence": {
+        "additionalProperties": false,
+        "properties": {
+          "at": {
+            "description": "When it happened, in UTC, when one timestamp describes it.",
+            "format": "date-time",
+            "type": "string"
+          },
+          "call_id": {
+            "description": "The dialog this instance belongs to. Absent for a capture-level finding.",
+            "type": "string"
+          },
+          "counts": {
+            "additionalProperties": false,
+            "description": "Named integer counts. The label set is closed: these are every label the analysis writes.",
+            "minProperties": 1,
+            "properties": {
+              "a_payload_type": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "a_ptime_ms": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "answer_transmissions": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "b_payload_type": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "b_ptime_ms": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "challenges": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "delay_after_200_ok_ms": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "dialogs": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "errors_naming_no_call": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "frames": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "frames_read": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "icmp_errors": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "lifetime_secs": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "messages": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "reasons_not_retained": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "refreshes": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "relayed_streams": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "requests": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "role_conflict_responses": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "rtp_packets": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "status_code": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "streams": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "stun_requests": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "stun_transactions": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "transmissions": {
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "type": "object"
+          },
+          "endpoints": {
+            "description": "The addresses involved, most specific first. Display text with the role written in, not bare addresses.",
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1,
+            "type": "array"
+          },
+          "note": {
+            "description": "The part of the evidence that is not an integer: codec names, a reason phrase, a router's own words.",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "CaptureReport_finding": {
+        "additionalProperties": false,
+        "properties": {
+          "evidence": {
+            "description": "Up to ten verifiable instances.",
+            "items": {
+              "$ref": "#/components/schemas/CaptureReport_evidence"
+            },
+            "maxItems": 10,
+            "type": "array"
+          },
+          "evidence_omitted": {
+            "description": "Evidence rows the cap kept out.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "kind": {
+            "description": "Stable identifier of the problem. At most one finding per kind.",
+            "enum": [
+              "undecodable_frames",
+              "sip_discarded_by_portrange",
+              "sip_discarded_by_websocket_ports",
+              "retention_loss",
+              "no_media",
+              "one_way_audio",
+              "stun_sdp_mismatch",
+              "icmp_unreachable_signaling",
+              "icmp_unreachable_media",
+              "nat_mismatch",
+              "server_failure",
+              "auth_loop",
+              "retransmissions",
+              "ack_missing",
+              "registration_failure",
+              "unanswered_stun_probe",
+              "turn_allocation_lapsed",
+              "ice_role_conflict",
+              "icmp_unreachable_endpoint",
+              "request_failure",
+              "abandoned",
+              "post_dial_delay",
+              "late_media",
+              "codec_asymmetry",
+              "ptime_asymmetry",
+              "payload_type_asymmetry",
+              "duration_asymmetry"
+            ]
+          },
+          "occurrences": {
+            "description": "Exact count, in `unit`s. Not the length of `evidence`, which is capped.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "severity": {
+            "description": "blind > critical > major > minor. `blind` means the analysis itself is incomplete.",
+            "enum": [
+              "blind",
+              "critical",
+              "major",
+              "minor"
+            ]
+          },
+          "unit": {
+            "description": "What one occurrence is.",
+            "enum": [
+              "frame",
+              "message",
+              "record",
+              "call",
+              "flow",
+              "registration",
+              "transaction",
+              "allocation",
+              "pair",
+              "error"
+            ]
+          }
+        },
+        "required": [
+          "kind",
+          "severity",
+          "occurrences",
+          "unit",
+          "evidence",
+          "evidence_omitted"
         ],
         "type": "object"
       },
@@ -6914,7 +7150,7 @@
     },
     "/v1/report": {
       "get": {
-        "description": "The capture-level view: findings across every dialog and stream, orphaned media, STUN and ICMP evidence, and what the retention caps shed.\n\n`GET /v1/dialogs/{call_id}/report` answers for one Call-ID; this answers for the capture. `complete: false` means a cap shed something and every count beside it is a floor.",
+        "description": "The capture-level view: findings across every dialog and stream, orphaned media, STUN and ICMP evidence, and what the retention caps shed.\n\n`GET /v1/dialogs/{call_id}/report` answers for one Call-ID; this answers for the capture. `complete: false` means sipnab did not read all of its input -- frames no decoder could read, SIP a port gate discarded, records a retention cap dropped -- and every count beside it is a floor.",
         "operationId": "get_capture_report",
         "responses": {
           "200": {

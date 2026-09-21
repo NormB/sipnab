@@ -764,9 +764,12 @@ fn every_object_in_a_sipnab_schema_is_closed_at_every_depth() {
             open.len()
         );
     }
+    // Five: message, dialog, call_report and stream, and capture_analysis --
+    // the capture-level analysis `--json-analyze`, `GET /v1/report` and the
+    // MCP `get_capture_report` all serialize.
     assert_eq!(
-        checked, 4,
-        "expected sipnab's four own schemas; found {checked}. A schema added \
+        checked, 5,
+        "expected sipnab's five own schemas; found {checked}. A schema added \
          without being checked here is one whose nested objects nothing closes"
     );
 }
@@ -774,4 +777,303 @@ fn every_object_in_a_sipnab_schema_is_closed_at_every_depth() {
 /// The directory holding the schemas this repository publishes.
 fn repo_schemas() -> std::path::PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/schemas")
+}
+
+// ── The capture analysis: `--json-analyze`, `GET /v1/report`, MCP ─────────
+//
+// The fifth schema, and the first for the capture-level analysis. Until it
+// existed that object had no `schema_version`, no JSON Schema, and an OpenAPI
+// component whose `findings` items were `{}` — the one machine-readable answer
+// sipnab gives about a whole capture was described nowhere a program could
+// check it. The three doors serialize the same `CaptureAnalysis`, so one
+// schema covers all three; the REST door is held to it again by
+// `tests/openapi_contract_test.rs`, which splices this file into the published
+// document.
+
+/// Every capture `tests/analyze_test.rs` drives, plus the port-gate case.
+///
+/// The port-gate run is the one that carries a `blind` finding and
+/// `complete: false`, and the clean call is the one with no findings at all —
+/// two shapes a schema written against a single "interesting" capture would
+/// never meet.
+#[cfg(feature = "native")]
+const ANALYSIS_CASES: &[(&str, &[&str])] = &[
+    ("tests/fixtures/stun_nat_probe.pcap", &[]),
+    ("tests/fixtures/stun_sdp_mismatch.pcap", &[]),
+    ("tests/pcap-samples/sip-problem-call.pcap", &[]),
+    (
+        "tests/pcap-samples/sip-problem-call.pcap",
+        &["--portrange", "6000-6001"],
+    ),
+    ("tests/fixtures/sip_call.pcap", &[]),
+];
+
+/// The `--json-analyze` object for one capture.
+#[cfg(feature = "native")]
+fn json_analyze(path: &str, extra: &[&str]) -> Value {
+    let mut args = vec!["-N", "-I", path, "--json-analyze", "--no-cli-print"];
+    args.extend_from_slice(extra);
+    let out = run_sipnab(&args);
+    let line = out
+        .lines()
+        .find(|l| l.starts_with('{'))
+        .unwrap_or_else(|| panic!("--json-analyze emitted no object for {path}:\n{out}"));
+    serde_json::from_str(line).expect("the analysis is JSON")
+}
+
+/// Every `--json-analyze` object validates, and the cases between them reach
+/// every shape the schema declares.
+#[cfg(feature = "native")]
+#[test]
+fn capture_analysis_schema_validates_json_analyze_output() {
+    let v = load_validator("capture_analysis.schema.json");
+    let mut severities = std::collections::BTreeSet::new();
+    let mut evidence_keys = std::collections::BTreeSet::new();
+    let mut clean = 0usize;
+    let mut incomplete = 0usize;
+    for (path, extra) in ANALYSIS_CASES {
+        let inst = json_analyze(path, extra);
+        assert_valid(&v, &inst, &format!("--json-analyze {path} {extra:?}"));
+        let findings = inst["findings"].as_array().expect("findings is an array");
+        if findings.is_empty() {
+            clean += 1;
+        }
+        if inst["complete"] == Value::Bool(false) {
+            incomplete += 1;
+        }
+        for f in findings {
+            severities.insert(f["severity"].as_str().unwrap_or_default().to_string());
+            for e in f["evidence"].as_array().into_iter().flatten() {
+                evidence_keys.extend(e.as_object().into_iter().flatten().map(|(k, _)| k.clone()));
+            }
+        }
+    }
+    // Anti-vacuity: a schema that validated five clean captures would prove
+    // nothing about findings, and one that never met a blind finding would
+    // prove nothing about the case `complete` exists for.
+    assert!(clean >= 1, "no case produced a clean analysis");
+    assert!(incomplete >= 1, "no case produced `complete: false`");
+    for s in ["blind", "critical", "major", "minor"] {
+        assert!(
+            severities.contains(s),
+            "no case produced a `{s}` finding, so the schema was never checked \
+             against one: {severities:?}"
+        );
+    }
+    for k in ["call_id", "endpoints", "at", "counts", "note"] {
+        assert!(
+            evidence_keys.contains(k),
+            "no evidence row carried `{k}`: {evidence_keys:?}"
+        );
+    }
+}
+
+/// The schema refuses what the analysis never emits.
+#[cfg(feature = "native")]
+#[test]
+fn capture_analysis_schema_rejects_malformed() {
+    let v = load_validator("capture_analysis.schema.json");
+    let good = json_analyze("tests/fixtures/stun_sdp_mismatch.pcap", &[]);
+    assert!(v.is_valid(&good), "sanity: a real analysis must validate");
+    assert!(
+        good["findings"][0]["evidence"][0].is_object(),
+        "the fixture must carry evidence, or the nested cases below prove nothing"
+    );
+
+    /// What the case breaks, and how. Non-capturing closures, so each
+    /// coerces to a plain `fn` pointer.
+    type Corruption = (&'static str, fn(&mut Value));
+    let cases: Vec<Corruption> = vec![
+        ("a missing schema_version", |v: &mut Value| {
+            v.as_object_mut().unwrap().remove("schema_version");
+        }),
+        ("a schema_version other than 1", |v: &mut Value| {
+            v["schema_version"] = Value::from(2)
+        }),
+        ("frames_read as a string", |v: &mut Value| {
+            v["frames_read"] = Value::from("12")
+        }),
+        ("an undeclared top-level field", |v: &mut Value| {
+            v["surprise"] = Value::Bool(true)
+        }),
+        ("a kind the analysis does not have", |v: &mut Value| {
+            v["findings"][0]["kind"] = Value::from("no_such_kind")
+        }),
+        ("a severity off the ladder", |v: &mut Value| {
+            v["findings"][0]["severity"] = Value::from("warning")
+        }),
+        ("a finding without evidence_omitted", |v: &mut Value| {
+            v["findings"][0]
+                .as_object_mut()
+                .unwrap()
+                .remove("evidence_omitted");
+        }),
+        ("an undeclared evidence field", |v: &mut Value| {
+            v["findings"][0]["evidence"][0]["extra"] = Value::from(1)
+        }),
+        (
+            "a count label the analysis never writes",
+            |v: &mut Value| {
+                v["findings"][0]["evidence"][0]["counts"] = serde_json::json!({"bogus": 1});
+            },
+        ),
+        ("a negative count", |v: &mut Value| {
+            v["findings"][0]["evidence"][0]["counts"] = serde_json::json!({"streams": -1});
+        }),
+    ];
+    for (what, corrupt) in cases {
+        let mut bad = good.clone();
+        corrupt(&mut bad);
+        assert!(
+            !v.is_valid(&bad),
+            "capture_analysis.schema.json accepted {what}"
+        );
+    }
+}
+
+/// The `properties` keys of one `$defs` entry in a schema.
+fn schema_def_properties(schema: &str, def: &str) -> Vec<String> {
+    let text = std::fs::read_to_string(repo_schemas().join(schema))
+        .unwrap_or_else(|e| panic!("read {schema}: {e}"));
+    let doc: Value = serde_json::from_str(&text).expect("schema is JSON");
+    doc["$defs"][def]["properties"]
+        .as_object()
+        .unwrap_or_else(|| panic!("{schema} declares no $defs/{def} properties"))
+        .keys()
+        .cloned()
+        .collect()
+}
+
+/// The three structs behind the capture analysis, field for field, in both
+/// directions.
+///
+/// The census the other four schemas were given after 0.5.159, applied from
+/// the first day this one exists rather than after a field slips past it.
+#[test]
+fn every_capture_analysis_field_is_declared_and_nothing_else_is() {
+    let root = schema_properties("capture_analysis.schema.json");
+    for (name, declared) in [
+        ("CaptureAnalysis", root),
+        (
+            "Finding",
+            schema_def_properties("capture_analysis.schema.json", "finding"),
+        ),
+        (
+            "Evidence",
+            schema_def_properties("capture_analysis.schema.json", "evidence"),
+        ),
+    ] {
+        let (missing, phantom) = census(&struct_fields("src/analysis.rs", name), &declared);
+        assert!(
+            missing.is_empty(),
+            "capture_analysis.schema.json declares no {missing:?}, which `{name}` \
+             emits; the schema refuses additional properties, so every consumer \
+             validating the analysis rejects it"
+        );
+        assert!(
+            phantom.is_empty(),
+            "capture_analysis.schema.json promises {phantom:?}, which `{name}` \
+             cannot emit"
+        );
+    }
+}
+
+/// The schema's closed vocabularies are the analysis's own tables.
+///
+/// `kind`, `severity` and `unit` are enums in the schema and tables in
+/// `src/analysis.rs`; the evidence cap is a `maxItems` here and a constant
+/// there. Each is one fact written twice, and a kind added to the Rust table
+/// without reaching the schema is a finding every validating consumer refuses.
+/// Both directions, so the schema cannot keep a kind the code dropped either.
+#[cfg(feature = "native")]
+#[test]
+fn the_capture_analysis_schema_vocabularies_are_the_analysis_tables() {
+    use sipnab::analysis::{EVIDENCE_CAP, FindingKind, Severity};
+    let doc: Value = serde_json::from_str(
+        &std::fs::read_to_string(repo_schemas().join("capture_analysis.schema.json"))
+            .expect("read capture_analysis.schema.json"),
+    )
+    .expect("schema is JSON");
+    let finding = &doc["$defs"]["finding"]["properties"];
+    let listed = |v: &Value| -> Vec<String> {
+        v["enum"]
+            .as_array()
+            .unwrap_or_else(|| panic!("expected an enum, got {v}"))
+            .iter()
+            .map(|s| s.as_str().expect("enum values are strings").to_string())
+            .collect()
+    };
+
+    let kinds: Vec<String> = FindingKind::ALL
+        .iter()
+        .map(|k| k.meta().id.to_string())
+        .collect();
+    assert_eq!(
+        listed(&finding["kind"]),
+        kinds,
+        "the schema's kind enum is not FindingKind::ALL in ladder order"
+    );
+
+    let severities: Vec<String> = Severity::ALL
+        .iter()
+        .map(|s| s.as_str().to_string())
+        .collect();
+    assert_eq!(listed(&finding["severity"]), severities);
+
+    let mut units: Vec<String> = FindingKind::ALL
+        .iter()
+        .map(|k| k.meta().unit.to_string())
+        .collect();
+    units.sort();
+    units.dedup();
+    let mut declared_units = listed(&finding["unit"]);
+    declared_units.sort();
+    assert_eq!(
+        declared_units, units,
+        "the schema's unit enum is not the set of units the kind table uses"
+    );
+
+    assert_eq!(
+        finding["evidence"]["maxItems"].as_u64(),
+        Some(EVIDENCE_CAP as u64),
+        "the schema's evidence cap is not EVIDENCE_CAP"
+    );
+}
+
+/// The schema's closed `counts` object names exactly the analysis's labels.
+///
+/// The labels used to be string literals at 25 call sites with no table, so
+/// no schema could close the object without guessing. `CountLabel::ALL` is
+/// the table; this holds the schema to it in both directions.
+#[cfg(feature = "native")]
+#[test]
+fn the_capture_analysis_schema_counts_are_the_count_label_table() {
+    use sipnab::analysis::CountLabel;
+    let declared: std::collections::BTreeSet<String> = {
+        let doc: Value = serde_json::from_str(
+            &std::fs::read_to_string(repo_schemas().join("capture_analysis.schema.json"))
+                .expect("read capture_analysis.schema.json"),
+        )
+        .expect("schema is JSON");
+        doc["$defs"]["evidence"]["properties"]["counts"]["properties"]
+            .as_object()
+            .expect("the counts object declares its labels")
+            .keys()
+            .cloned()
+            .collect()
+    };
+    let table: std::collections::BTreeSet<String> = CountLabel::ALL
+        .iter()
+        .map(|l| l.as_str().to_string())
+        .collect();
+    assert!(
+        table.len() >= 20,
+        "only {} labels in the table",
+        table.len()
+    );
+    assert_eq!(
+        declared, table,
+        "capture_analysis.schema.json and CountLabel::ALL disagree about the \
+         count labels"
+    );
 }

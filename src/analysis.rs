@@ -110,6 +110,11 @@ pub enum Severity {
 }
 
 impl Severity {
+    /// Every severity, in ladder order — worst first, which is also the sort
+    /// order. The exhaustive `match` in [`Self::as_str`] is what makes a fifth
+    /// rung a compile error until it is listed here too.
+    pub const ALL: [Self; 4] = [Self::Blind, Self::Critical, Self::Major, Self::Minor];
+
     /// The lowercase tag used in reports, JSON and tests.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
@@ -124,7 +129,7 @@ impl Severity {
 
 /// The fixed properties of a finding kind.
 ///
-/// One table rather than four parallel `match` statements over the same 25
+/// One table rather than four parallel `match` statements over the same 27
 /// variants: four matches is four chances for a new kind to be added to three
 /// of them, and the missing arm would be a compile error in only the ones
 /// somebody remembered to write exhaustively.
@@ -223,6 +228,84 @@ pub enum FindingKind {
 }
 
 impl FindingKind {
+    /// Every kind, in declaration order — the ladder, worst first.
+    ///
+    /// The machine contracts are generated from this list: the JSON Schema's
+    /// `kind` enum is held to it, and the YANG module renders one identity per
+    /// entry. A kind missing from it would be a finding sipnab emits and no
+    /// published contract admits, so membership is not left to memory:
+    /// [`Self::ordinal`] is an exhaustive `match`, a new variant does not
+    /// compile until it has an arm there, and the assertion below this `impl`
+    /// fails the build unless every entry here sits at its own ordinal.
+    pub const ALL: [Self; 27] = [
+        Self::UndecodableFrames,
+        Self::SipDiscardedByPortRange,
+        Self::SipDiscardedByWebSocketPorts,
+        Self::RetentionLoss,
+        Self::NoMedia,
+        Self::OneWayAudio,
+        Self::StunSdpMismatch,
+        Self::IcmpUnreachableSignaling,
+        Self::IcmpUnreachableMedia,
+        Self::NatMismatch,
+        Self::ServerFailure,
+        Self::AuthLoop,
+        Self::Retransmissions,
+        Self::AckMissing,
+        Self::RegistrationFailure,
+        Self::UnansweredStunProbe,
+        Self::TurnAllocationLapsed,
+        Self::IceRoleConflict,
+        Self::IcmpUnreachableEndpoint,
+        Self::RequestFailure,
+        Self::Abandoned,
+        Self::PostDialDelay,
+        Self::LateMedia,
+        Self::CodecAsymmetry,
+        Self::PtimeAsymmetry,
+        Self::PayloadTypeAsymmetry,
+        Self::DurationAsymmetry,
+    ];
+
+    /// This kind's position in [`Self::ALL`].
+    ///
+    /// Exhaustive on purpose, and written out rather than cast from the
+    /// discriminant: adding a variant is a compile error HERE, beside the list
+    /// it must also join, instead of a kind that silently never reaches the
+    /// schema or the YANG module.
+    #[must_use]
+    pub const fn ordinal(self) -> usize {
+        match self {
+            Self::UndecodableFrames => 0,
+            Self::SipDiscardedByPortRange => 1,
+            Self::SipDiscardedByWebSocketPorts => 2,
+            Self::RetentionLoss => 3,
+            Self::NoMedia => 4,
+            Self::OneWayAudio => 5,
+            Self::StunSdpMismatch => 6,
+            Self::IcmpUnreachableSignaling => 7,
+            Self::IcmpUnreachableMedia => 8,
+            Self::NatMismatch => 9,
+            Self::ServerFailure => 10,
+            Self::AuthLoop => 11,
+            Self::Retransmissions => 12,
+            Self::AckMissing => 13,
+            Self::RegistrationFailure => 14,
+            Self::UnansweredStunProbe => 15,
+            Self::TurnAllocationLapsed => 16,
+            Self::IceRoleConflict => 17,
+            Self::IcmpUnreachableEndpoint => 18,
+            Self::RequestFailure => 19,
+            Self::Abandoned => 20,
+            Self::PostDialDelay => 21,
+            Self::LateMedia => 22,
+            Self::CodecAsymmetry => 23,
+            Self::PtimeAsymmetry => 24,
+            Self::PayloadTypeAsymmetry => 25,
+            Self::DurationAsymmetry => 26,
+        }
+    }
+
     /// The kind's fixed properties.
     #[must_use]
     pub const fn meta(self) -> KindMeta {
@@ -507,11 +590,278 @@ impl FindingKind {
     }
 }
 
+// `ALL` is complete and in declaration order: every entry sits at its own
+// ordinal AND at its own discriminant. The discriminant half is what catches a
+// variant declared mid-ladder and left out of `ALL`, because every kind after
+// it then sits one place early.
+const _: () = {
+    let mut i = 0;
+    while i < FindingKind::ALL.len() {
+        assert!(FindingKind::ALL[i].ordinal() == i);
+        assert!(FindingKind::ALL[i] as usize == i);
+        i += 1;
+    }
+};
+
 impl serde::Serialize for FindingKind {
     /// Serializes as the stable [`KindMeta::id`], not as the Rust variant
     /// name, so renaming a variant cannot change a consumer's JSON.
     fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
         s.serialize_str(self.meta().id)
+    }
+}
+
+/// The name of one integer in [`Evidence::counts`].
+///
+/// These were string literals at the call sites that wrote them, 25 of them
+/// and no list: nothing could say which labels a consumer might meet, so no
+/// schema could close the `counts` object and no YANG module could name them.
+/// This is the list. Every label the analysis writes is a variant here, so a
+/// new one cannot reach the JSON without joining the table the published
+/// contracts are generated from.
+///
+/// Declared in alphabetical order of [`Self::as_str`], and ordered by that
+/// text rather than by declaration, because `counts` is a `BTreeMap` and its
+/// key order is the JSON's: the table must not reorder a single consumer's
+/// object.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CountLabel {
+    /// `a_payload_type`: The RTP payload type number the A leg used, where both legs negotiated the same codec.
+    APayloadType,
+    /// `a_ptime_ms`: The packetization time the A leg framed its audio at, in milliseconds.
+    APtimeMs,
+    /// `answer_transmissions`: How many times the 2xx answer to an INVITE was transmitted with no ACK confirming it.
+    AnswerTransmissions,
+    /// `b_payload_type`: The RTP payload type number the B leg used, where both legs negotiated the same codec.
+    BPayloadType,
+    /// `b_ptime_ms`: The packetization time the B leg framed its audio at, in milliseconds.
+    BPtimeMs,
+    /// `challenges`: How many 401 or 407 authentication challenges the dialog drew without reaching a 2xx.
+    Challenges,
+    /// `delay_after_200_ok_ms`: Milliseconds from the 200 OK to the first RTP packet of the leg that started late.
+    DelayAfter200OkMs,
+    /// `dialogs`: Dialogs a store refused or discarded at its capacity limit.
+    Dialogs,
+    /// `errors_naming_no_call`: ICMP errors whose quoted bytes reached no tracked dialog.
+    ErrorsNamingNoCall,
+    /// `frames`: Frames that reached the parser and decoded to nothing.
+    Frames,
+    /// `frames_read`: Frames handed to the parser in the whole run: the denominator for the frames that decoded to nothing.
+    FramesRead,
+    /// `icmp_errors`: ICMP errors counted against this evidence row: one endpoint, one media flow, one dialog's request, or the errors a full tracking table could not attribute.
+    IcmpErrors,
+    /// `lifetime_secs`: The allocation lifetime the TURN server last granted, in seconds.
+    LifetimeSecs,
+    /// `messages`: SIP messages: those a port gate discarded, or those evicted from retained dialogs by idle compaction.
+    Messages,
+    /// `reasons_not_retained`: Distinct reasons frames failed to decode that were counted but not kept, because the reason table was full.
+    ReasonsNotRetained,
+    /// `refreshes`: TURN Refresh transactions seen for the allocation.
+    Refreshes,
+    /// `relayed_streams`: RTP streams the capture saw carried on the TURN relay.
+    RelayedStreams,
+    /// `requests`: STUN Binding Requests the client sent in one transaction that nothing answered.
+    Requests,
+    /// `role_conflict_responses`: 487 Role Conflict responses exchanged between the two ICE agents.
+    RoleConflictResponses,
+    /// `rtp_packets`: RTP packets carried by the streams linked to the dialog.
+    RtpPackets,
+    /// `status_code`: The SIP status code: the final response a call ended on, or the one a REGISTER was answered with.
+    StatusCode,
+    /// `streams`: RTP streams: those linked to the dialog, or those an ICMP error about a media flow affected.
+    Streams,
+    /// `stun_requests`: STUN requests the client sent that bear on the address its SDP advertised.
+    StunRequests,
+    /// `stun_transactions`: STUN transactions past the tracking cap, counted but not kept.
+    StunTransactions,
+    /// `transmissions`: How many times a request was transmitted with no response coming back.
+    Transmissions,
+}
+
+impl CountLabel {
+    /// Every label, in the order it serializes. The exhaustive matches in
+    /// [`Self::as_str`] and [`Self::description`] make a new variant a
+    /// compile error until it has a name and a description; the assertion
+    /// after this `impl` fails the build unless it is listed here too.
+    pub const ALL: [Self; 25] = [
+        Self::APayloadType,
+        Self::APtimeMs,
+        Self::AnswerTransmissions,
+        Self::BPayloadType,
+        Self::BPtimeMs,
+        Self::Challenges,
+        Self::DelayAfter200OkMs,
+        Self::Dialogs,
+        Self::ErrorsNamingNoCall,
+        Self::Frames,
+        Self::FramesRead,
+        Self::IcmpErrors,
+        Self::LifetimeSecs,
+        Self::Messages,
+        Self::ReasonsNotRetained,
+        Self::Refreshes,
+        Self::RelayedStreams,
+        Self::Requests,
+        Self::RoleConflictResponses,
+        Self::RtpPackets,
+        Self::StatusCode,
+        Self::Streams,
+        Self::StunRequests,
+        Self::StunTransactions,
+        Self::Transmissions,
+    ];
+
+    /// The label as it appears in the JSON and in the text report.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::APayloadType => "a_payload_type",
+            Self::APtimeMs => "a_ptime_ms",
+            Self::AnswerTransmissions => "answer_transmissions",
+            Self::BPayloadType => "b_payload_type",
+            Self::BPtimeMs => "b_ptime_ms",
+            Self::Challenges => "challenges",
+            Self::DelayAfter200OkMs => "delay_after_200_ok_ms",
+            Self::Dialogs => "dialogs",
+            Self::ErrorsNamingNoCall => "errors_naming_no_call",
+            Self::Frames => "frames",
+            Self::FramesRead => "frames_read",
+            Self::IcmpErrors => "icmp_errors",
+            Self::LifetimeSecs => "lifetime_secs",
+            Self::Messages => "messages",
+            Self::ReasonsNotRetained => "reasons_not_retained",
+            Self::Refreshes => "refreshes",
+            Self::RelayedStreams => "relayed_streams",
+            Self::Requests => "requests",
+            Self::RoleConflictResponses => "role_conflict_responses",
+            Self::RtpPackets => "rtp_packets",
+            Self::StatusCode => "status_code",
+            Self::Streams => "streams",
+            Self::StunRequests => "stun_requests",
+            Self::StunTransactions => "stun_transactions",
+            Self::Transmissions => "transmissions",
+        }
+    }
+
+    /// One sentence saying what the number counts. Published as the YANG
+    /// identity's description, so the module doubles as the label catalog.
+    #[must_use]
+    pub const fn description(self) -> &'static str {
+        match self {
+            Self::APayloadType => {
+                "The RTP payload type number the A leg used, where both legs negotiated the same codec."
+            }
+            Self::APtimeMs => {
+                "The packetization time the A leg framed its audio at, in milliseconds."
+            }
+            Self::AnswerTransmissions => {
+                "How many times the 2xx answer to an INVITE was transmitted with no ACK confirming it."
+            }
+            Self::BPayloadType => {
+                "The RTP payload type number the B leg used, where both legs negotiated the same codec."
+            }
+            Self::BPtimeMs => {
+                "The packetization time the B leg framed its audio at, in milliseconds."
+            }
+            Self::Challenges => {
+                "How many 401 or 407 authentication challenges the dialog drew without reaching a 2xx."
+            }
+            Self::DelayAfter200OkMs => {
+                "Milliseconds from the 200 OK to the first RTP packet of the leg that started late."
+            }
+            Self::Dialogs => "Dialogs a store refused or discarded at its capacity limit.",
+            Self::ErrorsNamingNoCall => "ICMP errors whose quoted bytes reached no tracked dialog.",
+            Self::Frames => "Frames that reached the parser and decoded to nothing.",
+            Self::FramesRead => {
+                "Frames handed to the parser in the whole run: the denominator for the frames that decoded to nothing."
+            }
+            Self::IcmpErrors => {
+                "ICMP errors counted against this evidence row: one endpoint, one media flow, one dialog's request, or the errors a full tracking table could not attribute."
+            }
+            Self::LifetimeSecs => {
+                "The allocation lifetime the TURN server last granted, in seconds."
+            }
+            Self::Messages => {
+                "SIP messages: those a port gate discarded, or those evicted from retained dialogs by idle compaction."
+            }
+            Self::ReasonsNotRetained => {
+                "Distinct reasons frames failed to decode that were counted but not kept, because the reason table was full."
+            }
+            Self::Refreshes => "TURN Refresh transactions seen for the allocation.",
+            Self::RelayedStreams => "RTP streams the capture saw carried on the TURN relay.",
+            Self::Requests => {
+                "STUN Binding Requests the client sent in one transaction that nothing answered."
+            }
+            Self::RoleConflictResponses => {
+                "487 Role Conflict responses exchanged between the two ICE agents."
+            }
+            Self::RtpPackets => "RTP packets carried by the streams linked to the dialog.",
+            Self::StatusCode => {
+                "The SIP status code: the final response a call ended on, or the one a REGISTER was answered with."
+            }
+            Self::Streams => {
+                "RTP streams: those linked to the dialog, or those an ICMP error about a media flow affected."
+            }
+            Self::StunRequests => {
+                "STUN requests the client sent that bear on the address its SDP advertised."
+            }
+            Self::StunTransactions => {
+                "STUN transactions past the tracking cap, counted but not kept."
+            }
+            Self::Transmissions => {
+                "How many times a request was transmitted with no response coming back."
+            }
+        }
+    }
+}
+
+// `CountLabel::ALL` holds every variant in declaration order.
+const _: () = {
+    let mut i = 0;
+    while i < CountLabel::ALL.len() {
+        assert!(CountLabel::ALL[i] as usize == i);
+        i += 1;
+    }
+};
+
+impl PartialOrd for CountLabel {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for CountLabel {
+    /// By the label's text, so a `BTreeMap` keyed by labels orders its JSON
+    /// keys exactly as it did when the keys were the strings themselves.
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.as_str().cmp(other.as_str())
+    }
+}
+
+impl std::borrow::Borrow<str> for CountLabel {
+    /// Lets `counts.get("streams")` look a label up by name. Sound because
+    /// [`Ord`] and [`PartialEq`] above agree with the text's own.
+    fn borrow(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl std::fmt::Display for CountLabel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl PartialEq<&str> for CountLabel {
+    fn eq(&self, other: &&str) -> bool {
+        self.as_str() == *other
+    }
+}
+
+impl serde::Serialize for CountLabel {
+    /// Serializes as its text: a `counts` key, exactly as before the table.
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(self.as_str())
     }
 }
 
@@ -539,7 +889,7 @@ pub struct Evidence {
     /// codes. A `BTreeMap` rather than a `Vec` of pairs so JSON key order is
     /// deterministic and the output stays diffable.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
-    pub counts: BTreeMap<&'static str, u64>,
+    pub counts: BTreeMap<CountLabel, u64>,
     /// The part of the evidence that is not an integer — codec names, a reason
     /// phrase, a router's own words.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -562,7 +912,7 @@ impl Evidence {
 
     /// Add a named count.
     #[must_use]
-    fn count(mut self, label: &'static str, value: u64) -> Self {
+    fn count(mut self, label: CountLabel, value: u64) -> Self {
         self.counts.insert(label, value);
         self
     }
@@ -617,9 +967,39 @@ pub struct Finding {
     pub evidence_omitted: u64,
 }
 
+/// The version of [`CaptureAnalysis`]'s serialized shape.
+///
+/// `tests/schemas/capture_analysis.schema.json` pins it with `const`, the way
+/// the message, dialog and stream schemas pin theirs. A change a consumer
+/// would break on — a field removed, renamed or retyped — raises it; a new
+/// optional field does not.
+pub const CAPTURE_ANALYSIS_SCHEMA_VERSION: u32 = 1;
+
 /// Everything `--analyze` found, ranked, with the denominators it found it in.
-#[derive(Debug, Clone, Default, PartialEq, serde::Serialize)]
+///
+/// One value, several encodings: `--json-analyze`, `GET /v1/report` and the
+/// MCP `get_capture_report` serialize it directly, and the RFC 7951 export is
+/// a transform of that same serialization. A field added here reaches every
+/// one of them; a field added to only one encoding would make the machine
+/// renderings disagree about one analysis.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct CaptureAnalysis {
+    /// [`CAPTURE_ANALYSIS_SCHEMA_VERSION`]. First, so a consumer reads the
+    /// shape it is holding before anything else in it.
+    ///
+    /// Every other JSON object sipnab emits carried one and this did not, so
+    /// the one answer about a whole capture was also the one a consumer could
+    /// not tell a future reshaping of.
+    pub schema_version: u32,
+    /// The filter expression that selected [`Self::dialogs_examined`], when
+    /// one did; absent when every dialog was examined.
+    ///
+    /// Only the dialogs are narrowed — the capture-level findings never are
+    /// (see [`analyze`]) — so without this a filtered analysis read exactly
+    /// like a whole one that happened to hold fewer calls. The text is the
+    /// expression that ran, after alias expansion: [`FilterExpr::source`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub filter: Option<String>,
     /// Frames handed to the parser. The denominator that makes every other
     /// number readable, and the reason the clean line is honest.
     pub frames_read: u64,
@@ -632,6 +1012,25 @@ pub struct CaptureAnalysis {
     pub complete: bool,
     /// The findings, worst first. See [`rank`].
     pub findings: Vec<Finding>,
+}
+
+impl Default for CaptureAnalysis {
+    /// An empty analysis at the current [`CAPTURE_ANALYSIS_SCHEMA_VERSION`]:
+    /// nothing read, nothing found, and `complete: false`, because nothing
+    /// has established that anything was read in full. Every other field is
+    /// what the derive used to produce; it is written out only because a
+    /// derived default would stamp version 0 on every analysis built from it.
+    fn default() -> Self {
+        Self {
+            schema_version: CAPTURE_ANALYSIS_SCHEMA_VERSION,
+            filter: None,
+            frames_read: 0,
+            dialogs_examined: 0,
+            streams_examined: 0,
+            complete: false,
+            findings: Vec::new(),
+        }
+    }
 }
 
 impl CaptureAnalysis {
@@ -905,6 +1304,8 @@ pub fn analyze_with(
     // which is the exact defect this module is written to be incapable of.
     let complete = !findings.iter().any(|f| f.severity == Severity::Blind);
     CaptureAnalysis {
+        schema_version: CAPTURE_ANALYSIS_SCHEMA_VERSION,
+        filter: filter.map(|f| f.source().to_string()),
         frames_read: facts.frames_read,
         dialogs_examined: selection.dialogs.len(),
         streams_examined,
@@ -925,8 +1326,8 @@ fn collect_media(
     let path = || {
         let packets: u64 = streams.iter().map(|s| s.packet_count).sum();
         let mut ev = Evidence::for_dialog(dialog)
-            .count("streams", streams.len() as u64)
-            .count("rtp_packets", packets);
+            .count(CountLabel::Streams, streams.len() as u64)
+            .count(CountLabel::RtpPackets, packets);
         if let Some(ref sdp) = diag.sdp_media {
             ev = ev.endpoint(format!("SDP {sdp}"));
         }
@@ -990,7 +1391,7 @@ fn collect_media(
         let ev = Evidence::for_dialog(dialog)
             .endpoint(format!("STUN client {}", m.client))
             .endpoint(format!("SDP advertises {}", m.advertised))
-            .count("stun_requests", u64::from(m.request_count))
+            .count(CountLabel::StunRequests, u64::from(m.request_count))
             .note(note);
         acc.add(FindingKind::StunSdpMismatch, ev);
     }
@@ -999,7 +1400,7 @@ fn collect_media(
             FindingKind::LateMedia,
             Evidence::for_dialog(dialog)
                 .count(
-                    "delay_after_200_ok_ms",
+                    CountLabel::DelayAfter200OkMs,
                     late.delay_after_200_ok_ms.max(0) as u64,
                 )
                 .note(format!("{} leg started late", late.leg)),
@@ -1015,16 +1416,16 @@ fn collect_media(
         acc.add(
             FindingKind::PtimeAsymmetry,
             Evidence::for_dialog(dialog)
-                .count("a_ptime_ms", u64::from(p.a_ptime_ms))
-                .count("b_ptime_ms", u64::from(p.b_ptime_ms)),
+                .count(CountLabel::APtimeMs, u64::from(p.a_ptime_ms))
+                .count(CountLabel::BPtimeMs, u64::from(p.b_ptime_ms)),
         );
     }
     if let Some(ref p) = diag.payload_type_asymmetry {
         acc.add(
             FindingKind::PayloadTypeAsymmetry,
             Evidence::for_dialog(dialog)
-                .count("a_payload_type", u64::from(p.a_pt))
-                .count("b_payload_type", u64::from(p.b_pt)),
+                .count(CountLabel::APayloadType, u64::from(p.a_pt))
+                .count(CountLabel::BPayloadType, u64::from(p.b_pt)),
         );
     }
     if let Some(ref d) = diag.duration_asymmetry {
@@ -1082,7 +1483,7 @@ fn fold_signaling(
         acc.add(
             kind,
             Evidence::for_dialog(dialog)
-                .count("status_code", u64::from(f.code))
+                .count(CountLabel::StatusCode, u64::from(f.code))
                 .note(note),
         );
     }
@@ -1090,7 +1491,7 @@ fn fold_signaling(
         acc.add(
             FindingKind::AuthLoop,
             Evidence::for_dialog(dialog)
-                .count("challenges", a.challenges as u64)
+                .count(CountLabel::Challenges, a.challenges as u64)
                 .note(match a.kind {
                     AuthLoopKind::CredentialFailure => {
                         "the UAC answers each challenge and is challenged again — wrong \
@@ -1114,7 +1515,7 @@ fn fold_signaling(
         acc.add(
             FindingKind::Retransmissions,
             Evidence::for_dialog(dialog)
-                .count("transmissions", r.count as u64)
+                .count(CountLabel::Transmissions, r.count as u64)
                 .note(note),
         );
     }
@@ -1122,7 +1523,10 @@ fn fold_signaling(
         acc.add(
             FindingKind::AckMissing,
             Evidence::for_dialog(dialog)
-                .count("answer_transmissions", a.answer_transmissions as u64)
+                .count(
+                    CountLabel::AnswerTransmissions,
+                    a.answer_transmissions as u64,
+                )
                 .note(format!("{:.1}s elapsed with no ACK", a.waited_sec)),
         );
     }
@@ -1163,7 +1567,7 @@ fn fold_signaling(
         acc.add(
             FindingKind::RegistrationFailure,
             Evidence::for_dialog(dialog)
-                .count("status_code", u64::from(r.code))
+                .count(CountLabel::StatusCode, u64::from(r.code))
                 .note(note),
         );
     }
@@ -1174,7 +1578,7 @@ fn fold_signaling(
             Evidence::for_dialog(dialog)
                 .endpoint(format!("unreachable {}", i.unreachable_endpoint))
                 .endpoint(format!("reported by {}", i.reported_by))
-                .count("icmp_errors", i.errors as u64)
+                .count(CountLabel::IcmpErrors, i.errors as u64)
                 .note(format!(
                     "{} (type {}, code {}){}",
                     i.description,
@@ -1200,7 +1604,7 @@ fn collect_capture_level(acc: &mut Accumulator, facts: &CaptureFacts) {
             Evidence::default()
                 .endpoint(format!("client {}", tx.client))
                 .endpoint(format!("server {}", tx.server))
-                .count("requests", u64::from(tx.request_count))
+                .count(CountLabel::Requests, u64::from(tx.request_count))
                 .note(if tx.was_retransmitted() {
                     "retransmitted, which by itself proves the first request went unanswered"
                 } else {
@@ -1215,10 +1619,10 @@ fn collect_capture_level(acc: &mut Accumulator, facts: &CaptureFacts) {
         let mut ev = Evidence::default()
             .endpoint(format!("client {}", alloc.client))
             .endpoint(format!("TURN server {}", alloc.server))
-            .count("refreshes", u64::from(alloc.refreshes))
+            .count(CountLabel::Refreshes, u64::from(alloc.refreshes))
             .at_time(alloc.allocated_at);
         if let Some(secs) = alloc.lifetime_secs {
-            ev = ev.count("lifetime_secs", u64::from(secs));
+            ev = ev.count(CountLabel::LifetimeSecs, u64::from(secs));
         }
         if let Some(relayed) = alloc.relayed_address {
             ev = ev.endpoint(format!("relayed {relayed}"));
@@ -1231,7 +1635,7 @@ fn collect_capture_level(acc: &mut Accumulator, facts: &CaptureFacts) {
         // what a follow-up capture has to filter on.
         let streams = alloc.relayed_ssrcs();
         if !streams.is_empty() {
-            ev = ev.count("relayed_streams", streams.len() as u64);
+            ev = ev.count(CountLabel::RelayedStreams, streams.len() as u64);
         }
         if let Some(label) = alloc.relayed_media_label() {
             ev = ev.endpoint(format!("media {label}"));
@@ -1258,7 +1662,7 @@ fn collect_capture_level(acc: &mut Accumulator, facts: &CaptureFacts) {
             .endpoint(conflict.a.to_string())
             .endpoint(conflict.b.to_string())
             .count(
-                "role_conflict_responses",
+                CountLabel::RoleConflictResponses,
                 u64::from(conflict.role_conflict_responses),
             );
         if let Some(role) = conflict.role {
@@ -1290,8 +1694,8 @@ fn collect_capture_level(acc: &mut Accumulator, facts: &CaptureFacts) {
             .endpoint(format!("unreachable {}", flow.unreachable_endpoint))
             .endpoint(format!("sent from {}", flow.source))
             .endpoint(format!("reported by {}", flow.reported_by))
-            .count("icmp_errors", flow.errors)
-            .count("streams", flow.streams as u64)
+            .count(CountLabel::IcmpErrors, flow.errors)
+            .count(CountLabel::Streams, flow.streams as u64)
             .note(flow.hint.clone());
         ev.call_id = flow.call_ids.first().cloned();
         acc.bump(FindingKind::IcmpUnreachableMedia, flow.errors, ev);
@@ -1306,7 +1710,7 @@ fn collect_capture_level(acc: &mut Accumulator, facts: &CaptureFacts) {
         acc.bump(
             FindingKind::IcmpUnreachableEndpoint,
             facts.icmp.unattributed,
-            Evidence::default().count("errors_naming_no_call", facts.icmp.unattributed),
+            Evidence::default().count(CountLabel::ErrorsNamingNoCall, facts.icmp.unattributed),
         );
         // Every endpoint goes through the accumulator, which keeps what fits
         // under the cap and COUNTS the rest: a `take` here dropped them before
@@ -1320,7 +1724,7 @@ fn collect_capture_level(acc: &mut Accumulator, facts: &CaptureFacts) {
                         Some(p) => format!("{}:{p}", endpoint.addr),
                         None => endpoint.addr.to_string(),
                     })
-                    .count("icmp_errors", endpoint.errors)
+                    .count(CountLabel::IcmpErrors, endpoint.errors)
                     .note(endpoint.description),
             );
         }
@@ -1338,11 +1742,11 @@ fn collect_incompleteness(acc: &mut Accumulator, facts: &CaptureFacts) {
     let undecodable = &facts.undecodable;
     if undecodable.frames > 0 {
         let mut ev = Evidence::default()
-            .count("frames", undecodable.frames)
-            .count("frames_read", facts.frames_read)
+            .count(CountLabel::Frames, undecodable.frames)
+            .count(CountLabel::FramesRead, facts.frames_read)
             .note(undecodable.reason_list());
         if undecodable.reasons_dropped > 0 {
-            ev = ev.count("reasons_not_retained", undecodable.reasons_dropped);
+            ev = ev.count(CountLabel::ReasonsNotRetained, undecodable.reasons_dropped);
         }
         acc.bump(FindingKind::UndecodableFrames, undecodable.frames, ev);
     }
@@ -1359,7 +1763,7 @@ fn collect_incompleteness(acc: &mut Accumulator, facts: &CaptureFacts) {
             port.messages,
             Evidence::default()
                 .endpoint(format!("port {}", port.port))
-                .count("messages", port.messages),
+                .count(CountLabel::Messages, port.messages),
         );
     }
     for port in &facts.websocket.ports {
@@ -1368,7 +1772,7 @@ fn collect_incompleteness(acc: &mut Accumulator, facts: &CaptureFacts) {
             port.messages,
             Evidence::default()
                 .endpoint(format!("port {}", port.port))
-                .count("messages", port.messages),
+                .count(CountLabel::Messages, port.messages),
         );
     }
 
@@ -1386,7 +1790,7 @@ fn collect_incompleteness(acc: &mut Accumulator, facts: &CaptureFacts) {
             FindingKind::RetentionLoss,
             msgs,
             Evidence::default()
-                .count("messages", msgs)
+                .count(CountLabel::Messages, msgs)
                 .note("messages evicted from retained dialogs by idle compaction (--limit)"),
         );
     }
@@ -1395,7 +1799,7 @@ fn collect_incompleteness(acc: &mut Accumulator, facts: &CaptureFacts) {
             FindingKind::RetentionLoss,
             refused,
             Evidence::default()
-                .count("dialogs", refused)
+                .count(CountLabel::Dialogs, refused)
                 .note("new dialogs refused at capacity (--no-rotate keeps the earliest)"),
         );
     }
@@ -1404,7 +1808,7 @@ fn collect_incompleteness(acc: &mut Accumulator, facts: &CaptureFacts) {
             FindingKind::RetentionLoss,
             rotated,
             Evidence::default()
-                .count("dialogs", rotated)
+                .count(CountLabel::Dialogs, rotated)
                 .note("oldest dialogs discarded at capacity by rotation (--limit)"),
         );
     }
@@ -1413,7 +1817,7 @@ fn collect_incompleteness(acc: &mut Accumulator, facts: &CaptureFacts) {
             FindingKind::RetentionLoss,
             facts.stun.dropped,
             Evidence::default()
-                .count("stun_transactions", facts.stun.dropped)
+                .count(CountLabel::StunTransactions, facts.stun.dropped)
                 .note("STUN transactions past the tracking cap — the packet count stays exact"),
         );
     }
@@ -1422,7 +1826,7 @@ fn collect_incompleteness(acc: &mut Accumulator, facts: &CaptureFacts) {
             FindingKind::RetentionLoss,
             facts.icmp.untracked_dialogs,
             Evidence::default()
-                .count("icmp_errors", facts.icmp.untracked_dialogs)
+                .count(CountLabel::IcmpErrors, facts.icmp.untracked_dialogs)
                 .note(
                     "ICMP errors that reached no dialog because the tracking cap was full — real \
                      evidence that appears against no call",
@@ -1434,6 +1838,66 @@ fn collect_incompleteness(acc: &mut Accumulator, facts: &CaptureFacts) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The count-label table is complete, unique, snake case, described, and
+    /// in the order the JSON has always carried its keys: alphabetical.
+    ///
+    /// Alphabetical is not a style preference. `Evidence::counts` is a
+    /// `BTreeMap`, so its key order IS the JSON key order, and it was the
+    /// order of the string literals this table replaced. A label table that
+    /// sorted any other way would reorder every consumer's `counts` object.
+    #[test]
+    fn the_count_label_table_is_unique_sorted_and_described() {
+        let names: Vec<&str> = CountLabel::ALL.iter().map(|l| l.as_str()).collect();
+        let mut sorted = names.clone();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(
+            names, sorted,
+            "CountLabel::ALL is not unique and alphabetical"
+        );
+        for label in CountLabel::ALL {
+            let name = label.as_str();
+            assert!(
+                !name.is_empty()
+                    && name
+                        .chars()
+                        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_'),
+                "`{name}` is not a snake_case label"
+            );
+            assert!(
+                label.description().ends_with('.') && label.description().len() > 20,
+                "`{name}` has no real description: {:?}",
+                label.description()
+            );
+            assert_eq!(label.to_string(), name, "Display must print the label");
+        }
+    }
+
+    /// A label orders, compares and looks up exactly as its text does.
+    ///
+    /// `Borrow<str>` promises that, and `BTreeMap::get("streams")` relies on
+    /// it: an `Ord` that disagreed with the text would make a lookup by name
+    /// miss a key that is present.
+    #[test]
+    fn a_count_label_orders_and_looks_up_as_its_text() {
+        for a in CountLabel::ALL {
+            for b in CountLabel::ALL {
+                assert_eq!(a.cmp(&b), a.as_str().cmp(b.as_str()), "{a} vs {b}");
+                assert_eq!(a == b, a.as_str() == b.as_str(), "{a} vs {b}");
+            }
+        }
+        let ev = Evidence::default()
+            .count(CountLabel::Streams, 2)
+            .count(CountLabel::RtpPackets, 425);
+        assert_eq!(ev.counts.get("streams"), Some(&2));
+        assert_eq!(ev.counts.get("rtp_packets"), Some(&425));
+        assert_eq!(
+            serde_json::to_string(&ev.counts).expect("serializes"),
+            r#"{"rtp_packets":425,"streams":2}"#,
+            "a label serializes as its text, in text order"
+        );
+    }
 
     /// A finding with a chosen kind and count, for ranking tests.
     fn finding(kind: FindingKind, occurrences: u64) -> Finding {

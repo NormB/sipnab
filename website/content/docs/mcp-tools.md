@@ -752,7 +752,7 @@ bad. The two are different facts and only one of them is a problem.
 
 ### `get_capture_report`
 
-The whole-capture analysis, the one `--report` prints. Backed by
+The whole-capture analysis, the one `--analyze` prints. Backed by
 [`analysis::analyze`](https://github.com/NormB/sipnab/blob/main/src/analysis.rs)
 and rendered by `output::analysis_report`.
 
@@ -780,8 +780,12 @@ empty body, because silence is indistinguishable from the tool not having run:
 ```
 
 **`json` is the default and returns an OBJECT**, serialized from the analysis
-itself — `findings`, `dialogs_examined`, `streams_examined`, `frames_read` and
-`complete`.
+itself — `schema_version`, `findings`, `dialogs_examined`, `streams_examined`,
+`frames_read` and `complete`. It is the object `--json-analyze` prints and
+`GET /v1/report` answers, described by
+[`tests/schemas/capture_analysis.schema.json`](https://github.com/NormB/sipnab/blob/main/tests/schemas/capture_analysis.schema.json).
+It never carries `filter`, because this tool analyzes every dialog in the
+store.
 
 Each `findings` row is one ranked problem, worst first:
 

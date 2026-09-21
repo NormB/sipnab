@@ -1,0 +1,5 @@
+---
+source: tests/analyze_test.rs
+expression: "analyze_json_line(&path, extra)"
+---
+{"schema_version":1,"frames_read":23,"dialogs_examined":5,"streams_examined":0,"complete":true,"findings":[{"kind":"server_failure","severity":"major","occurrences":2,"unit":"call","evidence":[{"call_id":"decline-7c6d5e@198.51.100.30","endpoints":["198.51.100.30:5060 -> 198.51.100.40"],"at":"2023-11-14T22:13:26Z","counts":{"status_code":603},"note":"Decline"},{"call_id":"unavail-4e5f60@192.0.2.50","endpoints":["192.0.2.50:5060 -> 192.0.2.60"],"at":"2023-11-14T22:13:32Z","counts":{"status_code":503},"note":"Service Unavailable"}],"evidence_omitted":0},{"kind":"request_failure","severity":"minor","occurrences":2,"unit":"call","evidence":[{"call_id":"busy-3a2b1c@192.0.2.30","endpoints":["192.0.2.30:5060 -> 192.0.2.40"],"at":"2023-11-14T22:13:23Z","counts":{"status_code":486},"note":"Busy Here"},{"call_id":"notfound-1b2c3d@203.0.113.30","endpoints":["203.0.113.30:5060 -> 203.0.113.40"],"at":"2023-11-14T22:13:29Z","counts":{"status_code":404},"note":"Not Found"}],"evidence_omitted":0}]}

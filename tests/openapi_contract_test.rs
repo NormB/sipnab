@@ -70,9 +70,13 @@ const WRITTEN: &str = "docs/rest-api.md";
 /// against `--call-report --json`. Its own header records that
 /// `stream.schema.json` had no live-output check at all, which is the gap that
 /// test closes.
-const SPLICED: [(&str, &str); 2] = [
+const SPLICED: [(&str, &str); 3] = [
     ("CallReport", "call_report.schema.json"),
     ("RtpStream", "stream.schema.json"),
+    // `GET /v1/report`. The component used to be declared by hand in
+    // `src/output/api.rs` with `findings` typed as a list of `{}` -- a body a
+    // generated client could read the denominators out of and nothing else.
+    ("CaptureReport", "capture_analysis.schema.json"),
 ];
 
 /// A capture with real dialogs AND real media, so every collection route has
@@ -1117,5 +1121,58 @@ fn the_staleness_gate_compares_rather_than_blesses_by_default() {
         on_disk,
         "generation and the checked-in artifact differ with the bless switch \
          unset, which is the state the drift gate exists to refuse"
+    );
+}
+
+/// The published `CaptureReport` IS the shared capture-analysis schema, down
+/// to the findings and their evidence.
+///
+/// Its hand-written predecessor declared `findings` as a list of `{}`, so the
+/// one REST answer about a whole capture told a client the shape of three
+/// integers and a boolean and nothing about what it had found. The component
+/// now comes from `tests/schemas/capture_analysis.schema.json`, which
+/// `tests/json_schema_test.rs` validates real `--json-analyze` output against;
+/// this holds the published artifact to that file one level down as well,
+/// where the hoisted `$defs` live.
+#[test]
+fn the_published_capture_report_is_the_shared_capture_analysis_schema() {
+    let artifact: Value =
+        serde_json::from_str(&std::fs::read_to_string(repo().join(ARTIFACT)).expect("read"))
+            .expect("the artifact is JSON");
+    let shared: Value = serde_json::from_str(
+        &std::fs::read_to_string(repo().join("tests/schemas/capture_analysis.schema.json"))
+            .expect("read the shared capture-analysis schema"),
+    )
+    .expect("the schema is JSON");
+    let names = |v: &Value| -> BTreeSet<String> {
+        v["properties"]
+            .as_object()
+            .map(|m| m.keys().cloned().collect())
+            .unwrap_or_default()
+    };
+    let components = &artifact["components"]["schemas"];
+
+    for (component, shared_part) in [
+        ("CaptureReport", &shared),
+        ("CaptureReport_finding", &shared["$defs"]["finding"]),
+        ("CaptureReport_evidence", &shared["$defs"]["evidence"]),
+    ] {
+        let declared = names(shared_part);
+        assert!(
+            declared.len() >= 5,
+            "only {} properties parsed out of the shared schema for {component}",
+            declared.len()
+        );
+        assert_eq!(
+            names(&components[component]),
+            declared,
+            "the published {component} and the shared capture-analysis schema \
+             disagree"
+        );
+    }
+    assert_eq!(
+        components["CaptureReport"]["properties"]["findings"]["items"]["$ref"],
+        "#/components/schemas/CaptureReport_finding",
+        "the published findings items are not the finding schema"
     );
 }

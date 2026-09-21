@@ -5504,8 +5504,15 @@ findings. `frames_read` comes from the same process-global counter the
 Prometheus scrape reports, so every other figure in the run shares that
 denominator.
 
-The MCP `get_capture_report` tool answers the same question. So does
-`sipnab --report`, which predates both servers.
+The body is the capture analysis itself, the object `--json-analyze` prints,
+and it opens with `schema_version`. The published contract is
+[`tests/schemas/capture_analysis.schema.json`](../tests/schemas/capture_analysis.schema.json),
+spliced into the OpenAPI document as `CaptureReport`. `filter` never appears
+here: this route analyzes every dialog in the store.
+
+The MCP `get_capture_report` tool answers the same question. So do
+`sipnab --analyze` and `sipnab --json-analyze` on the command line. Not
+`--report`, which is the tabular per-dialog summary and ranks nothing.
 
 ---
 
@@ -14013,7 +14020,10 @@ the conflict a candidate cause of media that never started.
 One JSON object for the whole run, not a line per finding: `frames_read`,
 `dialogs_examined` and `streams_examined` are properties of the run rather than
 of any finding, and a clean capture must still serialize to something that
-states them.
+states them. The object opens with `schema_version` (currently `1`), and
+[`tests/schemas/capture_analysis.schema.json`](../tests/schemas/capture_analysis.schema.json)
+describes it field by field. The same object is the `GET /v1/report` body and
+the MCP `get_capture_report` answer.
 
 ```bash
 sipnab -N -I capture.pcap --json-analyze --no-cli-print \
@@ -14021,8 +14031,18 @@ sipnab -N -I capture.pcap --json-analyze --no-cli-print \
 ```
 
 `findings` ranks worst first. Each carries a stable `kind`, a `severity`, an
-exact `occurrences` count, a `summary`, and an `evidence` array pointing back at
-the capture with Call-IDs, endpoints, timestamps and counts.
+exact `occurrences` count in its `unit`, an `evidence` array pointing back at
+the capture with Call-IDs, endpoints, timestamps and counts, and
+`evidence_omitted`, the rows a cap of ten kept out. A finding has no `summary`
+field: the title and the one-sentence explanation belong to the kind, so the
+text report prints them and the JSON names the `kind`.
+
+`filter` appears only when `--filter` or a diagnostic alias narrowed the
+dialogs. It holds the expression that ran, after alias expansion, so
+`--filter one-way` records `one_way == true`. The filter narrows the dialogs
+and nothing else: STUN probes, ICMP that reached no dialog, undecodable frames
+and retention losses are capture-level, and the analysis always reports them
+whole.
 
 `complete` is the field to read first. It is `false` when the run did not decode
 everything it received — undecodable frames, SIP a port gate discarded, records
@@ -18535,7 +18555,7 @@ bad. The two are different facts and only one of them is a problem.
 
 ### `get_capture_report`
 
-The whole-capture analysis, the one `--report` prints. Backed by
+The whole-capture analysis, the one `--analyze` prints. Backed by
 [`analysis::analyze`](https://github.com/NormB/sipnab/blob/main/src/analysis.rs)
 and rendered by `output::analysis_report`.
 
@@ -18563,8 +18583,12 @@ empty body, because silence is indistinguishable from the tool not having run:
 ```
 
 **`json` is the default and returns an OBJECT**, serialized from the analysis
-itself — `findings`, `dialogs_examined`, `streams_examined`, `frames_read` and
-`complete`.
+itself — `schema_version`, `findings`, `dialogs_examined`, `streams_examined`,
+`frames_read` and `complete`. It is the object `--json-analyze` prints and
+`GET /v1/report` answers, described by
+[`tests/schemas/capture_analysis.schema.json`](https://github.com/NormB/sipnab/blob/main/tests/schemas/capture_analysis.schema.json).
+It never carries `filter`, because this tool analyzes every dialog in the
+store.
 
 Each `findings` row is one ranked problem, worst first:
 

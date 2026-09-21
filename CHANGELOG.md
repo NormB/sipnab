@@ -10,6 +10,21 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Added
+
+- **The capture analysis has a published contract.** `--json-analyze`,
+  `GET /v1/report` and the MCP `get_capture_report` answer now open with
+  `schema_version: 1`, and `tests/schemas/capture_analysis.schema.json`
+  describes the object, closed at every depth: each finding `kind`, each
+  severity, each unit and each evidence count label. The OpenAPI
+  `CaptureReport` component is that schema. It used to type `findings` as a
+  list of `{}`. The count labels are now one table in `src/analysis.rs`, and
+  the JSON is byte-identical to before.
+- **A filtered analysis says it was filtered.** When `--filter` or a
+  diagnostic alias narrowed the dialogs, `--json-analyze` carries `filter`,
+  the expression that ran, and `--analyze` prints the same sentence. Before,
+  a narrowed analysis read like a whole capture with fewer calls in it.
+
 ### Changed
 
 - **The published binary-size ceiling is 17 MB.** The 0.5.183 x86_64-musl
@@ -32,6 +47,13 @@ entry that carries them.
 
 ### Fixed
 
+- **The analysis docs describe the fields it has.** The output-formats page
+  promised a per-finding `summary` field, which the analysis never had, and
+  the REST reference said `complete: false` meant only that a retention cap
+  shed something. It is false for any `blind` finding, including undecodable
+  frames and SIP a port gate discarded. The REST and MCP references also
+  named `--report` as the CLI form of the capture analysis; that is
+  `--analyze`.
 - **A STUN finding far outside its call keeps its reason.** The time caveat
   replaced the note naming the address STUN offered instead of being appended
   to it, and that address appears nowhere else in the evidence.

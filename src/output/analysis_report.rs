@@ -38,6 +38,10 @@ pub fn print_analysis_report_as(
 
     if analysis.is_clean() {
         out.push_str(&clean_line(analysis));
+        if let Some(note) = filter_note(analysis) {
+            out.push(' ');
+            out.push_str(&note);
+        }
         out.push('\n');
         return out;
     }
@@ -51,6 +55,9 @@ pub fn print_analysis_report_as(
         analysis.streams_examined,
         analysis.frames_read
     );
+    if let Some(note) = filter_note(analysis) {
+        let _ = writeln!(out, "{note}");
+    }
 
     // The incompleteness banner goes ABOVE the findings, not below them. A
     // reader who stops after the first screen must still have been told that
@@ -98,6 +105,19 @@ fn clean_line(analysis: &CaptureAnalysis) -> String {
          statement about the capture, not only about what sipnab could read of it.",
         analysis.dialogs_examined, analysis.streams_examined, analysis.frames_read
     )
+}
+
+/// The sentence a narrowed analysis carries, or `None` for a whole one.
+///
+/// The same fact the JSON carries as `filter`, in the report a person reads:
+/// the two renderings of one analysis must not disagree about what it covered.
+fn filter_note(analysis: &CaptureAnalysis) -> Option<String> {
+    analysis.filter.as_ref().map(|expr| {
+        format!(
+            "Dialogs were selected by the filter `{expr}`; capture-level findings are not \
+             narrowed by it."
+        )
+    })
 }
 
 /// One finding: heading, meaning, evidence.
@@ -180,7 +200,7 @@ fn evidence_line(ev: &Evidence) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::analysis::FindingKind;
+    use crate::analysis::{CAPTURE_ANALYSIS_SCHEMA_VERSION, CountLabel, FindingKind};
     use std::collections::BTreeMap;
 
     /// A finding whose evidence list is complete.
@@ -201,6 +221,8 @@ mod tests {
     #[test]
     fn a_clean_capture_gets_one_honest_line() {
         let analysis = CaptureAnalysis {
+            schema_version: CAPTURE_ANALYSIS_SCHEMA_VERSION,
+            filter: None,
             frames_read: 41_203,
             dialogs_examined: 214,
             streams_examined: 402,
@@ -221,6 +243,8 @@ mod tests {
     #[test]
     fn an_incomplete_read_never_prints_the_clean_line() {
         let analysis = CaptureAnalysis {
+            schema_version: CAPTURE_ANALYSIS_SCHEMA_VERSION,
+            filter: None,
             frames_read: 49,
             dialogs_examined: 0,
             streams_examined: 0,
@@ -229,7 +253,10 @@ mod tests {
                 FindingKind::UndecodableFrames,
                 49,
                 vec![Evidence {
-                    counts: BTreeMap::from([("frames", 49), ("frames_read", 49)]),
+                    counts: BTreeMap::from([
+                        (CountLabel::Frames, 49),
+                        (CountLabel::FramesRead, 49),
+                    ]),
                     note: Some("unsupported link type 0 (49)".to_string()),
                     ..Evidence::default()
                 }],
@@ -251,6 +278,8 @@ mod tests {
         let at =
             chrono::DateTime::from_timestamp_millis(1_700_000_000_000).expect("valid timestamp");
         let analysis = CaptureAnalysis {
+            schema_version: CAPTURE_ANALYSIS_SCHEMA_VERSION,
+            filter: None,
             frames_read: 900,
             dialogs_examined: 1,
             streams_examined: 1,
@@ -262,7 +291,10 @@ mod tests {
                     call_id: Some("abc123@192.0.2.1".to_string()),
                     endpoints: vec!["SDP 192.168.10.50:16400".to_string()],
                     at: Some(at),
-                    counts: BTreeMap::from([("rtp_packets", 412), ("streams", 1)]),
+                    counts: BTreeMap::from([
+                        (CountLabel::RtpPackets, 412),
+                        (CountLabel::Streams, 1),
+                    ]),
                     note: Some("nothing came back the other way".to_string()),
                 }],
             )],
@@ -287,6 +319,8 @@ mod tests {
             ..Evidence::default()
         }];
         let complete = CaptureAnalysis {
+            schema_version: CAPTURE_ANALYSIS_SCHEMA_VERSION,
+            filter: None,
             frames_read: 9_000,
             dialogs_examined: 40,
             streams_examined: 80,
@@ -312,6 +346,8 @@ mod tests {
     #[test]
     fn markdown_format_uses_headings() {
         let analysis = CaptureAnalysis {
+            schema_version: CAPTURE_ANALYSIS_SCHEMA_VERSION,
+            filter: None,
             frames_read: 10,
             dialogs_examined: 1,
             streams_examined: 0,
@@ -330,6 +366,8 @@ mod tests {
     #[test]
     fn rendered_prose_has_no_doubled_spaces() {
         let analysis = CaptureAnalysis {
+            schema_version: CAPTURE_ANALYSIS_SCHEMA_VERSION,
+            filter: None,
             frames_read: 10,
             dialogs_examined: 0,
             streams_examined: 0,
@@ -351,5 +389,52 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// A narrowed analysis says so in the report a person reads, not only in
+    /// the JSON.
+    ///
+    /// `--filter` selects dialogs and leaves the capture-level findings whole,
+    /// so a filtered report with a small dialog count reads like a small
+    /// capture. The machine encodings carry the expression as `filter`; the
+    /// human one must carry the same fact, or the two renderings of one
+    /// analysis disagree about what it covered. Both shapes are checked: the
+    /// clean one-liner and the ranked list.
+    #[test]
+    fn a_filtered_report_names_its_filter_and_an_unfiltered_one_does_not() {
+        let expr = "call_id == 'abc@192.0.2.1'";
+        let clean = CaptureAnalysis {
+            filter: Some(expr.to_string()),
+            complete: true,
+            ..CaptureAnalysis::default()
+        };
+        let out = print_analysis_report(&clean);
+        assert_eq!(out.lines().count(), 1, "still one line: {out}");
+        assert!(out.contains(expr), "the clean line names the filter: {out}");
+
+        let ranked = CaptureAnalysis {
+            filter: Some(expr.to_string()),
+            complete: true,
+            findings: vec![finding(FindingKind::OneWayAudio, 1, Vec::new())],
+            ..CaptureAnalysis::default()
+        };
+        for out in [
+            print_analysis_report(&ranked),
+            print_analysis_report_as(&ranked, crate::output::ReportFormat::Markdown),
+        ] {
+            assert!(
+                out.contains(expr),
+                "the ranked report names the filter: {out}"
+            );
+        }
+
+        let unfiltered = CaptureAnalysis {
+            filter: None,
+            ..ranked
+        };
+        assert!(
+            !print_analysis_report(&unfiltered).contains("filter"),
+            "an unfiltered report must not mention a filter"
+        );
     }
 }

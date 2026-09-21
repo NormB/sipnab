@@ -1671,7 +1671,7 @@ For implementers picking this up, the bridge from each MCP tool to existing func
 
 | MCP tool | Wraps |
 |---|---|
-| `list_dialogs` | `DialogStore::iter` ([`src/sip/dialog_store.rs:1101`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1101)) + `FilterExpr::matches_dialog` ([`src/sip/dsl.rs:723`](https://github.com/NormB/sipnab/blob/main/src/sip/dsl.rs#L723)) + `expand_alias` ([`src/sip/dsl.rs:510`](https://github.com/NormB/sipnab/blob/main/src/sip/dsl.rs#L510)) |
+| `list_dialogs` | `DialogStore::iter` ([`src/sip/dialog_store.rs:1101`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1101)) + `FilterExpr::matches_dialog` ([`src/sip/dsl.rs:747`](https://github.com/NormB/sipnab/blob/main/src/sip/dsl.rs#L747)) + `expand_alias` ([`src/sip/dsl.rs:510`](https://github.com/NormB/sipnab/blob/main/src/sip/dsl.rs#L510)) |
 | `get_dialog` | `DialogStore::get` ([`src/sip/dialog_store.rs:1066`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1066)) + iterate `dialog.messages` + `output::json::message_to_json` |
 | `get_dialog_report` | `output::generate_call_report` ([`src/output/call_report.rs:53`](https://github.com/NormB/sipnab/blob/main/src/output/call_report.rs#L53)) with `ReportFormat::Json/Markdown/Text` |
 | `get_message` | `output::json::message_to_json` ([`src/output/json.rs:690`](https://github.com/NormB/sipnab/blob/main/src/output/json.rs#L690)) |

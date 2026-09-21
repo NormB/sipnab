@@ -102,6 +102,10 @@ pub struct FilterExpr {
     /// [`FilterExpr::matches_dialog`] can skip the media/asymmetry
     /// diagnosis entirely when no such field appears.
     needs_diagnosis: bool,
+    /// The expression text this was compiled from, trimmed. Kept so an
+    /// answer narrowed by a filter can say which one — see
+    /// [`FilterExpr::source`].
+    source: String,
 }
 
 impl std::fmt::Debug for FilterExpr {
@@ -606,7 +610,21 @@ impl FilterExpr {
         FilterExpr {
             root,
             needs_diagnosis,
+            // The tree above, written the way `parse` would read it back.
+            source: "one_way == true AND one_way == false".to_string(),
         }
+    }
+
+    /// The expression text this filter was compiled from, trimmed.
+    ///
+    /// The text that actually ran: an alias such as `one-way` arrives here
+    /// already expanded, so the answer is an expression a reader can paste
+    /// back into `--filter` and reproduce. Used by the capture analysis,
+    /// which otherwise could not say that the dialogs it examined were a
+    /// selection rather than the capture.
+    #[must_use]
+    pub fn source(&self) -> &str {
+        &self.source
     }
 
     /// Parse a filter expression string into a compiled [`FilterExpr`].
@@ -679,6 +697,7 @@ impl FilterExpr {
         Ok(FilterExpr {
             root: expr,
             needs_diagnosis,
+            source: trimmed.to_string(),
         })
     }
 

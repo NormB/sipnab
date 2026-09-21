@@ -1817,8 +1817,15 @@ findings. `frames_read` comes from the same process-global counter the
 Prometheus scrape reports, so every other figure in the run shares that
 denominator.
 
-The MCP `get_capture_report` tool answers the same question. So does
-`sipnab --report`, which predates both servers.
+The body is the capture analysis itself, the object `--json-analyze` prints,
+and it opens with `schema_version`. The published contract is
+[`tests/schemas/capture_analysis.schema.json`](../tests/schemas/capture_analysis.schema.json),
+spliced into the OpenAPI document as `CaptureReport`. `filter` never appears
+here: this route analyzes every dialog in the store.
+
+The MCP `get_capture_report` tool answers the same question. So do
+`sipnab --analyze` and `sipnab --json-analyze` on the command line. Not
+`--report`, which is the tabular per-dialog summary and ranks nothing.
 
 ---
 

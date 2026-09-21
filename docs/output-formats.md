@@ -481,7 +481,10 @@ the conflict a candidate cause of media that never started.
 One JSON object for the whole run, not a line per finding: `frames_read`,
 `dialogs_examined` and `streams_examined` are properties of the run rather than
 of any finding, and a clean capture must still serialize to something that
-states them.
+states them. The object opens with `schema_version` (currently `1`), and
+[`tests/schemas/capture_analysis.schema.json`](../tests/schemas/capture_analysis.schema.json)
+describes it field by field. The same object is the `GET /v1/report` body and
+the MCP `get_capture_report` answer.
 
 ```bash
 sipnab -N -I capture.pcap --json-analyze --no-cli-print \
@@ -489,8 +492,18 @@ sipnab -N -I capture.pcap --json-analyze --no-cli-print \
 ```
 
 `findings` ranks worst first. Each carries a stable `kind`, a `severity`, an
-exact `occurrences` count, a `summary`, and an `evidence` array pointing back at
-the capture with Call-IDs, endpoints, timestamps and counts.
+exact `occurrences` count in its `unit`, an `evidence` array pointing back at
+the capture with Call-IDs, endpoints, timestamps and counts, and
+`evidence_omitted`, the rows a cap of ten kept out. A finding has no `summary`
+field: the title and the one-sentence explanation belong to the kind, so the
+text report prints them and the JSON names the `kind`.
+
+`filter` appears only when `--filter` or a diagnostic alias narrowed the
+dialogs. It holds the expression that ran, after alias expansion, so
+`--filter one-way` records `one_way == true`. The filter narrows the dialogs
+and nothing else: STUN probes, ICMP that reached no dialog, undecodable frames
+and retention losses are capture-level, and the analysis always reports them
+whole.
 
 `complete` is the field to read first. It is `false` when the run did not decode
 everything it received — undecodable frames, SIP a port gate discarded, records
