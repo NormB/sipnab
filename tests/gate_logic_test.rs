@@ -46,9 +46,9 @@ use std::path::PathBuf;
 mod release_logic;
 
 use release_logic::{
-    ADVERTISEMENT_PATHS, LOAD_VERIFICATION_RECORD, advertisement_path, debounce_ceiling,
-    dependency_path, is_advertisement, is_advertisement_beside_dependency_bumps,
-    is_dependency_bump, parse_version,
+    ADVERTISEMENT_PATHS, LOAD_VERIFICATION_RECORD, MAX_UNRELEASED_COMMITS, advertisement_path,
+    debounce_ceiling, dependency_path, is_advertisement, is_advertisement_beside_dependency_bumps,
+    is_dependency_bump, parse_version, unreleased_accumulation,
 };
 
 /// The repository root.
@@ -723,4 +723,40 @@ fn the_mixture_exemption_keeps_both_siblings_refusals() {
             "{what} was accepted as an advertisement beside dependency bumps"
         );
     }
+}
+
+/// Past the bound, cutting the release is the remedy the gate asks for, so a
+/// cut must be pushable. It was not: the count still read 26 on the commit that
+/// bumps the version, and the tag cannot be pushed before that commit's CI has
+/// run, so once past the bound nothing could release.
+#[test]
+fn a_release_being_cut_is_the_remedy_not_a_violation() {
+    let past = MAX_UNRELEASED_COMMITS + 1;
+    assert!(unreleased_accumulation(past, true, None).is_ok());
+    assert!(
+        unreleased_accumulation(past, false, None).is_err(),
+        "no cut and no reason is still the stall the gate exists for"
+    );
+}
+
+/// The gate's own message offers a second remedy: say in `[Unreleased]` why
+/// the work is held. A reason with nothing in it is not one.
+#[test]
+fn a_stated_hold_reason_is_accepted_and_an_empty_one_is_not() {
+    let past = MAX_UNRELEASED_COMMITS + 1;
+    assert!(
+        unreleased_accumulation(
+            past,
+            false,
+            Some("the P5 features land together in the next release")
+        )
+        .is_ok()
+    );
+    for empty in ["", "   ", "tbd"] {
+        assert!(
+            unreleased_accumulation(past, false, Some(empty)).is_err(),
+            "{empty:?} explains nothing"
+        );
+    }
+    assert!(unreleased_accumulation(MAX_UNRELEASED_COMMITS, false, None).is_ok());
 }

@@ -10,6 +10,8 @@ entry that carries them.
 
 ## [Unreleased]
 
+**Held:** 0.5.184 is cut in the commit after this one; this commit carries the gate fix that cut needs in order to be pushed.
+
 ### Changed
 
 - **The published binary-size ceiling is 17 MB.** The 0.5.183 x86_64-musl
@@ -87,6 +89,12 @@ entry that carries them.
 
 ### Internal
 
+- **The unreleased-commit gate accepts the remedies it names.** Past 25
+  commits since the newest tag it refused every push, including the commit that
+  cuts the release it was asking for, whose CI has to run before the tag can be
+  pushed, and it ignored the `[Unreleased]` explanation its own message offered.
+  It now passes a commit that moves the crate version past the newest tag, and
+  a `**Held:** <why>` line in `[Unreleased]` that says something.
 - **The published test count is satisfiable again.** Nine tests landed in
   `src/capture/uprobe/bpf.rs`, which compiles only with the `bpf` feature, so
   CI's `--all-features` suite counted nine more tests than the hook's

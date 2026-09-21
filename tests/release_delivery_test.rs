@@ -33,7 +33,7 @@ mod release_logic;
 
 use release_logic::{
     ADVERTISEMENT_PATHS, is_advertisement, is_advertisement_beside_dependency_bumps,
-    is_dependency_bump, parse_version,
+    is_dependency_bump, parse_version, unreleased_accumulation,
 };
 
 /// The repository root.
@@ -367,18 +367,25 @@ fn an_unreleased_section_exists_only_when_something_is_unreleased() {
 /// ordinary batching.
 #[test]
 fn unreleased_commits_do_not_accumulate_without_a_release() {
-    const MAX_UNRELEASED_COMMITS: u32 = 25;
     let Some(n) = commits_since_newest_tag() else {
         cannot_tell("git could not count commits since the newest tag");
         return;
     };
-    assert!(
-        n <= MAX_UNRELEASED_COMMITS,
-        "{n} commits since {:?} without a release. Cut one, or say in \
-         CHANGELOG.md's [Unreleased] section why the work is being held. A \
-         backlog of unreleased commits is invisible to every other gate here.",
-        newest_tag()
-    );
+    let cutting = newest_tag().is_some_and(|t| crate_version() > t);
+    let held = unreleased_body().and_then(|body| {
+        body.lines().find_map(|l| {
+            l.trim()
+                .strip_prefix("**Held:**")
+                .map(|r| r.trim().to_string())
+        })
+    });
+    if let Err(why) = unreleased_accumulation(n, cutting, held.as_deref()) {
+        panic!(
+            "{why} Newest tag {:?}. A backlog of unreleased commits is invisible to \
+             every other gate here.",
+            newest_tag()
+        );
+    }
 }
 
 /// A security fix must never be quietly unreleased.

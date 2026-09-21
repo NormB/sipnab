@@ -220,3 +220,39 @@ pub fn is_advertisement_beside_dependency_bumps(
         changed.iter().cloned().partition(|f| dependency_path(f));
     !bumps.is_empty() && is_advertisement(&rest, published, newest_tag)
 }
+
+/// The most commits past the newest tag before the delivery gate calls it a
+/// stall rather than ordinary batching.
+pub const MAX_UNRELEASED_COMMITS: u32 = 25;
+
+/// Whether `commits` past the newest tag are acceptable.
+///
+/// Past the bound the gate's message names two remedies, and both have to be
+/// ones a commit can actually deliver. Cutting the release: `cutting` is true
+/// on the commit that moves the crate version past the newest tag, and that
+/// commit has to be pushable, because its CI must run before the tag can be.
+/// Refusing it made the gate block the one remedy it asked for. Saying why the
+/// work is held: `held` is the text after a `**Held:**` line in
+/// `[Unreleased]`, and a reason has to say something, so blank text or a
+/// placeholder is refused.
+pub fn unreleased_accumulation(
+    commits: u32,
+    cutting: bool,
+    held: Option<&str>,
+) -> Result<(), String> {
+    if commits <= MAX_UNRELEASED_COMMITS || cutting {
+        return Ok(());
+    }
+    let says_something = held
+        .map(|r| r.chars().filter(|c| c.is_alphanumeric()).count() >= 12)
+        .unwrap_or(false);
+    if says_something {
+        Ok(())
+    } else {
+        Err(format!(
+            "{commits} commits since the newest tag without a release. Cut one, or add a \
+             `**Held:** <why>` line to CHANGELOG.md's [Unreleased] section saying why the \
+             work is being held."
+        ))
+    }
+}
