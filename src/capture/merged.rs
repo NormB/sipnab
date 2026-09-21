@@ -166,6 +166,14 @@ impl MergedPcapNg {
     pub fn open(path: &Path) -> Result<Self> {
         use pcap_file::pcapng::{Block, PcapNgReader};
 
+        // Prevent path traversal attacks by rejecting paths containing '..'.
+        if path
+            .components()
+            .any(|c| c == std::path::Component::ParentDir)
+        {
+            anyhow::bail!("Invalid input: {}", path.display());
+        }
+
         let bytes = std::fs::read(path)
             .with_context(|| format!("Failed to read capture '{}'", path.display()))?;
         let mut reader = PcapNgReader::new(&bytes[..])
