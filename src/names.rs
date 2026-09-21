@@ -543,6 +543,13 @@ impl NameResolver {
     /// Reads `path`; on success merges into the manual table and bumps
     /// the generation counter.
     pub fn load_manual_file(&self, path: &Path) -> std::io::Result<()> {
+        // Prevent path traversal attacks by rejecting paths containing '..'.
+        if path.components().any(|c| c == std::path::Component::ParentDir) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("Invalid input: {}", path.display()),
+            ));
+        }
         let text = std::fs::read_to_string(path)?;
         let parsed = parse_hosts(&text);
         let mut inner = self.inner.write();
