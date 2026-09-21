@@ -48,13 +48,13 @@ narrower and more interesting:
 | Platform split | [`fanout.rs:109`](https://github.com/NormB/sipnab/blob/main/src/capture/fanout.rs#L109) | non-Linux returns `ErrorKind::Unsupported`; the call site is unconditional so it cannot go unused (`82eb8ff`) |
 | Plan / group id | [`live.rs:194`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L194), [`:209`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L209) | pure, tested without a device |
 | Kernel probe | [`live.rs:293`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L293) | throwaway handle, so refusal is discovered once |
-| N-socket driver | `capture_live_fanout`, [`live.rs:270`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L270) | complete, joins all threads, first error wins |
+| N-socket driver | `capture_live_fanout`, [`live.rs:291`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L291) | complete, joins all threads, first error wins |
 | **A caller** | [`bootstrap.rs:1958`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L1958), [`native.rs:397`](https://github.com/NormB/sipnab/blob/main/src/capture/native.rs#L397) | **CT4 shipped it**: `--cores N` becomes `fanout_sockets`, and the `Live` arm calls `capture_live_fanout` |
 
 That last row is the one thing this section got to change. When the page was
 written the `Live` arm spawned exactly one thread running `capture_live`, a
 one-line wrapper passing `None` for the group
-([`live.rs:175`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L175)); CT4 replaced that call with
+([`live.rs:191`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L191)); CT4 replaced that call with
 `capture_live_fanout` and gave it `config.fanout_sockets`. Confirmed by running
 it: `sipnab -d <veth> --cores 4` logs *"capturing on 4 sockets, fanout group
 …"*.
@@ -106,7 +106,7 @@ does nothing on this path — the rarest and cheapest kind of flag change.
 
 **The module already assumes it.** `capture_live_fanout`'s own fallback warning
 is written in terms of `--cores`
-([`live.rs:270`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L270)): *"`--cores {sockets}` does not
+([`live.rs:291`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L291)): *"`--cores {sockets}` does not
 widen a live capture here."* Shipping a second flag would make that message
 wrong on the day it first becomes reachable.
 
@@ -167,7 +167,7 @@ coordinator thread and an aggregated readiness signal. That is the same topology
 `capture_live_fanout` builds — which is a good sign for the design and a problem
 for the combination: `--cores 4 -d eth0,eth1 --multi-device` would be eight
 capture threads and eight rings, and `fanout_group_id`
-([`live.rs:255`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L255)) derives **one group id per
+([`live.rs:276`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L276)) derives **one group id per
 process**, not per device.
 
 **Unverified:** whether the kernel permits sockets bound to two different
@@ -202,7 +202,7 @@ speculated about.
 ## 3. What widening CAPTURE buys, exactly
 
 `capture_live_fanout` gives every socket the same `tx`
-([`live.rs:270`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L270)), and there is one receiver: the
+([`live.rs:291`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L291)), and there is one receiver: the
 `rx.recv_timeout` at [`batch.rs:2121`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L2121). So the shape is
 N producers, one consumer, one pair of stores, one sweep.
 
@@ -305,7 +305,7 @@ to answer is what replaces `final_sweep`'s single well-defined moment.
 ### Instruments
 
 `KERNEL_DROPPED` / `IFACE_DROPPED`
-([`live.rs:857`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L857)) are the loss counters;
+([`live.rs:878`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L878)) are the loss counters;
 `sipnab_capture_queue_depth_packets` and
 `sipnab_capture_backpressure_blocks_total` are the regime discriminator
 ([section 3, "What widening CAPTURE buys, exactly"](#3-what-widening-capture-buys-exactly)).

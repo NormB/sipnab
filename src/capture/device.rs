@@ -49,28 +49,17 @@ pub fn find_default_device() -> Result<String> {
     }
 
     // Fall back: first non-loopback device from the full list.
-    let devices = Device::list().unwrap_or_default();
-    for dev in &devices {
-        if dev.name != "lo" && dev.name != "lo0" {
-            return Ok(dev.name.clone());
-        }
+    let devices: Vec<String> = Device::list()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|d| d.name)
+        .collect();
+    if let Some(name) = first_non_loopback(&devices) {
+        return Ok(name.to_string());
     }
 
     // Nothing found — build a helpful error message.
-    let names = list_devices();
-    if names.is_empty() {
-        anyhow::bail!(
-            "No capture device found. Are you running with sufficient privileges?\n\
-             Try: sudo sipnab"
-        );
-    } else {
-        anyhow::bail!(
-            "No suitable capture device found. Available devices: {}\n\
-             Try: sipnab -d {}",
-            names.join(", "),
-            names[0]
-        );
-    }
+    Err(no_device_error(&list_devices()))
 }
 
 /// List all available capture device names.
@@ -144,6 +133,38 @@ pub fn parse_device_list(spec: &str) -> Result<Vec<String>> {
     }
 
     Ok(out)
+}
+
+/// The first device in `names` that is not a loopback interface.
+///
+/// Both spellings are skipped: `lo` on Linux, `lo0` on macOS and the BSDs.
+/// Separate from [`find_default_device`] because that function answers `any`
+/// on Linux before it gets here, so on the platform CI runs this would
+/// otherwise never execute.
+fn first_non_loopback(names: &[String]) -> Option<&str> {
+    names
+        .iter()
+        .map(String::as_str)
+        .find(|name| *name != "lo" && *name != "lo0")
+}
+
+/// The error for "no suitable device", given the devices that do exist.
+///
+/// An empty list usually means insufficient privileges, so it says so; a list
+/// of loopbacks is shown, with the first suggested explicitly.
+fn no_device_error(names: &[String]) -> anyhow::Error {
+    match names.first() {
+        None => anyhow::anyhow!(
+            "No capture device found. Are you running with sufficient privileges?\n\
+             Try: sudo sipnab"
+        ),
+        Some(first) => anyhow::anyhow!(
+            "No suitable capture device found. Available devices: {}\n\
+             Try: sipnab -d {}",
+            names.join(", "),
+            first
+        ),
+    }
 }
 
 /// Tests for device auto-detection (environment-tolerant, since CI may
@@ -314,6 +335,49 @@ mod tests {
         assert_eq!(
             parse_device_list(r"\Device\NPF_{abc},en0.1").unwrap(),
             vec![r"\Device\NPF_{abc}", "en0.1"]
+        );
+    }
+
+    // ── The non-Linux fallback, as data ──────────────────────────────────
+    //
+    // On Linux `find_default_device` answers `any` before reaching any of
+    // this, so the fallback runs only on macOS/BSD. Its two decisions take
+    // the device list as an argument, so they are pinned here on every host.
+
+    fn names(list: &[&str]) -> Vec<String> {
+        list.iter().map(|s| (*s).to_string()).collect()
+    }
+
+    /// The first device that is not loopback wins, in the order listed;
+    /// both loopback spellings (`lo`, `lo0`) are skipped.
+    #[test]
+    fn the_fallback_takes_the_first_device_that_is_not_loopback() {
+        assert_eq!(
+            first_non_loopback(&names(&["lo", "eth0", "wlan0"])),
+            Some("eth0")
+        );
+        assert_eq!(first_non_loopback(&names(&["lo0", "en0"])), Some("en0"));
+        assert_eq!(first_non_loopback(&names(&["lo", "lo0"])), None);
+        assert_eq!(first_non_loopback(&[]), None);
+    }
+
+    /// No devices at all points at privileges; only loopback lists what
+    /// exists and suggests the first of it.
+    #[test]
+    fn the_no_device_error_says_why_and_what_to_try() {
+        let none = no_device_error(&[]).to_string();
+        assert!(none.starts_with("No capture device found."), "{none}");
+        assert!(none.contains("Try: sudo sipnab"), "{none}");
+
+        let only_loopback = no_device_error(&names(&["lo", "lo0"])).to_string();
+        assert!(
+            only_loopback
+                .starts_with("No suitable capture device found. Available devices: lo, lo0"),
+            "{only_loopback}"
+        );
+        assert!(
+            only_loopback.ends_with("Try: sipnab -d lo"),
+            "{only_loopback}"
         );
     }
 }

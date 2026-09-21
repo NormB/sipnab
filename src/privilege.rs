@@ -141,11 +141,7 @@ fn setcap_command(exe: &str, as_root: bool) -> (String, Vec<String>) {
 pub fn setup_capabilities() -> Result<()> {
     let exe = std::env::current_exe()
         .map_err(|e| anyhow::anyhow!("cannot resolve own executable path: {e}"))?;
-    // Follow symlinks so setcap targets the real binary, not a symlink in PATH.
-    let exe = std::fs::canonicalize(&exe).unwrap_or(exe);
-    let exe_str = exe
-        .to_str()
-        .ok_or_else(|| anyhow::anyhow!("executable path is not valid UTF-8"))?;
+    let exe_str = setcap_target(&exe)?;
 
     let root = is_root();
     if !root {
@@ -153,26 +149,62 @@ pub fn setup_capabilities() -> Result<()> {
             "Not root — elevating via sudo to set capabilities (may prompt for a password)"
         );
     }
-    let (program, args) = setcap_command(exe_str, root);
+    let (program, args) = setcap_command(&exe_str, root);
 
-    let status = std::process::Command::new(&program)
-        .args(&args)
-        .status()
-        .map_err(|e| {
-            anyhow::anyhow!(
-                "failed to run '{program}' (is 'setcap' installed? on Debian: \
-                 'sudo apt install libcap2-bin'): {e}"
-            )
-        })?;
+    let status = std::process::Command::new(&program).args(&args).status();
+    setcap_outcome(&program, &exe_str, status)
+}
+
+/// The path `setcap` should be pointed at for the executable at `exe`.
+///
+/// Follows symlinks so setcap targets the real binary, not a symlink in PATH —
+/// a file capability on a symlink grants nothing. A path that cannot be
+/// canonicalized is used as given, so `setcap` itself reports what is wrong.
+///
+/// # Errors
+///
+/// The path is not valid UTF-8, so it cannot be handed on as an argument
+/// without being mangled.
+#[cfg(target_os = "linux")]
+fn setcap_target(exe: &std::path::Path) -> Result<String> {
+    let exe = std::fs::canonicalize(exe).unwrap_or_else(|_| exe.to_path_buf());
+    exe.to_str()
+        .map(str::to_string)
+        .ok_or_else(|| anyhow::anyhow!("executable path is not valid UTF-8"))
+}
+
+/// What running `program` to grant capabilities on `exe` came to.
+///
+/// Separate from [`setup_capabilities`] so the verdict is testable without
+/// running the privileged command: spawning `setcap`/`sudo` is the part no
+/// test may do, and turning its result into an answer is the part that can be
+/// wrong.
+///
+/// # Errors
+///
+/// The command could not be spawned (the message names the package that ships
+/// `setcap`), or it exited non-zero.
+#[cfg(target_os = "linux")]
+fn setcap_outcome(
+    program: &str,
+    exe: &str,
+    status: std::io::Result<std::process::ExitStatus>,
+) -> Result<()> {
+    let status = status.map_err(|e| {
+        anyhow::anyhow!(
+            "failed to run '{program}' (is 'setcap' installed? on Debian: \
+             'sudo apt install libcap2-bin'): {e}"
+        )
+    })?;
 
     if !status.success() {
-        bail!("setcap failed (exit {:?}) on {}", status.code(), exe_str);
+        bail!("setcap failed (exit {:?}) on {}", status.code(), exe);
     }
 
     tracing::info!(
         "Granted {} on {} — live capture now works without sudo",
         CAPTURE_CAPS,
-        exe_str
+        exe
     );
     Ok(())
 }
@@ -231,19 +263,32 @@ pub fn lock_key_memory() -> MemoryLock {
     {
         // SAFETY: mlockall takes a flags word and touches no memory we own.
         let rc = unsafe { libc::mlockall(libc::MCL_CURRENT | libc::MCL_FUTURE) };
-        if rc == 0 {
-            return MemoryLock::Locked;
-        }
-        let err = std::io::Error::last_os_error();
-        MemoryLock::Unlocked(format!(
-            "mlockall failed: {err}. Key material can be written to swap, where \
-             it outlives this process and zeroize cannot reach it. Raise \
-             RLIMIT_MEMLOCK (ulimit -l, or LimitMEMLOCK= in the systemd unit)."
-        ))
+        memory_lock_outcome(if rc == 0 {
+            Ok(())
+        } else {
+            Err(std::io::Error::last_os_error())
+        })
     }
     #[cfg(not(target_os = "linux"))]
     {
         MemoryLock::Unlocked("locking pages is implemented on Linux only".to_string())
+    }
+}
+
+/// What an `mlockall` result means for the operator.
+///
+/// Separate from [`lock_key_memory`] because which branch a given host takes
+/// depends on its `RLIMIT_MEMLOCK`, so a test of the call alone can only ever
+/// see one of them.
+#[cfg(target_os = "linux")]
+fn memory_lock_outcome(result: std::io::Result<()>) -> MemoryLock {
+    match result {
+        Ok(()) => MemoryLock::Locked,
+        Err(err) => MemoryLock::Unlocked(format!(
+            "mlockall failed: {err}. Key material can be written to swap, where \
+             it outlives this process and zeroize cannot reach it. Raise \
+             RLIMIT_MEMLOCK (ulimit -l, or LimitMEMLOCK= in the systemd unit)."
+        )),
     }
 }
 
@@ -335,15 +380,25 @@ pub fn disable_core_dumps() -> Result<()> {
 /// between the lookup and reading the fields. Production resolution happens once
 /// at single-threaded startup, but the reentrant call is correct regardless.
 fn resolve_user(username: &str) -> Result<(u32, u32)> {
-    let c_user = std::ffi::CString::new(username)
-        .map_err(|_| anyhow::anyhow!("Username '{}' contains a null byte", username))?;
-
     // Initial scratch-buffer size for the string fields; grow on ERANGE.
     // SAFETY: `sysconf` takes no pointers and only reads a system constant.
-    let mut buf_len: usize = match unsafe { libc::sysconf(libc::_SC_GETPW_R_SIZE_MAX) } {
+    let initial: usize = match unsafe { libc::sysconf(libc::_SC_GETPW_R_SIZE_MAX) } {
         n if n > 0 => n as usize,
         _ => 16_384,
     };
+    resolve_user_with_buffer(username, initial)
+}
+
+/// [`resolve_user`], starting from a scratch buffer of `initial` bytes.
+///
+/// The starting size is an argument because it comes from `sysconf`, and on
+/// every real host it is large enough that the ERANGE growth below never runs.
+/// A test hands in one byte to prove the growth does.
+fn resolve_user_with_buffer(username: &str, initial: usize) -> Result<(u32, u32)> {
+    let c_user = std::ffi::CString::new(username)
+        .map_err(|_| anyhow::anyhow!("Username '{}' contains a null byte", username))?;
+
+    let mut buf_len = initial;
 
     loop {
         // SAFETY: `libc::passwd` is a plain-old-data C struct for which
@@ -651,7 +706,7 @@ pub fn do_chroot(dir: &std::path::Path) -> Result<()> {
 /// Verify that the process is now running with the expected UID and GID.
 fn verify_dropped(expected_uid: u32, expected_gid: u32) -> Result<()> {
     // SAFETY: getuid/getgid/geteuid/getegid are always safe read-only syscalls.
-    let (actual_uid, actual_gid, euid, egid) = unsafe {
+    let held = unsafe {
         (
             libc::getuid(),
             libc::getgid(),
@@ -659,7 +714,21 @@ fn verify_dropped(expected_uid: u32, expected_gid: u32) -> Result<()> {
             libc::getegid(),
         )
     };
+    check_dropped_ids(expected_uid, expected_gid, held)
+}
 
+/// The comparison [`verify_dropped`] makes, with the ids the kernel reported
+/// — `(uid, gid, euid, egid)` — as an argument.
+///
+/// Separate because the case it exists for cannot be produced on demand: real
+/// ids dropped with effective ids left behind needs a setuid binary or a
+/// broken drop, and the test suite has neither. With the ids as input, every
+/// divergence can be handed in and each refusal checked.
+fn check_dropped_ids(
+    expected_uid: u32,
+    expected_gid: u32,
+    (actual_uid, actual_gid, euid, egid): (u32, u32, u32, u32),
+) -> Result<()> {
     if actual_uid != expected_uid || actual_gid != expected_gid {
         bail!(
             "Privilege drop verification failed: expected uid={}/gid={}, got uid={}/gid={}",
@@ -1105,5 +1174,239 @@ mod tests {
             "the failure must name the null byte rather than report an errno from \
              a truncated path, got: {msg}"
         );
+    }
+    // ── Pieces of the drop that run unprivileged once their inputs are ────
+    // ── arguments rather than syscalls ──────────────────────────────────
+    //
+    // The drop itself needs root, so its happy path is out of reach here (the
+    // integration suite runs it under sudo where sudo exists). What is not out
+    // of reach is every DECISION it makes: the comparison `verify_dropped`
+    // applies to the ids the kernel reports, the order the group calls run
+    // in, the scratch buffer's growth, and what `--setup-caps` makes of the
+    // command it spawns.
+
+    /// The drop is refused when the EFFECTIVE uid was not dropped even though
+    /// the real one was -- the half an attacker who gets code execution
+    /// actually inherits.
+    #[test]
+    fn a_drop_that_left_the_effective_uid_behind_is_refused() {
+        let msg = check_dropped_ids(65534, 65534, (65534, 65534, 0, 65534))
+            .expect_err("euid 0 is still root")
+            .to_string();
+        assert!(msg.contains("EFFECTIVE"), "{msg}");
+        assert!(
+            msg.contains("expected euid=65534/egid=65534, got euid=0/egid=65534"),
+            "both sides of the comparison are named: {msg}"
+        );
+    }
+
+    /// egid 0 under an unprivileged uid is exactly what reversing the two
+    /// group calls produces on macOS -- root by group, wearing `nobody`.
+    #[test]
+    fn an_effective_gid_of_zero_under_an_unprivileged_uid_is_refused() {
+        let msg = check_dropped_ids(65534, 65534, (65534, 65534, 65534, 0))
+            .expect_err("egid 0 is wheel")
+            .to_string();
+        assert!(msg.contains("got euid=65534/egid=0"), "{msg}");
+    }
+
+    /// A real gid that was not dropped fails the first comparison, and says
+    /// which half is wrong.
+    #[test]
+    fn a_real_gid_that_was_not_dropped_is_refused() {
+        let msg = check_dropped_ids(65534, 65534, (65534, 0, 65534, 65534))
+            .expect_err("gid 0 was not given up")
+            .to_string();
+        assert!(
+            msg.contains("expected uid=65534/gid=65534, got uid=65534/gid=0"),
+            "{msg}"
+        );
+    }
+
+    /// All four ids matching is a completed drop.
+    #[test]
+    fn a_drop_whose_four_ids_all_match_is_accepted() {
+        assert!(check_dropped_ids(65534, 65534, (65534, 65534, 65534, 65534)).is_ok());
+    }
+
+    /// Groups go first, and a failure there stops the sequence before the GID
+    /// is touched. The order is load-bearing on macOS (see
+    /// `drop_group_credentials`); if the two calls were swapped, an
+    /// unprivileged caller would see `setgid` refuse first instead.
+    #[test]
+    fn group_credentials_are_surrendered_supplementary_list_first() {
+        if is_root() {
+            skip_loudly(
+                "group_credentials_are_surrendered_supplementary_list_first",
+                "the process IS root, so setgroups(2) succeeds; this gate asserts which step refuses first",
+            );
+            return;
+        }
+        let msg = drop_group_credentials(0)
+            .expect_err("an unprivileged process cannot shed its groups")
+            .to_string();
+        assert!(
+            msg.starts_with("setgroups failed"),
+            "the supplementary list is the FIRST step to refuse: {msg}"
+        );
+    }
+
+    /// Setting the ids a process already holds is permitted at any privilege
+    /// level, and each call reports that success rather than inventing a
+    /// failure -- the success arm of each syscall wrapper.
+    ///
+    /// The ids come from the kernel's own report in `/proc/self/status` (the
+    /// first column of `Uid:`/`Gid:` is the real id), which needs no `unsafe`.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn setting_the_ids_the_process_already_holds_succeeds_and_changes_nothing() {
+        let status = std::fs::read_to_string("/proc/self/status").expect("procfs is mounted");
+        let real = |key: &str| -> u32 {
+            status
+                .lines()
+                .find(|l| l.starts_with(key))
+                .and_then(|l| l.split_whitespace().nth(1))
+                .and_then(|v| v.parse().ok())
+                .unwrap_or_else(|| panic!("no {key} line in /proc/self/status"))
+        };
+        let (uid, gid) = (real("Uid:"), real("Gid:"));
+        set_gid(gid).expect("setgid to the real gid is always permitted");
+        set_uid(uid).expect("setuid to the real uid is always permitted");
+        assert!(
+            verify_dropped(uid, gid).is_ok(),
+            "and the process holds exactly the ids it held before"
+        );
+    }
+
+    /// `getpwnam_r` answers ERANGE when the scratch buffer cannot hold the
+    /// entry's strings. The lookup must grow the buffer and retry, not report
+    /// a user that exists as unresolvable.
+    #[test]
+    fn a_scratch_buffer_too_small_for_the_entry_grows_until_it_fits() {
+        let (uid, _gid) =
+            resolve_user_with_buffer("root", 1).expect("a one-byte buffer is grown, not fatal");
+        assert_eq!(uid, 0);
+    }
+
+    // ── --setup-caps, minus the privileged command ───────────────────────
+
+    /// A PATH symlink is followed, so `setcap` lands on the real binary --
+    /// file capabilities on a symlink do nothing.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_setcap_target_is_the_real_binary_behind_a_symlink() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let real = dir.path().join("sipnab-real");
+        std::fs::write(&real, b"").expect("write");
+        let link = dir.path().join("sipnab");
+        std::os::unix::fs::symlink(&real, &link).expect("symlink");
+
+        let target = setcap_target(&link).expect("a UTF-8 path");
+        let canonical = std::fs::canonicalize(&real).expect("canonicalize");
+        assert_eq!(std::path::Path::new(&target), canonical.as_path());
+    }
+
+    /// A path that cannot be canonicalized is used as given, rather than
+    /// failing before `setcap` can say what is wrong with it.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn an_uncanonicalizable_setcap_target_is_used_as_given() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let absent = dir.path().join("not-here");
+        assert_eq!(
+            setcap_target(&absent).expect("still a UTF-8 path"),
+            absent.display().to_string()
+        );
+    }
+
+    /// `setcap` takes a C string; a path that is not UTF-8 is refused with a
+    /// reason instead of being mangled on the way.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_setcap_target_that_is_not_utf8_is_refused() {
+        use std::os::unix::ffi::OsStrExt as _;
+        let path = std::path::Path::new(std::ffi::OsStr::from_bytes(b"/nonexistent/\xff\xfe"));
+        let msg = setcap_target(path)
+            .expect_err("not representable as &str")
+            .to_string();
+        assert!(msg.contains("not valid UTF-8"), "{msg}");
+    }
+
+    /// A command that could not be spawned is reported with the remedy for
+    /// the usual cause: the package that ships `setcap` is not installed.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_setcap_that_cannot_be_spawned_names_the_package_to_install() {
+        let spawn = Err(std::io::Error::from(std::io::ErrorKind::NotFound));
+        let msg = setcap_outcome("setcap", "/usr/bin/sipnab", spawn)
+            .expect_err("nothing ran")
+            .to_string();
+        assert!(msg.contains("failed to run 'setcap'"), "{msg}");
+        assert!(msg.contains("libcap2-bin"), "{msg}");
+    }
+
+    /// A non-zero exit is a failure naming the code and the binary, never a
+    /// success -- the capability was not granted.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_setcap_that_exits_non_zero_is_a_failure_naming_the_code() {
+        use std::os::unix::process::ExitStatusExt as _;
+        let msg = setcap_outcome(
+            "sudo",
+            "/usr/bin/sipnab",
+            Ok(std::process::ExitStatus::from_raw(1 << 8)),
+        )
+        .expect_err("exit 1 granted nothing")
+        .to_string();
+        assert_eq!(msg, "setcap failed (exit Some(1)) on /usr/bin/sipnab");
+
+        let killed = setcap_outcome(
+            "sudo",
+            "/usr/bin/sipnab",
+            Ok(std::process::ExitStatus::from_raw(9)),
+        )
+        .expect_err("a killed setcap granted nothing")
+        .to_string();
+        assert!(
+            killed.contains("exit None"),
+            "no code for a signal: {killed}"
+        );
+    }
+
+    /// A zero exit is the grant.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_setcap_that_exits_zero_is_the_grant() {
+        use std::os::unix::process::ExitStatusExt as _;
+        assert!(
+            setcap_outcome(
+                "setcap",
+                "/usr/bin/sipnab",
+                Ok(std::process::ExitStatus::from_raw(0))
+            )
+            .is_ok()
+        );
+    }
+
+    // ── What a refused mlockall is reported as ───────────────────────────
+
+    /// A refused lock names the limit to raise; a granted one says Locked.
+    /// Which of the two this host produces depends on its `RLIMIT_MEMLOCK`,
+    /// so the mapping is pinned here with the outcome as an argument.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_refused_memory_lock_names_the_limit_to_raise() {
+        assert_eq!(memory_lock_outcome(Ok(())), MemoryLock::Locked);
+        match memory_lock_outcome(Err(std::io::Error::from_raw_os_error(libc::ENOMEM))) {
+            MemoryLock::Unlocked(reason) => {
+                assert!(reason.starts_with("mlockall failed:"), "{reason}");
+                assert!(reason.contains("RLIMIT_MEMLOCK"), "{reason}");
+                assert!(
+                    reason.contains(&std::io::Error::from_raw_os_error(libc::ENOMEM).to_string()),
+                    "the kernel's own reason is kept: {reason}"
+                );
+            }
+            MemoryLock::Locked => panic!("a refusal must not read as locked"),
+        }
     }
 }

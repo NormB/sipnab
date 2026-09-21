@@ -114,19 +114,40 @@ fn wait_readable(
             poll_timeout_millis(timeout),
         )
     };
-    if ret < 0 {
-        let err = std::io::Error::last_os_error();
+    // errno is read here, straight after the call, before anything can
+    // overwrite it.
+    let ready = if ret < 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(ret)
+    };
+    poll_outcome(ready, pfd.revents)
+}
+
+/// What one `poll(2)` result means for the capture loop.
+///
+/// `ready` is the call's return value, or the error it failed with; `revents`
+/// is what it reported for the one descriptor. Separate from
+/// [`wait_readable`] because two of these answers -- an interrupted call and
+/// a failed one -- cannot be produced on demand by a real descriptor.
+#[cfg(unix)]
+fn poll_outcome(
+    ready: std::io::Result<libc::c_int>,
+    revents: libc::c_short,
+) -> std::io::Result<WaitResult> {
+    let ready = match ready {
+        Ok(n) => n,
         // EINTR: a signal arrived. Treat as a timeout so the loop re-checks the
         // shutdown flag immediately instead of erroring out.
-        if err.kind() == std::io::ErrorKind::Interrupted {
+        Err(err) if err.kind() == std::io::ErrorKind::Interrupted => {
             return Ok(WaitResult::TimedOut);
         }
-        return Err(err);
-    }
-    if ret == 0 {
+        Err(err) => return Err(err),
+    };
+    if ready == 0 {
         return Ok(WaitResult::TimedOut);
     }
-    if pfd.revents & libc::POLLNVAL != 0 {
+    if revents & libc::POLLNVAL != 0 {
         return Err(std::io::Error::other("poll: invalid capture fd (POLLNVAL)"));
     }
     // POLLIN, or POLLERR/POLLHUP — let next_packet() surface any real error.
@@ -1740,5 +1761,179 @@ mod tests {
             !msg.to_lowercase().contains("default"),
             "the message must quote the live value, never name a default: {msg}"
         );
+    }
+
+    // ── What one poll(2) result means ─────────────────────────────────────
+    //
+    // `wait_readable` can only be driven to the answers a pipe can produce:
+    // readable, timed out, and POLLNVAL. EINTR needs a signal to land inside
+    // the call and a hard failure needs the kernel to refuse `poll` itself, so
+    // the decision is pinned with the kernel's answer as an argument.
+
+    /// A signal interrupting the wait is a timeout, so the loop re-checks the
+    /// shutdown flag at once -- never a fatal capture error.
+    #[cfg(unix)]
+    #[test]
+    fn an_interrupted_poll_is_a_timeout_not_a_failure() {
+        let eintr = Err(std::io::Error::from_raw_os_error(libc::EINTR));
+        assert_eq!(
+            poll_outcome(eintr, 0).expect("not fatal"),
+            WaitResult::TimedOut
+        );
+    }
+
+    /// Any other failure of `poll` itself is returned as the kernel's error.
+    #[cfg(unix)]
+    #[test]
+    fn a_failing_poll_is_returned_as_the_kernels_error() {
+        let err = poll_outcome(Err(std::io::Error::from_raw_os_error(libc::ENOMEM)), 0)
+            .expect_err("fatal");
+        assert_eq!(err.raw_os_error(), Some(libc::ENOMEM));
+    }
+
+    /// Nothing ready is a timeout, whatever `revents` happens to hold.
+    #[cfg(unix)]
+    #[test]
+    fn nothing_ready_is_a_timeout() {
+        assert_eq!(
+            poll_outcome(Ok(0), libc::POLLNVAL).expect("ok"),
+            WaitResult::TimedOut
+        );
+    }
+
+    /// A ready descriptor is readable -- including on POLLERR or POLLHUP,
+    /// which `next_packet` surfaces as the real error -- except POLLNVAL,
+    /// which means the descriptor is not open and would spin the loop.
+    #[cfg(unix)]
+    #[test]
+    fn a_ready_descriptor_is_readable_unless_it_is_invalid() {
+        for revents in [libc::POLLIN, libc::POLLERR, libc::POLLHUP] {
+            assert_eq!(
+                poll_outcome(Ok(1), revents).expect("ok"),
+                WaitResult::Readable,
+                "revents {revents:#x}"
+            );
+        }
+        let err = poll_outcome(Ok(1), libc::POLLNVAL).expect_err("an invalid fd is fatal");
+        assert!(err.to_string().contains("POLLNVAL"), "{err}");
+    }
+
+    // ── Opening fails before anything is captured ───────────────────────
+    //
+    // A live open needs CAP_NET_RAW and a real interface, so the capture loop
+    // itself is out of reach here. Asking for a device that does not exist
+    // fails at the open for every caller, privileged or not, which is enough
+    // to drive what happens around the open.
+
+    /// A `--cores N` capture whose fanout probe fails falls back to one
+    /// socket, says so, and still reports the device failure on the
+    /// readiness channel rather than hanging the launch.
+    #[test]
+    fn a_fanout_whose_probe_fails_falls_back_to_one_socket_and_still_reports() {
+        let (ready_tx, ready_rx) = crossbeam_channel::bounded(1);
+        let (tx, _rx) = crate::capture::channel::packet_channel(16);
+        let config = crate::capture::CaptureConfig::default();
+        let mut result = None;
+        let logs = capture_logs(|| {
+            result = Some(capture_live_fanout(
+                "sipnab-no-such-dev0",
+                &config,
+                tx,
+                Some(ready_tx),
+                4,
+                None,
+            ));
+        });
+
+        assert!(
+            result.expect("ran").is_err(),
+            "a nonexistent device cannot be captured"
+        );
+        let reported = ready_rx
+            .try_recv()
+            .expect("the fallback answers readiness")
+            .expect_err("with the failure");
+        assert!(reported.contains("sipnab-no-such-dev0"), "{reported}");
+        assert!(
+            logs.contains("'sipnab-no-such-dev0'") && logs.contains("capturing on one socket"),
+            "the fallback is announced, naming the device: {logs}"
+        );
+        if cfg!(target_os = "linux") {
+            assert!(
+                logs.contains("refused PACKET_FANOUT"),
+                "on Linux the fallback came from the probe: {logs}"
+            );
+        }
+        assert!(
+            !logs.contains("capturing on 4 sockets"),
+            "no group was formed: {logs}"
+        );
+    }
+
+    /// A buffer above the C-int ceiling is announced as clamped before the
+    /// open is attempted -- the operator asked for a ring they cannot have.
+    #[test]
+    fn a_buffer_above_the_ceiling_is_announced_as_clamped() {
+        let (tx, _rx) = crate::capture::channel::packet_channel(16);
+        let config = crate::capture::CaptureConfig {
+            buffer_mb: 5000,
+            ..Default::default()
+        };
+        let logs = capture_logs(|| {
+            let _ = capture_live("sipnab-no-such-dev0", &config, tx, None, None);
+        });
+        assert!(
+            logs.contains("-B/--buffer 5000 MiB exceeds the 2047 MiB ceiling"),
+            "{logs}"
+        );
+        assert!(logs.contains("capturing with 2047 MiB instead"), "{logs}");
+    }
+
+    /// At the ceiling exactly, nothing is clamped and nothing is said.
+    #[test]
+    fn a_buffer_at_the_ceiling_is_not_announced() {
+        let (tx, _rx) = crate::capture::channel::packet_channel(16);
+        let config = crate::capture::CaptureConfig {
+            buffer_mb: MAX_BUFFER_MB,
+            ..Default::default()
+        };
+        let logs = capture_logs(|| {
+            let _ = capture_live("sipnab-no-such-dev0", &config, tx, None, None);
+        });
+        assert!(!logs.contains("ceiling"), "{logs}");
+    }
+
+    /// A `tracing` writer that keeps what was logged for the test to read.
+    #[derive(Clone, Default)]
+    struct CaptureBuf(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for CaptureBuf {
+        fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().expect("log buffer").extend_from_slice(b);
+            Ok(b.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for CaptureBuf {
+        type Writer = CaptureBuf;
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
+    /// Run `f` under a thread-local subscriber and return what it logged.
+    fn capture_logs(f: impl FnOnce()) -> String {
+        let buf = CaptureBuf::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::DEBUG)
+            .with_ansi(false)
+            .with_writer(buf.clone())
+            .finish();
+        tracing::subscriber::with_default(subscriber, f);
+        let bytes = buf.0.lock().expect("log buffer").clone();
+        String::from_utf8_lossy(&bytes).into_owned()
     }
 }
