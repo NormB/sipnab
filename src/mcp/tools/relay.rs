@@ -2281,3 +2281,1365 @@ mod relay_stats_view_tests {
         assert!(suspect.relay_reported.is_none() && suspect.sipnab_measured.is_none());
     }
 }
+
+/// The six async handlers, driven end to end against real stores.
+///
+/// The conversion tests above prove what each answer SAYS once it is built.
+/// They cannot prove what a handler DOES before that: which question reaches
+/// the relay, which refusal a run with no relay access gets, which endpoints a
+/// call's streams touch, or that `relay_was_consulted` is read off every orphan
+/// rather than off the page. Those decisions live in the handler bodies, and
+/// only calling the handlers exercises them.
+///
+/// Nothing here transmits. The relay is a double behind the `ReadOnlyRelay`
+/// seam, holding the permit a `Live` source grants, and the handler cannot tell
+/// it from a socket -- which is what the seam is for, and why `query_relay`'s
+/// "the destination comes from configuration only" can be checked without one.
+#[cfg(test)]
+mod relay_handler_tests {
+    use super::*;
+    use crate::capture::parse::{InputOrigin, ParsedPacket, TransportProto};
+    use crate::relay::types::{CallView, ControlReply, Enumeration, RelayTag};
+    use crate::rtp::parser::RtpHeader;
+    use crate::rtp::stream_store::{SdpProvenance, StreamStore};
+    use crate::security::transmit_guard::TransmitPermit;
+    use crate::sip::dialog_store::DialogStore;
+    use parking_lot::{Mutex, RwLock};
+    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+    use std::sync::Arc;
+
+    /// A fixed capture time, so no fixture depends on the clock.
+    fn ts0() -> chrono::DateTime<chrono::Utc> {
+        chrono::TimeZone::with_ymd_and_hms(&chrono::Utc, 2026, 6, 15, 12, 0, 0)
+            .single()
+            .expect("a literal instant")
+    }
+
+    /// Past the SDP endpoint TTL from [`ts0`], so an endpoint learned at `ts0`
+    /// still ANSWERS `sdp_endpoint_provenance` but no longer claims a stream
+    /// that starts now. That is the only way a named endpoint and an orphaned
+    /// stream coexist, and it is the shape a long-running capture produces.
+    fn late() -> chrono::DateTime<chrono::Utc> {
+        ts0() + chrono::Duration::seconds(400)
+    }
+
+    /// An address in TEST-NET-1, so nothing here names a real host.
+    fn ip(last: u8) -> IpAddr {
+        IpAddr::V4(Ipv4Addr::new(192, 0, 2, last))
+    }
+
+    /// Record `packets` RTP packets on one stream, first seen at `at`.
+    fn rtp(
+        ss: &mut StreamStore,
+        src: (IpAddr, u16),
+        dst: (IpAddr, u16),
+        ssrc: u32,
+        packets: u16,
+        at: chrono::DateTime<chrono::Utc>,
+    ) {
+        for i in 0..packets {
+            let parsed = ParsedPacket {
+                frame_bytes: None,
+                frame: None,
+                timestamp: at,
+                src_addr: src.0,
+                dst_addr: dst.0,
+                src_port: src.1,
+                dst_port: dst.1,
+                transport: TransportProto::Udp,
+                payload: vec![0u8; 12 + 160].into(),
+                ip_id: None,
+                tcp_seq: None,
+                tcp_flags: None,
+                fragment_offset: None,
+                more_fragments: false,
+                ip_protocol: 17,
+                dscp: None,
+                input_origin: InputOrigin::Wire,
+                hep: None,
+            };
+            let hdr = RtpHeader {
+                version: 2,
+                padding: false,
+                extension: false,
+                csrc_count: 0,
+                marker: false,
+                payload_type: 0,
+                sequence: 100 + i,
+                timestamp: 160 * u32::from(i + 1),
+                ssrc,
+                payload_offset: 12,
+            };
+            ss.process_rtp(&parsed, &hdr, at);
+        }
+    }
+
+    /// A dialog store holding one INVITE for `call_id`.
+    fn dialogs_with(call_id: &str) -> DialogStore {
+        let raw = crate::test_utils::build_sip_message(
+            "INVITE sip:bob@example.com SIP/2.0",
+            &[
+                "Via: SIP/2.0/UDP 192.0.2.10:5060;branch=z9hG4bKrelay",
+                "From: <sip:alice@example.com>;tag=a1",
+                "To: <sip:bob@example.com>",
+                &format!("Call-ID: {call_id}"),
+                "CSeq: 1 INVITE",
+                "Content-Length: 0",
+            ],
+            b"",
+        );
+        let msg = crate::sip::parser::parse_sip(
+            &raw,
+            ts0(),
+            ip(10),
+            ip(20),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("the fixture INVITE parses");
+        let mut ds = DialogStore::new(64, false);
+        ds.process_message(msg);
+        ds
+    }
+
+    fn server(ds: DialogStore, ss: StreamStore) -> SipnabMcp {
+        SipnabMcp::new(Arc::new(RwLock::new(ds)), Arc::new(RwLock::new(ss)))
+    }
+
+    /// The JSON payload of a result, skipping the untrusted-content note.
+    fn payload(result: &CallToolResult) -> serde_json::Value {
+        let note = crate::mcp::shape::untrusted_note();
+        let text = result
+            .content
+            .iter()
+            .filter_map(ContentBlock::as_text)
+            .map(|t| t.text.clone())
+            .find(|t| *t != note)
+            .expect("a payload block that is not the note");
+        serde_json::from_str(&text).expect("the payload is JSON")
+    }
+
+    /// Whether a result carries the note marking relay-supplied text.
+    fn carries_the_untrusted_note(result: &CallToolResult) -> bool {
+        let note = crate::mcp::shape::untrusted_note();
+        result
+            .content
+            .iter()
+            .filter_map(ContentBlock::as_text)
+            .any(|t| t.text == note)
+    }
+
+    // ── explain_attribution ─────────────────────────────────────────
+
+    /// A Call-ID the store does not hold is refused, by name.
+    ///
+    /// An empty endpoint list would read as "this call touched no media",
+    /// which is a claim about a call nobody has seen.
+    #[tokio::test]
+    async fn explaining_a_call_the_store_does_not_hold_is_refused_by_name() {
+        let err = server(DialogStore::new(16, false), StreamStore::new(16))
+            .explain_attribution(Parameters(ExplainAttributionParams {
+                call_id: "absent@example.invalid".to_string(),
+            }))
+            .await
+            .expect_err("an unknown call must be refused");
+        assert_eq!(err.code.0, -32602);
+        assert!(
+            err.message.contains("absent@example.invalid"),
+            "the refusal names what was asked for: {}",
+            err.message
+        );
+    }
+
+    /// One call touching four endpoints, one of each provenance there is.
+    ///
+    /// Three streams, and the second is the first one reversed, so it touches
+    /// no endpoint the first did not: a row per endpoint, not per stream end,
+    /// is what the tool promises.
+    ///
+    /// - `192.0.2.20:30000` -- a relay's claim, delivered over HEP;
+    /// - `192.0.2.10:40000` -- the party's own SDP, seen on the wire;
+    /// - `192.0.2.30:30002` -- a relay's claim sipnab ASKED for (no origin);
+    /// - `192.0.2.10:40002` -- never recorded at all.
+    fn server_with_every_provenance(call_id: &str) -> SipnabMcp {
+        let mut ss = StreamStore::new(64);
+        rtp(&mut ss, (ip(10), 40000), (ip(20), 30000), 0xA, 1, ts0());
+        rtp(&mut ss, (ip(20), 30000), (ip(10), 40000), 0xB, 1, ts0());
+        rtp(&mut ss, (ip(10), 40002), (ip(30), 30002), 0xC, 1, ts0());
+        let relay = crate::relay::RelayImplementation::default();
+        ss.link_endpoint_from(
+            ip(20),
+            30000,
+            call_id,
+            &[],
+            None,
+            SdpProvenance::relay_asserted(
+                relay,
+                crate::relay::ControlDelivery::Encapsulated,
+                InputOrigin::Hep,
+                ts0(),
+            ),
+        );
+        ss.link_endpoint_from(
+            ip(10),
+            40000,
+            call_id,
+            &[],
+            None,
+            SdpProvenance::observed(InputOrigin::Wire, ts0()),
+        );
+        ss.link_endpoint_from(
+            ip(30),
+            30002,
+            call_id,
+            &[],
+            None,
+            SdpProvenance::relay_queried(relay, ts0()),
+        );
+        assert_eq!(
+            ss.streams_for(call_id).count(),
+            3,
+            "the fixture must link all three streams, or the rows below describe \
+             a call it did not build"
+        );
+        server(dialogs_with(call_id), ss)
+    }
+
+    /// The row for one endpoint, found by address rather than by position.
+    fn row<'a>(v: &'a serde_json::Value, address: &str, port: u16) -> &'a serde_json::Value {
+        v["endpoints"]
+            .as_array()
+            .and_then(|rows| {
+                rows.iter()
+                    .find(|r| r["address"] == address && r["port"] == port)
+            })
+            .unwrap_or_else(|| panic!("no row for {address}:{port} in {v}"))
+    }
+
+    /// Every endpoint appears once, carrying who asserted it, how it arrived,
+    /// when, and what that path is worth.
+    ///
+    /// The four rows are the whole scale `classify` draws, reached through the
+    /// store rather than handed to it: a claim delivered over authenticated HEP,
+    /// one sipnab asked for itself, and two that are the parties' own -- one
+    /// with a recorded origin and one with none, which must not be promoted to
+    /// a relay assertion by the default it falls back to.
+    #[tokio::test]
+    async fn each_endpoint_of_a_call_reports_its_own_provenance_once() {
+        let call = "attr@example.invalid";
+        let v = payload(
+            &server_with_every_provenance(call)
+                .with_hep_auth_mode(crate::cli::HepAuthMode::Hmac)
+                .explain_attribution(Parameters(ExplainAttributionParams {
+                    call_id: call.to_string(),
+                }))
+                .await
+                .expect("a held call is explained"),
+        );
+        assert_eq!(v["call_id"], call);
+        assert_eq!(v["schema_version"], 1);
+        assert_eq!(
+            v["endpoints"].as_array().map(Vec::len),
+            Some(4),
+            "three streams over four distinct endpoints is four rows, the \
+             reversed stream adding none: {v}"
+        );
+
+        let over_hep = row(&v, "192.0.2.20", 30000);
+        assert_eq!(over_hep["asserted_by"], "media-relay");
+        assert_eq!(over_hep["input_origin"], "hep");
+        assert_eq!(over_hep["observed_at"], ts0().to_rfc3339());
+        assert_eq!(over_hep["delivery_trust"], "hmac-verified");
+        assert_eq!(
+            over_hep["delivery_note"],
+            DeliveryTrust::HmacVerified.explain(),
+            "the note is the level's own sentence"
+        );
+
+        let signaled = row(&v, "192.0.2.10", 40000);
+        assert_eq!(signaled["asserted_by"], "signaled");
+        assert_eq!(signaled["input_origin"], "wire");
+        assert_eq!(signaled["delivery_trust"], "not-relay-asserted");
+
+        let asked = row(&v, "192.0.2.30", 30002);
+        assert_eq!(asked["asserted_by"], "media-relay");
+        assert!(
+            asked["input_origin"].is_null(),
+            "an answer sipnab asked for arrived over no capture source: {asked}"
+        );
+        assert_eq!(asked["delivery_trust"], "asked");
+
+        let unrecorded = row(&v, "192.0.2.10", 40002);
+        assert_eq!(unrecorded["asserted_by"], "signaled");
+        assert!(unrecorded["input_origin"].is_null());
+        assert!(
+            unrecorded["observed_at"].is_null(),
+            "nothing recorded when it was learned, so no time is claimed: {unrecorded}"
+        );
+        assert_eq!(unrecorded["delivery_trust"], "not-relay-asserted");
+
+        assert_eq!(
+            v["unauthenticated_endpoints"], 0,
+            "under HMAC nothing here rests on the port alone: {v}"
+        );
+    }
+
+    /// The same relay claim is worth what the RUN's posture says, and the
+    /// unauthenticated count follows it.
+    ///
+    /// One store, three configurations. The HEP-delivered claim is
+    /// `port-gated-only` when no authentication was configured -- the default
+    /// must be the weakest reading, never a rounded-up one -- and that is the
+    /// row `unauthenticated_endpoints` exists to surface.
+    #[tokio::test]
+    async fn a_relay_claim_is_worth_what_the_configured_posture_says() {
+        let call = "attr@example.invalid";
+        for (mode, want, unauthenticated) in [
+            (None, "port-gated-only", 1),
+            (Some(crate::cli::HepAuthMode::Plain), "plain-secret", 0),
+            (Some(crate::cli::HepAuthMode::Hmac), "hmac-verified", 0),
+        ] {
+            let mut s = server_with_every_provenance(call);
+            if let Some(mode) = mode {
+                s = s.with_hep_auth_mode(mode);
+            }
+            let v = payload(
+                &s.explain_attribution(Parameters(ExplainAttributionParams {
+                    call_id: call.to_string(),
+                }))
+                .await
+                .expect("a held call is explained"),
+            );
+            assert_eq!(
+                row(&v, "192.0.2.20", 30000)["delivery_trust"],
+                want,
+                "under {mode:?}"
+            );
+            assert_eq!(
+                v["unauthenticated_endpoints"], unauthenticated,
+                "under {mode:?}: {v}"
+            );
+            assert_eq!(
+                row(&v, "192.0.2.30", 30002)["delivery_trust"],
+                "asked",
+                "asking is worth the same under every posture, because no \
+                 capture path was involved"
+            );
+        }
+    }
+
+    // ── reconcile_orphans ───────────────────────────────────────────
+
+    /// Three orphans -- never named, named in SDP, named by a relay, inserted
+    /// in that order -- and one stream a dialog holds.
+    ///
+    /// The relay-named one is named on its DESTINATION side, so a handler that
+    /// asked only about the source would miss it.
+    fn store_with_three_kinds_of_orphan() -> StreamStore {
+        let mut ss = StreamStore::new(128);
+        rtp(&mut ss, (ip(50), 41000), (ip(51), 31000), 1, 1, late());
+
+        ss.link_endpoint_from(
+            ip(60),
+            41002,
+            "gone-a@example.invalid",
+            &[],
+            None,
+            SdpProvenance::observed(InputOrigin::Wire, ts0()),
+        );
+        rtp(&mut ss, (ip(60), 41002), (ip(61), 31002), 2, 1, late());
+
+        ss.link_endpoint_from(
+            ip(71),
+            31004,
+            "gone-b@example.invalid",
+            &[],
+            None,
+            SdpProvenance::relay_asserted(
+                crate::relay::RelayImplementation::default(),
+                crate::relay::ControlDelivery::BareDatagram,
+                InputOrigin::Wire,
+                ts0(),
+            ),
+        );
+        rtp(&mut ss, (ip(70), 41004), (ip(71), 31004), 3, 1, late());
+
+        rtp(&mut ss, (ip(80), 41006), (ip(81), 31006), 4, 1, late());
+        ss.link_to_dialog(ip(81), 31006, "held@example.invalid");
+        assert_eq!(
+            ss.orphaned_count(),
+            3,
+            "the fixture must hold exactly three orphans"
+        );
+        ss
+    }
+
+    async fn orphans(ss: StreamStore, limit: Option<u32>) -> serde_json::Value {
+        payload(
+            &server(DialogStore::new(16, false), ss)
+                .reconcile_orphans(Parameters(ReconcileOrphansParams { limit }))
+                .await
+                .expect("reconciliation does not fail"),
+        )
+    }
+
+    /// The orphan row for one SSRC.
+    fn orphan(v: &serde_json::Value, ssrc: u32) -> &serde_json::Value {
+        v["orphans"]
+            .as_array()
+            .and_then(|rows| rows.iter().find(|r| r["ssrc"] == ssrc))
+            .unwrap_or_else(|| panic!("no orphan row for ssrc {ssrc} in {v}"))
+    }
+
+    /// An empty capture is an answer, not an error: no orphans, and nobody was
+    /// asked about any.
+    #[tokio::test]
+    async fn a_capture_with_no_streams_has_no_orphans_and_consulted_nobody() {
+        let v = orphans(StreamStore::new(16), None).await;
+        assert_eq!(v["orphans"], serde_json::json!([]));
+        assert_eq!(v["total_orphans"], 0);
+        assert_eq!(v["truncated"], false);
+        assert_eq!(v["relay_was_consulted"], false);
+        assert_eq!(v["schema_version"], 1);
+    }
+
+    /// Each orphan carries the reason its own endpoint earns, and the endpoint
+    /// that earned it; the stream a dialog holds is not an orphan at all.
+    #[tokio::test]
+    async fn each_orphan_says_why_it_is_unexplained_and_names_what_named_it() {
+        let v = orphans(store_with_three_kinds_of_orphan(), None).await;
+        assert_eq!(
+            v["total_orphans"], 3,
+            "the held stream is not an orphan: {v}"
+        );
+        assert_eq!(v["truncated"], false);
+        assert_eq!(v["relay_was_consulted"], true);
+
+        let never = orphan(&v, 1);
+        assert_eq!(never["reason"], "never-named");
+        assert!(never["named_endpoint"].is_null() && never["asserted_by"].is_null());
+        assert_eq!(never["note"], OrphanReason::NeverNamed.explain());
+        assert_eq!(never["src"], "192.0.2.50:41000");
+        assert_eq!(never["dst"], "192.0.2.51:31000");
+
+        let signaled = orphan(&v, 2);
+        assert_eq!(signaled["reason"], "signaled-but-no-dialog");
+        assert_eq!(signaled["named_endpoint"], "192.0.2.60:41002");
+        assert_eq!(signaled["asserted_by"], "signaled");
+
+        let relayed = orphan(&v, 3);
+        assert_eq!(relayed["reason"], "relay-asserted-but-no-dialog");
+        assert_eq!(
+            relayed["named_endpoint"], "192.0.2.71:31004",
+            "the relay named the DESTINATION, and the row must say which end"
+        );
+        assert_eq!(relayed["asserted_by"], "media-relay");
+        assert_eq!(
+            relayed["note"],
+            OrphanReason::RelayAssertedButNoDialog.explain()
+        );
+    }
+
+    /// `relay_was_consulted` is read off EVERY orphan, not the page.
+    ///
+    /// The relay-named orphan is the last one inserted, so a limit of one
+    /// leaves it off the page. Read off the page, the answer would be "nobody
+    /// asked" about a capture holding a relay assertion -- turning an absence
+    /// of evidence into evidence of absence, which is the reading the field's
+    /// own documentation exists to prevent.
+    #[tokio::test]
+    async fn a_relay_assertion_off_the_page_still_counts_as_consulted() {
+        let v = orphans(store_with_three_kinds_of_orphan(), Some(1)).await;
+        assert_eq!(v["orphans"].as_array().map(Vec::len), Some(1));
+        assert_eq!(
+            v["orphans"][0]["reason"], "never-named",
+            "the page holds the first orphan, not the relay-named one: {v}"
+        );
+        assert_eq!(v["total_orphans"], 3, "the total counts past the page");
+        assert_eq!(v["truncated"], true);
+        assert_eq!(
+            v["relay_was_consulted"], true,
+            "the relay assertion is off the page and still happened: {v}"
+        );
+    }
+
+    /// Orphans that only SDP ever named are not a relay having been asked.
+    #[tokio::test]
+    async fn orphans_no_relay_named_report_that_no_relay_was_consulted() {
+        let mut ss = StreamStore::new(16);
+        rtp(&mut ss, (ip(50), 41000), (ip(51), 31000), 1, 1, late());
+        ss.link_endpoint_from(
+            ip(60),
+            41002,
+            "gone@example.invalid",
+            &[],
+            None,
+            SdpProvenance::observed(InputOrigin::Wire, ts0()),
+        );
+        rtp(&mut ss, (ip(60), 41002), (ip(61), 31002), 2, 1, late());
+        let v = orphans(ss, None).await;
+        assert_eq!(v["total_orphans"], 2);
+        assert_eq!(
+            v["relay_was_consulted"], false,
+            "SDP naming an endpoint is not a relay answering for it: {v}"
+        );
+    }
+
+    /// A limit of zero is read as one, and an omitted limit as fifty.
+    ///
+    /// Zero rows with `truncated: true` would be a page that can never make
+    /// progress; and the default is what an agent that passes nothing gets, so
+    /// it is pinned rather than left to whatever `unwrap_or` happens to say.
+    #[tokio::test]
+    async fn a_zero_limit_returns_one_row_and_no_limit_returns_fifty() {
+        let zero = orphans(store_with_three_kinds_of_orphan(), Some(0)).await;
+        assert_eq!(zero["orphans"].as_array().map(Vec::len), Some(1), "{zero}");
+        assert_eq!(zero["truncated"], true);
+
+        let mut ss = StreamStore::new(128);
+        for i in 0..51u16 {
+            rtp(
+                &mut ss,
+                (ip(90), 20000 + i * 2),
+                (ip(91), 30000 + i * 2),
+                1000 + u32::from(i),
+                1,
+                late(),
+            );
+        }
+        let v = orphans(ss, None).await;
+        assert_eq!(v["orphans"].as_array().map(Vec::len), Some(50), "{v}");
+        assert_eq!(v["total_orphans"], 51);
+        assert_eq!(v["truncated"], true);
+    }
+
+    // ── the transmitting tools, against a relay double ──────────────
+
+    /// A relay that records every question and answers from a script.
+    ///
+    /// `None` for a verb is a relay that did not answer, which is how a timeout
+    /// reaches the handler: as an `Err` from the client.
+    #[derive(Default)]
+    struct RelayDouble {
+        list: Option<ControlReply>,
+        query: Option<ControlReply>,
+        statistics: Option<ControlReply>,
+        call_statistics: Option<ControlReply>,
+        asked: Mutex<Vec<String>>,
+    }
+
+    impl RelayDouble {
+        fn answer(
+            &self,
+            question: String,
+            reply: &Option<ControlReply>,
+        ) -> anyhow::Result<ControlReply> {
+            self.asked.lock().push(question);
+            reply
+                .clone()
+                .ok_or_else(|| anyhow::anyhow!("no reply within 1000 ms"))
+        }
+
+        fn asked(&self) -> Vec<String> {
+            self.asked.lock().clone()
+        }
+    }
+
+    impl crate::relay::reconcile::ReadOnlyRelay for RelayDouble {
+        fn list(&self, _p: &TransmitPermit, limit: u32) -> anyhow::Result<ControlReply> {
+            self.answer(format!("list {limit}"), &self.list)
+        }
+        fn query(&self, _p: &TransmitPermit, call_id: &str) -> anyhow::Result<ControlReply> {
+            self.answer(format!("query {call_id}"), &self.query)
+        }
+        fn statistics(&self, _p: &TransmitPermit) -> anyhow::Result<ControlReply> {
+            self.answer("statistics".to_string(), &self.statistics)
+        }
+        fn call_statistics(
+            &self,
+            _p: &TransmitPermit,
+            call_id: &str,
+        ) -> anyhow::Result<ControlReply> {
+            self.answer(format!("call_statistics {call_id}"), &self.call_statistics)
+        }
+        fn describe(&self) -> String {
+            "relay-double".to_string()
+        }
+    }
+
+    /// The configured relay address. Loopback, and never dialed: the double
+    /// answers in its place.
+    fn relay_addr() -> SocketAddr {
+        "127.0.0.1:22222".parse().expect("a literal address")
+    }
+
+    /// `server` permitted to ask `relay`, as a live run would be.
+    fn asking(server: SipnabMcp, relay: &Arc<RelayDouble>) -> SipnabMcp {
+        let permit = TransmitPermit::for_source(&crate::capture::CaptureSource::Live {
+            device: "eth0".to_string(),
+        })
+        .expect("a live source grants a permit");
+        server.with_relay_query(relay_addr(), relay.clone(), permit)
+    }
+
+    fn empty() -> SipnabMcp {
+        server(DialogStore::new(16, false), StreamStore::new(16))
+    }
+
+    fn stats(kv: &[(&str, &str)]) -> ControlReply {
+        ControlReply::Statistics(
+            kv.iter()
+                .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+                .collect(),
+        )
+    }
+
+    /// A server with no relay access refuses all three transmitting tools, and
+    /// says what each missing piece is called.
+    ///
+    /// The permit is structural -- a file-backed run cannot build one -- so the
+    /// refusal is the only thing an agent on such a run ever sees from these
+    /// tools, and it has to name the flags that would change the answer.
+    #[tokio::test]
+    async fn every_transmitting_tool_refuses_a_server_with_no_relay_access() {
+        let s = empty();
+        let refusals = [
+            s.query_relay(Parameters(QueryRelayParams::default()))
+                .await
+                .expect_err("query_relay must refuse"),
+            s.relay_stats(Parameters(RelayStatsParams::default()))
+                .await
+                .expect_err("relay_stats must refuse"),
+            s.relay_compare(Parameters(RelayCompareParams {
+                call_id: "c@example.invalid".to_string(),
+            }))
+            .await
+            .expect_err("relay_compare must refuse"),
+        ];
+        for err in refusals {
+            assert_eq!(err.code.0, -32602, "{}", err.message);
+            assert!(
+                err.message.contains("--mcp-allow-relay-query")
+                    && err.message.contains(crate::cli::RELAY_CONTROL_FLAG),
+                "the refusal must name both flags: {}",
+                err.message
+            );
+        }
+    }
+
+    /// Without a Call-ID, `query_relay` enumerates, at the relay's default cap.
+    #[tokio::test]
+    async fn querying_without_a_call_id_lists_at_the_default_cap() {
+        let relay = Arc::new(RelayDouble {
+            list: Some(ControlReply::Calls(Enumeration {
+                call_ids: vec!["c1@example.invalid".to_string()],
+                truncated: true,
+            })),
+            ..Default::default()
+        });
+        let result = asking(empty(), &relay)
+            .query_relay(Parameters(QueryRelayParams::default()))
+            .await
+            .expect("the relay answered");
+        assert_eq!(
+            relay.asked(),
+            vec![format!(
+                "list {}",
+                crate::relay::reconcile::DEFAULT_LIST_LIMIT
+            )]
+        );
+        let v = payload(&result);
+        assert_eq!(v["asked"], "list");
+        assert_eq!(v["outcome"], "calls");
+        assert_eq!(v["call_ids"], serde_json::json!(["c1@example.invalid"]));
+        assert_eq!(v["truncated"], true);
+        assert_eq!(
+            v["relay_address"],
+            relay_addr().to_string(),
+            "the answer names the configured relay as its source"
+        );
+        assert_eq!(v["delivery_trust"], "asked");
+        assert!(
+            carries_the_untrusted_note(&result),
+            "Call-IDs are the relay's text, and are marked as such"
+        );
+    }
+
+    /// `max_calls` reaches the relay as its own `list` argument.
+    #[tokio::test]
+    async fn max_calls_is_passed_to_the_relay_unchanged() {
+        let relay = Arc::new(RelayDouble {
+            list: Some(ControlReply::Calls(Enumeration {
+                call_ids: Vec::new(),
+                truncated: false,
+            })),
+            ..Default::default()
+        });
+        asking(empty(), &relay)
+            .query_relay(Parameters(QueryRelayParams {
+                call_id: None,
+                max_calls: Some(7),
+            }))
+            .await
+            .expect("the relay answered");
+        assert_eq!(relay.asked(), vec!["list 7".to_string()]);
+    }
+
+    /// With a Call-ID, `query_relay` asks about that call and nothing else.
+    #[tokio::test]
+    async fn querying_with_a_call_id_asks_about_that_call() {
+        let relay = Arc::new(RelayDouble {
+            query: Some(ControlReply::Call(CallView {
+                call_id: "c1@example.invalid".to_string(),
+                tags: vec![RelayTag {
+                    tag: "from-tag-a".to_string(),
+                    in_dialogue_with: vec!["to-tag-b".to_string()],
+                    media_subscriptions: Vec::new(),
+                    codec: Some("PCMU".to_string()),
+                    streams: Vec::new(),
+                }],
+            })),
+            ..Default::default()
+        });
+        let v = payload(
+            &asking(empty(), &relay)
+                .query_relay(Parameters(QueryRelayParams {
+                    call_id: Some("c1@example.invalid".to_string()),
+                    max_calls: Some(7),
+                }))
+                .await
+                .expect("the relay answered"),
+        );
+        assert_eq!(
+            relay.asked(),
+            vec!["query c1@example.invalid".to_string()],
+            "a query is not also an enumeration, whatever max_calls says"
+        );
+        assert_eq!(v["asked"], "query");
+        assert_eq!(v["outcome"], "call");
+        assert_eq!(v["tags"][0]["tag"], "from-tag-a");
+    }
+
+    /// A relay that does not answer is an internal error that says nothing is
+    /// known -- never an empty enumeration.
+    #[tokio::test]
+    async fn a_relay_that_does_not_answer_a_query_is_not_an_empty_answer() {
+        let relay = Arc::new(RelayDouble::default());
+        let err = asking(empty(), &relay)
+            .query_relay(Parameters(QueryRelayParams::default()))
+            .await
+            .expect_err("no answer must not be a success");
+        assert_eq!(err.code.0, -32603);
+        assert!(
+            err.message.contains(&relay_addr().to_string())
+                && err.message.contains("not an answer that it holds nothing"),
+            "{}",
+            err.message
+        );
+    }
+
+    /// A global stats ask reaches `statistics` and returns the counters.
+    #[tokio::test]
+    async fn a_global_stats_ask_returns_the_relays_own_counters() {
+        let relay = Arc::new(RelayDouble {
+            statistics: Some(stats(&[("totals.RTP.packets", "9000")])),
+            ..Default::default()
+        });
+        let result = asking(empty(), &relay)
+            .relay_stats(Parameters(RelayStatsParams::default()))
+            .await
+            .expect("the relay answered");
+        assert_eq!(relay.asked(), vec!["statistics".to_string()]);
+        let v = payload(&result);
+        assert_eq!(v["outcome"], "ok");
+        assert_eq!(v["tier"], "relay_reported");
+        assert_eq!(v["statistics"][0]["name"], "totals.RTP.packets");
+        assert_eq!(v["statistics"][0]["value"], "9000");
+        assert!(v.get("names").is_none());
+        assert!(carries_the_untrusted_note(&result));
+    }
+
+    /// `names_only` on a global ask lists names instead of values.
+    #[tokio::test]
+    async fn a_names_only_ask_lists_the_names_the_relay_knows() {
+        let relay = Arc::new(RelayDouble {
+            statistics: Some(stats(&[("totals.RTP.packets", "9000")])),
+            ..Default::default()
+        });
+        let v = payload(
+            &asking(empty(), &relay)
+                .relay_stats(Parameters(RelayStatsParams {
+                    call_id: None,
+                    names_only: Some(true),
+                }))
+                .await
+                .expect("the relay answered"),
+        );
+        assert_eq!(v["names"], serde_json::json!(["totals.RTP.packets"]));
+        assert_eq!(v["names_source"], "listed");
+        assert!(v.get("statistics").is_none(), "names, not values: {v}");
+    }
+
+    /// With a Call-ID, `names_only` is ignored and the per-call counters come
+    /// back, matching the REST names route, which has no per-call form.
+    #[tokio::test]
+    async fn names_only_is_ignored_on_a_per_call_ask() {
+        let relay = Arc::new(RelayDouble {
+            call_statistics: Some(stats(&[("totals.RTP.packets", "12")])),
+            ..Default::default()
+        });
+        let v = payload(
+            &asking(empty(), &relay)
+                .relay_stats(Parameters(RelayStatsParams {
+                    call_id: Some("c1@example.invalid".to_string()),
+                    names_only: Some(true),
+                }))
+                .await
+                .expect("the relay answered"),
+        );
+        assert_eq!(
+            relay.asked(),
+            vec!["call_statistics c1@example.invalid".to_string()],
+            "a per-call ask goes to the per-call verb"
+        );
+        assert!(v.get("names").is_none(), "names_only was ignored: {v}");
+        assert_eq!(v["statistics"][0]["value"], "12");
+    }
+
+    /// A relay's per-call "no" is a refused success, not an error.
+    #[tokio::test]
+    async fn a_per_call_stats_refusal_is_a_success_carrying_the_relays_words() {
+        let relay = Arc::new(RelayDouble {
+            call_statistics: Some(stats(&[
+                ("result", "error"),
+                ("error-reason", "Unknown call-id"),
+            ])),
+            ..Default::default()
+        });
+        let v = payload(
+            &asking(empty(), &relay)
+                .relay_stats(Parameters(RelayStatsParams {
+                    call_id: Some("nope@example.invalid".to_string()),
+                    names_only: None,
+                }))
+                .await
+                .expect("a refusal is an answer"),
+        );
+        assert_eq!(v["outcome"], "refused");
+        assert_eq!(v["refusal"], "Unknown call-id");
+    }
+
+    /// No answer to a stats ask is an internal error naming the relay.
+    #[tokio::test]
+    async fn a_relay_that_does_not_answer_a_stats_ask_is_not_an_empty_answer() {
+        let relay = Arc::new(RelayDouble::default());
+        let err = asking(empty(), &relay)
+            .relay_stats(Parameters(RelayStatsParams::default()))
+            .await
+            .expect_err("no answer must not be a success");
+        assert_eq!(err.code.0, -32603);
+        assert!(
+            err.message.contains(&relay_addr().to_string())
+                && err.message.contains("not an answer that it has none"),
+            "{}",
+            err.message
+        );
+    }
+
+    /// A blank Call-ID is refused BEFORE anything is sent.
+    ///
+    /// The order matters: this tool transmits, and a question that has no
+    /// answer must not be put on the wire to find that out.
+    #[tokio::test]
+    async fn a_blank_compare_call_id_is_refused_without_asking_the_relay() {
+        let relay = Arc::new(RelayDouble {
+            call_statistics: Some(stats(&[("totals.RTP.packets", "1")])),
+            ..Default::default()
+        });
+        let err = asking(empty(), &relay)
+            .relay_compare(Parameters(RelayCompareParams {
+                call_id: "   ".to_string(),
+            }))
+            .await
+            .expect_err("a blank call must be refused");
+        assert_eq!(err.code.0, -32602);
+        assert!(
+            relay.asked().is_empty(),
+            "nothing may be sent: {:?}",
+            relay.asked()
+        );
+    }
+
+    /// The comparison reads sipnab's own count from the call's linked streams
+    /// and the relay's from its answer, for the TRIMMED Call-ID.
+    #[tokio::test]
+    async fn a_compare_sets_the_relays_count_beside_the_captures_own() {
+        let call = "cmp@example.invalid";
+        let mut ss = StreamStore::new(16);
+        rtp(&mut ss, (ip(10), 40000), (ip(20), 30000), 0xC0, 3, ts0());
+        ss.link_to_dialog(ip(20), 30000, call);
+        assert_eq!(ss.measured_packet_count_for(call), 3, "the fixture holds 3");
+
+        let relay = Arc::new(RelayDouble {
+            call_statistics: Some(stats(&[("totals.RTP.packets", "9000")])),
+            ..Default::default()
+        });
+        let result = asking(server(DialogStore::new(16, false), ss), &relay)
+            .relay_compare(Parameters(RelayCompareParams {
+                call_id: format!("  {call}  "),
+            }))
+            .await
+            .expect("the relay answered");
+        assert_eq!(
+            relay.asked(),
+            vec![format!("call_statistics {call}")],
+            "the relay is asked about the trimmed Call-ID"
+        );
+        let v = payload(&result);
+        assert_eq!(v["call_id"], call);
+        assert_eq!(v["outcome"], "compared");
+        assert_eq!(v["relay_reported"]["value"], 9000);
+        assert_eq!(v["sipnab_measured"], 3);
+        assert_eq!(v["verdict"], "differ");
+        assert!(carries_the_untrusted_note(&result));
+    }
+
+    /// A call sipnab never captured media for is ABSENT on sipnab's side, not a
+    /// measured zero set against the relay.
+    #[tokio::test]
+    async fn a_call_with_no_captured_media_is_absent_not_zero() {
+        let relay = Arc::new(RelayDouble {
+            call_statistics: Some(stats(&[("totals.RTP.packets", "9000")])),
+            ..Default::default()
+        });
+        let v = payload(
+            &asking(empty(), &relay)
+                .relay_compare(Parameters(RelayCompareParams {
+                    call_id: "unseen@example.invalid".to_string(),
+                }))
+                .await
+                .expect("the relay answered"),
+        );
+        assert_eq!(v["outcome"], "sipnab_has_no_rtp");
+        assert!(v.get("sipnab_measured").is_none(), "absent, not 0: {v}");
+        assert_eq!(v["relay_reported"]["value"], 9000);
+    }
+
+    /// Statistics that lack the per-call RTP counter leave the relay's side
+    /// absent: the relay does not hold the call, rather than holding zero.
+    #[tokio::test]
+    async fn statistics_without_the_rtp_counter_leave_the_relay_side_absent() {
+        let call = "held@example.invalid";
+        let mut ss = StreamStore::new(16);
+        rtp(&mut ss, (ip(10), 40000), (ip(20), 30000), 0xC1, 2, ts0());
+        ss.link_to_dialog(ip(20), 30000, call);
+        let relay = Arc::new(RelayDouble {
+            call_statistics: Some(stats(&[("totals.RTP.bytes", "320")])),
+            ..Default::default()
+        });
+        let v = payload(
+            &asking(server(DialogStore::new(16, false), ss), &relay)
+                .relay_compare(Parameters(RelayCompareParams {
+                    call_id: call.to_string(),
+                }))
+                .await
+                .expect("the relay answered"),
+        );
+        assert_eq!(v["outcome"], "relay_does_not_hold_call");
+        assert_eq!(v["sipnab_measured"], 2);
+        assert!(v.get("relay_reported").is_none(), "absent, not 0: {v}");
+    }
+
+    /// The relay's own "no", an oversized count, and a reply that is not
+    /// statistics each reach the agent as what they are.
+    #[tokio::test]
+    async fn a_compare_reports_a_refusal_an_overflow_and_a_non_statistics_reply() {
+        let ask = |reply: ControlReply| async move {
+            let relay = Arc::new(RelayDouble {
+                call_statistics: Some(reply),
+                ..Default::default()
+            });
+            payload(
+                &asking(empty(), &relay)
+                    .relay_compare(Parameters(RelayCompareParams {
+                        call_id: "c@example.invalid".to_string(),
+                    }))
+                    .await
+                    .expect("every one of these is an answer"),
+            )
+        };
+
+        let refused = ask(stats(&[
+            ("result", "error"),
+            ("error-reason", "Unknown call-id"),
+        ]))
+        .await;
+        assert_eq!(refused["outcome"], "refused");
+        assert_eq!(refused["refusal"], "Unknown call-id");
+
+        let digits = "184467440737095516160";
+        let overflow = ask(stats(&[("totals.RTP.packets", digits)])).await;
+        assert_eq!(overflow["outcome"], "suspect");
+        assert!(
+            overflow["note"]
+                .as_str()
+                .is_some_and(|n| n.contains(digits)),
+            "the digits travel as received: {overflow}"
+        );
+
+        let not_stats = ask(ControlReply::Refused {
+            reason: "unexpected".to_string(),
+        })
+        .await;
+        assert_eq!(not_stats["outcome"], "suspect");
+        assert!(not_stats.get("note").is_none(), "{not_stats}");
+    }
+
+    /// No answer to a compare is an internal error naming the call.
+    #[tokio::test]
+    async fn a_relay_that_does_not_answer_a_compare_is_an_error_naming_the_call() {
+        let relay = Arc::new(RelayDouble::default());
+        let err = asking(empty(), &relay)
+            .relay_compare(Parameters(RelayCompareParams {
+                call_id: "c@example.invalid".to_string(),
+            }))
+            .await
+            .expect_err("no answer must not be a success");
+        assert_eq!(err.code.0, -32603);
+        assert!(err.message.contains("c@example.invalid"), "{}", err.message);
+    }
+
+    // ── decode_ng ───────────────────────────────────────────────────
+
+    /// A classic little-endian pcap holding `frames`, Ethernet link type.
+    ///
+    /// Written by hand rather than through a writer, so the fixture is the
+    /// format itself and not whatever sipnab's own writer happens to emit.
+    fn write_pcap(path: &std::path::Path, frames: &[Vec<u8>]) {
+        let mut out = Vec::new();
+        out.extend_from_slice(&0xa1b2_c3d4u32.to_le_bytes());
+        out.extend_from_slice(&2u16.to_le_bytes());
+        out.extend_from_slice(&4u16.to_le_bytes());
+        out.extend_from_slice(&0i32.to_le_bytes());
+        out.extend_from_slice(&0u32.to_le_bytes());
+        out.extend_from_slice(&65_535u32.to_le_bytes());
+        out.extend_from_slice(&1u32.to_le_bytes());
+        for (i, frame) in frames.iter().enumerate() {
+            let len = u32::try_from(frame.len()).expect("a small frame");
+            let secs = 1_700_000_000u32 + u32::try_from(i).expect("a few frames");
+            out.extend_from_slice(&secs.to_le_bytes());
+            out.extend_from_slice(&0u32.to_le_bytes());
+            out.extend_from_slice(&len.to_le_bytes());
+            out.extend_from_slice(&len.to_le_bytes());
+            out.extend_from_slice(frame);
+        }
+        std::fs::write(path, out).expect("the fixture capture is written");
+    }
+
+    /// One Ethernet/IPv4/UDP frame from 192.0.2.10:43734 to
+    /// 192.0.2.20:`dst_port`, with a correct IPv4 header checksum.
+    fn udp_frame(dst_port: u16, payload: &[u8]) -> Vec<u8> {
+        let total = u16::try_from(20 + 8 + payload.len()).expect("a small datagram");
+        let mut ipv4 = vec![0x45, 0, 0, 0, 0, 0, 0x40, 0, 64, 17, 0, 0];
+        ipv4[2..4].copy_from_slice(&total.to_be_bytes());
+        ipv4.extend_from_slice(&[192, 0, 2, 10, 192, 0, 2, 20]);
+        let sum = ipv4
+            .chunks(2)
+            .map(|w| u32::from(u16::from_be_bytes([w[0], w[1]])))
+            .sum::<u32>();
+        let folded = (sum & 0xffff) + (sum >> 16);
+        let checksum = !u16::try_from((folded & 0xffff) + (folded >> 16)).unwrap_or(0);
+        ipv4[10..12].copy_from_slice(&checksum.to_be_bytes());
+
+        let mut frame = vec![0x02, 0, 0, 0, 0, 0x01, 0x02, 0, 0, 0, 0, 0x02, 0x08, 0x00];
+        frame.extend_from_slice(&ipv4);
+        frame.extend_from_slice(&43_734u16.to_be_bytes());
+        frame.extend_from_slice(&dst_port.to_be_bytes());
+        frame.extend_from_slice(&(total - 20).to_be_bytes());
+        frame.extend_from_slice(&0u16.to_be_bytes());
+        frame.extend_from_slice(payload);
+        frame
+    }
+
+    /// The port the frames below land on. The toy decoder reports whether a
+    /// message arrived on it, so the answer can be seen to carry that through.
+    const MIRROR_PORT: u16 = 9060;
+
+    /// A control decoder reading a toy wire format, installed through the
+    /// same seam the composition root uses.
+    ///
+    /// A toy rather than a real relay's decoder, for two reasons. The handler
+    /// takes its decoder by injection precisely so that it never depends on
+    /// one protocol, and `relay_seam_test` refuses a vendor name in this file.
+    /// And what is under test is what `decode_ng` does with a decode -- the
+    /// trust it assigns each delivery path, the confinement, the refusals --
+    /// which a real parser would only obscure. `ENC <call-id>` decodes as an
+    /// encapsulated message, `BARE <call-id>` as a sniffed one, and anything
+    /// else is not a control message.
+    struct ToyDecoder;
+
+    impl crate::relay::ControlDecoder for ToyDecoder {
+        fn decode(&self, payload: &[u8], dst_port: u16) -> Option<crate::relay::DecodedControl> {
+            let text = std::str::from_utf8(payload).ok()?;
+            let (delivery, call_id) = if let Some(c) = text.strip_prefix("ENC ") {
+                (crate::relay::ControlDelivery::Encapsulated, c)
+            } else {
+                (
+                    crate::relay::ControlDelivery::BareDatagram,
+                    text.strip_prefix("BARE ")?,
+                )
+            };
+            let encapsulated = matches!(delivery, crate::relay::ControlDelivery::Encapsulated);
+            Some(crate::relay::DecodedControl {
+                delivery,
+                on_believed_mirror_port: encapsulated.then_some(dst_port == MIRROR_PORT),
+                correlation_id: encapsulated.then(|| format!("corr-{call_id}")),
+                message: crate::relay::ControlMessage {
+                    command: Some("offer".to_string()),
+                    call_id: Some(call_id.to_string()),
+                    sdp_bytes: Some(120),
+                },
+            })
+        }
+    }
+
+    /// A sniffed control message for `call_id`.
+    fn bare(call_id: &str) -> Vec<u8> {
+        format!("BARE {call_id}").into_bytes()
+    }
+
+    /// An encapsulated control message for `call_id`.
+    fn encapsulated(call_id: &str) -> Vec<u8> {
+        format!("ENC {call_id}").into_bytes()
+    }
+
+    /// A server confined to `root`, with the toy decoder installed.
+    fn decoding(root: &std::path::Path) -> SipnabMcp {
+        empty()
+            .with_file_root(root)
+            .with_control_decoder(Arc::new(ToyDecoder))
+    }
+
+    /// `decode_ng`'s answer for `pointer`, which is never a call failure.
+    async fn decode(server: &SipnabMcp, pointer: &str) -> serde_json::Value {
+        payload(
+            &server
+                .decode_ng(Parameters(DecodeNgParams {
+                    frame_ref: pointer.to_string(),
+                }))
+                .await
+                .expect("a non-blank pointer is always answered"),
+        )
+    }
+
+    /// A blank pointer is refused: an empty decode would read as "this frame
+    /// holds no control message".
+    #[tokio::test]
+    async fn a_blank_frame_ref_is_refused_rather_than_decoded_as_nothing() {
+        let err = empty()
+            .decode_ng(Parameters(DecodeNgParams {
+                frame_ref: "  ".to_string(),
+            }))
+            .await
+            .expect_err("a blank pointer names no frame");
+        assert_eq!(err.code.0, -32602);
+    }
+
+    /// A bare datagram decodes as sniffed and port-gated, whatever HEP posture
+    /// the run was configured with.
+    ///
+    /// The HMAC posture describes what an ENCAPSULATED message was worth on
+    /// delivery. A bare datagram was never delivered through that listener,
+    /// so crediting it with the run's posture would launder a sniffed message
+    /// into an authenticated one.
+    #[tokio::test]
+    async fn a_bare_datagram_decodes_as_sniffed_and_port_gated_under_any_posture() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_pcap(
+            &dir.path().join("ng.pcap"),
+            &[udp_frame(MIRROR_PORT, &bare("c1@example.invalid"))],
+        );
+        let server = decoding(dir.path()).with_hep_auth_mode(crate::cli::HepAuthMode::Hmac);
+        let result = server
+            .decode_ng(Parameters(DecodeNgParams {
+                frame_ref: "ng.pcap#0".to_string(),
+            }))
+            .await
+            .expect("answered");
+        let v = payload(&result);
+        assert_eq!(v["status"], "unverified", "no digest was given: {v}");
+        assert_eq!(v["source"], "ng.pcap");
+        assert_eq!(v["ordinal"], 0);
+        assert_eq!(v["delivery"], "sniffed-udp");
+        assert_eq!(v["delivery_trust"], "port-gated-only");
+        assert_eq!(v["delivery_note"], DeliveryTrust::PortGatedOnly.explain());
+        assert_eq!(v["command"], "offer");
+        assert_eq!(v["call_id"], "c1@example.invalid");
+        assert_eq!(v["has_sdp"], true);
+        assert_eq!(v["sdp_bytes"], 120);
+        assert!(
+            v.get("correlation_id").is_none() && v.get("on_believed_mirror_port").is_none(),
+            "a sniffed message carries no envelope facts: {v}"
+        );
+        assert!(
+            v.get("reason").is_none(),
+            "a decode that worked states no reason: {v}"
+        );
+        assert!(
+            carries_the_untrusted_note(&result),
+            "the decode quotes bytes the datagram's sender wrote"
+        );
+    }
+
+    /// A pointer carrying the frame's digest decodes as `verified`; one whose
+    /// digest no longer matches is unresolvable rather than decoded anyway.
+    #[tokio::test]
+    async fn a_digest_decides_between_verified_and_unresolvable() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let frame = udp_frame(MIRROR_PORT, &bare("c1@example.invalid"));
+        let digest = crate::capture::packet::frame_digest(&frame);
+        write_pcap(&dir.path().join("ng.pcap"), &[frame]);
+        let server = decoding(dir.path());
+
+        let verified = decode(&server, &format!("ng.pcap#0@{digest:x}")).await;
+        assert_eq!(verified["status"], "verified", "{verified}");
+        assert_eq!(verified["command"], "offer");
+
+        let changed = decode(&server, &format!("ng.pcap#0@{:x}", digest ^ 1)).await;
+        assert_eq!(changed["status"], "unresolvable", "{changed}");
+        assert!(
+            changed.get("command").is_none(),
+            "a frame that is not the one pointed at must not be decoded: {changed}"
+        );
+    }
+
+    /// An encapsulated message is worth what the run's posture says, and says
+    /// where it landed.
+    #[tokio::test]
+    async fn an_encapsulated_message_takes_the_runs_configured_trust() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_pcap(
+            &dir.path().join("hep.pcap"),
+            &[udp_frame(MIRROR_PORT, &encapsulated("c1@example.invalid"))],
+        );
+        for (mode, want) in [
+            (None, "port-gated-only"),
+            (Some(crate::cli::HepAuthMode::Plain), "plain-secret"),
+            (Some(crate::cli::HepAuthMode::Hmac), "hmac-verified"),
+        ] {
+            let mut server = decoding(dir.path());
+            if let Some(mode) = mode {
+                server = server.with_hep_auth_mode(mode);
+            }
+            let v = decode(&server, "hep.pcap#0").await;
+            assert_eq!(v["delivery"], "hep", "under {mode:?}: {v}");
+            assert_eq!(v["delivery_trust"], want, "under {mode:?}: {v}");
+            assert_eq!(v["on_believed_mirror_port"], true);
+            assert_eq!(v["correlation_id"], "corr-c1@example.invalid");
+            assert_eq!(v["command"], "offer");
+        }
+    }
+
+    /// A pointer naming some other directory is followed inside the file root.
+    ///
+    /// Confinement rewrites WHERE to look, never what was asked for: the leaf
+    /// is what is resolved, so a pointer minted on another host still resolves
+    /// against the copy an operator placed in the root, and a pointer cannot
+    /// reach outside it.
+    #[tokio::test]
+    async fn a_pointer_is_followed_inside_the_file_root_whatever_directory_it_names() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_pcap(
+            &dir.path().join("ng.pcap"),
+            &[udp_frame(MIRROR_PORT, &bare("c1@example.invalid"))],
+        );
+        let v = decode(&decoding(dir.path()), "/elsewhere/entirely/ng.pcap#0").await;
+        assert_eq!(v["status"], "unverified", "{v}");
+        assert_eq!(v["source"], "ng.pcap");
+        assert_eq!(v["command"], "offer");
+    }
+
+    /// Every pointer that leads nowhere is `unresolvable`, with a reason that
+    /// names the step it failed at and nothing decoded around it.
+    ///
+    /// One row per refusal in `decode_ng_one`, in the order the function makes
+    /// them. The reasons are how an operator tells "the file is gone" from
+    /// "the frame is not a control message" from "this server cannot decode at
+    /// all", and those send them to three different places.
+    #[tokio::test]
+    async fn each_pointer_that_leads_nowhere_says_where_it_stopped() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_pcap(
+            &dir.path().join("mixed.pcap"),
+            &[
+                udp_frame(MIRROR_PORT, &bare("c1@example.invalid")),
+                // An Ethernet header announcing IPv4, and no IPv4 after it.
+                vec![0x02, 0, 0, 0, 0, 0x01, 0x02, 0, 0, 0, 0, 0x02, 0x08, 0x00],
+                udp_frame(MIRROR_PORT, b"not a control message at all"),
+            ],
+        );
+        let confined = decoding(dir.path());
+        let unconfined = empty().with_control_decoder(Arc::new(ToyDecoder));
+        let no_decoder = empty().with_file_root(dir.path());
+
+        for (server, pointer, says) in [
+            (&confined, "no-ordinal-here", "no-ordinal-here"),
+            (&confined, "uprobe:opensips/1234#7", "uprobe read"),
+            (&confined, "/#0", "does not name a capture file"),
+            (
+                &unconfined,
+                "mixed.pcap#0",
+                "not reachable from the configured file root",
+            ),
+            (&confined, "absent.pcap#0", "absent.pcap"),
+            (&confined, "mixed.pcap#9", "mixed.pcap"),
+            (&confined, "mixed.pcap#1", "carries no decodable transport"),
+            (
+                &confined,
+                "mixed.pcap#2",
+                "carries no relay control message",
+            ),
+            (
+                &no_decoder,
+                "mixed.pcap#0",
+                "no relay control decoder installed",
+            ),
+        ] {
+            let v = decode(server, pointer).await;
+            assert_eq!(v["status"], "unresolvable", "{pointer}: {v}");
+            assert_eq!(v["pointer"], pointer);
+            let reason = v["reason"].as_str().unwrap_or_default();
+            assert!(
+                reason.contains(says),
+                "{pointer}: the reason must say '{says}', got: {reason}"
+            );
+            for absent in ["command", "call_id", "delivery", "delivery_trust", "source"] {
+                assert!(
+                    v.get(absent).is_none(),
+                    "{pointer}: nothing is decoded around a refusal, but '{absent}' \
+                     is present: {v}"
+                );
+            }
+            assert_eq!(v["has_sdp"], false);
+        }
+    }
+
+    /// A statistics reply renders on `query_relay`'s answer as the relay's own
+    /// name/value pairs, not a schema of sipnab's.
+    #[test]
+    fn a_statistics_reply_is_carried_as_the_relays_own_pairs() {
+        let answer = RelayAnswer::from_reply(
+            "statistics",
+            relay_addr(),
+            &stats(&[("totals.RTP.packets", "9000")]),
+        );
+        assert_eq!(answer.outcome, "statistics");
+        assert_eq!(
+            answer.statistics,
+            Some(vec![("totals.RTP.packets".to_string(), "9000".to_string())])
+        );
+        assert!(answer.tags.is_none() && answer.call_ids.is_none());
+        assert_eq!(answer.delivery_trust, DeliveryTrust::Asked);
+    }
+}

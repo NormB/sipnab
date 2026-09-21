@@ -404,3 +404,292 @@ mod tests {
         );
     }
 }
+
+/// [`Confirm::to`] and [`Confirm::ask`] against a real peer, in process.
+///
+/// The tests above prove the predicate and the request's shape. They cannot
+/// prove what `ask` does with the answer, because `ask` needs a connected
+/// `Peer` and every answer it reads arrives over one. The subprocess tests in
+/// `tests/mcp_elicitation_test.rs` drive the happy paths through a real
+/// `sipnab --mcp`; the answers a stock client rarely sends -- a cancel, an
+/// error reply, a result of the wrong type, a pipe that closes mid-question --
+/// are the ones that decide whether an irreversible act can slip through, and
+/// they are driven here.
+///
+/// The server runs rmcp's own session over an in-memory duplex pipe; the
+/// client is written by hand, line by line, so each test chooses exactly the
+/// bytes that come back. Nothing leaves the process.
+#[cfg(test)]
+mod round_trip_tests {
+    use super::*;
+    use serde_json::{Value, json};
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, DuplexStream, ReadHalf, WriteHalf};
+
+    /// A server with nothing to offer: these tests are about the channel back
+    /// to the client, not about any tool.
+    struct Bare;
+
+    impl rmcp::ServerHandler for Bare {}
+
+    /// The client's end of one session, driven by hand.
+    struct Client {
+        lines: tokio::io::Lines<BufReader<ReadHalf<DuplexStream>>>,
+        writer: WriteHalf<DuplexStream>,
+    }
+
+    impl Client {
+        /// Write one JSON-RPC message.
+        async fn send(&mut self, message: Value) {
+            let line = format!("{message}\n");
+            self.writer
+                .write_all(line.as_bytes())
+                .await
+                .expect("the pipe accepts a line");
+            self.writer.flush().await.expect("the pipe flushes");
+        }
+
+        /// Read one JSON-RPC message, bounded so a hang fails the test.
+        async fn next(&mut self) -> Value {
+            let line =
+                tokio::time::timeout(std::time::Duration::from_secs(10), self.lines.next_line())
+                    .await
+                    .expect("the server wrote nothing within 10 s")
+                    .expect("the pipe reads")
+                    .expect("the server closed the pipe");
+            serde_json::from_str(&line).expect("each line is one JSON-RPC message")
+        }
+    }
+
+    /// A session whose client declared `capabilities` at `initialize`.
+    async fn connect(
+        capabilities: Value,
+    ) -> (rmcp::service::RunningService<RoleServer, Bare>, Client) {
+        let (server_end, client_end) = tokio::io::duplex(64 * 1024);
+        let (server_read, server_write) = tokio::io::split(server_end);
+        let (client_read, client_write) = tokio::io::split(client_end);
+        let serving = tokio::spawn(async move {
+            rmcp::ServiceExt::serve(Bare, (server_read, server_write)).await
+        });
+        let mut client = Client {
+            lines: BufReader::new(client_read).lines(),
+            writer: client_write,
+        };
+        client
+            .send(json!({
+                "jsonrpc": "2.0", "id": 1, "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-06-18",
+                    "capabilities": capabilities,
+                    "clientInfo": {"name": "confirm-test", "version": "1"}
+                }
+            }))
+            .await;
+        let initialized = client.next().await;
+        assert!(
+            initialized["result"].is_object(),
+            "handshake failed: {initialized}"
+        );
+        client
+            .send(json!({"jsonrpc": "2.0", "method": "notifications/initialized"}))
+            .await;
+        let running = serving
+            .await
+            .expect("the serving task completes")
+            .expect("the handshake succeeds");
+        (running, client)
+    }
+
+    /// Ask once over a session whose client can answer a form, reply with what
+    /// `reply` builds from the request's id, and return the request that went
+    /// out and the answer `ask` settled on.
+    async fn ask_answered_with(reply: impl FnOnce(Value) -> Value) -> (Value, Answer) {
+        let (running, mut client) = connect(json!({"elicitation": {}})).await;
+        let confirm = Confirm::to(running.peer().clone());
+        assert!(
+            confirm.available(),
+            "a client declaring elicitation can be asked"
+        );
+        let asking = tokio::spawn(async move {
+            confirm
+                .ask("Stop the sipnab server?", "Stop", "ends the run")
+                .await
+        });
+        let request = client.next().await;
+        client.send(reply(request["id"].clone())).await;
+        let answer = asking.await.expect("the ask completes");
+        drop(running);
+        (request, answer)
+    }
+
+    /// A JSON-RPC result for request `id`.
+    fn result(id: Value, result: Value) -> Value {
+        json!({"jsonrpc": "2.0", "id": id, "result": result})
+    }
+
+    /// The question goes out as one `elicitation/create` form asking for the
+    /// confirmation field, titled and described in the caller's words -- and a
+    /// ticked box is the one answer that confirms.
+    #[tokio::test]
+    async fn a_ticked_confirmation_confirms_and_the_request_asks_in_the_callers_words() {
+        let (request, answer) = ask_answered_with(|id| {
+            result(
+                id,
+                json!({"action": "accept", "content": {"confirm": true}}),
+            )
+        })
+        .await;
+        assert_eq!(request["method"], "elicitation/create", "{request}");
+        assert!(
+            request["id"].is_number() || request["id"].is_string(),
+            "{request}"
+        );
+        let params = &request["params"];
+        assert_eq!(params["mode"], "form");
+        assert_eq!(params["message"], "Stop the sipnab server?");
+        let field = &params["requestedSchema"]["properties"][CONFIRM_FIELD];
+        assert_eq!(field["type"], "boolean", "{request}");
+        assert_eq!(field["title"], "Stop");
+        assert_eq!(field["description"], "ends the run");
+        assert_eq!(answer, Answer::Confirmed);
+        assert!(answer.permits());
+    }
+
+    /// Every answer that is not a ticked box is a refusal, and says which.
+    ///
+    /// The act is irreversible, so the only safe reading of anything short of
+    /// an explicit yes is no -- including an answer this build cannot read as
+    /// an elicitation result at all. Each refusal names what happened, because
+    /// "declined" and "the pipe closed" send an operator different places.
+    #[tokio::test]
+    async fn every_answer_short_of_a_ticked_box_refuses_and_says_why() {
+        let cases: [(&str, Value, &str); 6] = [
+            (
+                "accept, unticked",
+                json!({"action": "accept", "content": {"confirm": false}}),
+                "confirm=false",
+            ),
+            (
+                "accept, no content",
+                json!({"action": "accept"}),
+                "confirm=false",
+            ),
+            ("decline", json!({"action": "decline"}), "declined"),
+            ("cancel", json!({"action": "cancel"}), "canceled"),
+            (
+                "a roots result",
+                json!({"roots": []}),
+                "something other than an elicitation result",
+            ),
+            (
+                "an action no revision defines",
+                json!({"action": "approve-everything"}),
+                "something other than an elicitation result",
+            ),
+        ];
+        for (label, body, says) in cases {
+            let (_, answer) = ask_answered_with(|id| result(id, body)).await;
+            match &answer {
+                Answer::Refused(why) => {
+                    assert!(why.contains(says), "{label}: expected '{says}' in: {why}");
+                    assert!(
+                        why.contains("nothing was done"),
+                        "{label}: a refusal says the act did not happen: {why}"
+                    );
+                }
+                other => panic!("{label}: must refuse, got {other:?}"),
+            }
+            assert!(!answer.permits(), "{label}: a refusal never permits");
+        }
+    }
+
+    /// An error reply is not an answer: the question was not answered, and
+    /// nothing was done.
+    #[tokio::test]
+    async fn an_error_reply_to_the_question_is_a_refusal() {
+        let (_, answer) = ask_answered_with(|id| {
+            json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32603, "message": "client broke"}})
+        })
+        .await;
+        match answer {
+            Answer::Refused(why) => assert!(why.contains("was not answered"), "{why}"),
+            other => panic!("an error reply must refuse, got {other:?}"),
+        }
+    }
+
+    /// A client that goes away mid-question has not said yes.
+    #[tokio::test]
+    async fn a_pipe_that_closes_mid_question_is_a_refusal() {
+        let (running, mut client) = connect(json!({"elicitation": {}})).await;
+        let confirm = Confirm::to(running.peer().clone());
+        let asking =
+            tokio::spawn(async move { confirm.ask("Stop?", "Stop", "ends the run").await });
+        let request = client.next().await;
+        assert_eq!(request["method"], "elicitation/create");
+        drop(client);
+        let answer = tokio::time::timeout(std::time::Duration::from_secs(10), asking)
+            .await
+            .expect("a closed pipe must end the ask, not hang it")
+            .expect("the ask completes");
+        match answer {
+            Answer::Refused(why) => assert!(why.contains("was not answered"), "{why}"),
+            other => panic!("a closed pipe must refuse, got {other:?}"),
+        }
+        drop(running);
+    }
+
+    /// A client that declared no elicitation is never sent one, and `ask`
+    /// answers `Unavailable` -- which permits, because the tool's own opt-in
+    /// is still the guard it always was.
+    ///
+    /// "Never sent" is checked on the wire: a ping written after the ask must
+    /// be answered by the NEXT line the server writes. An elicitation sent
+    /// anyway would arrive first.
+    #[tokio::test]
+    async fn a_client_that_declared_nothing_is_never_sent_the_question() {
+        let (running, mut client) = connect(json!({})).await;
+        let confirm = Confirm::to(running.peer().clone());
+        assert!(!confirm.available());
+        assert_eq!(
+            confirm.ask("Stop?", "Stop", "ends the run").await,
+            Answer::Unavailable
+        );
+        client
+            .send(json!({"jsonrpc": "2.0", "id": 2, "method": "ping"}))
+            .await;
+        let next = client.next().await;
+        assert_eq!(
+            next["id"], 2,
+            "the next line must answer the ping; anything else was sent unasked: {next}"
+        );
+        assert!(next.get("method").is_none(), "{next}");
+        drop(running);
+    }
+
+    /// A client that can only open a URL is not reachable for a form.
+    #[tokio::test]
+    async fn a_url_only_client_is_not_reachable_through_the_peer() {
+        let (running, _client) = connect(json!({"elicitation": {"url": {}}})).await;
+        let confirm = Confirm::to(running.peer().clone());
+        assert!(
+            !confirm.available(),
+            "a url-only client would be sent a form it cannot render"
+        );
+        drop(running);
+    }
+
+    /// `Debug` reports whether anyone can be asked, which is the one fact
+    /// someone debugging a missing confirmation needs.
+    #[tokio::test]
+    async fn debug_reports_whether_anyone_can_be_asked() {
+        assert_eq!(
+            format!("{:?}", Confirm::unavailable()),
+            "Confirm { available: false }"
+        );
+        let (running, _client) = connect(json!({"elicitation": {"form": {}}})).await;
+        assert_eq!(
+            format!("{:?}", Confirm::to(running.peer().clone())),
+            "Confirm { available: true }"
+        );
+        drop(running);
+    }
+}
