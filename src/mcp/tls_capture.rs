@@ -193,32 +193,16 @@ fn run(
     while !capture.stop.load(Ordering::Relaxed) && !crate::signals::shutdown_requested() {
         let sent = reader.drain_once(&tx);
         for packet in rx.try_iter() {
-            let parsed = match crate::capture::parse::parse_packet(&packet) {
-                Ok(p) => p,
-                Err(e) => {
-                    crate::capture::record_undecodable(&e, crate::capture::FrameFacts::UNRECORDED);
-                    continue;
-                }
-            };
-            if parsed.payload.is_empty() {
-                continue;
-            }
-            // These bytes arrived as plaintext already; nothing to decrypt.
-            let mut decrypt = crate::pipeline::MediaDecrypt::default();
-            crate::pipeline::process_packet(
-                &parsed,
+            if ingest(
+                &packet,
                 dialog_store,
                 stream_store,
                 &mut rtp_heuristic,
                 &opts,
-                &mut decrypt,
-                // RE4 joins a relay's ports to a call. These bytes were
-                // lifted from a process with no addressing at all, so there
-                // is no socket to ask about.
-                None,
-            );
-            messages += 1;
-            capture.messages.store(messages, Ordering::Relaxed);
+            ) {
+                messages += 1;
+                capture.messages.store(messages, Ordering::Relaxed);
+            }
         }
         if sent == 0 {
             // A probe fires only when the application writes, which on a quiet
@@ -232,6 +216,51 @@ fn run(
     // the kernel accepts.
     drop(reader);
     (messages, lost, None)
+}
+
+/// Feed one packet the probes delivered into the stores, and say whether it
+/// counts as a delivered message.
+///
+/// The body of `run`'s drain loop, as a function of its inputs, so the one
+/// part of a uprobe capture that needs no kernel can be driven without one:
+/// the loop around it starts only after `attach_many` has installed probes,
+/// which takes root.
+///
+/// A read that cannot be labeled with a transport is recorded as undecodable,
+/// and an empty read is skipped; neither counts.
+#[cfg(all(target_os = "linux", feature = "native"))]
+fn ingest(
+    packet: &crate::capture::packet::Packet,
+    dialog_store: &Arc<RwLock<DialogStore>>,
+    stream_store: &Arc<RwLock<StreamStore>>,
+    rtp_heuristic: &mut crate::rtp::heuristic::RtpHeuristic,
+    opts: &crate::pipeline::PipelineOptions,
+) -> bool {
+    let parsed = match crate::capture::parse::parse_packet(packet) {
+        Ok(p) => p,
+        Err(e) => {
+            crate::capture::record_undecodable(&e, crate::capture::FrameFacts::UNRECORDED);
+            return false;
+        }
+    };
+    if parsed.payload.is_empty() {
+        return false;
+    }
+    // These bytes arrived as plaintext already; nothing to decrypt.
+    let mut decrypt = crate::pipeline::MediaDecrypt::default();
+    crate::pipeline::process_packet(
+        &parsed,
+        dialog_store,
+        stream_store,
+        rtp_heuristic,
+        opts,
+        &mut decrypt,
+        // RE4 joins a relay's ports to a call. These bytes were
+        // lifted from a process with no addressing at all, so there
+        // is no socket to ask about.
+        None,
+    );
+    true
 }
 
 /// Everywhere else this is unreachable — `start_tls_capture` refuses before
@@ -350,6 +379,108 @@ mod tests {
             !c.finished(),
             "the probes are still installed until the worker removes them, and \
              reporting otherwise would have an agent believe the kernel is clean"
+        );
+    }
+
+    /// A handle built for a test is the same unstarted handle `spawn` makes:
+    /// nothing counted, no outcome, not finished.
+    #[test]
+    fn a_handle_built_for_a_test_starts_unfinished_with_no_outcome() {
+        let c = TlsCapture::new_for_test(vec!["x:y".to_string()], "cap-t");
+        assert_eq!(c.instance, "cap-t");
+        assert!(!c.finished());
+        assert!(!c.stop.load(Ordering::Relaxed));
+        assert!(
+            c.outcome.lock().is_none(),
+            "an outcome before the worker ran would be a result nobody produced"
+        );
+    }
+
+    /// Bytes an application handed its TLS library, as the uprobe reader
+    /// packages them: no addressing, and the process named as the source.
+    #[cfg(all(target_os = "linux", feature = "native"))]
+    fn lifted(bytes: &[u8], ip_protocol: u8) -> crate::capture::packet::Packet {
+        let unspecified = std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED);
+        crate::capture::packet::Packet::with_pre_parsed(
+            chrono::TimeZone::with_ymd_and_hms(&chrono::Utc, 2026, 6, 15, 12, 0, 0)
+                .single()
+                .expect("a literal instant"),
+            bytes.to_vec(),
+            Some("uprobe:opensips/1234".to_string()),
+            crate::capture::packet::PreParsed {
+                src_addr: unspecified,
+                dst_addr: unspecified,
+                src_port: 0,
+                dst_port: 0,
+                ip_protocol,
+                hep: None,
+            },
+        )
+    }
+
+    /// What the drain loop does with each packet the probes hand it: a SIP
+    /// message reaches the dialog store and counts; an empty read and a read
+    /// that cannot be labeled with a transport do neither.
+    ///
+    /// Driven through the extracted per-packet step because the loop around it
+    /// cannot run here: it starts only after `attach_many` has installed
+    /// kernel uprobes, which needs root and tracefs, and a test that needed
+    /// either would either be skipped everywhere it matters or leave kernel
+    /// state behind when it failed.
+    #[cfg(all(target_os = "linux", feature = "native"))]
+    #[test]
+    fn each_drained_read_counts_only_if_it_reached_the_stores() {
+        let dialogs = Arc::new(RwLock::new(DialogStore::new(16, false)));
+        let streams = Arc::new(RwLock::new(StreamStore::new(16)));
+        let mut heuristic = crate::rtp::heuristic::RtpHeuristic::new();
+        let opts = crate::pipeline::PipelineOptions::default();
+        let invite = crate::test_utils::build_sip_message(
+            "INVITE sip:bob@example.com SIP/2.0",
+            &[
+                "Via: SIP/2.0/TLS 192.0.2.10:5061;branch=z9hG4bKlifted",
+                "From: <sip:alice@example.com>;tag=a1",
+                "To: <sip:bob@example.com>",
+                "Call-ID: lifted@example.invalid",
+                "CSeq: 1 INVITE",
+                "Content-Length: 0",
+            ],
+            b"",
+        );
+
+        assert!(
+            ingest(
+                &lifted(&invite, 6),
+                &dialogs,
+                &streams,
+                &mut heuristic,
+                &opts
+            ),
+            "a SIP message the probes delivered is counted"
+        );
+        assert!(
+            dialogs.read().get("lifted@example.invalid").is_some(),
+            "and counting it means it reached the dialog store"
+        );
+
+        assert!(
+            !ingest(&lifted(b"", 6), &dialogs, &streams, &mut heuristic, &opts),
+            "an empty read is not a message"
+        );
+        assert!(
+            !ingest(
+                &lifted(&invite, 50),
+                &dialogs,
+                &streams,
+                &mut heuristic,
+                &opts
+            ),
+            "a read no transport can be named for is recorded as undecodable, \
+             not counted as a message"
+        );
+        assert_eq!(
+            dialogs.read().len(),
+            1,
+            "neither of the refused reads created a dialog"
         );
     }
 }

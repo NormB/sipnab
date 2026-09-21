@@ -15351,3 +15351,668 @@ pub(crate) struct RelayQueryAccess {
     /// Proof this run reads a live source and may put a packet on the wire.
     pub permit: crate::security::transmit_guard::TransmitPermit,
 }
+
+/// Tool handlers and protocol methods that no in-process test called.
+///
+/// The tool handlers are called directly. The protocol methods take a
+/// `RequestContext`, which only a live session can build, so they run over
+/// rmcp's own session on an in-memory pipe, driven line by line by the
+/// hand-written client in `elicit::wire`. Nothing leaves the process.
+#[cfg(test)]
+mod in_process_handler_tests {
+    use super::*;
+    use crate::capture::parse::{InputOrigin, ParsedPacket, TransportProto};
+    use crate::mcp::elicit::wire::{Client, connect};
+    use serde_json::{Value, json};
+    use std::net::{IpAddr, Ipv4Addr};
+
+    /// A fixed capture time, so no fixture depends on the clock.
+    fn ts() -> chrono::DateTime<chrono::Utc> {
+        chrono::TimeZone::with_ymd_and_hms(&chrono::Utc, 2026, 6, 15, 12, 0, 0)
+            .single()
+            .expect("a literal instant")
+    }
+
+    fn server_over(ds: DialogStore, ss: StreamStore) -> SipnabMcp {
+        SipnabMcp::new(Arc::new(RwLock::new(ds)), Arc::new(RwLock::new(ss)))
+    }
+
+    fn empty() -> SipnabMcp {
+        server_over(DialogStore::new(64, false), StreamStore::new(64))
+    }
+
+    /// An INVITE for `call_id`, optionally carrying `(content_type, body)`.
+    fn invite(call_id: &str, body: Option<(&str, &[u8])>) -> crate::sip::SipMessage {
+        let mut headers = vec![
+            "Via: SIP/2.0/UDP 192.0.2.10:5060;branch=z9hG4bKinproc".to_string(),
+            "From: <sip:alice@example.com>;tag=a1".to_string(),
+            "To: <sip:bob@example.com>".to_string(),
+            format!("Call-ID: {call_id}"),
+            "CSeq: 1 INVITE".to_string(),
+        ];
+        let bytes: &[u8] = body.map_or(b"", |(_, b)| b);
+        if let Some((ct, _)) = body {
+            headers.push(format!("Content-Type: {ct}"));
+        }
+        headers.push(format!("Content-Length: {}", bytes.len()));
+        let refs: Vec<&str> = headers.iter().map(String::as_str).collect();
+        crate::sip::parser::parse_sip(
+            &crate::test_utils::build_sip_message(
+                "INVITE sip:bob@example.com SIP/2.0",
+                &refs,
+                bytes,
+            ),
+            ts(),
+            IpAddr::V4(Ipv4Addr::new(192, 0, 2, 10)),
+            IpAddr::V4(Ipv4Addr::new(192, 0, 2, 20)),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("the fixture INVITE parses")
+    }
+
+    fn dialogs(messages: Vec<crate::sip::SipMessage>) -> DialogStore {
+        let mut ds = DialogStore::new(64, false);
+        for m in messages {
+            ds.process_message(m);
+        }
+        ds
+    }
+
+    /// The JSON payload of a tool result.
+    fn payload(result: &CallToolResult) -> Value {
+        let text = result
+            .content
+            .iter()
+            .filter_map(|c| c.as_text())
+            .map(|t| t.text.clone())
+            .next()
+            .expect("a payload block");
+        serde_json::from_str(&text).expect("the payload is JSON")
+    }
+
+    // ── siprec_metadata ─────────────────────────────────────────────
+
+    /// Recording metadata in the shape OpenSIPS's SRC writes: the mode in
+    /// `<datamode>`, participants beside the session, and stream ownership
+    /// only through `<participantstreamassoc>`.
+    const RS_METADATA: &str = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\r\n\
+<recording xmlns='urn:ietf:params:xml:ns:recording:1'>\r\n\
+<datamode>complete</datamode>\r\n\
+<session session_id=\"sess-1\"><sipSessionID>rec@example.invalid</sipSessionID></session>\r\n\
+<participant participant_id=\"p-alice\"><nameID aor=\"sip:alice@example.invalid\"><name>Alice</name></nameID></participant>\r\n\
+<participant participant_id=\"p-bob\"><nameID aor=\"sip:bob@example.invalid\"/></participant>\r\n\
+<stream stream_id=\"s-alice\" session_id=\"sess-1\"><label>0</label></stream>\r\n\
+<stream stream_id=\"s-bob\" session_id=\"sess-1\"><label>1</label></stream>\r\n\
+<participantstreamassoc participant_id=\"p-alice\"><send>s-alice</send><recv>s-bob</recv></participantstreamassoc>\r\n\
+<participantstreamassoc participant_id=\"p-bob\"><send>s-bob</send><recv>s-alice</recv></participantstreamassoc>\r\n\
+</recording>\r\n";
+
+    /// A dialog whose INVITE carries SDP and the metadata as multipart parts.
+    fn recorded_call(call_id: &str) -> DialogStore {
+        let body = format!(
+            "--OSS\r\nContent-Type: application/sdp\r\n\r\nv=0\r\n\
+             --OSS\r\nContent-Type: application/rs-metadata+xml\r\n\r\n{RS_METADATA}\r\n--OSS--"
+        );
+        dialogs(vec![invite(
+            call_id,
+            Some(("multipart/mixed; boundary=OSS", body.as_bytes())),
+        )])
+    }
+
+    /// A recorded call reaches the agent with its session, mode, parties and
+    /// streams, each stream naming its `m=` label and the party that sends it.
+    #[tokio::test]
+    async fn siprec_metadata_reports_what_a_recorded_invite_carried() {
+        let call = "rec@example.invalid";
+        let v = payload(
+            &server_over(recorded_call(call), StreamStore::new(16))
+                .siprec_metadata(Parameters(SiprecMetadataParams {
+                    call_id: call.to_string(),
+                }))
+                .await
+                .expect("a held call is answered"),
+        );
+        assert_eq!(v["recorded"], true, "{v}");
+        assert_eq!(v["call_id"], call);
+        assert_eq!(v["schema_version"], 1);
+        assert!(v["capture_identity"].is_object(), "{v}");
+        let md = &v["siprec"];
+        assert_eq!(md["session_id"], "sess-1");
+        assert_eq!(md["mode"], "complete");
+        assert_eq!(md["participants"][0]["aor"], "sip:alice@example.invalid");
+        assert_eq!(md["participants"][0]["name"], "Alice");
+        let streams = md["streams"].as_array().cloned().unwrap_or_default();
+        let bob = streams
+            .iter()
+            .find(|s| s["stream_id"] == "s-bob")
+            .unwrap_or_else(|| panic!("no s-bob stream: {v}"));
+        assert_eq!(bob["label"], "1");
+        assert_eq!(bob["participant_id"], "p-bob", "the sender owns the stream");
+    }
+
+    /// A call with no metadata is `recorded: false`, worded so it cannot be
+    /// read as "nobody recorded this call".
+    #[tokio::test]
+    async fn siprec_metadata_for_a_plain_call_does_not_claim_it_went_unrecorded() {
+        let call = "plain@example.invalid";
+        let v = payload(
+            &server_over(dialogs(vec![invite(call, None)]), StreamStore::new(16))
+                .siprec_metadata(Parameters(SiprecMetadataParams {
+                    call_id: call.to_string(),
+                }))
+                .await
+                .expect("a held call is answered"),
+        );
+        assert_eq!(v["recorded"], false);
+        assert!(v.get("siprec").is_none(), "{v}");
+        assert!(
+            v["reason"]
+                .as_str()
+                .is_some_and(|r| r.contains("none reached the capture point")),
+            "{v}"
+        );
+    }
+
+    /// An unknown Call-ID is refused by name, even beside a recorded call it
+    /// could otherwise be mistaken for.
+    #[tokio::test]
+    async fn siprec_metadata_refuses_an_unknown_call_by_name() {
+        let err = server_over(recorded_call("held@example.invalid"), StreamStore::new(16))
+            .siprec_metadata(Parameters(SiprecMetadataParams {
+                call_id: "absent@example.invalid".to_string(),
+            }))
+            .await
+            .expect_err("an unknown call must be refused");
+        assert_eq!(err.code.0, -32602);
+        assert!(
+            err.message.contains("absent@example.invalid"),
+            "{}",
+            err.message
+        );
+    }
+
+    // ── media_diagnostics ───────────────────────────────────────────
+
+    /// Record `marks.len()` PCMU packets on one stream, the i-th carrying DSCP
+    /// `marks[i]`.
+    fn rtp(ss: &mut StreamStore, src_port: u16, dst_port: u16, ssrc: u32, marks: &[Option<u8>]) {
+        for (i, dscp) in marks.iter().enumerate() {
+            let seq = u16::try_from(i).expect("a few packets");
+            let parsed = ParsedPacket {
+                frame_bytes: None,
+                frame: None,
+                timestamp: ts(),
+                src_addr: IpAddr::V4(Ipv4Addr::new(192, 0, 2, 10)),
+                dst_addr: IpAddr::V4(Ipv4Addr::new(192, 0, 2, 20)),
+                src_port,
+                dst_port,
+                transport: TransportProto::Udp,
+                payload: vec![0u8; 12 + 160].into(),
+                ip_id: None,
+                tcp_seq: None,
+                tcp_flags: None,
+                fragment_offset: None,
+                more_fragments: false,
+                ip_protocol: 17,
+                dscp: *dscp,
+                input_origin: InputOrigin::Wire,
+                hep: None,
+            };
+            let hdr = crate::rtp::parser::RtpHeader {
+                version: 2,
+                padding: false,
+                extension: false,
+                csrc_count: 0,
+                marker: false,
+                payload_type: 0,
+                sequence: 100 + seq,
+                timestamp: 160 * (u32::from(seq) + 1),
+                ssrc,
+                payload_offset: 12,
+            };
+            ss.process_rtp(&parsed, &hdr, ts());
+        }
+    }
+
+    /// A call with two streams: one marked EF and re-marked to best effort in
+    /// flight, which the far end also reported on over RTCP (RR and XR); and
+    /// one on which no IP header -- so no marking -- was ever observed.
+    fn call_with_media(call_id: &str) -> SipnabMcp {
+        use crate::rtp::rtcp::{
+            ExtendedReport, ReceiverReport, ReceptionReport, RtcpPacket, VoipMetrics, XrBlock,
+        };
+        let mut ss = StreamStore::new(64);
+        rtp(
+            &mut ss,
+            40000,
+            30000,
+            0x1111,
+            &[Some(46), Some(46), Some(0)],
+        );
+        rtp(&mut ss, 40002, 30002, 0x2222, &[None, None]);
+        ss.link_to_dialog(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 20)), 30000, call_id);
+        ss.link_to_dialog(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 20)), 30002, call_id);
+        ss.process_rtcp(
+            &[
+                RtcpPacket::ReceiverReport(ReceiverReport {
+                    ssrc: 0x9999,
+                    reports: vec![ReceptionReport {
+                        ssrc: 0x1111,
+                        fraction_lost: 64,
+                        cumulative_lost: 5,
+                        highest_seq: 102,
+                        jitter: 80,
+                        last_sr: 0,
+                        delay_since_sr: 0,
+                    }],
+                }),
+                RtcpPacket::ExtendedReport(ExtendedReport {
+                    ssrc: 0x9999,
+                    blocks: vec![XrBlock::VoipMetrics(VoipMetrics {
+                        ssrc: 0x1111,
+                        loss_rate: 64,
+                        discard_rate: 0,
+                        burst_density: 0,
+                        gap_density: 0,
+                        burst_duration: 0,
+                        gap_duration: 0,
+                        round_trip_delay: 40,
+                        end_system_delay: 20,
+                        signal_level: 127,
+                        noise_level: 127,
+                        rerl: 127,
+                        gmin: 16,
+                        r_factor: 80,
+                        ext_r_factor: 127,
+                        mos_lq: 42,
+                        mos_cq: 40,
+                        rx_config: 0,
+                        jb_nominal: 20,
+                        jb_maximum: 60,
+                        jb_abs_max: 100,
+                    })],
+                }),
+            ],
+            ts(),
+            None,
+        );
+        server_over(dialogs(vec![invite(call_id, None)]), ss)
+    }
+
+    /// The stream row for one SSRC.
+    fn stream_row<'a>(v: &'a Value, ssrc: &str) -> &'a Value {
+        v["streams"]
+            .as_array()
+            .and_then(|rows| rows.iter().find(|r| r["ssrc"] == ssrc))
+            .unwrap_or_else(|| panic!("no stream {ssrc} in {v}"))
+    }
+
+    /// Each stream reports its marking, jitter grounding, delay provenance and
+    /// silence; a marking never observed says so rather than reading as
+    /// unmarked; and the far end's RTCP claims sit under their own key, only
+    /// on the stream they were about.
+    #[tokio::test]
+    async fn media_diagnostics_reports_each_streams_facts_and_whose_they_are() {
+        let call = "media@example.invalid";
+        let v = payload(
+            &call_with_media(call)
+                .media_diagnostics(Parameters(MediaDiagnosticsParams {
+                    call_id: call.to_string(),
+                }))
+                .await
+                .expect("a held call is answered"),
+        );
+        assert_eq!(v["applicable"], true, "{v}");
+        assert_eq!(v["streams"].as_array().map(Vec::len), Some(2));
+
+        let marked = stream_row(&v, "0x00001111");
+        assert_eq!(marked["packets"], 3);
+        assert_eq!(marked["qos"]["marking_observed"], true);
+        assert_eq!(marked["qos"]["dscp"], 46);
+        assert_eq!(marked["qos"]["expedited"], true);
+        assert_eq!(
+            marked["qos"]["remarked_to"], 0,
+            "a marking that changed in flight says what it became: {marked}"
+        );
+        assert_eq!(marked["jitter"]["clock_basis"], "rfc3551");
+        assert_eq!(marked["jitter"]["clock_rate_hz"], 8000);
+        assert!(marked["delay"]["source"].is_string(), "{marked}");
+        assert!(marked["delay"]["assumed"].is_boolean(), "{marked}");
+        assert_eq!(marked["silence"]["periods"], 0);
+        let reported = &marked["endpoint_reported"];
+        assert_eq!(reported["reception_report"]["reporter_ssrc"], "0x00009999");
+        assert_eq!(reported["reception_report"]["cumulative_lost"], 5);
+        assert_eq!(reported["voip_metrics"]["reporter_ssrc"], "0x00009999");
+        assert_eq!(reported["voip_metrics"]["r_factor"], 80);
+        assert!(
+            reported["note"]
+                .as_str()
+                .is_some_and(|n| n.contains("did not") && n.contains("measure")),
+            "a remote claim is labeled as one: {reported}"
+        );
+
+        let unmarked = stream_row(&v, "0x00002222");
+        assert_eq!(unmarked["qos"]["marking_observed"], false);
+        assert!(unmarked["qos"].get("dscp").is_none(), "{unmarked}");
+        assert!(
+            unmarked.get("endpoint_reported").is_none(),
+            "nothing reported is absent, never an empty claim: {unmarked}"
+        );
+    }
+
+    /// A call with no media is not applicable, and says it is not a clean bill
+    /// of health.
+    #[tokio::test]
+    async fn media_diagnostics_for_a_call_without_media_is_not_a_clean_bill() {
+        let call = "silent@example.invalid";
+        let v = payload(
+            &server_over(dialogs(vec![invite(call, None)]), StreamStore::new(16))
+                .media_diagnostics(Parameters(MediaDiagnosticsParams {
+                    call_id: call.to_string(),
+                }))
+                .await
+                .expect("a held call is answered"),
+        );
+        assert_eq!(v["applicable"], false);
+        assert!(v.get("streams").is_none(), "{v}");
+        assert!(
+            v["reason"]
+                .as_str()
+                .is_some_and(|r| r.contains("not a clean bill of health")),
+            "{v}"
+        );
+    }
+
+    /// An unknown Call-ID is refused by name.
+    #[tokio::test]
+    async fn media_diagnostics_refuses_an_unknown_call_by_name() {
+        let err = empty()
+            .media_diagnostics(Parameters(MediaDiagnosticsParams {
+                call_id: "absent@example.invalid".to_string(),
+            }))
+            .await
+            .expect_err("an unknown call must be refused");
+        assert_eq!(err.code.0, -32602);
+        assert!(
+            err.message.contains("absent@example.invalid"),
+            "{}",
+            err.message
+        );
+    }
+
+    // ── stop_tls_capture against a capture that exists ──────────────
+
+    fn with_capture(handle: &Arc<super::super::tls_capture::TlsCapture>) -> SipnabMcp {
+        let s = empty();
+        s.capture.write().tls = Some(Arc::clone(handle));
+        s
+    }
+
+    /// Stopping a running capture records the request and reports it still
+    /// running: the worker removes the probes, and saying otherwise would tell
+    /// an agent the kernel is clean while probes are still attached.
+    #[tokio::test]
+    async fn stopping_a_running_capture_asks_it_to_stop_without_claiming_it_has() {
+        let handle = Arc::new(super::super::tls_capture::TlsCapture::new_for_test(
+            vec!["/lib/libssl.so.3:SSL_write".to_string()],
+            "cap-run",
+        ));
+        handle
+            .messages
+            .store(7, std::sync::atomic::Ordering::Relaxed);
+        let v = payload(
+            &with_capture(&handle)
+                .stop_tls_capture()
+                .await
+                .expect("stopping is always answered"),
+        );
+        assert!(
+            handle.stop.load(std::sync::atomic::Ordering::Relaxed),
+            "the stop was requested of the worker"
+        );
+        assert_eq!(v["running"], true, "{v}");
+        assert_eq!(v["messages"], 7);
+        assert_eq!(v["targets"], json!(["/lib/libssl.so.3:SSL_write"]));
+        assert!(v["lost"].is_null() && v["error"].is_null(), "{v}");
+        assert!(
+            v["summary"]
+                .as_str()
+                .is_some_and(|s| s.contains("Stop requested")),
+            "{v}"
+        );
+    }
+
+    /// A capture that has finished reports how it ended: what the kernel
+    /// dropped, and why it stopped.
+    #[tokio::test]
+    async fn stopping_a_finished_capture_reports_how_it_ended() {
+        let handle = Arc::new(super::super::tls_capture::TlsCapture::new_for_test(
+            vec!["/lib/libssl.so.3:SSL_write".to_string()],
+            "cap-done",
+        ));
+        *handle.outcome.lock() = Some(super::super::tls_capture::TlsCaptureOutcome {
+            messages: 3,
+            lost: 2,
+            error: Some("attach failed: no tracefs".to_string()),
+        });
+        handle
+            .done
+            .store(true, std::sync::atomic::Ordering::Release);
+        let v = payload(
+            &with_capture(&handle)
+                .stop_tls_capture()
+                .await
+                .expect("stopping is always answered"),
+        );
+        assert_eq!(v["running"], false, "{v}");
+        assert_eq!(v["lost"], 2);
+        assert_eq!(v["error"], "attach failed: no tracefs");
+        assert!(
+            v["summary"]
+                .as_str()
+                .is_some_and(|s| s.contains("has stopped")),
+            "{v}"
+        );
+    }
+
+    // ── protocol methods, over a session ────────────────────────────
+
+    /// Send one request and return its response, skipping anything else the
+    /// server writes in between.
+    async fn ask(client: &mut Client, id: i64, method: &str, params: Value) -> Value {
+        client
+            .send(json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}))
+            .await;
+        for _ in 0..32 {
+            let message = client.next().await;
+            if message["id"] == id {
+                return message;
+            }
+        }
+        panic!("no response to {method} among the next 32 messages");
+    }
+
+    /// Every served prompt is listed, one can be fetched by name, and a name
+    /// nothing serves is refused with the vocabulary.
+    #[tokio::test]
+    async fn prompts_are_listed_fetched_by_name_and_refused_when_unknown() {
+        let (running, mut client) = connect(empty(), json!({})).await;
+        let served = super::super::prompts::all();
+
+        let listed = ask(&mut client, 2, "prompts/list", json!({})).await;
+        let names: Vec<&str> = listed["result"]["prompts"]
+            .as_array()
+            .map(|p| p.iter().filter_map(|p| p["name"].as_str()).collect())
+            .unwrap_or_default();
+        let expected: Vec<&str> = served.iter().map(|w| w.name).collect();
+        assert_eq!(names, expected, "{listed}");
+
+        let first = &served[0];
+        let got = ask(&mut client, 3, "prompts/get", json!({"name": first.name})).await;
+        assert_eq!(got["result"]["description"], first.description, "{got}");
+        assert_eq!(got["result"]["messages"][0]["role"], "user");
+        assert_eq!(got["result"]["messages"][0]["content"]["text"], first.text);
+
+        let unknown = ask(
+            &mut client,
+            4,
+            "prompts/get",
+            json!({"name": "no-such-workflow"}),
+        )
+        .await;
+        assert_eq!(unknown["error"]["code"], -32602, "{unknown}");
+        let message = unknown["error"]["message"].as_str().unwrap_or_default();
+        assert!(
+            message.contains("no-such-workflow") && message.contains(first.name),
+            "the refusal names what was asked and what is served: {message}"
+        );
+        drop(running);
+    }
+
+    /// The file-root template is advertised only when a file root exists,
+    /// because a template is a promise that its URIs resolve.
+    #[tokio::test]
+    async fn the_file_template_is_advertised_only_with_a_file_root() {
+        let templates = |v: &Value| -> Vec<String> {
+            v["result"]["resourceTemplates"]
+                .as_array()
+                .map(|t| {
+                    t.iter()
+                        .filter_map(|t| t["uriTemplate"].as_str().map(str::to_string))
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        let (running, mut client) = connect(empty(), json!({})).await;
+        let bare = templates(&ask(&mut client, 2, "resources/templates/list", json!({})).await);
+        drop(running);
+        assert!(
+            bare.iter().any(|t| t == "sipnab://live/dialogs/{call_id}"),
+            "{bare:?}"
+        );
+        assert!(
+            !bare.iter().any(|t| t == "sipnab:///{filename}"),
+            "{bare:?}"
+        );
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (running, mut client) = connect(empty().with_file_root(dir.path()), json!({})).await;
+        let rooted = templates(&ask(&mut client, 2, "resources/templates/list", json!({})).await);
+        drop(running);
+        assert!(
+            rooted.iter().any(|t| t == "sipnab:///{filename}"),
+            "{rooted:?}"
+        );
+        assert_eq!(rooted.len(), bare.len() + 1, "{rooted:?}");
+    }
+
+    /// Files under the root are listed as resources.
+    #[tokio::test]
+    async fn files_under_the_root_are_listed_as_resources() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("listed.pcap"), b"not really a pcap").expect("write");
+        let (running, mut client) = connect(empty().with_file_root(dir.path()), json!({})).await;
+        let v = ask(&mut client, 2, "resources/list", json!({})).await;
+        drop(running);
+        assert!(
+            v["result"]["resources"]
+                .as_array()
+                .is_some_and(|r| r.iter().any(|r| r["name"] == "listed.pcap")),
+            "{v}"
+        );
+    }
+
+    /// A Call-ID completes from the dialogs the store holds now; an argument
+    /// the template does not have completes to nothing rather than to another
+    /// argument's vocabulary.
+    #[tokio::test]
+    async fn a_call_id_completes_from_live_state_and_a_foreign_argument_to_nothing() {
+        let server = server_over(
+            dialogs(vec![
+                invite("alpha@example.invalid", None),
+                invite("beta@example.invalid", None),
+            ]),
+            StreamStore::new(16),
+        );
+        let (running, mut client) = connect(server, json!({})).await;
+        let reference = json!({"type": "ref/resource", "uri": "sipnab://live/dialogs/{call_id}"});
+        let hit = ask(
+            &mut client,
+            2,
+            "completion/complete",
+            json!({"ref": reference, "argument": {"name": "call_id", "value": "al"}}),
+        )
+        .await;
+        assert_eq!(
+            hit["result"]["completion"]["values"],
+            json!(["alpha@example.invalid"]),
+            "{hit}"
+        );
+        assert_eq!(hit["result"]["completion"]["total"], 1);
+
+        let foreign = ask(
+            &mut client,
+            3,
+            "completion/complete",
+            json!({"ref": reference, "argument": {"name": "rule_id", "value": "al"}}),
+        )
+        .await;
+        drop(running);
+        assert_eq!(
+            foreign["result"]["completion"]["values"],
+            json!([]),
+            "{foreign}"
+        );
+    }
+
+    /// Only a live view can be subscribed to; a subscription can be removed
+    /// once, and removing one this connection does not hold is refused.
+    #[tokio::test]
+    async fn only_a_live_view_subscribes_and_an_unheld_subscription_cannot_be_removed() {
+        let (running, mut client) = connect(empty(), json!({})).await;
+        let live = super::super::live::DIALOG_LIST_URI;
+
+        let file = ask(
+            &mut client,
+            2,
+            "resources/subscribe",
+            json!({"uri": "sipnab:///capture.pcap"}),
+        )
+        .await;
+        assert_eq!(file["error"]["code"], -32602, "{file}");
+        assert!(
+            file["error"]["message"]
+                .as_str()
+                .is_some_and(|m| m.contains("cannot be subscribed to") && m.contains(live)),
+            "the refusal names the views that can be: {file}"
+        );
+
+        let held = ask(&mut client, 3, "resources/subscribe", json!({"uri": live})).await;
+        assert!(held["result"].is_object(), "{held}");
+        let removed = ask(
+            &mut client,
+            4,
+            "resources/unsubscribe",
+            json!({"uri": live}),
+        )
+        .await;
+        assert!(removed["result"].is_object(), "{removed}");
+        let again = ask(
+            &mut client,
+            5,
+            "resources/unsubscribe",
+            json!({"uri": live}),
+        )
+        .await;
+        drop(running);
+        assert_eq!(again["error"]["code"], -32602, "{again}");
+        assert!(
+            again["error"]["message"]
+                .as_str()
+                .is_some_and(|m| m.contains("not subscribed")),
+            "{again}"
+        );
+    }
+}
