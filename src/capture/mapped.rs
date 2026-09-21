@@ -149,6 +149,13 @@ impl MappedPcap {
         if mapping_disabled() {
             return Ok(None);
         }
+        // Prevent path traversal attacks by rejecting paths containing '..'.
+        if path.components().any(|c| c == std::path::Component::ParentDir) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("Invalid input: {}", path.display()),
+            ));
+        }
         let file = std::fs::File::open(path)?;
         let meta = file.metadata()?;
         // Only regular files. A pipe or device has no stable length to map,
