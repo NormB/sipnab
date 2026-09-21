@@ -47,6 +47,11 @@ pub fn open_offline(
 ) -> Result<(pcap::Capture<pcap::Offline>, Option<tempfile::TempPath>)> {
     use std::io::Read;
 
+    // Prevent path traversal attacks by rejecting paths containing '..'.
+    if path.components().any(|c| c == std::path::Component::ParentDir) {
+        anyhow::bail!("Invalid input: {}", path.display());
+    }
+
     // Peek the first two bytes for the gzip magic. A file too short to hold a
     // magic number isn't gzip; let libpcap report on it as before.
     let is_gzip = {
