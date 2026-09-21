@@ -236,4 +236,181 @@ mod tests {
             "an unofferable socket must be counted, not silently discarded"
         );
     }
+
+    /// A `tracing` writer that keeps every line, so a test can read what the
+    /// loop told the operator.
+    #[derive(Clone, Default)]
+    struct CaptureBuf(Arc<parking_lot::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for CaptureBuf {
+        fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().extend_from_slice(b);
+            Ok(b.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for CaptureBuf {
+        type Writer = CaptureBuf;
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
+    /// Run the loop on this thread over `sockets` and return what it logged.
+    ///
+    /// The log IS the loop's output: it returns nothing, and the only other
+    /// thing it touches is the store, which an unanswered socket leaves alone.
+    fn run_logged<R: ReadOnlyRelay>(reconciler: Reconciler<R>, sockets: &[u16]) -> String {
+        let store = Arc::new(RwLock::new(StreamStore::new(100)));
+        let (sink, rx) = orphan_channel();
+        let relay: IpAddr = "10.0.0.2".parse().expect("a literal v4 address parses");
+        for port in sockets {
+            sink.offer(relay, *port);
+        }
+        drop(sink);
+
+        let buf = CaptureBuf::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::INFO)
+            .with_ansi(false)
+            .with_writer(buf.clone())
+            .finish();
+        tracing::subscriber::with_default(subscriber, || {
+            run(reconciler, &permit(), &rx, &store);
+        });
+        let bytes = buf.0.lock().clone();
+        String::from_utf8_lossy(&bytes).into_owned()
+    }
+
+    /// A relay that attributes nothing: it cannot be reached, or it names
+    /// calls it then cannot describe, or it holds no call at all.
+    struct UnhelpfulRelay {
+        /// Fail every `list` rather than answering it.
+        down: bool,
+        /// Calls `list` names; every `query` about them fails.
+        unreadable: Vec<&'static str>,
+    }
+
+    impl ReadOnlyRelay for UnhelpfulRelay {
+        fn list(&self, _permit: &TransmitPermit, _limit: u32) -> anyhow::Result<ControlReply> {
+            if self.down {
+                anyhow::bail!("connection refused");
+            }
+            Ok(ControlReply::Calls(Enumeration {
+                call_ids: self.unreadable.iter().map(|c| (*c).to_owned()).collect(),
+                truncated: false,
+            }))
+        }
+
+        fn query(&self, _permit: &TransmitPermit, _call_id: &str) -> anyhow::Result<ControlReply> {
+            anyhow::bail!("relay busy")
+        }
+
+        fn describe(&self) -> String {
+            "10.0.0.2:22222".to_owned()
+        }
+
+        fn statistics(&self, _permit: &TransmitPermit) -> anyhow::Result<ControlReply> {
+            anyhow::bail!("this double answers no statistics")
+        }
+    }
+
+    /// A relay that is down answers the same way for every socket, so the
+    /// loop says so ONCE. A line per orphan stream would bury the capture's
+    /// own output under one fact repeated.
+    #[test]
+    fn a_relay_that_is_down_is_reported_once_not_once_per_stream() {
+        let logs = run_logged(
+            Reconciler::new(UnhelpfulRelay {
+                down: true,
+                unreadable: Vec::new(),
+            }),
+            &[30000, 30002, 30004],
+        );
+        assert_eq!(
+            logs.matches("could not be asked (connection refused)")
+                .count(),
+            1,
+            "one failure, said once: {logs}"
+        );
+        assert!(
+            logs.contains(
+                "rtpengine at 10.0.0.2:22222: 3 unexplained stream(s) offered, 0 attributed, \
+                 3 control transaction(s) spent of a ceiling of 66"
+            ),
+            "the closing line reports what the run did: {logs}"
+        );
+    }
+
+    /// "Not mine" about traffic that is not the relay's is the expected
+    /// answer, not news -- but a DIFFERENT reason arriving after it is.
+    #[test]
+    fn not_mine_is_not_news_but_a_new_reason_after_it_is() {
+        let logs = run_logged(
+            Reconciler::new(UnhelpfulRelay {
+                down: false,
+                unreadable: Vec::new(),
+            })
+            .with_budget(2),
+            &[30000, 30002, 30004],
+        );
+        assert!(
+            !logs.contains("does not hold this port"),
+            "a relay disowning traffic it does not carry is not reported: {logs}"
+        );
+        assert_eq!(
+            logs.matches("was never asked about").count(),
+            1,
+            "the ceiling running out on the third socket is new, so it is said: {logs}"
+        );
+        assert!(
+            logs.contains(
+                "3 unexplained stream(s) offered, 0 attributed, 2 control transaction(s)"
+            ),
+            "{logs}"
+        );
+    }
+
+    /// An answered socket is counted as attributed in the closing line, and
+    /// raises no per-socket line at all.
+    #[test]
+    fn an_attributed_socket_is_counted_in_the_closing_line() {
+        let logs = run_logged(Reconciler::new(OneCallRelay), &[30000]);
+        assert!(
+            logs.contains(
+                "rtpengine at 10.0.0.2:22222: 1 unexplained stream(s) offered, 1 attributed, \
+                 2 control transaction(s) spent of a ceiling of 66"
+            ),
+            "{logs}"
+        );
+        assert_eq!(logs.lines().count(), 1, "nothing else is news: {logs}");
+    }
+
+    /// A relay that named a call it then could not describe left a GAP, and
+    /// a gap is news -- unlike "not mine" -- so it is said, once.
+    #[test]
+    fn a_snapshot_with_an_unreadable_call_is_said_once_as_a_gap() {
+        let logs = run_logged(
+            Reconciler::new(UnhelpfulRelay {
+                down: false,
+                unreadable: vec!["mid-call"],
+            }),
+            &[30000, 30002],
+        );
+        assert_eq!(
+            logs.matches("named 1 call(s) that could not be read")
+                .count(),
+            1,
+            "{logs}"
+        );
+        assert!(
+            logs.contains(
+                "2 unexplained stream(s) offered, 0 attributed, 4 control transaction(s)"
+            ),
+            "each refresh retries the unread call rather than writing it off: {logs}"
+        );
+    }
 }

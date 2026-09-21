@@ -1580,4 +1580,515 @@ mod tests {
         .expect_err("an empty suite must error");
         assert!(matches!(err, RuleError::NoRules));
     }
+
+    // ── The rule vocabulary, end to end ─────────────────────────────
+
+    /// Every operator reads back as the symbol a rule file uses, and that
+    /// symbol parses back to the same operator. `as_str` is what the outcome
+    /// quotes; a quote that did not round-trip would name a rule the file
+    /// never contained.
+    #[test]
+    fn every_operator_reads_back_as_the_symbol_a_rule_file_uses() {
+        for (op, symbol) in [
+            (Op::Ge, ">="),
+            (Op::Gt, ">"),
+            (Op::Le, "<="),
+            (Op::Lt, "<"),
+            (Op::Eq, "=="),
+            (Op::Ne, "!="),
+        ] {
+            assert_eq!(op.as_str(), symbol);
+            let suite = Suite::from_toml_str(&format!(
+                "[[rules]]\nmetric = \"count\"\nop = \"{symbol}\"\nvalue = 1\n"
+            ))
+            .expect("every documented operator parses");
+            assert_eq!(suite.rules[0].op, op, "{symbol} parses to {op:?}");
+        }
+    }
+
+    /// The strict operators exclude the threshold and the inclusive ones take
+    /// it, in both directions. Only `>=`, `>`, `==` and `!=` had an equal-value
+    /// case above; a `<` that behaved as `<=` would pass that test.
+    #[test]
+    fn strict_operators_exclude_the_threshold_on_both_sides() {
+        assert!(Op::Lt.holds(0.5, 1.0) && !Op::Lt.holds(1.0, 1.0));
+        assert!(Op::Le.holds(0.5, 1.0) && !Op::Le.holds(1.5, 1.0));
+        assert!(Op::Gt.holds(1.5, 1.0) && !Op::Gt.holds(0.5, 1.0));
+        assert!(Op::Ne.holds(0.5, 1.0));
+    }
+
+    /// A percentile past 100 is refused, quoting the number that was asked
+    /// for, because `mos_p300` is a typo for something and the author has to
+    /// be told which part was wrong.
+    #[test]
+    fn a_percentile_past_one_hundred_is_refused_with_the_number_asked_for() {
+        let t = AliasThresholds::default();
+        for (metric, asked) in [("mos_p101", 101), ("mos_p300", 300)] {
+            let err = compile(3, &rule(metric, Op::Ge, 3.5), &t)
+                .expect_err("a percentile past 100 must be refused");
+            assert!(
+                matches!(
+                    &err,
+                    RuleError::PercentileOutOfRange { index: 3, percentile, .. }
+                        if *percentile == asked
+                ),
+                "{err:?}"
+            );
+            let text = err.to_string();
+            assert!(
+                text.contains(&asked.to_string()) && text.contains("0 to 100"),
+                "{text}"
+            );
+        }
+    }
+
+    /// Digits too many to be any number are not a percentile at all -- the
+    /// name is unknown, rather than a percentile of some wrapped value.
+    #[test]
+    fn a_percentile_too_long_to_be_a_number_is_an_unknown_metric() {
+        assert_eq!(Metric::parse("mos_p99999999999"), None);
+        let t = AliasThresholds::default();
+        let err = compile(0, &rule("mos_p99999999999", Op::Ge, 3.5), &t)
+            .expect_err("an unparseable percentile must be refused");
+        assert!(matches!(err, RuleError::UnknownMetric { .. }), "{err:?}");
+    }
+
+    /// A malformed filter refuses the WHOLE suite, naming the rule and the
+    /// expression. Evaluating the rules around it would be half a gate
+    /// reporting green.
+    #[test]
+    fn an_unparseable_filter_refuses_the_whole_suite_naming_the_rule() {
+        let ds = store(&[("a@x", Some(200))]);
+        let ss = StreamStore::new(16);
+        let t = AliasThresholds::default();
+        let mut bad = rule("count", Op::Eq, 0.0);
+        bad.scope = Some("filter:response_code == == 488".to_string());
+        let err = evaluate(
+            &[rule("count", Op::Ge, 1.0), rule("asr", Op::Ge, 50.0), bad],
+            &Inputs {
+                dialogs: &ds,
+                streams: &ss,
+                thresholds: &t,
+                suppressions: None,
+            },
+        )
+        .expect_err("a malformed filter must refuse the suite");
+        match &err {
+            RuleError::BadFilter { index, filter, .. } => {
+                assert_eq!(*index, 2);
+                assert_eq!(filter, "response_code == == 488", "quoted as written");
+            }
+            other => panic!("expected BadFilter, got {other:?}"),
+        }
+        assert!(
+            err.to_string().starts_with("rule 2: invalid filter"),
+            "{err}"
+        );
+    }
+
+    /// A `filter:` scope accepts a diagnostic alias, expanded with the
+    /// operator's thresholds, so a suite and the TUI's filter bar speak the
+    /// same vocabulary. `problems` is not DSL on its own: without the
+    /// expansion it would be refused as a malformed filter.
+    #[test]
+    fn a_filter_scope_accepts_a_diagnostic_alias() {
+        let mut r = rule("count", Op::Eq, 0.0);
+        r.scope = Some("filter:problems".to_string());
+        let report = run(&[("a@x", Some(200)), ("b@x", Some(486))], &[r]);
+        assert_eq!(
+            report.results[0].observed,
+            Some(1.0),
+            "the failed call is a problem and the answered one is not: {:?}",
+            report.results[0]
+        );
+        assert_eq!(report.results[0].verdict, Verdict::Fail);
+    }
+
+    /// A severity that does not exist is refused by name, with the ones that
+    /// do.
+    #[test]
+    fn an_unknown_severity_is_refused_by_name() {
+        let t = AliasThresholds::default();
+        let mut r = rule("lint_errors", Op::Eq, 0.0);
+        r.scope = Some("severity:fatal".to_string());
+        let err = compile(1, &r, &t).expect_err("an unknown severity must error");
+        assert!(
+            matches!(&err, RuleError::UnknownSeverity { index: 1, name } if name == "fatal"),
+            "{err:?}"
+        );
+        assert!(
+            err.to_string().contains("info, notice, warning, error"),
+            "{err}"
+        );
+    }
+
+    /// A pass and a fail each quote the observation, the comparison and the
+    /// population in the metric's own noun -- the sentence a CI log shows.
+    #[test]
+    fn a_verdict_reason_quotes_the_numbers_in_the_metrics_own_noun() {
+        let spec = rule("count", Op::Eq, 0.0);
+        let out = judge(&compiled(&spec, Metric::Count), measured(Some(2.0), 3));
+        assert_eq!(out.reason, "2 is NOT == 0 over 3 dialog(s)");
+        assert_eq!(out.unit, "dialogs");
+
+        let spec = rule("mos_p10", Op::Ge, 3.5);
+        let out = judge(
+            &compiled(&spec, Metric::MosPercentile(10)),
+            measured(Some(4.25), 5),
+        );
+        assert_eq!(out.reason, "4.2500 is >= 3.5000 over 5 scored stream(s)");
+        assert_eq!(out.unit, "mos (1.0-5.0)");
+
+        let spec = rule("lint_errors", Op::Le, 0.0);
+        let out = judge(&compiled(&spec, Metric::LintErrors), measured(Some(1.0), 2));
+        assert_eq!(out.reason, "1 is NOT <= 0 over 2 dialog(s)");
+        assert_eq!(out.unit, "findings");
+    }
+
+    /// ASR is a property of calls: a REGISTER that got its 200 is neither a
+    /// seizure nor an answer, and counting it would lift ASR on a capture of
+    /// failing calls.
+    #[test]
+    fn asr_counts_only_invite_dialogs() {
+        let mut ds = store(&[("call@x", Some(486))]);
+        let register = |raw_first: &str, extra: &str| {
+            parse_at(&crate::test_utils::build_sip_message(
+                raw_first,
+                &[
+                    "Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKreg",
+                    "From: <sip:alice@example.com>;tag=r1",
+                    &format!("To: <sip:alice@example.com>{extra}"),
+                    "Call-ID: reg@x",
+                    "CSeq: 1 REGISTER",
+                    "Contact: <sip:alice@127.0.0.1>",
+                    "Content-Length: 0",
+                ],
+                b"",
+            ))
+        };
+        ds.process_message(register("REGISTER sip:example.com SIP/2.0", ""));
+        ds.process_message(register("SIP/2.0 200 OK", ";tag=r2"));
+        let ss = StreamStore::new(16);
+        let t = AliasThresholds::default();
+        let report = evaluate(
+            &[rule("asr", Op::Ge, 50.0)],
+            &Inputs {
+                dialogs: &ds,
+                streams: &ss,
+                thresholds: &t,
+                suppressions: None,
+            },
+        )
+        .expect("the rule compiles");
+        assert_eq!(report.dialogs_in_capture, 2, "the REGISTER is a dialog");
+        let o = &report.results[0];
+        assert_eq!(o.sample, 1, "but only the INVITE is a seizure: {o:?}");
+        assert_eq!(o.observed, Some(0.0));
+        assert!(
+            o.notes.is_empty(),
+            "nor is the REGISTER an INVITE still waiting for its answer: {:?}",
+            o.notes
+        );
+    }
+
+    /// An INVITE whose Content-Length promises a body that never arrived: one
+    /// error-severity conformance finding ([RFC 3261 section 20.14](https://www.rfc-editor.org/rfc/rfc3261#section-20.14)).
+    fn invite_with_missing_body(call_id: &str) -> crate::sip::SipMessage {
+        parse_at(&crate::test_utils::build_sip_message(
+            "INVITE sip:bob@example.com SIP/2.0",
+            &[
+                "Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKbody",
+                "Max-Forwards: 70",
+                "From: Alice <sip:alice@example.com>;tag=t1",
+                "To: <sip:bob@example.com>",
+                &format!("Call-ID: {call_id}"),
+                "CSeq: 1 INVITE",
+                "Content-Length: 120",
+            ],
+            b"",
+        ))
+    }
+
+    /// Evaluate `rules` against `ds`, with an optional suppression file.
+    fn evaluate_lint(
+        ds: &DialogStore,
+        rules: &[ExpectRule],
+        suppressions: Option<&SuppressionFile>,
+    ) -> Report {
+        let ss = StreamStore::new(16);
+        let t = AliasThresholds::default();
+        evaluate(
+            rules,
+            &Inputs {
+                dialogs: ds,
+                streams: &ss,
+                thresholds: &t,
+                suppressions,
+            },
+        )
+        .expect("the rules compile")
+    }
+
+    /// `lint_errors` counts from `error` unless the rule names a floor, and
+    /// says which floor it counted from. A default that counted every warning
+    /// would make the obvious `lint_errors == 0` unsatisfiable.
+    #[test]
+    fn lint_errors_count_from_the_error_floor_unless_a_severity_scope_lowers_it() {
+        // The fixture INVITEs carry no Max-Forwards: a WARNING per dialog, and
+        // no error at all.
+        let clean = store(&[("a@x", Some(200)), ("b@x", Some(200))]);
+        let report = evaluate_lint(&clean, &[rule("lint_errors", Op::Eq, 0.0)], None);
+        let o = &report.results[0];
+        assert_eq!(o.observed, Some(0.0), "{o:?}");
+        assert_eq!(o.sample, 2);
+        assert_eq!(o.verdict, Verdict::Pass);
+        assert_eq!(
+            o.notes,
+            vec!["counted findings at severity error and above".to_string()]
+        );
+        assert!(!report.suppressions_applied);
+
+        let mut warnings = rule("lint_errors", Op::Eq, 0.0);
+        warnings.scope = Some("severity:warning".to_string());
+        let report = evaluate_lint(&clean, &[warnings], None);
+        let o = &report.results[0];
+        assert!(
+            o.observed.is_some_and(|n| n >= 2.0),
+            "a warning floor counts the missing Max-Forwards on both calls: {o:?}"
+        );
+        assert_eq!(o.verdict, Verdict::Fail);
+        assert_eq!(
+            o.notes,
+            vec!["counted findings at severity warning and above".to_string()]
+        );
+
+        // An error-severity defect is counted at the default floor.
+        let mut broken = DialogStore::new(16, false);
+        broken.process_message(invite_with_missing_body("c@x"));
+        let report = evaluate_lint(&broken, &[rule("lint_errors", Op::Eq, 0.0)], None);
+        assert_eq!(
+            report.results[0].observed,
+            Some(1.0),
+            "{:?}",
+            report.results[0]
+        );
+        assert_eq!(report.results[0].verdict, Verdict::Fail);
+    }
+
+    /// A rule silenced in the suppression file does not count against the
+    /// gate, and the report says a suppression file was in force -- or a zero
+    /// could be mistaken for one taken with every rule armed.
+    #[test]
+    fn a_suppressed_rule_does_not_count_and_the_report_says_one_was_in_force() {
+        let dir = tempfile::tempdir().expect("a scratch directory");
+        let path = dir.path().join(crate::sip::lint::SUPPRESSION_FILENAME);
+        std::fs::write(&path, "SIP-3261-20.14-CONTENT-LENGTH-MISMATCH\n")
+            .expect("write the suppression file");
+        let file = SuppressionFile::load(&path).expect("the suppression file loads");
+
+        let mut ds = DialogStore::new(16, false);
+        ds.process_message(invite_with_missing_body("c@x"));
+        let rules = [rule("lint_errors", Op::Eq, 0.0)];
+
+        let armed = evaluate_lint(&ds, &rules, None);
+        assert_eq!(armed.results[0].observed, Some(1.0));
+
+        let silenced = evaluate_lint(&ds, &rules, Some(&file));
+        assert_eq!(
+            silenced.results[0].observed,
+            Some(0.0),
+            "the operator silenced this rule in writing: {:?}",
+            silenced.results[0]
+        );
+        assert_eq!(silenced.verdict, SuiteVerdict::Pass);
+        assert!(silenced.suppressions_applied);
+    }
+
+    // ── MOS percentiles over real streams ───────────────────────────
+
+    /// Feed one RTP packet on `payload_type` from `src_port` to `dst_port`
+    /// into `ss`, after registering the destination as `call_id`'s SDP
+    /// endpoint when one is given. The stream is created with that codec and
+    /// that dialog, the way an SDP-negotiated stream is.
+    fn rtp_into(
+        ss: &mut StreamStore,
+        call_id: Option<&str>,
+        (pt, codec): (u8, &str),
+        src_port: u16,
+        dst_port: u16,
+    ) {
+        let local = std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST);
+        if let Some(id) = call_id {
+            ss.link_endpoint(local, dst_port, id, &[(pt, codec.to_string(), 8000)]);
+        }
+        let parsed = crate::capture::ParsedPacket {
+            frame_bytes: None,
+            frame: None,
+            timestamp: ts(),
+            src_addr: local,
+            dst_addr: local,
+            src_port,
+            dst_port,
+            transport: crate::net::TransportProto::Udp,
+            payload: vec![0u8; 12 + 160].into(),
+            ip_id: None,
+            tcp_seq: None,
+            tcp_flags: None,
+            fragment_offset: None,
+            more_fragments: false,
+            ip_protocol: 17,
+            dscp: None,
+            input_origin: crate::capture::parse::InputOrigin::Wire,
+            hep: None,
+        };
+        let hdr = crate::rtp::parser::RtpHeader {
+            version: 2,
+            padding: false,
+            extension: false,
+            csrc_count: 0,
+            marker: false,
+            payload_type: pt,
+            sequence: 1,
+            timestamp: 160,
+            ssrc: u32::from(src_port),
+            payload_offset: 12,
+        };
+        ss.process_rtp(&parsed, &hdr, ts());
+    }
+
+    /// PCMU, whose MOS has a published impairment value.
+    const PCMU: (u8, &str) = (0, "PCMU");
+    /// G.722, whose MOS is a placeholder: no published impairment value.
+    const G722: (u8, &str) = (9, "G722");
+
+    /// Evaluate `rules` against `calls` and the streams `ss` holds.
+    fn run_with_streams(
+        calls: &[(&str, Option<u16>)],
+        ss: &StreamStore,
+        rules: &[ExpectRule],
+    ) -> Report {
+        let ds = store(calls);
+        let t = AliasThresholds::default();
+        evaluate(
+            rules,
+            &Inputs {
+                dialogs: &ds,
+                streams: ss,
+                thresholds: &t,
+                suppressions: None,
+            },
+        )
+        .expect("these rules compile")
+    }
+
+    /// By default a MOS percentile reads only streams whose codec has a real
+    /// impairment value, and says how many it had to leave out. A placeholder
+    /// score is byte-identical to a measured one, so a gate that read it would
+    /// pass on a number nobody measured.
+    #[test]
+    fn a_mos_percentile_reads_only_grounded_codecs_and_counts_the_rest() {
+        let mut ss = StreamStore::new(16);
+        rtp_into(&mut ss, Some("a@x"), PCMU, 4000, 5000);
+        rtp_into(&mut ss, Some("a@x"), G722, 4002, 5002);
+        let report = run_with_streams(&[("a@x", Some(200))], &ss, &[rule("mos_p50", Op::Ge, 1.0)]);
+        let o = &report.results[0];
+        assert_eq!(o.sample, 1, "only the PCMU stream is scored: {o:?}");
+        assert_eq!(o.ungrounded_excluded, Some(1));
+        assert!(
+            o.observed.is_some_and(|m| (1.0..=5.0).contains(&m)),
+            "a MOS on its own scale: {o:?}"
+        );
+        assert!(
+            o.notes
+                .iter()
+                .any(|n| n.starts_with("1 stream(s) were excluded")),
+            "{:?}",
+            o.notes
+        );
+        assert_eq!(report.streams_in_capture, 2);
+    }
+
+    /// Turning `grounded_only` off admits the placeholder -- and stamps the
+    /// outcome with that, so the percentile never passes for a measurement.
+    #[test]
+    fn grounded_only_off_admits_placeholder_scores_and_says_so() {
+        let mut ss = StreamStore::new(16);
+        rtp_into(&mut ss, Some("a@x"), PCMU, 4000, 5000);
+        rtp_into(&mut ss, Some("a@x"), G722, 4002, 5002);
+        let mut r = rule("mos_p50", Op::Ge, 1.0);
+        r.grounded_only = Some(false);
+        let report = run_with_streams(&[("a@x", Some(200))], &ss, &[r]);
+        let o = &report.results[0];
+        assert_eq!(o.sample, 2, "both streams are scored: {o:?}");
+        assert_eq!(o.ungrounded_excluded, Some(0));
+        assert!(
+            o.notes
+                .iter()
+                .any(|n| n.starts_with("grounded_only is off")),
+            "{:?}",
+            o.notes
+        );
+        assert!(
+            !o.notes.iter().any(|n| n.contains("were excluded")),
+            "nothing was excluded, so nothing may say it was: {:?}",
+            o.notes
+        );
+    }
+
+    /// With no filter a MOS rule reads every stream, orphans included -- a
+    /// stream with no dialog is what one-way audio looks like from the media
+    /// side. A filter selects dialogs, so it reaches only their streams, and
+    /// says so.
+    #[test]
+    fn a_filter_scope_reaches_only_the_selected_dialogs_streams() {
+        let mut ss = StreamStore::new(16);
+        rtp_into(&mut ss, Some("a@x"), PCMU, 4000, 5000);
+        rtp_into(&mut ss, Some("b@x"), PCMU, 4002, 5002);
+        // Nothing negotiated this one: an orphan.
+        rtp_into(&mut ss, None, PCMU, 4004, 5004);
+        let calls = [("a@x", Some(200)), ("b@x", Some(200))];
+
+        let everything = run_with_streams(&calls, &ss, &[rule("mos_p0", Op::Ge, 1.0)]);
+        assert_eq!(
+            everything.results[0].sample, 3,
+            "the orphan counts when nothing narrows the rule: {:?}",
+            everything.results[0]
+        );
+        assert!(
+            everything.results[0]
+                .notes
+                .iter()
+                .all(|n| !n.contains("orphaned"))
+        );
+
+        let mut one_call = rule("mos_p0", Op::Ge, 1.0);
+        one_call.scope = Some("filter:call_id == 'a@x'".to_string());
+        let narrowed = run_with_streams(&calls, &ss, &[one_call]);
+        let o = &narrowed.results[0];
+        assert_eq!(o.sample, 1, "only call a's stream: {o:?}");
+        assert!(
+            o.notes.iter().any(|n| n.contains("orphaned streams")),
+            "{:?}",
+            o.notes
+        );
+    }
+
+    /// A MOS rule over a capture holding only placeholder codecs judged
+    /// nothing, so it fails as unevaluable rather than passing on no data.
+    #[test]
+    fn a_mos_rule_over_only_placeholder_codecs_fails_as_unevaluable() {
+        let mut ss = StreamStore::new(16);
+        rtp_into(&mut ss, Some("a@x"), G722, 4002, 5002);
+        let report = run_with_streams(&[("a@x", Some(200))], &ss, &[rule("mos_p10", Op::Ge, 1.0)]);
+        let o = &report.results[0];
+        assert_eq!(o.observed, None);
+        assert_eq!(o.sample, 0);
+        assert_eq!(o.ungrounded_excluded, Some(1));
+        assert_eq!(o.verdict, Verdict::Fail);
+        assert!(
+            o.reason.contains("no scored stream was in scope"),
+            "{}",
+            o.reason
+        );
+    }
 }

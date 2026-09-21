@@ -977,4 +977,250 @@ mod tests {
             assert!(msg.contains("WAV"), "missing the fallback: {msg}");
         }
     }
+
+    // ── What crosses the plugin's C ABI ─────────────────────────────
+    //
+    // The device itself is unreachable from a test, by design: it lives in the
+    // `sipnab-audio` plugin behind rodio and ALSA, and needs audio hardware a
+    // test host may not have and a test must not open if it does. What
+    // `AudioPlayer` does on this side of the ABI is a CONVERSION -- decode,
+    // resample to 48 kHz mono, and hand the plugin a pointer, a length, a rate
+    // and a channel count -- and that is what these tests drive, with
+    // stand-ins behind the same five C signatures recording what reached them.
+
+    /// One `play` call as the plugin saw it: sample count, rate and channels.
+    ///
+    /// Not the samples themselves: reading them back through the raw pointer
+    /// would put an `unsafe` block in test code for a fact the decoder test
+    /// below pins without one.
+    type PlayCall = (usize, u32, u16);
+
+    std::thread_local! {
+        /// Every `play` call, in order.
+        static PLAYED: std::cell::RefCell<Vec<PlayCall>> =
+            const { std::cell::RefCell::new(Vec::new()) };
+        /// What the stand-in `play` returns.
+        static PLAY_RC: std::cell::Cell<i32> = const { std::cell::Cell::new(0) };
+        /// What the stand-in `is_playing` returns.
+        static PLAYING: std::cell::Cell<i32> = const { std::cell::Cell::new(0) };
+        /// The handle each `stop` call received.
+        static STOPPED: std::cell::RefCell<Vec<usize>> =
+            const { std::cell::RefCell::new(Vec::new()) };
+        /// The handle each `close` call received.
+        static CLOSED: std::cell::RefCell<Vec<usize>> =
+            const { std::cell::RefCell::new(Vec::new()) };
+    }
+
+    /// Stand-in `sipnab_audio_play`: records what it was handed.
+    extern "C" fn stand_in_play(
+        _handle: *mut c_void,
+        _samples: *const f32,
+        len: usize,
+        rate: u32,
+        channels: u16,
+    ) -> i32 {
+        PLAYED.with(|p| p.borrow_mut().push((len, rate, channels)));
+        PLAY_RC.with(std::cell::Cell::get)
+    }
+
+    /// Stand-in `sipnab_audio_stop`.
+    extern "C" fn stand_in_stop(handle: *mut c_void) {
+        STOPPED.with(|s| s.borrow_mut().push(handle.addr()));
+    }
+
+    /// Stand-in `sipnab_audio_is_playing`.
+    extern "C" fn stand_in_is_playing(_handle: *mut c_void) -> i32 {
+        PLAYING.with(std::cell::Cell::get)
+    }
+
+    /// Stand-in `sipnab_audio_close`.
+    extern "C" fn stand_in_close(handle: *mut c_void) {
+        CLOSED.with(|c| c.borrow_mut().push(handle.addr()));
+    }
+
+    /// The opaque device handle the stand-ins are given: never dereferenced,
+    /// only compared.
+    fn stand_in_device() -> *mut c_void {
+        std::ptr::NonNull::<u8>::dangling().as_ptr().cast()
+    }
+
+    /// A player wired to the stand-ins, with this process's own image as the
+    /// library it keeps alive -- `dlopen(NULL)`, which loads nothing new.
+    #[cfg(unix)]
+    fn stand_in_player() -> AudioPlayer {
+        PLAYED.with(|p| p.borrow_mut().clear());
+        STOPPED.with(|s| s.borrow_mut().clear());
+        CLOSED.with(|c| c.borrow_mut().clear());
+        PLAY_RC.with(|r| r.set(0));
+        AudioPlayer {
+            play: stand_in_play,
+            stop: stand_in_stop,
+            is_playing: stand_in_is_playing,
+            close: stand_in_close,
+            handle: stand_in_device(),
+            _not_send_sync: PhantomData,
+            _lib: Library::from(libloading::os::unix::Library::this()),
+        }
+    }
+
+    /// A stream on `payload_type` holding `frames` frames of `byte`, with its
+    /// codec named `codec`.
+    fn buffered(payload_type: u8, codec: Option<&str>, frames: u32, byte: u8) -> RtpStream {
+        let mut s = stream(payload_type);
+        s.codec = codec.map(str::to_string);
+        for i in 0..frames {
+            s.payload_buffer.push_back((i * 160, vec![byte; 160]));
+        }
+        s
+    }
+
+    /// G.711 reaches the plugin decoded, resampled to 48 kHz and mono: six
+    /// output samples per 8 kHz byte, at the rate and channel count the
+    /// plugin is told. A second of audio is reported as a second.
+    #[cfg(unix)]
+    #[test]
+    fn g711_reaches_the_plugin_as_48k_mono_and_is_reported_in_seconds() {
+        let player = stand_in_player();
+        // 50 frames of 20 ms is one second.
+        let line = player
+            .play_stream(&buffered(0, Some("PCMU"), 50, 0x00))
+            .expect("a PCMU stream plays");
+        assert_eq!(line, "Playing 1.0s of mu-law audio (50 frames)");
+
+        let played = PLAYED.with(|p| p.borrow().clone());
+        assert_eq!(played.len(), 1, "one hand-off per stream");
+        let (len, rate, channels) = played[0];
+        assert_eq!(len, 50 * 160 * 6, "8 kHz to 48 kHz is six samples per byte");
+        assert_eq!((rate, channels), (48_000, 1));
+
+        let line = player
+            .play_stream(&buffered(8, Some("PCMA"), 1, 0x55))
+            .expect("a PCMA stream plays");
+        assert_eq!(line, "Playing 0.0s of A-law audio (1 frames)");
+        let a_law = PLAYED.with(|p| p.borrow()[1].0);
+        assert_eq!(a_law, 160 * 6);
+    }
+
+    /// Opus is recognized whatever case the SDP spelled it in, and goes to
+    /// the plugin at its native 48 kHz. Frames the decoder rejects are
+    /// skipped, so a stream of them plays as nothing rather than failing.
+    #[cfg(unix)]
+    #[test]
+    fn opus_is_named_in_any_case_and_undecodable_frames_play_as_nothing() {
+        let player = stand_in_player();
+        let line = player
+            .play_stream(&buffered(111, Some("OPUS"), 2, 0xFF))
+            .expect("an Opus stream plays even when its frames do not decode");
+        assert_eq!(line, "Playing 0.0s of Opus audio (2 frames)");
+        let played = PLAYED.with(|p| p.borrow().clone());
+        assert_eq!(played[0].0, 0, "no decodable frame, no samples");
+        assert_eq!(played[0].1, 48_000);
+    }
+
+    /// A codec playback cannot decode, or none at all, is refused before
+    /// anything reaches the plugin -- and says which it was.
+    #[cfg(unix)]
+    #[test]
+    fn a_codec_playback_cannot_decode_is_refused_before_the_plugin() {
+        let player = stand_in_player();
+        let err = player
+            .play_stream(&buffered(18, Some("G729"), 1, 0x00))
+            .expect_err("G.729 is not decoded here");
+        assert_eq!(err.to_string(), "Unsupported codec for playback: G729");
+
+        let err = player
+            .play_stream(&buffered(96, None, 1, 0x00))
+            .expect_err("a stream with no codec cannot be decoded");
+        assert_eq!(err.to_string(), "Unknown codec");
+
+        assert!(
+            PLAYED.with(|p| p.borrow().is_empty()),
+            "nothing may be handed to the device for a refused stream"
+        );
+    }
+
+    /// A stream with nothing buffered gets the exporter's own explanation,
+    /// word for word, and the device is never touched.
+    #[cfg(unix)]
+    #[test]
+    fn an_empty_buffer_gets_the_exporters_explanation() {
+        let player = stand_in_player();
+        let empty = stream(0);
+        let err = player
+            .play_stream(&empty)
+            .expect_err("nothing buffered, nothing to play");
+        assert_eq!(
+            err.to_string(),
+            crate::rtp::audio_export::nothing_to_decode(&[&empty])
+        );
+        assert!(PLAYED.with(|p| p.borrow().is_empty()));
+    }
+
+    /// A plugin that reports failure is an error carrying its code, never a
+    /// "Playing" line for audio nobody heard.
+    #[cfg(unix)]
+    #[test]
+    fn a_plugin_that_fails_to_play_is_an_error_with_its_code() {
+        let player = stand_in_player();
+        PLAY_RC.with(|r| r.set(7));
+        let err = player
+            .play_stream(&buffered(0, Some("PCMU"), 1, 0xFF))
+            .expect_err("a non-zero return is a failure");
+        assert_eq!(err.to_string(), "audio plugin playback failed (code 7)");
+    }
+
+    /// `stop` and `is_playing` reach the plugin with the device handle, and
+    /// dropping the player closes that handle exactly once.
+    #[cfg(unix)]
+    #[test]
+    fn stop_and_is_playing_reach_the_device_and_drop_closes_it_once() {
+        let player = stand_in_player();
+        player.stop();
+        assert_eq!(
+            STOPPED.with(|s| s.borrow().clone()),
+            vec![stand_in_device().addr()]
+        );
+
+        PLAYING.with(|p| p.set(1));
+        assert!(player.is_playing());
+        PLAYING.with(|p| p.set(0));
+        assert!(!player.is_playing());
+
+        assert!(CLOSED.with(|c| c.borrow().is_empty()), "open until dropped");
+        drop(player);
+        assert_eq!(
+            CLOSED.with(|c| c.borrow().clone()),
+            vec![stand_in_device().addr()],
+            "closed exactly once, with the handle it opened"
+        );
+    }
+
+    /// A TOC-only Opus packet is a legitimate one. A code-0 packet carries
+    /// N-1 bytes of frame ([RFC 6716 section 3.2.2](https://www.rfc-editor.org/rfc/rfc6716#section-3.2.2)), so its one frame is zero
+    /// bytes, and "any Opus frame in any mode MAY have a length of 0"
+    /// ([RFC 6716 section 3.2.1](https://www.rfc-editor.org/rfc/rfc6716#section-3.2.1)). The decoder conceals the absent frame
+    /// with a full frame of output, and those samples must be kept, in range.
+    #[test]
+    fn a_decodable_opus_frame_contributes_its_samples_in_range() {
+        let mut s = stream(111);
+        // Config 31: CELT-only, fullband, 20 ms; mono; one frame (code 0).
+        s.payload_buffer.push_back((0, vec![0xF8]));
+        s.payload_buffer.push_back((960, vec![0xF8]));
+        let pcm = decode_opus_to_f32(&s).expect("opus decode ok");
+        assert_eq!(pcm.len(), 2 * 960, "two 20 ms frames at 48 kHz");
+        assert!(pcm.iter().all(|v| (-1.0..=1.0).contains(v)));
+    }
+
+    /// Decoded G.711 is normalized by 32768, so a code keeps its value on the
+    /// [-1, 1] scale. mu-law 0x00 is the most negative code, which G.711
+    /// decodes to -32124 in 16-bit linear.
+    #[test]
+    fn g711_decodes_to_the_normalized_code_value() {
+        let pcm = decode_g711_to_f32(G711Codec::Ulaw, &buffered(0, Some("PCMU"), 1, 0x00));
+        assert!(
+            (pcm[0] - (-32124.0 / 32768.0)).abs() < 1e-6,
+            "normalized to [-1, 1] from the decoded code: {}",
+            pcm[0]
+        );
+    }
 }
