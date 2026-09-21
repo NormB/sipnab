@@ -60,9 +60,10 @@ pub(super) fn export_outcome(msg: &str) -> &'static str {
 ///
 /// Re-synthesizes an Ethernet/IP/UDP-or-TCP packet for every SIP message
 /// of every exported dialog (checked rows, or all when none are checked).
-/// In pcapng mode, when name resolution is active, a Name Resolution
-/// Block with the resolver's validated names is written before the
-/// packets (DNS-derived names only in DNS mode).
+/// In pcapng mode the section comment says the frames were rebuilt (the
+/// same paragraph MCP's `export_capture` writes), and, when name resolution
+/// is active, a Name Resolution Block with the resolver's validated names is
+/// written before the packets (DNS-derived names only in DNS mode).
 ///
 /// # Arguments
 ///
@@ -75,7 +76,7 @@ pub(super) fn export_outcome(msg: &str) -> &'static str {
 /// `"Saved N packets (fmt) to path"` on success; `"No messages to
 /// save"` when nothing is exportable; `"Save failed ..."` when the
 /// writer cannot be created or the NRB write fails; `"Write error after
-/// N packets ..."` when a packet write fails partway.
+/// N packets ..."` when a packet write, or the closing flush, fails.
 ///
 /// # Side effects
 ///
@@ -97,14 +98,22 @@ pub(super) fn save_to_pcap_path(app: &App, path_str: &str, pcapng: bool) -> Stri
         return "No messages to save".to_string();
     }
 
-    // Create writer (DLT_EN10MB = 1)
-    let mut writer = match crate::capture::PcapWriter::with_format(
+    // Create writer (DLT_EN10MB = 1). The section comment says the frames
+    // were rebuilt: this file is what gets forwarded, and whoever opens it has
+    // no other way to learn that everything below the SIP layer was invented.
+    // Classic pcap has nowhere to put it, which the writer documents.
+    let mut writer = match crate::capture::PcapWriter::with_provenance(
         &path,
         1,
         None,
         None,
         pcapng,
         crate::capture::PcapExportMode::Raw,
+        None,
+        Some(crate::output::synthetic::rebuilt_frames_note(
+            "the TUI save dialog",
+            messages.len(),
+        )),
     ) {
         Ok(w) => w,
         Err(e) => return format!("Save failed: {e}"),
@@ -129,6 +138,12 @@ pub(super) fn save_to_pcap_path(app: &App, path_str: &str, pcapng: bool) -> Stri
             return format!("Write error after {count} packets: {e}");
         }
         count += 1;
+    }
+    // Flush explicitly. The writer buffers, and a buffer dropped instead of
+    // flushed discards its error: a disk that filled at the tail of the save
+    // left a short file behind a status line reading "Saved".
+    if let Err(e) = writer.finish() {
+        return format!("Write error after {count} packets: {e:#}");
     }
 
     format!("Saved {count} packets ({fmt_label}) to {}", path.display())
@@ -1293,6 +1308,115 @@ mod tests {
         let msg = save_to_pcap_path(&app, p.to_str().unwrap(), true);
         assert!(msg.contains("pcapng"), "got: {msg}");
         assert!(p.exists());
+    }
+
+    /// Every `opt_comment` in a pcapng's Section Header Block.
+    ///
+    /// Read the way the writer's own metadata tests read it: the reader parses
+    /// the SHB in `new()` and exposes it through `section()`.
+    fn section_comments(path: &std::path::Path) -> Vec<String> {
+        use pcap_file::pcapng::PcapNgReader;
+        use pcap_file::pcapng::blocks::section_header::SectionHeaderOption;
+        let bytes = std::fs::read(path).expect("read the saved pcapng");
+        let reader = PcapNgReader::new(&bytes[..]).expect("a pcapng the reader accepts");
+        reader
+            .section()
+            .options
+            .iter()
+            .filter_map(|o| match o {
+                SectionHeaderOption::Comment(c) => Some(c.to_string()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// A pcapng saved from the TUI says, in the file, that its frames were
+    /// rebuilt.
+    ///
+    /// The TUI's save re-synthesizes an Ethernet/IPv4/UDP frame around every
+    /// held SIP message, exactly as MCP's `export_capture` does — and MCP's
+    /// export has said so in the section comment since #106, while the TUI's,
+    /// built on `with_format`, said nothing. The file is what gets forwarded,
+    /// and whoever opens it in Wireshark has no other way to learn that the
+    /// MAC addresses, IP ids and checksums were invented.
+    ///
+    /// Driven through the real key path (F2, Tab to PCAP-NG, Enter), because
+    /// the defect is about what the operator's save produces.
+    #[test]
+    fn a_tui_pcapng_save_says_its_frames_were_rebuilt() {
+        let mut app = app_with_dialogs();
+        let p = tmp_path("rebuilt.pcapng");
+        app.handle_key(KeyCode::F(2));
+        app.handle_key(KeyCode::Tab);
+        assert_eq!(app.save_format(), SaveFormat::PcapNg, "Tab reaches PCAP-NG");
+        app.set_save_path(p.to_str().expect("utf-8 temp path"));
+        app.handle_key(KeyCode::Enter);
+        app.settle_background_work();
+        assert!(
+            p.exists(),
+            "the save must have happened: {:?}",
+            app.status_error()
+        );
+
+        let comments = section_comments(&p);
+        let all = comments.join("\n");
+        assert!(
+            all.contains("REBUILT, NOT COPIED"),
+            "the section comment must say the frames were rebuilt: {comments:?}"
+        );
+        assert!(
+            all.contains("TUI save"),
+            "and name the path that rebuilt them, so a reader can tell a TUI \
+             export from an agent's: {comments:?}"
+        );
+        assert!(
+            all.contains("4 message(s) written"),
+            "and how many messages it holds: {comments:?}"
+        );
+    }
+
+    /// The MCP export's wording is the same rule, not a second copy of it.
+    ///
+    /// Both exporters describe the same synthesis; the only honest difference
+    /// is which surface asked for the file. Two hand-written paragraphs would
+    /// agree today and drift the next time one of them is corrected.
+    #[test]
+    fn the_rebuilt_frames_note_names_its_surface_and_nothing_else_differs() {
+        let tui = crate::output::synthetic::rebuilt_frames_note("the TUI save dialog", 3);
+        let mcp = crate::output::synthetic::rebuilt_frames_note("the MCP export_capture tool", 3);
+        assert!(tui.contains("via the TUI save dialog"), "{tui}");
+        assert!(mcp.contains("via the MCP export_capture tool"), "{mcp}");
+        assert_eq!(
+            tui.replace("the TUI save dialog", "X"),
+            mcp.replace("the MCP export_capture tool", "X"),
+            "the two notes may differ only in the surface they name"
+        );
+    }
+
+    /// A save whose bytes never reached the disk does not report "Saved".
+    ///
+    /// The pcapng backend buffers through a `BufWriter`, whose `Drop` flushes
+    /// and DISCARDS the error. `save_to_pcap_path` never called
+    /// `PcapWriter::finish`, so a full disk at the tail of the save left a
+    /// short file behind a status line reading "Saved N packets". `/dev/full`
+    /// accepts the open and fails every write, which is exactly a disk that
+    /// filled after the file was created.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_save_that_could_not_be_flushed_is_not_reported_as_saved() {
+        if !std::path::Path::new("/dev/full").exists() {
+            eprintln!("skipped: no /dev/full on this host");
+            return;
+        }
+        let app = app_with_dialogs();
+        for pcapng in [false, true] {
+            let msg = save_to_pcap_path(&app, "/dev/full", pcapng);
+            assert!(
+                !msg.starts_with("Saved"),
+                "a write that failed must not be reported as a save \
+                 (pcapng={pcapng}): {msg}"
+            );
+        }
     }
 
     /// txt export writes per-message headers and the raw INVITE text.

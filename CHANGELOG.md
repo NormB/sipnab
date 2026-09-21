@@ -32,6 +32,16 @@ entry that carries them.
 
 ### Fixed
 
+- **A pcapng saved from the TUI says its frames were rebuilt.** The save
+  dialog builds a new Ethernet, IPv4 and UDP frame around every SIP message it
+  holds, as MCP's `export_capture` does, but only the MCP export said so in the
+  file. The TUI's pcapng now carries the same section comment, naming the TUI
+  save dialog as its source, so whoever opens it in Wireshark learns that the
+  MAC addresses, IP ids and checksums were not on the wire.
+- **A TUI pcap save that could not be flushed no longer reports "Saved".**
+  The save never flushed its buffer, so a disk that filled at the end of the
+  write left a short file and the status line still read "Saved N packets". It
+  now reports the write error.
 - **A STUN finding far outside its call keeps its reason.** The time caveat
   replaced the note naming the address STUN offered instead of being appended
   to it, and that address appears nowhere else in the evidence.

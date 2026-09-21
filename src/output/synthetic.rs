@@ -9,6 +9,50 @@
 
 use std::net::IpAddr;
 
+/// The section comment every export of [`build_synthetic_packet`] frames
+/// carries: the frames were rebuilt, what that means, and what is missing.
+///
+/// # Why one function
+///
+/// Two surfaces write these frames to a file that leaves the box — MCP's
+/// `export_capture` and the TUI's save dialog — and #106 gave only the first
+/// one a note. The person who opens the file in Wireshark is the same person
+/// either way, and has no other way to learn that the MAC addresses, IP ids
+/// and checksums were invented. One paragraph, parameterized by the surface
+/// that asked, so a correction to one export cannot leave the other stating
+/// the old claim.
+///
+/// # Arguments
+///
+/// * `via` — the surface that produced the file, as a noun phrase that
+///   follows "via" (`"the MCP export_capture tool"`, `"the TUI save dialog"`).
+/// * `messages` — how many SIP messages the file holds.
+///
+/// # Returns
+///
+/// The comment text, for `PcapWriter::with_provenance`.
+#[must_use]
+pub fn rebuilt_frames_note(via: &str, messages: usize) -> String {
+    format!(
+        "Produced by sipnab {} via {via}.\n\
+         \n\
+         THE FRAMES IN THIS FILE WERE REBUILT, NOT COPIED. sipnab retains \
+         parsed SIP messages rather than captured frames, so each packet here \
+         is a synthetic Ethernet/IPv4/UDP frame constructed around one \
+         message's bytes. The SIP layer is byte-faithful; the link, IP and \
+         transport headers are reconstructed from the addresses and ports \
+         sipnab recorded, and MAC addresses, IP identification, checksums, \
+         fragmentation and TCP state are not what was on the wire.\n\
+         \n\
+         Non-SIP traffic present in the original capture — RTP, RTCP, DNS, \
+         ICMP — is NOT in this file. Do not read packet counts here as \
+         capture-level counts.\n\
+         \n\
+         {messages} message(s) written.",
+        env!("CARGO_PKG_VERSION"),
+    )
+}
+
 /// Build a synthetic Ethernet + IPv4 + UDP packet from a SIP message's raw bytes.
 ///
 /// The link-layer type is DLT_EN10MB (1). IP addresses and ports come from
