@@ -21,13 +21,10 @@ entry that carries them.
   or `synthetic`, with the tracked generator that writes it, and carries the
   SHA-256 of the bytes it vouches for, so replacing a fixture's bytes means
   saying again where they came from. An entry for a file that is gone fails
-  too. `tests/pcap-samples/` keeps its own manifest and gate. Eight captures
-  are neither yet and sit on a list that only shrinks, each with its reason:
-  the two SIPp media files in `harness/sipp/scenarios/`, which are not the
-  files SIPp publishes but match a third-party repository that states no
-  license; the two OpenSIPS relay fixtures whose audio came from one of them;
-  and four hand-built STUN, TURN and ICE fixtures that no committed generator
-  writes.
+  too. `tests/pcap-samples/` keeps its own manifest and gate. A capture that
+  is neither goes on a list that only shrinks, with its reason. Eight started
+  there and all eight now have generators, so the list is empty and its
+  ceiling is zero.
 
 ### Changed
 
@@ -45,6 +42,30 @@ entry that carries them.
   output `docs/rtpengine.md` already printed. Tests that quoted an old address
   or Call-ID quote the new one, and each says why. Git history still holds
   the old bytes.
+
+- **The last eight committed captures without a generator now have one.** The
+  two media files SIPp plays in the harness, `g711a.pcap` and `g722.pcap`,
+  were copies of a third-party repository that states no license. They are now
+  tones encoded as G.711 A-law and G.722, with the old files' packet counts,
+  payload types and 20 ms framing. sipnab decodes no G.722, so
+  `tests/support/codecs.rs` carries an ITU-T G.722 encoder, and the suite
+  checks it byte for byte against spandsp and FFmpeg on three inputs. The two
+  OpenSIPS relay fixtures had carried the start of that third-party G.722.
+  They keep their control plane, the relay's G.722-to-PCMU transcode and
+  their timing, and move to 198.51.100.0/24, so the Call-ID the tests quote is
+  now `1-4062@198.51.100.21`. The four STUN, TURN and ICE fixtures had been
+  built by hand with no generator. `ice_checks.pcap` and `turn_relay.pcap`
+  come out byte-identical. The two NAT fixtures change only their MAC
+  addresses, which were outside the RFC 7042 documentation block, and in
+  `stun_sdp_mismatch.pcap` the two SDP bodies' `Content-Length`, which said 126
+  for 134 bytes. Its RFC 1918 address stays, because it is the mismatch the
+  fixture shows, and the test that checks for documentation addresses lists
+  it as the one deliberate exception.
+
+- **The OpenSIPS relay test counts the relay-named streams for real.** It
+  checked the call's row with `contains('2')`, which the Call-ID alone
+  satisfies, so a report that named only one leg passed. It now reads the
+  Streams column, and a report that counts one stream fails it.
 
 ### Fixed
 

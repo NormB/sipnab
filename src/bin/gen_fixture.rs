@@ -9,6 +9,8 @@
 //! and the bytes the suite checks come from one definition. The test only
 //! compares; this binary is the one thing that writes.
 
+#[path = "../../tests/support/codecs.rs"]
+mod codecs;
 #[path = "../../tests/support/synthetic_captures.rs"]
 mod synthetic_captures;
 

@@ -61,55 +61,15 @@ const HEAD: usize = 64 * 1024;
 /// license, or a generator) or by the file being deleted, never by being
 /// described from memory. [`UNRESOLVED_CEILING`] is the ratchet: a gate that
 /// has to be edited to grow is a gate that cannot grow by accident.
-const UNRESOLVED: &[(&str, &str)] = &[
-    (
-        "harness/sipp/scenarios/g711a.pcap",
-        "not the g711a.pcap SIPp publishes (that one is 73,184 bytes; this is \
-         1,273,074). Byte-identical to g711a.pcap in \
-         https://github.com/vnyb/sipp-scenarios, which states no license, and \
-         its media flows from a public address",
-    ),
-    (
-        "harness/sipp/scenarios/g722.pcap",
-        "SIPp publishes no g722.pcap. Byte-identical to g722.pcap in \
-         https://github.com/vnyb/sipp-scenarios, which states no license, and \
-         its media flows from a public address",
-    ),
-    (
-        "tests/fixtures/rtpengine-opensips-ng.pcap",
-        "a harness capture, but its G.722 RTP payloads are the first 21 frames \
-         of harness/sipp/scenarios/g722.pcap, which is unresolved above",
-    ),
-    (
-        "tests/fixtures/rtpengine-opensips-media-only.pcap",
-        "the media-only twin of rtpengine-opensips-ng.pcap, carrying the same \
-         g722.pcap-derived payloads",
-    ),
-    (
-        "tests/fixtures/ice_checks.pcap",
-        "constructed by hand (RFC 5737 addresses, RFC 7042 MACs), and no \
-         generator for it was ever committed",
-    ),
-    (
-        "tests/fixtures/stun_nat_probe.pcap",
-        "constructed by hand with no generator committed, and both its MAC \
-         addresses are outside the RFC 7042 documentation block",
-    ),
-    (
-        "tests/fixtures/stun_sdp_mismatch.pcap",
-        "constructed by hand with no generator committed, carrying the same \
-         two non-documentation MAC addresses",
-    ),
-    (
-        "tests/fixtures/turn_relay.pcap",
-        "constructed by hand (RFC 5737 addresses, RFC 7042 MACs), and no \
-         generator for it was ever committed",
-    ),
-];
+const UNRESOLVED: &[(&str, &str)] = &[];
 
 /// The most entries [`UNRESOLVED`] may hold. Lower it when one leaves; never
 /// raise it.
-const UNRESOLVED_CEILING: usize = 8;
+///
+/// 8 when the gate landed, 0 since September 2026: the two SIPp media files,
+/// the two OpenSIPS relay fixtures and the four STUN, TURN and ICE fixtures
+/// all gained generators in `tests/support/synthetic_captures.rs`.
+const UNRESOLVED_CEILING: usize = 0;
 
 // ── what a capture looks like ───────────────────────────────────────
 
@@ -612,7 +572,8 @@ fn every_committed_capture_is_public_or_synthetic() {
     // stopped matching reports as a failure instead of as an empty, passing
     // sweep. 53 captures were in the index when this was written: 37 direct
     // children of tests/pcap-samples/, 8 listed in the manifest and 8
-    // unresolved.
+    // unresolved. The 8 unresolved have since joined the manifest, so it
+    // lists 16.
     assert!(
         captures >= 45,
         "found only {captures} captures in the index; detection has stopped \
@@ -623,12 +584,25 @@ fn every_committed_capture_is_public_or_synthetic() {
         "only {deferred} captures deferred to the tests/pcap-samples gate; \
          the path rule has stopped matching"
     );
-    assert!(
-        UNRESOLVED.len() <= UNRESOLVED_CEILING,
-        "UNRESOLVED holds {} entries against a ceiling of {UNRESOLVED_CEILING}. \
-         The list only shrinks: account for a new capture in {MANIFEST} instead.",
-        UNRESOLVED.len()
-    );
+    if let Some(why) = over_ceiling(UNRESOLVED, UNRESOLVED_CEILING) {
+        panic!("{why}");
+    }
+}
+
+/// The ratchet: why `unresolved` breaks `ceiling`, or `None` if it does not.
+///
+/// A function rather than an inline comparison, because with the ceiling at
+/// zero `len() <= 0` is a comparison clippy rightly calls always-false-or-true
+/// on the constant, while the rule it enforces is anything but: the day an
+/// entry is added, this is what fails.
+fn over_ceiling(unresolved: &[(&str, &str)], ceiling: usize) -> Option<String> {
+    (unresolved.len() > ceiling).then(|| {
+        format!(
+            "UNRESOLVED holds {} entries against a ceiling of {ceiling}. The \
+             list only shrinks: account for a new capture in {MANIFEST} instead.",
+            unresolved.len()
+        )
+    })
 }
 
 // ── the logic, driven with built inputs ─────────────────────────────
@@ -1164,5 +1138,19 @@ fn every_listed_capture_is_hashed_and_compared() {
     assert!(
         problems[0].contains("tests/fixtures/b.pcap") && problems[0].contains(&changed),
         "{problems:?}"
+    );
+}
+
+/// The ratchet holds at the ceiling and breaks one past it, naming both
+/// numbers and what to do instead.
+#[test]
+fn the_unresolved_list_cannot_grow_past_its_ceiling() {
+    let one = [("tests/fixtures/a.pcap", "why")];
+    assert_eq!(over_ceiling(&[], 0), None);
+    assert_eq!(over_ceiling(&one, 1), None);
+    let why = over_ceiling(&one, 0).expect("one entry over a ceiling of zero");
+    assert!(
+        why.contains("holds 1") && why.contains("ceiling of 0") && why.contains(MANIFEST),
+        "{why}"
     );
 }

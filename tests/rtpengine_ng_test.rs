@@ -270,21 +270,29 @@ fn stripping_the_control_plane_returns_every_stream_to_orphan() {
 // proves the decoder and proves nothing about whether a real proxy and a real
 // relay, talking to each other, produce something sipnab can use.
 //
-// These two fixtures come from the harness: OpenSIPS 3.x handling signaling,
+// These two fixtures began in the harness: OpenSIPS 3.x handling signaling,
 // rtpengine 12.5.1 anchoring media, a SIPp call driven through both, and
 // rtpengine mirroring its control plane with `--homer-enable-ng`. The capture
-// is then filtered to what a SEPARATE relay host would see -- media and the
+// was then filtered to what a SEPARATE relay host would see -- media and the
 // relay's own control plane, no SIP -- because that is the deployment the
 // feature exists for. A co-resident relay needs none of this: the proxy's own
-// rewritten SDP already names both sockets, which was measured on this same
+// rewritten SDP already names both sockets, which was measured on the harness
 // capture and is why the filtered view is the honest one to assert against.
 //
-// The Call-ID below is OpenSIPS's, not this project's. That is the whole
-// point: the name travels proxy -> rtpengine -> HEP -> sipnab, and arrives on
-// a host where no SIP was ever captured.
+// In September 2026 the pair was rebuilt by tests/support/synthetic_captures.rs,
+// because its G.722 audio was the start of a third-party recording. The rebuild
+// keeps the control plane's shapes, the transcode and the timing, and moves the
+// harness's container addresses into 198.51.100.0/24 with their last octets
+// kept, which is why the Call-ID below changed: its host part was the
+// caller's container address.
+//
+// The Call-ID is the one SIPp minted and OpenSIPS handed the relay, not one
+// this project's code chose. That is the whole point: the name travels proxy
+// -> rtpengine -> HEP -> sipnab, and arrives on a host where no SIP was ever
+// captured.
 
-/// The OpenSIPS-assigned Call-ID, recoverable on a host with no SIP in it.
-const OPENSIPS_CALL_ID: &str = "1-4062@172.28.0.21";
+/// The call's Call-ID, recoverable on a host with no SIP in it.
+const OPENSIPS_CALL_ID: &str = "1-4062@198.51.100.21";
 
 fn relay_report(fixture: &str) -> String {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -324,13 +332,17 @@ fn an_opensips_call_is_named_on_a_relay_that_captured_no_sip() {
     );
     // Both legs: the relay holds a socket per side, and both belong to the
     // one call. An implementation that recovered only the leg described by the
-    // offer would pass a weaker test than this.
+    // offer would pass a weaker test than this. The Streams column is read as
+    // the row's last field: the row used to be checked with `contains('2')`,
+    // which the Call-ID itself satisfies (`...0.21` then, `...100.21` now), so
+    // it passed whatever the count was.
     let row = out
         .lines()
         .find(|l| l.starts_with(OPENSIPS_CALL_ID))
         .unwrap_or_else(|| panic!("no relay-named row for the call:\n{out}"));
-    assert!(
-        row.contains('2'),
+    assert_eq!(
+        row.split_whitespace().last(),
+        Some("2"),
         "both legs must count against the call; row was {row:?}"
     );
 }
@@ -338,7 +350,7 @@ fn an_opensips_call_is_named_on_a_relay_that_captured_no_sip() {
 /// The control case, from the SAME capture with only the control plane removed.
 ///
 /// This is what makes the test above a measurement rather than a coincidence:
-/// identical media, identical sockets, and without the sixteen control-plane
+/// identical media, identical sockets, and without the four control-plane
 /// packets every stream is an unattributable orphan again.
 #[test]
 fn the_same_relay_capture_orphans_without_the_control_plane() {

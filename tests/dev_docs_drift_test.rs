@@ -739,7 +739,12 @@ fn linked_code_targets_exist() {
     // Attributed by counting every page under `docs/internals/` against HEAD:
     // rtpengine-control-plane.md moved 23 -> 25, testing.md 97 -> 98, and no
     // other page changed.
-    const EXPECTED_CODE_LINKS: usize = 449;
+    // 449 -> 450: one, in `docs/internals/rtpengine-control-plane.md`, whose
+    // OpenSIPS pair paragraph now says the generator rebuilt that pair too and
+    // links it. Attributed by counting `](../../` links on every page under
+    // `docs/internals/` against HEAD: rtpengine-control-plane.md moved
+    // 25 -> 26, and no other page changed.
+    const EXPECTED_CODE_LINKS: usize = 450;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \

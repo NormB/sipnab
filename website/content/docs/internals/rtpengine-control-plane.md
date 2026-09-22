@@ -230,13 +230,19 @@ Both fixtures above carry an `ng` exchange this project generated itself. That
 proves the decoder and proves nothing about whether a real proxy and a real
 relay, talking to each other, produce something sipnab can use.
 
-`rtpengine-opensips-ng.pcap` closes that. It is a SIPp call driven through
-OpenSIPS and rtpengine in the harness, with `--homer-enable-ng` set, filtered
-to what a SEPARATE relay host would see: media and the relay's own control
-plane, no SIP. The Call-ID it recovers is OpenSIPS's, so the name travels
-proxy to rtpengine to HEP to sipnab and arrives on a host that captured no
-signaling at all. `rtpengine-opensips-media-only.pcap` is the same capture
-with the sixteen control-plane packets removed.
+`rtpengine-opensips-ng.pcap` closes that. It began as a SIPp call driven
+through OpenSIPS and rtpengine in the harness, with `--homer-enable-ng` set,
+filtered to what a SEPARATE relay host would see: media and the relay's own
+control plane, no SIP. The Call-ID it recovers is the one OpenSIPS handed the
+relay, so the name travels proxy to rtpengine to HEP to sipnab and arrives on
+a host that captured no signaling at all. `rtpengine-opensips-media-only.pcap`
+is the same capture with the four control-plane packets removed.
+
+The harness capture carried the opening of a third-party G.722 recording, so
+in September 2026 [`tests/support/synthetic_captures.rs`](https://github.com/NormB/sipnab/blob/main/tests/support/synthetic_captures.rs) rebuilt the pair. The
+rebuild keeps OpenSIPS's key order, the relay's conversion from G.722 to PCMU,
+and the timing, puts synthetic G.722 in the caller's packets, and moves the
+addresses into 198.51.100.0/24.
 
 Two things came out of building it that the synthetic test could not reach.
 

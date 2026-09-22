@@ -30668,7 +30668,7 @@ drifted.
 
 | Artifact | Regenerate with |
 |---|---|
-| [`tests/fixtures/`](../../tests/fixtures) — capture fixtures | Six captures, among them the two fuzz seeds in `fuzz/corpus/pcap_reader/` named `truncated-sip` and `empty-classic`, come from [`tests/support/synthetic_captures.rs`](../../tests/support/synthetic_captures.rs). `cargo run --features native --bin gen_fixture` writes them, and `synthetic_captures_test` fails when a committed byte differs from what the generator builds. The rest of the directory stays as checked in. [`tests/PROVENANCE.md`](../../tests/PROVENANCE.md) records where every capture outside `tests/pcap-samples/` came from, and `every_committed_capture_is_public_or_synthetic` refuses one with no entry, finding captures by their leading bytes rather than their names. |
+| [`tests/fixtures/`](../../tests/fixtures) — capture fixtures | Every capture in the directory comes from [`tests/support/synthetic_captures.rs`](../../tests/support/synthetic_captures.rs), and so do the two SIPp media files in `harness/sipp/scenarios/` and the two fuzz seeds in `fuzz/corpus/pcap_reader/` named `truncated-sip` and `empty-classic`: fourteen in all. `cargo run --features native --bin gen_fixture` writes them, and `synthetic_captures_test` fails when a committed byte differs from what the generator builds. The directory's other fixtures, the JSON goldens, `ng` replies and TLS keys, stay as checked in. [`tests/PROVENANCE.md`](../../tests/PROVENANCE.md) records where every capture outside `tests/pcap-samples/` came from, and `every_committed_capture_is_public_or_synthetic` refuses one with no entry, finding captures by their leading bytes rather than their names. |
 | [`tests/snapshots/`](../../tests/snapshots) — TUI buffers | `cargo insta test --features tui --accept` (needs `cargo install cargo-insta`) |
 | [`tests/cli/`](../../tests/cli) — trycmd goldens | `TRYCMD=overwrite cargo test --features full --test cli_goldens` |
 | [`tests/schemas/`](../../tests/schemas) — JSON Schemas | Hand-maintained; `json_schema_test` validates output against them. |
@@ -32904,13 +32904,19 @@ Both fixtures above carry an `ng` exchange this project generated itself. That
 proves the decoder and proves nothing about whether a real proxy and a real
 relay, talking to each other, produce something sipnab can use.
 
-`rtpengine-opensips-ng.pcap` closes that. It is a SIPp call driven through
-OpenSIPS and rtpengine in the harness, with `--homer-enable-ng` set, filtered
-to what a SEPARATE relay host would see: media and the relay's own control
-plane, no SIP. The Call-ID it recovers is OpenSIPS's, so the name travels
-proxy to rtpengine to HEP to sipnab and arrives on a host that captured no
-signaling at all. `rtpengine-opensips-media-only.pcap` is the same capture
-with the sixteen control-plane packets removed.
+`rtpengine-opensips-ng.pcap` closes that. It began as a SIPp call driven
+through OpenSIPS and rtpengine in the harness, with `--homer-enable-ng` set,
+filtered to what a SEPARATE relay host would see: media and the relay's own
+control plane, no SIP. The Call-ID it recovers is the one OpenSIPS handed the
+relay, so the name travels proxy to rtpengine to HEP to sipnab and arrives on
+a host that captured no signaling at all. `rtpengine-opensips-media-only.pcap`
+is the same capture with the four control-plane packets removed.
+
+The harness capture carried the opening of a third-party G.722 recording, so
+in September 2026 [`tests/support/synthetic_captures.rs`](../../tests/support/synthetic_captures.rs) rebuilt the pair. The
+rebuild keeps OpenSIPS's key order, the relay's conversion from G.722 to PCMU,
+and the timing, puts synthetic G.722 in the caller's packets, and moves the
+addresses into 198.51.100.0/24.
 
 Two things came out of building it that the synthetic test could not reach.
 

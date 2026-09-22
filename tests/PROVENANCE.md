@@ -132,3 +132,95 @@ leaves it by gaining a real entry here, or by the file being deleted.
   registrations, an answered call with media, and three subscriptions, all on
   RFC 5737 addresses. `python3 demos/gen-sample-call.py <out>` writes the same
   bytes.
+
+### harness/sipp/scenarios/g711a.pcap
+
+- **Category:** synthetic
+- **Generator:** `tests/support/synthetic_captures.rs` (`g711a_media`)
+- **SHA-256:** `f90e397973accbaddf0b1f102afc8d76cbb7d0471cf4ec6c5a5a72097177b37c`
+- **Holds:** the audio `uac_hold.xml` hands SIPp's `play_pcap_audio`: 5,535
+  G.711 A-law RTP packets, 20 ms apart, carrying a 500 Hz and a 1.5 kHz tone
+  from `tests/support/codecs.rs`. SIPp sends only the RTP, so the addresses
+  around it (192.0.2.10 to 192.0.2.20) never leave the file. Until September
+  2026 this was a copy of a third-party capture that stated no license. The
+  packet count, payload type and framing are the old file's.
+
+### harness/sipp/scenarios/g722.pcap
+
+- **Category:** synthetic
+- **Generator:** `tests/support/synthetic_captures.rs` (`g722_media`)
+- **SHA-256:** `776e6d8b224a380717111b56f63a186e6c787326e22c3bda745588e8573c54e4`
+- **Holds:** the audio `uac_pcap_g722.xml` plays: 5,413 G.722 RTP packets, 20
+  ms apart, carrying a 1 kHz and a 5 kHz tone. The G.722 encoder in
+  `tests/support/codecs.rs` agrees byte for byte with spandsp and FFmpeg,
+  which the suite checks on two vectors. Until September 2026 this was a copy
+  of a third-party capture that stated no license. The packet count, payload
+  type and framing are the old file's.
+
+### tests/fixtures/rtpengine-opensips-ng.pcap
+
+- **Category:** synthetic
+- **Generator:** `tests/support/synthetic_captures.rs` (`rtpengine_opensips_ng`)
+- **SHA-256:** `57bf2dbac100704d0701de611124d26fbc22015d844c2c3bd21d2ac3097aac40`
+- **Holds:** a separate rtpengine relay's view of a call OpenSIPS set up: four
+  HEP datagrams mirroring `offer` and `answer` with their replies, 21 G.722
+  packets from the caller and 19 PCMU packets the relay transcoded from them,
+  and no SIP. The caller's packets are the first 21 of `g722.pcap`, as SIPp
+  replays them. It proves that the Call-ID `1-4062@198.51.100.21` reaches a
+  host that captured no signaling. Rebuilt in September 2026 from a harness
+  capture whose audio came from the third-party `g722.pcap`. The rebuild keeps
+  that capture's control-plane shapes and timing and moves its addresses into
+  198.51.100.0/24.
+
+### tests/fixtures/rtpengine-opensips-media-only.pcap
+
+- **Category:** synthetic
+- **Generator:** `tests/support/synthetic_captures.rs` (`rtpengine_opensips_media_only`)
+- **SHA-256:** `d72375dbf3660a5162f0d61b9d72267041125ee4d9a5aff356345f478f5433a4`
+- **Holds:** `rtpengine-opensips-ng.pcap` without its four HEP datagrams and
+  nothing else changed: the control case, in which nothing names the streams.
+
+### tests/fixtures/ice_checks.pcap
+
+- **Category:** synthetic
+- **Generator:** `tests/support/synthetic_captures.rs` (`ice_checks`)
+- **SHA-256:** `988ddf78642b76f11e18f711a39dd4cecaf1427ac1db991b1162476468bcd4e8`
+- **Holds:** two ICE connectivity-check exchanges: one pair that succeeds, with
+  a nominating check, and one that fails both ways with 487 Role Conflict. It
+  was built by hand before any generator existed, and the generator
+  reproduces it byte for byte, so the hash did not change.
+
+### tests/fixtures/turn_relay.pcap
+
+- **Category:** synthetic
+- **Generator:** `tests/support/synthetic_captures.rs` (`turn_relay`)
+- **SHA-256:** `09919edc9aaf3dd95aab2c72a6767f7ab8d0830b5f8b4db08194d6055b687da0`
+- **Holds:** a TURN allocation, a permission, a channel binding, one Send
+  indication and 152 ChannelData frames of RTP and RTCP between 192.0.2.10
+  and a peer at 203.0.113.9. It was built by hand before any generator
+  existed, and the generator reproduces it byte for byte, so the hash did not
+  change.
+
+### tests/fixtures/stun_nat_probe.pcap
+
+- **Category:** synthetic
+- **Generator:** `tests/support/synthetic_captures.rs` (`stun_nat_probe`)
+- **SHA-256:** `24e5128c1063d6d5f457342f10308bbab02e0def33fd63552696ff3350a175b6`
+- **Holds:** a STUN Binding request that goes unanswered and is retransmitted,
+  and a second one answered with a reflexive address. Built by hand until
+  September 2026. The generator reproduces the old frames except for the MAC
+  addresses, which moved into the RFC 7042 documentation block.
+
+### tests/fixtures/stun_sdp_mismatch.pcap
+
+- **Category:** synthetic
+- **Generator:** `tests/support/synthetic_captures.rs` (`stun_sdp_mismatch`)
+- **SHA-256:** `33606c69d97fe2d79660a626815c87699ea8e58426490dd911f958aed524e6b9`
+- **Holds:** a phone behind NAT that gets no STUN answer, then calls with its
+  private address, 192.168.10.50, in its SDP, and receives media from
+  203.0.113.7. The RFC 1918 address is deliberate: it is the mismatch the
+  fixture exists to show, and the only address outside RFC 5737 in the file.
+  Built by hand until September 2026. The generator reproduces the old frames
+  except for the MAC addresses, now in the RFC 7042 block, and the two SDP
+  bodies' `Content-Length`, which the original gave as 126 for a 134-byte
+  body.
