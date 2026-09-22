@@ -962,6 +962,12 @@ impl Keyring {
         self.wrong
     }
 
+    /// Archives this keyring remembers a password for.
+    #[must_use]
+    pub fn remembered_count(&self) -> usize {
+        self.remembered.len()
+    }
+
     /// Forget every password this keyring remembered, clearing each.
     pub fn forget_remembered(&mut self) {
         self.remembered.clear();
@@ -1109,8 +1115,21 @@ pub fn install_run_keyring(keyring: Keyring) {
 }
 
 /// Drop the run's keyring, clearing every password it held.
+///
+/// Never waits: an exit can be taken from inside a walk that holds the
+/// keyring, such as Ctrl-C at the prompt, and waiting there would never end.
+/// The process is leaving in that case, and its memory with it.
 pub fn clear_run_keyring() {
-    drop(RUN_KEYRING.lock().take());
+    if let Some(mut guard) = RUN_KEYRING.try_lock() {
+        drop(guard.take());
+    }
+}
+
+/// Run `f` with the run's keyring, installing an empty one first when there
+/// is none: for a surface that brings its own prompter, such as the TUI.
+pub fn with_run_keyring_or_default<R>(f: impl FnOnce(&mut Keyring) -> R) -> R {
+    let mut guard = RUN_KEYRING.lock();
+    f(guard.get_or_insert_with(Keyring::default))
 }
 
 /// Run `f` with the run's keyring, if one is installed.

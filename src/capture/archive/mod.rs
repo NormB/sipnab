@@ -1691,6 +1691,10 @@ pub fn keep_for_run(kept: KeptExtraction) {
 pub fn release_run() {
     let held = std::mem::take(&mut *RUN.lock());
     drop(held);
+    // The run is ending: clear every archive password it held rather than
+    // leave them for the process's teardown, which never drops a static.
+    #[cfg(feature = "archive")]
+    password::clear_run_keyring();
 }
 
 /// [`release_run`], then `std::process::exit`.

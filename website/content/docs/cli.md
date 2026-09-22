@@ -522,8 +522,10 @@ configure, in this order, before it gives up on a member:
    members, Ctrl-U clears the line, and Ctrl-C stops the run. sipnab restores
    the terminal on every one of those paths. With no terminal, as in cron, CI
    or a detached agent, or with `--no-password-prompt`, it never asks and
-   never waits, and locked members count as `encrypted_no_password`. The TUI
-   asks in its own window instead.
+   never waits, and locked members count as `encrypted_no_password`. A TUI
+   run asks here for the archives `-I` names, before it draws. A capture
+   opened inside the TUI asks in its own window, described in
+   [Archive password popup](@/docs/keybindings.md#archive-password-popup).
 
 **How sipnab tries them.** The password that opened one member of an archive
 goes first for that archive's other members, and never for another archive

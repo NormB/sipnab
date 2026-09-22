@@ -214,6 +214,12 @@ STREAM DETAIL:
   L                Packet loss map (RTP loss pattern)
   Esc              Back to RTP Streams
 
+ARCHIVE PASSWORD (a load waits on an encrypted archive member):
+  Enter            Try the password (three attempts per archive)
+  Esc              Skip this archive's locked members
+  Ctrl-R           Show or hide what you typed, until the next attempt
+  Ctrl-U           Clear the entry
+
 COPY & PASTE:
   y                Copy displayed message to clipboard (Raw Message view)
   E                Export Mermaid diagram to clipboard (Call Flow view)

@@ -374,6 +374,7 @@ pub fn restore_terminal_if_raw() {
         let _ = crossterm::execute!(
             out,
             crossterm::event::DisableMouseCapture,
+            crossterm::event::DisableBracketedPaste,
             crossterm::cursor::Show,
             crossterm::terminal::LeaveAlternateScreen
         );

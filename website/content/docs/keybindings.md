@@ -424,7 +424,8 @@ and `Tab` again returns to the browser.
 
 The browser lists `.pcap`, `.pcapng`, and `.cap` files, their
 gzip-compressed forms (`*.pcap.gz`, …), and archives of captures (`.tar`,
-`.tgz`, `.tar.gz`). sipnab decompresses on the fly, and loads an archive as the
+`.tgz`, `.tar.gz`, and `.zip` in builds with the `archive` feature). sipnab
+decompresses on the fly, and loads an archive as the
 set of captures it holds, member by member into one view. The status line says
 how many captures came out of the archive and how many members it did not read.
 If sipnab cannot read the directory — most often because it started with
@@ -432,6 +433,29 @@ If sipnab cannot read the directory — most often because it started with
 home directory — the dialog shows the reason instead of a blank list. Run
 sipnab **without** `sudo` (see [install.md](@/docs/install.md#capture-live-traffic-without-root) for capabilities) to
 browse your own files.
+
+## Archive password popup
+
+A capture load that meets an encrypted archive member asks here when no
+password you configured opens it (see [Archives](@/docs/cli.md#archives)).
+The load waits for the answer. The popup names the archive, the member and
+the attempt, and each archive gets three attempts.
+
+| Key | Action |
+|-----|--------|
+| Enter | Try the password. A wrong one reopens the popup, masked, saying so |
+| Esc | Skip this archive's locked members and load the rest |
+| Ctrl-R | Show or hide what you typed. The popup always opens masked, one dot per character, and masks again after every attempt. While shown, the title says "password visible" |
+| Ctrl-U | Clear the entry |
+| Backspace | Delete the last character |
+
+A paste arrives as one entry, so a password manager works and no character
+of the password acts as a key. The session remembers the password that opened
+an archive for that archive only, and forgets it when another capture opens.
+The action trail says `archive_password_accepted` or
+`archive_locked_members_skipped` with the archive's name, never the password
+or its length. The status line counts locked members and marks an archive
+that uses ZipCrypto, which protects nothing.
 
 ## Column selector
 

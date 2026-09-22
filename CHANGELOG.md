@@ -38,6 +38,16 @@ entry that carries them.
   waits. `-O`, `--strip-secrets` and `--write-annotated` from a decrypted
   member warn once that they write the data unencrypted, and a
   `--write-annotated` copy's section comment says so.
+- **The TUI asks for an archive password in a popup.** Opening a
+  password-protected ZIP from the file browser, or re-scanning one, parks the
+  load and asks: archive, member, attempt n of 3, masked one dot per
+  character. Ctrl-R shows what you typed until the next attempt, with the
+  title saying so. Esc skips the archive, Ctrl-U clears, and a paste arrives
+  whole. The session remembers the password for that archive and forgets it
+  when another capture opens. The action trail records
+  `archive_password_accepted` or `archive_locked_members_skipped` by archive
+  name, and the status line counts locked members and marks ZipCrypto. A TUI
+  run asks for its `-I` archives on the terminal before it draws.
 - **`-I` reads archives of captures.** A `.tar`, `.tgz` or `.tar.gz` reads like
   a directory: every capture inside joins the set in capture order, and the
   answer matches reading the unpacked directory. gzip-compressed members and

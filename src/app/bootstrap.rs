@@ -2500,11 +2500,14 @@ pub fn install_archive_passwords(cli: &Cli) -> Result<(), String> {
 }
 
 /// The terminal prompt for archive passwords, when this run may ask: a
-/// controlling terminal opens, `--no-password-prompt` is off, and the run is
-/// not the TUI, which asks in its own popup.
+/// controlling terminal opens and `--no-password-prompt` is off.
+///
+/// A TUI run asks here too, for its `-I` archives: they resolve before the
+/// TUI takes the screen, and [`end_archive_prompts`] removes this prompter
+/// before it does. Captures opened inside the TUI ask in its own popup.
 #[cfg(feature = "archive")]
 fn archive_prompter(cli: &Cli) -> Option<Box<dyn crate::capture::archive::password::Prompter>> {
-    if cli.archive_args.no_password_prompt || runs_the_tui(cli) {
+    if cli.archive_args.no_password_prompt {
         return None;
     }
     #[cfg(unix)]

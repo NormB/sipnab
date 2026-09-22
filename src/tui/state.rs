@@ -1523,6 +1523,9 @@ pub enum Popup {
     /// file. The notes are about frames of the capture on screen, so opening
     /// another one drops them.
     UnsavedNotes,
+    /// A capture load waits on a password for an encrypted archive member.
+    /// Masked, with Ctrl-R to reveal until the next attempt.
+    ArchivePassword,
 }
 
 /// The note being typed, and the frame it is about.
@@ -1753,6 +1756,9 @@ pub struct PcapLoadOutcome {
     /// Names from an embedded pcapng Name Resolution Block, applied to the
     /// resolver on the UI thread.
     pub file_names: Vec<(std::net::IpAddr, String)>,
+    /// What a password-protected archive in the load came to, for the action
+    /// trail: `(archive, members decrypted, members locked)`. Never a password.
+    pub archive_passwords: Option<(String, usize, usize)>,
 }
 
 /// A save accepted by the save dialog but deferred one event-loop tick, so

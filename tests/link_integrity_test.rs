@@ -923,7 +923,11 @@ fn wiki_intra_docs_links_resolve() {
     // (the archive section's pointer to the new Archives section, and the
     // Archives section's pointer back). Counted per file against HEAD; no
     // other page moved.
-    const EXPECTED_WIKI_LINKS: usize = 796;
+    // 796 -> 798 by the TUI archive password popup: docs/keybindings.md +1
+    // (the popup section's pointer to the CLI reference's Archives section)
+    // and docs/cli-reference.md +1 (the prompt paragraph's pointer to the
+    // popup). Counted per file against HEAD; no other page moved.
+    const EXPECTED_WIKI_LINKS: usize = 798;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe 6d in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

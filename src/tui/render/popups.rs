@@ -494,6 +494,51 @@ pub(in crate::tui) fn render_note_editor_popup(frame: &mut ratatui::Frame, area:
     draw_popup_body(frame, popup_area, app, title, lines);
 }
 
+/// Render the archive password popup: archive, member, attempt, and the
+/// entry, masked one dot per character unless Ctrl-R revealed it.
+pub(in crate::tui) fn render_archive_password_popup(
+    frame: &mut ratatui::Frame,
+    area: Rect,
+    app: &App,
+) {
+    #[cfg(feature = "archive")]
+    {
+        let Some(entry) = app.archive_entry.as_ref() else {
+            return;
+        };
+        let req = entry.request();
+        let muted = Style::default().fg(app.theme.muted);
+        let mut lines = vec![
+            Line::from(""),
+            Line::from(format!("  Archive: {}", req.archive)),
+            Line::from(format!("  Member:  {}", req.member)),
+            Line::from(Span::styled(
+                format!("  Attempt {} of {}", req.attempt, req.of),
+                muted,
+            )),
+        ];
+        if req.after_wrong {
+            lines.push(Line::from(Span::styled(
+                "  Wrong password",
+                Style::default().fg(app.theme.bad),
+            )));
+        }
+        lines.push(Line::from(""));
+        lines.push(Line::from(format!("  Password: {}", entry.field())));
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "  Enter tries it · Esc skips this archive · Ctrl-R reveals · Ctrl-U clears",
+            muted,
+        )));
+        let title = entry.title();
+        let popup_area = sized_popup_area(area, title, &lines);
+        frame.render_widget(Clear, popup_area);
+        draw_popup_body(frame, popup_area, app, title, lines);
+    }
+    #[cfg(not(feature = "archive"))]
+    let _ = (frame, area, app);
+}
+
 /// Render the question a capture swap asks while notes are not saved.
 pub(in crate::tui) fn render_unsaved_notes_popup(
     frame: &mut ratatui::Frame,
@@ -1452,6 +1497,26 @@ mod tests {
             ("unsaved_notes", |f, a, app| {
                 render_unsaved_notes_popup(f, a, app)
             }),
+            // Drawn only while a load waits on a password, so rendered with
+            // one open: a long archive and member name, after a wrong try.
+            #[cfg(feature = "archive")]
+            ("archive_password", |f, a, _app| {
+                let mut app = App::new_test();
+                let (reply, _answer) = std::sync::mpsc::sync_channel(1);
+                app.archive_entry = Some(crate::tui::archive_password::PasswordEntry::new(
+                    crate::tui::archive_password::PasswordAsk {
+                        request: crate::capture::archive::password::PromptRequest {
+                            archive: "/srv/evidence/2026-09-22/trunk-b/evidence.zip".into(),
+                            member: "voip/ring/call-000317.pcap".into(),
+                            attempt: 2,
+                            of: 3,
+                            after_wrong: true,
+                        },
+                        reply,
+                    },
+                ));
+                render_archive_password_popup(f, a, &app)
+            }),
         ]
     }
 
@@ -1689,6 +1754,11 @@ mod tests {
             // a scanner that counts its own fixtures is measuring itself.
             let production = src.split("\nmod tests {").next().unwrap_or(src);
             overlays += production.matches("frame.render_widget(Clear").count();
+        }
+        // The archive password popup's overlay is compiled only with the
+        // `archive` feature, and so is its row in the table.
+        if !cfg!(feature = "archive") {
+            overlays -= 1;
         }
         let covered = every_overlay().len();
         assert!(

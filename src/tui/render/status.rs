@@ -366,6 +366,12 @@ pub(in crate::tui) fn fkey_bar_items(
             Popup::QuitConfirm => vec![("Y", "Quit"), ("N/Esc", "Cancel")],
             Popup::NoteEditor => vec![("Enter", "Keep"), ("Esc", "Cancel")],
             Popup::UnsavedNotes => vec![("Y", "Open"), ("N/Esc", "Keep")],
+            Popup::ArchivePassword => vec![
+                ("Enter", "Try"),
+                ("Esc", "Skip"),
+                ("^R", "Reveal"),
+                ("^U", "Clear"),
+            ],
             Popup::SaveDialog => vec![("Enter", "Save"), ("Tab", "Format"), ("Esc", "Cancel")],
             Popup::FilterDialog => {
                 vec![

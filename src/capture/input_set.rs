@@ -147,6 +147,12 @@ pub struct ResolvedSet {
     /// Candidates found and not read: archive members skipped with a reason,
     /// and found files or members libpcap would not open.
     not_read: usize,
+    /// Archive members skipped for want of the right password.
+    locked: usize,
+    /// Archive members decrypted with a password and read.
+    decrypted: usize,
+    /// Whether an archive in the set uses ZipCrypto, which protects nothing.
+    zipcrypto: bool,
 }
 
 impl std::ops::Deref for ResolvedSet {
@@ -163,6 +169,24 @@ impl ResolvedSet {
     #[must_use]
     pub fn members_not_read(&self) -> usize {
         self.not_read
+    }
+
+    /// Archive members skipped because no password available opened them.
+    #[must_use]
+    pub fn members_locked(&self) -> usize {
+        self.locked
+    }
+
+    /// Archive members decrypted with a password and read.
+    #[must_use]
+    pub fn members_decrypted(&self) -> usize {
+        self.decrypted
+    }
+
+    /// Whether an archive in the set uses ZipCrypto.
+    #[must_use]
+    pub fn uses_zipcrypto(&self) -> bool {
+        self.zipcrypto
     }
 
     /// Whether an archive in the set could not be read to its end, so every
@@ -217,6 +241,13 @@ struct ResolveTally {
     /// Archives the walk could not finish, or members that broke off before
     /// their end. What lay past that point is not in the set.
     archives_cut_short: usize,
+    /// Of `members_skipped`, those locked: encrypted, and no password
+    /// available opened them.
+    members_locked: usize,
+    /// Members decrypted with a password and read.
+    members_decrypted: usize,
+    /// Archives that use ZipCrypto.
+    zipcrypto_archives: usize,
 }
 
 impl ResolveTally {
@@ -307,7 +338,7 @@ pub fn resolve(specs: &[String], opts: &ResolveOptions) -> Result<Vec<ResolvedIn
         inputs,
         extractions,
         incomplete,
-        not_read: _,
+        ..
     } = set;
     if incomplete {
         crate::output::run_integrity::record_archives_cut_short();
@@ -492,6 +523,9 @@ fn resolve_counting(
             inputs: resolved,
             extractions,
             incomplete: tally.archives_cut_short > 0,
+            locked: tally.members_locked,
+            decrypted: tally.members_decrypted,
+            zipcrypto: tally.zipcrypto_archives > 0,
             not_read: tally.members_skipped + tally.unreadable,
         },
         tally,
@@ -535,6 +569,9 @@ fn expand_archive(
     tally.filtered_out += exp.filtered;
     for skipped in &exp.skipped {
         tally.members_skipped += 1;
+        if skipped.reason.is_locked() {
+            tally.members_locked += 1;
+        }
         tracing::warn!("Skipping '{}': {}", skipped.label, skipped.reason);
     }
     for stop in &exp.stops {
@@ -608,6 +645,16 @@ fn expand_archive(
         .filter(|m| m.encryption != archive::Encryption::None)
         .map(|m| m.path.clone())
         .collect();
+    tally.members_decrypted += decrypted.len();
+    if exp
+        .members
+        .iter()
+        .map(|m| m.encryption)
+        .chain(exp.skipped.iter().map(|s| s.encryption))
+        .any(|e| e == archive::Encryption::ZipCrypto)
+    {
+        tally.zipcrypto_archives += 1;
+    }
     if let Some(dir) = exp.take_dir() {
         extractions.push(archive::KeptExtraction::new(dir, labels).with_decrypted(decrypted));
     }

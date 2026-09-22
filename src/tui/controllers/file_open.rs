@@ -393,6 +393,11 @@ fn run_pcap_load(
         .to_string();
     let capture_mode = format!("Offline ({filename})");
     let failed = |message: String| PcapLoadOutcome {
+        // A named archive of which nothing opened fails the load, and its
+        // message names each locked member by the shared reason code.
+        archive_passwords: (message.contains("encrypted_no_password")
+            || message.contains("encrypted_wrong_password"))
+        .then(|| (filename.clone(), 0, 1)),
         message,
         sip_count: 0,
         capture_mode: capture_mode.clone(),
@@ -466,6 +471,15 @@ fn run_pcap_load(
             if set.incomplete() {
                 text.push_str(", archive cut short");
             }
+            if set.members_locked() > 0 {
+                text.push_str(&format!(
+                    ", {} locked member(s) skipped",
+                    set.members_locked()
+                ));
+            }
+            if set.uses_zipcrypto() {
+                text.push_str(" \u{26a0} ZipCrypto, which protects nothing");
+            }
             text
         }
         None => String::new(),
@@ -479,6 +493,15 @@ fn run_pcap_load(
         sip_count: totals.sip,
         capture_mode,
         file_names: totals.file_names,
+        archive_passwords: set.as_ref().and_then(|s| {
+            (s.members_decrypted() + s.members_locked() > 0).then(|| {
+                (
+                    path.display().to_string(),
+                    s.members_decrypted(),
+                    s.members_locked(),
+                )
+            })
+        }),
     }
 }
 
@@ -666,6 +689,22 @@ fn load_one_capture(
 /// arrived while it was `Off`. When the capture had no SIP but has RTP
 /// streams, switches `app.current_view` to the stream list.
 fn apply_load_outcome(app: &mut App, outcome: PcapLoadOutcome) {
+    // What the archive's passwords came to, on the action trail by archive
+    // name and count: never a password, never its length.
+    if let Some((archive, decrypted, locked)) = &outcome.archive_passwords {
+        if *decrypted > 0 {
+            app.record_action("archive_password_accepted", archive, "", "ok", "");
+        }
+        if *locked > 0 {
+            app.record_action(
+                "archive_locked_members_skipped",
+                archive,
+                "",
+                "skipped",
+                &format!("{locked} locked member(s)"),
+            );
+        }
+    }
     app.set_capture_mode(outcome.capture_mode);
     // The label now reads `Offline (...)` while the BPF slot still shows the
     // filter the LIVE capture was compiled with — which keeps running behind
@@ -764,6 +803,8 @@ pub(in crate::tui) fn begin_pcap_load_confirmed(
     }
 
     reset_for_load(app);
+    #[cfg(feature = "archive")]
+    let asks = arm_archive_prompt(app, other_capture);
 
     let filename = path
         .file_name()
@@ -787,6 +828,13 @@ pub(in crate::tui) fn begin_pcap_load_confirmed(
                 &worker_progress,
                 filter_owned.as_deref(),
             );
+            // Before `done`: the next load must not find this one's prompter.
+            #[cfg(feature = "archive")]
+            crate::capture::archive::password::with_run_keyring(|k| {
+                if let Some(k) = k {
+                    drop(k.take_prompter());
+                }
+            });
             *worker_progress.result.lock() = Some(outcome);
             worker_progress
                 .done
@@ -800,6 +848,10 @@ pub(in crate::tui) fn begin_pcap_load_confirmed(
                 format!("Loading {filename}…")
             });
             app.pcap_load = Some(progress);
+            #[cfg(feature = "archive")]
+            {
+                app.archive_asks = Some(asks);
+            }
             // The swap is the moment the session stops describing the capture
             // it started with: `reset_for_load` above has already emptied both
             // stores and dropped the active filter, so every later record in
@@ -831,8 +883,17 @@ pub(in crate::tui) fn poll_pcap_load(app: &mut App) {
     let Some(progress) = app.pcap_load.clone() else {
         return;
     };
+    #[cfg(feature = "archive")]
+    open_archive_password_ask(app);
     if progress.done.load(std::sync::atomic::Ordering::Acquire) {
         app.pcap_load = None;
+        #[cfg(feature = "archive")]
+        {
+            app.archive_asks = None;
+            if app.archive_entry.take().is_some() {
+                app.active_popup = None;
+            }
+        }
         if let Some(outcome) = progress.result.lock().take() {
             app.status_error = Some(outcome.message.clone());
             apply_load_outcome(app, outcome);
@@ -846,6 +907,87 @@ pub(in crate::tui) fn poll_pcap_load(app: &mut App) {
         // Keep the adaptive refresh cadence active while data streams in.
         app.mark_data_updated();
     }
+}
+
+/// Give the run keyring a prompter that asks this TUI, for the load about to
+/// start, and return where its questions arrive.
+///
+/// A different capture also forgets every archive password the session
+/// remembered, clearing each: they were for the capture that is going.
+#[cfg(feature = "archive")]
+fn arm_archive_prompt(
+    app: &mut App,
+    other_capture: bool,
+) -> std::sync::mpsc::Receiver<crate::tui::archive_password::PasswordAsk> {
+    let (prompter, asks) = crate::tui::archive_password::PopupPrompter::channel();
+    crate::capture::archive::password::with_run_keyring_or_default(|k| {
+        if other_capture {
+            k.forget_remembered();
+        }
+        k.set_prompter(Some(Box::new(prompter)));
+    });
+    app.archive_entry = None;
+    asks
+}
+
+/// Open the password popup for a question the load is parked on, when no
+/// other popup is in the way.
+#[cfg(feature = "archive")]
+fn open_archive_password_ask(app: &mut App) {
+    if app.archive_entry.is_some() || app.active_popup.is_some() {
+        return;
+    }
+    let Some(asks) = app.archive_asks.as_ref() else {
+        return;
+    };
+    if let Ok(ask) = asks.try_recv() {
+        let entry = crate::tui::archive_password::PasswordEntry::new(ask);
+        if entry.request().after_wrong {
+            app.status_error = Some(format!(
+                "Wrong password for {} (attempt {} of {})",
+                entry.request().archive,
+                entry.request().attempt,
+                entry.request().of
+            ));
+        }
+        app.archive_entry = Some(entry);
+        app.active_popup = Some(Popup::ArchivePassword);
+    }
+}
+
+/// Keys while [`Popup::ArchivePassword`] is open.
+///
+/// # Side effects
+/// Enter sends what was typed to the parked load, and Esc sends "skip this
+/// archive"; either closes the popup, and the load resumes. Ctrl-R reveals or
+/// hides the entry, Ctrl-U clears it. Nothing typed is recorded anywhere.
+pub(in crate::tui) fn handle_archive_password_key(app: &mut App, key: KeyEvent) {
+    #[cfg(feature = "archive")]
+    {
+        let Some(entry) = app.archive_entry.as_mut() else {
+            app.active_popup = None;
+            return;
+        };
+        if entry.key(key) {
+            app.archive_entry = None;
+            app.active_popup = None;
+        }
+    }
+    #[cfg(not(feature = "archive"))]
+    {
+        let _ = key;
+        app.active_popup = None;
+    }
+}
+
+/// A bracketed paste: into the password popup as one entry, and nowhere else.
+pub(in crate::tui) fn handle_paste(app: &mut App, text: &str) {
+    #[cfg(feature = "archive")]
+    if let Some(entry) = app.archive_entry.as_mut() {
+        entry.paste(text);
+    }
+    #[cfg(not(feature = "archive"))]
+    let _ = (app, text);
 }
 
 /// Unit tests for the file browser, tilde expansion, and pcap loading
@@ -1958,5 +2100,163 @@ mod browser_tests {
             "64 of 1500 bytes is a snapped frame"
         );
         crate::capture::reset_undecodable_frames();
+    }
+}
+
+/// The password popup and the load that waits on it.
+///
+/// Serialized: the run keyring is process-global, and each of these installs
+/// a prompter on it for the load it starts.
+#[cfg(test)]
+#[cfg(feature = "archive")]
+mod archive_password_tests {
+    use super::*;
+    use crate::capture::archive::zipped::testutil::{Lock, build};
+    use crossterm::event::{KeyEvent, KeyModifiers};
+
+    static SERIAL: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+
+    fn secret(label: &str) -> &'static str {
+        crate::test_material::key_str(label)
+    }
+
+    /// An AES ZIP of the repo's `sip_call.pcap`, locked with `password`.
+    fn locked_zip(dir: &std::path::Path, password: &str) -> std::path::PathBuf {
+        let pcap = std::fs::read(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/sip_call.pcap"),
+        )
+        .expect("fixture");
+        let path = dir.join("evidence.zip");
+        std::fs::write(
+            &path,
+            build(
+                &[("calls/call.pcap", &pcap)],
+                Lock::Aes(zip::AesMode::Aes256, password.as_bytes()),
+            ),
+        )
+        .expect("write");
+        path
+    }
+
+    /// Pump the event-loop hook until `done` says so.
+    fn pump_until(app: &mut App, what: &str, done: impl Fn(&App) -> bool) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        while !done(app) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "{what} never happened"
+            );
+            poll_pcap_load(app);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
+    fn popup_open(app: &App) -> bool {
+        app.active_popup == Some(Popup::ArchivePassword)
+    }
+
+    fn type_in(app: &mut App, text: &str) {
+        for c in text.chars() {
+            handle_popup_key(app, KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+    }
+
+    fn press(app: &mut App, code: KeyCode, mods: KeyModifiers) {
+        handle_popup_key(app, KeyEvent::new(code, mods));
+    }
+
+    fn screen(app: &mut App) -> String {
+        crate::tui::render::test_support::render_to_string(app, 110, 30)
+    }
+
+    #[test]
+    fn a_load_parks_on_a_locked_member_and_resumes_with_the_answer() {
+        let _serial = SERIAL.lock();
+        let tmp = tempfile::tempdir().expect("tmp");
+        let trail_path = tmp.path().join("trail.jsonl");
+        let zip = locked_zip(tmp.path(), secret("tui-right"));
+        let mut app = App::new_test();
+        app.set_action_trail(Some(Arc::new(
+            crate::tui::action_trail::ActionTrail::open(&trail_path).expect("trail"),
+        )));
+        begin_pcap_load_confirmed(&mut app, &zip.display().to_string(), None);
+        pump_until(&mut app, "the popup", popup_open);
+
+        // Masked, one dot per character, and the title does not say visible.
+        type_in(&mut app, &secret("tui-wrong")[..10]);
+        let text = screen(&mut app);
+        assert!(text.contains(&"\u{2022}".repeat(10)), "{text}");
+        assert!(text.contains("Attempt 1 of 3"), "{text}");
+        assert!(!text.contains("password visible"), "{text}");
+        assert!(!text.contains(&secret("tui-wrong")[..10]), "{text}");
+
+        // Ctrl-R reveals, and says so.
+        press(&mut app, KeyCode::Char('r'), KeyModifiers::CONTROL);
+        let text = screen(&mut app);
+        assert!(text.contains(&secret("tui-wrong")[..10]), "{text}");
+        assert!(text.contains("password visible"), "{text}");
+
+        // A wrong attempt re-opens the popup masked, saying it was wrong.
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        pump_until(&mut app, "the second ask", |a| {
+            a.archive_entry
+                .as_ref()
+                .is_some_and(|e| e.request().attempt == 2)
+        });
+        let text = screen(&mut app);
+        assert!(text.contains("Wrong password"), "{text}");
+        assert!(!text.contains("password visible"), "re-masked: {text}");
+
+        // A paste arrives as one entry, and opens the member.
+        handle_paste(&mut app, &format!("{}\n", secret("tui-right")));
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        pump_until(&mut app, "the load", |a| a.pcap_load.is_none());
+        assert!(!app.dialog_store.read().is_empty(), "the member was read");
+        assert!(!popup_open(&app));
+        let status = app.status_error.clone().unwrap_or_default();
+        assert!(status.contains("capture(s) from the archive"), "{status}");
+
+        // The trail says the archive opened, and never what opened it.
+        let trail = std::fs::read_to_string(&trail_path).expect("trail");
+        assert!(trail.contains("archive_password_accepted"), "{trail}");
+        for label in ["tui-right", "tui-wrong"] {
+            assert!(!trail.contains(&secret(label)[..10]), "{trail}");
+        }
+
+        // The session remembers the password for this archive, and forgets it
+        // the moment another capture opens.
+        let remembered = crate::capture::archive::password::with_run_keyring(|k| {
+            k.map_or(0, |k| k.remembered_count())
+        });
+        assert_eq!(remembered, 1);
+        let other =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/sip_call.pcap");
+        begin_pcap_load_confirmed(&mut app, &other.display().to_string(), None);
+        let remembered = crate::capture::archive::password::with_run_keyring(|k| {
+            k.map_or(0, |k| k.remembered_count())
+        });
+        assert_eq!(remembered, 0, "cleared on capture change");
+        pump_until(&mut app, "the second load", |a| a.pcap_load.is_none());
+    }
+
+    #[test]
+    fn esc_skips_the_archive_and_the_load_finishes() {
+        let _serial = SERIAL.lock();
+        let tmp = tempfile::tempdir().expect("tmp");
+        let trail_path = tmp.path().join("trail.jsonl");
+        let zip = locked_zip(tmp.path(), secret("tui-esc"));
+        let mut app = App::new_test();
+        app.set_action_trail(Some(Arc::new(
+            crate::tui::action_trail::ActionTrail::open(&trail_path).expect("trail"),
+        )));
+        begin_pcap_load_confirmed(&mut app, &zip.display().to_string(), None);
+        pump_until(&mut app, "the popup", popup_open);
+        press(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        pump_until(&mut app, "the load", |a| a.pcap_load.is_none());
+        assert!(!popup_open(&app));
+        let status = app.status_error.clone().unwrap_or_default();
+        assert!(status.contains("encrypted_no_password"), "{status}");
+        let trail = std::fs::read_to_string(&trail_path).expect("trail");
+        assert!(trail.contains("archive_locked_members_skipped"), "{trail}");
     }
 }

@@ -90,7 +90,7 @@ generators and proxies — where operators most want to compare two captures.
 `-I` now accepts a file, a directory, a glob, or a repeated set
 ([`cli.rs:234-247`](https://github.com/NormB/sipnab/blob/main/src/cli.rs#L234-L247)), resolves it into one chronologically
 ordered list (`input_set::resolve`,
-[`input_set.rs:304`](https://github.com/NormB/sipnab/blob/main/src/capture/input_set.rs#L304)), and streams every file
+[`input_set.rs:335`](https://github.com/NormB/sipnab/blob/main/src/capture/input_set.rs#L335)), and streams every file
 into **one** `DialogStore` through one channel
 (`capture_files`, [`file.rs:356`](https://github.com/NormB/sipnab/blob/main/src/capture/file.rs#L356)). It is tempting to
 read that as "sipnab now has a cross-capture story, so the comparison request is
@@ -98,7 +98,7 @@ satisfied."
 
 It is the opposite operation, and the module that implements it says so in as
 many words. `warn_on_overlap`
-([`input_set.rs:901`](https://github.com/NormB/sipnab/blob/main/src/capture/input_set.rs#L901)) exists precisely to warn
+([`input_set.rs:954`](https://github.com/NormB/sipnab/blob/main/src/capture/input_set.rs#L954)) exists precisely to warn
 an operator away from the comparison use case:
 
 ```
@@ -133,7 +133,7 @@ produce — silently, with `--problems` adding nothing.
 The `same instant` warning did fire, which is the design working. But the
 warning detects overlap in *time*, not overlap in *identity*: `same_instant_pairs`
 compares consecutive files' first-packet timestamps against `SAME_INSTANT_SECS`
-(1 ms, [`input_set.rs:926`](https://github.com/NormB/sipnab/blob/main/src/capture/input_set.rs#L926)) and
+(1 ms, [`input_set.rs:979`](https://github.com/NormB/sipnab/blob/main/src/capture/input_set.rs#L979)) and
 `overlap_message` compares the previous file's end against the next one's start.
 Two captures that share Call-IDs without overlapping in time trip neither — and
 that population is not exotic, since a load generator reuses Call-IDs across

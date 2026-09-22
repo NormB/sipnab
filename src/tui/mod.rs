@@ -8,6 +8,8 @@
 //! (100ms active, 500ms idle, immediate on keypress).
 
 pub mod action_trail;
+#[cfg(feature = "archive")]
+pub(crate) mod archive_password;
 pub mod bpf_editor;
 pub mod call_flow;
 pub mod call_list;
@@ -406,6 +408,12 @@ pub struct App {
     note_editor: Option<NoteEditorState>,
     /// The capture open that [`Popup::UnsavedNotes`] is asking about.
     pending_swap: Option<PendingSwap>,
+    /// Questions a running load asks about archive passwords.
+    #[cfg(feature = "archive")]
+    archive_asks: Option<std::sync::mpsc::Receiver<archive_password::PasswordAsk>>,
+    /// The question [`Popup::ArchivePassword`] is showing.
+    #[cfg(feature = "archive")]
+    archive_entry: Option<archive_password::PasswordEntry>,
 }
 
 impl App {
@@ -543,6 +551,10 @@ impl App {
             notes_path: None,
             note_editor: None,
             pending_swap: None,
+            #[cfg(feature = "archive")]
+            archive_asks: None,
+            #[cfg(feature = "archive")]
+            archive_entry: None,
         }
     }
 
@@ -1789,6 +1801,9 @@ impl Drop for TerminalGuard {
         let _ = execute!(
             io::stdout(),
             crossterm::event::DisableMouseCapture,
+            // Harmless when paste was never on; restores it when the run
+            // ended with the password popup open.
+            crossterm::event::DisableBracketedPaste,
             crossterm::cursor::Show,
             LeaveAlternateScreen
         );
@@ -1891,6 +1906,7 @@ pub fn run_tui_with_pause(
     // flag after each input drain (the controller layer only flips the
     // flag; all terminal I/O stays here).
     let mut mouse_captured = true;
+    let mut pasting = false;
 
     // Main event loop
     loop {
@@ -1939,6 +1955,7 @@ pub fn run_tui_with_pause(
                     Event::Mouse(m) => {
                         controllers::handle_mouse_event(&mut app, m.kind);
                     }
+                    Event::Paste(text) => controllers::handle_paste(&mut app, &text),
                     _ => {}
                 }
                 if app.should_quit || !event::poll(std::time::Duration::ZERO)? {
@@ -1952,6 +1969,18 @@ pub fn run_tui_with_pause(
         // scrolling pauses); the restore paths (guard drop + crash hook)
         // stay unconditional — crossterm's DisableMouseCapture just writes
         // the reset sequences, harmless when capture is already off.
+        // Bracketed paste only while the password popup is open, so a pasted
+        // password arrives as one event and is never read as keystrokes, and
+        // every other view keeps the paste behavior it had.
+        let wants_paste = app.active_popup == Some(Popup::ArchivePassword);
+        if wants_paste != pasting {
+            if wants_paste {
+                execute!(io::stdout(), crossterm::event::EnableBracketedPaste)?;
+            } else {
+                execute!(io::stdout(), crossterm::event::DisableBracketedPaste)?;
+            }
+            pasting = wants_paste;
+        }
         if app.mouse_capture_enabled != mouse_captured {
             if app.mouse_capture_enabled {
                 execute!(io::stdout(), crossterm::event::EnableMouseCapture)?;

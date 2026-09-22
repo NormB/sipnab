@@ -147,7 +147,7 @@ capture provenance anywhere in the data model. `Packet.interface`
 field and the file reader hard-codes it to `None`; `ParsedPacket` does not carry
 it forward; `SipMessage` and `SipDialog` have no source field at all. `-I`
 resolves a whole set into **one** store, and `warn_on_overlap`
-([`input_set.rs:901`](https://github.com/NormB/sipnab/blob/main/src/capture/input_set.rs#L901)) exists specifically to warn
+([`input_set.rs:954`](https://github.com/NormB/sipnab/blob/main/src/capture/input_set.rs#L954)) exists specifically to warn
 operators away from feeding it two captures of the same traffic.
 
 This document assumes an interned `u16` capture index reaching `SipDialog` —

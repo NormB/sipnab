@@ -3757,7 +3757,10 @@ fn no_documentation_table_repeats_a_row() {
     // docs/cli-reference.md's new Archives section, and its site mirror.
     // Attributed by counting table separators per file against HEAD: exactly
     // those two files moved.
-    const EXPECTED_TABLES: usize = 950;
+    // 950 -> 952: the Archive password popup's key table in
+    // docs/keybindings.md, and its site mirror. Attributed by counting table
+    // separators per file against HEAD: exactly those two files moved.
+    const EXPECTED_TABLES: usize = 952;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

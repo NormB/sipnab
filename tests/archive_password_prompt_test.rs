@@ -125,6 +125,12 @@ fn drain(mut src: impl std::io::Read + Send + 'static) -> std::thread::JoinHandl
 }
 
 fn start(args: &[&str], tmpdir: &Path, with_tty: bool) -> Session {
+    start_with(args, tmpdir, with_tty, false)
+}
+
+/// [`start`], with stdout on the terminal too when `stdout_tty`, as a TUI run
+/// needs.
+fn start_with(args: &[&str], tmpdir: &Path, with_tty: bool, stdout_tty: bool) -> Session {
     let pty = pty();
     let slave = pty.slave.as_raw_fd();
     let master = pty.master.as_raw_fd();
@@ -136,8 +142,13 @@ fn start(args: &[&str], tmpdir: &Path, with_tty: bool) -> Session {
         .env_remove("SIPNAB_ARCHIVE_PASSWORD")
         .env_remove("CREDENTIALS_DIRECTORY")
         .stdin(Stdio::null())
-        .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    if stdout_tty {
+        let out = pty.slave.try_clone().expect("dup slave");
+        cmd.stdout(Stdio::from(out));
+    } else {
+        cmd.stdout(Stdio::piped());
+    }
     // SAFETY: between fork and exec this calls only async-signal-safe
     // functions (close, setsid, ioctl) on descriptors the child inherited.
     unsafe {
@@ -155,7 +166,10 @@ fn start(args: &[&str], tmpdir: &Path, with_tty: bool) -> Session {
     }
     let mut child = cmd.spawn().expect("spawn sipnab");
     let drains = vec![
-        drain(child.stdout.take().expect("stdout")),
+        match child.stdout.take() {
+            Some(out) => drain(out),
+            None => drain(std::io::empty()),
+        },
         drain(child.stderr.take().expect("stderr")),
     ];
     Session {
@@ -487,4 +501,33 @@ fn a_decrypted_export_warns_that_it_is_written_unencrypted() {
         done.stderr
     );
     done.assert_sealed(&password);
+}
+
+/// `-I` in TUI mode resolves before the TUI takes the screen, so the prompt
+/// asks on the plain terminal first; the TUI then opens on what it read.
+#[test]
+fn the_tui_asks_for_an_i_archive_before_it_draws() {
+    let root = tempfile::tempdir().expect("root");
+    let tmp = tempfile::tempdir().expect("tmp");
+    let password = mint("tuistart");
+    let zip = locked_zip(root.path(), "tuistart@test", &password);
+    let spec = zip.display().to_string();
+    let mut s = start_with(&["-I", &spec], tmp.path(), true, true);
+    s.wait_for("attempt 1 of 3): ");
+    assert!(
+        !s.screen.contains("\u{1b}[?1049h"),
+        "the prompt came before the TUI's alternate screen"
+    );
+    s.type_in(password.as_bytes());
+    s.type_in(b"\r");
+    // The TUI takes the screen, then quits on `q` and its confirmation.
+    s.wait_for("\u{1b}[?1049h");
+    std::thread::sleep(Duration::from_millis(500));
+    s.type_in(b"q");
+    std::thread::sleep(Duration::from_millis(300));
+    s.type_in(b"y");
+    let done = s.finish();
+    assert_eq!(done.code, Some(0), "{}", done.stderr);
+    done.assert_sealed(&password);
+    done.assert_terminal_restored();
 }
