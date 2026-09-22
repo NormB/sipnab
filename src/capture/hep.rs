@@ -7560,6 +7560,18 @@ mod tests {
 
     // ── Silence: what counts as traffic (HEP1) ───────────────────────────
 
+    /// The shared secret these listener tests hold, minted at runtime: a
+    /// literal here is scanned like production code and is an open
+    /// `rust/hard-coded-cryptographic-value` alert (see `crate::test_material`).
+    fn right_key() -> &'static str {
+        crate::test_material::key_str("hep-roster-right")
+    }
+
+    /// A secret the listener does not hold.
+    fn wrong_key() -> &'static str {
+        crate::test_material::key_str("hep-roster-wrong")
+    }
+
     /// Listener options as the CLI defaults build them, with a shared secret
     /// and the silence threshold the caller names.
     fn keyed_opts(key: &'static str, silence: Duration) -> HepListenerOpts<'static> {
@@ -7593,11 +7605,11 @@ mod tests {
     /// packets to, so the test takes no time and covers UDP and stream alike.
     #[test]
     fn a_sender_whose_every_packet_is_refused_still_trips_the_silence_warning() {
-        let opts = keyed_opts("the-right-key", Duration::from_secs(30));
+        let opts = keyed_opts(right_key(), Duration::from_secs(30));
         let t0 = Instant::now();
         let mut ingest = HepIngest::new(&opts, listener_roster(&opts, t0, Utc::now()));
         let peer: IpAddr = "192.0.2.7".parse().expect("literal");
-        let wrong = hep3_from(7, Some("the-wrong-key"), b"OPTIONS sip:x SIP/2.0\r\n\r\n");
+        let wrong = hep3_from(7, Some(wrong_key()), b"OPTIONS sip:x SIP/2.0\r\n\r\n");
 
         let mut warning = None;
         for s in 1..=35 {
@@ -7642,11 +7654,11 @@ mod tests {
     /// warned one with a "resumed" report.
     #[test]
     fn an_admitted_packet_ends_the_quiet_period_it_interrupts() {
-        let opts = keyed_opts("the-right-key", Duration::from_secs(30));
+        let opts = keyed_opts(right_key(), Duration::from_secs(30));
         let t0 = Instant::now();
         let mut ingest = HepIngest::new(&opts, listener_roster(&opts, t0, Utc::now()));
         let peer: IpAddr = "192.0.2.8".parse().expect("literal");
-        let right = hep3_from(9, Some("the-right-key"), b"OPTIONS sip:x SIP/2.0\r\n\r\n");
+        let right = hep3_from(9, Some(right_key()), b"OPTIONS sip:x SIP/2.0\r\n\r\n");
 
         assert!(
             ingest
@@ -7675,7 +7687,7 @@ mod tests {
     /// runbooks grep for.
     #[test]
     fn a_listener_that_receives_nothing_keeps_the_original_warning() {
-        let opts = keyed_opts("the-right-key", Duration::from_secs(30));
+        let opts = keyed_opts(right_key(), Duration::from_secs(30));
         let t0 = Instant::now();
         let mut ingest = HepIngest::new(&opts, listener_roster(&opts, t0, Utc::now()));
         let warning = ingest
@@ -7741,7 +7753,10 @@ mod tests {
     fn allowlisted_opts(allow: &'static [CidrRange]) -> HepListenerOpts<'static> {
         HepListenerOpts {
             allowlist: allow,
-            ..keyed_opts("unused-key", Duration::from_secs(30))
+            ..keyed_opts(
+                crate::test_material::key_str("hep-roster-unused"),
+                Duration::from_secs(30),
+            )
         }
     }
 
@@ -7761,7 +7776,11 @@ mod tests {
         let roster = listener_roster(&opts, t0, Utc::now());
         let mut ingest = HepIngest::new(&opts, roster.clone());
         let outside: IpAddr = "192.0.2.50".parse().expect("literal");
-        let pkt = hep3_from(7, Some("unused-key"), b"OPTIONS sip:x SIP/2.0\r\n\r\n");
+        let pkt = hep3_from(
+            7,
+            Some(crate::test_material::key_str("hep-roster-unused")),
+            b"OPTIONS sip:x SIP/2.0\r\n\r\n",
+        );
         for s in 0..3 {
             let got = ingest.receive(&pkt, outside, t0 + Duration::from_secs(s));
             assert!(got.packet.is_none(), "control: the allowlist refuses it");
@@ -7783,7 +7802,7 @@ mod tests {
     /// refused source under `auth_mismatch`.
     #[test]
     fn the_listener_path_feeds_the_roster_with_senders_and_refusals() {
-        let opts = keyed_opts("the-right-key", Duration::from_secs(30));
+        let opts = keyed_opts(right_key(), Duration::from_secs(30));
         let t0 = Instant::now();
         let roster = listener_roster(&opts, t0, Utc::now());
         let mut ingest = HepIngest::new(&opts, roster.clone());
@@ -7795,26 +7814,26 @@ mod tests {
             let now = t0 + Duration::from_secs(s);
             assert!(
                 ingest
-                    .receive(&hep3_from(7, Some("the-right-key"), body), a, now)
+                    .receive(&hep3_from(7, Some(right_key()), body), a, now)
                     .packet
                     .is_some()
             );
             assert!(
                 ingest
-                    .receive(&hep3_from(9, Some("the-right-key"), body), b, now)
+                    .receive(&hep3_from(9, Some(right_key()), body), b, now)
                     .packet
                     .is_some()
             );
             assert!(
                 ingest
-                    .receive(&hep3_from(7, Some("the-wrong-key"), body), bad, now)
+                    .receive(&hep3_from(7, Some(wrong_key()), body), bad, now)
                     .packet
                     .is_none()
             );
         }
         assert!(
             ingest
-                .receive(&hep3_from(9, Some("the-right-key"), body), b, t0)
+                .receive(&hep3_from(9, Some(right_key()), body), b, t0)
                 .packet
                 .is_some()
         );

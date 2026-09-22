@@ -227,6 +227,13 @@ entry that carries them.
   queue fills. A 5 ms pause after each refusal makes the old test fail every
   time and leaves the new one passing.
 
+- **The HEP roster tests mint their shared secrets at runtime.** Three
+  listener tests passed literal keys through a helper into the listener, and
+  CodeQL raised three `rust/hard-coded-cryptographic-value` alerts on the cut,
+  which turned CI red. `test_material::key_str` gives a minted secret as the
+  `&'static str` the listener takes. Setting the "wrong" key equal to the right
+  one turns the two refusal tests red.
+
 ## [0.5.184] - 2026-09-21
 
 ### Changed

@@ -106,6 +106,28 @@ pub fn key_bytes(label: &str) -> &'static [u8] {
     leaked
 }
 
+/// The whole of `label`'s material as lower-case hex, borrowed for the life of
+/// the process: for a shared secret an API takes as `&'static str`, such as
+/// the HEP listener's `auth_key`.
+///
+/// Leaked once per label, like [`key_bytes`], so asking again returns the same
+/// string and the leak is bounded by the number of labels a test run uses.
+#[must_use]
+pub fn key_str(label: &str) -> &'static str {
+    static LEAKED: OnceLock<Mutex<HashMap<String, &'static str>>> = OnceLock::new();
+    let mut m = LEAKED
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    if let Some(k) = m.get(label) {
+        return k;
+    }
+    let hex: String = key_for(label).iter().map(|b| format!("{b:02x}")).collect();
+    let leaked: &'static str = String::leak(hex);
+    m.insert(label.to_string(), leaked);
+    leaked
+}
+
 /// Fixture material for `label` as lower-case hex, for the places that want a
 /// string: a challenge nonce, a `cnonce`, an opaque token.
 #[must_use]
@@ -147,6 +169,17 @@ mod tests {
     fn the_borrowed_form_matches_the_owned_one() {
         assert_eq!(key_bytes("zeta"), key_for("zeta").as_slice());
         assert_eq!(key_bytes("zeta").as_ptr(), key_bytes("zeta").as_ptr());
+    }
+
+    /// The string form is the same material as hex, is one allocation per
+    /// label, and differs between labels: the HEP listener takes its shared
+    /// secret as `&'static str`.
+    #[test]
+    fn the_string_form_is_the_material_in_hex() {
+        let hex: String = key_for("eta").iter().map(|b| format!("{b:02x}")).collect();
+        assert_eq!(key_str("eta"), hex);
+        assert_eq!(key_str("eta").as_ptr(), key_str("eta").as_ptr());
+        assert_ne!(key_str("eta"), key_str("theta"));
     }
 
     /// Nothing in the output is a literal from this file.
