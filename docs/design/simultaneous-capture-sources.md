@@ -97,7 +97,7 @@ decisions downstream read the source as a scalar:
 ### 2.3 How a packet reaches the pipeline
 
 Every reader — `capture_live_fanout` ([`src/capture/live.rs:291`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L291)), `capture_files`
-([`src/capture/file.rs:310`](https://github.com/NormB/sipnab/blob/main/src/capture/file.rs#L310)), `capture_hep` ([`src/capture/hep.rs:2492`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L2492)), the
+([`src/capture/file.rs:356`](https://github.com/NormB/sipnab/blob/main/src/capture/file.rs#L356)), `capture_hep` ([`src/capture/hep.rs:2492`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L2492)), the
 uprobe reader — builds a `Packet` ([`src/capture/packet.rs:502`](https://github.com/NormB/sipnab/blob/main/src/capture/packet.rs#L502)) and calls
 `tx.send(..)`. `PacketTx` derives `Clone` ([`src/capture/channel.rs:142`](https://github.com/NormB/sipnab/blob/main/src/capture/channel.rs#L142)), and the
 channel is an unbounded crossbeam queue guarded by a bounded slot semaphore
@@ -148,10 +148,10 @@ already solved, and the ways it goes wrong are real but nameable.
 sipnab does not correlate a dialog to a stream by capture source. It correlates
 by SDP media endpoint, and the key is a bare `(IpAddr, u16)`.
 
-`extract_sdp_links` ([`src/pipeline.rs:1677`](https://github.com/NormB/sipnab/blob/main/src/pipeline.rs#L1677)) resolves each `m=` section's address
+`extract_sdp_links` ([`src/pipeline.rs:1717`](https://github.com/NormB/sipnab/blob/main/src/pipeline.rs#L1717)) resolves each `m=` section's address
 through `effective_address` ([`src/sip/sdp.rs:340`](https://github.com/NormB/sipnab/blob/main/src/sip/sdp.rs#L340)) — media-level `c=` when
 present, session-level otherwise — and yields `(ip, port, call_id, media)`
-tuples. `process_packet` ([`src/pipeline.rs:2405`](https://github.com/NormB/sipnab/blob/main/src/pipeline.rs#L2405)) feeds each one to `link_to_dialog_with_sdp`
+tuples. `process_packet` ([`src/pipeline.rs:2445`](https://github.com/NormB/sipnab/blob/main/src/pipeline.rs#L2445)) feeds each one to `link_to_dialog_with_sdp`
 ([`src/rtp/stream_store.rs:1231`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L1231)), which lands in `link_endpoint_with_ptime`
 ([`src/rtp/stream_store.rs:1339`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L1339)). That function does two things:
 

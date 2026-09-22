@@ -575,9 +575,9 @@ pub(in crate::tui) const FILTER_METHODS: [&str; 10] = [
 ];
 
 /// Number of text input fields in the filter dialog.
-pub(in crate::tui) const FILTER_TEXT_FIELD_COUNT: usize = 7;
+pub(in crate::tui) const FILTER_TEXT_FIELD_COUNT: usize = 8;
 
-/// Total focusable items: 7 text fields + 10 method checkboxes + the
+/// Total focusable items: 8 text fields + 10 method checkboxes + the
 /// "All" master checkbox + 2 buttons.
 pub(in crate::tui) const FILTER_ITEM_COUNT: usize =
     FILTER_TEXT_FIELD_COUNT + FILTER_METHODS.len() + 3;
@@ -916,6 +916,47 @@ pub(in crate::tui) type TimeWindow = (
     Option<chrono::DateTime<chrono::Utc>>,
 );
 
+/// The DSL term the filter dialog's Header field compiles to, or `None` when
+/// the field is blank.
+///
+/// `Name: text` becomes `header."Name" =~ '<text, regex-escaped>'`, so the text
+/// is a literal substring exactly as in every other text field of the dialog.
+/// A bare `Name` — or `Name:` with nothing after it — becomes
+/// `header."Name" =~ ''`, which selects the calls carrying the header at all.
+/// The name is split at the FIRST colon, which no header name can contain.
+///
+/// The name is quoted rather than validated here: the DSL checks it against the
+/// same RFC 3261 token rule the SIP parser uses, and a name that fails comes
+/// back as a parse error the dialog shows inline, instead of a second copy of
+/// the rule deciding differently.
+fn header_filter_term(field: &str) -> Option<String> {
+    let field = field.trim();
+    if field.is_empty() {
+        return None;
+    }
+    let (name, text) = match field.split_once(':') {
+        Some((name, text)) => (name.trim(), text.trim()),
+        None => (field, ""),
+    };
+    Some(format!(
+        "header.\"{}\" =~ '{}'",
+        name.replace('"', "\\\""),
+        escape_filter_text(text)
+    ))
+}
+
+/// Regex-escape user text for embedding in a DSL string literal, so the text
+/// the operator typed matches as a LITERAL substring.
+///
+/// A literal quote is smuggled through as the regex byte escape `\x27` /
+/// `\x22` rather than a DSL escape, so the delimiter can never end the literal
+/// early whichever quote the expression uses.
+fn escape_filter_text(s: &str) -> String {
+    regex::escape(s)
+        .replace('\'', "\\x27")
+        .replace('"', "\\x22")
+}
+
 /// Structured state for the filter dialog.
 #[derive(Debug, Clone)]
 pub struct FilterDialogState {
@@ -929,6 +970,12 @@ pub struct FilterDialogState {
     pub(in crate::tui) destination: String,
     /// Payload content filter text.
     pub(in crate::tui) payload: String,
+    /// Named-header filter text: `Name: text` selects the calls carrying a
+    /// header of that name whose value contains the text, and a bare `Name`
+    /// selects the calls carrying the header at all. Compiles to the DSL's
+    /// `header.<name>` family, so any header works — registered, vendor or
+    /// user-defined, `X-` or not.
+    pub(in crate::tui) header: String,
     /// Lower time bound, RFC 3339; empty means unbounded below. INCLUSIVE.
     pub(in crate::tui) time_after: String,
     /// Upper time bound, RFC 3339; empty means unbounded above. EXCLUSIVE, so
@@ -958,6 +1005,7 @@ impl Default for FilterDialogState {
             source: String::new(),
             destination: String::new(),
             payload: String::new(),
+            header: String::new(),
             time_after: String::new(),
             time_before: String::new(),
             // All SIP methods checked by default == show every message. The
@@ -998,8 +1046,9 @@ impl FilterDialogState {
             2 => &self.source,
             3 => &self.destination,
             4 => &self.payload,
-            5 => &self.time_after,
-            6 => &self.time_before,
+            5 => &self.header,
+            6 => &self.time_after,
+            7 => &self.time_before,
             _ => "",
         }
     }
@@ -1012,8 +1061,9 @@ impl FilterDialogState {
             2 => Some(&mut self.source),
             3 => Some(&mut self.destination),
             4 => Some(&mut self.payload),
-            5 => Some(&mut self.time_after),
-            6 => Some(&mut self.time_before),
+            5 => Some(&mut self.header),
+            6 => Some(&mut self.time_after),
+            7 => Some(&mut self.time_before),
             _ => None,
         }
     }
@@ -1150,14 +1200,6 @@ impl FilterDialogState {
     /// before being embedded, so `a+b` means the user a+b and an unbalanced
     /// `(` can never produce a parse error.
     pub(in crate::tui) fn build_filter_expression(&self) -> Option<String> {
-        /// Regex-escape user text for embedding in a DSL string literal.
-        /// The DSL string literal has no escape sequences, so a literal quote
-        /// is smuggled through as the regex byte escape \x27 / \x22.
-        fn escape_filter_text(s: &str) -> String {
-            regex::escape(s)
-                .replace('\'', "\\x27")
-                .replace('"', "\\x22")
-        }
         let mut parts: Vec<String> = Vec::new();
 
         if !self.sip_from.is_empty() {
@@ -1183,6 +1225,9 @@ impl FilterDialogState {
                 "payload =~ '{}'",
                 escape_filter_text(&self.payload)
             ));
+        }
+        if let Some(term) = header_filter_term(&self.header) {
+            parts.push(term);
         }
 
         // Method filter: if some (but not all or none) methods are checked
@@ -1217,6 +1262,7 @@ impl FilterDialogState {
         self.source.clear();
         self.destination.clear();
         self.payload.clear();
+        self.header.clear();
         self.time_after.clear();
         self.time_before.clear();
         // Re-check every method so "clear filter" means show all, matching the
@@ -1252,6 +1298,7 @@ impl FilterDialogState {
             && self.source.is_empty()
             && self.destination.is_empty()
             && self.payload.is_empty()
+            && self.header.is_empty()
             && self.time_after.is_empty()
             && self.time_before.is_empty()
             // All methods checked == no method narrowing == an "empty" filter.

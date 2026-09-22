@@ -63,7 +63,7 @@ HEADERS = "\n".join([
     "/*",
     "  Strict-Transport-Security: max-age=31536000; includeSubDomains",
     "  Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline'",
-    "  X-Frame-Options: DENY",
+    "  Referrer-Policy: no-referrer",
     "",
 ])
 with tempfile.TemporaryDirectory() as d:
@@ -76,7 +76,7 @@ with tempfile.TemporaryDirectory() as d:
     check("rewrote the CSP line in place", lines[3] == "  Content-Security-Policy: " + csp(["'sha256-abc'"]))
     check("left the comment line alone", lines[0] == HEADERS.split("\n")[0])
     check("left the other headers alone",
-          lines[1:3] == HEADERS.split("\n")[1:3] and lines[4] == "  X-Frame-Options: DENY")
+          lines[1:3] == HEADERS.split("\n")[1:3] and lines[4] == "  Referrer-Policy: no-referrer")
     check("dropped 'unsafe-inline' from script-src",
           "'unsafe-inline'" not in re.search(r"script-src([^;]*);", out).group(1))
 
@@ -84,7 +84,7 @@ with tempfile.TemporaryDirectory() as d:
     # caller believing a policy was published.
     q = os.path.join(d, "no_csp")
     with open(q, "w") as f:
-        f.write("/*\n  X-Frame-Options: DENY\n")
+        f.write("/*\n  Referrer-Policy: no-referrer\n")
     try:
         write_headers(q, ["'sha256-abc'"])
         check("missing CSP line is an error", False)

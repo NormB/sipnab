@@ -90,15 +90,15 @@ generators and proxies — where operators most want to compare two captures.
 `-I` now accepts a file, a directory, a glob, or a repeated set
 ([`cli.rs:234-247`](https://github.com/NormB/sipnab/blob/main/src/cli.rs#L234-L247)), resolves it into one chronologically
 ordered list (`input_set::resolve`,
-[`input_set.rs:216`](https://github.com/NormB/sipnab/blob/main/src/capture/input_set.rs#L216)), and streams every file
+[`input_set.rs:304`](https://github.com/NormB/sipnab/blob/main/src/capture/input_set.rs#L304)), and streams every file
 into **one** `DialogStore` through one channel
-(`capture_files`, [`file.rs:302`](https://github.com/NormB/sipnab/blob/main/src/capture/file.rs#L302)). It is tempting to
+(`capture_files`, [`file.rs:356`](https://github.com/NormB/sipnab/blob/main/src/capture/file.rs#L356)). It is tempting to
 read that as "sipnab now has a cross-capture story, so the comparison request is
 satisfied."
 
 It is the opposite operation, and the module that implements it says so in as
 many words. `warn_on_overlap`
-([`input_set.rs:585`](https://github.com/NormB/sipnab/blob/main/src/capture/input_set.rs#L585)) exists precisely to warn
+([`input_set.rs:865`](https://github.com/NormB/sipnab/blob/main/src/capture/input_set.rs#L865)) exists precisely to warn
 an operator away from the comparison use case:
 
 ```
@@ -107,7 +107,7 @@ the same traffic, packets present in both are counted twice
 ```
 
 and its companion in the read path, `overlap_message`
-([`file.rs:670`](https://github.com/NormB/sipnab/blob/main/src/capture/file.rs#L670)), repeats the consequence for the
+([`file.rs:770`](https://github.com/NormB/sipnab/blob/main/src/capture/file.rs#L770)), repeats the consequence for the
 end-against-start case: *"they overlap by {by} ms, so packets present in both
 are counted twice."* The doc comment above `warn_on_overlap` is explicit that
 *"Overlap means the set is not one sequence — most often two capture runs, or
@@ -133,7 +133,7 @@ produce — silently, with `--problems` adding nothing.
 The `same instant` warning did fire, which is the design working. But the
 warning detects overlap in *time*, not overlap in *identity*: `same_instant_pairs`
 compares consecutive files' first-packet timestamps against `SAME_INSTANT_SECS`
-(1 ms, [`input_set.rs:610`](https://github.com/NormB/sipnab/blob/main/src/capture/input_set.rs#L610)) and
+(1 ms, [`input_set.rs:890`](https://github.com/NormB/sipnab/blob/main/src/capture/input_set.rs#L890)) and
 `overlap_message` compares the previous file's end against the next one's start.
 Two captures that share Call-IDs without overlapping in time trip neither — and
 that population is not exotic, since a load generator reuses Call-IDs across
@@ -286,10 +286,10 @@ registry has grown since, and the count is pinned by
 `mcp_tool_table_lists_every_registered_tool` rather than by this sentence.
 The argument below does not depend on the number. Four
 of them touch something other than the stores: `export_capture`
-([`server.rs:7434`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L7434)) writes a pcap, `export_audio`
-([`server.rs:7487`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L7487)) writes a WAV, `list_captures`
-([`server.rs:7218`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L7218)) reads a directory, and
-`shutdown_server` ([`server.rs:7960`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L7960)) ends the process.
+([`server.rs:7497`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L7497)) writes a pcap, `export_audio`
+([`server.rs:7550`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L7550)) writes a WAV, `list_captures`
+([`server.rs:7278`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L7278)) reads a directory, and
+`shutdown_server` ([`server.rs:8023`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L8023)) ends the process.
 
 **None of them mutates a store.** `shutdown_server` reads `dialog_store` and
 `stream_store` for its report, optionally writes a file, and then calls
@@ -369,7 +369,7 @@ and it is not incidental — it is the tool working:
 - `DialogSummary.from_user` / `to_user`
   ([`model.rs:53-57`](https://github.com/NormB/sipnab/blob/main/src/output/model.rs#L53-L57)) are copied straight off the
   From/To URIs.
-- `get_message` ([`server.rs:4986`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L4986)) returns the parsed
+- `get_message` ([`server.rs:5046`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5046)) returns the parsed
   message through `message_to_json_value`. Until 0.5.159 the phrasing here was
   *"headers and body included"*, and measured against 0.5.130 that was false:
   the projection had a closed field list and no headers map, so a `Diversion`
@@ -377,7 +377,7 @@ and it is not incidental — it is the tool working:
   gap — `extension_headers` now carries every header outside that closed list,
   in wire form — so the sentence is true today, and it is worth recording that
   a threat-model section leaned on it for a release in which it was not.
-- `search_messages` ([`server.rs:5400`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5400)) returns
+- `search_messages` ([`server.rs:5460`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5460)) returns
   `snippet`, built as
   `truncate_string(&String::from_utf8_lossy(&msg.raw), MAX_BODY_BYTES)` — the
   raw bytes off the wire.
@@ -750,7 +750,7 @@ documents *"the tool server; cloned per HTTP session"* and
 built once at startup ([`servers.rs:224-249`](https://github.com/NormB/sipnab/blob/main/src/app/servers.rs#L224-L249)) with
 `name` taken from `cli.primary_input()` — which returns only the *first* `-I`
 argument ([`cli.rs:1363-1365`](https://github.com/NormB/sipnab/blob/main/src/cli.rs#L1363-L1365)). So after an `open_capture`,
-`capture_status` ([`server.rs:5709`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5709)) would keep naming
+`capture_status` ([`server.rs:5769`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5769)) would keep naming
 the old file, in the calling session as well as every other one, unless the
 field moves behind a shared lock. Two agents on one HTTP server would read the
 same store and disagree about which capture it is.
@@ -830,7 +830,7 @@ decision was taken, not as it stands now:
    a `SipnabMcp` cloned per HTTP session
    ([`transport.rs:192`](https://github.com/NormB/sipnab/blob/main/src/mcp/transport.rs#L192)). Until it moves behind
    a shared lock, a swap leaves `capture_status`
-   ([`server.rs:5709`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5709)) naming the old file in the
+   ([`server.rs:5769`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5769)) naming the old file in the
    calling session and in every other one.
 2. **Capture identity must be visible on the wire.** `DialogStore::generation`
    ([`dialog_store.rs:709`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L709)) is bumped by every
@@ -845,7 +845,7 @@ decision was taken, not as it stands now:
 The opt-in machinery and the path confinement are already solved and should be
 reused rather than redesigned: the `shutdown_server` flag, off-by-default field,
 builder and first-statement refusal
-([`server.rs:7960`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L7960)), and `--mcp-file-root` with
+([`server.rs:8023`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L8023)), and `--mcp-file-root` with
 `resolve_in_root` ([`server.rs:858`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L858)).
 
 **What shipped**, against those three:

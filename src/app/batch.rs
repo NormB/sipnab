@@ -599,6 +599,13 @@ fn tshark_input_file(files: &[PathBuf], output: Option<&str>) -> Result<String, 
              to save the live capture so tshark has a file to read"
                 .to_string()
         }),
+        // A member of an archive exists only as a file sipnab extracted and
+        // will delete; `tshark -r` cannot read inside the archive either.
+        [one] if crate::capture::archive::is_extracted_member(one) => Err(format!(
+            "the input '{}' is a member of an archive, and `tshark -r` reads one \
+             capture file; extract that member and point tshark at it",
+            crate::capture::archive::source_name(one)
+        )),
         [one] => Ok(one.display().to_string()),
         many => Err(format!(
             "the input is {} files and `tshark -r` reads one, so no single \
@@ -607,7 +614,7 @@ fn tshark_input_file(files: &[PathBuf], output: Option<&str>) -> Result<String, 
              a subset. Files: {}",
             many.len(),
             many.iter()
-                .map(|p| p.display().to_string())
+                .map(|p| crate::capture::archive::source_name(p))
                 .collect::<Vec<_>>()
                 .join(", ")
         )),
@@ -939,7 +946,7 @@ fn run_lint_stage(cli: &Cli, config: &Config, ds: &crate::sip::dialog_store::Dia
             // to tell "this capture is non-conformant" apart from "sipnab was
             // asked to read a file that is not there", and only the first is a
             // fact about the traffic.
-            std::process::exit(2);
+            crate::capture::archive::release_run_and_exit(2);
         }
     };
 
@@ -1092,7 +1099,7 @@ pub fn run_cores_file(
         // so loudly anyway rather than exiting 0 with an empty report, which is
         // precisely the failure this path used to have.
         tracing::error!("--cores: no capture files to read");
-        std::process::exit(1);
+        crate::capture::archive::release_run_and_exit(1);
     }
     let no_rtp = cli.capture_args.no_rtp || config.capture.no_rtp.unwrap_or(false);
     let pcfg = parallel_config(cli, config, portrange, no_rtp);
@@ -1117,15 +1124,15 @@ pub fn run_cores_file(
             // through the one `ReadTally::report`, so the two paths cannot
             // reach different verdicts about the same file set.
             if !reports_ok || crate::output::run_integrity::run_failed() {
-                std::process::exit(1);
+                crate::capture::archive::release_run_and_exit(1);
             }
             if lint_tripped {
-                std::process::exit(3);
+                crate::capture::archive::release_run_and_exit(3);
             }
         }
         Err(e) => {
             tracing::error!("multi-core reconstruction failed: {e:#}");
-            std::process::exit(1);
+            crate::capture::archive::release_run_and_exit(1);
         }
     }
 }
@@ -1593,7 +1600,17 @@ fn capture_quality_summary() -> Option<String> {
     // sentence below says the ones it counts did.
     let snapped_undecodable = crate::capture::snapped_undecodable_frames();
     let intact_undecodable = undecodable.frames.saturating_sub(snapped_undecodable);
-    if dropped == 0 && if_dropped == 0 && bad_ts == 0 && undecodable.frames == 0 && snapped == 0 {
+    // A sixth: holes in TCP streams that no captured packet filled. Reading
+    // resumed at the next message behind each, so what is missing is the
+    // data in the hole and any message it cut.
+    let (holes, hole_bytes) = crate::capture::reassembly::tcp_gaps_skipped();
+    if dropped == 0
+        && if_dropped == 0
+        && bad_ts == 0
+        && undecodable.frames == 0
+        && snapped == 0
+        && holes == 0
+    {
         return None;
     }
 
@@ -1645,6 +1662,15 @@ fn capture_quality_summary() -> Option<String> {
             "{snapped} frame(s) arrived truncated by the capture's snaplen and \
              {snapped_undecodable} of them were cut too short to decode at all, so \
              nothing in those was analyzed (raise --snaplen)"
+        ));
+    }
+
+    if holes > 0 {
+        parts.push(format!(
+            "{holes} hole(s) in TCP streams, {hole_bytes} byte(s) of sequence space the \
+             capture never held, were skipped: reading resumed at the next SIP message \
+             behind each, and a message the hole cut is lost (packets the capture point \
+             missed)"
         ));
     }
 
@@ -2328,7 +2354,7 @@ pub fn run(
             batch.vcon_filter_expr.as_ref(),
         );
         if !reports_ok {
-            std::process::exit(1);
+            crate::capture::archive::release_run_and_exit(1);
         }
         return;
     }
@@ -3335,6 +3361,9 @@ impl BatchRunner {
         // 18. Main receive loop
         let start = std::time::Instant::now();
         let mut total_count: u64 = 0;
+        // Set once the capture channel closes, so the end-of-input release
+        // runs exactly once.
+        let mut input_ended = false;
         let mut counters = PacketCounters {
             sip_count: 0,
             rtp_count: 0,
@@ -3433,99 +3462,115 @@ impl BatchRunner {
             if rx.is_empty() {
                 sink.flush();
             }
-            let packet = match rx.recv_timeout(std::time::Duration::from_millis(100)) {
-                Ok(pkt) => pkt,
+            let received = match rx.recv_timeout(std::time::Duration::from_millis(100)) {
+                Ok(pkt) => Some(pkt),
                 Err(crossbeam_channel::RecvTimeoutError::Timeout) => continue,
+                // The input ended. One more pass carries what only its end
+                // could release -- a TCP message held behind a hole the capture
+                // never filled -- through the same per-packet body below; the
+                // pass after that leaves.
+                Err(crossbeam_channel::RecvTimeoutError::Disconnected) if !input_ended => {
+                    input_ended = true;
+                    None
+                }
                 Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break,
             };
+            let parsed_packets = match received {
+                None => processor.finish(),
+                Some(packet) => {
+                    // Offline, this packet's timestamp is what "now" means to the next
+                    // sweep. Recorded before any parse/filter step so that a capture of
+                    // traffic sipnab does not decode still advances the clock — the
+                    // alternative would stall compaction on exactly the captures whose
+                    // memory growth it exists to bound.
+                    sweep_clock.observe(packet.timestamp);
 
-            // Offline, this packet's timestamp is what "now" means to the next
-            // sweep. Recorded before any parse/filter step so that a capture of
-            // traffic sipnab does not decode still advances the clock — the
-            // alternative would stall compaction on exactly the captures whose
-            // memory growth it exists to bound.
-            sweep_clock.observe(packet.timestamp);
-
-            // Lazily initialize the writer on first packet (we need link_type)
-            if writer.is_none()
-                && let Some(ref output_path) = cli.capture_args.output
-            {
-                // Record the capture source as the pcapng interface name (SNB-0001):
-                // the capture device for live, the input file for replay.
-                let capture_source = cli.capture_args.device.as_deref().or(cli.primary_input());
-                match PcapWriter::with_interface(
-                    &PathBuf::from(output_path),
-                    packet.link_type,
-                    split_bytes,
-                    split_duration,
-                    use_pcapng,
-                    export_mode,
-                    capture_source,
-                )
-                .map(|w| w.keep_last_splits(split_keep))
-                {
-                    Ok(mut w) => {
-                        // Write DSB with keylog content if mode requires it
-                        if let Some(ref keylog_path) = cli.tls_args.keylog
-                            && let Err(e) =
-                                w.maybe_write_keylog_dsb(std::path::Path::new(keylog_path))
+                    // Lazily initialize the writer on first packet (we need link_type)
+                    if writer.is_none()
+                        && let Some(ref output_path) = cli.capture_args.output
+                    {
+                        // Record the capture source as the pcapng interface name (SNB-0001):
+                        // the capture device for live, the input file for replay.
+                        let capture_source =
+                            cli.capture_args.device.as_deref().or(cli.primary_input());
+                        match PcapWriter::with_interface(
+                            &PathBuf::from(output_path),
+                            packet.link_type,
+                            split_bytes,
+                            split_duration,
+                            use_pcapng,
+                            export_mode,
+                            capture_source,
+                        )
+                        .map(|w| w.keep_last_splits(split_keep))
                         {
-                            tracing::warn!("Failed to write DSB: {e}");
-                        }
-                        // Embed a Name Resolution Block when name resolution is active
-                        // (SNB-0001): headless `--names`/`--resolve` should travel with
-                        // the capture, mirroring the TUI save path. Before packets.
-                        if use_pcapng {
-                            let (resolver, mode) = crate::app::build_resolver(&cli, &config);
-                            if mode != crate::names::NameMode::Off {
-                                let include_dns = mode == crate::names::NameMode::Dns;
-                                let entries = resolver.nrb_entries(include_dns);
-                                if let Err(e) = w.write_name_resolution_block(&entries) {
-                                    tracing::warn!("Failed to write name resolution block: {e}");
+                            Ok(mut w) => {
+                                // Write DSB with keylog content if mode requires it
+                                if let Some(ref keylog_path) = cli.tls_args.keylog
+                                    && let Err(e) =
+                                        w.maybe_write_keylog_dsb(std::path::Path::new(keylog_path))
+                                {
+                                    tracing::warn!("Failed to write DSB: {e}");
                                 }
+                                // Embed a Name Resolution Block when name resolution is active
+                                // (SNB-0001): headless `--names`/`--resolve` should travel with
+                                // the capture, mirroring the TUI save path. Before packets.
+                                if use_pcapng {
+                                    let (resolver, mode) =
+                                        crate::app::build_resolver(&cli, &config);
+                                    if mode != crate::names::NameMode::Off {
+                                        let include_dns = mode == crate::names::NameMode::Dns;
+                                        let entries = resolver.nrb_entries(include_dns);
+                                        if let Err(e) = w.write_name_resolution_block(&entries) {
+                                            tracing::warn!(
+                                                "Failed to write name resolution block: {e}"
+                                            );
+                                        }
+                                    }
+                                }
+                                writer = Some(w);
+                            }
+                            Err(e) => {
+                                tracing::error!("Failed to open output file: {e}");
+                                crate::capture::archive::release_run_and_exit(1);
                             }
                         }
-                        writer = Some(w);
                     }
-                    Err(e) => {
-                        tracing::error!("Failed to open output file: {e}");
-                        std::process::exit(1);
+
+                    // Write to output pcap if configured
+                    if let Some(ref mut w) = writer
+                        && let Err(e) = w.write(&packet)
+                    {
+                        tracing::error!("Failed to write packet: {e}");
+                        // Failing to OPEN the output exits 1 a few lines above; failing
+                        // to WRITE it used to exit 0, so `sipnab -O out.pcap && process
+                        // out.pcap` proceeded on a truncated capture.
+                        output_failed = true;
+                        break;
                     }
+
+                    total_count += 1;
+
+                    // Retain the raw frame when an operator asked for a window into
+                    // live capture. Only for sources that cannot be re-read: a capture
+                    // file can be seeked, so spending memory to hold its bytes buys
+                    // nothing a second read would not give for free.
+                    if let Some(ring) = evidence_ring.as_ref()
+                        && let Some(origin) = packet.origin
+                        && !origin.verifiable
+                        && let Some(source) = packet.interface.as_ref()
+                    {
+                        ring.write().insert(
+                            crate::capture::packet::intern_source(source),
+                            origin.ordinal,
+                            packet.data.clone(),
+                        );
+                    }
+
+                    // Parse and reassemble the packet
+                    processor.process(&packet)
                 }
-            }
-
-            // Write to output pcap if configured
-            if let Some(ref mut w) = writer
-                && let Err(e) = w.write(&packet)
-            {
-                tracing::error!("Failed to write packet: {e}");
-                // Failing to OPEN the output exits 1 a few lines above; failing
-                // to WRITE it used to exit 0, so `sipnab -O out.pcap && process
-                // out.pcap` proceeded on a truncated capture.
-                output_failed = true;
-                break;
-            }
-
-            total_count += 1;
-
-            // Retain the raw frame when an operator asked for a window into
-            // live capture. Only for sources that cannot be re-read: a capture
-            // file can be seeked, so spending memory to hold its bytes buys
-            // nothing a second read would not give for free.
-            if let Some(ring) = evidence_ring.as_ref()
-                && let Some(origin) = packet.origin
-                && !origin.verifiable
-                && let Some(source) = packet.interface.as_ref()
-            {
-                ring.write().insert(
-                    crate::capture::packet::intern_source(source),
-                    origin.ordinal,
-                    packet.data.clone(),
-                );
-            }
-
-            // Parse and reassemble the packet
-            let parsed_packets = processor.process(&packet);
+            };
             for pp in &parsed_packets {
                 // --hep-parse: try to unwrap HEP-encapsulated packets
                 #[cfg(feature = "hep")]
@@ -3809,7 +3854,7 @@ impl BatchRunner {
                 total_count,
                 gate,
             ) {
-                std::process::exit(1);
+                crate::capture::archive::release_run_and_exit(1);
             }
         }
 
@@ -3819,7 +3864,7 @@ impl BatchRunner {
         if cli.hep_args.hep_senders
             && !print_hep_senders(capture_meter.hep_roster(), cli.output_args.json)
         {
-            std::process::exit(1);
+            crate::capture::archive::release_run_and_exit(1);
         }
 
         // 21-hep-send. What the exporter delivered and what failed, said once
@@ -4170,7 +4215,7 @@ impl BatchRunner {
         // CAPTURE is non-conformant — so spending it here would erase the
         // distinction it exists to make.
         if output_failed || capture_failed || crate::output::run_integrity::run_failed() {
-            std::process::exit(1);
+            crate::capture::archive::release_run_and_exit(1);
         }
         // 3, not 1. A pipeline has to tell "sipnab broke" from "the capture is
         // non-conformant": the first means investigate the tool, the second
@@ -4182,7 +4227,7 @@ impl BatchRunner {
         // write its output and found lint errors reports the failure — the
         // findings came from a partial read and are not trustworthy anyway.
         if lint_gate_tripped {
-            std::process::exit(3);
+            crate::capture::archive::release_run_and_exit(3);
         }
     }
 }

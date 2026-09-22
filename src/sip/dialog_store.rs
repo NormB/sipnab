@@ -356,7 +356,8 @@ pub struct DialogStore {
     /// Header names used for B2BUA leg correlation (`sip.xcid`). A
     /// candidate dialog whose message carries one of these headers pointing at
     /// another dialog's Call-ID (or vice versa) is correlated at score 100.
-    /// Defaults to `["X-Call-ID"]`.
+    /// Empty by default: an operator names their estate's header in
+    /// `[sip] xcid_headers`, and RFC 7989 `Session-ID` needs no configuration.
     xcid_headers: Vec<String>,
     /// How far apart, in milliseconds, two `INVITE`s from overlapping
     /// endpoints may be created and still be reported as legs of one call by
@@ -676,7 +677,7 @@ impl DialogStore {
             capacity_dialogs_dropped: 0,
             capacity_dialogs_evicted: 0,
             generation: 0,
-            xcid_headers: vec!["X-Call-ID".to_string()],
+            xcid_headers: Vec::new(),
             leg_correlation_window_ms: DEFAULT_LEG_CORRELATION_WINDOW_MS,
         }
     }
@@ -691,11 +692,13 @@ impl DialogStore {
     }
 
     /// Override the correlation header names (`sip.xcid`). An empty list
-    /// is ignored so the default `["X-Call-ID"]` is preserved. Builder-style:
-    /// returns `self` for chaining after [`new`](Self::new).
+    /// means no such header: sipnab follows RFC 7989 `Session-ID` and the
+    /// timing heuristic, which is the default (RFC 6648 — sipnab does not
+    /// pick an `X-` name for an operator). Builder-style: returns `self` for
+    /// chaining after [`new`](Self::new).
     #[must_use]
     pub fn with_xcid_headers(mut self, headers: Vec<String>) -> Self {
-        if !headers.is_empty() {
+        {
             self.xcid_headers = headers;
         }
         self
@@ -4415,11 +4418,11 @@ mod tests {
         assert_eq!(correlated[0].call_id, "b-leg@test");
     }
 
-    /// A header outside the configured correlation list (X-CID with the
-    /// default X-Call-ID-only config) does not correlate.
+    /// A header outside the configured correlation list (X-CID where only
+    /// X-Call-ID is configured) does not correlate.
     #[test]
     fn xcid_header_not_in_configured_list_is_ignored() {
-        // Default list is just ["X-Call-ID"]; a B-leg carrying only X-CID (30s
+        // With X-Call-ID configured, a B-leg carrying only X-CID (30s
         // later, so the timing heuristic can't match) must NOT correlate.
         let mut store = DialogStore::new(100, false);
         let t0 = base_ts();
@@ -4436,12 +4439,40 @@ mod tests {
         );
     }
 
-    /// Passing an empty header list to with_xcid_headers keeps the
-    /// default X-Call-ID correlation working.
+    /// No correlation header is configured by default (RFC 6648).
+    ///
+    /// `X-Call-ID` used to be the built-in default, so sipnab followed a
+    /// vendor-prefixed header nobody had asked it to follow. RFC 6648 section
+    /// 3 says a tool should not choose such a name, and the identifier that
+    /// crosses a B2BUA by design is RFC 7989 `Session-ID`, which correlation
+    /// strategy 0 already reads. An operator whose estate stamps `X-Call-ID`
+    /// says so in `[sip] xcid_headers`.
     #[test]
-    fn with_xcid_headers_empty_keeps_default() {
-        // An empty override must not wipe out the default X-Call-ID correlation.
-        let mut store = DialogStore::new(100, false).with_xcid_headers(vec![]);
+    fn no_correlation_header_is_configured_by_default() {
+        let mut store = DialogStore::new(100, false);
+        let t0 = base_ts();
+        store.process_message(make_invite_msg("a-leg@test", t0));
+        // 30 s apart, so the timing heuristic cannot match either.
+        store.process_message(make_invite_with_x_call_id(
+            "b-leg@test",
+            "a-leg@test",
+            t0 + TimeDelta::seconds(30),
+        ));
+        assert!(
+            store.find_correlated("a-leg@test").is_empty(),
+            "X-Call-ID must not correlate unless the operator configured it"
+        );
+    }
+
+    /// An empty override means no correlation header, not the old default.
+    ///
+    /// `with_xcid_headers(vec![])` used to be ignored, so a configuration that
+    /// deliberately turned the header off got `["X-Call-ID"]` back.
+    #[test]
+    fn with_xcid_headers_empty_clears_the_list() {
+        let mut store = DialogStore::new(100, false)
+            .with_xcid_headers(vec!["X-Call-ID".to_string()])
+            .with_xcid_headers(vec![]);
         let t0 = base_ts();
         store.process_message(make_invite_msg("a-leg@test", t0));
         store.process_message(make_invite_with_x_call_id(
@@ -4449,14 +4480,18 @@ mod tests {
             "a-leg@test",
             t0 + TimeDelta::seconds(30),
         ));
-        assert_eq!(store.find_correlated("a-leg@test").len(), 1);
+        assert!(
+            store.find_correlated("a-leg@test").is_empty(),
+            "an empty list must clear the headers, not restore a default"
+        );
     }
 
     /// X-Call-ID correlation works in both directions: A-leg finds B-leg
     /// and B-leg finds A-leg.
     #[test]
     fn find_correlated_via_x_call_id() {
-        let mut store = DialogStore::new(100, false);
+        let mut store =
+            DialogStore::new(100, false).with_xcid_headers(vec!["X-Call-ID".to_string()]);
         let t0 = base_ts();
 
         // A-leg: normal INVITE
@@ -4527,7 +4562,8 @@ mod tests {
     /// An X-Call-ID match scores 100 with the XCallId reason.
     #[test]
     fn scored_x_call_id_returns_100() {
-        let mut store = DialogStore::new(100, false);
+        let mut store =
+            DialogStore::new(100, false).with_xcid_headers(vec!["X-Call-ID".to_string()]);
         let t0 = base_ts();
 
         store.process_message(make_invite_msg("scored-a@test", t0));
@@ -4631,7 +4667,8 @@ mod tests {
     /// highest score (X-Call-ID beats Via branch).
     #[test]
     fn scored_dedup_highest_score_wins() {
-        let mut store = DialogStore::new(100, false);
+        let mut store =
+            DialogStore::new(100, false).with_xcid_headers(vec!["X-Call-ID".to_string()]);
         let t0 = base_ts();
 
         // A-leg: INVITE with a Via branch

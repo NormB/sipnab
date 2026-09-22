@@ -26,6 +26,60 @@ entry that carries them.
   there and all eight now have generators, so the list is empty and its
   ceiling is zero.
 
+- **`-I` reads archives of captures.** A `.tar`, `.tgz` or `.tar.gz` reads like
+  a directory: every capture inside joins the set in capture order, and the
+  answer matches reading the unpacked directory. gzip-compressed members and
+  archives nested in archives unwrap too, up to four layers, each recognized by
+  its bytes rather than its name. Every member sipnab does not read gets a
+  `Skipping` line with the reason — empty, not a capture, a link, a device
+  node, a sparse file, or a format it does not unwrap such as ZIP or `zstd` —
+  and the closing `-I resolved to` line counts them. `--input-name` filters an
+  archive's members. It used to fail with libpcap's `unknown file format`.
+- **The same archives open everywhere a capture does.** The TUI file browser
+  and MCP `list_captures` list `.tar`, `.tgz` and `.tar.gz` and load one as the
+  set of captures it holds, and so do MCP `open_capture`, `find_in_captures`,
+  `compare_captures` and the REST compare route. `--cores` reads an archive's
+  members exactly as the single-threaded reader does.
+- **A test proves decryption answers the same through every wrapper.** It runs TLS
+  with `--keylog`, TLS with a pcapng's embedded secrets, SRTP keyed by SDES,
+  and DTLS-SRTP over one synthetic capture presented plain, gzip-compressed,
+  as a tar member, as a `.tgz` member and gzip-compressed inside a `.tgz`, and
+  requires identical plaintext from all five. Before archive input, sipnab
+  could not open the three archive columns at all.
+- **Frame pointers name archive members, and resolve.** A packet read out of
+  an archive carries `<archive>/<member>#<ordinal>` as its frame pointer, and
+  `--show-frame`, MCP `show_evidence`, `decode_frame` and `decode_ng_frame`
+  read that member back out of the archive to follow it. MCP confines the
+  archive to `--mcp-file-root` by name, as it does a capture.
+- **`sipnab_run` reports an archive cut short.** `archives.cut_short` in the
+  `--json-dialogs` trailer and a line in the `INCOMPLETE RUN` block say when
+  sipnab could not unpack an archive to its end, and the run exits `1`, because
+  members past that point are in no report.
+- **sipnab reads SIP inside ESP with NULL encryption.** An IMS lab protects
+  the phone-to-P-CSCF interface with IPsec ESP and often runs it with NULL
+  encryption, so the SIP travels in the clear between an ESP header and
+  trailer. sipnab now peels them when the trailer, the padding and the inner
+  TCP or UDP checksum prove NULL encryption, over IPv4, IPv6 and fragmented
+  datagrams. ESP that fails those checks stays unread, and the `NOT DECODED`
+  line now names it `ESP not NULL-encrypted (IP protocol 50)`. The decryption
+  matrix test carries an ESP row through all five wrappers.
+- **The capture-quality line counts holes in TCP streams.** When a capture
+  missed a segment, sipnab now resumes at the next SIP message behind the hole
+  and says how many holes it skipped and how many bytes of sequence space they
+  spanned.
+
+- **Filter on any header: `header.<name>`.** The DSL could match `from.user`,
+  `ua`, `call_id` and the rest of a closed list, and everything else only
+  through `payload`, a substring search over the whole message. A dialog is now
+  selected by any header it carries, on any of its messages, with repeated
+  headers each considered: `header.x-cid == 'abc'`,
+  `header.p-asserted-identity ~ 'sip:alice@'`. Header names are compared
+  case-insensitively and a compact form names the same header as its long form
+  ([RFC 3261 section 7.3.3](https://www.rfc-editor.org/rfc/rfc3261#section-7.3.3)),
+  so `header.k` and `header.Supported` are one field. A name is bounded at 256
+  bytes (`MAX_HEADER_NAME_LEN`). It reaches every surface that takes a filter:
+  `--filter`, the TUI filter dialog, REST and MCP.
+
 ### Changed
 
 - **Five committed captures are now built by a generator anyone can run.**
@@ -67,8 +121,75 @@ entry that carries them.
   satisfies, so a report that named only one leg passed. It now reads the
   Streams column, and a report that counts one stream fails it.
 
+
+- **`--max-gunzip-bytes` bounds a `-I capture.pcap.gz` too.** sipnab inflated
+  a compressed capture to a temporary file with no bound at all, and the
+  documentation said libpcap did it. The ceiling now covers that file and every
+  gzip layer of an archive, summed across the layers of one input, so a nested
+  gzip bomb stops at the same ceiling. A `.pcap.gz` that inflates past 1 GiB
+  now needs `--max-gunzip-bytes` raised.
+- **A new YANG revision, `sipnab-diagnosis@2026-09-22`.** The ICMP media
+  finding's unit changed, and a unit is part of an identity's description in
+  the module, so the module gains a revision rather than editing the published
+  one. Descriptions only: no node, identity or type changed, and
+  `pyang --check-update-from` holds the pair to [RFC 7950 section 11](https://www.rfc-editor.org/rfc/rfc7950#section-11). The
+  2026-09-21 file stays beside it.
+- **A member whose link type sipnab does not decode no longer ends a filtered
+  run.** When a BPF filter cannot compile against such a file — an LTE MAC log
+  in a set of SIP captures — both readers skip it with a line saying why. A
+  filter that fails against a link type sipnab does decode still ends the run.
+  Every file of that kind now also gets a line naming its link type.
+
+- **Nothing sipnab sends is named with an `X-` prefix
+  ([RFC 6648](https://www.rfc-editor.org/rfc/rfc6648)).** Three names carried
+  one, and each moves to its modern equivalent:
+  - the REST audio response header `x-sipnab-audio-partial` is now
+    `Sipnab-Audio-Partial`;
+  - the site's `X-Frame-Options: DENY` is dropped for the Content-Security-Policy
+    `frame-ancestors 'none'` the same responses already carry;
+  - leg correlation no longer defaults to the `X-Call-ID` header. An estate that
+    stamps one names it in `[sip] xcid_headers`, and the identifier that crosses
+    a B2BUA by design,
+    [RFC 7989](https://www.rfc-editor.org/rfc/rfc7989) `Session-ID`, is
+    correlation strategy 0 and needs no configuration.
+
+  `X-Content-Type-Options: nosniff` stays, as the one exception: the WHATWG
+  Fetch Standard defines it under that name and there is no alternative
+  spelling. A gate reads the REST and MCP surfaces and the published site
+  headers and fails on any other `X-` name. Headers a CAPTURE carries are
+  untouched by all of this: [RFC 6648 section 2](https://www.rfc-editor.org/rfc/rfc6648#section-2) forbids treating a header
+  differently for its prefix, so `X-Asterisk-HangupCause` and an SBC's `X-CID`
+  are read exactly as before.
+
 ### Fixed
 
+- **An empty `xcid_headers` list is obeyed.** `with_xcid_headers(vec![])` was
+  ignored, so a configuration that deliberately turned correlation headers off
+  got the built-in default back instead.
+
+- **A missing TCP segment no longer hides the rest of the connection.** A
+  segment the capture never held left a hole that no later packet filled, and
+  sipnab held every later byte on that direction behind it until a buffer
+  ceiling, a FIN or eviction, so the SIP after it never appeared. sipnab now
+  resumes at the next message start behind the hole once one more packet
+  shows the hole is not a reordering, and releases what is still held at the
+  end of the input, in both readers.
+- **A retransmission no longer counts as a second message.** On a connection
+  the capture joined after its SYN, sipnab rewound to every earlier segment it
+  saw, so each TCP retransmission, and each copy another interface recorded,
+  reported its SIP message again. A direction silent for longer than the
+  reassembly TTL, measured in capture time, now starts afresh, so a later
+  connection on the same address and port pair still reads.
+- **Duplicate IP fragments no longer drop the datagram.** A capture on `any`
+  records a forwarded fragmented datagram once per interface, and sipnab read
+  the second copy of a fragment as an overlap and discarded the datagram, and
+  the SIP in it. An exact copy of a fragment already held is now ignored, as
+  [RFC 8200 section 4.5](https://www.rfc-editor.org/rfc/rfc8200#section-4.5) allows. Overlaps that differ still drop the datagram.
+- **A failed DNS lookup is no longer reported as undeliverable media.** An
+  ICMP error quoting a DNS message whose random ID starts with RTP's version
+  bits read as RTP, and joined the critical `ICMP: media undeliverable`
+  finding. The quoted DNS question now marks it as not media. That finding
+  also counted ICMP errors while labeling them flows, and now says errors.
 - **A killed kill-worker no longer reads as alive for a moment after the
   defense has been disabled.** A SIGKILLed process closes its pipes on the way
   out, before the kernel lets it be reaped. In that window the reader had seen
@@ -86,6 +207,11 @@ entry that carries them.
   three times and stops at the first answer, a refusal from the edge included.
   It reports `000` only when no attempt got a response, where it used to print
   `000000`.
+
+- **Skipping the first file of a set no longer kills the run.** When the
+  reader skipped the file that sorts first before opening it, nothing signaled
+  readiness and the run died with `Capture thread exited before signaling
+  ready`. The first file actually read now signals it.
 
 ## [0.5.185] - 2026-09-22
 

@@ -50,8 +50,59 @@ pub struct ReadOutcome {
 /// A [`ReadOutcome`]: the packet count, the error that stopped the read (if
 /// any), and whether it stopped before the file ended. A file that will not
 /// open reports zero packets, the reason, and `stopped_early`.
+///
+/// An archive (`.tar`, `.tgz`, a `.pcap.gz` inside either) is read as the set
+/// of captures it holds, in first-packet order, into the same two stores —
+/// the resolution `-I` uses, through [`super::input_set::resolve_set`]. A
+/// member that is not a capture is named in the log with its reason; one the
+/// archive cut short, or a walk that stopped early, makes the read
+/// `stopped_early`, because every count is then a floor.
 #[must_use]
 pub fn read_into_stores(
+    path: &Path,
+    dialog_store: &Arc<RwLock<DialogStore>>,
+    stream_store: &Arc<RwLock<StreamStore>>,
+    progress: &AtomicU64,
+) -> ReadOutcome {
+    let holds_members = super::archive::holds_members(path);
+    if !holds_members {
+        return read_one(path, dialog_store, stream_store, progress);
+    }
+    let set = match super::input_set::resolve_set(
+        &[path.display().to_string()],
+        &super::input_set::ResolveOptions::default(),
+    ) {
+        Ok(set) => set,
+        Err(e) => {
+            return ReadOutcome {
+                packets: 0,
+                error: Some(format!("{e:#}")),
+                stopped_early: true,
+            };
+        }
+    };
+    let mut total = ReadOutcome {
+        packets: 0,
+        error: None,
+        stopped_early: set.incomplete(),
+    };
+    for input in set.iter() {
+        let before = total.packets;
+        let member_progress = AtomicU64::new(0);
+        let one = read_one(&input.path, dialog_store, stream_store, &member_progress);
+        total.packets = before + one.packets;
+        progress.store(total.packets, Ordering::Relaxed);
+        total.stopped_early |= one.stopped_early;
+        if one.error.is_some() {
+            total.error = one.error;
+            break;
+        }
+    }
+    total
+}
+
+/// Read one capture file into the stores. See [`read_into_stores`].
+fn read_one(
     path: &Path,
     dialog_store: &Arc<RwLock<DialogStore>>,
     stream_store: &Arc<RwLock<StreamStore>>,
@@ -97,7 +148,7 @@ pub fn read_into_stores(
             Err(e) => {
                 tracing::warn!(
                     "capture '{}' stopped early after {packets} packet(s): {e}",
-                    path.display()
+                    super::archive::source_name(path)
                 );
                 return ReadOutcome {
                     packets,
@@ -192,6 +243,41 @@ mod tests {
             outcome.stopped_early,
             "zero of the file was read — the most partial read there is"
         );
+    }
+
+    /// An archive is read as the set it is: every capture member lands in the
+    /// same stores, exactly as reading each member on its own would put it
+    /// there. This is what MCP `open_capture`, `compare_captures`,
+    /// `find_in_captures` and the REST compare route all read through.
+    #[test]
+    fn an_archive_reads_every_member_into_the_stores() {
+        use crate::capture::archive::tar::testutil::{Spec, build};
+        use std::io::Write;
+        let samples =
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/pcap-samples");
+        let a = std::fs::read(samples.join("sip-rtp-g711.pcap")).expect("a");
+        let b = std::fs::read(samples.join("sip-register.pcap")).expect("b");
+
+        let count = |path: &std::path::Path| {
+            let ds = Arc::new(RwLock::new(DialogStore::new(1000, false)));
+            let ss = Arc::new(RwLock::new(StreamStore::new(1000)));
+            let outcome = read_into_stores(path, &ds, &ss, &AtomicU64::new(0));
+            assert!(outcome.error.is_none(), "{:?}", outcome.error);
+            (outcome.packets, ds.read().len(), ss.read().len())
+        };
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("a.pcap"), &a).expect("a");
+        std::fs::write(dir.path().join("b.pcap"), &b).expect("b");
+        let (pa, da, sa) = count(&dir.path().join("a.pcap"));
+        let (pb, db, sb) = count(&dir.path().join("b.pcap"));
+
+        let tar = build(&[Spec::file("a.pcap", &a), Spec::file("b.pcap", &b)]);
+        let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        enc.write_all(&tar).expect("gzip");
+        let tgz = dir.path().join("both.tgz");
+        std::fs::write(&tgz, enc.finish().expect("gzip")).expect("tgz");
+
+        assert_eq!(count(&tgz), (pa + pb, da + db, sa + sb));
     }
 
     /// A frame the capture cut short is counted as snapped on this reader too,

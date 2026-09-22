@@ -280,7 +280,7 @@ fn decode_one(server: &SipnabMcp, pointer: &str, field: Option<&str>) -> Value {
     let leaf = std::path::Path::new(parsed.source.as_ref())
         .file_name()
         .map(|s| s.to_string_lossy().into_owned());
-    let Some(leaf) = leaf else {
+    let Some(_) = leaf else {
         return unresolvable(
             pointer,
             format!(
@@ -294,8 +294,8 @@ fn decode_one(server: &SipnabMcp, pointer: &str, field: Option<&str>) -> Value {
         );
     };
 
-    let path = match server.resolve_in_root(&leaf) {
-        Ok(p) => p,
+    let (confined_source, leaf) = match server.confine_pointer_source(&parsed.source) {
+        Ok(found) => found,
         Err(e) => {
             return unresolvable(
                 pointer,
@@ -312,7 +312,7 @@ fn decode_one(server: &SipnabMcp, pointer: &str, field: Option<&str>) -> Value {
     // Confining rewrites the path and nothing else: the kind of thing the
     // pointer named still decides how it may be followed.
     let confined = crate::capture::packet::FrameRef {
-        source: path.display().to_string().into(),
+        source: confined_source.into(),
         origin: parsed.origin,
         kind: parsed.kind.clone(),
         // The range the caller asked for is carried through confinement
@@ -321,7 +321,10 @@ fn decode_one(server: &SipnabMcp, pointer: &str, field: Option<&str>) -> Value {
         // answer a different question than the one the pointer posed.
         bytes: parsed.bytes.clone(),
     };
-    let resolution = match crate::capture::resolve::resolve(&confined) {
+    // The link type comes back from the same open that found the frame. It
+    // decides how many bytes precede the IP header, and a pointer into an
+    // archive member has no file of its own to reopen for it.
+    let (resolution, link_type) = match crate::capture::resolve::resolve_with_link_type(&confined) {
         Ok(r) => r,
         Err(e) => return unresolvable(pointer, e.to_string()),
     };
@@ -342,26 +345,6 @@ fn decode_one(server: &SipnabMcp, pointer: &str, field: Option<&str>) -> Value {
     out.insert("ordinal".to_string(), json!(parsed.origin.ordinal));
     out.insert("frame_bytes".to_string(), json!(frame.len()));
 
-    // The resolver hands back bytes and no link type, and the link type decides
-    // how many bytes precede the IP header. Reading it costs a second open of
-    // the same file, which an evidence lookup can afford; decoding an SLL or
-    // PPPoE capture as Ethernet cannot be afforded at all, because it produces
-    // addressing that looks decoded and is wrong.
-    let link_type = match crate::capture::file::open_offline(&path) {
-        Ok((cap, _guard)) => cap.get_datalink().0,
-        Err(e) => {
-            out.insert(
-                "decode_unavailable".to_string(),
-                json!(format!(
-                    "the frame resolved, but '{leaf}' would not reopen for its \
-                     link-layer type: {e:#}. Decoding it as Ethernet would be a \
-                     guess about the wire format, and a wrong guess reads as a \
-                     decoded packet."
-                )),
-            );
-            return Value::Object(out);
-        }
-    };
     out.insert("link_type".to_string(), json!(link_type));
 
     // UNIX_EPOCH, not `now()`: this field never reaches the response. The

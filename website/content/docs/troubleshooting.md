@@ -29,6 +29,7 @@ the cause from there.
 | "No SIP traffic found" on a link you know carries calls | [A live capture that sees nothing](#a-live-capture-that-sees-nothing) |
 | A HEP collector (`-L`) shows no calls, or one proxy's calls are missing | [A HEP collector that receives nothing](#a-hep-collector-that-receives-nothing) |
 | SIP is over TLS and the calls never appear | [Encrypted SIP that does not decrypt](#encrypted-sip-that-does-not-decrypt) |
+| Somebody handed you a `.tgz` or `.tar` of captures, and the run looks short | [An archive of captures](#an-archive-of-captures) |
 | Nothing yet -- you have a capture and a complaint | [Start here](#start-here-one-pass-over-everything) |
 
 Whatever the symptom, three things decide whether the answer is in the capture
@@ -92,7 +93,8 @@ sipnab -N -I capture.pcap --problems --json
 > |---|---|---|
 > | `unsupported link type N` | The pcap's DLT has no decoder here. `0` is `DLT_NULL` (BSD loopback), `9` is PPP, `276` is Linux cooked v2. | Convert it: `editcap -T ether in.pcap out.pcap`. If the link type is one sipnab should read, open an issue naming the number. |
 > | `not IP (EtherType 0xNNNN)` | The frame decoded and carried no IP. `0x0806` is ARP, `0x8847` MPLS, `0x88CC` LLDP. | ARP and LLDP are ordinary background -- expect a few on any Ethernet capture. A large MPLS or PPPoE share means the mirror is giving you the encapsulated form. |
-> | `no transport (IP protocol N)` | IP decoded; its payload is no transport sipnab handles. `50` is ESP, `47` GRE, `89` OSPF. | ESP encrypts the SIP inside it, so the capture cannot yield it; take the capture inside the tunnel instead. |
+> | `ESP not NULL-encrypted (IP protocol 50)` | IPsec ESP whose payload failed the checks that prove NULL encryption, so it carries real encryption, or a protection sipnab cannot read. | sipnab takes no ESP keys. Take the capture inside the tunnel, or run the lab with NULL encryption, which sipnab reads. See [Tunnels above the link layer](@/docs/encapsulations.md#tunnels-above-the-link-layer). |
+> | `no transport (IP protocol N)` | IP decoded, and its payload is no transport sipnab handles. `2` is IGMP, `89` OSPF, `103` PIM. | Routing and multicast control traffic is ordinary background. A large share of another number means a tunnel sipnab does not strip. |
 > | `truncated frame` | The frame is shorter than a header it declares. | Raise `--snaplen` on the capture, or re-take it. |
 > | `decode error` | The decoder rejected the bytes outright. | Usually a corrupt or mis-declared file; try `editcap` or `tshark -r` on it. |
 
@@ -814,6 +816,37 @@ repository's PPPoE-over-Ethernet sample the plain filter matches 0 of 32 frames
 and the generated one matches all 32. Wrap the same SIP in a Linux cooked
 header and the numbers hold: 11 encapsulations, 11 matched, on Ethernet,
 cooked v1 and cooked v2 alike.
+
+## An archive of captures
+
+`-I session.tgz` reads every capture in the archive, the way `-I dir/` reads a
+directory. Read the lines sipnab prints before the analysis starts, because
+they say what came out of the archive and what did not:
+
+```text
+Skipping 'session.tgz/lab/cell-trace.pcap': empty (0 bytes)
+'session.tgz' unpacked (gzip > tar): 12 capture(s) to read, 1 member(s) not read, 1 directory entr(ies)
+-I resolved to 12 capture file(s), 1 archive member(s) not read (each named above with its reason)
+```
+
+- **`not a capture (starts with ...)`**: the member is not pcap or pcapng.
+  The four bytes identify what it is. A text file starts with printable bytes.
+- **`ZIP data, which sipnab does not unwrap`** (or 7-Zip, `zstd`, `xz`,
+  `bzip2`, LZ4): unpack that member with the tool that made it, then point `-I`
+  at what comes out.
+- **`has link type N, which sipnab does not decode`**: the member is a capture
+  of something other than IP, such as an LTE or NR MAC log from a test handset.
+  Its frames appear under NOT DECODED, and nothing else in the run changes.
+- **`could not be read past this point`** or **`ends before its archive says
+  it should`**: the archive stops early. sipnab keeps what arrived, and the
+  run ends `INCOMPLETE RUN` with exit status `1`, because members past that
+  point are in no report.
+- **`decompressing reached the N-byte ceiling`**: the archive inflates past
+  `--max-gunzip-bytes`. For an archive you trust, raise it.
+
+The [CLI reference](@/docs/cli.md#archives-read-like-directories) covers the
+rest: how nesting works, how frame pointers name a member, and where the
+unpacked copies live while the run reads them.
 
 ## A HEP collector that receives nothing
 

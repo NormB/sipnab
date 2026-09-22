@@ -147,7 +147,7 @@ capture provenance anywhere in the data model. `Packet.interface`
 field and the file reader hard-codes it to `None`; `ParsedPacket` does not carry
 it forward; `SipMessage` and `SipDialog` have no source field at all. `-I`
 resolves a whole set into **one** store, and `warn_on_overlap`
-([`input_set.rs:585`](https://github.com/NormB/sipnab/blob/main/src/capture/input_set.rs#L585)) exists specifically to warn
+([`input_set.rs:865`](https://github.com/NormB/sipnab/blob/main/src/capture/input_set.rs#L865)) exists specifically to warn
 operators away from feeding it two captures of the same traffic.
 
 This document assumes an interned `u16` capture index reaching `SipDialog` —
@@ -221,7 +221,7 @@ calls. Under comparison it becomes the exact operation wanted, and the refusal
 must be relaxed *only* for a confirmed cross-session pair — not removed.
 
 The MCP surface has the single-capture ancestor of all three: `compare_dialogs`
-([`server.rs:6172`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L6172)) takes two Call-IDs, projects state,
+([`server.rs:6232`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L6232)) takes two Call-IDs, projects state,
 final status code, message count, methods and hints for each, and names the keys
 that differ. Its shape is right and its scope is one store — both Call-IDs are
 looked up in the same `dialog_store`. Extending it to cross sessions is the same

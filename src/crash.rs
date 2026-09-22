@@ -395,9 +395,15 @@ pub fn restore_terminal_if_raw() {}
 /// crash report per `policy`, and terminates the process (abort or
 /// exit 101) — it never returns to the unwinding machinery.
 pub fn install_panic_hook(policy: CrashPolicy) {
-    install_panic_hook_with(policy, |action| match action {
-        PostAction::Abort => std::process::abort(),
-        PostAction::Exit(code) => std::process::exit(code),
+    install_panic_hook_with(policy, |action| {
+        // Extracted archive members would otherwise outlive the process until
+        // the next extraction swept them. Never blocks: see the function.
+        #[cfg(feature = "native")]
+        crate::capture::archive::release_run_on_panic();
+        match action {
+            PostAction::Abort => std::process::abort(),
+            PostAction::Exit(code) => std::process::exit(code),
+        }
     });
 }
 

@@ -917,6 +917,15 @@ enum LinkType {
     PppEther,
 }
 
+/// Whether sipnab decodes frames of libpcap link type `dlt` at all.
+///
+/// The same closed set every frame is dispatched on, so a reader deciding what
+/// to do with a whole file cannot disagree with the parser about one frame.
+#[must_use]
+pub fn link_type_is_decoded(dlt: i32) -> bool {
+    LinkType::from_dlt(dlt).is_some()
+}
+
 impl LinkType {
     /// Recognize a captured frame's libpcap link-type number.
     ///
@@ -2587,12 +2596,14 @@ fn walk_ip_encapsulation(
         // AH authenticates without encrypting, so what it protects is in the
         // clear. `etherparse` walks a single AH itself; reaching this arm
         // means a second one, which it stops at.
-        //
-        // ESP (protocol 50) is deliberately absent: its payload is
-        // ciphertext, and reporting ciphertext as a SIP message would be a
-        // fabricated call rather than a missed one.
         IpNumber::AUTHENTICATION_HEADER => {
             Some(parse_after_ah(timestamp, data, net, ip_data, budget))
+        }
+        // ESP is read only when its payload proves to be NULL-encrypted: a
+        // trailer and a transport header whose checksum holds. Ciphertext
+        // stays opaque and named; see `esp_null_payload`.
+        IpNumber::ENCAPSULATING_SECURITY_PAYLOAD => {
+            Some(parse_after_esp(timestamp, data, net, ip_data, budget))
         }
         _ => None,
     }
@@ -2887,6 +2898,181 @@ fn parse_after_ah(
     Ok(parsed)
 }
 
+/// Integrity Check Value lengths an ESP-NULL trailer is looked for behind,
+/// most common first.
+///
+/// 12 octets is HMAC-MD5-96 and HMAC-SHA-1-96, the two 3GPP TS 33.203 requires
+/// for IMS; 16 is HMAC-SHA-256-128 ([RFC 4868](https://www.rfc-editor.org/rfc/rfc4868)); 24 and 32 are its
+/// SHA-384 and SHA-512 siblings. Each length is one more way a random payload
+/// could pass, which the checks below make negligible, but the list stays
+/// short for that reason.
+const ESP_ICV_LENGTHS: [usize; 4] = [12, 16, 24, 32];
+
+/// SPI and sequence number: the ESP header ([RFC 4303 section 2](https://www.rfc-editor.org/rfc/rfc4303#section-2)).
+const ESP_HEADER_LEN: usize = 8;
+
+/// The transport segment inside an ESP packet with NULL encryption
+/// ([RFC 2410](https://www.rfc-editor.org/rfc/rfc2410)), and the protocol it carries.
+///
+/// ESP names neither its cipher nor its ICV length on the wire, so NULL
+/// encryption can only be recognized by what the payload IS. It is accepted
+/// only when every one of these holds for some ICV length:
+///
+/// - the trailer's Next Header is TCP or UDP, the transports that carry SIP;
+/// - the padding before Pad Length is [RFC 4303 section 2.4](https://www.rfc-editor.org/rfc/rfc4303#section-2.4)'s default,
+///   1, 2, 3, ..., and the trailer ends on a 4-octet boundary as section 2.4
+///   requires;
+/// - the transport header inside is consistent -- a TCP data offset inside
+///   the segment, a UDP Length equal to the datagram -- and its checksum,
+///   computed with the pseudo-header of `src` and `dst`, holds.
+///
+/// A ciphertext passes all of that with probability well under one in a
+/// billion per packet: two Next Header values out of 256, a padding pattern,
+/// and a 16-bit checksum. That margin is the point. Reading ciphertext as
+/// SIP would fabricate a call, which is worse than missing one, so a checksum
+/// of zero is accepted only where it means "none" (UDP over IPv4).
+///
+/// `src` and `dst` are the addresses of the IP header carrying the ESP. In
+/// transport mode -- what IMS uses -- those are the addresses the checksum was
+/// computed over. `None` for anything else, including ESP that is encrypted.
+#[must_use]
+pub(crate) fn esp_null_payload(src: IpAddr, dst: IpAddr, esp: &[u8]) -> Option<(u8, &[u8])> {
+    // SPI 0 is reserved (RFC 4303 section 2.1); RFC 3948 uses it to mark a
+    // non-ESP packet on UDP 4500, so it is never ESP here either.
+    if esp.get(..4)? == [0, 0, 0, 0] {
+        return None;
+    }
+    let after_header = esp.get(ESP_HEADER_LEN..)?;
+    for icv in ESP_ICV_LENGTHS {
+        let Some(body_len) = after_header.len().checked_sub(icv) else {
+            continue;
+        };
+        if body_len < 2 || body_len % 4 != 0 {
+            continue;
+        }
+        let body = &after_header[..body_len];
+        let next_header = body[body_len - 1];
+        if next_header != 6 && next_header != 17 {
+            continue;
+        }
+        let pad_len = usize::from(body[body_len - 2]);
+        let Some(inner_len) = body_len.checked_sub(2 + pad_len) else {
+            continue;
+        };
+        let default_padding = body[inner_len..body_len - 2]
+            .iter()
+            .enumerate()
+            .all(|(i, &b)| usize::from(b) == i + 1);
+        if !default_padding {
+            continue;
+        }
+        let inner = &body[..inner_len];
+        if transport_checksum_holds(src, dst, next_header, inner) {
+            return Some((next_header, inner));
+        }
+    }
+    None
+}
+
+/// Whether `segment` is a whole TCP segment or UDP datagram whose header is
+/// self-consistent and whose checksum holds over the `src`/`dst`
+/// pseudo-header ([RFC 9293 section 3.1](https://www.rfc-editor.org/rfc/rfc9293#section-3.1), [RFC 768](https://www.rfc-editor.org/rfc/rfc768), [RFC 8200 section 8.1](https://www.rfc-editor.org/rfc/rfc8200#section-8.1)).
+fn transport_checksum_holds(src: IpAddr, dst: IpAddr, protocol: u8, segment: &[u8]) -> bool {
+    match protocol {
+        6 => {
+            let Some(&offset_byte) = segment.get(12) else {
+                return false;
+            };
+            let header_len = usize::from(offset_byte >> 4) * 4;
+            if header_len < TCP_HEADER_MIN || header_len > segment.len() {
+                return false;
+            }
+        }
+        17 => {
+            let Some(length) = segment.get(4..6) else {
+                return false;
+            };
+            if usize::from(u16::from_be_bytes([length[0], length[1]])) != segment.len() {
+                return false;
+            }
+            if segment[6..8] == [0, 0] {
+                // "No checksum" is legal for UDP over IPv4 only.
+                return src.is_ipv4();
+            }
+        }
+        _ => return false,
+    }
+    let Ok(len) = u32::try_from(segment.len()) else {
+        return false;
+    };
+    let mut sum: u64 = 0;
+    let mut add = |bytes: &[u8]| {
+        let (words, remainder) = bytes.as_chunks::<2>();
+        for w in words {
+            sum += u64::from(u16::from_be_bytes(*w));
+        }
+        if let [last] = remainder {
+            sum += u64::from(*last) << 8;
+        }
+    };
+    match (src, dst) {
+        (IpAddr::V4(s), IpAddr::V4(d)) => {
+            add(&s.octets());
+            add(&d.octets());
+        }
+        (IpAddr::V6(s), IpAddr::V6(d)) => {
+            add(&s.octets());
+            add(&d.octets());
+        }
+        _ => return false,
+    }
+    add(&[0, protocol]);
+    add(&len.to_be_bytes());
+    add(segment);
+    while sum > 0xffff {
+        sum = (sum & 0xffff) + (sum >> 16);
+    }
+    sum == 0xffff
+}
+
+/// Read the transport segment inside ESP with NULL encryption, or name the
+/// ESP as unreadable.
+///
+/// Transport mode, as IMS uses it between a phone and its P-CSCF: the ESP
+/// header sits where the transport header would, so the addresses stay the
+/// outer ones and only the ports and payload come from inside -- the same
+/// shape as [`parse_after_ah`], which this follows.
+///
+/// # Errors
+///
+/// `EncapTooDeep` once the frame's [`Budget`] is spent, and
+/// `UnsupportedIpProtocol(50)` for ESP whose payload is not provably
+/// NULL-encrypted -- ciphertext, a tunnel-mode payload, or a trailer the
+/// capture cut off -- which the not-decoded tally then names.
+fn parse_after_esp(
+    timestamp: DateTime<Utc>,
+    data: &bytes::Bytes,
+    net: &NetSlice<'_>,
+    esp_data: &[u8],
+    budget: &mut Budget,
+) -> Result<ParsedPacket, CaptureError> {
+    budget.charge("ESP")?;
+    let esp = IpNumber::ENCAPSULATING_SECURITY_PAYLOAD.0;
+    let (src, dst) = net_addresses(net).ok_or(CaptureError::UnsupportedIpProtocol(esp))?;
+    let (next, segment) =
+        esp_null_payload(src, dst, esp_data).ok_or(CaptureError::UnsupportedIpProtocol(esp))?;
+    let transport = match next {
+        6 => TcpSlice::from_slice(segment).ok().map(TransportSlice::Tcp),
+        _ => UdpSlice::from_slice(segment).ok().map(TransportSlice::Udp),
+    }
+    .ok_or(CaptureError::UnsupportedIpProtocol(esp))?;
+    let mut parsed = extract_parsed_packet(timestamp, data, net, &Some(transport), budget)?;
+    // The outer header says 50; what it protects is what the packet carries,
+    // and it is what TCP reassembly and every consumer downstream key on.
+    parsed.ip_protocol = next;
+    Ok(parsed)
+}
+
 /// The inner protocol and the offset the inner packet starts at, from a GRE
 /// header's flags and its optional checksum / key / sequence fields.
 ///
@@ -3173,8 +3359,12 @@ fn extract_parsed_packet(
         });
     }
 
-    // Transport header extraction
-    let transport_slice = transport.as_ref().ok_or(CaptureError::NoTransport)?;
+    // Transport header extraction. A protocol this does not read leaves
+    // carrying its number, so the not-decoded tally can name it -- ESP, OSPF,
+    // VRRP -- instead of reporting "IP protocol not recorded".
+    let transport_slice = transport
+        .as_ref()
+        .ok_or(CaptureError::UnsupportedIpProtocol(ip_protocol))?;
 
     // UDP tunnels (VXLAN, GTP-U, Geneve, Teredo, L2TP, UDP-encapsulated ESP)
     // are claimed by destination port, so the check runs here — after the
@@ -5672,8 +5862,10 @@ mod tests {
         );
     }
 
-    /// ESP (protocol 50) is encrypted. It stays undecodable — traversing it
-    /// would report ciphertext as a SIP message.
+    /// ESP (protocol 50) whose payload carries no NULL-encryption trailer
+    /// stays undecodable — traversing it would report ciphertext as a SIP
+    /// message — and is named by its protocol number rather than counted as
+    /// an anonymous frame.
     #[test]
     fn parse_esp_is_not_traversed() {
         let mut esp = 0x1122_3344u32.to_be_bytes().to_vec(); // SPI
@@ -5683,8 +5875,285 @@ mod tests {
         let data = wrap_in_eth(&ip, ETHERTYPE_IPV4);
         let err = parse_packet(&make_packet(data, DLT_EN10MB)).unwrap_err();
         assert!(
-            matches!(err, CaptureError::NoTransport),
-            "ESP must stay opaque, got {err:?}"
+            matches!(err, CaptureError::UnsupportedIpProtocol(50)),
+            "ESP must stay opaque and named, got {err:?}"
+        );
+    }
+
+    // ── ESP with NULL encryption (RFC 2410) ─────────────────────────────
+    //
+    // IMS protects the UE-to-P-CSCF leg with IPsec ESP (3GPP TS 33.203), and
+    // test networks commonly run it with NULL encryption and HMAC-96
+    // integrity: the SIP is in the clear, behind an 8-octet header and ahead
+    // of a trailer. These builders are written from RFC 4303 and share nothing
+    // with the decoder.
+
+    /// The Internet checksum of `pseudo` followed by `segment`.
+    fn inet_checksum(pseudo: &[u8], segment: &[u8]) -> u16 {
+        let mut sum: u32 = 0;
+        let mut add = |bytes: &[u8]| {
+            let (chunks, remainder) = bytes.as_chunks::<2>();
+            for c in chunks {
+                sum += u32::from(u16::from_be_bytes(*c));
+            }
+            if let [last] = remainder {
+                sum += u32::from(*last) << 8;
+            }
+        };
+        add(pseudo);
+        add(segment);
+        while sum > 0xffff {
+            sum = (sum & 0xffff) + (sum >> 16);
+        }
+        !(sum as u16)
+    }
+
+    fn pseudo_v4(src: [u8; 4], dst: [u8; 4], proto: u8, len: usize) -> Vec<u8> {
+        let mut p = src.to_vec();
+        p.extend_from_slice(&dst);
+        p.push(0);
+        p.push(proto);
+        p.extend_from_slice(&(len as u16).to_be_bytes());
+        p
+    }
+
+    fn pseudo_v6(src: [u8; 16], dst: [u8; 16], proto: u8, len: usize) -> Vec<u8> {
+        let mut p = src.to_vec();
+        p.extend_from_slice(&dst);
+        p.extend_from_slice(&(len as u32).to_be_bytes());
+        p.extend_from_slice(&[0, 0, 0, proto]);
+        p
+    }
+
+    /// A TCP segment (PSH|ACK) carrying `payload`, checksummed over `pseudo`.
+    fn tcp_segment(
+        pseudo: impl Fn(usize) -> Vec<u8>,
+        sport: u16,
+        dport: u16,
+        payload: &[u8],
+    ) -> Vec<u8> {
+        let mut t = sport.to_be_bytes().to_vec();
+        t.extend_from_slice(&dport.to_be_bytes());
+        t.extend_from_slice(&1_000u32.to_be_bytes()); // seq
+        t.extend_from_slice(&2_000u32.to_be_bytes()); // ack
+        t.extend_from_slice(&[0x50, 0x18, 0xff, 0xff, 0, 0, 0, 0]);
+        t.extend_from_slice(payload);
+        let ck = inet_checksum(&pseudo(t.len()), &t);
+        t[16..18].copy_from_slice(&ck.to_be_bytes());
+        t
+    }
+
+    /// A UDP datagram carrying `payload`, checksummed over `pseudo`.
+    fn udp_datagram(
+        pseudo: impl Fn(usize) -> Vec<u8>,
+        sport: u16,
+        dport: u16,
+        payload: &[u8],
+    ) -> Vec<u8> {
+        let len = 8 + payload.len();
+        let mut u = sport.to_be_bytes().to_vec();
+        u.extend_from_slice(&dport.to_be_bytes());
+        u.extend_from_slice(&(len as u16).to_be_bytes());
+        u.extend_from_slice(&[0, 0]);
+        u.extend_from_slice(payload);
+        let ck = inet_checksum(&pseudo(len), &u);
+        u[6..8].copy_from_slice(&ck.to_be_bytes());
+        u
+    }
+
+    /// An ESP packet with NULL encryption: SPI, sequence number, the
+    /// protected `inner`, [RFC 4303 section 2.4](https://www.rfc-editor.org/rfc/rfc4303#section-2.4) default padding (1, 2, 3, ...)
+    /// to a 4-octet boundary, Pad Length, Next Header, and an `icv_len`
+    /// octet Integrity Check Value.
+    fn esp_null(next_header: u8, inner: &[u8], icv_len: usize) -> Vec<u8> {
+        let mut e = 0xc0ff_ee01u32.to_be_bytes().to_vec(); // SPI
+        e.extend_from_slice(&7u32.to_be_bytes()); // sequence number
+        e.extend_from_slice(inner);
+        let pad = (4 - (inner.len() + 2) % 4) % 4;
+        for i in 1..=pad {
+            e.push(i as u8);
+        }
+        e.push(pad as u8);
+        e.push(next_header);
+        e.extend(std::iter::repeat_n(0x5a, icv_len));
+        e
+    }
+
+    const ESP_SRC: [u8; 4] = [192, 0, 2, 10];
+    const ESP_DST: [u8; 4] = [192, 0, 2, 20];
+
+    fn esp_frame_v4(esp: &[u8]) -> Packet {
+        let ip = wrap_in_ipv4(esp, 50, ESP_SRC, ESP_DST);
+        make_packet(wrap_in_eth(&ip, ETHERTYPE_IPV4), DLT_EN10MB)
+    }
+
+    /// SIP over TCP inside NULL-encrypted ESP, the shape IMS Gm takes: the
+    /// transport header and the SIP come out, keyed on the OUTER addresses
+    /// (transport mode keeps them), with the transport's own protocol.
+    #[test]
+    fn parse_esp_null_recovers_tcp_sip() {
+        let seg = tcp_segment(|n| pseudo_v4(ESP_SRC, ESP_DST, 6, n), 5060, 43687, INVITE);
+        let parsed = parse_packet(&esp_frame_v4(&esp_null(6, &seg, 12))).expect("ESP-NULL TCP");
+        assert_eq!(parsed.transport, TransportProto::Tcp);
+        assert_eq!(parsed.src_addr, IpAddr::from(ESP_SRC));
+        assert_eq!(parsed.dst_addr, IpAddr::from(ESP_DST));
+        assert_eq!((parsed.src_port, parsed.dst_port), (5060, 43687));
+        assert_eq!(&parsed.payload[..], INVITE);
+        assert_eq!(parsed.ip_protocol, 6, "the protected protocol, not 50");
+        assert_eq!(parsed.tcp_seq, Some(1_000));
+    }
+
+    /// UDP inside ESP-NULL, with a 16-octet ICV (HMAC-SHA-256-128), and with
+    /// a UDP checksum of zero, which IPv4 permits.
+    #[test]
+    fn parse_esp_null_recovers_udp_sip_with_either_icv_length() {
+        let dg = udp_datagram(|n| pseudo_v4(ESP_SRC, ESP_DST, 17, n), 5060, 5062, INVITE);
+        for icv in [12, 16] {
+            let parsed = parse_packet(&esp_frame_v4(&esp_null(17, &dg, icv)))
+                .unwrap_or_else(|e| panic!("ESP-NULL UDP, ICV {icv}: {e:?}"));
+            assert_eq!(parsed.transport, TransportProto::Udp);
+            assert_eq!((parsed.src_port, parsed.dst_port), (5060, 5062));
+            assert_eq!(&parsed.payload[..], INVITE);
+        }
+        let mut no_ck = dg.clone();
+        no_ck[6..8].copy_from_slice(&[0, 0]);
+        let parsed = parse_packet(&esp_frame_v4(&esp_null(17, &no_ck, 12))).expect("zero checksum");
+        assert_eq!(&parsed.payload[..], INVITE);
+    }
+
+    /// ESP-NULL over IPv6, checksummed with the IPv6 pseudo-header.
+    #[test]
+    fn parse_esp_null_over_ipv6() {
+        let src = [0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1];
+        let dst = [0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2];
+        let seg = tcp_segment(|n| pseudo_v6(src, dst, 6, n), 5060, 40000, INVITE);
+        let esp = esp_null(6, &seg, 12);
+        let mut ip6 = vec![0x60, 0, 0, 0];
+        ip6.extend_from_slice(&(esp.len() as u16).to_be_bytes());
+        ip6.push(50);
+        ip6.push(64);
+        ip6.extend_from_slice(&src);
+        ip6.extend_from_slice(&dst);
+        ip6.extend_from_slice(&esp);
+        let parsed = parse_packet(&make_packet(wrap_in_eth(&ip6, ETHERTYPE_IPV6), DLT_EN10MB))
+            .expect("ESP-NULL over IPv6");
+        assert_eq!(parsed.transport, TransportProto::Tcp);
+        assert_eq!(&parsed.payload[..], INVITE);
+    }
+
+    /// Encrypted ESP is named, never guessed at. The bytes here are what a
+    /// cipher produces: nothing in them forms a NULL trailer and a transport
+    /// header whose checksum holds.
+    #[test]
+    fn parse_encrypted_esp_is_named_not_guessed() {
+        let mut esp = 0x0102_0304u32.to_be_bytes().to_vec();
+        esp.extend_from_slice(&9u32.to_be_bytes());
+        let mut x: u32 = 0x9e37_79b9;
+        for _ in 0..200 {
+            x ^= x << 13;
+            x ^= x >> 17;
+            x ^= x << 5;
+            esp.push(x as u8);
+        }
+        let err = parse_packet(&esp_frame_v4(&esp)).expect_err("ciphertext");
+        assert!(
+            matches!(err, CaptureError::UnsupportedIpProtocol(50)),
+            "{err:?}"
+        );
+    }
+
+    /// Each structural check refuses on its own: a trailer that looks right
+    /// around a segment whose checksum fails, padding that is not RFC 4303's
+    /// 1, 2, 3, ... sequence, and a Next Header that is not TCP or UDP. Any one
+    /// of them letting a frame through would invent a SIP message.
+    #[test]
+    fn parse_esp_null_refuses_when_any_check_fails() {
+        // One octet longer than INVITE, so the trailer needs padding and the
+        // padding check has something to refuse.
+        let payload = [INVITE, b"X"].concat();
+        let seg = tcp_segment(|n| pseudo_v4(ESP_SRC, ESP_DST, 6, n), 5060, 43687, &payload);
+        let good = esp_null(6, &seg, 12);
+        assert!(
+            parse_packet(&esp_frame_v4(&good)).is_ok(),
+            "the unaltered packet decodes"
+        );
+
+        let mut bad_checksum = good.clone();
+        bad_checksum[8 + 20] ^= 0x01; // one bit of the SIP
+        let mut bad_padding = good.clone();
+        let pad_len_at = good.len() - 12 - 2;
+        assert!(
+            good[pad_len_at] > 0,
+            "the fixture pads, so the padding can be bent"
+        );
+        bad_padding[pad_len_at - 1] ^= 0x40;
+        let mut bad_next = good.clone();
+        bad_next[good.len() - 12 - 1] = 4; // IP-in-IP: not a transport this decodes
+        for (what, esp) in [
+            ("segment checksum", bad_checksum),
+            ("padding", bad_padding),
+            ("next header", bad_next),
+        ] {
+            let err = parse_packet(&esp_frame_v4(&esp)).expect_err(what);
+            assert!(
+                matches!(err, CaptureError::UnsupportedIpProtocol(50)),
+                "{what}: {err:?}"
+            );
+        }
+    }
+
+    /// [RFC 4303 section 2.4](https://www.rfc-editor.org/rfc/rfc4303#section-2.4) has the trailer end on a 4-octet boundary; a
+    /// trailer that does not is refused even when everything else fits. And
+    /// a UDP checksum of zero means "none" only over IPv4 -- over IPv6 it is
+    /// not a checksum at all ([RFC 8200 section 8.1](https://www.rfc-editor.org/rfc/rfc8200#section-8.1)), so it proves nothing.
+    #[test]
+    fn parse_esp_null_refuses_a_misaligned_trailer_and_an_unchecksummed_ipv6_datagram() {
+        // 58 octets of segment + Pad Length + Next Header = 60, then one more
+        // octet of payload makes 61 with no padding: valid pattern, wrong end.
+        let payload = [INVITE, b"X"].concat();
+        let seg = tcp_segment(|n| pseudo_v4(ESP_SRC, ESP_DST, 6, n), 5060, 43687, &payload);
+        let mut misaligned = 0xc0ff_ee01u32.to_be_bytes().to_vec();
+        misaligned.extend_from_slice(&7u32.to_be_bytes());
+        misaligned.extend_from_slice(&seg);
+        misaligned.extend_from_slice(&[0, 6]);
+        misaligned.extend(std::iter::repeat_n(0x5a, 12));
+        let err = parse_packet(&esp_frame_v4(&misaligned)).expect_err("misaligned trailer");
+        assert!(
+            matches!(err, CaptureError::UnsupportedIpProtocol(50)),
+            "{err:?}"
+        );
+
+        let src = [0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1];
+        let dst = [0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2];
+        let mut dg = udp_datagram(|n| pseudo_v6(src, dst, 17, n), 5060, 5062, INVITE);
+        dg[6..8].copy_from_slice(&[0, 0]);
+        let esp = esp_null(17, &dg, 12);
+        let mut ip6 = vec![0x60, 0, 0, 0];
+        ip6.extend_from_slice(&(esp.len() as u16).to_be_bytes());
+        ip6.push(50);
+        ip6.push(64);
+        ip6.extend_from_slice(&src);
+        ip6.extend_from_slice(&dst);
+        ip6.extend_from_slice(&esp);
+        let err = parse_packet(&make_packet(wrap_in_eth(&ip6, ETHERTYPE_IPV6), DLT_EN10MB))
+            .expect_err("zero UDP checksum over IPv6");
+        assert!(
+            matches!(err, CaptureError::UnsupportedIpProtocol(50)),
+            "{err:?}"
+        );
+    }
+
+    /// An IP protocol sipnab does not read is named by its number. It used to
+    /// leave as a bare "no transport", and the report could only say "IP
+    /// protocol not recorded" — for every ESP frame of an IMS capture.
+    #[test]
+    fn an_unread_ip_protocol_is_named_by_its_number() {
+        let ip = wrap_in_ipv4(b"\x02\x01\x00\x2c", 89, ESP_SRC, ESP_DST); // OSPF
+        let err = parse_packet(&make_packet(wrap_in_eth(&ip, ETHERTYPE_IPV4), DLT_EN10MB))
+            .expect_err("OSPF");
+        assert!(
+            matches!(err, CaptureError::UnsupportedIpProtocol(89)),
+            "{err:?}"
         );
     }
 

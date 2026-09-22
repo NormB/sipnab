@@ -8,6 +8,8 @@
 //! a capture thread and returns a [`CaptureHandle`] for lifecycle management.
 
 #[cfg(feature = "native")]
+pub mod archive;
+#[cfg(feature = "native")]
 pub mod atomic;
 #[cfg(feature = "native")]
 pub mod bpf_filter;
@@ -398,6 +400,12 @@ impl std::fmt::Display for UndecodableReason {
             Self::UnsupportedLinkType(dlt) => write!(f, "unsupported link type {dlt}"),
             Self::NotIp(Some(et)) => write!(f, "not IP (EtherType 0x{et:04X})"),
             Self::NotIp(None) => write!(f, "not IP (EtherType not recorded)"),
+            // ESP reaches this reason only after its payload failed every
+            // NULL-encryption check, so the sentence says that rather than
+            // leaving an operator to look up protocol 50.
+            Self::NoTransport(Some(p)) if *p == IP_PROTO_ESP => {
+                write!(f, "ESP not NULL-encrypted (IP protocol {p})")
+            }
             Self::NoTransport(Some(p)) => write!(f, "no transport (IP protocol {p})"),
             Self::NoTransport(None) => write!(f, "no transport (IP protocol not recorded)"),
             Self::Truncated => write!(f, "truncated frame"),
@@ -995,6 +1003,9 @@ pub fn decode_captured_frame(packet: &Packet) -> Result<ParsedPacket, CaptureErr
     })
 }
 
+/// IP protocol number of ESP ([RFC 4303](https://www.rfc-editor.org/rfc/rfc4303)).
+const IP_PROTO_ESP: u8 = 50;
+
 /// Output of [`PacketProcessor::process`]: the parsed packets ready from one
 /// input packet. Inline-sized for one element — the dominant case (UDP, a
 /// single-frame TCP message, one reassembled fragment) allocates nothing;
@@ -1065,7 +1076,8 @@ impl PacketProcessor {
     pub fn new() -> Self {
         Self {
             fragment_reassembler: FragmentReassembler::new(),
-            tcp_reassembler: TcpReassembler::new(),
+            tcp_reassembler: TcpReassembler::new()
+                .with_resync(crate::sip::parser::starts_sip_message),
             tcp_sip_leftover: indexmap::IndexMap::default(),
             max_sessions: DEFAULT_MAX_SESSIONS,
             sctp_reassembler: parse::SctpReassembler::new(),
@@ -1100,7 +1112,8 @@ impl PacketProcessor {
             tcp_reassembler: TcpReassembler::with_limits(
                 max_sessions,
                 reassembly::reassembly_ttl(),
-            ),
+            )
+            .with_resync(crate::sip::parser::starts_sip_message),
             tcp_sip_leftover: indexmap::IndexMap::default(),
             max_sessions,
             sctp_reassembler: parse::SctpReassembler::with_max_streams(max_sessions),
@@ -1210,13 +1223,37 @@ impl PacketProcessor {
 
         if is_fragment {
             return match self.fragment_reassembler.insert(&parsed) {
-                Some(reassembled) => {
+                Some(mut reassembled) => {
                     // The reassembled buffer is the full IP payload (transport
                     // header + data). Re-parse the transport header so the ports
                     // and offset are recovered — the fragments themselves carried
                     // no usable transport header, so without this the payload
                     // still begins with the UDP/TCP header and SIP parsing fails.
                     let mut completed = parsed;
+                    // A fragmented ESP datagram: read the segment inside it by
+                    // the same test the whole-frame parse applies, or count it
+                    // as unreadable ESP. Reassembly is the only place a
+                    // fragmented one can be judged -- no single fragment holds
+                    // both the header and the trailer.
+                    if completed.ip_protocol == IP_PROTO_ESP {
+                        match parse::esp_null_payload(
+                            completed.src_addr,
+                            completed.dst_addr,
+                            &reassembled,
+                        ) {
+                            Some((next, segment)) => {
+                                reassembled = segment.to_vec();
+                                completed.ip_protocol = next;
+                            }
+                            None => {
+                                record_undecodable(
+                                    &CaptureError::UnsupportedIpProtocol(IP_PROTO_ESP),
+                                    FrameFacts::UNRECORDED,
+                                );
+                                return SmallVec::new();
+                            }
+                        }
+                    }
                     if let Some((sp, dp, tp, hdr)) =
                         parse::reparse_transport(completed.ip_protocol, &reassembled)
                     {
@@ -1322,6 +1359,13 @@ impl PacketProcessor {
             return SmallVec::new();
         }
 
+        // A hole the capture never held was skipped: the partial message held
+        // for this direction lost its continuation and can never complete, so
+        // it must not be glued onto the message the stream resumed at.
+        if self.tcp_reassembler.take_resync(src, dst) {
+            self.tcp_sip_leftover.shift_remove(&key);
+        }
+
         // Prepend any partial message held from a previous flush.
         let mut buf = self.tcp_sip_leftover.shift_remove(&key).unwrap_or_default();
         for chunk in &flushed {
@@ -1383,6 +1427,41 @@ impl PacketProcessor {
             let mut p = parsed.clone();
             p.payload = frozen.slice(consumed..);
             out.push(p);
+        }
+        out
+    }
+
+    /// Release what only the end of the input can: a message held behind a
+    /// hole in a TCP stream that its direction never followed with another
+    /// packet. Call once, after the last packet.
+    ///
+    /// # Returns
+    ///
+    /// The SIP messages framed out of what was released, or the raw data for
+    /// a stream that does not carry SIP -- the same two shapes a flush during
+    /// the capture produces.
+    pub fn finish(&mut self) -> ParsedPackets {
+        let mut out = ParsedPackets::new();
+        for (template, data) in self.tcp_reassembler.finish() {
+            let src = std::net::SocketAddr::new(template.src_addr, template.src_port);
+            let dst = std::net::SocketAddr::new(template.dst_addr, template.dst_port);
+            // The partial held for this direction lost its continuation.
+            self.tcp_sip_leftover.shift_remove(&(src, dst));
+            if !crate::sip::is_sip_message(&data) {
+                let mut p = template;
+                p.payload = bytes::Bytes::from(data);
+                out.push(p);
+                continue;
+            }
+            // Complete messages only: an incomplete tail at the very end of a
+            // capture is dropped here as it is everywhere else at the end.
+            let (ranges, _) = frame_tcp_sip(&data);
+            let frozen = bytes::Bytes::from(data);
+            for r in ranges {
+                let mut p = template.clone();
+                p.payload = frozen.slice(r);
+                out.push(p);
+            }
         }
         out
     }
@@ -2017,6 +2096,144 @@ mod tests {
         );
     }
 
+    /// A segment the capture never held splits a SIP-over-TCP stream. The
+    /// messages after the hole come out on their own, and the half message
+    /// before it is not glued onto them. This is the shape of a capture that
+    /// joined a long-lived proxy-to-proxy connection, or of a tap that
+    /// dropped a packet; every message on that direction used to be lost.
+    #[test]
+    fn messages_after_a_hole_in_the_capture_are_recovered() {
+        let mut proc = PacketProcessor::new();
+        let head = b"INVITE sip:b@x SIP/2.0\r\nCall-ID: lost\r\nContent-Length: 0\r\n";
+        assert!(
+            proc.process(&tcp_frame(head, 1, true, false)).is_empty(),
+            "held partial"
+        );
+        let hole = 300u32;
+        let ok = b"SIP/2.0 100 Trying\r\nCall-ID: kept\r\nContent-Length: 0\r\n\r\n";
+        let at_ok = 1 + head.len() as u32 + hole;
+        let first = proc.process(&tcp_frame(ok, at_ok, true, false));
+        let bye = b"BYE sip:b@x SIP/2.0\r\nCall-ID: kept\r\nContent-Length: 0\r\n\r\n";
+        let second = proc.process(&tcp_frame(bye, at_ok + ok.len() as u32, true, false));
+        let messages: Vec<String> = first
+            .iter()
+            .chain(second.iter())
+            .map(|p| String::from_utf8_lossy(&p.payload).into_owned())
+            .collect();
+        assert_eq!(
+            messages,
+            vec![
+                String::from_utf8_lossy(ok).into_owned(),
+                String::from_utf8_lossy(bye).into_owned()
+            ],
+            "both messages after the hole, and nothing of the lost INVITE"
+        );
+    }
+
+    /// When the message behind a hole is the LAST thing its direction ever
+    /// sends, no later packet can show the hole is not a reordering -- the
+    /// end of the capture does. `finish` releases it; before `finish`, it is
+    /// held. A processor with nothing blocked finishes with nothing.
+    #[test]
+    fn the_end_of_the_capture_releases_a_message_held_behind_a_hole() {
+        let mut proc = PacketProcessor::new();
+        assert!(
+            proc.finish().is_empty(),
+            "nothing blocked, nothing released"
+        );
+        let head = b"NOTIFY sip:b@x SIP/2.0\r\nCall-ID: lost\r\n";
+        assert!(proc.process(&tcp_frame(head, 1, true, false)).is_empty());
+        let last = b"NOTIFY sip:b@x SIP/2.0\r\nCall-ID: tail\r\nContent-Length: 0\r\n\r\n";
+        let at = 1 + head.len() as u32 + 400;
+        assert!(
+            proc.process(&tcp_frame(last, at, true, false)).is_empty(),
+            "held: one packet behind a hole could still be a reordering"
+        );
+        let released = proc.finish();
+        assert_eq!(released.len(), 1, "the message behind the hole");
+        assert_eq!(&released[0].payload[..], &last[..]);
+        assert_eq!(released[0].src_port, 5230);
+        assert!(proc.finish().is_empty(), "released once");
+    }
+
+    /// A NULL-encrypted ESP packet too big for one frame arrives as IP
+    /// fragments. The reassembled datagram is ESP, and has to be read as the
+    /// UDP datagram inside it -- the reassembly path used to know only UDP and
+    /// TCP, so the SIP inside came out as raw ESP bytes and parsed as nothing.
+    #[test]
+    fn a_fragmented_esp_null_datagram_yields_the_sip_inside() {
+        let src = [10, 20, 0, 1];
+        let dst = [10, 20, 0, 2];
+        let sip = format!(
+            "MESSAGE sip:b@x SIP/2.0\r\nCall-ID: esp-frag\r\nContent-Length: 0\r\n\r\n{}",
+            "Z".repeat(60)
+        );
+        // UDP with a real checksum over the pseudo-header.
+        let udp_len = 8 + sip.len();
+        let mut udp = vec![0x13, 0xc4, 0x13, 0xc4];
+        udp.extend_from_slice(&(udp_len as u16).to_be_bytes());
+        udp.extend_from_slice(&[0, 0]);
+        udp.extend_from_slice(sip.as_bytes());
+        let mut sum: u32 = 0;
+        let mut words = src.to_vec();
+        words.extend_from_slice(&dst);
+        words.extend_from_slice(&[0, 17]);
+        words.extend_from_slice(&(udp_len as u16).to_be_bytes());
+        words.extend_from_slice(&udp);
+        if words.len() % 2 == 1 {
+            words.push(0);
+        }
+        for w in words.as_chunks::<2>().0 {
+            sum += u32::from(u16::from_be_bytes(*w));
+        }
+        while sum > 0xffff {
+            sum = (sum & 0xffff) + (sum >> 16);
+        }
+        udp[6..8].copy_from_slice(&(!(sum as u16)).to_be_bytes());
+        // ESP-NULL around it: SPI, sequence, padding 1..n, Pad Length, Next
+        // Header 17, a 12-octet ICV.
+        let mut esp = 0x0000_1005u32.to_be_bytes().to_vec();
+        esp.extend_from_slice(&3u32.to_be_bytes());
+        esp.extend_from_slice(&udp);
+        let pad = (4 - (udp.len() + 2) % 4) % 4;
+        esp.extend((1..=pad).map(|i| i as u8));
+        esp.push(pad as u8);
+        esp.push(17);
+        esp.extend(std::iter::repeat_n(0x77, 12));
+
+        let frag = |chunk: &[u8], off_units: u16, mf: bool| -> Packet {
+            let total_len = (20 + chunk.len()) as u16;
+            let mut ip = vec![0x45, 0x00];
+            ip.extend_from_slice(&total_len.to_be_bytes());
+            ip.extend_from_slice(&0x4242u16.to_be_bytes());
+            ip.extend_from_slice(&(off_units | if mf { 0x2000 } else { 0 }).to_be_bytes());
+            ip.extend_from_slice(&[64, 50, 0, 0]); // proto 50 = ESP
+            ip.extend_from_slice(&src);
+            ip.extend_from_slice(&dst);
+            ip.extend_from_slice(chunk);
+            let mut eth = vec![0u8; 12];
+            eth.extend_from_slice(&[0x08, 0x00]);
+            eth.extend_from_slice(&ip);
+            let len = eth.len();
+            Packet::new(
+                chrono::DateTime::from_timestamp(1_700_000_000, 0).unwrap(),
+                eth,
+                len,
+                len,
+                None,
+                1,
+            )
+        };
+        let mut proc = PacketProcessor::new();
+        assert!(proc.process(&frag(&esp[..48], 0, true)).is_empty());
+        let out = proc.process(&frag(&esp[48..], 6, false));
+        assert_eq!(out.len(), 1, "one datagram out of the two fragments");
+        assert_eq!(out[0].transport, parse::TransportProto::Udp);
+        assert_eq!((out[0].src_port, out[0].dst_port), (5060, 5060));
+        assert_eq!(&out[0].payload[..], sip.as_bytes());
+        assert_eq!(out[0].ip_protocol, 17);
+    }
+
     /// At the `max_sessions` cap the held-partial map must evict the
     /// least-recently-updated connection, not an arbitrary one — an active
     /// session's partial data must survive while the stalest entry goes.
@@ -2523,12 +2740,10 @@ mod tests {
         }
 
         /// End to end through the real swallow site: a frame with no IP layer
-        /// and a frame with no usable transport are both counted, and both
-        /// report *not recorded* while `parse_packet` hands no number back.
-        ///
-        /// This is the honest statement of today's plumbing. When the decoder
-        /// starts handing the numbers out, the classifier gates above already
-        /// pin what must then appear here.
+        /// and a frame with no usable transport are both counted. The IP
+        /// protocol now travels out with the error, so the ESP frame is named
+        /// 50. ARP still reports *not recorded*: the link-layer walk does not
+        /// yet hand its EtherType back, and saying so beats inventing one.
         #[test]
         #[serial_test::serial(undecodable_tally)]
         fn unnumbered_reasons_are_counted_and_reported_as_unrecorded() {
@@ -2547,11 +2762,53 @@ mod tests {
                         frames: 2,
                     },
                     UndecodableTally {
-                        reason: UndecodableReason::NoTransport(None),
+                        reason: UndecodableReason::NoTransport(Some(50)),
                         frames: 1,
                     },
                 ],
                 "counted and classified, with the number honestly absent"
+            );
+        }
+
+        /// A fragmented ESP datagram that is NOT NULL-encrypted can only be
+        /// judged once reassembled, and is then counted under ESP's number --
+        /// never emitted as a datagram of ciphertext.
+        #[test]
+        #[serial_test::serial(undecodable_tally)]
+        fn a_fragmented_encrypted_esp_datagram_is_counted_as_esp() {
+            let mut esp = 0x0000_2002u32.to_be_bytes().to_vec();
+            esp.extend_from_slice(&1u32.to_be_bytes());
+            let mut x: u32 = 0x1234_5678;
+            for _ in 0..120 {
+                x ^= x << 13;
+                x ^= x >> 17;
+                x ^= x << 5;
+                esp.push(x as u8);
+            }
+            let frag = |chunk: &[u8], off_units: u16, mf: bool| -> Vec<u8> {
+                let mut ip = vec![0x45, 0x00];
+                ip.extend_from_slice(&((20 + chunk.len()) as u16).to_be_bytes());
+                ip.extend_from_slice(&0x0e5bu16.to_be_bytes());
+                ip.extend_from_slice(&(off_units | if mf { 0x2000 } else { 0 }).to_be_bytes());
+                ip.extend_from_slice(&[64, 50, 0, 0, 10, 0, 0, 1, 10, 0, 0, 2]);
+                ip.extend_from_slice(chunk);
+                let mut eth = vec![0u8; 12];
+                eth.extend_from_slice(&[0x08, 0x00]);
+                eth.extend_from_slice(&ip);
+                eth
+            };
+            reset_undecodable_frames();
+            let mut proc = PacketProcessor::new();
+            let a = proc.process(&packet_dlt(frag(&esp[..64], 0, true), 1));
+            let b = proc.process(&packet_dlt(frag(&esp[64..], 8, false), 1));
+            assert!(a.is_empty() && b.is_empty(), "no datagram of ciphertext");
+            let r = undecodable_report();
+            assert_eq!(
+                r.reasons,
+                vec![UndecodableTally {
+                    reason: UndecodableReason::NoTransport(Some(50)),
+                    frames: 1,
+                }]
             );
         }
 
@@ -2713,10 +2970,17 @@ mod tests {
                     "not IP (EtherType not recorded)",
                     "not_ip_ethertype_unrecorded",
                 ),
+                // ESP is named for what it is: the one IP protocol whose
+                // payload sipnab reads only when it proves NULL encryption.
                 (
                     UndecodableReason::NoTransport(Some(50)),
-                    "no transport (IP protocol 50)",
+                    "ESP not NULL-encrypted (IP protocol 50)",
                     "no_transport_ip_protocol_50",
+                ),
+                (
+                    UndecodableReason::NoTransport(Some(89)),
+                    "no transport (IP protocol 89)",
+                    "no_transport_ip_protocol_89",
                 ),
                 (
                     UndecodableReason::NoTransport(None),

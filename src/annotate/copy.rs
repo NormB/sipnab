@@ -150,7 +150,12 @@ fn is_classic_name(output: &Path) -> bool {
 /// relative to another working directory, is still the capture the note was
 /// written on, and the digest check proves the bytes. A different file name
 /// is a different capture.
-fn names_this_capture(source: &str, input: &Path) -> bool {
+fn names_this_capture(source: &str, input: &Path, input_label: &str) -> bool {
+    // The label is the name frame pointers carry, including for a member of
+    // an archive, whose `input` is only the file it was extracted to.
+    if source == input_label {
+        return true;
+    }
     let named = Path::new(source);
     if named == input {
         return true;
@@ -160,8 +165,25 @@ fn names_this_capture(source: &str, input: &Path) -> bool {
     {
         return true;
     }
+    // The same member of the same archive, spelled from a different place.
+    if let (Some(a), Some(b)) = (
+        crate::capture::archive::locate_member(source),
+        crate::capture::archive::locate_member(input_label),
+    ) {
+        let rest = |label: &str, archive: &Path| {
+            label
+                .strip_prefix(&archive.display().to_string())
+                .unwrap_or(label)
+                .to_string()
+        };
+        let same_archive = matches!(
+            (a.canonicalize(), b.canonicalize()),
+            (Ok(x), Ok(y)) if x == y
+        );
+        return same_archive && rest(source, &a) == rest(input_label, &b);
+    }
     matches!(
-        (named.file_name(), input.file_name()),
+        (named.file_name(), Path::new(input_label).file_name()),
         (Some(a), Some(b)) if a == b
     )
 }
@@ -198,7 +220,7 @@ fn place<'a>(
         let Some(digest) = pointer.origin.digest else {
             return Err(CopyError::NoDigest(key.to_string()));
         };
-        if !names_this_capture(&pointer.source, input) {
+        if !names_this_capture(&pointer.source, input, input_label) {
             return Err(CopyError::OtherSource {
                 frame: key.to_string(),
                 input: input_label.to_string(),
@@ -355,4 +377,23 @@ pub fn write_annotated_copy(
         frames: ordinal,
         notes: written_notes,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A capture read out of an archive is named by its label — the name its
+    /// frame pointers carry — not by the file it was extracted to. A note made
+    /// against `<archive>/<member>` must bind to that member.
+    #[test]
+    fn an_archive_member_is_named_by_its_label() {
+        let extracted = Path::new("/tmp/sipnab-archive-XXXX/m00000.pcap");
+        let label = "caps/session.tgz/set/call.pcap";
+        assert!(names_this_capture(label, extracted, label));
+        assert!(
+            !names_this_capture("caps/session.tgz/set/other.pcap", extracted, label),
+            "a different member of the same archive is a different capture"
+        );
+    }
 }

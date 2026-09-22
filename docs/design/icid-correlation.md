@@ -43,7 +43,7 @@ first match wins:
 | Strategy | Score | Code | Reported `identifier_match` |
 |---|---|---|---|
 | `session_id` — [RFC 7989](https://www.rfc-editor.org/rfc/rfc7989) `Session-ID` | 100 | [`:1078`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1078) | `true` |
-| `x_call_id` — a configured header, `X-Call-ID` by default | 100 | [`:1096`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1096) | `true` |
+| `x_call_id` — a configured header, none by default | 100 | [`:1096`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1096) | `true` |
 | `charging_vector_related_icid` — [RFC 7315](https://www.rfc-editor.org/rfc/rfc7315) `related-icid` | 95 | [`:1129`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1129) | `true` |
 | `sdp_origin` — the [RFC 8866](https://www.rfc-editor.org/rfc/rfc8866) origin tuple | 90 | [`:1153`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1153) | `true` |
 | `charging_vector_icid` — a shared [RFC 7315](https://www.rfc-editor.org/rfc/rfc7315) `icid-value` | 85 | [`:1174`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1174) | `true` |
@@ -370,7 +370,7 @@ router name in disguise.
 
 **The good news is that the existing surface already does the right thing and
 needs no new discipline.** `find_correlated`'s response
-([`server.rs:7746`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L7746)) returns, per leg, `call_id`,
+([`server.rs:7809`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L7809)) returns, per leg, `call_id`,
 `score`, `strategy`, `identifier_match` and `observed_gap_ms` — and never the
 matched identifier. `session_id` matches today without the `Session-ID` value
 ever reaching a client. **A sixth strategy that reports only its name inherits

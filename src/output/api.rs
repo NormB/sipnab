@@ -2543,7 +2543,7 @@ async fn get_dialog_audio(
 
     let stem = wav_filename_stem(&call_id);
     // The provenance note lives inside the bytes (a RIFF comment chunk), so a
-    // client that saves the file keeps it; `x-sipnab-audio-partial` surfaces the
+    // client that saves the file keeps it; `sipnab-audio-partial` surfaces the
     // one bit a program branches on without parsing RIFF.
     Ok((
         StatusCode::OK,
@@ -2554,7 +2554,7 @@ async fn get_dialog_audio(
                 format!("attachment; filename=\"{stem}.wav\""),
             ),
             (
-                "x-sipnab-audio-partial",
+                "sipnab-audio-partial",
                 (!audio.partial.is_empty()).to_string(),
             ),
         ],
@@ -3787,7 +3787,7 @@ async fn get_stream(
     params(CaptureReportParams),
     security(("bearer" = [])),
     responses(
-        (status = 200, description = "The whole-capture analysis. `application/json` is sipnab's own encoding. `application/yang-data+json`, answered for `format=yang-json`, is the same analysis RFC 7951-encoded against the YANG module `sipnab-diagnosis` (https://sipnab.com/yang/sipnab-diagnosis@2026-09-21.yang, or `sipnab --print-yang-module`); the module is its schema.", content(
+        (status = 200, description = "The whole-capture analysis. `application/json` is sipnab's own encoding. `application/yang-data+json`, answered for `format=yang-json`, is the same analysis RFC 7951-encoded against the YANG module `sipnab-diagnosis` (https://sipnab.com/yang/sipnab-diagnosis@2026-09-22.yang, or `sipnab --print-yang-module`); the module is its schema.", content(
             (schema::CaptureReport = "application/json"),
             ("application/yang-data+json"),
         )),

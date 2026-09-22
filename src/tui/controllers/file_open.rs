@@ -24,24 +24,16 @@ pub(in crate::tui) fn open_file_dialog(app: &mut App) {
     app.active_popup = Some(Popup::FileOpenDialog);
 }
 
-/// Extensions recognized as pcap/pcapng files by the file browser.
-pub(in crate::tui) const PCAP_EXTENSIONS: &[&str] = &["pcap", "pcapng", "cap"];
-
 /// True if `name` is a capture file the browser should list: a bare
-/// pcap/pcapng/cap file, or a gzip-compressed one (`*.pcap.gz`, `*.cap.gz`…).
+/// pcap/pcapng/cap file, a gzip-compressed one (`*.pcap.gz`, `*.cap.gz`…), or
+/// an archive of captures (`*.tar`, `*.tgz`, `*.tar.gz`).
 ///
-/// `crate::capture::file::open_offline` transparently decompresses gzip
-/// captures (it sniffs the `1f 8b` magic), so hiding `*.gz` here would let the
-/// browser refuse files the loader can actually open. Case-insensitive.
+/// The loader opens all of these — an archive as the set of captures it holds
+/// — so hiding any of them here would let the browser refuse files the loader
+/// can actually read. One rule, shared with MCP `list_captures`:
+/// [`crate::capture::archive::is_capture_file_name`]. Case-insensitive.
 pub(in crate::tui) fn is_browsable_capture(name: &str) -> bool {
-    let lower = name.to_ascii_lowercase();
-    // Peel an optional `.gz` so `foo.pcap.gz` is judged by its `.pcap` stem.
-    let stem = lower.strip_suffix(".gz").unwrap_or(lower.as_str());
-    std::path::Path::new(stem)
-        .extension()
-        .and_then(|e| e.to_str())
-        .map(|e| PCAP_EXTENSIONS.iter().any(|p| p == &e))
-        .unwrap_or(false)
+    crate::capture::archive::is_capture_file_name(name)
 }
 
 /// Rebuild `app.file_open.entries` from the current `app.file_open.dir`,
@@ -400,19 +392,142 @@ fn run_pcap_load(
         .unwrap_or(&progress.filename)
         .to_string();
     let capture_mode = format!("Offline ({filename})");
+    let failed = |message: String| PcapLoadOutcome {
+        message,
+        sip_count: 0,
+        capture_mode: capture_mode.clone(),
+        file_names: Vec::new(),
+    };
 
+    // An archive is loaded as the set of captures it holds, resolved exactly
+    // as `-I` resolves it, and read member by member into the same stores.
+    // The set owns the extracted members and deletes them when it drops.
+    let set = if crate::capture::archive::holds_members(path) {
+        match crate::capture::input_set::resolve_set(
+            &[path.display().to_string()],
+            &crate::capture::input_set::ResolveOptions::default(),
+        ) {
+            Ok(set) => Some(set),
+            Err(e) => return failed(format!("Failed to open: {e:#}")),
+        }
+    } else {
+        None
+    };
+    let members: Vec<std::path::PathBuf> = match &set {
+        Some(set) => set.paths(),
+        None => vec![path.to_path_buf()],
+    };
+
+    let mut totals = LoadTotals {
+        rtp_heuristic: crate::rtp::heuristic::RtpHeuristic::new(),
+        ..LoadTotals::default()
+    };
+    for member in &members {
+        if let Err(message) = load_one_capture(
+            member,
+            dialog_store,
+            stream_store,
+            progress,
+            bpf_filter,
+            &mut totals,
+        ) {
+            return failed(message);
+        }
+    }
+
+    let stream_count = stream_store.read().len();
+    let rtcp_suffix = if totals.rtcp > 0 {
+        format!(", {} RTCP", totals.rtcp)
+    } else {
+        String::new()
+    };
+    let names_suffix = if !totals.file_names.is_empty() {
+        format!(", {} name(s)", totals.file_names.len())
+    } else {
+        String::new()
+    };
+    let key_log_note = if totals.embedded_key_logs > 0 {
+        format!(
+            " \u{26a0} file contains {} embedded decryption secret(s)",
+            totals.embedded_key_logs
+        )
+    } else {
+        String::new()
+    };
+    // For an archive, say how much of it was read: a member left out is
+    // named in the log, and the status line is where the operator looks.
+    let archive_suffix = match &set {
+        Some(set) => {
+            let not_read = set.members_not_read() + totals.members_not_read;
+            let mut text = format!("; {} capture(s) from the archive", totals.captures_read);
+            if not_read > 0 {
+                text.push_str(&format!(", {not_read} member(s) not read"));
+            }
+            if set.incomplete() {
+                text.push_str(", archive cut short");
+            }
+            text
+        }
+        None => String::new(),
+    };
+    PcapLoadOutcome {
+        message: format!(
+            "Loaded {} SIP, {} RTP{rtcp_suffix}{names_suffix} from {} packets across \
+             {stream_count} stream(s) ({filename}{archive_suffix}){key_log_note}",
+            totals.sip, totals.rtp, totals.packets
+        ),
+        sip_count: totals.sip,
+        capture_mode,
+        file_names: totals.file_names,
+    }
+}
+
+/// What a load has read so far, across every capture of an archive.
+#[derive(Default)]
+struct LoadTotals {
+    /// Frames read.
+    packets: u64,
+    /// SIP messages applied.
+    sip: u64,
+    /// RTP packets applied.
+    rtp: u64,
+    /// RTCP packets applied.
+    rtcp: u64,
+    /// The RTP heuristic, carried across members as it would be across one
+    /// file.
+    rtp_heuristic: crate::rtp::heuristic::RtpHeuristic,
+    /// Captures read.
+    captures_read: usize,
+    /// Captures skipped at read time (a filter that cannot apply to a link
+    /// type sipnab does not decode).
+    members_not_read: usize,
+    /// Embedded pcapng names.
+    file_names: Vec<(std::net::IpAddr, String)>,
+    /// Embedded decryption secrets seen.
+    embedded_key_logs: usize,
+}
+
+/// Read one capture file into the stores, adding to `totals`.
+///
+/// # Errors
+///
+/// The status-line message when the file will not open or the filter will
+/// not compile against it; the load stops there, as it always has.
+fn load_one_capture(
+    path: &std::path::Path,
+    dialog_store: &Arc<RwLock<DialogStore>>,
+    stream_store: &Arc<RwLock<StreamStore>>,
+    progress: &PcapLoadProgress,
+    bpf_filter: Option<&str>,
+    totals: &mut LoadTotals,
+) -> Result<(), String> {
     // Transparently handles gzip-compressed captures (libpcap cannot). The
     // guard owns any decompressed temp file and must outlive the read loop
     // below, so keep it bound for the rest of the function.
     let (mut cap, _gz_guard) = match crate::capture::file::open_offline(path) {
         Ok(opened) => opened,
         Err(e) => {
-            return PcapLoadOutcome {
-                message: format!("Failed to open: {e:#}"),
-                sip_count: 0,
-                capture_mode,
-                file_names: Vec::new(),
-            };
+            return Err(format!("Failed to open: {e:#}"));
         }
     };
 
@@ -424,26 +539,25 @@ fn run_pcap_load(
     if let Some(bpf) = bpf_filter
         && let Err(e) = cap.filter(bpf, true)
     {
-        return PcapLoadOutcome {
-            message: format!("Filter rejected: {e}"),
-            sip_count: 0,
-            capture_mode,
-            file_names: Vec::new(),
-        };
+        // The rule both `-I` readers apply: a member sipnab could not decode
+        // a frame of loses nothing by being skipped.
+        if crate::capture::file::undecodable_filter_skip(path, cap.get_datalink().0, bpf, &e)
+            .is_some()
+        {
+            totals.members_not_read += 1;
+            return Ok(());
+        }
+        return Err(format!("Filter rejected: {e}"));
     }
 
-    let mut packet_count = 0u64;
-    let mut sip_count = 0u64;
-    let mut rtp_count = 0u64;
-    let mut rtcp_count = 0u64;
-    let mut rtp_heuristic = crate::rtp::heuristic::RtpHeuristic::new();
     let link_type = cap.get_datalink().0;
+    totals.captures_read += 1;
 
     while let Ok(pkt) = cap.next_packet() {
-        packet_count += 1;
+        totals.packets += 1;
         progress
             .packets
-            .store(packet_count, std::sync::atomic::Ordering::Relaxed);
+            .store(totals.packets, std::sync::atomic::Ordering::Relaxed);
 
         // Route through the shared, hardened converter: an out-of-range or
         // unrepresentable tv_usec (crafted or nanosecond-precision capture)
@@ -476,14 +590,14 @@ fn run_pcap_load(
         let mut decrypt = crate::pipeline::MediaDecrypt::default();
         match crate::pipeline::classify_packet(
             &parsed,
-            &mut rtp_heuristic,
+            &mut totals.rtp_heuristic,
             &crate::pipeline::PipelineOptions::default(),
             &mut decrypt,
         ) {
             crate::pipeline::PacketAction::None => {}
             crate::pipeline::PacketAction::Sip { msg, sdp_links } => {
                 dialog_store.write().process_message(msg);
-                sip_count += 1;
+                totals.sip += 1;
                 if !sdp_links.is_empty() {
                     let mut ss = stream_store.write();
                     // As on the batch and `--cores` routers: opening a file in
@@ -519,7 +633,7 @@ fn run_pcap_load(
                 stream_store
                     .write()
                     .process_rtcp(&rtcp_packets, parsed.timestamp, parsed.frame);
-                rtcp_count += rtcp_packets.len() as u64;
+                totals.rtcp += rtcp_packets.len() as u64;
             }
             crate::pipeline::PacketAction::Rtp { hdr, .. } => {
                 // No decryption keys on the file-open path, so there is never
@@ -527,7 +641,7 @@ fn run_pcap_load(
                 stream_store
                     .write()
                     .process_rtp(&parsed, &hdr, parsed.timestamp);
-                rtp_count += 1;
+                totals.rtp += 1;
             }
         }
     }
@@ -536,37 +650,11 @@ fn run_pcap_load(
     // Name Resolution Block names (applied to the resolver on the UI thread)
     // and any Decryption Secrets Block so the operator is alerted the file
     // carries keys.
-    let mut file_names = Vec::new();
-    let mut secrets_present = 0;
     if let Ok(meta) = crate::capture::pcapng_meta::read_pcapng_metadata(path) {
-        file_names = meta.names;
-        secrets_present = meta.tls_secrets.len();
+        totals.file_names.extend(meta.names);
+        totals.embedded_key_logs += meta.tls_secrets.len();
     }
-
-    let stream_count = stream_store.read().len();
-    let rtcp_suffix = if rtcp_count > 0 {
-        format!(", {rtcp_count} RTCP")
-    } else {
-        String::new()
-    };
-    let names_suffix = if !file_names.is_empty() {
-        format!(", {} name(s)", file_names.len())
-    } else {
-        String::new()
-    };
-    let secrets_suffix = if secrets_present > 0 {
-        format!(" \u{26a0} file contains {secrets_present} embedded decryption secret(s)")
-    } else {
-        String::new()
-    };
-    PcapLoadOutcome {
-        message: format!(
-            "Loaded {sip_count} SIP, {rtp_count} RTP{rtcp_suffix}{names_suffix} from {packet_count} packets across {stream_count} stream(s) ({filename}){secrets_suffix}"
-        ),
-        sip_count,
-        capture_mode,
-        file_names,
-    }
+    Ok(())
 }
 
 /// Apply a finished load's outcome to the app: capture-mode label, embedded
@@ -869,6 +957,10 @@ mod tests {
         assert!(is_browsable_capture("a.pcap.gz"));
         assert!(is_browsable_capture("a.cap.GZ"));
         assert!(is_browsable_capture("a.pcapng.gz"));
+        // Archives of captures — loaded as the set they hold.
+        assert!(is_browsable_capture("session.tar"));
+        assert!(is_browsable_capture("session.tgz"));
+        assert!(is_browsable_capture("session.TAR.GZ"));
         // Non-captures and traps.
         assert!(!is_browsable_capture("notes.txt"));
         assert!(!is_browsable_capture("archive.gz")); // bare .gz isn't a capture
@@ -1371,6 +1463,107 @@ mod browser_tests {
         let ss = Arc::new(RwLock::new(StreamStore::new(100)));
         let out = run_pcap_load(path, &ds, &ss, &progress, None);
         (out, ds, ss)
+    }
+
+    /// A pcapng carrying a Decryption Secrets Block warns the operator that
+    /// the file holds keys, from inside an archive exactly as on its own. The
+    /// metadata reader opens each member's own file, never the archive.
+    #[test]
+    fn embedded_secrets_are_announced_from_inside_an_archive() {
+        use crate::capture::archive::tar::testutil::{Spec, build};
+        use std::io::Write;
+        fn block(kind: u32, body: &[u8]) -> Vec<u8> {
+            let pad = (4 - body.len() % 4) % 4;
+            let total = (12 + body.len() + pad) as u32;
+            let mut b = kind.to_le_bytes().to_vec();
+            b.extend_from_slice(&total.to_le_bytes());
+            b.extend_from_slice(body);
+            b.extend(std::iter::repeat_n(0u8, pad));
+            b.extend_from_slice(&total.to_le_bytes());
+            b
+        }
+        let secrets = format!("CLIENT_RANDOM {} {}\n", "ab".repeat(32), "cd".repeat(48));
+        let mut shb = 0x1a2b_3c4du32.to_le_bytes().to_vec();
+        shb.extend_from_slice(&[1, 0, 0, 0]);
+        shb.extend_from_slice(&(-1i64).to_le_bytes());
+        let mut idb = vec![1u8, 0, 0, 0];
+        idb.extend_from_slice(&65_535u32.to_le_bytes());
+        let mut dsb = 0x544c_534bu32.to_le_bytes().to_vec();
+        dsb.extend_from_slice(&(secrets.len() as u32).to_le_bytes());
+        dsb.extend_from_slice(secrets.as_bytes());
+        let frame = [0u8; 60];
+        let mut epb = vec![0u8; 12];
+        epb.extend_from_slice(&60u32.to_le_bytes());
+        epb.extend_from_slice(&60u32.to_le_bytes());
+        epb.extend_from_slice(&frame);
+        let mut pcapng = block(0x0a0d_0d0a, &shb);
+        pcapng.extend(block(1, &idb));
+        pcapng.extend(block(0x0a, &dsb));
+        pcapng.extend(block(6, &epb));
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let plain = dir.path().join("keys.pcapng");
+        std::fs::write(&plain, &pcapng).expect("pcapng");
+        let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        enc.write_all(&build(&[Spec::file("k/keys.pcapng", &pcapng)]))
+            .expect("gzip");
+        let tgz = dir.path().join("keys.tgz");
+        std::fs::write(&tgz, enc.finish().expect("gzip")).expect("tgz");
+
+        let (plain_out, _, _) = load_into_fresh_stores(&plain);
+        let (tgz_out, _, _) = load_into_fresh_stores(&tgz);
+        assert!(
+            plain_out.message.contains("1 embedded decryption secret"),
+            "{}",
+            plain_out.message
+        );
+        assert!(
+            tgz_out.message.contains("1 embedded decryption secret"),
+            "{}",
+            tgz_out.message
+        );
+    }
+
+    /// Opening an archive in the browser loads the set of captures it holds —
+    /// the same dialogs and SIP count as loading each member in turn.
+    #[test]
+    fn run_pcap_load_reads_an_archive_as_the_set_it_holds() {
+        use crate::capture::archive::tar::testutil::{Spec, build};
+        use std::io::Write;
+        let samples =
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/pcap-samples");
+        let a = std::fs::read(samples.join("sip-rtp-g711.pcap")).expect("a");
+        let b = std::fs::read(samples.join("sip-register.pcap")).expect("b");
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("a.pcap"), &a).expect("a");
+        std::fs::write(dir.path().join("b.pcap"), &b).expect("b");
+        let (oa, da, _) = load_into_fresh_stores(&dir.path().join("a.pcap"));
+        let (ob, db, _) = load_into_fresh_stores(&dir.path().join("b.pcap"));
+
+        let tar = build(&[
+            Spec::file("s/a.pcap", &a),
+            Spec::file("s/README", b"not a capture"),
+            Spec::file("s/b.pcap", &b),
+        ]);
+        let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        enc.write_all(&tar).expect("gzip");
+        let tgz = dir.path().join("s.tgz");
+        std::fs::write(&tgz, enc.finish().expect("gzip")).expect("tgz");
+
+        let (out, ds, _) = load_into_fresh_stores(&tgz);
+        assert_eq!(
+            out.sip_count,
+            oa.sip_count + ob.sip_count,
+            "{}",
+            out.message
+        );
+        assert_eq!(ds.read().len(), da.read().len() + db.read().len());
+        assert!(out.message.contains("2 capture"), "{}", out.message);
+        assert!(
+            out.message.contains("1 member(s) not read"),
+            "{}",
+            out.message
+        );
     }
 
     /// Opening the dialog clears the previous visit's filter, manual path and

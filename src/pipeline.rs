@@ -969,6 +969,11 @@ pub fn quoted_media_kind(payload: &[u8]) -> QuotedMediaKind {
     if first >> 6 != 2 {
         return QuotedMediaKind::NotMedia;
     }
+    // A DNS transaction ID is random, so a quarter of all DNS messages pass
+    // the version test. Their question section gives them away.
+    if spells_a_dns_question(payload) {
+        return QuotedMediaKind::NotMedia;
+    }
     let Some(&second) = payload.get(1) else {
         // One byte of payload is not enough to tell RTP from RTCP from
         // anything else, and guessing from it would be guessing.
@@ -1005,6 +1010,41 @@ pub fn quoted_media_kind(payload: &[u8]) -> QuotedMediaKind {
         ssrc: u32::from_be_bytes([payload[8], payload[9], payload[10], payload[11]]),
         payload_type,
     }
+}
+
+/// Whether `payload` opens with a DNS header ([RFC 1035 section 4.1.1](https://www.rfc-editor.org/rfc/rfc1035#section-4.1.1)) whose
+/// question count is one, followed by that question in full: a name of
+/// length-prefixed labels of at most 63 octets, no compression (nothing
+/// precedes it to point at), at most 255 octets in all, then a type and a
+/// class of IN, CH, HS or ANY (the top bit is mDNS's unicast-response flag).
+///
+/// Nothing in RTP lines up with that. A quote cut short before the class is
+/// not claimed as DNS: that is guessing.
+fn spells_a_dns_question(payload: &[u8]) -> bool {
+    const HEADER: usize = 12;
+    if payload.get(4..6) != Some(&[0, 1][..]) {
+        return false;
+    }
+    let mut at = HEADER;
+    loop {
+        let Some(&label) = payload.get(at) else {
+            return false;
+        };
+        at += 1;
+        if label == 0 {
+            break;
+        }
+        if label > 63 || at + usize::from(label) - HEADER > 255 {
+            return false;
+        }
+        at += usize::from(label);
+    }
+    let Some(tail) = payload.get(at..at + 4) else {
+        return false;
+    };
+    let qtype = u16::from_be_bytes([tail[0], tail[1]]);
+    let qclass = u16::from_be_bytes([tail[2], tail[3]]) & 0x7FFF;
+    qtype != 0 && matches!(qclass, 1 | 3 | 4 | 255)
 }
 
 /// The quoted datagram's flow: who sent it, who did not answer, and over what.
@@ -3502,6 +3542,121 @@ mod quoted_media_tests {
     fn a_dns_query_is_not_media() {
         let dns = [0x12u8, 0x34, 0x01, 0x00, 0, 1, 0, 0, 0, 0, 0, 0];
         assert_eq!(quoted_media_kind(&dns), QuotedMediaKind::NotMedia);
+    }
+
+    /// A DNS message with its question, as a resolver's late answer or a
+    /// query to an unreachable server is quoted back.
+    fn dns_message(id: u16, response: bool) -> Vec<u8> {
+        let mut m = id.to_be_bytes().to_vec();
+        m.extend_from_slice(if response {
+            &[0x81, 0x80]
+        } else {
+            &[0x01, 0x00]
+        });
+        m.extend_from_slice(&[0, 1, 0, u8::from(response), 0, 0, 0, 1]);
+        m.extend_from_slice(b"\x07example\x03com\x00");
+        m.extend_from_slice(&[0, 1, 0, 1]); // A, IN
+        if response {
+            m.extend_from_slice(&[0xC0, 0x0C, 0, 1, 0, 1, 0, 0, 0, 60, 0, 4, 192, 0, 2, 1]);
+        }
+        m
+    }
+
+    /// A DNS transaction ID is random, so a quarter of them open with the
+    /// two bits RTP's version field reads as 2. Read on those bits alone, a
+    /// failed DNS lookup became "RTP (payload type 21) could not be
+    /// delivered" inside a critical media finding. The question section is
+    /// the tell: a count of one, then a well-formed name, type and class,
+    /// which RTP bytes do not happen to spell.
+    #[test]
+    fn a_dns_message_whose_id_reads_as_rtp_version_2_is_not_media() {
+        for id in [0x9A15u16, 0x80FF, 0xBF00] {
+            for response in [false, true] {
+                assert_eq!(
+                    quoted_media_kind(&dns_message(id, response)),
+                    QuotedMediaKind::NotMedia,
+                    "DNS id {id:#06x}, response {response}"
+                );
+            }
+        }
+        // A resolver's priming query asks for the root name itself: one
+        // zero octet.
+        let priming = [
+            0x9Au8, 0x15, 0x00, 0x00, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 2, 0, 1,
+        ];
+        assert_eq!(quoted_media_kind(&priming), QuotedMediaKind::NotMedia);
+    }
+
+    /// Each rule of the question is load-bearing: a message wrong in exactly
+    /// one of them is not DNS, and falls to the RTP bar.
+    #[test]
+    fn a_question_wrong_in_any_one_rule_is_not_dns() {
+        let head = |qdcount: u8| vec![0x9Au8, 0x15, 0x01, 0x00, 0, qdcount, 0, 0, 0, 0, 0, 0];
+        let with = |qdcount: u8, name: &[u8], qtype: u8, qclass: u8| {
+            let mut m = head(qdcount);
+            m.extend_from_slice(name);
+            m.extend_from_slice(&[0, qtype, 0, qclass]);
+            m
+        };
+        let long_label = [&[64u8][..], &[b'a'; 64], &[0]].concat();
+        let long_name: Vec<u8> = std::iter::repeat_n([&[63u8][..], &[b'a'; 63]].concat(), 5)
+            .flatten()
+            .chain([0])
+            .collect();
+        for (why, m) in [
+            ("two questions", with(2, b"\x07example\x03com\x00", 1, 1)),
+            ("a 64-octet label", with(1, &long_label, 1, 1)),
+            ("a name over 255 octets", with(1, &long_name, 1, 1)),
+            ("a compression pointer", with(1, b"\xC0\x0C", 1, 1)),
+            ("type zero", with(1, b"\x07example\x03com\x00", 0, 1)),
+            ("class two", with(1, b"\x07example\x03com\x00", 1, 2)),
+        ] {
+            assert!(
+                matches!(quoted_media_kind(&m), QuotedMediaKind::Rtp { .. }),
+                "{why}"
+            );
+        }
+        for class in [1u8, 3, 4, 255] {
+            assert_eq!(
+                quoted_media_kind(&with(1, b"\x07example\x03com\x00", 1, class)),
+                QuotedMediaKind::NotMedia,
+                "class {class}"
+            );
+        }
+        // mDNS sets the class's top bit to ask for a unicast answer.
+        let mut unicast = with(1, b"\x07example\x03com\x00", 1, 1);
+        let class_hi = unicast.len() - 2;
+        unicast[class_hi] = 0x80;
+        assert_eq!(quoted_media_kind(&unicast), QuotedMediaKind::NotMedia);
+    }
+
+    /// A quote that stops before the question's class cannot be told from
+    /// RTP by its question, so it is read on the RTP bar as before rather
+    /// than guessed at.
+    #[test]
+    fn a_dns_question_cut_short_is_not_claimed_as_dns() {
+        let full = dns_message(0x9A15, false);
+        let cut = &full[..full.len() - 2];
+        assert!(matches!(
+            quoted_media_kind(cut),
+            QuotedMediaKind::Rtp { .. }
+        ));
+    }
+
+    /// RTP whose timestamp happens to begin 0x0001 -- the question count's
+    /// position in a DNS header -- is still RTP: its payload is no DNS name.
+    #[test]
+    fn rtp_that_shares_a_dns_header_prefix_is_still_rtp() {
+        let mut p = vec![0x80u8, 0x60, 0x12, 0x34, 0x00, 0x01, 0x5F, 0x90];
+        p.extend_from_slice(&0x0BAD_F00Du32.to_be_bytes());
+        p.extend_from_slice(&[0xF4, 0x7A, 0x33, 0x01, 0x9C, 0x00, 0x42, 0x17]);
+        assert_eq!(
+            quoted_media_kind(&p),
+            QuotedMediaKind::Rtp {
+                ssrc: 0x0BAD_F00D,
+                payload_type: 0x60
+            }
+        );
     }
 
     /// [RFC 5761 section 4](https://www.rfc-editor.org/rfc/rfc5761#section-4) reserves payload types 64-95 so RTP and RTCP can share one

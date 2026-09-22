@@ -846,6 +846,66 @@ impl SipnabMcp {
         self
     }
 
+    /// Confine a frame pointer's source to the file root.
+    ///
+    /// A source is a capture file's path, or `<archive>/<member>` for a member
+    /// of an archive. Either way only a NAME is taken from the pointer and
+    /// looked up with [`Self::resolve_in_root`] — the capture's name, or the
+    /// archive's — so a pointer can never reach a file outside the root,
+    /// however it spells its path. The archive reading is tried first: a
+    /// member's own file name may happen to match a separate capture in the
+    /// root, and following it there would return a different frame.
+    ///
+    /// # Returns
+    ///
+    /// `(confined source, name to show)`. The confined source is what
+    /// [`crate::capture::resolve`] is handed; the name is the in-root file
+    /// name, or `<archive name>/<member>`.
+    ///
+    /// # Errors
+    ///
+    /// The refusal from [`Self::resolve_in_root`] for the capture's own name,
+    /// when no reading reaches a file in the root.
+    pub(crate) fn confine_pointer_source(
+        &self,
+        source: &str,
+    ) -> Result<(String, String), rmcp::ErrorData> {
+        let path = std::path::Path::new(source);
+        for ancestor in path.ancestors().skip(1) {
+            let Some(name) = ancestor.file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
+            let Ok(archive) = self.resolve_in_root(name) else {
+                continue;
+            };
+            let is_archive = archive.is_file()
+                && matches!(
+                    crate::capture::archive::container_format(&archive),
+                    Ok(Some(
+                        crate::capture::archive::Format::Gzip
+                            | crate::capture::archive::Format::Tar
+                    ))
+                );
+            if !is_archive {
+                continue;
+            }
+            let Ok(rest) = path.strip_prefix(ancestor) else {
+                continue;
+            };
+            let rest = rest.to_string_lossy();
+            return Ok((
+                format!("{}/{rest}", archive.display()),
+                format!("{name}/{rest}"),
+            ));
+        }
+        let leaf = path
+            .file_name()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let resolved = self.resolve_in_root(&leaf)?;
+        Ok((resolved.display().to_string(), leaf))
+    }
+
     /// Resolve a caller-supplied FILENAME inside the configured root.
     ///
     /// The only accepted input is a bare filename. Anything with a separator,
@@ -7125,7 +7185,7 @@ impl SipnabMcp {
                                 pointer.source
                             ),
                         }),
-                        Some(name) => match self.resolve_in_root(&name) {
+                        Some(_) => match self.confine_pointer_source(&pointer.source) {
                             Err(e) => serde_json::json!({
                                 "pointer": text,
                                 "status": "unresolvable",
@@ -7135,12 +7195,12 @@ impl SipnabMcp {
                                     pointer.source, e.message
                                 ),
                             }),
-                            Ok(path) => {
+                            Ok((confined_source, name)) => {
                                 // Resolve against the CONFINED path, never the
                                 // one the pointer carried.
                                 let confined = crate::capture::packet::FrameRef {
                                     bytes: None,
-                                    source: path.display().to_string().into(),
+                                    source: confined_source.into(),
                                     origin: pointer.origin,
                                     // Confining rewrites the PATH, never what
                                     // kind of thing the pointer named.
@@ -7228,9 +7288,12 @@ impl SipnabMcp {
         })?;
         for entry in entries.flatten() {
             let path = entry.path();
-            let is_capture = path.extension().and_then(|e| e.to_str()).is_some_and(|e| {
-                e.eq_ignore_ascii_case("pcap") || e.eq_ignore_ascii_case("pcapng")
-            });
+            // The same rule the TUI's file browser lists by, so an archive
+            // or a compressed capture sipnab reads is offered here too.
+            let is_capture = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(crate::capture::archive::is_capture_file_name);
             // Files only: a directory here would tempt a caller into a path.
             if !is_capture || !path.is_file() {
                 continue;
@@ -7314,9 +7377,9 @@ impl SipnabMcp {
             .map(|e| e.path())
             .filter(|p| {
                 p.is_file()
-                    && p.extension().and_then(|e| e.to_str()).is_some_and(|e| {
-                        e.eq_ignore_ascii_case("pcap") || e.eq_ignore_ascii_case("pcapng")
-                    })
+                    && p.file_name()
+                        .and_then(|n| n.to_str())
+                        .is_some_and(crate::capture::archive::is_capture_file_name)
             })
             .collect();
         candidates.sort();
@@ -9528,6 +9591,76 @@ mod tests {
         root
     }
 
+    /// Write a gzip-compressed tar of `members` (name, fixture path) into
+    /// `root` as `name`.
+    fn tgz_into(root: &std::path::Path, name: &str, members: &[(&str, &str)]) {
+        use crate::capture::archive::tar::testutil::{Spec, build};
+        use std::io::Write;
+        let bytes: Vec<(String, Vec<u8>)> = members
+            .iter()
+            .map(|(n, src)| {
+                let from = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(src);
+                (n.to_string(), std::fs::read(from).expect("fixture"))
+            })
+            .collect();
+        let specs: Vec<Spec<'_>> = bytes.iter().map(|(n, d)| Spec::file(n, d)).collect();
+        let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        enc.write_all(&build(&specs)).expect("gzip");
+        std::fs::write(root.join(name), enc.finish().expect("gzip")).expect("write tgz");
+    }
+
+    /// An archive in the root is listed: `open_capture` and
+    /// `find_in_captures` read it as the set it holds, so hiding it would
+    /// leave an agent unable to name a capture sipnab can read.
+    #[tokio::test]
+    async fn list_captures_lists_an_archive() {
+        let root = sweep_root("list-archive", &[], &[]);
+        tgz_into(
+            &root,
+            "session.tgz",
+            &[("a.pcap", "tests/pcap-samples/sip-rtp-g711.pcap")],
+        );
+        let srv = server_with_dialog("caps@x").with_file_root(&root);
+        let result = srv.list_captures().await.expect("list_captures");
+        let v: serde_json::Value = serde_json::from_str(&text_of(&result)).expect("json");
+        let names: Vec<&str> = v["captures"]
+            .as_array()
+            .expect("captures")
+            .iter()
+            .filter_map(|c| c["filename"].as_str())
+            .collect();
+        assert_eq!(names, vec!["session.tgz"]);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The sweep reads inside an archive, and names the archive as the file
+    /// holding the call.
+    #[tokio::test]
+    async fn find_in_captures_reads_inside_an_archive() {
+        let root = sweep_root("archive-hit", &[], &[]);
+        tgz_into(
+            &root,
+            "bundle.tgz",
+            &[
+                ("x/register.pcap", "tests/pcap-samples/sip-register.pcap"),
+                ("x/call.pcap", "tests/pcap-samples/sip-rtp-g711.pcap"),
+            ],
+        );
+        let srv = server_with_dialog("loaded@test").with_file_root(&root);
+        let r = srv
+            .find_in_captures(Parameters(FindInCapturesParams {
+                filter: "call_id == \"1-1966@10.0.2.20\"".to_string(),
+                ..Default::default()
+            }))
+            .await
+            .expect("the sweep succeeds");
+        let v: serde_json::Value = serde_json::from_str(&text_of(&r)).expect("json");
+        let sweep = &v["sweep"];
+        assert_eq!(sweep["matches"][0]["filename"], "bundle.tgz", "{sweep}");
+        assert_eq!(sweep["complete"], true, "{sweep}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// The sweep names the file holding the call, and leaves the loaded
     /// capture exactly as it was.
     ///
@@ -10062,6 +10195,59 @@ mod tests {
             "the frame bytes must be returned, not just a success flag: {v}"
         );
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// A pointer into a member of an archive in the file root resolves: the
+    /// archive is confined to the root by name, exactly as a plain capture
+    /// is, and the member is read out of it.
+    #[tokio::test]
+    async fn show_evidence_follows_a_pointer_into_an_archive_member() {
+        let root = sweep_root("evidence-archive", &[], &[]);
+        tgz_into(
+            &root,
+            "set.tgz",
+            &[("x/reg.pcap", "tests/pcap-samples/sip-register.pcap")],
+        );
+        let srv = server_with_dialog("archive@test").with_file_root(&root);
+        let pointer = format!("{}/set.tgz/x/reg.pcap#0", root.display());
+        let result = srv
+            .show_evidence(Parameters(ShowEvidenceParams {
+                refs: vec![pointer],
+                max_bytes: None,
+            }))
+            .await
+            .expect("the call succeeds");
+        let v: serde_json::Value = serde_json::from_str(&text_of(&result)).expect("json");
+        assert_eq!(v["resolved"], 1, "{v}");
+        let hex = v["frames"][0]["hex"].as_str().unwrap_or_default();
+        assert!(hex.split_whitespace().count() >= 8, "{v}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// An archive OUTSIDE the root is not reachable through a member label,
+    /// any more than a capture outside it is through its path.
+    #[tokio::test]
+    async fn show_evidence_refuses_an_archive_member_outside_the_root() {
+        let root = sweep_root("evidence-archive-in", &[], &[]);
+        let outside = sweep_root("evidence-archive-out", &[], &[]);
+        tgz_into(
+            &outside,
+            "set.tgz",
+            &[("x/reg.pcap", "tests/pcap-samples/sip-register.pcap")],
+        );
+        let srv = server_with_dialog("archive@test").with_file_root(&root);
+        let pointer = format!("{}/set.tgz/x/reg.pcap#0", outside.display());
+        let result = srv
+            .show_evidence(Parameters(ShowEvidenceParams {
+                refs: vec![pointer],
+                max_bytes: None,
+            }))
+            .await
+            .expect("the call answers");
+        let v: serde_json::Value = serde_json::from_str(&text_of(&result)).expect("json");
+        assert_eq!(v["resolved"], 0, "{v}");
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&outside);
     }
 
     /// `resolve_in_root`, so a crafted pointer can at worst name a file the

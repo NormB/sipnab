@@ -1117,7 +1117,7 @@ curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" http://127.0.0.1:8080/v1/dial
 
 **Response:** the WAV bytes, `Content-Type: audio/wav`, with a
 `Content-Disposition` naming the download after a sanitized Call-ID. An
-`X-Sipnab-Audio-Partial` header carries one bit — `true` when the file falls
+`Sipnab-Audio-Partial` header carries one bit — `true` when the file falls
 short of the call — so a program branches on it without parsing the RIFF chunks.
 
 **A provenance note travels inside the file, not only in a header.** It names the
@@ -1839,7 +1839,7 @@ curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" \
 ```
 
 ```bash
-yanglint -t data sipnab-diagnosis@2026-09-21.yang analysis.json
+yanglint -t data sipnab-diagnosis@2026-09-22.yang analysis.json
 ```
 
 It is the same analysis in a different encoding: the YANG section of

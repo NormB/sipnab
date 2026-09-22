@@ -3,7 +3,7 @@
 `sipnab.com` is served by GitHub Pages behind the Cloudflare proxy. GitHub
 Pages cannot set response headers, so a Cloudflare **response-header
 transform rule** injects them at the edge: HSTS (1y, includeSubDomains),
-CSP, X-Content-Type-Options, X-Frame-Options, Referrer-Policy,
+CSP, X-Content-Type-Options, Referrer-Policy,
 Permissions-Policy, COOP and CORP.
 
 The CSP's `script-src` allows the site's inline `<script>` blocks by

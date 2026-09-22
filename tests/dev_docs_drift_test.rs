@@ -744,7 +744,15 @@ fn linked_code_targets_exist() {
     // links it. Attributed by counting `](../../` links on every page under
     // `docs/internals/` against HEAD: rtpengine-control-plane.md moved
     // 25 -> 26, and no other page changed.
-    const EXPECTED_CODE_LINKS: usize = 450;
+    // 446 -> 448: two, in `docs/internals/invariants.md`, where invariant 4
+    // gains the bounds on an archive named with `-I` and links
+    // `src/capture/archive/mod.rs`, the walk that enforces them, and
+    // `src/capture/archive/tar.rs`, whose long-name cap it names. Attributed
+    // by diffing `docs/internals/` against HEAD: invariants.md gained exactly
+    // those two links and no other page changed.
+    // Merge of the fixtures branch with main: 446 +4 (fixtures) +2 (archive
+    // invariants) = 452. Each side's attribution is above.
+    const EXPECTED_CODE_LINKS: usize = 452;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \
