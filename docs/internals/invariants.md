@@ -227,6 +227,15 @@ one-at-a-time removal from the index is O(n) under sustained pressure) and
 `rotate=false` drops new arrivals once full. The stream store evicts
 oldest-out at `max_streams`. TCP/IP reassembly caps entries, per-datagram size
 and per-stream buffered bytes in [`reassembly.rs`](../../src/capture/reassembly.rs).
+An archive named with `-I` is attacker-shaped input of the same kind, and its
+walk in [`archive`](../../src/capture/archive/mod.rs) stops rather than evicts:
+every gzip layer's output counts against `--max-gunzip-bytes`, summed across
+the layers of one input, nesting stops at `MAX_DEPTH` (4) wrappers and an
+archive at `MAX_ENTRIES` (10,000) entries, and the walk throws away whole the
+member it was writing when a ceiling hits. Inside the tar reader
+([`tar.rs`](../../src/capture/archive/tar.rs)), `MAX_META_BYTES` (1 MiB) caps
+the one thing held in memory in proportion to the input, the text of a long
+name or a pax header.
 The digest detector in [`digest_leak.rs`](../../src/security/digest_leak.rs)
 remembers at most `MAX_NONCE_ENTRIES` (10,000) challenge nonce values, each
 with the transaction that carried it, and drops an arbitrary one to admit the

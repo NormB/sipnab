@@ -917,6 +917,15 @@ enum LinkType {
     PppEther,
 }
 
+/// Whether sipnab decodes frames of libpcap link type `dlt` at all.
+///
+/// The same closed set every frame is dispatched on, so a reader deciding what
+/// to do with a whole file cannot disagree with the parser about one frame.
+#[must_use]
+pub fn link_type_is_decoded(dlt: i32) -> bool {
+    LinkType::from_dlt(dlt).is_some()
+}
+
 impl LinkType {
     /// Recognize a captured frame's libpcap link-type number.
     ///

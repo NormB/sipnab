@@ -363,12 +363,16 @@ pub fn write_pcap(path: &Path, frames: &[Vec<u8>]) {
 /// Wrap `data` in a gzip member built from STORED (uncompressed) deflate
 /// blocks.
 ///
-/// `flate2` is a main dependency, so an integration test cannot compress with
-/// it — and a checked-in `.gz` fixture would be a binary blob nobody can read
-/// a diff of. Stored blocks are the one deflate encoding short enough to emit
-/// by hand, and every gzip reader accepts them, which is all a test of the
-/// INFLATION CAP needs: the cap counts bytes coming out, not how they were
-/// packed.
+/// A checked-in `.gz` fixture would be a binary blob nobody can read a diff
+/// of, so the test builds one. Stored blocks are the one deflate encoding short
+/// enough to emit by hand, and every gzip reader accepts them, which is all a
+/// test of the INFLATION CAP needs: the cap counts bytes coming out, not how
+/// they were packed.
+///
+/// An integration test CAN compress for real when it needs to: `flate2` is a
+/// non-optional main dependency, and those are in scope for `tests/`. Only an
+/// OPTIONAL dependency such as `pcap` is out of reach, which is what the
+/// module header means. This comment used to say the opposite.
 pub fn gzip_stored(data: &[u8]) -> Vec<u8> {
     // Fixed header: magic, deflate method, no flags, no mtime, no extra
     // flags, unknown OS.
@@ -629,6 +633,16 @@ pub fn sip_call_frames(
 /// `secrets` is embedded as a TLS key-log DSB (`TLSK`), the type Wireshark and
 /// sipnab both write for `--tls-key` material.
 pub fn write_pcapng_with_dsb(path: &Path, secrets: &str, frame: &[u8]) {
+    write_pcapng_with_dsb_frames(path, secrets, &[frame.to_vec()]);
+}
+
+/// [`write_pcapng_with_dsb`] with any number of frames, the n-th stamped n ms
+/// after the epoch (the first at zero, as the single-frame writer has always
+/// stamped it).
+///
+/// A decryption test needs a whole session after the secrets: the handshake
+/// the keys belong to and the records they open.
+pub fn write_pcapng_with_dsb_frames(path: &Path, secrets: &str, frames: &[Vec<u8>]) {
     fn block(kind: u32, body: &[u8]) -> Vec<u8> {
         // total = 12 (type + 2x length) + padded body
         let pad = (4 - body.len() % 4) % 4;
@@ -666,17 +680,20 @@ pub fn write_pcapng_with_dsb(path: &Path, secrets: &str, frame: &[u8]) {
     dsb.extend_from_slice(secrets.as_bytes());
     out.extend_from_slice(&block(0x0000_000a, &dsb));
 
-    // Enhanced Packet: interface 0, zero timestamp, one frame.
-    let mut epb = Vec::new();
-    epb.extend_from_slice(&0u32.to_le_bytes());
-    epb.extend_from_slice(&0u32.to_le_bytes());
-    epb.extend_from_slice(&0u32.to_le_bytes());
-    epb.extend_from_slice(&(frame.len() as u32).to_le_bytes());
-    epb.extend_from_slice(&(frame.len() as u32).to_le_bytes());
-    epb.extend_from_slice(frame);
-    let pad = (4 - frame.len() % 4) % 4;
-    epb.extend(std::iter::repeat_n(0u8, pad));
-    out.extend_from_slice(&block(0x0000_0006, &epb));
+    // Enhanced Packets: interface 0, microsecond timestamps split high/low.
+    for (i, frame) in frames.iter().enumerate() {
+        let ts = i as u64 * 1_000;
+        let mut epb = Vec::new();
+        epb.extend_from_slice(&0u32.to_le_bytes());
+        epb.extend_from_slice(&((ts >> 32) as u32).to_le_bytes());
+        epb.extend_from_slice(&(ts as u32).to_le_bytes());
+        epb.extend_from_slice(&(frame.len() as u32).to_le_bytes());
+        epb.extend_from_slice(&(frame.len() as u32).to_le_bytes());
+        epb.extend_from_slice(frame);
+        let pad = (4 - frame.len() % 4) % 4;
+        epb.extend(std::iter::repeat_n(0u8, pad));
+        out.extend_from_slice(&block(0x0000_0006, &epb));
+    }
 
     std::fs::write(path, out).expect("write pcapng");
 }

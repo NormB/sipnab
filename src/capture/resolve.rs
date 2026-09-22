@@ -206,14 +206,12 @@ pub fn parse_pointer(text: &str) -> Result<FrameRef, ResolveError> {
     })
 }
 
-/// Follow a pointer back to the frame's bytes.
+/// [`resolve`], plus the libpcap link type of the capture the frame is in.
 ///
 /// # Errors
 ///
-/// Returns [`ResolveError`] rather than bytes whenever the answer would be a
-/// guess: the source will not open, it is too short, or the frame there is
-/// not the frame the pointer was made against.
-pub fn resolve(pointer: &FrameRef) -> Result<Resolution, ResolveError> {
+/// As [`resolve`].
+pub fn resolve_with_link_type(pointer: &FrameRef) -> Result<(Resolution, i32), ResolveError> {
     // Refuse before touching the filesystem. These bytes were read out of a
     // process and never existed as a frame, so every filesystem answer below
     // would be about the wrong question.
@@ -224,18 +222,14 @@ pub fn resolve(pointer: &FrameRef) -> Result<Resolution, ResolveError> {
             ordinal: pointer.origin.ordinal,
         });
     }
-    let path = Path::new(&*pointer.source);
-    let (mut cap, _guard) =
-        super::file::open_offline(path).map_err(|e| ResolveError::Unreadable {
-            source: pointer.source.to_string(),
-            cause: format!("{e:#}"),
-        })?;
+    let (mut cap, _guard) = open_source(&pointer.source)?;
+    let link_type = cap.get_datalink().0;
 
     let mut seen: u64 = 0;
     while let Ok(pkt) = cap.next_packet() {
         if seen == pointer.origin.ordinal {
             let bytes = pkt.data.to_vec();
-            return Ok(match pointer.origin.digest {
+            let resolution = match pointer.origin.digest {
                 // Nothing to check against. Say so rather than implying a
                 // check happened.
                 None => Resolution::Unverified(bytes),
@@ -246,7 +240,8 @@ pub fn resolve(pointer: &FrameRef) -> Result<Resolution, ResolveError> {
                         ordinal: pointer.origin.ordinal,
                     });
                 }
-            });
+            };
+            return Ok((resolution, link_type));
         }
         seen += 1;
     }
@@ -256,6 +251,186 @@ pub fn resolve(pointer: &FrameRef) -> Result<Resolution, ResolveError> {
         ordinal: pointer.origin.ordinal,
         frames_present: seen,
     })
+}
+
+/// Whatever [`open_source`] had to write out to open a capture, deleted on
+/// drop.
+enum SourceGuard {
+    /// A file on disk, or a compressed one inflated by `open_offline`.
+    File {
+        /// Held only to be dropped.
+        _inflated: Option<super::file::OfflineGuard>,
+    },
+    /// A member written out of an archive.
+    Member {
+        /// Held only to be dropped.
+        _dir: super::archive::ExtractDir,
+    },
+}
+
+/// Open the capture a pointer's source names: a file, or — when the source is
+/// `<archive>/<member>` — that member, written out of the archive afresh.
+///
+/// Written out afresh rather than taken from wherever a run extracted it,
+/// because a pointer outlives the run that minted it. The walk is the one the
+/// run used, so a label it produced finds the same member here.
+fn open_source(source: &str) -> Result<(pcap::Capture<pcap::Offline>, SourceGuard), ResolveError> {
+    let unreadable = |cause: String| ResolveError::Unreadable {
+        source: source.to_string(),
+        cause,
+    };
+    let path = Path::new(source);
+    if !path.exists()
+        && let Some(archive) = super::archive::locate_member(source)
+    {
+        let limits = super::archive::Limits::for_run();
+        return match super::archive::extract_member(&archive, source, &limits) {
+            Ok(Some((member, dir))) => pcap::Capture::from_file(&member.path)
+                .map(|cap| (cap, SourceGuard::Member { _dir: dir }))
+                .map_err(|e| unreadable(e.to_string())),
+            Ok(None) => Err(unreadable(format!(
+                "'{}' holds no member named '{}'",
+                archive.display(),
+                source
+                    .strip_prefix(&archive.display().to_string())
+                    .map_or(source, |rest| rest.trim_start_matches('/'))
+            ))),
+            Err(e) => Err(unreadable(e.to_string())),
+        };
+    }
+    super::file::open_offline(path)
+        .map(|(cap, guard)| (cap, SourceGuard::File { _inflated: guard }))
+        .map_err(|e| unreadable(format!("{e:#}")))
+}
+
+/// Follow a pointer back to the frame's bytes.
+///
+/// # Errors
+///
+/// Returns [`ResolveError`] rather than bytes whenever the answer would be a
+/// guess: the source will not open, it is too short, or the frame there is
+/// not the frame the pointer was made against.
+pub fn resolve(pointer: &FrameRef) -> Result<Resolution, ResolveError> {
+    resolve_with_link_type(pointer).map(|(resolution, _)| resolution)
+}
+
+#[cfg(test)]
+mod archive_member_tests {
+    use super::*;
+    use crate::capture::archive::tar::testutil::{Spec, build};
+    use crate::capture::packet::{FrameOrigin, FrameRef, FrameSource};
+    use std::io::Write;
+
+    /// A classic pcap holding one record per frame, each stamped a second on.
+    fn pcap_of(link_type: u32, frames: &[&[u8]]) -> Vec<u8> {
+        let mut f = Vec::new();
+        f.extend_from_slice(&0xa1b2_c3d4u32.to_le_bytes());
+        f.extend_from_slice(&2u16.to_le_bytes());
+        f.extend_from_slice(&4u16.to_le_bytes());
+        for v in [0u32, 0, 65_535, link_type] {
+            f.extend_from_slice(&v.to_le_bytes());
+        }
+        for (i, frame) in frames.iter().enumerate() {
+            for v in [1_000 + i as u32, 0, frame.len() as u32, frame.len() as u32] {
+                f.extend_from_slice(&v.to_le_bytes());
+            }
+            f.extend_from_slice(frame);
+        }
+        f
+    }
+
+    fn gzip(data: &[u8]) -> Vec<u8> {
+        let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        enc.write_all(data).expect("gzip");
+        enc.finish().expect("gzip")
+    }
+
+    fn pointer(source: &str, ordinal: u64) -> FrameRef {
+        FrameRef {
+            source: std::sync::Arc::from(source),
+            origin: FrameOrigin {
+                ordinal,
+                digest: None,
+                verifiable: true,
+            },
+            kind: FrameSource::Wire,
+            bytes: None,
+        }
+    }
+
+    /// A pointer whose source is `<archive>/<member>` resolves to that frame
+    /// of that member, through a gzip layer and a nested archive alike.
+    #[test]
+    fn a_pointer_into_an_archive_member_resolves() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let a = pcap_of(1, &[b"a-zero", b"a-one"]);
+        let b = pcap_of(1, &[b"b-zero", b"b-one", b"b-two"]);
+        let inner = build(&[Spec::file("b.pcap.gz", &gzip(&b))]);
+        let outer = build(&[Spec::file("dir/a.pcap", &a), Spec::file("in.tar", &inner)]);
+        let path = tmp.path().join("set.tgz");
+        std::fs::write(&path, gzip(&outer)).expect("write");
+        let root = path.display().to_string();
+
+        let got = resolve(&pointer(&format!("{root}/dir/a.pcap"), 1)).expect("resolves");
+        assert_eq!(got, Resolution::Unverified(b"a-one".to_vec()));
+        let got = resolve(&pointer(&format!("{root}/in.tar/b.pcap.gz"), 2)).expect("nested");
+        assert_eq!(got.bytes(), b"b-two");
+    }
+
+    /// The link type comes back with the bytes, from the member itself: a
+    /// pointer into an archive has no file of its own to reopen for it.
+    #[test]
+    fn the_members_link_type_comes_back_with_the_frame() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let cooked = pcap_of(113, &[b"sll-frame"]);
+        let path = tmp.path().join("c.tar");
+        std::fs::write(&path, build(&[Spec::file("c.pcap", &cooked)])).expect("write");
+        let (res, link_type) =
+            resolve_with_link_type(&pointer(&format!("{}/c.pcap", path.display()), 0))
+                .expect("resolves");
+        assert_eq!(res.bytes(), b"sll-frame");
+        assert_eq!(link_type, 113);
+    }
+
+    /// A label naming no member is refused with the archive and the name, not
+    /// "file not found": the archive is right there.
+    #[test]
+    fn a_label_naming_no_member_is_refused_by_name() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let path = tmp.path().join("s.tar");
+        std::fs::write(
+            &path,
+            build(&[Spec::file("real.pcap", &pcap_of(1, &[b"x"]))]),
+        )
+        .expect("write");
+        let err = resolve(&pointer(&format!("{}/missing.pcap", path.display()), 0))
+            .expect_err("no such member");
+        let msg = err.to_string();
+        assert!(
+            matches!(err, ResolveError::Unreadable { .. }) && msg.contains("no member"),
+            "{msg}"
+        );
+    }
+
+    /// A member holding fewer frames than the ordinal is `NoSuchFrame`, the
+    /// same answer a short file gives.
+    #[test]
+    fn an_ordinal_past_a_members_end_is_no_such_frame() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let path = tmp.path().join("s.tar");
+        std::fs::write(&path, build(&[Spec::file("m.pcap", &pcap_of(1, &[b"x"]))])).expect("write");
+        let err = resolve(&pointer(&format!("{}/m.pcap", path.display()), 5)).expect_err("short");
+        assert!(
+            matches!(
+                err,
+                ResolveError::NoSuchFrame {
+                    frames_present: 1,
+                    ..
+                }
+            ),
+            "{err}"
+        );
+    }
 }
 
 #[cfg(test)]

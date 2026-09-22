@@ -417,8 +417,11 @@ and `Tab` again returns to the browser.
 | Home / End (typed path) | Jump to the start or end of the path |
 | Delete | Typed path: delete the character under the cursor |
 
-The browser lists `.pcap`, `.pcapng`, and `.cap` files, plus their
-gzip-compressed forms (`*.pcap.gz`, …), which sipnab decompresses on the fly.
+The browser lists `.pcap`, `.pcapng`, and `.cap` files, their
+gzip-compressed forms (`*.pcap.gz`, …), and archives of captures (`.tar`,
+`.tgz`, `.tar.gz`). sipnab decompresses on the fly, and loads an archive as the
+set of captures it holds, member by member into one view. The status line says
+how many captures came out of the archive and how many members it did not read.
 If sipnab cannot read the directory — most often because it started with
 `sudo` and dropped privileges to an unprivileged user that can't read your
 home directory — the dialog shows the reason instead of a blank list. Run

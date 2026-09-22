@@ -961,11 +961,13 @@ one's first packet arrived.
 
 **Parameters:** none.
 
-**It lists `.pcap` and `.pcapng` only**, matched case-insensitively, and skips
-directories. That is narrower than what [`open_capture`](#open-capture) accepts,
-which is any readable capture the name resolves to — a `.cap` file sitting in
-the root opens fine and never appears here, so an agent that treats this listing
-as the whole set it may open misses it. Ask the operator, or try the name.
+**It lists what sipnab can open by name:** `.pcap`, `.pcapng` and `.cap`
+files, their gzip-compressed forms such as `*.pcap.gz`, and archives of captures
+(`.tar`, `.tgz`, `.tar.gz`), matched case-insensitively. It skips directories.
+The TUI's file browser lists by the same rule. [`open_capture`](#open-capture)
+accepts one thing this listing leaves out, a capture with no extension at all,
+so an agent that treats the listing as the whole set it may open misses those.
+Ask the operator, or try the name.
 
 ```jsonc
 list_captures {}
@@ -981,9 +983,9 @@ directory is empty" are different facts:
 ```
 
 Otherwise it answers with `captures` sorted by filename, plus
-`schema_version`. Running it against `tests/pcap-samples` returns 30 of the
-directory's 36 entries. The six it leaves out are five `.cap` captures and one
-file carrying no extension at all:
+`schema_version`. Running it against `tests/pcap-samples` returns 36 of the
+directory's 38 entries. The two it leaves out are `PROVENANCE.md`, which is not
+a capture, and one capture carrying no extension at all:
 
 ```jsonc
 // list_captures {}
@@ -1008,7 +1010,9 @@ turn. Opening one is not free: [`open_capture`](#open-capture) replaces the
 loaded capture and voids every cursor and Call-ID an agent is holding. The key
 reads `null` whenever sipnab got no first packet out of the file — a rotated
 capture that never received one, or a file it could not open — so treat `null`
-as "unknown", not as "empty". sipnab reports neither a dialog count nor a
+as "unknown", not as "empty". An archive always reads `null`: its first packet
+belongs to whichever member holds the earliest traffic, and finding out means
+unpacking it. sipnab reports neither a dialog count nor a
 last-packet time here, because both need the whole file parsed and a listing
 that costs a full read of every capture in the root is a listing nobody runs.
 
@@ -1025,7 +1029,9 @@ the only way inside another file is [`open_capture`](#open-capture), documented
 `capture_identity` that voids every cursor you hold.
 
 This sweeps instead: a scratch store per file, the filter applied, **the loaded
-capture untouched**.
+capture untouched**. An archive in the root counts as one file: the sweep reads
+every capture inside it into the one scratch store, and a match names the
+archive.
 
 | Name | Type | Legal values | If omitted |
 |---|---|---|---|
@@ -5857,10 +5863,11 @@ with a different `-I` does the same job and leaves a clean store behind, so
 prefer that.
 
 **Parameters:** `filename` (string, required) — a bare filename inside
-`--mcp-file-root`, under the rule every file tool applies. Unlike
-[`list_captures`](#list-captures), any capture format libpcap reads is fine,
-`.cap` included. No optional parameters, and no way to ask for a merge: this
-replaces the stores rather than adding to them.
+`--mcp-file-root`, under the rule every file tool applies. Any capture format
+libpcap reads is fine, and an archive (`.tar`, `.tgz`, `.tar.gz`) loads as the
+set of captures it holds, in first-packet order, into the one store. No optional
+parameters, and no way to ask for a merge: this replaces the stores rather than
+adding to them.
 
 Returns `status` (`"loading"`), `filename`, `path`, the **new**
 `capture_identity`, `discarded_dialogs`, `note` and `schema_version`.

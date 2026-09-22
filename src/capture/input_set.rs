@@ -104,6 +104,10 @@ pub struct ResolveOptions {
 #[derive(Debug, Clone)]
 pub struct ResolvedInput {
     /// Path to the capture file.
+    ///
+    /// For a member of an archive this is the file it was extracted to, which
+    /// every reader opens like any other capture. It is never the name the
+    /// member goes by: see [`Self::label`].
     pub path: PathBuf,
     /// Epoch seconds of the first packet, used for ordering.
     ///
@@ -111,6 +115,68 @@ pub struct ResolvedInput {
     /// an empty file has no position in a timeline, and putting it first would
     /// let it define the start of the capture window.
     pub first_packet: Option<f64>,
+    /// The name a member of an archive goes by — `<archive>/<member>` — or
+    /// `None` for a file read where it lies. See [`crate::capture::archive`].
+    pub label: Option<std::sync::Arc<str>>,
+}
+
+impl ResolvedInput {
+    /// The name this input goes by in output: its archive label, or its path.
+    #[must_use]
+    pub fn name(&self) -> std::borrow::Cow<'_, str> {
+        match &self.label {
+            Some(label) => std::borrow::Cow::Borrowed(label),
+            None => self.path.to_string_lossy(),
+        }
+    }
+}
+
+/// A resolved set that owns whatever it had to extract so it could be read.
+///
+/// Dropping it deletes the extracted members and stops readers naming them by
+/// their labels, so it must outlive every read of [`Self::inputs`].
+#[derive(Debug, Default)]
+pub struct ResolvedSet {
+    /// The files to read, in read order.
+    pub inputs: Vec<ResolvedInput>,
+    /// Extracted archive members, held for as long as the set is.
+    extractions: Vec<crate::capture::archive::KeptExtraction>,
+    /// An archive in the set could not be walked to its end, or a member
+    /// broke off early, so the set is short of what the archive holds.
+    incomplete: bool,
+    /// Candidates found and not read: archive members skipped with a reason,
+    /// and found files or members libpcap would not open.
+    not_read: usize,
+}
+
+impl std::ops::Deref for ResolvedSet {
+    type Target = [ResolvedInput];
+
+    fn deref(&self) -> &Self::Target {
+        &self.inputs
+    }
+}
+
+impl ResolvedSet {
+    /// Found candidates that were not read — each already named in the log
+    /// with its reason — for a surface that reports a load in one line.
+    #[must_use]
+    pub fn members_not_read(&self) -> usize {
+        self.not_read
+    }
+
+    /// Whether an archive in the set could not be read to its end, so every
+    /// count taken from the set is a floor.
+    #[must_use]
+    pub fn incomplete(&self) -> bool {
+        self.incomplete
+    }
+
+    /// The paths to hand a reader, in read order.
+    #[must_use]
+    pub fn paths(&self) -> Vec<PathBuf> {
+        self.inputs.iter().map(|r| r.path.clone()).collect()
+    }
 }
 
 /// What resolution left out of the set it returned.
@@ -145,6 +211,12 @@ struct ResolveTally {
     filtered_out: usize,
     /// Repeat paths collapsed so the file is read once.
     duplicates: usize,
+    /// Archive members not read, each named with its reason as it happened:
+    /// empty, not a capture, a link, a format sipnab does not unwrap.
+    members_skipped: usize,
+    /// Archives the walk could not finish, or members that broke off before
+    /// their end. What lay past that point is not in the set.
+    archives_cut_short: usize,
 }
 
 impl ResolveTally {
@@ -161,6 +233,8 @@ impl ResolveTally {
             + self.unreadable
             + self.filtered_out
             + self.duplicates
+            + self.members_skipped
+            + self.archives_cut_short
             > 0
     }
 
@@ -171,7 +245,13 @@ impl ResolveTally {
     /// `--recursive` setting, which nobody typed — is capture the run does not
     /// contain and the reader has no other way to learn about.
     fn lossy(&self) -> bool {
-        self.not_descended + self.link_to_dir + self.unusable + self.unreachable + self.unreadable
+        self.not_descended
+            + self.link_to_dir
+            + self.unusable
+            + self.unreachable
+            + self.unreadable
+            + self.members_skipped
+            + self.archives_cut_short
             > 0
     }
 
@@ -194,6 +274,14 @@ impl ResolveTally {
             (self.unreadable, "file(s) that are not readable captures"),
             (self.filtered_out, "file(s) excluded by --input-name"),
             (self.duplicates, "repeat path(s) read once"),
+            (
+                self.members_skipped,
+                "archive member(s) not read (each named above with its reason)",
+            ),
+            (
+                self.archives_cut_short,
+                "archive(s) or member(s) cut short (each named above)",
+            ),
         ] {
             if n > 0 {
                 line.push_str(", ");
@@ -214,12 +302,45 @@ impl ResolveTally {
 /// as a capture, when a glob pattern is malformed, or when the whole set
 /// resolves to no readable file.
 pub fn resolve(specs: &[String], opts: &ResolveOptions) -> Result<Vec<ResolvedInput>> {
+    let set = resolve_reporting(specs, opts)?;
+    let ResolvedSet {
+        inputs,
+        extractions,
+        incomplete,
+        not_read: _,
+    } = set;
+    if incomplete {
+        crate::output::run_integrity::record_archives_cut_short();
+    }
+    // The CLI's `-I` set is read by threads this function never sees end, so
+    // what it extracted is held for the life of the run.
+    for kept in extractions {
+        crate::capture::archive::keep_for_run(kept);
+    }
+    Ok(inputs)
+}
+
+/// [`resolve`], returning a set that owns what it extracted.
+///
+/// For the readers that open a capture on request — the TUI's file browser,
+/// MCP `open_capture`, the REST compare route — which read the whole set and
+/// are then done with it, so the extracted members can go when they are.
+///
+/// # Errors
+///
+/// As [`resolve`].
+pub fn resolve_set(specs: &[String], opts: &ResolveOptions) -> Result<ResolvedSet> {
+    resolve_reporting(specs, opts)
+}
+
+/// Resolve, and report what resolution left out.
+fn resolve_reporting(specs: &[String], opts: &ResolveOptions) -> Result<ResolvedSet> {
     let (resolved, tally) = resolve_counting(specs, opts)?;
 
     // Reported here rather than left to the caller, so it reaches the operator
     // for every `-I` path there is without each of them remembering to ask.
     if tally.dropped_any() {
-        let line = tally.summary(resolved.len(), opts.recursive);
+        let line = tally.summary(resolved.inputs.len(), opts.recursive);
         if tally.lossy() {
             tracing::warn!("{line}");
         } else {
@@ -227,7 +348,7 @@ pub fn resolve(specs: &[String], opts: &ResolveOptions) -> Result<Vec<ResolvedIn
         }
     }
 
-    warn_on_overlap(&resolved);
+    warn_on_overlap(&resolved.inputs);
     Ok(resolved)
 }
 
@@ -242,7 +363,7 @@ pub fn resolve(specs: &[String], opts: &ResolveOptions) -> Result<Vec<ResolvedIn
 fn resolve_counting(
     specs: &[String],
     opts: &ResolveOptions,
-) -> Result<(Vec<ResolvedInput>, ResolveTally)> {
+) -> Result<(ResolvedSet, ResolveTally)> {
     if specs.is_empty() {
         bail!("no capture input given");
     }
@@ -289,9 +410,46 @@ fn resolve_counting(
     }
 
     let mut resolved: Vec<ResolvedInput> = Vec::new();
+    let mut extractions: Vec<crate::capture::archive::KeptExtraction> = Vec::new();
     for (path, explicit) in candidates {
+        // A wrapper — gzip, tar, or both — is unwrapped here, before libpcap
+        // is asked, and its captures join the set like files found in a
+        // directory. See `crate::capture::archive`.
+        match crate::capture::archive::container_format(&path) {
+            Ok(Some(
+                crate::capture::archive::Format::Gzip | crate::capture::archive::Format::Tar,
+            )) => {
+                expand_archive(
+                    &path,
+                    explicit,
+                    name_pat.as_ref(),
+                    &mut tally,
+                    &mut resolved,
+                    &mut extractions,
+                )?;
+                continue;
+            }
+            Ok(Some(other)) => {
+                let why = crate::capture::archive::SkipReason::Unsupported(other);
+                if explicit {
+                    bail!(
+                        "cannot read capture '{}' named with -I: {why}",
+                        path.display()
+                    );
+                }
+                tally.unreadable += 1;
+                tracing::warn!("Skipping '{}': {why}", path.display());
+                continue;
+            }
+            // A capture, or something libpcap will judge: the path below.
+            Ok(None) | Err(_) => {}
+        }
         match first_packet_time(&path) {
-            Ok(first_packet) => resolved.push(ResolvedInput { path, first_packet }),
+            Ok(first_packet) => resolved.push(ResolvedInput {
+                path,
+                first_packet,
+                label: None,
+            }),
             Err(e) if explicit => {
                 return Err(e).with_context(|| {
                     format!("cannot read capture '{}' named with -I", path.display())
@@ -328,10 +486,117 @@ fn resolve_counting(
             (None, Some(_)) => std::cmp::Ordering::Greater,
             (None, None) => std::cmp::Ordering::Equal,
         }
-        .then_with(|| a.path.cmp(&b.path))
+        .then_with(|| a.name().cmp(&b.name()))
     });
 
-    Ok((resolved, tally))
+    Ok((
+        ResolvedSet {
+            inputs: resolved,
+            extractions,
+            incomplete: tally.archives_cut_short > 0,
+            not_read: tally.members_skipped + tally.unreadable,
+        },
+        tally,
+    ))
+}
+
+/// Unwrap one archive (or compressed capture) into the set.
+///
+/// Every capture inside joins `resolved`, labeled `<archive>/<member>`; every
+/// member that is not one is named with its reason and counted. An archive is
+/// treated like a directory: its members are *found*, not named, so one that
+/// will not open is skipped with a warning rather than failing the run.
+///
+/// # Errors
+///
+/// Only when an archive named directly cannot be opened at all.
+fn expand_archive(
+    path: &Path,
+    explicit: bool,
+    name_pat: Option<&glob::Pattern>,
+    tally: &mut ResolveTally,
+    resolved: &mut Vec<ResolvedInput>,
+    extractions: &mut Vec<crate::capture::archive::KeptExtraction>,
+) -> Result<()> {
+    use crate::capture::archive;
+
+    let keep = |name: &str| name_pat.is_none_or(|p| p.matches(name));
+    let mut exp = match archive::expand_filtered(path, &archive::Limits::for_run(), Some(&keep)) {
+        Ok(exp) => exp,
+        Err(e) if explicit => {
+            return Err(e).with_context(|| {
+                format!("cannot read capture '{}' named with -I", path.display())
+            });
+        }
+        Err(e) => {
+            tally.unreadable += 1;
+            tracing::warn!("Skipping '{}': cannot unpack it ({e})", path.display());
+            return Ok(());
+        }
+    };
+    tally.filtered_out += exp.filtered;
+    for skipped in &exp.skipped {
+        tally.members_skipped += 1;
+        tracing::warn!("Skipping '{}': {}", skipped.label, skipped.reason);
+    }
+    for stop in &exp.stops {
+        tally.archives_cut_short += 1;
+        tracing::warn!("'{}': {stop}", path.display());
+    }
+
+    let mut labels = Vec::with_capacity(exp.members.len());
+    let mut read = 0usize;
+    for member in &exp.members {
+        if let Some(why) = &member.cut_short {
+            tally.archives_cut_short += 1;
+            tracing::warn!(
+                "'{}' ends before its archive says it should ({why}); the packets \
+                 before that point are read",
+                member.label
+            );
+        }
+        match first_packet_time(&member.path) {
+            Ok(first_packet) => {
+                read += 1;
+                resolved.push(ResolvedInput {
+                    path: member.path.clone(),
+                    first_packet,
+                    label: Some(std::sync::Arc::from(member.label.as_str())),
+                });
+                labels.push((member.path.clone(), member.label.clone()));
+            }
+            Err(e) => {
+                tally.unreadable += 1;
+                tracing::warn!(
+                    "Skipping '{}': not a readable capture ({e:#})",
+                    member.label
+                );
+            }
+        }
+    }
+
+    let layers = exp
+        .members
+        .first()
+        .map(|m| {
+            m.layers
+                .iter()
+                .map(|l| l.name())
+                .collect::<Vec<_>>()
+                .join(" > ")
+        })
+        .unwrap_or_default();
+    tracing::info!(
+        "'{}' unpacked ({layers}): {read} capture(s) to read, {} member(s) not read, \
+         {} directory entr(ies)",
+        path.display(),
+        exp.skipped.len() + exp.members.len() - read,
+        exp.directories
+    );
+    if let Some(dir) = exp.take_dir() {
+        extractions.push(archive::KeptExtraction::new(dir, labels));
+    }
+    Ok(())
 }
 
 /// Expand one `-I` argument. Returns `(path, explicitly_named)` pairs.
@@ -415,6 +680,7 @@ fn expand_one(
         // filtered something.
         if let Some(pat) = name_pat
             && !name_matches(pat, &path)
+            && !crate::capture::archive::holds_members(&path)
         {
             bail!(
                 "-I '{spec}' names a file directly, which --input-name '{pat}' does not \
@@ -601,8 +867,8 @@ fn warn_on_overlap(resolved: &[ResolvedInput]) {
         tracing::warn!(
             "'{}' and '{}' start at the same instant — if these are two captures of \
              the same traffic, packets present in both are counted twice",
-            resolved[i].path.display(),
-            resolved[j].path.display()
+            resolved[i].name(),
+            resolved[j].name()
         );
     }
 }
@@ -852,12 +1118,209 @@ mod tests {
         enc.write_all(&raw).expect("compress");
         enc.finish().expect("finish");
 
-        let out = resolve(&[spec(root.path())], &ResolveOptions::default()).expect("resolve");
+        // `resolve_set`, not `resolve`: the gzip member is inflated to a file
+        // the set owns, and `resolve` would hand that file to the run-long
+        // holder a test process never releases.
+        let out = resolve_set(&[spec(root.path())], &ResolveOptions::default()).expect("resolve");
         assert_eq!(out.len(), 2, "both members must resolve: {out:?}");
         assert!(
             out.iter().all(|r| r.first_packet.is_some()),
             "the gzip member must be probed through the decompressor, not skipped: {out:?}"
         );
+    }
+
+    /// A one-packet classic pcap whose packet is stamped `secs`.
+    fn pcap_at(secs: u32, payload: &[u8]) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(&0xa1b2_c3d4u32.to_le_bytes());
+        out.extend_from_slice(&2u16.to_le_bytes());
+        out.extend_from_slice(&4u16.to_le_bytes());
+        for v in [
+            0u32,
+            0,
+            65535,
+            1,
+            secs,
+            0,
+            payload.len() as u32,
+            payload.len() as u32,
+        ] {
+            out.extend_from_slice(&v.to_le_bytes());
+        }
+        out.extend_from_slice(payload);
+        out
+    }
+
+    fn gzip(data: &[u8]) -> Vec<u8> {
+        use std::io::Write;
+        let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        enc.write_all(data).expect("gzip");
+        enc.finish().expect("gzip")
+    }
+
+    fn tar_of(entries: &[(&str, &[u8])]) -> Vec<u8> {
+        use crate::capture::archive::tar::testutil::{Spec, build};
+        let specs: Vec<Spec<'_>> = entries.iter().map(|(n, d)| Spec::file(n, d)).collect();
+        build(&specs)
+    }
+
+    /// A `.tgz` resolves to its capture members, ordered by their packets and
+    /// not by where they sit in the archive, each named `<archive>/<member>`.
+    #[test]
+    fn an_archive_resolves_to_its_members_in_timestamp_order() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let tar = tar_of(&[
+            ("set/later.pcap", &pcap_at(2_000, b"b")),
+            ("set/earlier.pcap", &pcap_at(1_000, b"a")),
+        ]);
+        let tgz = root.path().join("set.tgz");
+        std::fs::write(&tgz, gzip(&tar)).expect("write");
+
+        let (set, tally) =
+            resolve_counting(&[spec(&tgz)], &ResolveOptions::default()).expect("resolve");
+        let names: Vec<String> = set.inputs.iter().map(|r| r.name().to_string()).collect();
+        let root_name = tgz.display().to_string();
+        assert_eq!(
+            names,
+            vec![
+                format!("{root_name}/set/earlier.pcap"),
+                format!("{root_name}/set/later.pcap")
+            ]
+        );
+        assert!(!tally.dropped_any(), "{tally:?}");
+        assert!(
+            set.inputs.iter().all(|r| r.path.is_file() && r.path != tgz),
+            "each member is read from a file of its own"
+        );
+    }
+
+    /// An archive found by walking a directory joins that directory's set,
+    /// the same way any other capture in it does.
+    #[test]
+    fn an_archive_inside_a_directory_joins_its_set() {
+        let root = tempfile::tempdir().expect("tempdir");
+        std::fs::write(root.path().join("loose.pcap"), pcap_at(3_000, b"c")).expect("write");
+        std::fs::write(
+            root.path().join("bundle.tar"),
+            tar_of(&[
+                ("x.pcap", &pcap_at(1_000, b"x")),
+                ("y.pcap", &pcap_at(2_000, b"y")),
+            ]),
+        )
+        .expect("write");
+        let (set, _) =
+            resolve_counting(&[spec(root.path())], &ResolveOptions::default()).expect("resolve");
+        let names: Vec<String> = set
+            .inputs
+            .iter()
+            .map(|r| {
+                Path::new(&*r.name())
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or_default()
+                    .to_string()
+            })
+            .collect();
+        assert_eq!(names, vec!["x.pcap", "y.pcap", "loose.pcap"]);
+    }
+
+    /// Members that are not captures are counted and named, never silently
+    /// dropped, and never cost the rest of the archive.
+    #[test]
+    fn non_capture_members_are_counted_in_the_reconciling_line() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let tar = tar_of(&[
+            ("empty.pcap", b""),
+            ("notes.txt", b"a note, not a capture"),
+            ("ok.pcap", &pcap_at(1_000, b"ok")),
+        ]);
+        let path = root.path().join("mixed.tar");
+        std::fs::write(&path, tar).expect("write");
+        let (set, tally) =
+            resolve_counting(&[spec(&path)], &ResolveOptions::default()).expect("resolve");
+        assert_eq!(set.inputs.len(), 1);
+        assert_eq!(tally.members_skipped, 2, "{tally:?}");
+        assert!(
+            tally.lossy(),
+            "a member that was not read is reported as a warning"
+        );
+        let line = tally.summary(set.inputs.len(), false);
+        assert!(line.contains("2 archive member(s)"), "{line}");
+    }
+
+    /// `--input-name` filters an archive's members the way it filters a
+    /// directory's files; it still refuses a single file named directly.
+    #[test]
+    fn input_name_filters_archive_members() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let tar = tar_of(&[
+            ("keep-1.pcap", &pcap_at(1_000, b"1")),
+            ("drop.pcap", &pcap_at(2_000, b"2")),
+            ("keep-2.pcap", &pcap_at(3_000, b"3")),
+        ]);
+        let path = root.path().join("ring.tgz");
+        std::fs::write(&path, gzip(&tar)).expect("write");
+        let opts = ResolveOptions {
+            name_glob: Some("keep-*".to_string()),
+            ..ResolveOptions::default()
+        };
+        let (set, tally) = resolve_counting(&[spec(&path)], &opts).expect("resolve");
+        assert_eq!(set.inputs.len(), 2);
+        assert_eq!(tally.filtered_out, 1);
+
+        let single = root.path().join("one.pcap.gz");
+        std::fs::write(&single, gzip(&pcap_at(1_000, b"1"))).expect("write");
+        let err = resolve_counting(&[spec(&single)], &opts).expect_err("refused");
+        assert!(
+            format!("{err:#}").contains("names a file directly"),
+            "{err:#}"
+        );
+    }
+
+    /// An archive with nothing readable in it, named on its own, is an error
+    /// naming why, not an empty analysis.
+    #[test]
+    fn an_archive_with_no_capture_in_it_fails_the_run() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let path = root.path().join("docs.tar");
+        std::fs::write(&path, tar_of(&[("README", b"nothing to see")])).expect("write");
+        let err = resolve_counting(&[spec(&path)], &ResolveOptions::default())
+            .expect_err("nothing readable");
+        assert!(
+            format!("{err:#}").contains("no readable capture"),
+            "{err:#}"
+        );
+    }
+
+    /// Readers name a member by its label, not by the file it was extracted
+    /// to, for as long as the set that extracted it is alive.
+    #[test]
+    fn readers_see_the_member_label_while_the_set_lives() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let path = root.path().join("a.tar");
+        std::fs::write(&path, tar_of(&[("m.pcap", &pcap_at(1_000, b"m"))])).expect("write");
+        let set = resolve_set(&[spec(&path)], &ResolveOptions::default()).expect("resolve");
+        let member = set.inputs[0].path.clone();
+        let label = format!("{}/m.pcap", path.display());
+        assert_eq!(crate::capture::archive::source_name(&member), label);
+        drop(set);
+        assert!(!member.exists(), "the extracted member outlived its set");
+        assert_eq!(
+            crate::capture::archive::source_name(&member),
+            member.display().to_string()
+        );
+    }
+
+    /// A compressed format sipnab does not unwrap, named directly, is refused
+    /// with its name rather than libpcap's "unknown file format".
+    #[test]
+    fn an_unsupported_wrapper_is_named_in_the_refusal() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let path = root.path().join("cap.pcap.zst");
+        std::fs::write(&path, [0x28, 0xb5, 0x2f, 0xfd, 0, 0, 0, 0]).expect("write");
+        let err =
+            resolve_counting(&[spec(&path)], &ResolveOptions::default()).expect_err("refused");
+        assert!(format!("{err:#}").contains("Zstandard"), "{err:#}");
     }
 
     /// A glob matching nothing is an error rather than an empty analysis.
@@ -1032,6 +1495,7 @@ mod tests {
     #[test]
     fn two_captures_starting_microseconds_apart_are_the_same_instant() {
         let at = |t: f64| ResolvedInput {
+            label: None,
             path: PathBuf::from(format!("cap-{t}")),
             first_packet: Some(t),
         };
@@ -1051,6 +1515,7 @@ mod tests {
     #[test]
     fn a_clean_ring_buffer_handover_is_not_the_same_instant() {
         let at = |t: f64| ResolvedInput {
+            label: None,
             path: PathBuf::from(format!("cap-{t}")),
             first_packet: Some(t),
         };

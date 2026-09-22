@@ -675,7 +675,7 @@ fn shard_opened<S: ShardSink>(
     // single-threaded run however many threads did the reading. Without the
     // stamp, every fact a parallel run produced carried no `frame_ref` at all,
     // so `--cores` silently dropped packet provenance from every surface.
-    let source: std::sync::Arc<str> = std::sync::Arc::from(path.display().to_string());
+    let source: std::sync::Arc<str> = crate::capture::archive::source_arc(path);
     let mut ordinal: u64 = 0;
 
     // One partial batch per shard, this FILE's own; see the doc comment.
@@ -777,7 +777,7 @@ fn shard_opened<S: ShardSink>(
             Err(e) => {
                 read.stopped = Some(anyhow::anyhow!(
                     "Error reading pcap '{}': {e}",
-                    path.display()
+                    crate::capture::archive::source_name(path)
                 ));
                 break;
             }
@@ -926,7 +926,7 @@ impl<'a> Frames<'a> {
             // is indistinguishable from a log that was never wired up.
             tracing::debug!(
                 "A BPF filter is set, so '{}' reads via libpcap, which applies it",
-                path.display()
+                crate::capture::archive::source_name(path)
             );
         }
         if may_map {
@@ -934,16 +934,22 @@ impl<'a> Frames<'a> {
             // gzip, so this is debug-level rather than a warning.
             match crate::capture::mapped::MappedPcap::open(path) {
                 Ok(Some(m)) => {
-                    tracing::debug!("Mapped '{}' for a copy-free read", path.display());
+                    tracing::debug!(
+                        "Mapped '{}' for a copy-free read",
+                        crate::capture::archive::source_name(path)
+                    );
                     return Frames::Mapped(Box::new(m));
                 }
                 Ok(None) => {
-                    tracing::debug!("'{}' cannot be mapped; reading via libpcap", path.display());
+                    tracing::debug!(
+                        "'{}' cannot be mapped; reading via libpcap",
+                        crate::capture::archive::source_name(path)
+                    );
                 }
                 Err(e) => {
                     tracing::debug!(
                         "Mapping '{}' failed ({e}); reading via libpcap",
-                        path.display()
+                        crate::capture::archive::source_name(path)
                     );
                 }
             }
@@ -1073,13 +1079,23 @@ fn shard_set(
             Err(e) => {
                 tally.skipped += 1;
                 tally.lost = true;
-                tracing::error!("Skipping '{}': {e:#}", path.display());
+                tracing::error!(
+                    "Skipping '{}': {e:#}",
+                    crate::capture::archive::source_name(path)
+                );
                 continue;
             }
         };
         if let Some(ref bpf) = capture_config.bpf_filter
             && let Err(e) = cap.filter(bpf, true)
         {
+            if let Some(line) =
+                crate::capture::file::undecodable_filter_skip(path, cap.get_datalink().0, bpf, &e)
+            {
+                tally.skipped += 1;
+                tracing::warn!("{line}");
+                continue;
+            }
             // Counted as a skip BEFORE the refusal is propagated: a file whose
             // traffic never reached the workers is data missing from the
             // analysis, and the caller reports the tally on every path out — so
@@ -1101,7 +1117,10 @@ fn shard_set(
             // set is which of the forty.
             return Err(crate::capture::file::filter_failure(bpf, path, e));
         }
-        tracing::info!("Reading from '{}'", path.display());
+        tracing::info!(
+            "Reading from '{}'",
+            crate::capture::archive::source_name(path)
+        );
         // A read error stops THIS file, not the set. Truncation is the normal
         // state of a ring buffer — the newest member is still being written when
         // the capture stops, and libpcap reports `truncated dump file` on the
@@ -1130,7 +1149,7 @@ fn shard_set(
                 tally.lost = true;
                 tracing::error!(
                     "Stopped reading '{}' early: {e:#}. Continuing with the rest of the set.",
-                    path.display()
+                    crate::capture::archive::source_name(path)
                 );
             }
         }
@@ -1243,6 +1262,10 @@ enum FileOutcome {
     OpenFailed(anyhow::Error),
     /// The BPF filter would not compile against this file's link type.
     FilterFailed(anyhow::Error),
+    /// The filter would not compile, and sipnab does not decode this file's
+    /// link type, so the file is skipped rather than ending the set. Carries
+    /// the line that says so.
+    Undecodable(String),
     /// The file was opened and read; [`FileRead::stopped`] says whether the
     /// read reached the end.
     Read(FileRead),
@@ -1519,6 +1542,11 @@ fn read_one_file(
     if let Some(ref bpf) = capture_config.bpf_filter
         && let Err(e) = cap.filter(bpf, true)
     {
+        if let Some(line) =
+            crate::capture::file::undecodable_filter_skip(path, cap.get_datalink().0, bpf, &e)
+        {
+            return FileOutcome::Undecodable(line);
+        }
         return FileOutcome::FilterFailed(crate::capture::file::filter_failure(bpf, path, e));
     }
     let mut sink = QueueSink { file, tx, runway };
@@ -1723,7 +1751,10 @@ fn dispatch_in_file_order(
         let mut announced = false;
         let announce = |announced: &mut bool| {
             if !*announced {
-                tracing::info!("Reading from '{}'", path.display());
+                tracing::info!(
+                    "Reading from '{}'",
+                    crate::capture::archive::source_name(path)
+                );
                 *announced = true;
             }
         };
@@ -1758,7 +1789,7 @@ fn dispatch_in_file_order(
                             tally.lost = true;
                             tracing::error!(
                                 "Stopped reading '{}' early: {e:#}. Continuing with the rest of the set.",
-                                path.display()
+                                crate::capture::archive::source_name(path)
                             );
                         }
                     }
@@ -1775,7 +1806,17 @@ fn dispatch_in_file_order(
                     }
                     tally.skipped += 1;
                     tally.lost = true;
-                    tracing::error!("Skipping '{}': {e:#}", path.display());
+                    tracing::error!(
+                        "Skipping '{}': {e:#}",
+                        crate::capture::archive::source_name(path)
+                    );
+                    break;
+                }
+                Ok(ReaderMsg::Done(FileOutcome::Undecodable(line))) => {
+                    // Not announced: the file is not read, and the serial
+                    // reader does not say "Reading from" for it either.
+                    tally.skipped += 1;
+                    tracing::warn!("{line}");
                     break;
                 }
                 Ok(ReaderMsg::Done(FileOutcome::FilterFailed(e))) => {
@@ -1794,7 +1835,7 @@ fn dispatch_in_file_order(
                     // failure this whole module's tally exists to prevent.
                     return Err(anyhow::anyhow!(
                         "the reader thread for '{}' stopped without reporting",
-                        path.display()
+                        crate::capture::archive::source_name(path)
                     ));
                 }
             }
@@ -2860,6 +2901,44 @@ mod tests {
             "the refusal must name the file it refused on, or a forty-file set \
              leaves the operator nothing to act on: {parallel}"
         );
+    }
+
+    /// A member whose link type sipnab does not decode is skipped by BOTH
+    /// readers when the filter will not compile against it, with and without
+    /// a `--count` budget (which picks the serial dispatcher). Refusing would
+    /// end the set over a file whose frames could not have been analyzed
+    /// anyway — an LTE MAC capture inside an archive of SIP captures.
+    #[cfg(feature = "native")]
+    #[test]
+    fn both_readers_skip_an_undecodable_member_under_a_filter() {
+        use crate::capture::CaptureConfig;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mac = dir.path().join("mac.pcap");
+        let mut f = Vec::new();
+        f.extend_from_slice(&0xa1b2_c3d4u32.to_le_bytes());
+        f.extend_from_slice(&2u16.to_le_bytes());
+        f.extend_from_slice(&4u16.to_le_bytes());
+        for v in [0u32, 0, 65_535, 149, 1_000, 0, 4, 4] {
+            f.extend_from_slice(&v.to_le_bytes());
+        }
+        f.extend_from_slice(&[1, 2, 3, 4]);
+        std::fs::write(&mac, f).expect("write");
+        let eth = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/pcap-samples/sip-rtp-g711.pcap");
+        let paths = vec![eth, mac];
+        for count in [None, Some(1_000_000)] {
+            let cc = CaptureConfig {
+                bpf_filter: Some("udp".to_string()),
+                count,
+                ..CaptureConfig::default()
+            };
+            let (tx, _rx) = crate::capture::channel::packet_channel(1024);
+            crate::capture::file::capture_files(&paths, &cc, tx, None)
+                .expect("the single-threaded reader skips it");
+            if run_offline_parallel_file(&paths, &cc, pcfg(4)).is_err() {
+                panic!("--cores must skip it too (count {count:?})");
+            }
+        }
     }
 
     // ── One reader thread per file ─────────────────────────────────
