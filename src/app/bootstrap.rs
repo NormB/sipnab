@@ -2429,6 +2429,83 @@ fn spawn_kill_worker(
     }
 }
 
+/// Gather the run's archive passwords from every configured source and
+/// install them for `-I` to use.
+///
+/// Before anything reads an input, and before the immediate commands, since
+/// `--strip-secrets` and `--write-annotated` resolve `-I` too. Core dumps are
+/// suppressed for any run that holds a password, as they are for one holding
+/// decryption keys; with `--allow-coredump` it says a dump would contain it.
+///
+/// # Errors
+///
+/// When a configured source cannot supply a password, or the build has no
+/// `archive` feature and a password flag was given. The message names the
+/// source and never the password.
+pub fn install_archive_passwords(cli: &Cli) -> Result<(), String> {
+    #[cfg(feature = "archive")]
+    {
+        use crate::capture::archive::password;
+        let args = &cli.archive_args;
+        let cfg = password::SourceConfig {
+            file: args.archive_password_file.clone(),
+            command: args.archive_password_command.clone(),
+            stdin: args.archive_password_stdin,
+            credentials_directory: std::env::var_os("CREDENTIALS_DIRECTORY")
+                .map(std::path::PathBuf::from),
+            environment: std::env::var_os(password::ENV_VAR),
+            inline: args.archive_password.clone(),
+            command_timeout: None,
+        };
+        let pinned = args
+            .archive_password_encoding
+            .as_deref()
+            .map(str::parse::<password::Encoding>)
+            .transpose()?;
+        if !cfg.any() {
+            return Ok(());
+        }
+        guard_core_dumps_for_passwords(cli.tls_args.allow_coredump)?;
+        let candidates = password::collect(&cfg, &mut std::io::stdin().lock())?;
+        tracing::debug!(
+            "{} archive password candidate(s) configured",
+            candidates.len()
+        );
+        password::install_run_keyring(password::Keyring::new(candidates, pinned));
+        Ok(())
+    }
+    #[cfg(not(feature = "archive"))]
+    {
+        if cli.archive_args.any() || std::env::var_os("SIPNAB_ARCHIVE_PASSWORD").is_some() {
+            return Err(
+                "archive passwords need the 'archive' feature, which this build does not \
+                 have"
+                    .to_string(),
+            );
+        }
+        Ok(())
+    }
+}
+
+/// Keep a password out of a core file: suppress dumps, or, when the operator
+/// allowed them, say what a dump would hold.
+///
+/// # Errors
+///
+/// When suppression is wanted and the platform refuses it.
+#[cfg(feature = "archive")]
+fn guard_core_dumps_for_passwords(allow_coredump: bool) -> Result<(), String> {
+    if allow_coredump {
+        tracing::warn!(
+            "--allow-coredump: a core dump would contain the archive password this run \
+             holds"
+        );
+        return Ok(());
+    }
+    privilege::disable_core_dumps()
+        .map_err(|e| format!("cannot keep the archive password out of a core dump: {e}"))
+}
+
 /// Handle the commands that run before config load and exit immediately
 /// (`--completions`, `--setup-caps`, `--strip-secrets`).
 ///

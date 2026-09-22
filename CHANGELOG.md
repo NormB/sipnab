@@ -12,6 +12,23 @@ entry that carries them.
 
 ### Added
 
+- **`-I` reads password-protected ZIP archives.** Point `-I` at a ZIP and
+  sipnab reads the captures inside without leaving a decrypted copy behind:
+  members stored or deflated, unencrypted, WinZip AES (128, 192 or 256-bit)
+  or legacy ZipCrypto, nested in a tar or holding one. Passwords come from
+  `--archive-password-file` (one per line, refused when you own it and others
+  can read it, as ssh refuses a key), `--archive-password-command` (run
+  without a shell), `--archive-password-stdin`, the systemd credential
+  `archive-password`, `SIPNAB_ARCHIVE_PASSWORD`, or `--archive-password`,
+  which warns on every use. A non-ASCII password also gets tried in NFC, NFD,
+  CP437, CP850 and CP1252, as one attempt, and
+  `--archive-password-encoding` pins one. Each locked member gets a `Skipping`
+  line saying `encrypted, and no password was supplied` or `encrypted, and no
+  password supplied opens it`. A named archive of which nothing opens fails the
+  run with exit status `1`, and ZipCrypto warns once per archive that it
+  protects nothing. The password appears in no log line at any level, no
+  error and no output, and a run holding one turns core dumps off. New
+  `archive` feature, part of `full`.
 - **`-I` reads archives of captures.** A `.tar`, `.tgz` or `.tar.gz` reads like
   a directory: every capture inside joins the set in capture order, and the
   answer matches reading the unpacked directory. gzip-compressed members and

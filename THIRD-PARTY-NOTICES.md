@@ -39,7 +39,7 @@ These offer a copyleft option alongside permissive ones. sipnab elects the permi
 | r-efi | MIT OR Apache-2.0 OR LGPL-2.1-or-later | **Apache-2.0** |
 | termina | MIT OR MPL-2.0 | **MIT** |
 
-## Rust crates (402)
+## Rust crates (409)
 
 | Crate | Version | License |
 |---|---|---|
@@ -103,6 +103,7 @@ These offer a copyleft option alongside permissive ones. sipnab elects the permi
 | compact_str | 0.9.0 | MIT |
 | const-oid | 0.10.2 | Apache-2.0 OR MIT |
 | const-oid | 0.9.6 | Apache-2.0 OR MIT |
+| constant_time_eq | 0.4.2 | CC0-1.0 OR MIT-0 OR Apache-2.0 |
 | convert_case | 0.10.0 | MIT |
 | core-foundation-sys | 0.8.7 | MIT OR Apache-2.0 |
 | cpubits | 0.1.1 | MIT OR Apache-2.0 |
@@ -249,6 +250,7 @@ These offer a copyleft option alongside permissive ones. sipnab elects the permi
 | parking_lot | 0.12.5 | MIT OR Apache-2.0 |
 | parking_lot_core | 0.9.12 | MIT OR Apache-2.0 |
 | pastey | 0.2.2 | MIT OR Apache-2.0 |
+| pbkdf2 | 0.13.0 | MIT OR Apache-2.0 |
 | pcap | 2.5.0 | MIT OR Apache-2.0 |
 | pcap-file | 2.0.0 | MIT |
 | pem-rfc7468 | 0.7.0 | Apache-2.0 OR MIT |
@@ -316,6 +318,7 @@ These offer a copyleft option alongside permissive ones. sipnab elects the permi
 | serde_path_to_error | 0.1.20 | MIT OR Apache-2.0 |
 | serde_spanned | 1.1.1 | MIT OR Apache-2.0 |
 | serde_urlencoded | 0.7.1 | MIT/Apache-2.0 |
+| sha1 | 0.11.0 | MIT OR Apache-2.0 |
 | sha2 | 0.10.9 | MIT OR Apache-2.0 |
 | sha2 | 0.11.0 | MIT OR Apache-2.0 |
 | sharded-slab | 0.1.7 | MIT |
@@ -355,6 +358,7 @@ These offer a copyleft option alongside permissive ones. sipnab elects the permi
 | time | 0.3.47 | MIT OR Apache-2.0 |
 | time-core | 0.1.8 | MIT OR Apache-2.0 |
 | time-macros | 0.2.27 | MIT OR Apache-2.0 |
+| tinyvec | 1.13.3 | Zlib OR Apache-2.0 OR MIT |
 | tokio | 1.53.1 | MIT |
 | tokio-macros | 2.7.0 | MIT |
 | tokio-stream | 0.1.18 | MIT |
@@ -373,9 +377,11 @@ These offer a copyleft option alongside permissive ones. sipnab elects the permi
 | tracing-log | 0.2.0 | MIT |
 | tracing-subscriber | 0.3.23 | MIT |
 | try-lock | 0.2.5 | MIT |
+| typed-path | 0.12.3 | MIT OR Apache-2.0 |
 | typenum | 1.20.1 | MIT OR Apache-2.0 |
 | ucd-trie | 0.1.7 | MIT OR Apache-2.0 |
 | unicode-ident | 1.0.24 | (MIT OR Apache-2.0) AND Unicode-3.0 |
+| unicode-normalization | 0.1.25 | MIT OR Apache-2.0 |
 | unicode-segmentation | 1.13.2 | MIT OR Apache-2.0 |
 | unicode-truncate | 2.0.1 | MIT OR Apache-2.0 |
 | unicode-width | 0.2.2 | MIT OR Apache-2.0 |
@@ -443,5 +449,6 @@ These offer a copyleft option alongside permissive ones. sipnab elects the permi
 | zerocopy-derive | 0.8.48 | BSD-2-Clause OR Apache-2.0 OR MIT |
 | zeroize | 1.9.0 | Apache-2.0 OR MIT |
 | zeroize_derive | 1.5.0 | Apache-2.0 OR MIT |
+| zip | 8.6.0 | MIT |
 | zlib-rs | 0.6.7 | Zlib |
 | zmij | 1.0.23 | MIT |

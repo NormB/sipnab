@@ -202,6 +202,14 @@ tokio = { version = "1", features = ["full"], optional = true }
 # `#[utoipa::path]` and `#[derive(OpenApi)]` live there.
 utoipa = { version = "5", optional = true }
 
+# Password-protected ZIP members (feature `archive`). READ only: sipnab never
+# writes an encrypted archive with it. The crate's own docs call its crypto
+# "insecure" for new archives, which is about ZipCrypto and about writing;
+# reading a legacy format is what this is for. Default features off: no zstd,
+# bzip2, xz or zopfli C code, only inflate through the flate2 already here.
+zip = { version = "8.6", default-features = false, features = ["aes-crypto", "deflate-flate2"], optional = true }
+unicode-normalization = { version = "0.1", optional = true }
+
 # Phase 8.1: MCP server (Model Context Protocol)
 rmcp = { version = "3", default-features = false, features = ["server", "transport-io", "macros", "schemars"], optional = true }
 
@@ -326,7 +334,13 @@ bpf = ["native", "dep:aya", "sipnab-bpf-types/pod"]
 # because media travels INLINE as base64url: the draft requires HTTPS for a
 # by-reference url and sipnab hosts nothing.
 vcon = ["native", "dep:sha2", "dep:hmac", "dep:base64"]
-full = ["native", "tui", "tls", "hep", "api", "audio", "mcp", "mcp-http", "metrics", "plugins", "vcon"]
+# Password-protected capture archives: ZIP (none, ZipCrypto, WinZip AES)
+# opened in memory with a password the operator supplies. NON-DEFAULT, and IN
+# `full`, so the pre-commit hook's `cargo test --features full` covers it.
+# `zeroize` is what clears a password when it is dropped; `unicode-normalization`
+# produces the NFC and NFD spellings a password may have been typed in.
+archive = ["native", "dep:zip", "dep:zeroize", "dep:unicode-normalization"]
+full = ["native", "tui", "tls", "hep", "api", "audio", "mcp", "mcp-http", "metrics", "plugins", "vcon", "archive"]
 
 # Userspace half of the eBPF backend. Stable Rust; only the KERNEL half needs
 # nightly.

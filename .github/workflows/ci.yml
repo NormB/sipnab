@@ -472,6 +472,10 @@ jobs:
           # this leg is what proves it still builds WITHOUT tui, tls, api or
           # mcp, which is the class of break `--all-features` cannot see.
           - vcon
+          # Password-protected ZIP input. In `full`; this leg proves it builds
+          # without tui, tls, api or mcp, the only company it keeps being
+          # `native`.
+          - archive
           - wasm
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7

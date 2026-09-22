@@ -48,7 +48,13 @@
 //! without dropping it leaves it holding a lock that died with the process,
 //! and the next extraction removes it (see [`ExtractDir`]).
 
+#[cfg(feature = "archive")]
+pub mod codepage;
+#[cfg(feature = "archive")]
+pub mod password;
 pub mod tar;
+#[cfg(feature = "archive")]
+pub mod zipped;
 
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
@@ -187,6 +193,8 @@ pub enum Layer {
     Gzip,
     /// A tar archive.
     Tar,
+    /// A ZIP archive.
+    Zip,
 }
 
 impl Layer {
@@ -196,6 +204,39 @@ impl Layer {
         match self {
             Self::Gzip => "gzip",
             Self::Tar => "tar",
+            Self::Zip => "zip",
+        }
+    }
+}
+
+/// How an archive member is encrypted, as the summary reports it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Encryption {
+    /// Not encrypted.
+    #[default]
+    None,
+    /// PKWARE's traditional ZIP encryption, which protects nothing: twelve
+    /// known bytes recover its keys.
+    ZipCrypto,
+    /// WinZip AES with a 128-bit key.
+    Aes128,
+    /// WinZip AES with a 192-bit key.
+    Aes192,
+    /// WinZip AES with a 256-bit key.
+    Aes256,
+}
+
+impl Encryption {
+    /// The name the summary uses: `none`, `zipcrypto`, `aes-128`, `aes-192`
+    /// or `aes-256`.
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::ZipCrypto => "zipcrypto",
+            Self::Aes128 => "aes-128",
+            Self::Aes192 => "aes-192",
+            Self::Aes256 => "aes-256",
         }
     }
 }
@@ -252,6 +293,8 @@ pub struct Member {
     /// the archive was cut short, or a gzip layer broke off. What arrived is
     /// still written and read, the way a truncated capture file is.
     pub cut_short: Option<String>,
+    /// How the archive member it came out of was encrypted.
+    pub encryption: Encryption,
 }
 
 /// Why a member was not read.
@@ -282,6 +325,14 @@ pub enum SkipReason {
     DuplicateName,
     /// Nested more deeply than [`Limits::max_depth`].
     TooDeep,
+    /// Encrypted, and no password was available to try.
+    EncryptedNoPassword,
+    /// Encrypted, and every password tried was wrong.
+    EncryptedWrongPassword,
+    /// Encrypted in a way sipnab cannot decrypt whatever the password.
+    EncryptionUnsupported(String),
+    /// A ZIP member compressed with a method sipnab does not inflate.
+    ZipMethod(u16),
 }
 
 impl std::fmt::Display for SkipReason {
@@ -317,6 +368,22 @@ impl std::fmt::Display for SkipReason {
                 "nested more than {MAX_DEPTH} wrappers deep, which is how a decompression \
                  bomb is built rather than how captures are shipped"
             ),
+            Self::EncryptedNoPassword => write!(
+                f,
+                "encrypted, and no password was supplied (--archive-password-file, \
+                 --archive-password-command, --archive-password-stdin, or the prompt)"
+            ),
+            Self::EncryptedWrongPassword => {
+                write!(f, "encrypted, and no password supplied opens it")
+            }
+            Self::EncryptionUnsupported(why) => {
+                write!(f, "encrypted in a way sipnab cannot decrypt ({why})")
+            }
+            Self::ZipMethod(m) => write!(
+                f,
+                "compressed with ZIP method {m}, which sipnab does not inflate; unpack it \
+                 and point -I at what comes out"
+            ),
         }
     }
 }
@@ -335,7 +402,41 @@ impl SkipReason {
             Self::OtherType(_) => "unknown entry type",
             Self::DuplicateName => "duplicate name",
             Self::TooDeep => "nested too deep",
+            Self::EncryptedNoPassword => "encrypted, no password",
+            Self::EncryptedWrongPassword => "encrypted, wrong password",
+            Self::EncryptionUnsupported(_) => "encryption unsupported",
+            Self::ZipMethod(_) => "unsupported compression",
         }
+    }
+
+    /// The reason in the vocabulary every surface's summary shares:
+    /// `encrypted_no_password`, `not_a_capture`, `nested_too_deep` and so on.
+    #[must_use]
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::Empty => "empty",
+            Self::NotACapture { .. } => "not_a_capture",
+            Self::Unsupported(_) => "unsupported_format",
+            Self::Link => "link",
+            Self::Special => "special_file",
+            Self::Sparse => "sparse",
+            Self::OtherType(_) => "unknown_entry_type",
+            Self::DuplicateName => "duplicate_name",
+            Self::TooDeep => "nested_too_deep",
+            Self::EncryptedNoPassword => "encrypted_no_password",
+            Self::EncryptedWrongPassword => "encrypted_wrong_password",
+            Self::EncryptionUnsupported(_) => "encryption_unsupported",
+            Self::ZipMethod(_) => "unsupported_compression",
+        }
+    }
+
+    /// Whether the member was skipped for want of the right password.
+    #[must_use]
+    pub fn is_locked(&self) -> bool {
+        matches!(
+            self,
+            Self::EncryptedNoPassword | Self::EncryptedWrongPassword
+        )
     }
 }
 
@@ -346,6 +447,8 @@ pub struct Skipped {
     pub label: String,
     /// Why it was not read.
     pub reason: SkipReason,
+    /// How the member was encrypted.
+    pub encryption: Encryption,
 }
 
 /// Why the walk ended before the archive did.
@@ -444,6 +547,15 @@ impl Expansion {
     }
 }
 
+/// Whether this build unwraps `format` rather than handing it to libpcap or
+/// naming it unsupported: gzip and tar always, ZIP with the `archive`
+/// feature.
+#[must_use]
+pub fn unwraps(format: Format) -> bool {
+    matches!(format, Format::Gzip | Format::Tar)
+        || (format == Format::Zip && cfg!(feature = "archive"))
+}
+
 /// Whether `path` is a wrapper this module unwraps, and which.
 ///
 /// `Ok(None)` for a capture, for an empty file, and for anything unrecognized
@@ -484,6 +596,9 @@ pub fn is_capture_file_name(name: &str) -> bool {
         // A bare ".tar" is a dotfile, not an archive of anything.
         return !matches!(lower.as_str(), ".tar" | ".tgz" | ".tar.gz");
     }
+    if cfg!(feature = "archive") && lower.ends_with(".zip") {
+        return lower != ".zip";
+    }
     // Peel an optional `.gz` so `foo.pcap.gz` is judged by its `.pcap` stem.
     let stem = lower.strip_suffix(".gz").unwrap_or(lower.as_str());
     Path::new(stem)
@@ -509,6 +624,7 @@ pub fn holds_members(path: &Path) -> bool {
     };
     match sniff(&head[..n]) {
         Format::Tar => true,
+        Format::Zip => unwraps(Format::Zip),
         Format::Gzip => {
             let mut dec = flate2::read::MultiGzDecoder::new((&head[..n]).chain(src));
             let mut inner = [0u8; tar::BLOCK];
@@ -546,12 +662,55 @@ pub fn expand_filtered(
     limits: &Limits,
     keep: Option<&dyn Fn(&str) -> bool>,
 ) -> io::Result<Expansion> {
+    #[cfg(feature = "archive")]
+    {
+        password::with_run_keyring(|keyring| expand_filtered_with(path, limits, keep, keyring))
+    }
+    #[cfg(not(feature = "archive"))]
+    {
+        expand_filtered_inner(path, limits, keep)
+    }
+}
+
+/// [`expand_filtered`] with an explicit keyring for encrypted members,
+/// instead of the run's: a REST request that brought its own password, or a
+/// test.
+///
+/// # Errors
+///
+/// As [`expand`].
+#[cfg(feature = "archive")]
+pub fn expand_filtered_with(
+    path: &Path,
+    limits: &Limits,
+    keep: Option<&dyn Fn(&str) -> bool>,
+    keyring: Option<&mut password::Keyring>,
+) -> io::Result<Expansion> {
     let mut file = io::BufReader::new(std::fs::File::open(path)?);
-    let mut walker = Walker::new(limits, None);
-    walker.keep = keep;
     let label = path.display().to_string();
+    let mut walker = Walker::new(limits, None, path, &label);
+    walker.keep = keep;
+    walker.keyring = keyring;
     // The outcome is recorded inside the walker; `Abort` only means the walk
     // could not go on, and the expansion says why.
+    let _ = walker.walk(&mut file, &label, &[], 0);
+    if let Some(e) = walker.fatal.take() {
+        return Err(e);
+    }
+    Ok(walker.out)
+}
+
+/// [`expand_filtered`] in a build without encrypted-archive support.
+#[cfg(not(feature = "archive"))]
+fn expand_filtered_inner(
+    path: &Path,
+    limits: &Limits,
+    keep: Option<&dyn Fn(&str) -> bool>,
+) -> io::Result<Expansion> {
+    let mut file = io::BufReader::new(std::fs::File::open(path)?);
+    let label = path.display().to_string();
+    let mut walker = Walker::new(limits, None, path, &label);
+    walker.keep = keep;
     let _ = walker.walk(&mut file, &label, &[], 0);
     if let Some(e) = walker.fatal.take() {
         return Err(e);
@@ -578,9 +737,56 @@ pub fn extract_member(
     label: &str,
     limits: &Limits,
 ) -> io::Result<Option<(Member, ExtractDir)>> {
+    #[cfg(feature = "archive")]
+    {
+        password::with_run_keyring(|keyring| extract_member_with(path, label, limits, keyring))
+    }
+    #[cfg(not(feature = "archive"))]
+    {
+        extract_member_inner(path, label, limits, ())
+    }
+}
+
+/// [`extract_member`] with an explicit keyring for encrypted members.
+///
+/// # Errors
+///
+/// As [`extract_member`].
+#[cfg(feature = "archive")]
+pub fn extract_member_with(
+    path: &Path,
+    label: &str,
+    limits: &Limits,
+    keyring: Option<&mut password::Keyring>,
+) -> io::Result<Option<(Member, ExtractDir)>> {
+    extract_member_inner(path, label, limits, keyring)
+}
+
+/// The keyring a walk is handed: a real one where encrypted archives are
+/// supported, nothing where they are not.
+#[cfg(feature = "archive")]
+type KeyringArg<'k> = Option<&'k mut password::Keyring>;
+/// The keyring a walk is handed: a real one where encrypted archives are
+/// supported, nothing where they are not.
+#[cfg(not(feature = "archive"))]
+type KeyringArg<'k> = ();
+
+/// [`extract_member`], with the keyring given.
+fn extract_member_inner(
+    path: &Path,
+    label: &str,
+    limits: &Limits,
+    keyring: KeyringArg<'_>,
+) -> io::Result<Option<(Member, ExtractDir)>> {
     let mut file = io::BufReader::new(std::fs::File::open(path)?);
-    let mut walker = Walker::new(limits, Some(label));
     let root = path.display().to_string();
+    let mut walker = Walker::new(limits, Some(label), path, &root);
+    #[cfg(feature = "archive")]
+    {
+        walker.keyring = keyring;
+    }
+    #[cfg(not(feature = "archive"))]
+    let () = keyring;
     let _ = walker.walk(&mut file, &root, &[], 0);
     if let Some(e) = walker.fatal.take() {
         return Err(e);
@@ -623,7 +829,7 @@ pub fn locate_member(source: &str) -> Option<PathBuf> {
             return None;
         }
         return match container_format(ancestor) {
-            Ok(Some(Format::Gzip | Format::Tar)) => Some(ancestor.to_path_buf()),
+            Ok(Some(f)) if unwraps(f) => Some(ancestor.to_path_buf()),
             _ => None,
         };
     }
@@ -741,11 +947,62 @@ struct Walker<'l> {
     /// A failure that is not about the input: the extraction directory could
     /// not be made.
     fatal: Option<io::Error>,
+    /// The file the walk started from, which a ZIP at the top can be read
+    /// from directly instead of being copied.
+    #[cfg_attr(not(feature = "archive"), allow(dead_code))]
+    root: Option<&'l Path>,
+    /// The label of [`Self::root`].
+    #[cfg_attr(not(feature = "archive"), allow(dead_code))]
+    root_label: &'l str,
+    /// Passwords for encrypted members, when any are available.
+    #[cfg(feature = "archive")]
+    keyring: Option<&'l mut password::Keyring>,
+    /// Nested archives copied out so far, for naming the copies.
+    #[cfg(feature = "archive")]
+    spills: usize,
+    /// How the member being walked is encrypted, stamped on what comes out.
+    encryption: Encryption,
+    /// Reading a member with a password that has not yet proven itself: a
+    /// stream that breaks, or data that is no capture and fails its check,
+    /// means the password was wrong rather than that the member is damaged.
+    trial: bool,
+    /// Set during a trial when what came out shows the password was wrong.
+    rejected: bool,
+    /// Labels claimed in [`Self::seen`], in order, so a trial can give back
+    /// the ones it claimed.
+    seen_log: Vec<String>,
+    /// Member files written so far, rolled-back ones included, so no name is
+    /// ever reused within one extraction directory.
+    members_written: usize,
+}
+
+/// Where a walk's records stood before a trial, so a failed one can be
+/// undone.
+#[derive(Debug, Clone, Copy)]
+struct Checkpoint {
+    /// `out.members.len()`.
+    members: usize,
+    /// `out.skipped.len()`.
+    skipped: usize,
+    /// `out.stops.len()`.
+    stops: usize,
+    /// `out.directories`.
+    directories: usize,
+    /// `out.filtered`.
+    filtered: usize,
+    /// `seen_log.len()`.
+    seen: usize,
 }
 
 impl<'l> Walker<'l> {
-    /// A walk under `limits`, materializing only `wanted` when it is set.
-    fn new(limits: &'l Limits, wanted: Option<&'l str>) -> Self {
+    /// A walk under `limits` of the file `root` labeled `root_label`,
+    /// materializing only `wanted` when it is set.
+    fn new(
+        limits: &'l Limits,
+        wanted: Option<&'l str>,
+        root: &'l Path,
+        root_label: &'l str,
+    ) -> Self {
         Self {
             limits,
             used: std::rc::Rc::new(std::cell::Cell::new(0)),
@@ -755,6 +1012,85 @@ impl<'l> Walker<'l> {
             keep: None,
             out: Expansion::default(),
             fatal: None,
+            root: Some(root),
+            root_label,
+            #[cfg(feature = "archive")]
+            keyring: None,
+            #[cfg(feature = "archive")]
+            spills: 0,
+            encryption: Encryption::None,
+            trial: false,
+            rejected: false,
+            seen_log: Vec::new(),
+            members_written: 0,
+        }
+    }
+
+    /// Claim `label` as seen; `false` when an earlier member has it.
+    fn claim(&mut self, label: &str) -> bool {
+        if !self.seen.insert(label.to_string()) {
+            return false;
+        }
+        self.seen_log.push(label.to_string());
+        true
+    }
+
+    /// Where the records stand now.
+    #[cfg_attr(not(feature = "archive"), allow(dead_code))]
+    fn checkpoint(&self) -> Checkpoint {
+        Checkpoint {
+            members: self.out.members.len(),
+            skipped: self.out.skipped.len(),
+            stops: self.out.stops.len(),
+            directories: self.out.directories,
+            filtered: self.out.filtered,
+            seen: self.seen_log.len(),
+        }
+    }
+
+    /// Whether a trial since `mark` broke: a container in it stopped short,
+    /// or a member came out cut short. Either means the bytes were not what
+    /// the archive stored, which from a password on trial means it was wrong.
+    #[cfg_attr(not(feature = "archive"), allow(dead_code))]
+    fn trial_broke(&self, mark: &Checkpoint) -> bool {
+        self.out.stops[mark.stops..]
+            .iter()
+            .any(|s| matches!(s, Stop::Broken { .. }))
+            || self.out.members[mark.members..]
+                .iter()
+                .any(|m| m.cut_short.is_some())
+    }
+
+    /// Undo everything recorded since `mark`, deleting the files it wrote.
+    #[cfg_attr(not(feature = "archive"), allow(dead_code))]
+    fn rollback(&mut self, mark: Checkpoint) {
+        for m in self.out.members.drain(mark.members..) {
+            let _ = std::fs::remove_file(&m.path);
+        }
+        self.out.skipped.truncate(mark.skipped);
+        self.out.stops.truncate(mark.stops);
+        self.out.directories = mark.directories;
+        self.out.filtered = mark.filtered;
+        for label in self.seen_log.drain(mark.seen..) {
+            self.seen.remove(&label);
+        }
+    }
+
+    /// The extraction directory, created on first use.
+    fn extract_dir(&mut self) -> Option<PathBuf> {
+        if let Some(d) = self.out.dir.as_ref() {
+            return Some(d.path().to_path_buf());
+        }
+        match ExtractDir::create() {
+            Ok(d) => {
+                let p = d.path().to_path_buf();
+                self.out.dir = Some(d);
+                Some(p)
+            }
+            Err(e) => {
+                self.fatal = Some(e);
+                None
+            }
         }
     }
 
@@ -769,10 +1105,16 @@ impl<'l> Walker<'l> {
     /// Record a member not read. A pointer-following walk records nothing:
     /// it is looking for one member, and the rest are not its business.
     fn skip(&mut self, label: &str, reason: SkipReason) {
+        self.skip_enc(label, reason, self.encryption);
+    }
+
+    /// [`Self::skip`], for a member whose encryption is known here.
+    fn skip_enc(&mut self, label: &str, reason: SkipReason, encryption: Encryption) {
         if self.wanted.is_none() {
             self.out.skipped.push(Skipped {
                 label: label.to_string(),
                 reason,
+                encryption,
             });
         }
     }
@@ -791,6 +1133,12 @@ impl<'l> Walker<'l> {
             // bytes are still a capture's prefix — kept and read, the way a
             // truncated file is — but a container cut this short holds
             // nothing that can be located, and a ceiling is a ceiling.
+            //
+            // On trial, a break this early is the password's fault.
+            if self.trial && !is_ceiling(&e) {
+                self.rejected = true;
+                return Flow::Continue;
+            }
             if n == 0 || is_ceiling(&e) || !matches!(format, Format::Pcap | Format::Pcapng) {
                 return self.broken(label, &e);
             }
@@ -806,6 +1154,11 @@ impl<'l> Walker<'l> {
                 self.write_member(&mut chained, label, layers, format, None)
             }
             Format::Gzip | Format::Tar if depth >= self.limits.max_depth => {
+                self.skip(label, SkipReason::TooDeep);
+                Flow::Continue
+            }
+            #[cfg(feature = "archive")]
+            Format::Zip if depth >= self.limits.max_depth => {
                 self.skip(label, SkipReason::TooDeep);
                 Flow::Continue
             }
@@ -826,16 +1179,32 @@ impl<'l> Walker<'l> {
                 next.push(Layer::Tar);
                 self.walk_tar(&mut chained, label, &next, depth + 1)
             }
-            Format::Zip
-            | Format::SevenZip
-            | Format::Zstd
-            | Format::Xz
-            | Format::Bzip2
-            | Format::Lz4 => {
+            #[cfg(feature = "archive")]
+            Format::Zip => self.walk_zip(&mut chained, label, layers, depth + 1),
+            #[cfg(not(feature = "archive"))]
+            Format::Zip => {
+                self.skip(label, SkipReason::Unsupported(format));
+                Flow::Continue
+            }
+            Format::SevenZip | Format::Zstd | Format::Xz | Format::Bzip2 | Format::Lz4 => {
                 self.skip(label, SkipReason::Unsupported(format));
                 Flow::Continue
             }
             Format::Unknown => {
+                // On trial, bytes that are no capture are either a member that
+                // is not one, or a wrong password ZipCrypto's check byte let
+                // through. The member's own CRC or MAC, checked at its end,
+                // tells the two apart.
+                if self.trial {
+                    match io::copy(&mut chained, &mut io::sink()) {
+                        Err(e) if is_ceiling(&e) => return self.broken(label, &e),
+                        Err(_) => {
+                            self.rejected = true;
+                            return Flow::Continue;
+                        }
+                        Ok(_) => {}
+                    }
+                }
                 let hex: Vec<String> = head.iter().take(4).map(|b| format!("{b:02x}")).collect();
                 self.skip(
                     label,
@@ -862,6 +1231,10 @@ impl<'l> Walker<'l> {
                 Ok(None) => return Flow::Continue,
                 Err(tar::TarError::Io(e)) => return self.broken(label, &e),
                 Err(e) => {
+                    if self.trial {
+                        self.rejected = true;
+                        return Flow::Continue;
+                    }
                     self.out.stops.push(Stop::Broken {
                         container: label.to_string(),
                         detail: e.to_string(),
@@ -898,7 +1271,7 @@ impl<'l> Walker<'l> {
                 self.skip(&child, reason);
                 continue;
             }
-            if !self.seen.insert(child.clone()) {
+            if !self.claim(&child) {
                 self.skip(&child, SkipReason::DuplicateName);
                 continue;
             }
@@ -931,30 +1304,26 @@ impl<'l> Walker<'l> {
         if self.wanted.is_some_and(|w| w != label) {
             return Flow::Continue;
         }
-        let dir = match self.out.dir.as_ref() {
-            Some(d) => d.path().to_path_buf(),
-            None => match ExtractDir::create() {
-                Ok(d) => {
-                    let p = d.path().to_path_buf();
-                    self.out.dir = Some(d);
-                    p
-                }
-                Err(e) => {
-                    self.fatal = Some(e);
-                    return Flow::Abort;
-                }
-            },
+        let Some(dir) = self.extract_dir() else {
+            return Flow::Abort;
         };
         let ext = if format == Format::Pcapng {
             "pcapng"
         } else {
             "pcap"
         };
-        let path = dir.join(format!("m{:05}.{ext}", self.out.members.len()));
-        let file = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&path);
+        let path = dir.join(format!("m{:05}.{ext}", self.members_written));
+        self.members_written += 1;
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        // Owner-only, whatever the umask: the member may be decrypted capture
+        // data, and the directory's own 0700 is not the only line.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let file = options.open(&path);
         let mut file = match file {
             Ok(f) => io::BufWriter::new(f),
             Err(e) => {
@@ -981,6 +1350,15 @@ impl<'l> Walker<'l> {
             // The data broke off: the archive was cut short, or a gzip layer
             // is corrupt. What arrived is a capture's prefix and is kept, the
             // way libpcap keeps the packets of a truncated file.
+            //
+            // Not on trial: there a break means the password was wrong, and
+            // what arrived is not the member at all.
+            (Err(_), _) if self.trial => {
+                drop(file);
+                let _ = std::fs::remove_file(&path);
+                self.rejected = true;
+                return Flow::Continue;
+            }
             (Err(e), _)
                 if matches!(
                     e.kind(),
@@ -1006,6 +1384,7 @@ impl<'l> Walker<'l> {
             path,
             layers: layers.to_vec(),
             cut_short,
+            encryption: self.encryption,
         });
         Flow::Continue
     }
@@ -1013,6 +1392,10 @@ impl<'l> Walker<'l> {
     /// Record that the stream feeding `label` broke, and stop: nothing after
     /// a broken read can be located.
     fn broken(&mut self, label: &str, e: &io::Error) -> Flow {
+        if self.trial && !is_ceiling(e) {
+            self.rejected = true;
+            return Flow::Continue;
+        }
         if is_ceiling(e) {
             self.out.stops.push(Stop::InflationCap {
                 limit: self.limits.max_inflated_bytes,
@@ -1485,13 +1868,91 @@ mod tests {
                     format!("{root}/zst.pcap.zst"),
                     SkipReason::Unsupported(Format::Zstd)
                 ),
+                #[cfg(not(feature = "archive"))]
                 (
                     format!("{root}/inner.zip"),
                     SkipReason::Unsupported(Format::Zip)
                 ),
             ]
         );
+        // With ZIP support the stub is opened, and a ZIP with no central
+        // directory is a container that could not be read, said as such.
+        #[cfg(feature = "archive")]
+        assert!(
+            matches!(exp.stops.as_slice(), [Stop::Broken { container, .. }]
+                if container.ends_with("/inner.zip")),
+            "{:?}",
+            exp.stops
+        );
+        #[cfg(not(feature = "archive"))]
         assert!(exp.stops.is_empty());
+    }
+
+    /// A trial that fails takes back everything it recorded: the members it
+    /// wrote, their files, its skips and stops, and the labels it claimed.
+    #[test]
+    fn a_rolled_back_trial_leaves_nothing_behind() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let root = tmp.path().join("r");
+        let lim = limits();
+        let mut w = Walker::new(&lim, None, &root, "r");
+        let kept = pcap_bytes(b"kept");
+        assert_eq!(
+            w.write_member(&mut &kept[..], "r/kept", &[], Format::Pcap, None),
+            Flow::Continue
+        );
+        assert!(w.claim("r/kept"));
+        let mark = w.checkpoint();
+        let gone = pcap_bytes(b"gone");
+        assert!(w.claim("r/gone"));
+        let _ = w.write_member(&mut &gone[..], "r/gone", &[], Format::Pcap, None);
+        w.skip("r/other", SkipReason::Empty);
+        w.out.stops.push(Stop::Broken {
+            container: "r".into(),
+            detail: "x".into(),
+        });
+        let written = w.out.members[1].path.clone();
+        assert!(w.trial_broke(&mark));
+        w.rollback(mark);
+        assert_eq!(labels(&w.out), vec!["r/kept".to_string()]);
+        assert!(w.out.skipped.is_empty() && w.out.stops.is_empty());
+        assert!(!written.exists(), "the trial's file is deleted");
+        assert!(w.claim("r/gone"), "the trial's label is free again");
+        assert!(!w.claim("r/kept"));
+    }
+
+    /// On trial, a member whose stream fails in any way is the password's
+    /// fault: the trial is rejected and nothing is recorded, rather than the
+    /// whole walk ending on a write failure.
+    #[test]
+    fn a_stream_failure_on_trial_rejects_rather_than_stops() {
+        struct Failing(Vec<u8>);
+        impl Read for Failing {
+            fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+                if self.0.is_empty() {
+                    return Err(io::Error::other("authentication failed"));
+                }
+                let n = buf.len().min(self.0.len());
+                buf[..n].copy_from_slice(&self.0[..n]);
+                self.0.drain(..n);
+                Ok(n)
+            }
+        }
+        let tmp = tempfile::tempdir().expect("tmp");
+        let root = tmp.path().join("r");
+        let lim = limits();
+        let mut w = Walker::new(&lim, None, &root, "r");
+        w.trial = true;
+        let flow = w.write_member(
+            &mut Failing(pcap_bytes(b"x")),
+            "r/m",
+            &[],
+            Format::Pcap,
+            None,
+        );
+        assert_eq!(flow, Flow::Continue);
+        assert!(w.rejected);
+        assert!(w.out.members.is_empty() && w.out.stops.is_empty());
     }
 
     /// Two layers of compression and archiving inside each other: a
@@ -1731,6 +2192,8 @@ mod tests {
             "s.tgz",
             "s.tar.gz",
             "s.TAR.GZ",
+            #[cfg(feature = "archive")]
+            "evidence.ZIP",
         ] {
             assert!(is_capture_file_name(yes), "{yes}");
         }
@@ -1738,6 +2201,7 @@ mod tests {
             "notes.txt",
             "x.gz",
             "notes.txt.gz",
+            #[cfg(not(feature = "archive"))]
             "s.zip",
             "pcap",
             "",

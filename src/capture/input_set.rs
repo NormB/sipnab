@@ -416,9 +416,7 @@ fn resolve_counting(
         // is asked, and its captures join the set like files found in a
         // directory. See `crate::capture::archive`.
         match crate::capture::archive::container_format(&path) {
-            Ok(Some(
-                crate::capture::archive::Format::Gzip | crate::capture::archive::Format::Tar,
-            )) => {
+            Ok(Some(f)) if crate::capture::archive::unwraps(f) => {
                 expand_archive(
                     &path,
                     explicit,
@@ -593,10 +591,48 @@ fn expand_archive(
         exp.skipped.len() + exp.members.len() - read,
         exp.directories
     );
+    // An archive the operator NAMED, of which nothing could be read, fails
+    // the run the way an unreadable named file does, naming each member's
+    // reason. An archive found in a directory stays a warning, as a stray
+    // file there would.
+    if explicit && read == 0 {
+        bail!(
+            "cannot read capture '{}' named with -I: no readable capture in it ({})",
+            path.display(),
+            unread_reasons(&exp)
+        );
+    }
     if let Some(dir) = exp.take_dir() {
         extractions.push(archive::KeptExtraction::new(dir, labels));
     }
     Ok(())
+}
+
+/// Each unread member of `exp` and its reason, in the shared vocabulary, for
+/// a message that fails a run. At most ten are listed.
+fn unread_reasons(exp: &crate::capture::archive::Expansion) -> String {
+    const SHOWN: usize = 10;
+    let mut parts: Vec<String> = exp
+        .skipped
+        .iter()
+        .map(|s| format!("{}: {}", s.label, s.reason.code()))
+        .collect();
+    parts.extend(
+        exp.members
+            .iter()
+            .map(|m| format!("{}: not a readable capture", m.label)),
+    );
+    parts.extend(exp.stops.iter().map(ToString::to_string));
+    if parts.is_empty() {
+        return "it holds no members".to_string();
+    }
+    let more = parts.len().saturating_sub(SHOWN);
+    parts.truncate(SHOWN);
+    let mut out = parts.join("; ");
+    if more > 0 {
+        out.push_str(&format!("; and {more} more, each named above"));
+    }
+    out
 }
 
 /// Expand one `-I` argument. Returns `(path, explicitly_named)` pairs.

@@ -244,6 +244,16 @@ member it was writing when a ceiling hits. Inside the tar reader
 ([`tar.rs`](https://github.com/NormB/sipnab/blob/main/src/capture/archive/tar.rs)), `MAX_META_BYTES` (1 MiB) caps
 the one thing held in memory in proportion to the input, the text of a long
 name or a pax header.
+A ZIP ([`zipped.rs`](https://github.com/NormB/sipnab/blob/main/src/capture/archive/zipped.rs), the `archive`
+feature) counts every member it inflates against the same ceiling, and every
+trial decryption with a password that has not yet proven itself counts too.
+A ZIP nested inside another layer gets copied out for reading, and that copy
+stops at the ceiling as well. The password layer has bounds of its own in
+[`password.rs`](https://github.com/NormB/sipnab/blob/main/src/capture/archive/password.rs): `MAX_PASSWORD_BYTES`
+(4096) per password, refused whole and never truncated,
+`MAX_PASSWORD_FILE_BYTES` (64 KiB) per password file, `MAX_COMMAND_OUTPUT`
+(64 KiB) and `COMMAND_TIMEOUT` (120 s) for `--archive-password-command`, and
+`PROMPT_ATTEMPTS` (3) prompts per archive.
 The digest detector in [`digest_leak.rs`](https://github.com/NormB/sipnab/blob/main/src/security/digest_leak.rs)
 remembers at most `MAX_NONCE_ENTRIES` (10,000) challenge nonce values, each
 with the transaction that carried it, and drops an arbitrary one to admit the
@@ -293,6 +303,25 @@ the same trigger as the core-dump hardening) so the kernel cannot page them
 out in the first place. That last one is best-effort and says so: a low
 `RLIMIT_MEMLOCK` is common and not always the operator's to change, so it
 reports whether it succeeded rather than claiming hardening it did not do.
+
+**Archive passwords are key material too.** A password that opens a
+password-protected capture archive decrypts everything inside it, so it gets
+the same treatment and a type that enforces it.
+[`ArchivePassword`](https://github.com/NormB/sipnab/blob/main/src/capture/archive/password.rs) holds bytes in a
+`zeroize::Zeroizing` buffer. It has no `Display`, `Serialize`, `Deref` or
+`as_str`, and its `Debug` prints `[REDACTED]` with no length. `compile_fail`
+doctests pin the missing accessors. Every buffer a password passes through
+gets its size before the read, because the copy a reallocation leaves behind
+is one `zeroize` never reaches. A run that holds a password suppresses core
+dumps, and `--allow-coredump` says that a dump would contain it. The password
+appears in no log line at any level, no error message, no stdout or JSON, and
+no TUI trail, setting, note or export. Error messages name the source, such as
+`--archive-password-file` or the program `--archive-password-command` ran, and
+never what it supplied. [`tests/archive_password_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/archive_password_test.rs) runs every source at
+`SIPNAB_LOG=trace` and requires that no byte of stdout or stderr contains the
+password. Decrypted members go to owner-only files, mode 0600, named `m00007.pcap`
+and never after the member, inside the private 0700 extraction directory that
+the run deletes on exit.
 
 **Fails as.** Keys recoverable from a crash report, a core file, or a swap
 device read long after the process exited — an exposure with no error message

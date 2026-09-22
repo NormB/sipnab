@@ -71,6 +71,15 @@ fn main() {
     let cli = Cli::parse_args();
     bootstrap::init_logging(&cli);
 
+    // 1b. Archive passwords, from every source the operator configured,
+    //     before anything below resolves `-I`: the immediate commands in step
+    //     2 read inputs too. A source that cannot supply one is an argument
+    //     error, the same as a malformed flag.
+    if let Err(msg) = bootstrap::install_archive_passwords(&cli) {
+        tracing::error!("{msg}");
+        sipnab::capture::archive::release_run_and_exit(2);
+    }
+
     // 2. Immediate commands that run before config load (--setup-caps,
     //    --strip-secrets).
     if let Some(code) = bootstrap::run_startup_commands(&cli) {

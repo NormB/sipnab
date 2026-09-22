@@ -881,10 +881,7 @@ impl SipnabMcp {
             let is_archive = archive.is_file()
                 && matches!(
                     crate::capture::archive::container_format(&archive),
-                    Ok(Some(
-                        crate::capture::archive::Format::Gzip
-                            | crate::capture::archive::Format::Tar
-                    ))
+                    Ok(Some(f)) if crate::capture::archive::unwraps(f)
                 );
             if !is_archive {
                 continue;

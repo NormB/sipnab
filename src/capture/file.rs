@@ -68,10 +68,10 @@ pub fn open_offline_with(
     path: &Path,
     limits: &crate::capture::archive::Limits,
 ) -> Result<(pcap::Capture<pcap::Offline>, Option<OfflineGuard>)> {
-    use crate::capture::archive::{self, Format};
+    use crate::capture::archive;
 
     match archive::container_format(path) {
-        Ok(Some(Format::Gzip | Format::Tar)) => {}
+        Ok(Some(f)) if archive::unwraps(f) => {}
         Ok(Some(other)) => anyhow::bail!(
             "Failed to open '{}': {}",
             crate::capture::archive::source_name(path),

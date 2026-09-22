@@ -737,7 +737,15 @@ fn linked_code_targets_exist() {
     // `src/capture/archive/tar.rs`, whose long-name cap it names. Attributed
     // by diffing `docs/internals/` against HEAD: invariants.md gained exactly
     // those two links and no other page changed.
-    const EXPECTED_CODE_LINKS: usize = 448;
+    // 448 -> 452: four, in `docs/internals/invariants.md`. Invariant 4
+    // gains the ZIP and password bounds and links
+    // `src/capture/archive/zipped.rs` and `src/capture/archive/password.rs`;
+    // invariant 5 gains the archive-password paragraph and links
+    // `password.rs` again for `ArchivePassword`, and names the sentinel test
+    // `tests/archive_password_test.rs` that proves the password never
+    // reaches output. Attributed by diffing `docs/internals/` against HEAD:
+    // invariants.md gained exactly those four and no other page changed.
+    const EXPECTED_CODE_LINKS: usize = 452;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \

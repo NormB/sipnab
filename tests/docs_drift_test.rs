@@ -33,6 +33,19 @@ mod markdown;
 /// would still fail this guard instead of being silently whitelisted. The
 /// label is the first element of each `docs` tuple in `readme_long_flags_exist_in_cli`.
 const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
+    // restic's and Docker's, named by the Archives section, which ranks
+    // sipnab's archive password sources against the tools operators already
+    // know (`restic --password-command`, `docker login --password-stdin`).
+    // Neither is a sipnab flag, and saying where a convention comes from must
+    // not turn it into one.
+    (
+        "password-command",
+        &["docs/cli-reference.md", "website/content/docs/cli.md"],
+    ),
+    (
+        "password-stdin",
+        &["docs/cli-reference.md", "website/content/docs/cli.md"],
+    ),
     // `scripts/verify-bpf-load.sh`'s, named by the uprobe page's section on the
     // half the suite cannot reach. `--classify` is that script's mode for
     // judging a run's output without performing one -- the split that makes the
@@ -2390,9 +2403,10 @@ fn feature_tables_cover_every_cargo_feature() {
         }
     }
 
+    // 14 -> 15: `archive`, password-protected ZIP input.
     assert_eq!(
-        seen, 14,
-        "feature extraction found {seen} features, expected 14. Bump when a \
+        seen, 15,
+        "feature extraction found {seen} features, expected 15. Bump when a \
          feature is added; a drop means the parser stopped reading Cargo.toml's \
          table and the comparison below narrowed."
     );
@@ -3739,7 +3753,11 @@ fn no_documentation_table_repeats_a_row() {
     // against HEAD: exactly those seven files moved.
     // 939 + 9 = 948: the HEP sender roster branch counted its nine against 932
     // and merged after the RFC 7951 export and operator notes.
-    const EXPECTED_TABLES: usize = 948;
+    // 948 -> 950: the password-protected archive flags' table in
+    // docs/cli-reference.md's new Archives section, and its site mirror.
+    // Attributed by counting table separators per file against HEAD: exactly
+    // those two files moved.
+    const EXPECTED_TABLES: usize = 950;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

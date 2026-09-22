@@ -310,6 +310,9 @@ pub fn compiled_features() -> Vec<&'static str> {
     if cfg!(feature = "vcon") {
         out.push("vcon");
     }
+    if cfg!(feature = "archive") {
+        out.push("archive");
+    }
     out
 }
 
@@ -341,6 +344,10 @@ pub struct Cli {
     // ── Capture ──
     #[command(flatten)]
     pub capture_args: CaptureArgs,
+
+    // ── Password-protected archives ──
+    #[command(flatten)]
+    pub archive_args: ArchiveArgs,
 
     // ── Mode ──
     #[command(flatten)]
@@ -415,6 +422,96 @@ pub struct Cli {
     #[arg(trailing_var_arg = true, value_name = "BPF_FILTER")]
     pub bpf_filter: Vec<String>,
 }
+/// Password flags for encrypted capture archives.
+///
+/// Every source an operator can put a password in, most preferred first. The
+/// environment variable `SIPNAB_ARCHIVE_PASSWORD` and the systemd credential
+/// `archive-password` are read too; neither is a flag. See
+/// [`crate::capture::archive::password`].
+#[derive(clap::Args, Debug, Clone, Default)]
+pub struct ArchiveArgs {
+    /// Read archive passwords from FILE, one per line, for encrypted ZIP
+    /// members `-I` finds. Only the line ending is stripped: spaces are part
+    /// of a password.
+    ///
+    /// A file you own must be private (`chmod 600`); sipnab refuses one that
+    /// other users can read, the way ssh refuses a private key. A file another
+    /// user owns, such as a Kubernetes secret mount, is accepted. Descriptor
+    /// forms work: `/dev/fd/3`, or `<(pass show pcaps)`.
+    #[arg(
+        help_heading = "Archives",
+        long = "archive-password-file",
+        value_name = "FILE"
+    )]
+    pub archive_password_file: Option<std::path::PathBuf>,
+
+    /// Run CMD and use the first line it prints as an archive password, like
+    /// restic's `--password-command`. Run without a shell; its stderr passes
+    /// through so a secret manager can prompt. A non-zero exit is an error,
+    /// and its output is never shown.
+    #[arg(
+        help_heading = "Archives",
+        long = "archive-password-command",
+        value_name = "CMD"
+    )]
+    pub archive_password_command: Option<String>,
+
+    /// Read an archive password from the first line of stdin, like
+    /// `docker login --password-stdin`.
+    #[arg(help_heading = "Archives", long = "archive-password-stdin")]
+    pub archive_password_stdin: bool,
+
+    /// An archive password on the command line. INSECURE: other local users
+    /// can read it in `ps`, and it is saved in shell history, so sipnab warns
+    /// on every use. Prefer --archive-password-stdin, --archive-password-file
+    /// or --archive-password-command.
+    #[arg(
+        help_heading = "Archives",
+        long = "archive-password",
+        value_name = "PASSWORD"
+    )]
+    pub archive_password: Option<std::ffi::OsString>,
+
+    /// Try archive passwords in this one encoding only: utf-8, cp437, cp850
+    /// or cp1252. By default a non-ASCII password is also tried in NFC, NFD
+    /// and those code pages, since ZIP never records which one its creator
+    /// used.
+    #[arg(
+        help_heading = "Archives",
+        long = "archive-password-encoding",
+        value_name = "ENC",
+        value_parser = parse_password_encoding
+    )]
+    pub archive_password_encoding: Option<String>,
+}
+
+impl ArchiveArgs {
+    /// Whether any archive password flag was given.
+    #[must_use]
+    pub fn any(&self) -> bool {
+        self.archive_password_file.is_some()
+            || self.archive_password_command.is_some()
+            || self.archive_password_stdin
+            || self.archive_password.is_some()
+            || self.archive_password_encoding.is_some()
+    }
+}
+
+/// Parse `--archive-password-encoding`, refusing a name sipnab cannot encode
+/// into. Kept here, independent of the `archive` feature, so the flag's
+/// contract is the same in every build.
+fn parse_password_encoding(s: &str) -> Result<String, String> {
+    let norm = s.to_ascii_lowercase().replace('_', "-");
+    match norm.as_str() {
+        "utf-8" | "utf8" | "cp437" | "ibm437" | "cp850" | "ibm850" | "cp1252" | "windows-1252" => {
+            Ok(norm)
+        }
+        _ => Err(format!(
+            "unknown password encoding '{s}'; use utf-8, cp437, cp850 or cp1252"
+        )),
+    }
+}
+
 /// `Capture` flags.
 ///
 /// Split out of [`Cli`] so clap's generated parser builds this group in its

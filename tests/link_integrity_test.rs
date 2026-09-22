@@ -919,7 +919,11 @@ fn wiki_intra_docs_links_resolve() {
     // reference), docs/mcp-tools.md -1 (the rewritten `open_capture`
     // paragraph no longer links `list_captures`). Counted per file against
     // HEAD with this gate's rule; no other page moved.
-    const EXPECTED_WIKI_LINKS: usize = 794;
+    // 794 -> 796 by password-protected archives: docs/cli-reference.md +2
+    // (the archive section's pointer to the new Archives section, and the
+    // Archives section's pointer back). Counted per file against HEAD; no
+    // other page moved.
+    const EXPECTED_WIKI_LINKS: usize = 796;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe 6d in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

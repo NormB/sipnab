@@ -7739,7 +7739,8 @@ sipnab uses Cargo feature flags to control optional capability. The default buil
 | `plugins` | WASM plugin host (`--plugin`): runs sandboxed third-party dialog detections, so a detection nobody here wrote cannot reach the process it inspects. | `native`, `wasmi` |
 | `bpf` | eBPF TLS capture (`--uprobe-backend bpf`): reads SIP plaintext **and the peer addresses** with no key material. Needs a nightly toolchain and `bpf-linker` to build, and a kernel with `CONFIG_DEBUG_INFO_BTF` to run — without the linker the binary still builds and the backend refuses at runtime rather than capturing nothing silently. | `native`, `aya`, `sipnab-bpf-types` |
 | `vcon` | vCon export: one observed dialog as an unsigned IETF conversation container, with the audio inline when the run retained it. Non-default, because a container that leaves the machine is a publication surface and a capture tool should not grow one unless an operator asks. Adds `--export-vcon`/`--vcon-out`, the `export_vcon` MCP tool and `GET /v1/dialogs/{call_id}/vcon`. | `native`, `sha2`, `hmac`, `base64` |
-| `full` | Everything: `native` + `tui` + `audio` + `tls` + `hep` + `api` + `mcp` + `mcp-http` + `metrics` + `plugins` + `vcon` | all |
+| `archive` | Password-protected ZIP input: `-I evidence.zip` reads the captures inside, stored, deflated, WinZip AES or ZipCrypto, without leaving a decrypted copy on disk. Adds `--archive-password-file`, `--archive-password-command`, `--archive-password-stdin`, `--archive-password` and `--archive-password-encoding`, and reads `SIPNAB_ARCHIVE_PASSWORD` and the systemd credential `archive-password`. | `native`, `zip`, `zeroize`, `unicode-normalization` |
+| `full` | Everything: `native` + `tui` + `audio` + `tls` + `hep` + `api` + `mcp` + `mcp-http` + `metrics` + `plugins` + `vcon` + `archive` | all |
 | `wasm` | WebAssembly target for in-browser pcap analysis | `wasm-bindgen`, `js-sys`, `web-sys`, `console_error_panic_hook` |
 
 Build with specific features. For the TUI plus TLS decryption and nothing else:
@@ -7902,7 +7903,7 @@ sipnab -D
 second line the libpcap it is running, e.g.
 
 ```text
-sipnab 0.5.185 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf,vcon
+sipnab 0.5.185 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf,vcon,archive
 libpcap version 1.10.5 (with TPACKET_V3); alternate capture backends named: none
 ```
 
@@ -11422,7 +11423,8 @@ sipnab -d eth0,eth1 --multi-device --delta-time
 
 ### Archives read like directories
 
-Point `-I` at a `.tar`, a `.tgz` or a `.tar.gz` and sipnab reads it the way it
+Point `-I` at a `.tar`, a `.tgz`, a `.tar.gz` or a `.zip` (see
+[Archives](#archives) for password-protected ones) and sipnab reads it the way it
 reads a directory. Every capture inside joins the set, in capture order,
 alongside anything else `-I` named. Nobody has to unpack it
 first, and the answer matches what reading the unpacked directory gives.
@@ -11434,7 +11436,7 @@ first, and the answer matches what reading the unpacked directory gives.
 - **sipnab accounts for every member.** A member that is not a capture gets a
   `Skipping` line naming it and the reason: empty, not a capture (with its
   first four bytes), a link, a device node, a sparse file, or a format sipnab
-  does not unwrap, such as ZIP, 7-Zip, `zstd`, `xz` or `bzip2`. The closing `-I
+  does not unwrap, such as 7-Zip, `zstd`, `xz` or `bzip2`. The closing `-I
   resolved to` line counts them. A member whose link type sipnab does not
   decode, such as an LTE MAC log, gets a line naming it, and its frames count
   as not decoded. A BPF filter that cannot compile against that link type
@@ -11461,6 +11463,82 @@ first, and the answer matches what reading the unpacked directory gives.
 A run that dies without cleaning up, from a crash or `kill -9`, leaves its
 directory behind holding a lock that died with it. The next run that unpacks an
 archive removes it.
+
+## Archives
+
+Captures often travel as password-protected ZIP files, because they carry
+subscriber identities, numbers and credentials. Unpacking one by hand leaves a
+decrypted copy on disk, which defeats the password. Point `-I` at the ZIP
+instead: sipnab opens it, reads the captures inside, and deletes its own
+owner-only copy of each member when the run ends. A ZIP reads like a `.tgz`,
+so everything in [Archives read like directories](#archives-read-like-directories)
+applies to it, and a ZIP nested in a tar, or a tar in a ZIP, unwraps too.
+Builds with the `archive` feature read ZIP files, and the `full` build and the
+release binaries include it.
+
+| Flag | Value | Default | Description |
+|------|-------|---------|-------------|
+| `--archive-password-file` | `<FILE>` | -- | Read archive passwords from a file, one per line. sipnab strips only the line ending: spaces belong to the password. sipnab refuses a file you own that other users can read (`chmod 600` it), the rule ssh applies to a private key, and accepts a file another user owns, such as a Kubernetes secret mount. `/dev/fd/3` and `<(pass show pcaps)` work |
+| `--archive-password-command` | `<CMD>` | -- | Run a command and use the first line it prints, like `restic --password-command`. sipnab runs it without a shell and passes its stderr through, so a secret manager can prompt. A non-zero exit fails the run, and sipnab never shows the command's output. The command gets 120 seconds and 64 KiB of output |
+| `--archive-password-stdin` | -- | off | Read an archive password from the first line of stdin, like `docker login --password-stdin` |
+| `--archive-password` | `<PASSWORD>` | -- | An archive password on the command line. **Insecure**, and sipnab warns on every use: other local users can read it in `ps`, and your shell saves it in its history |
+| `--archive-password-encoding` | `<ENC>` | all | Try passwords in one encoding only: `utf-8`, `cp437`, `cp850` or `cp1252` |
+
+**Where a password comes from, best first.** sipnab tries every source you
+configure, in this order, before it gives up on a member:
+
+1. `--archive-password-file`, for scripts and services.
+2. `--archive-password-command`.
+3. `--archive-password-stdin`.
+4. The systemd credential `archive-password`. When
+   `$CREDENTIALS_DIRECTORY/archive-password` exists, sipnab reads it like a
+   password file, so `LoadCredential=archive-password:/etc/sipnab/pcaps.pw`
+   or `LoadCredentialEncrypted=` in the unit is all it takes. Writing
+   `--archive-password-file %d/archive-password` in the unit works too.
+5. The `SIPNAB_ARCHIVE_PASSWORD` environment variable. It ranks below every
+   source above because a process's environment leaks: child processes
+   inherit it, and systemd and OWASP both advise against secrets there.
+6. `--archive-password`, which warns on every use.
+
+**How sipnab tries them.** The password that opened one member of an archive
+goes first for that archive's other members, and never for another archive
+unless you configured it. ZIP never records which encoding its creator typed
+the password in, so sipnab also tries a non-ASCII password in its NFC and NFD forms
+and in the CP437, CP850 and CP1252 code pages that `unzip` and 7-Zip fall back
+to. All of those spellings count as one attempt. Passwords may be up to 4096
+bytes, and sipnab refuses a longer one whole rather than cutting it short.
+
+**What it reads.** ZIP members stored or deflated, unencrypted, encrypted with
+WinZip AES (128, 192 or 256-bit), or encrypted with the legacy ZipCrypto.
+sipnab reads ZipCrypto and warns once per archive that it protects nothing:
+the `bkcrack` tool recovers its keys from 12 known bytes, and a capture's first bytes are
+predictable. A wrong password fails the format's own check. For the one wrong
+password in 256 that slips past ZipCrypto's check byte, the member's CRC fails
+instead, and sipnab moves on to the next candidate.
+
+**What it reports.** Each member sipnab does not read gets a `Skipping` line
+with the reason: `encrypted, and no password was supplied`, `encrypted, and
+no password supplied opens it`, or a format it cannot decrypt. An archive you
+name with `-I` of which sipnab reads nothing fails the run with exit status
+`1`, naming each member with its reason code, such as
+`evidence.zip/call3.pcap: encrypted_no_password`. If some members open, the
+run succeeds and the closing `-I resolved to` line counts the rest.
+
+**Where the password never goes.** No log line at any level, error message,
+output format or export contains it. A run that holds a password turns core
+dumps off, and `--allow-coredump` warns that a dump would contain it.
+
+**Examples**
+
+- `sipnab -N -I evidence.zip --archive-password-file ~/.config/sipnab/pcaps.pw --report` — read a password-protected ZIP with the password in an owner-only file
+- `sipnab -N -I evidence.zip --archive-password-file <(pass show pcaps/lab) --json-dialogs --no-cli-print` — take the password straight from a password manager through a pipe, so it never touches the disk
+- `sipnab -N -I evidence.zip --archive-password-command 'pass show pcaps/lab' --report` — let sipnab run the password manager itself
+- `printf '%s\n' "$PCAP_PW" | sipnab -N -I evidence.zip --archive-password-stdin --report` — pass a password a CI job holds in a masked variable
+- `sipnab -N -I evidence.zip --archive-password-file pw.txt --archive-password-encoding cp437 --report` — try only the DOS code page, for an archive you know an old Windows tool made
+- `sipnab -N -I evidence.zip --archive-password-stdin --archive-password-encoding cp1252 --json-dialogs --no-cli-print < pw.txt` — read the password from a redirected file and try only the Windows code page
+- `sipnab -N -I 'captures/*.zip' --archive-password-command 'op read op://lab/pcaps/password' --json-dialogs --no-cli-print` — open every ZIP a glob finds with one password from 1Password's CLI
+- `sipnab -N -I evidence.zip --archive-password 'correct horse' --report` — a throwaway lab archive only: the password lands in `ps` and your shell history, and sipnab warns
+- `sipnab -N -I lab.zip --archive-password "$LAB_PW" --report` — the same trade-off from a variable, which still shows in `ps`; prefer `--archive-password-stdin`
 
 ## Mode
 
@@ -30285,6 +30363,16 @@ member it was writing when a ceiling hits. Inside the tar reader
 ([`tar.rs`](../../src/capture/archive/tar.rs)), `MAX_META_BYTES` (1 MiB) caps
 the one thing held in memory in proportion to the input, the text of a long
 name or a pax header.
+A ZIP ([`zipped.rs`](../../src/capture/archive/zipped.rs), the `archive`
+feature) counts every member it inflates against the same ceiling, and every
+trial decryption with a password that has not yet proven itself counts too.
+A ZIP nested inside another layer gets copied out for reading, and that copy
+stops at the ceiling as well. The password layer has bounds of its own in
+[`password.rs`](../../src/capture/archive/password.rs): `MAX_PASSWORD_BYTES`
+(4096) per password, refused whole and never truncated,
+`MAX_PASSWORD_FILE_BYTES` (64 KiB) per password file, `MAX_COMMAND_OUTPUT`
+(64 KiB) and `COMMAND_TIMEOUT` (120 s) for `--archive-password-command`, and
+`PROMPT_ATTEMPTS` (3) prompts per archive.
 The digest detector in [`digest_leak.rs`](../../src/security/digest_leak.rs)
 remembers at most `MAX_NONCE_ENTRIES` (10,000) challenge nonce values, each
 with the transaction that carried it, and drops an arbitrary one to admit the
@@ -30334,6 +30422,25 @@ the same trigger as the core-dump hardening) so the kernel cannot page them
 out in the first place. That last one is best-effort and says so: a low
 `RLIMIT_MEMLOCK` is common and not always the operator's to change, so it
 reports whether it succeeded rather than claiming hardening it did not do.
+
+**Archive passwords are key material too.** A password that opens a
+password-protected capture archive decrypts everything inside it, so it gets
+the same treatment and a type that enforces it.
+[`ArchivePassword`](../../src/capture/archive/password.rs) holds bytes in a
+`zeroize::Zeroizing` buffer. It has no `Display`, `Serialize`, `Deref` or
+`as_str`, and its `Debug` prints `[REDACTED]` with no length. `compile_fail`
+doctests pin the missing accessors. Every buffer a password passes through
+gets its size before the read, because the copy a reallocation leaves behind
+is one `zeroize` never reaches. A run that holds a password suppresses core
+dumps, and `--allow-coredump` says that a dump would contain it. The password
+appears in no log line at any level, no error message, no stdout or JSON, and
+no TUI trail, setting, note or export. Error messages name the source, such as
+`--archive-password-file` or the program `--archive-password-command` ran, and
+never what it supplied. [`tests/archive_password_test.rs`](../../tests/archive_password_test.rs) runs every source at
+`SIPNAB_LOG=trace` and requires that no byte of stdout or stderr contains the
+password. Decrypted members go to owner-only files, mode 0600, named `m00007.pcap`
+and never after the member, inside the private 0700 extraction directory that
+the run deletes on exit.
 
 **Fails as.** Keys recoverable from a crash report, a core file, or a swap
 device read long after the process exited — an exposure with no error message
@@ -31227,7 +31334,7 @@ compiles, which is exactly why CI has a feature matrix.
 see a data race: the tests exercise the capture thread, the channel, and the
 processing thread, but a test that passes and a test that raced are
 indistinguishable to `cargo test`. The borrow checker does not help here either
-— it stops at `unsafe`, and most of this crate's 110 `unsafe` blocks are libc
+— it stops at `unsafe`, and most of this crate's 112 `unsafe` blocks are libc
 FFI, concentrated in privilege dropping ([`privilege.rs`](../../src/privilege.rs)
 and [`process_isolation.rs`](../../src/process_isolation.rs)) and capture setup.
 Recount with `grep -rc 'unsafe {' src/` rather than trusting that figure — this
