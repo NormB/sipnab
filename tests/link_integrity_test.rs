@@ -880,7 +880,14 @@ fn wiki_intra_docs_links_resolve() {
     // this extractor, which counts links between wiki pages only, reads +34.
     // 759 -> 763: the index link to client-examples.md and that page's three
     // links to the harness, library and cookbook. Measured by this gate.
-    const EXPECTED_WIKI_LINKS: usize = 763;
+    // 763 -> 771 by the HEP sender roster's pages: docs/keybindings.md +2
+    // (the Capture health and HEP senders anchors), docs/mcp-tools.md +2 (the
+    // `hep_senders` index row and the pointer from `capture_health`),
+    // docs/troubleshooting.md +2 (the symptom row and recipe 6e),
+    // docs/prometheus-metrics.md +1 (to `GET /v1/hep/senders`) and
+    // docs/rest-api.md +1 (to the metrics page). Counted per file against
+    // HEAD with this gate's rule; no other page moved.
+    const EXPECTED_WIKI_LINKS: usize = 771;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe 6d in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

@@ -99,6 +99,7 @@ without toggling anything.
 | u | Cycle From/To column display (default / host:port / user / user@host:port) |
 | r / F6 | Show raw SIP message for selected dialog |
 | s | Switch to Statistics view |
+| h | Open the [Capture health](#capture-health) panel: drops, undecodable frames, and on a `-L` run the HEP listener's senders |
 | S | Open the **Relay statistics** view — asks the live relay for its own counters (`s` asks what this capture saw, `S` asks what the relay says). See [Relay statistics](#relay-statistics) |
 | D | Open the Quality Dashboard (live MOS/jitter/loss) |
 | T | Open the call timeline for the selected dialog (Esc / q closes it) |
@@ -276,6 +277,35 @@ the Call List or RTP Streams view.
 | PgUp / PgDn | Page scroll |
 | Home / End | Jump to top/bottom |
 | Esc / q / s | Back to Call List |
+
+## Capture health
+
+The capture's own health: the loss, decode and media-path counters, and on a
+run with a HEP listener (`-L`) one line counting its senders. Open with `h`
+from the Call List.
+
+| Key | Action |
+|-----|--------|
+| s | Open [HEP senders](#hep-senders) |
+| Up / k, Down / j | Scroll |
+| PgUp / PgDn | Page scroll |
+| Home / End | Jump to top/bottom |
+| Esc / q / h | Back to Call List |
+
+## HEP senders
+
+Who is feeding the `-L` listener: each sender (the capture id it claims and
+the address it sends from), its packet count, when it was last heard and
+whether it went silent, then every address the listener refused, with the
+reasons. The same table `--hep-senders` prints at the end of a headless run.
+A session with no listener says so. Open with `s` from Capture health.
+
+| Key | Action |
+|-----|--------|
+| Up / k, Down / j | Scroll |
+| PgUp / PgDn | Page scroll |
+| Home / End | Jump to top/bottom |
+| Esc / q / s | Back to Capture health |
 
 ## Relay statistics
 

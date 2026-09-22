@@ -105,7 +105,10 @@ plain UDP socket: **no capture privileges, no setcap, fully unprivileged.**
      and the peer it came from. Fix the sender's key, `--hep-auth-mode` or
      the `--hep-allow` list rather than the network.
 
-   `--hep-silence-warn` changes the 30 seconds.
+   `--hep-silence-warn` changes the 30 seconds. To see each proxy on its own,
+   ask the MCP `hep_senders` tool: it lists every sender with its packet
+   count and whether it went silent, and every address the listener refused,
+   with the reason.
 
 6. **[laptop]** Wire up exactly as scenario
    [2C](mcp-deploy.md#keep-a-capture-running-without-exposing-a-port)

@@ -774,9 +774,13 @@ fn stdio_mcp_full_tool_set_and_remaining_tools() {
     if cfg!(feature = "vcon") {
         expected.extend_from_slice(&["export_vcon", "validate_vcon"]);
     }
+    // `hep_senders` likewise exists only where a HEP listener can.
+    if cfg!(feature = "hep") {
+        expected.push("hep_senders");
+    }
     expected.sort();
     assert_eq!(names, expected, "MCP tool set drifted");
-    let want = if cfg!(feature = "vcon") { 68 } else { 66 };
+    let want = 66 + if cfg!(feature = "vcon") { 2 } else { 0 } + usize::from(cfg!(feature = "hep"));
     assert_eq!(names.len(), want, "expected exactly {want} MCP tools");
 
     // find_problems with default kinds (['problems']) → JSON array, no error.

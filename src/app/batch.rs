@@ -3288,6 +3288,11 @@ impl BatchRunner {
         // --after / -A trailing context counter
         let after_count = cli.output_args.after.unwrap_or(0);
 
+        // Taken before `rx` is dropped at the end of the loop: the meter is
+        // where a HEP listener hangs its sender roster, and `--hep-senders`
+        // reads it once the capture has drained.
+        let capture_meter = rx.meter();
+
         let batch_ctx = BatchContext {
             matcher: &matcher,
             filter_expr: &filter_expr,
@@ -3825,6 +3830,15 @@ impl BatchRunner {
             ) {
                 std::process::exit(1);
             }
+        }
+
+        // 21-hep. --hep-senders: who fed the listener, who went silent, who
+        //      it refused. Here, after the capture drained, so the counts are
+        //      final.
+        if cli.hep_args.hep_senders
+            && !print_hep_senders(capture_meter.hep_roster(), cli.output_args.json)
+        {
+            std::process::exit(1);
         }
 
         // 21b. --relay-compare <CALL-ID>: the relay's own per-call RTP count
@@ -5054,6 +5068,37 @@ fn render_sip_output(
 }
 
 // ── Report generation ────────────────────────────────────────────────
+
+/// Print `--hep-senders`: the listener's roster as the text table, or with
+/// `--json` as one JSON object on its own line — the shape
+/// `GET /v1/hep/senders` and the MCP `hep_senders` tool return.
+///
+/// # Arguments
+///
+/// * `roster` — the roster the listener hung on the capture meter, or `None`
+///   when no listener ran, which prints the "no listener" answer rather than
+///   an empty table.
+/// * `json` — whether the run is in `--json` mode.
+///
+/// # Returns
+///
+/// `false` when stdout could not be written, which makes the output
+/// incomplete.
+fn print_hep_senders(roster: Option<&crate::capture::hep_roster::HepRoster>, json: bool) -> bool {
+    let report = crate::capture::hep_roster::senders_report(roster, usize::MAX);
+    let text = if json {
+        match serde_json::to_string(&report) {
+            Ok(line) => format!("{line}\n"),
+            Err(e) => {
+                tracing::error!("--hep-senders: the roster did not serialize: {e}");
+                return false;
+            }
+        }
+    } else {
+        report.to_text()
+    };
+    write_stdout(&text)
+}
 
 /// Write `text` to stdout, returning `false` if it could not be delivered.
 ///

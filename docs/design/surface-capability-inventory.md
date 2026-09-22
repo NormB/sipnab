@@ -11,9 +11,9 @@ reachable three ways and not four is visible only once these four are set
 beside one another. [`tests/capability_matrix_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/capability_matrix_test.rs) keeps
 this current and requires the matrix to account for every row here.
 
-Totals: CLI 273, TUI 24, REST 39, MCP 68.
+Totals: CLI 274, TUI 25, REST 40, MCP 69.
 
-## CLI flags (273)
+## CLI flags (274)
 
 - `--ack-timeout`
 - `--active-idle-window`
@@ -102,6 +102,7 @@ Totals: CLI 273, TUI 24, REST 39, MCP 68.
 - `--hep-rate-limit-per-peer`
 - `--hep-send`
 - `--hep-send-transport`
+- `--hep-senders`
 - `--hep-silence-warn`
 - `--hep-tls-ca`
 - `--hep-tls-cert`
@@ -289,7 +290,7 @@ Totals: CLI 273, TUI 24, REST 39, MCP 68.
 - `--word`
 - `--ws-portrange`
 
-## TUI views (24)
+## TUI views (25)
 
 - `BpfFilter`
 - `CallFlow`
@@ -303,6 +304,7 @@ Totals: CLI 273, TUI 24, REST 39, MCP 68.
 - `Conformance`
 - `EndpointRollup`
 - `Help`
+- `HepSenders`
 - `MessageDiff`
 - `QualityDashboard`
 - `RawMessage`
@@ -316,7 +318,7 @@ Totals: CLI 273, TUI 24, REST 39, MCP 68.
 - `Talkers`
 - `TfpsObserve`
 
-## REST routes (39)
+## REST routes (40)
 
 - `/health`
 - `/metrics`
@@ -335,6 +337,7 @@ Totals: CLI 273, TUI 24, REST 39, MCP 68.
 - `/v1/dialogs/{call_id}/tree`
 - `/v1/dialogs/{call_id}/vcon`
 - `/v1/endpoints`
+- `/v1/hep/senders`
 - `/v1/persistence`
 - `/v1/relay/compare/{call_id}`
 - `/v1/relay/holdings`
@@ -358,7 +361,7 @@ Totals: CLI 273, TUI 24, REST 39, MCP 68.
 - `/v1/timeline`
 - `/v1/vcon/validate`
 
-## MCP tools (68)
+## MCP tools (69)
 
 - `aggregate_dialogs`
 - `await_condition`
@@ -392,6 +395,7 @@ Totals: CLI 273, TUI 24, REST 39, MCP 68.
 - `get_message`
 - `get_sdp_timeline`
 - `group_dialogs`
+- `hep_senders`
 - `lint_dialog`
 - `list_captures`
 - `list_dialogs`

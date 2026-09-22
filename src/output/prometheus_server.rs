@@ -490,8 +490,7 @@ fn collect_metrics_onto(
     let mut metrics = base;
 
     if let Some(meter) = capture_meter {
-        metrics.capture_queue_depth_packets = meter.in_flight() as u64;
-        metrics.capture_backpressure_blocks_total = meter.backpressure_blocks();
+        metrics.apply_meter(meter);
     }
 
     // One assembler, shared with the REST `/metrics` handler. They used to be

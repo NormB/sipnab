@@ -49,9 +49,9 @@ was driving all of them.
 
 | Surface | Rows | `e2e` | `parsed` | `referenced` | `none` |
 |---|---|---|---|---|---|
-| CLI flags | 273 | 140 | 53 | 79 | 1 |
-| HTTP routes | 39 | 39 | -- | 0 | 0 |
-| MCP tools | 68 | 68 | -- | 0 | 0 |
+| CLI flags | 274 | 141 | 53 | 79 | 1 |
+| HTTP routes | 40 | 40 | -- | 0 | 0 |
+| MCP tools | 69 | 69 | -- | 0 | 0 |
 
 **Flags with no occurrence at all:** `--syslog`
 
@@ -309,6 +309,7 @@ behind them.
 | `--hep-listen` | `-L` | `ADDR` | HEP | e2e | `tests/cli_flag_behavior_test.rs`, `tests/config_wiring_test.rs` +4 |  |  |
 | `--hep-send` | `-H` | `ADDR` | HEP | e2e | `tests/doc_commands_run_test.rs`, `tests/hep_send_file_export_test.rs` +1 |  |  |
 | `--hep-send-transport` |  |  | HEP | parsed | `src/cli.rs` |  |  |
+| `--hep-senders` |  |  | HEP | e2e | `tests/hep_test.rs` |  |  |
 | `--hep-listen-transport` |  |  | HEP | parsed | `src/cli.rs` |  |  |
 | `--hep-tls-ca` |  | `FILE` | HEP | parsed | `src/cli.rs` |  |  |
 | `--hep-tls-cert` |  | `FILE` | HEP | parsed | `src/cli.rs` |  |  |
@@ -378,6 +379,7 @@ behind them.
 | `/v1/dialogs/{call_id}/tree` | exercised | `tests/api_test.rs` |
 | `/v1/dialogs/{call_id}/vcon` | exercised | `tests/api_test.rs` |
 | `/v1/endpoints` | exercised | `tests/api_test.rs`, `tests/openapi_contract_test.rs` |
+| `/v1/hep/senders` | exercised | `tests/api_token_test.rs`, `tests/hep_senders_surfaces_test.rs` |
 | `/v1/persistence` | exercised | `tests/api_test.rs`, `tests/openapi_contract_test.rs` |
 | `/v1/relay/compare/{call_id}` | exercised | `tests/relay_rest_test.rs` |
 | `/v1/relay/holdings` | exercised | `tests/api_test.rs` |
@@ -437,6 +439,7 @@ behind them.
 | `get_message` | exercised | `tests/mcp_completeness_test.rs`, `tests/mcp_output_injection_test.rs` +1 |
 | `get_sdp_timeline` | exercised | `tests/mcp_completeness_test.rs`, `tests/mcp_diagnostic_tools_test.rs` +3 |
 | `group_dialogs` | exercised | `tests/mcp_completeness_test.rs`, `tests/mcp_stdio_test.rs` +1 |
+| `hep_senders` | exercised | `tests/mcp_protocol_features_test.rs` |
 | `lint_dialog` | exercised | `tests/mcp_completeness_test.rs`, `tests/mcp_lint_tools_test.rs` +2 |
 | `list_captures` | exercised | `tests/mcp_diagnostic_tools_test.rs`, `tests/mcp_stdio_test.rs` |
 | `list_dialogs` | exercised | `tests/config_wiring_test.rs`, `tests/mcp_audit_sink_test.rs` +12 |

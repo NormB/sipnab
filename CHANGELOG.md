@@ -23,6 +23,19 @@ entry that carries them.
   bound is still admitted and its packets counted, but it is not named.
   Refused packets are counted by reason and by address in a separate table of
   256 addresses that evicts the least recently refused.
+- **Every surface reports who feeds a HEP collector.** `--hep-senders` prints
+  the roster at the end of a headless run (with `--json`, one object on the
+  last line of stdout). `GET /v1/hep/senders` (full-scope token) and the
+  read-only MCP tool `hep_senders` return the same bytes for one roster. In the
+  TUI, `s` in the capture-health panel opens a HEP senders view. Each sender
+  row shows the capture id it claims and its address, its packet count, when
+  sipnab last heard it and whether it went silent, and says the id is claimed
+  by the sender, never proven. Refused addresses show counts by reason.
+  Prometheus gains three aggregate series, `sipnab_hep_senders`,
+  `sipnab_hep_datagrams_received_total` and
+  `sipnab_hep_datagrams_refused_total{reason}` with every reason present, and
+  no per-sender label. `capture_health` carries the listener's counts as
+  integers under `hep`.
 
 ### Changed
 
@@ -2896,7 +2909,7 @@ entry that carries them.
 ### Added
 
 - **`runtime_stats` over MCP and `GET /v1/runtime` over REST.** sipnab exports
-  32 Prometheus metrics and the listener that serves them is off by default, so
+  its Prometheus metrics through a listener that is off by default, so
   on most deployments those numbers existed inside the process and nothing could
   read them — an agent asked "is this server healthy" could not enable a
   listener to find out.

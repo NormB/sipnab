@@ -472,6 +472,82 @@ fn a_sender_refused_on_every_packet_trips_the_silence_warning() {
     );
 }
 
+/// `--hep-senders --json` ends a headless run with the roster: two senders
+/// with the right key (capture ids 7 and 9) as two entries with their own
+/// counts, and a sender with the wrong key as a refused source under
+/// `auth_mismatch` — never as a sender. The object validates against the
+/// schema the MCP tool advertises for the same shape.
+#[cfg(feature = "mcp")]
+#[test]
+fn hep_senders_reports_who_fed_the_listener_and_who_it_refused() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let key_file = dir.path().join("hep.key");
+    std::fs::write(&key_file, "the-right-key\n").expect("write key file");
+    let srv = HepListener::spawn(&[
+        "--hep-allow",
+        "127.0.0.1/32",
+        "--hep-auth-file",
+        key_file.to_str().expect("utf-8 temp path"),
+        "--hep-senders",
+        "--count",
+        "7",
+    ]);
+    let payload = invite_bytes();
+    let sends = [
+        hep3_sip_keyed(7, "the-right-key", &payload),
+        hep3_sip_keyed(9, "the-right-key", &payload),
+        hep3_sip_keyed(7, "the-right-key", &payload),
+        hep3_sip_keyed(5, "the-wrong-key", &payload),
+        hep3_sip_keyed(9, "the-right-key", &payload),
+        hep3_sip_keyed(7, "the-right-key", &payload),
+        hep3_sip_keyed(5, "the-wrong-key", &payload),
+    ];
+    for datagram in &sends {
+        srv.send(datagram);
+        thread::sleep(Duration::from_millis(20));
+    }
+    let line = srv
+        .wait_for_stdout("\"senders\"", test_timeout(15))
+        .expect("--hep-senders --json must print the roster as its last stdout line");
+    let report: serde_json::Value = serde_json::from_str(&line).expect("one JSON object");
+
+    let senders: Vec<(String, u64)> = report["senders"]
+        .as_array()
+        .expect("senders array")
+        .iter()
+        .map(|s| {
+            (
+                s["source"].as_str().unwrap_or_default().to_string(),
+                s["packets"].as_u64().unwrap_or_default(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        senders,
+        vec![
+            ("hep:7@127.0.0.1".to_string(), 3),
+            ("hep:9@127.0.0.1".to_string(), 2)
+        ],
+        "two senders, each with its own count, and no entry for the wrong key: {report}"
+    );
+    assert_eq!(report["trust"], "shared_secret_plain");
+    assert_eq!(report["packets_received"], 7);
+    assert_eq!(report["refused_by_reason"]["auth_mismatch"], 2);
+    let refused = report["refused_sources"].as_array().expect("refused array");
+    assert_eq!(refused.len(), 1, "{report}");
+    assert_eq!(refused[0]["peer"], "127.0.0.1");
+    assert_eq!(refused[0]["by_reason"]["auth_mismatch"], 2);
+
+    let schema = serde_json::to_value(rmcp::schemars::schema_for!(
+        sipnab::output::model::HepSendersReport
+    ))
+    .expect("schema serializes");
+    let validator = jsonschema::validator_for(&schema).expect("schema compiles");
+    if let Err(e) = validator.validate(&report) {
+        panic!("--hep-senders --json does not match its schema: {e}\n{report:#}");
+    }
+}
+
 /// A 20-datagram burst against `--hep-rate-limit 1` logs a
 /// "rate limit exceeded" drop (visible at debug log level).
 #[test]

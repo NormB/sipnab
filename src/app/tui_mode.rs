@@ -566,6 +566,9 @@ pub fn run_tui_mode(
     // the queue depth too, and with this behind that feature both published a
     // confident `0` for a queue they could not see.
     let capture_meter = Some(rx.meter());
+    // The same meter, for the HEP senders view: a `-L` listener hangs its
+    // roster on it once the capture starts, and the view reads it each frame.
+    let tui_capture_meter = capture_meter.clone();
 
     // Live security detectors: see `LiveDetectors`. The TUI never acts on a
     // detection; it only fills the findings ring the security view reads.
@@ -838,6 +841,7 @@ pub fn run_tui_mode(
         crate::tui::TuiOptions {
             theme,
             keymap,
+            capture_meter: tui_capture_meter,
             visible_columns: config.display.visible_columns.clone(),
             name_setup,
             from_to_mode,

@@ -513,6 +513,22 @@ impl RosterState {
         }
     }
 
+    /// The aggregate counts the Prometheus exposition publishes. O(1): no
+    /// walk of either table.
+    #[must_use]
+    pub fn counters(&self) -> HepListenerCounts {
+        let refused = self
+            .refused_by_reason
+            .iter()
+            .copied()
+            .fold(0u64, u64::saturating_add);
+        HepListenerCounts {
+            senders: self.senders.len() as u64,
+            received: self.admitted_total.saturating_add(refused),
+            refused_by_reason: self.refused_by_reason,
+        }
+    }
+
     /// The monotonic instant this roster started at.
     #[must_use]
     pub fn started(&self) -> Instant {
@@ -640,6 +656,34 @@ impl RosterState {
     }
 }
 
+/// The senders report for a run: the listener's roster when one hung it on
+/// the capture meter, the "not listening" answer otherwise.
+///
+/// The ONE function every surface calls — `--hep-senders`, `GET
+/// /v1/hep/senders`, the MCP `hep_senders` tool and the TUI view — so the
+/// "no listener" case cannot be answered four ways.
+///
+/// # Arguments
+///
+/// * `roster` — the roster, from [`crate::capture::channel::CaptureMeter::hep_roster`].
+/// * `limit` — the most rows either list may carry.
+#[must_use]
+pub fn senders_report(roster: Option<&HepRoster>, limit: usize) -> HepSendersReport {
+    roster.map_or_else(HepSendersReport::not_listening, |r| r.report(limit))
+}
+
+/// A listener's aggregate counts, for the Prometheus exposition: no
+/// addresses, no ids, and a fixed label set.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct HepListenerCounts {
+    /// Senders tracked now.
+    pub senders: u64,
+    /// Packets received, admitted or refused.
+    pub received: u64,
+    /// Refusals by reason, indexed by [`HepRefusal::index`].
+    pub refused_by_reason: [u64; HepRefusal::COUNT],
+}
+
 /// A shared handle on one listener's [`RosterState`]: the listener writes
 /// through it, and every surface that reports senders reads through it.
 ///
@@ -680,6 +724,12 @@ impl HepRoster {
     /// never across I/O.
     pub fn lock(&self) -> parking_lot::MutexGuard<'_, RosterState> {
         self.state.lock()
+    }
+
+    /// The aggregate counts, for the Prometheus exposition.
+    #[must_use]
+    pub fn counters(&self) -> HepListenerCounts {
+        self.state.lock().counters()
     }
 
     /// The report every surface returns, at most `limit` rows per list.

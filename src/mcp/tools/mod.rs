@@ -19,6 +19,11 @@ pub mod await_condition;
 pub mod compare;
 pub mod endpoints;
 pub mod expectations;
+// Only where a HEP listener can exist, for the reason `vcon` below is gated.
+// Stated as both features for the reason given there: the file is an MCP tool
+// over the `hep` listener's roster.
+#[cfg(all(feature = "mcp", feature = "hep"))]
+pub mod hep;
 pub mod inspect;
 pub mod provenance;
 pub mod relay;

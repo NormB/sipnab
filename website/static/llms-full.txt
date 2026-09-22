@@ -749,6 +749,43 @@ changes that: put sipnab's `-d` where the media actually is.
 - `-d` with `--hep-listen` takes exactly one interface and one listener. sipnab refuses `-I` with `--hep-listen` (a file's addresses are historical and belong to third parties, and sipnab keeps them off its active-response path by refusing to transmit for a file run at all); so are `--multi-device` with `--hep-listen`, and `-O` with the pair — the two sources disagree about the link layer, so there is no honest pcap to write. Use `--hep-send` to forward the signaling instead.
 - One sipnab, one mirroring node. The SDP endpoint index keys on address and port with no node dimension, so two nodes advertising the same [RFC 1918](https://www.rfc-editor.org/rfc/rfc1918) socket would overwrite each other and a stream would bind to whichever offer arrived last.
 
+### 6e. Find who feeds the collector and who it refuses
+
+A collector fed by twenty proxies needs to answer three questions: which of
+them are sending, which one stopped, and which one sends while the listener
+refuses it. The listener keeps a roster that answers all three.
+
+At the end of a bounded headless run:
+
+```bash
+sipnab -N -L 0.0.0.0:9060 --hep-parse --hep-auth-file /etc/sipnab/hep.key --duration 600 --hep-senders
+```
+
+While a server runs, from the REST API or the MCP `hep_senders` tool:
+
+```bash
+curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" http://localhost:9100/v1/hep/senders \
+  | jq '.senders[] | {source, packets, idle_seconds, silent}'
+```
+
+In the TUI, press `h` for capture health and then `s`.
+
+Each row is one sender, keyed by the capture id it claims (`--hep-id` on a
+sipnab agent, the capture-agent id on OpenSIPS or Kamailio) and the address it
+sends from. Give every sender its own id: two proxies left at the default id 1
+are still two rows, because their addresses differ, but a sipnab agent and its
+host's proxy share an address and only the id tells them apart.
+
+Read `refused_sources` when a sender you configured never shows up. The reason
+names the fix: `auth_mismatch` is the wrong shared secret, `auth_missing` a
+sender with no key, `allowlist` an address `--hep-allow` does not cover, and
+`hmac_timestamp_out_of_window` a sender whose clock drifted.
+
+The listener also logs `sender 7@192.0.2.7 silent for 30s` when one sender
+goes quiet while others keep sending, and a `resumed` line when it comes back.
+`--hep-silence-warn` sets the threshold. The roster covers this run only, and
+sipnab persists none of it.
+
 ---
 
 ## 7. Decrypt SIP/TLS via SSLKEYLOGFILE
@@ -3622,6 +3659,9 @@ Metric names emitted by [`src/output/prometheus.rs`](https://github.com/NormB/si
 | `sipnab_capture_quality_degraded` | gauge | `1` when any of the three *loss* counters above exceeds zero, `0` otherwise. Undecodable frames are deliberately **not** folded in: ARP makes them non-zero on nearly every capture, so a flag including them would always be `1` and carry no information — use `sipnab_capture_undecoded_fraction` with a threshold instead. The one series to put on a dashboard or an alert rule to know whether the rest of the scrape describes the whole capture. `0` means nothing **surfaced** as wrong, not that the capture provably saw every packet: loss upstream of the capture point — an oversubscribed SPAN port, a tap mirroring one direction, a filter that excluded the traffic — is invisible to all three counters. |
 | `sipnab_capture_queue_depth_packets` | gauge | Packets currently queued between the capture reader and the processing thread (standalone `--metrics` server). |
 | `sipnab_capture_backpressure_blocks_total` | counter | Times the capture reader blocked on a full queue (standalone `--metrics` server). |
+| `sipnab_hep_senders` | gauge | Senders the `--hep-listen` listener is tracking, each keyed by the capture id it claims and the address it sent from. Present only on a run with a HEP listener: a zero would claim a listener that heard nothing. **Aggregates only, never a series per sender** — sender addresses describe the estate, and a `metrics`-scoped token must not read what the full-scope [`GET /v1/hep/senders`](rest-api.md#get-v1hepsenders) withholds from it; a spoofed flood would also set the label cardinality. For which sender stopped, ask that route, the MCP `hep_senders` tool, or `--hep-senders`. Both servers fill it. |
+| `sipnab_hep_datagrams_received_total` | counter | HEP packets the listener received, admitted or refused. With the refused family below, `received - sum(refused)` is what reached the capture. |
+| `sipnab_hep_datagrams_refused_total{reason}` | counter | HEP packets the listener refused, by why: `allowlist`, `rate_limit_global`, `rate_limit_per_peer`, `peer_tracking_full`, `malformed`, `auth_missing`, `auth_mismatch`, and the five `hmac_*` reasons (`hmac_bad_format`, `hmac_unsupported_version`, `hmac_timestamp_out_of_window`, `hmac_bad_mac`, `hmac_replay`). Every reason appears on every scrape of a run with a listener, at `0` where the listener refused nothing for it, so a rule on `auth_mismatch` reads zero rather than no-data. A climbing `auth_mismatch` or `hmac_bad_mac` is a sender with the wrong key; `hmac_timestamp_out_of_window` is a sender with a drifting clock. Both servers fill it. |
 | `sipnab_diagnosis_total{type}` | counter | Tracked dialogs whose media diagnosis raises each finding. A dialog with two findings counts under both. **Seven label values, in three groups an alert rule has to keep apart.** `one_way_audio`, `nat_mismatch` and `no_media` appear on every scrape, at `0` where nothing raises them, so a rule watching for the first one reads zero rather than no-data. `private_media_address` — the SDP `c=` line offered an address the far end cannot route back to — and `private_media_address_confirmed` — the subset where STUN evidence also shows nothing rewrote that address — appear only once a dialog raises them, so both series stay absent until the first one does. The ratio of the second to the first is how much of the fleet's warning the capture confirms. `dead_air` and `clipping` are the third group: they are amplitude measurements on the decoded audio, so they tick only on a run started with `--retain-audio` and stay absent otherwise. Absent means the run kept no samples, never that the calls were fine — an alert rule that treats a missing `dead_air` series as a healthy fleet is reading a capture setting as a finding. Both servers run the diagnosis during the scrape, so scrape cost grows with the number of tracked dialogs (capped by `-l`/`--limit`). |
 | `sipnab_security_alerts_total{type}` | counter | Security alerts by the detector that fired: `scanner`, `fraud`, `digest`, `reg_flood`. Only types that have fired appear, so the family is absent before the first alert. A rule name can come from packet data, so sipnab caps the family at 128 distinct names and folds everything past the cap into `type="other"` — the total stays right even where the breakdown cannot. |
 | `sipnab_mcp_tool_calls_total{tool,outcome}` | counter | MCP tool calls, by the tool asked for and how the call ended: `ok`, `tool_error` (the tool answered and said the answer is an error), or `refused` (the rate limit, the concurrency cap, a scope check, unknown arguments, or a name no tool answers to). The name comes from the CLIENT, so a name no tool answers to still counts — probing is what this series is for — and sipnab caps the distinct names at 256 (`MAX_TOOLS`), well above the tool surface, folding everything past the cap into `tool="other"` so a peer looping over invented names cannot grow the series set. Absent until the first tool call, like `sipnab_security_alerts_total`. sipnab counts at the same point it writes the `mcp_audit` log line, so the two always agree. |
@@ -5513,7 +5553,7 @@ The MCP `get_capture_report` tool answers the same question. So does
 
 What sipnab is doing, and what it is costing the host it runs on.
 
-sipnab exports 32 Prometheus metrics, and the listener that serves them is off
+sipnab exports 35 Prometheus metrics, and the listener that serves them is off
 by default — so on most deployments those numbers exist inside the process and
 nothing can read them. This endpoint answers the same questions without one,
 and adds two things that did not exist anywhere: sipnab's own resource use, and
@@ -5629,6 +5669,105 @@ is exactly what a healthy quiet capture looks like.
 The MCP tool `runtime_stats` returns the same envelope from the same
 derivation — including the same refusal and the same clamp — so the two
 surfaces cannot disagree about one process.
+
+### GET /v1/hep/senders
+
+Who is feeding this run's HEP listener, who went silent, and who it is turning
+away. Only in a build with the `hep` feature, and it needs a full-scope token:
+sender addresses describe your estate, so a `metrics` token gets `401`.
+
+**curl:**
+
+```bash
+curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" http://127.0.0.1:8080/v1/hep/senders | jq .
+```
+
+**Response:**
+
+```json
+{
+  "schema_version": 1,
+  "listening": true,
+  "trust": "shared_secret_plain",
+  "silence_threshold_seconds": 30,
+  "packets_received": 1843,
+  "packets_admitted": 1829,
+  "packets_refused": 14,
+  "refused_by_reason": {
+    "allowlist": 0, "auth_missing": 0, "auth_mismatch": 14, "hmac_bad_format": 0,
+    "hmac_bad_mac": 0, "hmac_replay": 0, "hmac_timestamp_out_of_window": 0,
+    "hmac_unsupported_version": 0, "malformed": 0, "peer_tracking_full": 0,
+    "rate_limit_global": 0, "rate_limit_per_peer": 0
+  },
+  "senders_tracked": 2,
+  "senders_limit": 4096,
+  "senders_silent": 1,
+  "untracked_packets": 0,
+  "senders": [
+    {
+      "source": "hep:7@192.0.2.7", "capture_id": 7, "peer": "192.0.2.7",
+      "identity": "claimed_by_sender", "trust": "shared_secret_plain",
+      "packets": 1604, "first_seen": "2026-09-21T12:00:00.412Z",
+      "last_seen": "2026-09-21T12:14:59.880Z", "idle_seconds": 0, "silent": false
+    },
+    {
+      "source": "hep:9@192.0.2.9", "capture_id": 9, "peer": "192.0.2.9",
+      "identity": "claimed_by_sender", "trust": "shared_secret_plain",
+      "packets": 225, "first_seen": "2026-09-21T12:00:01.020Z",
+      "last_seen": "2026-09-21T12:09:12.334Z", "idle_seconds": 348, "silent": true
+    }
+  ],
+  "refused_sources_tracked": 1,
+  "refused_sources_limit": 256,
+  "refused_sources_evicted": 0,
+  "refused_sources": [
+    {
+      "peer": "203.0.113.66", "packets": 14, "by_reason": { "auth_mismatch": 14 },
+      "first_seen": "2026-09-21T12:03:40.101Z", "last_seen": "2026-09-21T12:14:58.007Z"
+    }
+  ]
+}
+```
+
+**A sender is the capture id it claims and the address it sent from.** Two
+proxies that both leave `--hep-id` at its default of 1 are still two rows, and
+one host running two sipnab agents with different ids is two rows too. `source`
+is the same `hep:<capture-id>@<peer>` string every frame pointer from that
+sender carries, so a row and a pointer name one sender the same way.
+
+**`identity` is always `claimed_by_sender`.** One shared secret serves the
+whole listener and sipnab asks no sender for a client certificate, so any
+sender holding the secret can claim any capture id. The roster reports what senders say about
+themselves, and says so.
+
+**`silent`, never "down".** A sender is silent once it has sent nothing sipnab
+admitted for `silence_threshold_seconds` (`--hep-silence-warn`). A PBX with no
+calls at night may legitimately send nothing, so the word describes what
+sipnab saw, not what happened to the sender. Only admitted packets count: a
+sender whose packets now fail authentication goes silent, and shows up under
+`refused_sources` instead.
+
+**The refused-source table keys on address alone.** A refused packet proved
+nothing, including the capture id it claimed. The table holds the 256 addresses
+refused most recently and evicts the oldest, so a spoofed flood rotates it
+rather than freezing it. `refused_by_reason` counts every refusal, and nothing
+evicts it.
+
+**Both lists have bounds, and the totals beside them do not.** The sender
+table holds `senders_limit` senders (`[limits] max_tracked_peers`). A sender
+arriving after it fills still reaches the capture and counts in
+`untracked_packets`, but gets no row: the table refuses new entries rather than
+recycling old ones, because it also numbers each sender's frames. `?limit=N`
+caps the rows each list returns without changing any total.
+
+**No listener, no roster.** A run without `-L` answers `listening: false`, zero
+counts and a `note`, never an empty roster that would read as "nobody is
+sending".
+
+The MCP tool `hep_senders` returns the same bytes for the same roster, and
+`--hep-senders` prints it at the end of a headless run. Prometheus carries only
+the aggregate counts, with no per-sender label: see
+[Metrics](prometheus-metrics.md).
 
 ### GET /v1/capabilities
 
@@ -6821,7 +6960,7 @@ reference client of the Model Context Protocol project. Point it at sipnab and
 it lists every tool the binary registers, shows the JSON Schema of each tool's
 arguments, and calls one by hand so you can read the answer — what
 <https://sipnab.com/api-reference/> does for the [REST API](rest-api.md), for
-this surface instead. sipnab registers 68 MCP tools, which is more than anyone
+this surface instead. sipnab registers 69 MCP tools, which is more than anyone
 reads in a table, and the Tools tab is the fastest way to find the one you
 want. Inspector belongs to the protocol rather than to sipnab, so it also
 settles whose bug you are looking at.
@@ -8470,6 +8609,7 @@ the cause from there.
 | "The phones keep dropping off" / no inbound calls arrive | [Registration failures](#registration-failures) |
 | "Something is hammering the PBX" / probes across unknown extensions | [SIP scanner detection](#sip-scanner-detection) |
 | "No SIP traffic found" on a link you know carries calls | [A live capture that sees nothing](#a-live-capture-that-sees-nothing) |
+| A HEP collector (`-L`) shows no calls, or one proxy's calls are missing | [A HEP collector that receives nothing](#a-hep-collector-that-receives-nothing) |
 | SIP is over TLS and the calls never appear | [Encrypted SIP that does not decrypt](#encrypted-sip-that-does-not-decrypt) |
 | Nothing yet -- you have a capture and a complaint | [Start here](#start-here-one-pass-over-everything) |
 
@@ -9257,6 +9397,43 @@ and the generated one matches all 32. Wrap the same SIP in a Linux cooked
 header and the numbers hold: 11 encapsulations, 11 matched, on Ethernet,
 cooked v1 and cooked v2 alike.
 
+## A HEP collector that receives nothing
+
+A `-L` listener that shows no calls has one of two problems, and the silence
+warning in its log already tells you which. The listener warns when it admits
+nothing for 30 seconds (`--hep-silence-warn`):
+
+- `no packets for 30s` means nothing arrived at all. The sender is not reaching
+  the port: check the address and port it targets, the firewall, and whether
+  the SIP server is mirroring at all.
+- `no packets admitted for 30s ... every one was refused` means packets arrive
+  and sipnab turns every one away. The line names the reason most of them met
+  and the peer that sent them. The network is fine, and the sender's
+  configuration is not.
+
+When some proxies get through and one does not, no warning fires, because the
+listener as a whole is busy. Ask the roster instead: `--hep-senders` at the end
+of a headless run, `GET /v1/hep/senders`, the MCP `hep_senders` tool, or `s`
+from the TUI's capture-health panel ([recipe 6e](examples.md#6e-find-who-feeds-the-collector-and-who-it-refuses)).
+A proxy that stopped shows as `silent`. A proxy that sends and gets refused has
+no sender row, and its address appears under `refused_sources` with the reason:
+
+| Reason | What to fix |
+|---|---|
+| `auth_mismatch` | The sender's shared secret differs from `--hep-auth-file` |
+| `auth_missing` | The sender sends no key, and this listener requires one |
+| `allowlist` | The sender's address is outside every `--hep-allow` range |
+| `hmac_timestamp_out_of_window` | The sender's clock is off by more than `--hep-hmac-window`; fix NTP there |
+| `hmac_bad_mac` | A wrong key under `--hep-auth-mode hmac`, or a packet altered on the way |
+| `hmac_unsupported_version` | The sending sipnab predates the current HMAC token; upgrade it |
+| `rate_limit_global`, `rate_limit_per_peer` | Traffic above `--hep-rate-limit` or `--hep-rate-limit-per-peer` |
+| `peer_tracking_full` | More senders at once than `[limits] max_tracked_peers` |
+| `malformed` | The bytes are not HEP; check the sender speaks HEP v3, or v2 over UDP |
+
+The roster names senders by the capture id each claims and the address it
+sends from. Give each sender its own id (`--hep-id` on a sipnab agent) so two
+agents on one host stay apart.
+
 ## Encrypted SIP that does not decrypt
 
 The calls are on port 5061 and sipnab reports nothing, or reports fewer
@@ -9656,6 +9833,7 @@ without toggling anything.
 | u | Cycle From/To column display (default / host:port / user / user@host:port) |
 | r / F6 | Show raw SIP message for selected dialog |
 | s | Switch to Statistics view |
+| h | Open the [Capture health](#capture-health) panel: drops, undecodable frames, and on a `-L` run the HEP listener's senders |
 | S | Open the **Relay statistics** view — asks the live relay for its own counters (`s` asks what this capture saw, `S` asks what the relay says). See [Relay statistics](#relay-statistics) |
 | D | Open the Quality Dashboard (live MOS/jitter/loss) |
 | T | Open the call timeline for the selected dialog (Esc / q closes it) |
@@ -9833,6 +10011,35 @@ the Call List or RTP Streams view.
 | PgUp / PgDn | Page scroll |
 | Home / End | Jump to top/bottom |
 | Esc / q / s | Back to Call List |
+
+## Capture health
+
+The capture's own health: the loss, decode and media-path counters, and on a
+run with a HEP listener (`-L`) one line counting its senders. Open with `h`
+from the Call List.
+
+| Key | Action |
+|-----|--------|
+| s | Open [HEP senders](#hep-senders) |
+| Up / k, Down / j | Scroll |
+| PgUp / PgDn | Page scroll |
+| Home / End | Jump to top/bottom |
+| Esc / q / h | Back to Call List |
+
+## HEP senders
+
+Who is feeding the `-L` listener: each sender (the capture id it claims and
+the address it sends from), its packet count, when it was last heard and
+whether it went silent, then every address the listener refused, with the
+reasons. The same table `--hep-senders` prints at the end of a headless run.
+A session with no listener says so. Open with `s` from Capture health.
+
+| Key | Action |
+|-----|--------|
+| Up / k, Down / j | Scroll |
+| PgUp / PgDn | Page scroll |
+| Home / End | Jump to top/bottom |
+| Esc / q / s | Back to Capture health |
 
 ## Relay statistics
 
@@ -11506,6 +11713,7 @@ Unprivileged runs (`sipnab --setup-caps`) now do too.
 | `--hep-auth-mode` | `<plain\|hmac>` | `plain` | HEP auth mode. `plain` sends/expects the shared secret verbatim in the 0x000e chunk (Homer-compatible, but replayable by an on-path sniffer). `hmac` sends/expects a per-message token (timestamp + nonce + HMAC-SHA256 over the payload) that resists replay — **sipnab-to-sipnab only**; a stock Homer/Kamailio peer does not understand it. Feature: `hep` |
 | `--hep-hmac-window` | `<SECS>` | `30` | Seconds either side of now within which sipnab still honors a `--hep-auth-mode hmac` token's timestamp. On an agent/collector pair with poor NTP sipnab turns every packet away as out-of-window, and what the operator sees is a collector receiving NOTHING -- a symptom they attribute to routing, a firewall, or a dead agent long before a clock. Widening it is a security trade rather than a convenience: the window is exactly how long a packet an on-path attacker captured stays acceptable, and how far back the receiver's nonce cache must remember. Range 1-300. Config: `[security] hep_hmac_window_secs` Feature: `hep` |
 | `--hep-silence-warn` | `<SECS>` | `30` | Seconds a `--hep-listen` listener may go without **admitting** a packet before it logs a warning; `0` turns the warning off. Only an admitted packet counts as traffic. When packets keep arriving and sipnab refuses every one, the warning says `no packets admitted` and names the refusal most of them met (`auth_mismatch`, `allowlist`, `hmac_timestamp_out_of_window` and so on) and a peer that sent them: the sender is reaching the port and sipnab is turning it away, which is a key, mode or allowlist problem rather than a network one. When nothing arrives at all the warning keeps its `no packets for` wording. Refused without `--hep-listen`, which is the side it governs. Feature: `hep` |
+| `--hep-senders` | -- | off | At the end of a headless (`-N`) run, print who fed the `--hep-listen` listener: each sender, keyed by the capture id it claims and the address it sent from, with its packet count, when sipnab last heard from it, how long it has been idle and whether it went silent past `--hep-silence-warn`; then every address the listener refused, with counts by reason, and the refusal totals. The capture id is the sender's claim, never proven. With `--json`, the same as one JSON object on the last line of stdout, the shape `GET /v1/hep/senders` and the MCP `hep_senders` tool return. The roster covers this run only and nothing persists it. Refused without `--hep-listen`, which is the side it describes. Feature: `hep` |
 | `-E`, `--hep-parse` | -- | off | Parse incoming HEP packets (enable HEP decoding). Feature: `hep` |
 | `--hep-allow` | `<ADDR>` | -- | Allowed source addresses for HEP input (repeatable). Takes CIDR (`192.0.2.0/8`, `2001:db8::/32`) or a **bare address** (`192.0.2.40`), which means that host alone — `/32` for IPv4, `/128` for IPv6. A missing prefix always narrows, never widens: `192.0.2.0` is one host, not `192.0.2.0/8`. sipnab **refuses** a non-loopback `--hep-listen` bind unless you pass either this or `--hep-auth`/`--hep-auth-file`. Feature: `hep` |
 | `--hep-rate-limit` | `<N>` | `50000` | Maximum HEP packets per second (global ceiling across all senders); `0` disables the global ceiling, consistent with `off` on the per-peer knob Feature: `hep` |
@@ -11532,6 +11740,8 @@ Unprivileged runs (`sipnab --setup-caps`) now do too.
 - `sipnab -N -L 127.0.0.1:9060 --hep-parse --hep-auth-file /etc/sipnab/hep.key --hep-auth-mode hmac --hep-hmac-window 5` — the opposite, where every agent shares a local time source: five seconds narrows the replay window a captured packet stays valid in
 - `sipnab -N -L 0.0.0.0:9060 --hep-parse --hep-auth-file /etc/sipnab/hep.key --hep-silence-warn 300` — a collector fed by PBXes that go quiet overnight: five minutes without an admitted packet before the listener warns, so a site with no calls overnight does not fill the journal
 - `sipnab -N -L 127.0.0.1:9060 --hep-parse --hep-silence-warn 0` — a lab listener fed by hand, where long silences are normal and the warning would only be noise
+- `sipnab -N -L 0.0.0.0:9060 --hep-parse --hep-auth-file /etc/sipnab/hep.key --duration 300 --hep-senders` — five minutes of a collector's feed, then the roster: which proxies sent and how much, which went silent, and which addresses the listener turned away and why
+- `sipnab -N -L 127.0.0.1:9060 --hep-parse --hep-senders --count 5000 --json` — the same roster as one JSON object on the last line of stdout, after the per-message lines, for a script to pick up with `tail -1`
 - `sudo sipnab -N -d eth0 --mcp --mcp-transport http --mcp-bind 127.0.0.1:8731 --mcp-token t0ken-alice --mcp-signing-key-file /etc/sipnab/mcp-signing.key --mcp-revoked-file /etc/sipnab/mcp-revoked.txt --mcp-token-ttl 1800` — loopback HTTP MCP server with a bearer token, file-loaded signing key, revocation denylist, and a 30-minute mint TTL
 - `sudo sipnab -N -d eth0 --mcp --mcp-transport http --mcp-bind 0.0.0.0:8731 --mcp-token t0ken-bob --mcp-signing-key-file /etc/sipnab/mcp-signing.key --mcp-revoked-file /etc/sipnab/mcp-revoked.txt --mcp-allowed-host mcp.example.com` — non-loopback HTTP MCP server (token required) accepting an extra Host header for named clients
 - `sudo sipnab -N -d eth0 --hep-send 192.0.2.10:9060 --hep-id 42 --hep-auth s3cr3t-homer-key` — forward captured packets to a Homer collector, stamping capture-agent id 42 and an authenticate key
@@ -17330,7 +17540,10 @@ plain UDP socket: **no capture privileges, no setcap, fully unprivileged.**
      and the peer it came from. Fix the sender's key, `--hep-auth-mode` or
      the `--hep-allow` list rather than the network.
 
-   `--hep-silence-warn` changes the 30 seconds.
+   `--hep-silence-warn` changes the 30 seconds. To see each proxy on its own,
+   ask the MCP `hep_senders` tool: it lists every sender with its packet
+   count and whether it went silent, and every address the listener refused,
+   with the reason.
 
 6. **[laptop]** Wire up exactly as scenario
    [2C](mcp-deploy.md#keep-a-capture-running-without-exposing-a-port)
@@ -17831,6 +18044,7 @@ ordinary update.
 | [`capture_status`](#capture_status) | -- | What this server captures: live or file, uptime, and whether stopping loses unsaved packets |
 | [`runtime_stats`](#runtime_stats) | `sample_seconds?` | What sipnab is doing and what it costs the host: its own memory, threads, descriptors and CPU; the host's totals and the basis they came from; its share of them and whether that share is load-bearing; per-interface counters; store occupancy against the caps |
 | [`capture_health`](#capture_health) | `sample_seconds` | Capture-path counters read twice: run totals, deltas across the window, `undecoded_fraction`, and undecodable frames by reason |
+| [`hep_senders`](#hep_senders) | `limit?` | Who feeds this run's HEP listener: each sender, its count, when it was last heard and whether it went silent, and every address the listener refused, by reason |
 | [`reconcile_orphans`](#reconcile_orphans) | `limit?` | Why each RTP stream with no dialog lacks one: a relay named the endpoint but no signaling arrived, SDP named it but no dialog claims it, or nothing named it at all |
 | [`get_capture_report`](#get_capture_report) | `format?` | Whole-capture analysis: findings, orphaned media, STUN/ICMP evidence, what the caps shed |
 | [`list_captures`](#list_captures) | -- | Capture files in `--mcp-file-root`, with sizes |
@@ -18264,7 +18478,7 @@ says whether this RUN did.
 
 What sipnab is doing, and what it is costing the host it runs on.
 
-sipnab exports 32 Prometheus metrics, and the listener that serves them is off
+sipnab exports 35 Prometheus metrics, and the listener that serves them is off
 by default — so on most deployments those numbers exist inside the process and
 nothing can read them. An agent asked "is this server healthy" could not enable
 a listener to find out. This answers without one.
@@ -18450,6 +18664,21 @@ Returns:
 }
 ```
 
+On a run with a HEP listener (`-L`), the response also carries `hep`: the
+listener's counts, and nothing else.
+
+```jsonc
+  "hep": {
+    "senders_tracked": 20, "senders_silent": 1, "packets_received": 900410,
+    "packets_admitted": 899396, "packets_refused": 1014, "untracked_packets": 0
+  }
+```
+
+Integers only, like the rest of the response. Which senders, their addresses
+and the ids they claim are [`hep_senders`](#hep_senders)' answer. Without a
+listener the key is absent, because a zero would claim a listener that heard
+nothing.
+
 `source_stopped_early` answers the question this tool usually gets: **did the
 whole capture arrive?** It reads `true` when a file's read ended before the file
 did — `libpcap error: truncated dump file`, a file that would not open, a read
@@ -18545,6 +18774,71 @@ thinks it is.
 `available: false` means the platform gave no answer — NOT that the clock is
 bad. The two are different facts and only one of them is a problem.
 
+
+
+### `hep_senders`
+
+Who is feeding this run's HEP listener, who went silent, and who it is turning
+away. Exists in a build with the `hep` feature. Starts nothing and waits for
+nothing: it reads the roster the listener keeps.
+
+```jsonc
+// hep_senders {}
+{
+  "schema_version": 1,
+  "listening": true,
+  "trust": "shared_secret_plain",
+  "silence_threshold_seconds": 30,
+  "packets_received": 1843, "packets_admitted": 1829, "packets_refused": 14,
+  "refused_by_reason": { "auth_mismatch": 14, "allowlist": 0, "malformed": 0, "...": 0 },
+  "senders_tracked": 2, "senders_limit": 4096, "senders_silent": 1,
+  "untracked_packets": 0,
+  "senders": [
+    { "source": "hep:7@192.0.2.7", "capture_id": 7, "peer": "192.0.2.7",
+      "identity": "claimed_by_sender", "trust": "shared_secret_plain",
+      "packets": 1604, "first_seen": "2026-09-21T12:00:00.412Z",
+      "last_seen": "2026-09-21T12:14:59.880Z", "idle_seconds": 0, "silent": false },
+    { "source": "hep:9@192.0.2.9", "capture_id": 9, "peer": "192.0.2.9",
+      "identity": "claimed_by_sender", "trust": "shared_secret_plain",
+      "packets": 225, "first_seen": "2026-09-21T12:00:01.020Z",
+      "last_seen": "2026-09-21T12:09:12.334Z", "idle_seconds": 348, "silent": true }
+  ],
+  "refused_sources_tracked": 1, "refused_sources_limit": 256, "refused_sources_evicted": 0,
+  "refused_sources": [
+    { "peer": "203.0.113.66", "packets": 14, "by_reason": { "auth_mismatch": 14 },
+      "first_seen": "2026-09-21T12:03:40.101Z", "last_seen": "2026-09-21T12:14:58.007Z" }
+  ]
+}
+```
+
+`refused_by_reason` carries all twelve reasons, and the example elides the zeros.
+
+| Name | Type | Legal values | If omitted |
+|---|---|---|---|
+| `limit` | u32 | The most rows `senders` and `refused_sources` each carry, up to the server's row cap (`--mcp-max-rows`). The totals beside each list always count everything. | 50 rows per list |
+
+**The questions it answers.** Is proxy seven still sending? Read its row's
+`silent` and `idle_seconds`. Why does the new PBX not show up? Look for its
+address under `refused_sources`: `auth_mismatch` is the wrong shared secret,
+`auth_missing` a sender with no key at all, `allowlist` an address `--hep-allow`
+does not cover, and `hmac_timestamp_out_of_window` a sender whose clock has
+drifted.
+
+**`identity` is always `claimed_by_sender`.** One shared secret serves the
+whole listener, so any sender holding it can claim any capture id. The roster
+reports what senders say about themselves.
+
+**Silent is not down.** A sender is silent once the listener has admitted
+nothing from it for `silence_threshold_seconds` (`--hep-silence-warn`). A PBX with no
+calls at night may send nothing at all.
+
+**No listener, no roster.** A server with no `-L` returns `listening: false`
+and a `note`, never an empty roster that would read as "nobody is sending".
+
+Every value is sipnab's own count, a claimed id, an address or a time, and no
+byte of any packet, so the response goes out without the untrusted-content
+note. `GET /v1/hep/senders` returns the same bytes for the same roster, and
+`--hep-senders` prints it at the end of a headless run.
 
 ### `get_capture_report`
 
@@ -23960,8 +24254,8 @@ For the tools themselves — and for the error codes and response bounds — see
 - **No prompt-injection cooperation.** Tool descriptions never
   instruct the LLM to "trust" or "act on" returned content; they
   describe what the tool returns and stop there.
-- **Every tool declares what it does.** All 68 carry MCP annotations, so a host
-  can decide what to call without asking. Fifty-six are `readOnlyHint: true`.
+- **Every tool declares what it does.** All 69 carry MCP annotations, so a host
+  can decide what to call without asking. Fifty-seven are `readOnlyHint: true`.
   [What the write verbs do](#what-the-write-verbs-do) names the twelve that
   are not. Every tool but five sets `openWorldHint` to `false`, because
   sipnab answers from the loaded capture and contacts no external service;
@@ -24246,7 +24540,7 @@ sipnab negotiates the 2025-06-18 and 2025-11-25 revisions, where
 
 ## What the write verbs do
 
-Fifty-six of the 68 tools are `readOnlyHint: true`. These twelve are not, and
+Fifty-seven of the 69 tools are `readOnlyHint: true`. These twelve are not, and
 each declares what kind of change it makes so a host can decide which need
 confirmation:
 

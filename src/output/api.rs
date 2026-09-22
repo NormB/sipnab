@@ -479,6 +479,17 @@ pub struct RuntimeParams {
     pub sample_seconds: Option<u32>,
 }
 
+/// Query parameters for the `GET /v1/hep/senders` endpoint.
+#[cfg(feature = "hep")]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct HepSendersParams {
+    /// The most rows each list (senders, refused sources) may carry. Omitted
+    /// or `0`, the server's row cap. The totals beside each list always count
+    /// everything.
+    pub limit: Option<usize>,
+}
+
 /// Query parameters for the `GET /v1/dialogs` endpoint.
 #[derive(Debug, Deserialize, utoipa::IntoParams)]
 #[into_params(parameter_in = Query)]
@@ -765,6 +776,10 @@ pub fn build_router(state: ApiState) -> Router {
     // vcon feature, so this route is gated with it too.
     #[cfg(feature = "vcon")]
     let router = router.route("/v1/vcon/validate", axum::routing::post(post_vcon_validate));
+    // Only where a HEP listener can exist, for the reason the vCon routes
+    // above are gated: "this sipnab cannot" must not read as "nobody sends".
+    #[cfg(feature = "hep")]
+    let router = router.route("/v1/hep/senders", get(get_hep_senders));
     router
         .route(
             "/v1/persistence",
@@ -3804,6 +3819,42 @@ fn rest_sample_seconds(requested: u32) -> Result<u32, &'static str> {
     Ok(crate::output::runtime::resolve_sample_seconds(requested)?.min(MAX_REST_SAMPLE_SECONDS))
 }
 
+/// `GET /v1/hep/senders` — who is feeding this run's HEP listener, who went
+/// silent, and who it is turning away.
+///
+/// 200 with the [`crate::output::model::HepSendersReport`] every surface
+/// returns: the same bytes as the MCP `hep_senders` tool for one roster. Full
+/// scope only, through [`guard`]: sender addresses describe the estate, and a
+/// `metrics` token reaches `/metrics` and nothing else.
+#[cfg(feature = "hep")]
+#[utoipa::path(
+    get,
+    path = "/v1/hep/senders",
+    tag = "capture",
+    description = "The HEP listener's sender roster: each sender keyed by the capture id it claims and the address it sent from, with its admitted packet count, when it was first and last heard, its idle seconds and whether it has been silent for the `--hep-silence-warn` threshold; the addresses the listener refused, with counts by reason; and refusal totals by reason that nothing evicts.\n\nThe capture id is the sender's claim, never proven, and every row says so in `identity`. A run with no HEP listener answers 200 with `listening: false` and a note, never an empty roster that would read as \"nobody is sending\".\n\nRequires a full-scope token: sender addresses describe the estate.",
+    params(HepSendersParams),
+    responses(
+        (status = 200, description = "The sender roster.", body = crate::output::model::HepSendersReport),
+        (status = 401, description = "No bearer credential, one this server does not accept, or one scoped narrower than full.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 503, description = "Over the per-source-IP rate limit of 100 requests per second.", body = schema::ProblemJson, content_type = "application/problem+json"),
+    )
+)]
+async fn get_hep_senders(
+    State(state): State<ApiState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Query(params): Query<HepSendersParams>,
+) -> Result<impl IntoResponse, Problem> {
+    guard(&state, &headers, addr.ip())?;
+    let limit = resolve_page_limit(params.limit, state.max_rows);
+    // The one builder the MCP tool and `--hep-senders` call too, over the
+    // roster the listener hung on the SAME meter.
+    Ok(Json(crate::capture::hep_roster::senders_report(
+        state.capture_meter.as_ref().and_then(|m| m.hep_roster()),
+        limit,
+    )))
+}
+
 /// `GET /v1/runtime` — what sipnab is doing and what it is costing the host.
 ///
 /// 200 with the [`schema::Runtime`] envelope: process resources, the host's
@@ -4712,8 +4763,7 @@ async fn get_metrics(
     // which is what this door published until `ApiState` started carrying the
     // meter.
     if let Some(meter) = state.capture_meter.as_ref() {
-        metrics.capture_queue_depth_packets = meter.in_flight() as u64;
-        metrics.capture_backpressure_blocks_total = meter.backpressure_blocks();
+        metrics.apply_meter(meter);
     }
 
     // Populate from dialog store. The stream store is read alongside it (in
@@ -6345,15 +6395,17 @@ pub fn openapi_json() -> String {
     use utoipa::OpenApi as _;
 
     #[cfg_attr(
-        not(feature = "vcon"),
+        not(any(feature = "vcon", feature = "hep")),
         expect(
             unused_mut,
-            reason = "the vcon route is the only mutation, and it is cfg-gated"
+            reason = "the vcon and hep routes are the only mutations, and both are cfg-gated"
         )
     )]
     let mut doc = ApiDoc::openapi();
     #[cfg(feature = "vcon")]
     doc.merge(VconDoc::openapi());
+    #[cfg(feature = "hep")]
+    doc.merge(HepDoc::openapi());
 
     #[expect(
         clippy::expect_used,
@@ -6385,6 +6437,20 @@ pub fn openapi_json() -> String {
     ))
 )]
 struct VconDoc;
+
+/// The `hep` route's half of the document, gated for the reason
+/// [`VconDoc`] is.
+#[cfg(feature = "hep")]
+#[derive(utoipa::OpenApi)]
+#[openapi(
+    paths(get_hep_senders),
+    components(schemas(
+        crate::output::model::HepSendersReport,
+        crate::output::model::HepSenderRow,
+        crate::output::model::HepRefusedSourceRow
+    ))
+)]
+struct HepDoc;
 
 // ── Tests ───────────────────────────────────────────────────────────
 
@@ -8667,6 +8733,113 @@ mod tests {
     async fn body_to_string(body: Body) -> String {
         let bytes = body.collect().await.expect("collect body").to_bytes();
         String::from_utf8(bytes.to_vec()).expect("utf8")
+    }
+
+    // ── GET /v1/hep/senders ──────────────────────────────────────────────
+
+    /// A listener's roster on a frozen clock: senders 7 and 9 admitted, one
+    /// address refused for a wrong key.
+    #[cfg(feature = "hep")]
+    fn hep_roster_fixture() -> crate::capture::hep_roster::HepRoster {
+        use crate::capture::hep_roster::{
+            HepRefusal, HepRoster, RosterState, SenderTrust, hep_source_label,
+        };
+        let t = std::time::Instant::now();
+        let wall = chrono::DateTime::parse_from_rfc3339("2026-09-21T12:00:00Z")
+            .map(|w| w.with_timezone(&chrono::Utc))
+            .unwrap_or_default();
+        let mut state = RosterState::new(
+            SenderTrust::SharedSecretPlain,
+            4096,
+            std::time::Duration::from_secs(30),
+            t,
+            wall,
+        );
+        for (id, peer, n) in [(7, "192.0.2.7", 3), (9, "192.0.2.9", 2)] {
+            let peer: IpAddr = peer.parse().expect("literal");
+            for _ in 0..n {
+                state.admitted(Some(id), peer, &hep_source_label(Some(id), peer), t);
+            }
+        }
+        let bad: IpAddr = "203.0.113.66".parse().expect("literal");
+        state.refused(HepRefusal::AuthMismatch, bad, t);
+        let frozen = t + std::time::Duration::from_secs(40);
+        HepRoster::with_clock(state, Arc::new(move || frozen))
+    }
+
+    /// A state whose capture meter carries `roster`, as a live `-L` run's does.
+    #[cfg(feature = "hep")]
+    fn state_with_roster(roster: crate::capture::hep_roster::HepRoster) -> ApiState {
+        let (_tx, rx) = crate::capture::channel::packet_channel(8);
+        let meter = rx.meter();
+        assert!(meter.attach_hep_roster(roster), "fresh meter");
+        ApiState {
+            capture_meter: Some(meter),
+            ..make_state()
+        }
+    }
+
+    /// The route answers with the roster the listener hung on the meter.
+    #[cfg(feature = "hep")]
+    #[tokio::test]
+    async fn hep_senders_returns_the_listeners_roster() {
+        let app = build_router(state_with_roster(hep_roster_fixture()));
+        let resp = app
+            .oneshot(test_request("/v1/hep/senders"))
+            .await
+            .expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body: Value =
+            serde_json::from_str(&body_to_string(resp.into_body()).await).expect("json");
+        assert_eq!(body["listening"], true);
+        assert_eq!(body["trust"], "shared_secret_plain");
+        assert_eq!(body["senders"][0]["source"], "hep:7@192.0.2.7");
+        assert_eq!(body["senders"][0]["packets"], 3);
+        assert_eq!(
+            body["senders"][0]["silent"], true,
+            "40s idle past a 30s threshold"
+        );
+        assert_eq!(body["senders"][1]["source"], "hep:9@192.0.2.9");
+        assert_eq!(body["refused_sources"][0]["peer"], "203.0.113.66");
+        assert_eq!(body["refused_by_reason"]["auth_mismatch"], 1);
+    }
+
+    /// `?limit=` caps each list, never the totals beside it.
+    #[cfg(feature = "hep")]
+    #[tokio::test]
+    async fn hep_senders_limit_caps_the_rows_and_not_the_totals() {
+        let app = build_router(state_with_roster(hep_roster_fixture()));
+        let resp = app
+            .oneshot(test_request("/v1/hep/senders?limit=1"))
+            .await
+            .expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body: Value =
+            serde_json::from_str(&body_to_string(resp.into_body()).await).expect("json");
+        assert_eq!(body["senders"].as_array().map(Vec::len), Some(1));
+        assert_eq!(body["senders_tracked"], 2);
+    }
+
+    /// A run with no HEP listener answers 200 with `listening: false` and a
+    /// note, rather than an empty roster that reads as "nobody is sending".
+    #[cfg(feature = "hep")]
+    #[tokio::test]
+    async fn hep_senders_without_a_listener_says_nothing_is_listening() {
+        let app = build_router(make_state());
+        let resp = app
+            .oneshot(test_request("/v1/hep/senders"))
+            .await
+            .expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body: Value =
+            serde_json::from_str(&body_to_string(resp.into_body()).await).expect("json");
+        assert_eq!(body["listening"], false);
+        assert!(
+            body["note"]
+                .as_str()
+                .is_some_and(|n| n.contains("no HEP listener")),
+            "{body}"
+        );
     }
 
     /// `GET /health` returns 200 with the literal body "ok".

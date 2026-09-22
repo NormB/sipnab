@@ -3287,6 +3287,16 @@ pub struct HepArgs {
     )]
     pub hep_silence_warn_secs: Option<u64>,
 
+    /// At the end of a headless run, print who fed the `--hep-listen`
+    /// listener: each sender (the capture id it claims and the address it sent
+    /// from), its packet count, when it was last heard and whether it went
+    /// silent, and every address the listener refused with the reasons. With
+    /// `--json`, the same as one JSON object on the last line of stdout — the
+    /// shape `GET /v1/hep/senders` and the MCP `hep_senders` tool return.
+    /// Refused without `--hep-listen`, which is the side it describes.
+    #[arg(help_heading = "HEP", long = "hep-senders", requires = "hep_listen")]
+    pub hep_senders: bool,
+
     /// Parse incoming HEP packets (enable HEP decoding).
     #[arg(help_heading = "HEP", short = 'E', long = "hep-parse")]
     pub hep_parse: bool,

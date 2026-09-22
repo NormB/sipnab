@@ -340,6 +340,9 @@ pub struct TuiOptions {
     /// sessions only). `Some` for `-I one.pcap`; `None` for a live capture, a
     /// multi-file input, or no input.
     pub rescan_path: Option<std::path::PathBuf>,
+    /// The capture channel's meter, where a HEP listener hangs its sender
+    /// roster for the HEP senders view. `None` on a session with no capture.
+    pub capture_meter: Option<crate::capture::channel::CaptureMeter>,
 }
 
 impl TuiOptions {
@@ -394,6 +397,7 @@ impl TuiOptions {
         app.relay_stats_interval = self.relay_stats_interval;
         app.set_reconfigure(self.reconfigure_control, self.reconfigure_outcomes);
         app.rescan_path = self.rescan_path;
+        app.capture_meter = self.capture_meter;
         app
     }
 }
@@ -1362,6 +1366,11 @@ pub enum View {
     /// Opened with `h` from the call list. Reads process-global counters, so it
     /// renders straight from `CaptureQuality::current` each frame.
     CaptureHealth,
+    /// Who is feeding this run's HEP listener, who went silent and who it is
+    /// refusing: the roster `--hep-senders`, `GET /v1/hep/senders` and the MCP
+    /// `hep_senders` tool report, rendered by the same table as the CLI.
+    /// Opened with `s` from [`View::CaptureHealth`], and `Esc` returns there.
+    HepSenders,
     /// Call volume over time: dialogs per fixed-width bucket, drawn as a text
     /// histogram — the same buckets `GET /v1/timeline` and the MCP `timeline`
     /// tool report. Opened with `b` from the call list.

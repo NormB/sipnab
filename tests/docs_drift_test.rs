@@ -2684,9 +2684,13 @@ fn mcp_tool_table_lists_every_registered_tool() {
     // per-call count beside sipnab's. Both read-only and both transmit, so the
     // split moves 54-of-66 to 56-of-68 and the twelve write-capable tools are
     // unchanged.
+    // 68 -> 69 by `hep_senders` (src/mcp/tools/hep.rs), which answers who is
+    // feeding this run's HEP listener, who went silent and who it refuses.
+    // Read-only, so the split moves 56-of-68 to 57-of-69 and the twelve
+    // write-capable tools are unchanged.
     assert_eq!(
         registered.len(),
-        68,
+        69,
         "found only {} #[tool(name = ...)] entries under src/mcp/ — the \
          attribute shape changed and this test is no longer reading the \
          registry: {registered:?}",
@@ -3692,7 +3696,14 @@ fn no_documentation_table_repeats_a_row() {
     // its site mirror.
     // 927 -> 932: the client-examples table and its site mirror, plus three
     // tables in the new library site mirror. Measured by this gate.
-    const EXPECTED_TABLES: usize = 932;
+    // 932 -> 941 by the HEP sender roster: the `HEP senders` row of the
+    // surface-capability matrix (one table), the Capture health and HEP
+    // senders key tables in docs/keybindings.md (two), the `hep_senders`
+    // parameter table in docs/mcp-tools.md (one) and the refusal-reason table
+    // in docs/troubleshooting.md (one), plus the site mirrors of the last
+    // three pages (four). Attributed by counting table separators per file
+    // against HEAD: exactly those seven files moved.
+    const EXPECTED_TABLES: usize = 941;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

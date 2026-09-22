@@ -1225,7 +1225,7 @@ fn dialog_list_by_method_has_one_row_per_method() {
 #[cfg(target_os = "linux")]
 /// `GET /v1/runtime` answers with the envelope both surfaces share.
 ///
-/// sipnab exports 32 Prometheus metrics and the listener that serves them is
+/// sipnab exports 35 Prometheus metrics and the listener that serves them is
 /// off by default, so on most deployments those numbers exist in-process and
 /// nothing can read them. This route answers without one.
 #[test]

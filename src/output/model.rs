@@ -497,6 +497,7 @@ impl StreamSummary {
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[cfg_attr(feature = "mcp", derive(rmcp::schemars::JsonSchema))]
 #[cfg_attr(feature = "mcp", schemars(crate = "rmcp::schemars"))]
+#[cfg_attr(feature = "api", derive(utoipa::ToSchema))]
 pub struct HepSendersReport {
     /// Wire-format version of this envelope.
     pub schema_version: u32,
@@ -556,6 +557,7 @@ pub struct HepSendersReport {
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[cfg_attr(feature = "mcp", derive(rmcp::schemars::JsonSchema))]
 #[cfg_attr(feature = "mcp", schemars(crate = "rmcp::schemars"))]
+#[cfg_attr(feature = "api", derive(utoipa::ToSchema))]
 pub struct HepSenderRow {
     /// The source half of every frame pointer this sender's packets carry
     /// (`hep:<capture-id>@<peer>`), so a row and a pointer name one sender
@@ -590,6 +592,7 @@ pub struct HepSenderRow {
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[cfg_attr(feature = "mcp", derive(rmcp::schemars::JsonSchema))]
 #[cfg_attr(feature = "mcp", schemars(crate = "rmcp::schemars"))]
+#[cfg_attr(feature = "api", derive(utoipa::ToSchema))]
 pub struct HepRefusedSourceRow {
     /// The address the refused packets came from.
     pub peer: String,
@@ -604,6 +607,105 @@ pub struct HepRefusedSourceRow {
 }
 
 impl HepSendersReport {
+    /// The table `--hep-senders` prints at the end of a run and the TUI's HEP
+    /// senders view shows: one renderer, so the two cannot describe one
+    /// roster differently.
+    #[must_use]
+    pub fn to_text(&self) -> String {
+        use std::fmt::Write as _;
+        let mut out = String::new();
+        if !self.listening {
+            let _ = writeln!(
+                out,
+                "HEP senders: {}",
+                self.note
+                    .as_deref()
+                    .unwrap_or("this run has no HEP listener (-L/--hep-listen)")
+            );
+            return out;
+        }
+        let silence = if self.silence_threshold_seconds == 0 {
+            "silence warning off".to_string()
+        } else {
+            format!("silent after {}s", self.silence_threshold_seconds)
+        };
+        let _ = writeln!(
+            out,
+            "HEP senders (trust {}, {silence})",
+            self.trust.as_deref().unwrap_or("unknown")
+        );
+        let _ = writeln!(
+            out,
+            "  received {}  admitted {}  refused {}  from untracked senders {}",
+            self.packets_received,
+            self.packets_admitted,
+            self.packets_refused,
+            self.untracked_packets
+        );
+        let _ = writeln!(out);
+        let _ = writeln!(
+            out,
+            "  {:<34} {:>10}  {:<24} {:>8}  STATE",
+            "SOURCE", "PACKETS", "LAST SEEN", "IDLE"
+        );
+        for s in &self.senders {
+            let _ = writeln!(
+                out,
+                "  {:<34} {:>10}  {:<24} {:>7}s  {}",
+                s.source,
+                s.packets,
+                s.last_seen,
+                s.idle_seconds,
+                if s.silent { "SILENT" } else { "sending" }
+            );
+        }
+        let _ = writeln!(
+            out,
+            "  {} of {} tracked sender(s) shown, {} silent, limit {}. Capture ids are \
+             claimed by the sender, not proven.",
+            self.senders.len(),
+            self.senders_tracked,
+            self.senders_silent,
+            self.senders_limit
+        );
+        let _ = writeln!(out);
+        let _ = writeln!(
+            out,
+            "Refused sources ({} of {} tracked shown, limit {}, {} evicted)",
+            self.refused_sources.len(),
+            self.refused_sources_tracked,
+            self.refused_sources_limit,
+            self.refused_sources_evicted
+        );
+        if !self.refused_sources.is_empty() {
+            let _ = writeln!(out, "  {:<40} {:>10}  REASONS", "PEER", "PACKETS");
+            for r in &self.refused_sources {
+                let reasons: Vec<String> = r
+                    .by_reason
+                    .iter()
+                    .map(|(k, v)| format!("{k}={v}"))
+                    .collect();
+                let _ = writeln!(
+                    out,
+                    "  {:<40} {:>10}  {}",
+                    r.peer,
+                    r.packets,
+                    reasons.join(" ")
+                );
+            }
+        }
+        let refused: Vec<String> = self
+            .refused_by_reason
+            .iter()
+            .filter(|(_, v)| **v > 0)
+            .map(|(k, v)| format!("{k}={v}"))
+            .collect();
+        if !refused.is_empty() {
+            let _ = writeln!(out, "  Refused by reason: {}", refused.join(" "));
+        }
+        out
+    }
+
     /// The answer for a run with no HEP listener: every count zero, and a note
     /// saying why, so "nothing is listening" cannot read as "nobody is
     /// sending".
@@ -633,6 +735,115 @@ impl HepSendersReport {
                     .to_string(),
             ),
         }
+    }
+}
+
+/// The HEP senders table every text surface prints.
+#[cfg(test)]
+mod hep_senders_text {
+    use super::*;
+
+    /// A report with one live sender, one silent one and one refused source,
+    /// built by hand so the rendering is tested against known values.
+    fn sample() -> HepSendersReport {
+        let row = |source: &str, id: u32, peer: &str, packets: u64, idle: u64, silent: bool| {
+            HepSenderRow {
+                source: source.to_string(),
+                capture_id: Some(id),
+                peer: peer.to_string(),
+                identity: "claimed_by_sender".to_string(),
+                trust: "shared_secret_plain".to_string(),
+                packets,
+                first_seen: "2026-09-21T12:00:00.000Z".to_string(),
+                last_seen: "2026-09-21T12:00:05.000Z".to_string(),
+                idle_seconds: idle,
+                silent,
+            }
+        };
+        let mut by_reason = std::collections::BTreeMap::new();
+        by_reason.insert("auth_mismatch".to_string(), 3);
+        HepSendersReport {
+            listening: true,
+            note: None,
+            trust: Some("shared_secret_plain".to_string()),
+            silence_threshold_seconds: 30,
+            packets_received: 12,
+            packets_admitted: 9,
+            packets_refused: 3,
+            refused_by_reason: by_reason.clone(),
+            senders_tracked: 2,
+            senders_limit: 4096,
+            senders_silent: 1,
+            senders: vec![
+                row("hep:7@192.0.2.7", 7, "192.0.2.7", 5, 2, false),
+                row("hep:9@192.0.2.9", 9, "192.0.2.9", 4, 41, true),
+            ],
+            refused_sources_tracked: 1,
+            refused_sources_limit: 256,
+            refused_sources: vec![HepRefusedSourceRow {
+                peer: "203.0.113.66".to_string(),
+                packets: 3,
+                by_reason,
+                first_seen: "2026-09-21T12:00:01.000Z".to_string(),
+                last_seen: "2026-09-21T12:00:03.000Z".to_string(),
+            }],
+            ..HepSendersReport::not_listening()
+        }
+    }
+
+    /// Every sender, its count and its state, every refused source with its
+    /// reasons, and the trust and identity caveat, all in the one table the
+    /// CLI prints and the TUI shows.
+    #[test]
+    fn the_table_names_every_sender_its_state_and_every_refused_source() {
+        let text = sample().to_text();
+        for needle in [
+            "hep:7@192.0.2.7",
+            "hep:9@192.0.2.9",
+            "SILENT",
+            "sending",
+            "203.0.113.66",
+            "auth_mismatch=3",
+            "shared_secret_plain",
+            "claimed by the sender",
+            "received 12",
+            "admitted 9",
+            "refused 3",
+            "silent after 30s",
+        ] {
+            assert!(text.contains(needle), "`{needle}` missing from:\n{text}");
+        }
+        let silent_line = text
+            .lines()
+            .find(|l| l.contains("hep:9@192.0.2.9"))
+            .unwrap_or_default();
+        assert!(
+            silent_line.contains("SILENT") && silent_line.contains("41s"),
+            "the silent sender's own line says so, with its idle time: {silent_line}"
+        );
+        let live_line = text
+            .lines()
+            .find(|l| l.contains("hep:7@192.0.2.7"))
+            .unwrap_or_default();
+        assert!(!live_line.contains("SILENT"), "{live_line}");
+    }
+
+    /// A run with no listener says so, instead of printing an empty table
+    /// that reads as "nobody is sending".
+    #[test]
+    fn a_run_with_no_listener_says_so_rather_than_printing_an_empty_table() {
+        let text = HepSendersReport::not_listening().to_text();
+        assert!(text.contains("no HEP listener"), "{text}");
+        assert!(!text.contains("SOURCE"), "no table header: {text}");
+    }
+
+    /// A list cut by a row limit says how many it left out.
+    #[test]
+    fn a_table_cut_by_a_row_limit_says_what_it_left_out() {
+        let mut report = sample();
+        report.senders_tracked = 40;
+        let text = report.to_text();
+        assert!(text.contains("2 of 40"), "{text}");
     }
 }
 

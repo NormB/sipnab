@@ -206,6 +206,21 @@ struct PageProbe {
     per_page: &'static [(&'static str, &'static str)],
 }
 
+/// Tools that take a page size and cannot be driven by [`loaded_session`],
+/// each with the reason and the test that holds the property instead.
+///
+/// Named rather than skipped, for the reason [`PageProbe::per_page`] is: an
+/// unexplained exception is indistinguishable from the defect. An entry the
+/// source no longer derives fails `the_page_size_surface_is_derived_and_fully_probed`.
+const NOT_PROBED: &[(&str, &str)] = &[(
+    "hep_senders",
+    "pages over a HEP listener's sender roster, and the session here replays a \
+     file: sipnab refuses `-I` beside `-L`, so no roster can exist in it and \
+     both page sizes would compare two empty lists. \
+     `a_page_size_never_moves_the_roster_totals` in src/mcp/tools/hep.rs \
+     drives the same property over a real roster.",
+)];
+
 /// Every tool that takes a page-size argument, with the smallest call that
 /// makes it answer.
 ///
@@ -1126,6 +1141,7 @@ fn the_page_size_surface_is_derived_and_fully_probed() {
     let missing: Vec<&String> = derived
         .iter()
         .filter(|(tool, _)| !PROBES.iter().any(|p| p.tool == tool))
+        .filter(|(tool, _)| !NOT_PROBED.iter().any(|(t, _)| t == tool))
         .map(|(tool, _)| tool)
         .collect();
     assert!(
@@ -1137,6 +1153,7 @@ fn the_page_size_surface_is_derived_and_fully_probed() {
     let stale: Vec<&str> = PROBES
         .iter()
         .map(|p| p.tool)
+        .chain(NOT_PROBED.iter().map(|(t, _)| *t))
         .filter(|tool| !derived.iter().any(|(t, _)| t == tool))
         .collect();
     assert!(

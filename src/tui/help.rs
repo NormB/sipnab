@@ -138,7 +138,14 @@ CAPTURE HEALTH:
   ↑/↓, j/k       Scroll
   PgUp/PgDn       Page scroll
   Home/End         Jump to top/bottom
+  s                HEP senders (who feeds the -L listener)
   Esc, q, h        Close
+
+HEP SENDERS:
+  ↑/↓, j/k       Scroll
+  PgUp/PgDn       Page scroll
+  Home/End         Jump to top/bottom
+  Esc, q, s        Back to capture health
 
 CALL VOLUME HISTOGRAM:
   ↑/↓, j/k       Scroll
