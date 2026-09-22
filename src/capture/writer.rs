@@ -25,6 +25,7 @@ use pcap_file::pcapng::blocks::interface_description::{
 use pcap_file::pcapng::blocks::section_header::{SectionHeaderBlock, SectionHeaderOption};
 
 use super::packet::Packet;
+use crate::annotate::pcapng::EpbComment;
 use crate::signals;
 
 /// Controls how encrypted traffic is written to output pcap files.
@@ -513,6 +514,36 @@ impl PcapWriter {
     /// (interface, link type) pair also appends that interface's IDB (and
     /// counts its bytes) before the packet's EPB.
     pub fn write(&mut self, packet: &Packet) -> Result<()> {
+        self.write_annotated(packet, &[])
+    }
+
+    /// Write a packet with operator notes as its pcapng packet comments.
+    ///
+    /// Each [`EpbComment`] becomes one `opt_comment` on the packet's Enhanced
+    /// Packet Block (draft-ietf-opsawg-pcapng section 3.5, which lets the
+    /// option repeat), in the order given. With no comments this is exactly
+    /// [`write`](Self::write), byte for byte.
+    ///
+    /// The comments can only come from [`crate::annotate`]: this is the one
+    /// place a note's text enters a capture file, and an exporter that does
+    /// not import that module has no way to make one.
+    ///
+    /// # Errors
+    ///
+    /// Everything [`write`](Self::write) fails on, and — on the classic-pcap
+    /// backend — any comment at all. Classic pcap has no field for one, and a
+    /// frame written without the note it was given would hand the operator a
+    /// file that looks annotated and is not, so the frame is refused whole and
+    /// nothing is written for it.
+    pub fn write_annotated(&mut self, packet: &Packet, comments: &[EpbComment]) -> Result<()> {
+        if !comments.is_empty() && !self.use_pcapng {
+            anyhow::bail!(
+                "'{}' is classic pcap, which has no field for a packet comment, so \
+                 the {} note(s) on this frame cannot be written. Write .pcapng.",
+                self.base_path.display(),
+                comments.len(),
+            );
+        }
         // A frame the kernel truncated at snaplen goes into the output at its
         // captured length, and nothing in the file says the rest existed. The
         // count is right, every frame is there, and each one stops early —
@@ -639,7 +670,9 @@ impl PcapWriter {
                     timestamp,
                     original_len: packet.origlen as u32,
                     data: Cow::Borrowed(&packet.data),
-                    options: vec![],
+                    // Empty for every frame without a note, so an export that
+                    // carries none is byte for byte what it always was.
+                    options: comments.iter().map(EpbComment::option).collect(),
                 };
 
                 let epb_bytes = writer
@@ -1691,6 +1724,188 @@ mod tests {
             }
             assert_eq!(v4_names, vec!["sbc-edge".to_string()]);
             assert_eq!(v6_count, 2, "IPv6 record should carry both names");
+        }
+
+        // ── Operator notes as packet comments ──────────────────────────
+
+        /// A note comment for a writer test.
+        fn note_comment(text: &str) -> crate::annotate::pcapng::EpbComment {
+            crate::annotate::pcapng::EpbComment::on_original_frame(
+                &crate::annotate::NoteText::new(text).expect("a valid note"),
+            )
+        }
+
+        /// The `opt_comment`s on every Enhanced Packet Block, in frame order,
+        /// plus each frame's bytes.
+        fn epb_comments(path: &Path) -> Vec<(Vec<String>, Vec<u8>)> {
+            use pcap_file::pcapng::PcapNgReader;
+            use pcap_file::pcapng::blocks::enhanced_packet::EnhancedPacketOption;
+            let bytes = std::fs::read(path).expect("read");
+            let mut reader = PcapNgReader::new(&bytes[..]).expect("pcapng");
+            let mut out = Vec::new();
+            while let Some(block) = reader.next_block() {
+                let block = block.expect("every block parses");
+                if let Some(epb) = block.into_enhanced_packet() {
+                    let comments = epb
+                        .options
+                        .iter()
+                        .filter_map(|o| match o {
+                            EnhancedPacketOption::Comment(c) => Some(c.to_string()),
+                            _ => None,
+                        })
+                        .collect();
+                    out.push((comments, epb.data.to_vec()));
+                }
+            }
+            out
+        }
+
+        /// A note written on a frame reads back as THAT frame's comment, a
+        /// frame given two carries both, and a frame given none carries none.
+        ///
+        /// Read with `pcap-file`, the reader the rest of this module is tested
+        /// against, rather than through the writer's own state: the only
+        /// version of a comment that matters is the one in the file.
+        #[test]
+        fn a_note_reads_back_as_the_comment_on_its_own_frame() {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let path = dir.path().join("notes.pcapng");
+            {
+                let mut w =
+                    PcapWriter::with_format(&path, 1, None, None, true, PcapExportMode::Raw)
+                        .expect("writer");
+                w.write(&pkt(0, 40)).expect("plain frame");
+                w.write_annotated(&pkt(1, 41), &[note_comment("one")])
+                    .expect("one note");
+                w.write_annotated(&pkt(2, 42), &[note_comment("two"), note_comment("three")])
+                    .expect("two notes");
+                w.finish().expect("finish");
+            }
+            let frames = epb_comments(&path);
+            assert_eq!(frames.len(), 3, "every frame is written");
+            assert_eq!(frames[0].0, Vec::<String>::new(), "no note, no comment");
+            assert_eq!(frames[1].0, vec!["[operator note] one".to_string()]);
+            assert_eq!(
+                frames[2].0,
+                vec![
+                    "[operator note] two".to_string(),
+                    "[operator note] three".to_string()
+                ]
+            );
+            // The comment rides beside the bytes; it does not change them.
+            assert_eq!(frames[1].1, vec![1u8; 41]);
+            assert_eq!(frames[2].1, vec![2u8; 42]);
+        }
+
+        /// Wireshark shows the note as the frame's comment.
+        ///
+        /// An outside reader, because the person this is for opens the file in
+        /// Wireshark, not in `pcap-file`. Run through `tshark` when this host
+        /// has it; when it does not, the test says so out loud and checks
+        /// nothing it cannot. Its configuration directory is pointed at the
+        /// test's own temporary directory, so no profile of the user's is read.
+        #[test]
+        fn tshark_shows_the_note_as_the_frame_comment() {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let path = dir.path().join("notes.pcapng");
+            {
+                let mut w =
+                    PcapWriter::with_format(&path, 1, None, None, true, PcapExportMode::Raw)
+                        .expect("writer");
+                w.write(&pkt(0, 40)).expect("plain frame");
+                w.write_annotated(&pkt(1, 40), &[note_comment("the 183 with the new SDP")])
+                    .expect("note");
+                w.finish().expect("finish");
+            }
+            let run = std::process::Command::new("tshark")
+                .args(["-n", "-r"])
+                .arg(&path)
+                .args(["-T", "fields", "-e", "frame.comment"])
+                .env("HOME", dir.path())
+                .env("XDG_CONFIG_HOME", dir.path())
+                .env("WIRESHARK_CONFIG_DIR", dir.path())
+                .output();
+            let out = match run {
+                Ok(out) => out,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    eprintln!(
+                        "skipped: no tshark on this host; the pcap-file round trip above still ran"
+                    );
+                    return;
+                }
+                Err(e) => panic!("tshark would not start: {e}"),
+            };
+            assert!(
+                out.status.success(),
+                "tshark refused the file: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            let text = String::from_utf8_lossy(&out.stdout);
+            let lines: Vec<&str> = text.lines().collect();
+            assert_eq!(
+                lines,
+                ["", "[operator note] the 183 with the new SDP"],
+                "tshark must show no comment on the first frame and the note on the second"
+            );
+        }
+
+        /// A note bound for classic pcap is refused, never dropped.
+        ///
+        /// Classic pcap has no comment field anywhere. Writing the frame and
+        /// losing the note would hand the operator a file that looks annotated
+        /// to them and is not, so the frame is refused with the note, the
+        /// error names pcapng, and the file holds only what was written whole.
+        #[test]
+        fn a_note_bound_for_classic_pcap_is_refused_not_dropped() {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let path = dir.path().join("classic.pcap");
+            let mut w = PcapWriter::new(&path, 1, None, None).expect("writer");
+            let err = w
+                .write_annotated(&pkt(1, 40), &[note_comment("lost?")])
+                .expect_err("classic pcap cannot carry a note");
+            let msg = format!("{err:#}");
+            assert!(
+                msg.contains("pcapng"),
+                "the error must name the remedy: {msg}"
+            );
+            w.write(&pkt(2, 40))
+                .expect("a frame with no note still writes");
+            w.finish().expect("finish");
+
+            let mut cap = pcap::Capture::from_file(&path).expect("reopen");
+            let mut frames = Vec::new();
+            while let Ok(p) = cap.next_packet() {
+                frames.push(p.data.to_vec());
+            }
+            assert_eq!(
+                frames,
+                vec![vec![2u8; 40]],
+                "the refused frame was not written without its note"
+            );
+        }
+
+        /// A frame given no note is written exactly as `write` writes it.
+        ///
+        /// `write` is `write_annotated` with no comments; this pins that the
+        /// empty case adds no option block, so every existing export is
+        /// byte-for-byte what it was.
+        #[test]
+        fn an_empty_comment_list_writes_the_same_bytes_as_write() {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let a = dir.path().join("a.pcapng");
+            let b = dir.path().join("b.pcapng");
+            let stamp = pkt(7, 60);
+            {
+                let mut w = PcapWriter::with_format(&a, 1, None, None, true, PcapExportMode::Raw)
+                    .expect("writer");
+                w.write(&stamp).expect("write");
+                w.finish().expect("finish");
+                let mut w = PcapWriter::with_format(&b, 1, None, None, true, PcapExportMode::Raw)
+                    .expect("writer");
+                w.write_annotated(&stamp, &[]).expect("write");
+                w.finish().expect("finish");
+            }
+            assert_eq!(std::fs::read(&a).expect("a"), std::fs::read(&b).expect("b"));
         }
 
         /// Read back the SHB UserApplication/OS and the first IDB's

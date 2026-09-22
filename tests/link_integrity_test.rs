@@ -884,7 +884,10 @@ fn wiki_intra_docs_links_resolve() {
     // are output, never input) links section 2 of deferred-and-declined.md and
     // Invariants 5 and 9 rather than restating them. One page, three links;
     // measured by this gate.
-    const EXPECTED_WIKI_LINKS: usize = 766;
+    // 766 -> 767: the `--notes` row in docs/cli-reference.md links the notes
+    // file format in output-formats.md rather than restating it. Measured by
+    // this gate.
+    const EXPECTED_WIKI_LINKS: usize = 767;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe 6d in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

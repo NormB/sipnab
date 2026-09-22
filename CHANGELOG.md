@@ -10,6 +10,21 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Added
+
+- **Operator notes as pcapng packet comments.** `--notes FILE --write-annotated
+  OUT -I CAPTURE` writes a pcapng copy of one capture with each note in the
+  notes file as a packet comment on the frame it names, so a carrier or a
+  vendor opening the file in Wireshark sees the note beside the frame. Each
+  note names its frame by the pointer `--json` prints, digest included, and a
+  frame whose bytes no longer match is refused with nothing written. The copy
+  carries the original frames byte for byte and no decryption secrets, and its
+  section comment says the comments are notes typed by a person. A note over
+  4096 bytes, or holding a control character, an SDES `inline:` key, a TLS
+  key-log line or a digest `response=` value, is refused. sipnab never reads a
+  packet comment back: `--json` over the copy is what it is over the original.
+  The notes file format is in `docs/output-formats.md`.
+
 ### Changed
 
 - **The published binary-size ceiling is 17 MB.** The 0.5.183 x86_64-musl

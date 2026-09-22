@@ -11,9 +11,9 @@ reachable three ways and not four is visible only once these four are set
 beside one another. [`tests/capability_matrix_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/capability_matrix_test.rs) keeps
 this current and requires the matrix to account for every row here.
 
-Totals: CLI 272, TUI 16, REST 39, MCP 68.
+Totals: CLI 274, TUI 24, REST 39, MCP 68.
 
-## CLI flags (272)
+## CLI flags (274)
 
 - `--ack-timeout`
 - `--active-idle-window`
@@ -196,6 +196,7 @@ Totals: CLI 272, TUI 16, REST 39, MCP 68.
 - `--no-rtp`
 - `--no-tui`
 - `--node-name`
+- `--notes`
 - `--on-dialog-exec`
 - `--on-quality-exec`
 - `--one-way`
@@ -286,6 +287,7 @@ Totals: CLI 272, TUI 16, REST 39, MCP 68.
 - `--version`
 - `--wireshark`
 - `--word`
+- `--write-annotated`
 - `--ws-portrange`
 
 ## TUI views (24)

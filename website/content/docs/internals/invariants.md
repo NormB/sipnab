@@ -548,6 +548,17 @@ line is at most `MAX_LINE_BYTES` long. The unit tests in the same file pair
 every refusal with the nearest note it must accept, so a validator that
 refuses everything fails as surely as one that refuses nothing.
 
+The module stays out of reach of everything that is not an output.
+[`annotate_import_gate_test`](https://github.com/NormB/sipnab/blob/main/tests/annotate_import_gate_test.rs) fails
+when `crate::annotate`, or the `EnhancedPacketOption` type that carries a
+packet comment, appears anywhere but `src/annotate/`, `src/tui/`, `src/app/`
+and [`src/capture/writer.rs`](https://github.com/NormB/sipnab/blob/main/src/capture/writer.rs). It names
+`src/mcp/`, `src/output/`, `src/sip/`, `src/rtp/`, `src/security/` and
+[`src/analysis.rs`](https://github.com/NormB/sipnab/blob/main/src/analysis.rs) as forbidden outright. The writer
+puts a comment on a frame only through `PcapWriter::write_annotated`, which
+takes an `EpbComment` that only the annotate module can build, so MCP's
+`export_capture` has no way to write one.
+
 **Fails as.** An operator's guess about a call, read back by a later run or
 an agent as though the capture said it. Or a decryption key, typed into a
 note, arriving at a carrier in a file nobody thought to screen.

@@ -11063,6 +11063,24 @@ and DSB TLS secrets back, and decrypts with them. See
 - `sipnab -N -I tls-call.pcapng --strip-secrets tls-call-clean.pcapng` — strip embedded TLS secrets from a decrypted-session capture before sharing it in a support ticket
 
 
+## Operator notes
+
+A note is a remark a person writes about one SIP message, carried to the
+person who opens the capture next. sipnab writes each note into a pcapng
+packet comment, where Wireshark shows it beside the frame. sipnab never reads a
+packet comment back: a note is output, never part of the analysis.
+
+| Flag | Value | Default | Description |
+|------|-------|---------|-------------|
+| `--notes` | `<FILE>` | -- | The notes to write with `--write-annotated`: a JSON Lines file, one `{"frame": "<pointer>", "note": "<text>"}` per line. Take each pointer from the `frame` field of `--json`. sipnab refuses a note over 4096 bytes, or one holding a control character other than newline and tab, an SDES `inline:` key, a TLS key-log line or a digest `response=` value, and one bad line refuses the whole file. The format is in [output formats](output-formats.md#operator-notes-file). |
+| `--write-annotated` | `<OUTPUT>` | -- | With `-I <capture>` and `--notes`, write a pcapng copy of that one capture to `<OUTPUT>` with each note as a packet comment on the frame it names, then exit. sipnab never touches the input. Every note must name its frame with a digest (`#<ordinal>@<digest>`), and the frame's bytes must still match it: when the capture changed after someone wrote the note, sipnab refuses, exits 1, and writes nothing. The copy carries the original frames byte for byte, drops decryption secrets, name resolution blocks and the input's own comments, and says so in its section comment. sipnab refuses a `.pcap` or `.cap` output, because classic pcap has no field for a comment. |
+
+**Examples**
+
+- `sipnab -N -I call.pcap --notes call.notes.jsonl --write-annotated call-annotated.pcapng` — hand a carrier the call with your notes on the frames they are about, readable in Wireshark
+- `sipnab -N -I ticket-4711.pcapng --notes ticket-4711.notes.jsonl --write-annotated ticket-4711-for-vendor.pcapng` — annotate a copy of a pcapng from a ticket without touching the original, which keeps its decryption secrets and the copy does not
+
+
 ## Diagnostic aliases
 
 Shortcut flags that expand to predefined filter DSL expressions. See [filter-dsl.md](filter-dsl.md#named-aliases) for the exact expansion of each alias.
@@ -14072,6 +14090,35 @@ stored nanosecond ticks but omitted that declaration, so other readers
 inflated every time value ×1000 (`capinfos` reporting year 58484).
 [`scripts/repair_pcapng_tsresol.py`](../scripts/repair_pcapng_tsresol.py)
 repairs such old captures in place without touching packet data.
+
+## Operator notes file
+
+The notes `--write-annotated` writes into a capture, one JSON object per line:
+
+```json
+{"frame":"call.pcap#0@bdb6cdb98013efe4","note":"the INVITE the SBC answered twice"}
+{"frame":"call.pcap#4@0b1c8f3e5a7d2946","note":"183 here, and the SDP changed"}
+```
+
+- `frame` names the frame the note is about, as a frame pointer: the `frame`
+  field of `--json`, copied as it is. `--write-annotated` requires the
+  `@<digest>` half, because only the digest proves a note lands on the frame
+  it describes, and it refuses a byte-range suffix (`+start-end`): a
+  note is about a whole frame.
+- `note` is the text. At most 4096 bytes of UTF-8, no control character other
+  than newline and tab, and no SDES `inline:` key, TLS key-log line or digest
+  `response=` value: the capture leaves the machine, and a key pasted into a
+  note would travel in clear.
+
+sipnab accepts no other field, and one bad line refuses the whole file, naming
+the line without quoting the note. A notes file sipnab writes has mode `0600`,
+because it holds free text about a call. The schema is
+[`tests/schemas/notes.schema.json`](../tests/schemas/notes.schema.json).
+
+In the annotated pcapng, each note is a packet comment that starts
+`[operator note] `, and the section comment says how many comments are notes
+typed by a person. sipnab writes packet comments and never reads one: `--json`
+over the annotated copy is what it is over the original.
 
 ## See also
 
@@ -29753,6 +29800,17 @@ value. A session holds at most `MAX_NOTES` (10,000) notes, and a notes-file
 line is at most `MAX_LINE_BYTES` long. The unit tests in the same file pair
 every refusal with the nearest note it must accept, so a validator that
 refuses everything fails as surely as one that refuses nothing.
+
+The module stays out of reach of everything that is not an output.
+[`annotate_import_gate_test`](../../tests/annotate_import_gate_test.rs) fails
+when `crate::annotate`, or the `EnhancedPacketOption` type that carries a
+packet comment, appears anywhere but `src/annotate/`, `src/tui/`, `src/app/`
+and [`src/capture/writer.rs`](../../src/capture/writer.rs). It names
+`src/mcp/`, `src/output/`, `src/sip/`, `src/rtp/`, `src/security/` and
+[`src/analysis.rs`](../../src/analysis.rs) as forbidden outright. The writer
+puts a comment on a frame only through `PcapWriter::write_annotated`, which
+takes an `EpbComment` that only the annotate module can build, so MCP's
+`export_capture` has no way to write one.
 
 **Fails as.** An operator's guess about a call, read back by a later run or
 an agent as though the capture said it. Or a decryption key, typed into a

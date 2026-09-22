@@ -21,7 +21,7 @@
 //! the capture said it. So a note reaches exactly three places, all of them
 //! outputs:
 //!
-//! - a pcapng packet comment in a file sipnab writes (`pcapng::EpbComment`);
+//! - a pcapng packet comment in a file sipnab writes ([`pcapng::EpbComment`]);
 //! - the TUI's own note pane, labeled as not being analysis (`tui` module);
 //! - the notes file an operator saves to resume a session
 //!   ([`Notes::save`]), written `0600`.
@@ -55,6 +55,9 @@ use std::io::BufRead;
 use std::path::Path;
 
 use crate::capture::packet::FrameRef;
+
+pub mod copy;
+pub mod pcapng;
 
 /// Longest note, in BYTES of UTF-8.
 ///

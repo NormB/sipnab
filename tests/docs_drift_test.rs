@@ -3692,7 +3692,10 @@ fn no_documentation_table_repeats_a_row() {
     // its site mirror.
     // 927 -> 932: the client-examples table and its site mirror, plus three
     // tables in the new library site mirror. Measured by this gate.
-    const EXPECTED_TABLES: usize = 932;
+    // 932 -> 934: the "Operator notes" flag table (`--notes`,
+    // `--write-annotated`) in docs/cli-reference.md and its site mirror: one
+    // written table, two pages. Measured by this gate.
+    const EXPECTED_TABLES: usize = 934;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")
