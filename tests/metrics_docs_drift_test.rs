@@ -173,8 +173,10 @@ fn prose_metric_counts_match_the_exposition() {
     // The changelog's `[Unreleased]` section only. A released entry says what
     // was true when it shipped, and holding it to today's exposition made the
     // HEP sender roster, which added metrics, rewrite 0.5.156's accurate "32".
-    let unreleased = release_logic::unreleased_section(include_str!("../CHANGELOG.md"))
-        .expect("CHANGELOG.md has an [Unreleased] section");
+    // A cut commit renames `[Unreleased]` to the version, so there is none to
+    // read: nothing unreleased states a count.
+    let unreleased =
+        release_logic::unreleased_section(include_str!("../CHANGELOG.md")).unwrap_or_default();
     let surfaces: [(&str, &str); 6] = [
         ("CHANGELOG.md [Unreleased]", &unreleased),
         ("docs/rest-api.md", include_str!("../docs/rest-api.md")),

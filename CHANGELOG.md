@@ -8,7 +8,7 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
-## [Unreleased]
+## [0.5.185] - 2026-09-22
 
 ### Added
 
@@ -218,6 +218,14 @@ entry that carries them.
   metrics" fail. The HEP sender roster had rewritten that entry to pass. The
   entry says 32 again, and the gate reads only `[Unreleased]` from the
   changelog, through the same extractor the release gate uses.
+
+- **The kill-queue refusal test no longer races its own forwarder.** It
+  claimed to be deterministic and was not. A queue reporting full while the
+  forwarder could still write into the pipe freed a slot one pull later, so an
+  offer the test required refused was accepted. The cut's pre-commit run hit
+  it. The forwarder now parks on a writer that says when it has, before the
+  queue fills. A 5 ms pause after each refusal makes the old test fail every
+  time and leaves the new one passing.
 
 ## [0.5.184] - 2026-09-21
 

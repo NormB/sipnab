@@ -2298,17 +2298,62 @@ mod tests {
         );
     }
 
+    /// A request pipe the worker never drains: the forwarder's first write
+    /// parks until `release` is dropped, and says on `parked` that it has.
+    ///
+    /// A real pipe to a peer that reads nothing is NOT this. Until the
+    /// forwarder is actually blocked in a write, the pipe still has room, and
+    /// the forwarder can take one more request off the queue after the queue
+    /// first reports full. That freed a slot under the pre-commit hook's load
+    /// on 2026-09-22 and one of the "must be refused" offers was accepted.
+    struct ParkedWriter {
+        parked: Sender<()>,
+        release: crossbeam_channel::Receiver<()>,
+    }
+
+    impl std::io::Write for ParkedWriter {
+        fn write(&mut self, _buf: &[u8]) -> std::io::Result<usize> {
+            let _ = self.parked.try_send(());
+            let _ = self.release.recv();
+            Err(std::io::ErrorKind::BrokenPipe.into())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
     /// A request the worker has no room for is counted, not silently dropped.
     ///
     /// Trading a hang for silent loss is the same defect wearing a different
-    /// hat, so the refusal has to leave a mark. Deterministic: against a
-    /// stopped worker the queue fills and stays full, and the two offers that
-    /// follow are refused and counted -- as backpressure, not as a death.
+    /// hat, so the refusal has to leave a mark. Deterministic because the
+    /// forwarder is parked holding the first request BEFORE the queue is
+    /// filled ([`ParkedWriter`]): nothing can drain the queue after that, so it
+    /// fills and stays full, and the two offers that follow are refused and
+    /// counted -- as backpressure, not as a death.
     #[test]
     fn a_refused_request_is_counted_not_silently_dropped() {
-        let (peer, release) = stalled_peer();
-        let handle = Arc::new(handle_over_pipes(peer));
-        let _release = release;
+        let (parked_tx, parked_rx) = crossbeam_channel::bounded::<()>(1);
+        let (release_tx, release_rx) = crossbeam_channel::bounded::<()>(1);
+        let (resp_r, resp_w) = std::io::pipe().expect("response pipe");
+        let writer = ParkedWriter {
+            parked: parked_tx,
+            release: release_rx,
+        };
+        let handle =
+            Arc::new(ScannerKillHandle::attach(writer, resp_r, None, Vec::new()).expect("attach"));
+        // Dropped before the handle (reverse declaration order), so the parked
+        // forwarder and the response reader both let go before its drop joins
+        // them, and a failing assertion fails instead of hanging.
+        let _release = Release(release_tx);
+        let _responses = resp_w;
+
+        handle
+            .send_kill(request_to(localhost_v4(), 59_996, sample_response()))
+            .expect("an empty queue has room");
+        parked_rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("the forwarder must take the first request and park writing it");
 
         // Offered from another thread behind a timeout: if `send_kill` ever
         // waits for a slot again, that wait is the capture thread's, so this
@@ -2318,7 +2363,8 @@ mod tests {
         std::thread::Builder::new()
             .name("kill-offer-test".to_string())
             .spawn(move || {
-                // Fill the pipe and the queue until the first refusal...
+                // Fill the queue behind the parked forwarder until the first
+                // refusal...
                 let mut before = 0u64;
                 loop {
                     match offerer.send_kill(request_to(localhost_v4(), 59_996, sample_response())) {
