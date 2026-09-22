@@ -474,6 +474,19 @@ pub fn run_offline_parallel(rx: PacketRx, cfg: ParallelConfig) -> ReconResult {
                         );
                     }
                 }
+                // The input is done: release what only its end could.
+                for pp in processor.finish() {
+                    total += 1;
+                    reconstruct(
+                        &pp,
+                        &mut ds,
+                        &mut ss,
+                        &mut heuristic,
+                        &cfg,
+                        &mut sip,
+                        &mut rtp,
+                    );
+                }
                 (ds, ss, sip, rtp, total)
             })
         })
@@ -1943,6 +1956,19 @@ pub fn run_offline_parallel_file(
                         }
                     }
                 }
+                // The input is done: release what only its end could.
+                for pp in processor.finish() {
+                    total += 1;
+                    reconstruct(
+                        &pp,
+                        &mut ds,
+                        &mut ss,
+                        &mut heuristic,
+                        &cfg,
+                        &mut sip,
+                        &mut rtp,
+                    );
+                }
                 (ds, ss, sip, rtp, total)
             })
         })
@@ -2264,6 +2290,56 @@ mod tests {
         p.extend_from_slice(&[0x00, 0x00]); // checksum
         p.extend_from_slice(payload);
         p
+    }
+
+    /// An Ethernet/IPv4/TCP frame from 10.0.0.1:`sport` to 10.0.0.2:`dport`.
+    fn eth_ipv4_tcp(sport: u16, dport: u16, seq: u32, flags: u8, payload: &[u8]) -> Vec<u8> {
+        let ip_total = (40 + payload.len()) as u16;
+        let (src, dst) = if sport == 5060 {
+            ([10, 0, 0, 2], [10, 0, 0, 1])
+        } else {
+            ([10, 0, 0, 1], [10, 0, 0, 2])
+        };
+        let mut p = vec![0xAA; 6];
+        p.extend_from_slice(&[0xBC; 6]);
+        p.extend_from_slice(&[0x08, 0x00, 0x45, 0x00]);
+        p.extend_from_slice(&ip_total.to_be_bytes());
+        p.extend_from_slice(&[0x00, 0x01, 0x40, 0x00, 64, 6, 0, 0]);
+        p.extend_from_slice(&src);
+        p.extend_from_slice(&dst);
+        p.extend_from_slice(&sport.to_be_bytes());
+        p.extend_from_slice(&dport.to_be_bytes());
+        p.extend_from_slice(&seq.to_be_bytes());
+        p.extend_from_slice(&[0, 0, 0, 0, 0x50, flags, 0xff, 0xff, 0, 0, 0, 0]);
+        p.extend_from_slice(payload);
+        p
+    }
+
+    /// The streamed `--cores` path releases, at the end of its input, a
+    /// message held behind a hole the capture never filled -- the same as the
+    /// single-threaded reader and the file-set path.
+    #[test]
+    fn the_streamed_parallel_path_releases_a_message_held_behind_a_hole() {
+        use crate::capture::packet::Packet;
+        let (tx, rx) = crate::capture::channel::packet_channel(1024);
+        let head = b"OPTIONS sip:b@x SIP/2.0\r\nCall-ID: never-whole\r\n";
+        let reply = b"SIP/2.0 200 OK\r\nCall-ID: held-reply\r\nCSeq: 1 OPTIONS\r\n\
+                      Content-Length: 0\r\n\r\n";
+        let frames = [
+            eth_ipv4_tcp(40_001, 5060, 5_000, 0x02, b""),
+            eth_ipv4_tcp(5060, 40_001, 9_000, 0x12, b""),
+            eth_ipv4_tcp(5060, 40_001, 9_001, 0x18, head),
+            eth_ipv4_tcp(5060, 40_001, 9_001 + head.len() as u32 + 300, 0x18, reply),
+        ];
+        for frame in frames {
+            let n = frame.len();
+            tx.send(Packet::new(chrono::Utc::now(), frame, n, n, None, 1))
+                .expect("worker pool must accept packets");
+        }
+        drop(tx);
+        let r = run_offline_parallel(rx, pcfg(2));
+        let ids: Vec<String> = r.dialog_store.iter().map(|d| d.call_id.clone()).collect();
+        assert_eq!(ids, vec!["held-reply".to_string()], "released at the end");
     }
 
     /// Minimal Ethernet ARP request — a frame `peek_host_pair` reads no host

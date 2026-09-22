@@ -1600,7 +1600,17 @@ fn capture_quality_summary() -> Option<String> {
     // sentence below says the ones it counts did.
     let snapped_undecodable = crate::capture::snapped_undecodable_frames();
     let intact_undecodable = undecodable.frames.saturating_sub(snapped_undecodable);
-    if dropped == 0 && if_dropped == 0 && bad_ts == 0 && undecodable.frames == 0 && snapped == 0 {
+    // A sixth: holes in TCP streams that no captured packet filled. Reading
+    // resumed at the next message behind each, so what is missing is the
+    // data in the hole and any message it cut.
+    let (holes, hole_bytes) = crate::capture::reassembly::tcp_gaps_skipped();
+    if dropped == 0
+        && if_dropped == 0
+        && bad_ts == 0
+        && undecodable.frames == 0
+        && snapped == 0
+        && holes == 0
+    {
         return None;
     }
 
@@ -1652,6 +1662,15 @@ fn capture_quality_summary() -> Option<String> {
             "{snapped} frame(s) arrived truncated by the capture's snaplen and \
              {snapped_undecodable} of them were cut too short to decode at all, so \
              nothing in those was analyzed (raise --snaplen)"
+        ));
+    }
+
+    if holes > 0 {
+        parts.push(format!(
+            "{holes} hole(s) in TCP streams, {hole_bytes} byte(s) of sequence space the \
+             capture never held, were skipped: reading resumed at the next SIP message \
+             behind each, and a message the hole cut is lost (packets the capture point \
+             missed)"
         ));
     }
 
@@ -3342,6 +3361,9 @@ impl BatchRunner {
         // 18. Main receive loop
         let start = std::time::Instant::now();
         let mut total_count: u64 = 0;
+        // Set once the capture channel closes, so the end-of-input release
+        // runs exactly once.
+        let mut input_ended = false;
         let mut counters = PacketCounters {
             sip_count: 0,
             rtp_count: 0,
@@ -3440,99 +3462,115 @@ impl BatchRunner {
             if rx.is_empty() {
                 sink.flush();
             }
-            let packet = match rx.recv_timeout(std::time::Duration::from_millis(100)) {
-                Ok(pkt) => pkt,
+            let received = match rx.recv_timeout(std::time::Duration::from_millis(100)) {
+                Ok(pkt) => Some(pkt),
                 Err(crossbeam_channel::RecvTimeoutError::Timeout) => continue,
+                // The input ended. One more pass carries what only its end
+                // could release -- a TCP message held behind a hole the capture
+                // never filled -- through the same per-packet body below; the
+                // pass after that leaves.
+                Err(crossbeam_channel::RecvTimeoutError::Disconnected) if !input_ended => {
+                    input_ended = true;
+                    None
+                }
                 Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break,
             };
+            let parsed_packets = match received {
+                None => processor.finish(),
+                Some(packet) => {
+                    // Offline, this packet's timestamp is what "now" means to the next
+                    // sweep. Recorded before any parse/filter step so that a capture of
+                    // traffic sipnab does not decode still advances the clock — the
+                    // alternative would stall compaction on exactly the captures whose
+                    // memory growth it exists to bound.
+                    sweep_clock.observe(packet.timestamp);
 
-            // Offline, this packet's timestamp is what "now" means to the next
-            // sweep. Recorded before any parse/filter step so that a capture of
-            // traffic sipnab does not decode still advances the clock — the
-            // alternative would stall compaction on exactly the captures whose
-            // memory growth it exists to bound.
-            sweep_clock.observe(packet.timestamp);
-
-            // Lazily initialize the writer on first packet (we need link_type)
-            if writer.is_none()
-                && let Some(ref output_path) = cli.capture_args.output
-            {
-                // Record the capture source as the pcapng interface name (SNB-0001):
-                // the capture device for live, the input file for replay.
-                let capture_source = cli.capture_args.device.as_deref().or(cli.primary_input());
-                match PcapWriter::with_interface(
-                    &PathBuf::from(output_path),
-                    packet.link_type,
-                    split_bytes,
-                    split_duration,
-                    use_pcapng,
-                    export_mode,
-                    capture_source,
-                )
-                .map(|w| w.keep_last_splits(split_keep))
-                {
-                    Ok(mut w) => {
-                        // Write DSB with keylog content if mode requires it
-                        if let Some(ref keylog_path) = cli.tls_args.keylog
-                            && let Err(e) =
-                                w.maybe_write_keylog_dsb(std::path::Path::new(keylog_path))
+                    // Lazily initialize the writer on first packet (we need link_type)
+                    if writer.is_none()
+                        && let Some(ref output_path) = cli.capture_args.output
+                    {
+                        // Record the capture source as the pcapng interface name (SNB-0001):
+                        // the capture device for live, the input file for replay.
+                        let capture_source =
+                            cli.capture_args.device.as_deref().or(cli.primary_input());
+                        match PcapWriter::with_interface(
+                            &PathBuf::from(output_path),
+                            packet.link_type,
+                            split_bytes,
+                            split_duration,
+                            use_pcapng,
+                            export_mode,
+                            capture_source,
+                        )
+                        .map(|w| w.keep_last_splits(split_keep))
                         {
-                            tracing::warn!("Failed to write DSB: {e}");
-                        }
-                        // Embed a Name Resolution Block when name resolution is active
-                        // (SNB-0001): headless `--names`/`--resolve` should travel with
-                        // the capture, mirroring the TUI save path. Before packets.
-                        if use_pcapng {
-                            let (resolver, mode) = crate::app::build_resolver(&cli, &config);
-                            if mode != crate::names::NameMode::Off {
-                                let include_dns = mode == crate::names::NameMode::Dns;
-                                let entries = resolver.nrb_entries(include_dns);
-                                if let Err(e) = w.write_name_resolution_block(&entries) {
-                                    tracing::warn!("Failed to write name resolution block: {e}");
+                            Ok(mut w) => {
+                                // Write DSB with keylog content if mode requires it
+                                if let Some(ref keylog_path) = cli.tls_args.keylog
+                                    && let Err(e) =
+                                        w.maybe_write_keylog_dsb(std::path::Path::new(keylog_path))
+                                {
+                                    tracing::warn!("Failed to write DSB: {e}");
                                 }
+                                // Embed a Name Resolution Block when name resolution is active
+                                // (SNB-0001): headless `--names`/`--resolve` should travel with
+                                // the capture, mirroring the TUI save path. Before packets.
+                                if use_pcapng {
+                                    let (resolver, mode) =
+                                        crate::app::build_resolver(&cli, &config);
+                                    if mode != crate::names::NameMode::Off {
+                                        let include_dns = mode == crate::names::NameMode::Dns;
+                                        let entries = resolver.nrb_entries(include_dns);
+                                        if let Err(e) = w.write_name_resolution_block(&entries) {
+                                            tracing::warn!(
+                                                "Failed to write name resolution block: {e}"
+                                            );
+                                        }
+                                    }
+                                }
+                                writer = Some(w);
+                            }
+                            Err(e) => {
+                                tracing::error!("Failed to open output file: {e}");
+                                crate::capture::archive::release_run_and_exit(1);
                             }
                         }
-                        writer = Some(w);
                     }
-                    Err(e) => {
-                        tracing::error!("Failed to open output file: {e}");
-                        crate::capture::archive::release_run_and_exit(1);
+
+                    // Write to output pcap if configured
+                    if let Some(ref mut w) = writer
+                        && let Err(e) = w.write(&packet)
+                    {
+                        tracing::error!("Failed to write packet: {e}");
+                        // Failing to OPEN the output exits 1 a few lines above; failing
+                        // to WRITE it used to exit 0, so `sipnab -O out.pcap && process
+                        // out.pcap` proceeded on a truncated capture.
+                        output_failed = true;
+                        break;
                     }
+
+                    total_count += 1;
+
+                    // Retain the raw frame when an operator asked for a window into
+                    // live capture. Only for sources that cannot be re-read: a capture
+                    // file can be seeked, so spending memory to hold its bytes buys
+                    // nothing a second read would not give for free.
+                    if let Some(ring) = evidence_ring.as_ref()
+                        && let Some(origin) = packet.origin
+                        && !origin.verifiable
+                        && let Some(source) = packet.interface.as_ref()
+                    {
+                        ring.write().insert(
+                            crate::capture::packet::intern_source(source),
+                            origin.ordinal,
+                            packet.data.clone(),
+                        );
+                    }
+
+                    // Parse and reassemble the packet
+                    processor.process(&packet)
                 }
-            }
-
-            // Write to output pcap if configured
-            if let Some(ref mut w) = writer
-                && let Err(e) = w.write(&packet)
-            {
-                tracing::error!("Failed to write packet: {e}");
-                // Failing to OPEN the output exits 1 a few lines above; failing
-                // to WRITE it used to exit 0, so `sipnab -O out.pcap && process
-                // out.pcap` proceeded on a truncated capture.
-                output_failed = true;
-                break;
-            }
-
-            total_count += 1;
-
-            // Retain the raw frame when an operator asked for a window into
-            // live capture. Only for sources that cannot be re-read: a capture
-            // file can be seeked, so spending memory to hold its bytes buys
-            // nothing a second read would not give for free.
-            if let Some(ring) = evidence_ring.as_ref()
-                && let Some(origin) = packet.origin
-                && !origin.verifiable
-                && let Some(source) = packet.interface.as_ref()
-            {
-                ring.write().insert(
-                    crate::capture::packet::intern_source(source),
-                    origin.ordinal,
-                    packet.data.clone(),
-                );
-            }
-
-            // Parse and reassemble the packet
-            let parsed_packets = processor.process(&packet);
+            };
             for pp in &parsed_packets {
                 // --hep-parse: try to unwrap HEP-encapsulated packets
                 #[cfg(feature = "hep")]

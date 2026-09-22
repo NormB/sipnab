@@ -88,7 +88,8 @@ sipnab -N -I capture.pcap --problems --json
 > |---|---|---|
 > | `unsupported link type N` | The pcap's DLT has no decoder here. `0` is `DLT_NULL` (BSD loopback), `9` is PPP, `276` is Linux cooked v2. | Convert it: `editcap -T ether in.pcap out.pcap`. If the link type is one sipnab should read, open an issue naming the number. |
 > | `not IP (EtherType 0xNNNN)` | The frame decoded and carried no IP. `0x0806` is ARP, `0x8847` MPLS, `0x88CC` LLDP. | ARP and LLDP are ordinary background -- expect a few on any Ethernet capture. A large MPLS or PPPoE share means the mirror is giving you the encapsulated form. |
-> | `no transport (IP protocol N)` | IP decoded; its payload is no transport sipnab handles. `50` is ESP, `47` GRE, `89` OSPF. | ESP encrypts the SIP inside it, so the capture cannot yield it; take the capture inside the tunnel instead. |
+> | `ESP not NULL-encrypted (IP protocol 50)` | IPsec ESP whose payload failed the checks that prove NULL encryption, so it carries real encryption, or a protection sipnab cannot read. | sipnab takes no ESP keys. Take the capture inside the tunnel, or run the lab with NULL encryption, which sipnab reads. See [Tunnels above the link layer](encapsulations.md#tunnels-above-the-link-layer). |
+> | `no transport (IP protocol N)` | IP decoded, and its payload is no transport sipnab handles. `2` is IGMP, `89` OSPF, `103` PIM. | Routing and multicast control traffic is ordinary background. A large share of another number means a tunnel sipnab does not strip. |
 > | `truncated frame` | The frame is shorter than a header it declares. | Raise `--snaplen` on the capture, or re-take it. |
 > | `decode error` | The decoder rejected the bytes outright. | Usually a corrupt or mis-declared file; try `editcap` or `tshark -r` on it. |
 

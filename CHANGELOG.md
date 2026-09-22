@@ -41,6 +41,18 @@ entry that carries them.
   `--json-dialogs` trailer and a line in the `INCOMPLETE RUN` block say when
   sipnab could not unpack an archive to its end, and the run exits `1`, because
   members past that point are in no report.
+- **sipnab reads SIP inside ESP with NULL encryption.** An IMS lab protects
+  the phone-to-P-CSCF interface with IPsec ESP and often runs it with NULL
+  encryption, so the SIP travels in the clear between an ESP header and
+  trailer. sipnab now peels them when the trailer, the padding and the inner
+  TCP or UDP checksum prove NULL encryption, over IPv4, IPv6 and fragmented
+  datagrams. ESP that fails those checks stays unread, and the `NOT DECODED`
+  line now names it `ESP not NULL-encrypted (IP protocol 50)`. The decryption
+  matrix test carries an ESP row through all five wrappers.
+- **The capture-quality line counts holes in TCP streams.** When a capture
+  missed a segment, sipnab now resumes at the next SIP message behind the hole
+  and says how many holes it skipped and how many bytes of sequence space they
+  spanned.
 
 - **Filter on any header: `header.<name>`.** The DSL could match `from.user`,
   `ua`, `call_id` and the rest of a closed list, and everything else only
@@ -62,6 +74,12 @@ entry that carries them.
   gzip layer of an archive, summed across the layers of one input, so a nested
   gzip bomb stops at the same ceiling. A `.pcap.gz` that inflates past 1 GiB
   now needs `--max-gunzip-bytes` raised.
+- **A new YANG revision, `sipnab-diagnosis@2026-09-22`.** The ICMP media
+  finding's unit changed, and a unit is part of an identity's description in
+  the module, so the module gains a revision rather than editing the published
+  one. Descriptions only: no node, identity or type changed, and
+  `pyang --check-update-from` holds the pair to [RFC 7950 section 11](https://www.rfc-editor.org/rfc/rfc7950#section-11). The
+  2026-09-21 file stays beside it.
 - **A member whose link type sipnab does not decode no longer ends a filtered
   run.** When a BPF filter cannot compile against such a file — an LTE MAC log
   in a set of SIP captures — both readers skip it with a line saying why. A
@@ -95,6 +113,29 @@ entry that carries them.
   ignored, so a configuration that deliberately turned correlation headers off
   got the built-in default back instead.
 
+- **A missing TCP segment no longer hides the rest of the connection.** A
+  segment the capture never held left a hole that no later packet filled, and
+  sipnab held every later byte on that direction behind it until a buffer
+  ceiling, a FIN or eviction, so the SIP after it never appeared. sipnab now
+  resumes at the next message start behind the hole once one more packet
+  shows the hole is not a reordering, and releases what is still held at the
+  end of the input, in both readers.
+- **A retransmission no longer counts as a second message.** On a connection
+  the capture joined after its SYN, sipnab rewound to every earlier segment it
+  saw, so each TCP retransmission, and each copy another interface recorded,
+  reported its SIP message again. A direction silent for longer than the
+  reassembly TTL, measured in capture time, now starts afresh, so a later
+  connection on the same address and port pair still reads.
+- **Duplicate IP fragments no longer drop the datagram.** A capture on `any`
+  records a forwarded fragmented datagram once per interface, and sipnab read
+  the second copy of a fragment as an overlap and discarded the datagram, and
+  the SIP in it. An exact copy of a fragment already held is now ignored, as
+  [RFC 8200 section 4.5](https://www.rfc-editor.org/rfc/rfc8200#section-4.5) allows. Overlaps that differ still drop the datagram.
+- **A failed DNS lookup is no longer reported as undeliverable media.** An
+  ICMP error quoting a DNS message whose random ID starts with RTP's version
+  bits read as RTP, and joined the critical `ICMP: media undeliverable`
+  finding. The quoted DNS question now marks it as not media. That finding
+  also counted ICMP errors while labeling them flows, and now says errors.
 - **A killed kill-worker no longer reads as alive for a moment after the
   defense has been disabled.** A SIGKILLed process closes its pipes on the way
   out, before the kernel lets it be reaped. In that window the reader had seen

@@ -56,7 +56,7 @@ use super::{CaptureAnalysis, CountLabel, FindingKind, Severity};
 /// committed file. Written once here; [`REVISION`] and [`REVISIONS`] read it.
 macro_rules! revision {
     () => {
-        "2026-09-21"
+        "2026-09-22"
     };
 }
 
@@ -89,7 +89,7 @@ pub const REVISION: &str = revision!();
 /// the published crate would build without `yang/` and fail on crates.io. The
 /// date is therefore written twice, and `print_yang_module_prints_the_committed_file`
 /// fails the moment the two name different revisions.
-pub const MODULE_TEXT: &str = include_str!("../../yang/sipnab-diagnosis@2026-09-21.yang");
+pub const MODULE_TEXT: &str = include_str!("../../yang/sipnab-diagnosis@2026-09-22.yang");
 
 /// The committed module's file name under `yang/`. [RFC 7950 section 5.2](https://www.rfc-editor.org/rfc/rfc7950#section-5.2) names a
 /// module file `name@revision.yang`.
@@ -113,11 +113,19 @@ pub struct Revision {
 /// kind or count label included — means a new entry here with a new date, the
 /// previous file kept beside the new one under `yang/`, and
 /// `pyang --check-update-from` holding the change to [RFC 7950 section 11](https://www.rfc-editor.org/rfc/rfc7950#section-11).
-pub const REVISIONS: &[Revision] = &[Revision {
-    date: revision!(),
-    description: "Initial revision: the capture analysis sipnab computes, its finding \
-                  kinds and its evidence count labels.",
-}];
+pub const REVISIONS: &[Revision] = &[
+    Revision {
+        date: revision!(),
+        description: "The ICMP media finding counts ICMP errors, so its unit reads \
+                      error rather than flow. Descriptions only: no node, identity \
+                      or type changed.",
+    },
+    Revision {
+        date: "2026-09-21",
+        description: "Initial revision: the capture analysis sipnab computes, its finding \
+                      kinds and its evidence count labels.",
+    },
+];
 
 /// A YANG type, as the table uses it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -1839,7 +1839,7 @@ curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" \
 ```
 
 ```bash
-yanglint -t data sipnab-diagnosis@2026-09-21.yang analysis.json
+yanglint -t data sipnab-diagnosis@2026-09-22.yang analysis.json
 ```
 
 It is the same analysis in a different encoding: the YANG section of

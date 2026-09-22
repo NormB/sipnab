@@ -15,6 +15,7 @@
 //! | TLS, embedded DSB | a pcapng Decryption Secrets Block | the same, with no `--keylog` |
 //! | SRTP, SDES | `a=crypto` in the SDP | the RFC 4733 digits inside the SRTP payloads |
 //! | DTLS-SRTP | `--dtls-keylog` | the same, keyed by the DTLS exporter |
+//! | ESP, NULL encryption | none: RFC 2410 has no key | the SIP inside the ESP becomes messages |
 //!
 //! The ciphertext is sealed here, with `ring` and `aes` directly, and shares no
 //! code with the decryptors it checks. Every fixture is built in the test; no
@@ -625,5 +626,96 @@ fn dtls_srtp_decrypts_the_same_in_every_wrapper() {
         "sipnab=debug",
         &dtmf_digits,
         "42",
+    );
+}
+
+// ── ESP with NULL encryption ───────────────────────────────────────────
+//
+// An IMS Gm interface in a lab runs IPsec ESP with NULL encryption (RFC
+// 2410): no key, but the SIP sits between an ESP header and trailer that
+// have to be proven and peeled.
+
+const ESP_CALL_ID: &str = "matrix-esp-1@test";
+const ESP_PHONE: [u8; 4] = [10, 1, 0, 1];
+const ESP_PCSCF: [u8; 4] = [10, 2, 0, 1];
+
+/// One's-complement sum folded to 16 bits, then inverted.
+fn internet_checksum(parts: &[&[u8]]) -> u16 {
+    let bytes: Vec<u8> = parts.concat();
+    let mut sum: u32 = bytes
+        .chunks(2)
+        .map(|c| u32::from(u16::from_be_bytes([c[0], *c.get(1).unwrap_or(&0)])))
+        .sum();
+    while sum >> 16 != 0 {
+        sum = (sum & 0xffff) + (sum >> 16);
+    }
+    !(sum as u16)
+}
+
+/// Ethernet + IPv4 (protocol 50) + ESP carrying a checksummed UDP datagram,
+/// RFC 4303 default padding, and a 12-octet ICV (HMAC-SHA-1-96's length).
+fn esp_null_udp_frame(src: [u8; 4], dst: [u8; 4], seq: u32, sip: &[u8]) -> Vec<u8> {
+    let udp_len = (8 + sip.len()) as u16;
+    let mut udp = Vec::new();
+    udp.extend_from_slice(&5060u16.to_be_bytes());
+    udp.extend_from_slice(&5060u16.to_be_bytes());
+    udp.extend_from_slice(&udp_len.to_be_bytes());
+    udp.extend_from_slice(&[0, 0]);
+    udp.extend_from_slice(sip);
+    let pseudo = [&src[..], &dst[..], &[0, 17], &udp_len.to_be_bytes()[..]].concat();
+    let ck = internet_checksum(&[&pseudo, &udp]);
+    udp[6..8].copy_from_slice(&ck.to_be_bytes());
+
+    let mut esp = Vec::new();
+    esp.extend_from_slice(&0x0000_4D2Au32.to_be_bytes()); // SPI
+    esp.extend_from_slice(&seq.to_be_bytes());
+    esp.extend_from_slice(&udp);
+    let pad = (4 - (udp.len() + 2) % 4) % 4;
+    esp.extend((1..=pad as u8).collect::<Vec<u8>>());
+    esp.push(pad as u8);
+    esp.push(17); // next header: UDP
+    esp.extend_from_slice(&[0xA7; 12]); // ICV: NULL encryption still authenticates
+
+    let total = (20 + esp.len()) as u16;
+    let mut ip = vec![0x45, 0x00];
+    ip.extend_from_slice(&total.to_be_bytes());
+    ip.extend_from_slice(&[0x00, 0x00, 0x40, 0x00, 64, 50, 0x00, 0x00]);
+    ip.extend_from_slice(&src);
+    ip.extend_from_slice(&dst);
+    let ck = internet_checksum(&[&ip]);
+    ip[10..12].copy_from_slice(&ck.to_be_bytes());
+
+    let mut frame = vec![0x02, 0, 0, 0, 0, 2, 0x02, 0, 0, 0, 0, 1, 0x08, 0x00];
+    frame.extend_from_slice(&ip);
+    frame.extend_from_slice(&esp);
+    frame
+}
+
+/// A whole call between a phone and its P-CSCF, every message inside ESP.
+fn esp_null_call_frames() -> Vec<Vec<u8>> {
+    pcap_build::sip_call(ESP_CALL_ID, "esp1", "phone", "pcscf")
+        .iter()
+        .enumerate()
+        .map(|(i, msg)| {
+            let (src, dst) = if i % 2 == 0 {
+                (ESP_PHONE, ESP_PCSCF)
+            } else {
+                (ESP_PCSCF, ESP_PHONE)
+            };
+            esp_null_udp_frame(src, dst, i as u32 + 1, msg.as_bytes())
+        })
+        .collect()
+}
+
+#[test]
+fn esp_with_null_encryption_decodes_the_same_in_every_wrapper() {
+    matrix(
+        "ESP NULL",
+        "esp.pcap",
+        &classic_pcap(&esp_null_call_frames()),
+        &["--json"],
+        "warn",
+        &sip_messages,
+        ESP_CALL_ID,
     );
 }

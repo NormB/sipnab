@@ -148,10 +148,10 @@ already solved, and the ways it goes wrong are real but nameable.
 sipnab does not correlate a dialog to a stream by capture source. It correlates
 by SDP media endpoint, and the key is a bare `(IpAddr, u16)`.
 
-`extract_sdp_links` ([`src/pipeline.rs:1677`](https://github.com/NormB/sipnab/blob/main/src/pipeline.rs#L1677)) resolves each `m=` section's address
+`extract_sdp_links` ([`src/pipeline.rs:1717`](https://github.com/NormB/sipnab/blob/main/src/pipeline.rs#L1717)) resolves each `m=` section's address
 through `effective_address` ([`src/sip/sdp.rs:340`](https://github.com/NormB/sipnab/blob/main/src/sip/sdp.rs#L340)) — media-level `c=` when
 present, session-level otherwise — and yields `(ip, port, call_id, media)`
-tuples. `process_packet` ([`src/pipeline.rs:2405`](https://github.com/NormB/sipnab/blob/main/src/pipeline.rs#L2405)) feeds each one to `link_to_dialog_with_sdp`
+tuples. `process_packet` ([`src/pipeline.rs:2445`](https://github.com/NormB/sipnab/blob/main/src/pipeline.rs#L2445)) feeds each one to `link_to_dialog_with_sdp`
 ([`src/rtp/stream_store.rs:1231`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L1231)), which lands in `link_endpoint_with_ptime`
 ([`src/rtp/stream_store.rs:1339`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L1339)). That function does two things:
 
