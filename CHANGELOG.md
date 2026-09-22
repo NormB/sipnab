@@ -109,6 +109,32 @@ entry that carries them.
 
 ### Fixed
 
+- **A-law audio decoded with inverted polarity.** ITU-T G.711 reads an A-law
+  byte's sign after XOR with 0x55, and a set bit 7 is positive. sipnab's decode
+  table had it the other way round, so every PCMA sample came out negated:
+  `0xD5` decoded to -8 and `0x55` to +8, the reverse of sox and FFmpeg. The
+  magnitudes were right, so levels, clipping and MOS were unaffected, but an
+  exported WAV was phase-inverted against every other tool's decode. The table
+  is now computed from the G.711 formula at compile time.
+- **An oversized REST request body is a 413, not a 400.** Every `POST` route
+  takes its JSON body fallibly so the API key is checked first, and that turned
+  the 1 MiB body limit's own 413 into a 400 that told the client its JSON was
+  malformed. `POST /v1/persistence`, `/v1/tfps/ban`, `/v1/tfps/unban` and
+  `/v1/vcon/validate` now answer 413, and the OpenAPI document lists it.
+- **`--srtp-keys` warns when it loads keys.** Loading a manual SRTP key file
+  logged only at the info level, so a run at `-q` or `SIPNAB_LOG=warn` never
+  said hand-supplied key material was in use. It now also logs `manual SRTP
+  keys loaded from <file> — use only in test environments` as a warning.
+- **`--reg-flood` matches a challenge without a `Via` branch.** A 401 or 407
+  settled a credentialed REGISTER only through the top `Via` branch, which an
+  [RFC 2543](https://www.rfc-editor.org/rfc/rfc2543) client does not send, so a branchless credential-stuffing run
+  counted no failures at all. The detector now falls back to the `Call-ID` and
+  `CSeq` that identify the transaction when there is no branch.
+- **`--reg-flood` no longer counts a challenge to an expired REGISTER.** A
+  pending REGISTER stayed open until its source aged out, so a 401 minutes
+  later still counted as a failure. A REGISTER's transaction now closes at
+  Timer F, 32 seconds ([RFC 3261 section 17.1.2.2](https://www.rfc-editor.org/rfc/rfc3261#section-17.1.2.2)).
+
 - **An empty `xcid_headers` list is obeyed.** `with_xcid_headers(vec![])` was
   ignored, so a configuration that deliberately turned correlation headers off
   got the built-in default back instead.
@@ -172,6 +198,9 @@ entry that carries them.
   `--ignored`, that its own file does not spawn, and that is not on an explicit
   manual-only list with the reason. The PTY TUI tests gained their reasons, and
   the one `CAP_NET_RAW` fanout test is listed as manual-only.
+- **`--alert reg-flood:50/10s:5m` is tested end to end.** A capture drives the
+  real rule string through the detector and the alert engine and proves a
+  second flood from the same source inside five minutes raises no alert.
 
 ## [0.5.185] - 2026-09-22
 

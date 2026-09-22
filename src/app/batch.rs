@@ -3058,6 +3058,13 @@ impl BatchRunner {
                             "SRTP decryption active: {} key(s) from {keyfile}",
                             ctx.key_count()
                         );
+                        // A WARNING, not only the info line above: a manual key
+                        // file is a testing and debugging aid, and a run at the
+                        // warn level (`-q`) must still say that hand-supplied
+                        // key material is in use.
+                        tracing::warn!(
+                            "manual SRTP keys loaded from {keyfile} — use only in test environments"
+                        );
                         Some(ctx)
                     }
                     Err(e) => {

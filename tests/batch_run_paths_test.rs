@@ -418,6 +418,31 @@ fn a_readable_srtp_key_file_is_loaded_and_announced() {
     );
 }
 
+/// Loading a manual `--srtp-keys` file prints a WARNING, not only an info
+/// line. The file is a testing and debugging aid, and an operator running at
+/// the warn level (`-q`, or `SIPNAB_LOG=warn`) must still be told that
+/// hand-supplied key material is in use.
+#[test]
+fn srtp_keys_prints_warning() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let keys = dir.path().join("media.keys");
+    std::fs::write(&keys, format!("ssrc=4660 key={}\n", "A".repeat(40))).expect("write keys");
+    let run = sipnab_env(
+        &["-N", "-I", SIP_CALL, "--srtp-keys", s(&keys)],
+        &[("SIPNAB_LOG", "warn")],
+    );
+    assert_eq!(run.code, Some(0), "{}", run.dump());
+    let line = run
+        .stderr
+        .lines()
+        .find(|l| l.contains("manual SRTP keys loaded"))
+        .unwrap_or_else(|| panic!("no manual-keys warning at the warn level:\n{}", run.dump()));
+    assert!(
+        line.contains("WARN") && line.contains("use only in test environments"),
+        "the manual-keys line must be a WARNING that says where the keys belong: {line}"
+    );
+}
+
 /// One NSS key-log line with a client random and a master secret.
 fn keylog_line(fill: char) -> String {
     format!(

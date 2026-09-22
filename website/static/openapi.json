@@ -7192,6 +7192,16 @@
             },
             "description": "No bearer credential, or one this server does not accept."
           },
+          "413": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "The body is over the 1 MiB request limit."
+          },
           "503": {
             "content": {
               "application/problem+json": {
@@ -8140,6 +8150,16 @@
             },
             "description": "No bearer credential, or one this server does not accept."
           },
+          "413": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "The body is over the 1 MiB request limit."
+          },
           "502": {
             "content": {
               "application/problem+json": {
@@ -8459,6 +8479,16 @@
             },
             "description": "No bearer credential, or one this server does not accept."
           },
+          "413": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "The body is over the 1 MiB request limit."
+          },
           "502": {
             "content": {
               "application/problem+json": {
@@ -8604,6 +8634,16 @@
               }
             },
             "description": "No bearer credential, or one this server does not accept."
+          },
+          "413": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "The body is over the 1 MiB request limit."
           },
           "503": {
             "content": {

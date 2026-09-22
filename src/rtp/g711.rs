@@ -14,7 +14,7 @@
 //!   Magnitude = ((mantissa << 1) | 0x21) << (exponent + 2) - 0x84.
 //!   Range: -32124 to +32124.
 //!
-//! - **A-law**: Input byte is XOR'd with 0x55. Sign bit (bit 7, 1=negative),
+//! - **A-law**: Input byte is XOR'd with 0x55. Sign bit (bit 7, 1=positive),
 //!   exponent (bits 4-6), and mantissa (bits 0-3) are extracted.
 //!   For exponent 0: magnitude = ((mantissa << 1) | 1) << 3.
 //!   For exponent > 0: magnitude = ((mantissa << 1) | 0x21) << (exponent + 2).
@@ -94,45 +94,37 @@ static ULAW_TABLE: [i16; 256] = [
         56,     48,     40,     32,     24,     16,      8,      0, // 0xf8..0xff
 ];
 
-/// A-law decode table: 256 entries mapping encoded byte to 16-bit signed PCM.
+/// One A-law byte decoded to 16-bit signed PCM, by the ITU-T G.711 rule.
 ///
-/// Derived from ITU-T G.711 A-law decoding formula, scaled to 16-bit range.
-/// Input is XOR'd with 0x55, then decomposed into sign, exponent, and mantissa.
-#[rustfmt::skip]
-static ALAW_TABLE: [i16; 256] = [
-      5504,   5248,   6016,   5760,   4480,   4224,   4992,   4736, // 0x00..0x07
-      7552,   7296,   8064,   7808,   6528,   6272,   7040,   6784, // 0x08..0x0f
-      2752,   2624,   3008,   2880,   2240,   2112,   2496,   2368, // 0x10..0x17
-      3776,   3648,   4032,   3904,   3264,   3136,   3520,   3392, // 0x18..0x1f
-     22016,  20992,  24064,  23040,  17920,  16896,  19968,  18944, // 0x20..0x27
-     30208,  29184,  32256,  31232,  26112,  25088,  28160,  27136, // 0x28..0x2f
-     11008,  10496,  12032,  11520,   8960,   8448,   9984,   9472, // 0x30..0x37
-     15104,  14592,  16128,  15616,  13056,  12544,  14080,  13568, // 0x38..0x3f
-       344,    328,    376,    360,    280,    264,    312,    296, // 0x40..0x47
-       472,    456,    504,    488,    408,    392,    440,    424, // 0x48..0x4f
-        88,     72,    120,    104,     24,      8,     56,     40, // 0x50..0x57
-       216,    200,    248,    232,    152,    136,    184,    168, // 0x58..0x5f
-      1376,   1312,   1504,   1440,   1120,   1056,   1248,   1184, // 0x60..0x67
-      1888,   1824,   2016,   1952,   1632,   1568,   1760,   1696, // 0x68..0x6f
-       688,    656,    752,    720,    560,    528,    624,    592, // 0x70..0x77
-       944,    912,   1008,    976,    816,    784,    880,    848, // 0x78..0x7f
-     -5504,  -5248,  -6016,  -5760,  -4480,  -4224,  -4992,  -4736, // 0x80..0x87
-     -7552,  -7296,  -8064,  -7808,  -6528,  -6272,  -7040,  -6784, // 0x88..0x8f
-     -2752,  -2624,  -3008,  -2880,  -2240,  -2112,  -2496,  -2368, // 0x90..0x97
-     -3776,  -3648,  -4032,  -3904,  -3264,  -3136,  -3520,  -3392, // 0x98..0x9f
-    -22016, -20992, -24064, -23040, -17920, -16896, -19968, -18944, // 0xa0..0xa7
-    -30208, -29184, -32256, -31232, -26112, -25088, -28160, -27136, // 0xa8..0xaf
-    -11008, -10496, -12032, -11520,  -8960,  -8448,  -9984,  -9472, // 0xb0..0xb7
-    -15104, -14592, -16128, -15616, -13056, -12544, -14080, -13568, // 0xb8..0xbf
-      -344,   -328,   -376,   -360,   -280,   -264,   -312,   -296, // 0xc0..0xc7
-      -472,   -456,   -504,   -488,   -408,   -392,   -440,   -424, // 0xc8..0xcf
-       -88,    -72,   -120,   -104,    -24,     -8,    -56,    -40, // 0xd0..0xd7
-      -216,   -200,   -248,   -232,   -152,   -136,   -184,   -168, // 0xd8..0xdf
-     -1376,  -1312,  -1504,  -1440,  -1120,  -1056,  -1248,  -1184, // 0xe0..0xe7
-     -1888,  -1824,  -2016,  -1952,  -1632,  -1568,  -1760,  -1696, // 0xe8..0xef
-      -688,   -656,   -752,   -720,   -560,   -528,   -624,   -592, // 0xf0..0xf7
-      -944,   -912,  -1008,   -976,   -816,   -784,   -880,   -848, // 0xf8..0xff
-];
+/// XOR the byte with 0x55, because A-law transmits every even bit inverted.
+/// Bits 4-6 are then the segment and bits 0-3 the mantissa, and bit 7 is the
+/// sign: SET is positive. That last rule is the one a hand-typed table got
+/// backwards, decoding every A-law call with inverted polarity, so the table
+/// is now computed from this function and cannot disagree with it. The Sun
+/// `g711.c` that sox and FFmpeg carry decodes the same way.
+const fn alaw_decode(byte: u8) -> i16 {
+    let a = byte ^ 0x55;
+    let segment = (a >> 4) & 0x07;
+    let mantissa = (a & 0x0F) as i16;
+    let magnitude = if segment == 0 {
+        ((mantissa << 1) | 1) << 3
+    } else {
+        ((mantissa << 1) | 0x21) << (segment + 2)
+    };
+    if a & 0x80 != 0 { magnitude } else { -magnitude }
+}
+
+/// A-law decode table: 256 entries mapping encoded byte to 16-bit signed PCM,
+/// each computed by [`alaw_decode`] at compile time.
+static ALAW_TABLE: [i16; 256] = {
+    let mut table = [0i16; 256];
+    let mut byte = 0usize;
+    while byte < 256 {
+        table[byte] = alaw_decode(byte as u8);
+        byte += 1;
+    }
+    table
+};
 
 /// Unit tests for the G.711 mu-law and A-law decode tables.
 #[cfg(test)]
@@ -182,10 +174,42 @@ mod tests {
         let input = [0xD5, 0x55, 0x80, 0x00];
         let pcm = decode_frame(G711Codec::Alaw, &input);
         assert_eq!(pcm.len(), 4);
-        assert_eq!(pcm[0], -8); // near-silence
-        assert_eq!(pcm[1], 8); // near-silence (opposite polarity)
-        assert_eq!(pcm[2], -5504); // negative value
-        assert_eq!(pcm[3], 5504); // positive value
+        assert_eq!(pcm[0], 8); // near-silence, positive
+        assert_eq!(pcm[1], -8); // near-silence, negative
+        assert_eq!(pcm[2], 5504); // positive value
+        assert_eq!(pcm[3], -5504); // negative value
+    }
+
+    /// A-law's sign is the one ITU-T G.711 defines, not its inverse.
+    ///
+    /// G.711 A-law transmits every even bit inverted, so a decoder XORs the
+    /// byte with 0x55 and then reads bit 7 as the sign: SET means positive.
+    /// The table had it the other way round, so every A-law call decoded with
+    /// inverted polarity. The magnitudes were right, which is why no level,
+    /// clip or MOS figure noticed. The reference decoders agree with the
+    /// standard: the Sun `g711.c` that sox and FFmpeg carry decode 0xD5 to +8
+    /// and 0x55 to -8.
+    #[test]
+    fn alaw_decode_sign_matches_itu_g711() {
+        assert_eq!(alaw_to_pcm(0x00), -5504);
+        assert_eq!(alaw_to_pcm(0x55), -8);
+        assert_eq!(alaw_to_pcm(0xD5), 8);
+        assert_eq!(alaw_to_pcm(0x80), 5504);
+        for b in 0u8..=255 {
+            assert_eq!(
+                alaw_to_pcm(b),
+                -alaw_to_pcm(b ^ 0x80),
+                "A-law 0x{b:02x} and 0x{:02x} differ only in sign",
+                b ^ 0x80
+            );
+            let negative = (b ^ 0x55) & 0x80 == 0;
+            assert_eq!(
+                alaw_to_pcm(b) < 0,
+                negative,
+                "A-law 0x{b:02x} decoded to {}: after XOR 0x55, bit 7 clear is negative",
+                alaw_to_pcm(b)
+            );
+        }
     }
 
     /// The mu-law positive and negative halves are exact mirror images.
