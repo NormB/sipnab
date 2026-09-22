@@ -966,6 +966,7 @@ fn the_runtime_schema_names_every_field_the_route_sends() {
     stats.rates = Some(sipnab::output::runtime::Rates::default());
     stats.capture_queue_depth_packets = Some(0);
     stats.capture_backpressure_blocks_total = Some(0);
+    stats.hep_export = Some(sipnab::output::runtime::HepExportStats::default());
     let sent: BTreeSet<String> = serde_json::to_value(&stats)
         .expect("RuntimeStats serializes")
         .as_object()
@@ -1013,6 +1014,7 @@ fn the_runtime_schema_names_every_field_the_route_sends() {
         ("RuntimeImpact", "/impact"),
         ("RuntimeOccupancy", "/dialogs"),
         ("RuntimeRates", "/rates"),
+        ("RuntimeHepExport", "/hep_export"),
     ] {
         let Some(obj) = value.pointer(pointer).and_then(Value::as_object) else {
             continue;

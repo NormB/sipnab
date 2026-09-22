@@ -178,3 +178,76 @@ fn rtp_stream_flood_bounded() {
         "stream store should be saturated at the cap"
     );
 }
+
+/// A HEP listener's sender roster under a spoofed flood: every packet claims a
+/// new capture id from a new address, half are admitted and half refused.
+///
+/// Both tables are keyed by what the attacker chooses, and both must hold
+/// their bound at every step. The admitted table REFUSES new senders at its
+/// bound (it is also the frame-ordinal table, and a recycled counter would
+/// mint a second frame 0), so the flood must neither grow it nor displace the
+/// senders already in it; the refused table evicts, so the flood rotates it.
+/// Nothing is lost from the account either way: packets from untracked
+/// senders and every refusal are still counted.
+///
+/// Gated on `hep`, the feature whose listener keeps this roster, although the
+/// type itself compiles without it: a build with no listener has no roster to
+/// flood.
+#[cfg(feature = "hep")]
+#[test]
+fn hep_sender_roster_flood_bounded() {
+    use sipnab::capture::hep_roster::{
+        HEP_REFUSED_SOURCES_TRACKED, HepRefusal, RosterState, SenderTrust, hep_source_label,
+    };
+    use std::time::{Duration, Instant};
+
+    let t = Instant::now();
+    let mut roster = RosterState::new(
+        SenderTrust::Unauthenticated,
+        CAP,
+        Duration::from_secs(30),
+        t,
+        Utc::now(),
+    );
+    // The node that was feeding the listener before the flood began.
+    let real = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1));
+    roster.admitted(Some(1), real, &hep_source_label(Some(1), real), t);
+
+    for i in 0..FLOOD as u32 {
+        let spoofed = IpAddr::V4(Ipv4Addr::from(0x0a00_0000 + i));
+        roster.admitted(Some(i), spoofed, &hep_source_label(Some(i), spoofed), t);
+        roster.refused(HepRefusal::AuthMismatch, spoofed, t);
+        assert!(
+            roster.senders_tracked() <= CAP,
+            "sender roster exceeded its bound: {} > {CAP} at i={i}",
+            roster.senders_tracked()
+        );
+        assert!(
+            roster.refused_sources_tracked() <= HEP_REFUSED_SOURCES_TRACKED,
+            "refused-source table exceeded its bound: {} at i={i}",
+            roster.refused_sources_tracked()
+        );
+    }
+
+    let report = roster.report(t, usize::MAX);
+    assert_eq!(report.senders_tracked, CAP as u64, "saturated at the bound");
+    assert!(
+        report.senders.iter().any(|s| s.peer == "192.0.2.1"),
+        "the flood displaced a sender that was already tracked"
+    );
+    assert_eq!(
+        report.untracked_packets,
+        (FLOOD + 1 - CAP) as u64,
+        "every packet from a sender past the bound is still counted"
+    );
+    assert_eq!(report.packets_admitted, FLOOD as u64 + 1);
+    assert_eq!(
+        report.refused_sources_tracked,
+        HEP_REFUSED_SOURCES_TRACKED as u64
+    );
+    assert_eq!(
+        report.refused_by_reason.get("auth_mismatch").copied(),
+        Some(FLOOD as u64),
+        "the reason totals keep every refusal the table evicted"
+    );
+}

@@ -466,7 +466,14 @@ fn undocumented_numeric_ceilings_do_not_increase() {
 // `GET /v1/capabilities` response. Response-only, same reason, pinned by the
 // same contract test. One component, attributed by counting `ToSchema`
 // derives against HEAD.
-const PERMISSIVE_SCHEMA_COMPONENTS: usize = 60;
+// 60 -> 61 (merged; the branch counted 59 -> 60) for `RuntimeHepExport`, the `hep_export` object `GET /v1/runtime`
+// carries on a `--hep-send` run. Response-only like `RuntimeRates`, and pinned
+// the same way: `the_runtime_schema_names_every_field_the_route_sends` checks
+// it among the nested components, so an undocumented field reaching a client
+// fails there. One component, attributed by counting `ToSchema` derives in
+// api.rs against HEAD. (`GET /v1/hep/senders` added none here: its components
+// derive `ToSchema` on the model in `src/output/model.rs`.)
+const PERMISSIVE_SCHEMA_COMPONENTS: usize = 61;
 
 #[test]
 fn permissive_rest_schema_components_do_not_increase() {

@@ -67,6 +67,31 @@ fn hep3_sip(payload: &[u8]) -> Vec<u8> {
     build_hep_v3(&ep, Utc::now(), HepProtocol::Sip, 0, None, payload)
 }
 
+/// A HEP3 datagram like [`hep3_sip`], stamped with `capture_id` and carrying
+/// `key` as its plain-mode auth chunk.
+///
+/// # Arguments
+/// * `capture_id` — the capture-agent id (HEP chunk 0x000c) the sender claims.
+/// * `key` — the shared secret presented in the 0x000e chunk.
+/// * `payload` — the SIP message bytes to encapsulate.
+fn hep3_sip_keyed(capture_id: u32, key: &str, payload: &[u8]) -> Vec<u8> {
+    let ep = HepEndpoint {
+        src_addr: "127.0.0.1".parse().unwrap(),
+        dst_addr: "127.0.0.1".parse().unwrap(),
+        src_port: 5060,
+        dst_port: 5062,
+        transport: sipnab::net::TransportProto::Udp,
+    };
+    build_hep_v3(
+        &ep,
+        Utc::now(),
+        HepProtocol::Sip,
+        capture_id,
+        Some(key),
+        payload,
+    )
+}
+
 /// A spawned `sipnab --hep-listen` process with line-buffered stdout/stderr.
 struct HepListener {
     child: Child,
@@ -395,6 +420,134 @@ fn the_skew_warning_quotes_the_configured_window() {
     );
 }
 
+/// A sender reaching the listener with the wrong key trips the silence
+/// warning, and the warning says why nothing got through.
+///
+/// The defect (HEP1): every datagram that ARRIVED reset the listener's idle
+/// watch, before authentication had looked at it. A sender with the wrong key
+/// kept the "no packets" warning quiet for as long as it kept sending, so the
+/// operator `docs/mcp-estate.md` tells to watch for that warning never saw it.
+/// Sent every 50 ms — faster than the listener's 100 ms read timeout — so the
+/// check must also run while refused packets keep arriving.
+#[test]
+fn a_sender_refused_on_every_packet_trips_the_silence_warning() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let key_file = dir.path().join("hep.key");
+    std::fs::write(&key_file, "the-right-key\n").expect("write key file");
+    let srv = HepListener::spawn(&[
+        "--hep-allow",
+        "127.0.0.1/32",
+        "--hep-auth-file",
+        key_file.to_str().expect("utf-8 temp path"),
+        "--hep-silence-warn",
+        "1",
+    ]);
+    let wrong = hep3_sip_keyed(7, "the-wrong-key", &invite_bytes());
+    let sock = UdpSocket::bind("127.0.0.1:0").expect("bind sender");
+
+    let deadline = Instant::now() + test_timeout(10);
+    let mut warning = None;
+    while warning.is_none() && Instant::now() < deadline {
+        sock.send_to(&wrong, ("127.0.0.1", srv.port))
+            .expect("send HEP");
+        thread::sleep(Duration::from_millis(50));
+        while let Ok(line) = srv.stderr_rx.try_recv() {
+            if line.contains("every one was refused") {
+                warning = Some(line);
+            }
+        }
+    }
+    let line = warning.expect(
+        "a sender whose every packet is refused must trip the one-second silence \
+         warning, not keep it quiet",
+    );
+    assert!(
+        line.contains("auth_mismatch") && line.contains("127.0.0.1"),
+        "the warning must name the refusal and the peer: {line}"
+    );
+    assert!(
+        srv.wait_for_stdout(CALL_ID, Duration::from_millis(200))
+            .is_none(),
+        "control: nothing with the wrong key reaches the capture"
+    );
+}
+
+/// `--hep-senders --json` ends a headless run with the roster: two senders
+/// with the right key (capture ids 7 and 9) as two entries with their own
+/// counts, and a sender with the wrong key as a refused source under
+/// `auth_mismatch` — never as a sender. The object validates against the
+/// schema the MCP tool advertises for the same shape.
+#[cfg(feature = "mcp")]
+#[test]
+fn hep_senders_reports_who_fed_the_listener_and_who_it_refused() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let key_file = dir.path().join("hep.key");
+    std::fs::write(&key_file, "the-right-key\n").expect("write key file");
+    let srv = HepListener::spawn(&[
+        "--hep-allow",
+        "127.0.0.1/32",
+        "--hep-auth-file",
+        key_file.to_str().expect("utf-8 temp path"),
+        "--hep-senders",
+        "--count",
+        "7",
+    ]);
+    let payload = invite_bytes();
+    let sends = [
+        hep3_sip_keyed(7, "the-right-key", &payload),
+        hep3_sip_keyed(9, "the-right-key", &payload),
+        hep3_sip_keyed(7, "the-right-key", &payload),
+        hep3_sip_keyed(5, "the-wrong-key", &payload),
+        hep3_sip_keyed(9, "the-right-key", &payload),
+        hep3_sip_keyed(7, "the-right-key", &payload),
+        hep3_sip_keyed(5, "the-wrong-key", &payload),
+    ];
+    for datagram in &sends {
+        srv.send(datagram);
+        thread::sleep(Duration::from_millis(20));
+    }
+    let line = srv
+        .wait_for_stdout("\"senders\"", test_timeout(15))
+        .expect("--hep-senders --json must print the roster as its last stdout line");
+    let report: serde_json::Value = serde_json::from_str(&line).expect("one JSON object");
+
+    let senders: Vec<(String, u64)> = report["senders"]
+        .as_array()
+        .expect("senders array")
+        .iter()
+        .map(|s| {
+            (
+                s["source"].as_str().unwrap_or_default().to_string(),
+                s["packets"].as_u64().unwrap_or_default(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        senders,
+        vec![
+            ("hep:7@127.0.0.1".to_string(), 3),
+            ("hep:9@127.0.0.1".to_string(), 2)
+        ],
+        "two senders, each with its own count, and no entry for the wrong key: {report}"
+    );
+    assert_eq!(report["trust"], "shared_secret_plain");
+    assert_eq!(report["packets_received"], 7);
+    assert_eq!(report["refused_by_reason"]["auth_mismatch"], 2);
+    let refused = report["refused_sources"].as_array().expect("refused array");
+    assert_eq!(refused.len(), 1, "{report}");
+    assert_eq!(refused[0]["peer"], "127.0.0.1");
+    assert_eq!(refused[0]["by_reason"]["auth_mismatch"], 2);
+
+    let schema = serde_json::to_value(rmcp::schemars::schema_for!(
+        sipnab::output::model::HepSendersReport
+    ))
+    .expect("schema serializes");
+    let validator = jsonschema::validator_for(&schema).expect("schema compiles");
+    if let Err(e) = validator.validate(&report) {
+        panic!("--hep-senders --json does not match its schema: {e}\n{report:#}");
+    }
+}
+
 /// A 20-datagram burst against `--hep-rate-limit 1` logs a
 /// "rate limit exceeded" drop (visible at debug log level).
 #[test]
@@ -445,6 +598,42 @@ fn hep_send_forwards_captured_sip_as_hep3() {
     assert_eq!(&buf[..4], b"HEP3", "forwarded datagram must be HEP3");
 
     let _ = terminate(&mut child);
+}
+
+/// A `--hep-send` run ends by saying what it exported: how many packets,
+/// how many failed and why, over which transport, and what "sent" means
+/// there. Before this a failed forward was one `debug!` line, so an agent
+/// whose collector was gone reported nothing wrong at the default level.
+#[test]
+fn hep_send_reports_its_exports_at_the_end_of_the_run() {
+    let collector = UdpSocket::bind("127.0.0.1:0").expect("bind collector");
+    let target = format!("127.0.0.1:{}", collector.local_addr().unwrap().port());
+    let pcap = format!(
+        "{}/tests/fixtures/sip_call.pcap",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let out = Command::new(env!("CARGO_BIN_EXE_sipnab"))
+        .args(["-N", "-I", &pcap, "--hep-send", &target])
+        .env("SIPNAB_LOG", "info")
+        .env("NO_COLOR", "1")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("run sipnab --hep-send");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let line = stderr
+        .lines()
+        .find(|l| l.contains(&format!("HEP export to {target} over udp")))
+        .unwrap_or_else(|| panic!("no end-of-run export line in:\n{stderr}"));
+    assert!(line.contains("none failed"), "{line}");
+    assert!(line.contains("UDP reports no delivery"), "{line}");
+    let sent: u64 = line
+        .split_once("over udp: ")
+        .and_then(|(_, rest)| rest.split(' ').next())
+        .and_then(|n| n.parse().ok())
+        .unwrap_or_else(|| panic!("no packet count in: {line}"));
+    assert!(sent > 0, "the capture's SIP was forwarded: {line}");
 }
 
 /// `--hep-send` on a TCP trunk stamps every SIP datagram with IP protocol

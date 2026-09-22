@@ -90,6 +90,42 @@ entry that carries them.
   notes file asks first. The TUI action trail records which frame a note was
   set on or removed from, never its text.
 
+- **A HEP listener names a sender that goes silent while others keep
+  sending.** The listener-wide "no packets" warning stays quiet while anyone
+  at all is sending, so a collector fed by twenty proxies could not say that
+  one of them stopped. The listener now keeps a roster of its senders, keyed
+  by the capture id each claims and the address it sends from, and logs
+  `sender 7@192.0.2.5 silent for 30s` once per silence and `sender ... resumed
+  after 45s silent` when it returns. The threshold is `--hep-silence-warn`.
+  The roster is bounded by `[limits] max_tracked_peers`: a sender past the
+  bound is still admitted and its packets counted, but it is not named.
+  Refused packets are counted by reason and by address in a separate table of
+  256 addresses that evicts the least recently refused.
+
+- **Every surface reports who feeds a HEP collector.** `--hep-senders` prints
+  the roster at the end of a headless run (with `--json`, one object on the
+  last line of stdout). `GET /v1/hep/senders` (full-scope token) and the
+  read-only MCP tool `hep_senders` return the same bytes for one roster. In the
+  TUI, `s` in the capture-health panel opens a HEP senders view. Each sender
+  row shows the capture id it claims and its address, its packet count, when
+  sipnab last heard it and whether it went silent, and says the id is claimed
+  by the sender, never proven. Refused addresses show counts by reason.
+  Prometheus gains three aggregate series, `sipnab_hep_senders`,
+  `sipnab_hep_datagrams_received_total` and
+  `sipnab_hep_datagrams_refused_total{reason}` with every reason present, and
+  no per-sender label. `capture_health` carries the listener's counts as
+  integers under `hep`.
+
+- **A `--hep-send` agent says when its exports fail.** A failed forward was a
+  `debug` line and nothing else, so an agent whose collector was down kept
+  reporting nothing wrong. The exporter now counts packets sent, failures by
+  the step that failed (`connect`, `tls_handshake`, `write`) and reconnects.
+  A headless run ends with one line saying so (`warn` when anything failed);
+  `runtime_stats` and `GET /v1/runtime` carry `hep_export`; Prometheus gains
+  `sipnab_hep_export_packets_total` and `sipnab_hep_export_failures_total{kind}`.
+  Over UDP "sent" means handed to the kernel, because a collector that is down
+  produces no error, and every surface says so rather than claiming delivery.
+
 ### Security
 
 - **`--kill-scanner` sends from a process of its own, and the process parsing
@@ -145,6 +181,17 @@ entry that carries them.
   write left a short file and the status line still read "Saved N packets". It
   now reports the write error.
 
+- **A HEP sender whose every packet is refused now trips the silence
+  warning.** The listener's "no packets for 30s" watch was reset by every
+  packet that arrived, before the allowlist, rate limit, parser or
+  authentication had looked at it, so a sender with the wrong key kept the
+  warning quiet while nothing it sent reached the capture. Only admitted
+  packets count now. When packets arrive and every one is refused, the
+  warning reads `no packets admitted for 30s`, names the refusal most of them
+  met (`auth_mismatch`, `allowlist`, `hmac_timestamp_out_of_window`, ...) and
+  a peer that sent them. `--hep-silence-warn <SECS>` sets the threshold, and
+  `0` turns the warning off.
+
 ### Internal
 
 - **The testing matrix credits a flag to a test only when the test hands it
@@ -158,6 +205,12 @@ entry that carries them.
   `tests/support/run.rs`, `server.rs` or `mcp.rs` has no `Command::new` of its
   own and read as a mere mention. With that fixed, 52 rows move up to `e2e`,
   and the matrix reads 210 `e2e` flags where it read 162.
+
+- **The surface inventory's printed counts are held to its own lists.** The
+  generated `docs/design/surface-capability-inventory.md` listed all 276 flags
+  under a heading and a totals line that both said 274. Two flags had gone into
+  the list by hand, and the gate compared only the sets. A test now fails when a
+  section heading or a `Totals:` entry disagrees with the bullets it counts.
 
 ## [0.5.184] - 2026-09-21
 
@@ -3041,7 +3094,7 @@ entry that carries them.
 ### Added
 
 - **`runtime_stats` over MCP and `GET /v1/runtime` over REST.** sipnab exports
-  32 Prometheus metrics and the listener that serves them is off by default, so
+  its Prometheus metrics through a listener that is off by default, so
   on most deployments those numbers existed inside the process and nothing could
   read them — an agent asked "is this server healthy" could not enable a
   listener to find out.

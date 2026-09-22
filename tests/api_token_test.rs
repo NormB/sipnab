@@ -245,3 +245,40 @@ fn a_full_token_still_reaches_metrics_and_the_v1_surface() {
         );
     }
 }
+
+/// `GET /v1/hep/senders` is full scope: a `metrics` token is refused, a
+/// `full` token admitted.
+///
+/// Sender addresses describe the estate — which proxies feed which
+/// collector — so the route sits behind the credential that reads dialogs,
+/// not the one a scrape job holds. Prometheus carries only the aggregate
+/// counts, with no per-sender label, for the same reason.
+#[cfg(feature = "hep")]
+#[test]
+fn the_hep_sender_roster_needs_a_full_token() {
+    let srv = ApiServer::spawn(&["--api-signing-key", SIGNING_KEY]);
+    let scrape = sipnab::auth::mint(
+        SIGNING_KEY.as_bytes(),
+        "scrape-job",
+        now() + 3600,
+        sipnab::auth::AUDIENCE_API,
+        sipnab::auth::SCOPE_METRICS,
+    );
+    let full = sipnab::auth::mint(
+        SIGNING_KEY.as_bytes(),
+        "ops",
+        now() + 3600,
+        sipnab::auth::AUDIENCE_API,
+        sipnab::auth::SCOPE_FULL,
+    );
+    assert_eq!(
+        srv.get_bearer("/v1/hep/senders", &scrape).status,
+        401,
+        "a metrics token must not read which senders feed this collector"
+    );
+    assert_eq!(
+        srv.get_bearer("/v1/hep/senders", &full).status,
+        200,
+        "a full token reads the roster"
+    );
+}

@@ -197,3 +197,86 @@ fn the_inventory_lists_every_rest_route() {
 fn the_inventory_lists_every_mcp_tool() {
     assert_surface("MCP", "MCP tools", &mcp_tools(), 40);
 }
+
+/// Every way the inventory's printed numbers disagree with its own lists:
+/// a `## <title> (N)` heading whose section holds a different number of
+/// bullets, and a `Totals:` entry that differs from its section's bullets.
+///
+/// The set comparison above cannot see this. On 2026-09-22 the doc listed all
+/// 276 flags under a heading that read `(274)` and a `Totals: CLI 274` line:
+/// two flags had been added to the list without regenerating the file, so
+/// every flag passed the set check while the file's own figures were false.
+fn printed_counts_disagree(doc: &str) -> Vec<String> {
+    let mut sections: Vec<(String, usize, usize)> = Vec::new();
+    for line in doc.lines() {
+        if let Some(heading) = line.strip_prefix("## ") {
+            let printed = heading
+                .rsplit_once(" (")
+                .and_then(|(title, n)| Some((title, n.strip_suffix(')')?.parse::<usize>().ok()?)));
+            if let Some((title, n)) = printed {
+                sections.push((title.to_string(), n, 0));
+            }
+            continue;
+        }
+        if line.starts_with("- `")
+            && let Some(last) = sections.last_mut()
+        {
+            last.2 += 1;
+        }
+    }
+    let mut out: Vec<String> = sections
+        .iter()
+        .filter(|(_, printed, listed)| printed != listed)
+        .map(|(title, printed, listed)| format!("`## {title} ({printed})` lists {listed} item(s)"))
+        .collect();
+    let totals = doc
+        .lines()
+        .find_map(|l| l.strip_prefix("Totals: "))
+        .map(|t| t.trim_end_matches('.'));
+    for entry in totals.into_iter().flat_map(|t| t.split(", ")) {
+        let Some((surface, n)) = entry.split_once(' ') else {
+            out.push(format!("unreadable Totals entry `{entry}`"));
+            continue;
+        };
+        let listed = sections
+            .iter()
+            .find(|(title, _, _)| title.split(' ').next() == Some(surface))
+            .map(|s| s.2);
+        if n.parse::<usize>().ok() != listed {
+            out.push(format!(
+                "Totals says {surface} {n}; its section lists {listed:?}"
+            ));
+        }
+    }
+    out
+}
+
+#[test]
+fn printed_counts_are_checked_against_the_lists_they_count() {
+    let agreeing = "Totals: CLI 2, MCP 1.\n\n## CLI flags (2)\n\n- `--a`\n- `--b`\n\n## MCP tools (1)\n\n- `t`\n";
+    assert_eq!(printed_counts_disagree(agreeing), Vec::<String>::new());
+
+    let stale_heading = agreeing.replace("## CLI flags (2)", "## CLI flags (1)");
+    assert_eq!(
+        printed_counts_disagree(&stale_heading),
+        vec!["`## CLI flags (1)` lists 2 item(s)".to_string()]
+    );
+
+    let stale_total = agreeing.replace("Totals: CLI 2", "Totals: CLI 3");
+    assert_eq!(
+        printed_counts_disagree(&stale_total),
+        vec!["Totals says CLI 3; its section lists Some(2)".to_string()]
+    );
+}
+
+#[test]
+fn the_inventory_s_printed_counts_match_its_lists() {
+    let wrong = printed_counts_disagree(&inventory_doc());
+    assert!(
+        wrong.is_empty(),
+        "docs/design/surface-capability-inventory.md prints counts its own lists \
+         contradict:\n  {}\n\nRegenerate rather than editing the list by hand:\n    \
+         cargo build --features full && python3 scripts/capability-matrix.py --write",
+        wrong.join("\n  ")
+    );
+}

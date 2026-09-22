@@ -1858,7 +1858,7 @@ per-dialog summary and ranks nothing.
 
 What sipnab is doing, and what it is costing the host it runs on.
 
-sipnab exports 32 Prometheus metrics, and the listener that serves them is off
+sipnab exports 37 Prometheus metrics, and the listener that serves them is off
 by default — so on most deployments those numbers exist inside the process and
 nothing can read them. This endpoint answers the same questions without one,
 and adds two things that did not exist anywhere: sipnab's own resource use, and
@@ -1902,6 +1902,26 @@ curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" http://127.0.0.1:8080/v1/runt
   "uptime_seconds": 41
 }
 ```
+
+On a `--hep-send` run the envelope also carries `hep_export`, what the exporter
+delivered and what failed:
+
+```json
+"hep_export": {
+  "transport": "tcp",
+  "packets_sent": 18204,
+  "failures": { "connect": 3, "tls_handshake": 0, "write": 0 },
+  "reconnects": 1,
+  "delivery": "written to the connection: a write that fails is counted, and the next packet dials again"
+}
+```
+
+Every failure kind appears, zeros included. `connect` is a collector that
+refused, or that the sender could not reach, when the sender dialled again, `tls_handshake`
+a collector whose certificate the sender does not accept, and `write` a packet
+an established connection refused. **Over UDP `packets_sent` means handed to
+the kernel**, and a collector that is down produces no failure at all, which
+`delivery` says in words. The key is absent on a run that exports nothing.
 
 **An absent field means "not readable here", never zero.** Every value under
 `process` and `host` is optional because the sources are platform-specific. A
@@ -1974,6 +1994,105 @@ is exactly what a healthy quiet capture looks like.
 The MCP tool `runtime_stats` returns the same envelope from the same
 derivation — including the same refusal and the same clamp — so the two
 surfaces cannot disagree about one process.
+
+### GET /v1/hep/senders
+
+Who is feeding this run's HEP listener, who went silent, and who it is turning
+away. Only in a build with the `hep` feature, and it needs a full-scope token:
+sender addresses describe your estate, so a `metrics` token gets `401`.
+
+**curl:**
+
+```bash
+curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" http://127.0.0.1:8080/v1/hep/senders | jq .
+```
+
+**Response:**
+
+```json
+{
+  "schema_version": 1,
+  "listening": true,
+  "trust": "shared_secret_plain",
+  "silence_threshold_seconds": 30,
+  "packets_received": 1843,
+  "packets_admitted": 1829,
+  "packets_refused": 14,
+  "refused_by_reason": {
+    "allowlist": 0, "auth_missing": 0, "auth_mismatch": 14, "hmac_bad_format": 0,
+    "hmac_bad_mac": 0, "hmac_replay": 0, "hmac_timestamp_out_of_window": 0,
+    "hmac_unsupported_version": 0, "malformed": 0, "peer_tracking_full": 0,
+    "rate_limit_global": 0, "rate_limit_per_peer": 0
+  },
+  "senders_tracked": 2,
+  "senders_limit": 4096,
+  "senders_silent": 1,
+  "untracked_packets": 0,
+  "senders": [
+    {
+      "source": "hep:7@192.0.2.7", "capture_id": 7, "peer": "192.0.2.7",
+      "identity": "claimed_by_sender", "trust": "shared_secret_plain",
+      "packets": 1604, "first_seen": "2026-09-21T12:00:00.412Z",
+      "last_seen": "2026-09-21T12:14:59.880Z", "idle_seconds": 0, "silent": false
+    },
+    {
+      "source": "hep:9@192.0.2.9", "capture_id": 9, "peer": "192.0.2.9",
+      "identity": "claimed_by_sender", "trust": "shared_secret_plain",
+      "packets": 225, "first_seen": "2026-09-21T12:00:01.020Z",
+      "last_seen": "2026-09-21T12:09:12.334Z", "idle_seconds": 348, "silent": true
+    }
+  ],
+  "refused_sources_tracked": 1,
+  "refused_sources_limit": 256,
+  "refused_sources_evicted": 0,
+  "refused_sources": [
+    {
+      "peer": "203.0.113.66", "packets": 14, "by_reason": { "auth_mismatch": 14 },
+      "first_seen": "2026-09-21T12:03:40.101Z", "last_seen": "2026-09-21T12:14:58.007Z"
+    }
+  ]
+}
+```
+
+**A sender is the capture id it claims and the address it sent from.** Two
+proxies that both leave `--hep-id` at its default of 1 are still two rows, and
+one host running two sipnab agents with different ids is two rows too. `source`
+is the same `hep:<capture-id>@<peer>` string every frame pointer from that
+sender carries, so a row and a pointer name one sender the same way.
+
+**`identity` is always `claimed_by_sender`.** One shared secret serves the
+whole listener and sipnab asks no sender for a client certificate, so any
+sender holding the secret can claim any capture id. The roster reports what senders say about
+themselves, and says so.
+
+**`silent`, never "down".** A sender is silent once it has sent nothing sipnab
+admitted for `silence_threshold_seconds` (`--hep-silence-warn`). A PBX with no
+calls at night may legitimately send nothing, so the word describes what
+sipnab saw, not what happened to the sender. Only admitted packets count: a
+sender whose packets now fail authentication goes silent, and shows up under
+`refused_sources` instead.
+
+**The refused-source table keys on address alone.** A refused packet proved
+nothing, including the capture id it claimed. The table holds the 256 addresses
+refused most recently and evicts the oldest, so a spoofed flood rotates it
+rather than freezing it. `refused_by_reason` counts every refusal, and nothing
+evicts it.
+
+**Both lists have bounds, and the totals beside them do not.** The sender
+table holds `senders_limit` senders (`[limits] max_tracked_peers`). A sender
+arriving after it fills still reaches the capture and counts in
+`untracked_packets`, but gets no row: the table refuses new entries rather than
+recycling old ones, because it also numbers each sender's frames. `?limit=N`
+caps the rows each list returns without changing any total.
+
+**No listener, no roster.** A run without `-L` answers `listening: false`, zero
+counts and a `note`, never an empty roster that would read as "nobody is
+sending".
+
+The MCP tool `hep_senders` returns the same bytes for the same roster, and
+`--hep-senders` prints it at the end of a headless run. Prometheus carries only
+the aggregate counts, with no per-sender label: see
+[Metrics](prometheus-metrics.md).
 
 ### GET /v1/capabilities
 

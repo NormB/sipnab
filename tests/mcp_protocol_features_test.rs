@@ -292,6 +292,11 @@ fn schema_probes(call_id: &str) -> Vec<(&'static str, Value)> {
         // One second: the smallest window the tool accepts, because this is
         // about the response shape and not about the sampling.
         ("capture_health", json!({"sample_seconds": 1})),
+        // The test server has no HEP listener, so this is the
+        // `listening: false` shape -- the one whose nullable `trust` and
+        // `note` the schema must describe, since a live roster never sends
+        // them absent.
+        ("hep_senders", json!({})),
         ("find_correlated", json!({"call_id": call_id})),
         // One second, and the filter is allowed to match nothing: the
         // deadline path is a SUCCESSFUL answer, so it exercises the same

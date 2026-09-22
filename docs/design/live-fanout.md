@@ -161,7 +161,7 @@ experiment in [section 5](#5-the-experiment-and-the-result-that-means-do-not-shi
 
 ### 2.2 `--multi-device` composes badly and should stay refused
 
-`start_multi_capture` ([`native.rs:657`](https://github.com/NormB/sipnab/blob/main/src/capture/native.rs#L657)) already
+`start_multi_capture` ([`native.rs:673`](https://github.com/NormB/sipnab/blob/main/src/capture/native.rs#L673)) already
 spawns one capture thread per interface into one shared channel, with a
 coordinator thread and an aggregated readiness signal. That is the same topology
 `capture_live_fanout` builds — which is a good sign for the design and a problem
@@ -213,7 +213,7 @@ That is the correct fix for a drainer-bound capture, and it is the only thing
 `PACKET_FANOUT` is for.
 
 **It buys nothing if the consumer is the limit.** `packet_channel`
-([`channel.rs:204`](https://github.com/NormB/sipnab/blob/main/src/capture/channel.rs#L204)) is an unbounded data queue
+([`channel.rs:254`](https://github.com/NormB/sipnab/blob/main/src/capture/channel.rs#L254)) is an unbounded data queue
 plus a bounded slot semaphore, so `send` blocks once `capacity` packets are in
 flight. When the processing loop cannot keep up, the channel saturates and the
 capture threads block in `send` — and a blocked capture thread is a thread not
@@ -240,7 +240,7 @@ from a headless run — `start_servers` is called with `metrics: true` and the
 real meter from [`batch.rs:1861-1879`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L1861-L1879).
 
 **One gap worth fixing before the experiment.** `CaptureCounters`, the
-`capture_health` MCP response ([`server.rs:8198`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L8198)),
+`capture_health` MCP response ([`server.rs:8242`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L8242)),
 carries `packets`, `kernel_dropped`, `interface_dropped`, `invalid_timestamps`
 and `undecodable_frames` — and **no queue depth and no backpressure count**. So
 the surface built for production field reports

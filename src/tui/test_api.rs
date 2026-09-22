@@ -29,6 +29,13 @@ impl App {
         app
     }
 
+    /// Hand the session a capture meter, as `run_tui_mode` does from the
+    /// capture channel (test helper).
+    #[doc(hidden)]
+    pub fn set_capture_meter_for_test(&mut self, meter: crate::capture::channel::CaptureMeter) {
+        self.capture_meter = Some(meter);
+    }
+
     /// Override the version string shown in the help view (test helper).
     #[doc(hidden)]
     pub fn set_version_for_test(&mut self, version: impl Into<String>) {

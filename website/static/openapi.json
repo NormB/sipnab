@@ -2660,6 +2660,255 @@
         ],
         "type": "object"
       },
+      "HepRefusedSourceRow": {
+        "description": "One address the listener has been turning away.\n\nKeyed by address alone, never by the capture id a refused packet claimed:\na packet that failed authentication has proven nothing, including its id.",
+        "properties": {
+          "by_reason": {
+            "additionalProperties": {
+              "format": "int64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "description": "Those packets by reason, only the reasons that occurred.",
+            "propertyNames": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "first_seen": {
+            "description": "When the first of them arrived (RFC 3339, UTC).",
+            "type": "string"
+          },
+          "last_seen": {
+            "description": "When the latest of them arrived (RFC 3339, UTC).",
+            "type": "string"
+          },
+          "packets": {
+            "description": "Packets refused from it while it has been in the table.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "peer": {
+            "description": "The address the refused packets came from.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "peer",
+          "packets",
+          "by_reason",
+          "first_seen",
+          "last_seen"
+        ],
+        "type": "object"
+      },
+      "HepSenderRow": {
+        "description": "One sender feeding a HEP listener.",
+        "properties": {
+          "capture_id": {
+            "description": "The capture-agent id the sender claims, when its packets carry one.",
+            "format": "int32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "first_seen": {
+            "description": "When its first admitted packet arrived (RFC 3339, UTC).",
+            "type": "string"
+          },
+          "identity": {
+            "description": "Always `claimed_by_sender`: the id is what the sender says, and no\ncertificate or per-sender key proves it.",
+            "type": "string"
+          },
+          "idle_seconds": {
+            "description": "Whole seconds since then.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "last_seen": {
+            "description": "When its latest admitted packet arrived (RFC 3339, UTC).",
+            "type": "string"
+          },
+          "packets": {
+            "description": "Packets admitted from it.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "peer": {
+            "description": "The address its packets came from.",
+            "type": "string"
+          },
+          "silent": {
+            "description": "Whether it has been silent for at least the threshold. \"Silent\", not\n\"down\": a PBX with no calls at night may legitimately send nothing.",
+            "type": "boolean"
+          },
+          "source": {
+            "description": "The source half of every frame pointer this sender's packets carry\n(`hep:<capture-id>@<peer>`), so a row and a pointer name one sender\nthe same way.",
+            "type": "string"
+          },
+          "trust": {
+            "description": "The trust the listener admitted it under.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "source",
+          "peer",
+          "identity",
+          "trust",
+          "packets",
+          "first_seen",
+          "last_seen",
+          "idle_seconds",
+          "silent"
+        ],
+        "type": "object"
+      },
+      "HepSendersReport": {
+        "description": "Who is feeding a HEP listener, who stopped, and who it is turning away.\n\nONE shape for every surface that answers the question: `--hep-senders` at\nthe end of a run, `GET /v1/hep/senders`, the MCP `hep_senders` tool and the\nTUI's HEP senders view all serialize or render this struct, built by\n[`crate::capture::hep_roster::RosterState::report`]. A second shape would\nbe a second answer, and REST and MCP must return the same bytes for one\nroster.\n\n# What the identity is, and is not\n\nEvery sender is keyed by the capture-agent id it CLAIMS (HEP chunk\n`0x000c`) and the address its packets came from. Neither is proven: one\nshared secret serves the whole listener, so any sender holding it can\nclaim any id, and no client certificate is asked for. Each row says so in\n`identity`, rather than a reader inferring a proof that was never made.\n\n# What it holds\n\nCounters, addresses, ids and times. No byte of any packet, so it needs no\nfencing on the MCP surface for the reason `runtime_stats` needs none.",
+        "properties": {
+          "listening": {
+            "description": "Whether this run has a HEP listener at all. `false` is a run with no\n`-L`/`--hep-listen`, and every count below is then zero because\nnothing was listening, not because nothing was sent.",
+            "type": "boolean"
+          },
+          "note": {
+            "description": "Why every count is zero, when the run has no HEP listener.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "packets_admitted": {
+            "description": "Packets admitted to the capture.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "packets_received": {
+            "description": "Every packet the listener received, admitted or refused.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "packets_refused": {
+            "description": "Packets refused, for any reason.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "refused_by_reason": {
+            "additionalProperties": {
+              "format": "int64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "description": "Refused packets by reason, every reason present, zeros included, so a\nreader can tell \"never happened\" from \"not reported\".",
+            "propertyNames": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "refused_sources": {
+            "description": "The refused sources, most refused first, at most the row limit the\ncaller asked for.",
+            "items": {
+              "$ref": "#/components/schemas/HepRefusedSourceRow"
+            },
+            "type": "array"
+          },
+          "refused_sources_evicted": {
+            "description": "Addresses evicted from that table to make room. Their refusals still\ncount in `refused_by_reason`, which nothing evicts.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "refused_sources_limit": {
+            "description": "The most addresses that table will hold. It evicts the address refused\nleast recently, so a spoofed flood rotates it rather than freezing it.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "refused_sources_tracked": {
+            "description": "Distinct addresses the refused-source table holds now.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "schema_version": {
+            "description": "Wire-format version of this envelope.",
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "senders": {
+            "description": "The tracked senders, by peer address and then capture id, at most the\nrow limit the caller asked for.",
+            "items": {
+              "$ref": "#/components/schemas/HepSenderRow"
+            },
+            "type": "array"
+          },
+          "senders_limit": {
+            "description": "The most senders it will track (`[limits] max_tracked_peers`). Past it\na new sender is still admitted, but is neither listed nor numbered.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "senders_silent": {
+            "description": "Tracked senders silent for at least the threshold.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "senders_tracked": {
+            "description": "Senders the listener is tracking, whether or not all are listed below.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "silence_threshold_seconds": {
+            "description": "Seconds without an admitted packet before a sender, or the whole\nlistener, is reported silent (`--hep-silence-warn`). `0` means the\nwarning is off, and no sender is ever reported silent.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "trust": {
+            "description": "The trust the listener admits packets under: `unauthenticated`,\n`shared_secret_plain` or `shared_secret_hmac`. Absent when not\nlistening.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "untracked_packets": {
+            "description": "Packets admitted from senders that arrived after the tracking table\nwas full. Counted rather than dropped from the account: the table\nrefuses new entries instead of recycling old ones, so these are the\ntraffic the rows below cannot show.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "schema_version",
+          "listening",
+          "silence_threshold_seconds",
+          "packets_received",
+          "packets_admitted",
+          "packets_refused",
+          "refused_by_reason",
+          "senders_tracked",
+          "senders_limit",
+          "senders_silent",
+          "untracked_packets",
+          "senders",
+          "refused_sources_tracked",
+          "refused_sources_limit",
+          "refused_sources_evicted",
+          "refused_sources"
+        ],
+        "type": "object"
+      },
       "Libpcap": {
         "description": "The libpcap this server runs, as `pcap_lib_version()` reports it. The\nsame fields the MCP `server_capabilities` tool returns, from the one\n`capture::libpcap::running` report.",
         "properties": {
@@ -3377,6 +3626,17 @@
             "$ref": "#/components/schemas/RuntimeOccupancy",
             "description": "Dialog-store occupancy."
           },
+          "hep_export": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/RuntimeHepExport",
+                "description": "The `--hep-send` exporter's deliveries and failures. Present only on\na run that exports."
+              }
+            ]
+          },
           "host": {
             "$ref": "#/components/schemas/RuntimeHost",
             "description": "The host, or the cgroup when sipnab runs inside one."
@@ -3435,6 +3695,52 @@
           "streams",
           "capture_packets_total",
           "uptime_seconds"
+        ],
+        "type": "object"
+      },
+      "RuntimeHepExport": {
+        "description": "What a `--hep-send` exporter reports about its own deliveries.",
+        "properties": {
+          "delivery": {
+            "description": "What `packets_sent` means on this transport, in words. Over UDP a\ncollector that is down produces no failure at all.",
+            "type": "string"
+          },
+          "failures": {
+            "additionalProperties": {
+              "format": "int64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "description": "Failures by kind: `connect`, `tls_handshake` and `write`, every kind\npresent, zeros included.",
+            "propertyNames": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "packets_sent": {
+            "description": "Packets delivered as far as the transport can tell: written to the\nconnection over TCP and TLS, handed to the kernel over UDP.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "reconnects": {
+            "description": "Connections rebuilt after one broke (TCP and TLS only).",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "transport": {
+            "description": "The transport it speaks.",
+            "example": "tcp",
+            "type": "string"
+          }
+        },
+        "required": [
+          "transport",
+          "packets_sent",
+          "failures",
+          "reconnects",
+          "delivery"
         ],
         "type": "object"
       },
@@ -6739,6 +7045,60 @@
         "summary": "Everything one endpoint did",
         "tags": [
           "dialogs"
+        ]
+      }
+    },
+    "/v1/hep/senders": {
+      "get": {
+        "description": "The HEP listener's sender roster: each sender keyed by the capture id it claims and the address it sent from, with its admitted packet count, when it was first and last heard, its idle seconds and whether it has been silent for the `--hep-silence-warn` threshold; the addresses the listener refused, with counts by reason; and refusal totals by reason that nothing evicts.\n\nThe capture id is the sender's claim, never proven, and every row says so in `identity`. A run with no HEP listener answers 200 with `listening: false` and a note, never an empty roster that would read as \"nobody is sending\".\n\nRequires a full-scope token: sender addresses describe the estate.",
+        "operationId": "get_hep_senders",
+        "parameters": [
+          {
+            "description": "The most rows each list (senders, refused sources) may carry. Omitted\nor `0`, the server's row cap. The totals beside each list always count\neverything.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "minimum": 0,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HepSendersReport"
+                }
+              }
+            },
+            "description": "The sender roster."
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "No bearer credential, one this server does not accept, or one scoped narrower than full."
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Over the per-source-IP rate limit of 100 requests per second."
+          }
+        },
+        "summary": "`GET /v1/hep/senders` — who is feeding this run's HEP listener, who went\nsilent, and who it is turning away.",
+        "tags": [
+          "capture"
         ]
       }
     },

@@ -127,6 +127,25 @@ Homer destination, so aiming it at sipnab takes it away from the collector it
 already feeds; reading the same datagrams off the wire costs nothing and is the
 default sipnab is built for.
 .TP
+.BI \-\-hep\-silence\-warn " secs"
+Warn when the
+.B \-\-hep\-listen
+listener has admitted no packet for
+.I secs
+seconds (default 30;
+.B 0
+turns the warning off). Only admitted packets count: when packets arrive and
+every one is refused, the warning names the refusal and a peer that sent them.
+.TP
+.B \-\-hep\-senders
+At the end of a headless run, print who fed the
+.B \-\-hep\-listen
+listener: each sender (the capture id it claims and its address), its packet
+count, when it was last heard and whether it went silent, then every address
+the listener refused with the reasons. With
+.BR \-\-json ,
+one JSON object on the last line of stdout.
+.TP
 .BI \-\-export\-vcon " call-id"
 Export one observed dialog as a vCon container, the IETF conversation
 interchange format, on stdout. Requires a build with the

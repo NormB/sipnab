@@ -30,6 +30,7 @@ ordinary update.
 | [`capture_status`](#capture_status) | -- | What this server captures: live or file, uptime, and whether stopping loses unsaved packets |
 | [`runtime_stats`](#runtime_stats) | `sample_seconds?` | What sipnab is doing and what it costs the host: its own memory, threads, descriptors and CPU; the host's totals and the basis they came from; its share of them and whether that share is load-bearing; per-interface counters; store occupancy against the caps |
 | [`capture_health`](#capture_health) | `sample_seconds` | Capture-path counters read twice: run totals, deltas across the window, `undecoded_fraction`, and undecodable frames by reason |
+| [`hep_senders`](#hep_senders) | `limit?` | Who feeds this run's HEP listener: each sender, its count, when it was last heard and whether it went silent, and every address the listener refused, by reason |
 | [`reconcile_orphans`](#reconcile_orphans) | `limit?` | Why each RTP stream with no dialog lacks one: a relay named the endpoint but no signaling arrived, SDP named it but no dialog claims it, or nothing named it at all |
 | [`get_capture_report`](#get_capture_report) | `format?` | Whole-capture analysis: findings, orphaned media, STUN/ICMP evidence, what the caps shed |
 | [`list_captures`](#list_captures) | -- | Capture files in `--mcp-file-root`, with sizes |
@@ -463,7 +464,7 @@ says whether this RUN did.
 
 What sipnab is doing, and what it is costing the host it runs on.
 
-sipnab exports 32 Prometheus metrics, and the listener that serves them is off
+sipnab exports 37 Prometheus metrics, and the listener that serves them is off
 by default — so on most deployments those numbers exist inside the process and
 nothing can read them. An agent asked "is this server healthy" could not enable
 a listener to find out. This answers without one.
@@ -497,6 +498,12 @@ parameter, `sample_seconds`, buys a rate at the cost of a wait that long.
   "uptime_seconds": 41
 }
 ```
+
+A `--hep-send` run also carries `hep_export`: the transport, `packets_sent`,
+`failures` by kind (`connect`, `tls_handshake`, `write`, every kind present),
+`reconnects`, and `delivery`, which says what "sent" means on that transport.
+Over UDP it means handed to the kernel: a collector that is down produces no
+failure. The shape is the same as `GET /v1/runtime`'s, from the same collector.
 
 **An absent field means "not readable here", never zero.** Every value under
 `process` and `host` is optional, because the sources are platform-specific. A
@@ -649,6 +656,21 @@ Returns:
 }
 ```
 
+On a run with a HEP listener (`-L`), the response also carries `hep`: the
+listener's counts, and nothing else.
+
+```jsonc
+  "hep": {
+    "senders_tracked": 20, "senders_silent": 1, "packets_received": 900410,
+    "packets_admitted": 899396, "packets_refused": 1014, "untracked_packets": 0
+  }
+```
+
+Integers only, like the rest of the response. Which senders, their addresses
+and the ids they claim are [`hep_senders`](#hep_senders)' answer. Without a
+listener the key is absent, because a zero would claim a listener that heard
+nothing.
+
 `source_stopped_early` answers the question this tool usually gets: **did the
 whole capture arrive?** It reads `true` when a file's read ended before the file
 did — `libpcap error: truncated dump file`, a file that would not open, a read
@@ -744,6 +766,71 @@ thinks it is.
 `available: false` means the platform gave no answer — NOT that the clock is
 bad. The two are different facts and only one of them is a problem.
 
+
+
+### `hep_senders`
+
+Who is feeding this run's HEP listener, who went silent, and who it is turning
+away. Exists in a build with the `hep` feature. Starts nothing and waits for
+nothing: it reads the roster the listener keeps.
+
+```jsonc
+// hep_senders {}
+{
+  "schema_version": 1,
+  "listening": true,
+  "trust": "shared_secret_plain",
+  "silence_threshold_seconds": 30,
+  "packets_received": 1843, "packets_admitted": 1829, "packets_refused": 14,
+  "refused_by_reason": { "auth_mismatch": 14, "allowlist": 0, "malformed": 0, "...": 0 },
+  "senders_tracked": 2, "senders_limit": 4096, "senders_silent": 1,
+  "untracked_packets": 0,
+  "senders": [
+    { "source": "hep:7@192.0.2.7", "capture_id": 7, "peer": "192.0.2.7",
+      "identity": "claimed_by_sender", "trust": "shared_secret_plain",
+      "packets": 1604, "first_seen": "2026-09-21T12:00:00.412Z",
+      "last_seen": "2026-09-21T12:14:59.880Z", "idle_seconds": 0, "silent": false },
+    { "source": "hep:9@192.0.2.9", "capture_id": 9, "peer": "192.0.2.9",
+      "identity": "claimed_by_sender", "trust": "shared_secret_plain",
+      "packets": 225, "first_seen": "2026-09-21T12:00:01.020Z",
+      "last_seen": "2026-09-21T12:09:12.334Z", "idle_seconds": 348, "silent": true }
+  ],
+  "refused_sources_tracked": 1, "refused_sources_limit": 256, "refused_sources_evicted": 0,
+  "refused_sources": [
+    { "peer": "203.0.113.66", "packets": 14, "by_reason": { "auth_mismatch": 14 },
+      "first_seen": "2026-09-21T12:03:40.101Z", "last_seen": "2026-09-21T12:14:58.007Z" }
+  ]
+}
+```
+
+`refused_by_reason` carries all twelve reasons, and the example elides the zeros.
+
+| Name | Type | Legal values | If omitted |
+|---|---|---|---|
+| `limit` | u32 | The most rows `senders` and `refused_sources` each carry, up to the server's row cap (`--mcp-max-rows`). The totals beside each list always count everything. | 50 rows per list |
+
+**The questions it answers.** Is proxy seven still sending? Read its row's
+`silent` and `idle_seconds`. Why does the new PBX not show up? Look for its
+address under `refused_sources`: `auth_mismatch` is the wrong shared secret,
+`auth_missing` a sender with no key at all, `allowlist` an address `--hep-allow`
+does not cover, and `hmac_timestamp_out_of_window` a sender whose clock has
+drifted.
+
+**`identity` is always `claimed_by_sender`.** One shared secret serves the
+whole listener, so any sender holding it can claim any capture id. The roster
+reports what senders say about themselves.
+
+**Silent is not down.** A sender is silent once the listener has admitted
+nothing from it for `silence_threshold_seconds` (`--hep-silence-warn`). A PBX with no
+calls at night may send nothing at all.
+
+**No listener, no roster.** A server with no `-L` returns `listening: false`
+and a `note`, never an empty roster that would read as "nobody is sending".
+
+Every value is sipnab's own count, a claimed id, an address or a time, and no
+byte of any packet, so the response goes out without the untrusted-content
+note. `GET /v1/hep/senders` returns the same bytes for the same roster, and
+`--hep-senders` prints it at the end of a headless run.
 
 ### `get_capture_report`
 

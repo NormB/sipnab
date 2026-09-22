@@ -259,6 +259,12 @@ const CAPTURE_ANSWERS: &[Answer] = &[
         mcp_tool: "get_capture_report",
         rest_route: "/v1/report",
     },
+    // Who feeds this run's HEP listener, who went silent, who it refuses. The
+    // same report, byte for byte (`tests/hep_senders_surfaces_test.rs`).
+    Answer {
+        mcp_tool: "hep_senders",
+        rest_route: "/v1/hep/senders",
+    },
 ];
 
 /// An answer sipnab can give, and where each door serves it.
@@ -270,7 +276,11 @@ struct Answer {
 /// Every answer one door can give, the other can give too.
 #[test]
 fn both_doors_answer_the_same_questions() {
-    let mcp = code("src/mcp/server.rs");
+    // The whole of `src/mcp`, not `server.rs` alone: tool groups own files
+    // under `src/mcp/tools/` now, and a scan of one file reported
+    // `hep_senders` (`tools/hep.rs`) as missing from a door that serves it --
+    // the narrowing `mcp_tool_descriptions_test` records for its own scan.
+    let mcp = code("src/mcp");
     let api = code("src/output/api.rs");
 
     let mut missing = Vec::new();

@@ -4,7 +4,7 @@
 //!
 //! # Why this module exists
 //!
-//! sipnab exports 32 Prometheus metrics and none of them is reachable over MCP
+//! sipnab exports 37 Prometheus metrics and none of them is reachable over MCP
 //! or REST. The metrics listener is also off by default, so on most
 //! deployments those numbers exist in-process and nothing can read them — an
 //! agent asked "is this server healthy" cannot enable a listener to find out.
@@ -376,6 +376,46 @@ pub struct RuntimeStats {
     /// they actually have.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rates: Option<Rates>,
+    /// The `--hep-send` exporter's deliveries and failures, when this run
+    /// exports. Absent otherwise, for the reason the queue fields are: a zero
+    /// would describe an exporter that does not exist.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hep_export: Option<HepExportStats>,
+}
+
+/// What a `--hep-send` exporter reports about its own deliveries.
+#[derive(Debug, Clone, Default, Serialize, PartialEq, Eq)]
+pub struct HepExportStats {
+    /// The transport it speaks: `udp`, `tcp` or `tls`.
+    pub transport: String,
+    /// Packets delivered as far as the transport can tell; see `delivery`.
+    pub packets_sent: u64,
+    /// Failures by kind — `connect`, `tls_handshake`, `write` — every kind
+    /// present, zeros included.
+    pub failures: std::collections::BTreeMap<String, u64>,
+    /// Connections rebuilt after one broke (TCP and TLS only).
+    pub reconnects: u64,
+    /// What `packets_sent` means on this transport. Over UDP it means handed
+    /// to the kernel: a collector that is down produces no failure at all.
+    pub delivery: String,
+}
+
+impl HepExportStats {
+    /// The surfaces' view of an exporter's counters, taken now.
+    #[must_use]
+    pub fn of(counters: &crate::capture::hep_export::HepExportCounters) -> Self {
+        let snap = counters.snapshot();
+        Self {
+            transport: snap.transport.to_string(),
+            packets_sent: snap.sent,
+            failures: crate::capture::hep_export::ExportFailure::ALL
+                .iter()
+                .map(|k| (k.as_str().to_string(), snap.failures[k.index()]))
+                .collect(),
+            reconnects: snap.reconnects,
+            delivery: snap.delivery().to_string(),
+        }
+    }
 }
 
 /// A rate measured across a window, with the window that was actually used.
@@ -659,6 +699,11 @@ pub fn collect(
         capture_backpressure_blocks_total: meter.map(CaptureMeterExt::blocks),
         uptime_seconds,
         rates: None,
+        // From the same meter as the queue fields, so `runtime_stats` and
+        // `GET /v1/runtime` cannot disagree about the exporter either.
+        hep_export: meter
+            .and_then(crate::capture::channel::CaptureMeter::hep_export)
+            .map(HepExportStats::of),
     }
 }
 

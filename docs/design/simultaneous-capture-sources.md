@@ -97,7 +97,7 @@ decisions downstream read the source as a scalar:
 ### 2.3 How a packet reaches the pipeline
 
 Every reader — `capture_live_fanout` ([`src/capture/live.rs:291`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L291)), `capture_files`
-([`src/capture/file.rs:310`](https://github.com/NormB/sipnab/blob/main/src/capture/file.rs#L310)), `capture_hep` ([`src/capture/hep.rs:2395`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L2395)), the
+([`src/capture/file.rs:310`](https://github.com/NormB/sipnab/blob/main/src/capture/file.rs#L310)), `capture_hep` ([`src/capture/hep.rs:2492`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L2492)), the
 uprobe reader — builds a `Packet` ([`src/capture/packet.rs:502`](https://github.com/NormB/sipnab/blob/main/src/capture/packet.rs#L502)) and calls
 `tx.send(..)`. `PacketTx` derives `Clone` ([`src/capture/channel.rs:142`](https://github.com/NormB/sipnab/blob/main/src/capture/channel.rs#L142)), and the
 channel is an unbounded crossbeam queue guarded by a bounded slot semaphore
@@ -112,7 +112,7 @@ parser already tells the two kinds of packet apart:
 - `Packet::interface` ([`src/capture/packet.rs:502`](https://github.com/NormB/sipnab/blob/main/src/capture/packet.rs#L502)) is an `Arc<str>` naming the
   source. Live capture sets the device name ([`src/capture/live.rs:533`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L533)); the
   HEP listener sets `hep:<capture-id>@<peer>` via `hep_source_label`
-  ([`src/capture/hep.rs:121`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L121)) and `hep_to_packet` ([`src/capture/hep.rs:134`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L134)).
+  ([`src/capture/hep_roster.rs:183`](https://github.com/NormB/sipnab/blob/main/src/capture/hep_roster.rs#L183)) and `hep_to_packet` ([`src/capture/hep.rs:134`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L134)).
 - `ParsedPacket` ([`src/capture/parse.rs:155`](https://github.com/NormB/sipnab/blob/main/src/capture/parse.rs#L155)) carries an `input_origin`
   field holding the `InputOrigin` enum ([`src/capture/parse.rs:90`](https://github.com/NormB/sipnab/blob/main/src/capture/parse.rs#L90)) — `Wire`, `Hep` or
   `Uprobe`. Line [`src/capture/parse.rs:2307`](https://github.com/NormB/sipnab/blob/main/src/capture/parse.rs#L2307) derives it per packet from the presence of
@@ -122,7 +122,7 @@ parser already tells the two kinds of packet apart:
 ### 2.4 The fan-in that already exists
 
 `--multi-device` is the precedent, and it is close to the shape this feature
-needs. `start_multi_capture` ([`src/capture/native.rs:657`](https://github.com/NormB/sipnab/blob/main/src/capture/native.rs#L657)) validates the device
+needs. `start_multi_capture` ([`src/capture/native.rs:673`](https://github.com/NormB/sipnab/blob/main/src/capture/native.rs#L673)) validates the device
 list, then `run_multi_capture` ([`src/capture/native.rs:753`](https://github.com/NormB/sipnab/blob/main/src/capture/native.rs#L753)) spawns one thread
 per device, hands each a `tx.clone()`, drops its own clone so the channel closes
 when the last reader exits, aggregates a per-device readiness signal, tears every
@@ -264,7 +264,7 @@ from a media time — post-dial delay against first RTP, ringback analysis,
 one-way-audio onset — inherits the offset.
 
 Two details soften this and one sharpens it. HEP v2 carries no timestamp at all,
-so `parse_hep_v2` ([`src/capture/hep.rs:1246`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L1246)) stamps local receive time, and v3
+so `parse_hep_v2` ([`src/capture/hep.rs:1250`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L1250)) stamps local receive time, and v3
 falls back the same way when the chunk pair is unrepresentable — a v2 mirror
 therefore has *one* clock, not two. And when the skew runs the wrong way,
 `elapsed_ms` ([`src/sip/timing.rs:58`](https://github.com/NormB/sipnab/blob/main/src/sip/timing.rs#L58)) refuses a backwards pair rather than
@@ -408,11 +408,11 @@ One consequence to accept rather than fix: **the channel carries no
 end-of-source marker.** `Item` is `One` or `Many` ([`src/capture/channel.rs:130`](https://github.com/NormB/sipnab/blob/main/src/capture/channel.rs#L130))
 and nothing else, so a consumer cannot tell "the HEP sender stopped" from "the
 HEP sender is quiet". A `--hep-listen` run already has the same blind spot, which
-`IdleWatch` ([`src/capture/hep.rs:1636`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L1636)) papers over with a log line after a
+`IdleWatch` ([`src/capture/hep_roster.rs:750`](https://github.com/NormB/sipnab/blob/main/src/capture/hep_roster.rs#L750)) papers over with a log line after a
 silence threshold. A composite run inherits both the blind spot and the paper.
 
 **Backpressure is shared and the accounting is asymmetric.** `PacketTx::send`
-blocks at the cap ([`src/capture/channel.rs:225`](https://github.com/NormB/sipnab/blob/main/src/capture/channel.rs#L225) onward) and both producers draw
+blocks at the cap ([`src/capture/channel.rs:289`](https://github.com/NormB/sipnab/blob/main/src/capture/channel.rs#L289) onward) and both producers draw
 on one slot pool with one `CaptureMeter`. A burst on either source blocks the
 other, and the two then fail *differently*: a blocked live reader stops calling
 `pcap_next`, the kernel ring overflows, and libpcap counts it — surfaced by
@@ -650,8 +650,8 @@ which no test can assert today.
 mints no digest for the reason `FrameRef::uprobe` already gives: a digest exists
 so a resolver can prove it found the same bytes again, and a live frame is gone
 the instant it is read. The live reader keeps one counter for its device; the
-HEP listener keeps one per SENDER (`HepFrameOrdinals`,
-[`src/capture/hep.rs`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs)), because a listener is a fan-in and one
+HEP listener keeps one per SENDER in its sender roster (`RosterState`,
+[`src/capture/hep_roster.rs`](https://github.com/NormB/sipnab/blob/main/src/capture/hep_roster.rs)), because a listener is a fan-in and one
 listener-wide counter would hand each node a sequence full of holes.
 `input_origin` now reaches `SipMessage`, `SipDialog` and `RtpStream`, and
 `SdpProvenance` ([`src/rtp/stream_store.rs`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs)) carries an endpoint's
@@ -844,7 +844,7 @@ Things this design could not settle from the code alone.
   advertises the RTCP socket only there, and `extract_sdp_links` reads `m=`/`c=`.
   Whether that produces real orphans is unconfirmed — no RTCP flowed in the runs.
 - **Does OpenSIPS mirror RTCP over HEP in practice?** `HepProtocol`
-  ([`src/capture/hep.rs:811`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L811)) parses protocol type 5 as RTCP, and SRC1 says such a
+  ([`src/capture/hep.rs:865`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L865)) parses protocol type 5 as RTCP, and SRC1 says such a
   report has nothing to attach to. Whether it becomes attachable once the NIC
   supplies the stream depends on whether the HEP path reaches RTCP ingestion at
   all, which this design did not trace.

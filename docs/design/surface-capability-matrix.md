@@ -400,6 +400,17 @@ Is the capture path losing packets — kernel drops, invalid timestamps, undecod
 | REST | `/v1/stats` |
 | MCP | `capture_health` |
 
+### HEP senders
+
+Who is feeding this collector's HEP listener, who went silent, and who is it turning away?
+
+| Surface | Detail |
+|---|---|
+| CLI | `--hep-senders` |
+| TUI | `HepSenders` |
+| REST | `/v1/hep/senders` |
+| MCP | `hep_senders` |
+
 ### Runtime cost
 
 What is sipnab costing the host — its memory, threads, CPU, load-bearing share?

@@ -724,7 +724,14 @@ fn linked_code_targets_exist() {
     // `src/analysis.rs`, forbidden). Measured by this gate.
     // 441 + 4 = 445: the operator-notes branch counted its four against 432
     // and merged after the two above.
-    const EXPECTED_CODE_LINKS: usize = 445;
+    // 432 -> 433: one, in `docs/internals/invariants.md`, where invariant 4
+    // gains the HEP sender roster's two attacker-keyed maps and links
+    // `src/capture/hep_roster.rs`. Attributed by counting every page under
+    // `docs/internals/` against HEAD: invariants.md gained exactly that link
+    // and no other page changed.
+    // 445 + 1 = 446: the HEP sender roster branch counted its one against 432
+    // and merged after the three above.
+    const EXPECTED_CODE_LINKS: usize = 446;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \

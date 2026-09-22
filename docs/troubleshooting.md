@@ -22,6 +22,7 @@ the cause from there.
 | "The phones keep dropping off" / no inbound calls arrive | [Registration failures](#registration-failures) |
 | "Something is hammering the PBX" / probes across unknown extensions | [SIP scanner detection](#sip-scanner-detection) |
 | "No SIP traffic found" on a link you know carries calls | [A live capture that sees nothing](#a-live-capture-that-sees-nothing) |
+| A HEP collector (`-L`) shows no calls, or one proxy's calls are missing | [A HEP collector that receives nothing](#a-hep-collector-that-receives-nothing) |
 | SIP is over TLS and the calls never appear | [Encrypted SIP that does not decrypt](#encrypted-sip-that-does-not-decrypt) |
 | Nothing yet -- you have a capture and a complaint | [Start here](#start-here-one-pass-over-everything) |
 
@@ -808,6 +809,51 @@ repository's PPPoE-over-Ethernet sample the plain filter matches 0 of 32 frames
 and the generated one matches all 32. Wrap the same SIP in a Linux cooked
 header and the numbers hold: 11 encapsulations, 11 matched, on Ethernet,
 cooked v1 and cooked v2 alike.
+
+## A HEP collector that receives nothing
+
+A `-L` listener that shows no calls has one of two problems, and the silence
+warning in its log already tells you which. The listener warns when it admits
+nothing for 30 seconds (`--hep-silence-warn`):
+
+- `no packets for 30s` means nothing arrived at all. The sender is not reaching
+  the port: check the address and port it targets, the firewall, and whether
+  the SIP server is mirroring at all.
+- `no packets admitted for 30s ... every one was refused` means packets arrive
+  and sipnab turns every one away. The line names the reason most of them met
+  and the peer that sent them. The network is fine, and the sender's
+  configuration is not.
+
+When some proxies get through and one does not, no warning fires, because the
+listener as a whole is busy. Ask the roster instead: `--hep-senders` at the end
+of a headless run, `GET /v1/hep/senders`, the MCP `hep_senders` tool, or `s`
+from the TUI's capture-health panel ([recipe 6e](examples.md#6e-find-who-feeds-the-collector-and-who-it-refuses)).
+A proxy that stopped shows as `silent`. A proxy that sends and gets refused has
+no sender row, and its address appears under `refused_sources` with the reason:
+
+| Reason | What to fix |
+|---|---|
+| `auth_mismatch` | The sender's shared secret differs from `--hep-auth-file` |
+| `auth_missing` | The sender sends no key, and this listener requires one |
+| `allowlist` | The sender's address is outside every `--hep-allow` range |
+| `hmac_timestamp_out_of_window` | The sender's clock is off by more than `--hep-hmac-window`; fix NTP there |
+| `hmac_bad_mac` | A wrong key under `--hep-auth-mode hmac`, or a packet altered on the way |
+| `hmac_unsupported_version` | The sending sipnab predates the current HMAC token; upgrade it |
+| `rate_limit_global`, `rate_limit_per_peer` | Traffic above `--hep-rate-limit` or `--hep-rate-limit-per-peer` |
+| `peer_tracking_full` | More senders at once than `[limits] max_tracked_peers` |
+| `malformed` | The bytes are not HEP; check the sender speaks HEP v3, or v2 over UDP |
+
+The roster names senders by the capture id each claims and the address it
+sends from. Give each sender its own id (`--hep-id` on a sipnab agent) so two
+agents on one host stay apart.
+
+When the sender is itself a sipnab (`--hep-send`), ask it too. Its
+`runtime_stats` or `GET /v1/runtime` carries `hep_export`, and a headless run
+ends with a `HEP export to ...` line: `connect` failures are a collector that is
+down or unreachable, and `tls_handshake` failures are a collector whose
+certificate the sender does not accept. Over UDP the sender cannot tell: a
+collector that is down produces no failure, so the collector's roster is the
+only witness.
 
 ## Encrypted SIP that does not decrypt
 

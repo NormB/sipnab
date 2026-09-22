@@ -21,9 +21,9 @@ use sipnab::tui::help::HELP_TEXT;
 use sipnab::tui::{
     Keymap, call_flow_action, call_list_action, call_volume_action, capture_health_action,
     carrier_metrics_action, combined_detail_action, compare_dialogs_action, conformance_action,
-    dashboard_action, endpoint_rollup_action, help_action, message_diff_action, raw_message_action,
-    sdp_timeline_action, security_findings_action, statistics_action, stream_detail_action,
-    stream_list_action, talkers_action, tfps_observe_action,
+    dashboard_action, endpoint_rollup_action, help_action, hep_senders_action, message_diff_action,
+    raw_message_action, sdp_timeline_action, security_findings_action, statistics_action,
+    stream_detail_action, stream_list_action, talkers_action, tfps_observe_action,
 };
 
 /// Display token for a key as it appears in the help's key column.
@@ -192,7 +192,7 @@ fn mapped_char_keys_are_documented_or_allowlisted() {
     let docs = documented_tokens();
     let km = Keymap::default();
     type Probe = (&'static str, fn(&Keymap, KeyEvent) -> bool);
-    let probes: [Probe; 20] = [
+    let probes: [Probe; 21] = [
         ("call_list", |km, k| call_list_action(km, k).is_some()),
         ("stream_list", |km, k| stream_list_action(km, k).is_some()),
         ("stream_detail", |km, k| {
@@ -219,6 +219,7 @@ fn mapped_char_keys_are_documented_or_allowlisted() {
         ("capture_health", |km, k| {
             capture_health_action(km, k).is_some()
         }),
+        ("hep_senders", |km, k| hep_senders_action(km, k).is_some()),
         ("call_volume", |km, k| call_volume_action(km, k).is_some()),
         ("sdp_timeline", |km, k| sdp_timeline_action(km, k).is_some()),
         ("conformance", |km, k| conformance_action(km, k).is_some()),
@@ -313,6 +314,7 @@ fn every_documented_view_key_is_handled() {
         ("CAPTURE HEALTH:", |km, k| {
             capture_health_action(km, k).is_some()
         }),
+        ("HEP SENDERS:", |km, k| hep_senders_action(km, k).is_some()),
         ("CALL VOLUME HISTOGRAM:", |km, k| {
             call_volume_action(km, k).is_some()
         }),

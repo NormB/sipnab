@@ -1761,7 +1761,7 @@ expose the MCP surface pay zero binary size for it.
 | `--mcp-transport http` rejected | Built without `mcp-http`. Rebuild with `--features mcp-http` (run `sipnab --version` to see compiled features). |
 | 401 from the server | Token mismatch — compare the client's bearer token with the token file; check for a trailing newline stripped by your client. Read the `WWW-Authenticate` header first: `error="invalid_token"` means the client sent a token and sipnab rejected it, while a challenge with no `error` means it sent none, which is a client-configuration problem rather than a wrong value. |
 | 403 / host rejected | DNS-rebind protection: add the hostname clients use via `--mcp-allowed-host`. |
-| Server starts, then "no packets" | If feeding via HEP, confirm the sender targets the `-L` port and watch for the idle warning (`no packets for 30s`) in the logs. |
+| Server starts, then "no packets" | If feeding via HEP, confirm the sender targets the `-L` port and watch for the idle warning (`no packets for 30s`) in the logs. If the warning says `no packets admitted` and that sipnab refused every packet, the sender is reaching the port and sipnab is turning it away: the line names the reason (a wrong key, a wrong auth mode, the allowlist) and the peer. |
 
 ## Connect a specific client
 

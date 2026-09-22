@@ -64,14 +64,15 @@ use controllers::*;
 pub use controllers::{
     CallFlowAction, CallListAction, CallVolumeAction, CaptureHealthAction, CarrierMetricsAction,
     CombinedDetailAction, CompareDialogsAction, ConformanceAction, DashboardAction,
-    EndpointRollupAction, HelpAction, LossMapAction, MessageDiffAction, RawMessageAction,
-    SdpTimelineAction, SecurityFindingsAction, StatisticsAction, StreamDetailAction,
-    StreamListAction, TalkersAction, TfpsObserveAction, TimelineAction, call_flow_action,
-    call_list_action, call_volume_action, capture_health_action, carrier_metrics_action,
-    combined_detail_action, compare_dialogs_action, conformance_action, dashboard_action,
-    endpoint_rollup_action, help_action, loss_map_action, message_diff_action, raw_message_action,
-    sdp_timeline_action, security_findings_action, statistics_action, stream_detail_action,
-    stream_list_action, talkers_action, tfps_observe_action, timeline_action,
+    EndpointRollupAction, HelpAction, HepSendersAction, LossMapAction, MessageDiffAction,
+    RawMessageAction, SdpTimelineAction, SecurityFindingsAction, StatisticsAction,
+    StreamDetailAction, StreamListAction, TalkersAction, TfpsObserveAction, TimelineAction,
+    call_flow_action, call_list_action, call_volume_action, capture_health_action,
+    carrier_metrics_action, combined_detail_action, compare_dialogs_action, conformance_action,
+    dashboard_action, endpoint_rollup_action, help_action, hep_senders_action, loss_map_action,
+    message_diff_action, raw_message_action, sdp_timeline_action, security_findings_action,
+    statistics_action, stream_detail_action, stream_list_action, talkers_action,
+    tfps_observe_action, timeline_action,
 };
 use render::*;
 use save::*;
@@ -165,6 +166,12 @@ pub struct App {
     endpoint_scroll: u16,
     /// Clamped scroll of the capture-health view (`h`).
     capture_health_scroll: u16,
+    /// Scroll offset of the HEP senders view.
+    hep_senders_scroll: u16,
+    /// The capture channel's meter, where a HEP listener hangs its sender
+    /// roster. Read each frame by the HEP senders view and the capture-health
+    /// summary line; `None` on a session with no capture.
+    pub(crate) capture_meter: Option<crate::capture::channel::CaptureMeter>,
     /// Clamped scroll of the call-volume histogram view (`b`).
     call_volume_scroll: u16,
     /// Clamped scroll of the SDP offer/answer timeline view (`o`).
@@ -463,6 +470,8 @@ impl App {
             compare_scroll: 0,
             endpoint_scroll: 0,
             capture_health_scroll: 0,
+            hep_senders_scroll: 0,
+            capture_meter: None,
             call_volume_scroll: 0,
             sdp_timeline_scroll: 0,
             conformance_scroll: 0,
@@ -1568,6 +1577,9 @@ impl App {
         }
         if let Some(v) = fb.endpoint_scroll {
             self.endpoint_scroll = v;
+        }
+        if let Some(v) = fb.hep_senders_scroll {
+            self.hep_senders_scroll = v;
         }
         if let Some(v) = fb.capture_health_scroll {
             self.capture_health_scroll = v;

@@ -55,6 +55,8 @@ pub(in crate::tui) struct RenderFeedback {
     pub(in crate::tui) endpoint_scroll: Option<u16>,
     /// Clamped scroll of the capture-health view.
     pub(in crate::tui) capture_health_scroll: Option<u16>,
+    /// Clamped scroll of the HEP senders view.
+    pub(in crate::tui) hep_senders_scroll: Option<u16>,
     /// Clamped scroll of the call-volume histogram view.
     pub(in crate::tui) call_volume_scroll: Option<u16>,
     /// Clamped scroll of the SDP offer/answer timeline view.
@@ -575,6 +577,9 @@ pub(in crate::tui) fn render_app(
         }
         View::CaptureHealth => {
             fb.capture_health_scroll = Some(render_capture_health(frame, main_area, app));
+        }
+        View::HepSenders => {
+            fb.hep_senders_scroll = Some(render_hep_senders(frame, main_area, app));
         }
         View::TfpsObserve { .. } => {
             fb.tfps_scroll = Some(render_tfps(frame, main_area, app));
@@ -1709,7 +1714,12 @@ pub(in crate::tui) fn render_capture_health(
     app: &App,
 ) -> u16 {
     let q = crate::output::prometheus::CaptureQuality::current();
-    let text = capture_health_text(&q);
+    let mut text = capture_health_text(&q);
+    if let Some(line) = hep_senders_summary(&hep_senders_report(app)) {
+        text.push('\n');
+        text.push_str(&line);
+        text.push('\n');
+    }
     let total_rows = text.lines().count() as u16;
     let viewport = area.height.saturating_sub(2);
     let scroll = app
@@ -1724,6 +1734,53 @@ pub(in crate::tui) fn render_capture_health(
         .style(Style::default().fg(app.theme.foreground))
         .scroll((scroll, 0));
 
+    frame.render_widget(paragraph, area);
+    scroll
+}
+
+/// The HEP senders report as this session's capture meter carries it, built
+/// by the one function `--hep-senders`, REST and MCP call.
+fn hep_senders_report(app: &App) -> crate::output::model::HepSendersReport {
+    crate::capture::hep_roster::senders_report(
+        app.capture_meter.as_ref().and_then(|m| m.hep_roster()),
+        usize::MAX,
+    )
+}
+
+/// The one line the capture-health panel gives the HEP listener, pointing at
+/// the key that opens the rest. `None` when the run has no listener, where
+/// the line would only say there is nothing to see.
+pub(in crate::tui) fn hep_senders_summary(
+    report: &crate::output::model::HepSendersReport,
+) -> Option<String> {
+    report.listening.then(|| {
+        format!(
+            "  HEP senders: {} tracked, {} silent, {} refused - press s for the roster",
+            report.senders_tracked, report.senders_silent, report.packets_refused
+        )
+    })
+}
+
+/// Render the HEP senders view: the table `--hep-senders` prints, over the
+/// roster the listener hung on the capture meter. Returns the clamped scroll.
+pub(in crate::tui) fn render_hep_senders(
+    frame: &mut ratatui::Frame,
+    area: ratatui::layout::Rect,
+    app: &App,
+) -> u16 {
+    let text = hep_senders_report(app).to_text();
+    let total_rows = text.lines().count() as u16;
+    let viewport = area.height.saturating_sub(2);
+    let scroll = app
+        .hep_senders_scroll
+        .min(total_rows.saturating_sub(viewport));
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" HEP senders ");
+    let paragraph = Paragraph::new(text)
+        .block(block)
+        .style(Style::default().fg(app.theme.foreground))
+        .scroll((scroll, 0));
     frame.render_widget(paragraph, area);
     scroll
 }

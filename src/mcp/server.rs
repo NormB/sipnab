@@ -312,6 +312,8 @@ impl SipnabMcp {
         // a compile error rather than a tool that lists and cannot run.
         #[cfg(feature = "vcon")]
         let router = router + Self::vcon_router();
+        #[cfg(feature = "hep")]
+        let router = router + Self::hep_router();
 
         // Every advertised schema, made portable in one place. `schemars`
         // renders `Option<T>` as `"type": ["T","null"]`, which several MCP
@@ -3126,6 +3128,45 @@ pub struct CaptureHealth {
     /// accumulates in a day. A caller comparing times between two servers
     /// should read this from both before trusting a time-based match.
     pub clock: crate::clock::ClockDiscipline,
+    /// The HEP listener's aggregate counts, when this run has one. Absent
+    /// otherwise, because a zero would claim a listener that heard nothing.
+    ///
+    /// Integers only, like everything above: which senders, their addresses
+    /// and the ids they claim are `hep_senders`' answer, not this tool's.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hep: Option<CaptureHealthHep>,
+}
+
+/// A HEP listener's counts, as `capture_health` carries them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+pub struct CaptureHealthHep {
+    /// Senders the listener is tracking.
+    pub senders_tracked: u64,
+    /// Tracked senders silent for at least the `--hep-silence-warn` threshold.
+    pub senders_silent: u64,
+    /// Packets received, admitted or refused.
+    pub packets_received: u64,
+    /// Packets admitted to the capture.
+    pub packets_admitted: u64,
+    /// Packets refused, for any reason.
+    pub packets_refused: u64,
+    /// Packets admitted from senders past the tracking bound.
+    pub untracked_packets: u64,
+}
+
+impl CaptureHealthHep {
+    /// The counts out of a senders report, and nothing else from it.
+    fn of(report: &crate::output::model::HepSendersReport) -> Self {
+        Self {
+            senders_tracked: report.senders_tracked,
+            senders_silent: report.senders_silent,
+            packets_received: report.packets_received,
+            packets_admitted: report.packets_admitted,
+            packets_refused: report.packets_refused,
+            untracked_packets: report.untracked_packets,
+        }
+    }
 }
 
 /// One reading of the process-global capture counters.
@@ -3256,6 +3297,9 @@ fn build_health(
         // or gain its time source while sipnab runs, and a cached "synced"
         // would keep saying so for the life of the process.
         clock: crate::clock::discipline(),
+        // Filled by the caller, which holds the capture meter this pure
+        // function does not.
+        hep: None,
     }
 }
 
@@ -8079,7 +8123,7 @@ impl SipnabMcp {
     ///
     /// # Why this is a tool rather than a metrics scrape
     ///
-    /// sipnab exports 32 Prometheus metrics and the listener that serves them
+    /// sipnab exports 37 Prometheus metrics and the listener that serves them
     /// is off by default, so on most deployments those numbers exist in-process
     /// and nothing can read them. An agent asked "is this server healthy"
     /// cannot enable a listener to find out.
@@ -8240,7 +8284,7 @@ impl SipnabMcp {
             counts
         };
 
-        let payload = build_health(
+        let mut payload = build_health(
             attachment,
             CaptureHealthWindow {
                 requested_seconds: params.sample_seconds,
@@ -8252,6 +8296,13 @@ impl SipnabMcp {
             dialogs_tracked,
             streams_tracked,
         );
+        // The listener's counts, read after the window like the counters
+        // above. A report with no rows: only its totals are taken.
+        payload.hep = self
+            .capture_meter
+            .as_ref()
+            .and_then(|m| m.hep_roster())
+            .map(|r| CaptureHealthHep::of(&r.report(0)));
         Ok(CallToolResult::success(vec![ContentBlock::json(payload)?]))
     }
 }
@@ -13898,6 +13949,14 @@ mod tests {
                 est_error_us: 240,
                 available: true,
             },
+            hep: Some(CaptureHealthHep {
+                senders_tracked: 20,
+                senders_silent: 1,
+                packets_received: 900_000,
+                packets_admitted: 899_000,
+                packets_refused: 1_000,
+                untracked_packets: 0,
+            }),
         }
     }
 
@@ -13926,8 +13985,14 @@ mod tests {
         // Raised 40 -> 44 by `clock`: four leaves (synchronized, max_error_us,
         // est_error_us, available), all bools and integers, which is why the
         // string check above still passes with the field present.
+        //
+        // Raised 44 -> 50 by `hep`: six leaves (senders_tracked,
+        // senders_silent, packets_received, packets_admitted, packets_refused,
+        // untracked_packets), all integers. The HEP listener's addresses and
+        // ids are `hep_senders`' answer, and this pin is what shows none of
+        // them crept in here.
         /// Leaf values the response shape is expected to carry.
-        const EXPECTED_LEAVES: usize = 44;
+        const EXPECTED_LEAVES: usize = 50;
         assert_eq!(
             leaves, EXPECTED_LEAVES,
             "the response shape changed: {EXPECTED_LEAVES} leaf values were \
@@ -15358,6 +15423,64 @@ mod tests {
                 "clock.{k} is {val}, which is not a counter"
             );
         }
+    }
+
+    /// `capture_health` carries the HEP listener's aggregate counts, integers
+    /// only, and no `hep` key at all on a run without a listener. The
+    /// addresses and ids stay in `hep_senders`: this tool promises numbers.
+    #[cfg(feature = "hep")]
+    #[tokio::test]
+    async fn capture_health_carries_the_hep_listeners_counts_and_nothing_else() {
+        use crate::capture::hep_roster::{
+            HepRefusal, HepRoster, RosterState, SenderTrust, hep_source_label,
+        };
+        let t = std::time::Instant::now();
+        let mut state = RosterState::new(
+            SenderTrust::Unauthenticated,
+            64,
+            std::time::Duration::from_secs(30),
+            t,
+            chrono::Utc::now(),
+        );
+        for (id, peer) in [(7u32, "192.0.2.7"), (9, "192.0.2.9")] {
+            let peer: std::net::IpAddr = peer.parse().expect("literal");
+            state.admitted(Some(id), peer, &hep_source_label(Some(id), peer), t);
+        }
+        let bad: std::net::IpAddr = "203.0.113.66".parse().expect("literal");
+        state.refused(HepRefusal::Malformed, bad, t);
+        let (_tx, rx) = crate::capture::channel::packet_channel(8);
+        let meter = rx.meter();
+        assert!(meter.attach_hep_roster(HepRoster::new(state)));
+
+        let health = |server: SipnabMcp| async move {
+            let v: serde_json::Value = serde_json::from_str(&text_of(
+                &server
+                    .capture_health(
+                        Parameters(CaptureHealthParams { sample_seconds: 1 }),
+                        Extension(crate::mcp::progress::Progress::silent()),
+                    )
+                    .await
+                    .expect("health"),
+            ))
+            .expect("json");
+            v
+        };
+        let v = health(server_with_dialog("hep@x").with_capture_meter(Some(meter))).await;
+        let hep = v["hep"]
+            .as_object()
+            .expect("a listener's counts are present");
+        assert_eq!(v["hep"]["senders_tracked"], 2);
+        assert_eq!(v["hep"]["packets_refused"], 1);
+        assert_eq!(v["hep"]["packets_received"], 3);
+        for (k, val) in hep {
+            assert!(val.is_u64(), "hep.{k} is {val}, which is not a counter");
+        }
+
+        let without = health(server_with_dialog("nohep@x")).await;
+        assert!(
+            without.get("hep").is_none(),
+            "no listener, no hep key: {without}"
+        );
     }
 
     /// An identifier match carries NO clock, because the clock is not why the

@@ -101,9 +101,22 @@ plain UDP socket: **no capture privileges, no setcap, fully unprivileged.**
      -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"curl","version":"0"}}}'
    ```
 
-   then watch `journalctl -u sipnab-mcp -f` — a
-   `no packets for 30s` warning means the HEP sender isn't reaching the
-   `-L` port (firewall, wrong port, wrong host).
+   then watch `journalctl -u sipnab-mcp -f`. The listener warns when it
+   admits nothing for 30 seconds, and the wording tells you which of two
+   problems you have:
+
+   - `no packets for 30s` means nothing arrived at all: the HEP sender
+     isn't reaching the `-L` port (firewall, wrong port, wrong host).
+   - `no packets admitted for 30s ... every one was refused` means the
+     sender IS reaching the port and sipnab is turning it away. The line
+     names the reason, such as `auth_mismatch` for a wrong shared secret,
+     and the peer it came from. Fix the sender's key, `--hep-auth-mode` or
+     the `--hep-allow` list rather than the network.
+
+   `--hep-silence-warn` changes the 30 seconds. To see each proxy on its own,
+   ask the MCP `hep_senders` tool: it lists every sender with its packet
+   count and whether it went silent, and every address the listener refused,
+   with the reason.
 
 6. **[laptop]** Wire up exactly as scenario
    [2C](@/docs/mcp-deploy.md#keep-a-capture-running-without-exposing-a-port)

@@ -49,9 +49,9 @@ was driving all of them.
 
 | Surface | Rows | `e2e` | `parsed` | `referenced` | `none` |
 |---|---|---|---|---|---|
-| CLI flags | 276 | 210 | 39 | 26 | 1 |
-| HTTP routes | 39 | 39 | -- | 0 | 0 |
-| MCP tools | 68 | 68 | -- | 0 | 0 |
+| CLI flags | 278 | 212 | 39 | 26 | 1 |
+| HTTP routes | 40 | 40 | -- | 0 | 0 |
+| MCP tools | 69 | 69 | -- | 0 | 0 |
 
 **Flags with no occurrence at all:** `--syslog`
 
@@ -104,7 +104,7 @@ behind them.
 | `--no-promisc` | `-p` |  | Capture | e2e | `tests/plugin_example_test.rs` |  |  |
 | `--bpf-file` |  | `FILE` | Capture | e2e | `tests/cli_flag_behavior_test.rs` |  |  |
 | `--capture-tunnels` |  |  | Capture | parsed | `src/cli.rs` |  |  |
-| `--count` | `-n` | `N` | Capture | e2e | `tests/cli_flag_behavior_test.rs`, `tests/cli_options_test.rs` +4 |  |  |
+| `--count` | `-n` | `N` | Capture | e2e | `tests/cli_flag_behavior_test.rs`, `tests/cli_options_test.rs` +5 |  |  |
 | `--duration` |  | `DURATION` | Capture | e2e | `tests/capture_probe_test.rs`, `tests/cli_flag_behavior_test.rs` +2 |  |  |
 | `--autostop` |  | `CONDITION` | Capture | e2e | `tests/parse_path_test.rs` |  |  |
 | `--split` |  | `CONDITION` | Capture | e2e | `tests/cli_flag_behavior_test.rs`, `tests/output_never_overwrites_input_test.rs` |  |  |
@@ -319,9 +319,11 @@ behind them.
 | `--hep-tls-key` |  | `FILE` | HEP | parsed | `src/cli.rs` |  |  |
 | `--hep-id` |  | `ID` | HEP | parsed | `src/cli.rs` |  |  |
 | `--hep-auth` |  | `KEY` | HEP | e2e | `tests/batch_run_paths_test.rs`, `tests/hep_test.rs` |  |  |
-| `--hep-auth-file` |  | `FILE` | HEP | e2e | `tests/batch_run_paths_test.rs` |  |  |
+| `--hep-auth-file` |  | `FILE` | HEP | e2e | `tests/batch_run_paths_test.rs`, `tests/hep_test.rs` |  |  |
 | `--hep-auth-mode` |  |  | HEP | e2e | `tests/hep_test.rs` |  |  |
 | `--hep-hmac-window` |  | `SECS` | HEP | e2e | `tests/hep_test.rs` |  |  |
+| `--hep-silence-warn` |  | `SECS` | HEP | e2e | `tests/hep_test.rs` |  |  |
+| `--hep-senders` |  |  | HEP | e2e | `tests/hep_test.rs` |  |  |
 | `--hep-parse` | `-E` |  | HEP | e2e | `tests/cli_flag_behavior_test.rs`, `tests/scanner_kill_process_test.rs` |  |  |
 | `--hep-allow` |  | `ADDR` | HEP | e2e | `tests/config_wiring_test.rs`, `tests/doc_commands_run_test.rs` +1 |  |  |
 | `--hep-rate-limit` |  | `N` | HEP | e2e | `tests/hep_test.rs` |  |  |
@@ -381,6 +383,7 @@ behind them.
 | `/v1/dialogs/{call_id}/tree` | exercised | `tests/api_test.rs` |
 | `/v1/dialogs/{call_id}/vcon` | exercised | `tests/api_test.rs` |
 | `/v1/endpoints` | exercised | `tests/api_test.rs`, `tests/openapi_contract_test.rs` |
+| `/v1/hep/senders` | exercised | `tests/api_token_test.rs`, `tests/hep_senders_surfaces_test.rs` |
 | `/v1/persistence` | exercised | `tests/api_test.rs`, `tests/openapi_contract_test.rs` |
 | `/v1/relay/compare/{call_id}` | exercised | `tests/relay_rest_test.rs` |
 | `/v1/relay/holdings` | exercised | `tests/api_test.rs` |
@@ -389,7 +392,7 @@ behind them.
 | `/v1/relay/stats/call/{call_id}` | exercised | `tests/relay_rest_test.rs` |
 | `/v1/relay/stats/names` | exercised | `tests/relay_rest_test.rs` |
 | `/v1/report` | exercised | `tests/api_test.rs`, `tests/yang_export_test.rs` |
-| `/v1/runtime` | exercised | `tests/api_test.rs` |
+| `/v1/runtime` | exercised | `tests/api_test.rs`, `tests/hep_senders_surfaces_test.rs` |
 | `/v1/security/findings` | exercised | `tests/api_test.rs` |
 | `/v1/stats` | exercised | `tests/api_test.rs`, `tests/api_token_test.rs` +3 |
 | `/v1/streams` | exercised | `tests/api_operator_flows_test.rs`, `tests/api_test.rs` +2 |
@@ -440,6 +443,7 @@ behind them.
 | `get_message` | exercised | `tests/annotate_cli_test.rs`, `tests/mcp_completeness_test.rs` +2 |
 | `get_sdp_timeline` | exercised | `tests/mcp_completeness_test.rs`, `tests/mcp_diagnostic_tools_test.rs` +3 |
 | `group_dialogs` | exercised | `tests/mcp_completeness_test.rs`, `tests/mcp_stdio_test.rs` +1 |
+| `hep_senders` | exercised | `tests/mcp_protocol_features_test.rs`, `tests/mcp_stdio_test.rs` +1 |
 | `lint_dialog` | exercised | `tests/mcp_completeness_test.rs`, `tests/mcp_lint_tools_test.rs` +2 |
 | `list_captures` | exercised | `tests/mcp_diagnostic_tools_test.rs`, `tests/mcp_stdio_test.rs` |
 | `list_dialogs` | exercised | `tests/annotate_cli_test.rs`, `tests/config_wiring_test.rs` +13 |

@@ -325,6 +325,32 @@ pub struct PrometheusMetrics {
     pub diagnosis_total: HashMap<String, u64>,
     /// The three ways this run's analysis can be incomplete or mistimed.
     pub capture_quality: CaptureQuality,
+    /// The HEP listener's aggregate counts, when this run has a listener.
+    ///
+    /// Aggregates only, never a series per sender: sender addresses describe
+    /// the estate, and a `metrics`-scoped token reaches `/metrics` and nothing
+    /// else, so a per-sender label would hand a scrape job what the
+    /// full-scope `GET /v1/hep/senders` withholds from it — and a spoofed
+    /// flood would set the label cardinality.
+    pub hep_listener: Option<crate::capture::hep_roster::HepListenerCounts>,
+    /// The `--hep-send` exporter's counts, when this run exports.
+    pub hep_export: Option<crate::capture::hep_export::HepExportSnapshot>,
+}
+
+impl PrometheusMetrics {
+    /// Read what the capture meter carries: the queue depth, the backpressure
+    /// count, and the HEP listener's counts when a listener hung its roster
+    /// on it.
+    ///
+    /// The ONE place both scrape doors — the standalone `--metrics` server
+    /// and the REST `/metrics` route — take these from, so the two cannot
+    /// publish different series for one capture.
+    pub fn apply_meter(&mut self, meter: &crate::capture::channel::CaptureMeter) {
+        self.capture_queue_depth_packets = meter.in_flight() as u64;
+        self.capture_backpressure_blocks_total = meter.backpressure_blocks();
+        self.hep_listener = meter.hep_roster().map(|r| r.counters());
+        self.hep_export = meter.hep_export().map(|c| c.snapshot());
+    }
 }
 
 /// How much of the wire the analysis actually saw, and whether its clock can
@@ -861,6 +887,76 @@ pub fn format_metrics(metrics: &PrometheusMetrics) -> String {
     );
     out.push('\n');
 
+    // The HEP listener, when this run has one. Omitted entirely otherwise: a
+    // zero would claim a listener that heard nothing. Aggregates only -- see
+    // `PrometheusMetrics::hep_listener` for why no series names a sender.
+    if let Some(hep) = &metrics.hep_listener {
+        write_help_type(
+            &mut out,
+            "sipnab_hep_senders",
+            "Senders the HEP listener is tracking (capture id and address as each claims)",
+            "gauge",
+        );
+        let _ = writeln!(out, "sipnab_hep_senders {}", hep.senders);
+        out.push('\n');
+        write_help_type(
+            &mut out,
+            "sipnab_hep_datagrams_received_total",
+            "HEP packets the listener received, admitted or refused",
+            "counter",
+        );
+        let _ = writeln!(out, "sipnab_hep_datagrams_received_total {}", hep.received);
+        out.push('\n');
+        // Every reason, zeros included, from the roster's own vocabulary: an
+        // alert on one reads zero rather than no-data, and a new reason
+        // reaches the scrape the day it is added.
+        write_help_type(
+            &mut out,
+            "sipnab_hep_datagrams_refused_total",
+            "HEP packets the listener refused, by reason",
+            "counter",
+        );
+        for reason in crate::capture::hep_roster::HepRefusal::ALL {
+            let _ = writeln!(
+                out,
+                "sipnab_hep_datagrams_refused_total{{reason=\"{}\"}} {}",
+                reason.as_str(),
+                hep.refused_by_reason[reason.index()]
+            );
+        }
+        out.push('\n');
+    }
+
+    // The `--hep-send` exporter, when this run has one: what it delivered and
+    // every kind of failure, zeros included. Over UDP "sent" means handed to
+    // the kernel -- a dead collector produces no failure -- which is the
+    // documented meaning of the series, not a defect in it.
+    if let Some(export) = &metrics.hep_export {
+        write_help_type(
+            &mut out,
+            "sipnab_hep_export_packets_total",
+            "Packets the --hep-send exporter delivered as far as its transport can tell",
+            "counter",
+        );
+        let _ = writeln!(out, "sipnab_hep_export_packets_total {}", export.sent);
+        out.push('\n');
+        write_help_type(
+            &mut out,
+            "sipnab_hep_export_failures_total",
+            "Packets the --hep-send exporter failed to deliver, by the step that failed",
+            "counter",
+        );
+        for kind in crate::capture::hep_export::ExportFailure::ALL {
+            let _ = writeln!(
+                out,
+                "sipnab_hep_export_failures_total{{kind=\"{}\"}} {}",
+                kind.as_str(),
+                export.failures[kind.index()]
+            );
+        }
+        out.push('\n');
+    }
+
     // Capture quality. Three counters, never a sum: a bigger ring buffer
     // fixes kernel drops and does nothing for interface drops, and a corrupt
     // timestamp loses no packet at all — it invalidates the timing figures.
@@ -1373,6 +1469,144 @@ fn format_histogram(
 /// counter/gauge values, cumulative buckets, and label sorting/escaping.
 #[cfg(test)]
 mod tests {
+    // ── HEP listener series ──────────────────────────────────────────
+
+    /// A meter carrying a roster with two senders, and refusals under two
+    /// reasons: two for a wrong key, one for the allowlist.
+    fn meter_with_hep_roster() -> crate::capture::channel::CaptureMeter {
+        use crate::capture::hep_roster::{
+            HepRefusal, HepRoster, RosterState, SenderTrust, hep_source_label,
+        };
+        let t = std::time::Instant::now();
+        let mut state = RosterState::new(
+            SenderTrust::Unauthenticated,
+            64,
+            std::time::Duration::from_secs(30),
+            t,
+            chrono::Utc::now(),
+        );
+        for (id, peer) in [(7u32, "192.0.2.7"), (9, "192.0.2.9")] {
+            let peer: std::net::IpAddr = peer.parse().expect("literal");
+            state.admitted(Some(id), peer, &hep_source_label(Some(id), peer), t);
+        }
+        let bad: std::net::IpAddr = "203.0.113.66".parse().expect("literal");
+        state.refused(HepRefusal::AuthMismatch, bad, t);
+        state.refused(HepRefusal::AuthMismatch, bad, t);
+        state.refused(HepRefusal::Allowlist, bad, t);
+        let (_tx, rx) = crate::capture::channel::packet_channel(8);
+        let meter = rx.meter();
+        assert!(meter.attach_hep_roster(HepRoster::new(state)));
+        meter
+    }
+
+    /// **A HEP listener scrapes its sender count, its received total, and a
+    /// refusal series for every reason** — the `reason` label set is exactly
+    /// the roster's vocabulary, derived from it rather than typed here, so a
+    /// new reason reaches the scrape the day it is added. Zeros are published,
+    /// so an alert on a reason reads zero rather than no-data.
+    #[test]
+    fn a_hep_listener_scrapes_its_counts_and_a_series_for_every_refusal_reason() {
+        let mut m = PrometheusMetrics::default();
+        m.apply_meter(&meter_with_hep_roster());
+        let out = format_metrics(&m);
+        assert!(out.contains("# TYPE sipnab_hep_senders gauge"), "{out}");
+        assert!(out.contains("\nsipnab_hep_senders 2\n"), "{out}");
+        assert!(
+            out.contains("\nsipnab_hep_datagrams_received_total 5\n"),
+            "two admitted and three refused: {out}"
+        );
+        let prefix = "sipnab_hep_datagrams_refused_total{reason=\"";
+        let mut reasons = std::collections::BTreeMap::new();
+        for line in out.lines().filter(|l| l.starts_with(prefix)) {
+            let rest = &line[prefix.len()..];
+            if let Some((reason, value)) = rest.split_once("\"} ") {
+                reasons.insert(reason.to_string(), value.to_string());
+            }
+        }
+        let vocabulary: std::collections::BTreeSet<String> =
+            crate::capture::hep_roster::HepRefusal::ALL
+                .iter()
+                .map(|r| r.as_str().to_string())
+                .collect();
+        assert_eq!(
+            reasons
+                .keys()
+                .cloned()
+                .collect::<std::collections::BTreeSet<_>>(),
+            vocabulary,
+            "the reason label set must be exactly the refusal vocabulary"
+        );
+        assert_eq!(reasons.get("auth_mismatch").map(String::as_str), Some("2"));
+        assert_eq!(reasons.get("allowlist").map(String::as_str), Some("1"));
+        assert_eq!(reasons.get("hmac_replay").map(String::as_str), Some("0"));
+        assert!(
+            !out.contains("192.0.2.7") && !out.contains("203.0.113.66"),
+            "no sender address reaches the scrape: {out}"
+        );
+    }
+
+    /// **An exporter scrapes its packets sent and a failure series for every
+    /// kind**, the `kind` label set derived from the exporter's own
+    /// vocabulary; zeros published so an alert reads zero, not no-data.
+    #[test]
+    fn an_exporter_scrapes_its_sends_and_a_series_for_every_failure_kind() {
+        use crate::capture::hep_export::{ExportFailure, HepExportCounters};
+        let counters = HepExportCounters::new("tls");
+        counters.record_sent();
+        counters.record_sent();
+        counters.record_failure(ExportFailure::TlsHandshake);
+        let (_tx, rx) = crate::capture::channel::packet_channel(8);
+        let meter = rx.meter();
+        assert!(meter.attach_hep_export(counters));
+        let mut m = PrometheusMetrics::default();
+        m.apply_meter(&meter);
+        let out = format_metrics(&m);
+        assert!(
+            out.contains("\nsipnab_hep_export_packets_total 2\n"),
+            "{out}"
+        );
+        let prefix = "sipnab_hep_export_failures_total{kind=\"";
+        let mut kinds = std::collections::BTreeMap::new();
+        for line in out.lines().filter(|l| l.starts_with(prefix)) {
+            if let Some((kind, value)) = line[prefix.len()..].split_once("\"} ") {
+                kinds.insert(kind.to_string(), value.to_string());
+            }
+        }
+        let vocabulary: std::collections::BTreeSet<String> = ExportFailure::ALL
+            .iter()
+            .map(|k| k.as_str().to_string())
+            .collect();
+        assert_eq!(
+            kinds
+                .keys()
+                .cloned()
+                .collect::<std::collections::BTreeSet<_>>(),
+            vocabulary
+        );
+        assert_eq!(kinds.get("tls_handshake").map(String::as_str), Some("1"));
+        assert_eq!(kinds.get("connect").map(String::as_str), Some("0"));
+    }
+
+    /// A run that exports nothing publishes no export series.
+    #[test]
+    fn a_run_with_no_exporter_scrapes_no_export_series() {
+        let (_tx, rx) = crate::capture::channel::packet_channel(8);
+        let mut m = PrometheusMetrics::default();
+        m.apply_meter(&rx.meter());
+        assert!(!format_metrics(&m).contains("sipnab_hep_export_"));
+    }
+
+    /// A run with no HEP listener publishes no HEP series at all: a zero
+    /// would claim a listener that heard nothing.
+    #[test]
+    fn a_run_with_no_hep_listener_scrapes_no_hep_series() {
+        let (_tx, rx) = crate::capture::channel::packet_channel(8);
+        let mut m = PrometheusMetrics::default();
+        m.apply_meter(&rx.meter());
+        let out = format_metrics(&m);
+        assert!(!out.contains("sipnab_hep_"), "{out}");
+    }
+
     use super::*;
 
     /// Build a metrics struct with every field populated.

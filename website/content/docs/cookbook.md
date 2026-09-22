@@ -531,6 +531,43 @@ changes that: put sipnab's `-d` where the media actually is.
 - `-d` with `--hep-listen` takes exactly one interface and one listener. sipnab refuses `-I` with `--hep-listen` (a file's addresses are historical and belong to third parties, and sipnab keeps them off its active-response path by refusing to transmit for a file run at all); so are `--multi-device` with `--hep-listen`, and `-O` with the pair — the two sources disagree about the link layer, so there is no honest pcap to write. Use `--hep-send` to forward the signaling instead.
 - One sipnab, one mirroring node. The SDP endpoint index keys on address and port with no node dimension, so two nodes advertising the same [RFC 1918](https://www.rfc-editor.org/rfc/rfc1918) socket would overwrite each other and a stream would bind to whichever offer arrived last.
 
+### 6e. Find who feeds the collector and who it refuses
+
+A collector fed by twenty proxies needs to answer three questions: which of
+them are sending, which one stopped, and which one sends while the listener
+refuses it. The listener keeps a roster that answers all three.
+
+At the end of a bounded headless run:
+
+```bash
+sipnab -N -L 0.0.0.0:9060 --hep-parse --hep-auth-file /etc/sipnab/hep.key --duration 600 --hep-senders
+```
+
+While a server runs, from the REST API or the MCP `hep_senders` tool:
+
+```bash
+curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" http://localhost:9100/v1/hep/senders \
+  | jq '.senders[] | {source, packets, idle_seconds, silent}'
+```
+
+In the TUI, press `h` for capture health and then `s`.
+
+Each row is one sender, keyed by the capture id it claims (`--hep-id` on a
+sipnab agent, the capture-agent id on OpenSIPS or Kamailio) and the address it
+sends from. Give every sender its own id: two proxies left at the default id 1
+are still two rows, because their addresses differ, but a sipnab agent and its
+host's proxy share an address and only the id tells them apart.
+
+Read `refused_sources` when a sender you configured never shows up. The reason
+names the fix: `auth_mismatch` is the wrong shared secret, `auth_missing` a
+sender with no key, `allowlist` an address `--hep-allow` does not cover, and
+`hmac_timestamp_out_of_window` a sender whose clock drifted.
+
+The listener also logs `sender 7@192.0.2.7 silent for 30s` when one sender
+goes quiet while others keep sending, and a `resumed` line when it comes back.
+`--hep-silence-warn` sets the threshold. The roster covers this run only, and
+sipnab persists none of it.
+
 ---
 
 ## 7. Decrypt SIP/TLS via SSLKEYLOGFILE

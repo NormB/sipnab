@@ -904,7 +904,16 @@ fn wiki_intra_docs_links_resolve() {
     // this gate.
     // 772 + 12 = 784: the operator-notes branch counted its twelve against
     // 763 and merged after CT6b/CT6c and the RFC 7951 export.
-    const EXPECTED_WIKI_LINKS: usize = 784;
+    // 763 -> 771 by the HEP sender roster's pages: docs/keybindings.md +2
+    // (the Capture health and HEP senders anchors), docs/mcp-tools.md +2 (the
+    // `hep_senders` index row and the pointer from `capture_health`),
+    // docs/troubleshooting.md +2 (the symptom row and recipe 6e),
+    // docs/prometheus-metrics.md +1 (to `GET /v1/hep/senders`) and
+    // docs/rest-api.md +1 (to the metrics page). Counted per file against
+    // HEAD with this gate's rule; no other page moved.
+    // 784 + 8 = 792: the HEP sender roster branch counted its eight against
+    // 763 and merged after the three above.
+    const EXPECTED_WIKI_LINKS: usize = 792;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe 6d in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

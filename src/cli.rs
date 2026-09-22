@@ -167,14 +167,23 @@ impl std::str::FromStr for HepTransport {
     }
 }
 
-impl std::fmt::Display for HepTransport {
-    /// The spelling the operator typed, so a log line and a flag value match.
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
+impl HepTransport {
+    /// The spelling the operator typed, so a log line, a flag value and the
+    /// `transport` every export counter reports all match.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
             Self::Udp => "udp",
             Self::Tcp => "tcp",
             Self::Tls => "tls",
-        })
+        }
+    }
+}
+
+impl std::fmt::Display for HepTransport {
+    /// The spelling the operator typed, so a log line and a flag value match.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
     }
 }
 
@@ -3349,6 +3358,33 @@ pub struct HepArgs {
     )]
     pub hep_hmac_window_secs: Option<u64>,
 
+    /// Seconds a `--hep-listen` listener may go without ADMITTING a packet
+    /// before it logs a warning (default 30; `0` turns the warning off).
+    ///
+    /// Only admitted packets count as traffic. When packets keep arriving and
+    /// every one is refused, the warning says so, names the refusal most of
+    /// them met, and names a peer that sent them: that is a sender reaching
+    /// the port with the wrong key, mode or source address, which is a
+    /// different fix from a sender that stopped. Refused without
+    /// `--hep-listen`, which is the side it governs.
+    #[arg(
+        help_heading = "HEP",
+        long = "hep-silence-warn",
+        value_name = "SECS",
+        requires = "hep_listen"
+    )]
+    pub hep_silence_warn_secs: Option<u64>,
+
+    /// At the end of a headless run, print who fed the `--hep-listen`
+    /// listener: each sender (the capture id it claims and the address it sent
+    /// from), its packet count, when it was last heard and whether it went
+    /// silent, and every address the listener refused with the reasons. With
+    /// `--json`, the same as one JSON object on the last line of stdout — the
+    /// shape `GET /v1/hep/senders` and the MCP `hep_senders` tool return.
+    /// Refused without `--hep-listen`, which is the side it describes.
+    #[arg(help_heading = "HEP", long = "hep-senders", requires = "hep_listen")]
+    pub hep_senders: bool,
+
     /// Parse incoming HEP packets (enable HEP decoding).
     #[arg(help_heading = "HEP", short = 'E', long = "hep-parse")]
     pub hep_parse: bool,
@@ -4262,6 +4298,21 @@ impl Cli {
             .hep_hmac_window_secs
             .or(config.security.hep_hmac_window_secs)
             .unwrap_or(crate::capture::hep::DEFAULT_HMAC_WINDOW_SECS)
+    }
+
+    /// How long a HEP listener may go without admitting a packet before it
+    /// warns: `--hep-silence-warn`, else the shipped threshold.
+    ///
+    /// The default is read from
+    /// [`crate::capture::hep_roster::HEP_IDLE_WARN_AFTER`] rather than
+    /// restated, so the threshold `--help` implies and the one the listener
+    /// applies are one figure. Zero is kept as zero: it turns the warning off.
+    #[must_use]
+    pub fn hep_silence_warn_after(&self) -> std::time::Duration {
+        self.hep_args.hep_silence_warn_secs.map_or(
+            crate::capture::hep_roster::HEP_IDLE_WARN_AFTER,
+            std::time::Duration::from_secs,
+        )
     }
 
     /// MCP findings budget: `--mcp-max-findings`, else

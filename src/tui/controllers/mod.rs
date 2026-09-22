@@ -190,6 +190,7 @@ fn dispatch_view_key(app: &mut App, key: KeyEvent) {
         View::CompareDialogs { .. } => handle_compare_dialogs_key(app, key),
         View::EndpointRollup { .. } => handle_endpoint_rollup_key(app, key),
         View::CaptureHealth => handle_capture_health_key(app, key),
+        View::HepSenders => handle_hep_senders_key(app, key),
         View::CallVolume => handle_call_volume_key(app, key),
         View::SdpTimeline { .. } => handle_sdp_timeline_key(app, key),
         View::Conformance { .. } => handle_conformance_key(app, key),
@@ -901,6 +902,8 @@ pub enum CaptureHealthAction {
     ScrollTop,
     /// Jump to the bottom (the render pass clamps to the content height).
     ScrollBottom,
+    /// `s` — open the HEP senders view.
+    OpenHepSenders,
 }
 
 /// Pure key→action mapping for the capture-health view (keymap-aware).
@@ -921,6 +924,7 @@ pub fn capture_health_action(km: &Keymap, key: KeyEvent) -> Option<CaptureHealth
         KeyCode::PageDown => PageDown,
         KeyCode::Home => ScrollTop,
         KeyCode::End => ScrollBottom,
+        KeyCode::Char('s') => OpenHepSenders,
         _ => return None,
     })
 }
@@ -957,6 +961,81 @@ pub(in crate::tui) fn handle_capture_health_key(app: &mut App, key: KeyEvent) {
         CaptureHealthAction::ScrollTop => app.capture_health_scroll = 0,
         // Clamped to the content height by the render pass.
         CaptureHealthAction::ScrollBottom => app.capture_health_scroll = u16::MAX,
+        CaptureHealthAction::OpenHepSenders => {
+            app.hep_senders_scroll = 0;
+            app.current_view = View::HepSenders;
+        }
+    }
+}
+
+/// Everything the HEP senders view can do for a single key press.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HepSendersAction {
+    /// Esc, the quit key, or `s` — back to the capture-health panel it was
+    /// opened from.
+    Close,
+    /// Scroll up one line.
+    ScrollUp,
+    /// Scroll down one line.
+    ScrollDown,
+    /// Scroll up 20 lines.
+    PageUp,
+    /// Scroll down 20 lines.
+    PageDown,
+    /// Jump to the top.
+    ScrollTop,
+    /// Jump to the bottom (the render pass clamps to the content height).
+    ScrollBottom,
+}
+
+/// Pure key→action mapping for the HEP senders view (keymap-aware).
+///
+/// # Arguments
+/// * `km` - the active keymap; the rebindable quit key is honored.
+/// * `key` - the key event whose code is matched against the bindings.
+///
+/// # Returns
+/// The mapped `HepSendersAction`, or `None` when the key is not bound here.
+pub fn hep_senders_action(km: &Keymap, key: KeyEvent) -> Option<HepSendersAction> {
+    use HepSendersAction::*;
+    Some(match key.code {
+        k if k == KeyCode::Esc || k == km.quit || k == KeyCode::Char('s') => Close,
+        KeyCode::Up | KeyCode::Char('k') => ScrollUp,
+        KeyCode::Down | KeyCode::Char('j') => ScrollDown,
+        KeyCode::PageUp => PageUp,
+        KeyCode::PageDown => PageDown,
+        KeyCode::Home => ScrollTop,
+        KeyCode::End => ScrollBottom,
+        _ => return None,
+    })
+}
+
+/// Handle keys in the HEP senders view: map, then execute.
+///
+/// # Side effects
+/// Scroll actions move `app.hep_senders_scroll`; `Close` returns to the
+/// capture-health panel the view was opened from. Unbound keys are ignored.
+pub(in crate::tui) fn handle_hep_senders_key(app: &mut App, key: KeyEvent) {
+    let Some(action) = hep_senders_action(&app.keymap, key) else {
+        return;
+    };
+    match action {
+        HepSendersAction::Close => app.current_view = View::CaptureHealth,
+        HepSendersAction::ScrollUp => {
+            app.hep_senders_scroll = app.hep_senders_scroll.saturating_sub(1);
+        }
+        HepSendersAction::ScrollDown => {
+            app.hep_senders_scroll = app.hep_senders_scroll.saturating_add(1);
+        }
+        HepSendersAction::PageUp => {
+            app.hep_senders_scroll = app.hep_senders_scroll.saturating_sub(20);
+        }
+        HepSendersAction::PageDown => {
+            app.hep_senders_scroll = app.hep_senders_scroll.saturating_add(20);
+        }
+        HepSendersAction::ScrollTop => app.hep_senders_scroll = 0,
+        // Clamped to the content height by the render pass.
+        HepSendersAction::ScrollBottom => app.hep_senders_scroll = u16::MAX,
     }
 }
 
@@ -1602,6 +1681,13 @@ pub(in crate::tui) fn handle_mouse_event(app: &mut App, kind: crossterm::event::
                 app.capture_health_scroll.saturating_add(3)
             } else {
                 app.capture_health_scroll.saturating_sub(3)
+            };
+        }
+        View::HepSenders => {
+            app.hep_senders_scroll = if down {
+                app.hep_senders_scroll.saturating_add(3)
+            } else {
+                app.hep_senders_scroll.saturating_sub(3)
             };
         }
         View::TfpsObserve { .. } => {

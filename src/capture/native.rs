@@ -185,6 +185,10 @@ pub enum CaptureSource {
         /// Private key for `tls_cert` (`--hep-tls-key`).
         #[cfg(feature = "hep")]
         tls_key: Option<std::path::PathBuf>,
+        /// How long the listener may go without admitting a packet before it
+        /// warns (`--hep-silence-warn`); zero disables the warning.
+        #[cfg(feature = "hep")]
+        silence_warn_after: std::time::Duration,
     },
     /// Several sources feeding ONE pipeline in one process.
     ///
@@ -517,6 +521,7 @@ pub fn start_capture(
             listen_transport,
             tls_cert,
             tls_key,
+            silence_warn_after,
         } => {
             let addr = bind_addr.clone();
             let allow = allowlist.clone();
@@ -529,6 +534,7 @@ pub fn start_capture(
             let transport = *listen_transport;
             let tls_cert = tls_cert.clone();
             let tls_key = tls_key.clone();
+            let silence_warn_after = *silence_warn_after;
             thread::Builder::new()
                 .name("capture-hep".to_string())
                 .spawn(move || {
@@ -543,6 +549,7 @@ pub fn start_capture(
                         transport,
                         tls_cert: tls_cert.as_deref(),
                         tls_key: tls_key.as_deref(),
+                        silence_warn_after,
                     };
                     hep::capture_hep(&addr, &config, tx, &opts, ready_tx)
                 })
@@ -1190,6 +1197,8 @@ mod tests {
                 tls_cert: None,
                 #[cfg(feature = "hep")]
                 tls_key: None,
+                #[cfg(feature = "hep")]
+                silence_warn_after: crate::capture::hep_roster::HEP_IDLE_WARN_AFTER,
             }
         }
 
