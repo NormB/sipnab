@@ -4,9 +4,11 @@
 [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/13931/badge)](https://www.bestpractices.dev/projects/13931)
 [![codecov](https://codecov.io/gh/NormB/sipnab/graph/badge.svg)](https://codecov.io/gh/NormB/sipnab)
 
-**Read a SIP call and see why it failed.** One static binary — live traffic, a
-pcap, or the HEP feed from every proxy in your estate — showing the call flow,
-the RTP quality underneath it, and the security signals around it.
+**Read a SIP call and see why it failed.** One binary reads live traffic, a
+pcap (packet capture) file, or the HEP feed that every proxy in your estate can
+send (HEP copies each SIP message to a collector). It shows the call flow, the
+quality of the RTP audio underneath it, and the security signals around it.
+The [Glossary](docs/glossary.md) defines these terms and the others the docs use.
 
 ![The sipnab TUI: a call-flow ladder of a complete SIP lifecycle — REGISTER, then INVITE / 180 Ringing / 200 OK / ACK, an in-dialog re-INVITE, and BYE — with the decoded INVITE in the detail pane](website/static/demos/hero-static.webp)
 
@@ -26,29 +28,51 @@ capabilities needed for live capture are in
 
 ## First run
 
-Start with a capture file — no root, no interface, and the fastest way to see
-whether sipnab tells you something you did not already know:
+Start with a capture file. Reading one needs no root and no network interface,
+and it is the fastest way to see whether sipnab tells you something you did not
+already know.
+
+No capture handy? Download the sample call the website uses:
 
 ```bash
-sipnab -I capture.pcap
+curl -LO https://sipnab.com/demos/sample-call.pcap
 ```
 
-Just the calls sipnab considers problematic, as JSON, which is the shape most
-people want first:
+Open it in the TUI (text user interface), the interactive full-screen view.
+Press `q` to quit:
 
 ```bash
-sipnab -N --json -I capture.pcap --problems
+sipnab -I sample-call.pcap
 ```
 
-One call, explained:
+List only the calls sipnab considers problematic, as JSON. `-N` skips the TUI
+and prints to the terminal instead. The sample call is healthy, so this prints
+nothing but the end-of-run totals, and on your own capture it prints the
+messages of each failed or poor-quality call:
 
 ```bash
-sipnab -N -I capture.pcap --call-report <call-id> --no-cli-print
+sipnab -N --json -I sample-call.pcap --problems
 ```
 
-Live capture needs privileges on the interface. This is the TUI, which puts
-the terminal in raw mode — anything pasted after it arrives as keystrokes
-rather than as a second command (`i` clears non-matching dialogs, `q` quits):
+Explain one call. A Call-ID is the SIP header that names a call, and
+`--report --no-cli-print` lists the Call-IDs a capture holds. Set it once, then
+use it:
+
+```bash
+CALL_ID='call-2c9d47@192.0.2.10'
+```
+
+```bash
+sipnab -N -I sample-call.pcap --call-report "$CALL_ID" --no-cli-print
+```
+
+[Triage a capture from the command line](docs/first-cli-triage.md) walks
+through those commands one at a time, with the output each one prints.
+
+Live capture needs privileges on the interface. This opens the TUI, which puts
+the terminal in raw mode, so anything you paste after it arrives as keystrokes
+rather than as a second command. In the TUI, `i` removes the dialogs that do not
+match the active filter, and `q` quits:
 
 ```bash
 sudo sipnab -d eth0
@@ -63,23 +87,23 @@ signaling to a single sipnab listener and that one process answers for every
 node — nothing goes on the production hosts, and there is no collector, no
 database and no web UI to operate.
 
-On one box it still does what you expect. sipnab honors the conventional terminal keybindings and accepts the
-established flag set, in one Rust binary that
-adds first-class RTP quality monitoring, VoIP diagnostic aliases, security
-analysis, and an MCP server an AI agent can drive.
+On one box it is an interactive SIP viewer and a scriptable command-line
+tool. The same Rust binary adds RTP quality monitoring, VoIP diagnostic
+filters, security analysis, and an MCP (Model Context Protocol) server that an
+AI agent can query.
 
 ## What it does
 
 
 - **Four output modes** -- interactive TUI, non-interactive CLI, JSON, MCP server (drive sipnab from an AI agent)
 - **SIP header matching** -- From, To, Contact, User-Agent, filter DSL
-- **RTP quality monitoring** -- jitter, loss, MOS scoring, one-way audio detection
+- **RTP quality monitoring** -- jitter, loss, MOS (mean opinion score, an estimate of how the call sounded), one-way audio detection
 - **Per-call asymmetry signals** -- codec, ptime, payload-type, duration, late-media
 - **Diagnostic aliases** -- `--problems`, `--slow-setup`, `--short-calls`, `--one-way`, `--nat-issues` as flags; `codec-asym`, `ptime-asym`, `payload-asym`, `duration-asym`, `late-media` via `--filter` (e.g. `sipnab -N -I capture.pcap --filter codec-asym`)
 - **Security analysis** -- scanner detection, registration flood, digest leak, STIR/SHAKEN, fraud heuristics
 - **Event execution** -- run commands on dialog state changes or quality drops
 - **HEP v3** -- send and receive Homer Encapsulation Protocol over UDP, TCP or TLS. Each side names its own transport (`--hep-send-transport`, `--hep-listen-transport`), both default to `udp`, and a TLS sender verifies the collector before it reports the feed up
-- **SIPREC** -- reads the recording metadata ([RFC 7866](https://www.rfc-editor.org/rfc/rfc7866)) an SRC sends: session, mode, participants, and which recorded stream belongs to whom. sipnab reads SIPREC and does not speak it -- it is not a recording client or server
+- **SIPREC** -- reads the recording metadata ([RFC 7866](https://www.rfc-editor.org/rfc/rfc7866)) that an SRC (session recording client) sends: session, mode, participants, and which recorded stream belongs to whom. sipnab reads SIPREC and does not speak it -- it is not a recording client or server
 - **TLS/SRTP decryption** -- SSLKEYLOGFILE (TLS 1.2/1.3), RSA private key (`--tls-key`, TLS 1.2 RSA-kx only — not ECDHE/PFS), SRTP media (`--srtp-keys` + SDES `a=crypto`, AES-CM), and DTLS-SRTP key extraction (`--dtls-keylog`, [RFC 5764](https://www.rfc-editor.org/rfc/rfc5764))
 - **Privilege separation** -- drop to unprivileged user after capture device open
 - **pcap I/O** -- read/write pcap and pcapng, file rotation and splitting
@@ -111,7 +135,7 @@ The default interactive mode is a full terminal interface for reading SIP and
 RTP as they happen:
 
 - **Call list** with sortable columns, multi-select, inline search, filter DSL
-- **Call flow ladder** with color-coded arrows, SDP codec display, PDD annotation
+- **Call flow ladder** with color-coded arrows, SDP codec display, and PDD (post-dial delay, the wait before ringing) annotation
 - **Four timestamp modes** -- absolute (`HH:MM:SS.mmm`), delta from previous
   message (color-coded by latency), delta from first message, and scaled, which
   stretches the ladder with time-proportional spacer rows
@@ -121,7 +145,8 @@ RTP as they happen:
 - **Extended flow** -- merge correlated dialog legs into a single ladder (`F4`/`x`)
 - **RTP stream list** -- jitter, loss, MOS scores (Tab to switch)
 
-sipnab honors every the terminal viewer keybinding. Press `F1` for the full shortcut reference.
+Press `F1` in any view for the keys that view accepts.
+[Keybindings](docs/keybindings.md) lists every key.
 
 ## Prerequisites
 
@@ -191,7 +216,7 @@ Docker Desktop, or similar) and `cross` (`cargo install cross`).
 
 | Flag       | Description                                                          | Default |
 |------------|----------------------------------------------------------------------|---------|
-| `native`   | Live capture, file capture, output writers, signal handling, CLI. Required (directly or transitively) by `tui`, `hep`, `metrics`, `api`, `mcp`, `mcp-http`, and `plugins`; NOT required by `tls`, `audio`, or `wasm` | yes     |
+| `native`   | Live capture, file capture, output writers, signal handling, CLI. Required (directly or transitively) by `tui`, `hep`, `metrics`, `api`, `mcp`, `mcp-http`, `plugins`, `bpf` and `vcon`. Not required by `tls`, `audio`, or `wasm` | yes     |
 | `tui`      | Interactive terminal UI (ratatui + crossterm)                        | yes     |
 | `audio`    | RTP audio playback in TUI via the lazily loaded `sipnab-audio` plugin + WAV export | yes     |
 | `tls`      | TLS/DTLS decryption + SRTP key extraction (ring, zeroize, rustls)    | no      |

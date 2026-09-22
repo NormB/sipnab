@@ -115,16 +115,33 @@ Open the call list and scan it visually — the interactive TUI:
 sipnab -I capture.pcap
 ```
 
-The same capture as a headless overview: dialog count, methods, average PDD.
+The same capture without the TUI. `-N` prints one line per SIP message (time,
+source, destination, method or status, transport) and then a totals line:
 
 ```bash
 sipnab -N -I capture.pcap
 ```
 
-A one-flag diagnostic sweep — retransmits and failed dialogs:
+One line per call instead, with state, final response code, duration and PDD
+(post-dial delay). `--no-cli-print` drops the per-message lines:
+
+```bash
+sipnab -N -I capture.pcap --report --no-cli-print
+```
+
+A one-flag diagnostic sweep. `--problems` keeps only the calls that failed, or
+that show one-way audio, high loss or jitter, a NAT mismatch, retransmits,
+slow setup, or a media asymmetry. What to look for, below, gives the exact
+expression:
 
 ```bash
 sipnab -N -I capture.pcap --problems
+```
+
+The same selection as a per-call table, which is usually the quickest read:
+
+```bash
+sipnab -N -I capture.pcap --problems --report --no-cli-print
 ```
 
 The same sweep in JSON, for piping into another tool:
@@ -139,12 +156,17 @@ The same sweep spelled the long way. `--problems` expands to the `problems` DSL 
 sipnab -N -I capture.pcap --filter problems
 ```
 
-The `--problems` sweep prints one line per SIP message of each flagged call, then the end-of-capture summary. You should see something like (abridged):
+Without `--report`, the `--problems` sweep prints a flagged call's messages from
+the one that made it a problem onward. For a failed call that is the final
+error response and the ACK after it. The end-of-capture totals line follows on
+stderr. Against [`tests/pcap-samples/sip-problem-call.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-problem-call.pcap),
+a sample in the repository that holds four failed calls, the first lines read:
 
 ```text
-INVITE +15551234 -> +15559876  192.0.2.6:5060 -> 192.0.2.7:5060  Failed  408 Request Timeout
-...
-852 packets captured, 10 SIP messages, 839 RTP packets across 2 streams
+22:13:24.800 192.0.2.40:5060 -> 192.0.2.30:5060 486 Busy Here UDP
+22:13:24.810 192.0.2.30:5060 -> 192.0.2.40:5060 ACK UDP
+22:13:27.800 198.51.100.40:5060 -> 198.51.100.30:5060 603 Decline UDP
+22:13:27.810 198.51.100.30:5060 -> 198.51.100.40:5060 ACK UDP
 ```
 
 **What to look for:**
@@ -1829,8 +1851,15 @@ error, and it does not stop on its own:
 sipnab -N -I capture.pcap --filter "state == 'Failed'" --json
 ```
 
+Then set `CALL_ID` to the `call_id` of one failed call from that output, and
+ask for its report:
+
 ```bash
-sipnab -N -I capture.pcap --call-report '<call-id>' --markdown
+CALL_ID='a84b4c76e66710@pc33.atlanta.example.com'
+```
+
+```bash
+sipnab -N -I capture.pcap --call-report "$CALL_ID" --markdown
 ```
 
 A `488 Not Acceptable Here` after an INVITE is the signature. The call report
@@ -1963,12 +1992,14 @@ sipnab -N \
 
 **Problem:** The SBC says it sent the call. The PBX says it never arrived. Both are looking at their own logs.
 
-Capture at both ends and read the same `Call-ID` from each:
+Capture at both ends and read the same `Call-ID` from each. Set `CALL_ID` to
+the call you are chasing first:
 
 ```bash
 # Run all of these, in order.
-sipnab -N -I sbc.pcap --call-report '<call-id>' --markdown > sbc.md
-sipnab -N -I pbx.pcap --call-report '<call-id>' --markdown > pbx.md
+CALL_ID='a84b4c76e66710@pc33.atlanta.example.com'
+sipnab -N -I sbc.pcap --call-report "$CALL_ID" --markdown > sbc.md
+sipnab -N -I pbx.pcap --call-report "$CALL_ID" --markdown > pbx.md
 diff sbc.md pbx.md
 ```
 

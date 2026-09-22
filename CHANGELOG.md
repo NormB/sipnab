@@ -68,6 +68,16 @@ entry that carries them.
 
 ### Changed
 
+- **A command-line tutorial.** `docs/first-cli-triage.md` takes a new reader
+  from a downloaded sample call to a per-call table, the failed calls, one
+  call's report and a `jq` pipeline, showing the real output of each step.
+- **A glossary, and a sample capture to start with.** `docs/glossary.md`
+  defines PDD, MOS, B2BUA, HEP and the other terms the pages use, one short
+  definition each, checked against how sipnab computes them. The README's
+  first run and the TUI walkthrough define each term at first use, link the
+  glossary, and start with `curl -LO https://sipnab.com/demos/sample-call.pcap`
+  for a reader with no capture of their own.
+
 - **`--max-gunzip-bytes` bounds a `-I capture.pcap.gz` too.** sipnab inflated
   a compressed capture to a temporary file with no bound at all, and the
   documentation said libpcap did it. The ceiling now covers that file and every
@@ -108,6 +118,31 @@ entry that carries them.
   are read exactly as before.
 
 ### Fixed
+
+- **Documented commands paste and run as written.** 31 lines across the
+  install, cookbook, troubleshooting and vCon harness pages put a placeholder
+  such as `<call-id>`, `<version>` or `<uuid>` inside a shell block. The shell
+  reads `<word>` as "redirect input from a file named word", so a pasted command
+  failed with a file-not-found error, and a `v<version>` download URL fetched
+  nothing. Each now sets a shell variable on its own line and uses it, and
+  `tests/no_placeholder_in_shell_blocks_test.rs` fails on any placeholder in a
+  shell block of the README or a `docs/` page.
+- **The documentation says what sipnab actually does.** Cookbook recipe 1 said
+  `sipnab -N -I capture.pcap` printed "dialog count, methods, average PDD". It
+  prints one line per SIP message, and the recipe now shows `--report` for the
+  per-call view and says what `--problems` selects. The TUI walkthrough said
+  selected dialogs show `▸`, and they show `[*]`. The REST API guide told a release
+  user to compile with `--features api`, which every release binary already
+  has, and put the API key on the command line where `ps` shows it. It now
+  checks `--version` and reads `SIPNAB_API_KEY` from the environment, passed
+  through `sudo --preserve-env`. The install page called sipnab one static
+  binary depending on libpcap (only the musl build is static and needs nothing
+  else), left `plugins`, `bpf` and `vcon` out of what needs `native`, sent MCP
+  deployment readers to the wrong page, and said the packages remove
+  `/etc/sipnab/sipnab.toml` (none ships or removes it). Troubleshooting counted
+  33 filter fields where the DSL has 32 plus any header by name. Three
+  sentences in the README and the CLI reference had been damaged by a
+  find-and-replace into non-sentences, and read plainly again.
 
 - **An empty `xcid_headers` list is obeyed.** `with_xcid_headers(vec![])` was
   ignored, so a configuration that deliberately turned correlation headers off

@@ -81,6 +81,17 @@ exceptions:
   - SBC
   - SDP
   - SIP
+  # Carrier metrics and recording roles, which docs/glossary.md heads one
+  # definition each with. ASR, NER and ACD are the ITU-T E.411 family sipnab
+  # reports per group, PDD is post-dial delay, and SRC and SRS are the two
+  # SIPREC roles (RFC 7866).
+  - ACD
+  - ASR
+  - NER
+  - PDD
+  - SIPREC
+  - SRC
+  - SRS
   - SRTP
   - SSRC
   - STIR

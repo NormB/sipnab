@@ -333,16 +333,33 @@ Open the call list and scan it visually — the interactive TUI:
 sipnab -I capture.pcap
 ```
 
-The same capture as a headless overview: dialog count, methods, average PDD.
+The same capture without the TUI. `-N` prints one line per SIP message (time,
+source, destination, method or status, transport) and then a totals line:
 
 ```bash
 sipnab -N -I capture.pcap
 ```
 
-A one-flag diagnostic sweep — retransmits and failed dialogs:
+One line per call instead, with state, final response code, duration and PDD
+(post-dial delay). `--no-cli-print` drops the per-message lines:
+
+```bash
+sipnab -N -I capture.pcap --report --no-cli-print
+```
+
+A one-flag diagnostic sweep. `--problems` keeps only the calls that failed, or
+that show one-way audio, high loss or jitter, a NAT mismatch, retransmits,
+slow setup, or a media asymmetry. What to look for, below, gives the exact
+expression:
 
 ```bash
 sipnab -N -I capture.pcap --problems
+```
+
+The same selection as a per-call table, which is usually the quickest read:
+
+```bash
+sipnab -N -I capture.pcap --problems --report --no-cli-print
 ```
 
 The same sweep in JSON, for piping into another tool:
@@ -357,12 +374,17 @@ The same sweep spelled the long way. `--problems` expands to the `problems` DSL 
 sipnab -N -I capture.pcap --filter problems
 ```
 
-The `--problems` sweep prints one line per SIP message of each flagged call, then the end-of-capture summary. You should see something like (abridged):
+Without `--report`, the `--problems` sweep prints a flagged call's messages from
+the one that made it a problem onward. For a failed call that is the final
+error response and the ACK after it. The end-of-capture totals line follows on
+stderr. Against [`tests/pcap-samples/sip-problem-call.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-problem-call.pcap),
+a sample in the repository that holds four failed calls, the first lines read:
 
 ```text
-INVITE +15551234 -> +15559876  192.0.2.6:5060 -> 192.0.2.7:5060  Failed  408 Request Timeout
-...
-852 packets captured, 10 SIP messages, 839 RTP packets across 2 streams
+22:13:24.800 192.0.2.40:5060 -> 192.0.2.30:5060 486 Busy Here UDP
+22:13:24.810 192.0.2.30:5060 -> 192.0.2.40:5060 ACK UDP
+22:13:27.800 198.51.100.40:5060 -> 198.51.100.30:5060 603 Decline UDP
+22:13:27.810 198.51.100.30:5060 -> 198.51.100.40:5060 ACK UDP
 ```
 
 **What to look for:**
@@ -2047,8 +2069,15 @@ error, and it does not stop on its own:
 sipnab -N -I capture.pcap --filter "state == 'Failed'" --json
 ```
 
+Then set `CALL_ID` to the `call_id` of one failed call from that output, and
+ask for its report:
+
 ```bash
-sipnab -N -I capture.pcap --call-report '<call-id>' --markdown
+CALL_ID='a84b4c76e66710@pc33.atlanta.example.com'
+```
+
+```bash
+sipnab -N -I capture.pcap --call-report "$CALL_ID" --markdown
 ```
 
 A `488 Not Acceptable Here` after an INVITE is the signature. The call report
@@ -2181,12 +2210,14 @@ sipnab -N \
 
 **Problem:** The SBC says it sent the call. The PBX says it never arrived. Both are looking at their own logs.
 
-Capture at both ends and read the same `Call-ID` from each:
+Capture at both ends and read the same `Call-ID` from each. Set `CALL_ID` to
+the call you are chasing first:
 
 ```bash
 # Run all of these, in order.
-sipnab -N -I sbc.pcap --call-report '<call-id>' --markdown > sbc.md
-sipnab -N -I pbx.pcap --call-report '<call-id>' --markdown > pbx.md
+CALL_ID='a84b4c76e66710@pc33.atlanta.example.com'
+sipnab -N -I sbc.pcap --call-report "$CALL_ID" --markdown > sbc.md
+sipnab -N -I pbx.pcap --call-report "$CALL_ID" --markdown > pbx.md
 diff sbc.md pbx.md
 ```
 
@@ -3767,15 +3798,17 @@ sipnab includes an optional REST API and Prometheus metrics endpoint, enabled wi
 
 ## Getting started
 
-### Step 1: Build with API support
+### Step 1: Check your binary has the API
 
-sipnab's REST API requires the `api` feature flag:
+The REST API is the `api` feature. Every release binary and package includes
+it, and a `cargo install` or source build without `--features api` or
+`--features full` does not. The first line of `--version` lists the features:
 
 ```bash
-cargo build --release --features api
+sipnab --version
 ```
 
-That is additive to the default features, so it gives you the REST API on top of the TUI, audio, and the standalone metrics server. Build `full` instead when you also want the MCP server, HEP forwarding, and the TLS-gated features (STIR/SHAKEN claim reporting, SRTP decryption) in the same binary — the REST API itself is identical either way, so choose on what else you need:
+If `api` is missing from that list, build a binary that has it:
 
 ```bash
 cargo build --release --features full
@@ -3783,26 +3816,32 @@ cargo build --release --features full
 
 ### Step 2: Choose an API key
 
-You create the API key yourself -- there's no registration. Pick any string:
+You create the API key yourself. There is no registration. Generate a random
+one and keep it in the environment, where sipnab reads it from
+`SIPNAB_API_KEY`:
 
 ```bash
-export SIPNAB_API_KEY="my-secret-token-change-this"
+export SIPNAB_API_KEY="$(openssl rand -hex 32)"
 ```
 
-> **Security:** Use a strong random string in production. Every request carries the key as a Bearer token. An environment variable keeps it out of `ps` output.
+> **Security:** every request carries the key as a Bearer token. Keeping it in
+> the environment rather than on the command line keeps it out of `ps` output,
+> which is why the commands below never pass `--api-key`.
 
 ### Step 3: Start sipnab with the API
 
-**Live capture:**
+To analyze a pcap file, run it in the same shell, so it inherits the variable:
 
 ```bash
-sudo sipnab --api 127.0.0.1:8080 --api-key "$SIPNAB_API_KEY"
+sipnab -N -I capture.pcap --api 127.0.0.1:8080
 ```
 
-**Analyze a pcap file:**
+For live capture under `sudo`, pass the variable through. `sudo` drops the
+caller's environment by default, and without the key an API on a loopback
+address accepts every request unauthenticated:
 
 ```bash
-sipnab -N -I capture.pcap --api 127.0.0.1:8080 --api-key "$SIPNAB_API_KEY"
+sudo --preserve-env=SIPNAB_API_KEY sipnab -N -d eth0 --api 127.0.0.1:8080
 ```
 
 The process stays alive serving the API until you press Ctrl-C.
@@ -3836,14 +3875,15 @@ signing-key rotation, and revocation denylists — see
 A shared secret with **no expiry**. Simplest to set up, and you revoke it by
 restarting with a different key.
 
-Both lines below are one procedure — the server reads the variable the first
-line sets. Run the second on its own and `$SIPNAB_API_KEY` is empty, which on
-this loopback bind starts an API that accepts every request unauthenticated:
+Both lines below are one procedure: the server reads `SIPNAB_API_KEY` from the
+environment the first line sets. Run the second on its own and the variable is
+unset, which on this loopback bind starts an API that accepts every request
+unauthenticated:
 
 ```bash
 # Run all of these, in order.
 export SIPNAB_API_KEY="$(openssl rand -hex 32)"
-sipnab --api 127.0.0.1:8080 --api-key "$SIPNAB_API_KEY"
+sipnab --api 127.0.0.1:8080
 ```
 
 | Setting | Purpose |
@@ -7201,9 +7241,11 @@ states the rule and what enforces it.
 
 # Installing sipnab
 
-sipnab is one static binary with one runtime dependency (libpcap). You do not
-need Rust, a compiler, or a toolchain to run it — those are only for the
-build-it-yourself path near the end of this page.
+sipnab is a single binary. The static Linux musl build needs nothing else. The
+other builds load the system's libpcap, which macOS always has and a Linux
+package manager installs. You do not need Rust, a compiler, or a toolchain to
+run it. Those are only for the build-it-yourself path near the end of this
+page.
 
 Most people should run the one-line installer and be reading a capture inside a
 minute.
@@ -7435,36 +7477,44 @@ canonical triples deliberately: they match `rustc -vV`, they are what
 `SHA256SUMS.txt` and the build-provenance attestation cover, and the install
 script constructs them.
 
+Every command below reads the release number from a `VERSION` variable. Set
+it first, in the same shell, to the release you want, e.g. 0.5.185 for the
+latest:
+
+```bash
+VERSION=0.5.185
+```
+
 On Linux x86_64, the static musl tarball runs on any distro and any glibc,
-Alpine included. Replace `<version>` with the latest, e.g. 0.5.185:
+Alpine included:
 
 ```bash
 # Run all of these, in order.
-curl -LO https://github.com/NormB/sipnab/releases/download/v<version>/sipnab-<version>-x86_64-unknown-linux-musl.tar.gz
-tar xzf sipnab-<version>-x86_64-unknown-linux-musl.tar.gz
-sudo install -m 755 sipnab-<version>-x86_64-unknown-linux-musl/sipnab /usr/local/bin/sipnab
+curl -LO "https://github.com/NormB/sipnab/releases/download/v$VERSION/sipnab-$VERSION-x86_64-unknown-linux-musl.tar.gz"
+tar xzf "sipnab-$VERSION-x86_64-unknown-linux-musl.tar.gz"
+sudo install -m 755 "sipnab-$VERSION-x86_64-unknown-linux-musl/sipnab" /usr/local/bin/sipnab
 ```
 
 The same three steps on Linux aarch64, against the aarch64 musl tarball:
 
 ```bash
 # Run all of these, in order.
-curl -LO https://github.com/NormB/sipnab/releases/download/v<version>/sipnab-<version>-aarch64-unknown-linux-musl.tar.gz
-tar xzf sipnab-<version>-aarch64-unknown-linux-musl.tar.gz
-sudo install -m 755 sipnab-<version>-aarch64-unknown-linux-musl/sipnab /usr/local/bin/sipnab
+curl -LO "https://github.com/NormB/sipnab/releases/download/v$VERSION/sipnab-$VERSION-aarch64-unknown-linux-musl.tar.gz"
+tar xzf "sipnab-$VERSION-aarch64-unknown-linux-musl.tar.gz"
+sudo install -m 755 "sipnab-$VERSION-aarch64-unknown-linux-musl/sipnab" /usr/local/bin/sipnab
 ```
 
-Manual download with checksum verification (replace `<version>` with the
-latest, e.g. 0.5.185):
+A manual download of the gnu build that checks the checksum before installing.
+`TARGET` names the build, and the tarball unpacks into `./sipnab-$VERSION-$TARGET/`:
 
 ```bash
 # Run all of these, in order.
-V=<version> T=x86_64-unknown-linux-gnu
-curl -LO "https://github.com/NormB/sipnab/releases/download/v$V/sipnab-$V-$T.tar.gz"
-curl -LO "https://github.com/NormB/sipnab/releases/download/v$V/sipnab-$V-$T.tar.gz.sha256"
-sha256sum -c "sipnab-$V-$T.tar.gz.sha256"
-tar -xzf "sipnab-$V-$T.tar.gz"   # unpacks into ./sipnab-$V-$T/
-sudo install -m 755 "sipnab-$V-$T/sipnab" /usr/local/bin/sipnab
+TARGET=x86_64-unknown-linux-gnu
+curl -LO "https://github.com/NormB/sipnab/releases/download/v$VERSION/sipnab-$VERSION-$TARGET.tar.gz"
+curl -LO "https://github.com/NormB/sipnab/releases/download/v$VERSION/sipnab-$VERSION-$TARGET.tar.gz.sha256"
+sha256sum -c "sipnab-$VERSION-$TARGET.tar.gz.sha256"
+tar -xzf "sipnab-$VERSION-$TARGET.tar.gz"
+sudo install -m 755 "sipnab-$VERSION-$TARGET/sipnab" /usr/local/bin/sipnab
 ```
 
 The dynamic `…-unknown-linux-gnu.tar.gz` builds add TUI audio playback but
@@ -7496,23 +7546,26 @@ cargo install sipnab --features full
 
 Download the `.deb` for your architecture from the [latest release](https://github.com/NormB/sipnab/releases/latest) and install with `apt` (it resolves the `libpcap0.8` runtime dependency). The `.deb` needs glibc >= 2.36, i.e. Debian 12+ / Ubuntu 23.04+ -- on older releases use the static musl tarball above.
 
-Download and install the amd64 (x86_64) package — replace `<version>` with the
-latest, e.g. 0.5.185:
+Download and install the amd64 (x86_64) package. Set `VERSION` to the release
+you want, e.g. 0.5.185, as in
+[Download a release binary yourself](#download-a-release-binary-yourself):
 
 ```bash
 # Run all of these, in order.
-curl -LO https://github.com/NormB/sipnab/releases/latest/download/sipnab_<version>_amd64.deb
-sudo apt install ./sipnab_<version>_amd64.deb
+VERSION=0.5.185
+curl -LO "https://github.com/NormB/sipnab/releases/download/v$VERSION/sipnab_${VERSION}_amd64.deb"
+sudo apt install "./sipnab_${VERSION}_amd64.deb"
 ```
 
-On an arm64 (aarch64) host, take the arm64 package instead — installing the
+On an arm64 (aarch64) host, take the arm64 package instead, with `VERSION` set
+as above — installing the
 wrong-architecture `.deb` over the right one leaves you with a binary that does
 not run:
 
 ```bash
 # Run all of these, in order.
-curl -LO https://github.com/NormB/sipnab/releases/latest/download/sipnab_<version>_arm64.deb
-sudo apt install ./sipnab_<version>_arm64.deb
+curl -LO "https://github.com/NormB/sipnab/releases/download/v$VERSION/sipnab_${VERSION}_arm64.deb"
+sudo apt install "./sipnab_${VERSION}_arm64.deb"
 ```
 
 The package installs `/usr/bin/sipnab`, the man page, and a systemd unit, and
@@ -7530,20 +7583,20 @@ The headless amd64 (x86_64) package:
 
 ```bash
 # Run all of these, in order.
-curl -LO https://github.com/NormB/sipnab/releases/latest/download/sipnab_<version>_amd64-noaudio.deb
-sudo apt install ./sipnab_<version>_amd64-noaudio.deb
+curl -LO "https://github.com/NormB/sipnab/releases/download/v$VERSION/sipnab_${VERSION}_amd64-noaudio.deb"
+sudo apt install "./sipnab_${VERSION}_amd64-noaudio.deb"
 ```
 
 The headless arm64 (aarch64) package, for arm64 hosts:
 
 ```bash
 # Run all of these, in order.
-curl -LO https://github.com/NormB/sipnab/releases/latest/download/sipnab_<version>_arm64-noaudio.deb
-sudo apt install ./sipnab_<version>_arm64-noaudio.deb
+curl -LO "https://github.com/NormB/sipnab/releases/download/v$VERSION/sipnab_${VERSION}_arm64-noaudio.deb"
+sudo apt install "./sipnab_${VERSION}_arm64-noaudio.deb"
 ```
 
 Alternatively, install the standard package with
-`sudo apt install --no-install-recommends ./sipnab_<version>_amd64.deb` to
+`sudo apt install --no-install-recommends "./sipnab_${VERSION}_amd64.deb"` to
 skip the ALSA packages while keeping the plugin on disk (playback then works
 as soon as `libasound2` lands).
 
@@ -7657,7 +7710,7 @@ nothing about who produced the list. The attestation is cryptographic proof the
 artifact came from sipnab's own release workflow, at a specific commit:
 
 ```bash
-gh attestation verify sipnab-<version>-x86_64-unknown-linux-gnu.tar.gz \
+gh attestation verify "sipnab-$VERSION-x86_64-unknown-linux-gnu.tar.gz" \
     --repo NormB/sipnab
 ```
 
@@ -7684,7 +7737,7 @@ that appear nowhere in the binary's own graph. Scanning only the first would
 quietly miss them. Feed either to any CycloneDX-aware scanner:
 
 ```bash
-grype sbom:sipnab-<version>.cdx.json      # or trivy sbom, osv-scanner, ...
+grype "sbom:sipnab-$VERSION.cdx.json"      # or trivy sbom, osv-scanner, ...
 ```
 
 The binary SBOM covers all features, so it is a superset of
@@ -7727,7 +7780,7 @@ sipnab uses Cargo feature flags to control optional capability. The default buil
 
 | Feature | Description | Dependencies |
 |---------|-------------|--------------|
-| `native` | Live capture, file capture, output writers, signal handling, CLI parser. **Required (directly or transitively) by `tui`, `hep`, `metrics`, `api`, `mcp`, and `mcp-http`; not required by `tls`, `audio`, or `wasm`.** Included by default. | `pcap`, `clap`, `clap_complete`, `env_logger`, `crossbeam-channel`, `libc`, `pcap-file`, `memmap2`, `tracing-subscriber`, `tracing-log`, `tempfile` |
+| `native` | Live capture, file capture, output writers, signal handling, CLI parser. **Required (directly or transitively) by `tui`, `hep`, `metrics`, `api`, `mcp`, `mcp-http`, `plugins`, `bpf` and `vcon`. Not required by `tls`, `audio`, or `wasm`.** Included by default. | `pcap`, `clap`, `clap_complete`, `env_logger`, `crossbeam-channel`, `libc`, `pcap-file`, `memmap2`, `tracing-subscriber`, `tracing-log`, `tempfile` |
 | `tui` | Interactive terminal UI (ratatui + crossterm). Included by default. | `native`, `ratatui`, `crossterm`, `unicode-width`, `base64` |
 | `audio` | RTP audio playback in the TUI + WAV export. Included by default. Builds the separate `sipnab-audio` plugin (`libsipnab_audio.so`) that the binary `dlopen`s lazily; the binary itself does **not** link `libasound.so.2`. | `libloading`, `libc` (plugin: `rodio`) |
 | `tls` | TLS/DTLS decryption and SRTP key extraction (pure Rust) | `ring`, `rustls`, `rsa`, `aes`, `cbc`, `zeroize`, `base64`, `libc` |
@@ -7774,9 +7827,10 @@ built.
 ## Turn on the MCP server
 
 To run sipnab as a Model Context Protocol server for an AI agent (Claude Code,
-Claude Desktop, …), see [mcp.md](mcp.md), which documents building with the
-`mcp`/`mcp-http` features and the runtime configuration, including token-file
-generation and the systemd unit pattern.
+Claude Desktop, …), start with [MCP server](mcp.md), which covers the `mcp` and
+`mcp-http` features and a first working example.
+[Connect an AI agent to sipnab](mcp-deploy.md) covers running it on a server,
+including token-file generation and the systemd unit.
 
 ## Release profile
 
@@ -8011,8 +8065,10 @@ of the file intact. The `N` dialog also keeps a mapping file at
 rm -rf ~/.config/sipnab
 ```
 
-The system-wide equivalent, which the `.deb` and `.rpm` packages own and their
-package manager already removed above:
+No package removes a system-wide config file, because none ships one. The
+`.deb` creates an empty `/etc/sipnab` directory and the `.rpm` creates nothing
+there, so a `sipnab.toml` you put in `/etc/sipnab` survives `apt remove`,
+`apt purge` and `dnf remove` alike. Remove it yourself:
 
 ```bash
 sudo rm -rf /etc/sipnab
@@ -9106,10 +9162,14 @@ page fires. Counting comfort-noise frames does not find it either: those frames
 say "I am sending silence", and this gateway is not saying anything.
 
 So sipnab measures the audio itself. It needs the samples, which means
-`--retain-audio`:
+`--retain-audio`. Set `CALL_ID` to the call that went quiet, then run:
 
 ```bash
-sipnab -N -I capture.pcap --retain-audio --call-report <call-id> --json
+CALL_ID='a84b4c76e66710@pc33.atlanta.example.com'
+```
+
+```bash
+sipnab -N -I capture.pcap --retain-audio --call-report "$CALL_ID" --json
 ```
 
 The `diagnosis.amplitude` object appears only on a run that kept the samples.
@@ -9780,7 +9840,7 @@ loaded.
 
 ## Still stuck?
 
-Build custom queries with the [Filter DSL](filter-dsl.md) -- 33 fields, regex support, boolean logic. See the [CLI Reference](cli-reference.md) for every flag and more recipes.
+Build custom queries with the [Filter DSL](filter-dsl.md) -- 32 fields plus any header by name, regex support, boolean logic. See the [CLI Reference](cli-reference.md) for every flag and more recipes.
 
 If the capture itself is the problem -- drops on a busy link, a full kernel ring buffer, or loss that appears on every call at once -- see [Tuning capture on a busy server](tuning-capture.md).
 
@@ -9842,19 +9902,27 @@ the ladder, measure a delay, and inspect RTP.
 
 > New to sipnab? Start here. This is a guided first run through the interactive
 > TUI. It names every key you press, and the full reference lives in
-> [Keybindings](keybindings.md). If you prefer the command line, see the
-> [Cookbook](examples.md) instead.
+> [Keybindings](keybindings.md). If you prefer the command line, follow
+> [Triage a capture from the command line](first-cli-triage.md) instead.
+> The [Glossary](glossary.md) defines any term you do not recognize.
 
 ## 1. Open a capture
 
-Point sipnab at a pcap and it drops you straight into the **Call List**:
+No capture handy? Download the sample call the website uses:
 
 ```bash
-sipnab -I capture.pcap
+curl -LO https://sipnab.com/demos/sample-call.pcap
 ```
 
-No file handy? Capture live on an interface instead — this needs `sudo`,
-because opening a capture device needs privilege:
+Point sipnab at a pcap (packet capture) file and it drops you straight into the
+**Call List**:
+
+```bash
+sipnab -I sample-call.pcap
+```
+
+To watch live traffic on an interface instead, run it with `sudo`, because
+opening a capture device needs privilege:
 
 ```bash
 sudo sipnab -d eth0
@@ -9871,8 +9939,10 @@ You can open a different capture at any time with `O` -- no restart needed.
 
 ## 2. Find your way around the call list
 
-The Call List is the home view: one row per SIP dialog, with method, endpoints,
-state, message count, and PDD (post-dial delay).
+The Call List is the home view: one row per SIP [dialog](glossary.md#dialog)
+(every message that shares a Call-ID), with method, endpoints, state, message
+count, and [PDD](glossary.md#pdd) (post-dial delay, the wait between the INVITE
+and the first ringing response).
 
 - `j` / `k` (or `Down` / `Up`) move the selection; `PgUp` / `PgDn`, `Home`, `End` jump around.
 - `<` / `>` sort by the previous / next column; `Z` reverses the direction. Sort by **State** to bring `Failed` calls to the top, or by **PDD** to find slow setups.
@@ -9920,11 +9990,14 @@ line-by-line comparison. `Esc` returns to the ladder.
 ## 7. Inspect RTP quality
 
 Press `Tab` to switch from the Call List to the **RTP Streams** view: every
-media stream with codec, packet count, jitter and loss. Streams flagged
-`orphan` have no matching SIP dialog (often a NAT/ALG symptom).
+media stream with codec, packet count, [jitter](glossary.md#jitter) (how much
+packet spacing varies) and loss. Streams flagged `orphan` have no matching SIP
+dialog, which is often a sign that NAT or a SIP-aware router rewrote the media
+address.
 
 Press `Enter` on a stream -- or on an `██ RTP ██` bar back in the Call Flow --
-to open **Stream Detail**: MOS, jitter statistics, quality intervals, burst/gap
+to open **Stream Detail**: [MOS](glossary.md#mos) (mean opinion score, an
+estimate of how the call sounded), jitter statistics, quality intervals, burst/gap
 analysis, silence detection, and MOS/jitter sparklines. A stream whose far end
 sent RTCP XR gains a **Reported by Far End (RTCP XR)** section at the bottom,
 holding that endpoint's own R-factor, MOS-LQ, MOS-CQ, delays and discard rate.
@@ -9935,25 +10008,27 @@ those numbers. With an `audio` build,
 
 ## 8. Trace a call through proxies (multi-leg)
 
-If a call crossed a B2BUA or SBC, press `x` (or `F4`) in the Call Flow to toggle
+If a call crossed a [B2BUA](glossary.md#b2bua) or [SBC](glossary.md#sbc) (a
+box that ends the call on one side and starts a new one on the other, so each
+side has its own Call-ID), press `x` (or `F4`) in the Call Flow to toggle
 **extended multi-leg flow** -- the related legs render together in one ladder,
 so you can follow the call end-to-end through the middle boxes.
 
 ## 9. Save what you found
 
-Select the dialogs you want with `Space` in the Call List (they show a `▸`),
+Select the dialogs you want with `Space` in the Call List (their checkbox
+changes from `[ ]` to `[*]`),
 then press `F2`. In the Save dialog, `Tab` cycles the format -- PCAP, PCAP-NG,
 TXT, JSON, NDJSON, CSV, **HTML** (a self-contained ladder diagram, drawn with
 Mermaid, for your ticket or wiki), Markdown, WAV, SIPp XML, RTP JSON -- and
 `Enter` writes the file. `Shift+Tab` or `Up` / `Down` cycle the same list. With
 nothing selected, it saves everything.
 
-**The diagram carries at most `MAX_MESSAGES` (200) arrows.** The renderer sipnab
-ships refuses a diagram past `RENDERER_MAX_EDGES` (500) outright — it draws
-nothing at all rather than degrading — so a long dialog would otherwise export
-as a blank panel with no error. Past the cap the diagram says so in a note
-inside itself, naming how many messages the call actually had: a picture that
-quietly omits half a call is worse than one that admits it.
+**The HTML diagram draws at most 200 messages.** A call with more exports its
+first 200 as arrows, and a note inside the diagram names how many messages the
+call really had. The cap exists because the diagram renderer draws nothing at
+all past 500 arrows and notes, so without it a long call would export as a blank panel
+with no error.
 
 ## 10. Send your notes with the frames they are about
 
@@ -9977,6 +10052,19 @@ carries your notes, and sipnab never reads them back as analysis.
 - [Theme Guide](theme-guide.md) -- recolor the TUI to taste.
 - [Cookbook](examples.md) -- the same investigations as one-shot CLI
   commands, for scripting and CI.
+
+<details>
+<summary>Why / how we know</summary>
+
+The 200-message cap is `MAX_MESSAGES` (200) in
+[`src/mermaid.rs`](https://github.com/NormB/sipnab/blob/main/src/mermaid.rs),
+and the renderer's limit is `RENDERER_MAX_EDGES` (500) in the same file. The
+vendored Mermaid build refuses a diagram past that many edges outright rather
+than drawing part of it, and every arrow and every note is one edge. The TUI's
+HTML export, the MCP `render_ladder` tool and the browser analyzer all draw
+through that one generator, so they share the cap.
+
+</details>
 
 ---
 
@@ -11297,7 +11385,7 @@ sipnab -d eth0,eth1 --multi-device --delta-time
 > | Linux | the `any` pseudo-device | **every interface at once**, loopback included |
 > | macOS / BSD | libpcap's default device, from the routing table; otherwise the first non-loopback interface | **one interface** |
 >
-> On Linux this is deliberate and matches the terminal viewer: a SIP proxy often talks to
+> On Linux this default is deliberate: a SIP proxy often talks to
 > itself over loopback, so capturing only `eth0` silently misses it. Pass
 > `-d any` to say so explicitly. Promiscuous mode does not apply to `any`, so
 > `--no-promisc` changes nothing there.
@@ -26582,9 +26670,15 @@ Two files, and Compose merges them in order — the base defines every service, 
 
 On the same host as OpenSIPS, the control socket stays on loopback and **nothing needs mirroring**. sipnab reads the SDP that describes this media, so it can attribute streams without ever seeing an ng message.
 
+Set `HOST_IP` to the address rtpengine offers media on:
+
+```bash
+HOST_IP=192.0.2.10
+```
+
 ```bash
 rtpengine \
-  --interface=<host-ip> \
+  --interface="$HOST_IP" \
   --listen-ng=127.0.0.1:22222 \
   --port-min=30000 --port-max=30050
 ```
@@ -26606,12 +26700,20 @@ No `hep` feature, no `--hep-parse`, no control ports in the filter. Everything b
 
 Signaling cannot attribute a relay that never sees an INVITE, so the mirror becomes the only link. Without it every captured stream is media nobody can name.
 
+Set `RELAY_IP` to the relay's own address and `COLLECTOR` to the host running the sipnab that receives the mirror:
+
+```bash
+# Run all of these, in order.
+RELAY_IP=192.0.2.20
+COLLECTOR=192.0.2.30
+```
+
 ```bash
 rtpengine \
-  --interface=<relay-ip> \
-  --listen-ng=<relay-ip>:22222 \
+  --interface="$RELAY_IP" \
+  --listen-ng="$RELAY_IP:22222" \
   --port-min=30000 --port-max=30050 \
-  --homer=<collector>:9060 \
+  --homer="$COLLECTOR:9060" \
   --homer-protocol=udp \
   --homer-enable-ng
 ```
@@ -26703,8 +26805,18 @@ sequenceDiagram
 >
 > `POST /vcon` with no `ingress_lists` writes the cache only. It answers **201**, it reads back correctly for about an hour, and then it vanishes — nothing ever wrote the durable tables. Name the ingress list, and confirm the row, every time.
 
+Set `CONSERVER` to the conserver's host and port, and `TOKEN` to the API token
+your conserver's configuration sets. The later commands on this page read the
+same `TOKEN`:
+
 ```bash
-curl -s -X POST "http://<conserver>/vcon?ingress_lists=sipnab" \
+# Run all of these, in order.
+CONSERVER=127.0.0.1:8000
+TOKEN='replace-with-your-conserver-api-token'
+```
+
+```bash
+curl -s -X POST "http://$CONSERVER/vcon?ingress_lists=sipnab" \
   -H "x-conserver-api-token: $TOKEN" \
   -H 'Content-Type: application/json' \
   --data-binary @call.json
@@ -26734,10 +26846,14 @@ Post it, naming the ingress list:
 curl -s -X POST "http://127.0.0.1:8000/vcon?ingress_lists=sipnab" -H "x-conserver-api-token: $TOKEN" -H 'Content-Type: application/json' --data-binary @call.json
 ```
 
-Read it back with its audio:
+Read it back with its audio. The container names itself in its `uuid` field:
 
 ```bash
-python3 ../clients/python/vcon_view.py <uuid> --audio call.wav
+VCON_UUID=$(jq -r .uuid call.json)
+```
+
+```bash
+python3 ../clients/python/vcon_view.py "$VCON_UUID" --audio call.wav
 ```
 
 ## User guide
@@ -26795,16 +26911,20 @@ List the containers the store holds:
 python3 ../clients/python/vcon_view.py
 ```
 
-Show one container's parties, dialog and recording:
+Show one container's parties, dialog and recording. Set `VCON_UUID` to a `uuid` from that list first:
 
 ```bash
-python3 ../clients/python/vcon_view.py <uuid>
+VCON_UUID=018f3a2b-4c5d-8e6f-9012-3456789abcde
+```
+
+```bash
+python3 ../clients/python/vcon_view.py "$VCON_UUID"
 ```
 
 Extract its audio to a WAV:
 
 ```bash
-python3 ../clients/python/vcon_view.py <uuid> --audio c.wav
+python3 ../clients/python/vcon_view.py "$VCON_UUID" --audio c.wav
 ```
 
 ### Answer "did we capture this call properly?"

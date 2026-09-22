@@ -45,6 +45,18 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             "website/content/docs/internals/uprobe-capture.md",
         ],
     ),
+    // jq's, named by the command-line triage tutorial. `--arg id "$CALL_ID"`
+    // hands the shell variable to the jq program as `$id` rather than pasting
+    // it into the program text. It is a jq flag, not a sipnab one.
+    ("arg", &["docs/first-cli-triage.md"]),
+    // sudo's, named by the REST API page's live-capture step.
+    // `--preserve-env=SIPNAB_API_KEY` passes the key through sudo's cleared
+    // environment, so the key never has to go on sipnab's command line where
+    // `ps` shows it. It is a sudo flag, not a sipnab one.
+    (
+        "preserve-env",
+        &["docs/rest-api.md", "website/content/docs/api.md"],
+    ),
     // curl's, named by the REST API page's `POST /v1/vcon/validate` example.
     // `--data-binary` sends the JSON container's bytes exactly. It is a curl
     // flag, not a sipnab one, and documenting how to POST a container must not
@@ -1594,6 +1606,16 @@ fn docs_current_version_markers_match_cargo() {
             "docs/install.md",
             include_str!("../docs/install.md"),
             r"e\.g\. (\d+\.\d+\.\d+)",
+        ),
+        // The download recipes read the release from a `VERSION=` line set on
+        // its own, so the pasted block never carries a `<version>` placeholder
+        // the shell would read as a redirection. That line names a release a
+        // reader fetches, so it tracks published_version like every marker
+        // here.
+        (
+            "docs/install.md",
+            include_str!("../docs/install.md"),
+            r"(?m)^VERSION=(\d+\.\d+\.\d+)$",
         ),
         // Every rpm variant, not just the x86_64 standard one. The pattern was
         // `-1\.x86_64\.rpm`, which pinned line one of three `rpm -i` recipes
@@ -3336,7 +3358,11 @@ fn no_documentation_table_repeats_a_row() {
     // lists exactly that one new .md path. No website mirror.
     // 220 -> 223: docs/client-examples.md and its site mirror, plus the new
     // site mirror of docs/library.md. Measured by this gate on 2026-09-19.
-    const EXPECTED_MARKDOWN_FILES: usize = 223;
+    // 223 -> 225 by docs/glossary.md and docs/first-cli-triage.md.
+    // `git diff --cached --diff-filter=A` lists exactly those two new .md
+    // paths. No site mirrors yet: both pages are on the wiki, and their site
+    // registration waits on the docs nav templates.
+    const EXPECTED_MARKDOWN_FILES: usize = 225;
     /// How many tables this gate expects to walk.
     ///
     /// Named rather than written twice. The count and the failure message

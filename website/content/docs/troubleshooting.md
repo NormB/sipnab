@@ -333,10 +333,14 @@ page fires. Counting comfort-noise frames does not find it either: those frames
 say "I am sending silence", and this gateway is not saying anything.
 
 So sipnab measures the audio itself. It needs the samples, which means
-`--retain-audio`:
+`--retain-audio`. Set `CALL_ID` to the call that went quiet, then run:
 
 ```bash
-sipnab -N -I capture.pcap --retain-audio --call-report <call-id> --json
+CALL_ID='a84b4c76e66710@pc33.atlanta.example.com'
+```
+
+```bash
+sipnab -N -I capture.pcap --retain-audio --call-report "$CALL_ID" --json
 ```
 
 The `diagnosis.amplitude` object appears only on a run that kept the samples.
@@ -1007,7 +1011,7 @@ loaded.
 
 ## Still stuck?
 
-Build custom queries with the [Filter DSL](@/docs/filter-dsl.md) -- 33 fields, regex support, boolean logic. See the [CLI Reference](@/docs/cli.md) for every flag and more recipes.
+Build custom queries with the [Filter DSL](@/docs/filter-dsl.md) -- 32 fields plus any header by name, regex support, boolean logic. See the [CLI Reference](@/docs/cli.md) for every flag and more recipes.
 
 If the capture itself is the problem -- drops on a busy link, a full kernel ring buffer, or loss that appears on every call at once -- see [Tuning capture on a busy server](@/docs/tuning-capture.md).
 

@@ -23,13 +23,16 @@ nothing and they tell you what you should see at each step.
 1. **[Install sipnab](install.md)** — one-line installer, prebuilt binaries,
    packages, or build from source. Live capture needs root or `CAP_NET_RAW`
    (`sudo sipnab --setup-caps` once); reading a pcap needs no privileges.
-2. **[Your first capture](tui-walkthrough.md)** — read a pcap with
+2. **[Triage a capture from the command line](first-cli-triage.md)** — download
+   a sample call, list its calls, find the failed ones, explain one, and pipe
+   the answer into `jq`.
+3. **[Your first capture](tui-walkthrough.md)** — read a pcap with
    `sipnab -I capture.pcap`, or watch an interface live with
    `sudo sipnab -d eth0`. Both open the TUI; the walkthrough takes you through
    your first analysis step by step.
-3. **[Drive sipnab from an AI agent](mcp-deploy.md)** — deployment
+4. **[Drive sipnab from an AI agent](mcp-deploy.md)** — deployment
    scenarios in order, from same-box stdio to a remote production server.
-4. **[Reading SIP over TLS without keys](uprobe-walkthrough.md)** — what uprobe
+5. **[Reading SIP over TLS without keys](uprobe-walkthrough.md)** — what uprobe
    and eBPF capture is and is **not**, its security implications, whether your
    kernel supports it at all, and both backends step by step.
 
@@ -99,6 +102,8 @@ you want.
 Information-oriented. Complete and dry. Consult them, do not read them
 through.
 
+- [Glossary](glossary.md) — PDD, MOS, B2BUA and the other terms these pages
+  use, one short definition each.
 - [CLI Reference](cli-reference.md) — every flag, grouped, with examples.
 - [Config Reference](config-reference.md) — every `[section]` and key.
 - [Filter DSL](filter-dsl.md) — grammar, fields, operators, aliases.

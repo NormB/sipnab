@@ -923,7 +923,15 @@ fn wiki_intra_docs_links_resolve() {
     // new `ESP not NULL-encrypted` row points at the encapsulations page's
     // "Tunnels above the link layer" section, which states the rule). Counted
     // per file against HEAD with this gate's rule; no other page moved.
-    const EXPECTED_WIKI_LINKS: usize = 795;
+    // 795 -> 816 by the readability pass that added the glossary and the
+    // command-line triage tutorial. Attributed per file against HEAD:
+    // docs/first-cli-triage.md +7 and docs/glossary.md +3 (both new),
+    // docs/tui-walkthrough.md +7 (a glossary link at the first use of each
+    // term, and the tutorial), docs/README.md +2 (the two new pages) and
+    // docs/install.md +2 (the MCP deployment page the install section had
+    // misnamed, and a same-page link to the download section). Every other
+    // changed page held its count.
+    const EXPECTED_WIKI_LINKS: usize = 816;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe 6d in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file
@@ -1018,7 +1026,9 @@ fn root_community_file_links_resolve() {
     /// has ever carried, on a visual analysis tool), `docs/install.md` and
     /// `docs/examples.md`. The moved funding badges are a wash: removed from
     /// the header, re-added under "Support the project".
-    const EXPECTED_COMMUNITY_LINKS: usize = 49;
+    // 49 -> 52: README.md links the glossary, the command-line triage
+    // tutorial and the keybindings page from its first-run and TUI sections.
+    const EXPECTED_COMMUNITY_LINKS: usize = 52;
     const ROOT_FILES: &[&str] = &[
         "README.md",
         "SUPPORT.md",
@@ -2099,7 +2109,8 @@ fn every_docs_page_is_linked_from_the_index() {
     // Attributed with `git status --short docs/` before the number moved: one
     // added file, no others.
     // 52 -> 53: docs/client-examples.md, linked from the documentation index.
-    const EXPECTED_DOCS_PAGES: usize = 53;
+    // 53 -> 55: docs/glossary.md and docs/first-cli-triage.md.
+    const EXPECTED_DOCS_PAGES: usize = 55;
     // Links are extracted from PROSE, not from the file's bytes. A raw
     // `contains("](backers.md")` counted a link that had been wrapped in an
     // HTML comment: the substring was still there, the page was reachable from

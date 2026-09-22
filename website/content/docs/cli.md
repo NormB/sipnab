@@ -311,7 +311,7 @@ sipnab -d eth0,eth1 --multi-device --delta-time
 > | Linux | the `any` pseudo-device | **every interface at once**, loopback included |
 > | macOS / BSD | libpcap's default device, from the routing table; otherwise the first non-loopback interface | **one interface** |
 >
-> On Linux this is deliberate and matches the terminal viewer: a SIP proxy often talks to
+> On Linux this default is deliberate: a SIP proxy often talks to
 > itself over loopback, so capturing only `eth0` silently misses it. Pass
 > `-d any` to say so explicitly. Promiscuous mode does not apply to `any`, so
 > `--no-promisc` changes nothing there.

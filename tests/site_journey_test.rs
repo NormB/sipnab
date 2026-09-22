@@ -3542,7 +3542,14 @@ fn published_download_urls_name_versioned_assets() {
         };
         // tests/ describe the pattern rather than publish it — this file
         // contains the regex and the examples, and would flag itself.
-        if rel.starts_with("tests/") || !text.contains("releases/latest/download/") {
+        // A file that downloads by release TAG (`releases/download/v…`) is
+        // still a download page and still counts toward the floor below:
+        // docs/install.md moved its recipes to tag URLs built from a
+        // `VERSION=` line, which cannot name a bare asset at all, and dropping
+        // out of the count would have read as the sweep going blind.
+        if rel.starts_with("tests/")
+            || !(text.contains("releases/latest/download/") || text.contains("releases/download/"))
+        {
             continue;
         }
         scanned += 1;
@@ -3558,7 +3565,7 @@ fn published_download_urls_name_versioned_assets() {
     }
     assert!(
         scanned >= 3,
-        "only {scanned} files mention releases/latest/download/ (3 at the time of writing) — the sweep has \
+        "only {scanned} files mention a release download URL (3 at the time of writing) — the sweep has \
          gone blind and a bare, permanently-404 URL would pass"
     );
     assert!(

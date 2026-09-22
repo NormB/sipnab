@@ -71,9 +71,15 @@ Two files, and Compose merges them in order — the base defines every service, 
 
 On the same host as OpenSIPS, the control socket stays on loopback and **nothing needs mirroring**. sipnab reads the SDP that describes this media, so it can attribute streams without ever seeing an ng message.
 
+Set `HOST_IP` to the address rtpengine offers media on:
+
+```bash
+HOST_IP=192.0.2.10
+```
+
 ```bash
 rtpengine \
-  --interface=<host-ip> \
+  --interface="$HOST_IP" \
   --listen-ng=127.0.0.1:22222 \
   --port-min=30000 --port-max=30050
 ```
@@ -95,12 +101,20 @@ No `hep` feature, no `--hep-parse`, no control ports in the filter. Everything b
 
 Signaling cannot attribute a relay that never sees an INVITE, so the mirror becomes the only link. Without it every captured stream is media nobody can name.
 
+Set `RELAY_IP` to the relay's own address and `COLLECTOR` to the host running the sipnab that receives the mirror:
+
+```bash
+# Run all of these, in order.
+RELAY_IP=192.0.2.20
+COLLECTOR=192.0.2.30
+```
+
 ```bash
 rtpengine \
-  --interface=<relay-ip> \
-  --listen-ng=<relay-ip>:22222 \
+  --interface="$RELAY_IP" \
+  --listen-ng="$RELAY_IP:22222" \
   --port-min=30000 --port-max=30050 \
-  --homer=<collector>:9060 \
+  --homer="$COLLECTOR:9060" \
   --homer-protocol=udp \
   --homer-enable-ng
 ```
@@ -192,8 +206,18 @@ sequenceDiagram
 >
 > `POST /vcon` with no `ingress_lists` writes the cache only. It answers **201**, it reads back correctly for about an hour, and then it vanishes — nothing ever wrote the durable tables. Name the ingress list, and confirm the row, every time.
 
+Set `CONSERVER` to the conserver's host and port, and `TOKEN` to the API token
+your conserver's configuration sets. The later commands on this page read the
+same `TOKEN`:
+
 ```bash
-curl -s -X POST "http://<conserver>/vcon?ingress_lists=sipnab" \
+# Run all of these, in order.
+CONSERVER=127.0.0.1:8000
+TOKEN='replace-with-your-conserver-api-token'
+```
+
+```bash
+curl -s -X POST "http://$CONSERVER/vcon?ingress_lists=sipnab" \
   -H "x-conserver-api-token: $TOKEN" \
   -H 'Content-Type: application/json' \
   --data-binary @call.json
@@ -223,10 +247,14 @@ Post it, naming the ingress list:
 curl -s -X POST "http://127.0.0.1:8000/vcon?ingress_lists=sipnab" -H "x-conserver-api-token: $TOKEN" -H 'Content-Type: application/json' --data-binary @call.json
 ```
 
-Read it back with its audio:
+Read it back with its audio. The container names itself in its `uuid` field:
 
 ```bash
-python3 ../clients/python/vcon_view.py <uuid> --audio call.wav
+VCON_UUID=$(jq -r .uuid call.json)
+```
+
+```bash
+python3 ../clients/python/vcon_view.py "$VCON_UUID" --audio call.wav
 ```
 
 ## User guide
@@ -284,16 +312,20 @@ List the containers the store holds:
 python3 ../clients/python/vcon_view.py
 ```
 
-Show one container's parties, dialog and recording:
+Show one container's parties, dialog and recording. Set `VCON_UUID` to a `uuid` from that list first:
 
 ```bash
-python3 ../clients/python/vcon_view.py <uuid>
+VCON_UUID=018f3a2b-4c5d-8e6f-9012-3456789abcde
+```
+
+```bash
+python3 ../clients/python/vcon_view.py "$VCON_UUID"
 ```
 
 Extract its audio to a WAV:
 
 ```bash
-python3 ../clients/python/vcon_view.py <uuid> --audio c.wav
+python3 ../clients/python/vcon_view.py "$VCON_UUID" --audio c.wav
 ```
 
 ### Answer "did we capture this call properly?"
