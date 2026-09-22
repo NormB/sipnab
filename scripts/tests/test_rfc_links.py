@@ -272,3 +272,32 @@ def test_rust_doc_comments_get_the_same_rule_and_code_does_not():
     ), out
     assert lines[1:] == src.split("\n")[1:], out
     assert sections == 1, out
+
+
+def test_the_pre_commit_hook_runs_the_check_on_every_commit():
+    """The first-mention rule is enforced before a commit, not only in CI.
+
+    The hook ran this file's tests only when `scripts/` was staged, so a
+    docs-only commit with an unlinked first mention passed locally and failed
+    CI's script tests. The hook must call the check at the top level, outside
+    any block that depends on which paths are staged.
+    """
+    hook = (REPO / ".githooks" / "pre-commit").read_text().split("\n")
+    depth = 0
+    unconditional = False
+    for line in hook:
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            continue
+        if depth == 0 and "rfc-links.py" in stripped and "--apply" not in stripped:
+            unconditional = True
+        if stripped.startswith("if ") and "git diff --cached" in stripped:
+            depth += 1
+        elif depth and stripped.startswith("if "):
+            depth += 1
+        elif depth and stripped == "fi":
+            depth -= 1
+    assert unconditional, (
+        "the pre-commit hook must run `python3 scripts/rfc-links.py` on every "
+        "commit, outside any staged-path condition"
+    )

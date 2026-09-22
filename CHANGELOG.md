@@ -8,6 +8,16 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Internal
+
+- **The pre-commit hook checks RFC links on every commit.** The
+  first-mention rule was enforced locally only by the script tests, which the
+  hook runs when `scripts/` is staged, so a docs-only commit with an unlinked
+  `RFC N` passed the hook and failed CI. The hook now runs
+  `scripts/rfc-links.py` in check mode on every commit.
+
 ## [0.5.186] - 2026-09-22
 
 ### Added

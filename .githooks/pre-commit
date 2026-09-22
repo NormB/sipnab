@@ -588,6 +588,25 @@ fi
 # defects that already shipped once -- a correlation join against fields that
 # do not exist, an SSE reader that took the keepalive, a guard that compared
 # nothing. Untested-by-default code rots.
+# ── RFC citations linked ───────────────────────────────────────────
+# Every commit, not only one that stages `scripts/`. The first-mention rule
+# was enforced only by the script tests, which run here when `scripts/` is
+# staged, so a docs-only commit with an unlinked `RFC N` passed this hook and
+# failed CI. Check mode exits 1 when `--apply` would change anything.
+echo -n "  RFC citations linked... "
+if command -v python3 >/dev/null 2>&1; then
+    if RFC_OUT=$(python3 scripts/rfc-links.py 2>&1); then
+        echo -e "${GREEN}OK${NC}"
+    else
+        echo -e "${RED}FAIL${NC}"
+        echo "$RFC_OUT" | tail -12 | sed 's/^/    /'
+        echo "  Fix: python3 scripts/rfc-links.py --apply, then stage the result"
+        exit 1
+    fi
+else
+    echo -e "${YELLOW}SKIP (python3 absent)${NC}"
+fi
+
 # ── Script tests ───────────────────────────────────────────────────
 # Twenty Python scripts had no tests at all, and several of them are the
 # fixers the gates below depend on. A fixer that stops producing what its gate
