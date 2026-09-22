@@ -129,6 +129,17 @@ impl App {
         apply_filter_dialog(self);
     }
 
+    /// How many text fields head the filter dialog. The "All" method checkbox
+    /// takes the next focus index and method checkbox `k` the one after that
+    /// plus `k`, so navigation tests derive their indices from this instead
+    /// of hard-coding the layout: adding the Header field shifted every one of
+    /// them by one.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn filter_text_field_count_for_test() -> usize {
+        super::state::FILTER_TEXT_FIELD_COUNT
+    }
+
     /// Inspect the filter dialog's focused element and method-checkbox states
     /// (test helper for navigation/toggle scenarios).
     #[doc(hidden)]

@@ -414,8 +414,13 @@ mod tests {
     }
 
     /// A server over a store holding the given messages.
+    ///
+    /// The chain fixtures correlate through `X-Call-ID`, which is no longer a
+    /// built-in default (RFC 6648: sipnab picks no `X-` name for an operator),
+    /// so these tests configure it the way an estate that stamps it would.
     fn server_with(messages: Vec<crate::sip::SipMessage>) -> SipnabMcp {
-        let mut store = DialogStore::new(100, false);
+        let mut store =
+            DialogStore::new(100, false).with_xcid_headers(vec!["X-Call-ID".to_string()]);
         for m in messages {
             store.process_message(m);
         }

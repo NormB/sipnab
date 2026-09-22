@@ -2447,7 +2447,7 @@ the same claim:
 | `strategy` | What it means | Survives a B2BUA? |
 |---|---|---|
 | `session_id` | [RFC 7989](https://www.rfc-editor.org/rfc/rfc7989) `Session-ID` matched | **Yes, by design** |
-| `x_call_id` | A configured header matched (`X-Call-ID` by default) | Only if the SBC inserts it |
+| `x_call_id` | A configured header matched (none configured by default) | Only if the SBC inserts it |
 | `charging_vector_related_icid` | One leg's [RFC 7315](https://www.rfc-editor.org/rfc/rfc7315) `related-icid` names the other's `icid-value` | Yes — but only when the B2BUA chose to emit it (`MAY`) |
 | `sdp_origin` | The [RFC 8866](https://www.rfc-editor.org/rfc/rfc8866) SDP origin tuple matched | Only if the SBC forwards SDP untouched |
 | `charging_vector_icid` | Both legs carry the same RFC 7315 `icid-value` | Not by design: an ICID identifies one dialog, and a B2BUA is two |

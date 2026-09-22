@@ -42,6 +42,18 @@ entry that carries them.
   sipnab could not unpack an archive to its end, and the run exits `1`, because
   members past that point are in no report.
 
+- **Filter on any header: `header.<name>`.** The DSL could match `from.user`,
+  `ua`, `call_id` and the rest of a closed list, and everything else only
+  through `payload`, a substring search over the whole message. A dialog is now
+  selected by any header it carries, on any of its messages, with repeated
+  headers each considered: `header.x-cid == 'abc'`,
+  `header.p-asserted-identity ~ 'sip:alice@'`. Header names are compared
+  case-insensitively and a compact form names the same header as its long form
+  ([RFC 3261 section 7.3.3](https://www.rfc-editor.org/rfc/rfc3261#section-7.3.3)),
+  so `header.k` and `header.Supported` are one field. A name is bounded at 256
+  bytes (`MAX_HEADER_NAME_LEN`). It reaches every surface that takes a filter:
+  `--filter`, the TUI filter dialog, REST and MCP.
+
 ### Changed
 
 - **`--max-gunzip-bytes` bounds a `-I capture.pcap.gz` too.** sipnab inflated
@@ -56,7 +68,32 @@ entry that carries them.
   filter that fails against a link type sipnab does decode still ends the run.
   Every file of that kind now also gets a line naming its link type.
 
+- **Nothing sipnab sends is named with an `X-` prefix
+  ([RFC 6648](https://www.rfc-editor.org/rfc/rfc6648)).** Three names carried
+  one, and each moves to its modern equivalent:
+  - the REST audio response header `x-sipnab-audio-partial` is now
+    `Sipnab-Audio-Partial`;
+  - the site's `X-Frame-Options: DENY` is dropped for the Content-Security-Policy
+    `frame-ancestors 'none'` the same responses already carry;
+  - leg correlation no longer defaults to the `X-Call-ID` header. An estate that
+    stamps one names it in `[sip] xcid_headers`, and the identifier that crosses
+    a B2BUA by design,
+    [RFC 7989](https://www.rfc-editor.org/rfc/rfc7989) `Session-ID`, is
+    correlation strategy 0 and needs no configuration.
+
+  `X-Content-Type-Options: nosniff` stays, as the one exception: the WHATWG
+  Fetch Standard defines it under that name and there is no alternative
+  spelling. A gate reads the REST and MCP surfaces and the published site
+  headers and fails on any other `X-` name. Headers a CAPTURE carries are
+  untouched by all of this: [RFC 6648 section 2](https://www.rfc-editor.org/rfc/rfc6648#section-2) forbids treating a header
+  differently for its prefix, so `X-Asterisk-HangupCause` and an SBC's `X-CID`
+  are read exactly as before.
+
 ### Fixed
+
+- **An empty `xcid_headers` list is obeyed.** `with_xcid_headers(vec![])` was
+  ignored, so a configuration that deliberately turned correlation headers off
+  got the built-in default back instead.
 
 - **A killed kill-worker no longer reads as alive for a moment after the
   defense has been disabled.** A SIGKILLed process closes its pipes on the way

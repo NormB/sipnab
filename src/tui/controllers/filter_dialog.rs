@@ -15,10 +15,12 @@ use crate::tui::*;
 /// `app.active_filter`/`active_filter_text`, and closes or keeps the
 /// popup depending on parse success.
 pub(in crate::tui) fn apply_filter_dialog(app: &mut App) {
-    // The time bounds are parsed first because they are the only field that can
-    // fail to parse (the text fields are regex-escaped into the DSL and cannot).
-    // A malformed timestamp keeps the dialog open with the error shown, the way
-    // a bad DSL expression would, so the typed text is corrected, not discarded.
+    // The time bounds are parsed first because the DSL cannot check them. A
+    // malformed timestamp keeps the dialog open with the error shown, the way a
+    // bad DSL expression does, so the typed text is corrected, not discarded.
+    // The other text fields are regex-escaped into the DSL and cannot fail —
+    // except the Header field's NAME, which the DSL checks against the RFC 3261
+    // token rule and which comes back as a parse error below.
     let window = match app.filter_dialog.parse_time_window() {
         Ok(w) => w,
         Err(msg) => {
@@ -83,8 +85,9 @@ pub(in crate::tui) fn apply_filter_expression(
         return;
     }
 
-    // Parse the DSL first — it can only fail on a hand-built expression, never
-    // on the regex-escaped dialog text, but the guard keeps that promise honest.
+    // Parse the DSL first. Regex-escaped dialog text cannot fail it, but a
+    // Header field whose name is not a header name does, and so does a
+    // hand-built expression; either keeps the dialog open with the error.
     let filter = match &expr_text {
         Some(text) => match FilterExpr::parse(text) {
             Ok(expr) => Some(expr),
