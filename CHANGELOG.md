@@ -10,6 +10,20 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Added
+
+- **A HEP listener names a sender that goes silent while others keep
+  sending.** The listener-wide "no packets" warning stays quiet while anyone
+  at all is sending, so a collector fed by twenty proxies could not say that
+  one of them stopped. The listener now keeps a roster of its senders, keyed
+  by the capture id each claims and the address it sends from, and logs
+  `sender 7@192.0.2.5 silent for 30s` once per silence and `sender ... resumed
+  after 45s silent` when it returns. The threshold is `--hep-silence-warn`.
+  The roster is bounded by `[limits] max_tracked_peers`: a sender past the
+  bound is still admitted and its packets counted, but it is not named.
+  Refused packets are counted by reason and by address in a separate table of
+  256 addresses that evicts the least recently refused.
+
 ### Changed
 
 - **The published binary-size ceiling is 17 MB.** The 0.5.183 x86_64-musl

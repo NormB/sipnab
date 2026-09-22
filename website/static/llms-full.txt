@@ -29468,7 +29468,16 @@ exec budgets. Admitting a key past the cap evicts the least recently used
 entry in constant time. Each of these used to pick its victim with
 `min_by_key` over the whole map, ten thousand comparisons per packet once a
 spoofed-source flood had filled it, on the capture thread under both store
-write locks.
+write locks. A HEP listener's sender roster
+([`hep_roster.rs`](../../src/capture/hep_roster.rs)) holds two such maps. The
+sender table keys on the capture id and address a sender claims, holds at most
+`[limits] max_tracked_peers` (default 4096), and REFUSES a new sender at the
+bound rather than evicting one. It is also the per-sender frame ordinal table,
+and a recycled counter would mint a second frame 0. The listener still admits
+a refused sender's packets and counts them as untracked. The refused-source
+table keys on address alone, holds `HEP_REFUSED_SOURCES_TRACKED` (256), and
+evicts the least recently refused address, so a spoofed flood rotates it. The
+per-reason refusal totals live outside it, and nothing evicts them.
 
 **Fails as.** Memory growth under a scan that looks like a leak, on a process
 that is often running as a long-lived capture.

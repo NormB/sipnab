@@ -115,6 +115,24 @@ pub enum Refusal {
     TrackingFull,
 }
 
+impl Refusal {
+    /// Every variant, for callers that map this vocabulary onto their own
+    /// and must prove the mapping covers it. [`Self::position`] holds the list
+    /// complete: a new variant fails to compile there until it is given a
+    /// slot, and a test checks each slot names its own variant.
+    pub const ALL: [Self; 3] = [Self::PerPeer, Self::Global, Self::TrackingFull];
+
+    /// This variant's position in [`Self::ALL`].
+    #[must_use]
+    pub const fn position(self) -> usize {
+        match self {
+            Self::PerPeer => 0,
+            Self::Global => 1,
+            Self::TrackingFull => 2,
+        }
+    }
+}
+
 /// Fixed-window counter with a global ceiling and a per-peer cap.
 ///
 /// The global ceiling bounds total load; the per-peer cap adds fairness, so a

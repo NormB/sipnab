@@ -473,6 +473,169 @@ impl StreamSummary {
     }
 }
 
+/// Who is feeding a HEP listener, who stopped, and who it is turning away.
+///
+/// ONE shape for every surface that answers the question: `--hep-senders` at
+/// the end of a run, `GET /v1/hep/senders`, the MCP `hep_senders` tool and the
+/// TUI's HEP senders view all serialize or render this struct, built by
+/// [`crate::capture::hep_roster::RosterState::report`]. A second shape would
+/// be a second answer, and REST and MCP must return the same bytes for one
+/// roster.
+///
+/// # What the identity is, and is not
+///
+/// Every sender is keyed by the capture-agent id it CLAIMS (HEP chunk
+/// `0x000c`) and the address its packets came from. Neither is proven: one
+/// shared secret serves the whole listener, so any sender holding it can
+/// claim any id, and no client certificate is asked for. Each row says so in
+/// `identity`, rather than a reader inferring a proof that was never made.
+///
+/// # What it holds
+///
+/// Counters, addresses, ids and times. No byte of any packet, so it needs no
+/// fencing on the MCP surface for the reason `runtime_stats` needs none.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[cfg_attr(feature = "mcp", derive(rmcp::schemars::JsonSchema))]
+#[cfg_attr(feature = "mcp", schemars(crate = "rmcp::schemars"))]
+pub struct HepSendersReport {
+    /// Wire-format version of this envelope.
+    pub schema_version: u32,
+    /// Whether this run has a HEP listener at all. `false` is a run with no
+    /// `-L`/`--hep-listen`, and every count below is then zero because
+    /// nothing was listening, not because nothing was sent.
+    pub listening: bool,
+    /// The trust the listener admits packets under: `unauthenticated`,
+    /// `shared_secret_plain` or `shared_secret_hmac`. Absent when not
+    /// listening.
+    pub trust: Option<String>,
+    /// Seconds without an admitted packet before a sender, or the whole
+    /// listener, is reported silent (`--hep-silence-warn`). `0` means the
+    /// warning is off, and no sender is ever reported silent.
+    pub silence_threshold_seconds: u64,
+    /// Every packet the listener received, admitted or refused.
+    pub packets_received: u64,
+    /// Packets admitted to the capture.
+    pub packets_admitted: u64,
+    /// Packets refused, for any reason.
+    pub packets_refused: u64,
+    /// Refused packets by reason, every reason present, zeros included, so a
+    /// reader can tell "never happened" from "not reported".
+    pub refused_by_reason: std::collections::BTreeMap<String, u64>,
+    /// Senders the listener is tracking, whether or not all are listed below.
+    pub senders_tracked: u64,
+    /// The most senders it will track (`[limits] max_tracked_peers`). Past it
+    /// a new sender is still admitted, but is neither listed nor numbered.
+    pub senders_limit: u64,
+    /// Tracked senders silent for at least the threshold.
+    pub senders_silent: u64,
+    /// Packets admitted from senders that arrived after the tracking table
+    /// was full. Counted rather than dropped from the account: the table
+    /// refuses new entries instead of recycling old ones, so these are the
+    /// traffic the rows below cannot show.
+    pub untracked_packets: u64,
+    /// The tracked senders, by peer address and then capture id, at most the
+    /// row limit the caller asked for.
+    pub senders: Vec<HepSenderRow>,
+    /// Distinct addresses the refused-source table holds now.
+    pub refused_sources_tracked: u64,
+    /// The most addresses that table will hold. It evicts the address refused
+    /// least recently, so a spoofed flood rotates it rather than freezing it.
+    pub refused_sources_limit: u64,
+    /// Addresses evicted from that table to make room. Their refusals still
+    /// count in `refused_by_reason`, which nothing evicts.
+    pub refused_sources_evicted: u64,
+    /// The refused sources, most refused first, at most the row limit the
+    /// caller asked for.
+    pub refused_sources: Vec<HepRefusedSourceRow>,
+    /// Why every count is zero, when the run has no HEP listener.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
+/// One sender feeding a HEP listener.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[cfg_attr(feature = "mcp", derive(rmcp::schemars::JsonSchema))]
+#[cfg_attr(feature = "mcp", schemars(crate = "rmcp::schemars"))]
+pub struct HepSenderRow {
+    /// The source half of every frame pointer this sender's packets carry
+    /// (`hep:<capture-id>@<peer>`), so a row and a pointer name one sender
+    /// the same way.
+    pub source: String,
+    /// The capture-agent id the sender claims, when its packets carry one.
+    pub capture_id: Option<u32>,
+    /// The address its packets came from.
+    pub peer: String,
+    /// Always `claimed_by_sender`: the id is what the sender says, and no
+    /// certificate or per-sender key proves it.
+    pub identity: String,
+    /// The trust the listener admitted it under.
+    pub trust: String,
+    /// Packets admitted from it.
+    pub packets: u64,
+    /// When its first admitted packet arrived (RFC 3339, UTC).
+    pub first_seen: String,
+    /// When its latest admitted packet arrived (RFC 3339, UTC).
+    pub last_seen: String,
+    /// Whole seconds since then.
+    pub idle_seconds: u64,
+    /// Whether it has been silent for at least the threshold. "Silent", not
+    /// "down": a PBX with no calls at night may legitimately send nothing.
+    pub silent: bool,
+}
+
+/// One address the listener has been turning away.
+///
+/// Keyed by address alone, never by the capture id a refused packet claimed:
+/// a packet that failed authentication has proven nothing, including its id.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[cfg_attr(feature = "mcp", derive(rmcp::schemars::JsonSchema))]
+#[cfg_attr(feature = "mcp", schemars(crate = "rmcp::schemars"))]
+pub struct HepRefusedSourceRow {
+    /// The address the refused packets came from.
+    pub peer: String,
+    /// Packets refused from it while it has been in the table.
+    pub packets: u64,
+    /// Those packets by reason, only the reasons that occurred.
+    pub by_reason: std::collections::BTreeMap<String, u64>,
+    /// When the first of them arrived (RFC 3339, UTC).
+    pub first_seen: String,
+    /// When the latest of them arrived (RFC 3339, UTC).
+    pub last_seen: String,
+}
+
+impl HepSendersReport {
+    /// The answer for a run with no HEP listener: every count zero, and a note
+    /// saying why, so "nothing is listening" cannot read as "nobody is
+    /// sending".
+    #[must_use]
+    pub fn not_listening() -> Self {
+        Self {
+            schema_version: 1,
+            listening: false,
+            trust: None,
+            silence_threshold_seconds: 0,
+            packets_received: 0,
+            packets_admitted: 0,
+            packets_refused: 0,
+            refused_by_reason: std::collections::BTreeMap::new(),
+            senders_tracked: 0,
+            senders_limit: 0,
+            senders_silent: 0,
+            untracked_packets: 0,
+            senders: Vec::new(),
+            refused_sources_tracked: 0,
+            refused_sources_limit: 0,
+            refused_sources_evicted: 0,
+            refused_sources: Vec::new(),
+            note: Some(
+                "this run has no HEP listener (-L/--hep-listen), so there are no senders to \
+                 report"
+                    .to_string(),
+            ),
+        }
+    }
+}
+
 #[cfg(test)]
 /// The wideband fields on `StreamSummary`.
 ///

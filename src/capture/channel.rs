@@ -89,6 +89,16 @@ pub struct CaptureMeter {
     /// Cumulative count of sends that found the channel at capacity
     /// (`try_send` failed), including instant recoveries.
     capacity_hits: Arc<AtomicU64>,
+    /// What the HEP listener feeding this channel knows about its senders,
+    /// once one has attached it.
+    ///
+    /// Carried here because the meter is already the per-capture handle every
+    /// surface holds — the metrics server, `GET /v1/runtime`, `runtime_stats`
+    /// and the TUI each receive it from the composition root — so the roster
+    /// reaches all of them without a second path through each, and a test's
+    /// channel carries its own roster rather than a process-wide one. Reading
+    /// the handle is lock-free; reading the roster takes its own lock, briefly.
+    hep_roster: Arc<std::sync::OnceLock<crate::capture::hep_roster::HepRoster>>,
 }
 
 impl CaptureMeter {
@@ -99,7 +109,24 @@ impl CaptureMeter {
             in_flight: Arc::new(AtomicUsize::new(0)),
             backpressure_blocks: Arc::new(AtomicU64::new(0)),
             capacity_hits: Arc::new(AtomicU64::new(0)),
+            hep_roster: Arc::new(std::sync::OnceLock::new()),
         }
+    }
+
+    /// Attach the roster of the HEP listener feeding this channel.
+    ///
+    /// # Returns
+    ///
+    /// `false` when a roster was already attached, which leaves the first in
+    /// place: one channel is fed by at most one HEP listener.
+    pub fn attach_hep_roster(&self, roster: crate::capture::hep_roster::HepRoster) -> bool {
+        self.hep_roster.set(roster).is_ok()
+    }
+
+    /// The roster of the HEP listener feeding this channel, once attached.
+    #[must_use]
+    pub fn hep_roster(&self) -> Option<&crate::capture::hep_roster::HepRoster> {
+        self.hep_roster.get()
     }
 
     /// Packets currently buffered (sent but not yet received).

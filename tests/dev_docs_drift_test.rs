@@ -705,7 +705,12 @@ fn linked_code_targets_exist() {
     // spawn harness uses, so a SIGKILLed child no longer drops its coverage.
     // Attributed by counting every page under `docs/internals/` against HEAD:
     // testing.md moved 96 -> 97 and no other page changed.
-    const EXPECTED_CODE_LINKS: usize = 432;
+    // 432 -> 433: one, in `docs/internals/invariants.md`, where invariant 4
+    // gains the HEP sender roster's two attacker-keyed maps and links
+    // `src/capture/hep_roster.rs`. Attributed by counting every page under
+    // `docs/internals/` against HEAD: invariants.md gained exactly that link
+    // and no other page changed.
+    const EXPECTED_CODE_LINKS: usize = 433;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \

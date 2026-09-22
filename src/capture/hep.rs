@@ -31,7 +31,7 @@ use anyhow::{Context, Result, bail, ensure};
 use chrono::{DateTime, TimeZone, Utc};
 
 use super::CaptureConfig;
-use super::hep_roster::{HepRefusal, ListenerSilence, SilenceWarning};
+use super::hep_roster::{HepRefusal, HepRoster, RosterState, SenderTrust, Sweep};
 use super::packet::{Packet, PreParsed};
 use super::parse::ParsedPacket;
 use crate::net::TransportProto;
@@ -85,6 +85,10 @@ const HEP2_MIN_HEADER: usize = 16;
 
 // ── HEP→Packet conversion ────────────────────────────────────────────
 
+// The sender's name lives beside the roster keyed on it, so the roster and
+// every frame pointer name a sender with one function.
+pub(crate) use super::hep_roster::hep_source_label;
+
 /// Convert a parsed [`HepPacket`] into a [`Packet`] tagged with
 /// `pre_parsed` metadata. The downstream parser short-circuits on
 /// `pre_parsed`, treating `data` as the transport-layer payload only
@@ -97,42 +101,21 @@ const HEP2_MIN_HEADER: usize = 16;
 /// would mis-interpret as an IPv4 header (e.g. `INVITE`'s first byte
 /// `0x49` parses as IPv4 IHL=9), silently dropping every HEP message.
 ///
+/// The inner addresses and ports come from the HEP chunks rather than an IP
+/// header walk, and `source` names where the frame came from — see
+/// [`hep_source_label`], which is what makes a multi-node fan-in
+/// distinguishable.
+///
 /// # Arguments
 ///
 /// * `hep` — the parsed HEP packet whose payload and metadata to convert.
-/// * `source` — listener bind address, recorded as interface `"hep:{source}"`.
+/// * `source` — the sender, as [`hep_source_label`] names it, recorded as
+///   interface `"hep:{source}"`.
 ///
 /// # Returns
 ///
 /// A `Packet` whose `data` is the HEP payload and whose `pre_parsed`
 /// carries the HEP-asserted addressing.
-/// Identify the SENDER of a HEP packet — the node whose traffic this is —
-/// rather than the listener that received it.
-///
-/// The listener used to record its own bind address, so a collector fed by an
-/// SBC and two PBXes labeled every dialog `hep:0.0.0.0:9060`. Every node
-/// collapsed into one identity, and "which node did this leg come from" had no
-/// answer even though the answer arrived in the packet: HEP chunk 0x000c
-/// carries the sender's capture-agent id (`--hep-id`), and the datagram's peer
-/// address says where it came from. Both were parsed and discarded.
-///
-/// The id alone is not enough — it defaults to 1, so an estate that never sets
-/// it would collapse again — and the address alone is not enough either, since
-/// two sipnab instances can share a host. Both, so neither collision hides a
-/// node.
-pub(crate) fn hep_source_label(capture_id: Option<u32>, peer: IpAddr) -> String {
-    match capture_id {
-        Some(id) => format!("{id}@{peer}"),
-        None => peer.to_string(),
-    }
-}
-
-/// Turn a parsed HEP packet into a `Packet` the rest of the pipeline accepts.
-///
-/// The inner addresses and ports come from the HEP chunks rather than an IP
-/// header walk, and `source` names where the frame came from — see
-/// [`hep_source_label`], which is what makes a multi-node fan-in
-/// distinguishable.
 fn hep_to_packet(hep: HepPacket, source: &str) -> Packet {
     Packet::with_pre_parsed(
         hep.timestamp,
@@ -153,65 +136,6 @@ fn hep_to_packet(hep: HepPacket, source: &str) -> Packet {
             }),
         },
     )
-}
-
-/// One listener's frame numbering, kept per SENDER.
-///
-/// A HEP listener is a fan-in: one socket, many nodes. Ordinals are per source
-/// and a source here is a sender, not the listener — the same distinction
-/// [`hep_source_label`] exists to make. One listener-wide counter would number
-/// an SBC's frames with a PBX's positions, so every pointer either side minted
-/// would name a gap, and following one would find nothing where a real frame
-/// was claimed to be.
-///
-/// # Why the table is bounded, and why it refuses instead of recycling
-///
-/// The label is built from the sender's capture-agent id, which absent
-/// `--hep-auth` is a number an unauthenticated peer chooses freely — so one
-/// host can mint unbounded distinct labels and this map is attacker-growable
-/// exactly as the rate limiter's peer table is. It therefore shares that
-/// table's bound.
-///
-/// At the bound a new sender gets NO ordinal rather than a recycled counter.
-/// Recycling would mint a second frame 0 for a source that already had one:
-/// two different datagrams with the same name, which is precisely the
-/// confident wrong answer the pointer system exists to prevent.
-/// [`crate::capture::packet::Packet::frame_ref`] already needs both halves, so
-/// an unstamped packet reports "unknown" downstream, which is true.
-struct HepFrameOrdinals {
-    /// Source label (`<capture-id>@<peer>`) to that sender's own counter.
-    counters: std::collections::HashMap<String, crate::capture::packet::FrameCounter>,
-    /// Distinct senders this listener will number, matching the rate
-    /// limiter's per-peer bound.
-    max_sources: usize,
-}
-
-impl HepFrameOrdinals {
-    /// A listener that will number at most `max_sources` distinct senders.
-    fn new(max_sources: usize) -> Self {
-        Self {
-            counters: std::collections::HashMap::new(),
-            max_sources,
-        }
-    }
-
-    /// Where the next frame from `source` sits in that sender's own stream, or
-    /// `None` once this listener is already numbering `max_sources` senders
-    /// and this is a new one.
-    fn next_origin(&mut self, source: &str) -> Option<crate::capture::packet::FrameOrigin> {
-        if let Some(counter) = self.counters.get_mut(source) {
-            return Some(counter.next_origin());
-        }
-        if self.counters.len() >= self.max_sources {
-            return None;
-        }
-        Some(
-            self.counters
-                .entry(source.to_string())
-                .or_default()
-                .next_origin(),
-        )
-    }
 }
 
 // ── Receiver-side authentication & bind policy ───────────────────────
@@ -429,6 +353,33 @@ pub enum HmacAuthError {
     BadMac,
     /// A token with this nonce was already accepted within the window.
     Replay,
+}
+
+#[cfg(feature = "hep")]
+impl HmacAuthError {
+    /// Every variant, so the listener can prove its refusal vocabulary covers
+    /// this one. [`Self::position`] holds the list complete: a new variant
+    /// fails to compile there until it is given a slot, and a test checks each
+    /// slot names its own variant.
+    pub const ALL: [Self; 5] = [
+        Self::BadFormat,
+        Self::UnsupportedVersion,
+        Self::TimestampOutOfWindow,
+        Self::BadMac,
+        Self::Replay,
+    ];
+
+    /// This variant's position in [`Self::ALL`].
+    #[must_use]
+    pub const fn position(self) -> usize {
+        match self {
+            Self::BadFormat => 0,
+            Self::UnsupportedVersion => 1,
+            Self::TimestampOutOfWindow => 2,
+            Self::BadMac => 3,
+            Self::Replay => 4,
+        }
+    }
 }
 
 /// The verifier's reasons, in the listener's vocabulary.
@@ -1820,13 +1771,36 @@ struct HepIngest<'a> {
     hmac_window_secs: u64,
     /// Global ceiling plus per-peer fairness.
     rate_limiter: HepRateLimiter,
-    /// Per-SENDER frame numbering.
-    frames: HepFrameOrdinals,
     /// Per-listener replay cache for HMAC auth mode.
     hmac_nonce_cache: HmacNonceCache,
-    /// How long since this listener last admitted anything, and what it
-    /// turned away meanwhile.
-    silence: ListenerSilence,
+    /// Who is feeding this listener, how long since it last admitted
+    /// anything and what it turned away meanwhile — and each sender's own
+    /// frame numbering, which is the same per-sender table. Shared with every
+    /// surface that reports senders.
+    roster: HepRoster,
+}
+
+/// The roster a listener with these options keeps: its trust from the
+/// configured secret and mode, its bound from the peer-tracking bound, its
+/// silence threshold from `--hep-silence-warn`.
+///
+/// # Arguments
+///
+/// * `opts` — the listener's options.
+/// * `now`, `wall` — the listener's start, on the monotonic and wall clocks.
+fn listener_roster(opts: &HepListenerOpts<'_>, now: Instant, wall: DateTime<Utc>) -> HepRoster {
+    let trust = match (opts.auth_key, opts.auth_mode) {
+        (None, _) => SenderTrust::Unauthenticated,
+        (Some(_), HepAuthMode::Plain) => SenderTrust::SharedSecretPlain,
+        (Some(_), HepAuthMode::Hmac) => SenderTrust::SharedSecretHmac,
+    };
+    HepRoster::new(RosterState::new(
+        trust,
+        opts.max_tracked_peers,
+        opts.silence_warn_after,
+        now,
+        wall,
+    ))
 }
 
 /// What became of one received HEP packet.
@@ -1836,6 +1810,9 @@ struct Received {
     /// How long the listener had gone without admitting anything, when this
     /// packet ends a quiet period it already warned about.
     resumed_after: Option<Duration>,
+    /// The sender, and how long it had been silent, when this packet ends a
+    /// silence that sender was already reported for.
+    sender_resumed: Option<(String, Duration)>,
 }
 
 impl<'a> HepIngest<'a> {
@@ -1844,11 +1821,10 @@ impl<'a> HepIngest<'a> {
     /// # Arguments
     ///
     /// * `opts` — the operator's listener options.
-    /// * `now` — when the listener started, which begins the first quiet
-    ///   period.
-    fn new(opts: &HepListenerOpts<'a>, now: Instant) -> Self {
+    /// * `roster` — the roster this listener feeds, from [`listener_roster`].
+    fn new(opts: &HepListenerOpts<'a>, roster: HepRoster) -> Self {
         Self {
-            silence: ListenerSilence::new(opts.silence_warn_after, now),
+            roster,
             allowlist: opts.allowlist,
             auth_key: opts.auth_key,
             auth_mode: opts.auth_mode,
@@ -1858,7 +1834,6 @@ impl<'a> HepIngest<'a> {
                 opts.per_peer_rate_limit,
                 opts.max_tracked_peers,
             ),
-            frames: HepFrameOrdinals::new(opts.max_tracked_peers),
             hmac_nonce_cache: HmacNonceCache::new(),
         }
     }
@@ -1891,34 +1866,54 @@ impl<'a> HepIngest<'a> {
     ///
     /// # Side effects
     ///
-    /// Those of [`Self::admit`], plus the silence watch's.
+    /// Those of [`Self::admit`], plus the roster's: an admitted packet is
+    /// counted against its sender and restarts both watches; a refused one is
+    /// counted against its address and its reason.
     fn receive(&mut self, datagram: &[u8], peer: IpAddr, now: Instant) -> Received {
         match self.admit(datagram, peer) {
-            Ok(packet) => Received {
-                packet: Some(packet),
-                resumed_after: self.silence.on_admitted(now),
-            },
+            Ok(hep) => {
+                // Provenance is the SENDER, not this listener — see
+                // hep_source_label. The roster keys on the same string.
+                let source = hep_source_label(hep.capture_id, peer);
+                let admission = self
+                    .roster
+                    .lock()
+                    .admitted(hep.capture_id, peer, &source, now);
+                let mut packet = hep_to_packet(hep, &source);
+                // The other half of the pointer. Stamped from the SENDER's
+                // counter, not the listener's, and before the send for the
+                // same reason the offline readers stamp before theirs: once
+                // the packet is on the shared channel this thread cannot amend
+                // it, and the live member of a composite is interleaving its
+                // own packets onto the same channel, so arrival order says
+                // nothing about position.
+                packet.origin = admission.origin;
+                Received {
+                    packet: Some(packet),
+                    resumed_after: admission.listener_resumed,
+                    sender_resumed: admission.sender_resumed.map(|d| (source, d)),
+                }
+            }
             Err(reason) => {
-                self.silence.on_refused(reason, peer);
+                self.roster.lock().refused(reason, peer, now);
                 Received {
                     packet: None,
                     resumed_after: None,
+                    sender_resumed: None,
                 }
             }
         }
     }
 
-    /// Poll the silence watch at `now`.
-    ///
-    /// # Returns
-    ///
-    /// The warning to log, the first time this listener has gone the whole
-    /// threshold without admitting a packet.
-    fn check_silence(&mut self, now: Instant) -> Option<SilenceWarning> {
-        self.silence.check(now)
+    /// Poll the roster for silence at `now`: the listener's, and each
+    /// sender's.
+    fn sweep(&mut self, now: Instant) -> Sweep {
+        self.roster.lock().sweep(now)
     }
 
-    /// One received HEP packet, converted for the pipeline or dropped.
+    /// The listener's checks on one received HEP packet, in the order it asks
+    /// them: who sent it, how fast, whether it parses, whether it proves it
+    /// came from a trusted producer.
     ///
     /// # Arguments
     ///
@@ -1927,7 +1922,7 @@ impl<'a> HepIngest<'a> {
     ///
     /// # Returns
     ///
-    /// The `Packet` to forward.
+    /// The parsed packet, admitted.
     ///
     /// # Errors
     ///
@@ -1936,9 +1931,13 @@ impl<'a> HepIngest<'a> {
     ///
     /// # Side effects
     ///
-    /// Advances the rate limiter's window, the per-sender frame ordinal and,
-    /// in `Hmac` mode, the replay cache.
-    fn admit(&mut self, datagram: &[u8], peer: IpAddr) -> std::result::Result<Packet, HepRefusal> {
+    /// Advances the rate limiter's window and, in `Hmac` mode, the replay
+    /// cache.
+    fn admit(
+        &mut self,
+        datagram: &[u8],
+        peer: IpAddr,
+    ) -> std::result::Result<HepPacket, HepRefusal> {
         if !self.peer_allowed(peer) {
             tracing::debug!("Dropping HEP packet from non-allowed source {peer}");
             return Err(HepRefusal::Allowlist);
@@ -1980,18 +1979,7 @@ impl<'a> HepIngest<'a> {
             );
             return Err(reason);
         }
-
-        // Provenance is the SENDER, not this listener — see hep_source_label.
-        let source = hep_source_label(hep.capture_id, peer);
-        let mut packet = hep_to_packet(hep, &source);
-        // The other half of the pointer. Stamped from the SENDER's counter,
-        // not the listener's, and before the send for the same reason the
-        // offline readers stamp before theirs: once the packet is on the
-        // shared channel this thread cannot amend it, and the live member of a
-        // composite is interleaving its own packets onto the same channel, so
-        // arrival order says nothing about position.
-        packet.origin = self.frames.next_origin(&source);
-        Ok(packet)
+        Ok(hep)
     }
 }
 
@@ -2059,6 +2047,8 @@ struct HepStreamShared<'a, 'o> {
     config: &'a CaptureConfig,
     /// When the listener began, for `--duration`.
     start: Instant,
+    /// The listener's address as the operator gave it, for log lines.
+    bind_addr: &'a str,
 }
 
 /// Read one stream connection to its end, handing whole HEP packets to
@@ -2094,6 +2084,7 @@ fn serve_hep_stream<R: std::io::Read>(
         stop,
         config,
         start,
+        bind_addr,
         ..
     } = shared;
     let start = *start;
@@ -2134,16 +2125,9 @@ fn serve_hep_stream<R: std::io::Read>(
             // rate limiter, parser or auth still makes progress toward the
             // limit rather than appearing to stall.
             received.fetch_add(1, Ordering::Relaxed);
-            let Received {
-                packet,
-                resumed_after,
-            } = ingest.lock().receive(&buf[..total], peer, Instant::now());
-            if let Some(outage) = resumed_after {
-                tracing::info!(
-                    "HEP listener: traffic resumed after {}s idle",
-                    outage.as_secs()
-                );
-            }
+            let outcome = ingest.lock().receive(&buf[..total], peer, Instant::now());
+            log_resumed(&outcome, bind_addr);
+            let packet = outcome.packet;
             buf.drain(..total);
             if let Some(packet) = packet
                 && tx.send(packet).is_err()
@@ -2179,6 +2163,51 @@ fn serve_hep_stream<R: std::io::Read>(
     }
 }
 
+/// Log what one sweep of the roster found. One place for the wording, so the
+/// datagram and stream listeners cannot describe the same silence twice.
+///
+/// Each sender is named once per silence, at most
+/// [`crate::capture::hep_roster::HEP_SILENCE_LINES_PER_SWEEP`] per sweep with
+/// the rest counted in one line. "Silent", never "down": a PBX with no calls
+/// at night may legitimately send nothing.
+fn log_sweep(sweep: Sweep, bind_addr: &str, datagram: bool) {
+    if let Some(warning) = sweep.listener {
+        tracing::warn!("{}", warning.render(bind_addr, datagram));
+    }
+    for silent in sweep.silent {
+        tracing::warn!(
+            "HEP listener on {bind_addr}: sender {} silent for {}s — nothing from it \
+             admitted in that time; capture is still listening",
+            silent.source,
+            silent.idle.as_secs()
+        );
+    }
+    if sweep.silent_not_listed > 0 {
+        tracing::warn!(
+            "HEP listener on {bind_addr}: {} more sender(s) went silent in the same \
+             sweep; --hep-senders, GET /v1/hep/senders or the MCP hep_senders tool \
+             lists them",
+            sweep.silent_not_listed
+        );
+    }
+}
+
+/// Log the resumptions one received packet reported.
+fn log_resumed(received: &Received, bind_addr: &str) {
+    if let Some(outage) = received.resumed_after {
+        tracing::info!(
+            "HEP listener on {bind_addr}: traffic resumed after {}s idle",
+            outage.as_secs()
+        );
+    }
+    if let Some((source, outage)) = &received.sender_resumed {
+        tracing::info!(
+            "HEP listener on {bind_addr}: sender {source} resumed after {}s silent",
+            outage.as_secs()
+        );
+    }
+}
+
 /// Serve HEP over TCP or TLS: accept connections and read each as a stream of
 /// length-prefixed HEP v3 packets.
 ///
@@ -2201,6 +2230,7 @@ fn capture_hep_stream(
     config: &CaptureConfig,
     tx: PacketTx,
     opts: &HepListenerOpts<'_>,
+    roster: HepRoster,
     tls: Option<std::sync::Arc<rustls::ServerConfig>>,
     ready_tx: Option<crossbeam_channel::Sender<Result<(), String>>>,
 ) -> Result<()> {
@@ -2232,12 +2262,13 @@ fn capture_hep_stream(
     tracing::info!("HEP listener started on {actual_addr} ({})", opts.transport);
 
     let shared = HepStreamShared {
-        ingest: parking_lot::Mutex::new(HepIngest::new(opts, Instant::now())),
+        ingest: parking_lot::Mutex::new(HepIngest::new(opts, roster)),
         received: AtomicU64::new(0),
         stop: AtomicBool::new(false),
         live: AtomicUsize::new(0),
         config,
         start: Instant::now(),
+        bind_addr,
     };
     let mut fatal: Option<anyhow::Error> = None;
 
@@ -2263,10 +2294,8 @@ fn capture_hep_stream(
             // Every pass, as the datagram loop does: readers on other threads
             // feed the watch, and this loop is the one that polls it. Taken as
             // a value so the ingest lock is not held while the line is written.
-            let warning = shared.ingest.lock().check_silence(Instant::now());
-            if let Some(warning) = warning {
-                tracing::warn!("{}", warning.render(bind_addr, false));
-            }
+            let sweep = shared.ingest.lock().sweep(Instant::now());
+            log_sweep(sweep, bind_addr, false);
 
             let (sock, peer) = match listener.accept() {
                 Ok(pair) => pair,
@@ -2528,10 +2557,20 @@ pub fn capture_hep(
         );
     }
 
+    // One roster per listener, hung on the capture meter every surface already
+    // holds, so `--hep-senders`, REST, MCP and the TUI all read this one.
+    let roster = listener_roster(opts, Instant::now(), Utc::now());
+    if !tx.meter().attach_hep_roster(roster.clone()) {
+        tracing::debug!(
+            "HEP listener on {bind_addr}: this capture channel already carries a sender \
+             roster, so this listener's is not the one its surfaces report"
+        );
+    }
+
     match opts.transport {
-        HepTransport::Udp => capture_hep_udp(bind_addr, config, tx, opts, ready_tx),
+        HepTransport::Udp => capture_hep_udp(bind_addr, config, tx, opts, roster, ready_tx),
         HepTransport::Tcp | HepTransport::Tls => {
-            capture_hep_stream(bind_addr, config, tx, opts, tls, ready_tx)
+            capture_hep_stream(bind_addr, config, tx, opts, roster, tls, ready_tx)
         }
     }
 }
@@ -2558,6 +2597,7 @@ fn capture_hep_udp(
     config: &CaptureConfig,
     tx: PacketTx,
     opts: &HepListenerOpts<'_>,
+    roster: HepRoster,
     ready_tx: Option<crossbeam_channel::Sender<Result<(), String>>>,
 ) -> Result<()> {
     let socket = match UdpSocket::bind(bind_addr)
@@ -2591,7 +2631,7 @@ fn capture_hep_udp(
     let start = Instant::now();
     let mut count: u64 = 0;
     let mut buf = vec![0u8; 65535];
-    let mut ingest = HepIngest::new(opts, start);
+    let mut ingest = HepIngest::new(opts, roster);
 
     // Log the actual bound address: with port 0 the OS assigns an ephemeral
     // port, so logging `bind_addr` would print ":0" (mirrors the REST API).
@@ -2625,9 +2665,7 @@ fn capture_hep_udp(
         // refused packets arrive faster than the read timeout would otherwise
         // starve the check, and the warning it exists to raise is exactly the
         // one that sender needs.
-        if let Some(warning) = ingest.check_silence(Instant::now()) {
-            tracing::warn!("{}", warning.render(bind_addr, true));
-        }
+        log_sweep(ingest.sweep(Instant::now()), bind_addr, true);
 
         let (n, peer) = match socket.recv_from(&mut buf) {
             Ok((n, peer)) => (n, peer),
@@ -2652,17 +2690,9 @@ fn capture_hep_udp(
         // The DATAGRAM, not the payload, reaches `admit`: in Hmac mode the
         // token authenticates every byte that arrived on this socket, so the
         // src/dst chunks are inside the signature rather than beside it.
-        let Received {
-            packet,
-            resumed_after,
-        } = ingest.receive(&buf[..n], peer.ip(), Instant::now());
-        if let Some(outage) = resumed_after {
-            tracing::info!(
-                "HEP listener on {bind_addr}: traffic resumed after {}s idle",
-                outage.as_secs()
-            );
-        }
-        if let Some(packet) = packet
+        let received = ingest.receive(&buf[..n], peer.ip(), Instant::now());
+        log_resumed(&received, bind_addr);
+        if let Some(packet) = received.packet
             && tx.send(packet).is_err()
         {
             tracing::debug!("Receiver dropped, stopping HEP listener");
@@ -7271,7 +7301,7 @@ mod tests {
     fn a_sender_whose_every_packet_is_refused_still_trips_the_silence_warning() {
         let opts = keyed_opts("the-right-key", Duration::from_secs(30));
         let t0 = Instant::now();
-        let mut ingest = HepIngest::new(&opts, t0);
+        let mut ingest = HepIngest::new(&opts, listener_roster(&opts, t0, Utc::now()));
         let peer: IpAddr = "192.0.2.7".parse().expect("literal");
         let wrong = hep3_from(7, Some("the-wrong-key"), b"OPTIONS sip:x SIP/2.0\r\n\r\n");
 
@@ -7284,7 +7314,7 @@ mod tests {
                 "control: a packet with the wrong key must be refused"
             );
             if warning.is_none() {
-                warning = ingest.check_silence(now);
+                warning = ingest.sweep(now).listener;
             }
         }
 
@@ -7320,12 +7350,15 @@ mod tests {
     fn an_admitted_packet_ends_the_quiet_period_it_interrupts() {
         let opts = keyed_opts("the-right-key", Duration::from_secs(30));
         let t0 = Instant::now();
-        let mut ingest = HepIngest::new(&opts, t0);
+        let mut ingest = HepIngest::new(&opts, listener_roster(&opts, t0, Utc::now()));
         let peer: IpAddr = "192.0.2.8".parse().expect("literal");
         let right = hep3_from(9, Some("the-right-key"), b"OPTIONS sip:x SIP/2.0\r\n\r\n");
 
         assert!(
-            ingest.check_silence(t0 + Duration::from_secs(31)).is_some(),
+            ingest
+                .sweep(t0 + Duration::from_secs(31))
+                .listener
+                .is_some(),
             "control: a listener that admitted nothing for 31s warns"
         );
         let received = ingest.receive(&right, peer, t0 + Duration::from_secs(40));
@@ -7336,7 +7369,10 @@ mod tests {
             "the first admitted packet after a warning reports the outage"
         );
         assert!(
-            ingest.check_silence(t0 + Duration::from_secs(60)).is_none(),
+            ingest
+                .sweep(t0 + Duration::from_secs(60))
+                .listener
+                .is_none(),
             "twenty seconds after an admitted packet is inside the threshold"
         );
     }
@@ -7347,9 +7383,10 @@ mod tests {
     fn a_listener_that_receives_nothing_keeps_the_original_warning() {
         let opts = keyed_opts("the-right-key", Duration::from_secs(30));
         let t0 = Instant::now();
-        let mut ingest = HepIngest::new(&opts, t0);
+        let mut ingest = HepIngest::new(&opts, listener_roster(&opts, t0, Utc::now()));
         let warning = ingest
-            .check_silence(t0 + Duration::from_secs(30))
+            .sweep(t0 + Duration::from_secs(30))
+            .listener
             .expect("thirty seconds of nothing warns");
         assert_eq!(warning.refused, 0);
         assert_eq!(warning.dominant, None, "nothing was refused");
@@ -7358,6 +7395,188 @@ mod tests {
             line.contains("no packets for 30s") && line.contains("UDP gives no error"),
             "{line}"
         );
+    }
+
+    // ── The roster, as the listener feeds it ─────────────────────────────
+
+    /// **Every reason the rate limiter or the HMAC verifier can give lands
+    /// under a roster reason of its own, and the roster's vocabulary is
+    /// exactly those plus the listener's own four checks.**
+    ///
+    /// Derived from the two enums' own variant lists rather than a list typed
+    /// here, so a variant added to either is covered — or refused — the day it
+    /// is added. Two source reasons collapsing onto one roster reason would
+    /// count, log and label things an operator fixes differently as one.
+    #[test]
+    fn every_source_reason_maps_onto_a_roster_reason_of_its_own() {
+        use crate::rate_limit::Refusal;
+        for (i, r) in Refusal::ALL.iter().enumerate() {
+            assert_eq!(r.position(), i, "Refusal::ALL out of step at {r:?}");
+        }
+        for (i, e) in HmacAuthError::ALL.iter().enumerate() {
+            assert_eq!(e.position(), i, "HmacAuthError::ALL out of step at {e:?}");
+        }
+        let mut image: Vec<HepRefusal> = Vec::new();
+        image.extend(Refusal::ALL.iter().map(|r| HepRefusal::from(*r)));
+        image.extend(HmacAuthError::ALL.iter().map(|e| HepRefusal::from(*e)));
+        let mapped = image.len();
+        // The four checks the listener makes itself, which no source enum
+        // carries.
+        image.extend([
+            HepRefusal::Allowlist,
+            HepRefusal::Malformed,
+            HepRefusal::AuthMissing,
+            HepRefusal::AuthMismatch,
+        ]);
+        let distinct: std::collections::BTreeSet<HepRefusal> = image.iter().copied().collect();
+        assert_eq!(
+            distinct.len(),
+            image.len(),
+            "two reasons collapsed onto one roster reason: {image:?}"
+        );
+        let vocabulary: std::collections::BTreeSet<HepRefusal> =
+            HepRefusal::ALL.iter().copied().collect();
+        assert_eq!(
+            distinct, vocabulary,
+            "the roster vocabulary is exactly the {mapped} mapped reasons and the \
+             listener's own four"
+        );
+    }
+
+    /// Listener options with an allowlist that excludes loopback.
+    fn allowlisted_opts(allow: &'static [CidrRange]) -> HepListenerOpts<'static> {
+        HepListenerOpts {
+            allowlist: allow,
+            ..keyed_opts("unused-key", Duration::from_secs(30))
+        }
+    }
+
+    /// **A packet the allowlist refuses is a refused source, never a sender.**
+    ///
+    /// The allowlist is the first question the listener asks, before the
+    /// packet is even parsed, so a packet it refuses has proven nothing about
+    /// who sent it. Counting it as an accepted sender — or at all before that
+    /// check — would put an address nobody allowed on the roster of who is
+    /// feeding the collector.
+    #[test]
+    fn a_packet_the_allowlist_refuses_is_a_refused_source_and_never_a_sender() {
+        static ALLOW: std::sync::OnceLock<Vec<CidrRange>> = std::sync::OnceLock::new();
+        let allow = ALLOW.get_or_init(|| CidrRange::parse("10.0.0.0/8").into_iter().collect());
+        let opts = allowlisted_opts(allow);
+        let t0 = Instant::now();
+        let roster = listener_roster(&opts, t0, Utc::now());
+        let mut ingest = HepIngest::new(&opts, roster.clone());
+        let outside: IpAddr = "192.0.2.50".parse().expect("literal");
+        let pkt = hep3_from(7, Some("unused-key"), b"OPTIONS sip:x SIP/2.0\r\n\r\n");
+        for s in 0..3 {
+            let got = ingest.receive(&pkt, outside, t0 + Duration::from_secs(s));
+            assert!(got.packet.is_none(), "control: the allowlist refuses it");
+        }
+        let rep = roster.report(usize::MAX);
+        assert!(
+            rep.senders.is_empty(),
+            "an address the allowlist refused is on the roster: {:?}",
+            rep.senders
+        );
+        assert_eq!(rep.packets_admitted, 0);
+        assert_eq!(rep.refused_by_reason.get("allowlist").copied(), Some(3));
+        assert_eq!(rep.refused_sources.len(), 1);
+        assert_eq!(rep.refused_sources[0].peer, "192.0.2.50");
+    }
+
+    /// **Two senders and one wrong-key sender, through the listener's own
+    /// path**: two roster entries with their counts, and the wrong key as a
+    /// refused source under `auth_mismatch`.
+    #[test]
+    fn the_listener_path_feeds_the_roster_with_senders_and_refusals() {
+        let opts = keyed_opts("the-right-key", Duration::from_secs(30));
+        let t0 = Instant::now();
+        let roster = listener_roster(&opts, t0, Utc::now());
+        let mut ingest = HepIngest::new(&opts, roster.clone());
+        let a: IpAddr = "10.1.0.7".parse().expect("literal");
+        let b: IpAddr = "10.1.0.9".parse().expect("literal");
+        let bad: IpAddr = "10.1.0.66".parse().expect("literal");
+        let body = b"OPTIONS sip:x SIP/2.0\r\n\r\n";
+        for s in 0..3 {
+            let now = t0 + Duration::from_secs(s);
+            assert!(
+                ingest
+                    .receive(&hep3_from(7, Some("the-right-key"), body), a, now)
+                    .packet
+                    .is_some()
+            );
+            assert!(
+                ingest
+                    .receive(&hep3_from(9, Some("the-right-key"), body), b, now)
+                    .packet
+                    .is_some()
+            );
+            assert!(
+                ingest
+                    .receive(&hep3_from(7, Some("the-wrong-key"), body), bad, now)
+                    .packet
+                    .is_none()
+            );
+        }
+        assert!(
+            ingest
+                .receive(&hep3_from(9, Some("the-right-key"), body), b, t0)
+                .packet
+                .is_some()
+        );
+        let rep = roster.report(usize::MAX);
+        let rows: Vec<(&str, u64)> = rep
+            .senders
+            .iter()
+            .map(|s| (s.source.as_str(), s.packets))
+            .collect();
+        assert_eq!(rows, vec![("hep:7@10.1.0.7", 3), ("hep:9@10.1.0.9", 4)]);
+        assert_eq!(rep.trust.as_deref(), Some("shared_secret_plain"));
+        assert_eq!(rep.refused_sources.len(), 1);
+        assert_eq!(rep.refused_sources[0].peer, "10.1.0.66");
+        assert_eq!(
+            rep.refused_sources[0]
+                .by_reason
+                .get("auth_mismatch")
+                .copied(),
+            Some(3)
+        );
+        assert_eq!(rep.packets_received, 10);
+    }
+
+    /// `capture_hep` hands its roster to the capture channel's meter, which
+    /// is how every surface that already holds the meter reaches it.
+    #[test]
+    fn a_listener_hangs_its_roster_on_the_capture_meter() {
+        let probe = UdpSocket::bind("127.0.0.1:0").expect("reserve a port");
+        let bind = probe.local_addr().expect("local_addr").to_string();
+        drop(probe);
+        let config = CaptureConfig {
+            count: Some(2),
+            duration: Some(Duration::from_secs(8)),
+            ..CaptureConfig::default()
+        };
+        let (rx, done) = start_listener(&bind, HepTransport::Udp, None, Vec::new(), None, config);
+        let sender = UdpSocket::bind("127.0.0.1:0").expect("bind sender");
+        for id in [7u32, 9] {
+            sender
+                .send_to(
+                    &hep3_from(id, None, b"OPTIONS sip:x SIP/2.0\r\n\r\n"),
+                    &bind,
+                )
+                .expect("send");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let _ = done.recv_timeout(MUST_ARRIVE);
+        let roster = rx
+            .meter()
+            .hep_roster()
+            .cloned()
+            .expect("the listener must attach its roster to the meter");
+        let rep = roster.report(usize::MAX);
+        let sources: Vec<&str> = rep.senders.iter().map(|s| s.source.as_str()).collect();
+        assert_eq!(sources, vec!["hep:7@127.0.0.1", "hep:9@127.0.0.1"]);
+        assert_eq!(rep.trust.as_deref(), Some("unauthenticated"));
     }
 
     // ── Per-source frame ordinals (SRC1 stage 2) ─────────────────────────
@@ -7503,31 +7722,6 @@ mod tests {
                  share a listener-wide counter: {per_source:?}"
             );
         }
-    }
-
-    /// The sender table is bounded, and at the bound it withholds an ordinal
-    /// rather than recycling one.
-    ///
-    /// The label carries a capture-agent id an unauthenticated peer chooses,
-    /// so one host can mint unbounded labels. Recycling a counter would give a
-    /// source a SECOND frame 0 — two datagrams with one name — so a new sender
-    /// past the bound gets nothing, and `frame_ref` then reports unknown,
-    /// which is true.
-    #[test]
-    fn a_new_hep_sender_past_the_bound_gets_no_ordinal_rather_than_a_recycled_one() {
-        let mut ord = HepFrameOrdinals::new(2);
-        assert_eq!(ord.next_origin("1@10.0.0.1").map(|o| o.ordinal), Some(0));
-        assert_eq!(ord.next_origin("2@10.0.0.1").map(|o| o.ordinal), Some(0));
-        assert_eq!(
-            ord.next_origin("3@10.0.0.1").map(|o| o.ordinal),
-            None,
-            "a third sender past a bound of two must be left unnumbered"
-        );
-        // The senders already being counted keep counting: the bound must not
-        // turn into a denial of provenance for the nodes that were there
-        // first.
-        assert_eq!(ord.next_origin("1@10.0.0.1").map(|o| o.ordinal), Some(1));
-        assert_eq!(ord.next_origin("2@10.0.0.1").map(|o| o.ordinal), Some(1));
     }
 
     /// A bare address is a HOST, so `--hep-allow 10.0.0.40` works without the
