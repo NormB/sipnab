@@ -363,12 +363,16 @@ pub fn write_pcap(path: &Path, frames: &[Vec<u8>]) {
 /// Wrap `data` in a gzip member built from STORED (uncompressed) deflate
 /// blocks.
 ///
-/// `flate2` is a main dependency, so an integration test cannot compress with
-/// it — and a checked-in `.gz` fixture would be a binary blob nobody can read
-/// a diff of. Stored blocks are the one deflate encoding short enough to emit
-/// by hand, and every gzip reader accepts them, which is all a test of the
-/// INFLATION CAP needs: the cap counts bytes coming out, not how they were
-/// packed.
+/// A checked-in `.gz` fixture would be a binary blob nobody can read a diff
+/// of, so the test builds one. Stored blocks are the one deflate encoding short
+/// enough to emit by hand, and every gzip reader accepts them, which is all a
+/// test of the INFLATION CAP needs: the cap counts bytes coming out, not how
+/// they were packed.
+///
+/// An integration test CAN compress for real when it needs to: `flate2` is a
+/// non-optional main dependency, and those are in scope for `tests/`. Only an
+/// OPTIONAL dependency such as `pcap` is out of reach, which is what the
+/// module header means. This comment used to say the opposite.
 pub fn gzip_stored(data: &[u8]) -> Vec<u8> {
     // Fixed header: magic, deflate method, no flags, no mtime, no extra
     // flags, unknown OS.
