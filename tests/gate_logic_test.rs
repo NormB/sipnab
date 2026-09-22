@@ -48,7 +48,7 @@ mod release_logic;
 use release_logic::{
     ADVERTISEMENT_PATHS, LOAD_VERIFICATION_RECORD, MAX_UNRELEASED_COMMITS, advertisement_path,
     debounce_ceiling, dependency_path, is_advertisement, is_advertisement_beside_dependency_bumps,
-    is_dependency_bump, parse_version, unreleased_accumulation,
+    is_dependency_bump, parse_version, unreleased_accumulation, unreleased_section,
 };
 
 /// The repository root.
@@ -759,4 +759,36 @@ fn a_stated_hold_reason_is_accepted_and_an_empty_one_is_not() {
         );
     }
     assert!(unreleased_accumulation(MAX_UNRELEASED_COMMITS, false, None).is_ok());
+}
+
+// ── `unreleased_section`: what a gate on today's code may read ──────
+
+/// A changelog with work in progress and two released entries, the second of
+/// which states a figure that was true when it shipped.
+const CHANGELOG: &str = "# Changelog\n\nintro\n\n## [Unreleased]\n\n### Added\n\n- new work\n\n\
+## [0.5.184] - 2026-09-21\n\n- shipped\n\n## [0.5.156] - 2026-09-01\n\n- 32 Prometheus metrics\n";
+
+/// Only the `[Unreleased]` body: released entries are a record of what was
+/// true when each shipped, and holding them to today's code forces a rewrite
+/// of history, as it did to 0.5.156's "32 Prometheus metrics".
+#[test]
+fn the_unreleased_section_stops_at_the_first_released_entry() {
+    let body = unreleased_section(CHANGELOG).expect("the fixture has one");
+    assert!(body.contains("- new work"), "{body:?}");
+    assert!(!body.contains("shipped"), "{body:?}");
+    assert!(!body.contains("32 Prometheus metrics"), "{body:?}");
+}
+
+/// No `[Unreleased]` heading is not an empty section: a gate must be able to
+/// tell the two apart.
+#[test]
+fn a_changelog_without_an_unreleased_heading_has_no_section() {
+    assert_eq!(
+        unreleased_section("# Changelog\n\n## [0.5.184] - x\n\n- a\n"),
+        None
+    );
+    assert_eq!(
+        unreleased_section("## [unreleased]\n\n## [0.5.184] - x\n").as_deref(),
+        Some("")
+    );
 }

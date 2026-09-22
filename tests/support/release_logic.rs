@@ -256,3 +256,25 @@ pub fn unreleased_accumulation(
         ))
     }
 }
+
+/// The body of `changelog`'s `[Unreleased]` section: every line after its
+/// `## [Unreleased]` heading up to the next `## ` heading, joined with `\n`.
+///
+/// `None` when there is no such heading, which is not the same as an empty
+/// section and must not read as one.
+///
+/// A gate that holds prose to TODAY's code reads this and nothing else of the
+/// changelog. A released entry records what was true when it shipped: 0.5.156
+/// said "32 Prometheus metrics", which it emitted, and a gate reading the whole
+/// file demanded that sentence be rewritten the day a 33rd metric landed.
+pub fn unreleased_section(changelog: &str) -> Option<String> {
+    let start = changelog
+        .lines()
+        .position(|l| l.starts_with("## ") && l.to_ascii_lowercase().contains("[unreleased]"))?;
+    let body: Vec<&str> = changelog
+        .lines()
+        .skip(start + 1)
+        .take_while(|l| !l.starts_with("## "))
+        .collect();
+    Some(body.join("\n"))
+}

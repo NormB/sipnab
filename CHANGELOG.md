@@ -212,6 +212,13 @@ entry that carries them.
   the list by hand, and the gate compared only the sets. A test now fails when a
   section heading or a `Totals:` entry disagrees with the bullets it counts.
 
+- **A metric-count gate no longer rewrites released changelog entries.** The
+  gate holding every "N Prometheus metrics" to the exposition read the whole
+  changelog, so adding a metric made 0.5.156's accurate "32 Prometheus
+  metrics" fail. The HEP sender roster had rewritten that entry to pass. The
+  entry says 32 again, and the gate reads only `[Unreleased]` from the
+  changelog, through the same extractor the release gate uses.
+
 ## [0.5.184] - 2026-09-21
 
 ### Changed
@@ -3094,7 +3101,7 @@ entry that carries them.
 ### Added
 
 - **`runtime_stats` over MCP and `GET /v1/runtime` over REST.** sipnab exports
-  its Prometheus metrics through a listener that is off by default, so
+  32 Prometheus metrics and the listener that serves them is off by default, so
   on most deployments those numbers existed inside the process and nothing could
   read them — an agent asked "is this server healthy" could not enable a
   listener to find out.

@@ -214,16 +214,7 @@ fn changelog_sections() -> (Vec<(u32, u32, u32)>, bool) {
 
 /// The body of the `[Unreleased]` section, if it has one.
 fn unreleased_body() -> Option<String> {
-    let text = read("CHANGELOG.md");
-    let start = text
-        .lines()
-        .position(|l| l.starts_with("## ") && l.to_ascii_lowercase().contains("[unreleased]"))?;
-    let body: Vec<&str> = text
-        .lines()
-        .skip(start + 1)
-        .take_while(|l| !l.starts_with("## "))
-        .collect();
-    Some(body.join("\n"))
+    release_logic::unreleased_section(&read("CHANGELOG.md"))
 }
 
 /// The version the website advertises.

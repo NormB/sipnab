@@ -10,6 +10,8 @@
 //! and only one of those is visible to a reader. This gate reads the
 //! formatter and the page and compares them.
 
+#[path = "support/release_logic.rs"]
+mod release_logic;
 #[path = "support/source_scan.rs"]
 mod source_scan;
 
@@ -168,8 +170,13 @@ fn prose_metric_counts_match_the_exposition() {
     );
 
     let claim = regex::Regex::new(r"(\d+) Prometheus metrics").expect("regex");
+    // The changelog's `[Unreleased]` section only. A released entry says what
+    // was true when it shipped, and holding it to today's exposition made the
+    // HEP sender roster, which added metrics, rewrite 0.5.156's accurate "32".
+    let unreleased = release_logic::unreleased_section(include_str!("../CHANGELOG.md"))
+        .expect("CHANGELOG.md has an [Unreleased] section");
     let surfaces: [(&str, &str); 6] = [
-        ("CHANGELOG.md", include_str!("../CHANGELOG.md")),
+        ("CHANGELOG.md [Unreleased]", &unreleased),
         ("docs/rest-api.md", include_str!("../docs/rest-api.md")),
         ("docs/mcp-tools.md", include_str!("../docs/mcp-tools.md")),
         (
