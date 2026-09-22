@@ -880,7 +880,11 @@ fn wiki_intra_docs_links_resolve() {
     // this extractor, which counts links between wiki pages only, reads +34.
     // 759 -> 763: the index link to client-examples.md and that page's three
     // links to the harness, library and cookbook. Measured by this gate.
-    const EXPECTED_WIKI_LINKS: usize = 763;
+    // 763 -> 766: Invariant 13 in docs/internals/invariants.md (operator notes
+    // are output, never input) links section 2 of deferred-and-declined.md and
+    // Invariants 5 and 9 rather than restating them. One page, three links;
+    // measured by this gate.
+    const EXPECTED_WIKI_LINKS: usize = 766;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe 6d in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

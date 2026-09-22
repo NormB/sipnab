@@ -312,6 +312,11 @@
 #![warn(clippy::unwrap_used, clippy::expect_used)]
 #[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
 pub mod analysis;
+// Operator notes: written into pcapng packet comments, never read back.
+// Native because it writes through the pcapng writer and follows frame
+// pointers, both of which are libpcap-side.
+#[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
+pub mod annotate;
 #[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
 pub mod app;
 #[cfg(any(feature = "api", feature = "mcp"))]

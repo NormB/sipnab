@@ -286,6 +286,96 @@ fn json_and_json_pretty_streams_validate(/* M2 — T2.2 */) {
     }
 }
 
+/// A notes file written by sipnab validates line by line against
+/// `notes.schema.json`.
+///
+/// Written through the library's own save, so the schema is held to what an
+/// operator's `--notes` file actually contains rather than to a hand-typed
+/// sample of it.
+// `sipnab::annotate` and `capture::resolve` are behind `native`.
+#[cfg(feature = "native")]
+#[test]
+fn notes_schema_validates_a_saved_notes_file() {
+    use sipnab::annotate::{NoteText, Notes};
+    use sipnab::capture::resolve::parse_pointer;
+
+    let v = load_validator("notes.schema.json");
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("session.notes.jsonl");
+    let mut notes = Notes::new();
+    for (pointer, text) in [
+        (
+            "tests/fixtures/sip_call.pcap#0@00000000deadbeef",
+            "the INVITE",
+        ),
+        ("eth0#12", "a live frame, with no digest"),
+        (
+            "a #hash.pcap#3",
+            "a path holding a \"#\" and a quote\nand a newline",
+        ),
+    ] {
+        notes
+            .set(
+                &parse_pointer(pointer).expect("pointer"),
+                NoteText::new(text).expect("note"),
+            )
+            .expect("room");
+    }
+    notes.save(&path).expect("save");
+
+    let text = std::fs::read_to_string(&path).expect("read");
+    let mut n = 0;
+    for line in text.lines() {
+        let inst: Value = serde_json::from_str(line).expect("each line is JSON");
+        assert_valid(&v, &inst, &format!("notes line {n}"));
+        n += 1;
+    }
+    assert_eq!(n, 3, "every note is one line");
+}
+
+/// Negative test (spec section 13.3): each way a notes line can be wrong is
+/// rejected by the schema, AND by the loader, so the schema never promises a
+/// shape sipnab refuses or refuses a shape sipnab reads.
+// `sipnab::annotate` and `capture::resolve` are behind `native`.
+#[cfg(feature = "native")]
+#[test]
+fn notes_schema_rejects_malformed_lines_the_loader_rejects() {
+    use sipnab::annotate::Notes;
+
+    let v = load_validator("notes.schema.json");
+    let good = serde_json::json!({"frame": "a.pcap#0@00000000deadbeef", "note": "ok"});
+    assert!(v.is_valid(&good), "the baseline must validate");
+    assert!(
+        Notes::from_jsonl(&format!("{good}\n")).is_ok(),
+        "and load, or the negatives below prove nothing"
+    );
+
+    let mut missing = good.clone();
+    missing.as_object_mut().expect("object").remove("note");
+    let mut extra = good.clone();
+    extra["author"] = Value::from("n");
+    let mut wrong_type = good.clone();
+    wrong_type["note"] = Value::from(7);
+    let mut not_a_pointer = good.clone();
+    not_a_pointer["frame"] = Value::from("no ordinal here");
+    let mut empty_note = good.clone();
+    empty_note["note"] = Value::from("");
+
+    for (bad, what) in [
+        (missing, "a missing note"),
+        (extra, "an unknown field"),
+        (wrong_type, "a note that is not a string"),
+        (not_a_pointer, "a frame that is not a pointer"),
+        (empty_note, "an empty note"),
+    ] {
+        assert!(!v.is_valid(&bad), "the schema must reject {what}: {bad}");
+        assert!(
+            Notes::from_jsonl(&format!("{bad}\n")).is_err(),
+            "the loader must reject {what} too: {bad}"
+        );
+    }
+}
+
 /// Every schema in `tests/schemas/` compiles into a validator (well-formed),
 /// including the ones whose live-output validation lives in the API tests.
 ///
@@ -764,9 +854,10 @@ fn every_object_in_a_sipnab_schema_is_closed_at_every_depth() {
             open.len()
         );
     }
+    // Five since `notes.schema.json`, the operator notes file.
     assert_eq!(
-        checked, 4,
-        "expected sipnab's four own schemas; found {checked}. A schema added \
+        checked, 5,
+        "expected sipnab's five own schemas; found {checked}. A schema added \
          without being checked here is one whose nested objects nothing closes"
     );
 }
