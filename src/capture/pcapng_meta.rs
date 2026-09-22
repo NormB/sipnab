@@ -523,14 +523,16 @@ mod tests {
         }
 
         let meta = read_pcapng_metadata(&path).unwrap();
-        assert_eq!(meta.tls_secrets.len(), 1, "secrets: {:?}", meta.tls_secrets);
+        // No assertion here prints the key-log text. The fixture's key is fake,
+        // but CodeQL's rust/cleartext-logging cannot tell, and the repository
+        // keeps test code clean at the source rather than dismissing alerts.
+        assert_eq!(meta.tls_secrets.len(), 1, "one DSB was written");
         // The count a caller may DISPLAY, kept apart from the secret text so
         // that saying "1 embedded key log" never reads the key material.
         assert_eq!(meta.key_log_blocks, 1, "the block read must be counted");
         assert!(
             meta.tls_secrets[0].contains("CLIENT_RANDOM aabbccdd 00112233"),
-            "secret content: {:?}",
-            meta.tls_secrets[0]
+            "the key-log line written was not read back intact"
         );
     }
 
