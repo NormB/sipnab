@@ -66,15 +66,11 @@ If that prints a version, the install worked. Go to
 If the shell cannot find `sipnab`, the install directory is not on your `PATH`
 — see [Check it worked](#check-it-worked).
 
-On Linux the installer chooses between two build variants: the dynamically
-linked **`-gnu`** build (requires glibc >= 2.36 — Debian 12+, Ubuntu 23.04+ —
-and libpcap installed via your package manager) and the static **musl** build
-(no glibc or libpcap requirement, and no TUI audio playback — everything else
-identical). The 2.36 figure is the floor the release workflow actually
-enforces on every gnu binary, and the installer uses that same cutover — it
-serves musl only to hosts below **glibc 2.36**, or with no glibc at all. One
-number in both places is what stops a host the gnu build runs on from taking
-the static build and losing TUI audio for nothing.
+On Linux the installer chooses between two builds. Hosts with glibc 2.36 or
+newer (Debian 12+, Ubuntu 23.04+) get the dynamically linked **`-gnu`** build,
+which needs libpcap from your package manager. Older hosts, and hosts with no
+glibc, get the static **musl** build, which needs nothing else and lacks only
+TUI audio playback.
 
 ## Download a release binary yourself
 
@@ -109,22 +105,6 @@ covers every file, and the tarballs additionally ship an individual
 | `sipnab-<version>.cdx.json` | — | — | CycloneDX SBOM — full dependency tree |
 | `sipnab-audio-<version>.cdx.json` | — | — | CycloneDX SBOM — audio feature subtree |
 | `v<version>.tar.gz`, `v<version>.zip` | — | anywhere Rust 1.98+ builds | tagged source tree |
-
-The two macOS floors differ because they are the pinned compiler's own defaults,
-one per target. `release.yml` pins `MACOSX_DEPLOYMENT_TARGET` to exactly
-those two values, so a toolchain bump cannot move a published floor without
-someone deciding to, and `published_macos_floors_match_the_toolchain` holds
-[`website/config.toml`](https://github.com/NormB/sipnab/blob/main/website/config.toml) to what the workflow pins — refusing a floor below the
-compiler's own default, which would agree on paper and still name an OS the
-binary cannot run on. Read them from the toolchain rather than trusting a copy:
-
-```bash
-rustc --print deployment-target --target x86_64-apple-darwin
-```
-
-```bash
-rustc --print deployment-target --target aarch64-apple-darwin
-```
 
 ### Which capture backends an artifact can reach
 
@@ -277,11 +257,9 @@ sudo install -m 755 "sipnab-$VERSION-$TARGET/sipnab" /usr/local/bin/sipnab
 ```
 
 The dynamic `…-unknown-linux-gnu.tar.gz` builds add TUI audio playback but
-require glibc >= 2.36 (Debian 12+, Ubuntu 23.04+) and libpcap. A gate holds that
-floor rather than estimating it: the gnu targets build inside a Debian bookworm
-container and a release-workflow gate rejects any binary linking a newer
-`GLIBC_` symbol. On an older distro they fail with `` version `GLIBC_2.36' not
-found `` -- use the static musl build.
+require glibc >= 2.36 (Debian 12+, Ubuntu 23.04+) and libpcap. On an older
+distribution they fail with `` version `GLIBC_2.36' not found ``, so use the
+static musl build there.
 
 ## Install with cargo
 
@@ -606,7 +584,7 @@ panic = "abort"
 debug = "line-tables-only"
 ```
 
-Target binary size (musl, stripped): <= 17 MB. Enforced against the real artifact by the "Enforce published binary size" step in release.yml.
+Target binary size (musl, stripped): <= 17 MB.
 
 ## Cross-compilation
 
@@ -838,3 +816,38 @@ sudo rm -rf /etc/sipnab
 - [examples.md](examples.md) — copy-paste recipes for the most common tasks
 - [keybindings.md](keybindings.md) — driving the interactive TUI
 - [cli-reference.md](cli-reference.md) — every flag, for headless use
+
+<details>
+<summary>Why / how we know</summary>
+
+**The glibc cutover.** 2.36 is the floor the release workflow enforces on
+every gnu binary, and the installer uses the same cutover, serving musl only to
+hosts below glibc 2.36 or with no glibc at all. One number in both places is
+what stops a host the gnu build runs on from taking the static build and losing
+TUI audio for nothing.
+
+**The two macOS floors.** They differ because they are the pinned compiler's own defaults,
+one per target. `release.yml` pins `MACOSX_DEPLOYMENT_TARGET` to exactly
+those two values, so a toolchain bump cannot move a published floor without
+someone deciding to, and `published_macos_floors_match_the_toolchain` holds
+[`website/config.toml`](https://github.com/NormB/sipnab/blob/main/website/config.toml) to what the workflow pins — refusing a floor below the
+compiler's own default, which would agree on paper and still name an OS the
+binary cannot run on. Read them from the toolchain rather than trusting a copy:
+
+```bash
+rustc --print deployment-target --target x86_64-apple-darwin
+```
+
+```bash
+rustc --print deployment-target --target aarch64-apple-darwin
+```
+
+**How the release keeps the glibc floor.** The gnu targets build inside a Debian
+bookworm container, and a release-workflow gate rejects any binary linking a
+`GLIBC_` symbol newer than 2.36. A gate enforces the floor rather than estimating it.
+
+**The size ceiling.** The "Enforce published binary size" step in
+`release.yml` checks the 17 MB ceiling against the real musl artifact on every
+release.
+
+</details>

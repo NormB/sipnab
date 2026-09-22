@@ -266,7 +266,7 @@ PAGES: list[tuple[str, str, str, str, int, str]] = [
     (
         "docs/mcp-deploy.md",
         "mcp-deploy.md",
-        "MCP walkthrough — every deployment scenario, step by step",
+        "Connect an AI agent to sipnab",
         "MCP Deployment",
         15,
         "Step-by-step MCP deployment scenarios: same-box stdio, remote "

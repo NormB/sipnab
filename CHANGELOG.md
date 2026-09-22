@@ -68,6 +68,20 @@ entry that carries them.
 
 ### Changed
 
+- **The documentation index lists each page once, by task.** Tutorials are
+  install, the command-line triage and the TUI walkthrough. MCP deployment and
+  TLS-without-keys moved to the how-to guides, which are grouped by what the
+  reader is doing, and the filter page and MCP pages no longer appear twice.
+- **Maintainer detail moved out of the user pages.** The encapsulations page
+  opens with a "Can sipnab read my capture?" table, including what a live
+  capture needs for each wrapper, and keeps its sources and history at the
+  end. The CLI reference's 600-word note on the generated BPF filter is now
+  two sentences, with the detail on the encapsulations page. The install
+  page's release-gate rationale sits in a collapsed "Why / how we know"
+  block. The MCP deployment page is retitled "Connect an AI agent to sipnab"
+  and says plainly which scenarios were last run on which release, and the
+  MCP page shows how to query the server with only the installed binary and
+  `jq`.
 - **A command-line tutorial.** `docs/first-cli-triage.md` takes a new reader
   from a downloaded sample call to a per-call table, the failed calls, one
   call's report and a `jq` pipeline, showing the real output of each step.

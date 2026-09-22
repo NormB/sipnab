@@ -3765,7 +3765,9 @@ fn no_documentation_table_repeats_a_row() {
     // against HEAD: exactly those seven files moved.
     // 939 + 9 = 948: the HEP sender roster branch counted its nine against 932
     // and merged after the RFC 7951 export and operator notes.
-    const EXPECTED_TABLES: usize = 948;
+    // 948 -> 950: the "Can sipnab read my capture?" table that now opens
+    // docs/encapsulations.md, and its site mirror.
+    const EXPECTED_TABLES: usize = 950;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

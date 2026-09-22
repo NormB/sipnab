@@ -931,7 +931,14 @@ fn wiki_intra_docs_links_resolve() {
     // docs/install.md +2 (the MCP deployment page the install section had
     // misnamed, and a same-page link to the download section). Every other
     // changed page held its count.
-    const EXPECTED_WIKI_LINKS: usize = 816;
+    // 816 -> 815 by the docs index listing each page once. Attributed per
+    // file against HEAD: docs/README.md -5 (filter-dsl.md, mcp.md,
+    // mcp-deploy.md, mcp-tools.md and architecture.md each appeared twice),
+    // docs/encapsulations.md +3 (the new summary table's links to its own
+    // sections and to troubleshooting, and the cooked-capture note) and
+    // docs/cli-reference.md +1 (the BPF filter note now links to the
+    // encapsulations page that carries the detail).
+    const EXPECTED_WIKI_LINKS: usize = 815;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe 6d in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

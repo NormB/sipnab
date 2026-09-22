@@ -244,50 +244,12 @@ sipnab -d eth0,eth1 --multi-device --delta-time
 | `<BPF_FILTER>...` | positional | -- | BPF display filter expression (trailing positional args) |
 
 > **The auto-generated filter looks through VLAN, QinQ, PPPoE and MPLS.**
-> On a live capture with no filter of your own, sipnab installs one built from
-> `--portrange`. It is not a bare `portrange 5060-5061`: that one matches the
-> outer headers only, so on a tagged trunk, a PPPoE access link or an MPLS
-> core it matches **nothing**, and the kernel discards the frames where no
-> sipnab counter, metric or report can see them. You get "No SIP traffic
-> found" on a link carrying calls.
->
-> The generated filter adds an encapsulated arm instead, covering one VLAN tag
-> (802.1Q, 802.1ad or 0x9100), QinQ, PPPoE Session, VLAN over PPPoE, and one or
-> two MPLS labels, for IPv4 and IPv6, UDP and TCP. The arm still demands a
-> signaling port, so it matches more of the *same* traffic, not a new class of
-> it: VLAN-tagged RTP reaches sipnab no more often than untagged RTP did.
->
-> **It covers cooked captures too**, so omitting `-d` costs you nothing. The
-> arm asks "does this frame carry an encapsulation?" through libpcap's
-> `ether proto`, which resolves to the right byte offset for whatever link type
-> the filter compiles against — offset 12 on Ethernet, 14 on Linux cooked v1,
-> 0 on Linux cooked v2, and a constant false on raw IP and the two loopback
-> link types, which carry no protocol field at all. Measured on a capture of
-> each type with `tcpdump -d`.
->
-> Asking the same question with a fixed `ether[12:2]` is the trap this avoids.
-> That offset holds the EtherType on Ethernet and part of the link-layer
-> address on a cooked capture, so an arm written that way compiles, runs and
-> matches nothing there: 1 of 11 encapsulated SIP frames on cooked v1 and
-> cooked v2, against 11 of 11 on Ethernet. Cooked is what Linux gives you when
-> you name no interface, so that shape would have left the default invocation
-> blind.
->
-> Two limits worth knowing. On the encapsulated arm an IPv4 header carrying
-> **options** stays unmatched. A BPF byte offset has to be a constant, so the
-> arm cannot multiply the IHL nibble into the port offset the way libpcap's own
-> `portrange` does. The untagged `portrange` handles those, so this costs you
-> only IPv4-options traffic that is *also* encapsulated.
->
-> And one filter string serving three link types has to carry all three sets of
-> inner offsets, because BPF offers no way to ask which link type it compiled
-> against. Seven offsets get probed on every link type, four of which belong to
-> a different link header. Those four can fire only on a frame that already
-> carries one of the six encapsulating protocols, and only if its bytes at the
-> wrong offset spell a complete IPv4-or-IPv6 header with a signaling port —
-> so the worst case is a stray tagged packet reaching userspace, where the
-> parser rejects it. Ordinary traffic never reaches those probes, because the
-> outer `ether proto` test is exact.
+> With no filter of your own on a live capture, sipnab builds one from
+> `--portrange` that also matches SIP inside one VLAN tag, QinQ, PPPoE Session
+> and one or two MPLS labels, on Ethernet and on Linux cooked captures. A bare
+> `portrange` would match none of that traffic. See
+> [How the generated filter reaches encapsulated SIP](encapsulations.md#how-the-generated-filter-reaches-encapsulated-sip)
+> for the offsets it probes and its two limits.
 >
 > **UDP tunnels are opt-in.** GTP-U, VXLAN and GENEVE are not covered by
 > default and sipnab says so at startup. BPF cannot parse a variable-length
