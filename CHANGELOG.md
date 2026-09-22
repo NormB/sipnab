@@ -116,6 +116,21 @@ entry that carries them.
   glossary, and start with `curl -LO https://sipnab.com/demos/sample-call.pcap`
   for a reader with no capture of their own.
 
+- **The TUI reads as plain words.** The header names the source
+  (`Live capture: eth0`, `File: call.pcap`, now true for a `-I` session, which
+  said `Online (any)`), counts `Dialogs: 3 shown of 5`, and spells out
+  autoscroll. Line 2 is the capture (BPF) filter and line 3 the view filter,
+  where both used to repeat the view filter. Analysis panels wrap instead of
+  cutting sentences at the border, and carrier metrics defines ASR, NER and
+  ACD one per line. Every view's key bar offers `F1 Help`, and `F1` and `?`
+  now open help from the analysis views too. The split pane is the "detail
+  pane" everywhere, settings and status values use the words the help uses,
+  and the help gains a TERMS section. Errors carry their severity in the code,
+  so `File not found` draws red, and the clipboard error says to install
+  xclip or press F12 and drag. The quality dashboard names each MOS band in a
+  word, the save dialog keeps its path, count and keys on a 24-row screen, and
+  the default text color follows the terminal, so light terminals read.
+
 - **Five committed captures are now built by a generator anyone can run.**
   Two rtpengine relay fixtures were live captures from the lab network, a
   fuzz seed was a copy of a third-party capture, and the two oldest fixtures

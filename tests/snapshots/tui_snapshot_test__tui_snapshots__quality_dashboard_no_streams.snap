@@ -2,14 +2,14 @@
 source: tests/tui_snapshot_test.rs
 expression: output
 ---
- Current Mode: Online (any)    Dialogs: 3 (3 displayed)  [A]
- Match Expression:     BPF Filter:
- Display Filter:
-┌ Quality Dashboard ─────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+ Live capture: any    Dialogs: 3 shown of 3    Autoscroll: on
+ Capture filter (BPF): none
+ View filter: none
+┌ Quality dashboard ─────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
 │                                                                                                                                │
 │  Streams: 0 (0 active)   No RTP streams yet   With loss: 0                                                                     │
 │                                                                                                                                │
-│    MOS     Jitter   Loss%   Packets  Codec    Stream                                                                           │
+│    MOS   Rating   Jitter   Loss%   Packets  Codec    Stream                                                                    │
 │                                                                                                                                │
 │                                                                                                                                │
 │                                                                                                                                │
@@ -25,4 +25,4 @@ expression: output
 │                                                                                                                                │
 │                                                                                                                                │
 └────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
-Esc Back
+Esc Back  F1 Help  ↑↓ Select  Enter Detail  L Loss map

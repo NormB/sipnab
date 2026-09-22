@@ -284,8 +284,8 @@ fn execute_stream_detail_action(app: &mut App, action: StreamDetailAction) {
 pub(in crate::tui) fn handle_stream_detail_play(app: &mut App) {
     // Don't re-attempt init if it already failed — retrying would
     // re-trigger libasound's stderr spam each keypress.
-    if let Some(msg) = app.audio_init_error.as_deref() {
-        app.status_error = Some(msg.to_string());
+    if let Some(msg) = app.audio_init_error.clone() {
+        app.set_status_error(msg);
         return;
     }
 

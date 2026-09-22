@@ -2,27 +2,27 @@
 source: tests/tui_snapshot_test.rs
 expression: output
 ---
- Cur┌ Save Capture ────────────────────────────────────────────────────────┐
- Mat│                                                                      │
- Dis│  Save to: /tmp/sipnab_20240615_120000.xml                            │
-  # │                                                                      │atio
-> [ │  Packet Capture                                                      │s
-  [ │      PCAP    Universal baseline (Wireshark, tcpdump, Homer)          │s
-  [ │      PCAP-NG Modern format with metadata and annotations             │s
+ Liv┌ Save capture ────────────────────────────────────────────────────────┐
+ Cap│                                                                      │
+ Vie│  Save to: /tmp/sipnab_20240615_120000.xml                            │
+  # │  Dialogs: 3 (none checked, so all are saved) · Messages: 8           │atio
+> [ │                                                                      │s
+  [ │  Packet capture                                                      │s
+  [ │      PCAP      Universal baseline (Wireshark, tcpdump, Homer)        │s
+    │      PCAP-NG   Modern format with metadata and annotations           │
     │                                                                      │
-    │  SIP-Specific                                                        │
-    │      TXT     Plain text SIP messages                                 │
-    │    ▸ SIPp    Replayable SIPp scenario for QA testing                 │
+    │  SIP-specific                                                        │
+    │      TXT       Plain text SIP messages                               │
+    │    ▸ SIPp      Replayable SIPp scenario for QA testing               │
     │                                                                      │
-    │  Structured/Analytics                                                │
-    │      JSON    Full call detail for ELK, ClickHouse, etc.              │
-    │      NDJSON  Streaming-friendly for large captures                   │
-    │      CSV     Summary rows for spreadsheets and BI tools              │
+    │  Structured/analytics                                                │
+    │      JSON      Full call detail for ELK, ClickHouse, etc.            │
+    │      NDJSON    Streaming-friendly for large captures                 │
+    │      CSV       Summary rows for spreadsheets and BI tools            │
     │                                                                      │
     │  Reporting                                                           │
-    │      HTML    Self-contained ladder diagram, zero dependencies        │
-    │      MD      Call summary for tickets and incidents                  │
+    │      HTML      Ladder diagram page (Mermaid), no dependencies        │
+    │      Markdown  Call summary for tickets and incidents                │
     │                                                                      │
-    │  RTP/Media                                                           │
-    │      WAV     Decoded G.711 audio per RTP stream                      │
+    │  [Enter] Save  [Tab/⇧Tab] Format  [Esc] Cancel                       │
 Ente└──────────────────────────────────────────────────────────────────────┘

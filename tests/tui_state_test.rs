@@ -3682,10 +3682,10 @@ mod tui_state {
         assert_eq!(SaveFormat::Ndjson.label(), "NDJSON");
         assert_eq!(SaveFormat::Csv.label(), "CSV");
         assert_eq!(SaveFormat::Html.label(), "HTML");
-        assert_eq!(SaveFormat::Markdown.label(), "MD");
+        assert_eq!(SaveFormat::Markdown.label(), "Markdown");
         assert_eq!(SaveFormat::Wav.label(), "WAV");
         assert_eq!(SaveFormat::SippXml.label(), "SIPp");
-        assert_eq!(SaveFormat::RtpJson.label(), "RTP");
+        assert_eq!(SaveFormat::RtpJson.label(), "RTP JSON");
     }
 
     /// Each save format maps to its expected file extension.
@@ -3707,17 +3707,17 @@ mod tui_state {
     /// Each save format reports its expected category grouping.
     #[test]
     fn save_popup_format_categories() {
-        assert_eq!(SaveFormat::Pcap.category(), "Packet Capture");
-        assert_eq!(SaveFormat::PcapNg.category(), "Packet Capture");
-        assert_eq!(SaveFormat::Txt.category(), "SIP-Specific");
-        assert_eq!(SaveFormat::Json.category(), "Structured/Analytics");
-        assert_eq!(SaveFormat::Ndjson.category(), "Structured/Analytics");
-        assert_eq!(SaveFormat::Csv.category(), "Structured/Analytics");
+        assert_eq!(SaveFormat::Pcap.category(), "Packet capture");
+        assert_eq!(SaveFormat::PcapNg.category(), "Packet capture");
+        assert_eq!(SaveFormat::Txt.category(), "SIP-specific");
+        assert_eq!(SaveFormat::Json.category(), "Structured/analytics");
+        assert_eq!(SaveFormat::Ndjson.category(), "Structured/analytics");
+        assert_eq!(SaveFormat::Csv.category(), "Structured/analytics");
         assert_eq!(SaveFormat::Html.category(), "Reporting");
         assert_eq!(SaveFormat::Markdown.category(), "Reporting");
-        assert_eq!(SaveFormat::Wav.category(), "RTP/Media");
-        assert_eq!(SaveFormat::SippXml.category(), "SIP-Specific");
-        assert_eq!(SaveFormat::RtpJson.category(), "RTP/Media");
+        assert_eq!(SaveFormat::Wav.category(), "RTP/media");
+        assert_eq!(SaveFormat::SippXml.category(), "SIP-specific");
+        assert_eq!(SaveFormat::RtpJson.category(), "RTP/media");
     }
 
     // ── Mark + delta additional tests ────────────────────────────────

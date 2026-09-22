@@ -2,17 +2,15 @@
 source: tests/tui_snapshot_test.rs
 expression: output
 ---
- Current Mode: Online (any)    Dialogs: 3 (3 displayed)  [A]
- Match Expression:     BPF Filter:
- Display Filter:
-┌ Top Talkers ─────────────────────────────────────────────────────────────────┐
-│Top Talkers (by source IP)                                                    │
-│                                                                              │
-│#   Source IP                Dialogs     Msgs INVITEs Answered Failed         │
+ Live capture: any    Dialogs: 3 shown of 3    Autoscroll: on
+ Capture filter (BPF): none
+ View filter: none
+┌ Top talkers (by source IP) ──────────────────────────────────────────────────┐
+│#   Source IP                Dialogs Messages INVITEs Answered Failed         │
 │1   10.0.0.1                       3        4       3        2      1         │
 │2   10.0.0.2                       3        4       3        2      1         │
 │                                                                              │
-│2 distinct talker(s).                                                         │
+│2 distinct talkers.                                                           │
 │A participant is credited for every dialog it took part in, so shares overlap.│
 │                                                                              │
 │Press Esc to return.                                                          │
@@ -20,5 +18,7 @@ expression: output
 │                                                                              │
 │                                                                              │
 │                                                                              │
+│                                                                              │
+│                                                                              │
 └──────────────────────────────────────────────────────────────────────────────┘
-Esc Back
+Esc Back  F1 Help  ↑↓ Scroll  PgUp/Dn Page

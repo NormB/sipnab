@@ -29,10 +29,9 @@ pub(in crate::tui) fn open_note_editor(app: &mut App, call_id: &str, index: usiz
             .and_then(|m| m.frame.clone())
     };
     let Some(frame) = frame else {
-        app.status_error = Some(
+        app.set_status_error(
             "This message was read from no frame, so a note on it could not be saved or \
-             written into a capture"
-                .to_string(),
+             written into a capture",
         );
         return;
     };
@@ -72,7 +71,7 @@ pub(in crate::tui) fn handle_note_editor_key(app: &mut App, key: KeyEvent) {
                         );
                         app.record_action("note_set", &frame.to_string(), "", "ok", "");
                     }
-                    Err(full) => app.status_error = Some(format!("Note not kept: {full}")),
+                    Err(full) => app.set_status_error(format!("Note not kept: {full}")),
                 }
             }
             Ok(None) => {
@@ -85,7 +84,7 @@ pub(in crate::tui) fn handle_note_editor_key(app: &mut App, key: KeyEvent) {
                 }
             }
             Err(refusal) => {
-                app.status_error = Some(format!("Note refused: {refusal}"));
+                app.set_status_error(format!("Note refused: {refusal}"));
             }
         },
         KeyCode::Backspace => state.editor.backspace(),

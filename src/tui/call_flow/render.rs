@@ -260,9 +260,9 @@ pub fn build_extended_flow_lines(
     let mut lines = vec![
         Line::from(Span::styled(
             format!(
-                " Extended Flow: {} + {} correlated leg(s)",
+                " Extended flow: {} + {}",
                 truncate(call_id, 40),
-                correlated.len()
+                crate::tui::count_noun(correlated.len(), "correlated leg", "correlated legs")
             ),
             Style::default()
                 .fg(opts.theme.accent)
@@ -308,6 +308,16 @@ pub fn render_call_flow(
     });
 }
 
+/// What the ladder pane says when its call is gone: what happened, then what
+/// to do. It said "Dialog not found or empty.", which named neither.
+pub const CALL_GONE_NOTICE: &str =
+    "This call is no longer in memory (cleared or evicted). Esc returns to the list.";
+
+/// What the ladder pane says when the participants do not fit: the two ways
+/// to make room, rather than only the fact that there is none.
+pub const TOO_NARROW_NOTICE: &str =
+    "Too narrow for the ladder: widen the window or press R to hide the detail pane";
+
 /// Render call flow from pre-built lines or a builder closure.
 ///
 /// # Arguments
@@ -320,7 +330,7 @@ pub fn render_call_flow(
 ///
 /// # Side effects
 /// Draws a wrapping, scrolled `Paragraph` of the built lines into `frame`;
-/// when `build` returns `None`, draws "Dialog not found or empty." instead.
+/// when `build` returns `None`, draws [`CALL_GONE_NOTICE`] instead.
 pub fn render_call_flow_lines(
     frame: &mut Frame,
     area: Rect,
@@ -331,8 +341,9 @@ pub fn render_call_flow_lines(
     let lines = match build() {
         Some((_count, lines)) => lines,
         None => {
-            let para = Paragraph::new("Dialog not found or empty.")
-                .style(Style::default().fg(theme.muted));
+            let para = Paragraph::new(CALL_GONE_NOTICE)
+                .wrap(Wrap { trim: true })
+                .style(Style::default().fg(theme.bad));
             frame.render_widget(para, area);
             return;
         }
@@ -481,13 +492,14 @@ pub fn render_call_flow_direct(
             .min()
             .unwrap_or(0);
         if min_gap < 10 {
-            crate::tui::render::set_string_clipped(
-                buf,
+            // Wrapped, not clipped: this is the case where the pane is narrow,
+            // so a one-row notice would lose its own remedy off the edge.
+            ratatui::widgets::Widget::render(
+                Paragraph::new(TOO_NARROW_NOTICE)
+                    .wrap(Wrap { trim: true })
+                    .style(Style::default().fg(theme.bad)),
                 area,
-                area.x,
-                area.y,
-                "Terminal too narrow for ladder",
-                Style::default().fg(theme.muted),
+                buf,
             );
             return;
         }
@@ -969,7 +981,7 @@ fn draw_participant_labels(
 /// This is the TUI entry point that replaces the Paragraph-based
 /// `render_call_flow_lines`. `prepared` is the cached
 /// (participants, messages) pair from `prepare_messages`; `None` paints
-/// "Dialog not found or empty." into the frame instead of a ladder.
+/// [`CALL_GONE_NOTICE`] into the frame instead of a ladder.
 pub fn render_call_flow_direct_or_empty(
     frame: &mut Frame,
     area: Rect,
@@ -982,14 +994,11 @@ pub fn render_call_flow_direct_or_empty(
             render_call_flow_direct(frame, area, participants, msgs, nav, theme);
         }
         None => {
-            let buf = frame.buffer_mut();
-            crate::tui::render::set_string_clipped(
-                buf,
+            frame.render_widget(
+                Paragraph::new(CALL_GONE_NOTICE)
+                    .wrap(Wrap { trim: true })
+                    .style(Style::default().fg(theme.bad)),
                 area,
-                area.x,
-                area.y,
-                "Dialog not found or empty.",
-                Style::default().fg(theme.muted),
             );
         }
     }
@@ -2471,6 +2480,39 @@ mod tests {
         }
     }
 
+    /// A ladder too narrow for its participants says so in full, both
+    /// remedies included, wrapped inside the pane. It was a one-row clipped
+    /// notice with no remedy, and a narrow pane is exactly where a one-row
+    /// notice loses its tail.
+    #[test]
+    fn a_too_narrow_ladder_names_both_remedies_in_full() {
+        let theme = Theme::default();
+        let parts: Vec<Participant> = (1..=7)
+            .map(|i| Participant {
+                addr: format!("10.0.0.{i}:5060"),
+                label: format!("10.0.0.{i}"),
+            })
+            .collect();
+        let msgs = vec![fmt_msg("12:00:00.000", SelectionState::Normal, 0, 1)];
+        let nav = FlowNavigation {
+            scroll_offset: 0,
+            mark_index: None,
+            selected_index: 0,
+            noted: Vec::new(),
+        };
+        let mut term = terminal(40, 12);
+        term.draw(|f| {
+            let a = f.area();
+            render_call_flow_direct(f, a, &parts, &msgs, &nav, &theme);
+        })
+        .unwrap();
+        let joined = buffer_text(&term)
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(joined.contains(TOO_NARROW_NOTICE), "{joined}");
+    }
+
     /// Six packed B2BUA participants with long ip:port and resolved-name
     /// labels: the header and footer rows must never paint colliding
     /// garbage, at the demo width and at much tighter ones.
@@ -2509,7 +2551,7 @@ mod tests {
                 .unwrap();
                 let text = buffer_text(&term);
                 let rows: Vec<&str> = text.lines().collect();
-                if text.contains("Terminal too narrow") {
+                if text.contains("Too narrow for the ladder") {
                     continue; // legitimately refused, nothing painted
                 }
                 let truncated: Vec<String> = parts.iter().map(|p| p.label.clone()).collect();
@@ -2807,7 +2849,7 @@ mod tests {
 
     // ── build_extended_flow_lines ──────────────────────────────────────
 
-    /// The extended view carries the "Extended Flow" header even without
+    /// The extended view carries the "Extended flow" header even without
     /// correlated legs.
     #[test]
     fn extended_flow_single_leg_header() {
@@ -2818,10 +2860,10 @@ mod tests {
         assert_eq!(count, 6);
         let text = lines_to_string(&lines);
         assert!(
-            text.contains("Extended Flow:"),
+            text.contains("Extended flow:"),
             "missing header in:\n{text}"
         );
-        assert!(text.contains("correlated leg(s)"));
+        assert!(text.contains("correlated leg"));
         assert!(text.contains("INVITE"));
     }
 
@@ -2851,7 +2893,7 @@ mod tests {
         assert!(!text.contains("Dialog not found"));
     }
 
-    /// A missing dialog paints the "Dialog not found or empty" fallback.
+    /// A missing dialog paints the [`CALL_GONE_NOTICE`] fallback.
     #[test]
     fn render_call_flow_missing_shows_fallback() {
         let theme = Theme::default();
@@ -2860,7 +2902,13 @@ mod tests {
         let area = Rect::new(0, 0, 80, 10);
         term.draw(|f| render_call_flow(f, area, &store, "missing@test", 0, &theme))
             .unwrap();
-        assert!(buffer_text(&term).contains("Dialog not found or empty"));
+        assert!(
+            buffer_text(&term)
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+                .contains(CALL_GONE_NOTICE)
+        );
     }
 
     /// A 40-column terminal still renders (wrapped) without panicking.
@@ -2910,7 +2958,13 @@ mod tests {
         let area = Rect::new(0, 0, 60, 8);
         term.draw(|f| render_call_flow_lines(f, area, 0, &theme, || None))
             .unwrap();
-        assert!(buffer_text(&term).contains("Dialog not found or empty"));
+        assert!(
+            buffer_text(&term)
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+                .contains(CALL_GONE_NOTICE)
+        );
     }
 
     // ── scrollbar / focus helpers ──────────────────────────────────────

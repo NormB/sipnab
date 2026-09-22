@@ -251,7 +251,7 @@ pub(in crate::tui) fn handle_file_open_manual_key(app: &mut App, key: KeyEvent) 
         KeyCode::Enter => {
             let path = expand_tilde(&app.file_open.path);
             if path.is_empty() {
-                app.status_error = Some("No file path specified".to_string());
+                app.set_status_error("No file path specified");
                 app.active_popup = None;
                 return;
             }
@@ -394,6 +394,7 @@ fn run_pcap_load(
     let capture_mode = format!("Offline ({filename})");
     let failed = |message: String| PcapLoadOutcome {
         message,
+        failed: true,
         sip_count: 0,
         capture_mode: capture_mode.clone(),
         file_names: Vec::new(),
@@ -442,14 +443,21 @@ fn run_pcap_load(
         String::new()
     };
     let names_suffix = if !totals.file_names.is_empty() {
-        format!(", {} name(s)", totals.file_names.len())
+        format!(
+            ", {}",
+            crate::tui::count_noun(totals.file_names.len(), "name", "names")
+        )
     } else {
         String::new()
     };
     let key_log_note = if totals.embedded_key_logs > 0 {
         format!(
-            " \u{26a0} file contains {} embedded decryption secret(s)",
-            totals.embedded_key_logs
+            " \u{26a0} file contains {}",
+            crate::tui::count_noun(
+                totals.embedded_key_logs,
+                "embedded decryption secret",
+                "embedded decryption secrets"
+            )
         )
     } else {
         String::new()
@@ -459,9 +467,15 @@ fn run_pcap_load(
     let archive_suffix = match &set {
         Some(set) => {
             let not_read = set.members_not_read() + totals.members_not_read;
-            let mut text = format!("; {} capture(s) from the archive", totals.captures_read);
+            let mut text = format!(
+                "; {} from the archive",
+                crate::tui::count_noun(totals.captures_read, "capture", "captures")
+            );
             if not_read > 0 {
-                text.push_str(&format!(", {not_read} member(s) not read"));
+                text.push_str(&format!(
+                    ", {} not read",
+                    crate::tui::count_noun(not_read, "member", "members")
+                ));
             }
             if set.incomplete() {
                 text.push_str(", archive cut short");
@@ -473,9 +487,13 @@ fn run_pcap_load(
     PcapLoadOutcome {
         message: format!(
             "Loaded {} SIP, {} RTP{rtcp_suffix}{names_suffix} from {} packets across \
-             {stream_count} stream(s) ({filename}{archive_suffix}){key_log_note}",
-            totals.sip, totals.rtp, totals.packets
+             {} ({filename}{archive_suffix}){key_log_note}",
+            totals.sip,
+            totals.rtp,
+            totals.packets,
+            crate::tui::count_noun(stream_count, "stream", "streams")
         ),
+        failed: false,
         sip_count: totals.sip,
         capture_mode,
         file_names: totals.file_names,
@@ -741,14 +759,14 @@ pub(in crate::tui) fn begin_pcap_load_confirmed(
     let other_capture = !is_the_capture_on_screen(app, path_str);
     if app.pcap_load.is_some() {
         let msg = "A pcap load is already in progress".to_string();
-        app.status_error = Some(msg.clone());
+        app.set_status_error(msg.clone());
         app.record_action("capture_swapped", path_str, "", "refused", &msg);
         return;
     }
     let path = std::path::Path::new(path_str);
     if !path.exists() {
         let msg = format!("File not found: {path_str}");
-        app.status_error = Some(msg.clone());
+        app.set_status_error(msg.clone());
         app.record_action("capture_swapped", path_str, "", "failed", &msg);
         return;
     }
@@ -812,7 +830,7 @@ pub(in crate::tui) fn begin_pcap_load_confirmed(
         }
         Err(e) => {
             let msg = format!("Failed to start the load worker: {e}");
-            app.status_error = Some(msg.clone());
+            app.set_status_error(msg.clone());
             app.record_action("capture_swapped", path_str, "", "failed", &msg);
         }
     }
@@ -834,7 +852,11 @@ pub(in crate::tui) fn poll_pcap_load(app: &mut App) {
     if progress.done.load(std::sync::atomic::Ordering::Acquire) {
         app.pcap_load = None;
         if let Some(outcome) = progress.result.lock().take() {
-            app.status_error = Some(outcome.message.clone());
+            app.show_status(if outcome.failed {
+                StatusMessage::error(outcome.message.clone())
+            } else {
+                StatusMessage::info(outcome.message.clone())
+            });
             apply_load_outcome(app, outcome);
             // A completed load is a discrete event, not churn: every view
             // must reflect the new stores on the next tick, floor or not.
@@ -1236,6 +1258,10 @@ mod tests {
             "got: {:?}",
             app.status_error
         );
+        assert!(
+            app.status_is_error(),
+            "a file that is not there is an error, whatever the words say"
+        );
     }
 
     /// A second load while one is in flight is refused and the running
@@ -1559,11 +1585,7 @@ mod browser_tests {
         );
         assert_eq!(ds.read().len(), da.read().len() + db.read().len());
         assert!(out.message.contains("2 capture"), "{}", out.message);
-        assert!(
-            out.message.contains("1 member(s) not read"),
-            "{}",
-            out.message
-        );
+        assert!(out.message.contains("1 member not read"), "{}", out.message);
     }
 
     /// Opening the dialog clears the previous visit's filter, manual path and
@@ -1909,6 +1931,7 @@ mod browser_tests {
             out.message.starts_with("Failed to open"),
             "the load does not report an open failure"
         );
+        assert!(out.failed, "a load that read nothing reports a failure");
         assert_eq!(out.sip_count, 0);
         assert_eq!(out.capture_mode, "Offline (garbage.pcap)");
         assert!(ds.read().is_empty() && ss.read().is_empty());
@@ -1927,6 +1950,7 @@ mod browser_tests {
             msg.starts_with("Loaded 0 SIP, 150 RTP, 2 RTCP"),
             "got: {msg}"
         );
+        assert!(!app.status_is_error(), "a load that worked is not an error");
         assert_eq!(app.current_view, View::StreamList);
     }
 

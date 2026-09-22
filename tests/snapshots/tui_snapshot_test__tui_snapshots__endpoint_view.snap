@@ -2,11 +2,11 @@
 source: tests/tui_snapshot_test.rs
 expression: output
 ---
- Current Mode: Online (any)    Dialogs: 3 (3 displayed)  [A]
- Match Expression:     BPF Filter:
- Display Filter:
+ Live capture: any    Dialogs: 3 shown of 3    Autoscroll: on
+ Capture filter (BPF): none
+ View filter: none
 ┌ Endpoint ────────────────────────────────────────────────────────────────────┐
-│Endpoint ip 10.0.0.1                                                          │
+│Endpoint 10.0.0.1                                                             │
 │                                                                              │
 │  Dialogs: 3    Messages sent: 4  received: 4                                 │
 │                                                                              │
@@ -17,12 +17,12 @@ expression: output
 │                                                                              │
 │  Registration: not applicable                                                │
 │                                                                              │
-│  Banners: none                                                               │
+│  User-Agent/Server: none seen                                                │
 │                                                                              │
 │  Streams: none                                                               │
 │                                                                              │
-│  Recent calls (3/3):                                                         │
+│  Recent calls (3 of 3):                                                      │
 │    call-1@test                                                               │
 │    call-3@test                                                               │
 └──────────────────────────────────────────────────────────────────────────────┘
-Esc Back
+Esc Back  F1 Help  ↑↓ Scroll  PgUp/Dn Page

@@ -95,7 +95,7 @@ without toggling anything.
 | / | Activate search **(configurable: `search`)** — while typing, ↑/↓/PgUp/PgDn/Home/End move the highlight in the narrowed list, Space stars rows, and Enter commits the query and opens the selection in one press |
 | i | Clear non-matching dialogs |
 | I | Clear matching dialogs |
-| t | Cycle timestamp mode (absolute / delta-prev / delta-first / scaled) |
+| t | Cycle timestamp mode (absolute / delta from previous / delta from first / scaled) |
 | u | Cycle From/To column display (default / host:port / user / user@host:port) |
 | r / F6 | Show raw SIP message for selected dialog |
 | s | Switch to Statistics view |
@@ -112,7 +112,7 @@ without toggling anything.
 | F4 | Open extended multi-leg flow for the selected dialog **(configurable: `extended_flow`)** |
 | F5 | Clear calls **(configurable: `clear_calls`)** — the starred dialogs when any carry a star, otherwise all of them |
 | F7 | Open filter dialog **(configurable: `filter`)** |
-| F9 | Clear active filter **and** persisted search |
+| F9 | Clear filter: drops the view filter **and** the persisted search |
 | F10 | Column selector **(configurable: `column_selector`)** — a popup to show/hide any of the eleven Call List columns (#, Method, From, To, Source, Destination, State, Msgs, Date, PDD, Duration) |
 
 A search committed with Enter keeps narrowing the list and appears on the
@@ -136,17 +136,17 @@ active filter.
 | Space | Select message for diff (press on two messages to compare) |
 | q | Quit, after a confirmation **(configurable: `quit`)** |
 | Esc | Back to call list |
-| d | Cycle SDP display mode (none / summary / full) |
-| t | Cycle timestamp mode (absolute / delta-prev / delta-first / scaled) |
-| c | Cycle color scheme (method / call-id / cseq) |
+| d | Cycle SDP display mode (hidden / summary / full) |
+| t | Cycle timestamp mode (absolute / delta from previous / delta from first / scaled) |
+| c | Cycle color scheme (method / Call-ID / CSeq) |
 | h | Cycle header-name display (as captured / expanded / compact) — visual only, rewrites `From:` ↔ `f:` etc. in the message text views |
-| R | Toggle detail panel visibility |
-| + / = / 0 / Left | Widen the detail pane, narrowing the ladder (with the split off, shows a hint instead) |
-| - / 9 / Right | Narrow the detail pane, widening the ladder (with the split off, shows a hint instead) |
+| R | Show or hide the detail pane |
+| + / = / 0 / Left | Widen the detail pane, narrowing the ladder (with the detail pane off, shows a hint instead) |
+| - / 9 / Right | Narrow the detail pane, widening the ladder (with the detail pane off, shows a hint instead) |
 | w | Toggle line wrapping in the detail pane (off = long lines truncate and a scrollbar appears along the bottom edge) |
 | ← / → | Scroll the detail pane horizontally when it has focus with wrap off |
-| \[ | Scroll detail panel up |
-| \] | Scroll detail panel down |
+| \[ | Scroll the detail pane up |
+| \] | Scroll the detail pane down |
 | e | Expand/collapse the selected fold header (retransmissions, auth retries) |
 | f | Filter the ladder to the selected message's transaction (toggle) |
 | a | Open combined detail for the selected message's transaction |
@@ -157,17 +157,17 @@ active filter.
 | C | Write, amend or remove your note on the selected message. The note is yours, never sipnab's analysis: sipnab shows it in a pane titled so, marks the row with `✎`, writes it as a packet comment when you save PCAP-NG, and saves it to a notes file with the NOTES save format. See [Operator notes](#operator-notes) |
 | x / F4 | Toggle extended multi-leg flow **(configurable: `extended_flow`)** — shows related B2BUA/SBC call legs together, for tracing a call through proxies and back-to-back user agents |
 | r | Jump to RTP Streams view |
-| N | Name endpoints (map IP → host/FQDN; Tab/Shift-Tab switch between the offered participants) |
+| N | Name endpoints (map IP → host/FQDN, and Tab/Shift+Tab switch between the offered participants) |
 | F1 / ? | Help **(configurable: `help`)** |
 | F2 | Save **(configurable: `save`)** |
 | F5 | Reset message-compare selection **(configurable: `clear_calls`)** |
 | F6 / Ctrl+R | Toggle RTP display in flow (`Ctrl+R` is an alias for front-ends that cannot send F-keys) |
 | F7 | Open filter dialog **(configurable: `filter`)** |
-| F9 | Clear active filter **and** persisted search |
+| F9 | Clear filter: drops the view filter **and** the persisted search |
 
-In the split view, `Tab` moves keyboard focus between the two panes; the
-status line names the focused pane (`Focus: Ladder` / `Focus: Detail`)
-and gets a highlighted border. When either pane has more rows than fit, a
+While the detail pane shows, `Tab` moves keyboard focus between the two panes.
+The status line names the focused pane (`Focus: Ladder` / `Focus: Detail`),
+and that pane gets a highlighted border. When either pane has more rows than fit, a
 vertical scrollbar appears on its right edge. `[` and `]` always scroll the
 detail pane regardless of focus.
 
@@ -401,7 +401,7 @@ or unchecks every method at once.
 | Down / j | Next setting |
 | Enter / Space | Toggle or cycle the focused setting |
 
-Settings items: Color mode, Timestamp mode, Autoscroll, Raw preview, SDP display mode, Syntax highlighting
+Settings items: Colors, Timestamps, Autoscroll, Detail pane, SDP, Syntax colors. Values read as the rest of the TUI spells them: `Delta from previous`, `Call-ID`, `Hidden`, `On` and `Off`.
 
 ## File open popup
 
@@ -448,20 +448,20 @@ browse your own files.
 Press `t` in the Call List or Call Flow to cycle through the timestamp modes (both views share the mode):
 
 1. **Absolute** -- `HH:MM:SS.mmm` wall-clock time
-2. **Delta-prev** (default) -- `+N.NNNs` time since previous entry. Color-coded in call flow:
+2. **Delta from previous** (default) -- `+N.NNNs` time since previous entry. Color-coded in call flow:
    - Green: < 100 ms
    - Yellow: 100 ms - 1 s
    - Red: 1 s - 5 s
    - Bold red: > 5 s
-3. **Delta-first** -- `+N.NNNs` cumulative time from first entry
-4. **Scaled** -- delta-prev timestamps plus time-proportional spacer rows, so
+3. **Delta from first** -- `+N.NNNs` cumulative time from first entry
+4. **Scaled** -- delta-from-previous timestamps plus time-proportional spacer rows, so
    quiet gaps are visible in the ladder. The set of visible messages is
    identical in every mode — only the presentation changes.
 
 In the Call List the timing column's header names the mode, because the
 column shows different data in each: **Start** in Absolute (the dialog's
-start time, `HH:MM:SS`), **+Prev** in Delta-prev (time since the dialog above
-it, in the list's current sort order), and **+First** in Delta-first (time
+start time, `HH:MM:SS`), **+Prev** in Delta from previous (time since the dialog above
+it, in the list's current sort order), and **+First** in Delta from first (time
 since the first dialog). The spacer rows of Scaled belong to the ladder, so
 the Call List shows Scaled as **+Prev**. The F10 column selector and the
 `visible_columns` setting still call this column `Date`.
@@ -471,7 +471,7 @@ the Call List shows Scaled as **+Prev**. The F10 column selector and the
 <span class="terminal-dot red"></span><span class="terminal-dot yellow"></span><span class="terminal-dot green"></span>
 <span class="terminal-title">Timestamp Modes Comparison</span>
 </div>
-<pre class="terminal-body"><span class="t-header">Absolute:</span>           <span class="t-header">Delta-prev:</span>          <span class="t-header">Delta-first:</span>
+<pre class="terminal-body"><span class="t-header">Absolute:</span>           <span class="t-header">Delta from previous:</span> <span class="t-header">Delta from first:</span>
 14:23:01.000  INVITE  +0.000s  INVITE      +0.000s  INVITE
 14:23:01.003  100     <span class="t-good">+0.003s</span>  100         +0.003s  100
 14:23:01.847  180     <span class="t-warn">+0.844s</span>  180         +0.847s  180
@@ -480,7 +480,7 @@ the Call List shows Scaled as **+Prev**. The F10 column selector and the
 14:24:08.320  BYE     <span class="t-bad">+65.18s</span>  BYE         +67.32s  BYE</pre>
 </div>
 
-> **Tip:** Delta-prev mode is ideal for spotting latency spikes in call setup. Delta-first mode is useful for measuring total elapsed time from the first message.
+> **Tip:** Delta from previous is ideal for spotting latency spikes in call setup. Delta from first is useful for measuring total elapsed time from the first message.
 
 ## Name resolution
 
@@ -538,9 +538,9 @@ The call list is the main view when sipnab starts. It shows all tracked SIP dial
 <span class="terminal-dot red"></span><span class="terminal-dot yellow"></span><span class="terminal-dot green"></span>
 <span class="terminal-title">sipnab -- Call List</span>
 </div>
-<pre class="terminal-body"><span class="t-header"> Current Mode: Online (eth0)   Dialogs: 47 (47 displayed)  [A]</span>
-<span class="t-muted"> Match Expression:             BPF Filter: port 5060</span>
-<span class="t-muted"> Time: Delta-prev</span>
+<pre class="terminal-body"><span class="t-header"> Live capture: eth0    Dialogs: 47 shown of 47    Autoscroll: on</span>
+<span class="t-muted"> Capture filter (BPF): port 5060</span>
+<span class="t-muted"> View filter: none</span>
 <span class="t-muted">  #  Method     From           To             Src IP         Dst IP         State        Msgs  +Prev       PDD</span>
 <span class="t-selected">▸</span><span class="t-accent"> 1  INVITE     alice          bob            192.0.2.1      192.0.2.2      </span><span class="t-good">InCall</span><span class="t-accent">         12  +0.000s     847ms</span>
   <span class="t-accent">2  INVITE     charlie        dave           192.0.2.3      192.0.2.4      </span><span class="t-warn">Ringing</span><span class="t-accent">         6  +1.234s     --</span>
@@ -549,8 +549,17 @@ The call list is the main view when sipnab starts. It shows all tracked SIP dial
   <span class="t-accent">5  INVITE     1005           1006           192.0.2.1      192.0.2.2      </span><span class="t-good">Completed</span><span class="t-accent">      14  +0.003s     923ms</span>
   <span class="t-accent">6  OPTIONS    monitor        --             192.0.2.8      192.0.2.1      </span><span class="t-good">Completed</span><span class="t-accent">       2  +0.001s     --</span>
   <span class="t-accent">7  INVITE     1010           +441234567     192.0.2.9      192.0.2.7      </span><span class="t-good">InCall</span><span class="t-accent">         10  +0.215s     1.2s</span>
-<span class="t-muted">  Esc Quit  Enter Show  F2 Save  F7 Filter  F8 Settings  F10 Columns  Tab Streams</span></pre>
+<span class="t-muted">  Esc Quit  F1 Help  Enter Open call  Tab Streams  F2 Save  F7 Filter</span></pre>
 </div>
+
+The three lines above the list say what you are looking at. Line 1 names
+the source (`Live capture: eth0` or `File: call.pcap`), how many dialogs the
+list shows out of how many sipnab holds, and whether autoscroll is on. Line 2
+is the capture (BPF) filter the kernel applies, `none` when sipnab compiled
+no filter. Line 3 is the view filter from `F7` and any search you kept with
+Enter, and it also carries status messages, with errors in red. The key bar
+at the bottom lists the keys of the view you are in, `F1 Help` first after the
+way out, and fewer of them on a narrow terminal.
 
 > **Tip:** Press `Space` to star dialogs — a starred row shows `[*]` in the `#` column (the `▸` above is just the cursor). `F2` then saves only the starred dialogs, and `Enter` opens two or more of them as a single merged flow. Use `<` / `>` to sort by different columns and `Z` to reverse sort direction.
 
@@ -582,7 +591,7 @@ The call flow shows a ladder diagram for a selected dialog, with timing, SDP, an
 <span class="t-accent">+65.323s  </span><span class="t-bad">|&lt;--------- BYE ---------|</span><span class="t-muted">                        |</span>
 <span class="t-accent">+65.326s  </span><span class="t-good">|------- 200 OK --------&gt;|</span><span class="t-muted">                        |</span>
 <span class="t-muted">          |                        |                        |</span>
-<span class="t-muted">  Esc Back  Enter Raw  Space Diff  d SDP  t Time  m Mark  x Extended  F6 RTP</span></pre>
+<span class="t-muted">  Esc Back  F1 Help  ↑↓ Move  Enter Raw  d SDP  t Time  c Color  R Detail</span></pre>
 </div>
 
 > **Tip:** Press `m` to set a mark at any message, then navigate to another message to see the delta badge showing elapsed time between them. Press `M` to clear the mark. Use `d` to cycle through SDP display modes (none / summary / full).
@@ -618,7 +627,7 @@ Full SIP message with optional syntax highlighting, searchable.
 <span class="t-accent">a=</span>rtpmap:8 PCMA/8000
 <span class="t-accent">a=</span>rtpmap:101 telephone-event/8000
 <span class="t-accent">a=</span>fmtp:101 0-16
-<span class="t-muted">  Esc Back  / Search  s Highlight  c Color</span></pre>
+<span class="t-muted">  Esc Back  F1 Help  s Highlight  c Color  / Search  y Copy  F2 Save</span></pre>
 </div>
 
 ### RTP streams view
@@ -639,7 +648,7 @@ Shows all tracked RTP streams with quality metrics. Switch here from the Call Li
   <span class="t-accent">5  0xe5f60718  192.0.2.9:14000      192.0.2.7:24000      opus    9612    </span><span class="t-good">3.2ms</span><span class="t-accent">   </span><span class="t-good">0.1%</span><span class="t-accent">    </span><span class="t-good">4.1</span>
   <span class="t-accent">6  0x29304150  192.0.2.7:24000      192.0.2.9:14000      opus    9608    </span><span class="t-good">2.9ms</span><span class="t-accent">   </span><span class="t-good">0.0%</span><span class="t-accent">    </span><span class="t-good">4.2</span>
   <span class="t-muted">7  0xdeadbeef  192.0.2.3:16000      --                   PCMU    340     </span><span class="t-bad">--</span><span class="t-muted">      </span><span class="t-bad">--</span><span class="t-muted">      </span><span class="t-bad">orphan</span>
-<span class="t-muted">  Tab Call List  Esc Back  F7 Filter</span></pre>
+<span class="t-muted">  Esc Back  F1 Help  Enter Detail  Tab Calls  F2 Save WAV  F7 Filter</span></pre>
 </div>
 
 > **Tip:** Streams marked `orphan` have no matching SIP dialog. This often indicates RTP arriving on unexpected ports (check your NAT/ALG config) or calls that started before capture began.
@@ -653,23 +662,34 @@ The filter popup lets you build filter expressions with text fields and checkbox
 <span class="terminal-dot red"></span><span class="terminal-dot yellow"></span><span class="terminal-dot green"></span>
 <span class="terminal-title">sipnab -- Filter Dialog</span>
 </div>
-<pre class="terminal-body"><span class="t-muted"> ┌──────────────────── Filter ────────────────────┐</span>
-<span class="t-muted"> │</span>                                                <span class="t-muted">│</span>
-<span class="t-muted"> │</span>  <span class="t-header">From:</span>     <span class="t-selected">[alice                       ]</span>      <span class="t-muted">│</span>
-<span class="t-muted"> │</span>  <span class="t-header">To:</span>       [                            ]      <span class="t-muted">│</span>
-<span class="t-muted"> │</span>  <span class="t-header">Payload:</span>  [INVITE                      ]      <span class="t-muted">│</span>
-<span class="t-muted"> │</span>                                                <span class="t-muted">│</span>
-<span class="t-muted"> │</span>  <span class="t-good">[x]</span> Case insensitive                          <span class="t-muted">│</span>
-<span class="t-muted"> │</span>  <span class="t-muted">[ ]</span> Invert match                              <span class="t-muted">│</span>
-<span class="t-muted"> │</span>  <span class="t-muted">[ ]</span> Calls only                                <span class="t-muted">│</span>
-<span class="t-muted"> │</span>                                                <span class="t-muted">│</span>
-<span class="t-muted"> │</span>     <span class="t-good">[ Apply ]</span>          <span class="t-muted">[ Cancel ]</span>              <span class="t-muted">│</span>
-<span class="t-muted"> │</span>                                                <span class="t-muted">│</span>
-<span class="t-muted"> └────────────────────────────────────────────────┘</span>
-<span class="t-muted"> Tab: next field  Enter: apply  Esc: cancel  F9: clear all</span></pre>
+<pre class="terminal-body"><span class="t-muted"> ┌ Filter ──────────────────────────────────────────────┐</span>
+<span class="t-muted"> │</span>                                                      <span class="t-muted">│</span>
+<span class="t-muted"> │</span>  <span class="t-header">From user:</span>       <span class="t-selected">[alice                          ]</span>  <span class="t-muted">│</span>
+<span class="t-muted"> │</span>  <span class="t-header">To user:</span>         [                               ]  <span class="t-muted">│</span>
+<span class="t-muted"> │</span>  <span class="t-header">Source IP:</span>       [                               ]  <span class="t-muted">│</span>
+<span class="t-muted"> │</span>  <span class="t-header">Destination IP:</span>  [                               ]  <span class="t-muted">│</span>
+<span class="t-muted"> │</span>  <span class="t-header">Text in message:</span> [                               ]  <span class="t-muted">│</span>
+<span class="t-muted"> │</span>  <span class="t-header">Header:</span>          [<span class="t-muted">Name: text</span>                     ]  <span class="t-muted">│</span>
+<span class="t-muted"> │</span>  <span class="t-header">After:</span>           [<span class="t-muted">2026-07-07T08:00:00Z</span>           ]  <span class="t-muted">│</span>
+<span class="t-muted"> │</span>  <span class="t-header">Before:</span>          [<span class="t-muted">2026-07-07T09:00:00Z</span>           ]  <span class="t-muted">│</span>
+<span class="t-muted"> │</span>  ──────────────────────────────────────────────────  <span class="t-muted">│</span>
+<span class="t-muted"> │</span>  All       <span class="t-good">[*]</span>                                       <span class="t-muted">│</span>
+<span class="t-muted"> │</span>  REGISTER  <span class="t-good">[*]</span>             OPTIONS   <span class="t-good">[*]</span>             <span class="t-muted">│</span>
+<span class="t-muted"> │</span>  INVITE    <span class="t-good">[*]</span>             PUBLISH   <span class="t-good">[*]</span>             <span class="t-muted">│</span>
+<span class="t-muted"> │</span>     <span class="t-good">[ Filter ]</span>                 <span class="t-muted">[ Cancel ]</span>            <span class="t-muted">│</span>
+<span class="t-muted"> └──────────────────────────────────────────────────────┘</span>
+<span class="t-muted"> Tab Next  Space Toggle  Enter Apply  Esc Cancel  F9 Clear</span></pre>
 </div>
 
-> **Tip:** The Filter field accepts the full [Filter DSL](@/docs/filter-dsl.md) syntax. Combine it with the From/To text fields for powerful multi-criteria matching. Press `F9` to clear all filters at once.
+Each label says what its field matches: From user and To user match the
+user part of the URI, Source IP and Destination IP the addresses, and Text in
+message searches every SIP message of the call. Header takes `Name: text`, or
+a bare header name to find the calls that carry it. After and Before take an
+RFC 3339 timestamp, and the empty fields show an example in gray.
+
+> **Tip:** Press `F9` to clear every field and the method boxes at once. For
+anything the fields cannot say, the [Filter DSL](@/docs/filter-dsl.md) takes the full
+expression.
 
 ### Save dialog (F2)
 
@@ -678,24 +698,29 @@ Save captured data in multiple formats. Use `Tab` to cycle through formats.
 <div class="terminal">
 <div class="terminal-bar">
 <span class="terminal-dot red"></span><span class="terminal-dot yellow"></span><span class="terminal-dot green"></span>
-<span class="terminal-title">sipnab -- Save Capture</span>
+<span class="terminal-title">sipnab -- Save capture</span>
 </div>
-<pre class="terminal-body"> <span class="t-muted">┌────────────────── Save Capture ──────────────────┐</span>
- <span class="t-muted">│</span>                                                  <span class="t-muted">│</span>
- <span class="t-muted">│</span>  <span class="t-header">Format:</span>  <span class="t-good">PCAP</span> <span class="t-muted">│ PCAP-NG │ TXT │ Mermaid</span>         <span class="t-muted">│</span>
- <span class="t-muted">│</span>                                                  <span class="t-muted">│</span>
- <span class="t-muted">│</span>  <span class="t-header">File:</span>    <span class="t-selected">[/tmp/capture.pcap           ]</span>         <span class="t-muted">│</span>
- <span class="t-muted">│</span>                                                  <span class="t-muted">│</span>
- <span class="t-muted">│</span>  <span class="t-muted">Saving: All 47 dialogs</span>                          <span class="t-muted">│</span>
- <span class="t-muted">│</span>  <span class="t-accent">(3 selected -- will save selected only)</span>         <span class="t-muted">│</span>
- <span class="t-muted">│</span>                                                  <span class="t-muted">│</span>
- <span class="t-muted">│</span>     <span class="t-good">[ Save ]</span>           <span class="t-muted">[ Cancel ]</span>                <span class="t-muted">│</span>
- <span class="t-muted">│</span>                                                  <span class="t-muted">│</span>
- <span class="t-muted">└──────────────────────────────────────────────────┘</span>
- <span class="t-muted">Tab: cycle format  Enter: save  Esc: cancel</span></pre>
+<pre class="terminal-body"><span class="t-muted"> ┌ Save capture ────────────────────────────────────────────────────────┐</span>
+<span class="t-muted"> │</span>  <span class="t-header">Save to:</span> <span class="t-selected">/tmp/sipnab_20240615_120000.pcap</span>                           <span class="t-muted">│</span>
+<span class="t-muted"> │</span>  <span class="t-muted">Dialogs: 47 (3 checked) · Messages: 212</span>                             <span class="t-muted">│</span>
+<span class="t-muted"> │</span>                                                                      <span class="t-muted">│</span>
+<span class="t-muted"> │</span>  <span class="t-accent">Packet capture</span>                                                      <span class="t-muted">│</span>
+<span class="t-muted"> │</span>    <span class="t-good">▸ PCAP      Universal baseline (Wireshark, tcpdump, Homer)</span>        <span class="t-muted">│</span>
+<span class="t-muted"> │</span>      PCAP-NG   Modern format with metadata and annotations           <span class="t-muted">│</span>
+<span class="t-muted"> │</span>  <span class="t-accent">Reporting</span>                                                           <span class="t-muted">│</span>
+<span class="t-muted"> │</span>      HTML      Ladder diagram page (Mermaid), no dependencies        <span class="t-muted">│</span>
+<span class="t-muted"> │</span>      Markdown  Call summary for tickets and incidents                <span class="t-muted">│</span>
+<span class="t-muted"> │</span>  <span class="t-muted">…</span>                                                                   <span class="t-muted">│</span>
+<span class="t-muted"> │</span>  <span class="t-good">[Enter]</span> Save  <span class="t-header">[Tab/⇧Tab]</span> Format  <span class="t-warn">[Esc]</span> Cancel                       <span class="t-muted">│</span>
+<span class="t-muted"> └──────────────────────────────────────────────────────────────────────┘</span>
+<span class="t-muted"> Enter Save  Tab Format  Esc Cancel</span></pre>
 </div>
 
-> **Tip:** Select specific dialogs in the Call List with `Space` before pressing `F2`. The save dialog shows the count and saves only those. **Mermaid** format exports a sequence diagram you can paste into documentation.
+The path and the dialog count stay at the top and the keys at the bottom on
+any terminal height, and only the format list scrolls. With no dialog checked the
+count line says `none checked, so all are saved`.
+
+> **Tip:** Select specific dialogs in the Call List with `Space` before pressing `F2`. The save dialog shows the count and saves only those. **HTML** writes a ladder diagram page drawn with Mermaid that you can open in any browser.
 
 ### Settings dialog (F8)
 
@@ -706,17 +731,18 @@ Toggle display options without leaving the TUI.
 <span class="terminal-dot red"></span><span class="terminal-dot yellow"></span><span class="terminal-dot green"></span>
 <span class="terminal-title">sipnab -- Settings</span>
 </div>
-<pre class="terminal-body"> <span class="t-muted">┌─────────────────── Settings ───────────────────┐</span>
- <span class="t-muted">│</span>                                                <span class="t-muted">│</span>
- <span class="t-muted">│</span>  <span class="t-selected">▸ Color mode         </span><span class="t-good">always</span>                   <span class="t-muted">│</span>
- <span class="t-muted">│</span>    Timestamp mode     <span class="t-accent">delta-prev</span>               <span class="t-muted">│</span>
- <span class="t-muted">│</span>    Autoscroll         <span class="t-good">on</span>                       <span class="t-muted">│</span>
- <span class="t-muted">│</span>    Raw preview        <span class="t-bad">off</span>                      <span class="t-muted">│</span>
- <span class="t-muted">│</span>    SDP display        <span class="t-accent">summary</span>                  <span class="t-muted">│</span>
- <span class="t-muted">│</span>    Syntax highlighting <span class="t-good">on</span>                      <span class="t-muted">│</span>
- <span class="t-muted">│</span>                                                <span class="t-muted">│</span>
- <span class="t-muted">└────────────────────────────────────────────────┘</span>
- <span class="t-muted">Up/Down: navigate  Enter/Space: toggle  Esc: close</span></pre>
+<pre class="terminal-body"><span class="t-muted"> ┌ Settings ──────────────────────────────────────┐</span>
+<span class="t-muted"> │</span>                                                <span class="t-muted">│</span>
+<span class="t-muted"> │</span>  <span class="t-selected">Colors:           [Method]</span>                    <span class="t-muted">│</span>
+<span class="t-muted"> │</span>  Timestamps:       <span class="t-good">[Delta from previous]</span>       <span class="t-muted">│</span>
+<span class="t-muted"> │</span>  Autoscroll:       <span class="t-good">[On]</span>                        <span class="t-muted">│</span>
+<span class="t-muted"> │</span>  Detail pane:      <span class="t-good">[On]</span>                        <span class="t-muted">│</span>
+<span class="t-muted"> │</span>  SDP:              <span class="t-good">[Hidden]</span>                    <span class="t-muted">│</span>
+<span class="t-muted"> │</span>  Syntax colors:    <span class="t-good">[On]</span>                        <span class="t-muted">│</span>
+<span class="t-muted"> │</span>                                                <span class="t-muted">│</span>
+<span class="t-muted"> │</span>  <span class="t-muted">↑/↓ move · Enter toggle · Esc close</span>           <span class="t-muted">│</span>
+<span class="t-muted"> └────────────────────────────────────────────────┘</span>
+<span class="t-muted"> ↑↓ Move  Enter Toggle  Esc Close</span></pre>
 </div>
 
 ## See also

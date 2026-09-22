@@ -2,16 +2,16 @@
 source: tests/tui_snapshot_test.rs
 expression: output
 ---
- Current Mod┌ Filter ──────────────────────────────────────────────┐
- Match Expre│                                                      │
- Display Fil│  SIP From:    [                                   ]  │
-# ▲   Method│  SIP To:      [                                   ]  │   Duratio
-            │  Source:      [                                   ]  │
-  No SIP dia│  Destination: [                                   ]  │
-            │  Payload:     [                                   ]  │
-  Waiting fo│  Header:      [                                   ]  │
-  Press 'q' │  After:       [                                   ]  │
-            │  Before:      [                                   ]  │
+ Live captur┌ Filter ──────────────────────────────────────────────┐
+ Capture fil│                                                      │
+ View filter│  From user:       [                               ]  │
+  # ▲    Met│  To user:         [                               ]  │D    Duratio
+            │  Source IP:       [                               ]  │
+  No SIP dia│  Destination IP:  [                               ]  │
+            │  Text in message: [                               ]  │
+  Waiting fo│  Header:          [Name: text                     ]  │
+  Check the │  After:           [2026-07-07T08:00:00Z           ]  │
+  F1 shows h│  Before:          [2026-07-07T09:00:00Z           ]  │
             │  ──────────────────────────────────────────────────  │
             │  All       [*]                                       │
             │  REGISTER  [*]             OPTIONS   [*]             │

@@ -198,7 +198,8 @@ pub fn stream_matches_search(stream: &RtpStream, query_lower: &str) -> bool {
     if query_lower.is_empty() {
         return true;
     }
-    let ssrc = format!("{:08X}", stream.key.ssrc).to_ascii_lowercase();
+    // Matched as drawn (`0x`-prefixed), so both "aabb" and "0xaabb" find it.
+    let ssrc = ssrc_cell(stream.key.ssrc).to_ascii_lowercase();
     if ssrc.contains(query_lower) {
         return true;
     }
@@ -448,13 +449,7 @@ pub fn render_stream_list(
             }
         };
 
-        let dialog_id = stream
-            .associated_dialog
-            .as_deref()
-            .unwrap_or("-")
-            .chars()
-            .take(11)
-            .collect::<String>();
+        let dialog_id = dialog_cell(stream.associated_dialog.as_deref());
 
         let status_label = match health {
             StreamHealth::Good => "OK",
@@ -466,7 +461,7 @@ pub fn render_stream_list(
         let (sdp_media, sdp_style) = advertised_cell(stream, dialogs, theme);
 
         let row = Row::new(vec![
-            Cell::from(Span::raw(format!("{:08X}", stream.key.ssrc))),
+            Cell::from(Span::raw(ssrc_cell(stream.key.ssrc))),
             Cell::from(Span::raw(stream.codec.as_deref().unwrap_or("?"))),
             Cell::from(Span::raw(resolver.label_socket(stream.key.src, name_mode))),
             Cell::from(Span::raw(resolver.label_socket(stream.key.dst, name_mode))),
@@ -501,12 +496,60 @@ pub fn render_stream_list(
         .header(header)
         .column_spacing(1)
         .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED))
-        .highlight_symbol("> ");
+        .highlight_symbol("> ")
+        // Reserve the marker column even with no rows, so the header does not
+        // shift two columns left when the list is empty.
+        .highlight_spacing(ratatui::widgets::HighlightSpacing::Always);
 
     frame.render_stateful_widget(table, table_area, &mut state.table_state);
+
+    // An empty list says why it is empty and what to do, rather than showing
+    // a bare header that reads as a rendering fault.
+    if total_streams == 0 && table_area.height > 1 {
+        let msg_area = Rect {
+            x: table_area.x,
+            y: table_area.y + 1,
+            width: table_area.width,
+            height: table_area.height - 1,
+        };
+        frame.render_widget(
+            ratatui::widgets::Paragraph::new(STREAM_LIST_EMPTY_HINT)
+                .style(Style::default().fg(theme.muted)),
+            msg_area,
+        );
+    }
 }
 
+/// What the stream list says while it has no rows.
+const STREAM_LIST_EMPTY_HINT: &str = "\n  No RTP streams yet.\n\n  A stream appears here once RTP \
+     packets are seen.\n  Tab returns to the call list.";
+
 // ── Helpers ─────────────────────────────────────────────────────────
+
+/// Widest Call-ID the Dialog column shows whole: its 13 cells less one of
+/// breathing room.
+const DIALOG_CELL_COLS: usize = 12;
+
+/// The Dialog cell: the associated Call-ID, or `-` for an orphan. A Call-ID
+/// wider than the column is cut to its leading characters plus `…`, so a
+/// clipped ID never reads as a complete, different one. Pure.
+fn dialog_cell(call_id: Option<&str>) -> String {
+    let Some(id) = call_id else {
+        return "-".to_string();
+    };
+    if id.chars().count() <= DIALOG_CELL_COLS {
+        return id.to_string();
+    }
+    let mut cut: String = id.chars().take(DIALOG_CELL_COLS - 1).collect();
+    cut.push('\u{2026}');
+    cut
+}
+
+/// The SSRC cell: `0x`-prefixed hex, the form RTP tools and Wireshark print,
+/// so an SSRC is never mistaken for a decimal. Pure.
+fn ssrc_cell(ssrc: u32) -> String {
+    format!("0x{ssrc:08X}")
+}
 
 /// Return a style for the health status label: good/warning/bad/muted per
 /// health, with warning and bad additionally bold. Pure.
@@ -607,6 +650,26 @@ mod tests {
         st.codec = codec.map(str::to_string);
         st.associated_dialog = dialog.map(str::to_string);
         st
+    }
+
+    /// The Dialog cell shows a Call-ID whole when it fits, and marks a cut
+    /// one with `…` so a clipped ID never reads as a complete (and different)
+    /// Call-ID.
+    #[test]
+    fn a_long_call_id_is_cut_with_an_ellipsis() {
+        assert_eq!(dialog_cell(Some("call-1@test")), "call-1@test");
+        assert_eq!(dialog_cell(Some("abcdefghijklmnop")), "abcdefghijk\u{2026}");
+        assert_eq!(dialog_cell(None), "-");
+    }
+
+    /// The SSRC is drawn `0x`-prefixed, and a search typed the way it is
+    /// drawn still finds it.
+    #[test]
+    fn the_ssrc_reads_as_hex_and_searches_as_drawn() {
+        assert_eq!(ssrc_cell(0xAABBCCDD), "0xAABBCCDD");
+        let a = mk_stream(0xAABBCCDD, 20000, Some("PCMU"), None);
+        assert!(stream_matches_search(&a, "0xaabb"));
+        assert!(stream_matches_search(&a, "aabb"));
     }
 
     /// Search narrows by the fields the table shows (codec, SSRC hex,

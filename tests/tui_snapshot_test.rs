@@ -1077,7 +1077,7 @@ mod tui_snapshots {
     fn the_capture_filter_is_drawn_in_the_bpf_slot() {
         let row = status_line2_for("udp port 5060", 80);
         assert!(
-            row.contains("BPF Filter: udp port 5060"),
+            row.contains("Capture filter (BPF): udp port 5060"),
             "the filter the capture compiled is not on the row: {row:?}"
         );
     }
@@ -1092,7 +1092,7 @@ mod tui_snapshots {
         let generated = sipnab::app::bootstrap::auto_bpf_filter(5060, 5061, &[]);
         let row = status_line2_for(&generated, 80);
         assert!(
-            row.contains("BPF Filter: portrange 5060-5061 or"),
+            row.contains("Capture filter (BPF): portrange 5060-5061 or"),
             "the generated filter is not on the row: {row:?}"
         );
         assert!(
@@ -1101,16 +1101,40 @@ mod tui_snapshots {
         );
     }
 
-    /// A capture with no compiled filter leaves the slot empty, which is the
-    /// only thing that may render as empty — the reading "nothing was
-    /// filtered" has to stay true.
+    /// A capture with no compiled filter says `none` in the slot, which is
+    /// the only thing that may render there as `none` — the reading "nothing
+    /// was filtered" has to stay true, and a bare label read as a rendering
+    /// fault.
     #[test]
-    fn a_capture_with_no_filter_leaves_the_bpf_slot_empty() {
+    fn a_capture_with_no_filter_says_none_in_the_bpf_slot() {
         let row = status_line2_for("", 80);
         assert!(
-            row.trim_end().ends_with("BPF Filter:"),
+            row.trim_end().ends_with("Capture filter (BPF): none"),
             "something was drawn for a capture that compiled no filter: {row:?}"
         );
+    }
+
+    /// The capture-mode label resolved at startup reaches status line 1. The
+    /// bar said `Online (any)` for every session, a `-I` file read included,
+    /// because nothing handed the label to the `App`.
+    #[test]
+    fn the_startup_capture_label_reaches_status_line1() {
+        let options = sipnab::tui::TuiOptions {
+            capture_mode: Some("Offline (incident.pcap)".to_string()),
+            ..Default::default()
+        };
+        let mut app = options.into_app(
+            Arc::new(RwLock::new(DialogStore::new(100, false))),
+            Arc::new(RwLock::new(StreamStore::new(100))),
+        );
+        let mut terminal = Terminal::new(TestBackend::new(100, 12)).unwrap();
+        terminal.draw(|frame| app.render(frame)).unwrap();
+        let row = buffer_to_string(&terminal)
+            .lines()
+            .next()
+            .unwrap_or_default()
+            .to_string();
+        assert!(row.contains("File: incident.pcap"), "{row:?}");
     }
 
     /// Snapshot: a list containing only a failed (503) dialog, locking in the failure styling.
@@ -1319,6 +1343,33 @@ mod tui_snapshots {
 
         let output = buffer_to_string(&terminal);
         insta::assert_snapshot!(output);
+    }
+
+    /// At 80x24 the save dialog is taller than the screen. The path, the
+    /// selection count and the key line stay on screen whichever format is
+    /// selected; only the format list scrolls. Before, the dialog scrolled as
+    /// a whole, so the count and the keys fell off the bottom and selecting a
+    /// late format (WAV) pushed the path off the top.
+    #[test]
+    fn save_dialog_keeps_path_count_and_keys_visible_at_80x24() {
+        for tabs in [0usize, 8, 11] {
+            let backend = TestBackend::new(80, 24);
+            let mut terminal = Terminal::new(backend).unwrap();
+            let mut app = test_app_with_dialogs();
+            app.handle_key(crossterm::event::KeyCode::F(2));
+            app.set_save_path("/tmp/sipnab_20240615_120000.pcap");
+            for _ in 0..tabs {
+                app.handle_key(crossterm::event::KeyCode::Tab);
+            }
+            terminal.draw(|frame| app.render(frame)).unwrap();
+            let out = buffer_to_string(&terminal);
+            for needle in ["Save to:", "all are saved", "[Enter] Save", "\u{25B8} "] {
+                assert!(
+                    out.contains(needle),
+                    "after {tabs} Tab(s) {needle:?} is off screen:\n{out}"
+                );
+            }
+        }
     }
 
     // ── Helper: SDP-containing message constructors ───────────────────

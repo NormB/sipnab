@@ -510,7 +510,7 @@ TUI color theme with 11 semantic color slots (plus `highlight`, a legacy alias f
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `background` | string | `"reset"` (terminal default) | Terminal background |
-| `foreground` | string | `"white"` | Default text color |
+| `foreground` | string | `"reset"` | Default text color (`reset` is the terminal's own) |
 | `highlight` | string | -- | Legacy alias for `selected` (backward compat) |
 | `header` | string | `"cyan"` | Status bar, column headers, endpoint labels |
 | `selected` | string | `"yellow"` | Selected/highlighted row, cursor, focused item |
