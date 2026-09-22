@@ -516,7 +516,7 @@ decisions as *"Fully implemented (P1–P5)"*, and the code matches claim for
 claim: the pure builders `build_ipv4_udp` / `build_ipv6_udp`
 ([`kill_packet.rs:34`, `:98`](../../src/security/kill_packet.rs)), the raw
 socket opened in the privileged window and handed to the worker
-(`RawKillSocket::open`, [`process_isolation.rs:111`](https://github.com/NormB/sipnab/blob/main/src/process_isolation.rs#L111)),
+(`RawKillSocket::open`, [`process_isolation.rs:149`](https://github.com/NormB/sipnab/blob/main/src/process_isolation.rs#L149)),
 `--kill-spoof {auto|raw|ephemeral}` with a loud failure for `raw`
 ([`bootstrap.rs:554-562`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L554-L562)), and the property that
 matters most — the forged source is never a parameter. It is always the sniffed

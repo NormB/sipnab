@@ -42,7 +42,9 @@ capture thread(s)              │                          │
 
   batch mode only
     └── scanner-kill worker            process_isolation::spawn_scanner_kill_worker
-          bounded crossbeam channel; --kill-scanner has no TUI path
+          a separate PROCESS (this binary, re-executed), started by
+          bootstrap::launch before the chroot and privilege drop; two
+          threads here serve its pipes; --kill-scanner has no TUI path
 ```
 
 The mode column above is the part to keep true, and it is worth saying why.
@@ -97,7 +99,7 @@ well as in the TUI. `TUI` and `batch` mean it does not.
 | `metrics-server` | both | [`output/prometheus_server.rs`](../../src/output/prometheus_server.rs) | Raw TCP accept loop for Prometheus scrapes. |
 | `metrics-conn` | both | [`output/prometheus_server.rs`](../../src/output/prometheus_server.rs) | One short-lived thread per accepted scrape, capped at 16 concurrent. |
 | `sipnab-dns` | both | [`names.rs`](../../src/names.rs) | Reverse-DNS resolver draining an `std::sync::mpsc` queue so the render path never blocks on a lookup. Starts only when the run turns reverse DNS on. |
-| `scanner-kill` | batch | [`process_isolation.rs`](../../src/process_isolation.rs) | Isolated worker that transmits kill responses — the only thread that answers an address the capture supplied. `--kill-scanner` has no TUI path. |
+| `scanner-kill-fwd`, `scanner-kill-rx` | batch | [`process_isolation.rs`](../../src/process_isolation.rs) | The parent's half of the scanner-kill worker, which is a process of its own: `-fwd` writes queued kill requests into the worker's request pipe (the one write that can block, so it is never the capture thread's), `-rx` reads its outcomes into the tally. The worker process runs the decision loop on its main thread between two pumps, `kill-worker-in` and `kill-worker-out`; it is the only process that answers an address the capture supplied, and the process parsing captured traffic holds none of its send sockets. `--kill-scanner` has no TUI path. |
 | `rtpengine-reconcile` | both | [`app/relay_reconciler.rs`](../../src/app/relay_reconciler.rs) | Asks an rtpengine relay which calls it holds, over the relay's read-only `list` and `query`, so a stream the signaling does not explain still gets a Call-ID. Starts only when `--rtpengine-control` names a relay on a live run, and keeps the round trip off the packet path. |
 | `pcap-load` | TUI | [`tui/controllers/file_open.rs`](../../src/tui/controllers/file_open.rs) | Loads a pcap chosen from inside the TUI, writing the live stores. |
 | `clipboard` | TUI | [`tui/clipboard.rs`](../../src/tui/clipboard.rs) | Holds the X11/Wayland selection alive after a copy without stalling the UI. |
@@ -215,7 +217,7 @@ flow's packets share a host pair and therefore a worker.
 | `--cores` dispatcher → workers, channel-fed | crossbeam `bounded::<Packet>(8192)` ([`run_offline_parallel()`](../../src/parallel.rs)) |
 | `--cores` reader → workers, file input | crossbeam `bounded::<Vec<Packet>>(64)` carrying batches of 128 ([`run_offline_parallel_file()`](../../src/parallel.rs)) — same ~8192 in-flight packet cap, one channel hop per 128 packets instead of per packet |
 | `--cores` per-file reader → dispatcher, multi-file input | crossbeam `bounded` carrying one batch per item ([`shard_set_parallel()`](../../src/parallel.rs)). The queue depth is not the bound that matters: `READ_AHEAD_BYTES` caps in **bytes** how far a LATER file's reader may run ahead of the file the dispatcher holds, because a batch is 128 packets of any size and the default snaplen is 65535 |
-| scanner-kill request / response | crossbeam `bounded(256)` in each direction ([`process_isolation.rs`](../../src/process_isolation.rs)) |
+| scanner-kill request / response | crossbeam `bounded(256)` from the capture thread to `scanner-kill-fwd`, then pipes to and from the worker process, then `bounded(256)` for the outcome stream ([`process_isolation.rs`](../../src/process_isolation.rs)) |
 | packet path → rtpengine reconciler | `std::sync::mpsc::sync_channel(1024)` ([`orphan_channel()`](../../src/relay/reconcile.rs)) — the capture path offers a relay-side socket and never waits on it: a full queue drops the offer and counts it, because stalling packet processing on a relay round trip is the trade `--rtpengine-control` exists to avoid |
 | DNS resolve queue | `std::sync::mpsc` ([`names.rs`](../../src/names.rs)) |
 | inside api/mcp servers | tokio (axum/rmcp internals) |

@@ -23,34 +23,42 @@ the problem in its own words (`:11-19`):
 > `-I file.pcap` suggests the tool sends anything at all. The damage is done
 > before any output is read.
 
-And why the fix is a type rather than a check (`:21-29`):
+And why the fix is a type rather than a check (`:23-32`):
 
 > The failure is silent and irreversible, so it must not depend on anyone
-> remembering. [`TransmitPermit`] has a private field, so the only way to obtain
-> one anywhere in the crate is [`TransmitPermit::for_source`], which inspects the
-> capture source. Every function in the kill path that reaches a socket takes
-> one by reference. A new call site therefore cannot compile a send without
-> first proving, from the capture source, that the run is live — there is no
-> code path to forget, and no flag to get wrong.
+> remembering. [`TransmitPermit`] has a private field, so the only way to
+> obtain one anywhere in the crate is [`TransmitPermit::for_source`], which
+> inspects the capture source. Every function that CREATES a kill-path send
+> socket takes one: the raw socket's `open` and the ephemeral UDP socket's
+> `bind` by reference, and `spawn_scanner_kill_worker`, which starts the
+> worker process and hands it those sockets, by value. A new call site
+> therefore cannot make a socket to send through without first proving, from
+> the capture source, that the run is live — there is no code path to
+> forget, and no flag to get wrong.
 
 Three properties make it hold, and a new capability must reproduce all three or
 it is not the same guarantee:
 
 1. **A private field.** `pub struct TransmitPermit(())`
-   ([`:48`](https://github.com/NormB/sipnab/blob/main/src/security/transmit_guard.rs#L48)). No other module can construct
-   one, so `for_source` ([`:61`](https://github.com/NormB/sipnab/blob/main/src/security/transmit_guard.rs#L61)) is the
+   ([`:86`](https://github.com/NormB/sipnab/blob/main/src/security/transmit_guard.rs#L86)). No other module can construct
+   one, so `for_source` ([`:111`](https://github.com/NormB/sipnab/blob/main/src/security/transmit_guard.rs#L111)) is the
    sole entry point. It returns `Some` for `Live` and `Hep` and `None` for
    `File`.
-2. **The permit is a parameter of every send.** Five signatures take it —
-   `RawKillSocket::send_to_v4` / `send_to_v6` in both the Linux and stub forms
-   ([`process_isolation.rs:156`, `:193`, `:229`, `:242`](../../src/process_isolation.rs))
-   and `KillUdpSocket::send_to` ([`:273`](https://github.com/NormB/sipnab/blob/main/src/process_isolation.rs#L273)) — plus
-   `spawn_scanner_kill_worker` ([`:1009`](https://github.com/NormB/sipnab/blob/main/src/process_isolation.rs#L1009)) and
-   `BatchRunner::new` ([`batch.rs:2404`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L2404)) by value, and the
-   worker holds one in a field ([`:801`](https://github.com/NormB/sipnab/blob/main/src/process_isolation.rs#L801)). A new
-   send that forgets it does not compile.
+2. **The permit is a parameter of every socket the kill path creates.**
+   `RawKillSocket::open` in both the Linux and stub forms
+   ([`process_isolation.rs:149`, `:177`](../../src/process_isolation.rs)) and
+   `KillUdpSocket::bind` ([`:322`](https://github.com/NormB/sipnab/blob/main/src/process_isolation.rs#L322)) take it by
+   reference, and `spawn_scanner_kill_worker`
+   ([`:1542`](https://github.com/NormB/sipnab/blob/main/src/process_isolation.rs#L1542)) and `BatchRunner::new`
+   ([`batch.rs:2378`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L2378)) by value. The sends themselves
+   take none, and that is the design rather than a gap: they happen in the
+   scanner-kill worker, a process of its own, and a proof token cannot cross a
+   pipe. The worker's capability is the descriptors it inherited — all of
+   them created under a permit — and it never calls `socket()`, so holding
+   none it refuses every request. A new socket that forgets the permit does
+   not compile; a worker with nothing handed to it has nothing to send on.
 3. **A refusal the operator can read.** `offline_refusal`
-   ([`:80`](https://github.com/NormB/sipnab/blob/main/src/security/transmit_guard.rs#L80)) names the flag, says what
+   ([`:143`](https://github.com/NormB/sipnab/blob/main/src/security/transmit_guard.rs#L143)) names the flag, says what
    happens instead and says how to get what was asked for. It fires from
    `bootstrap::plan` ([`bootstrap.rs:245-263`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L245-L263)),
    which runs for every mode. The doc comment at `:31-36` is explicit that the

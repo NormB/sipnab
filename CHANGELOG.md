@@ -21,6 +21,22 @@ entry that carries them.
 
 ### Security
 
+- **`--kill-scanner` sends from a process of its own, and the process parsing
+  captured traffic no longer holds the kill path's sockets.** The worker that
+  answers scanners was a thread beside libpcap, the parsers, TLS key material
+  and bearer tokens, holding the `CAP_NET_RAW` raw sockets for the whole run.
+  It is now the sipnab binary re-executed before the chroot and the privilege
+  drop. The parent creates every socket the worker sends through (the raw ones
+  and two ephemeral UDP ones), hands them over, and closes its own copies; the
+  worker never opens a socket, refuses every request when it holds none, drops
+  root, every capability and dumpability, and sets `PR_SET_NO_NEW_PRIVS`. It
+  starts with an emptied environment apart from its logging and loader
+  variables, so an API key, signing key or HEP secret passed to sipnab through
+  the environment does not reach it. If it
+  dies, the defense is reported disabled once, requests it held are counted as
+  lost, and the capture carries on. Not covered: the parsing process can still
+  open an ordinary UDP socket, and a `--setup-caps` install keeps its file
+  capabilities for the whole run.
 - **An unreadable or empty `--metrics-auth-file` no longer starts an open
   metrics endpoint.** The credential error was logged and the endpoint came up
   with no authentication, exit 0. It is now a startup error, the way the
@@ -32,6 +48,10 @@ entry that carries them.
 
 ### Fixed
 
+- **`[security] kill_scanner = true` spoofs kill responses the way
+  `--kill-scanner` does.** The raw socket was opened only for the flag and
+  `-K`, so a run armed from the config file always answered from sipnab's own
+  port, even holding `CAP_NET_RAW`. One rule now decides both.
 - **A STUN finding far outside its call keeps its reason.** The time caveat
   replaced the note naming the address STUN offered instead of being appended
   to it, and that address appears nowhere else in the evidence.

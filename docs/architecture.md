@@ -197,17 +197,20 @@ EOF.
   right after socket open and disables core dumps whenever decryption keys are
   resident ([`src/privilege.rs`](https://github.com/NormB/sipnab/blob/main/src/privilege.rs)); `--chroot` is available for daemon
   deployments.
-- **D16 — Process isolation: specified, not shipped.** D16
+- **D16 — Process isolation: scanner-kill yes, the REST API no.** D16
   ([`docs/design/implementation-plan-v6.md:624`](https://github.com/NormB/sipnab/blob/main/docs/design/implementation-plan-v6.md#L624)) called for scanner-kill and the
-  REST API to run in forked children behind a Unix socket pair. **Neither
-  does.** Scanner-kill runs in the `scanner-kill` *thread*
-  ([`src/process_isolation.rs`](https://github.com/NormB/sipnab/blob/main/src/process_isolation.rs)) and the REST/MCP servers run as tasks on a shared
-  runtime thread ([`src/app/servers.rs`](https://github.com/NormB/sipnab/blob/main/src/app/servers.rs)), all in one address space alongside the
-  parsers, the stores, TLS key material and bearer tokens. Treat the API bind
-  address and key accordingly — and note that `panic = "abort"`
-  ([`Cargo.toml:328`](https://github.com/NormB/sipnab/blob/main/Cargo.toml#L328)) means a panic on any thread ends the whole process, so
-  threads buy no fault containment either. The analysis of whether to close this
-  gap, and why most of it should stay open, is in
+  REST API to run in forked children. **Scanner-kill does**: its worker is a
+  process of its own ([`src/process_isolation.rs`](https://github.com/NormB/sipnab/blob/main/src/process_isolation.rs)), this binary re-executed before the chroot and
+  the privilege drop. The parent creates the only sockets the kill path sends
+  through, hands them to the worker, and closes its own copies, so the process
+  parsing captured traffic holds none of them; the worker never creates a
+  socket, and holding none it refuses every request. The REST/MCP servers
+  still run as tasks on a shared runtime thread ([`src/app/servers.rs`](https://github.com/NormB/sipnab/blob/main/src/app/servers.rs)), in one address space
+  alongside the parsers, the stores, TLS key material and bearer tokens. Treat
+  the API bind address and key accordingly — and note that `panic = "abort"`
+  ([`Cargo.toml:328`](https://github.com/NormB/sipnab/blob/main/Cargo.toml#L328)) means a panic on any thread ends the whole process, so threads buy
+  no fault containment either. The analysis of whether to close the rest of
+  this gap, and why most of it should stay open, is in
   [`docs/design/process-isolation-and-hot-path-cost.md`](https://github.com/NormB/sipnab/blob/main/docs/design/process-isolation-and-hot-path-cost.md).
 - **D17 — Warn and continue.** Malformed input must never crash the
   process; parsers set `parse_error` and keep going ([`docs/fault-model.md`](https://github.com/NormB/sipnab/blob/main/docs/fault-model.md)).

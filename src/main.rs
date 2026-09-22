@@ -57,6 +57,16 @@ use sipnab::signals;
 /// (exit code 2 on argument-validation failure, and on a provenance record
 /// `--run-provenance-file` could not write).
 fn main() {
+    // 0. The scanner-kill worker process is this binary too, started by a
+    //    parent run with `--internal-kill-worker` as its FIRST argument. It is
+    //    dispatched before the command line is parsed, so no combination of
+    //    ordinary flags can reach it, and it never reaches anything below: it
+    //    sets up its own logging and hardening and exits. See
+    //    `process_isolation::worker_process`.
+    if let Some(code) = sipnab::process_isolation::worker_process::run_if_requested() {
+        std::process::exit(code);
+    }
+
     // 1. Parse CLI arguments and set up logging.
     let cli = Cli::parse_args();
     bootstrap::init_logging(&cli);
@@ -184,7 +194,13 @@ fn main() {
 
     // 9. Launch the capture: channel, capture thread, readiness handshake,
     //    chroot, privilege drop, runtime hardening.
-    let launched = bootstrap::launch(&cli, &loaded.config, plan.source, &plan.capture_config);
+    let launched = bootstrap::launch(
+        &cli,
+        &loaded.config,
+        plan.source,
+        &plan.capture_config,
+        &plan.mode,
+    );
 
     // 10. Dispatch to the selected mode.
     match plan.mode {
@@ -219,7 +235,7 @@ fn main() {
                     keylog_source: launched.keylog_source,
                 },
                 plan.policy,
-                launched.raw_kill_sock,
+                launched.kill_worker,
             );
         }
         // gate: unreachable because step 8 above returns for CoresFile before

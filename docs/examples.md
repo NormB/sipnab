@@ -1140,7 +1140,7 @@ sudo sipnab -N -d eth0 \
             --json
 ```
 
-`--kill-scanner` actively responds to known scanner User-Agents (uses a scanner-kill worker thread). The response code defaults to **200**. Pass `--kill-response 403` (or any 100–699 code) to change it. `--alert syslog` writes alerts to `LOCAL0` so you can pick them up from `/var/log/syslog` (`--syslog` is the equivalent boolean form).
+`--kill-scanner` actively responds to known scanner User-Agents, from a scanner-kill worker that runs as a process of its own: the process parsing your traffic holds none of the sockets it sends through. The response code defaults to **200**. Pass `--kill-response 403` (or any 100–699 code) to change it. `--alert syslog` writes alerts to `LOCAL0` so you can pick them up from `/var/log/syslog` (`--syslog` is the equivalent boolean form).
 
 ### 10b. Wire to fail2ban
 
@@ -1299,7 +1299,7 @@ The hook is rate-limited (`--exec-rate-limit 10` default) and runs in a sandboxe
 
 **Pitfalls:**
 
-- The scanner-kill worker needs `CAP_NET_RAW` to forge SIP responses. Run sipnab as root or with capabilities — privilege drop happens after the worker opens its raw socket.
+- Forging the source of a kill response needs a raw socket, and a raw socket needs `CAP_NET_RAW`. Run sipnab as root or with capabilities: it opens the raw socket and starts the scanner-kill worker process before it drops privileges, and the worker keeps that socket and gives up everything else. Without the capability, responses still go out, from sipnab's own port.
 - `--kill-ua "<regex>"` adds a custom User-Agent pattern beyond the built-in scanner list.
 
 ---
@@ -2624,7 +2624,7 @@ sudo sipnab -N -d eth0 --user sipnab --chroot /var/empty
 
 - **`setcap` does not survive a new binary.** Every upgrade, every rebuild, every package update drops it, and the failure looks like a permissions problem that appeared from nowhere. Re-run `--setup-caps` after an upgrade.
 - sipnab opens anything it must reach by path — a keylog FIFO, an output file, a config — **before** the drop and the chroot. A path under `/run` is unreachable afterwards (recipe 7f).
-- `--no-priv-drop` keeps the privileges. It exists for the cases that genuinely need them, such as the scanner-kill worker forging responses, and it is not the way to fix a permissions error.
+- `--no-priv-drop` keeps the privileges for the rest of the run, and it is not the way to fix a permissions error. Forging kill responses does not need it: sipnab opens the raw socket before the drop and hands it to the scanner-kill worker process, which never keeps root either way.
 
 ---
 

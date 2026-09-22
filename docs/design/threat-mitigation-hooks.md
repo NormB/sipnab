@@ -207,7 +207,7 @@ behavioral detector is not.
 **(c) The action is proportionate and self-limiting.** The kill path already
 does this and the numbers are the model: a global limiter at
 `DEFAULT_RATE_LIMIT = 10` per second
-([`process_isolation.rs:990`](https://github.com/NormB/sipnab/blob/main/src/process_isolation.rs#L990)) and a
+([`process_isolation.rs:1396`](https://github.com/NormB/sipnab/blob/main/src/process_isolation.rs#L1396)) and a
 per-destination limiter at `MAX_PER_DST_PER_MINUTE = 3`
 ([`:731`](https://github.com/NormB/sipnab/blob/main/src/process_isolation.rs#L731)), both applied before any send. The
 per-destination cap is the one that matters: it bounds the damage to *one* peer
