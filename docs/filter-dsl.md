@@ -547,6 +547,10 @@ measurements only. No filter DSL field matches an XR value.
 - Maximum parenthesis nesting depth: **50 levels** (`MAX_NESTING_DEPTH`).
   It bounds recursion in the parser itself; how large the resulting tree may
   grow is the separate node bound above.
+- **Header name length: 256 bytes** (`MAX_HEADER_NAME_LEN`), for the
+  `header.<name>` field. Whoever sent the message chose the header name, so
+  sipnab bounds the field that names one like every other input.
+  `FilterExpr::parse` refuses a longer name and states the limit.
 - Maximum regex pattern size: **1 MB** (1,000,000 bytes)
 - Empty expressions produce a parse error
 - Trailing unparsed input produces a parse error with position

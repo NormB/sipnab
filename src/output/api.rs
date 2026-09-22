@@ -2543,7 +2543,7 @@ async fn get_dialog_audio(
 
     let stem = wav_filename_stem(&call_id);
     // The provenance note lives inside the bytes (a RIFF comment chunk), so a
-    // client that saves the file keeps it; `x-sipnab-audio-partial` surfaces the
+    // client that saves the file keeps it; `sipnab-audio-partial` surfaces the
     // one bit a program branches on without parsing RIFF.
     Ok((
         StatusCode::OK,
@@ -2554,7 +2554,7 @@ async fn get_dialog_audio(
                 format!("attachment; filename=\"{stem}.wav\""),
             ),
             (
-                "x-sipnab-audio-partial",
+                "sipnab-audio-partial",
                 (!audio.partial.is_empty()).to_string(),
             ),
         ],

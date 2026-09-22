@@ -177,7 +177,6 @@ def headers(script_hashes):
         "Strict-Transport-Security": "max-age=31536000; includeSubDomains",
         "Content-Security-Policy": csp(script_hashes),
         "X-Content-Type-Options": "nosniff",
-        "X-Frame-Options": "DENY",
         "Referrer-Policy": "strict-origin-when-cross-origin",
         "Permissions-Policy": "camera=(), microphone=(), geolocation=(), payment=()",
         "Cross-Origin-Opener-Policy": "same-origin",

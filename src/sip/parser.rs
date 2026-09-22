@@ -61,7 +61,11 @@ const MAX_METHOD_LEN: usize = 32;
 /// / "~")` (RFC 3261 §25.1). Nothing outside this set can begin a request
 /// line, which is what makes the check a cheap first-byte reject for binary
 /// payloads: an RTP packet starts `0x80`, and dies here.
-const fn is_token_byte(b: u8) -> bool {
+///
+/// Crate-visible because the filter DSL validates a `header.<name>` field
+/// against the same production: one rule for what a header name may be, not a
+/// second copy that drifts from the parser's.
+pub(crate) const fn is_token_byte(b: u8) -> bool {
     b.is_ascii_alphanumeric()
         || matches!(
             b,
@@ -775,7 +779,12 @@ fn parse_header_line(line: &str, line_span: Option<Range<u32>>) -> Option<SipHea
 /// allocation per header on the hot path); any other casing is returned
 /// as-is, preserving the original (see
 /// `non_canonical_case_header_name_is_preserved`).
-fn expand_compact_header(name: &str) -> Cow<'static, str> {
+///
+/// Crate-visible so the filter DSL's `header.<name>` expands a compact name
+/// through the SAME table that shaped every stored [`SipHeader::name`]: the
+/// two sides then compare long form to long form, and a letter this table does
+/// not know stays itself on both.
+pub(crate) fn expand_compact_header(name: &str) -> Cow<'static, str> {
     if name.len() == 1 {
         let ch = name.as_bytes()[0].to_ascii_lowercase();
         for &(compact, long) in COMPACT_HEADERS {
