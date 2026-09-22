@@ -8,6 +8,19 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Fixed
+
+- **One malformed pcapng block no longer costs the names and TLS secrets after
+  it.** The metadata reader decoded every block and stopped at the first it
+  could not decode, under a comment saying it skipped them, so a single bad
+  block silently dropped every name-resolution record and decryption secret
+  that followed, and TLS decryption then failed with nothing said. Blocks are
+  now framed by their lengths, only name-resolution and decryption-secrets
+  blocks are decoded, a malformed one is skipped and counted, and only a block
+  length that cannot be trusted stops the walk. Both are logged.
+
 ## [0.5.184] - 2026-09-21
 
 ### Changed

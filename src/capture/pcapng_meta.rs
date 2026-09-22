@@ -93,6 +93,12 @@ pub struct PcapngMetadata {
     pub names: Vec<(IpAddr, String)>,
     /// TLS Key Log lines from Decryption Secrets Blocks.
     pub tls_secrets: Vec<String>,
+    /// Name-resolution or secrets blocks whose frame was sound but whose
+    /// contents could not be decoded, and were skipped.
+    pub malformed_blocks: usize,
+    /// Byte offset of a block whose length could not be trusted, where reading
+    /// had to stop: nothing after it was read.
+    pub stopped_at: Option<usize>,
 }
 
 /// Read NRB names and DSB TLS secrets from the pcapng file at `path`.
@@ -104,8 +110,10 @@ pub struct PcapngMetadata {
 /// # Returns
 ///
 /// The extracted metadata. Non-pcapng input, a corrupt gzip stream, or a
-/// capture with no NRB/DSB blocks all yield empty metadata, not an error;
-/// malformed blocks mid-file are skipped.
+/// capture with no NRB/DSB blocks all yield empty metadata, not an error. A
+/// name or secrets block whose contents are malformed is skipped and counted in
+/// [`PcapngMetadata::malformed_blocks`]; a block whose length cannot be trusted
+/// ends the walk, recorded in [`PcapngMetadata::stopped_at`]. Both are logged.
 ///
 /// # Errors
 ///
@@ -132,44 +140,76 @@ pub fn read_pcapng_metadata(path: &Path) -> std::io::Result<PcapngMetadata> {
         Err(_) => return Ok(meta),
     };
     // A non-pcapng file (e.g. legacy pcap) simply carries no metadata blocks.
-    let mut reader = match pcap_file::pcapng::PcapNgReader::new(&bytes[..]) {
-        Ok(r) => r,
-        Err(_) => return Ok(meta),
+    let Ok(frames) = BlockFrames::new(&bytes) else {
+        return Ok(meta);
     };
 
-    // Skip malformed blocks rather than aborting (untrusted-input hardening).
-    while let Some(Ok(block)) = reader.next_block() {
-        match block {
-            Block::NameResolution(nrb) => {
-                for rec in &nrb.records {
-                    match rec {
-                        Record::Ipv4(r) if r.ip_addr.len() == 4 => {
-                            let o = r.ip_addr.as_ref();
-                            let ip = IpAddr::V4(Ipv4Addr::new(o[0], o[1], o[2], o[3]));
-                            for n in &r.names {
-                                meta.names.push((ip, n.to_string()));
+    // Blocks are framed by their lengths and only the two kinds this reads are
+    // decoded, each on its own. It used to decode every block through one
+    // `pcap-file` reader and stop at the first it could not decode -- under a
+    // comment saying malformed blocks were skipped -- so one bad block, of any
+    // kind, silently cost every name and TLS secret after it. A block whose
+    // contents are bad is now skipped and counted; only a length that cannot
+    // be trusted stops the walk, because nothing after it can be found.
+    let mut section: &[u8] = &[];
+    for frame in frames {
+        let frame = match frame {
+            Ok(frame) => frame,
+            Err(offset) => {
+                meta.stopped_at = Some(offset);
+                break;
+            }
+        };
+        match frame.kind {
+            SHB_TYPE => section = frame.bytes,
+            NRB_TYPE | DSB_TYPE => match decode_in_section(section, frame.bytes) {
+                Some(Block::NameResolution(nrb)) => {
+                    for rec in &nrb.records {
+                        match rec {
+                            Record::Ipv4(r) if r.ip_addr.len() == 4 => {
+                                let o = r.ip_addr.as_ref();
+                                let ip = IpAddr::V4(Ipv4Addr::new(o[0], o[1], o[2], o[3]));
+                                for n in &r.names {
+                                    meta.names.push((ip, n.to_string()));
+                                }
                             }
-                        }
-                        Record::Ipv6(r) if r.ip_addr.len() == 16 => {
-                            let mut a = [0u8; 16];
-                            a.copy_from_slice(r.ip_addr.as_ref());
-                            let ip = IpAddr::V6(Ipv6Addr::from(a));
-                            for n in &r.names {
-                                meta.names.push((ip, n.to_string()));
+                            Record::Ipv6(r) if r.ip_addr.len() == 16 => {
+                                let mut a = [0u8; 16];
+                                a.copy_from_slice(r.ip_addr.as_ref());
+                                let ip = IpAddr::V6(Ipv6Addr::from(a));
+                                for n in &r.names {
+                                    meta.names.push((ip, n.to_string()));
+                                }
                             }
+                            _ => {}
                         }
-                        _ => {}
                     }
                 }
-            }
-            // Decryption Secrets Block (type 0x0A) — not a typed pcap-file block.
-            Block::Unknown(u) if u.type_ == 0x0000_000A => {
-                if let Some(secret) = parse_dsb_tls_secret(u.value.as_ref()) {
-                    meta.tls_secrets.push(secret);
+                // Decryption Secrets Block -- not a typed pcap-file block.
+                Some(Block::Unknown(u)) if u.type_ == DSB_TYPE => {
+                    if let Some(secret) = parse_dsb_tls_secret(u.value.as_ref()) {
+                        meta.tls_secrets.push(secret);
+                    }
                 }
-            }
+                _ => meta.malformed_blocks += 1,
+            },
             _ => {}
         }
+    }
+    if meta.malformed_blocks > 0 {
+        tracing::warn!(
+            "{}: skipped {} malformed name-resolution or decryption-secrets block(s); \
+             any names or TLS secrets in them were not read",
+            path.display(),
+            meta.malformed_blocks
+        );
+    }
+    if let Some(offset) = meta.stopped_at {
+        tracing::warn!(
+            "{}: stopped reading pcapng metadata at byte {offset}: that block's length \
+             cannot be trusted, so names and TLS secrets after it were not read",
+            path.display()
+        );
     }
     Ok(meta)
 }
@@ -221,12 +261,6 @@ fn parse_dsb_tls_secret(value: &[u8]) -> Option<String> {
 /// invalid block length, or when writing `dst` fails.
 pub fn strip_secrets(src: &Path, dst: &Path) -> std::io::Result<usize> {
     use std::io::{Error, ErrorKind};
-    // Decryption Secrets Block type code.
-    const DSB_TYPE: u32 = 0x0000_000A;
-    // The Section Header Block type 0x0A0D0D0A is byte-symmetric, so it reads
-    // the same regardless of section byte order.
-    const SHB_BYTES: [u8; 4] = [0x0A, 0x0D, 0x0D, 0x0A];
-
     ensure_within_size_cap(std::fs::metadata(src)?.len(), max_metadata_file_bytes())?;
     let raw = std::fs::read(src)?;
     let bytes = crate::capture::pcap_reader::decompress_capture(&raw)
@@ -234,44 +268,126 @@ pub fn strip_secrets(src: &Path, dst: &Path) -> std::io::Result<usize> {
     // The on-disk cap above saw the compressed size; re-check what it inflated
     // to before block-walking it.
     ensure_within_size_cap(bytes.len() as u64, max_metadata_file_bytes())?;
-    let bytes: &[u8] = &bytes;
-    if bytes.len() < 12 || bytes[0..4] != SHB_BYTES {
-        return Err(Error::new(
-            ErrorKind::InvalidData,
-            "not a pcapng (missing Section Header Block)",
-        ));
-    }
-    let mut be = byte_order_from_shb(&bytes[8..12])
-        .ok_or_else(|| Error::new(ErrorKind::InvalidData, "invalid SHB byte-order magic"))?;
+    let frames = BlockFrames::new(&bytes).map_err(|why| Error::new(ErrorKind::InvalidData, why))?;
 
     let mut kept: Vec<u8> = Vec::with_capacity(bytes.len());
     let mut stripped = 0usize;
-    let mut off = 0usize;
-    while off + 8 <= bytes.len() {
-        // A new section (another SHB) resets the byte order.
-        if bytes[off..off + 4] == SHB_BYTES
-            && let Some(b) = bytes.get(off + 8..off + 12).and_then(byte_order_from_shb)
-        {
-            be = b;
-        }
-        let btype = rd_u32(&bytes[off..off + 4], be);
-        let total_len = rd_u32(&bytes[off + 4..off + 8], be) as usize;
-        if total_len < 12 || off + total_len > bytes.len() {
-            return Err(Error::new(
+    for frame in frames {
+        let frame = frame.map_err(|_| {
+            Error::new(
                 ErrorKind::InvalidData,
                 "truncated or invalid pcapng block length",
-            ));
-        }
-        if btype == DSB_TYPE {
+            )
+        })?;
+        if frame.kind == DSB_TYPE {
             stripped += 1; // drop this Decryption Secrets Block
         } else {
-            kept.extend_from_slice(&bytes[off..off + total_len]);
+            kept.extend_from_slice(frame.bytes);
         }
-        off += total_len;
     }
 
     crate::capture::atomic::write_atomic(dst, |w| w.write_all(&kept))?;
     Ok(stripped)
+}
+
+/// The Section Header Block's first four bytes. Byte-symmetric, so they read
+/// the same in either byte order.
+const SHB_BYTES: [u8; 4] = [0x0A, 0x0D, 0x0D, 0x0A];
+/// Section Header Block type.
+const SHB_TYPE: u32 = 0x0A0D_0D0A;
+/// Name Resolution Block type.
+const NRB_TYPE: u32 = 0x0000_0004;
+/// Decryption Secrets Block type.
+const DSB_TYPE: u32 = 0x0000_000A;
+
+/// One pcapng block, framed by its length and nothing else.
+struct BlockFrame<'a> {
+    /// Block type code.
+    kind: u32,
+    /// The whole block, header and trailer included.
+    bytes: &'a [u8],
+}
+
+/// The blocks of a pcapng, framed by their lengths, following each section's
+/// byte order. The one framing rule for this module: [`strip_secrets`] copies
+/// frames and [`read_pcapng_metadata`] decodes the two kinds it reads.
+///
+/// Yields `Err(offset)` once, for a block whose length cannot be trusted (under
+/// the 12-byte minimum or past the end of the data), and then stops: nothing
+/// after an untrusted length can be found. Fewer than 8 trailing bytes are not
+/// a block and end the walk quietly.
+struct BlockFrames<'a> {
+    /// The whole (inflated) pcapng.
+    bytes: &'a [u8],
+    /// Where the next block starts.
+    offset: usize,
+    /// The current section's byte order; another SHB resets it.
+    big_endian: bool,
+    /// Set after an untrusted length, so the walk yields nothing more.
+    done: bool,
+}
+
+impl<'a> BlockFrames<'a> {
+    /// Start at the first Section Header Block.
+    ///
+    /// # Errors
+    ///
+    /// `bytes` does not begin with a Section Header Block, or its byte-order
+    /// magic is neither order.
+    fn new(bytes: &'a [u8]) -> Result<Self, &'static str> {
+        if bytes.len() < 12 || bytes[0..4] != SHB_BYTES {
+            return Err("not a pcapng (missing Section Header Block)");
+        }
+        let big_endian =
+            byte_order_from_shb(&bytes[8..12]).ok_or("invalid SHB byte-order magic")?;
+        Ok(Self {
+            bytes,
+            offset: 0,
+            big_endian,
+            done: false,
+        })
+    }
+}
+
+impl<'a> Iterator for BlockFrames<'a> {
+    type Item = Result<BlockFrame<'a>, usize>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let (b, off) = (self.bytes, self.offset);
+        if self.done || off + 8 > b.len() {
+            return None;
+        }
+        // A new section (another SHB) resets the byte order.
+        if b[off..off + 4] == SHB_BYTES
+            && let Some(order) = b.get(off + 8..off + 12).and_then(byte_order_from_shb)
+        {
+            self.big_endian = order;
+        }
+        let kind = rd_u32(&b[off..off + 4], self.big_endian);
+        let len = rd_u32(&b[off + 4..off + 8], self.big_endian) as usize;
+        if len < 12 || off + len > b.len() {
+            self.done = true;
+            return Some(Err(off));
+        }
+        self.offset = off + len;
+        Some(Ok(BlockFrame {
+            kind,
+            bytes: &b[off..off + len],
+        }))
+    }
+}
+
+/// Decode one block in the section whose header is `section`, so it is read
+/// with that section's byte order. `None` when `pcap-file` cannot decode it.
+fn decode_in_section(section: &[u8], block: &[u8]) -> Option<pcap_file::pcapng::Block<'static>> {
+    let mut buf = Vec::with_capacity(section.len() + block.len());
+    buf.extend_from_slice(section);
+    buf.extend_from_slice(block);
+    let mut reader = pcap_file::pcapng::PcapNgReader::new(&buf[..]).ok()?;
+    reader
+        .next_block()?
+        .ok()
+        .map(pcap_file::pcapng::Block::into_owned)
 }
 
 /// Read a u32 from a 4-byte slice in the given byte order.
@@ -556,5 +672,176 @@ mod tests {
         std::fs::write(&cut, &whole[..whole.len() / 2]).unwrap();
         let dst = dir.path().join("out.pcapng");
         assert!(strip_secrets(&cut, &dst).is_err(), "no panic, clean error");
+    }
+}
+
+#[cfg(test)]
+mod malformed_block_tests {
+    //! One bad block must not cost the metadata that follows it.
+    //!
+    //! The reader used to stop at the first block `pcap-file` could not
+    //! decode, under a comment saying it skipped them, so a single malformed
+    //! block silently dropped every name and TLS secret after it and TLS
+    //! decryption then failed with nothing said.
+    use super::*;
+    use crate::capture::{PcapExportMode, PcapWriter};
+    /// Name-resolution block type.
+    const NRB: u32 = 0x0000_0004;
+    /// Enhanced packet block type.
+    const EPB: u32 = 0x0000_0006;
+
+    /// A pcapng with an NRB naming `early`, one naming `late`, and a DSB.
+    fn fixture(dir: &Path) -> Vec<u8> {
+        let path = dir.join("fixture.pcapng");
+        let mut w =
+            PcapWriter::with_format(&path, 1, None, None, true, PcapExportMode::EncryptedWithDsb)
+                .unwrap();
+        let early: IpAddr = "10.0.0.1".parse().unwrap();
+        let late: IpAddr = "10.0.0.2".parse().unwrap();
+        w.write_name_resolution_block(&[(early, vec!["early".to_string()])])
+            .unwrap();
+        w.write_name_resolution_block(&[(late, vec!["late".to_string()])])
+            .unwrap();
+        let keylog = dir.join("keys.txt");
+        std::fs::write(&keylog, b"CLIENT_RANDOM aabbccdd 00112233\n").unwrap();
+        w.maybe_write_keylog_dsb(&keylog).unwrap();
+        w.finish().unwrap();
+        std::fs::read(&path).unwrap()
+    }
+
+    /// Byte order of the first section, and the offset just past the first
+    /// NRB, where a crafted block is spliced in.
+    fn after_first_nrb(bytes: &[u8]) -> (bool, usize) {
+        let be = byte_order_from_shb(&bytes[8..12]).expect("fixture has an SHB");
+        let mut off = 0;
+        while off + 8 <= bytes.len() {
+            let kind = rd_u32(&bytes[off..off + 4], be);
+            let len = rd_u32(&bytes[off + 4..off + 8], be) as usize;
+            if kind == NRB {
+                return (be, off + len);
+            }
+            off += len;
+        }
+        panic!("fixture has no NRB");
+    }
+
+    /// A block of `kind` framed correctly around `body` (padded to 32 bits).
+    fn framed(kind: u32, body: &[u8], be: bool) -> Vec<u8> {
+        let mut body = body.to_vec();
+        while !body.len().is_multiple_of(4) {
+            body.push(0);
+        }
+        let total = (12 + body.len()) as u32;
+        let w32 = |v: u32| if be { v.to_be_bytes() } else { v.to_le_bytes() };
+        let mut out = Vec::new();
+        out.extend_from_slice(&w32(kind));
+        out.extend_from_slice(&w32(total));
+        out.extend_from_slice(&body);
+        out.extend_from_slice(&w32(total));
+        out
+    }
+
+    /// Whether `pcap-file` refuses to decode `block` in the fixture's section --
+    /// the fixture guard, so a test cannot pass because the "malformed" block
+    /// was in fact fine. Independent of the code under test.
+    fn pcap_file_refuses(bytes: &[u8], block: &[u8], be: bool) -> bool {
+        let shb_len = rd_u32(&bytes[4..8], be) as usize;
+        let mut buf = bytes[..shb_len].to_vec();
+        buf.extend_from_slice(block);
+        let Ok(mut reader) = pcap_file::pcapng::PcapNgReader::new(&buf[..]) else {
+            return true;
+        };
+        !matches!(reader.next_block(), Some(Ok(_)))
+    }
+
+    fn splice(bytes: &[u8], at: usize, block: &[u8], dir: &Path) -> std::path::PathBuf {
+        let mut out = bytes[..at].to_vec();
+        out.extend_from_slice(block);
+        out.extend_from_slice(&bytes[at..]);
+        let path = dir.join("spliced.pcapng");
+        std::fs::write(&path, out).unwrap();
+        path
+    }
+
+    fn named(meta: &PcapngMetadata, name: &str) -> bool {
+        meta.names.iter().any(|(_, n)| n == name)
+    }
+
+    /// An NRB whose frame is sound and whose one IPv4 record claims 200 bytes
+    /// the block does not hold is skipped, counted, and the NRB and DSB after
+    /// it are still read.
+    #[test]
+    fn a_malformed_name_block_is_skipped_and_what_follows_is_still_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let bytes = fixture(dir.path());
+        let (be, at) = after_first_nrb(&bytes);
+        let w16 = |v: u16| if be { v.to_be_bytes() } else { v.to_le_bytes() };
+        let mut body = Vec::new();
+        body.extend_from_slice(&w16(1)); // record type: IPv4
+        body.extend_from_slice(&w16(200)); // claimed length: far past the block
+        body.extend_from_slice(&[10, 0, 0, 9, b'x', 0, 0, 0]);
+        let bad = framed(NRB, &body, be);
+        assert!(
+            pcap_file_refuses(&bytes, &bad, be),
+            "fixture: the crafted NRB must not decode"
+        );
+
+        let meta = read_pcapng_metadata(&splice(&bytes, at, &bad, dir.path())).unwrap();
+        assert!(named(&meta, "early"), "{meta:?}");
+        assert!(
+            named(&meta, "late"),
+            "the NRB after the bad one was lost: {meta:?}"
+        );
+        assert_eq!(
+            meta.tls_secrets.len(),
+            1,
+            "the DSB after the bad block was lost"
+        );
+        assert_eq!(meta.malformed_blocks, 1);
+        assert_eq!(meta.stopped_at, None);
+    }
+
+    /// A packet block with garbage in it is none of the metadata's business:
+    /// it is not decoded, so it costs nothing and is not counted.
+    #[test]
+    fn a_garbled_packet_block_costs_the_metadata_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let bytes = fixture(dir.path());
+        let (be, at) = after_first_nrb(&bytes);
+        let bad = framed(EPB, &[0xFF; 9], be);
+        assert!(
+            pcap_file_refuses(&bytes, &bad, be),
+            "fixture: the crafted EPB must not decode"
+        );
+
+        let meta = read_pcapng_metadata(&splice(&bytes, at, &bad, dir.path())).unwrap();
+        assert!(named(&meta, "late"), "{meta:?}");
+        assert_eq!(meta.tls_secrets.len(), 1);
+        assert_eq!(
+            meta.malformed_blocks, 0,
+            "a packet block is never decoded here"
+        );
+    }
+
+    /// A block whose length cannot be trusted leaves nothing after it
+    /// findable, so reading stops there and says where.
+    #[test]
+    fn an_untrustworthy_block_length_stops_reading_and_says_where() {
+        let dir = tempfile::tempdir().unwrap();
+        let bytes = fixture(dir.path());
+        let (be, at) = after_first_nrb(&bytes);
+        let w32 = |v: u32| if be { v.to_be_bytes() } else { v.to_le_bytes() };
+        let mut bad = Vec::new();
+        bad.extend_from_slice(&w32(NRB));
+        bad.extend_from_slice(&w32(0x7FFF_FFF0)); // past the end of any file here
+        bad.extend_from_slice(&[0; 8]);
+
+        let meta = read_pcapng_metadata(&splice(&bytes, at, &bad, dir.path())).unwrap();
+        assert!(named(&meta, "early"), "what came before is kept: {meta:?}");
+        assert!(
+            !named(&meta, "late"),
+            "nothing past an untrusted length can be found"
+        );
+        assert_eq!(meta.stopped_at, Some(at));
     }
 }
