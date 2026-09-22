@@ -5295,17 +5295,20 @@ pub fn generate_reports(
         }
     }
 
-    // --analyze / --json-analyze: every problem in the capture, worst first.
+    // --analyze / --json-analyze / --yang-analyze: every problem in the
+    // capture, worst first.
     //
-    // Computed once and rendered twice: asking for both forms must not be able
-    // to produce two different answers, and `analyze` reads process-global
-    // stores whose contents a second call has no reason to change but no
-    // guarantee not to.
+    // Computed once and rendered up to three times: asking for several forms
+    // must not be able to produce different answers, and `analyze` reads
+    // process-global stores whose contents a second call has no reason to
+    // change but no guarantee not to.
     //
     // `--filter` narrows the DIALOG selection, exactly as `--report` does, and
     // narrows nothing else. See `crate::analysis::analyze` for why the
     // capture-level findings are deliberately not filtered.
-    if (cli.output_args.analyze || cli.output_args.json_analyze) && cli.mode_args.no_tui {
+    if (cli.output_args.analyze || cli.output_args.json_analyze || cli.output_args.yang_analyze)
+        && cli.mode_args.no_tui
+    {
         let analysis = crate::analysis::analyze(dialog_store, stream_store, filter, frames_read);
         if cli.output_args.analyze {
             let report = output::print_analysis_report_as(
@@ -5331,6 +5334,20 @@ pub fn generate_reports(
                 // An analysis that will not serialize is a bug in the type, not
                 // a reason to fail the whole run silently.
                 Err(e) => tracing::error!("analysis serialization failed: {e}"),
+            }
+        }
+        // The same analysis, RFC 7951-encoded against `sipnab-diagnosis`: a
+        // transform of the serialization just written, never a second reading.
+        if cli.output_args.yang_analyze {
+            match crate::analysis::yang::to_rfc7951(&analysis)
+                .and_then(|doc| crate::analysis::yang::to_line(&doc))
+            {
+                Ok(line) => {
+                    if !write_stdout(&line) {
+                        return false;
+                    }
+                }
+                Err(e) => tracing::error!("RFC 7951 encoding failed: {e}"),
             }
         }
     }

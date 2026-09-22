@@ -1,0 +1,5 @@
+---
+source: tests/analyze_test.rs
+expression: "analyze_json_line(&path, extra)"
+---
+{"schema_version":1,"frames_read":23,"dialogs_examined":0,"streams_examined":0,"complete":false,"findings":[{"kind":"sip_discarded_by_portrange","severity":"blind","occurrences":23,"unit":"message","evidence":[{"endpoints":["port 5060"],"counts":{"messages":23}}],"evidence_omitted":0}]}

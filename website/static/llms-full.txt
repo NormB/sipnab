@@ -5504,8 +5504,40 @@ findings. `frames_read` comes from the same process-global counter the
 Prometheus scrape reports, so every other figure in the run shares that
 denominator.
 
-The MCP `get_capture_report` tool answers the same question. So does
-`sipnab --report`, which predates both servers.
+The body is the capture analysis itself, the object `--json-analyze` prints,
+and it opens with `schema_version`. The published contract is
+[`tests/schemas/capture_analysis.schema.json`](../tests/schemas/capture_analysis.schema.json),
+spliced into the OpenAPI document as `CaptureReport`. `filter` never appears
+here: this route analyzes every dialog in the store.
+
+**Query parameter:**
+
+| Name | Legal values | If omitted |
+|---|---|---|
+| `format` | `json`, or `yang-json` for the same analysis [RFC 7951](https://www.rfc-editor.org/rfc/rfc7951)-encoded against the YANG module `sipnab-diagnosis`. Anything else is a `400`. | `json` |
+
+`?format=yang-json` answers `Content-Type: application/yang-data+json`, the
+media type [RFC 8040](https://www.rfc-editor.org/rfc/rfc8040) registers for YANG data. The body validates against the
+module `sipnab --print-yang-module` prints:
+
+```bash
+curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" \
+  'http://127.0.0.1:8080/v1/report?format=yang-json' > analysis.json
+```
+
+```bash
+yanglint -t data sipnab-diagnosis@2026-09-21.yang analysis.json
+```
+
+It is the same analysis in a different encoding: the YANG section of
+[Output formats](output-formats.md) lists every difference. This is not a
+RESTCONF server: the route, the guard and the bearer token are the ones every
+other route uses.
+
+The MCP `get_capture_report` tool answers the same question, with the same
+`format` spellings. So do `sipnab --analyze`, `--json-analyze` and
+`--yang-analyze` on the command line. Not `--report`, which is the tabular
+per-dialog summary and ranks nothing.
 
 ---
 
@@ -11197,6 +11229,8 @@ selects only problem calls from user 1001.
 | `--json-stun` | -- | off | NDJSON, one object per STUN/TURN transaction and per TURN allocation, emitted after capture. Each carries a `record` field (`transaction`, `turn_allocation` or `ice`) so a consumer never infers the kind from which keys are present; an allocation also carries the derived `lapsed` and the `channels` that attribute relayed media to it, and the single `ice` record carries the checks, the nominated pairs and any role conflicts. The machine-readable form of `--stun`. Requires `-N` |
 | `--analyze` | -- | off | Analyze the capture and print every problem in it, worst first — one ranked list instead of one dialog at a time. It aggregates the diagnosis sipnab already computes (one-way audio, media that never arrived, an SDP address STUN contradicts, ICMP unreachables, failed and unacknowledged calls, codec and framing asymmetry) plus capture-level evidence, counted exactly and evidenced with Call-IDs, addresses, timestamps and packet counts. It derives nothing new. What sipnab did NOT read — undecodable frames, SIP a port gate discarded, records a retention cap dropped — appears at the top, because those make every count below them a floor, and a capture that did not fully decode never gets a clean verdict. Requires `-N` |
 | `--json-analyze` | -- | off | The `--analyze` result as one JSON object, emitted after capture. One object rather than a line per finding: the frames read and the dialogs examined are properties of the run, and a clean capture must still serialize to something that states them. Requires `-N` |
+| `--yang-analyze` | -- | off | The `--analyze` result [RFC 7951](https://www.rfc-editor.org/rfc/rfc7951)-encoded: the same analysis `--json-analyze` prints, as one JSON document that validates against the `sipnab-diagnosis` YANG module. 64-bit integers are strings, names use hyphens, and each finding carries its `rank`. Asked for with `--json-analyze`, both come from one analysis. Requires `-N` |
+| `--print-yang-module` | -- | off | Print the `sipnab-diagnosis` YANG 1.1 module and exit: the model the [RFC 7951](https://www.rfc-editor.org/rfc/rfc7951) export of the capture analysis validates against, byte for byte the file committed under `yang/`. Needs no capture, config or privileges |
 | `--hexdump` | -- | off | Include hex dump of SIP payloads. Requires `-N` |
 | `--delta-time` | -- | off | Show delta time between consecutive messages |
 | `-A`, `--after` | `<N>` | -- | Show N messages after each match (like `grep -A`) |
@@ -11237,6 +11271,10 @@ selects only problem calls from user 1001.
 - `sipnab -N -I capture.pcap --analyze --filter "state == 'Failed'" --no-cli-print` — narrow the DIALOG findings to failed calls; the capture-level evidence (undecodable frames, discarded ports, dropped records) is deliberately not narrowed, because it bounds every count in the report
 - `sipnab -N -I capture.pcap --json-analyze --no-cli-print | jq '.findings[] | select(.severity == "critical")'` — the critical findings only, for a pipeline
 - `sipnab -N -I capture.pcap --json-analyze --no-cli-print | jq '.complete'` — whether the capture decoded fully. `false` means every count in the analysis is a floor, so do not trust a clean-looking verdict
+- `sipnab -N -I capture.pcap --yang-analyze --no-cli-print > analysis.json` — the capture analysis as a YANG instance document; `yanglint -t data sipnab-diagnosis@2026-09-21.yang analysis.json` validates it
+- `sipnab -N -I capture.pcap --json-analyze --yang-analyze --no-cli-print` — both encodings of ONE analysis, one line each: the same findings, the same counts, the same `rank` order
+- `sipnab --print-yang-module > sipnab-diagnosis@2026-09-21.yang` — save the YANG module this build's RFC 7951 export validates against, under the file name [RFC 7950](https://www.rfc-editor.org/rfc/rfc7950) gives it, for `yanglint` or `pyang`
+- `sipnab --print-yang-module | pyang -f tree` — the shape of the capture analysis as a YANG tree: every node, its type, and which are lists
 - `sipnab -N -I capture.pcap --json-dialogs --no-cli-print --quiet | jq -c 'select(.state == "Failed")'` — one line per failed call, each carrying the code that failed it, instead of every message of every failed dialog
 - `sudo sipnab -d eth0 -N --json-dialogs --no-cli-print --line-buffer > calls.ndjson` — record one summary object per call from live traffic, flushed per line for a downstream collector
 - `sudo sipnab -N -d eth0 --node-name sbc-edge-1 --mcp --mcp-transport http` — one node of a federated setup, naming itself so an agent can attribute each answer to this box rather than another
@@ -14097,7 +14135,10 @@ the conflict a candidate cause of media that never started.
 One JSON object for the whole run, not a line per finding: `frames_read`,
 `dialogs_examined` and `streams_examined` are properties of the run rather than
 of any finding, and a clean capture must still serialize to something that
-states them.
+states them. The object opens with `schema_version` (currently `1`), and
+[`tests/schemas/capture_analysis.schema.json`](../tests/schemas/capture_analysis.schema.json)
+describes it field by field. The same object is the `GET /v1/report` body and
+the MCP `get_capture_report` answer.
 
 ```bash
 sipnab -N -I capture.pcap --json-analyze --no-cli-print \
@@ -14105,8 +14146,18 @@ sipnab -N -I capture.pcap --json-analyze --no-cli-print \
 ```
 
 `findings` ranks worst first. Each carries a stable `kind`, a `severity`, an
-exact `occurrences` count, a `summary`, and an `evidence` array pointing back at
-the capture with Call-IDs, endpoints, timestamps and counts.
+exact `occurrences` count in its `unit`, an `evidence` array pointing back at
+the capture with Call-IDs, endpoints, timestamps and counts, and
+`evidence_omitted`, the rows a cap of ten kept out. A finding has no `summary`
+field: the title and the one-sentence explanation belong to the kind, so the
+text report prints them and the JSON names the `kind`.
+
+`filter` appears only when `--filter` or a diagnostic alias narrowed the
+dialogs. It holds the expression that ran, after alias expansion, so
+`--filter one-way` records `one_way == true`. The filter narrows the dialogs
+and nothing else: STUN probes, ICMP that reached no dialog, undecodable frames
+and retention losses are capture-level, and the analysis always reports them
+whole.
 
 `complete` is the field to read first. It is `false` when the run did not decode
 everything it received — undecodable frames, SIP a port gate discarded, records
@@ -14120,6 +14171,63 @@ sipnab -N -I capture.pcap --json-analyze --no-cli-print | jq '.complete'
 `--analyze` derives nothing new. `--analyze` aggregates the per-dialog diagnosis
 sipnab already computes and the capture-level evidence it already holds. It
 ranks and counts them, and adds no judgement of its own.
+
+## YANG export (`--yang-analyze`)
+
+The capture analysis again, encoded as [RFC 7951](https://www.rfc-editor.org/rfc/rfc7951)
+JSON against sipnab's own YANG 1.1 module, `sipnab-diagnosis`. It is the same
+value `--json-analyze` prints. A tool that speaks YANG can validate it, draw
+its tree with `pyang -f tree`, or generate code for it, without learning
+sipnab's JSON first.
+
+```bash
+sipnab -N -I capture.pcap --yang-analyze --no-cli-print > analysis.json
+```
+
+To check it, save the module this sipnab writes against, then hand both to
+`yanglint`:
+
+```bash
+sipnab --print-yang-module > sipnab-diagnosis@2026-09-21.yang
+```
+
+```bash
+yanglint -t data sipnab-diagnosis@2026-09-21.yang analysis.json
+```
+
+`--print-yang-module` prints the module this sipnab validates against. The
+repository commits the same file at
+[`yang/sipnab-diagnosis@2026-09-21.yang`](../yang/sipnab-diagnosis@2026-09-21.yang).
+
+The document has one member, `sipnab-diagnosis:capture-analysis`, and differs
+from the `--json-analyze` object only in how it writes the same facts:
+
+| `--json-analyze` | `--yang-analyze` | Why |
+|---|---|---|
+| `frames_read` | `frames-read` | YANG names use hyphens. Every field follows the same rule. |
+| `"frames_read": 1024` | `"frames-read": "1024"` | [RFC 7951 section 6.1](https://www.rfc-editor.org/rfc/rfc7951#section-6.1) writes every 64-bit integer as a string: `frames-read`, `dialogs-examined`, `streams-examined`, `occurrences`, `evidence-omitted`, and each count's `value`. `schema-version`, `rank` and `index` stay numbers. |
+| `findings` in ranked order | `finding`, with a `rank` counting from 1 | YANG gives state data no order, so the position becomes a leaf. |
+| `evidence` in order | `evidence`, each with an `index` counting from 1 | The same reason. |
+| `endpoints` | `endpoint` | YANG names a leaf-list for one entry. |
+| `counts: {"rtp_packets": 425}` | `count: [{"name": "rtp_packets", "value": "425"}]` | A map becomes a list keyed by `name`. |
+| `[]` for no findings | no `finding` member | A YANG list has no empty form. |
+
+`kind` keeps the same strings in both encodings, such as `one_way_audio`. Each
+finding kind and each count label is an identity in the module, and its
+description is the kind's title and one-sentence explanation. That makes the
+module a catalog of everything the analysis can report. When a string from the
+capture holds a character YANG cannot carry, such as a control character in a
+reason phrase, sipnab writes U+FFFD in its place. That substitution is the only
+change to the text itself.
+
+The module does not model the per-dialog `diagnosis` and `signaling_diagnosis`.
+Their "`null` means checked, absent means not run" distinction has no RFC 7951
+equivalent, so they need their own modeling pass.
+
+The REST API serves the same document at `GET /v1/report?format=yang-json` as
+`application/yang-data+json`, and the MCP tool `get_capture_report` answers it
+for `{"format": "yang-json"}`. sipnab does not run a NETCONF or RESTCONF
+server. It writes documents that conform to the module.
 
 ## vCon (`--export-vcon`)
 
@@ -18624,7 +18732,7 @@ bad. The two are different facts and only one of them is a problem.
 
 ### `get_capture_report`
 
-The whole-capture analysis, the one `--report` prints. Backed by
+The whole-capture analysis, the one `--analyze` prints. Backed by
 [`analysis::analyze`](https://github.com/NormB/sipnab/blob/main/src/analysis.rs)
 and rendered by `output::analysis_report`.
 
@@ -18636,11 +18744,22 @@ could expand it.
 
 | Name | Type | Legal values | If omitted |
 |---|---|---|---|
-| `format` | string? | `"json"`, `"markdown"` or `"text"`. Anything else fails with `unknown format 'x', expected json\|markdown\|text`. | `"json"`. |
+| `format` | string? | `"json"`, `"yang-json"`, `"markdown"` or `"text"`. Anything else fails with `unknown format 'x', expected json\|yang-json\|markdown\|text`. | `"json"`. |
 
 Frames read comes from the same process-global counter the Prometheus scrape
 reports (`sipnab_capture_packets_total`), so the denominator here is the one
 every other number in the run measures against.
+
+**`yang-json`** answers the same analysis as `json`, encoded per
+[RFC 7951](https://www.rfc-editor.org/rfc/rfc7951) against the YANG module
+`sipnab-diagnosis`, which `sipnab --print-yang-module` prints. The document is
+the first content block, and its one top-level member is
+`sipnab-diagnosis:capture-analysis`. RFC 7951 allows no other member there, so
+`source_exhausted` and `source_stopped_early` arrive in a second block instead
+of inside the document. `complete` inside the document still reads `false`
+while the capture loads, as it does in `json`.
+The YANG section of [Output formats](output-formats.md) lists every difference
+between the two encodings.
 
 A capture with no findings still answers with the clean line rather than an
 empty body, because silence is indistinguishable from the tool not having run:
@@ -18652,8 +18771,12 @@ empty body, because silence is indistinguishable from the tool not having run:
 ```
 
 **`json` is the default and returns an OBJECT**, serialized from the analysis
-itself — `findings`, `dialogs_examined`, `streams_examined`, `frames_read` and
-`complete`.
+itself — `schema_version`, `findings`, `dialogs_examined`, `streams_examined`,
+`frames_read` and `complete`. It is the object `--json-analyze` prints and
+`GET /v1/report` answers, described by
+[`tests/schemas/capture_analysis.schema.json`](https://github.com/NormB/sipnab/blob/main/tests/schemas/capture_analysis.schema.json).
+It never carries `filter`, because this tool analyzes every dialog in the
+store.
 
 Each `findings` row is one ranked problem, worst first:
 
@@ -30332,6 +30455,24 @@ it. Steps 1, 2, and 4 are still convention with no gate behind them.
 5. Document it in [`docs/output-formats.md`](../output-formats.md), and mirror
    into the website page. The flag that selects it then owes the CLI-flag
    checklist above.
+6. A new finding kind or evidence count label in
+   [`src/analysis.rs`](../../src/analysis.rs) changes two published contracts,
+   and a test holds each one to the table. Give the variant its arm in
+   `ordinal` and `meta` (or `as_str` and `description` for a `CountLabel`) —
+   the compiler insists — and its place in `ALL`, which a `const` assertion
+   checks. Then add it to
+   [`tests/schemas/capture_analysis.schema.json`](../../tests/schemas/capture_analysis.schema.json):
+   `json_schema_test` fails until the `kind` enum or the `counts` properties
+   name it. Last, the YANG module. Users already hold its current revision,
+   so do not bless over it: add an entry to `REVISIONS` in
+   [`src/analysis/yang.rs`](../../src/analysis/yang.rs) with the day's date,
+   point `MODULE_TEXT`'s `include_str!` at the new file name, run
+   `SIPNAB_BLESS_YANG=1 cargo test --features full --test yang_module_test`,
+   and keep the previous file under `yang/` beside the new one.
+   [`yang_module_test`](../../tests/yang_module_test.rs) fails until the
+   committed module names the kind, and
+   [`scripts/check-yang.py`](../../scripts/check-yang.py) runs
+   `pyang --check-update-from` over the pair.
 
 ## Add a fuzz target
 
@@ -30791,13 +30932,28 @@ push-and-wait feedback loop. [`scripts/check-feature-matrix.py`](../../scripts/c
 thirteen locally, reading both the combo list and `RUSTFLAGS` out of
 [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml) so the two cannot drift.
 
-[`pre-push`](../../.githooks/pre-push) adds twelve hard gates that `cargo test`
+[`pre-push`](../../.githooks/pre-push) adds thirteen hard gates that `cargo test`
 does not cover: `cargo fmt --check`, `cargo clippy --workspace --all-features --all-targets
 -D warnings`, `cargo doc` with `RUSTDOCFLAGS=-D warnings`, `cd fuzz &&
 cargo check`, the release-delivery tests, a check of the reduced feature
 combinations `tls`, `api` and `wasm`, the full thirteen-combination matrix with
-CI's flags, a non-Linux compile of the whole tree, a `zola build` of the
-website, and the two prose linters — Vale and codespell.
+CI's flags, a non-Linux compile of the whole tree, a YANG validation of the
+`sipnab-diagnosis` module, a `zola build` of the website, and the two prose
+linters — Vale and codespell.
+
+The YANG gate, [`scripts/check-yang.py`](../../scripts/check-yang.py), exists
+because a test generates the module under `yang/`: [`tests/yang_module_test.rs`](../../tests/yang_module_test.rs)
+proves the committed file is what the analysis's tables produce, and only a
+YANG implementation that did not write it can say the text is valid YANG.
+`pyang --lint` and `yanglint` from `libyang` compile it, and
+`yanglint -t data` validates every [RFC 7951](https://www.rfc-editor.org/rfc/rfc7951) document the CLI, REST and MCP
+doors write for each fixture, and `pyang --check-update-from` holds each new
+revision to the last under
+[RFC 7950 section 11](https://www.rfc-editor.org/rfc/rfc7950#section-11). A
+machine without either tool reports `NOT CHECKED` and names the fix. CI's
+`check` job installs both (`libyang2-tools`, and `pyang` from the hashed
+[`scripts/requirements-yang.txt`](../../scripts/requirements-yang.txt)) and runs the script with
+`SIPNAB_YANG_REQUIRED=1`, so the one place that must check cannot skip.
 
 The release-delivery tests are here for a reason the others are not: nothing
 earlier can answer them. They compare the tree against the newest tag, and at
@@ -30912,7 +31068,7 @@ because a hand-kept list cannot catch a *new* corpus binary, which is the one
 thing this gate exists for. The first draft did hand-keep the list, and it went
 stale inside an hour, when a twelfth binary landed mid-review.
 
-**When it runs.** Last, after the twelve hard gates. Each of those fails in
+**When it runs.** Last, after the thirteen hard gates. Each of those fails in
 seconds, and spending a minute on the corpus only to hear that the tree does not
 compile wastes the minute. The gate then reaches one of five states — a run, or
 one of the four reasons not to run — and each prints its own line:

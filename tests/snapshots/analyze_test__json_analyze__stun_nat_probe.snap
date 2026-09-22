@@ -1,0 +1,5 @@
+---
+source: tests/analyze_test.rs
+expression: "analyze_json_line(&path, extra)"
+---
+{"schema_version":1,"frames_read":4,"dialogs_examined":0,"streams_examined":0,"complete":true,"findings":[{"kind":"unanswered_stun_probe","severity":"major","occurrences":1,"unit":"transaction","evidence":[{"endpoints":["client 192.0.2.10:5060","server 198.51.100.20:3478"],"at":"1970-01-01T00:16:40Z","counts":{"requests":2},"note":"retransmitted, which by itself proves the first request went unanswered"}],"evidence_omitted":0}]}

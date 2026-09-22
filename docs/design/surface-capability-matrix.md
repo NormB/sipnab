@@ -413,14 +413,16 @@ What is sipnab costing the host — its memory, threads, CPU, load-bearing share
 
 ### Whole-capture report
 
-The whole-capture problem report — findings, orphaned media, what retention shed.
+The whole-capture problem report — findings, orphaned media, what retention
+shed — in sipnab's own JSON and [RFC 7951](https://www.rfc-editor.org/rfc/rfc7951)-encoded against the YANG module
+`sipnab-diagnosis`.
 
 | Surface | Detail |
 |---|---|
-| CLI | `--report` |
-| TUI | `Statistics` |
-| REST | `/v1/report` |
-| MCP | `get_capture_report` |
+| CLI | `--analyze`, `--json-analyze` and `--yang-analyze` (not --report, which is the per-dialog table) |
+| TUI | gap: no TUI view renders the capture analysis — `Statistics` shows totals, dialog states and methods, and no findings (PAR4). The RFC 7951 encoding itself is a decision, not part of the gap: a schema-typed machine encoding is a detail a person at a terminal never reads |
+| REST | `/v1/report`, with `format=yang-json` for RFC 7951 |
+| MCP | `get_capture_report`, with `format` `json`, `yang-json`, `markdown` or `text` |
 
 ### Open or replace the capture
 

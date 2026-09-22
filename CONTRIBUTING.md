@@ -158,7 +158,7 @@ Because gate 2 runs the whole suite, **every commit takes minutes**, and gate 5
 means adding a test obliges you to update the count in
 `website/templates/index.html` in the same commit.
 
-**`pre-push`** adds twelve hard gates, all of which mirror CI exactly and any of
+**`pre-push`** adds thirteen hard gates, all of which mirror CI exactly and any of
 which blocks the push:
 
 | Gate | Why it is not covered by `cargo test` |
@@ -171,6 +171,7 @@ which blocks the push:
 | `cargo check --no-default-features --features <combo> --tests` over the reduced combinations | `--all-features` never builds a tree without `native`, so `#[cfg]` rot is invisible to it. The `--tests` part matters: without it no test file compiles and the gate passes over nothing. |
 | `python3 scripts/check-feature-matrix.py` | Every combo CI builds, not the reduced subset above, and with CI's `RUSTFLAGS=-Dwarnings`. Both the combo list and the flags are read out of `.github/workflows/ci.yml` rather than restated, because a local gate checking a stale set reports a pass CI contradicts. That is not hypothetical: the first version had the combos right and the flags missing, and passed the very break it was written for — an item used only under `#[cfg(feature = "vcon")]`, which is dead code in every build without it. |
 | `sh scripts/check-non-linux.sh` | Re-checks a copy of the tree with the `target_os` values swapped, so the macOS arm of every platform split compiles here. CI is the only non-Linux build in this project, and two macOS breaks reached it on 2026-08-07 with every other gate green. Runs on Linux hosts only — on macOS or a BSD your ordinary `cargo clippy` already is that build, and the gate says `NOT CHECKED` rather than pretending. |
+| `python3 scripts/check-yang.py` | The `sipnab-diagnosis` YANG module is generated from the analysis's tables, and a Rust test proves the committed file matches them; only a YANG implementation can say it is valid YANG. `pyang --lint` and `yanglint` compile it, `pyang --check-update-from` holds a new revision to the last, and `yanglint -t data` validates the [RFC 7951](https://www.rfc-editor.org/rfc/rfc7951) export every door writes. `NOT CHECKED` where neither tool is installed; CI installs both and fails without them. |
 | `vale docs/ website/content/ README.md SUPPORT.md MAINTAINERS.md` | Prose style is invisible to every cargo command. Turned main red on 2026-08-03. |
 | `codespell` over CI's path list | Spelling likewise, and it reads `src/` too — the hits that broke CI were in doc comments. |
 

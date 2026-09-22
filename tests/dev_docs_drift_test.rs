@@ -705,12 +705,16 @@ fn linked_code_targets_exist() {
     // spawn harness uses, so a SIGKILLed child no longer drops its coverage.
     // Attributed by counting every page under `docs/internals/` against HEAD:
     // testing.md moved 96 -> 97 and no other page changed.
-    // 432 -> 433: one, in `docs/internals/subsystem-guide.md`, where the Source
-    // hop gains the paragraph on how a device name selects libpcap's backend
-    // and links `src/capture/libpcap.rs`, the one report every surface gives.
-    // Attributed by counting every page under `docs/internals/` against HEAD:
-    // subsystem-guide.md moved 32 -> 33 and no other page changed.
-    const EXPECTED_CODE_LINKS: usize = 433;
+    // 432 -> 441: one for CT6b/CT6c, in `docs/internals/subsystem-guide.md`
+    // (the Source hop links `src/capture/libpcap.rs`), and eight for the
+    // sipnab-diagnosis YANG module: three in
+    // `docs/internals/build-ci-release.md` (`scripts/check-yang.py`,
+    // `tests/yang_module_test.rs`, `scripts/requirements-yang.txt`) and five in
+    // `docs/internals/walkthroughs.md` (`src/analysis.rs`, the capture-analysis
+    // schema, `src/analysis/yang.rs`, `tests/yang_module_test.rs`,
+    // `scripts/check-yang.py`). Merged from two branches that each counted
+    // against 432.
+    const EXPECTED_CODE_LINKS: usize = 441;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \

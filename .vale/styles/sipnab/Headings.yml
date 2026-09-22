@@ -109,6 +109,9 @@ exceptions:
   - HTTPS
   - MCP
   - NDJSON
+  # The data modeling language of RFC 7950, which the capture analysis's
+  # RFC 7951 export is written against. An acronym, never a word.
+  - YANG
   - PTY
   - RGB
   - REST

@@ -68,6 +68,10 @@ build/
 # repository cannot be audited from source.
 website/static/wasm/sipnab_bg.wasm
 
+# The YANG module as the site serves it. .github/workflows/pages.yml copies
+# yang/*.yang here at deploy time; yang/ holds the one committed copy.
+website/static/yang/
+
 # Gate transcripts: one run on one machine, absolute paths and all.
 .git-docsgate.log
 *.log

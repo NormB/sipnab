@@ -537,6 +537,17 @@ pub struct AggregateParams {
     pub top_n: Option<usize>,
 }
 
+/// Query parameters for the `GET /v1/report` endpoint.
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct CaptureReportParams {
+    /// `json` (the default) for the analysis as sipnab's own JSON, or
+    /// `yang-json` for the same analysis RFC 7951-encoded against the YANG
+    /// module `sipnab-diagnosis`, answered as `application/yang-data+json`.
+    /// The spelling MCP's `get_capture_report` takes. Anything else is a 400.
+    pub format: Option<String>,
+}
+
 /// Query parameters for the `GET /v1/timeline` endpoint.
 #[derive(Debug, Deserialize, utoipa::IntoParams)]
 #[into_params(parameter_in = Query)]
@@ -3726,23 +3737,27 @@ async fn get_stream(
 /// The capture-level view: findings across every dialog and stream, orphaned
 /// media, STUN and ICMP evidence, and what the retention caps shed.
 /// `GET /v1/dialogs/{call_id}/report` answers for one Call-ID; this answers for
-/// the capture. The CLI has had it as `--report` since before either server
-/// existed, and MCP as `get_capture_report`; REST could not answer the question
-/// at all, so a client wanting it had to reimplement the analysis it came here
-/// for.
+/// the capture. The CLI has it as `--analyze` and `--json-analyze`, and MCP as
+/// `get_capture_report`; REST could not answer the question at all, so a
+/// client wanting it had to reimplement the analysis it came here for. (Not
+/// `--report`: that is the tabular per-dialog summary, and it ranks nothing.)
 ///
 /// # Arguments
 ///
 /// * `state` — Shared application state.
 /// * `addr` — Client socket address used for rate limiting.
 /// * `headers` — Request headers (auth).
+/// * `params` — optional `format`: `json` (the default) or `yang-json`.
 ///
 /// # Returns
 ///
-/// 200 with the analysis object; 401/503 from the guard. Frames read comes from
-/// [`crate::capture::captured_packets`], the same process-global the Prometheus
-/// scrape reports, so the denominator here is the one every other number in the
-/// run is read against.
+/// 200 with the analysis object — `application/json`, or for `yang-json` the
+/// same analysis RFC 7951-encoded as `application/yang-data+json`, the media
+/// type [RFC 8040 section 11.3.2](https://www.rfc-editor.org/rfc/rfc8040#section-11.3.2) registers for YANG data outside a RESTCONF
+/// server too; 400 for any other `format`; 401/503 from the guard. Frames read
+/// comes from [`crate::capture::captured_packets`], the same process-global the
+/// Prometheus scrape reports, so the denominator here is the one every other
+/// number in the run is read against.
 ///
 /// # Side effects
 ///
@@ -3753,13 +3768,15 @@ async fn get_stream(
     path = "/v1/report",
     tag = "capture",
     summary = "Analyze the whole capture",
-    description = "The capture-level view: findings across every dialog and stream, orphaned media, STUN and ICMP evidence, and what the retention caps shed.\n\n`GET /v1/dialogs/{call_id}/report` answers for one Call-ID; this answers for the capture. `complete: false` means a cap shed something and every count beside it is a floor.",
+    description = "The capture-level view: findings across every dialog and stream, orphaned media, STUN and ICMP evidence, and what the retention caps shed.\n\n`GET /v1/dialogs/{call_id}/report` answers for one Call-ID; this answers for the capture. `complete: false` means sipnab did not read all of its input -- frames no decoder could read, SIP a port gate discarded, records a retention cap dropped -- and every count beside it is a floor.",
+    params(CaptureReportParams),
     security(("bearer" = [])),
     responses(
-        (status = 200, description = "The whole-capture analysis: findings across every dialog \
-                                      and stream, orphaned media, STUN and ICMP evidence, and \
-                                      what the retention caps shed.                                       `/v1/dialogs/{call_id}/report` answers for one \
-                                      Call-ID; this answers for the capture.", body = schema::CaptureReport),
+        (status = 200, description = "The whole-capture analysis. `application/json` is sipnab's own encoding. `application/yang-data+json`, answered for `format=yang-json`, is the same analysis RFC 7951-encoded against the YANG module `sipnab-diagnosis` (https://sipnab.com/yang/sipnab-diagnosis@2026-09-21.yang, or `sipnab --print-yang-module`); the module is its schema.", content(
+            (schema::CaptureReport = "application/json"),
+            ("application/yang-data+json"),
+        )),
+        (status = 400, description = "A `format` other than `json` or `yang-json`.", body = schema::ProblemJson, content_type = "application/problem+json"),
         (status = 401, description = "No bearer credential, or one this server does not accept.", body = schema::ProblemJson, content_type = "application/problem+json"),
         (status = 500, description = "The analysis would not serialize.", body = schema::ProblemJson, content_type = "application/problem+json"),
         (status = 503, description = "Over the per-source-IP rate limit of 100 requests per second.", body = schema::ProblemJson, content_type = "application/problem+json"),
@@ -3769,8 +3786,23 @@ async fn get_capture_report(
     State(state): State<ApiState>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
-) -> Result<impl IntoResponse, Problem> {
+    Query(params): Query<CaptureReportParams>,
+) -> Result<axum::response::Response, Problem> {
     guard(&state, &headers, addr.ip())?;
+
+    // Decided before the analysis runs, so a misspelled format costs nothing
+    // but the refusal. The vocabulary is MCP's; REST serves the two formats a
+    // program integrates, and not MCP's rendered `markdown` and `text`.
+    let yang = match params.format.as_deref() {
+        None | Some("json") => false,
+        Some("yang-json") => true,
+        Some(other) => {
+            return Err(Problem::detailed(
+                StatusCode::BAD_REQUEST,
+                format!("unknown format '{other}': expected json or yang-json"),
+            ));
+        }
+    };
 
     let analysis = {
         // Dialogs then streams, the order `CaptureState` documents and the
@@ -3789,8 +3821,24 @@ async fn get_capture_report(
     // result is how this endpoint first returned 500 -- and how MCP's tool of
     // the same name had been quietly serving text under a `format: "json"`
     // default, because its parse failure fell through to a text block.
+    if yang {
+        // A transform of the same analysis's serialization, so the two formats
+        // of one request are one value. See `crate::analysis::yang`.
+        let body = crate::analysis::yang::to_rfc7951(&analysis)
+            .ok()
+            .and_then(|doc| serde_json::to_vec(&doc).ok())
+            .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
+        return Ok((
+            [(
+                axum::http::header::CONTENT_TYPE,
+                "application/yang-data+json",
+            )],
+            body,
+        )
+            .into_response());
+    }
     let parsed = serde_json::to_value(&analysis).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    Ok(Json(parsed))
+    Ok(Json(parsed).into_response())
 }
 
 /// Resolve a REST caller's rate window: the shared rule, narrowed to what this
@@ -6119,26 +6167,19 @@ pub mod schema {
 
     /// `GET /v1/report` — the whole-capture analysis.
     ///
-    /// Serialized from `crate::analysis::CaptureAnalysis` itself, never
-    /// re-parsed out of a rendered report: `print_analysis_report_as` looks
-    /// like it has a JSON arm and does not, and asking it for JSON is how this
-    /// endpoint once returned 500.
+    /// Marker only: the component is spliced from
+    /// `tests/schemas/capture_analysis.schema.json`, the schema
+    /// `tests/json_schema_test.rs` validates real `--json-analyze` output
+    /// against. The body is `crate::analysis::CaptureAnalysis` serialized
+    /// directly, never re-parsed out of a rendered report:
+    /// `print_analysis_report_as` looks like it has a JSON arm and does not,
+    /// and asking it for JSON is how this endpoint once returned 500.
+    ///
+    /// The hand-written component this replaced typed `findings` as a list of
+    /// `{}`, so the published contract described the denominators and nothing
+    /// that was found.
     #[derive(Debug, Clone, ToSchema)]
-    pub struct CaptureReport {
-        /// Frames the capture read, from the same process-global the
-        /// Prometheus scrape reports — so this denominator is the one every
-        /// other number in the run is read against.
-        pub frames_read: u64,
-        /// Dialogs the analysis looked at.
-        pub dialogs_examined: usize,
-        /// Streams the analysis looked at.
-        pub streams_examined: usize,
-        /// Whether the analysis saw the whole capture. `false` means a
-        /// retention cap shed something, and every count above is a floor.
-        pub complete: bool,
-        /// What the analysis found, across every dialog and stream.
-        pub findings: Vec<serde_json::Value>,
-    }
+    pub struct CaptureReport {}
 
     /// `GET /v1/dialogs/{call_id}/vcon` — one observed dialog as an unsigned
     /// OBSERVER vCon container (draft-ietf-vcon-vcon-core).

@@ -31,6 +31,9 @@ on:
       # scripts/check-wasm-exports.py: the analyzer build below runs it, so a
       # change to the check must re-run the check.
       - 'scripts/check-wasm-exports.py'
+      # yang/: the YANG module is copied into the site below, so a new
+      # revision has to reach sipnab.com/yang/ when it lands.
+      - 'yang/**'
   workflow_dispatch:
 
 # Allow the GITHUB_TOKEN to deploy to Pages and verify the deployment origin;
@@ -144,6 +147,20 @@ jobs:
           # pre-commit hook runs, applied to the artifact actually deployed.
           python3 scripts/check-wasm-exports.py
           ls -l website/static/wasm/sipnab_bg.wasm
+
+      # The YANG module the RFC 7951 export validates against, served at
+      # https://sipnab.com/yang/<module>@<revision>.yang. Copied here rather
+      # than committed a second time under website/static/: yang/ holds the one
+      # copy, generated from the analysis's tables and held to them by the YANG
+      # module test. A second committed copy would be a second thing to keep
+      # equal, and the analyzer bundle above is the record of what a committed
+      # build product does over time.
+      - name: Publish the YANG module
+        run: |
+          set -euo pipefail
+          mkdir -p website/static/yang
+          cp yang/*.yang website/static/yang/
+          ls -l website/static/yang
 
       - name: Build site
         working-directory: website

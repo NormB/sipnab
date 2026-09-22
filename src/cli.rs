@@ -1008,6 +1008,26 @@ pub struct OutputArgs {
     #[arg(help_heading = "Output", long)]
     pub json_analyze: bool,
 
+    /// Output the `--analyze` result RFC 7951-encoded, emitted after capture.
+    ///
+    /// The same analysis as `--json-analyze`, written as a document that
+    /// validates against the `sipnab-diagnosis` YANG module
+    /// (`--print-yang-module`): one namespace-qualified top-level member,
+    /// 64-bit integers as strings, hyphenated names, and an explicit `rank`
+    /// in place of array order. Computed once with the other two forms when
+    /// they are asked for together, so all three describe one analysis.
+    #[arg(help_heading = "Output", long)]
+    pub yang_analyze: bool,
+
+    /// Print the `sipnab-diagnosis` YANG module and exit.
+    ///
+    /// The YANG 1.1 module the RFC 7951 export of the capture analysis
+    /// validates against, byte for byte the file committed under `yang/`.
+    /// Hand it to `yanglint` or `pyang` with an export. Needs no capture, no
+    /// config and no privileges.
+    #[arg(help_heading = "Output", long)]
+    pub print_yang_module: bool,
+
     /// Generate a detailed report for a specific Call-ID.
     #[arg(help_heading = "Output", long, value_name = "CALL-ID")]
     pub call_report: Option<String>,
@@ -4993,6 +5013,7 @@ impl Cli {
             (self.output_args.json_stun, "--json-stun"),
             (self.output_args.analyze, "--analyze"),
             (self.output_args.json_analyze, "--json-analyze"),
+            (self.output_args.yang_analyze, "--yang-analyze"),
             (self.output_args.hexdump, "--hexdump"),
             (self.output_args.fail2ban, "--fail2ban"),
             (self.output_args.group_by.is_some(), "--group-by"),
@@ -5088,6 +5109,7 @@ impl Cli {
                 (self.output_args.json_stun, "--json-stun"),
                 (self.output_args.analyze, "--analyze"),
                 (self.output_args.json_analyze, "--json-analyze"),
+                (self.output_args.yang_analyze, "--yang-analyze"),
                 (self.output_args.hexdump, "--hexdump"),
                 (self.output_args.wireshark, "--wireshark"),
                 (self.output_args.call_report.is_some(), "--call-report"),

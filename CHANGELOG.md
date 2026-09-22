@@ -12,6 +12,41 @@ entry that carries them.
 
 ### Added
 
+- **The capture analysis has a published contract.** `--json-analyze`,
+  `GET /v1/report` and the MCP `get_capture_report` answer now open with
+  `schema_version: 1`, and `tests/schemas/capture_analysis.schema.json`
+  describes the object, closed at every depth: each finding `kind`, each
+  severity, each unit and each evidence count label. The OpenAPI
+  `CaptureReport` component is that schema. It used to type `findings` as a
+  list of `{}`. The count labels are now one table in `src/analysis.rs`, and
+  the JSON is byte-identical to before.
+
+- **The `sipnab-diagnosis` YANG module.** A YANG 1.1 model of the capture
+  analysis, committed at `yang/sipnab-diagnosis@2026-09-21.yang` and printed
+  by `sipnab --print-yang-module`. Every finding kind and every evidence count
+  label is an identity whose description is the kind's own title and
+  explanation, so the module is also the catalog of what the analysis can
+  report. The module is generated from the analysis's tables, and a test fails
+  when a kind is added without it. `pyang --lint` and `yanglint` check it in
+  CI and in the pre-push hook, which reports NOT CHECKED where neither tool is
+  installed.
+
+- **The capture analysis as [RFC 7951](https://www.rfc-editor.org/rfc/rfc7951) JSON, on every door.**
+  `--yang-analyze`, `GET /v1/report?format=yang-json` (answered as
+  `application/yang-data+json`) and MCP `get_capture_report` with
+  `format: "yang-json"` write the same analysis as a document that validates
+  against `sipnab-diagnosis`. Integers wider than 32 bits are strings, as RFC
+  7951 requires, and each finding carries an explicit `rank`. A test decodes
+  every door's document and compares it with the plain JSON of the same run,
+  and CI hands every door's output to `yanglint -t data`. A character YANG
+  cannot carry, such as a control character in a reason phrase, becomes
+  U+FFFD. sipnab runs no NETCONF or RESTCONF server.
+
+- **A filtered analysis says it was filtered.** When `--filter` or a
+  diagnostic alias narrowed the dialogs, `--json-analyze` carries `filter`,
+  the expression that ran, and `--analyze` prints the same sentence. Before,
+  a narrowed analysis read like a whole capture with fewer calls in it.
+
 - **sipnab names the libpcap it runs.** `sipnab --version` prints a second
   line: `pcap_lib_version()` as the running process sees it, then the
   alternate capture backends (netmap, DPDK, DAG, SNF) that banner names. The
@@ -51,6 +86,14 @@ entry that carries them.
   capabilities for the whole run.
 
 ### Fixed
+
+- **The analysis docs describe the fields it has.** The output-formats page
+  promised a per-finding `summary` field, which the analysis never had, and
+  the REST reference said `complete: false` meant only that a retention cap
+  shed something. It is false for any `blind` finding, including undecodable
+  frames and SIP a port gate discarded. The REST and MCP references also
+  named `--report` as the CLI form of the capture analysis; that is
+  `--analyze`.
 
 - **`[security] kill_scanner = true` spoofs kill responses the way
   `--kill-scanner` does.** The raw socket was opened only for the flag and

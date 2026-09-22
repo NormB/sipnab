@@ -486,7 +486,10 @@ the conflict a candidate cause of media that never started.
 One JSON object for the whole run, not a line per finding: `frames_read`,
 `dialogs_examined` and `streams_examined` are properties of the run rather than
 of any finding, and a clean capture must still serialize to something that
-states them.
+states them. The object opens with `schema_version` (currently `1`), and
+[`tests/schemas/capture_analysis.schema.json`](https://github.com/NormB/sipnab/blob/main/tests/schemas/capture_analysis.schema.json)
+describes it field by field. The same object is the `GET /v1/report` body and
+the MCP `get_capture_report` answer.
 
 ```bash
 sipnab -N -I capture.pcap --json-analyze --no-cli-print \
@@ -494,8 +497,18 @@ sipnab -N -I capture.pcap --json-analyze --no-cli-print \
 ```
 
 `findings` ranks worst first. Each carries a stable `kind`, a `severity`, an
-exact `occurrences` count, a `summary`, and an `evidence` array pointing back at
-the capture with Call-IDs, endpoints, timestamps and counts.
+exact `occurrences` count in its `unit`, an `evidence` array pointing back at
+the capture with Call-IDs, endpoints, timestamps and counts, and
+`evidence_omitted`, the rows a cap of ten kept out. A finding has no `summary`
+field: the title and the one-sentence explanation belong to the kind, so the
+text report prints them and the JSON names the `kind`.
+
+`filter` appears only when `--filter` or a diagnostic alias narrowed the
+dialogs. It holds the expression that ran, after alias expansion, so
+`--filter one-way` records `one_way == true`. The filter narrows the dialogs
+and nothing else: STUN probes, ICMP that reached no dialog, undecodable frames
+and retention losses are capture-level, and the analysis always reports them
+whole.
 
 `complete` is the field to read first. It is `false` when the run did not decode
 everything it received — undecodable frames, SIP a port gate discarded, records
@@ -509,6 +522,63 @@ sipnab -N -I capture.pcap --json-analyze --no-cli-print | jq '.complete'
 `--analyze` derives nothing new. `--analyze` aggregates the per-dialog diagnosis
 sipnab already computes and the capture-level evidence it already holds. It
 ranks and counts them, and adds no judgement of its own.
+
+## YANG export (`--yang-analyze`)
+
+The capture analysis again, encoded as [RFC 7951](https://www.rfc-editor.org/rfc/rfc7951)
+JSON against sipnab's own YANG 1.1 module, `sipnab-diagnosis`. It is the same
+value `--json-analyze` prints. A tool that speaks YANG can validate it, draw
+its tree with `pyang -f tree`, or generate code for it, without learning
+sipnab's JSON first.
+
+```bash
+sipnab -N -I capture.pcap --yang-analyze --no-cli-print > analysis.json
+```
+
+To check it, save the module this sipnab writes against, then hand both to
+`yanglint`:
+
+```bash
+sipnab --print-yang-module > sipnab-diagnosis@2026-09-21.yang
+```
+
+```bash
+yanglint -t data sipnab-diagnosis@2026-09-21.yang analysis.json
+```
+
+`--print-yang-module` prints the module this sipnab validates against. The
+repository commits the same file at
+[`yang/sipnab-diagnosis@2026-09-21.yang`](https://github.com/NormB/sipnab/blob/main/yang/sipnab-diagnosis@2026-09-21.yang).
+
+The document has one member, `sipnab-diagnosis:capture-analysis`, and differs
+from the `--json-analyze` object only in how it writes the same facts:
+
+| `--json-analyze` | `--yang-analyze` | Why |
+|---|---|---|
+| `frames_read` | `frames-read` | YANG names use hyphens. Every field follows the same rule. |
+| `"frames_read": 1024` | `"frames-read": "1024"` | [RFC 7951 section 6.1](https://www.rfc-editor.org/rfc/rfc7951#section-6.1) writes every 64-bit integer as a string: `frames-read`, `dialogs-examined`, `streams-examined`, `occurrences`, `evidence-omitted`, and each count's `value`. `schema-version`, `rank` and `index` stay numbers. |
+| `findings` in ranked order | `finding`, with a `rank` counting from 1 | YANG gives state data no order, so the position becomes a leaf. |
+| `evidence` in order | `evidence`, each with an `index` counting from 1 | The same reason. |
+| `endpoints` | `endpoint` | YANG names a leaf-list for one entry. |
+| `counts: {"rtp_packets": 425}` | `count: [{"name": "rtp_packets", "value": "425"}]` | A map becomes a list keyed by `name`. |
+| `[]` for no findings | no `finding` member | A YANG list has no empty form. |
+
+`kind` keeps the same strings in both encodings, such as `one_way_audio`. Each
+finding kind and each count label is an identity in the module, and its
+description is the kind's title and one-sentence explanation. That makes the
+module a catalog of everything the analysis can report. When a string from the
+capture holds a character YANG cannot carry, such as a control character in a
+reason phrase, sipnab writes U+FFFD in its place. That substitution is the only
+change to the text itself.
+
+The module does not model the per-dialog `diagnosis` and `signaling_diagnosis`.
+Their "`null` means checked, absent means not run" distinction has no RFC 7951
+equivalent, so they need their own modeling pass.
+
+The REST API serves the same document at `GET /v1/report?format=yang-json` as
+`application/yang-data+json`, and the MCP tool `get_capture_report` answers it
+for `{"format": "yang-json"}`. sipnab does not run a NETCONF or RESTCONF
+server. It writes documents that conform to the module.
 
 ## vCon (`--export-vcon`)
 

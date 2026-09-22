@@ -880,14 +880,13 @@ fn wiki_intra_docs_links_resolve() {
     // this extractor, which counts links between wiki pages only, reads +34.
     // 759 -> 763: the index link to client-examples.md and that page's three
     // links to the harness, library and cookbook. Measured by this gate.
-    // 763 -> 770: CT6b/CT6c, pointing every surface that reports the running
-    // libpcap at the one page with the per-artifact backend table rather than
-    // restating it. Attributed per file against HEAD: docs/install.md +3 (the
-    // MCP and REST references from the backend section, and the `--version`
-    // paragraph's same-page link back to that section), docs/mcp-tools.md,
-    // docs/rest-api.md and docs/tuning-capture.md +1 each (to that section),
-    // docs/mcp-deploy.md +1 (to `server_capabilities`). No other page moved.
-    const EXPECTED_WIKI_LINKS: usize = 770;
+    // 763 -> 772: seven for CT6b/CT6c, pointing every surface that reports the
+    // running libpcap at the per-artifact backend table (docs/install.md +3,
+    // docs/mcp-tools.md, docs/rest-api.md, docs/tuning-capture.md and
+    // docs/mcp-deploy.md +1 each), and two for the RFC 7951 export
+    // (docs/rest-api.md and docs/mcp-tools.md each link output-formats.md).
+    // Merged from two branches that each counted against 763.
+    const EXPECTED_WIKI_LINKS: usize = 772;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe 6d in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

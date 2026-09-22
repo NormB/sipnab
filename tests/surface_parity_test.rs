@@ -253,7 +253,8 @@ const CAPTURE_ANSWERS: &[Answer] = &[
     },
     // The whole capture: findings across every dialog and stream, orphaned
     // media, STUN and ICMP evidence, and what the retention caps shed. The CLI
-    // has had this as `--report` since before either server existed.
+    // has it as `--analyze`, `--json-analyze` and `--yang-analyze`; `--report`
+    // is the per-dialog table and never answered this.
     Answer {
         mcp_tool: "get_capture_report",
         rest_route: "/v1/report",

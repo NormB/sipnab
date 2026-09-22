@@ -278,7 +278,7 @@ Every task's requirements implicitly include the design above, plus:
 - Test: [`src/app/batch.rs`](../../src/app/batch.rs) tests module
 
 **Interfaces:**
-- Consumes: `FilterExpr::parse(input: &str) -> anyhow::Result<FilterExpr>` ([`src/sip/dsl.rs:633`](https://github.com/NormB/sipnab/blob/main/src/sip/dsl.rs#L633)); `select_dialogs<'a>(filter: Option<&FilterExpr>, dialog_store: &'a DialogStore, stream_store: &'a StreamStore) -> DialogSelection<'a>` ([`src/sip/dsl.rs:612`](https://github.com/NormB/sipnab/blob/main/src/sip/dsl.rs#L612)), whose `dialogs` field is `Vec<(&SipDialog, Vec<&RtpStream>)>` in store order.
+- Consumes: `FilterExpr::parse(input: &str) -> anyhow::Result<FilterExpr>` ([`src/sip/dsl.rs:656`](https://github.com/NormB/sipnab/blob/main/src/sip/dsl.rs#L656)); `select_dialogs<'a>(filter: Option<&FilterExpr>, dialog_store: &'a DialogStore, stream_store: &'a StreamStore) -> DialogSelection<'a>` ([`src/sip/dsl.rs:612`](https://github.com/NormB/sipnab/blob/main/src/sip/dsl.rs#L612)), whose `dialogs` field is `Vec<(&SipDialog, Vec<&RtpStream>)>` in store order.
 - Produces: `fn vcon_selection<'a>(cli: &Cli, dialog_store: &'a DialogStore, stream_store: &'a StreamStore) -> anyhow::Result<DialogSelection<'a>>`.
 
 **Correction, made by reading the API rather than the surrounding shape.** An

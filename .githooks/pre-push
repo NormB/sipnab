@@ -413,6 +413,65 @@ else
 	esac
 fi
 
+# -- Hard gate: the YANG module, and real RFC 7951 exports -------------------
+#
+# `yang/sipnab-diagnosis@<revision>.yang` is generated from the analysis's own
+# tables, and tests/yang_module_test.rs holds the committed file equal to that
+# generator. What no Rust test can say is whether the TEXT is valid YANG --
+# that takes an implementation that did not write it. scripts/check-yang.py
+# asks two: `pyang --lint` and `yanglint` compile the newest revision,
+# `pyang --check-update-from` holds each new revision to the one before it
+# (RFC 7950 section 11: a published module may only grow), and `yanglint -t
+# data` validates every document tests/yang_export_test.rs writes -- CLI, REST
+# and MCP, per fixture. libyang refuses a uint64 written as a JSON number,
+# which is RFC 7951 section 6.1 and the rule the encoder exists to keep.
+#
+# NOT CHECKED rather than blocking when either tool is absent -- the rule zola,
+# tmux and the prose linters follow in this hook. A contributor without libyang
+# must still be able to push, and CI installs both and runs the script with
+# SIPNAB_YANG_REQUIRED=1, where a missing tool is a failure. The verdict is
+# printed either way: silence in this column would read as "validated".
+YANG_GATE="$(dirname "$0")/../scripts/check-yang.py"
+if [ ! -f "$YANG_GATE" ]; then
+	printf '%b  YANG: NOT CHECKED -- scripts/check-yang.py is missing%b\n' "$YELLOW" "$NC"
+	printf '    CI validates the module and blocks there.\n'
+else
+	printf '  YANG module + RFC 7951 exports (pyang, yanglint) ... '
+	set +e
+	YANG_OUTPUT=$(python3 "$YANG_GATE" 2>&1)
+	YANG_RC=$?
+	set -e
+	case "$YANG_RC" in
+	0)
+		printf '%bOK%b\n' "$GREEN" "$NC"
+		;;
+	2)
+		printf '%b%s%b\n' "$YELLOW" "$(printf '%s\n' "$YANG_OUTPUT" | head -1)" "$NC"
+		printf '    CI installs both and blocks there. YANGLINT_BIN and PYANG_BIN point\n'
+		printf '    at builds outside PATH.\n'
+		;;
+	*)
+		printf '%bFAIL%b\n' "$RED" "$NC"
+		YANG_LOG="$(git rev-parse --git-dir 2>/dev/null || echo .)/sipnab-pre-push-yang.log"
+		printf '%s\n' "$YANG_OUTPUT" >"$YANG_LOG"
+		printf '%s\n' "$YANG_OUTPUT" | head -24 | sed 's/^/  /'
+		printf '  Full output: %s\n' "$YANG_LOG"
+		printf '\n'
+		printf '%bPush blocked: the YANG module or an export is not valid.%b\n' "$RED" "$NC"
+		printf 'Reproduce with:\n'
+		printf '    python3 scripts/check-yang.py\n'
+		printf '\n'
+		printf 'The module is generated: fix the table in src/analysis/yang.rs and\n'
+		printf 'regenerate it with\n'
+		printf '    SIPNAB_BLESS_YANG=1 cargo test --features full --test yang_module_test\n'
+		printf 'adding a new revision rather than editing a published one.\n'
+		printf '\n'
+		printf 'Emergency bypass (discouraged): SKIP_FMT_HOOK=1 git push\n'
+		exit 1
+		;;
+	esac
+fi
+
 # -- The E2E TUI tests, which are `#[ignore]` and so run nowhere else ---------
 #
 # They drive a real sipnab in a real PTY through tmux, and they are the only

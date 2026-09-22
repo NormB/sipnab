@@ -1226,10 +1226,13 @@ pub struct AggregateDialogsResponse {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
 pub struct GetCaptureReportParams {
-    /// Output format: "json", "markdown", or "text". Default "json".
+    /// Output format: "json", "yang-json", "markdown", or "text". Default
+    /// "json".
     ///
     /// The same vocabulary `get_dialog_report` takes, deliberately: an agent
-    /// that learned one should not have to learn the other.
+    /// that learned one should not have to learn the other. "yang-json" is the
+    /// same analysis as "json", RFC 7951-encoded against the YANG module
+    /// `sipnab-diagnosis`, and the spelling `GET /v1/report?format=` takes.
     #[serde(default)]
     pub format: Option<String>,
 }
@@ -4563,20 +4566,25 @@ impl SipnabMcp {
                        across every dialog and stream, orphaned media, STUN and \
                        ICMP evidence, and what the retention caps shed. This is \
                        the capture-level view; get_dialog_report answers for one \
-                       Call-ID. Format 'json', 'markdown', or 'text'.",
+                       Call-ID. Format 'json', 'markdown', or 'text', or \
+                       'yang-json' for the same analysis RFC 7951-encoded against \
+                       the YANG module sipnab-diagnosis.",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub async fn get_capture_report(
         &self,
         Parameters(params): Parameters<GetCaptureReportParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        let format = match params.format.as_deref() {
-            Some("markdown") | Some("md") => ReportFormat::Markdown,
-            Some("text") | Some("txt") => ReportFormat::Text,
-            None | Some("json") => ReportFormat::Json,
+        // `yang-json` is not a `ReportFormat`: that type chooses a RENDERING
+        // of a report, and this is an encoding of the analysis itself.
+        let (format, yang) = match params.format.as_deref() {
+            Some("markdown") | Some("md") => (ReportFormat::Markdown, false),
+            Some("text") | Some("txt") => (ReportFormat::Text, false),
+            None | Some("json") => (ReportFormat::Json, false),
+            Some("yang-json") => (ReportFormat::Json, true),
             Some(other) => {
                 return Err(rmcp::ErrorData::invalid_params(
-                    format!("unknown format '{other}', expected json|markdown|text"),
+                    format!("unknown format '{other}', expected json|yang-json|markdown|text"),
                     None,
                 ));
             }
@@ -4617,7 +4625,16 @@ impl SipnabMcp {
             crate::analysis::analyze(&ds, &ss, None, frames_read)
         };
 
-        let content = if format == ReportFormat::Json {
+        let content = if yang {
+            // The same analysis, RFC 7951-encoded. The completeness envelope
+            // every JSON answer carries cannot sit inside it -- RFC 7951
+            // section 4 admits only module-qualified members at the top of an
+            // instance document -- so `crate::mcp::completeness::stamp` puts it
+            // in a block of its own beside this one.
+            ContentBlock::json(crate::analysis::yang::to_rfc7951(&analysis).map_err(|e| {
+                rmcp::ErrorData::internal_error(format!("RFC 7951 encoding failed: {e}"), None)
+            })?)?
+        } else if format == ReportFormat::Json {
             // Serialized from the ANALYSIS, not re-parsed out of a rendered
             // report. `print_analysis_report_as` looks like it has a JSON arm
             // and does not: its `format` argument only chooses between markdown

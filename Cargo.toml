@@ -72,6 +72,7 @@ include = [
   "/tests/fixtures/tfps-*",
   "/tests/fixtures/tls_rsa/**",
   "/tests/schemas/vcon.schema.json",
+  "/yang/**",
 ]
 
 # docs.rs: the documented `full` build, on the one target sipnab is built for

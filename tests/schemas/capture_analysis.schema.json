@@ -1,0 +1,278 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sipnab.com/schemas/capture_analysis.schema.json",
+  "title": "sipnab capture analysis (CaptureAnalysis)",
+  "description": "Serialized form of CaptureAnalysis (src/analysis.rs): the `--json-analyze` object, the GET /v1/report body and the MCP get_capture_report `json` answer. Every finding sipnab already diagnosed, aggregated by kind and ranked worst first, with the denominators it was found in. The same analysis is exported RFC 7951-encoded against the YANG module sipnab-diagnosis; this schema describes the plain JSON encoding only.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "frames_read",
+    "dialogs_examined",
+    "streams_examined",
+    "complete",
+    "findings"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1,
+      "description": "Version of this object's shape."
+    },
+    "filter": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The filter expression that selected the dialogs examined, after alias expansion. Absent when every dialog was examined. Capture-level findings are never narrowed by it."
+    },
+    "frames_read": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Frames handed to the parser: the denominator every other number is read against."
+    },
+    "dialogs_examined": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Dialogs the analysis looked at, after any dialog filter."
+    },
+    "streams_examined": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "RTP streams linked to those dialogs."
+    },
+    "complete": {
+      "type": "boolean",
+      "description": "Whether sipnab read all of its input. False whenever any `blind` finding is present, and then every count is a floor."
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/finding"
+      },
+      "description": "One entry per finding kind that occurred, worst first."
+    }
+  },
+  "$defs": {
+    "finding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "severity",
+        "occurrences",
+        "unit",
+        "evidence",
+        "evidence_omitted"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "undecodable_frames",
+            "sip_discarded_by_portrange",
+            "sip_discarded_by_websocket_ports",
+            "retention_loss",
+            "no_media",
+            "one_way_audio",
+            "stun_sdp_mismatch",
+            "icmp_unreachable_signaling",
+            "icmp_unreachable_media",
+            "nat_mismatch",
+            "server_failure",
+            "auth_loop",
+            "retransmissions",
+            "ack_missing",
+            "registration_failure",
+            "unanswered_stun_probe",
+            "turn_allocation_lapsed",
+            "ice_role_conflict",
+            "icmp_unreachable_endpoint",
+            "request_failure",
+            "abandoned",
+            "post_dial_delay",
+            "late_media",
+            "codec_asymmetry",
+            "ptime_asymmetry",
+            "payload_type_asymmetry",
+            "duration_asymmetry"
+          ],
+          "description": "Stable identifier of the problem. At most one finding per kind."
+        },
+        "severity": {
+          "enum": [
+            "blind",
+            "critical",
+            "major",
+            "minor"
+          ],
+          "description": "blind > critical > major > minor. `blind` means the analysis itself is incomplete."
+        },
+        "occurrences": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Exact count, in `unit`s. Not the length of `evidence`, which is capped."
+        },
+        "unit": {
+          "enum": [
+            "frame",
+            "message",
+            "record",
+            "call",
+            "flow",
+            "registration",
+            "transaction",
+            "allocation",
+            "pair",
+            "error"
+          ],
+          "description": "What one occurrence is."
+        },
+        "evidence": {
+          "type": "array",
+          "maxItems": 10,
+          "items": {
+            "$ref": "#/$defs/evidence"
+          },
+          "description": "Up to ten verifiable instances."
+        },
+        "evidence_omitted": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Evidence rows the cap kept out."
+        }
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "call_id": {
+          "type": "string",
+          "description": "The dialog this instance belongs to. Absent for a capture-level finding."
+        },
+        "endpoints": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string"
+          },
+          "description": "The addresses involved, most specific first. Display text with the role written in, not bare addresses."
+        },
+        "at": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When it happened, in UTC, when one timestamp describes it."
+        },
+        "counts": {
+          "type": "object",
+          "minProperties": 1,
+          "additionalProperties": false,
+          "properties": {
+            "a_payload_type": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "a_ptime_ms": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "answer_transmissions": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "b_payload_type": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "b_ptime_ms": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "challenges": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "delay_after_200_ok_ms": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "dialogs": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "errors_naming_no_call": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "frames": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "frames_read": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "icmp_errors": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "lifetime_secs": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "messages": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "reasons_not_retained": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "refreshes": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "relayed_streams": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "requests": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "role_conflict_responses": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "rtp_packets": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "status_code": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "streams": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "stun_requests": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "stun_transactions": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "transmissions": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          "description": "Named integer counts. The label set is closed: these are every label the analysis writes."
+        },
+        "note": {
+          "type": "string",
+          "description": "The part of the evidence that is not an integer: codec names, a reason phrase, a router's own words."
+        }
+      }
+    }
+  }
+}
