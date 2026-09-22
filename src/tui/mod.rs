@@ -390,6 +390,15 @@ pub struct App {
     /// [`crate::app::tui_mode`] can read [`ActionTrail::exit_notice`] after
     /// this `App` is gone.
     action_trail: Option<Arc<action_trail::ActionTrail>>,
+    /// The operator's notes, keyed by frame. Output only: the analysis never
+    /// reads them (Invariant 13 in `docs/internals/invariants.md`).
+    notes: crate::annotate::Notes,
+    /// Where the Notes save format writes by default: the `--notes` file.
+    notes_path: Option<PathBuf>,
+    /// The note being typed while [`Popup::NoteEditor`] is open.
+    note_editor: Option<NoteEditorState>,
+    /// The capture open that [`Popup::UnsavedNotes`] is asking about.
+    pending_swap: Option<PendingSwap>,
 }
 
 impl App {
@@ -521,7 +530,18 @@ impl App {
             #[cfg(feature = "audio")]
             pending_audio_play: false,
             protected_inputs: Default::default(),
+            notes: crate::annotate::Notes::new(),
+            notes_path: None,
+            note_editor: None,
+            pending_swap: None,
         }
+    }
+
+    /// Start the session with `notes`, and make `path` the file the save
+    /// dialog's Notes format writes to by default.
+    pub fn set_notes(&mut self, notes: crate::annotate::Notes, path: Option<PathBuf>) {
+        self.notes = notes;
+        self.notes_path = path;
     }
 
     /// Declare the capture files this session reads, so the save dialog
@@ -837,6 +857,7 @@ impl App {
             SaveFormat::Wav => save_to_wav_path(self, &path),
             SaveFormat::SippXml => save_to_sipp_path(self, &path),
             SaveFormat::RtpJson => save_to_rtp_json_path(self, &path),
+            SaveFormat::Notes => save_to_notes_path(self, &path),
         };
         // The one choke point every one of the eleven formats passes through,
         // which is why the trail is written here and not in each writer: a
@@ -3302,9 +3323,10 @@ mod tests {
     /// `SaveFormat::next` cycles through all 11 formats back to the start.
     #[test]
     fn save_format_next_full_cycle() {
-        // 11 formats — next() applied 11 times returns to start.
+        // 12 formats (Notes, the operator's notes file, is the twelfth) —
+        // next() applied 12 times returns to start.
         let mut f = SaveFormat::Pcap;
-        for _ in 0..11 {
+        for _ in 0..12 {
             f = f.next();
         }
         assert_eq!(f, SaveFormat::Pcap);
@@ -3325,6 +3347,7 @@ mod tests {
             SaveFormat::Wav,
             SaveFormat::SippXml,
             SaveFormat::RtpJson,
+            SaveFormat::Notes,
         ];
         for &f in &formats {
             assert_eq!(f.next().prev(), f, "prev∘next != id for {f:?}");

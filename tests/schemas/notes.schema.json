@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sipnab.com/schemas/notes.schema.json",
+  "title": "sipnab operator notes file line",
+  "description": "One line of an operator notes file (JSON Lines: one object per line), as written by the TUI's notes save and read by --notes. Written and read by src/annotate/mod.rs. A note is a person's text about one frame; sipnab writes it into a pcapng packet comment and never reads it back as analysis.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["frame", "note"],
+  "properties": {
+    "frame": {
+      "description": "The frame the note is about, as a sipnab frame pointer: <source>#<ordinal>, optionally @<digest> (16 hex digits, FNV-1a of the frame's bytes). The form the `frame` field of --json carries. --write-annotated refuses a pointer without a digest, because nothing could then prove the note lands on the frame it was written about. A byte-range suffix (+start-end) is refused: a note is about a whole frame.",
+      "type": "string",
+      "pattern": "^.+#[0-9]+(@[0-9a-fA-F]{1,16})?$"
+    },
+    "note": {
+      "description": "The note text. At most 4096 BYTES of UTF-8 (maxLength counts characters and cannot express the byte cap). No control character other than newline and tab. A note holding an SDES inline: key, a TLS key-log line or a digest response= value is refused.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096,
+      "pattern": "\\S"
+    }
+  }
+}

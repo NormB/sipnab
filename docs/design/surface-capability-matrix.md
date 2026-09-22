@@ -710,6 +710,17 @@ Put two SIP messages side by side and highlight what differs.
 | REST | decision: a client composes two message fetches and diffs them, with no diff resource to poll |
 | MCP | decision: an agent composes two message reads and reasons over the difference, with no dedicated diff tool |
 
+### Operator notes on frames
+
+Put my note on this message into the capture I hand over, where Wireshark shows it.
+
+| Surface | Detail |
+|---|---|
+| CLI | `--write-annotated` with `--notes` |
+| TUI | `CallFlow` and `RawMessage`, key C |
+| REST | decision: writing a server-side capture is a side-effecting control action REST here does not take, and a network-writable store of free-text notes read beside the analysis is the store section 2 of deferred-and-declined.md declined to build |
+| MCP | decision: an agent may not read an operator's note, which would turn a person's conclusion into evidence it cites, and may not write text into a file that leaves the box; the findings log stays its only write |
+
 ### Edit the capture BPF filter
 
 Narrow the live capture with a BPF expression, interactively.

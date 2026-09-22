@@ -611,6 +611,35 @@ inflated every time value ×1000 (`capinfos` reporting year 58484).
 [`scripts/repair_pcapng_tsresol.py`](../scripts/repair_pcapng_tsresol.py)
 repairs such old captures in place without touching packet data.
 
+## Operator notes file
+
+The notes `--write-annotated` writes into a capture, one JSON object per line:
+
+```json
+{"frame":"call.pcap#0@bdb6cdb98013efe4","note":"the INVITE the SBC answered twice"}
+{"frame":"call.pcap#4@0b1c8f3e5a7d2946","note":"183 here, and the SDP changed"}
+```
+
+- `frame` names the frame the note is about, as a frame pointer: the `frame`
+  field of `--json`, copied as it is. `--write-annotated` requires the
+  `@<digest>` half, because only the digest proves a note lands on the frame
+  it describes, and it refuses a byte-range suffix (`+start-end`): a
+  note is about a whole frame.
+- `note` is the text. At most 4096 bytes of UTF-8, no control character other
+  than newline and tab, and no SDES `inline:` key, TLS key-log line or digest
+  `response=` value: the capture leaves the machine, and a key pasted into a
+  note would travel in clear.
+
+sipnab accepts no other field, and one bad line refuses the whole file, naming
+the line without quoting the note. A notes file sipnab writes has mode `0600`,
+because it holds free text about a call. The schema is
+[`tests/schemas/notes.schema.json`](../tests/schemas/notes.schema.json).
+
+In the annotated pcapng, each note is a packet comment that starts
+`[operator note] `, and the section comment says how many comments are notes
+typed by a person. sipnab writes packet comments and never reads one: `--json`
+over the annotated copy is what it is over the original.
+
 ## See also
 
 - [cli-reference.md](cli-reference.md#output) — every output flag

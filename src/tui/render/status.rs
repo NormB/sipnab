@@ -364,6 +364,8 @@ pub(in crate::tui) fn fkey_bar_items(
     if let Some(p) = popup {
         match p {
             Popup::QuitConfirm => vec![("Y", "Quit"), ("N/Esc", "Cancel")],
+            Popup::NoteEditor => vec![("Enter", "Keep"), ("Esc", "Cancel")],
+            Popup::UnsavedNotes => vec![("Y", "Open"), ("N/Esc", "Keep")],
             Popup::SaveDialog => vec![("Enter", "Save"), ("Tab", "Format"), ("Esc", "Cancel")],
             Popup::FilterDialog => {
                 vec![

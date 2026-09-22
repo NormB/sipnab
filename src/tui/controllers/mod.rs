@@ -14,6 +14,7 @@ mod file_open;
 mod filter_dialog;
 pub(crate) mod loss_map;
 mod name_dialog;
+mod note_editor;
 mod quit_confirm;
 mod save_dialog;
 mod stream;
@@ -38,6 +39,7 @@ pub(in crate::tui) use file_open::*;
 pub(in crate::tui) use filter_dialog::*;
 pub use loss_map::{LossMapAction, loss_map_action};
 pub(in crate::tui) use name_dialog::*;
+pub(in crate::tui) use note_editor::*;
 pub(in crate::tui) use quit_confirm::*;
 pub(in crate::tui) use save_dialog::*;
 #[cfg(test)]
@@ -415,6 +417,8 @@ pub(in crate::tui) fn handle_popup_key(app: &mut App, key: KeyEvent) {
         Popup::FileOpenDialog => handle_file_open_popup_key(app, key),
         Popup::NameAddress => handle_name_popup_key(app, key),
         Popup::QuitConfirm => handle_quit_confirm_key(app, key),
+        Popup::NoteEditor => handle_note_editor_key(app, key),
+        Popup::UnsavedNotes => handle_unsaved_notes_key(app, key),
     }
 }
 

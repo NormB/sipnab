@@ -387,6 +387,9 @@ pub struct FlowNavigation {
     pub mark_index: Option<usize>,
     /// Index of the currently selected row in the messages slice.
     pub selected_index: usize,
+    /// `raw_index` of every row whose message carries an operator note,
+    /// sorted. The ladder marks those rows; empty marks none.
+    pub noted: Vec<usize>,
 }
 
 /// Render a call flow ladder diagram by painting directly into the terminal buffer.
@@ -799,6 +802,26 @@ pub fn render_call_flow_direct(
                     .fg(theme.muted)
                     .add_modifier(Modifier::ITALIC);
                 draw_annotation(buf, annotation_x, &fold_str, fold_style);
+            }
+
+            // An operator note on this message: a marker in the column every
+            // timestamp mode leaves blank, just left of the first pipe, so no
+            // content moves.
+            if !msg.is_rtp_bar
+                && msg
+                    .raw_index
+                    .is_some_and(|r| nav.noted.binary_search(&r).is_ok())
+            {
+                crate::tui::render::set_string_clipped(
+                    buf,
+                    area,
+                    ts_col + ts_width - 1,
+                    y,
+                    crate::annotate::tui::MARKER,
+                    Style::default()
+                        .fg(theme.accent)
+                        .add_modifier(Modifier::BOLD),
+                );
             }
 
             // Full-row highlight for the current message: patch a background
@@ -2183,6 +2206,7 @@ mod tests {
             scroll_offset: 0,
             mark_index: None,
             selected_index: 0,
+            noted: Vec::new(),
         };
         let mut term = terminal(80, 24);
         term.draw(|f| {
@@ -2235,6 +2259,7 @@ mod tests {
             scroll_offset: 0,
             mark_index: None,
             selected_index: 0,
+            noted: Vec::new(),
         };
         let mut term = terminal(80, 24);
         term.draw(|f| {
@@ -2301,6 +2326,7 @@ mod tests {
             scroll_offset: 0,
             mark_index: Some(0),
             selected_index: 1,
+            noted: Vec::new(),
         };
         let w = 80u16;
         let mut term = terminal(w, 24);
@@ -2350,6 +2376,7 @@ mod tests {
             scroll_offset: 0,
             mark_index: None,
             selected_index: 0,
+            noted: Vec::new(),
         };
         let w = 80u16;
         let mut term = terminal(w, 24);
@@ -2472,6 +2499,7 @@ mod tests {
                     scroll_offset: 0,
                     mark_index: None,
                     selected_index: 0,
+                    noted: Vec::new(),
                 };
                 let mut term = terminal(width, 12);
                 term.draw(|f| {
@@ -2512,6 +2540,7 @@ mod tests {
                 scroll_offset: 0,
                 mark_index: None,
                 selected_index: 0,
+                noted: Vec::new(),
             };
             let mut term = terminal(width, 8);
             term.draw(|f| {
@@ -2552,6 +2581,7 @@ mod tests {
             scroll_offset: 0,
             mark_index: None,
             selected_index: 99,
+            noted: Vec::new(),
         };
         let mut term = terminal(120, 24);
         term.draw(|f| {

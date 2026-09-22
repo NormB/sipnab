@@ -81,6 +81,49 @@ pub enum RunMode {
     CoresFile,
 }
 
+/// The mode the flags select.
+///
+/// One function because two places ask: the plan below, and
+/// `run_startup_commands`, which refuses `--notes` in a run where nothing would
+/// read it. Two copies of the rule would agree today and disagree the next
+/// time a mode is added.
+pub(crate) fn select_run_mode(cli: &Cli) -> RunMode {
+    if cli.limits_args.cores > 1 && cli.has_input() && !cli.capture_args.multi_device {
+        return RunMode::CoresFile;
+    }
+    #[cfg(feature = "mcp")]
+    let use_tui = !cli.mode_args.no_tui && !cli.mcp_args.mcp;
+    #[cfg(all(feature = "tui", not(feature = "mcp")))]
+    let use_tui = !cli.mode_args.no_tui;
+    #[cfg(not(any(feature = "tui", feature = "mcp")))]
+    let use_tui = false;
+    if use_tui {
+        RunMode::Tui
+    } else {
+        RunMode::Batch
+    }
+}
+
+/// Why the TUI would refuse the notes file at `path`, if it would.
+#[cfg(feature = "tui")]
+fn tui_notes_refusal(path: &str) -> Option<String> {
+    crate::app::tui_mode::tui_notes(Some(path))
+        .err()
+        .map(|e| e.to_string())
+}
+
+/// A build without the TUI never reaches the notes file: `--notes` is refused
+/// earlier, as a flag nothing in this run reads.
+#[cfg(not(feature = "tui"))]
+fn tui_notes_refusal(_path: &str) -> Option<String> {
+    None
+}
+
+/// Whether this run is the interactive TUI.
+fn runs_the_tui(cli: &Cli) -> bool {
+    matches!(select_run_mode(cli), RunMode::Tui)
+}
+
 /// Everything main() needs to run, decided up front from CLI + config.
 pub struct RunPlan {
     /// The capture source; `None` defers to device auto-detection in
@@ -942,21 +985,7 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
         tracing::warn!("{msg}");
     }
 
-    let mode = if cli.limits_args.cores > 1 && cli.has_input() && !cli.capture_args.multi_device {
-        RunMode::CoresFile
-    } else {
-        #[cfg(feature = "mcp")]
-        let use_tui = !cli.mode_args.no_tui && !cli.mcp_args.mcp;
-        #[cfg(all(feature = "tui", not(feature = "mcp")))]
-        let use_tui = !cli.mode_args.no_tui;
-        #[cfg(not(any(feature = "tui", feature = "mcp")))]
-        let use_tui = false;
-        if use_tui {
-            RunMode::Tui
-        } else {
-            RunMode::Batch
-        }
-    };
+    let mode = select_run_mode(cli);
 
     // Whether a detector will exist at all is a property of the MODE, so it
     // cannot be answered with the warnings above, which run before the mode is
@@ -2453,6 +2482,32 @@ pub fn run_startup_commands(cli: &Cli) -> Option<i32> {
         return Some(show_frame(pointer));
     }
 
+    // --write-annotated: a pcapng copy of one capture with the operator's
+    // notes as packet comments. The input is never modified, and a note that
+    // cannot be bound to its frame writes nothing at all.
+    if let Some(ref out) = cli.name_args.write_annotated {
+        return Some(write_annotated(cli, out));
+    }
+    // `--notes` names the notes `--write-annotated` writes, or the TUI's
+    // notes file. In any other run nothing would read it, and a flag that is
+    // accepted and ignored reads as a note that was written.
+    if cli.name_args.notes.is_some() && !runs_the_tui(cli) {
+        tracing::error!(
+            "--notes names the notes for --write-annotated or the TUI's notes file, \
+             and this run is neither: nothing would read them"
+        );
+        return Some(2);
+    }
+    // The TUI reads the notes file again once it starts, but a file sipnab
+    // refuses is refused HERE, before any capture opens: stopping later would
+    // leave a running capture thread behind (Invariant 12).
+    if let Some(path) = cli.name_args.notes.as_deref()
+        && let Some(refusal) = tui_notes_refusal(path)
+    {
+        tracing::error!("--notes {path}: {refusal}");
+        return Some(2);
+    }
+
     // --strip-secrets: write a DSB-free copy of the input pcapng. The input
     // is never modified; the output is written atomically.
     if let Some(ref out) = cli.name_args.strip_secrets {
@@ -2553,6 +2608,119 @@ pub fn run_startup_commands(cli: &Cli) -> Option<i32> {
     }
 
     None
+}
+
+/// `--notes FILE --write-annotated OUT -I CAPTURE`: write an annotated pcapng
+/// copy of one capture.
+///
+/// The same input handling as `--strip-secrets`: `-I` must resolve to exactly
+/// one capture, and the output may not be that capture (or the notes file).
+/// The copy itself is [`crate::annotate::copy::write_annotated_copy`], which
+/// refuses, and writes nothing, when any note cannot be bound to its frame.
+///
+/// # Returns
+///
+/// `0` when the copy was written, `1` when it was refused or failed, `2` when
+/// the output names a file this run must not overwrite or `--notes` is
+/// missing.
+///
+/// # Side effects
+///
+/// Reads the notes file and the capture, and writes `out` atomically.
+fn write_annotated(cli: &Cli, out: &str) -> i32 {
+    let Some(notes_path) = cli.name_args.notes.as_deref() else {
+        // clap's `requires` already refuses this; kept so the command never
+        // runs on an absent notes file whatever the parser is told.
+        tracing::error!("--write-annotated needs --notes <FILE>");
+        return 2;
+    };
+    if !cli.has_input() {
+        tracing::error!("--write-annotated requires an input capture (-I <file>)");
+        return 1;
+    }
+    let resolved = match crate::capture::input_set::resolve(
+        &cli.capture_args.input,
+        &cli.input_resolve_options(),
+    ) {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::error!("--write-annotated: {e:#}");
+            return 1;
+        }
+    };
+    // One output path, so one capture: annotating the first of a set would
+    // report success and leave the operator believing the rest were handled.
+    if resolved.len() != 1 {
+        let names = resolved
+            .iter()
+            .map(|r| format!("'{}'", r.path.display()))
+            .collect::<Vec<_>>()
+            .join(", ");
+        tracing::error!(
+            "--write-annotated writes one copy, but -I resolved to {} files: {names}. \
+             Run it once per capture.",
+            resolved.len()
+        );
+        return 1;
+    }
+    let protected = crate::capture::output_guard::ProtectedInputs::new(
+        &cli.capture_args.input,
+        &resolved.iter().map(|r| r.path.clone()).collect::<Vec<_>>(),
+        cli.capture_args.recursive,
+    );
+    if let Err(msg) = protected.check(std::path::Path::new(out), "--write-annotated", false) {
+        tracing::error!("{msg}");
+        return 2;
+    }
+    let notes_file = std::path::Path::new(notes_path);
+    let same_as_notes = std::path::Path::new(out) == notes_file
+        || matches!(
+            (std::fs::canonicalize(out), std::fs::canonicalize(notes_file)),
+            (Ok(a), Ok(b)) if a == b
+        );
+    if same_as_notes {
+        tracing::error!(
+            "--write-annotated {out} would overwrite the notes file it reads; \
+             name another output"
+        );
+        return 2;
+    }
+
+    let notes = match crate::annotate::Notes::load(notes_file) {
+        Ok(n) => n,
+        Err(e) => {
+            tracing::error!("--notes {notes_path}: {e}");
+            return 1;
+        }
+    };
+    if notes.is_empty() {
+        tracing::error!("--notes {notes_path} holds no notes, so there is nothing to annotate");
+        return 1;
+    }
+    let input = &resolved[0].path;
+    // As the operator spelled it, never made absolute: this string goes into
+    // a file that leaves the box, and an absolute path carries the account
+    // name.
+    let label = input.display().to_string();
+    match crate::annotate::copy::write_annotated_copy(
+        input,
+        &label,
+        &notes,
+        std::path::Path::new(out),
+    ) {
+        Ok(report) => {
+            tracing::info!(
+                "Wrote {} note(s) onto {} frame(s) copied from {label}: {out}",
+                report.notes,
+                report.frames
+            );
+            0
+        }
+        Err(e) => {
+            tracing::error!("--write-annotated refused: {e}. Nothing was written to {out}.");
+            1
+        }
+    }
 }
 
 /// Follow one frame pointer and print the frame, or refuse and say why.

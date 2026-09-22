@@ -340,6 +340,12 @@ pub struct TuiOptions {
     /// sessions only). `Some` for `-I one.pcap`; `None` for a live capture, a
     /// multi-file input, or no input.
     pub rescan_path: Option<std::path::PathBuf>,
+    /// The operator's notes this session starts with: loaded from `--notes`
+    /// when that file exists, empty otherwise.
+    pub notes: crate::annotate::Notes,
+    /// The `--notes` path, which the save dialog's Notes format writes to by
+    /// default. `None` when the run named no notes file.
+    pub notes_path: Option<std::path::PathBuf>,
 }
 
 impl TuiOptions {
@@ -394,6 +400,7 @@ impl TuiOptions {
         app.relay_stats_interval = self.relay_stats_interval;
         app.set_reconfigure(self.reconfigure_control, self.reconfigure_outcomes);
         app.rescan_path = self.rescan_path;
+        app.set_notes(self.notes, self.notes_path);
         app
     }
 }
@@ -438,6 +445,8 @@ pub enum SaveFormat {
     SippXml,
     /// RTP/RTCP quality JSON — jitter, loss, MOS per stream.
     RtpJson,
+    /// The operator's notes, as the JSON Lines file `--notes` resumes from.
+    Notes,
 }
 
 impl SaveFormat {
@@ -454,14 +463,16 @@ impl SaveFormat {
             Self::Markdown => Self::Wav,
             Self::Wav => Self::SippXml,
             Self::SippXml => Self::RtpJson,
-            Self::RtpJson => Self::Pcap,
+            Self::RtpJson => Self::Notes,
+            Self::Notes => Self::Pcap,
         }
     }
 
     /// Cycle to the previous format (Shift-Tab).
     pub fn prev(self) -> Self {
         match self {
-            Self::Pcap => Self::RtpJson,
+            Self::Pcap => Self::Notes,
+            Self::Notes => Self::RtpJson,
             Self::PcapNg => Self::Pcap,
             Self::Txt => Self::PcapNg,
             Self::Json => Self::Txt,
@@ -489,6 +500,7 @@ impl SaveFormat {
             Self::Wav => "wav",
             Self::SippXml => "xml",
             Self::RtpJson => "rtp.json",
+            Self::Notes => "notes.jsonl",
         }
     }
 
@@ -506,6 +518,7 @@ impl SaveFormat {
             Self::Wav => "WAV",
             Self::SippXml => "SIPp",
             Self::RtpJson => "RTP",
+            Self::Notes => "NOTES",
         }
     }
 
@@ -517,6 +530,7 @@ impl SaveFormat {
             Self::Json | Self::Ndjson | Self::Csv => "Structured/Analytics",
             Self::Html | Self::Markdown => "Reporting",
             Self::Wav | Self::RtpJson => "RTP/Media",
+            Self::Notes => "Operator notes",
         }
     }
 
@@ -534,6 +548,7 @@ impl SaveFormat {
             Self::Wav => "Decoded G.711 audio per RTP stream",
             Self::SippXml => "Replayable SIPp scenario for QA testing",
             Self::RtpJson => "Jitter, packet loss, MOS per stream",
+            Self::Notes => "Your notes, to resume with --notes (not analysis)",
         }
     }
 }
@@ -1445,6 +1460,31 @@ pub enum Popup {
     /// [issue #283](https://github.com/NormB/sipnab/issues/283). `Ctrl-C`
     /// bypasses it entirely.
     QuitConfirm,
+    /// The one-line editor for an operator note on the selected message,
+    /// opened with `C` in the call flow and the raw-message view.
+    NoteEditor,
+    /// "Open another capture?" while operator notes are not saved to a notes
+    /// file. The notes are about frames of the capture on screen, so opening
+    /// another one drops them.
+    UnsavedNotes,
+}
+
+/// The note being typed, and the frame it is about.
+#[derive(Debug)]
+pub(in crate::tui) struct NoteEditorState {
+    /// The frame the note goes on: the message's own pointer.
+    pub(in crate::tui) frame: crate::capture::packet::FrameRef,
+    /// What the operator is typing.
+    pub(in crate::tui) editor: crate::annotate::tui::NoteEditor,
+}
+
+/// A capture open waiting on the unsaved-notes question.
+#[derive(Debug, Clone)]
+pub(in crate::tui) struct PendingSwap {
+    /// The capture to open.
+    pub(in crate::tui) path: String,
+    /// The BPF filter to re-scan it with, when this is a re-scan.
+    pub(in crate::tui) filter: Option<String>,
 }
 
 /// Key identifying one exact displayed-dialog derivation: if every field

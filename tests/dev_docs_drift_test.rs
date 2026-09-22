@@ -714,7 +714,17 @@ fn linked_code_targets_exist() {
     // schema, `src/analysis/yang.rs`, `tests/yang_module_test.rs`,
     // `scripts/check-yang.py`). Merged from two branches that each counted
     // against 432.
-    const EXPECTED_CODE_LINKS: usize = 441;
+    // 432 -> 433: one, in `docs/internals/invariants.md`, where Invariant 13
+    // (operator notes are output, never input) links `src/annotate/mod.rs`,
+    // the sealed `NoteText` it is enforced by. Measured by this gate.
+    // 433 -> 436: three, in the same section: the import allow-list
+    // `tests/annotate_import_gate_test.rs` that keeps the notes module away
+    // from MCP, the wire shapes and the analysis, and the two files it names
+    // by path (`src/capture/writer.rs`, the one permitted writer, and
+    // `src/analysis.rs`, forbidden). Measured by this gate.
+    // 441 + 4 = 445: the operator-notes branch counted its four against 432
+    // and merged after the two above.
+    const EXPECTED_CODE_LINKS: usize = 445;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \

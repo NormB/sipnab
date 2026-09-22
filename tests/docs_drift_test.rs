@@ -3718,7 +3718,15 @@ fn no_documentation_table_repeats_a_row() {
     // docs/output-formats.md and the `format` parameter table under
     // `GET /v1/report` in docs/rest-api.md, each counted once in docs/ and
     // once in its site mirror.
-    const EXPECTED_TABLES: usize = 936;
+    // 932 -> 934: the "Operator notes" flag table (`--notes`,
+    // `--write-annotated`) in docs/cli-reference.md and its site mirror: one
+    // written table, two pages. Measured by this gate.
+    // 934 -> 935: the "Operator notes on frames" capability in
+    // docs/design/surface-capability-matrix.md, one `| Surface | Detail |`
+    // table in a design doc with no site mirror. Measured by this gate.
+    // 936 + 3 = 939: the operator-notes branch counted its three against 932
+    // and merged after the RFC 7951 export.
+    const EXPECTED_TABLES: usize = 939;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

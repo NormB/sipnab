@@ -430,6 +430,38 @@ impl LiveDetectors {
     }
 }
 
+/// The TUI's operator notes from `--notes`.
+///
+/// # Arguments
+///
+/// * `path` — the `--notes` value, if any.
+///
+/// # Returns
+///
+/// The file's notes when it exists, or an empty session when it does not yet
+/// (its first save creates it), paired with the path the save dialog's Notes
+/// format defaults to. No path, no notes and no default.
+///
+/// # Errors
+///
+/// [`crate::annotate::NotesFileError`] when the file exists and cannot be
+/// read or holds a line sipnab refuses. The caller stops the run on it before
+/// the terminal is taken, where the refusal can be read.
+pub(crate) fn tui_notes(
+    path: Option<&str>,
+) -> Result<(crate::annotate::Notes, Option<std::path::PathBuf>), crate::annotate::NotesFileError> {
+    let Some(path) = path else {
+        return Ok((crate::annotate::Notes::new(), None));
+    };
+    let p = std::path::PathBuf::from(path);
+    let notes = if p.exists() {
+        crate::annotate::Notes::load(&p)?
+    } else {
+        crate::annotate::Notes::new()
+    };
+    Ok((notes, Some(p)))
+}
+
 /// Heavy wiring, in order: optionally starts the standalone Prometheus
 /// metrics server; spawns the "tui-processor" thread that drains the packet
 /// channel, drives the shared pipeline into the stores, lazily opens and
@@ -501,6 +533,18 @@ pub fn run_tui_mode(
         }
         None => None,
     };
+
+    // The operator's notes file (`--notes`), read before the terminal is
+    // taken so a file sipnab cannot accept stops the run where the refusal can
+    // be read. A path that does not exist yet starts an empty session whose
+    // notes save there.
+    let (notes, notes_path) = tui_notes(cli.name_args.notes.as_deref()).unwrap_or_else(|e| {
+        tracing::error!(
+            "--notes {}: {e}. sipnab will not start the TUI on it",
+            cli.name_args.notes.as_deref().unwrap_or_default()
+        );
+        std::process::exit(2);
+    });
 
     // Read before the capture config moves into the processing thread below.
     let bpf_filter = bpf_status_text(&capture_config);
@@ -881,6 +925,8 @@ pub fn run_tui_mode(
             // a multi-file input or a live device leaves this None.
             rescan_path: (cli.capture_args.input.len() == 1)
                 .then(|| std::path::PathBuf::from(&cli.capture_args.input[0])),
+            notes,
+            notes_path,
         },
     ) {
         tracing::error!("TUI error: {e}");
@@ -932,6 +978,53 @@ pub fn run_tui_mode(
 /// name-persistence path resolution.
 #[cfg(test)]
 mod tests {
+    // ── The TUI's `--notes` file ────────────────────────────────────────
+
+    /// No `--notes`: an empty session with nowhere to save by default.
+    #[test]
+    fn no_notes_flag_starts_an_empty_session() {
+        let (notes, path) = super::tui_notes(None).expect("nothing to read");
+        assert!(notes.is_empty());
+        assert_eq!(path, None);
+    }
+
+    /// A `--notes` file that does not exist yet starts an empty session that
+    /// saves there, so the first save creates it.
+    #[test]
+    fn a_new_notes_file_starts_an_empty_session_that_saves_there() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("new.notes.jsonl");
+        let (notes, path) =
+            super::tui_notes(Some(file.to_str().expect("utf-8"))).expect("absent is fine");
+        assert!(notes.is_empty());
+        assert_eq!(path.as_deref(), Some(file.as_path()));
+    }
+
+    /// An existing file resumes its notes.
+    #[test]
+    fn an_existing_notes_file_resumes() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("s.notes.jsonl");
+        std::fs::write(&file, "{\"frame\":\"a.pcap#0\",\"note\":\"kept\"}\n").expect("write");
+        let (notes, path) =
+            super::tui_notes(Some(file.to_str().expect("utf-8"))).expect("a valid file");
+        assert_eq!(notes.len(), 1);
+        assert!(!notes.is_unsaved(), "a resumed session starts saved");
+        assert_eq!(path.as_deref(), Some(file.as_path()));
+    }
+
+    /// A file sipnab refuses stops the run before the terminal is taken, and
+    /// the error names the line.
+    #[test]
+    fn a_refused_notes_file_is_an_error() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("bad.notes.jsonl");
+        std::fs::write(&file, "not json\n").expect("write");
+        let err = super::tui_notes(Some(file.to_str().expect("utf-8")))
+            .expect_err("a bad file must not start a session");
+        assert!(err.to_string().contains("line 1"), "{err}");
+    }
+
     use super::{bpf_status_text, build_stores, count_and_check_limit, names_path_from};
     use crate::capture::{CaptureConfig, ParsedPacket};
     use crate::cli::Cli;

@@ -123,6 +123,19 @@ as a blank panel with no error. Past the cap the diagram says so in a note
 inside itself, naming how many messages the call actually had: a picture that
 quietly omits half a call is worse than one that admits it.
 
+## 10. Send your notes with the frames they are about
+
+Select the message that matters and press `C`. Type the note and press Enter.
+sipnab shows it in a pane under the flow titled "operator note — not sipnab
+analysis" and marks the row with `✎`. Press `C` again to amend it, or clear the
+text to remove it.
+
+To hand the capture over, press `F2`, Tab to PCAP-NG and save: each note is the
+packet comment on its message's frame, which Wireshark shows, with a line naming
+the frame you typed it on. To pick the session up later, Tab to NOTES instead,
+then start sipnab again with `--notes` and that file. The capture you send
+carries your notes, and sipnab never reads them back as analysis.
+
 ## Where to go next
 
 - `F1` (or `?`) opens context help in any view -- the fastest way to see what a

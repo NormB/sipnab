@@ -9269,23 +9269,10 @@ pub(crate) fn write_messages_to_pcap(
     // and this is the artifact that gets forwarded to a carrier or into a
     // ticket. pcapng carries it as the section comment; classic pcap has
     // nowhere to put it, which is itself a reason to prefer .pcapng here.
-    let note = format!(
-        "Produced by sipnab {} via the MCP export_capture tool.\n\
-         \n\
-         THE FRAMES IN THIS FILE WERE REBUILT, NOT COPIED. sipnab retains \
-         parsed SIP messages rather than captured frames, so each packet here \
-         is a synthetic Ethernet/IPv4/UDP frame constructed around one \
-         message's bytes. The SIP layer is byte-faithful; the link, IP and \
-         transport headers are reconstructed from the addresses and ports \
-         sipnab recorded, and MAC addresses, IP identification, checksums, \
-         fragmentation and TCP state are not what was on the wire.\n\
-         \n\
-         Non-SIP traffic present in the original capture — RTP, RTCP, DNS, \
-         ICMP — is NOT in this file. Do not read packet counts here as \
-         capture-level counts.\n\
-         \n\
-         {} message(s) written.",
-        env!("CARGO_PKG_VERSION"),
+    // The TUI's save dialog writes the same synthetic frames and says the same
+    // thing about them, so the paragraph lives once, beside the synthesis.
+    let note = crate::output::synthetic::rebuilt_frames_note(
+        "the MCP export_capture tool",
         messages.len(),
     );
     let mut writer = PcapWriter::with_provenance(

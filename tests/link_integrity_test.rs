@@ -886,7 +886,25 @@ fn wiki_intra_docs_links_resolve() {
     // docs/mcp-deploy.md +1 each), and two for the RFC 7951 export
     // (docs/rest-api.md and docs/mcp-tools.md each link output-formats.md).
     // Merged from two branches that each counted against 763.
-    const EXPECTED_WIKI_LINKS: usize = 772;
+    // 763 -> 766: Invariant 13 in docs/internals/invariants.md (operator notes
+    // are output, never input) links section 2 of deferred-and-declined.md and
+    // Invariants 5 and 9 rather than restating them. One page, three links;
+    // measured by this gate.
+    // 766 -> 767: the `--notes` row in docs/cli-reference.md links the notes
+    // file format in output-formats.md rather than restating it. Measured by
+    // this gate.
+    // 767 -> 770: the TUI's operator notes. The two `C` rows in
+    // docs/keybindings.md (call flow, raw message) link its new Operator notes
+    // section, and the `--notes` row in docs/cli-reference.md links the
+    // call-flow keys. Measured by this gate.
+    // 770 -> 775: the documented absences and the recipe. docs/mcp.md links the
+    // keybindings, the CLI reference and Invariant 13 (three), docs/rest-api.md
+    // links section 2 of deferred-and-declined.md (one), and recipe 65 in
+    // docs/examples.md links the TUI's operator-notes keys (one). Measured by
+    // this gate.
+    // 772 + 12 = 784: the operator-notes branch counted its twelve against
+    // 763 and merged after CT6b/CT6c and the RFC 7951 export.
+    const EXPECTED_WIKI_LINKS: usize = 784;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe 6d in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

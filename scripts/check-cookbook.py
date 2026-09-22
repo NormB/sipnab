@@ -100,7 +100,8 @@ CAPTURE_SUFFIXES = (".pcap", ".pcapng", ".cap")
 # Flags whose VALUE is an artifact the reader builds or brings. A recipe using
 # one cannot execute here, and that is a property of the flag rather than of
 # any particular recipe -- so it is named once, not exempted case by case.
-READER_SUPPLIED_FLAGS: frozenset[str] = frozenset({"--plugin"})
+# `--notes` names the notes file the reader writes in the step before.
+READER_SUPPLIED_FLAGS: frozenset[str] = frozenset({"--plugin", "--notes"})
 
 UNCOVERABLE: dict[str, str] = {}
 

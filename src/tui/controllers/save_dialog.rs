@@ -101,6 +101,14 @@ pub(in crate::tui) fn handle_save_popup_key(app: &mut App, key: KeyEvent) {
                 app.save.path = format!("{base}.{new_ext}");
                 app.save.cursor = app.save.path.len();
             }
+            // The notes file a `--notes` run resumes from is where its notes
+            // go back to, unless the operator types another path.
+            if app.save.format == SaveFormat::Notes
+                && let Some(ref resume) = app.notes_path
+            {
+                app.save.path = resume.display().to_string();
+                app.save.cursor = app.save.path.len();
+            }
         }
         KeyCode::Backspace => {
             if app.save.cursor > 0 {

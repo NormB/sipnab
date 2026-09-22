@@ -66,6 +66,30 @@ entry that carries them.
   also says that a `netmap:` capture takes the interface's traffic away
   from the host for as long as it runs, so it belongs on a capture-only port.
 
+- **Operator notes as pcapng packet comments.** `--notes FILE --write-annotated
+  OUT -I CAPTURE` writes a pcapng copy of one capture with each note in the
+  notes file as a packet comment on the frame it names, so a carrier or a
+  vendor opening the file in Wireshark sees the note beside the frame. Each
+  note names its frame by the pointer `--json` prints, digest included, and a
+  frame whose bytes no longer match is refused with nothing written. The copy
+  carries the original frames byte for byte and no decryption secrets, and its
+  section comment says the comments are notes typed by a person. A note over
+  4096 bytes, or holding a control character, an SDES `inline:` key, a TLS
+  key-log line or a digest `response=` value, is refused. sipnab never reads a
+  packet comment back: `--json` over the copy is what it is over the original.
+  The notes file format is in `docs/output-formats.md`.
+
+- **Operator notes in the TUI.** `C` on a message in the call flow or the raw
+  message view opens a one-line editor. The note is shown under the flow in a
+  pane titled "operator note — not sipnab analysis", the ladder marks the row
+  with `✎`, and a PCAP-NG save writes it as the packet comment on that
+  message's frame, with the pointer to the frame it was typed on. The save
+  dialog's new NOTES format writes the notes file, and `sipnab -I <capture>
+  --notes FILE` resumes from it. A classic PCAP save refuses rather than drop
+  the notes, and quitting or opening another capture with notes not saved to a
+  notes file asks first. The TUI action trail records which frame a note was
+  set on or removed from, never its text.
+
 ### Security
 
 - **`--kill-scanner` sends from a process of its own, and the process parsing
@@ -108,6 +132,18 @@ entry that carries them.
   now framed by their lengths, only name-resolution and decryption-secrets
   blocks are decoded, a malformed one is skipped and counted, and only a block
   length that cannot be trusted stops the walk. Both are logged.
+
+- **A pcapng saved from the TUI says its frames were rebuilt.** The save
+  dialog builds a new Ethernet, IPv4 and UDP frame around every SIP message it
+  holds, as MCP's `export_capture` does, but only the MCP export said so in the
+  file. The TUI's pcapng now carries the same section comment, naming the TUI
+  save dialog as its source, so whoever opens it in Wireshark learns that the
+  MAC addresses, IP ids and checksums were not on the wire.
+
+- **A TUI pcap save that could not be flushed no longer reports "Saved".**
+  The save never flushed its buffer, so a disk that filled at the end of the
+  write left a short file and the status line still read "Saved N packets". It
+  now reports the write error.
 
 ## [0.5.184] - 2026-09-21
 

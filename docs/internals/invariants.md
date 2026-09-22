@@ -510,6 +510,56 @@ sanitizer run.
 device, mid-read. Benign on most exits and invisible without a sanitizer, which
 is why it survived until a sanitizer ran over it.
 
+## 13. Operator notes are output, never input
+
+**Rule.** A note an operator types about a SIP message reaches three places
+and no others: a pcapng packet comment in a file sipnab writes, the TUI's
+note pane, and the notes file the operator saves to resume a session. sipnab
+never reads a packet comment back, and no dialog, stream, report, wire shape
+or MCP tool can name a note.
+
+**Why.** A note is a person's conclusion, and sipnab builds the analysis from
+what was on the wire. [Section 2 of the deferred-and-declined record](../design/deferred-and-declined.md#2-write-back-mcp-tools)
+refuses to let an agent's conclusion come back as evidence it can then cite,
+and a person's conclusion is no different once it sits beside the facts. And
+the file leaves the box. sipnab may have decrypted the SIP in it from TLS, so a
+key pasted into a note would travel in clear where it traveled encrypted,
+which breaks [Invariant 5](#5-key-material-is-toxic-waste) with one paste.
+
+**Enforced by.** [`NoteText`](../../src/annotate/mod.rs) keeps its text in a
+private field and has no `Deref`, `as_str`, `Display` or `Serialize`, so the
+text cannot enter any JSON projection ([Invariant 9](#9-one-wire-shape-per-concept))
+or log line. Five `compile_fail` doctests pin each missing accessor, beside
+one that compiles to prove the type is reachable. `NoteText::new` refuses an
+empty note, a note over `MAX_NOTE_BYTES` (4096) bytes (refused, never cut:
+`pcap-file` writes an option length as a `u16`, so a longer comment would
+corrupt the file rather than fail), a control character other than newline or
+tab, an SDES `inline:` key, a TLS key-log line and a digest `response=`
+value. A session holds at most `MAX_NOTES` (10,000) notes, and a notes-file
+line is at most `MAX_LINE_BYTES` long. The unit tests in the same file pair
+every refusal with the nearest note it must accept, so a validator that
+refuses everything fails as surely as one that refuses nothing.
+
+The module stays out of reach of everything that is not an output.
+[`annotate_import_gate_test`](../../tests/annotate_import_gate_test.rs) fails
+when `crate::annotate`, or the `EnhancedPacketOption` type that carries a
+packet comment, appears anywhere but `src/annotate/`, `src/tui/`, `src/app/`
+and [`src/capture/writer.rs`](../../src/capture/writer.rs). It names
+`src/mcp/`, `src/output/`, `src/sip/`, `src/rtp/`, `src/security/` and
+[`src/analysis.rs`](../../src/analysis.rs) as forbidden outright. The writer
+puts a comment on a frame only through `PcapWriter::write_annotated`, which
+takes an `EpbComment` that only the annotate module can build, so MCP's
+`export_capture` has no way to write one. The annotate module refuses, rather
+than cuts, a comment longer than the 16-bit option length, `MAX_COMMENT_BYTES`
+(65,535). In the TUI the note pane and the editor draw the text from inside the
+annotate module, the action trail records the frame a note is on and never its
+text (`an_operator_note_never_reaches_the_trail`), and nothing else in
+`src/tui/` can read a note.
+
+**Fails as.** An operator's guess about a call, read back by a later run or
+an agent as though the capture said it. Or a decryption key, typed into a
+note, arriving at a carrier in a file nobody thought to screen.
+
 ## Two cultural norms
 
 No test enforces them, which is precisely why this page writes them down.

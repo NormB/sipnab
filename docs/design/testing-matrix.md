@@ -49,7 +49,7 @@ was driving all of them.
 
 | Surface | Rows | `e2e` | `parsed` | `referenced` | `none` |
 |---|---|---|---|---|---|
-| CLI flags | 274 | 162 | 43 | 68 | 1 |
+| CLI flags | 276 | 162 | 43 | 70 | 1 |
 | HTTP routes | 39 | 39 | -- | 0 | 0 |
 | MCP tools | 68 | 68 | -- | 0 | 0 |
 
@@ -57,7 +57,7 @@ was driving all of them.
 
 ## What a person found that the detector could not
 
-The generator understates. Of the 68 flags it could only call
+The generator understates. Of the 70 flags it could only call
 `referenced`, a read of the tests found 65 with a real behavior test --
 evidence that arrives through a config-file equivalent sharing the flag's
 resolver, through a golden file, or through a library-level test, none of
@@ -104,14 +104,14 @@ behind them.
 | `--no-promisc` | `-p` |  | Capture | e2e | `tests/crate_package_test.rs`, `tests/plugin_example_test.rs` +2 |  |  |
 | `--bpf-file` |  | `FILE` | Capture | e2e | `tests/cli_flag_behavior_test.rs` |  |  |
 | `--capture-tunnels` |  |  | Capture | parsed | `src/cli.rs` |  |  |
-| `--count` | `-n` | `N` | Capture | e2e | `tests/cli_flag_behavior_test.rs`, `tests/input_set_accounting_test.rs` +5 |  |  |
+| `--count` | `-n` | `N` | Capture | e2e | `src/capture/writer.rs`, `tests/cli_flag_behavior_test.rs` +6 |  |  |
 | `--duration` |  | `DURATION` | Capture | e2e | `tests/capture_probe_test.rs`, `tests/cli_flag_behavior_test.rs` +3 |  |  |
 | `--autostop` |  | `CONDITION` | Capture | e2e | `tests/parse_path_test.rs` |  |  |
 | `--split` |  | `CONDITION` | Capture | e2e | `tests/cli_flag_behavior_test.rs`, `tests/output_never_overwrites_input_test.rs` |  |  |
 | `--split-keep` |  | `N` | Capture | e2e | `tests/cli_flag_behavior_test.rs` |  |  |
 | `--replay` |  |  | Capture | e2e | `tests/mcp_stdio_shutdown_test.rs` |  |  |
 | `--pcapng` |  |  | Capture | e2e | `tests/cli_flag_behavior_test.rs`, `tests/integration_test.rs` +3 |  |  |
-| `--no-tui` | `-N` |  | Mode | e2e | `src/app/bootstrap.rs`, `tests/analyze_test.rs` +65 |  |  |
+| `--no-tui` | `-N` |  | Mode | e2e | `src/app/bootstrap.rs`, `tests/analyze_test.rs` +66 |  |  |
 | `--calls-only` | `-c` |  | Mode | e2e | `src/output/event_exec.rs`, `src/security/alerting.rs` +8 |  |  |
 | `--telephone-event` | `-t` |  | Mode | e2e | `tests/dtmf_retransmission_test.rs`, `tests/tui_e2e_test.rs` |  |  |
 | `--dtmf-cleartext` |  |  | Mode | referenced | `tests/dtmf_masking_test.rs` | **behavior** | dtmf_cleartext_emits_the_digit_value_at_debug_level (tests/dtmf_masking_test.rs), with an anti-vacuity guard |
@@ -123,7 +123,9 @@ behind them.
 | `--from-to-mode` |  | `MODE` | Name resolution | parsed | `src/cli.rs` |  |  |
 | `--strip-secrets` |  | `OUTPUT` | Name resolution | e2e | `src/app/bootstrap.rs`, `tests/cli_flag_behavior_test.rs` +2 |  |  |
 | `--show-frame` |  | `POINTER` | Name resolution | e2e | `tests/show_frame_cli_test.rs` |  |  |
-| `--match` | `-e` | `PATTERN` | Matching | e2e | `tests/search_sanitizer_test.rs` |  |  |
+| `--notes` |  | `FILE` | Operator notes | referenced | `src/app/bootstrap.rs`, `src/app/tui_mode.rs` +2 |  |  |
+| `--write-annotated` |  | `OUTPUT` | Operator notes | referenced | `src/annotate/copy.rs`, `src/annotate/mod.rs` +2 |  |  |
+| `--match` | `-e` | `PATTERN` | Matching | e2e | `src/capture/writer.rs`, `tests/search_sanitizer_test.rs` |  |  |
 | `--ignore-case` | `-i` |  | Matching | e2e | `tests/cli_flag_behavior_test.rs` |  |  |
 | `--invert` | `-v` |  | Matching | e2e | `tests/cli_flag_behavior_test.rs` |  |  |
 | `--word` | `-w` |  | Matching | e2e | `tests/cli_flag_behavior_test.rs` |  |  |
@@ -171,7 +173,7 @@ behind them.
 | `--line-buffer` |  |  | Output | referenced | `src/output/sink.rs`, `tests/cli_options_test.rs` | **parse-only** | line_buffer_flag asserts "still emits all 7"; the flush effect is tested on the sink parameter, never joined to the flag |
 | `--color` |  | `WHEN` | Output | e2e | `tests/config_wiring_test.rs` |  |  |
 | `--payload-limit` |  | `BYTES` | Output | referenced | `tests/cli_options_test.rs` | **behavior** | payload_limit_truncates_raw_dump: [truncated] appears, User-Agent disappears, against a no-flag baseline |
-| `--text-dump` | `-T` |  | Output | e2e | `tests/cli_flag_behavior_test.rs`, `tests/integration_test.rs` |  |  |
+| `--text-dump` | `-T` |  | Output | e2e | `src/capture/writer.rs`, `tests/cli_flag_behavior_test.rs` +1 |  |  |
 | `--no-cli-print` |  |  | Output | e2e | `tests/analyze_test.rs`, `tests/batch_run_paths_test.rs` +26 |  |  |
 | `--wireshark` |  |  | Output | e2e | `tests/batch_run_paths_test.rs` | **behavior** | golden tests/cli/out/wireshark.trycmd adds two lines absent from the flagless golden |
 | `--lint` |  |  | Output | e2e | `tests/config_wiring_test.rs` |  |  |
@@ -208,9 +210,9 @@ behind them.
 | `--seccomp` |  | `MODE` | Security | e2e | `src/app/bootstrap.rs`, `tests/seccomp_child_test.rs` |  |  |
 | `--kill-ua` |  | `PATTERN` | Security | referenced | `src/app/batch.rs`, `src/app/bootstrap.rs` +3 | **behavior** | FIXED THIS PASS. Was a silent no-op without --kill-scanner; now refused, and kill_ua_pattern_reaches_the_detector_that_reads_it asserts the match |
 | `--kill-response` |  | `CODE` | Security | e2e | `tests/config_wiring_test.rs` |  |  |
-| `--kill-target` | `-K` |  | Security | e2e | `tests/offline_never_transmits_test.rs` |  |  |
-| `--kill-spoof` |  | `MODE` | Security | e2e | `tests/offline_never_transmits_test.rs` |  |  |
-| `--hep-allow-kill` |  |  | Security | e2e | `tests/cli_flag_behavior_test.rs` |  |  |
+| `--kill-target` | `-K` |  | Security | e2e | `src/app/bootstrap.rs`, `tests/offline_never_transmits_test.rs` +1 |  |  |
+| `--kill-spoof` |  | `MODE` | Security | e2e | `tests/offline_never_transmits_test.rs`, `tests/scanner_kill_process_test.rs` |  |  |
+| `--hep-allow-kill` |  |  | Security | e2e | `tests/cli_flag_behavior_test.rs`, `tests/scanner_kill_process_test.rs` |  |  |
 | `--tfps-ctl` |  | `PATH` | Security | e2e | `tests/mcp_protocol_features_test.rs` |  |  |
 | `--fraud-detect` |  |  | Security | parsed | `src/app/batch.rs`, `src/cli.rs` |  |  |
 | `--evidence-out` |  |  | Security | e2e | `tests/cli_flag_behavior_test.rs` |  |  |
@@ -308,7 +310,7 @@ behind them.
 | `--mos-bad` |  | `MOS` | Analysis | referenced | `src/cli.rs` | **behavior** | same test, case mos_bad: MOS 3.5 moves Warning -> Bad |
 | `--rtt-warn-ms` |  | `MS` | Analysis | referenced | `src/cli.rs` | **behavior** | same test, case rtt_warn_ms |
 | `--rtt-bad-ms` |  | `MS` | Analysis | referenced | `src/cli.rs` | **behavior** | same test, case rtt_bad_ms |
-| `--hep-listen` | `-L` | `ADDR` | HEP | e2e | `src/app/bootstrap.rs`, `tests/cli_flag_behavior_test.rs` +6 |  |  |
+| `--hep-listen` | `-L` | `ADDR` | HEP | e2e | `src/app/bootstrap.rs`, `tests/cli_flag_behavior_test.rs` +7 |  |  |
 | `--hep-send` | `-H` | `ADDR` | HEP | e2e | `tests/batch_run_paths_test.rs`, `tests/doc_commands_run_test.rs` +2 |  |  |
 | `--hep-send-transport` |  |  | HEP | parsed | `src/cli.rs` |  |  |
 | `--hep-listen-transport` |  |  | HEP | parsed | `src/cli.rs` |  |  |
@@ -320,7 +322,7 @@ behind them.
 | `--hep-auth-file` |  | `FILE` | HEP | e2e | `tests/batch_run_paths_test.rs` |  |  |
 | `--hep-auth-mode` |  |  | HEP | e2e | `tests/hep_test.rs` |  |  |
 | `--hep-hmac-window` |  | `SECS` | HEP | e2e | `tests/hep_test.rs` |  |  |
-| `--hep-parse` | `-E` |  | HEP | e2e | `tests/cli_flag_behavior_test.rs` |  |  |
+| `--hep-parse` | `-E` |  | HEP | e2e | `tests/cli_flag_behavior_test.rs`, `tests/scanner_kill_process_test.rs` |  |  |
 | `--hep-allow` |  | `ADDR` | HEP | e2e | `src/app/bootstrap.rs`, `tests/config_wiring_test.rs` +2 |  |  |
 | `--hep-rate-limit` |  | `N` | HEP | e2e | `tests/hep_test.rs` |  |  |
 | `--hep-rate-limit-per-peer` |  |  | HEP | e2e | `tests/config_wiring_test.rs` |  |  |
@@ -435,12 +437,12 @@ behind them.
 | `get_capture_report` | exercised | `tests/mcp_completeness_test.rs`, `tests/mcp_stdio_test.rs` +1 |
 | `get_dialog` | exercised | `tests/mcp_completeness_test.rs`, `tests/mcp_operator_flows_test.rs` +3 |
 | `get_dialog_report` | exercised | `tests/mcp_completeness_test.rs`, `tests/mcp_operator_flows_test.rs` +1 |
-| `get_message` | exercised | `tests/mcp_completeness_test.rs`, `tests/mcp_output_injection_test.rs` +1 |
+| `get_message` | exercised | `tests/annotate_cli_test.rs`, `tests/mcp_completeness_test.rs` +2 |
 | `get_sdp_timeline` | exercised | `tests/mcp_completeness_test.rs`, `tests/mcp_diagnostic_tools_test.rs` +3 |
 | `group_dialogs` | exercised | `tests/mcp_completeness_test.rs`, `tests/mcp_stdio_test.rs` +1 |
 | `lint_dialog` | exercised | `tests/mcp_completeness_test.rs`, `tests/mcp_lint_tools_test.rs` +2 |
 | `list_captures` | exercised | `tests/mcp_diagnostic_tools_test.rs`, `tests/mcp_stdio_test.rs` |
-| `list_dialogs` | exercised | `tests/config_wiring_test.rs`, `tests/mcp_audit_sink_test.rs` +12 |
+| `list_dialogs` | exercised | `tests/annotate_cli_test.rs`, `tests/config_wiring_test.rs` +13 |
 | `list_tls_libraries` | exercised | `tests/mcp_protocol_features_test.rs`, `tests/mcp_stdio_test.rs` |
 | `media_diagnostics` | exercised | `tests/mcp_completeness_test.rs`, `tests/mcp_media_diagnostics_test.rs` +1 |
 | `open_capture` | exercised | `tests/mcp_completeness_test.rs`, `tests/mcp_completion_test.rs` +4 |
@@ -453,7 +455,7 @@ behind them.
 | `runtime_stats` | exercised | `tests/mcp_completeness_test.rs`, `tests/mcp_stdio_test.rs` |
 | `save_findings` | exercised | `tests/app_servers_wiring_test.rs`, `tests/config_wiring_test.rs` +4 |
 | `search_by_time` | exercised | `tests/mcp_completeness_test.rs`, `tests/mcp_diagnostic_tools_test.rs` +2 |
-| `search_messages` | exercised | `tests/config_wiring_test.rs`, `tests/mcp_completeness_test.rs` +2 |
+| `search_messages` | exercised | `tests/annotate_cli_test.rs`, `tests/config_wiring_test.rs` +3 |
 | `security_findings` | exercised | `tests/mcp_completeness_test.rs`, `tests/mcp_operator_flows_test.rs` +2 |
 | `server_capabilities` | exercised | `tests/mcp_completeness_test.rs`, `tests/mcp_open_capture_test.rs` +2 |
 | `show_evidence` | exercised | `tests/mcp_operator_flows_test.rs`, `tests/mcp_stdio_test.rs` |

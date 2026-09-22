@@ -134,6 +134,29 @@ interchange format, on stdout. Requires a build with the
 feature. Pair with
 .B \-\-vcon\-out
 to write it to a file instead.
+.TP
+.BI \-\-notes " file"
+Operator notes for
+.BR \-\-write\-annotated :
+JSON Lines, one
+.I {"frame": "<pointer>", "note": "<text>"}
+per line, each pointer taken from the
+.B frame
+field of
+.BR \-\-json .
+In the TUI, the session's notes file: loaded when it exists, and where the save
+dialog's NOTES format writes. A note is a person's text and never analysis;
+sipnab writes it into a packet comment and never reads one back.
+.TP
+.BI \-\-write\-annotated " output"
+With
+.B \-I
+and
+.BR \-\-notes ,
+write a pcapng copy of the one input capture with each note as a packet
+comment on the frame it names, then exit. Every note must carry its frame's
+digest, and a capture that changed since the note was written is refused with
+nothing written.
 .SH TUI KEYBINDINGS
 The interactive TUI supports the terminal viewer-compatible navigation:
 .SS Call List
@@ -184,6 +207,13 @@ Toggle extended multi-leg call flow.
 .TP
 .B Space
 Select messages for side-by-side diff comparison.
+.TP
+.B C
+Write, amend or remove your note on the selected message. The note is shown in
+a pane titled as not being sipnab's analysis, written as a packet comment in a
+PCAP-NG save, and saved with the NOTES save format for
+.B \-\-notes
+to resume.
 .SH ENVIRONMENT
 .TP
 .B SIPNAB_LOG

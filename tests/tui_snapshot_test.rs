@@ -750,6 +750,42 @@ mod tui_snapshots {
         insta::assert_snapshot!(output);
     }
 
+    /// Snapshot: an operator note on the INVITE. The ladder marks the row
+    /// with `✎` beside its timestamp, and the note sits in its own pane under
+    /// the flow, titled as not being sipnab's analysis.
+    #[test]
+    fn call_flow_operator_note_pane() {
+        let t0 = base_ts();
+        let mut invite = make_invite("note-snap@test", "1001", "1002", t0);
+        invite.frame = Some(
+            sipnab::capture::resolve::parse_pointer("call.pcap#0@00000000000000a1")
+                .expect("a test pointer"),
+        );
+        let ok = make_response(
+            "note-snap@test",
+            200,
+            "OK",
+            "INVITE",
+            t0 + TimeDelta::milliseconds(80),
+        );
+        let mut app = App::with_processed_messages(vec![invite, ok]);
+        app.handle_key(KeyCode::Enter);
+        app.handle_key(KeyCode::Char('C'));
+        for c in "the far end answered before the 183".chars() {
+            app.handle_key(KeyCode::Char(c));
+        }
+        app.handle_key(KeyCode::Enter);
+
+        let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        terminal.draw(|frame| app.render(frame)).unwrap();
+        let output = buffer_to_string(&terminal);
+        assert!(
+            output.contains("operator note — not sipnab analysis"),
+            "the pane's title must say what it is:\n{output}"
+        );
+        insta::assert_snapshot!(output);
+    }
+
     /// The `h` key cycles header-name display (as captured → expanded →
     /// compact) as a purely visual transform: the same message renders
     /// with `f:`/`i:` in compact mode and `From:`/`Call-ID:` again after

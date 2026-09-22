@@ -196,6 +196,7 @@ Totals: CLI 274, TUI 24, REST 39, MCP 68.
 - `--no-rtp`
 - `--no-tui`
 - `--node-name`
+- `--notes`
 - `--on-dialog-exec`
 - `--on-quality-exec`
 - `--one-way`
@@ -287,6 +288,7 @@ Totals: CLI 274, TUI 24, REST 39, MCP 68.
 - `--version`
 - `--wireshark`
 - `--word`
+- `--write-annotated`
 - `--ws-portrange`
 - `--yang-analyze`
 

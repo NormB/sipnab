@@ -816,6 +816,37 @@ pub struct NameResolutionArgs {
         value_name = "POINTER"
     )]
     pub show_frame: Option<String>,
+
+    /// Operator notes: a JSON Lines file, one
+    /// `{"frame": "<pointer>", "note": "<text>"}` per line, the pointer taken
+    /// from the `frame` field of `--json`. With `--write-annotated`, the notes
+    /// to write into the copy. In the TUI, the session's notes file: loaded at
+    /// start when it exists, and where the save dialog's NOTES format writes.
+    ///
+    /// A note is a person's text, never analysis. sipnab writes it into a
+    /// pcapng packet comment and never reads a comment back. A note over 4096
+    /// bytes, or holding a control character, an SDES `inline:` key, a TLS
+    /// key-log line or a digest `response=` value, is refused, and one bad
+    /// line refuses the whole file.
+    #[arg(help_heading = "Operator notes", long = "notes", value_name = "FILE")]
+    pub notes: Option<String>,
+
+    /// Write a pcapng copy of the one capture `-I` names to this path, with
+    /// each note from `--notes` as a packet comment on the frame it names, then
+    /// exit. The input is never modified.
+    ///
+    /// Every note must name its frame WITH a digest, and the frame's bytes must
+    /// still match it: a capture that changed since the note was written is
+    /// refused, and no file is written. The copy carries the original frames
+    /// byte for byte and drops decryption secrets, name resolution blocks and
+    /// the input's own comments; its section comment says so.
+    #[arg(
+        help_heading = "Operator notes",
+        long = "write-annotated",
+        value_name = "OUTPUT",
+        requires = "notes"
+    )]
+    pub write_annotated: Option<String>,
 }
 
 /// `Matching` flags.
