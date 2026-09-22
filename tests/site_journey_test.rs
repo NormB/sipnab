@@ -4766,18 +4766,53 @@ fn hero_swap_keeps_the_static_frame_as_the_lcp_element() {
 }
 
 // ---------------------------------------------------------------------------
-// Docs nav drift: the docs sidebar (page.html + section.html nav_group
-// lists) and the header dropdown (base.html) are HARDCODED page lists. The
-// MCP walkthrough shipped reachable only from the /docs/ index cards
-// because none of the three was updated. Every docs page must appear in
-// all three, the two sidebar templates must agree, no nav entry may point
-// at a deleted page, and page weights must be unique (prev/next order).
+// Docs nav: ONE list, rendered twice. The docs sidebar (page.html and
+// section.html) and the header dropdown (base.html) used to be three
+// hand-kept page lists. The MCP walkthrough shipped reachable only from the
+// /docs/ index cards because none of the three was updated, and the labels
+// drifted ("Install" in one, "Installation" in the other; "Real-world
+// captures" lit up on the cookbook page). Both navs now render
+// `[[extra.docs_nav]]` from website/config.toml, so a page or a label exists
+// once, and page weights must still be unique (prev/next order).
 // ---------------------------------------------------------------------------
 
-/// The docs pages, both sidebar nav_group lists, and the header dropdown
-/// must be identical sets, and page weights must be unique.
+/// One entry of the docs nav list in config.toml.
+struct NavEntry {
+    group: String,
+    path: String,
+    label: String,
+    menu: bool,
+}
+
+/// `[[extra.docs_nav]]` from website/config.toml, in order.
+fn docs_nav_list() -> Vec<NavEntry> {
+    let cfg: toml::Value =
+        toml::from_str(&read("website/config.toml")).expect("website/config.toml parses");
+    let groups = cfg["extra"]
+        .get("docs_nav")
+        .and_then(|g| g.as_array())
+        .expect("website/config.toml has no [[extra.docs_nav]] list");
+    let mut out = Vec::new();
+    for g in groups {
+        let group = g["title"].as_str().expect("a docs_nav group has no title");
+        for e in g["pages"]
+            .as_array()
+            .expect("a docs_nav group has no pages")
+        {
+            out.push(NavEntry {
+                group: group.to_string(),
+                path: e["path"].as_str().expect("entry path").to_string(),
+                label: e["label"].as_str().expect("entry label").to_string(),
+                menu: e.get("menu").and_then(|m| m.as_bool()).unwrap_or(false),
+            });
+        }
+    }
+    out
+}
+
+/// Every docs page is in the one nav list, once, and nothing else is.
 #[test]
-fn every_docs_page_is_in_the_sidebar_and_dropdown_navs() {
+fn every_docs_page_is_in_the_docs_nav_list() {
     let docs_dir = repo().join("website/content/docs");
     let mut pages: Vec<String> = std::fs::read_dir(&docs_dir)
         .expect("docs content dir")
@@ -4786,50 +4821,40 @@ fn every_docs_page_is_in_the_sidebar_and_dropdown_navs() {
         .collect();
     pages.sort();
 
-    let nav_paths = |template: &str| -> Vec<String> {
-        let text = std::fs::read_to_string(repo().join("website/templates").join(template))
-            .expect("read template");
-        let group = regex::Regex::new(r#"nav_group\([^)]*paths=\[([^\]]*)\]"#).unwrap();
-        let entry = regex::Regex::new(r#""([^"]+\.md)""#).unwrap();
-        let mut out: Vec<String> = Vec::new();
-        for c in group.captures_iter(&text) {
-            for e in entry.captures_iter(c.get(1).expect("paths list").as_str()) {
-                out.push(e[1].to_string());
-            }
-        }
-        out.sort();
-        out
-    };
-
-    let page_nav = nav_paths("page.html");
-    let section_nav = nav_paths("section.html");
+    let list = docs_nav_list();
+    let mut listed: Vec<String> = list
+        .iter()
+        .filter_map(|e| e.path.strip_prefix("docs/").map(str::to_string))
+        .collect();
+    listed.sort();
+    let mut dedup = listed.clone();
+    dedup.dedup();
     assert_eq!(
-        page_nav, section_nav,
-        "page.html and section.html sidebar nav_group lists differ — update both"
+        listed, dedup,
+        "a docs page is listed twice in [[extra.docs_nav]]"
     );
     assert_eq!(
-        page_nav, pages,
-        "docs sidebar (page.html/section.html nav_group paths) does not match \
-         website/content/docs/*.md — a page is missing from the sidebar or a \
+        listed, pages,
+        "[[extra.docs_nav]] in website/config.toml does not match \
+         website/content/docs/*.md: a page is missing from both navs, or a \
          nav entry points at a deleted page"
     );
-
-    let base = std::fs::read_to_string(repo().join("website/templates/base.html"))
-        .expect("read base.html");
-    let dropdown =
-        regex::Regex::new(r#"get_url\(path='@/docs/([a-z0-9-]+\.md)'\)[^>]*role="menuitem""#)
-            .unwrap();
-    let mut dropdown_pages: Vec<String> = dropdown
-        .captures_iter(&base)
-        .map(|c| c[1].to_string())
-        .collect();
-    dropdown_pages.sort();
-    dropdown_pages.dedup();
-    assert_eq!(
-        dropdown_pages, pages,
-        "header dropdown (base.html role=menuitem docs links) does not match \
-         website/content/docs/*.md"
-    );
+    for e in &list {
+        assert!(
+            repo().join("website/content").join(&e.path).is_file(),
+            "docs_nav entry {:?} names {}, which does not exist",
+            e.label,
+            e.path
+        );
+        assert!(!e.label.trim().is_empty(), "{} has an empty label", e.path);
+    }
+    for group in list.iter().map(|e| &e.group) {
+        assert!(
+            list.iter().any(|e| &e.group == group && e.menu),
+            "group {group:?} puts nothing in the dropdown, so its heading \
+             would stand over an empty list"
+        );
+    }
 
     // Prev/next is weight-ordered; duplicate weights make the order arbitrary.
     let weight = regex::Regex::new(r"(?m)^weight = (\d+)$").unwrap();
@@ -4853,6 +4878,128 @@ fn every_docs_page_is_in_the_sidebar_and_dropdown_navs() {
             pair[0].0, pair[0].1, pair[1].1
         );
     }
+}
+
+/// Both navs render the one list, and label an entry with its list label.
+///
+/// A second list anywhere is the drift this replaced, so the templates may
+/// carry no hand-written docs links in either nav beyond the three fixed
+/// ones: the docs overview, the developer index and "All docs".
+#[test]
+fn both_docs_navs_render_the_one_list() {
+    let macros = read("website/templates/macros.html");
+    let at = macros
+        .find("macro docs_nav(")
+        .expect("macros.html has no docs_nav macro");
+    let sidebar = &macros[at..at + macros[at..].find("endmacro").expect("endmacro")];
+    assert!(
+        sidebar.contains("for group in nav"),
+        "the docs_nav sidebar macro does not iterate the list it is given"
+    );
+    assert!(
+        sidebar.contains("{{ entry.label }}") && !sidebar.contains("{{ p.title }}"),
+        "the sidebar labels an entry with something other than its list label, \
+         so the sidebar and the dropdown can name one page two ways"
+    );
+    for tpl in ["page.html", "section.html"] {
+        let text = read(&format!("website/templates/{tpl}"));
+        assert!(
+            text.contains("macros::docs_nav(nav=config.extra.docs_nav,"),
+            "{tpl} does not render the sidebar from macros::docs_nav over \
+             config.extra.docs_nav"
+        );
+        assert!(
+            !text.contains("nav_group("),
+            "{tpl} still carries a hand-written nav_group list"
+        );
+    }
+
+    let base = read("website/templates/base.html");
+    let menu_at = base
+        .find("class=\"nav-drop-menu\"")
+        .expect("base.html has no dropdown menu");
+    let menu_end = menu_at + base[menu_at..].find("</nav>").expect("menu inside <nav>");
+    let menu = &base[menu_at..menu_end];
+    assert!(
+        menu.contains("config.extra.docs_nav") && menu.contains("entry.label"),
+        "the Docs dropdown does not render config.extra.docs_nav with each \
+         entry's list label"
+    );
+    let literal = regex::Regex::new(r"get_url\(path='(@/[^']+)'\)").unwrap();
+    let fixed: BTreeSet<String> = literal
+        .captures_iter(menu)
+        .map(|c| c[1].to_string())
+        .collect();
+    let allowed: BTreeSet<String> = ["@/docs/_index.md", "@/docs/internals/_index.md"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    assert_eq!(
+        fixed, allowed,
+        "the Docs dropdown hand-writes links besides the overview, \"All \
+         docs\" and the developer index; every other entry belongs in \
+         [[extra.docs_nav]]"
+    );
+    assert!(
+        menu.contains("All docs"),
+        "the Docs dropdown shows a subset of the pages and does not end with \
+         a link to all of them"
+    );
+    assert!(
+        menu.contains("entry.menu"),
+        "the Docs dropdown ignores `menu`, so it lists every page again"
+    );
+}
+
+/// Active state comes from the page an entry links, never a pasted path.
+///
+/// The dropdown compared `current_path` against a literal typed beside each
+/// link, and one was pasted wrong: "Real-world captures" lit up on
+/// /docs/cookbook/, and "Library API" and "Runnable Examples" carried no
+/// comparison at all, so they never lit.
+#[test]
+fn nav_active_state_is_derived_from_the_linked_page() {
+    let base = read("website/templates/base.html");
+    let pasted = regex::Regex::new(r#"current_path == "/docs/[^"]+/""#).unwrap();
+    let hits: Vec<&str> = pasted.find_iter(&base).map(|m| m.as_str()).collect();
+    assert!(
+        hits.is_empty(),
+        "base.html compares current_path against hand-typed docs paths: {hits:?}"
+    );
+    let menu_at = base.find("class=\"nav-drop-menu\"").expect("menu");
+    let menu = &base[menu_at..];
+    assert!(
+        menu.contains("current_path == p.path"),
+        "the dropdown's active state is not taken from the linked page's own \
+         path"
+    );
+    assert!(
+        menu.contains("aria-current=\"page\""),
+        "the dropdown marks the active entry only with a color"
+    );
+}
+
+/// The dropdown's group headings label their groups for assistive tech.
+///
+/// They were `aria-hidden`, so a screen reader heard forty menu items with no
+/// grouping at all.
+#[test]
+fn dropdown_group_headings_label_their_groups() {
+    let base = read("website/templates/base.html");
+    let menu_at = base.find("class=\"nav-drop-menu\"").expect("menu");
+    let menu = &base[menu_at..menu_at + base[menu_at..].find("</nav>").expect("nav")];
+    assert!(
+        !menu.contains("nav-drop-label\" aria-hidden"),
+        "a dropdown group heading is aria-hidden"
+    );
+    assert!(
+        menu.contains("role=\"group\"") && menu.contains("aria-labelledby=\"nav-grp-{{"),
+        "the dropdown groups are not role=\"group\" labeled by their heading"
+    );
+    assert!(
+        menu.contains("id=\"nav-grp-{{"),
+        "the heading a group is labeled by has no id"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -8498,7 +8645,7 @@ fn docs_search_loads_only_same_origin_assets() {
 /// after the engine has actually loaded.
 ///
 /// The other half is what such a reader gets INSTEAD: the section template's
-/// own "Reference" index, which lists the same pages a search would have
+/// own "All docs" index, which lists the same pages a search would have
 /// reached. Hiding the box would be no improvement if the fallback were also
 /// behind JavaScript.
 #[test]

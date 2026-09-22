@@ -537,7 +537,7 @@ input:focus-visible,
   }
 }
 
-// Docs dropdown: the 7 documentation links live under one top-level item so
+// Docs dropdown: the documentation links live under one top-level item so
 // the bar fits far narrower windows (hamburger only kicks in below 700px).
 .nav-drop {
   position: relative;
@@ -580,23 +580,35 @@ input:focus-visible,
     box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
     padding: 0.4rem;
     z-index: 110;
-    // 29 entries overflow a laptop viewport; scroll inside the menu rather
+    // A long menu overflows a short laptop viewport. Scroll inside the menu rather
     // than pushing items off-screen where they are unreachable.
     max-height: calc(100vh - #{$nav-height} - 24px);
     overflow-y: auto;
   }
 
-  // Group heading inside the menu — a label, not a menuitem, so it stays out
-  // of the roving-focus order.
+  // One labeled group per docs_nav group. The anchors inside must stack the
+  // way the menu's own flex column stacks its direct children, or they run
+  // together on one line.
+  .nav-drop-group {
+    display: flex;
+    flex-direction: column;
+  }
+
+  // Group heading inside the menu — the label its group is announced by, not
+  // a menuitem, so it stays out of the roving-focus order.
   .nav-drop-label {
     margin: 0.5rem 0 0.15rem;
-    padding: 0 0.55rem;
-    font-size: 0.68rem;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
+    padding: 0.5rem 0.55rem 0;
+    font-size: 0.75rem;
+    font-weight: 600;
     color: $text-dim;
     border-top: 1px solid $border;
-    padding-top: 0.5rem;
+  }
+
+  .nav-drop-all {
+    margin-top: 0.35rem;
+    border-top: 1px solid $border;
+    color: $link;
   }
 
   // Keyboard: tabbing into the menu keeps it open without any JS.

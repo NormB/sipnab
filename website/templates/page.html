@@ -37,13 +37,8 @@
 <div class="doc-layout">
   <aside class="doc-sidebar" aria-label="Documentation navigation" id="doc-sidebar">
     <nav class="doc-nav" aria-label="Docs sections">
-      {{ macros::nav_group(title="Getting started", paths=["install.md", "cookbook.md", "real-world-captures.md", "tls-capture.md", "uprobe-walkthrough.md", "troubleshooting.md", "tuning-capture.md", "encapsulations.md", "rtpengine.md"], current_url=page.permalink) }}
-      {{ macros::nav_group(title="Using the TUI", paths=["tui.md", "keybindings.md", "theme.md"], current_url=page.permalink) }}
-      {{ macros::nav_group(title="CLI & automation", paths=["cli.md", "filter-dsl.md", "output-formats.md", "sip-response-codes.md", "sip-methods.md", "sip-header-fields.md", "sip-parameters.md", "sip-lint-rules.md", "mos-and-codecs.md"], current_url=page.permalink) }}
-      {{ macros::nav_group(title="Configuration", paths=["config.md"], current_url=page.permalink) }}
-      {{ macros::nav_group(title="API & integrations", paths=["api.md", "api-clients.md", "library.md", "examples.md", "metrics.md", "auth.md", "integrations.md", "plugins.md", "mcp.md", "mcp-deploy.md", "mcp-estate.md", "mcp-tools.md", "mcp-protocol.md", "vcon.md", "vcon-harness.md"], current_url=page.permalink) }}
-      {{ macros::nav_group(title="Build & benchmarks", paths=["build.md", "benchmarks.md"], current_url=page.permalink) }}
-      {{ macros::nav_section(title="Internals (developers)", section_path="docs/internals/_index.md", current_url=page.permalink) }}
+      {{ macros::docs_nav(nav=config.extra.docs_nav, current_url=page.permalink) }}
+      {{ macros::nav_section(title="Developer docs", section_path="docs/internals/_index.md", current_url=page.permalink) }}
     </nav>
   </aside>
 

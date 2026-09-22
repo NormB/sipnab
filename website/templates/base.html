@@ -188,71 +188,30 @@
         <a href="{{ get_url(path='@/analyze/_index.md') }}" {% if current_path is defined and current_path is starting_with("/analyze") %}class="active"{% endif %}>Analyze</a>
         <a href="{{ get_url(path='@/notes/_index.md') }}" {% if current_path is defined and current_path is starting_with("/notes") %}class="active"{% endif %}>Notes</a>
         <div class="nav-drop" id="nav-drop">
-          <button class="nav-drop-btn{% if current_path is defined and current_path is starting_with("/docs") %} active{% endif %}" id="nav-drop-btn" aria-haspopup="true" aria-expanded="false">Docs <span class="nav-caret" aria-hidden="true">&#9662;</span></button>
-          <div class="nav-drop-menu" role="menu">
-            <a href="{{ get_url(path='@/docs/_index.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/" %}class="active"{% endif %}>Overview</a>
-            <p class="nav-drop-label" aria-hidden="true">Getting started</p>
-            <a href="{{ get_url(path='@/docs/install.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/install/" %}class="active"{% endif %}>Install</a>
-            <a href="{{ get_url(path='@/docs/cookbook.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/cookbook/" %}class="active"{% endif %}>Cookbook</a>
-            <a href="{{ get_url(path='@/docs/real-world-captures.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/cookbook/" %}class="active"{% endif %}>Real-world captures</a>
-            <a href="{{ get_url(path='@/docs/tls-capture.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/tls-capture/" %}class="active"{% endif %}>Capture SIP over TLS</a>
-            <a href="{{ get_url(path='@/docs/rtpengine.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/rtpengine/" %}class="active"{% endif %}>rtpengine Relays</a>
-            <a href="{{ get_url(path='@/docs/uprobe-walkthrough.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/uprobe-walkthrough/" %}class="active"{% endif %}>TLS Without Keys</a>
-            <a href="{{ get_url(path='@/docs/troubleshooting.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/troubleshooting/" %}class="active"{% endif %}>Troubleshooting</a>
-            <a href="{{ get_url(path='@/docs/tuning-capture.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/tuning-capture/" %}class="active"{% endif %}>Tuning Capture</a>
-            <a href="{{ get_url(path='@/docs/encapsulations.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/encapsulations/" %}class="active"{% endif %}>Encapsulations</a>
-            <p class="nav-drop-label" aria-hidden="true">Using the TUI</p>
-            <a href="{{ get_url(path='@/docs/tui.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/tui/" %}class="active"{% endif %}>TUI Walkthrough</a>
-            <a href="{{ get_url(path='@/docs/keybindings.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/keybindings/" %}class="active"{% endif %}>Keybindings</a>
-            <a href="{{ get_url(path='@/docs/theme.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/theme/" %}class="active"{% endif %}>Theme</a>
-            <p class="nav-drop-label" aria-hidden="true">CLI &amp; automation</p>
-            <a href="{{ get_url(path='@/docs/cli.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/cli/" %}class="active"{% endif %}>CLI</a>
-            <a href="{{ get_url(path='@/docs/filter-dsl.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/filter-dsl/" %}class="active"{% endif %}>Filter DSL</a>
-            <a href="{{ get_url(path='@/docs/output-formats.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/output-formats/" %}class="active"{% endif %}>Output Formats</a>
-            <a href="{{ get_url(path='@/docs/sip-response-codes.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/sip-response-codes/" %}class="active"{% endif %}>Response Codes</a>
-            <a href="{{ get_url(path='@/docs/sip-parameters.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/sip-parameters/" %}class="active"{% endif %}>Parameters</a>
-            <a href="{{ get_url(path='@/docs/mos-and-codecs.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/mos-and-codecs/" %}class="active"{% endif %}>MOS &amp; Codecs</a>
-            <a href="{{ get_url(path='@/docs/sip-methods.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/sip-methods/" %}class="active"{% endif %}>Request Methods</a>
-            <a href="{{ get_url(path='@/docs/sip-header-fields.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/sip-header-fields/" %}class="active"{% endif %}>Header Fields</a>
-            <a href="{{ get_url(path='@/docs/sip-lint-rules.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/sip-lint-rules/" %}class="active"{% endif %}>Conformance Rules</a>
-            <p class="nav-drop-label" aria-hidden="true">Configuration</p>
-            <a href="{{ get_url(path='@/docs/config.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/config/" %}class="active"{% endif %}>Config</a>
-            <p class="nav-drop-label" aria-hidden="true">API &amp; integrations</p>
-            <a href="{{ get_url(path='@/docs/api.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/api/" %}class="active"{% endif %}>API</a>
-            <a href="{{ get_url(path='@/docs/metrics.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/metrics/" %}class="active"{% endif %}>Prometheus Metrics</a>
-            <a href="{{ get_url(path='@/api-reference.md') }}" role="menuitem" {% if current_path is defined and current_path == "/api-reference/" %}class="active"{% endif %}>OpenAPI Reference</a>
-            <a href="{{ get_url(path='@/docs/library.md') }}" role="menuitem">Library API</a>
-            <a href="{{ get_url(path='@/docs/examples.md') }}" role="menuitem">Runnable Examples</a>
-            <a href="{{ get_url(path='@/docs/api-clients.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/api-clients/" %}class="active"{% endif %}>API Clients</a>
-            <a href="{{ get_url(path='@/docs/auth.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/auth/" %}class="active"{% endif %}>Authentication</a>
-            <a href="{{ get_url(path='@/docs/integrations.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/integrations/" %}class="active"{% endif %}>Integrations</a>
-            <a href="{{ get_url(path='@/docs/plugins.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/plugins/" %}class="active"{% endif %}>WASM plugins</a>
-            <a href="{{ get_url(path='@/docs/mcp.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/mcp/" %}class="active"{% endif %}>MCP</a>
-            <a href="{{ get_url(path='@/docs/mcp-deploy.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/mcp-deploy/" %}class="active"{% endif %}>MCP Deployment</a>
-            <a href="{{ get_url(path='@/docs/mcp-estate.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/mcp-estate/" %}class="active"{% endif %}>MCP Across an Estate</a>
-            <a href="{{ get_url(path='@/docs/mcp-tools.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/mcp-tools/" %}class="active"{% endif %}>MCP Tools</a>
-            <a href="{{ get_url(path='@/docs/mcp-protocol.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/mcp-protocol/" %}class="active"{% endif %}>MCP Protocol</a>
-            <a href="{{ get_url(path='@/docs/vcon.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/vcon/" %}class="active"{% endif %}>vCon Export</a>
-            <a href="{{ get_url(path='@/docs/vcon-harness.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/vcon-harness/" %}class="active"{% endif %}>vCon Capture Stack</a>
-            <p class="nav-drop-label" aria-hidden="true">Build &amp; benchmarks</p>
-            <a href="{{ get_url(path='@/docs/build.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/build/" %}class="active"{% endif %}>Build from Source</a>
-            <a href="{{ get_url(path='@/docs/benchmarks.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/benchmarks/" %}class="active"{% endif %}>Benchmarks</a>
-            <p class="nav-drop-label" aria-hidden="true">Internals (developers)</p>
-            <a href="{{ get_url(path='@/docs/internals/_index.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/internals/" %}class="active"{% endif %}>Developer Index</a>
-            <a href="{{ get_url(path='@/docs/internals/domain-primer.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/internals/domain-primer/" %}class="active"{% endif %}>Domain Primer</a>
-            <a href="{{ get_url(path='@/docs/internals/subsystem-guide.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/internals/subsystem-guide/" %}class="active"{% endif %}>Subsystem Guide</a>
-            <a href="{{ get_url(path='@/docs/internals/invariants.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/internals/invariants/" %}class="active"{% endif %}>Invariants</a>
-            <a href="{{ get_url(path='@/docs/internals/testing.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/internals/testing/" %}class="active"{% endif %}>Test Architecture</a>
-            <a href="{{ get_url(path='@/docs/internals/walkthroughs.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/internals/walkthroughs/" %}class="active"{% endif %}>Contributor Walkthroughs</a>
-            <a href="{{ get_url(path='@/docs/internals/build-ci-release.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/internals/build-ci-release/" %}class="active"{% endif %}>Build, CI and Release</a>
-            <a href="{{ get_url(path='@/docs/internals/threading.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/internals/threading/" %}class="active"{% endif %}>Threading Model</a>
-            <a href="{{ get_url(path='@/docs/internals/profiling.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/internals/profiling/" %}class="active"{% endif %}>Profiling</a>
-            <a href="{{ get_url(path='@/docs/internals/zero-copy-payloads.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/internals/zero-copy-payloads/" %}class="active"{% endif %}>Zero-Copy Payloads</a>
-            <a href="{{ get_url(path='@/docs/internals/relay-control-decoding.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/internals/relay-control-decoding/" %}class="active"{% endif %}>Relay Control Decoding</a>
-            <a href="{{ get_url(path='@/docs/internals/uprobe-capture.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/internals/uprobe-capture/" %}class="active"{% endif %}>Uprobe TLS Capture</a>
-            <a href="{{ get_url(path='@/docs/internals/rtpengine-control-plane.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/internals/rtpengine-control-plane/" %}class="active"{% endif %}>The rtpengine Control Plane</a>
-            <a href="{{ get_url(path='@/docs/internals/tui-testing.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/internals/tui-testing/" %}class="active"{% endif %}>TUI Testing</a>
-            <a href="{{ get_url(path='@/docs/internals/vcon.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/internals/vcon/" %}class="active"{% endif %}>The vCon Exporter</a>
+          <button class="nav-drop-btn{% if current_path is defined and (current_path is starting_with("/docs") or current_path == "/api-reference/") %} active{% endif %}" id="nav-drop-btn" aria-haspopup="true" aria-expanded="false">Docs <span class="nav-caret" aria-hidden="true">&#9662;</span></button>
+          {#- Built from `[[extra.docs_nav]]` in config.toml, the list the docs
+              sidebar renders too, so the two cannot name a page two ways. The
+              dropdown shows the entries marked `menu`; "All docs" leads to the
+              rest. An entry is active when the page being read IS the page it
+              links, compared on the page's own path, never a pasted literal.
+              Each group is a labeled group, so a screen reader hears the
+              heading with the items under it. -#}
+          <div class="nav-drop-menu" role="menu" aria-label="Docs">
+            <a href="{{ get_url(path='@/docs/_index.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/" %}class="active" aria-current="page"{% endif %}>Overview</a>
+            {% for group in config.extra.docs_nav %}
+            <div class="nav-drop-group" role="group" aria-labelledby="nav-grp-{{ group.id }}">
+              <p class="nav-drop-label" id="nav-grp-{{ group.id }}">{{ group.title }}</p>
+              {% for entry in group.pages %}{% if entry.menu %}
+              {% set p = get_page(path=entry.path) %}
+              <a href="{{ p.permalink }}" role="menuitem" {% if current_path is defined and current_path == p.path %}class="active" aria-current="page"{% endif %}>{{ entry.label }}</a>
+              {% endif %}{% endfor %}
+            </div>
+            {% endfor %}
+            <div class="nav-drop-group" role="group" aria-labelledby="nav-grp-dev">
+              <p class="nav-drop-label" id="nav-grp-dev">For developers</p>
+              <a href="{{ get_url(path='@/docs/internals/_index.md') }}" role="menuitem" {% if current_path is defined and current_path is starting_with("/docs/internals/") %}class="active" aria-current="page"{% endif %}>Developer docs</a>
+            </div>
+            <a class="nav-drop-all" href="{{ get_url(path='@/docs/_index.md') }}" role="menuitem">All docs &rarr;</a>
           </div>
         </div>
       </div>

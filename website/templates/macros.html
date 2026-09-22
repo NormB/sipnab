@@ -17,8 +17,6 @@
 </li>
 {% endmacro %}
 
-{# Left-sidebar navigation group: a titled section of doc-page links, with the
-   active page's on-page section anchors nested beneath it. #}
 {# Left-sidebar group built from a Zola section rather than a hand-listed set
    of paths. Used for the generated developer docs: the pages under
    `docs/internals/` come and go with `scripts/build-site-internals.py`, so a
@@ -29,7 +27,7 @@
   <p class="doc-nav-group-title">{{ title }}</p>
   <ul class="doc-nav-list">
     <li>
-      <a href="{{ sec.permalink }}" class="doc-nav-link{% if sec.permalink == current_url %} active{% endif %}"{% if sec.permalink == current_url %} aria-current="page"{% endif %}>{{ sec.title }} index</a>
+      <a href="{{ sec.permalink }}" class="doc-nav-link{% if sec.permalink == current_url %} active{% endif %}"{% if sec.permalink == current_url %} aria-current="page"{% endif %}>Overview</a>
     </li>
     {% for p in sec.pages %}
     {% set is_current = p.permalink == current_url %}
@@ -48,15 +46,21 @@
 </div>
 {% endmacro %}
 
-{% macro nav_group(title, paths, current_url) %}
+{# The docs sidebar, rendered from `[[extra.docs_nav]]` in config.toml -- the
+   same list base.html builds the Docs dropdown from, so a page and its label
+   exist once. Every entry is listed here; the dropdown shows the ones marked
+   `menu`. An entry is active when it links the page being read. A Tera macro
+   cannot see `config`, so the caller passes the list in as `nav`. #}
+{% macro docs_nav(nav, current_url) %}
+{% for group in nav %}
 <div class="doc-nav-group">
-  <p class="doc-nav-group-title">{{ title }}</p>
+  <p class="doc-nav-group-title">{{ group.title }}</p>
   <ul class="doc-nav-list">
-    {% for path in paths %}
-    {% set p = get_page(path="docs/" ~ path) %}
+    {% for entry in group.pages %}
+    {% set p = get_page(path=entry.path) %}
     {% set is_current = p.permalink == current_url %}
     <li>
-      <a href="{{ p.permalink }}" class="doc-nav-link{% if is_current %} active{% endif %}"{% if is_current %} aria-current="page"{% endif %}>{{ p.title }}</a>
+      <a href="{{ p.permalink }}" class="doc-nav-link{% if is_current %} active{% endif %}"{% if is_current %} aria-current="page"{% endif %}>{{ entry.label }}</a>
       {% if is_current and p.toc | length > 0 %}
       <ul class="doc-nav-toc">
         {% for h2 in p.toc %}
@@ -68,6 +72,7 @@
     {% endfor %}
   </ul>
 </div>
+{% endfor %}
 {% endmacro %}
 
 {# Notes sidebar, grouped by kind.

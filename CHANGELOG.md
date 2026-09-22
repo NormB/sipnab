@@ -68,6 +68,17 @@ entry that carries them.
 
 ### Changed
 
+- **The site's docs navigation is one list.** The Docs dropdown and the docs
+  sidebar both render `[[extra.docs_nav]]` in `website/config.toml`, so a page
+  carries one task-first label in both ("Install sipnab", "Fix a common
+  problem", "Look up CLI flags", "Connect an AI agent (MCP)"). Groups read
+  "Start here", "Capture in hard places", "Use the terminal UI", "Script and
+  automate", "Connect other tools" and "Build and measure". The dropdown shows
+  the main pages of each group, one link to the developer docs, and "All
+  docs". The active entry comes from the page it links: "Learn from real
+  captures" no longer lights up on the cookbook page, and the library and
+  examples pages now light up at all. Group headings label their groups for
+  screen readers instead of being hidden from them.
 - **The site's notes lead with how-tos.** The homepage notes block, now titled
   "How-tos and walkthroughs", shows how-tos and feature notes and never a
   post-mortem. The notes sidebar collapses its post-mortems behind a
