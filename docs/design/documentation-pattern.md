@@ -247,9 +247,9 @@ as `cli.md`, `config-reference.md` as `config.md`, `examples.md` as
 
 **The three originally named, one of them corrected:**
 
-- `dev_docs_drift_test::every_site_operator_page_is_in_every_docs_nav` — a new
-  page needs an entry in [`scripts/build-site-pages.py`](https://github.com/NormB/sipnab/blob/main/scripts/build-site-pages.py) PAGES *and* a place in
-  every docs nav.
+- `dev_docs_drift_test::every_site_operator_page_is_in_the_docs_nav_list` — a
+  new page needs an entry in [`scripts/build-site-pages.py`](https://github.com/NormB/sipnab/blob/main/scripts/build-site-pages.py) PAGES *and* a place in
+  `[[extra.docs_nav]]` in [`website/config.toml`](https://github.com/NormB/sipnab/blob/main/website/config.toml), which both docs navs render.
 - `dev_docs_drift_test::docs_to_site_map_is_complete` — the source-to-site map
   must cover it.
 - `doc_example_coverage_test::every_flag_has_at_least_two_examples` — **not

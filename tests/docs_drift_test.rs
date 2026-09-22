@@ -3336,7 +3336,10 @@ fn no_documentation_table_repeats_a_row() {
     // lists exactly that one new .md path. No website mirror.
     // 220 -> 223: docs/client-examples.md and its site mirror, plus the new
     // site mirror of docs/library.md. Measured by this gate on 2026-09-19.
-    const EXPECTED_MARKDOWN_FILES: usize = 223;
+    // 223 -> 224 by website/content/standards.md, the /standards/ page the
+    // homepage's standards cards moved to. A front-matter-only file; its body
+    // is the standards.html template. Measured by this gate on 2026-09-22.
+    const EXPECTED_MARKDOWN_FILES: usize = 224;
     /// How many tables this gate expects to walk.
     ///
     /// Named rather than written twice. The count and the failure message

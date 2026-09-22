@@ -777,10 +777,8 @@ input:focus-visible,
 
 .section-kicker {
   font-family: $font-mono;
-  font-size: 0.72rem;
+  font-size: 0.75rem;
   font-weight: 600;
-  letter-spacing: 0.22em;
-  text-transform: uppercase;
   color: $accent;
   margin: 0 0 0.6rem;
 }
@@ -928,6 +926,35 @@ input:focus-visible,
   max-width: 920px;
   margin: 3.5rem auto 0;
   padding: 0 1.5rem;
+}
+
+// Pause control for the looping hero animation (WCAG 2.2.2). Positioned over
+// the image's corner rather than below it: it is revealed after `load`, and a
+// control that took space in the flow would push the page down when it
+// appeared.
+.hero-pause {
+  position: absolute;
+  right: 2.25rem;
+  bottom: 0.75rem;
+  font: inherit;
+  font-size: 0.85rem;
+  padding: 0.35rem 0.8rem;
+  border-radius: 6px;
+  border: 1px solid $border-light;
+  background: rgba($bg, 0.85);
+  color: $text;
+  cursor: pointer;
+  visibility: hidden;
+
+  &.is-live { visibility: visible; }
+  @media (max-width: 480px) {
+    right: 1.75rem;
+    bottom: 0.5rem;
+    font-size: 0.75rem;
+    padding: 0.2rem 0.5rem;
+  }
+  &:hover { border-color: $accent; }
+  &:focus-visible { outline: 2px solid $accent; outline-offset: 2px; }
 }
 
 .hero-screenshot {
@@ -1280,6 +1307,42 @@ input:focus-visible,
   margin: 0 auto;
 }
 
+// One numbered step per command, each with its own block and copy button.
+.qs-step {
+  font-size: 1rem;
+  font-weight: 600;
+  margin: 1.75rem 0 0.6rem;
+}
+
+.quickstart .code-block-wrap pre { padding: 0.9rem 1.25rem; }
+
+.arch-more {
+  text-align: center;
+  margin: 2.5rem 0 0;
+
+  a {
+    text-decoration: underline;
+    text-underline-offset: 0.2em;
+  }
+}
+
+// The standards page: a page title over the two bands the homepage used to
+// carry.
+.standards-head {
+  max-width: $doc-width;
+  margin: 0 auto;
+  padding: 6rem 1.5rem 3rem;
+  text-align: center;
+
+  h1 { font-size: clamp(2rem, 4vw, 2.6rem); letter-spacing: -0.01em; }
+}
+
+.standards-lead {
+  color: $text-dim;
+  font-size: 1.05rem;
+  line-height: 1.65;
+}
+
 .code-block-wrap {
   background: $surface;
   border: 1px solid $border;
@@ -1331,7 +1394,7 @@ input:focus-visible,
 .code-block-title {
   flex: 1;
   font-family: $font-mono;
-  font-size: 0.74rem;
+  font-size: 0.75rem;
   color: $text-dim;
 }
 
@@ -1459,6 +1522,7 @@ input:focus-visible,
 // the copies inherited its silence about them.
 .metrics-sub,
 .demos-sub,
+.quickstart-sub,
 .comparison-sub {
   max-width: 640px;
   margin: 1rem auto 0;
@@ -1527,8 +1591,6 @@ input:focus-visible,
 
 .metric-topic {
   font-size: 0.78rem;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
   color: $text-dim;
   margin: 0 0 0.9rem;
 }
@@ -1691,9 +1753,7 @@ input:focus-visible,
 
   .doc-kicker {
     font-family: $font-mono;
-    font-size: 0.72rem;
-    letter-spacing: 0.2em;
-    text-transform: uppercase;
+    font-size: 0.75rem;
     color: $accent;
     margin: 0 0 0.6rem;
 
@@ -1771,8 +1831,6 @@ input:focus-visible,
     margin: 0;
     font-size: 0.8rem;
     font-family: $font-mono;
-    letter-spacing: 0.12em;
-    text-transform: uppercase;
     color: $text-dim;
   }
 
@@ -1825,13 +1883,11 @@ input:focus-visible,
     .note-archive-title {
       font-family: $font-mono;
       font-size: 0.8rem;
-      letter-spacing: 0.12em;
-      text-transform: uppercase;
     }
 
     .note-archive-count {
       font-family: $font-mono;
-      font-size: 0.68rem;
+      font-size: 0.75rem;
       padding: 0.1rem 0.45rem;
       border: 1px solid rgba($ayu-orange, 0.45);
       border-radius: 99px;
@@ -1848,9 +1904,7 @@ input:focus-visible,
 
   .note-kind {
     font-family: $font-mono;
-    font-size: 0.68rem;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
+    font-size: 0.75rem;
     padding: 0.15rem 0.5rem;
     border-radius: 99px;
     border: 1px solid $border;
@@ -2013,7 +2067,7 @@ input:focus-visible,
       top: 0;
       right: 0;
       font-family: $font-mono;
-      font-size: 0.66rem;
+      font-size: 0.75rem;
       letter-spacing: 0.08em;
       text-transform: uppercase;
       color: $text-dim;
@@ -2163,10 +2217,8 @@ input:focus-visible,
 
 .doc-nav-group-title {
   font-family: $font-mono;
-  font-size: 0.68rem;
+  font-size: 0.75rem;
   font-weight: 600;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
   color: $text-dim;
   margin: 0 0 0.45rem;
   padding-left: 0.85rem;
@@ -2286,7 +2338,7 @@ input:focus-visible,
   display: block;
   margin-top: 0.2rem;
   font-family: $font-mono;
-  font-size: 0.72rem;
+  font-size: 0.75rem;
   color: $text-dim;
 }
 
@@ -2353,7 +2405,7 @@ input:focus-visible,
 
   .doc-task-cmd {
     font-family: $font-mono;
-    font-size: 0.74rem;
+    font-size: 0.75rem;
     color: $text-dim;
     background: rgba($bg, 0.6);
     border-radius: 5px;
@@ -2428,7 +2480,7 @@ input:focus-visible,
     cursor: pointer;
     padding: 0.6rem 0.9rem;
     font-family: $font-mono;
-    font-size: 0.74rem;
+    font-size: 0.75rem;
     letter-spacing: 0.12em;
     text-transform: uppercase;
     color: $text-dim;
@@ -2449,7 +2501,7 @@ input:focus-visible,
   border-radius: 5px;
   color: $text-dim;
   font-family: $font-mono;
-  font-size: 0.68rem;
+  font-size: 0.75rem;
   padding: 0.2rem 0.5rem;
   cursor: pointer;
   opacity: 0;
@@ -2644,7 +2696,7 @@ input:focus-visible,
 
   .doc-pn-dir {
     font-family: $font-mono;
-    font-size: 0.72rem;
+    font-size: 0.75rem;
     letter-spacing: 0.04em;
     color: $text-dim;
   }
@@ -3005,7 +3057,7 @@ input:focus-visible,
       -webkit-overflow-scrolling: touch;
     }
 
-    pre { border-radius: 8px; font-size: 0.8rem; }
+    pre { border-radius: 8px; font-size: 0.85rem; }
   }
 
   .doc-prevnext { grid-template-columns: 1fr; }
@@ -3042,7 +3094,7 @@ input:focus-visible,
   .comparison-table th, .comparison-table td { padding: 0.7rem 0.8rem; }
   .comparison-table td:first-child { width: auto; white-space: normal; }
 
-  .code-block-wrap pre { font-size: 0.78rem; padding: 1.1rem; }
+  .code-block-wrap pre { font-size: 0.85rem; padding: 1.1rem; }
 }
 
 // Download page
@@ -3055,7 +3107,7 @@ input:focus-visible,
 .dl-layout .dl [id] { scroll-margin-top: calc(#{$nav-height} + 1.25rem); }
 
 .dl-hero { text-align: center; margin-bottom: 2.75rem; animation: dlUp 0.6s ease both; }
-.dl-kicker { font-family: $font-mono; font-size: 0.74rem; letter-spacing: 0.22em; text-transform: uppercase; color: $accent; margin: 0; }
+.dl-kicker { font-family: $font-mono; font-size: 0.75rem; color: $accent; margin: 0; }
 .dl-hero h1 { font-size: clamp(2.1rem, 5vw, 3rem); margin: 0.6rem 0 0; letter-spacing: -0.02em; }
 .dl-sub { color: $text-dim; margin: 0.95rem auto 0; max-width: 32rem; line-height: 1.6; }
 .dl-sub a { color: $accent; text-decoration: none; border-bottom: 1px solid rgba($accent, 0.3); }
@@ -3093,7 +3145,7 @@ input:focus-visible,
 .dl-panel > .dl-method-head:not(:first-child) { margin-top: 2.75rem; }
 .dl-method-head h2 { font-size: 1.15rem; margin: 0; }
 .dl-rec {
-  font-family: $font-mono; font-size: 0.66rem; text-transform: uppercase; letter-spacing: 0.06em;
+  font-family: $font-mono; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.06em;
   color: $code-green; border: 1px solid rgba($good, 0.4); border-radius: 5px; padding: 0.14rem 0.42rem;
 }
 .dl-rec--blue { color: $link; border-color: rgba($link, 0.4); }
@@ -3114,7 +3166,7 @@ input:focus-visible,
   border-bottom: 1px solid $border; background: rgba(255, 255, 255, 0.02);
 }
 // .dl-dots styling is shared with .code-block-dots (see the Quickstart block).
-.dl-term-title { font-family: $font-mono; font-size: 0.74rem; color: $text-dim; }
+.dl-term-title { font-family: $font-mono; font-size: 0.75rem; color: $text-dim; }
 .dl-term-body {
   display: flex; align-items: center; justify-content: space-between; gap: 1rem;
   padding: 1.05rem 1.15rem;
@@ -3133,13 +3185,13 @@ input:focus-visible,
 .dl-copy:hover { color: $text; border-color: $border-light; }
 .dl-copy svg { width: 15px; height: 15px; }
 .dl-copy.copied { color: $code-green; border-color: rgba($good, 0.45); }
-.dl-copy.copied::after { content: "Copied"; font-size: 0.72rem; font-family: $font-sans; }
+.dl-copy.copied::after { content: "Copied"; font-size: 0.75rem; font-family: $font-sans; }
 // A blocked copy has to look different from a successful one. Silence here read
 // as success: the visitor pressed the button, nothing moved, and nothing said
 // why. The JS selects the command as a fallback, so the label points at that.
 .dl-copy.failed { color: $warn; border-color: rgba($warn, 0.5); }
 .dl-copy.failed::after {
-  content: "Press Ctrl/Cmd+C"; font-size: 0.72rem; font-family: $font-sans;
+  content: "Press Ctrl/Cmd+C"; font-size: 0.75rem; font-family: $font-sans;
   white-space: nowrap;
 }
 
@@ -3155,7 +3207,7 @@ input:focus-visible,
 
 .dl-direct { margin-top: 1.75rem; }
 .dl-direct-label {
-  display: block; font-family: $font-mono; font-size: 0.72rem; letter-spacing: 0.04em;
+  display: block; font-family: $font-mono; font-size: 0.75rem; letter-spacing: 0.04em;
   text-transform: uppercase; color: $text-dim; margin-bottom: 0.8rem;
 }
 .dl-tiles { display: grid; grid-template-columns: repeat(2, 1fr); gap: 0.75rem; }
@@ -3184,7 +3236,7 @@ input:focus-visible,
 .dl-tile-ico svg { width: 19px; height: 19px; }
 .dl-tile-txt { flex: 1; min-width: 0; }
 .dl-tile-name { display: block; color: $text; font-weight: 600; font-size: 0.92rem; }
-.dl-tile-sub { display: block; color: $text-dim; font-family: $font-mono; font-size: 0.72rem; margin-top: 0.12rem; }
+.dl-tile-sub { display: block; color: $text-dim; font-family: $font-mono; font-size: 0.75rem; margin-top: 0.12rem; }
 .dl-tile-dl { flex-shrink: 0; color: $text-dim; transition: color 0.15s, transform 0.15s; }
 .dl-tile-dl svg { width: 18px; height: 18px; display: block; }
 .dl-tile:hover .dl-tile-dl { color: $accent; transform: translateY(2px); }
@@ -3242,7 +3294,7 @@ input:focus-visible,
   display: flex; align-items: baseline; gap: 0.5rem;
   background: $surface; border: 1px solid $border; border-radius: 8px;
   padding: 0.5rem 0.8rem; font-size: 0.82rem;
-  code { color: $accent; font-size: 0.8rem; }
+  code { color: $accent; font-size: 0.85rem; }
 }
 .dl-eq { color: $text-dim; opacity: 0.6; }
 .dl-who { color: $text-dim; }
@@ -3254,7 +3306,7 @@ input:focus-visible,
   h3 { margin: 0 0 0.5rem; font-size: 0.94rem; }
   ul { margin: 0; padding-left: 1.2rem; font-size: 0.88rem; color: $text-dim; }
   li { margin: 0.3rem 0; line-height: 1.55; }
-  code { font-size: 0.8rem; }
+  code { font-size: 0.85rem; }
 }
 .dl-pick { color: $good; font-weight: 600; }
 .dl-warn { color: $ayu-orange; font-weight: 600; }
@@ -3266,12 +3318,12 @@ input:focus-visible,
   border-collapse: collapse; width: 100%; font-size: 0.84rem; font-variant-numeric: tabular-nums;
   th, td { text-align: left; padding: 0.55rem 0.85rem; border-bottom: 1px solid $border; white-space: nowrap; }
   th {
-    font-family: $font-mono; font-size: 0.68rem; letter-spacing: 0.08em;
+    font-family: $font-mono; font-size: 0.75rem; letter-spacing: 0.08em;
     text-transform: uppercase; color: $text-dim; background: $surface;
   }
   tr:last-child td { border-bottom: none; }
   td:nth-child(n+2) { color: $text-dim; }
-  code { font-size: 0.78rem; }
+  code { font-size: 0.85rem; }
 }
 
 // Nudge between the download tiles and the far-down "Verify" section.

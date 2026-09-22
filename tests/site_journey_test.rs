@@ -1896,6 +1896,10 @@ struct CardItem {
     desc: String,
 }
 
+/// The template the standards cards render from. They were a band on the
+/// homepage until the homepage outgrew them; every card gate reads them here.
+const STANDARDS_TEMPLATE: &str = "website/templates/standards.html";
+
 /// One `metric-card` on the homepage: the section it sits in, the standard
 /// its title names (text and href), and the items it lists.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2750,7 +2754,7 @@ fn homepage_cards(html: &str) -> Vec<StandardCard> {
 
 /// The real page against the real tree, docs, mirror and output docs.
 fn homepage_violations() -> Vec<Violation> {
-    let html = read("website/templates/index.html");
+    let html = read(STANDARDS_TEMPLATE);
     let docs = docs_prose();
     let mirror = site_mirror();
     let output_docs = output_schema_docs();
@@ -2771,10 +2775,10 @@ fn homepage_violations() -> Vec<Violation> {
 /// is the card's own text, never a bare URL — the demo wall above the band
 /// links the same RFCs, and the first match is the wrong one.
 fn homepage_with(from: &str, to: &str) -> String {
-    let html = read("website/templates/index.html");
+    let html = read(STANDARDS_TEMPLATE);
     assert!(
         html.contains(from),
-        "control edit did not apply: index.html no longer contains {from:?}"
+        "control edit did not apply: standards.html no longer contains {from:?}"
     );
     html.replacen(from, to, 1)
 }
@@ -2782,11 +2786,11 @@ fn homepage_with(from: &str, to: &str) -> String {
 /// The real card for a standard, verbatim, for a control that needs to
 /// duplicate or append one.
 fn homepage_card_html(label: &str) -> String {
-    let html = read("website/templates/index.html");
+    let html = read(STANDARDS_TEMPLATE);
     let needle = format!(r#">{label}</a>"#);
     let at = html
         .find(&needle)
-        .unwrap_or_else(|| panic!("index.html has no card titled {label:?}"));
+        .unwrap_or_else(|| panic!("standards.html has no card titled {label:?}"));
     let start = html[..at]
         .rfind(r#"<div class="metric-card"#)
         .expect("card open tag before the title");
@@ -2919,7 +2923,7 @@ fn homepage_card_items_map_to_code_that_exists() {
     let docs = docs_prose();
     let mirror = site_mirror();
     let output_docs = output_schema_docs();
-    let html = read("website/templates/index.html");
+    let html = read(STANDARDS_TEMPLATE);
     let hits = standard_card_violations(
         &standard_cards(&html),
         HOMEPAGE_STANDARDS,
@@ -3014,7 +3018,7 @@ fn homepage_standards_are_cited_in_the_site_mirror() {
     let mirror = mirror.replace("RFC 8446", "RFC ----");
     let docs = docs_prose();
     let output_docs = output_schema_docs();
-    let html = read("website/templates/index.html");
+    let html = read(STANDARDS_TEMPLATE);
     let hits = standard_card_violations(
         &standard_cards(&html),
         HOMEPAGE_STANDARDS,
@@ -3050,7 +3054,7 @@ fn homepage_metrics_are_fields_the_program_emits() {
     let output_docs = output_docs.replace("round_trip_ms", "round_trip_--");
     let docs = docs_prose();
     let mirror = site_mirror();
-    let html = read("website/templates/index.html");
+    let html = read(STANDARDS_TEMPLATE);
     let hits = standard_card_violations(
         &standard_cards(&html),
         HOMEPAGE_STANDARDS,
@@ -3090,7 +3094,7 @@ fn homepage_card_claims_are_no_more_specific_than_the_code() {
     let docs = docs_prose();
     let mirror = site_mirror();
     let output_docs = output_schema_docs();
-    let html = read("website/templates/index.html");
+    let html = read(STANDARDS_TEMPLATE);
     let hits = standard_card_violations(
         &standard_cards(&html),
         HOMEPAGE_STANDARDS,
@@ -3114,7 +3118,7 @@ fn homepage_card_claims_are_no_more_specific_than_the_code() {
 /// the checker cannot pass vacuously.
 #[test]
 fn homepage_standards_gate_reports_every_kind_of_wrong_card() {
-    let mut page = read("website/templates/index.html");
+    let mut page = read(STANDARDS_TEMPLATE);
     let mut edit = |from: &str, to: &str| {
         assert!(
             page.contains(from),
@@ -4644,8 +4648,13 @@ fn inline_script_edits_require_csp_hash_refresh() {
             // the wiring already derives a tab's panel from its own id -- but
             // a comment edit changes the hash exactly as much as a code edit
             // does, and shipping the old hash would blank the whole script.
+            // Re-pinned for the hero pause control (WCAG 2.2.2): the swap now
+            // also sets the alt text to describe the animation, reveals
+            // #hero-pause (by class, so no layout box appears) once the
+            // animation plays, and the button puts the
+            // still frame and its alt text back.
             "index.html",
-            "sha256-jkZDUfcMSkaA5zdJk8XtpjPoyxBG3nGNd4tUw3NiJB4=",
+            "sha256-0v4G6tae2tjaEo7PTkg590b1RvJLQSjgRyGf13h3DrA=",
         ),
         (
             "page.html",
@@ -10156,4 +10165,313 @@ fn every_page_body_is_inside_the_email_obfuscation_opt_out() {
         pages >= 8,
         "found {pages} page template(s); the scan is not reading them"
     );
+}
+
+/// Section open tags of the homepage, in document order, by class.
+fn homepage_section_order(page: &str) -> Vec<String> {
+    regex::Regex::new(r#"<section class="([a-z-]+)""#)
+        .unwrap()
+        .captures_iter(page)
+        .map(|c| c[1].to_string())
+        .collect()
+}
+
+/// The homepage reads in the order a newcomer needs it.
+///
+/// Quick Start sat below a demo wall whose first command
+/// (`demos/mcp-stdio.sh tests/pcap-samples/...`) runs only from a source
+/// checkout, so a visitor who had just installed the binary met something they
+/// could not run before anything they could. The order is: what it is, how to
+/// run it, what it does, what an agent can ask it, what it supports, the
+/// numbers, then the guides.
+#[test]
+fn the_homepage_puts_quick_start_directly_under_the_hero() {
+    let page = read("website/templates/index.html");
+    let order = homepage_section_order(&page);
+    let want = [
+        "hero",
+        "quickstart",
+        "features",
+        "demos",
+        "comparison",
+        "arch-callout",
+        "notes-callout",
+    ];
+    let seen: Vec<&str> = order
+        .iter()
+        .map(String::as_str)
+        .filter(|c| want.contains(c))
+        .collect();
+    assert_eq!(
+        seen, want,
+        "the homepage sections are out of order: {order:?}"
+    );
+    assert!(
+        page.contains("Install and open your first capture"),
+        "the Quick Start heading no longer says what the reader will do"
+    );
+}
+
+/// Each Quick Start block holds one command, so each copy button copies one.
+///
+/// The block held four commands and three comments under one Copy button, so
+/// the button put all of them on the clipboard, and pasting that into a shell
+/// ran `sudo sipnab -d eth0` along with the install.
+#[test]
+fn each_quick_start_block_holds_one_command() {
+    let page = read("website/templates/index.html");
+    let qs = element_span(&page, "<section class=\"quickstart\"", "section");
+    let body = &page[qs.start..qs.end];
+    let pre = regex::Regex::new(r"(?s)<pre[^>]*><code[^>]*>(.*?)</code></pre>").unwrap();
+    let tags = regex::Regex::new(r"<[^>]+>").unwrap();
+    let mut blocks = 0;
+    for c in pre.captures_iter(body) {
+        blocks += 1;
+        let text = tags.replace_all(&c[1], "");
+        let commands: Vec<&str> = text
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty() && !l.starts_with('#'))
+            .collect();
+        assert_eq!(
+            commands.len(),
+            1,
+            "a Quick Start block holds {} commands under one copy button: {commands:?}",
+            commands.len()
+        );
+    }
+    assert!(
+        blocks >= 3,
+        "found {blocks} Quick Start block(s); the scan is broken"
+    );
+    assert_eq!(
+        body.matches("class=\"copy-btn\"").count(),
+        blocks,
+        "every Quick Start block needs its own copy button"
+    );
+}
+
+/// The MCP demos say they are run from a source checkout.
+///
+/// Every command on the demo wall starts `demos/mcp-stdio.sh` against
+/// `tests/pcap-samples/`, both of which exist only in a clone of the
+/// repository. Presented as the first thing to try, they read as broken to
+/// anyone who installed the binary.
+#[test]
+fn the_agent_demos_say_they_run_from_a_source_checkout() {
+    let page = read("website/templates/index.html");
+    let demos = element_span(&page, "<section class=\"demos\"", "section");
+    let head = element_span(&page[demos.start..demos.end], "<header", "header");
+    let head = &page[demos.start + head.start..demos.start + head.end];
+    assert!(
+        head.contains("Ask an AI agent about a capture"),
+        "the demo section is not titled for what its commands do:\n{head}"
+    );
+    assert!(
+        head.contains("source checkout"),
+        "the demo section does not say its commands run from a source \
+         checkout:\n{head}"
+    );
+    let tablist = element_open_tag(&page, "<div class=\"demo-tabs\" role=\"tablist\"");
+    assert!(
+        tablist.contains("aria-label=\"Examples\""),
+        "the demo tablist is labeled for videos it does not contain: {tablist}"
+    );
+}
+
+/// The hero animation can be paused, and the alt text follows the image.
+///
+/// The hero swaps a still screenshot for a looping animation on `load` and
+/// offered no way to stop it, which WCAG 2.2.2 requires for motion that lasts
+/// more than five seconds. The alt text also kept describing the still frame
+/// while the animation played.
+#[test]
+fn the_hero_animation_can_be_paused_and_its_alt_follows_the_image() {
+    let page = read("website/templates/index.html");
+    let button = element_open_tag(&page, "<button type=\"button\" class=\"hero-pause\"");
+    assert!(
+        button.contains("id=\"hero-pause\"") && !button.contains("is-live"),
+        "the pause control must exist and ship not live, shown only once the \
+         animation is actually playing: {button}"
+    );
+    // Hidden by visibility, not by `hidden`: the box must exist from first
+    // paint, or revealing it after `load` is a layout change.
+    let scss = read("website/sass/style.scss");
+    let rule = scss_block(&scss, ".hero-pause {");
+    assert!(
+        rule.contains("visibility: hidden") && rule.contains("&.is-live { visibility: visible; }"),
+        "the pause control is not hidden by visibility until it is live:\n{rule}"
+    );
+    assert!(
+        !button.contains(" hidden"),
+        "the pause control uses `hidden`, so revealing it adds a layout box: {button}"
+    );
+    assert!(
+        button.contains("aria-pressed=\"false\""),
+        "the pause control does not expose its state: {button}"
+    );
+    let script = &page[page.find("<script>").expect("index.html has no script")..];
+    assert!(
+        script.contains("getElementById('hero-pause')"),
+        "nothing in the homepage script wires the pause control"
+    );
+    // Every assignment of the hero's image is followed by one of its alt
+    // text, in either direction, so no path leaves the two describing
+    // different pictures.
+    let lines: Vec<&str> = script.lines().map(str::trim).collect();
+    let swaps: Vec<usize> = lines
+        .iter()
+        .enumerate()
+        .filter(|(_, l)| l.starts_with("hero.src = "))
+        .map(|(i, _)| i)
+        .collect();
+    assert!(
+        swaps.len() >= 2,
+        "expected the script to set the hero image both ways (play and pause), \
+         found {} assignment(s)",
+        swaps.len()
+    );
+    for i in swaps {
+        assert!(
+            lines
+                .get(i + 1)
+                .is_some_and(|l| l.starts_with("hero.alt = ")),
+            "`{}` swaps the hero image without updating its alt text",
+            lines[i]
+        );
+    }
+    assert!(
+        script.contains("pause.classList.add('is-live')"),
+        "the pause control is never shown"
+    );
+}
+
+/// The standards live on their own page, and the homepage links to it.
+///
+/// Two bands of standards cards made the homepage the longest page on the
+/// site. The cards are the evidence behind the numbers, not the pitch, so
+/// they moved to /standards/ whole, and every gate that reads a card reads
+/// that page.
+#[test]
+fn the_standards_cards_live_on_their_own_page() {
+    let home = read("website/templates/index.html");
+    assert!(
+        !home.contains("class=\"metric-card"),
+        "the homepage still carries standards cards"
+    );
+    let links = anchors(&home);
+    assert!(
+        links
+            .iter()
+            .any(|(href, text)| href.contains("@/standards.md")
+                && text.contains("See the standards behind every number")),
+        "the homepage does not link to the standards page"
+    );
+    let standards = read(STANDARDS_TEMPLATE);
+    for id in ["metrics", "standards"] {
+        assert!(
+            standards.contains(&format!("<section class=\"metrics\" id=\"{id}\">")),
+            "{STANDARDS_TEMPLATE} has no `{id}` band"
+        );
+    }
+    assert!(
+        read("website/content/standards.md").contains("template = \"standards.html\""),
+        "website/content/standards.md does not render with standards.html"
+    );
+}
+
+/// Prose a reader sees, with markup, code, comments and templating removed.
+fn visible_prose(html: &str) -> String {
+    let mut s = html.to_string();
+    for re in [
+        r"(?s)<script.*?</script>",
+        r"(?s)<style.*?</style>",
+        r"(?s)<pre.*?</pre>",
+        r"(?s)<code.*?</code>",
+        r"(?s)<!--.*?-->",
+        r"(?s)\{#.*?#\}",
+        r"(?s)\{%.*?%\}",
+        r"(?s)\{\{.*?\}\}",
+        r"<[^>]+>",
+        r"&[a-zA-Z0-9#]+;",
+    ] {
+        s = regex::Regex::new(re)
+            .expect("regex")
+            .replace_all(&s, " ")
+            .into_owned();
+    }
+    s
+}
+
+/// The site's own pages write no semicolons in prose.
+///
+/// The style the prose gates enforce splits a sentence rather than joining
+/// two with a semicolon. Vale checks website/content, but the homepage and
+/// the standards page are templates and it never reads them.
+#[test]
+fn homepage_and_standards_prose_carry_no_semicolons() {
+    for tpl in ["website/templates/index.html", STANDARDS_TEMPLATE] {
+        let prose = visible_prose(&read(tpl));
+        assert!(
+            prose.split_whitespace().count() > 200,
+            "{tpl}: the prose extractor found almost nothing"
+        );
+        let hits: Vec<String> = prose
+            .split(['.', '\n'])
+            .filter(|s| s.contains(';'))
+            .map(|s| s.split_whitespace().collect::<Vec<_>>().join(" "))
+            .collect();
+        assert!(
+            hits.is_empty(),
+            "{tpl} joins sentences with semicolons: {hits:#?}"
+        );
+    }
+}
+
+/// Headings are sentence case.
+///
+/// "See It In Action" and "What sipnab Does" capitalized every word, which the
+/// style guide reserves for names. A capitalized word after the first is
+/// allowed only when it is a name or an acronym.
+#[test]
+fn homepage_and_standards_headings_are_sentence_case() {
+    const NAMES: &[&str] = &[
+        "Homer",
+        "Rust",
+        "Claude",
+        "Code",
+        "Kamailio",
+        "OpenSIPS",
+        "Asterisk",
+        "Wireshark",
+        "Prometheus",
+        "I",
+    ];
+    let heading = regex::Regex::new(r"(?s)<h([1-3])[^>]*>(.*?)</h[1-3]>").unwrap();
+    let mut seen = 0;
+    for tpl in ["website/templates/index.html", STANDARDS_TEMPLATE] {
+        let html = read(tpl);
+        for c in heading.captures_iter(&html) {
+            let text = visible_prose(&c[2]);
+            // The first WORD may be capitalized; a step number such as "1."
+            // before it is not a word.
+            let words: Vec<&str> = text
+                .split_whitespace()
+                .skip_while(|w| !w.chars().any(char::is_alphabetic))
+                .collect();
+            seen += 1;
+            for w in words.iter().skip(1) {
+                let w = w.trim_matches(|ch: char| !ch.is_alphanumeric());
+                let starts_upper = w.chars().next().is_some_and(char::is_uppercase);
+                let acronym = w.chars().filter(|ch| ch.is_uppercase()).count() >= 2
+                    || w.chars().any(|ch| ch.is_ascii_digit());
+                assert!(
+                    !starts_upper || acronym || NAMES.contains(&w),
+                    "{tpl}: heading {:?} capitalizes {w:?}, which is not a name",
+                    text.trim()
+                );
+            }
+        }
+    }
+    assert!(seen >= 8, "found {seen} heading(s); the scan is broken");
 }

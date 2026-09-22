@@ -68,6 +68,20 @@ entry that carries them.
 
 ### Changed
 
+- **The homepage starts with something a newcomer can run.** "Install and
+  open your first capture" now sits directly under the hero, one command per
+  block and copy button: install, download the sample capture, open it in the
+  terminal UI, print a report with `-N --report`, capture live. The MCP demo
+  wall is titled "Ask an AI agent about a capture" and says its commands run
+  from a source checkout. The hero defines HEP instead of "estate" and
+  "collector tier", its looping animation has a pause button (WCAG 2.2.2),
+  and its alt text follows the image that is showing. Capability rows are
+  shorter, headings are sentence case, and homepage prose carries no
+  semicolons. The two standards bands moved to a new `/standards/` page,
+  linked as "See the standards behind every number", and every standards
+  gate reads them there. Small text is at least 0.75rem and code on narrow
+  screens 0.85rem. Kickers, note chips and group titles are no longer
+  forced to uppercase.
 - **The site's docs navigation is one list.** The Docs dropdown and the docs
   sidebar both render `[[extra.docs_nav]]` in `website/config.toml`, so a page
   carries one task-first label in both ("Install sipnab", "Fix a common
