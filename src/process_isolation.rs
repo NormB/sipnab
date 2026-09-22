@@ -842,8 +842,13 @@ impl ScannerKillHandle {
     /// Whether the worker process is still running.
     pub fn is_alive(&self) -> bool {
         let mut child = self.child.lock();
+        // End of stream on the worker's pipe settles it before the kernel
+        // does: a killed process closes its descriptors on the way out,
+        // before `waitpid` can see it, and in that window `try_wait` still
+        // says "running" while the defense is already disabled.
+        let gone = self.shared.tally.worker_gone.load(Ordering::Acquire);
         match child.as_mut() {
-            Some(c) => matches!(c.try_wait(), Ok(None)),
+            Some(c) => !gone && matches!(c.try_wait(), Ok(None)),
             // No process to ask: in-process tests, or already reaped. The
             // reader's end of stream is then the only evidence there is.
             None => self.reader.is_some() && !self.shared.tally.worker_gone.load(Ordering::Acquire),
@@ -2321,6 +2326,51 @@ mod tests {
         fn flush(&mut self) -> std::io::Result<()> {
             Ok(())
         }
+    }
+
+    /// A worker whose pipe has closed is not alive, even before the kernel
+    /// lets it be reaped.
+    ///
+    /// A SIGKILLed process closes its descriptors on the way out, before it
+    /// becomes a zombie `waitpid` can see. In that window the reader has seen
+    /// end of stream and disabled the defense, while `try_wait` still says the
+    /// process is running, so `is_alive` contradicted `defense_disabled`.
+    /// `a_killed_worker_disables_the_defense_and_counts_what_was_in_flight`
+    /// (tests/scanner_kill_process_test.rs) hit it under CI load on
+    /// 2026-09-22. Here the window is held open deliberately: the child keeps
+    /// running while its pipe closes, so the check fails every time rather
+    /// than when the scheduler happens to cooperate.
+    #[cfg(unix)]
+    #[test]
+    fn a_worker_whose_pipe_closed_is_not_alive_while_it_still_runs() {
+        let (req_r, req_w) = std::io::pipe().expect("request pipe");
+        let (resp_r, resp_w) = std::io::pipe().expect("response pipe");
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("spawn a stand-in worker process");
+        let pid = child.id();
+        // The stand-in is still running: this is the window being tested.
+        assert!(matches!(child.try_wait(), Ok(None)), "sleep exited early");
+        let mut handle =
+            ScannerKillHandle::attach(req_w, resp_r, Some(child), Vec::new()).expect("attach");
+        // The worker's end of the response pipe closes, as a killed worker's does.
+        drop((req_r, resp_w));
+
+        within(std::time::Duration::from_secs(10), || {
+            handle.defense_disabled().then_some(())
+        })
+        .expect("end of stream must disable the defense");
+        assert!(
+            std::path::Path::new(&format!("/proc/{pid}")).exists()
+                || cfg!(not(target_os = "linux")),
+            "the stand-in must still be running for this to test the window"
+        );
+        assert!(
+            !handle.is_alive(),
+            "the pipe is closed and the defense is disabled, so the worker is not alive"
+        );
+        handle.shutdown();
     }
 
     /// A request the worker has no room for is counted, not silently dropped.

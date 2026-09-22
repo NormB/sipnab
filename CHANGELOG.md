@@ -29,6 +29,15 @@ entry that carries them.
 
 ### Fixed
 
+- **A killed kill-worker no longer reads as alive for a moment after the
+  defense has been disabled.** A SIGKILLed process closes its pipes on the way
+  out, before the kernel lets it be reaped. In that window the reader had seen
+  end of stream and disabled the defense, while `is_alive` still asked only
+  `try_wait` and answered "running". The two answers contradicted each other,
+  and a scanner-kill test caught it under CI load. `is_alive` now treats the
+  worker's closed pipe as the end of the worker, as the in-process path already
+  did.
+
 - **One timeout no longer reads as the site being down.** The daily
   certificate watcher asked sipnab.com once. On the v0.5.185 tag's run the
   runner got no answer inside 20 seconds, and with the origin certificate
