@@ -913,6 +913,10 @@ fn wiki_intra_docs_links_resolve() {
     // HEAD with this gate's rule; no other page moved.
     // 784 + 8 = 792: the HEP sender roster branch counted its eight against
     // 763 and merged after the three above.
+    // 792 -> 793 by docs/internals/testing.md +1: its fixtures row links
+    // tests/PROVENANCE.md, the manifest the committed-capture gate reads.
+    // Measured by this gate: 792 at HEAD, 793 with that row, and no other
+    // docs/ page is in the change.
     // 792 -> 794 by archive input: docs/cli-reference.md +1 (the `-I` row to
     // the new "Archives read like directories" section), docs/troubleshooting.md
     // +2 (the symptom row, and the pointer from the new section to the CLI
@@ -923,6 +927,8 @@ fn wiki_intra_docs_links_resolve() {
     // new `ESP not NULL-encrypted` row points at the encapsulations page's
     // "Tunnels above the link layer" section, which states the rule). Counted
     // per file against HEAD with this gate's rule; no other page moved.
+    // Merge of the fixtures branch with main: 792 +1 (fixtures) +3 (archive
+    // input and ESP) = 796. Each side's attribution is above.
     // 795 -> 816 by the readability pass that added the glossary and the
     // command-line triage tutorial. Attributed per file against HEAD:
     // docs/first-cli-triage.md +7 and docs/glossary.md +3 (both new),
@@ -946,7 +952,9 @@ fn wiki_intra_docs_links_resolve() {
     // link-type list), docs/examples.md +3 (goal-table rows for recipes 13b,
     // 60 and 65, which had none) and docs/cli-reference.md +2 (the "More:"
     // links that replaced two long cells).
-    const EXPECTED_WIKI_LINKS: usize = 836;
+    // Merge of docs-readability with main: 795 +41 (docs pass, above) +1
+    // (fixtures) = 837.
+    const EXPECTED_WIKI_LINKS: usize = 837;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe 6d in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

@@ -4094,7 +4094,7 @@ sipnab -d eth0 --api 127.0.0.1:8080 --api-key "secret"
 
 The base URL is whatever you pass to `--api` (e.g., `http://127.0.0.1:8080`). All network listeners bind to loopback by default. Bind a routable address (e.g. `0.0.0.0:8080`) only behind a token and a reverse proxy. Data endpoints use a `/v1/` prefix, and utility endpoints (`/health`, `/metrics`) have none.
 
-`--api-max-conn` (default `100`) caps concurrent API connections to prevent resource exhaustion. The API refuses a request body larger than 1 MiB (`MAX_REQUEST_BODY_BYTES`) with HTTP 413 before any handler sees it — defense in depth, since every route is `GET` today. Requests are additionally rate-limited to 100 per second per source IP. Requests rejected by the rate limiter or connection cap return **`503 Service Unavailable`** (not 429).
+`--api-max-conn` (default `100`) caps concurrent API connections to prevent resource exhaustion. The API refuses a request body larger than 1 MiB (`MAX_REQUEST_BODY_BYTES`) with HTTP 413 on every route that reads one: `POST /v1/persistence`, `POST /v1/tfps/ban`, `POST /v1/tfps/unban` and `POST /v1/vcon/validate`. A body that is merely malformed is a 400, so the two answers stay distinct. Requests are additionally rate-limited to 100 per second per source IP. Requests rejected by the rate limiter or connection cap return **`503 Service Unavailable`** (not 429).
 
 ## OpenAPI specification
 
@@ -8008,7 +8008,7 @@ sipnab -D
 second line the libpcap it is running, e.g.
 
 ```text
-sipnab 0.5.185 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf,vcon
+sipnab 0.5.186 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf,vcon
 libpcap version 1.10.5 (with TPACKET_V3); alternate capture backends named: none
 ```
 
@@ -8185,7 +8185,7 @@ mirror and ties the media to the call. A call that was already up when the
 capture opened left no control message for the mirror to carry, so
 `--rtpengine-control` asks the relay for that one directly.
 
-## The problem, on a real capture
+## The problem, on a relay capture
 
 Both runs below read the same forty RTP packets on the same four sockets. The
 only difference is whether the six control-plane packets are in the file.
@@ -10006,9 +10006,15 @@ The Call List is the home view: one row per SIP [dialog](glossary.md#dialog)
 count, and [PDD](glossary.md#pdd) (post-dial delay, the wait between the INVITE
 and the first ringing response).
 
+The three lines above it say what you are looking at: the source
+(`File: capture.pcap` or `Live capture: eth0`) with how many dialogs the list
+shows out of how many sipnab holds, then the capture (BPF) filter, then the view
+filter. The bar at the bottom lists the keys of the view you are in, and `F1`
+opens the help from any view.
+
 - `j` / `k` (or `Down` / `Up`) move the selection; `PgUp` / `PgDn`, `Home`, `End` jump around.
 - `<` / `>` sort by the previous / next column; `Z` reverses the direction. Sort by **State** to bring `Failed` calls to the top, or by **PDD** to find slow setups.
-- `t` cycles the timestamp mode (absolute → delta-prev → delta-first → scaled). Delta-prev is the one that makes latency spikes jump out.
+- `t` cycles the timestamp mode (absolute → delta from previous → delta from first → scaled). Delta from previous is the one that makes latency spikes jump out.
 - Too many columns, or missing one you want (Source IP, PDD)? `F10` opens the column selector.
 
 Land on the call you care about, then press `Enter`.
@@ -10016,11 +10022,11 @@ Land on the call you care about, then press `Enter`.
 ## 3. Read the call-flow ladder
 
 `Enter` opens the **Call Flow** -- a ladder diagram of the dialog across every
-host it touched (UAC → proxy → UAS), with a detail panel beside it.
+host it touched (UAC → proxy → UAS), with a detail pane beside it.
 
-- `j` / `k` walk message-to-message; the detail panel updates to show the parsed message under the cursor.
-- `d` cycles how the detail panel shows SDP (none / summary / full).
-- `w` toggles line wrapping in the detail panel. With wrap off, long lines truncate and a horizontal scrollbar appears. Press `Tab` to put the cursor in the detail panel, and `Left` / `Right` then scroll it sideways. Without that focus the same two keys resize the split instead.
+- `j` / `k` walk message-to-message, and the detail pane updates to show the parsed message under the cursor.
+- `d` cycles how the detail pane shows SDP (hidden / summary / full).
+- `w` toggles line wrapping in the detail pane. With wrap off, long lines truncate and a horizontal scrollbar appears. Press `Tab` to put the cursor in the detail pane, and `Left` / `Right` then scroll it sideways. Without that focus the same two keys resize the detail pane instead. `R` hides or shows it.
 - `Enter` on a message opens the full-screen **Raw Message** view (`/` searches within it, `n` / `N` jump between matches, `Esc` returns).
 - `c` recolors the ladder by method, Call-ID, or CSeq; `t` shares the timestamp mode with the Call List.
 
@@ -10047,7 +10053,7 @@ line-by-line comparison. `Esc` returns to the ladder.
 
 - `/` searches the current view (Call List, Raw Message, or RTP Streams).
 - `F7` opens the **Filter dialog**, which offers From/To, source/destination, payload, time bounds and method fields. These fields build a filter; there is no free-form expression field. Pass the full [Filter DSL](filter-dsl.md) through CLI `--filter`, for example `rtp.mos < 3.0`.
-- `F9` clears the active filter; `i` prunes the dialogs that do *not* match, keeping only the matches, and `I` prunes the ones that do.
+- `F9` clears the view filter and any kept search. `i` prunes the dialogs that do *not* match, keeping only the matches, and `I` prunes the ones that do.
 
 ## 7. Inspect RTP quality
 
@@ -10224,7 +10230,7 @@ without toggling anything.
 | / | Activate search **(configurable: `search`)** — while typing, ↑/↓/PgUp/PgDn/Home/End move the highlight in the narrowed list, Space stars rows, and Enter commits the query and opens the selection in one press |
 | i | Clear non-matching dialogs |
 | I | Clear matching dialogs |
-| t | Cycle timestamp mode (absolute / delta-prev / delta-first / scaled) |
+| t | Cycle timestamp mode (absolute / delta from previous / delta from first / scaled) |
 | u | Cycle From/To column display (default / host:port / user / user@host:port) |
 | r / F6 | Show raw SIP message for selected dialog |
 | s | Switch to Statistics view |
@@ -10241,7 +10247,7 @@ without toggling anything.
 | F4 | Open extended multi-leg flow for the selected dialog **(configurable: `extended_flow`)** |
 | F5 | Clear calls **(configurable: `clear_calls`)** — the starred dialogs when any carry a star, otherwise all of them |
 | F7 | Open filter dialog **(configurable: `filter`)** |
-| F9 | Clear active filter **and** persisted search |
+| F9 | Clear filter: drops the view filter **and** the persisted search |
 | F10 | Column selector **(configurable: `column_selector`)** — a popup to show/hide any of the eleven Call List columns (#, Method, From, To, Source, Destination, State, Msgs, Date, PDD, Duration) |
 
 A search committed with Enter keeps narrowing the list and appears on the
@@ -10265,17 +10271,17 @@ active filter.
 | Space | Select message for diff (press on two messages to compare) |
 | q | Quit, after a confirmation **(configurable: `quit`)** |
 | Esc | Back to call list |
-| d | Cycle SDP display mode (none / summary / full) |
-| t | Cycle timestamp mode (absolute / delta-prev / delta-first / scaled) |
-| c | Cycle color scheme (method / call-id / cseq) |
+| d | Cycle SDP display mode (hidden / summary / full) |
+| t | Cycle timestamp mode (absolute / delta from previous / delta from first / scaled) |
+| c | Cycle color scheme (method / Call-ID / CSeq) |
 | h | Cycle header-name display (as captured / expanded / compact) — visual only, rewrites `From:` ↔ `f:` etc. in the message text views |
-| R | Toggle detail panel visibility |
-| + / = / 0 / Left | Widen the detail pane, narrowing the ladder (with the split off, shows a hint instead) |
-| - / 9 / Right | Narrow the detail pane, widening the ladder (with the split off, shows a hint instead) |
+| R | Show or hide the detail pane |
+| + / = / 0 / Left | Widen the detail pane, narrowing the ladder (with the detail pane off, shows a hint instead) |
+| - / 9 / Right | Narrow the detail pane, widening the ladder (with the detail pane off, shows a hint instead) |
 | w | Toggle line wrapping in the detail pane (off = long lines truncate and a scrollbar appears along the bottom edge) |
 | ← / → | Scroll the detail pane horizontally when it has focus with wrap off |
-| \[ | Scroll detail panel up |
-| \] | Scroll detail panel down |
+| \[ | Scroll the detail pane up |
+| \] | Scroll the detail pane down |
 | e | Expand/collapse the selected fold header (retransmissions, auth retries) |
 | f | Filter the ladder to the selected message's transaction (toggle) |
 | a | Open combined detail for the selected message's transaction |
@@ -10286,17 +10292,17 @@ active filter.
 | C | Write, amend or remove your note on the selected message. The note is yours, never sipnab's analysis: sipnab shows it in a pane titled so, marks the row with `✎`, writes it as a packet comment when you save PCAP-NG, and saves it to a notes file with the NOTES save format. See [Operator notes](#operator-notes) |
 | x / F4 | Toggle extended multi-leg flow **(configurable: `extended_flow`)** — shows related B2BUA/SBC call legs together, for tracing a call through proxies and back-to-back user agents |
 | r | Jump to RTP Streams view |
-| N | Name endpoints (map IP → host/FQDN; Tab/Shift-Tab switch between the offered participants) |
+| N | Name endpoints (map IP → host/FQDN, and Tab/Shift+Tab switch between the offered participants) |
 | F1 / ? | Help **(configurable: `help`)** |
 | F2 | Save **(configurable: `save`)** |
 | F5 | Reset message-compare selection **(configurable: `clear_calls`)** |
 | F6 / Ctrl+R | Toggle RTP display in flow (`Ctrl+R` is an alias for front-ends that cannot send F-keys) |
 | F7 | Open filter dialog **(configurable: `filter`)** |
-| F9 | Clear active filter **and** persisted search |
+| F9 | Clear filter: drops the view filter **and** the persisted search |
 
-In the split view, `Tab` moves keyboard focus between the two panes; the
-status line names the focused pane (`Focus: Ladder` / `Focus: Detail`)
-and gets a highlighted border. When either pane has more rows than fit, a
+While the detail pane shows, `Tab` moves keyboard focus between the two panes.
+The status line names the focused pane (`Focus: Ladder` / `Focus: Detail`),
+and that pane gets a highlighted border. When either pane has more rows than fit, a
 vertical scrollbar appears on its right edge. `[` and `]` always scroll the
 detail pane regardless of focus.
 
@@ -10530,7 +10536,7 @@ or unchecks every method at once.
 | Down / j | Next setting |
 | Enter / Space | Toggle or cycle the focused setting |
 
-Settings items: Color mode, Timestamp mode, Autoscroll, Raw preview, SDP display mode, Syntax highlighting
+Settings items: Colors, Timestamps, Autoscroll, Detail pane, SDP, Syntax colors. Values read as the rest of the TUI spells them: `Delta from previous`, `Call-ID`, `Hidden`, `On` and `Off`.
 
 ## File open popup
 
@@ -10577,20 +10583,20 @@ browse your own files.
 Press `t` in the Call List or Call Flow to cycle through the timestamp modes (both views share the mode):
 
 1. **Absolute** -- `HH:MM:SS.mmm` wall-clock time
-2. **Delta-prev** (default) -- `+N.NNNs` time since previous entry. Color-coded in call flow:
+2. **Delta from previous** (default) -- `+N.NNNs` time since previous entry. Color-coded in call flow:
    - Green: < 100 ms
    - Yellow: 100 ms - 1 s
    - Red: 1 s - 5 s
    - Bold red: > 5 s
-3. **Delta-first** -- `+N.NNNs` cumulative time from first entry
-4. **Scaled** -- delta-prev timestamps plus time-proportional spacer rows, so
+3. **Delta from first** -- `+N.NNNs` cumulative time from first entry
+4. **Scaled** -- delta-from-previous timestamps plus time-proportional spacer rows, so
    quiet gaps are visible in the ladder. The set of visible messages is
    identical in every mode — only the presentation changes.
 
 In the Call List the timing column's header names the mode, because the
 column shows different data in each: **Start** in Absolute (the dialog's
-start time, `HH:MM:SS`), **+Prev** in Delta-prev (time since the dialog above
-it, in the list's current sort order), and **+First** in Delta-first (time
+start time, `HH:MM:SS`), **+Prev** in Delta from previous (time since the dialog above
+it, in the list's current sort order), and **+First** in Delta from first (time
 since the first dialog). The spacer rows of Scaled belong to the ladder, so
 the Call List shows Scaled as **+Prev**. The F10 column selector and the
 `visible_columns` setting still call this column `Date`.
@@ -10600,7 +10606,7 @@ the Call List shows Scaled as **+Prev**. The F10 column selector and the
 <span class="terminal-dot red"></span><span class="terminal-dot yellow"></span><span class="terminal-dot green"></span>
 <span class="terminal-title">Timestamp Modes Comparison</span>
 </div>
-<pre class="terminal-body"><span class="t-header">Absolute:</span>           <span class="t-header">Delta-prev:</span>          <span class="t-header">Delta-first:</span>
+<pre class="terminal-body"><span class="t-header">Absolute:</span>           <span class="t-header">Delta from previous:</span> <span class="t-header">Delta from first:</span>
 14:23:01.000  INVITE  +0.000s  INVITE      +0.000s  INVITE
 14:23:01.003  100     <span class="t-good">+0.003s</span>  100         +0.003s  100
 14:23:01.847  180     <span class="t-warn">+0.844s</span>  180         +0.847s  180
@@ -10609,7 +10615,7 @@ the Call List shows Scaled as **+Prev**. The F10 column selector and the
 14:24:08.320  BYE     <span class="t-bad">+65.18s</span>  BYE         +67.32s  BYE</pre>
 </div>
 
-> **Tip:** Delta-prev mode is ideal for spotting latency spikes in call setup. Delta-first mode is useful for measuring total elapsed time from the first message.
+> **Tip:** Delta from previous is ideal for spotting latency spikes in call setup. Delta from first is useful for measuring total elapsed time from the first message.
 
 ## Name resolution
 
@@ -10667,9 +10673,9 @@ The call list is the main view when sipnab starts. It shows all tracked SIP dial
 <span class="terminal-dot red"></span><span class="terminal-dot yellow"></span><span class="terminal-dot green"></span>
 <span class="terminal-title">sipnab -- Call List</span>
 </div>
-<pre class="terminal-body"><span class="t-header"> Current Mode: Online (eth0)   Dialogs: 47 (47 displayed)  [A]</span>
-<span class="t-muted"> Match Expression:             BPF Filter: port 5060</span>
-<span class="t-muted"> Time: Delta-prev</span>
+<pre class="terminal-body"><span class="t-header"> Live capture: eth0    Dialogs: 47 shown of 47    Autoscroll: on</span>
+<span class="t-muted"> Capture filter (BPF): port 5060</span>
+<span class="t-muted"> View filter: none</span>
 <span class="t-muted">  #  Method     From           To             Src IP         Dst IP         State        Msgs  +Prev       PDD</span>
 <span class="t-selected">▸</span><span class="t-accent"> 1  INVITE     alice          bob            192.0.2.1      192.0.2.2      </span><span class="t-good">InCall</span><span class="t-accent">         12  +0.000s     847ms</span>
   <span class="t-accent">2  INVITE     charlie        dave           192.0.2.3      192.0.2.4      </span><span class="t-warn">Ringing</span><span class="t-accent">         6  +1.234s     --</span>
@@ -10678,8 +10684,17 @@ The call list is the main view when sipnab starts. It shows all tracked SIP dial
   <span class="t-accent">5  INVITE     1005           1006           192.0.2.1      192.0.2.2      </span><span class="t-good">Completed</span><span class="t-accent">      14  +0.003s     923ms</span>
   <span class="t-accent">6  OPTIONS    monitor        --             192.0.2.8      192.0.2.1      </span><span class="t-good">Completed</span><span class="t-accent">       2  +0.001s     --</span>
   <span class="t-accent">7  INVITE     1010           +441234567     192.0.2.9      192.0.2.7      </span><span class="t-good">InCall</span><span class="t-accent">         10  +0.215s     1.2s</span>
-<span class="t-muted">  Esc Quit  Enter Show  F2 Save  F7 Filter  F8 Settings  F10 Columns  Tab Streams</span></pre>
+<span class="t-muted">  Esc Quit  F1 Help  Enter Open call  Tab Streams  F2 Save  F7 Filter</span></pre>
 </div>
+
+The three lines above the list say what you are looking at. Line 1 names
+the source (`Live capture: eth0` or `File: call.pcap`), how many dialogs the
+list shows out of how many sipnab holds, and whether autoscroll is on. Line 2
+is the capture (BPF) filter the kernel applies, `none` when sipnab compiled
+no filter. Line 3 is the view filter from `F7` and any search you kept with
+Enter, and it also carries status messages, with errors in red. The key bar
+at the bottom lists the keys of the view you are in, `F1 Help` first after the
+way out, and fewer of them on a narrow terminal.
 
 > **Tip:** Press `Space` to star dialogs — a starred row shows `[*]` in the `#` column (the `▸` above is just the cursor). `F2` then saves only the starred dialogs, and `Enter` opens two or more of them as a single merged flow. Use `<` / `>` to sort by different columns and `Z` to reverse sort direction.
 
@@ -10711,7 +10726,7 @@ The call flow shows a ladder diagram for a selected dialog, with timing, SDP, an
 <span class="t-accent">+65.323s  </span><span class="t-bad">|&lt;--------- BYE ---------|</span><span class="t-muted">                        |</span>
 <span class="t-accent">+65.326s  </span><span class="t-good">|------- 200 OK --------&gt;|</span><span class="t-muted">                        |</span>
 <span class="t-muted">          |                        |                        |</span>
-<span class="t-muted">  Esc Back  Enter Raw  Space Diff  d SDP  t Time  m Mark  x Extended  F6 RTP</span></pre>
+<span class="t-muted">  Esc Back  F1 Help  ↑↓ Move  Enter Raw  d SDP  t Time  c Color  R Detail</span></pre>
 </div>
 
 > **Tip:** Press `m` to set a mark at any message, then navigate to another message to see the delta badge showing elapsed time between them. Press `M` to clear the mark. Use `d` to cycle through SDP display modes (none / summary / full).
@@ -10747,7 +10762,7 @@ Full SIP message with optional syntax highlighting, searchable.
 <span class="t-accent">a=</span>rtpmap:8 PCMA/8000
 <span class="t-accent">a=</span>rtpmap:101 telephone-event/8000
 <span class="t-accent">a=</span>fmtp:101 0-16
-<span class="t-muted">  Esc Back  / Search  s Highlight  c Color</span></pre>
+<span class="t-muted">  Esc Back  F1 Help  s Highlight  c Color  / Search  y Copy  F2 Save</span></pre>
 </div>
 
 ### RTP streams view
@@ -10768,7 +10783,7 @@ Shows all tracked RTP streams with quality metrics. Switch here from the Call Li
   <span class="t-accent">5  0xe5f60718  192.0.2.9:14000      192.0.2.7:24000      opus    9612    </span><span class="t-good">3.2ms</span><span class="t-accent">   </span><span class="t-good">0.1%</span><span class="t-accent">    </span><span class="t-good">4.1</span>
   <span class="t-accent">6  0x29304150  192.0.2.7:24000      192.0.2.9:14000      opus    9608    </span><span class="t-good">2.9ms</span><span class="t-accent">   </span><span class="t-good">0.0%</span><span class="t-accent">    </span><span class="t-good">4.2</span>
   <span class="t-muted">7  0xdeadbeef  192.0.2.3:16000      --                   PCMU    340     </span><span class="t-bad">--</span><span class="t-muted">      </span><span class="t-bad">--</span><span class="t-muted">      </span><span class="t-bad">orphan</span>
-<span class="t-muted">  Tab Call List  Esc Back  F7 Filter</span></pre>
+<span class="t-muted">  Esc Back  F1 Help  Enter Detail  Tab Calls  F2 Save WAV  F7 Filter</span></pre>
 </div>
 
 > **Tip:** Streams marked `orphan` have no matching SIP dialog. This often indicates RTP arriving on unexpected ports (check your NAT/ALG config) or calls that started before capture began.
@@ -10782,23 +10797,34 @@ The filter popup lets you build filter expressions with text fields and checkbox
 <span class="terminal-dot red"></span><span class="terminal-dot yellow"></span><span class="terminal-dot green"></span>
 <span class="terminal-title">sipnab -- Filter Dialog</span>
 </div>
-<pre class="terminal-body"><span class="t-muted"> ┌──────────────────── Filter ────────────────────┐</span>
-<span class="t-muted"> │</span>                                                <span class="t-muted">│</span>
-<span class="t-muted"> │</span>  <span class="t-header">From:</span>     <span class="t-selected">[alice                       ]</span>      <span class="t-muted">│</span>
-<span class="t-muted"> │</span>  <span class="t-header">To:</span>       [                            ]      <span class="t-muted">│</span>
-<span class="t-muted"> │</span>  <span class="t-header">Payload:</span>  [INVITE                      ]      <span class="t-muted">│</span>
-<span class="t-muted"> │</span>                                                <span class="t-muted">│</span>
-<span class="t-muted"> │</span>  <span class="t-good">[x]</span> Case insensitive                          <span class="t-muted">│</span>
-<span class="t-muted"> │</span>  <span class="t-muted">[ ]</span> Invert match                              <span class="t-muted">│</span>
-<span class="t-muted"> │</span>  <span class="t-muted">[ ]</span> Calls only                                <span class="t-muted">│</span>
-<span class="t-muted"> │</span>                                                <span class="t-muted">│</span>
-<span class="t-muted"> │</span>     <span class="t-good">[ Apply ]</span>          <span class="t-muted">[ Cancel ]</span>              <span class="t-muted">│</span>
-<span class="t-muted"> │</span>                                                <span class="t-muted">│</span>
-<span class="t-muted"> └────────────────────────────────────────────────┘</span>
-<span class="t-muted"> Tab: next field  Enter: apply  Esc: cancel  F9: clear all</span></pre>
+<pre class="terminal-body"><span class="t-muted"> ┌ Filter ──────────────────────────────────────────────┐</span>
+<span class="t-muted"> │</span>                                                      <span class="t-muted">│</span>
+<span class="t-muted"> │</span>  <span class="t-header">From user:</span>       <span class="t-selected">[alice                          ]</span>  <span class="t-muted">│</span>
+<span class="t-muted"> │</span>  <span class="t-header">To user:</span>         [                               ]  <span class="t-muted">│</span>
+<span class="t-muted"> │</span>  <span class="t-header">Source IP:</span>       [                               ]  <span class="t-muted">│</span>
+<span class="t-muted"> │</span>  <span class="t-header">Destination IP:</span>  [                               ]  <span class="t-muted">│</span>
+<span class="t-muted"> │</span>  <span class="t-header">Text in message:</span> [                               ]  <span class="t-muted">│</span>
+<span class="t-muted"> │</span>  <span class="t-header">Header:</span>          [<span class="t-muted">Name: text</span>                     ]  <span class="t-muted">│</span>
+<span class="t-muted"> │</span>  <span class="t-header">After:</span>           [<span class="t-muted">2026-07-07T08:00:00Z</span>           ]  <span class="t-muted">│</span>
+<span class="t-muted"> │</span>  <span class="t-header">Before:</span>          [<span class="t-muted">2026-07-07T09:00:00Z</span>           ]  <span class="t-muted">│</span>
+<span class="t-muted"> │</span>  ──────────────────────────────────────────────────  <span class="t-muted">│</span>
+<span class="t-muted"> │</span>  All       <span class="t-good">[*]</span>                                       <span class="t-muted">│</span>
+<span class="t-muted"> │</span>  REGISTER  <span class="t-good">[*]</span>             OPTIONS   <span class="t-good">[*]</span>             <span class="t-muted">│</span>
+<span class="t-muted"> │</span>  INVITE    <span class="t-good">[*]</span>             PUBLISH   <span class="t-good">[*]</span>             <span class="t-muted">│</span>
+<span class="t-muted"> │</span>     <span class="t-good">[ Filter ]</span>                 <span class="t-muted">[ Cancel ]</span>            <span class="t-muted">│</span>
+<span class="t-muted"> └──────────────────────────────────────────────────────┘</span>
+<span class="t-muted"> Tab Next  Space Toggle  Enter Apply  Esc Cancel  F9 Clear</span></pre>
 </div>
 
-> **Tip:** The Filter field accepts the full [Filter DSL](filter-dsl.md) syntax. Combine it with the From/To text fields for powerful multi-criteria matching. Press `F9` to clear all filters at once.
+Each label says what its field matches: From user and To user match the
+user part of the URI, Source IP and Destination IP the addresses, and Text in
+message searches every SIP message of the call. Header takes `Name: text`, or
+a bare header name to find the calls that carry it. After and Before take an
+RFC 3339 timestamp, and the empty fields show an example in gray.
+
+> **Tip:** Press `F9` to clear every field and the method boxes at once. For
+anything the fields cannot say, the [Filter DSL](filter-dsl.md) takes the full
+expression.
 
 ### Save dialog (F2)
 
@@ -10807,24 +10833,29 @@ Save captured data in multiple formats. Use `Tab` to cycle through formats.
 <div class="terminal">
 <div class="terminal-bar">
 <span class="terminal-dot red"></span><span class="terminal-dot yellow"></span><span class="terminal-dot green"></span>
-<span class="terminal-title">sipnab -- Save Capture</span>
+<span class="terminal-title">sipnab -- Save capture</span>
 </div>
-<pre class="terminal-body"> <span class="t-muted">┌────────────────── Save Capture ──────────────────┐</span>
- <span class="t-muted">│</span>                                                  <span class="t-muted">│</span>
- <span class="t-muted">│</span>  <span class="t-header">Format:</span>  <span class="t-good">PCAP</span> <span class="t-muted">│ PCAP-NG │ TXT │ Mermaid</span>         <span class="t-muted">│</span>
- <span class="t-muted">│</span>                                                  <span class="t-muted">│</span>
- <span class="t-muted">│</span>  <span class="t-header">File:</span>    <span class="t-selected">[/tmp/capture.pcap           ]</span>         <span class="t-muted">│</span>
- <span class="t-muted">│</span>                                                  <span class="t-muted">│</span>
- <span class="t-muted">│</span>  <span class="t-muted">Saving: All 47 dialogs</span>                          <span class="t-muted">│</span>
- <span class="t-muted">│</span>  <span class="t-accent">(3 selected -- will save selected only)</span>         <span class="t-muted">│</span>
- <span class="t-muted">│</span>                                                  <span class="t-muted">│</span>
- <span class="t-muted">│</span>     <span class="t-good">[ Save ]</span>           <span class="t-muted">[ Cancel ]</span>                <span class="t-muted">│</span>
- <span class="t-muted">│</span>                                                  <span class="t-muted">│</span>
- <span class="t-muted">└──────────────────────────────────────────────────┘</span>
- <span class="t-muted">Tab: cycle format  Enter: save  Esc: cancel</span></pre>
+<pre class="terminal-body"><span class="t-muted"> ┌ Save capture ────────────────────────────────────────────────────────┐</span>
+<span class="t-muted"> │</span>  <span class="t-header">Save to:</span> <span class="t-selected">/tmp/sipnab_20240615_120000.pcap</span>                           <span class="t-muted">│</span>
+<span class="t-muted"> │</span>  <span class="t-muted">Dialogs: 47 (3 checked) · Messages: 212</span>                             <span class="t-muted">│</span>
+<span class="t-muted"> │</span>                                                                      <span class="t-muted">│</span>
+<span class="t-muted"> │</span>  <span class="t-accent">Packet capture</span>                                                      <span class="t-muted">│</span>
+<span class="t-muted"> │</span>    <span class="t-good">▸ PCAP      Universal baseline (Wireshark, tcpdump, Homer)</span>        <span class="t-muted">│</span>
+<span class="t-muted"> │</span>      PCAP-NG   Modern format with metadata and annotations           <span class="t-muted">│</span>
+<span class="t-muted"> │</span>  <span class="t-accent">Reporting</span>                                                           <span class="t-muted">│</span>
+<span class="t-muted"> │</span>      HTML      Ladder diagram page (Mermaid), no dependencies        <span class="t-muted">│</span>
+<span class="t-muted"> │</span>      Markdown  Call summary for tickets and incidents                <span class="t-muted">│</span>
+<span class="t-muted"> │</span>  <span class="t-muted">…</span>                                                                   <span class="t-muted">│</span>
+<span class="t-muted"> │</span>  <span class="t-good">[Enter]</span> Save  <span class="t-header">[Tab/⇧Tab]</span> Format  <span class="t-warn">[Esc]</span> Cancel                       <span class="t-muted">│</span>
+<span class="t-muted"> └──────────────────────────────────────────────────────────────────────┘</span>
+<span class="t-muted"> Enter Save  Tab Format  Esc Cancel</span></pre>
 </div>
 
-> **Tip:** Select specific dialogs in the Call List with `Space` before pressing `F2`. The save dialog shows the count and saves only those. **Mermaid** format exports a sequence diagram you can paste into documentation.
+The path and the dialog count stay at the top and the keys at the bottom on
+any terminal height, and only the format list scrolls. With no dialog checked the
+count line says `none checked, so all are saved`.
+
+> **Tip:** Select specific dialogs in the Call List with `Space` before pressing `F2`. The save dialog shows the count and saves only those. **HTML** writes a ladder diagram page drawn with Mermaid that you can open in any browser.
 
 ### Settings dialog (F8)
 
@@ -10835,17 +10866,18 @@ Toggle display options without leaving the TUI.
 <span class="terminal-dot red"></span><span class="terminal-dot yellow"></span><span class="terminal-dot green"></span>
 <span class="terminal-title">sipnab -- Settings</span>
 </div>
-<pre class="terminal-body"> <span class="t-muted">┌─────────────────── Settings ───────────────────┐</span>
- <span class="t-muted">│</span>                                                <span class="t-muted">│</span>
- <span class="t-muted">│</span>  <span class="t-selected">▸ Color mode         </span><span class="t-good">always</span>                   <span class="t-muted">│</span>
- <span class="t-muted">│</span>    Timestamp mode     <span class="t-accent">delta-prev</span>               <span class="t-muted">│</span>
- <span class="t-muted">│</span>    Autoscroll         <span class="t-good">on</span>                       <span class="t-muted">│</span>
- <span class="t-muted">│</span>    Raw preview        <span class="t-bad">off</span>                      <span class="t-muted">│</span>
- <span class="t-muted">│</span>    SDP display        <span class="t-accent">summary</span>                  <span class="t-muted">│</span>
- <span class="t-muted">│</span>    Syntax highlighting <span class="t-good">on</span>                      <span class="t-muted">│</span>
- <span class="t-muted">│</span>                                                <span class="t-muted">│</span>
- <span class="t-muted">└────────────────────────────────────────────────┘</span>
- <span class="t-muted">Up/Down: navigate  Enter/Space: toggle  Esc: close</span></pre>
+<pre class="terminal-body"><span class="t-muted"> ┌ Settings ──────────────────────────────────────┐</span>
+<span class="t-muted"> │</span>                                                <span class="t-muted">│</span>
+<span class="t-muted"> │</span>  <span class="t-selected">Colors:           [Method]</span>                    <span class="t-muted">│</span>
+<span class="t-muted"> │</span>  Timestamps:       <span class="t-good">[Delta from previous]</span>       <span class="t-muted">│</span>
+<span class="t-muted"> │</span>  Autoscroll:       <span class="t-good">[On]</span>                        <span class="t-muted">│</span>
+<span class="t-muted"> │</span>  Detail pane:      <span class="t-good">[On]</span>                        <span class="t-muted">│</span>
+<span class="t-muted"> │</span>  SDP:              <span class="t-good">[Hidden]</span>                    <span class="t-muted">│</span>
+<span class="t-muted"> │</span>  Syntax colors:    <span class="t-good">[On]</span>                        <span class="t-muted">│</span>
+<span class="t-muted"> │</span>                                                <span class="t-muted">│</span>
+<span class="t-muted"> │</span>  <span class="t-muted">↑/↓ move · Enter toggle · Esc close</span>           <span class="t-muted">│</span>
+<span class="t-muted"> └────────────────────────────────────────────────┘</span>
+<span class="t-muted"> ↑↓ Move  Enter Toggle  Esc Close</span></pre>
 </div>
 
 ## See also
@@ -10871,7 +10903,7 @@ sipnab's TUI uses 11 semantic color slots (plus `highlight`, a legacy alias for 
 | Slot | Default | What It Affects |
 |------|---------|-----------------|
 | `background` | `reset` (terminal default) | Terminal background color |
-| `foreground` | `white` | Default text color |
+| `foreground` | `reset` (terminal default) | Default text color. The status band and key bar pick their own text color against `status_bg` |
 | `header` | `cyan` | Status bar, column headers, endpoint labels in call flow |
 | `selected` | `yellow` | Selected/highlighted row, cursor position, focused item |
 | `accent` | `magenta` | Correlation info, PDD annotations, extended flow labels |
@@ -10912,12 +10944,12 @@ plain text.
 
 ### Dark (built-in default)
 
-The built-in theme works on dark terminal backgrounds without any configuration. It is deliberately palette-neutral: `background` is `reset` (your terminal's own background shows through) and every other slot is an ANSI color name, so your terminal's palette picks the exact shades. The preview below stands in a representative xterm palette for those names.
+The built-in theme works on dark terminal backgrounds without any configuration. It is deliberately palette-neutral: `background` and `foreground` are `reset` (your terminal's own colors show through, so it reads on light terminals too) and every other slot is an ANSI color name, so your terminal's palette picks the exact shades. The preview below stands in a representative xterm palette for those names.
 
 ```toml
 [theme]
 background = "reset"
-foreground = "white"
+foreground = "reset"
 header = "cyan"
 selected = "yellow"
 accent = "magenta"
@@ -15377,7 +15409,7 @@ TUI color theme with 11 semantic color slots (plus `highlight`, a legacy alias f
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `background` | string | `"reset"` (terminal default) | Terminal background |
-| `foreground` | string | `"white"` | Default text color |
+| `foreground` | string | `"reset"` | Default text color (`reset` is the terminal's own) |
 | `highlight` | string | -- | Legacy alias for `selected` (backward compat) |
 | `header` | string | `"cyan"` | Status bar, column headers, endpoint labels |
 | `selected` | string | `"yellow"` | Selected/highlighted row, cursor, focused item |
@@ -16032,7 +16064,7 @@ itself):
 
    ```bash
    sipnab --version
-   # sipnab 0.5.185 (...) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,vcon,bpf
+   # sipnab 0.5.186 (...) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,vcon,bpf
    # libpcap version 1.10.5 (with TPACKET_V3); alternate capture backends named: none
    ```
 
@@ -17181,7 +17213,7 @@ Then confirm the build can do what you are about to ask of it:
 ```json
 {
   "schema_version": 1,
-  "version": "0.5.185",
+  "version": "0.5.186",
   "features": ["api", "audio", "hep", "mcp", "mcp-http", "metrics",
                "native", "plugins", "tls", "tui"],
   "can_decrypt": true,
@@ -17752,7 +17784,7 @@ stdin and the `sleep`s pace the handshake — so paste it as a unit:
 Expected first line of response:
 
 ```json
-{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"sipnab","version": "0.5.185"},"instructions":"sipnab MCP server — queries captured SIP dialogs ..."}}
+{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"sipnab","version": "0.5.186"},"instructions":"sipnab MCP server — queries captured SIP dialogs ..."}}
 ```
 
 ### Test the HTTP wire by hand
@@ -20211,7 +20243,7 @@ No parameters. Returns:
 ```jsonc
 {
   "schema_version": 1,
-  "version": "0.5.185",
+  "version": "0.5.186",
   "features": ["api", "hep", "mcp", "native", "tls", "tui"],
   "can_decrypt": true,           // tls
   "can_hep": true,               // hep
@@ -27701,7 +27733,7 @@ and a consumer parses it before indexing into it.
             "dscp": 0,
             "dst": "192.0.2.2",
             "dst_port": 5060,
-            "frame": "…/tests/fixtures/sip_call.pcap#0@bdb6cdb98013efe4",
+            "frame": "…/tests/fixtures/sip_call.pcap#0@4ed7f4560fa79e74",
             "from": "<sip:1001@192.0.2.1>;tag=1928301774",
             "is_request": true,
             "method": "INVITE",
@@ -29638,7 +29670,7 @@ carrier with both timestamps, because the gap between your `BYE` and their
   [example 10](#10-conformance-findings-move-with-the-vantage-point) needs.
 - [Output formats](output-formats.md#one-object-per-dialog) — every field these
   examples read out of `--json-dialogs`, with its type and meaning.
-- [Attribute media on an rtpengine relay](rtpengine.md#the-problem-on-a-real-capture)
+- [Attribute media on an rtpengine relay](rtpengine.md#the-problem-on-a-relay-capture)
   — what to do when the media in a capture like these arrives with no call
   attached to it.
 
@@ -31658,7 +31690,7 @@ drifted.
 
 | Artifact | Regenerate with |
 |---|---|
-| [`tests/fixtures/`](../../tests/fixtures) — synthetic pcaps | `cargo run --features native --bin gen_fixture` |
+| [`tests/fixtures/`](../../tests/fixtures) — capture fixtures | Every capture in the directory comes from [`tests/support/synthetic_captures.rs`](../../tests/support/synthetic_captures.rs), and so do the two SIPp media files in `harness/sipp/scenarios/` and the two fuzz seeds in `fuzz/corpus/pcap_reader/` named `truncated-sip` and `empty-classic`: fourteen in all. `cargo run --features native --bin gen_fixture` writes them, and `synthetic_captures_test` fails when a committed byte differs from what the generator builds. The directory's other fixtures, the JSON goldens, `ng` replies and TLS keys, stay as checked in. [`tests/PROVENANCE.md`](../../tests/PROVENANCE.md) records where every capture outside `tests/pcap-samples/` came from, and `every_committed_capture_is_public_or_synthetic` refuses one with no entry, finding captures by their leading bytes rather than their names. |
 | [`tests/snapshots/`](../../tests/snapshots) — TUI buffers | `cargo insta test --features tui --accept` (needs `cargo install cargo-insta`) |
 | [`tests/cli/`](../../tests/cli) — trycmd goldens | `TRYCMD=overwrite cargo test --features full --test cli_goldens` |
 | [`tests/schemas/`](../../tests/schemas) — JSON Schemas | Hand-maintained; `json_schema_test` validates output against them. |
@@ -32277,13 +32309,18 @@ describes are the ones whose contents are worth spelling out.
   Python clients under `clients/python/` and runs `pytest` over their tests
   and `scripts/tests`.
 - **`features`** — `cargo check --no-default-features --features X --tests`
-  across thirteen feature sets: each of `native`, `tls`, `api`, `mcp`, `hep`,
+  across fifteen feature sets: each of `native`, `tls`, `api`, `mcp`, `hep`,
   `metrics`, then `tls,api`, `native,tui,audio`, `native,tui,tls,hep,api`,
-  `native,hep,api,mcp,mcp-http`, `bpf`, `vcon`, and `wasm` (lib-only). `vcon`
+  `native,hep,api,mcp,mcp-http`, `bpf`, `vcon`, `audio`, `plugins`, and `wasm`
+  (lib-only). `vcon`
   is in `full`, so `--all-features` already builds it; this leg is what proves
   it also builds without `tui`, `tls`, `api` or `mcp`. The documented
   headless server recipe (`native,hep,api,mcp,mcp-http`) gets a full `cargo
-  test`, not just a compile check. `bpf` is here because every published
+  test`, not just a compile check. Three legs also run the tests that exist
+  only where a feature is absent, which no `--all-features` or `--features
+  full` run can compile: `native` runs `feature_gate_test` (no `mcp`, no
+  `hep`), `mcp` runs `app_servers_test` (no `mcp-http`), and
+  `native,tui,tls,hep,api` runs `tui_snapshot_test` (no `audio`). `bpf` is here because every published
   `*-linux-gnu` binary carries it: this leg compiles its userspace half and
   its test files, while `build.rs` takes its degrading default (no nightly, no
   `bpf-linker` on this runner) — the release job is where the kernel half is
@@ -32453,17 +32490,17 @@ wait, on every commit instead of every push. The prose pair used to sit here
 too, and moved: Vale and codespell cost about a second each, so gate 0b runs
 them at the commit and `pre-push` keeps its copies.
 
-The matrix used to be the exception: pre-push checked three of the thirteen
+The matrix used to be the exception: pre-push checked three of the fifteen
 combinations and CI ran the rest, which left a class of break with a
 push-and-wait feedback loop. [`scripts/check-feature-matrix.py`](../../scripts/check-feature-matrix.py) now runs all
-thirteen locally, reading both the combo list and `RUSTFLAGS` out of
+fifteen locally, reading both the combo list and `RUSTFLAGS` out of
 [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml) so the two cannot drift.
 
 [`pre-push`](../../.githooks/pre-push) adds thirteen hard gates that `cargo test`
 does not cover: `cargo fmt --check`, `cargo clippy --workspace --all-features --all-targets
 -D warnings`, `cargo doc` with `RUSTDOCFLAGS=-D warnings`, `cd fuzz &&
 cargo check`, the release-delivery tests, a check of the reduced feature
-combinations `tls`, `api` and `wasm`, the full thirteen-combination matrix with
+combinations `tls`, `api` and `wasm`, the full fifteen-combination matrix with
 CI's flags, a non-Linux compile of the whole tree, a YANG validation of the
 `sipnab-diagnosis` module, a `zola build` of the website, and the two prose
 linters — Vale and codespell.
@@ -32523,7 +32560,7 @@ someone builds without that feature. It has bitten twice — the `features` job
 below records "at one point 7 of 8 reduced combos failed to build", and it
 happened again on the 0.5.61 release commit, where a test reflecting over `Cli`
 (behind `native`) took a whole test target out of every build without it. Three
-combinations, not thirteen: `tls` and `api` are the ones that *exclude* `native`,
+combinations, not fifteen: `tls` and `api` are the ones that *exclude* `native`,
 where the breakage lives, and `wasm` is the most distant target. The full matrix
 stays in CI. CI skips a combination the crate does not define, the way the
 fuzz gate skips a missing `fuzz/`.
@@ -33735,7 +33772,7 @@ Decoded from the committed fixture, every packet carries it:
 
 ```text
 HEP #1 capture-proto=0x3d correlation-id='km-670bd208@sipnab'  d7:command5:offer...
-HEP #2 capture-proto=0x3d correlation-id='km-670bd208@sipnab'  d3:sdp136:v=0...   <- reply
+HEP #2 capture-proto=0x3d correlation-id='km-670bd208@sipnab'  d3:sdp138:v=0...   <- reply
 ```
 
 The passive sniffer stays on the roadmap as a second delivery path behind the
@@ -33862,10 +33899,16 @@ caught.
 
 ## Proving the claim
 
-[`tests/fixtures/rtpengine-ng-hep.pcap`](../../tests/fixtures/rtpengine-ng-hep.pcap) is a live capture, not a construction:
-rtpengine 12.5.1 with `--homer-enable-ng`, six HEP packets covering
+[`tests/fixtures/rtpengine-ng-hep.pcap`](../../tests/fixtures/rtpengine-ng-hep.pcap) holds six HEP packets covering
 offer/answer/delete with their replies, and forty relayed RTP packets on the
-four sockets those commands allocated.
+four sockets those commands allocated. It started as a live capture from
+rtpengine 12.5.1 with `--homer-enable-ng`.
+[`tests/support/synthetic_captures.rs`](../../tests/support/synthetic_captures.rs) now builds it, keeping the live
+exchange's key order, reply shapes, ports and timing and replacing every
+address, MAC address and cookie with a documentation value. The repository
+publishes nothing from the lab's network, and
+[`tests/synthetic_captures_test.rs`](../../tests/synthetic_captures_test.rs) rebuilds the file byte for byte and
+checks those wire shapes on the committed bytes.
 
 Two properties make it discriminating rather than merely convenient, and
 [`tests/rtpengine_ng_test.rs`](../../tests/rtpengine_ng_test.rs) asserts both instead of describing them:
@@ -33888,13 +33931,19 @@ Both fixtures above carry an `ng` exchange this project generated itself. That
 proves the decoder and proves nothing about whether a real proxy and a real
 relay, talking to each other, produce something sipnab can use.
 
-`rtpengine-opensips-ng.pcap` closes that. It is a SIPp call driven through
-OpenSIPS and rtpengine in the harness, with `--homer-enable-ng` set, filtered
-to what a SEPARATE relay host would see: media and the relay's own control
-plane, no SIP. The Call-ID it recovers is OpenSIPS's, so the name travels
-proxy to rtpengine to HEP to sipnab and arrives on a host that captured no
-signaling at all. `rtpengine-opensips-media-only.pcap` is the same capture
-with the sixteen control-plane packets removed.
+`rtpengine-opensips-ng.pcap` closes that. It began as a SIPp call driven
+through OpenSIPS and rtpengine in the harness, with `--homer-enable-ng` set,
+filtered to what a SEPARATE relay host would see: media and the relay's own
+control plane, no SIP. The Call-ID it recovers is the one OpenSIPS handed the
+relay, so the name travels proxy to rtpengine to HEP to sipnab and arrives on
+a host that captured no signaling at all. `rtpengine-opensips-media-only.pcap`
+is the same capture with the four control-plane packets removed.
+
+The harness capture carried the opening of a third-party G.722 recording, so
+in September 2026 [`tests/support/synthetic_captures.rs`](../../tests/support/synthetic_captures.rs) rebuilt the pair. The
+rebuild keeps OpenSIPS's key order, the relay's conversion from G.722 to PCMU,
+and the timing, puts synthetic G.722 in the caller's packets, and moves the
+addresses into 198.51.100.0/24.
 
 Two things came out of building it that the synthetic test could not reach.
 

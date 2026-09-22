@@ -16,6 +16,12 @@ mod run_support;
 /// tests here.
 const FIXTURE: &str = "tests/fixtures/sip_call.pcap";
 
+/// The Call-ID of the one dialog in [`FIXTURE`]. Its host part, like every
+/// address in the fixture, moved to RFC 5737 documentation addresses in
+/// September 2026, when the fixture was regenerated so that no committed
+/// capture carries an address from a private network.
+const FIXTURE_CALL_ID: &str = "test-call-1@192.0.2.1";
+
 /// Run the binary under the shared test baseline (see [`run_support::run`])
 /// with `SIPNAB_LOG=off`; return stdout, asserting the process exited 0.
 ///
@@ -78,7 +84,7 @@ fn text_dump_emits_raw_sip() {
     // --text-dump prints the raw SIP message text (request line + headers).
     let out = run(&["-N", "-I", FIXTURE, "--text-dump"]);
     assert!(
-        out.contains("INVITE sip:1002@10.0.0.2 SIP/2.0"),
+        out.contains("INVITE sip:1002@192.0.2.2 SIP/2.0"),
         "--text-dump must contain the raw SIP request line"
     );
     assert!(out.contains("Via: SIP/2.0/UDP"), "raw headers expected");
@@ -849,6 +855,95 @@ fn a_hep_carried_register_flood_is_not_written_to_the_jail_log() {
     );
 }
 
+/// `--alert reg-flood:50/10s:5m` end to end: once the rule fires for a source,
+/// a second flood from that source inside five minutes raises no alert, and
+/// one after the five minutes does.
+///
+/// The rule string, the detector and the alert engine are all the real ones,
+/// driven by a capture. `--reg-flood-threshold 1` makes every refused
+/// registration after the first in a second one detector finding, so a burst
+/// of 60 is 59 findings: past the rule's 50-in-10-seconds, once. Three bursts,
+/// at 0 s, 60 s and 400 s of capture time. The first fires, the second is
+/// inside the cooldown and the third is past it, so the answer is exactly two
+/// alerts. Without the rule the engine's default (one finding, 60 s cooldown)
+/// fires on every burst, and a broken cooldown fires on every finding past the
+/// fiftieth, so both regressions change the count.
+#[test]
+fn reg_flood_rule_cooldown_suppresses_repeat_alert() {
+    const SBC: [u8; 4] = [10, 1, 0, 1];
+    const REGISTRAR: [u8; 4] = [10, 2, 0, 1];
+    let register = |i: usize| {
+        format!(
+            "REGISTER sip:10.2.0.1 SIP/2.0\r\n\
+             Via: SIP/2.0/UDP 10.1.0.1:5060;branch=z9hG4bKcool{i}\r\n\
+             Max-Forwards: 70\r\n\
+             From: <sip:alice@10.1.0.1>;tag=c{i}\r\n\
+             To: <sip:alice@10.2.0.1>\r\n\
+             Call-ID: cool-{i}@10.1.0.1\r\n\
+             CSeq: 1 REGISTER\r\n\
+             Authorization: Digest username=\"alice\", realm=\"10.2.0.1\", nonce=\"n\", \
+             uri=\"sip:10.2.0.1\", response=\"0\"\r\n\
+             Content-Length: 0\r\n\r\n"
+        )
+    };
+    let refusal = |i: usize| {
+        format!(
+            "SIP/2.0 401 Unauthorized\r\n\
+             Via: SIP/2.0/UDP 10.1.0.1:5060;branch=z9hG4bKcool{i}\r\n\
+             From: <sip:alice@10.1.0.1>;tag=c{i}\r\n\
+             To: <sip:alice@10.2.0.1>;tag=t{i}\r\n\
+             Call-ID: cool-{i}@10.1.0.1\r\n\
+             CSeq: 1 REGISTER\r\n\
+             Content-Length: 0\r\n\r\n"
+        )
+    };
+    let mut frames: Vec<(Vec<u8>, u64)> = Vec::new();
+    for (burst, start_secs) in [0u64, 60, 400].into_iter().enumerate() {
+        for n in 0..60u64 {
+            let i = burst * 60 + n as usize;
+            let at = start_secs * 1_000_000 + n * 10_000;
+            frames.push((
+                pcap_build::udp_frame(SBC, REGISTRAR, 5060, 5060, register(i).as_bytes()),
+                at,
+            ));
+            frames.push((
+                pcap_build::udp_frame(REGISTRAR, SBC, 5060, 5060, refusal(i).as_bytes()),
+                at + 5_000,
+            ));
+        }
+    }
+    let dir = tempfile::tempdir().expect("tempdir");
+    let pcap = dir.path().join("reg-flood-cooldown.pcap");
+    pcap_build::write_pcap_at(&pcap, &frames, 1);
+
+    let (_, stderr, code) = run_support::run(
+        &[
+            "--no-config",
+            "-N",
+            "-I",
+            pcap.to_str().expect("utf-8 path"),
+            "--reg-flood",
+            "--reg-flood-threshold",
+            "1",
+            "--alert",
+            "reg-flood:50/10s:5m",
+        ],
+        Some("warn"),
+    );
+    assert_eq!(code, Some(0), "the run failed:\n{stderr}");
+    let alerts: Vec<&str> = stderr
+        .lines()
+        .filter(|l| l.contains("[ALERT] reg_flood src=10.1.0.1"))
+        .collect();
+    assert_eq!(
+        alerts.len(),
+        2,
+        "the flood at 0 s alerts, the one at 60 s is inside the 5 m cooldown, \
+         the one at 400 s is past it:\n{}",
+        alerts.join("\n")
+    );
+}
+
 /// `--reg-flood --fail2ban` arms a producer of jail lines, so the startup
 /// warning that this run "will emit nothing" must stay quiet -- and with no
 /// producer armed it must print. The warning looked at the scanner detector
@@ -1286,7 +1381,7 @@ fn call_report_resolves_by_call_id_in_branch_mode() {
             "--dialog-track",
             "branch",
             "--call-report",
-            "test-call-1@10.0.0.1",
+            FIXTURE_CALL_ID,
             "--no-cli-print",
         ],
         Some("error"),

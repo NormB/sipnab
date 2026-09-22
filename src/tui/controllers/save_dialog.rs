@@ -63,7 +63,7 @@ pub(in crate::tui) fn handle_save_popup_key(app: &mut App, key: KeyEvent) {
             // only) path can only fail once the deferred write runs, so
             // catch it here and keep the popup open for the user to fix.
             if app.save.path.trim().is_empty() {
-                app.status_error = Some("Save path is empty".to_string());
+                app.set_status_error("Save path is empty: type a file name, then Enter");
                 return;
             }
             // Defer the write one event-loop tick (App::run_pending_save):

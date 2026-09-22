@@ -164,7 +164,7 @@ thirteen in [`.githooks/pre-push`](https://github.com/NormB/sipnab/blob/main/.gi
 `# -- Hard gate` in the hook: `fmt`,
 `clippy --workspace --all-features --all-targets`, `cargo doc` with `-D warnings`,
 a `fuzz` workspace check, the release-delivery tests, the reduced feature
-combinations, CI's full thirteen-combination feature matrix, the non-Linux arm
+combinations, CI's full fifteen-combination feature matrix, the non-Linux arm
 of every platform cfg, the YANG module and its [RFC 7951](https://www.rfc-editor.org/rfc/rfc7951) exports, the test count
 a commit message claims, the refusal to tag `v*` at a commit whose CI is not
 green, the prose linters, and a `zola build` of the website. Plus the conditional corpus gate, and the CI jobs behind

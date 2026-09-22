@@ -2,27 +2,27 @@
 source: tests/tui_snapshot_test.rs
 expression: output
 ---
- Current Mode: Online (any)    Dialogs: 3 (3 displayed)  [A]
- Match Expression:     BPF Filter:
- Display Filter:
+ Live capture: any    Dialogs: 3 shown of 3    Autoscroll: on
+ Capture filter (BPF): none
+ View filter: none
 ┌ RFC conformance ─────────────────────────────────────────────────────────────┐
-│RFC conformance findings                                                      │
-│                                                                              │
 │  7 findings                                                                  │
 │                                                                              │
-│  [ERROR]  RFC 3261 §8.1.1  (msg #0)  SIP-3261-8.1.1-MANDATORY-HEADER-MISSING │
+│  [ERROR]  RFC 3261 §8.1.1, message 1 of 4                                    │
+│    SIP-3261-8.1.1-MANDATORY-HEADER-MISSING                                   │
 │    observed:  no Via header field                                            │
 │    expected:  Via present                                                    │
 │    Via is one of the six fields §8.1.1 calls mandatory in all SIP requests. A│
+│    request without it cannot be routed, answered or matched to a transaction.│
 │                                                                              │
-│  [WARNING]  RFC 3261 §8.1.1.6  (msg #0)  SIP-3261-8.1.1.6-MAX-FORWARDS-MISSIN│
+│  [WARNING]  RFC 3261 §8.1.1.6, message 1 of 4                                │
+│    SIP-3261-8.1.1.6-MAX-FORWARDS-MISSING                                     │
 │    observed:  no Max-Forwards header field                                   │
 │    expected:  Max-Forwards: 70                                               │
 │    §8.1.1.6 makes a UAC insert one into every request it originates. Without │
+│    it a routing loop has nothing to stop it, and RFC 3261 §16.6 leaves each  │
+│    proxy to invent its own starting value.                                   │
 │                                                                              │
-│  [ERROR]  RFC 3261 §8.1.1  (msg #1)  SIP-3261-8.1.1-MANDATORY-HEADER-MISSING │
-│    observed:  no Via header field                                            │
-│    expected:  Via present                                                    │
-│    Via is one of the six fields §8.1.1 calls mandatory in all SIP requests. R│
+│  [ERROR]  RFC 3261 §8.1.1, message 2 of 4                                    │
 └──────────────────────────────────────────────────────────────────────────────┘
-Esc Back
+Esc Back  F1 Help  ↑↓ Scroll  PgUp/Dn Page

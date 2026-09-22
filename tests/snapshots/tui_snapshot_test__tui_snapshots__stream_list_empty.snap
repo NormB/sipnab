@@ -2,10 +2,15 @@
 source: tests/tui_snapshot_test.rs
 expression: output
 ---
- Current Mode: Online (any)    Dialogs: 0 (0 displayed)  [A]
- Match Expression:     BPF Filter:
- Display Filter:
-SSRC    Codec  Source  Destina Pkts   Jitter  Loss    Durati Dialog  SDP   Statu
+ Live capture: any    Dialogs: 0 shown of 0    Autoscroll: on
+ Capture filter (BPF): none
+ View filter: none
+  SSRC   Codec   Source Destina Pkts   Jitter  Loss   Duratio Dialog SDP   Statu
+
+  No RTP streams yet.
+
+  A stream appears here once RTP packets are seen.
+  Tab returns to the call list.
 
 
 
@@ -20,9 +25,4 @@ SSRC    Codec  Source  Destina Pkts   Jitter  Loss    Durati Dialog  SDP   Statu
 
 
 
-
-
-
-
-
-Esc Back  Enter Detail  Tab Calls  F2 Save WAV  F7 Filter
+Esc Back  F1 Help  Enter Detail  Tab Calls  F2 Save WAV  F7 Filter

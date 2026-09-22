@@ -242,7 +242,10 @@ fn documented_ceiling_values(src: &str, docs: &str) -> (Vec<String>, usize, usiz
         r"(?m)^\s*(?:pub(?:\([a-z]+\))?\s+)?const ((?:MAX|MIN|DEFAULT)_[A-Z0-9_]+)\s*:\s*(?:usize|u\d+)\s*=\s*([^;]+);",
     )
     .expect("declaration pattern");
-    let mut values = std::collections::BTreeMap::new();
+    // Every value a name is declared with: two modules may reuse a name (see
+    // `a_name_declared_twice_agrees_with_either_value_in_any_order`).
+    let mut values: std::collections::BTreeMap<String, std::collections::BTreeSet<u128>> =
+        std::collections::BTreeMap::new();
     for c in decl.captures_iter(src) {
         let raw = c[2].trim().trim_end_matches("_usize");
         let cleaned: String = raw.chars().filter(|c| *c != '_').collect();
@@ -250,7 +253,7 @@ fn documented_ceiling_values(src: &str, docs: &str) -> (Vec<String>, usize, usiz
         // guessed at: resolving one means evaluating Rust, and a wrong guess
         // here would report a disagreement that is not there.
         if let Ok(v) = cleaned.parse::<u128>() {
-            values.insert(c[1].to_string(), v);
+            values.entry(c[1].to_string()).or_default().insert(v);
         }
     }
 
@@ -267,10 +270,12 @@ fn documented_ceiling_values(src: &str, docs: &str) -> (Vec<String>, usize, usiz
             continue;
         };
         checked += 1;
-        if written != *declared {
+        if !declared.contains(&written) {
+            let declared: Vec<String> = declared.iter().map(u128::to_string).collect();
             disagreeing.push(format!(
-                "  {} is {declared} in source and {written} in a document",
-                &c[1]
+                "  {} is {} in source and {written} in a document",
+                &c[1],
+                declared.join(" or ")
             ));
         }
     }
@@ -336,6 +341,35 @@ fn the_ceiling_value_comparison_fires_on_a_disagreement() {
     let (unknown, checked, _) = documented_ceiling_values(src, "`MAX_NOT_DECLARED` (7)");
     assert_eq!(checked, 0);
     assert!(unknown.is_empty(), "{unknown:?}");
+}
+
+/// Two modules may declare a bound under the same name.
+///
+/// `capture::archive::MAX_DEPTH` is 4 and `rtpengine::bencode::MAX_DEPTH` is
+/// 16. The first version kept one value per name, so the declaration read
+/// LAST won, and which one that was depended on the order `read_dir` returned
+/// files in. The gate passed on thor-02 and failed in CI's Coverage job over
+/// the same commit, reporting the correct `MAX_DEPTH` (4) as wrong. A document
+/// citing either value is citing a real bound, so both orders must agree with
+/// both values, and a number matching neither must still be reported.
+#[test]
+fn a_name_declared_twice_agrees_with_either_value_in_any_order() {
+    let archive = "pub const MAX_SHARED: usize = 4;\n";
+    let bencode = "pub const MAX_SHARED: usize = 16;\n";
+    for src in [format!("{archive}{bencode}"), format!("{bencode}{archive}")] {
+        for cited in ["`MAX_SHARED` (4)", "`MAX_SHARED` (16)"] {
+            let (bad, checked, _) = documented_ceiling_values(&src, cited);
+            assert_eq!(checked, 1, "{cited} must be compared");
+            assert!(bad.is_empty(), "{cited} is a real bound: {bad:?}");
+        }
+        let (bad, checked, _) = documented_ceiling_values(&src, "`MAX_SHARED` (9)");
+        assert_eq!(checked, 1);
+        assert_eq!(bad.len(), 1, "9 matches neither declaration: {bad:?}");
+        assert!(
+            bad[0].contains('4') && bad[0].contains("16") && bad[0].contains('9'),
+            "the report names every declared value: {bad:?}"
+        );
+    }
 }
 
 #[test]

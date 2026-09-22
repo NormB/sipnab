@@ -10,7 +10,79 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Changed
+
+- **/download reads as tasks, one command per copy button.** Method headings
+  say what the reader does ("Install with Homebrew", "Download a static Linux
+  binary"), and "for the seasoned" is "every file, for scripted installs". The
+  build, Docker and raw-URL blocks each split into one block per command, so a
+  copy button never pastes two. Prose splits its semicolon-joined sentences.
+- **The glossary and the command-line triage tutorial are on the site.**
+  Both are generated from `docs/` and listed under "Start here" in the docs
+  navigation. The authentication page is generated too, so its site copy
+  follows the source's steps-first order instead of drifting from it.
+- **Smaller site fixes.** /api-reference/ has one `<h1>` instead of two. The
+  docs index says what it offers in one sentence, and "All 19 ... compact
+  header forms all resolve" reads once. Long explanatory HTML comments in the
+  site templates are Tera comments, so they no longer ship to every visitor.
+  `scripts/rfc-links.py` and its gate leave front matter alone, so a page
+  description stays plain text. Links inside the standards cards are
+  underlined, which axe requires against their dimmed text.
+- **The homepage starts with something a newcomer can run.** "Install and
+  open your first capture" now sits directly under the hero, one command per
+  block and copy button: install, download the sample capture, open it in the
+  terminal UI, print a report with `-N --report`, capture live. The MCP demo
+  wall is titled "Ask an AI agent about a capture" and says its commands run
+  from a source checkout. The hero defines HEP instead of "estate" and
+  "collector tier", its looping animation has a pause button (WCAG 2.2.2),
+  and its alt text follows the image that is showing. Capability rows are
+  shorter, headings are sentence case, and homepage prose carries no
+  semicolons. The two standards bands moved to a new `/standards/` page,
+  linked as "See the standards behind every number", and every standards
+  gate reads them there. Small text is at least 0.75rem and code on narrow
+  screens 0.85rem. Kickers, note chips and group titles are no longer
+  forced to uppercase.
+- **The site's docs navigation is one list.** The Docs dropdown and the docs
+  sidebar both render `[[extra.docs_nav]]` in `website/config.toml`, so a page
+  carries one task-first label in both ("Install sipnab", "Fix a common
+  problem", "Look up CLI flags", "Connect an AI agent (MCP)"). Groups read
+  "Start here", "Capture in hard places", "Use the terminal UI", "Script and
+  automate", "Connect other tools" and "Build and measure". The dropdown shows
+  the main pages of each group, one link to the developer docs, and "All
+  docs". The active entry comes from the page it links: "Learn from real
+  captures" no longer lights up on the cookbook page, and the library and
+  examples pages now light up at all. Group headings label their groups for
+  screen readers instead of being hidden from them.
+- **The site's notes lead with how-tos.** The homepage notes block, now titled
+  "How-tos and walkthroughs", shows how-tos and feature notes and never a
+  post-mortem. The notes sidebar collapses its post-mortems behind a
+  disclosure, as the notes index already did, and opens it only on a
+  post-mortem's own page. Kind chips read "How-to", "Feature" and
+  "Post-mortem" instead of the front-matter slug. Dates no longer carry a
+  leading space on the first nine days of a month. Three note descriptions
+  that printed raw Markdown are plain text.
+- **Call-IDs in code blocks survive the CDN.** Cloudflare's Email Obfuscation
+  rewrote Call-IDs such as `busy-3a2b1c@192.0.2.30` to `[email protected]`
+  for readers without JavaScript. Every page's content now sits inside the
+  CDN's `<!--email_off-->` markers.
+
+## [0.5.186] - 2026-09-22
+
 ### Added
+
+- **Every committed capture has to say where it came from.**
+  `every_committed_capture_is_public_or_synthetic` reads the index, finds
+  each capture by its leading bytes whatever the file is called (classic pcap
+  in either byte order and either timestamp precision, pcapng, NetMon 2.x, and
+  gzip around any of them), and fails on one with no entry in
+  `tests/PROVENANCE.md`. An entry is `public`, with the URL and the license,
+  or `synthetic`, with the tracked generator that writes it, and carries the
+  SHA-256 of the bytes it vouches for, so replacing a fixture's bytes means
+  saying again where they came from. An entry for a file that is gone fails
+  too. `tests/pcap-samples/` keeps its own manifest and gate. A capture that
+  is neither goes on a list that only shrinks, with its reason. Eight started
+  there and all eight now have generators, so the list is empty and its
+  ceiling is zero.
 
 - **`-I` reads archives of captures.** A `.tar`, `.tgz` or `.tar.gz` reads like
   a directory: every capture inside joins the set in capture order, and the
@@ -68,59 +140,6 @@ entry that carries them.
 
 ### Changed
 
-- **/download reads as tasks, one command per copy button.** Method headings
-  say what the reader does ("Install with Homebrew", "Download a static Linux
-  binary"), and "for the seasoned" is "every file, for scripted installs". The
-  build, Docker and raw-URL blocks each split into one block per command, so a
-  copy button never pastes two. Prose splits its semicolon-joined sentences.
-- **The glossary and the command-line triage tutorial are on the site.**
-  Both are generated from `docs/` and listed under "Start here" in the docs
-  navigation. The authentication page is generated too, so its site copy
-  follows the source's steps-first order instead of drifting from it.
-- **Smaller site fixes.** /api-reference/ has one `<h1>` instead of two. The
-  docs index says what it offers in one sentence, and "All 19 ... compact
-  header forms all resolve" reads once. Long explanatory HTML comments in the
-  site templates are Tera comments, so they no longer ship to every visitor.
-  `scripts/rfc-links.py` and its gate leave front matter alone, so a page
-  description stays plain text. Links inside the standards cards are
-  underlined, which axe requires against their dimmed text.
-- **The homepage starts with something a newcomer can run.** "Install and
-  open your first capture" now sits directly under the hero, one command per
-  block and copy button: install, download the sample capture, open it in the
-  terminal UI, print a report with `-N --report`, capture live. The MCP demo
-  wall is titled "Ask an AI agent about a capture" and says its commands run
-  from a source checkout. The hero defines HEP instead of "estate" and
-  "collector tier", its looping animation has a pause button (WCAG 2.2.2),
-  and its alt text follows the image that is showing. Capability rows are
-  shorter, headings are sentence case, and homepage prose carries no
-  semicolons. The two standards bands moved to a new `/standards/` page,
-  linked as "See the standards behind every number", and every standards
-  gate reads them there. Small text is at least 0.75rem and code on narrow
-  screens 0.85rem. Kickers, note chips and group titles are no longer
-  forced to uppercase.
-- **The site's docs navigation is one list.** The Docs dropdown and the docs
-  sidebar both render `[[extra.docs_nav]]` in `website/config.toml`, so a page
-  carries one task-first label in both ("Install sipnab", "Fix a common
-  problem", "Look up CLI flags", "Connect an AI agent (MCP)"). Groups read
-  "Start here", "Capture in hard places", "Use the terminal UI", "Script and
-  automate", "Connect other tools" and "Build and measure". The dropdown shows
-  the main pages of each group, one link to the developer docs, and "All
-  docs". The active entry comes from the page it links: "Learn from real
-  captures" no longer lights up on the cookbook page, and the library and
-  examples pages now light up at all. Group headings label their groups for
-  screen readers instead of being hidden from them.
-- **The site's notes lead with how-tos.** The homepage notes block, now titled
-  "How-tos and walkthroughs", shows how-tos and feature notes and never a
-  post-mortem. The notes sidebar collapses its post-mortems behind a
-  disclosure, as the notes index already did, and opens it only on a
-  post-mortem's own page. Kind chips read "How-to", "Feature" and
-  "Post-mortem" instead of the front-matter slug. Dates no longer carry a
-  leading space on the first nine days of a month. Three note descriptions
-  that printed raw Markdown are plain text.
-- **Call-IDs in code blocks survive the CDN.** Cloudflare's Email Obfuscation
-  rewrote Call-IDs such as `busy-3a2b1c@192.0.2.30` to `[email protected]`
-  for readers without JavaScript. Every page's content now sits inside the
-  CDN's `<!--email_off-->` markers.
 - **The cookbook, troubleshooting and reference pages read task-first.** The
   cookbook's goal table is grouped into eight tasks and now lists recipes
   13b, 60 and 65, recipes 7 and 8 are named for what the reader wants to do,
@@ -154,6 +173,61 @@ entry that carries them.
   first run and the TUI walkthrough define each term at first use, link the
   glossary, and start with `curl -LO https://sipnab.com/demos/sample-call.pcap`
   for a reader with no capture of their own.
+
+- **The TUI reads as plain words.** The header names the source
+  (`Live capture: eth0`, `File: call.pcap`, now true for a `-I` session, which
+  said `Online (any)`), counts `Dialogs: 3 shown of 5`, and spells out
+  autoscroll. Line 2 is the capture (BPF) filter and line 3 the view filter,
+  where both used to repeat the view filter. Analysis panels wrap instead of
+  cutting sentences at the border, and carrier metrics defines ASR, NER and
+  ACD one per line. Every view's key bar offers `F1 Help`, and `F1` and `?`
+  now open help from the analysis views too. The split pane is the "detail
+  pane" everywhere, settings and status values use the words the help uses,
+  and the help gains a TERMS section. Errors carry their severity in the code,
+  so `File not found` draws red, and the clipboard error says to install
+  xclip or press F12 and drag. The quality dashboard names each MOS band in a
+  word, the save dialog keeps its path, count and keys on a 24-row screen, and
+  the default text color follows the terminal, so light terminals read.
+
+- **Five committed captures are now built by a generator anyone can run.**
+  Two rtpengine relay fixtures were live captures from the lab network, a
+  fuzz seed was a copy of a third-party capture, and the two oldest fixtures
+  used private addresses. `tests/support/synthetic_captures.rs` now builds
+  all five, plus the empty fuzz seed, on RFC 5737 addresses and RFC 7042 MAC
+  addresses, and `cargo run --features native --bin gen_fixture` writes them.
+  `tests/synthetic_captures_test.rs` rebuilds each one and fails on the first
+  byte that differs. The relay pair keeps what the live exchange showed:
+  rtpengine's unsorted `ng` keys, replies with no `call-id`, the relay's ports
+  and timing, kernel forwarding after the third packet, and a `delete` reply
+  whose second fragment the capture never saw. Its addresses now match the
+  output `docs/rtpengine.md` already printed. Tests that quoted an old address
+  or Call-ID quote the new one, and each says why. Git history still holds
+  the old bytes.
+
+- **The last eight committed captures without a generator now have one.** The
+  two media files SIPp plays in the harness, `g711a.pcap` and `g722.pcap`,
+  were copies of a third-party repository that states no license. They are now
+  tones encoded as G.711 A-law and G.722, with the old files' packet counts,
+  payload types and 20 ms framing. sipnab decodes no G.722, so
+  `tests/support/codecs.rs` carries an ITU-T G.722 encoder, and the suite
+  checks it byte for byte against spandsp and FFmpeg on three inputs. The two
+  OpenSIPS relay fixtures had carried the start of that third-party G.722.
+  They keep their control plane, the relay's G.722-to-PCMU transcode and
+  their timing, and move to 198.51.100.0/24, so the Call-ID the tests quote is
+  now `1-4062@198.51.100.21`. The four STUN, TURN and ICE fixtures had been
+  built by hand with no generator. `ice_checks.pcap` and `turn_relay.pcap`
+  come out byte-identical. The two NAT fixtures change only their MAC
+  addresses, which were outside the RFC 7042 documentation block, and in
+  `stun_sdp_mismatch.pcap` the two SDP bodies' `Content-Length`, which said 126
+  for 134 bytes. Its RFC 1918 address stays, because it is the mismatch the
+  fixture shows, and the test that checks for documentation addresses lists
+  it as the one deliberate exception.
+
+- **The OpenSIPS relay test counts the relay-named streams for real.** It
+  checked the call's row with `contains('2')`, which the Call-ID alone
+  satisfies, so a report that named only one leg passed. It now reads the
+  Streams column, and a report that counts one stream fails it.
+
 
 - **`--max-gunzip-bytes` bounds a `-I capture.pcap.gz` too.** sipnab inflated
   a compressed capture to a temporary file with no bound at all, and the
@@ -195,6 +269,32 @@ entry that carries them.
   are read exactly as before.
 
 ### Fixed
+
+- **A-law audio decoded with inverted polarity.** ITU-T G.711 reads an A-law
+  byte's sign after XOR with 0x55, and a set bit 7 is positive. sipnab's decode
+  table had it the other way round, so every PCMA sample came out negated:
+  `0xD5` decoded to -8 and `0x55` to +8, the reverse of sox and FFmpeg. The
+  magnitudes were right, so levels, clipping and MOS were unaffected, but an
+  exported WAV was phase-inverted against every other tool's decode. The table
+  is now computed from the G.711 formula at compile time.
+- **An oversized REST request body is a 413, not a 400.** Every `POST` route
+  takes its JSON body fallibly so the API key is checked first, and that turned
+  the 1 MiB body limit's own 413 into a 400 that told the client its JSON was
+  malformed. `POST /v1/persistence`, `/v1/tfps/ban`, `/v1/tfps/unban` and
+  `/v1/vcon/validate` now answer 413, and the OpenAPI document lists it.
+- **`--srtp-keys` warns when it loads keys.** Loading a manual SRTP key file
+  logged only at the info level, so a run at `-q` or `SIPNAB_LOG=warn` never
+  said hand-supplied key material was in use. It now also logs `manual SRTP
+  keys loaded from <file> — use only in test environments` as a warning.
+- **`--reg-flood` matches a challenge without a `Via` branch.** A 401 or 407
+  settled a credentialed REGISTER only through the top `Via` branch, which an
+  [RFC 2543](https://www.rfc-editor.org/rfc/rfc2543) client does not send, so a branchless credential-stuffing run
+  counted no failures at all. The detector now falls back to the `Call-ID` and
+  `CSeq` that identify the transaction when there is no branch.
+- **`--reg-flood` no longer counts a challenge to an expired REGISTER.** A
+  pending REGISTER stayed open until its source aged out, so a 401 minutes
+  later still counted as a failure. A REGISTER's transaction now closes at
+  Timer F, 32 seconds ([RFC 3261 section 17.1.2.2](https://www.rfc-editor.org/rfc/rfc3261#section-17.1.2.2)).
 
 - **Troubleshooting's decode example matches this release.** It quoted
   `unsupported link type 0` and said DLT 0, 9 and 276 had no decoder, while
@@ -276,6 +376,23 @@ entry that carries them.
   reader skipped the file that sorts first before opening it, nothing signaled
   readiness and the run died with `Capture thread exited before signaling
   ready`. The first file actually read now signals it.
+
+### Internal
+
+- **Tests that exist only in a reduced build now run.** The feature-gate
+  refusals, the `mcp`-without-`mcp-http` startup error and the no-`audio` TUI
+  snapshot compiled only where a feature is absent, and CI only type-checked
+  those builds. Three `features` legs now run them with `cargo test`, and the
+  matrix gains `audio` and `plugins` on their own, which nothing built alone
+  before.
+- **Every `#[ignore]` names its reason and its runner.** A gate test fails on
+  a bare `#[ignore]`, and on an ignored test that no workflow runs with
+  `--ignored`, that its own file does not spawn, and that is not on an explicit
+  manual-only list with the reason. The PTY TUI tests gained their reasons, and
+  the one `CAP_NET_RAW` fanout test is listed as manual-only.
+- **`--alert reg-flood:50/10s:5m` is tested end to end.** A capture drives the
+  real rule string through the detector and the alert engine and proves a
+  second flood from the same source inside five minutes raises no alert.
 
 ## [0.5.185] - 2026-09-22
 

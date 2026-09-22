@@ -24,8 +24,10 @@ use pcap_build::{udp_frame, write_pcap, write_pcapng_with_dsb};
 
 /// The committed two-party call every flag-only case reads.
 const SIP_CALL: &str = "tests/fixtures/sip_call.pcap";
-/// The one dialog in [`SIP_CALL`].
-const SIP_CALL_ID: &str = "test-call-1@10.0.0.1";
+/// The one dialog in [`SIP_CALL`]. The host part moved to RFC 5737
+/// documentation addresses in September 2026, when the fixture was regenerated
+/// so that no committed capture carries an address from a private network.
+const SIP_CALL_ID: &str = "test-call-1@192.0.2.1";
 
 /// What one finished run left behind.
 struct Outcome {
@@ -415,6 +417,31 @@ fn a_readable_srtp_key_file_is_loaded_and_announced() {
         )),
         "{}",
         run.dump()
+    );
+}
+
+/// Loading a manual `--srtp-keys` file prints a WARNING, not only an info
+/// line. The file is a testing and debugging aid, and an operator running at
+/// the warn level (`-q`, or `SIPNAB_LOG=warn`) must still be told that
+/// hand-supplied key material is in use.
+#[test]
+fn srtp_keys_prints_warning() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let keys = dir.path().join("media.keys");
+    std::fs::write(&keys, format!("ssrc=4660 key={}\n", "A".repeat(40))).expect("write keys");
+    let run = sipnab_env(
+        &["-N", "-I", SIP_CALL, "--srtp-keys", s(&keys)],
+        &[("SIPNAB_LOG", "warn")],
+    );
+    assert_eq!(run.code, Some(0), "{}", run.dump());
+    let line = run
+        .stderr
+        .lines()
+        .find(|l| l.contains("manual SRTP keys loaded"))
+        .unwrap_or_else(|| panic!("no manual-keys warning at the warn level:\n{}", run.dump()));
+    assert!(
+        line.contains("WARN") && line.contains("use only in test environments"),
+        "the manual-keys line must be a WARNING that says where the keys belong: {line}"
     );
 }
 

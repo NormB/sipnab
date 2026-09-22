@@ -30,13 +30,18 @@ impl SdpDisplayMode {
         }
     }
 
-    /// Human-readable label for the status bar.
-    pub(in crate::tui) fn label(self) -> &'static str {
+    /// The mode's name, as the settings popup and the help spell it.
+    pub(in crate::tui) fn name(self) -> &'static str {
         match self {
-            Self::None => "SDP: Hidden",
-            Self::Summary => "SDP: Summary",
-            Self::Full => "SDP: Full",
+            Self::None => "Hidden",
+            Self::Summary => "Summary",
+            Self::Full => "Full",
         }
+    }
+
+    /// Human-readable label for the status bar.
+    pub(in crate::tui) fn label(self) -> String {
+        format!("SDP: {}", self.name())
     }
 }
 
@@ -95,14 +100,19 @@ impl TimestampMode {
         }
     }
 
-    /// Human-readable label for the status bar.
-    pub(in crate::tui) fn label(self) -> &'static str {
+    /// The mode's name, as the settings popup and the help spell it.
+    pub(in crate::tui) fn name(self) -> &'static str {
         match self {
-            Self::Absolute => "Time: Absolute",
-            Self::DeltaPrev => "Time: Delta-prev",
-            Self::DeltaFirst => "Time: Delta-first",
-            Self::Scaled => "Time: Scaled",
+            Self::Absolute => "Absolute",
+            Self::DeltaPrev => "Delta from previous",
+            Self::DeltaFirst => "Delta from first",
+            Self::Scaled => "Scaled",
         }
+    }
+
+    /// Human-readable label for the status bar.
+    pub(in crate::tui) fn label(self) -> String {
+        format!("Time: {}", self.name())
     }
 }
 
@@ -128,13 +138,18 @@ impl ColorMode {
         }
     }
 
-    /// Human-readable label for the status bar.
-    pub(in crate::tui) fn label(self) -> &'static str {
+    /// The mode's name, as the settings popup and the help spell it.
+    pub(in crate::tui) fn name(self) -> &'static str {
         match self {
-            Self::Method => "Color: Method",
-            Self::CallId => "Color: Call-ID",
-            Self::CSeq => "Color: CSeq",
+            Self::Method => "Method",
+            Self::CallId => "Call-ID",
+            Self::CSeq => "CSeq",
         }
+    }
+
+    /// Human-readable label for the status bar.
+    pub(in crate::tui) fn label(self) -> String {
+        format!("Color: {}", self.name())
     }
 }
 
@@ -346,6 +361,9 @@ pub struct TuiOptions {
     /// The `--notes` path, which the save dialog's Notes format writes to by
     /// default. `None` when the run named no notes file.
     pub notes_path: Option<std::path::PathBuf>,
+    /// The capture-mode label the status bar opens with (`Online (eth0)`,
+    /// `Offline (call.pcap)`). `None` keeps the built-in `Online (any)`.
+    pub capture_mode: Option<String>,
     /// The capture channel's meter, where a HEP listener hangs its sender
     /// roster for the HEP senders view. `None` on a session with no capture.
     pub capture_meter: Option<crate::capture::channel::CaptureMeter>,
@@ -405,6 +423,9 @@ impl TuiOptions {
         app.rescan_path = self.rescan_path;
         app.set_notes(self.notes, self.notes_path);
         app.capture_meter = self.capture_meter;
+        if let Some(mode) = self.capture_mode {
+            app.set_capture_mode(mode);
+        }
         app
     }
 }
@@ -518,10 +539,10 @@ impl SaveFormat {
             Self::Ndjson => "NDJSON",
             Self::Csv => "CSV",
             Self::Html => "HTML",
-            Self::Markdown => "MD",
+            Self::Markdown => "Markdown",
             Self::Wav => "WAV",
             Self::SippXml => "SIPp",
-            Self::RtpJson => "RTP",
+            Self::RtpJson => "RTP JSON",
             Self::Notes => "NOTES",
         }
     }
@@ -529,11 +550,11 @@ impl SaveFormat {
     /// Category grouping for the save dialog display.
     pub fn category(self) -> &'static str {
         match self {
-            Self::Pcap | Self::PcapNg => "Packet Capture",
-            Self::Txt | Self::SippXml => "SIP-Specific",
-            Self::Json | Self::Ndjson | Self::Csv => "Structured/Analytics",
+            Self::Pcap | Self::PcapNg => "Packet capture",
+            Self::Txt | Self::SippXml => "SIP-specific",
+            Self::Json | Self::Ndjson | Self::Csv => "Structured/analytics",
             Self::Html | Self::Markdown => "Reporting",
-            Self::Wav | Self::RtpJson => "RTP/Media",
+            Self::Wav | Self::RtpJson => "RTP/media",
             Self::Notes => "Operator notes",
         }
     }
@@ -547,7 +568,7 @@ impl SaveFormat {
             Self::Json => "Full call detail for ELK, ClickHouse, etc.",
             Self::Ndjson => "Streaming-friendly for large captures",
             Self::Csv => "Summary rows for spreadsheets and BI tools",
-            Self::Html => "Self-contained ladder diagram, zero dependencies",
+            Self::Html => "Ladder diagram page (Mermaid), no dependencies",
             Self::Markdown => "Call summary for tickets and incidents",
             Self::Wav => "Decoded G.711 audio per RTP stream",
             Self::SippXml => "Replayable SIPp scenario for QA testing",
@@ -1746,6 +1767,8 @@ impl PcapLoadProgress {
 pub struct PcapLoadOutcome {
     /// Final status-line message.
     pub message: String,
+    /// Whether the load failed, so `message` draws as an error.
+    pub failed: bool,
     /// SIP message count (0 with streams present ⇒ jump to the stream list).
     pub sip_count: u64,
     /// Capture-mode label ("Offline (file)").

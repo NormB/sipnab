@@ -58,7 +58,7 @@ pub fn render_loss_map(f: &mut Frame, app: &App, area: Rect, key: &StreamKey) {
     let theme = &app.theme;
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(" Packet Loss Map ");
+        .title(" Packet loss map ");
 
     // Resolve the stream without blocking: the render pass already holds a
     // read guard on the shared store, so a plain re-lock could stall behind
@@ -363,7 +363,7 @@ mod tests {
         let (app, key) = app_on_loss_map(s);
 
         let out = render(&app, &key, 100, 16);
-        assert!(out.contains("Packet Loss Map"), "title missing:\n{out}");
+        assert!(out.contains("Packet loss map"), "title missing:\n{out}");
         assert!(out.contains("0x0000ABCD"), "ssrc missing:\n{out}");
         assert!(
             out.contains('\u{2588}') || out.contains('\u{2593}'),

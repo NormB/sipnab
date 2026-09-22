@@ -52,9 +52,15 @@ The Call List is the home view: one row per SIP [dialog](@/docs/glossary.md#dial
 count, and [PDD](@/docs/glossary.md#pdd) (post-dial delay, the wait between the INVITE
 and the first ringing response).
 
+The three lines above it say what you are looking at: the source
+(`File: capture.pcap` or `Live capture: eth0`) with how many dialogs the list
+shows out of how many sipnab holds, then the capture (BPF) filter, then the view
+filter. The bar at the bottom lists the keys of the view you are in, and `F1`
+opens the help from any view.
+
 - `j` / `k` (or `Down` / `Up`) move the selection; `PgUp` / `PgDn`, `Home`, `End` jump around.
 - `<` / `>` sort by the previous / next column; `Z` reverses the direction. Sort by **State** to bring `Failed` calls to the top, or by **PDD** to find slow setups.
-- `t` cycles the timestamp mode (absolute → delta-prev → delta-first → scaled). Delta-prev is the one that makes latency spikes jump out.
+- `t` cycles the timestamp mode (absolute → delta from previous → delta from first → scaled). Delta from previous is the one that makes latency spikes jump out.
 - Too many columns, or missing one you want (Source IP, PDD)? `F10` opens the column selector.
 
 Land on the call you care about, then press `Enter`.
@@ -62,11 +68,11 @@ Land on the call you care about, then press `Enter`.
 ## 3. Read the call-flow ladder
 
 `Enter` opens the **Call Flow** -- a ladder diagram of the dialog across every
-host it touched (UAC → proxy → UAS), with a detail panel beside it.
+host it touched (UAC → proxy → UAS), with a detail pane beside it.
 
-- `j` / `k` walk message-to-message; the detail panel updates to show the parsed message under the cursor.
-- `d` cycles how the detail panel shows SDP (none / summary / full).
-- `w` toggles line wrapping in the detail panel. With wrap off, long lines truncate and a horizontal scrollbar appears. Press `Tab` to put the cursor in the detail panel, and `Left` / `Right` then scroll it sideways. Without that focus the same two keys resize the split instead.
+- `j` / `k` walk message-to-message, and the detail pane updates to show the parsed message under the cursor.
+- `d` cycles how the detail pane shows SDP (hidden / summary / full).
+- `w` toggles line wrapping in the detail pane. With wrap off, long lines truncate and a horizontal scrollbar appears. Press `Tab` to put the cursor in the detail pane, and `Left` / `Right` then scroll it sideways. Without that focus the same two keys resize the detail pane instead. `R` hides or shows it.
 - `Enter` on a message opens the full-screen **Raw Message** view (`/` searches within it, `n` / `N` jump between matches, `Esc` returns).
 - `c` recolors the ladder by method, Call-ID, or CSeq; `t` shares the timestamp mode with the Call List.
 
@@ -93,7 +99,7 @@ line-by-line comparison. `Esc` returns to the ladder.
 
 - `/` searches the current view (Call List, Raw Message, or RTP Streams).
 - `F7` opens the **Filter dialog**, which offers From/To, source/destination, payload, time bounds and method fields. These fields build a filter; there is no free-form expression field. Pass the full [Filter DSL](@/docs/filter-dsl.md) through CLI `--filter`, for example `rtp.mos < 3.0`.
-- `F9` clears the active filter; `i` prunes the dialogs that do *not* match, keeping only the matches, and `I` prunes the ones that do.
+- `F9` clears the view filter and any kept search. `i` prunes the dialogs that do *not* match, keeping only the matches, and `I` prunes the ones that do.
 
 ## 7. Inspect RTP quality
 

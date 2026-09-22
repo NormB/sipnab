@@ -2,19 +2,19 @@
 source: tests/tui_snapshot_test.rs
 expression: output
 ---
- Current Mode: Online (any)    Dialogs: 0 (0 displayed)  [A]
- Match Expression:     BPF Filter:
- Display Filter:
-RTP Stream Detail  SSRC: 0xAAAABBBB  Codec: PCMU/8000  PT: 0
+ Live capture: any    Dialogs: 0 shown of 0    Autoscroll: on
+ Capture filter (BPF): none
+ View filter: none
+RTP stream detail  SSRC: 0xAAAABBBB  Codec: PCMU/8000  Payload type: 0
 10.0.0.1:20000 → 10.0.0.2:30000  Dialog: call-1@test
 
 ── Quality ──────────────────────────────────────────────────
-  MOS: 4.4 (Good)    Jitter: 0.0ms    Loss: 0.00%    RTT: n/a    (delay 100ms assumed)
-  Packets: 1    Octets: 160    Duration: 0.0s
-  Bitrate: 0.0 kbps    Clock: 8000 Hz    CN Frames: 0
-  First: 22:13:20.000    Last: 22:13:20.000    Lost pkts: 0
-  Orphaned: No    Heuristic: No
-  DSCP: 46 (EF)
+  MOS: 4.4 (Good)    Jitter: 0.0ms    Loss: 0.00%    RTT: n/a    (delay 100ms assumed, not measured)
+  Packets: 1    Payload bytes: 160    Duration: 0.0s
+  Bitrate: 0.0 kbps    Clock: 8000 Hz    Comfort-noise frames: 0
+  First: 22:13:20.000    Last: 22:13:20.000    Lost packets: 0
+  Orphaned: No    Found without SDP: No
+  DSCP: 46 (EF, voice priority)
 
 
 
@@ -41,4 +41,4 @@ RTP Stream Detail  SSRC: 0xAAAABBBB  Codec: PCMU/8000  PT: 0
 
 
 
-Esc Back  j/k Scroll  PgUp/Dn Page  F2 Save WAV
+Esc Back  F1 Help  j/k Scroll  PgUp/Dn Page  F2 Save WAV  L Loss map

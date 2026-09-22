@@ -271,7 +271,7 @@ fn execute_call_list_action(app: &mut App, action: CallListAction) {
         }
         CallListAction::CycleTimestampMode => {
             app.timestamp_mode = app.timestamp_mode.next();
-            app.status_error = Some(app.timestamp_mode.label().to_string());
+            app.status_error = Some(app.timestamp_mode.label());
         }
         CallListAction::CycleFromToMode => {
             // Cycle From/To column display (user / host:port / both)
@@ -357,7 +357,7 @@ fn execute_call_list_action(app: &mut App, action: CallListAction) {
                     b: checked[1].clone(),
                 };
             } else {
-                app.status_error = Some("check exactly two calls (Space) to compare".to_string());
+                app.set_status_error("Check exactly two calls with Space to compare them");
             }
         }
         CallListAction::OpenEndpoint => {
@@ -467,12 +467,12 @@ pub(in crate::tui) fn save_columns(app: &mut App) {
     app.call_list.column_selector_open = false;
     let cols = app.call_list.visible_column_names();
     let Some(path) = app.column_config_path.clone() else {
-        app.status_error = Some("Cannot save columns: no config path".to_string());
+        app.set_status_error("Cannot save columns: no config path");
         return;
     };
     match crate::config::write_display_columns_file(&path, &cols) {
         Ok(()) => app.status_error = Some(format!("Saved columns to {}", path.display())),
-        Err(e) => app.status_error = Some(format!("Save columns failed: {e}")),
+        Err(e) => app.set_status_error(format!("Save columns failed: {e}")),
     }
 }
 
@@ -499,7 +499,10 @@ pub(in crate::tui) fn clear_calls(app: &mut App) {
         app.stream_store.write().clear();
         app.call_list.clear_selections();
         app.call_list.move_to_top();
-        app.status_error = Some(format!("Cleared {} dialogs", count));
+        app.status_error = Some(format!(
+            "Cleared {}",
+            crate::tui::count_noun(count, "dialog", "dialogs")
+        ));
     } else {
         // Checkmarks are Call-ID keyed: remove exactly the checked calls,
         // keeping only the ones that still exist (for an honest count).
@@ -520,7 +523,10 @@ pub(in crate::tui) fn clear_calls(app: &mut App) {
             ds.retain(|d| !remove.contains(d.call_id.as_str()));
         }
         app.call_list.clear_selections();
-        app.status_error = Some(format!("Cleared {} dialogs", count));
+        app.status_error = Some(format!(
+            "Cleared {}",
+            crate::tui::count_noun(count, "dialog", "dialogs")
+        ));
     }
 }
 
@@ -558,7 +564,10 @@ pub(in crate::tui) fn clear_non_matching(app: &mut App) {
     };
     app.call_list.clear_selections();
     app.call_list.move_to_top();
-    app.status_error = Some(format!("Cleared {} non-matching dialogs", removed));
+    app.status_error = Some(format!(
+        "Cleared {}",
+        crate::tui::count_noun(removed, "non-matching dialog", "non-matching dialogs")
+    ));
 }
 
 /// Clear calls that DO match the current filter (keep non-matching ones).
@@ -594,7 +603,10 @@ pub(in crate::tui) fn clear_matching(app: &mut App) {
     };
     app.call_list.clear_selections();
     app.call_list.move_to_top();
-    app.status_error = Some(format!("Cleared {} matching dialogs", removed));
+    app.status_error = Some(format!(
+        "Cleared {}",
+        crate::tui::count_noun(removed, "matching dialog", "matching dialogs")
+    ));
 }
 
 /// Unit tests for the call-list key handling, column selector, and the

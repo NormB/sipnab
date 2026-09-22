@@ -2,13 +2,13 @@
 source: tests/tui_snapshot_test.rs
 expression: output
 ---
- Current Mode: Online (any)    Dialogs: 3 (3 displayed)  [A]
- Match Expression:     BPF Filter:
- Display Filter:
-  # ▲    Method     From            To               Source          Destination     State        Msgs  +Prev    PDD      Duration
-> [ ]1   INVITE     1001            1002             10.0.0.1        10.0.0.2        Completed    4     +0.000s  1000ms   1m2s
-  [ ]2   INVITE     1003            1004             10.0.0.1        10.0.0.2        FAILED ⚠     2     +5.000s           1.0s
-  [ ]3   INVITE     1005            1006             10.0.0.1        10.0.0.2        InCall       2     +5.000s           2.0s
+ Live capture: any    Dialogs: 3 shown of 3    Autoscroll: on
+ Capture filter (BPF): none
+ View filter: none
+  # ▲     Method     From            To              Source          Destination     State        Msgs  +Prev    PDD      Duration
+> [ ] 1   INVITE     1001            1002            10.0.0.1        10.0.0.2        Completed    4     +0.000s  1000ms   1m2s
+  [ ] 2   INVITE     1003            1004            10.0.0.1        10.0.0.2        FAILED ⚠     2     +5.000s           1.0s
+  [ ] 3   INVITE     1005            1006            10.0.0.1        10.0.0.2        InCall       2     +5.000s           2.0s
 
 
 
@@ -41,4 +41,4 @@ expression: output
 
 
 
-Esc Quit  F1 Help  Enter Show  Tab Streams  O Open  F2 Save  F3 Search  F5 Clear  F6 Raw  F7 Filter  F9 Unfilter
+Esc Quit  F1 Help  Enter Open call  Tab Streams  O Open file  F2 Save  F3 Search  F5 Clear calls  F7 Filter  F9 Clear filter

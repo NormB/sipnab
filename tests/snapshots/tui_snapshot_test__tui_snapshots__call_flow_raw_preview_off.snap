@@ -2,9 +2,9 @@
 source: tests/tui_snapshot_test.rs
 expression: output
 ---
- Current Mode: Online (any)    Dialogs: 3 (3 displayed)  [A]
- Match Expression:     BPF Filter:
- Raw preview: OFF
+ Live capture: any    Dialogs: 3 shown of 3    Autoscroll: on
+ Capture filter (BPF): none
+ Detail pane: off
              10.0.0.1:5060                                                            10.0.0.2:5060
              │                                                                                    │
      +0.000s │───────────────────────────────────── INVITE ──────────────────────────────────────▶│
@@ -31,4 +31,4 @@ expression: output
 
              │                                                                                    │
              10.0.0.1:5060                                                            10.0.0.2:5060
-Esc Back  ↑↓ Nav  Enter Raw  Space Diff  d SDP  t Time  c Color  R Split
+Esc Back  F1 Help  ↑↓ Move  Enter Raw  d SDP  t Time  c Color  R Detail

@@ -28,6 +28,12 @@ fn sip_call_fixture() -> PathBuf {
         .join("sip_call.pcap")
 }
 
+/// The Call-ID of the one dialog in `sip_call.pcap`. Its host part moved to
+/// RFC 5737 documentation addresses in September 2026, when the fixture was
+/// regenerated so that no committed capture carries an address from a private
+/// network.
+const SIP_CALL_ID: &str = "test-call-1@192.0.2.1";
+
 /// Absolute path to `tests/fixtures/udp_5060.pcap` (10 bare 200 OK packets).
 fn udp_5060_fixture() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -767,7 +773,7 @@ fn line_buffer_flag() {
 fn report_contains_dialog() {
     let (stdout, _, code) = run_text(&["--report"]);
     assert_eq!(code, 0);
-    assert!(stdout.contains("test-call-1@10.0.0.1"));
+    assert!(stdout.contains(SIP_CALL_ID));
     assert!(stdout.contains("1001"));
     assert!(stdout.contains("1002"));
     assert!(stdout.contains("Completed"));
@@ -794,14 +800,14 @@ fn call_report_specific_call() {
         "-I",
         fixture.to_str().unwrap(),
         "--call-report",
-        "test-call-1@10.0.0.1",
+        SIP_CALL_ID,
     ]);
     assert_eq!(code, 0);
     assert!(
         stdout.contains("Call Report:"),
         "should contain report header"
     );
-    assert!(stdout.contains("test-call-1@10.0.0.1"));
+    assert!(stdout.contains(SIP_CALL_ID));
 }
 
 /// `--call-report --markdown` exits 0 and includes the Call-ID.
@@ -813,11 +819,11 @@ fn call_report_markdown() {
         "-I",
         fixture.to_str().unwrap(),
         "--call-report",
-        "test-call-1@10.0.0.1",
+        SIP_CALL_ID,
         "--markdown",
     ]);
     assert_eq!(code, 0);
-    assert!(stdout.contains("test-call-1@10.0.0.1"));
+    assert!(stdout.contains(SIP_CALL_ID));
 }
 
 /// `--call-report` for an unknown Call-ID exits 1 and explains the failure on
@@ -1182,7 +1188,7 @@ fn text_dump_with_count() {
 fn report_with_quiet() {
     let (stdout, _, code) = run_text(&["--report", "-q"]);
     assert_eq!(code, 0);
-    assert!(stdout.contains("test-call-1@10.0.0.1"));
+    assert!(stdout.contains(SIP_CALL_ID));
 }
 
 /// `--delta-time` does not break JSON mode: all 7 messages emitted.

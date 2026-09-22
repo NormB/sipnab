@@ -86,7 +86,7 @@ pub fn render_stream_detail(
 
     lines.push(Line::from(vec![
         Span::styled(
-            "RTP Stream Detail",
+            "RTP stream detail",
             Style::default()
                 .fg(theme.accent)
                 .add_modifier(Modifier::BOLD),
@@ -98,7 +98,7 @@ pub fn render_stream_detail(
             format!("{codec_str}/{clock}"),
             Style::default().fg(theme.header),
         ),
-        Span::raw(format!("  PT: {pt}")),
+        Span::raw(format!("  Payload type: {pt}")),
     ]));
 
     lines.push(Line::from(vec![
@@ -162,7 +162,14 @@ pub fn render_stream_detail(
     // operator seeing a bad MOS needs to know which of the four remedies is
     // theirs, and a view that words the provenance itself is a view that can
     // word it differently from the next one.
-    let delay_note = format!("delay {one_way:.0}ms {}", delay_src.label());
+    //
+    // An assumed delay gets a sentence rather than the bare word: "assumed"
+    // alone did not say that nothing measured it, which is the whole finding.
+    let delay_note = if delay_src.is_assumed() {
+        format!("delay {one_way:.0}ms assumed, not measured")
+    } else {
+        format!("delay {one_way:.0}ms {}", delay_src.label())
+    };
 
     // What that number MEANS, in the vocabulary the enum owns rather than one
     // this view invents. sipnab returns the same digits for a grounded G.711
@@ -324,7 +331,7 @@ pub fn render_stream_detail(
             stream.packet_count.to_string(),
             Style::default().fg(theme.header),
         ),
-        Span::raw("    Octets: "),
+        Span::raw("    Payload bytes: "),
         Span::raw(stream.octet_count.to_string()),
         Span::raw("    Duration: "),
         Span::raw(format!("{duration_secs:.1}s")),
@@ -335,7 +342,7 @@ pub fn render_stream_detail(
         Span::raw(format!("{bitrate:.1} kbps")),
         Span::raw("    Clock: "),
         Span::raw(format!("{clock} Hz")),
-        Span::raw("    CN Frames: "),
+        Span::raw("    Comfort-noise frames: "),
         Span::raw(stream.cn_frames.to_string()),
     ]));
 
@@ -344,7 +351,7 @@ pub fn render_stream_detail(
         Span::raw(stream.first_seen.format("%H:%M:%S%.3f").to_string()),
         Span::raw("    Last: "),
         Span::raw(stream.last_seen.format("%H:%M:%S%.3f").to_string()),
-        Span::raw("    Lost pkts: "),
+        Span::raw("    Lost packets: "),
         Span::styled(
             stream.lost_packets.to_string(),
             if stream.lost_packets > 0 {
@@ -356,7 +363,7 @@ pub fn render_stream_detail(
     ]));
 
     let flags = format!(
-        "  Orphaned: {}    Heuristic: {}",
+        "  Orphaned: {}    Found without SDP: {}",
         if stream.orphaned() { "Yes" } else { "No" },
         if stream.heuristic { "Yes" } else { "No" },
     );
@@ -372,7 +379,14 @@ pub fn render_stream_detail(
     // flight is a policy boundary the operator may not know they crossed.
     let (marking, marking_style) = match stream.dscp_first {
         Some(v) => (
-            format!("{} ({})", v, crate::rtp::stream::dscp_name(v)),
+            // EF gets its purpose beside its name: it is the one codepoint a
+            // voice operator is checking for.
+            format!(
+                "{} ({}{})",
+                v,
+                crate::rtp::stream::dscp_name(v),
+                if v == 46 { ", voice priority" } else { "" }
+            ),
             if v == 0 {
                 Style::default().fg(theme.warning)
             } else {
@@ -397,7 +411,7 @@ pub fn render_stream_detail(
 
     // ── Quality Over Time ───────────────────────────────────────────
     if !stream.quality_intervals.is_empty() {
-        lines.push(section_header("Quality Over Time", theme));
+        lines.push(section_header("Quality over time", theme));
 
         // Cap the number of sparkline glyphs to the pane width: reserve room
         // for the row label and the trailing "(avg: …)" annotation, then draw
@@ -531,7 +545,7 @@ pub fn render_stream_detail(
     if stream.lost_packets > 0
         && let Some(bga) = stream.burst_gap_analysis()
     {
-        lines.push(section_header("Burst/Gap Analysis", theme));
+        lines.push(section_header("Burst/gap analysis", theme));
         lines.push(Line::from(vec![
             Span::raw("  Bursts: "),
             Span::styled(
@@ -568,9 +582,9 @@ pub fn render_stream_detail(
 
     // ── Silence Detection ───────────────────────────────────────────
     if stream.cn_frames > 0 || !stream.silence_periods.is_empty() {
-        lines.push(section_header("Silence Detection", theme));
+        lines.push(section_header("Silence detection", theme));
         lines.push(Line::from(vec![
-            Span::raw("  CN Frames: "),
+            Span::raw("  Comfort-noise frames: "),
             Span::raw(stream.cn_frames.to_string()),
             Span::raw("    Silence periods: "),
             Span::raw(stream.silence_periods.len().to_string()),
@@ -603,7 +617,7 @@ pub fn render_stream_detail(
     // header says so, and no value from here is folded into anything above.
     if let Some(xr) = store.remote_voip_metrics(key) {
         let m = &xr.metrics;
-        lines.push(section_header("Reported by Far End (RTCP XR)", theme));
+        lines.push(section_header("Reported by far end (RTCP XR)", theme));
         lines.push(Line::styled(
             format!(
                 "  Endpoint's own claim, not sipnab's measurement \
@@ -731,7 +745,7 @@ fn reported_dbm0(value: Option<i8>) -> String {
 /// sparkline and per-interval table), so the label and its color can never
 /// drift out of agreement at a band boundary.
 #[derive(Clone, Copy)]
-enum MosBand {
+pub(in crate::tui) enum MosBand {
     Good,
     Fair,
     Poor,
@@ -746,7 +760,7 @@ impl MosBand {
     /// cannot. Only the OUTER boundaries are shared, so this stays finer
     /// without being able to disagree — a score this view calls Good can never
     /// be one the dashboard colors yellow.
-    fn of(mos: f64, bands: &crate::rtp::bands::QualityBands) -> Self {
+    pub(in crate::tui) fn of(mos: f64, bands: &crate::rtp::bands::QualityBands) -> Self {
         if mos >= bands.mos_warn {
             Self::Good
         } else if mos >= (bands.mos_warn + bands.mos_bad) / 2.0 {
@@ -759,7 +773,7 @@ impl MosBand {
     }
 
     /// Short human-readable label for the band.
-    fn label(self) -> &'static str {
+    pub(in crate::tui) fn label(self) -> &'static str {
         match self {
             Self::Good => "Good",
             Self::Fair => "Fair",
@@ -1201,7 +1215,7 @@ mod tests {
         // Low jitter, no loss → "Good" MOS path, good-colored styles.
         let (store, key) = store_with_stream(0x1111_1111, /*jitter*/ 0, /*lost*/ 0);
         let out = render_to_string(&store, &key);
-        assert!(out.contains("RTP Stream Detail"), "header missing: {out}");
+        assert!(out.contains("RTP stream detail"), "header missing: {out}");
         assert!(out.contains("SSRC: 0x11111111"), "ssrc missing: {out}");
         assert!(out.contains("PCMU"), "codec missing: {out}");
         assert!(out.contains("Quality"), "quality section missing: {out}");
@@ -1220,10 +1234,13 @@ mod tests {
         // Moderate jitter (30ms) and some loss → warning-band styles.
         let (store, key) = store_with_stream(0x2222_2222, /*jitter*/ 30, /*lost*/ 1);
         let out = render_to_string(&store, &key);
-        assert!(out.contains("RTP Stream Detail"));
+        assert!(out.contains("RTP stream detail"));
         assert!(out.contains("MOS:"));
         // Lost packets > 0 surfaces the burst/gap analysis section.
-        assert!(out.contains("Lost pkts:"), "lost pkts line missing: {out}");
+        assert!(
+            out.contains("Lost packets:"),
+            "lost packets line missing: {out}"
+        );
     }
 
     /// High jitter with a real RTP sequence gap (loss) renders the
@@ -1263,10 +1280,13 @@ mod tests {
             dst: std::net::SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
         };
         let out = render_to_string(&store, &key);
-        assert!(out.contains("RTP Stream Detail"));
+        assert!(out.contains("RTP stream detail"));
         assert!(out.contains("MOS:"));
         assert!(out.contains("Loss:"));
-        assert!(out.contains("Lost pkts:"), "lost pkts line missing: {out}");
+        assert!(
+            out.contains("Lost packets:"),
+            "lost packets line missing: {out}"
+        );
         let _ = Color::Reset; // keep Color import used regardless of assertions
     }
 
@@ -1319,7 +1339,7 @@ mod tests {
 
         let out = render_to_string(&store, &key);
         assert!(
-            out.contains("Reported by Far End"),
+            out.contains("Reported by far end"),
             "the XR section must appear: {out}"
         );
         assert!(

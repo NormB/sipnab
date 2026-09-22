@@ -222,7 +222,7 @@ pub fn render_dashboard(frame: &mut ratatui::Frame, area: ratatui::layout::Rect,
         lines.push(Line::raw("  Gathering stream quality data..."));
         let block = Block::default()
             .borders(Borders::ALL)
-            .title(" Quality Dashboard ");
+            .title(" Quality dashboard ");
         frame.render_widget(Paragraph::new(lines).block(block), area);
         return;
     };
@@ -270,8 +270,8 @@ pub fn render_dashboard(frame: &mut ratatui::Frame, area: ratatui::layout::Rect,
     // ── worst-streams table ─────────────────────────────────────────
     lines.push(Line::styled(
         format!(
-            "    {:<5} {:>8} {:>7} {:>9}  {:<8} {}",
-            "MOS", "Jitter", "Loss%", "Packets", "Codec", "Stream"
+            "    {:<5} {:<6} {:>8} {:>7} {:>9}  {:<8} {}",
+            "MOS", "Rating", "Jitter", "Loss%", "Packets", "Codec", "Stream"
         ),
         Style::default().fg(theme.muted),
     ));
@@ -297,8 +297,11 @@ pub fn render_dashboard(frame: &mut ratatui::Frame, area: ratatui::layout::Rect,
             .call_id
             .clone()
             .unwrap_or_else(|| format!("{} → {}", row.key.src, row.key.dst));
+        // The band in a word beside the number, so the row does not depend on
+        // color to be read: the same four words the stream detail uses.
+        let rating = crate::tui::stream_detail::MosBand::of(row.mos, &bands).label();
         let text = format!(
-            "{marker}{activity} {:<5.1} {:>6.1}ms {:>6.2} {:>9}  {:<8} {}",
+            "{marker}{activity} {:<5.1} {rating:<6} {:>6.1}ms {:>6.2} {:>9}  {:<8} {}",
             row.mos,
             row.jitter_ms,
             row.loss_pct,
@@ -358,7 +361,8 @@ pub fn render_dashboard(frame: &mut ratatui::Frame, area: ratatui::layout::Rect,
         lines.push(Line::from(jit_spans));
         lines.push(Line::from(loss_spans));
 
-        // Legend: metric names with units and the good/warn/bad color keys.
+        // Legend: metric names with units, the band words beside their colors,
+        // and what the activity dots mean.
         // Rendered as a single line so a narrow terminal clips it rather
         // than wrapping or overflowing.
         lines.push(Line::from(vec![
@@ -370,17 +374,21 @@ pub fn render_dashboard(frame: &mut ratatui::Frame, area: ratatui::layout::Rect,
             Span::styled("Loss %", Style::default().fg(theme.muted)),
             Span::raw("   "),
             Span::styled("\u{2588}", Style::default().fg(theme.good)),
-            Span::styled(" good  ", Style::default().fg(theme.muted)),
+            Span::styled(" Good  ", Style::default().fg(theme.muted)),
             Span::styled("\u{2588}", Style::default().fg(theme.warning)),
-            Span::styled(" warn  ", Style::default().fg(theme.muted)),
+            Span::styled(" Fair/Poor  ", Style::default().fg(theme.muted)),
             Span::styled("\u{2588}", Style::default().fg(theme.bad)),
-            Span::styled(" bad", Style::default().fg(theme.muted)),
+            Span::styled(" Bad   ", Style::default().fg(theme.muted)),
+            Span::styled(
+                "\u{25CF} active  \u{00B7} idle",
+                Style::default().fg(theme.muted),
+            ),
         ]));
     }
 
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(" Quality Dashboard ");
+        .title(" Quality dashboard ");
     frame.render_widget(Paragraph::new(lines).block(block), area);
 }
 
@@ -744,6 +752,33 @@ mod tests {
             loss_row(&out).contains('\u{2588}'),
             "loss spike glyph missing: {out}"
         );
+    }
+
+    /// Each row names its MOS band in a word, so the meaning does not rest
+    /// on color alone (a color-blind reader, a monochrome terminal, NO_COLOR),
+    /// and the legend spells out the band words and the activity dots.
+    #[test]
+    fn rows_name_their_band_in_words_and_the_legend_defines_the_dots() {
+        let snap = snapshot_with_rows(1);
+        let mos = snap.rows[0].mos;
+        let bands = crate::rtp::bands::QualityBands::default();
+        let word = crate::tui::stream_detail::MosBand::of(mos, &bands).label();
+        let out = render_snapshot(snap, 0, 120, 30);
+        let row = out
+            .lines()
+            .find(|l| l.contains('\u{25B6}'))
+            .expect("the selected row renders");
+        assert!(row.contains(word), "band word {word:?} missing: {row}");
+        assert!(out.contains("Rating"), "column header missing: {out}");
+        for key in [
+            "Good",
+            "Fair/Poor",
+            "Bad",
+            "\u{25CF} active",
+            "\u{00B7} idle",
+        ] {
+            assert!(out.contains(key), "legend lacks {key:?}: {out}");
+        }
     }
 
     /// All-lost intervals render only full blocks on the loss row — no

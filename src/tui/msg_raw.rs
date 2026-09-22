@@ -260,8 +260,8 @@ pub fn render_combined_detail(
     let scroll_offset = view.scroll_offset;
     let theme = view.theme;
     let title = format!(
-        " {scope} detail — {} message(s) (Esc: Back · ↑/↓ PgUp/PgDn scroll) ",
-        indices.len()
+        " {scope} detail — {} (Esc: Back · ↑/↓ PgUp/PgDn scroll) ",
+        crate::tui::count_noun(indices.len(), "message", "messages")
     );
     let block = Block::default().borders(Borders::ALL).title(title);
 

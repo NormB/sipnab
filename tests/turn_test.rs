@@ -9,8 +9,9 @@
 //! magic cookie, so it is not STUN, and its version bits are `01`, so it is not
 //! RTP either. sipnab read those frames and reported an empty media path.
 //!
-//! The fixture `turn_relay.pcap` is fabricated end to end and uses RFC 5737
-//! documentation addresses throughout:
+//! The fixture `turn_relay.pcap` is fabricated end to end, built by
+//! `tests/support/synthetic_captures.rs`, and uses RFC 5737 documentation
+//! addresses throughout:
 //!
 //! ```text
 //!   192.0.2.10:50000     the TURN client

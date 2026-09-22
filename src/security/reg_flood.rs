@@ -54,11 +54,13 @@ struct RegFloodState {
     /// Capture time of the newest message from or to this source, which is
     /// what [`RegFloodDetector::sweep`] ages against.
     last_seen: DateTime<Utc>,
-    /// Credentialed REGISTER transactions this source has open, by top `Via`
-    /// branch, oldest first. A challenge is a failure only when it names one
-    /// of these. Bounded by [`MAX_PENDING_PER_SOURCE`]; past it the oldest is
-    /// forgotten, in constant time.
-    pending: LruMap<String, ()>,
+    /// Credentialed REGISTER transactions this source has open, keyed by
+    /// [`transaction_key`], oldest first, each with the capture time it was
+    /// sent. A challenge is a failure only when it names one of these that is
+    /// younger than [`TRANSACTION_TIMEOUT`]. Bounded by
+    /// [`MAX_PENDING_PER_SOURCE`]; past it the oldest is forgotten, in
+    /// constant time.
+    pending: LruMap<String, DateTime<Utc>>,
 }
 
 impl RegFloodState {
@@ -114,6 +116,33 @@ const MAX_SOURCE_ENTRIES: usize = 10_000;
 /// yesterday's traffic. The scanner detector moved for the same reason.
 fn window_elapsed(window_start: DateTime<Utc>, now: DateTime<Utc>) -> bool {
     now.signed_duration_since(window_start) >= TimeDelta::seconds(1)
+}
+
+/// How long a REGISTER's transaction stays open to a challenge: Timer F.
+///
+/// [RFC 3261 section 17.1.2.2](https://www.rfc-editor.org/rfc/rfc3261#section-17.1.2.2) ends a non-INVITE client transaction at Timer F,
+/// 64*T1 with T1 at its 500 ms default, so 32 seconds. A 401 that names a
+/// REGISTER older than that answers a transaction that has already ended, and
+/// counting it would let every unanswered REGISTER wait in the map to be
+/// charged by a stray. Not the one-second failure window: a REGISTER sent late
+/// in one window is routinely answered in the next.
+const TRANSACTION_TIMEOUT: TimeDelta = TimeDelta::seconds(32);
+
+/// The client transaction a REGISTER or its response belongs to.
+///
+/// [RFC 3261 section 17.1.3](https://www.rfc-editor.org/rfc/rfc3261#section-17.1.3) matches a response to its request by the top `Via`
+/// branch, and that is the key whenever there is one. An RFC 2543 client puts
+/// no branch in its `Via`, and a response copies the request's `Via`, so
+/// neither side has one. RFC 2543 identified the transaction by `Call-ID` and
+/// `CSeq`, and that is the fallback: the `Call-ID`, the `CSeq` number and its
+/// method. A branch is a token and cannot hold a space, so the two forms of
+/// key cannot collide.
+fn transaction_key(msg: &SipMessage) -> Option<String> {
+    if let Some(branch) = msg.top_via_branch() {
+        return Some(branch.to_owned());
+    }
+    let (number, method) = msg.cseq()?;
+    Some(format!("call-id {} cseq {number} {method}", msg.call_id()?))
 }
 
 /// Whether a REGISTER carried the credentials a challenge asks for.
@@ -218,11 +247,11 @@ impl RegFloodDetector {
         state.register_count += 1;
 
         if carries_credentials(msg)
-            && let Some(branch) = msg.top_via_branch()
+            && let Some(key) = transaction_key(msg)
         {
             // Past MAX_PENDING_PER_SOURCE the oldest open transaction is
             // forgotten, in constant time as well.
-            state.pending.insert(branch.to_owned(), ());
+            state.pending.insert(key, now);
         }
     }
 
@@ -243,8 +272,8 @@ impl RegFloodDetector {
 
         if completes_registration(msg) {
             state.auth_fail_count = 0;
-            if let Some(branch) = msg.top_via_branch() {
-                state.pending.remove(branch);
+            if let Some(key) = transaction_key(msg) {
+                state.pending.remove(&key);
             }
             return None;
         }
@@ -255,8 +284,12 @@ impl RegFloodDetector {
         // answers. One that names no open transaction from this source is
         // the ordinary first half of a registration, or a retransmission,
         // or an answer to somebody else's request behind the same address.
-        let branch = msg.top_via_branch()?;
-        state.pending.remove(branch)?;
+        // One sent longer ago than Timer F answers a transaction that has
+        // already ended.
+        let sent = state.pending.remove(&transaction_key(msg)?)?;
+        if now.signed_duration_since(sent) > TRANSACTION_TIMEOUT {
+            return None;
+        }
 
         state.roll_window(now);
         state.auth_fail_count += 1;
@@ -645,6 +678,155 @@ mod tests {
         assert_eq!(
             fired, 2,
             "control: matched branches must fire from the 2nd failure"
+        );
+    }
+
+    /// A REGISTER, or the registrar's answer to one, whose top `Via` carries
+    /// no `branch` parameter: what an RFC 2543 client sends.
+    ///
+    /// `code` of `None` builds the request from `src`, `Some` builds the
+    /// response back to it.
+    fn branchless(
+        code: Option<u16>,
+        peer: IpAddr,
+        call_id: &str,
+        cseq: u32,
+        at: DateTime<Utc>,
+    ) -> SipMessage {
+        let call_id = format!("Call-ID: {call_id}");
+        let cseq = format!("CSeq: {cseq} REGISTER");
+        let mut headers = vec![
+            "Via: SIP/2.0/UDP 10.0.0.7:5060",
+            "From: <sip:user@example.com>;tag=r1",
+            call_id.as_str(),
+            cseq.as_str(),
+        ];
+        let raw = match code {
+            None => {
+                headers.push("To: <sip:user@example.com>");
+                headers.push(
+                    "Authorization: Digest username=\"user\", realm=\"example.com\", \
+                     nonce=\"abc\", uri=\"sip:example.com\", response=\"0000\"",
+                );
+                headers.push("Content-Length: 0");
+                build_sip("REGISTER sip:registrar@example.com SIP/2.0", &headers, b"")
+            }
+            Some(code) => {
+                headers.push("To: <sip:user@example.com>;tag=r2");
+                headers.push("Content-Length: 0");
+                build_sip(&format!("SIP/2.0 {code} Unauthorized"), &headers, b"")
+            }
+        };
+        let (src, dst) = match code {
+            None => (peer, localhost()),
+            Some(_) => (localhost(), peer),
+        };
+        parse_sip(&raw, at, src, dst, 5060, 5060, TransportProto::Udp).expect("parse")
+    }
+
+    /// A challenge with no `Via` branch still settles the REGISTER it answers.
+    ///
+    /// [RFC 3261 section 17.1.3](https://www.rfc-editor.org/rfc/rfc3261#section-17.1.3) matches a response to its client transaction
+    /// by the top `Via` branch and the `CSeq` method, and the branch is only
+    /// there when the client put one in. An RFC 2543 client does not, and a
+    /// response copies the request's `Via` (section 8.2.6.2), so neither side
+    /// has one. RFC 2543 identified the transaction by `Call-ID` and `CSeq`,
+    /// and that is the fallback: the same `Call-ID`, `CSeq` number and method.
+    /// Branch-only matching let a branchless credential-stuffing run through
+    /// without one failure counted.
+    #[test]
+    fn a_challenge_without_a_via_branch_matches_on_call_id_and_cseq() {
+        let mut det = RegFloodDetector::new(1);
+        let mut fired = 0usize;
+        for n in 1..=3 {
+            let reg = branchless(None, attacker_ip(), "old-ua@test", n, ts());
+            assert_eq!(reg.top_via_branch(), None, "the fixture carries a branch");
+            let _ = det.check(&reg);
+            if det
+                .check(&branchless(
+                    Some(401),
+                    attacker_ip(),
+                    "old-ua@test",
+                    n,
+                    ts(),
+                ))
+                .is_some()
+            {
+                fired += 1;
+            }
+        }
+        assert_eq!(
+            fired, 2,
+            "three branchless refusals at threshold 1 fire from the second"
+        );
+
+        // The fallback is a match, not a wildcard: a challenge naming another
+        // CSeq number, or another Call-ID, answers some other request.
+        let mut det = RegFloodDetector::new(1);
+        for n in 1..=3 {
+            let _ = det.check(&branchless(None, attacker_ip(), "other@test", n, ts()));
+            assert!(
+                det.check(&branchless(
+                    Some(401),
+                    attacker_ip(),
+                    "other@test",
+                    n + 10,
+                    ts()
+                ))
+                .is_none(),
+                "a 401 for CSeq {} was charged to the REGISTER with CSeq {n}",
+                n + 10
+            );
+            assert!(
+                det.check(&branchless(
+                    Some(401),
+                    attacker_ip(),
+                    "nobody@test",
+                    n,
+                    ts()
+                ))
+                .is_none(),
+                "a 401 on another Call-ID was charged to this REGISTER"
+            );
+        }
+    }
+
+    /// A challenge that arrives after the REGISTER's transaction has timed
+    /// out answers nothing that is still open.
+    ///
+    /// [RFC 3261 section 17.1.2.2](https://www.rfc-editor.org/rfc/rfc3261#section-17.1.2.2) ends a non-INVITE client transaction at
+    /// Timer F, 64*T1, which is 32 seconds. A pending REGISTER older than that
+    /// is expired: a 401 naming it forty seconds later is a stray, and
+    /// charging it would let one stale REGISTER per branch sit in the map for
+    /// the life of the source, waiting to be counted.
+    #[test]
+    fn a_pending_register_older_than_the_window_is_expired() {
+        // One fresh failure, then the stale REGISTER's challenge in the same
+        // second. At threshold 1, counting the stale one fires.
+        let run = |stale_sent: i64| -> bool {
+            let mut det = RegFloodDetector::new(1);
+            let _ = det.check(&register_at(
+                attacker_ip(),
+                "z9hG4bK-stale",
+                true,
+                at(stale_sent),
+            ));
+            let _ = det.check(&register_at(attacker_ip(), "z9hG4bK-fresh", true, at(40)));
+            assert!(
+                det.check(&response_at(401, attacker_ip(), "z9hG4bK-fresh", at(40)))
+                    .is_none()
+            );
+            det.check(&response_at(401, attacker_ip(), "z9hG4bK-stale", at(40)))
+                .is_some()
+        };
+        assert!(
+            !run(0),
+            "a 401 forty seconds after its REGISTER was counted as a failure: that \
+             transaction ended at Timer F, 32 seconds"
+        );
+        assert!(
+            run(10),
+            "control: thirty seconds is inside Timer F, so the same 401 counts"
         );
     }
 

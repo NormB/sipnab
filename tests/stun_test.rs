@@ -22,6 +22,11 @@
 //! server probes: a pair that converged and nominated, and a pair where both
 //! agents claimed to be controlling. See [`ice_fixture`] for its contents. It
 //! is fabricated end to end and uses RFC 5737 addresses throughout.
+//!
+//! All three are built by `tests/support/synthetic_captures.rs`, and their MAC
+//! addresses are in the RFC 7042 documentation block. The two NAT fixtures
+//! carried two MAC addresses from outside it until September 2026; nothing
+//! here reads a MAC address, so no assertion changed with them.
 #![cfg(feature = "native")]
 
 use std::path::PathBuf;

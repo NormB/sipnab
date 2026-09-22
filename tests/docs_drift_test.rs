@@ -3365,17 +3365,24 @@ fn no_documentation_table_repeats_a_row() {
     // lists exactly that one new .md path. No website mirror.
     // 220 -> 223: docs/client-examples.md and its site mirror, plus the new
     // site mirror of docs/library.md. Measured by this gate on 2026-09-19.
+    // 223 -> 224 by tests/PROVENANCE.md, the record of where every committed
+    // capture outside tests/pcap-samples/ came from, which
+    // `every_committed_capture_is_public_or_synthetic` reads. ONE file: it
+    // lives beside the gate rather than under docs/, so it has no website
+    // mirror. Attributed against the staged diff -- `--diff-filter=A` lists
+    // exactly one new `.md` path, and it is that one.
     // 223 -> 225 by docs/glossary.md and docs/first-cli-triage.md.
     // `git diff --cached --diff-filter=A` lists exactly those two new .md
     // paths. No site mirrors yet: both pages are on the wiki, and their site
     // registration waits on the docs nav templates.
-    // 225 -> 226 by website/content/standards.md, the /standards/ page the
-    // homepage's standards cards moved to. A front-matter-only file; its body
-    // is the standards.html template. Measured by this gate on 2026-09-22.
-    // 226 -> 228 by the site mirrors of docs/glossary.md and
-    // docs/first-cli-triage.md, now registered in build-site-pages.py PAGES
-    // and listed under "Start here" in the docs nav.
-    const EXPECTED_MARKDOWN_FILES: usize = 228;
+    // Merge of docs-readability with main: 223 +2 (glossary, first-cli-triage)
+    // +1 (tests/PROVENANCE.md) = 226.
+    // 226 -> 229 on site-readability: website/content/standards.md, the
+    // /standards/ page the homepage's standards cards moved to (front matter
+    // only; its body is the standards.html template), plus the site mirrors
+    // of docs/glossary.md and docs/first-cli-triage.md, now registered in
+    // build-site-pages.py PAGES and listed under "Start here" in the docs nav.
+    const EXPECTED_MARKDOWN_FILES: usize = 229;
     /// How many tables this gate expects to walk.
     ///
     /// Named rather than written twice. The count and the failure message

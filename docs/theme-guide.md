@@ -9,7 +9,7 @@ sipnab's TUI uses 11 semantic color slots (plus `highlight`, a legacy alias for 
 | Slot | Default | What It Affects |
 |------|---------|-----------------|
 | `background` | `reset` (terminal default) | Terminal background color |
-| `foreground` | `white` | Default text color |
+| `foreground` | `reset` (terminal default) | Default text color. The status band and key bar pick their own text color against `status_bg` |
 | `header` | `cyan` | Status bar, column headers, endpoint labels in call flow |
 | `selected` | `yellow` | Selected/highlighted row, cursor position, focused item |
 | `accent` | `magenta` | Correlation info, PDD annotations, extended flow labels |
@@ -50,12 +50,12 @@ plain text.
 
 ### Dark (built-in default)
 
-The built-in theme works on dark terminal backgrounds without any configuration. It is deliberately palette-neutral: `background` is `reset` (your terminal's own background shows through) and every other slot is an ANSI color name, so your terminal's palette picks the exact shades. The preview below stands in a representative xterm palette for those names.
+The built-in theme works on dark terminal backgrounds without any configuration. It is deliberately palette-neutral: `background` and `foreground` are `reset` (your terminal's own colors show through, so it reads on light terminals too) and every other slot is an ANSI color name, so your terminal's palette picks the exact shades. The preview below stands in a representative xterm palette for those names.
 
 ```toml
 [theme]
 background = "reset"
-foreground = "white"
+foreground = "reset"
 header = "cyan"
 selected = "yellow"
 accent = "magenta"
