@@ -446,10 +446,10 @@ fn run_pcap_load(
     } else {
         String::new()
     };
-    let secrets_suffix = if totals.secrets_present > 0 {
+    let key_log_note = if totals.embedded_key_logs > 0 {
         format!(
             " \u{26a0} file contains {} embedded decryption secret(s)",
-            totals.secrets_present
+            totals.embedded_key_logs
         )
     } else {
         String::new()
@@ -473,7 +473,7 @@ fn run_pcap_load(
     PcapLoadOutcome {
         message: format!(
             "Loaded {} SIP, {} RTP{rtcp_suffix}{names_suffix} from {} packets across \
-             {stream_count} stream(s) ({filename}{archive_suffix}){secrets_suffix}",
+             {stream_count} stream(s) ({filename}{archive_suffix}){key_log_note}",
             totals.sip, totals.rtp, totals.packets
         ),
         sip_count: totals.sip,
@@ -504,7 +504,7 @@ struct LoadTotals {
     /// Embedded pcapng names.
     file_names: Vec<(std::net::IpAddr, String)>,
     /// Embedded decryption secrets seen.
-    secrets_present: usize,
+    embedded_key_logs: usize,
 }
 
 /// Read one capture file into the stores, adding to `totals`.
@@ -652,7 +652,7 @@ fn load_one_capture(
     // carries keys.
     if let Ok(meta) = crate::capture::pcapng_meta::read_pcapng_metadata(path) {
         totals.file_names.extend(meta.names);
-        totals.secrets_present += meta.tls_secrets.len();
+        totals.embedded_key_logs += meta.tls_secrets.len();
     }
     Ok(())
 }
