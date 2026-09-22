@@ -417,7 +417,7 @@ Issues Detected:
           <tr><td><a href="{{ get_url(path='@/docs/metrics.md') }}">Prometheus metrics</a></td><td>Counters about sipnab itself: what it captured, what it lost and what it could not read.</td></tr>
           <tr><td><a href="{{ get_url(path='@/docs/mcp.md') }}">MCP server</a></td><td>Lets an AI agent such as Claude Code query captures over stdio or HTTP. 69 tools cover dialogs, RTP, diagnostics, and security findings. 57 are read-only, and the twelve that write stay off until you enable them on the server.</td></tr>
           <tr><td><a href="{{ get_url(path='@/analyze/_index.md') }}">Browser analysis</a></td><td>Opens a pcap in your browser with WebAssembly. Nothing is uploaded or installed.</td></tr>
-          <tr><td><a href="{{ get_url(path='@/docs/build.md') }}">Built in Rust</a></td><td>Rust everywhere except the OS boundary: 94 <code>unsafe</code> blocks, all of them FFI, and the build rejects any block that does not state its own soundness argument. 9794 automated tests. Under 17 MB static binary.</td></tr>
+          <tr><td><a href="{{ get_url(path='@/docs/build.md') }}">Built in Rust</a></td><td>Rust everywhere except the OS boundary: 94 <code>unsafe</code> blocks, all of them FFI, and the build rejects any block that does not state its own soundness argument. 9797 automated tests. Under 17 MB static binary.</td></tr>
         </tbody>
       </table>
     </div>
@@ -458,7 +458,7 @@ Issues Detected:
         <span class="arch-label">Packets per second reading a capture file on four cores: room for the HEP feed of many proxies on one box (measured v0.5.160)</span>
       </a>
       <a class="arch-item fade-in-up" href="{{ config.extra.github_url }}/actions/workflows/ci.yml">
-        <span class="arch-stat" data-count="9794" data-suffix="">9794</span>
+        <span class="arch-stat" data-count="9797" data-suffix="">9797</span>
         <span class="arch-label">Automated tests</span>
       </a>
     </div>

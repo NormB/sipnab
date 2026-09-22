@@ -15,9 +15,9 @@
     </nav>
   </aside>
 
-  <!-- data-pagefind-body: same scoping as page.html, and the same reason —
+  {# data-pagefind-body: same scoping as page.html, and the same reason —
        indexing <body> would put the identical docs sidebar into every
-       record. See the comment there. -->
+       record. See the comment there. #}
   <article class="doc-content" data-pagefind-body>
     <header class="doc-header">
       <p class="doc-kicker">Documentation</p>
@@ -106,20 +106,20 @@
     {% endif %}
 
     <div class="doc-body">
-      <!-- Same bypass, same justification as page.html: `section.content` is
+      {# Same bypass, same justification as page.html: `section.content` is
            HTML Zola rendered from a committed _index.md, so escaping it would
            show the markup instead of the section, and nothing a visitor sends
            can reach it. Held to the reviewed allowlist in
-           every_escaping_bypass_in_the_site_templates_is_on_the_reviewed_allowlist. -->
+           every_escaping_bypass_in_the_site_templates_is_on_the_reviewed_allowlist. #}
       {{ section.content | safe }}
     </div>
 
     {% if section.pages | length > 0 %}
     <h2 class="doc-index-title">All docs</h2>
-    <!-- data-pagefind-ignore: every entry here is the title and
+    {# data-pagefind-ignore: every entry here is the title and
          description of a page that Pagefind indexes in its own right, so
          indexing the list as well would make this landing page a
-         duplicate match for every one of them. -->
+         duplicate match for every one of them. #}
     <nav class="doc-index" aria-label="Documentation sections" data-pagefind-ignore>
       {% for page in section.pages %}
       <a href="{{ page.permalink }}" class="doc-index-item">
@@ -139,8 +139,8 @@
   </article>
 </div>
 
-<!-- The search behavior, as an external file: see the CSP note on the
+{# The search behavior, as an external file: see the CSP note on the
      #doc-search box above. cachebust=true so an edit to the script can
-     never be served from a cache against new HTML. -->
+     never be served from a cache against new HTML. #}
 <script src="{{ get_url(path='js/docs-search.js', cachebust=true) }}" defer></script>
 {% endblock content %}

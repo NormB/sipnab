@@ -38,6 +38,9 @@ This file indexes the documentation as plain text. `llms-full.txt` beside it car
 - [vCon Export](https://sipnab.com/docs/vcon/): Export one observed dialog as a vCon container: what the format is, how to produce one, and what an observer's record does and does not let a consumer conclude.
 - [Encapsulations](https://sipnab.com/docs/encapsulations/): Which link types, EtherTypes and tunnels sipnab can read a SIP dialog out of, which it cannot, and what it reports when a frame does not decode.
 - [Examples from real traffic](https://sipnab.com/docs/real-world-captures/): Twelve findings read out of live carrier and PBX traffic, with the command, the output and what an operator does next -- the retransmit storms, false-positive detections and misleading aggregates that a curated fixture cannot show.
+- [Triage a capture from the command line](https://sipnab.com/docs/first-cli-triage/): A first analysis without the TUI: list the calls in a capture, find the ones that went wrong, explain one, and hand the answer to another tool as JSON.
+- [Glossary](https://sipnab.com/docs/glossary/): The VoIP and sipnab terms the other pages use, each defined in one short entry by what it means in sipnab's output.
+- [Authentication](https://sipnab.com/docs/auth/): Bearer-token authentication for the REST API and MCP server: token format, audience binding, configuring a signing key, minting tokens, expiry and key rotation.
 
 ## Internals
 

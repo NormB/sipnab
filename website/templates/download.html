@@ -109,7 +109,7 @@
   })();
   </script>
 
-  <div class="dl-method-head" id="installer"><h2>Fastest path &mdash; the installer picks for you</h2><span class="dl-rec">recommended &middot; start here</span></div>
+  <div class="dl-method-head" id="installer"><h2>Let the installer pick the right build</h2><span class="dl-rec">recommended &middot; start here</span></div>
   {# Every terminal block below carries tabindex="0" on its <code>.
      .dl-term-body code is `overflow-x: auto; white-space: nowrap`, which makes it
      a horizontally SCROLLABLE region -- and a scrollable region that nothing can
@@ -144,7 +144,7 @@
        aarch64, so every RHEL reader was left to guess -- and "left"/"middle"
        describes where the words sit, which stops being true the moment these
        flex chips wrap onto two lines on a phone. Name the file kind instead. #}
-    <p class="dl-namemap-lead">Same chip, different names &mdash; these are equivalent. Tarballs and <code>.rpm</code> packages use the <code>x86_64</code>/<code>aarch64</code> spelling; <code>.deb</code> packages use <code>amd64</code>/<code>arm64</code>. Not sure which you have? Run <code>uname -m</code>.</p>
+    <p class="dl-namemap-lead">Same chip, different names &mdash; these are equivalent. Tarballs and <code>.rpm</code> packages use the <code>x86_64</code>/<code>aarch64</code> spelling. <code>.deb</code> packages use <code>amd64</code>/<code>arm64</code>. Not sure which you have? Run <code>uname -m</code>.</p>
     <div class="dl-namemap">
       <div class="dl-chip"><code>x86_64</code><span class="dl-eq">=</span><code>amd64</code><span class="dl-eq">=</span><span class="dl-who">Intel &amp; AMD &mdash; most servers and PCs</span></div>
       <div class="dl-chip"><code>aarch64</code><span class="dl-eq">=</span><code>arm64</code><span class="dl-eq">=</span><span class="dl-who">ARM &mdash; Apple Silicon, Graviton, RPi&nbsp;4/5</span></div>
@@ -162,7 +162,7 @@
 
   <!-- macOS -->
   <div class="dl-panel active" data-os="mac" id="dl-panel-mac" role="tabpanel" aria-labelledby="dl-tab-mac">
-    <div class="dl-method-head"><h2>Homebrew</h2><span class="dl-rec dl-rec--dim">best on macOS</span></div>
+    <div class="dl-method-head"><h2>Install with Homebrew</h2><span class="dl-rec dl-rec--dim">best on macOS</span></div>
     <div class="dl-term">
       <div class="dl-term-head"><span class="dl-dots"><i></i><i></i><i></i></span><span class="dl-term-title">macOS &middot; Intel &amp; Apple Silicon</span></div>
       <div class="dl-term-body">
@@ -189,11 +189,11 @@
 
   <!-- Debian / Ubuntu -->
   <div class="dl-panel" data-os="debian" id="dl-panel-debian" role="tabpanel" aria-labelledby="dl-tab-debian">
-    <div class="dl-method-head"><h2>Debian / Ubuntu package</h2><span class="dl-rec dl-rec--dim">best on Debian/Ubuntu</span></div>
+    <div class="dl-method-head"><h2>Install the Debian or Ubuntu package</h2><span class="dl-rec dl-rec--dim">best on Debian/Ubuntu</span></div>
     <div class="dl-decide">
       <h3>Which Debian file?</h3>
       <ul>
-        <li><span class="dl-pick">{{ config.extra.glibc_floor_distros }}</span> &rarr; the <code>.deb</code> below; apt resolves libpcap for you.</li>
+        <li><span class="dl-pick">{{ config.extra.glibc_floor_distros }}</span> &rarr; the <code>.deb</code> below. apt resolves libpcap for you.</li>
         <li><span class="dl-warn">Older releases</span> &rarr; the .deb needs glibc &ge; {{ config.extra.glibc_floor }} and fails with <code>GLIBC_{{ config.extra.glibc_floor }} not found</code>. Use the <b>static binary</b> on the &ldquo;Linux&rdquo; tab &mdash; or run the installer above, which checks this for you.</li>
         <li>Unsure? <code>cat /etc/debian_version</code> or <code>ldd --version</code> tells you where you stand.</li>
       </ul>
@@ -225,7 +225,7 @@
     </div>
     <p class="dl-note">Headless server? The <code>-noaudio</code> variants skip the ALSA sound dependency: <a href="{{ rel }}/sipnab_{{ v }}_amd64-noaudio.deb">amd64-noaudio.deb</a> &middot; <a href="{{ rel }}/sipnab_{{ v }}_arm64-noaudio.deb">arm64-noaudio.deb</a></p>
 
-    <div class="dl-method-head"><h2>RHEL / Fedora package</h2></div>
+    <div class="dl-method-head"><h2>Install the RHEL or Fedora package</h2></div>
     <div class="dl-direct">
       <span class="dl-direct-label">1 &middot; Download the .rpm</span>
       <div class="dl-tiles">
@@ -256,7 +256,7 @@
 
   <!-- Linux (static + glibc) -->
   <div class="dl-panel" data-os="linux" id="dl-panel-linux" role="tabpanel" aria-labelledby="dl-tab-linux">
-    <div class="dl-method-head"><h2>Static binary</h2><span class="dl-rec dl-rec--blue">zero dependencies</span></div>
+    <div class="dl-method-head"><h2>Download a static Linux binary</h2><span class="dl-rec dl-rec--blue">zero dependencies</span></div>
     <p class="dl-lead">musl-linked and fully self-contained &mdash; runs on any distro, any glibc version, Alpine included. Download, extract, run. This is the safe choice when you&rsquo;re not sure &mdash; the two things it leaves out are TUI audio playback and WASM plugin loading, so this binary has no <code>--plugin</code> flag at all.</p>
     <div class="dl-direct">
       <div class="dl-tiles">
@@ -291,11 +291,17 @@
   <div class="dl-panel" data-os="source" id="dl-panel-source" role="tabpanel" aria-labelledby="dl-tab-source">
     <div class="dl-method-head"><h2>Build from source</h2><span class="dl-rec dl-rec--dim">Rust 1.98+</span></div>
     <div class="dl-term">
-      <div class="dl-term-head"><span class="dl-dots"><i></i><i></i><i></i></span><span class="dl-term-title">cargo</span></div>
-      <div class="dl-term-body dl-term-body--multi">
-        <code tabindex="0"><span class="dl-prompt">$</span>git clone {{ config.extra.github_url }}.git
-<span class="dl-prompt">$</span>cd sipnab &amp;&amp; cargo build --release --features full</code>
-        <button type="button" class="dl-copy" data-copy="git clone {{ config.extra.github_url }}.git&#10;cd sipnab &amp;&amp; cargo build --release --features full" aria-label="Copy commands"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
+      <div class="dl-term-head"><span class="dl-dots"><i></i><i></i><i></i></span><span class="dl-term-title">clone the repository</span></div>
+      <div class="dl-term-body">
+        <code tabindex="0"><span class="dl-prompt">$</span>git clone {{ config.extra.github_url }}.git</code>
+        <button type="button" class="dl-copy" data-copy="git clone {{ config.extra.github_url }}.git" aria-label="Copy clone command"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
+      </div>
+    </div>
+    <div class="dl-term">
+      <div class="dl-term-head"><span class="dl-dots"><i></i><i></i><i></i></span><span class="dl-term-title">build the release binary</span></div>
+      <div class="dl-term-body">
+        <code tabindex="0"><span class="dl-prompt">$</span>cd sipnab &amp;&amp; cargo build --release --features full</code>
+        <button type="button" class="dl-copy" data-copy="cd sipnab &amp;&amp; cargo build --release --features full" aria-label="Copy build command"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
       </div>
     </div>
     <p class="dl-note">The release binary lands at <code>target/release/sipnab</code>. Toolchain, build deps, and feature flags: <a href="{{ get_url(path='@/docs/build.md') }}">Build from Source</a>.</p>
@@ -324,19 +330,25 @@
   <p class="dl-verify-hint"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M12 3l7 4v5c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V7l7-4z"/><path d="M9 12l2 2 4-4"/></svg><span>Grabbed a file above? <a href="#verify">Verify its checksum &darr;</a> before you run it.</span></p>
 
   <section class="dl-automation" id="automation">
-    <div class="dl-method-head"><h2>Docker &amp; automation</h2><span class="dl-rec dl-rec--blue">for CI &amp; fleets</span></div>
+    <div class="dl-method-head"><h2>Install with Docker or a script</h2><span class="dl-rec dl-rec--blue">for CI &amp; fleets</span></div>
     <p class="dl-lead">No interactive steps: a container image on every release, version-pinned scripted installs, and raw artifact URLs your tooling can fetch and verify.</p>
 
     <div class="dl-direct">
       <span class="dl-direct-label">Container image &mdash; ghcr.io, x86-64 &amp; ARM64, runs as non-root</span>
       <div class="dl-term">
-        <div class="dl-term-head"><span class="dl-dots"><i></i><i></i><i></i></span><span class="dl-term-title">pin the version tag; <code>latest</code> tracks releases</span></div>
-        <div class="dl-term-body dl-term-body--multi">
-          <code tabindex="0"><span class="dl-prompt">$</span>docker pull {{ config.extra.ghcr_image }}:{{ v }}
-<span class="dl-prompt">$</span>docker run --rm -v "$PWD:/data" {{ config.extra.ghcr_image }}:{{ v }} -N -I /data/capture.pcap --report</code>
-          <button type="button" class="dl-copy" data-copy="docker pull {{ config.extra.ghcr_image }}:{{ v }}&#10;docker run --rm -v &quot;$PWD:/data&quot; {{ config.extra.ghcr_image }}:{{ v }} -N -I /data/capture.pcap --report" aria-label="Copy docker commands"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
-        </div>
+      <div class="dl-term-head"><span class="dl-dots"><i></i><i></i><i></i></span><span class="dl-term-title">pull the image, pinned to this release</span></div>
+      <div class="dl-term-body">
+        <code tabindex="0"><span class="dl-prompt">$</span>docker pull {{ config.extra.ghcr_image }}:{{ v }}</code>
+        <button type="button" class="dl-copy" data-copy="docker pull {{ config.extra.ghcr_image }}:{{ v }}" aria-label="Copy docker pull command"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
       </div>
+    </div>
+      <div class="dl-term">
+      <div class="dl-term-head"><span class="dl-dots"><i></i><i></i><i></i></span><span class="dl-term-title">analyze a capture in the current directory</span></div>
+      <div class="dl-term-body">
+        <code tabindex="0"><span class="dl-prompt">$</span>docker run --rm -v "$PWD:/data" {{ config.extra.ghcr_image }}:{{ v }} -N -I /data/capture.pcap --report</code>
+        <button type="button" class="dl-copy" data-copy="docker run --rm -v &quot;$PWD:/data&quot; {{ config.extra.ghcr_image }}:{{ v }} -N -I /data/capture.pcap --report" aria-label="Copy docker run command"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
+      </div>
+    </div>
       <p class="dl-note">Offline pcap analysis needs nothing extra. Live capture inside the container needs <code>--cap-add NET_RAW --net host</code>.</p>
     </div>
 
@@ -349,20 +361,25 @@
           <button type="button" class="dl-copy" data-copy="curl -fsSL {{ config.base_url }}/install.sh | SIPNAB_VERSION={{ v }} sh" aria-label="Copy pinned install command"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
         </div>
       </div>
-      <p class="dl-note">Omit <code>SIPNAB_VERSION</code> to track the latest release; <code>SIPNAB_INSTALL_DIR</code> overrides the <code>/usr/local/bin</code> destination. The script picks the CPU and glibc-appropriate build and verifies its <code>sha256</code> before installing.</p>
+      <p class="dl-note">Omit <code>SIPNAB_VERSION</code> to track the latest release. <code>SIPNAB_INSTALL_DIR</code> overrides the <code>/usr/local/bin</code> destination. The script picks the CPU and glibc-appropriate build and verifies its <code>sha256</code> before installing.</p>
     </div>
 
     <div class="dl-direct">
       <span class="dl-direct-label">Raw URLs for your own tooling</span>
       <div class="dl-term">
-        <div class="dl-term-head"><span class="dl-dots"><i></i><i></i><i></i></span><span class="dl-term-title">fetch artifact + checksum sidecar, then verify</span></div>
-        <div class="dl-term-body dl-term-body--multi">
-          <code tabindex="0"><span class="dl-prompt">$</span>curl -fsSLO {{ rel }}/sipnab-{{ v }}-x86_64-unknown-linux-musl.tar.gz \
-       -O {{ rel }}/sipnab-{{ v }}-x86_64-unknown-linux-musl.tar.gz.sha256
-<span class="dl-prompt">$</span>sha256sum -c sipnab-{{ v }}-x86_64-unknown-linux-musl.tar.gz.sha256</code>
-          <button type="button" class="dl-copy" data-copy="curl -fsSLO {{ rel }}/sipnab-{{ v }}-x86_64-unknown-linux-musl.tar.gz -O {{ rel }}/sipnab-{{ v }}-x86_64-unknown-linux-musl.tar.gz.sha256&#10;sha256sum -c sipnab-{{ v }}-x86_64-unknown-linux-musl.tar.gz.sha256" aria-label="Copy fetch-and-verify commands"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
-        </div>
+      <div class="dl-term-head"><span class="dl-dots"><i></i><i></i><i></i></span><span class="dl-term-title">fetch the tarball and its checksum file</span></div>
+      <div class="dl-term-body">
+        <code tabindex="0"><span class="dl-prompt">$</span>curl -fsSLO {{ rel }}/sipnab-{{ v }}-x86_64-unknown-linux-musl.tar.gz -O {{ rel }}/sipnab-{{ v }}-x86_64-unknown-linux-musl.tar.gz.sha256</code>
+        <button type="button" class="dl-copy" data-copy="curl -fsSLO {{ rel }}/sipnab-{{ v }}-x86_64-unknown-linux-musl.tar.gz -O {{ rel }}/sipnab-{{ v }}-x86_64-unknown-linux-musl.tar.gz.sha256" aria-label="Copy fetch command"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
       </div>
+    </div>
+      <div class="dl-term">
+      <div class="dl-term-head"><span class="dl-dots"><i></i><i></i><i></i></span><span class="dl-term-title">verify the tarball against its checksum</span></div>
+      <div class="dl-term-body">
+        <code tabindex="0"><span class="dl-prompt">$</span>sha256sum -c sipnab-{{ v }}-x86_64-unknown-linux-musl.tar.gz.sha256</code>
+        <button type="button" class="dl-copy" data-copy="sha256sum -c sipnab-{{ v }}-x86_64-unknown-linux-musl.tar.gz.sha256" aria-label="Copy verify command"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
+      </div>
+    </div>
       <p class="dl-note">Swap the target triple from the <a href="#all-files">table below</a>. To discover the latest version without scraping HTML:</p>
       <div class="dl-term">
         <div class="dl-term-head"><span class="dl-dots"><i></i><i></i><i></i></span><span class="dl-term-title">latest release tag</span></div>
@@ -381,7 +398,7 @@
      recipes. The reference now has exactly one home; this page links to it and
      keeps the concrete per-platform links above, which are the how-to. #}
   <section class="dl-allfiles" id="all-files">
-    <div class="dl-method-head"><h2>Every file in a release</h2><span class="dl-rec dl-rec--dim">for the seasoned</span></div>
+    <div class="dl-method-head"><h2>Download any file in a release</h2><span class="dl-rec dl-rec--dim">every file, for scripted installs</span></div>
     <p class="dl-lead">Four <code>.deb</code> and four <code>.rpm</code> packages, six tarballs each with its own <code>.sha256</code> sidecar, two CycloneDX SBOMs, and <code>SHA256SUMS.txt</code> &mdash; 23 files in all, plus the two source archives GitHub generates from the tag itself. The <a href="{{ get_url(path='@/docs/install.md') }}#release-artifacts">artifact reference</a> describes what each one is, which CPU it targets, and what it needs to run.</p>
     <div class="dl-allfiles-links">
       <a class="dl-tile dl-tile--sm" href="{{ get_url(path='@/docs/install.md') }}#release-artifacts">
@@ -427,7 +444,7 @@
        and docs/install.md -- already drew that distinction correctly, so the
        page contradicted itself on a security claim. Authenticity is the
        attestation's job, which is why it is no longer a footnote here. #}
-    <p class="dl-note">Grab <a href="{{ rel }}/SHA256SUMS.txt">SHA256SUMS.txt</a> into the same folder as your download, then run the check for your OS. An <code>OK</code> line means the file arrived intact &mdash; it matches the checksum list. Each tarball also ships an individual <code>.sha256</code>; <code>.deb</code>, <code>.rpm</code>, and SBOM checksums live only in <code>SHA256SUMS.txt</code>.</p>
+    <p class="dl-note">Grab <a href="{{ rel }}/SHA256SUMS.txt">SHA256SUMS.txt</a> into the same folder as your download, then run the check for your OS. An <code>OK</code> line means the file arrived intact &mdash; it matches the checksum list. Each tarball also ships an individual <code>.sha256</code>. The <code>.deb</code>, <code>.rpm</code> and SBOM checksums live only in <code>SHA256SUMS.txt</code>.</p>
     <h3 class="dl-verify-sub">Then check who built it</h3>
     <p class="dl-note">A checksum only proves the file matches the list. It says nothing about who produced the list, so anyone serving you both files passes that check. Build provenance is the part that proves origin: a sigstore attestation that this artifact was built by this repository&rsquo;s CI from a specific commit, which a rehosted or tampered copy cannot forge.</p>
     <div class="dl-term">

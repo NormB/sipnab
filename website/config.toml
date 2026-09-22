@@ -247,9 +247,11 @@ id = "start"
 title = "Start here"
 pages = [
   { path = "docs/install.md", label = "Install sipnab", menu = true },
+  { path = "docs/first-cli-triage.md", label = "Triage your first capture", menu = true },
   { path = "docs/cookbook.md", label = "Fix a common problem", menu = true },
   { path = "docs/troubleshooting.md", label = "Diagnose a call step by step", menu = true },
   { path = "docs/real-world-captures.md", label = "Learn from real captures", menu = true },
+  { path = "docs/glossary.md", label = "Look up a term", menu = true },
 ]
 
 [[extra.docs_nav]]

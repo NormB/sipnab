@@ -1596,6 +1596,15 @@ input:focus-visible,
 }
 
 .metric-list {
+  // A link inside a card item sits in $text-dim prose, where $link alone is
+  // 1.79:1 against it, under WCAG 1.4.1's 3:1. axe reported it as
+  // link-in-text-block once the cards got a page of their own and were
+  // scanned there. The underline is what marks it.
+  a {
+    text-decoration: underline;
+    text-underline-offset: 0.2em;
+  }
+
   list-style: none;
   margin: 0;
   padding: 0;

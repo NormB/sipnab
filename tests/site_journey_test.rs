@@ -10416,8 +10416,12 @@ fn visible_prose(html: &str) -> String {
 /// two with a semicolon. Vale checks website/content, but the homepage and
 /// the standards page are templates and it never reads them.
 #[test]
-fn homepage_and_standards_prose_carry_no_semicolons() {
-    for tpl in ["website/templates/index.html", STANDARDS_TEMPLATE] {
+fn site_page_prose_carries_no_semicolons() {
+    for tpl in [
+        "website/templates/index.html",
+        STANDARDS_TEMPLATE,
+        "website/templates/download.html",
+    ] {
         let prose = visible_prose(&read(tpl));
         assert!(
             prose.split_whitespace().count() > 200,
@@ -10441,7 +10445,7 @@ fn homepage_and_standards_prose_carry_no_semicolons() {
 /// style guide reserves for names. A capitalized word after the first is
 /// allowed only when it is a name or an acronym.
 #[test]
-fn homepage_and_standards_headings_are_sentence_case() {
+fn site_page_headings_are_sentence_case() {
     const NAMES: &[&str] = &[
         "Homer",
         "Rust",
@@ -10452,11 +10456,21 @@ fn homepage_and_standards_headings_are_sentence_case() {
         "Asterisk",
         "Wireshark",
         "Prometheus",
+        "Homebrew",
+        "Debian",
+        "Ubuntu",
+        "Fedora",
+        "Docker",
+        "Linux",
         "I",
     ];
     let heading = regex::Regex::new(r"(?s)<h([1-3])[^>]*>(.*?)</h[1-3]>").unwrap();
     let mut seen = 0;
-    for tpl in ["website/templates/index.html", STANDARDS_TEMPLATE] {
+    for tpl in [
+        "website/templates/index.html",
+        STANDARDS_TEMPLATE,
+        "website/templates/download.html",
+    ] {
         let html = read(tpl);
         for c in heading.captures_iter(&html) {
             let text = visible_prose(&c[2]);
@@ -10481,4 +10495,60 @@ fn homepage_and_standards_headings_are_sentence_case() {
         }
     }
     assert!(seen >= 8, "found {seen} heading(s); the scan is broken");
+}
+
+/// Every copy button on /download copies one command.
+///
+/// Two buttons copied two commands joined by a newline (`docker pull` and
+/// `docker run`, and the fetch and the checksum check), so one paste ran both
+/// before the reader had read the second.
+#[test]
+fn every_download_copy_button_copies_one_command() {
+    let page = read("website/templates/download.html");
+    let attr = regex::Regex::new(r#"data-copy="([^"]*)""#).unwrap();
+    let mut seen = 0;
+    for c in attr.captures_iter(&page) {
+        seen += 1;
+        assert!(
+            !c[1].contains("&#10;") && !c[1].contains('\n'),
+            "a /download copy button copies more than one command: {}",
+            &c[1]
+        );
+    }
+    assert!(seen >= 5, "found {seen} copy button(s); the scan is broken");
+}
+
+/// A hand-written page does not repeat its title as a second `<h1>`.
+///
+/// page.html renders the front-matter title as the page's `<h1>`, so a body
+/// that opens with `# Title` gives the page two. /api-reference/ did.
+#[test]
+fn no_hand_written_page_repeats_its_title_as_an_h1() {
+    let mut seen = 0;
+    for entry in std::fs::read_dir(repo().join("website/content")).expect("content dir") {
+        let p = entry.expect("entry").path();
+        if p.extension().and_then(|e| e.to_str()) != Some("md") {
+            continue;
+        }
+        seen += 1;
+        let text = std::fs::read_to_string(&p).expect("read page");
+        // The body starts after the closing `+++` of the front matter.
+        let body = text.splitn(3, "+++").nth(2).unwrap_or_default();
+        let mut fenced = false;
+        for line in body.lines() {
+            if line.trim_start().starts_with("```") {
+                fenced = !fenced;
+            }
+            assert!(
+                fenced || !line.starts_with("# "),
+                "{} opens a second <h1> with {line:?}; the template already \
+                 renders the title",
+                p.display()
+            );
+        }
+    }
+    assert!(
+        seen >= 4,
+        "found {seen} hand-written page(s); the scan is broken"
+    );
 }

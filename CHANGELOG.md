@@ -68,6 +68,22 @@ entry that carries them.
 
 ### Changed
 
+- **/download reads as tasks, one command per copy button.** Method headings
+  say what the reader does ("Install with Homebrew", "Download a static Linux
+  binary"), and "for the seasoned" is "every file, for scripted installs". The
+  build, Docker and raw-URL blocks each split into one block per command, so a
+  copy button never pastes two. Prose splits its semicolon-joined sentences.
+- **The glossary and the command-line triage tutorial are on the site.**
+  Both are generated from `docs/` and listed under "Start here" in the docs
+  navigation. The authentication page is generated too, so its site copy
+  follows the source's steps-first order instead of drifting from it.
+- **Smaller site fixes.** /api-reference/ has one `<h1>` instead of two. The
+  docs index says what it offers in one sentence, and "All 19 ... compact
+  header forms all resolve" reads once. Long explanatory HTML comments in the
+  site templates are Tera comments, so they no longer ship to every visitor.
+  `scripts/rfc-links.py` and its gate leave front matter alone, so a page
+  description stays plain text. Links inside the standards cards are
+  underlined, which axe requires against their dimmed text.
 - **The homepage starts with something a newcomer can run.** "Install and
   open your first capture" now sits directly under the hero, one command per
   block and copy button: install, download the sample capture, open it in the

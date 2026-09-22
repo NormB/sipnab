@@ -11,8 +11,8 @@ the ladder, measure a delay, and inspect RTP.
 > New to sipnab? Start here. This is a guided first run through the interactive
 > TUI. It names every key you press, and the full reference lives in
 > [Keybindings](@/docs/keybindings.md). If you prefer the command line, follow
-> [Triage a capture from the command line](https://github.com/NormB/sipnab/blob/main/docs/first-cli-triage.md) instead.
-> The [Glossary](https://github.com/NormB/sipnab/blob/main/docs/glossary.md) defines any term you do not recognize.
+> [Triage a capture from the command line](@/docs/first-cli-triage.md) instead.
+> The [Glossary](@/docs/glossary.md) defines any term you do not recognize.
 
 ## 1. Open a capture
 
@@ -47,9 +47,9 @@ You can open a different capture at any time with `O` -- no restart needed.
 
 ## 2. Find your way around the call list
 
-The Call List is the home view: one row per SIP [dialog](https://github.com/NormB/sipnab/blob/main/docs/glossary.md#dialog)
+The Call List is the home view: one row per SIP [dialog](@/docs/glossary.md#dialog)
 (every message that shares a Call-ID), with method, endpoints, state, message
-count, and [PDD](https://github.com/NormB/sipnab/blob/main/docs/glossary.md#pdd) (post-dial delay, the wait between the INVITE
+count, and [PDD](@/docs/glossary.md#pdd) (post-dial delay, the wait between the INVITE
 and the first ringing response).
 
 - `j` / `k` (or `Down` / `Up`) move the selection; `PgUp` / `PgDn`, `Home`, `End` jump around.
@@ -98,13 +98,13 @@ line-by-line comparison. `Esc` returns to the ladder.
 ## 7. Inspect RTP quality
 
 Press `Tab` to switch from the Call List to the **RTP Streams** view: every
-media stream with codec, packet count, [jitter](https://github.com/NormB/sipnab/blob/main/docs/glossary.md#jitter) (how much
+media stream with codec, packet count, [jitter](@/docs/glossary.md#jitter) (how much
 packet spacing varies) and loss. Streams flagged `orphan` have no matching SIP
 dialog, which is often a sign that NAT or a SIP-aware router rewrote the media
 address.
 
 Press `Enter` on a stream -- or on an `██ RTP ██` bar back in the Call Flow --
-to open **Stream Detail**: [MOS](https://github.com/NormB/sipnab/blob/main/docs/glossary.md#mos) (mean opinion score, an
+to open **Stream Detail**: [MOS](@/docs/glossary.md#mos) (mean opinion score, an
 estimate of how the call sounded), jitter statistics, quality intervals, burst/gap
 analysis, silence detection, and MOS/jitter sparklines. A stream whose far end
 sent RTCP XR gains a **Reported by Far End (RTCP XR)** section at the bottom,
@@ -116,7 +116,7 @@ those numbers. With an `audio` build,
 
 ## 8. Trace a call through proxies (multi-leg)
 
-If a call crossed a [B2BUA](https://github.com/NormB/sipnab/blob/main/docs/glossary.md#b2bua) or [SBC](https://github.com/NormB/sipnab/blob/main/docs/glossary.md#sbc) (a
+If a call crossed a [B2BUA](@/docs/glossary.md#b2bua) or [SBC](@/docs/glossary.md#sbc) (a
 box that ends the call on one side and starts a new one on the other, so each
 side has its own Call-ID), press `x` (or `F4`) in the Call Flow to toggle
 **extended multi-leg flow** -- the related legs render together in one ladder,

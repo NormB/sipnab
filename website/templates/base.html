@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#0a0e14">
-  <!-- Browser-level security policy. GitHub Pages cannot set response
+  {# Browser-level security policy. GitHub Pages cannot set response
        headers, so this meta CSP is the enforceable layer there; the full
        header set (incl. frame-ancestors/HSTS, which meta cannot carry)
        lives in static/_headers for hosts/proxies that honor it.
@@ -32,7 +32,7 @@
        carry no handler attributes (no_inline_event_handlers_in_templates),
        so nothing legitimate is lost. Removing 'unsafe-inline' outright needs
        the inline scripts externalized to .js files first; see
-       ops/cloudflare/README.md. -->
+       ops/cloudflare/README.md. #}
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; script-src-attr 'none'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; upgrade-insecure-requests">
   <meta name="referrer" content="strict-origin-when-cross-origin">
   <title>{% block title %}{{ config.title }}{% endblock title %}</title>
@@ -41,14 +41,14 @@
   <!-- Open Graph -->
   <meta property="og:title" content="{% block og_title %}{{ config.title }}{% endblock og_title %}">
   <meta property="og:description" content="{% block og_description %}{{ config.description }}{% endblock og_description %}">
-  <!-- og:type is per-page, not a constant. "website" is right for the
+  {# og:type is per-page, not a constant. "website" is right for the
        homepage, the download page and the two section indexes; a docs page
        or an engineering note is an `article`, which is what tells an
        unfurler to render it as a document rather than as a site. The block
        defaults to the old constant so a template that says nothing keeps
        the previous behavior; page.html and note.html override it.
        `docs_pages_declare_the_article_open_graph_type` in
-       tests/site_journey_test.rs holds the wiring. -->
+       tests/site_journey_test.rs holds the wiring. #}
   <meta property="og:type" content="{% block og_type %}website{% endblock og_type %}">
   <meta property="og:url" content="{{ config.base_url }}{% if current_path is defined %}{{ current_path }}{% endif %}">
   <meta property="og:site_name" content="sipnab">
@@ -57,7 +57,7 @@
   <meta property="og:image:height" content="630">
   <meta property="og:image:alt" content="{% block og_image_alt %}sipnab — SIP & RTP analysis tool{% endblock og_image_alt %}">
 
-  <!-- Twitter / X.
+  {# Twitter / X.
 
        There is deliberately no twitter:title or twitter:description here, and
        it is not an omission. X's card parser falls back to og:title and
@@ -82,7 +82,7 @@
        download.html, index.html) and let the two drift silently, which is
        worse than the fallback that already works.
        `the_twitter_card_relies_on_the_open_graph_fallback` in
-       tests/site_journey_test.rs pins this. -->
+       tests/site_journey_test.rs pins this. #}
   <meta name="twitter:card" content="summary_large_image">
   <meta name="twitter:image" content="{{ config.base_url }}/og-image.png">
 
@@ -91,12 +91,12 @@
 
   <!-- Favicon: classic .ico fallback for bookmarks / non-SVG clients, then inline SVG -->
   <link rel="icon" href="/favicon.ico" sizes="any">
-  <!-- Favicon (inline SVG — amber handset on ink). A telephone reads at 16px
+  {# Favicon (inline SVG — amber handset on ink). A telephone reads at 16px
        where a letterform does not: a tab strip is the one place this is seen,
-       and a glyph that small resolves to a smudge. -->
+       and a glyph that small resolves to a smudge. #}
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='4' fill='%230a0e14'/><path d='M9.6 5.5h4.1c.7 0 1.3.5 1.4 1.2l.7 3.4c.1.6-.1 1.2-.6 1.5l-2.1 1.4c1.3 2.9 3.6 5.2 6.5 6.5l1.4-2.1c.3-.5.9-.7 1.5-.6l3.4.7c.7.1 1.2.7 1.2 1.4v4.1c0 .9-.7 1.6-1.6 1.5C15.3 25.7 6.3 16.7 5.5 7.1c-.1-.9.6-1.6 1.5-1.6z' fill='%23ffcc66'/></svg>">
 
-  <!-- Fonts: self-hosted, `font-display: optional` (see the Web fonts section of
+  {# Fonts: self-hosted, `font-display: optional` (see the Web fonts section of
        style.scss). The @font-face rules are only discovered once style.css is
        parsed and text is laid out, which is late enough to miss optional's
        ~100ms block period on a first visit; preloading starts the fetch while
@@ -104,7 +104,7 @@
        always fetched in CORS mode, and a preload without it does not match,
        so the file downloads twice. Latin only -- every page's text is latin,
        and a preload the page never uses is a wasted fetch and a console
-       warning. -->
+       warning. #}
   <link rel="preload" href="{{ get_url(path='fonts/inter/inter-latin-400-normal.woff2') }}" as="font" type="font/woff2" crossorigin>
   <link rel="preload" href="{{ get_url(path='fonts/inter/inter-latin-500-normal.woff2') }}" as="font" type="font/woff2" crossorigin>
   <link rel="preload" href="{{ get_url(path='fonts/jetbrains-mono/jetbrains-mono-latin-400-normal.woff2') }}" as="font" type="font/woff2" crossorigin>
@@ -127,7 +127,7 @@
   <script src="{{ get_url(path='elasticlunr.min.js', cachebust=true) }}" defer></script>
   {% endif %}
 
-  <!-- Structured data.
+  {# Structured data.
 
        The four `| safe` expressions below are escaping bypasses and cannot be
        written any other way: `json_encode` emits its own surrounding quotes,
@@ -143,7 +143,7 @@
        needs only an unlucky edit to config.toml. The property is asserted in
        no_config_value_in_the_json_ld_block_can_close_the_script_element, and
        every bypass on the page is held to a reviewed allowlist by
-       every_escaping_bypass_in_the_site_templates_is_on_the_reviewed_allowlist. -->
+       every_escaping_bypass_in_the_site_templates_is_on_the_reviewed_allowlist. #}
   <script type="application/ld+json">
   {
     "@context": "https://schema.org",
@@ -166,9 +166,9 @@
 
   {% block head_extra %}{% endblock head_extra %}
 
-  <!-- Progressive enhancement: scroll-reveal sections start hidden and are
+  {# Progressive enhancement: scroll-reveal sections start hidden and are
        revealed by an IntersectionObserver. Without JS they must stay visible,
-       or ~half the homepage renders blank. -->
+       or ~half the homepage renders blank. #}
   <noscript><style>.fade-in-up { opacity: 1 !important; transform: none !important; }</style></noscript>
 </head>
 <body>
