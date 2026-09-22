@@ -20,6 +20,15 @@ entry that carries them.
   `CaptureReport` component is that schema. It used to type `findings` as a
   list of `{}`. The count labels are now one table in `src/analysis.rs`, and
   the JSON is byte-identical to before.
+- **The `sipnab-diagnosis` YANG module.** A YANG 1.1 model of the capture
+  analysis, committed at `yang/sipnab-diagnosis@2026-09-21.yang` and printed
+  by `sipnab --print-yang-module`. Every finding kind and every evidence count
+  label is an identity whose description is the kind's own title and
+  explanation, so the module is also the catalog of what the analysis can
+  report. The module is generated from the analysis's tables, and a test fails
+  when a kind is added without it. `pyang --lint` and `yanglint` check it in
+  CI and in the pre-push hook, which reports NOT CHECKED where neither tool is
+  installed.
 - **A filtered analysis says it was filtered.** When `--filter` or a
   diagnostic alias narrowed the dialogs, `--json-analyze` carries `filter`,
   the expression that ran, and `--analyze` prints the same sentence. Before,

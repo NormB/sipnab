@@ -1,0 +1,710 @@
+module sipnab-diagnosis {
+  yang-version 1.1;
+  namespace "https://sipnab.com/ns/yang/sipnab-diagnosis";
+  prefix snd;
+
+  import ietf-yang-types {
+    prefix yang;
+    reference
+      "RFC 9911: Common YANG Data Types";
+  }
+
+  organization
+    "sipnab";
+  contact
+    "https://github.com/NormB/sipnab";
+  description
+    "The capture-level analysis sipnab computes for a packet capture:
+     every problem it already diagnosed, one dialog or one capture at
+     a time, aggregated by kind and ranked worst first, with the
+     denominators it was found in. This module describes that analysis
+     as state data so a file or an HTTP body carrying it can be
+     validated and processed by YANG tools. It is generated from the
+     tables the analysis itself uses; the identities are the catalog
+     of finding kinds and evidence count labels. No server implements
+     it as a datastore: sipnab exports documents that conform to it.";
+
+  revision 2026-09-21 {
+    description
+      "Initial revision: the capture analysis sipnab computes, its
+       finding kinds and its evidence count labels.";
+    reference
+      "https://sipnab.com/docs/output-formats/";
+  }
+
+  identity finding-kind {
+    description
+      "Base identity of every problem the analysis can report. Each
+       derived identity is named with the analysis's own stable id,
+       the value the plain JSON encoding carries as 'kind'.";
+  }
+
+  identity undecodable_frames {
+    base finding-kind;
+    description
+      "Frames not decoded. These frames reached sipnab intact and no
+       decoder here could read them, so nothing in them is in any
+       count above — a zero elsewhere in this report is not evidence
+       of absence. Convert the capture (editcap -T ether) or open an
+       issue naming the link type, EtherType or IP protocol below.
+       Severity: blind. Unit: frame.";
+  }
+
+  identity sip_discarded_by_portrange {
+    base finding-kind;
+    description
+      "SIP discarded by --portrange. sipnab recognized these as SIP
+       and then threw them away because neither port was inside
+       --portrange. They are in no dialog and no count. Widen the
+       range (--portrange 1-65535 analyzes everything) and read the
+       capture again. Severity: blind. Unit: message.";
+  }
+
+  identity sip_discarded_by_websocket_ports {
+    base finding-kind;
+    description
+      "SIP-over-WebSocket discarded by port set. These were unwrapped
+       far enough to confirm they were SIP and then declined because
+       the WebSocket port was outside the configured set. A WebRTC
+       signaling leg terminating off 80/443/8080/8443 vanishes
+       entirely without this line. Severity: blind. Unit: message.";
+  }
+
+  identity retention_loss {
+    base finding-kind;
+    description
+      "Records discarded at a store cap. sipnab read these and then
+       dropped them to stay inside a size limit, so the counts in this
+       report are what it KEPT rather than what it read. Raise --limit
+       or --max-streams and run it again. Severity: blind. Unit:
+       record.";
+  }
+
+  identity no_media {
+    base finding-kind;
+    description
+      "No media on an answered call. The call was answered and its SDP
+       asked for RTP that was expected to flow, and not one packet of
+       it arrived. Neither party heard anything. Check that the
+       capture point sees the media path at all before reading this as
+       a fault. Severity: critical. Unit: call.";
+  }
+
+  identity one_way_audio {
+    base finding-kind;
+    description
+      "One-way audio. RTP flowed in one direction only: one party
+       heard the other and was not heard back. The usual causes are a
+       NAT that never opened the return pinhole, an SDP advertising an
+       address the far end cannot route to, or a firewall dropping
+       inbound media. Severity: critical. Unit: call.";
+  }
+
+  identity stun_sdp_mismatch {
+    base finding-kind;
+    description
+      "SDP advertises an address STUN contradicts. The client's SDP
+       names an address that STUN is on record either replacing with a
+       different, reachable one, allocating on a TURN relay, or never
+       answering about at all: the far end is sending media to an
+       address that cannot receive it. Where the STUN exchange and the
+       call coincide this is the cause of one-way audio rather than an
+       inference from it; evidence seen well outside the call is
+       matched by client IP alone and says so in its notes. Severity:
+       critical. Unit: call.";
+  }
+
+  identity icmp_unreachable_signaling {
+    base finding-kind;
+    description
+      "ICMP: SIP request undeliverable. A router answered this
+       dialog's own SIP request with an ICMP error. This is the one
+       packet in a capture that states a cause instead of implying one
+       — the request was never delivered, so the call could not have
+       carried audio. Severity: critical. Unit: call.";
+  }
+
+  identity icmp_unreachable_media {
+    base finding-kind;
+    description
+      "ICMP: media undeliverable. A router answered a media datagram
+       with an ICMP error: the audio was sent to a socket that was not
+       listening. Check that the media relay is running and that the
+       port the SDP advertised is the port it is bound to. Severity:
+       critical. Unit: flow.";
+  }
+
+  identity nat_mismatch {
+    base finding-kind;
+    description
+      "RTP source no SDP advertised. Media arrived from an address
+       that no SDP in the dialog named — the signature of a NAT
+       rewriting the media source. Frequently benign on its own
+       (symmetric RTP through a NAT looks exactly like this); read it
+       together with any one-way audio on the same call. Severity:
+       major. Unit: call.";
+  }
+
+  identity server_failure {
+    base finding-kind;
+    description
+      "Call failed 5xx/6xx. The call ended on a server-class or global
+       failure (RFC 3261 §21.5, §21.6). Unlike a 4xx these are never
+       an ordinary call outcome: something on the path or at the far
+       end was unable to serve the request. Severity: major. Unit:
+       call.";
+  }
+
+  identity auth_loop {
+    base finding-kind;
+    description
+      "Authentication loop. The endpoint was challenged repeatedly and
+       never reached a 2xx. Either the credentials are wrong
+       (provisioning) or no Authorization header is ever sent (a
+       client that does not know the realm, or a proxy stripping it).
+       Severity: major. Unit: call.";
+  }
+
+  identity retransmissions {
+    base finding-kind;
+    description
+      "Request retransmitted, no response. A request was sent
+       repeatedly with nothing coming back — a one-way network path or
+       a peer that is not there. Look for an ICMP error against the
+       same destination: it turns this inference into a stated cause.
+       Severity: major. Unit: call.";
+  }
+
+  identity ack_missing {
+    base finding-kind;
+    description
+      "Answered INVITE never acknowledged. A 2xx answered the INVITE
+       and no ACK confirmed it (RFC 3261 §13.3.1.4), so the UAS
+       retransmitted until Timer H and then tore the call down. Audio
+       typically stops within seconds of the answer. Severity: major.
+       Unit: call.";
+  }
+
+  identity registration_failure {
+    base finding-kind;
+    description
+      "REGISTER failed or was cut short. A registration was rejected,
+       or was granted a shorter expiry than the endpoint asked for.
+       The first means the phone is not reachable for inbound calls;
+       the second means it will re-register sooner than it planned,
+       which shows up as registration churn rather than as a fault.
+       Severity: major. Unit: registration.";
+  }
+
+  identity unanswered_stun_probe {
+    base finding-kind;
+    description
+      "STUN Binding Request unanswered. A client asked a STUN server
+       what its public address was and nothing came back, so it never
+       learned one and will advertise its private address in any SDP
+       it later sends. RFC 5389 §7.2.1 retransmits only on timeout, so
+       a repeated request is itself proof the earlier ones drew
+       silence. Severity: major. Unit: transaction.";
+  }
+
+  identity turn_allocation_lapsed {
+    base finding-kind;
+    description
+      "TURN allocation outlived its lifetime. Relayed traffic was
+       still flowing after the lifetime the TURN server last granted
+       had run out, and no Refresh was seen in between. A server tears
+       an allocation down the moment its lifetime lapses, and the
+       media stops with it — mid-call, with no SIP message to explain
+       it. Check that the client's Refresh transactions are reaching
+       the server, and that the capture covers them. Severity: major.
+       Unit: allocation.";
+  }
+
+  identity ice_role_conflict {
+    base finding-kind;
+    description
+      "ICE agents disagreed about who was controlling. Both agents on
+       a candidate pair claimed the same ICE role, or one answered 487
+       Role Conflict (RFC 8445 §7.3.1.1). ICE resolves this itself —
+       the losing agent switches role and repeats every check it had
+       already sent — so a conflict that resolved cost a round trip
+       and nothing else. One that did NOT resolve is a candidate cause
+       of media that never started, and the evidence says which of the
+       two this is. The usual source is two endpoints configured with
+       the same role, or a B2BUA relaying one side's role attribute to
+       the other. Severity: major. Unit: pair.";
+  }
+
+  identity icmp_unreachable_endpoint {
+    base finding-kind;
+    description
+      "ICMP: endpoint unreachable, no dialog. ICMP named these
+       endpoints unreachable but the quoted bytes stopped before a
+       Call-ID, or the dialog was never tracked, so the evidence
+       appears against no call in this report. It is still a real
+       router saying a real socket did not answer. Severity: major.
+       Unit: error.";
+  }
+
+  identity request_failure {
+    base finding-kind;
+    description
+      "Call failed 4xx. The call ended on a request failure (RFC 3261
+       §21.4). Many 4xx codes are ordinary call outcomes — 486 Busy
+       Here, 404 for a misdialled number, 480 for a phone that is off
+       — so this is listed to be ruled out rather than acted on. The
+       codes are named below; a run of 403 or 408 is not an ordinary
+       outcome. Severity: minor. Unit: call.";
+  }
+
+  identity abandoned {
+    base finding-kind;
+    description
+      "No final response. The dialog never reached a final response,
+       either because a CANCEL arrived first or because none was
+       observed. The second is a statement about the CAPTURE, not the
+       call — the recording may simply have stopped while the phone
+       was still ringing. Severity: minor. Unit: call.";
+  }
+
+  identity post_dial_delay {
+    base finding-kind;
+    description
+      "Slow ring-back. The caller waited longer than the
+       post-dial-delay threshold before hearing anything. Callers hang
+       up on this long before it becomes an outage, so it reads as
+       random call failure to everyone except the person holding the
+       capture. Severity: minor. Unit: call.";
+  }
+
+  identity late_media {
+    base finding-kind;
+    description
+      "Media started late. RTP began well after the 200 OK, so the
+       first part of the conversation was clipped. Usually a media
+       relay that had not finished setting the path up when signaling
+       completed. Severity: minor. Unit: call.";
+  }
+
+  identity codec_asymmetry {
+    base finding-kind;
+    description
+      "Codec differs between legs. The two legs carried different
+       codecs, which means something on the path is transcoding. Costs
+       CPU on the B2BUA and a measurable amount of audio quality;
+       expected on an interconnect, suspicious inside one network.
+       Severity: minor. Unit: call.";
+  }
+
+  identity ptime_asymmetry {
+    base finding-kind;
+    description
+      "Packetization time differs between legs. The two legs framed
+       audio at different packetization times. A repacketizing
+       middlebox adds a little delay and jitter in each direction.
+       Severity: minor. Unit: call.";
+  }
+
+  identity payload_type_asymmetry {
+    base finding-kind;
+    description
+      "Payload type differs between legs. Both legs negotiated the
+       same codec and then used different RTP payload type numbers — a
+       middlebox rewriting them, or an SDP answer that did not echo
+       the offer's numbering. Endpoints that trust the PT rather than
+       the SDP decode noise from this. Severity: minor. Unit: call.";
+  }
+
+  identity duration_asymmetry {
+    base finding-kind;
+    description
+      "Leg durations differ. One leg's media ran materially longer
+       than the other's — one side stopped sending, or stopped being
+       forwarded, before the call ended. Severity: minor. Unit: call.";
+  }
+
+  identity count-label {
+    description
+      "Base identity of every named count an evidence row can carry.
+       Each derived identity is named with the label the plain JSON
+       encoding uses as a key of 'counts'.";
+  }
+
+  identity a_payload_type {
+    base count-label;
+    description
+      "The RTP payload type number the A leg used, where both legs
+       negotiated the same codec.";
+  }
+
+  identity a_ptime_ms {
+    base count-label;
+    description
+      "The packetization time the A leg framed its audio at, in
+       milliseconds.";
+  }
+
+  identity answer_transmissions {
+    base count-label;
+    description
+      "How many times the 2xx answer to an INVITE was transmitted with
+       no ACK confirming it.";
+  }
+
+  identity b_payload_type {
+    base count-label;
+    description
+      "The RTP payload type number the B leg used, where both legs
+       negotiated the same codec.";
+  }
+
+  identity b_ptime_ms {
+    base count-label;
+    description
+      "The packetization time the B leg framed its audio at, in
+       milliseconds.";
+  }
+
+  identity challenges {
+    base count-label;
+    description
+      "How many 401 or 407 authentication challenges the dialog drew
+       without reaching a 2xx.";
+  }
+
+  identity delay_after_200_ok_ms {
+    base count-label;
+    description
+      "Milliseconds from the 200 OK to the first RTP packet of the leg
+       that started late.";
+  }
+
+  identity dialogs {
+    base count-label;
+    description
+      "Dialogs a store refused or discarded at its capacity limit.";
+  }
+
+  identity errors_naming_no_call {
+    base count-label;
+    description
+      "ICMP errors whose quoted bytes reached no tracked dialog.";
+  }
+
+  identity frames {
+    base count-label;
+    description
+      "Frames that reached the parser and decoded to nothing.";
+  }
+
+  identity frames_read {
+    base count-label;
+    description
+      "Frames handed to the parser in the whole run: the denominator
+       for the frames that decoded to nothing.";
+  }
+
+  identity icmp_errors {
+    base count-label;
+    description
+      "ICMP errors counted against this evidence row: one endpoint,
+       one media flow, one dialog's request, or the errors a full
+       tracking table could not attribute.";
+  }
+
+  identity lifetime_secs {
+    base count-label;
+    description
+      "The allocation lifetime the TURN server last granted, in
+       seconds.";
+  }
+
+  identity messages {
+    base count-label;
+    description
+      "SIP messages: those a port gate discarded, or those evicted
+       from retained dialogs by idle compaction.";
+  }
+
+  identity reasons_not_retained {
+    base count-label;
+    description
+      "Distinct reasons frames failed to decode that were counted but
+       not kept, because the reason table was full.";
+  }
+
+  identity refreshes {
+    base count-label;
+    description
+      "TURN Refresh transactions seen for the allocation.";
+  }
+
+  identity relayed_streams {
+    base count-label;
+    description
+      "RTP streams the capture saw carried on the TURN relay.";
+  }
+
+  identity requests {
+    base count-label;
+    description
+      "STUN Binding Requests the client sent in one transaction that
+       nothing answered.";
+  }
+
+  identity role_conflict_responses {
+    base count-label;
+    description
+      "487 Role Conflict responses exchanged between the two ICE
+       agents.";
+  }
+
+  identity rtp_packets {
+    base count-label;
+    description
+      "RTP packets carried by the streams linked to the dialog.";
+  }
+
+  identity status_code {
+    base count-label;
+    description
+      "The SIP status code: the final response a call ended on, or the
+       one a REGISTER was answered with.";
+  }
+
+  identity streams {
+    base count-label;
+    description
+      "RTP streams: those linked to the dialog, or those an ICMP error
+       about a media flow affected.";
+  }
+
+  identity stun_requests {
+    base count-label;
+    description
+      "STUN requests the client sent that bear on the address its SDP
+       advertised.";
+  }
+
+  identity stun_transactions {
+    base count-label;
+    description
+      "STUN transactions past the tracking cap, counted but not kept.";
+  }
+
+  identity transmissions {
+    base count-label;
+    description
+      "How many times a request was transmitted with no response
+       coming back.";
+  }
+
+  typedef severity {
+    type enumeration {
+      enum blind {
+        value 1;
+        description
+          "This analysis is incomplete: sipnab did not read part of
+           its input, so every count is a floor and a zero means
+           unknown. Ranks above every call fault, because it qualifies
+           every other finding and every absence of one.";
+      }
+      enum critical {
+        value 2;
+        description
+          "Nobody could hear: media was negotiated and none arrived,
+           arrived in one direction only, or was addressed somewhere
+           the network says it could not be delivered.";
+      }
+      enum major {
+        value 3;
+        description
+          "The call failed or the media path is provably damaged, but
+           audio was not proven absent.";
+      }
+      enum minor {
+        value 4;
+        description
+          "Measurable degradation, or an outcome that is frequently
+           normal and is listed so it can be ruled out.";
+      }
+    }
+    description
+      "How bad a finding is, as a ladder: blind, then critical, then
+       major, then minor, worst first. The values state the order.
+       This is not the severity of RFC 8632: an alarm there requires
+       corrective action, while 'minor' here includes outcomes listed
+       only so they can be ruled out, and 'blind' describes the
+       analysis rather than the network.";
+  }
+
+  container capture-analysis {
+    config false;
+    description
+      "Everything sipnab's capture analysis found, ranked, with the
+       denominators it was found in. Every fact here was already
+       computed by a per-dialog or capture-level diagnosis; the
+       analysis aggregates and ranks them and adds no judgement of its
+       own.";
+    leaf schema-version {
+      type uint32;
+      mandatory true;
+      description
+        "The version of the plain JSON encoding's shape this analysis
+         was produced under.";
+    }
+    leaf filter {
+      type string;
+      description
+        "The filter expression that selected the dialogs examined,
+         after alias expansion. Absent when every dialog was examined.
+         Capture-level findings are never narrowed by it.";
+    }
+    leaf frames-read {
+      type uint64;
+      mandatory true;
+      description
+        "Frames handed to the parser: the denominator every other
+         number is read against.";
+    }
+    leaf dialogs-examined {
+      type uint64;
+      mandatory true;
+      description
+        "Dialogs the analysis looked at, after any filter.";
+    }
+    leaf streams-examined {
+      type uint64;
+      mandatory true;
+      description
+        "RTP streams linked to those dialogs.";
+    }
+    leaf complete {
+      type boolean;
+      mandatory true;
+      description
+        "Whether sipnab read all of its input. False whenever a
+         finding of severity 'blind' is present, and then every count
+         is a floor and the absence of a finding is not evidence of
+         the absence of a problem.";
+    }
+    list finding {
+      key "kind";
+      description
+        "Every finding, one per kind. The entries are written worst
+         first; 'rank' states the order.";
+      leaf kind {
+        type identityref {
+          base finding-kind;
+        }
+        description
+          "Which problem this is. At most one finding per kind: the
+           analysis aggregates every occurrence of a kind into one
+           entry.";
+      }
+      leaf rank {
+        type uint32;
+        mandatory true;
+        description
+          "This finding's place in the ranking, 1 being the worst:
+           severity first, then occurrences, highest first, then the
+           kind's place on the ladder. The plain JSON encoding states
+           it by array position; RFC 7950 section 7.7.7 gives state
+           data no order, so it is carried here.";
+      }
+      leaf severity {
+        type severity;
+        mandatory true;
+        description
+          "How bad it is. Carried on every finding so a consumer can
+           sort without the identity table.";
+      }
+      leaf occurrences {
+        type uint64;
+        mandatory true;
+        description
+          "How many times it was observed, in units of 'unit'. Exact,
+           and not the number of evidence entries, which is capped.";
+      }
+      leaf unit {
+        type string;
+        mandatory true;
+        description
+          "What one occurrence is: call, frame, message, transaction
+           and so on.";
+      }
+      leaf evidence-omitted {
+        type uint64;
+        mandatory true;
+        description
+          "Evidence rows the cap of ten kept out. Counted, not derived
+           from 'occurrences', because one row often stands for many
+           occurrences.";
+      }
+      list evidence {
+        key "index";
+        description
+          "Up to ten verifiable instances, each pointing back at the
+           capture.";
+        leaf index {
+          type uint32;
+          description
+            "This row's position in the finding's evidence, counting
+             from 1. The plain JSON encoding states it by array
+             position; RFC 7950 section 7.7.7 gives state data no
+             order, so it is carried here.";
+        }
+        leaf call-id {
+          type string;
+          description
+            "The Call-ID of the dialog this instance belongs to.
+             Absent for a capture-level finding that belongs to no
+             call: a STUN probe, an undecodable frame, an ICMP quote
+             too short to name a Call-ID.";
+        }
+        leaf-list endpoint {
+          type string;
+          description
+            "The addresses involved, most specific first, as display
+             text with the role written in (\"SDP 192.0.2.1\",
+             \"reported by 198.51.100.1\") rather than as bare
+             addresses. The encoding keeps the order; RFC 7950 section
+             7.7.7 means a YANG tool need not.";
+        }
+        leaf at {
+          type yang:date-and-time;
+          description
+            "When it happened, in UTC, when a single timestamp
+             describes it.";
+        }
+        list count {
+          key "name";
+          description
+            "Named integer counts: packets, streams, messages, errors,
+             status codes.";
+          leaf name {
+            type identityref {
+              base count-label;
+            }
+            description
+              "What the number counts. One of the count-label
+               identities, whose names are the labels the plain JSON
+               uses as keys.";
+          }
+          leaf value {
+            type uint64;
+            mandatory true;
+            description
+              "The count.";
+          }
+        }
+        leaf note {
+          type string;
+          description
+            "The part of the evidence that is not an integer: codec
+             names, a reason phrase, a router's own words.";
+        }
+      }
+    }
+  }
+}

@@ -423,13 +423,26 @@ push-and-wait feedback loop. [`scripts/check-feature-matrix.py`](../../scripts/c
 thirteen locally, reading both the combo list and `RUSTFLAGS` out of
 [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml) so the two cannot drift.
 
-[`pre-push`](../../.githooks/pre-push) adds twelve hard gates that `cargo test`
+[`pre-push`](../../.githooks/pre-push) adds thirteen hard gates that `cargo test`
 does not cover: `cargo fmt --check`, `cargo clippy --workspace --all-features --all-targets
 -D warnings`, `cargo doc` with `RUSTDOCFLAGS=-D warnings`, `cd fuzz &&
 cargo check`, the release-delivery tests, a check of the reduced feature
 combinations `tls`, `api` and `wasm`, the full thirteen-combination matrix with
-CI's flags, a non-Linux compile of the whole tree, a `zola build` of the
-website, and the two prose linters — Vale and codespell.
+CI's flags, a non-Linux compile of the whole tree, a YANG validation of the
+`sipnab-diagnosis` module, a `zola build` of the website, and the two prose
+linters — Vale and codespell.
+
+The YANG gate, [`scripts/check-yang.py`](../../scripts/check-yang.py), exists
+because a test generates the module under `yang/`: [`tests/yang_module_test.rs`](../../tests/yang_module_test.rs)
+proves the committed file is what the analysis's tables produce, and only a
+YANG implementation that did not write it can say the text is valid YANG.
+`pyang --lint` and `yanglint` from `libyang` compile it, and
+`pyang --check-update-from` holds each new revision to the last under
+[RFC 7950 section 11](https://www.rfc-editor.org/rfc/rfc7950#section-11). A
+machine without either tool reports `NOT CHECKED` and names the fix. CI's
+`check` job installs both (`libyang2-tools`, and `pyang` from the hashed
+[`scripts/requirements-yang.txt`](../../scripts/requirements-yang.txt)) and runs the script with
+`SIPNAB_YANG_REQUIRED=1`, so the one place that must check cannot skip.
 
 The release-delivery tests are here for a reason the others are not: nothing
 earlier can answer them. They compare the tree against the newest tag, and at
@@ -544,7 +557,7 @@ because a hand-kept list cannot catch a *new* corpus binary, which is the one
 thing this gate exists for. The first draft did hand-keep the list, and it went
 stale inside an hour, when a twelfth binary landed mid-review.
 
-**When it runs.** Last, after the twelve hard gates. Each of those fails in
+**When it runs.** Last, after the thirteen hard gates. Each of those fails in
 seconds, and spending a minute on the corpus only to hear that the tree does not
 compile wastes the minute. The gate then reaches one of five states — a run, or
 one of the four reasons not to run — and each prints its own line:

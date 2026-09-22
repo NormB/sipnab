@@ -152,13 +152,14 @@ that notice are the two advisory gates, printing `WARN`/`REVIEW` and letting the
 commit through). Version markers are not in that list: one Rust test asserts
 them and runs here *and* in CI, because two implementations of one rule
 diverge — as the shell copy the hook once carried did. Also
-ten in [`.githooks/pre-push`](../../.githooks/pre-push), each marked
+thirteen in [`.githooks/pre-push`](../../.githooks/pre-push), each marked
 `# -- Hard gate` in the hook: `fmt`,
 `clippy --workspace --all-features --all-targets`, `cargo doc` with `-D warnings`,
-a `fuzz` workspace check, the reduced feature combinations, CI's full
-thirteen-combination feature matrix, the non-Linux arm of
-every platform cfg, the refusal to tag `v*` at a commit whose CI is not green,
-the prose linters, and a `zola build` of the website. Plus the conditional corpus gate, and the CI jobs behind
+a `fuzz` workspace check, the release-delivery tests, the reduced feature
+combinations, CI's full thirteen-combination feature matrix, the non-Linux arm
+of every platform cfg, the validity of the YANG module, the test count
+a commit message claims, the refusal to tag `v*` at a commit whose CI is not
+green, the prose linters, and a `zola build` of the website. Plus the conditional corpus gate, and the CI jobs behind
 them.
 
 **The drift tests** — the subset of the gate suite that compares documentation

@@ -72,7 +72,8 @@ jobs:
         if: runner.os == 'Linux'
         uses: ./.github/actions/system-deps
         with:
-          packages: libpcap-dev libasound2-dev
+          # libyang2-tools is yanglint, for the YANG validation step below.
+          packages: libpcap-dev libasound2-dev libyang2-tools
 
       - uses: dtolnay/rust-toolchain@ce678459e9fc7500d337468f904b95f1b5c10b5e # 1.98.1
         with:
@@ -111,6 +112,24 @@ jobs:
         run: |
           set -o pipefail
           cargo test --all-features 2>&1 | tee test-output.txt
+
+      # The sipnab-diagnosis YANG module, checked by two implementations that
+      # did not write it: `pyang --lint` and libyang's `yanglint` compile it,
+      # and `pyang --check-update-from` holds each revision to the last (RFC
+      # 7950 section 11). The Rust suite above proves the committed module is
+      # what the analysis's tables generate; only a YANG tool can prove it is
+      # valid YANG. Locally a missing tool is NOT CHECKED; here
+      # SIPNAB_YANG_REQUIRED makes it a failure, because this is the one place
+      # that must not be able to skip. See scripts/check-yang.py.
+      - name: Validate the YANG module
+        if: runner.os == 'Linux'
+        env:
+          SIPNAB_YANG_REQUIRED: '1'
+        run: |
+          python3 -m venv .venv-yang
+          . .venv-yang/bin/activate
+          python3 -m pip install --require-hashes -r scripts/requirements-yang.txt
+          python3 scripts/check-yang.py
 
       # The homepage advertises an automated-test count in two places.
       # .githooks/pre-commit already compares both to a real test run, but a

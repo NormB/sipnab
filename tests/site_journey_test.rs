@@ -5281,7 +5281,7 @@ fn packaging_scripts_reference_existing_paths() {
         //
         // So every top-level directory must appear in one list or the other,
         // and a new one fails until someone decides which.
-        const ROOTS: [&str; 17] = [
+        const ROOTS: [&str; 18] = [
             "bpf/",
             "clients/",
             ".clusterfuzzlite/",
@@ -5299,6 +5299,8 @@ fn packaging_scripts_reference_existing_paths() {
             ".githooks/",
             ".cargo/",
             ".config/",
+            // The committed YANG module; pages.yml copies it into the site.
+            "yang/",
         ];
         // Directories deliberately not treated as path roots, each with the
         // reason a match inside them would be a false positive.
@@ -5424,11 +5426,14 @@ fn packaging_scripts_reference_existing_paths() {
             //
             // `sipnab.js` is NOT here and must keep existing: it is text, the
             // export guard reads it, and its absence is a real failure.
-            const GENERATED: [&str; 4] = [
+            const GENERATED: [&str; 5] = [
                 "website/public",
                 "build/",
                 "target/",
                 "website/static/wasm/sipnab_bg.wasm",
+                // pages.yml copies the YANG module here at deploy; yang/ holds
+                // the one committed copy.
+                "website/static/yang",
             ];
             if GENERATED.iter().any(|g| cand.starts_with(g)) {
                 continue;
@@ -5548,7 +5553,15 @@ fn packaging_scripts_reference_existing_paths() {
     // 103 -> 104: ci.yml installs pytest from
     // clients/python/requirements-test.txt, pinned by hash. Attributed by
     // measurement: with HEAD's ci.yml swapped back in, the scan reads 103.
-    const EXPECTED_REFERENCES: usize = 104;
+    // 104 -> 108: four, for the sipnab-diagnosis YANG module. Three in
+    // `.github/workflows/ci.yml`, whose YANG step installs from
+    // `scripts/requirements-yang.txt`, runs `scripts/check-yang.py` and names
+    // it in its comment; one in `.github/workflows/pages.yml`, whose `paths:`
+    // filter gains `yang/**` (`yang/` joins ROOTS above so it is checked at
+    // all). The step's copy destination, `website/static/yang`, is a deploy
+    // output and sits in GENERATED. Attributed by measurement: with HEAD's
+    // ci.yml swapped back in the scan reads 105, with HEAD's pages.yml 107.
+    const EXPECTED_REFERENCES: usize = 108;
     assert_eq!(
         checked, EXPECTED_REFERENCES,
         "packaging path scan saw {checked} references, expected \

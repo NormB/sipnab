@@ -243,6 +243,24 @@ it. Steps 1, 2, and 4 are still convention with no gate behind them.
 5. Document it in [`docs/output-formats.md`](@/docs/output-formats.md), and mirror
    into the website page. The flag that selects it then owes the CLI-flag
    checklist above.
+6. A new finding kind or evidence count label in
+   [`src/analysis.rs`](https://github.com/NormB/sipnab/blob/main/src/analysis.rs) changes two published contracts,
+   and a test holds each one to the table. Give the variant its arm in
+   `ordinal` and `meta` (or `as_str` and `description` for a `CountLabel`) —
+   the compiler insists — and its place in `ALL`, which a `const` assertion
+   checks. Then add it to
+   [`tests/schemas/capture_analysis.schema.json`](https://github.com/NormB/sipnab/blob/main/tests/schemas/capture_analysis.schema.json):
+   `json_schema_test` fails until the `kind` enum or the `counts` properties
+   name it. Last, the YANG module. Users already hold its current revision,
+   so do not bless over it: add an entry to `REVISIONS` in
+   [`src/analysis/yang.rs`](https://github.com/NormB/sipnab/blob/main/src/analysis/yang.rs) with the day's date,
+   point `MODULE_TEXT`'s `include_str!` at the new file name, run
+   `SIPNAB_BLESS_YANG=1 cargo test --features full --test yang_module_test`,
+   and keep the previous file under `yang/` beside the new one.
+   [`yang_module_test`](https://github.com/NormB/sipnab/blob/main/tests/yang_module_test.rs) fails until the
+   committed module names the kind, and
+   [`scripts/check-yang.py`](https://github.com/NormB/sipnab/blob/main/scripts/check-yang.py) runs
+   `pyang --check-update-from` over the pair.
 
 ## Add a fuzz target
 

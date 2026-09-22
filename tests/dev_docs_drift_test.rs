@@ -705,7 +705,15 @@ fn linked_code_targets_exist() {
     // spawn harness uses, so a SIGKILLed child no longer drops its coverage.
     // Attributed by counting every page under `docs/internals/` against HEAD:
     // testing.md moved 96 -> 97 and no other page changed.
-    const EXPECTED_CODE_LINKS: usize = 432;
+    // 432 -> 440: eight, for the sipnab-diagnosis YANG module. Three in
+    // `docs/internals/build-ci-release.md`, whose pre-push section gains the
+    // YANG gate and links `scripts/check-yang.py`, `tests/yang_module_test.rs`
+    // and `scripts/requirements-yang.txt`; five in
+    // `docs/internals/walkthroughs.md`, whose output-format checklist gains
+    // the finding-kind step and links `src/analysis.rs`, the capture-analysis
+    // schema, `src/analysis/yang.rs`, `tests/yang_module_test.rs` and
+    // `scripts/check-yang.py`. No other page changed.
+    const EXPECTED_CODE_LINKS: usize = 440;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \

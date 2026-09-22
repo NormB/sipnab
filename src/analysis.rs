@@ -56,6 +56,8 @@ use crate::sip::dialog::SipDialog;
 use crate::sip::dialog_store::DialogStore;
 use crate::sip::dsl::FilterExpr;
 
+pub mod yang;
+
 /// How many evidence rows a single finding retains.
 ///
 /// A finding that matched 4,000 calls is a count, not a list; keeping every

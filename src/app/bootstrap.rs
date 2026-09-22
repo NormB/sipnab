@@ -2314,6 +2314,27 @@ pub fn run_startup_commands(cli: &Cli) -> Option<i32> {
         return Some(0);
     }
 
+    // --print-yang-module: the module the RFC 7951 export validates against.
+    // A fact about this binary, not about any capture, so it needs no config,
+    // capture or privileges. Written through a checked write rather than
+    // `print!`, which panics when stdout is a closed pipe.
+    if cli.output_args.print_yang_module {
+        use std::io::Write;
+        let mut out = std::io::stdout().lock();
+        return Some(
+            match out
+                .write_all(crate::analysis::yang::MODULE_TEXT.as_bytes())
+                .and_then(|()| out.flush())
+            {
+                Ok(()) => 0,
+                Err(e) => {
+                    tracing::error!("--print-yang-module: {e}");
+                    1
+                }
+            },
+        );
+    }
+
     // --setup-caps: grant this binary the capabilities needed for live
     // capture. Handled before any config/capture setup so it works right
     // after a fresh `cargo install` with no config present.

@@ -980,6 +980,15 @@ pub struct OutputArgs {
     #[arg(help_heading = "Output", long)]
     pub json_analyze: bool,
 
+    /// Print the `sipnab-diagnosis` YANG module and exit.
+    ///
+    /// The YANG 1.1 module the RFC 7951 export of the capture analysis
+    /// validates against, byte for byte the file committed under `yang/`.
+    /// Hand it to `yanglint` or `pyang` with an export. Needs no capture, no
+    /// config and no privileges.
+    #[arg(help_heading = "Output", long)]
+    pub print_yang_module: bool,
+
     /// Generate a detailed report for a specific Call-ID.
     #[arg(help_heading = "Output", long, value_name = "CALL-ID")]
     pub call_report: Option<String>,

@@ -110,11 +110,17 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
         "fix",
         &["website/content/notes/the-assumption-nobody-timed.md"],
     ),
+    // `--features` and `--test` are cargo's in the contributor walkthroughs
+    // too: `SIPNAB_BLESS_YANG=1 cargo test --features full --test
+    // yang_module_test` is the one command that regenerates the YANG module,
+    // so the finding-kind checklist cannot state the step without them.
     (
         "features",
         &[
             "website/content/notes/the-assumption-nobody-timed.md",
             "website/content/notes/the-tool-list-that-promised-what-the-build-lacked.md",
+            "docs/internals/walkthroughs.md",
+            "website/content/docs/internals/walkthroughs.md",
         ],
     ),
     // `--test` is cargo's, named twice more by the REST reference and its
@@ -128,6 +134,22 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             "website/content/notes/seventy-five-percent-of-a-test-binary.md",
             "docs/rest-api.md",
             "website/content/docs/api.md",
+            "docs/internals/walkthroughs.md",
+            "website/content/docs/internals/walkthroughs.md",
+        ],
+    ),
+    // pyang's. `pyang --check-update-from` is the check that holds a new
+    // revision of the YANG module to the published one (RFC 7950 section 11),
+    // and the contributing guide, the build page and the contributor
+    // walkthroughs name it when they say what the YANG gate runs.
+    (
+        "check-update-from",
+        &[
+            "CONTRIBUTING.md",
+            "docs/internals/build-ci-release.md",
+            "website/content/docs/internals/build-ci-release.md",
+            "docs/internals/walkthroughs.md",
+            "website/content/docs/internals/walkthroughs.md",
         ],
     ),
     // `--yes` is npx's. The REST reference shows `npx --yes @redocly/cli` for
@@ -5301,6 +5323,7 @@ fn documented_pre_push_gate_count_matches_the_hook() {
         11 => "eleven",
         12 => "twelve",
         13 => "thirteen",
+        14 => "fourteen",
         n => panic!("no spelling for {n} gates; add one rather than dropping the check"),
     };
 
@@ -5318,7 +5341,7 @@ fn documented_pre_push_gate_count_matches_the_hook() {
         // Each of these names a count of pre-push gates somewhere. Any OTHER
         // spelled number next to "hard gate" is the drift this catches.
         for wrong in [
-            "four", "five", "six", "seven", "eight", "nine", "ten", "eleven",
+            "four", "five", "six", "seven", "eight", "nine", "ten", "eleven", "twelve",
         ] {
             if wrong == spelled {
                 continue;
@@ -6231,6 +6254,7 @@ fn the_gate_count_spelling_table_covers_one_more_than_today() {
         (11, "eleven"),
         (12, "twelve"),
         (13, "thirteen"),
+        (14, "fourteen"),
     ];
     let want = spellings
         .iter()

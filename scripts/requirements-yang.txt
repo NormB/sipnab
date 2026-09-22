@@ -1,0 +1,16 @@
+# The YANG validation tools CI installs for scripts/check-yang.py, pinned by
+# hash so pip refuses any file whose bytes differ: `--require-hashes -r` this
+# file. pyang 2.7.1 and the lxml it requires, for Python 3.12 on Linux
+# (ubuntu-24.04-arm, the leg that runs the check; x86_64 listed too). yanglint
+# is not here: it comes from Ubuntu's libyang2-tools package. OSV-Scanner reads
+# this file in CI, so a vulnerable pin turns main red; osv.dev listed no
+# advisory against either version when they were pinned (2026-09-21).
+
+lxml==6.1.3 \
+    --hash=sha256:b37772102d44bb6628186accca3a121b1fa3a6b3d97518a8c29a5229ca4c0d0a \
+    --hash=sha256:f683dc6300317700025e41d89a43e0276692ded16113a3c43eab704d605c58e5 \
+    --hash=sha256:909f4e927bb051f7740d6367285fc60cdcfdaf0258c2dba4ff5ba7eadadc250c \
+    --hash=sha256:379f8a75cf6eb7eef0af074b55f49ab73b868388a98de14646abcdfa4564bb11
+pyang==2.7.1 \
+    --hash=sha256:eadff4c0a37cbdd509c231b1bd6c3b322ae60cf971a22cc268c60a6f82241a1d \
+    --hash=sha256:ccffeebc6796a462ed6f63e802b9d61b0f21bf6cee0af88362cbda553483fe32
