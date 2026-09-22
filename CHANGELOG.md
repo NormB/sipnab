@@ -135,7 +135,7 @@ entry that carries them.
   Two rtpengine relay fixtures were live captures from the lab network, a
   fuzz seed was a copy of a third-party capture, and the two oldest fixtures
   used private addresses. `tests/support/synthetic_captures.rs` now builds
-  all five, plus the empty fuzz seed, on RFC 5737 addresses and RFC 7042 MAC
+  all five, plus the empty fuzz seed, on [RFC 5737](https://www.rfc-editor.org/rfc/rfc5737) addresses and [RFC 7042](https://www.rfc-editor.org/rfc/rfc7042) MAC
   addresses, and `cargo run --features native --bin gen_fixture` writes them.
   `tests/synthetic_captures_test.rs` rebuilds each one and fails on the first
   byte that differs. The relay pair keeps what the live exchange showed:
@@ -161,7 +161,7 @@ entry that carries them.
   come out byte-identical. The two NAT fixtures change only their MAC
   addresses, which were outside the RFC 7042 documentation block, and in
   `stun_sdp_mismatch.pcap` the two SDP bodies' `Content-Length`, which said 126
-  for 134 bytes. Its RFC 1918 address stays, because it is the mismatch the
+  for 134 bytes. Its [RFC 1918](https://www.rfc-editor.org/rfc/rfc1918) address stays, because it is the mismatch the
   fixture shows, and the test that checks for documentation addresses lists
   it as the one deliberate exception.
 
@@ -320,6 +320,15 @@ entry that carries them.
   ready`. The first file actually read now signals it.
 
 ### Internal
+
+- **The RFC link check can fail, and its tests leave the checkout alone.**
+  `scripts/rfc-links.py` without `--apply` reported what it would link and
+  exited 0 regardless, so the test calling it the tree's gate passed on every
+  tree. Two other tests ran `--apply` on the real checkout. In CI that linked
+  three first mentions before `cargo test` ran, and
+  `site_pages_mirror_is_current` failed over a page the commit did not hold,
+  which no local run reproduced. Check mode now exits 1 when anything would
+  change, and those tests run a copy of the script in a throwaway repository.
 
 - **Tests that exist only in a reduced build now run.** The feature-gate
   refusals, the `mcp`-without-`mcp-http` startup error and the no-`audio` TUI

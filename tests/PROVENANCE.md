@@ -35,8 +35,8 @@ Prefer a generator. A builder in
 [`support/synthetic_captures.rs`](support/synthetic_captures.rs), listed in its
 `OWNED` table, is rebuilt and compared byte for byte by
 [`synthetic_captures_test.rs`](synthetic_captures_test.rs), and
-`cargo run --features native --bin gen_fixture` writes the file. Use RFC 5737
-addresses, RFC 7042 documentation MAC addresses and `example.*` host names.
+`cargo run --features native --bin gen_fixture` writes the file. Use [RFC 5737](https://www.rfc-editor.org/rfc/rfc5737)
+addresses, [RFC 7042](https://www.rfc-editor.org/rfc/rfc7042) documentation MAC addresses and `example.*` host names.
 
 Then add an entry below, headed by the capture's path from the repository
 root, with these labels:
@@ -62,7 +62,7 @@ leaves it by gaining a real entry here, or by the file being deleted.
 - **SHA-256:** `113597350ef13c41d40023c855c22cd06b3c6341e46c1f3e7722698e2409595b`
 - **Holds:** one complete call between 192.0.2.1 and 192.0.2.2, INVITE
   through BYE, seven messages and no media. The default capture for CLI,
-  REST, MCP and TUI tests. Until September 2026 it used private RFC 1918
+  REST, MCP and TUI tests. Until September 2026 it used private [RFC 1918](https://www.rfc-editor.org/rfc/rfc1918)
   addresses; the frames are otherwise the ones `gen_fixture` wrote in April.
 
 ### tests/fixtures/udp_5060.pcap

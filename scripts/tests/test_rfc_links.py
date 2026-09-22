@@ -31,33 +31,104 @@ def test_the_tree_is_currently_clean():
     assert run().returncode == 0, run().stdout[-400:]
 
 
-def test_the_fixer_is_idempotent():
+def fixture_tree(tmp_path, pages):
+    """A throwaway repository holding a copy of `scripts/` and `pages`.
+
+    The script derives its root from its own location, deliberately (see
+    `convert` below), so the only way to point the CLI at a fixture is to
+    run a COPY of it from inside one. The first versions of the idempotence
+    and reporting tests ran `--apply` against the real checkout instead. In
+    CI that rewrote three tracked files before `cargo test` ran, and
+    `site_pages_mirror_is_current` then failed on a keybindings.md page the
+    commit did not contain -- a red that no local run could reproduce.
+    """
+    import shutil
+
+    root = tmp_path / "repo"
+    shutil.copytree(SCRIPTS, root / "scripts",
+                    ignore=shutil.ignore_patterns("tests", "__pycache__"))
+    for rel, text in pages.items():
+        path = root / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+    for cmd in (["git", "init", "-q"], ["git", "add", "-A"]):
+        subprocess.run(cmd, cwd=root, check=True, capture_output=True)
+    return root
+
+
+def run_in(root, *args):
+    return subprocess.run(
+        ["python3", str(root / "scripts" / "rfc-links.py"), *args],
+        capture_output=True, text=True, timeout=180, cwd=root,
+    )
+
+
+UNLINKED = {"docs/page.md": "# Page\n\nThe rules are in RFC 3261.\n"}
+
+
+def test_check_mode_fails_when_the_fixer_would_change_something(tmp_path):
+    """The gate half must be able to fail.
+
+    Check mode printed what it WOULD link and exited 0 regardless, so
+    `test_the_tree_is_currently_clean` passed on every tree there has ever
+    been, including the 0.5.186 cut, which carried three unlinked first
+    mentions that `--apply` then linked in CI.
+    """
+    root = fixture_tree(tmp_path, UNLINKED)
+    result = run_in(root)
+    assert result.returncode == 1, result.stdout
+    assert "WOULD LINK" in result.stdout, result.stdout
+    assert (root / "docs/page.md").read_text() == UNLINKED["docs/page.md"], (
+        "check mode must not write"
+    )
+
+
+def test_check_mode_passes_once_the_fixer_has_run(tmp_path):
+    root = fixture_tree(tmp_path, UNLINKED)
+    assert run_in(root, "--apply").returncode == 0
+    result = run_in(root)
+    assert result.returncode == 0, result.stdout
+
+
+def test_the_fixer_is_idempotent(tmp_path):
     """A second run must change nothing.
 
     A fixer that keeps editing fights its gate forever, and the symptom is a
     commit that will not go through however many times the fix is applied.
-    Measured as the tree state around a second run rather than by reading the
-    fixer's own report, which is the thing under test.
+    Measured as the file contents around a second run rather than by reading
+    the fixer's own report, which is the thing under test.
     """
-    def tree():
-        return subprocess.run(["git", "status", "--porcelain"],
-                              capture_output=True, text=True, cwd=REPO).stdout
+    root = fixture_tree(tmp_path, UNLINKED)
+    assert run_in(root, "--apply").returncode == 0
+    once = (root / "docs/page.md").read_text()
+    assert once != UNLINKED["docs/page.md"], "the first run linked nothing"
+    assert run_in(root, "--apply").returncode == 0
+    assert (root / "docs/page.md").read_text() == once, (
+        "a second run of the fixer changed the page"
+    )
 
-    assert run("--apply").returncode == 0
-    before = tree()
-    assert run("--apply").returncode == 0
-    assert tree() == before, "a second run of the fixer changed the tree"
 
-
-def test_it_reports_what_it_did():
+def test_it_reports_what_it_did(tmp_path):
     """Silence from a fixer cannot be told apart from a fixer that never ran.
 
     This one prints its counts even when both are zero, which is what makes
     "I ran it and nothing happened" a distinguishable outcome.
     """
-    out = run("--apply").stdout
-    assert out.strip(), "the fixer printed nothing at all"
-    assert "section citations" in out, out
+    root = fixture_tree(tmp_path, UNLINKED)
+    out = run_in(root, "--apply").stdout
+    assert "LINKED 0 section citations + 1 first mentions across 1 files" in out, out
+
+
+def test_the_suite_never_writes_to_the_real_tree():
+    """No test in this file may run `--apply` where `cwd=REPO`.
+
+    Read from this file's own source, so a new test that reaches for the
+    real checkout fails here instead of in CI's mirror gate.
+    """
+    src = pathlib.Path(__file__).read_text()
+    # Built in two halves so this line does not match itself.
+    needle = "run(" + '"--apply")'
+    assert needle not in src, "a test runs --apply against the real checkout"
 
 
 def convert():
