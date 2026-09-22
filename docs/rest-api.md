@@ -2924,6 +2924,16 @@ values a program keys on.
 
 ---
 
+## Operator notes are not a REST resource
+
+Operator notes, typed in the TUI or written with `--write-annotated`, have no
+route. Writing a capture on the server is a control action REST here does not
+take, and a note store every client could write, read beside the analysis by the
+same dashboards, is the store section 2 of the
+[deferred-and-declined record](design/deferred-and-declined.md#2-write-back-mcp-tools)
+declined to build. sipnab never reads a packet comment back, so no route shows a
+note from a capture either.
+
 ## Status codes
 
 | Code | When |

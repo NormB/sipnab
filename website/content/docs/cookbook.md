@@ -3289,6 +3289,34 @@ The first asks the relay for its own loss counter, live. The second reads what s
 
 ---
 
+## 65. Send a carrier the capture with your notes on the frames
+
+**Problem:** You found the message that went wrong. The carrier's engineer opens the capture in Wireshark, not in sipnab, and a remark in an email comes apart from the file it is about.
+
+Take each frame's pointer from `--json` and write the notes file, one JSON object per line:
+
+```bash
+sipnab -N -I capture.pcap --json | jq -c 'select(.status_code == 183) | {frame, note: "the SDP changed here, after the 180"}' > capture.notes.jsonl
+```
+
+Then write the annotated copy:
+
+```bash
+sipnab -N -I capture.pcap --notes capture.notes.jsonl --write-annotated capture-for-carrier.pcapng
+```
+
+Wireshark shows each note as the packet comment on its frame, and `tshark -r capture-for-carrier.pcapng -Y frame.comment` lists the annotated frames. The copy carries the original frames byte for byte. sipnab checks every note against its frame's digest and refuses, writing nothing, when the capture changed after you took the pointers.
+
+In the TUI, `C` on a message types the note there, and a PCAP-NG save writes it. [Operator notes](@/docs/keybindings.md#operator-notes) has the keys.
+
+**Pitfalls:**
+
+- The copy carries no decryption secrets, no name resolution blocks and none of the input's own comments. If the carrier needs to decrypt TLS, send the key log on purpose, separately.
+- A note is text you typed, and sipnab never reads it back: `--json`, the REST API and MCP never show it. That is the design (Invariant 13), not a gap.
+- sipnab refuses a note holding an SDES key, a TLS key-log line or a digest `response=` value. Describe the message that carried the key, and leave the key out.
+
+---
+
 ## Next steps
 
 - [keybindings.md](@/docs/keybindings.md) — the interactive TUI these captures feed

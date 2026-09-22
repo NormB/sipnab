@@ -223,6 +223,21 @@ reference](mcp-tools.md) remains the page that says what each tool means, and
 [`tests/docs_drift_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/docs_drift_test.rs)
 already fails the build when that page stops naming every registered tool.
 
+## Operator notes are not an MCP surface
+
+An operator can put a note on a SIP message in the TUI, or write notes into a
+pcapng copy with `--write-annotated` (see
+[keybindings](keybindings.md#operator-notes) and the
+[CLI reference](cli-reference.md#operator-notes)). No MCP tool reads a note or
+writes one, and that is a decision, not a missing tool. An agent that could read
+a note would cite a person's conclusion as though the capture said it. An agent
+that could write one would be putting its own text into a file that leaves the
+machine. `save_findings` stays the only thing an agent writes, and it goes to
+the log. sipnab never reads a packet comment back, so a note in a capture an MCP
+server opens is invisible to every tool. Invariant 13 in
+[the invariants page](internals/invariants.md#13-operator-notes-are-output-never-input)
+states the rule and what enforces it.
+
 ## Where to go next
 
 | You want to | Page |

@@ -491,6 +491,18 @@ end is enforced by the compiler rather than by prose — the annotation types ar
 `pub(in crate::mcp)`, so no analysis path can name them, and widening that
 visibility is the change a reviewer should treat as breaking the invariant.
 
+**Operator notes (2026-09-21) are the operator-facing surface
+[`findings.rs`](../../src/mcp/findings.rs) anticipated**, whose caller is not
+the agent. An operator's note on a SIP message goes into a pcapng packet comment
+in a file sipnab writes, the TUI's own labeled pane, and the operator's notes
+file, and nowhere else. sipnab never reads a packet comment back, MCP and REST
+have no note surface, and the notes module is reachable only from the TUI, the
+run wiring and the pcapng writer. That reconciles with this section because
+neither thing it guards is touched: an agent's text never comes back as
+evidence, and no write changes what an operator is reading.
+[Invariant 13](../internals/invariants.md#13-operator-notes-are-output-never-input)
+records the rule and what enforces it.
+
 The REST half of requirement 1 is still open, the same gap
 [section 4 (`open_capture`)](#4-the-open_capture-mcp-tool) records: `/v1/dialogs`
 carries no etag.

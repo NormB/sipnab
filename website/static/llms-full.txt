@@ -3507,6 +3507,34 @@ The first asks the relay for its own loss counter, live. The second reads what s
 
 ---
 
+## 65. Send a carrier the capture with your notes on the frames
+
+**Problem:** You found the message that went wrong. The carrier's engineer opens the capture in Wireshark, not in sipnab, and a remark in an email comes apart from the file it is about.
+
+Take each frame's pointer from `--json` and write the notes file, one JSON object per line:
+
+```bash
+sipnab -N -I capture.pcap --json | jq -c 'select(.status_code == 183) | {frame, note: "the SDP changed here, after the 180"}' > capture.notes.jsonl
+```
+
+Then write the annotated copy:
+
+```bash
+sipnab -N -I capture.pcap --notes capture.notes.jsonl --write-annotated capture-for-carrier.pcapng
+```
+
+Wireshark shows each note as the packet comment on its frame, and `tshark -r capture-for-carrier.pcapng -Y frame.comment` lists the annotated frames. The copy carries the original frames byte for byte. sipnab checks every note against its frame's digest and refuses, writing nothing, when the capture changed after you took the pointers.
+
+In the TUI, `C` on a message types the note there, and a PCAP-NG save writes it. [Operator notes](keybindings.md#operator-notes) has the keys.
+
+**Pitfalls:**
+
+- The copy carries no decryption secrets, no name resolution blocks and none of the input's own comments. If the carrier needs to decrypt TLS, send the key log on purpose, separately.
+- A note is text you typed, and sipnab never reads it back: `--json`, the REST API and MCP never show it. That is the design (Invariant 13), not a gap.
+- sipnab refuses a note holding an SDES key, a TLS key-log line or a digest `response=` value. Describe the message that carried the key, and leave the key out.
+
+---
+
 ## Next steps
 
 - [keybindings.md](keybindings.md) — the interactive TUI these captures feed
@@ -6611,6 +6639,16 @@ values a program keys on.
 
 ---
 
+## Operator notes are not a REST resource
+
+Operator notes, typed in the TUI or written with `--write-annotated`, have no
+route. Writing a capture on the server is a control action REST here does not
+take, and a note store every client could write, read beside the analysis by the
+same dashboards, is the store section 2 of the
+[deferred-and-declined record](design/deferred-and-declined.md#2-write-back-mcp-tools)
+declined to build. sipnab never reads a packet comment back, so no route shows a
+note from a capture either.
+
 ## Status codes
 
 | Code | When |
@@ -6924,6 +6962,21 @@ reference](mcp-tools.md) remains the page that says what each tool means, and
 `mcp_tool_table_lists_every_registered_tool` in
 [`tests/docs_drift_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/docs_drift_test.rs)
 already fails the build when that page stops naming every registered tool.
+
+## Operator notes are not an MCP surface
+
+An operator can put a note on a SIP message in the TUI, or write notes into a
+pcapng copy with `--write-annotated` (see
+[keybindings](keybindings.md#operator-notes) and the
+[CLI reference](cli-reference.md#operator-notes)). No MCP tool reads a note or
+writes one, and that is a decision, not a missing tool. An agent that could read
+a note would cite a person's conclusion as though the capture said it. An agent
+that could write one would be putting its own text into a file that leaves the
+machine. `save_findings` stays the only thing an agent writes, and it goes to
+the log. sipnab never reads a packet comment back, so a note in a capture an MCP
+server opens is invisible to every tool. Invariant 13 in
+[the invariants page](internals/invariants.md#13-operator-notes-are-output-never-input)
+states the rule and what enforces it.
 
 ## Where to go next
 
@@ -9545,6 +9598,19 @@ nothing at all rather than degrading — so a long dialog would otherwise export
 as a blank panel with no error. Past the cap the diagram says so in a note
 inside itself, naming how many messages the call actually had: a picture that
 quietly omits half a call is worse than one that admits it.
+
+## 10. Send your notes with the frames they are about
+
+Select the message that matters and press `C`. Type the note and press Enter.
+sipnab shows it in a pane under the flow titled "operator note — not sipnab
+analysis" and marks the row with `✎`. Press `C` again to amend it, or clear the
+text to remove it.
+
+To hand the capture over, press `F2`, Tab to PCAP-NG and save: each note is the
+packet comment on its message's frame, which Wireshark shows, with a line naming
+the frame you typed it on. To pick the session up later, Tab to NOTES instead,
+then start sipnab again with `--notes` and that file. The capture you send
+carries your notes, and sipnab never reads them back as analysis.
 
 ## Where to go next
 

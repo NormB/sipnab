@@ -891,7 +891,12 @@ fn wiki_intra_docs_links_resolve() {
     // docs/keybindings.md (call flow, raw message) link its new Operator notes
     // section, and the `--notes` row in docs/cli-reference.md links the
     // call-flow keys. Measured by this gate.
-    const EXPECTED_WIKI_LINKS: usize = 770;
+    // 770 -> 775: the documented absences and the recipe. docs/mcp.md links the
+    // keybindings, the CLI reference and Invariant 13 (three), docs/rest-api.md
+    // links section 2 of deferred-and-declined.md (one), and recipe 65 in
+    // docs/examples.md links the TUI's operator-notes keys (one). Measured by
+    // this gate.
+    const EXPECTED_WIKI_LINKS: usize = 775;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe 6d in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file
