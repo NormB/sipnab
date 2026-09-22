@@ -652,7 +652,7 @@ fn load_one_capture(
     // carries keys.
     if let Ok(meta) = crate::capture::pcapng_meta::read_pcapng_metadata(path) {
         totals.file_names.extend(meta.names);
-        totals.embedded_key_logs += meta.tls_secrets.len();
+        totals.embedded_key_logs += meta.key_log_blocks;
     }
     Ok(())
 }
