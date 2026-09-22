@@ -370,7 +370,7 @@ sipnab -N --json -I capture.pcap --problems</code></pre>
           <tr><td><a href="{{ get_url(path='@/docs/metrics.md') }}">Prometheus metrics</a></td><td>Counters and gauges about sipnab itself: what it captured, what it lost, what it could not read.</td></tr>
           <tr><td><a href="{{ get_url(path='@/docs/mcp.md') }}">MCP server</a></td><td>Drive sipnab from an AI agent (Claude Code, Claude Desktop, …) over stdio or HTTP. 69 tools cover dialogs, RTP, diagnostics, and security findings. 57 are read-only; the twelve that write — file and audio export, evidence packages, repro scripts, capture swap, findings, TLS capture, shutdown, and two toll-fraud actions — each stay off until you enable them server-side.</td></tr>
           <tr><td><a href="{{ get_url(path='@/analyze/_index.md') }}">Browser analysis</a></td><td>Analyze pcap files in the browser via WASM. Zero upload, zero install.</td></tr>
-          <tr><td><a href="{{ get_url(path='@/docs/build.md') }}">Built in Rust</a></td><td>Rust everywhere except the OS boundary: 94 <code>unsafe</code> blocks, all of them FFI, and the build rejects any block that does not state its own soundness argument. 9773 automated tests. Under 17 MB static binary.</td></tr>
+          <tr><td><a href="{{ get_url(path='@/docs/build.md') }}">Built in Rust</a></td><td>Rust everywhere except the OS boundary: 94 <code>unsafe</code> blocks, all of them FFI, and the build rejects any block that does not state its own soundness argument. 9779 automated tests. Under 17 MB static binary.</td></tr>
         </tbody>
       </table>
     </div>
@@ -549,39 +549,40 @@ sipnab -N --json -I capture.pcap --problems</code></pre>
         <span class="arch-label">Headroom to take a whole estate's HEP feed on one box, with no collector tier &mdash; offline reconstruction, four cores (measured v0.5.160)</span>
       </a>
       <a class="arch-item fade-in-up" href="{{ config.extra.github_url }}/actions/workflows/ci.yml">
-        <span class="arch-stat" data-count="9773" data-suffix="">9773</span>
+        <span class="arch-stat" data-count="9779" data-suffix="">9779</span>
         <span class="arch-label">Automated tests</span>
       </a>
     </div>
   </div>
 </section>
 
-<!-- Engineering notes: the most recent, capped at three. Pulled from the
-     section so the LIST cannot go stale the way a hand-written one would.
-     The cap is three; how many appear is however many notes exist, which is
-     why nothing here states a count -- this comment said "the three most
-     recent" while the section held two, and a number in prose has to be kept
-     true by hand, which is the thing the generated list exists to avoid. -->
+{# How-tos and walkthroughs: the newest three, how-tos ahead of features, pulled from the section so the
+   list cannot go stale the way a hand-written one would. Post-mortems are left
+   out on purpose. The notes index collapses them because an account of what
+   broke is a poor front page, and this is the front page of the front page.
+   Nothing here states a count: how many appear is however many exist, up to
+   the cap, and a number in prose has to be kept true by hand. #}
 {% set notes = get_section(path="notes/_index.md") %}
-{% if notes.pages | length > 0 %}
+{% set guides = notes.pages | filter(attribute="extra.kind", value="howto") | concat(with=notes.pages | filter(attribute="extra.kind", value="feature")) %}
+{% if guides | length > 0 %}
 <section class="notes-callout" id="notes">
   <div class="notes-inner">
     <header class="notes-head">
-      <h2>Engineering notes</h2>
-      <p>How sipnab is actually built and debugged &mdash; regressions found and fixed, protocol traps, and reasoning that is hard to see from the outside. Real problems, real numbers.</p>
+      <h2>How-tos and walkthroughs</h2>
+      <p>Step-by-step guides to real jobs with sipnab, and what each new feature is for.</p>
     </header>
     <ul class="notes-grid">
-      {% for p in notes.pages | slice(end=3) %}
+      {% for p in guides | slice(end=3) %}
       <li class="notes-card">
         <a href="{{ p.permalink }}">
-          {% if p.date %}<span class="notes-card-date"><time datetime="{{ p.date }}">{{ p.date | date(format="%e %B %Y") }}</time></span>{% endif %}
+          {% if p.date %}<span class="notes-card-date"><time datetime="{{ p.date }}">{{ p.date | date(format="%-d %B %Y") }}</time></span>{% endif %}
           <span class="notes-card-title">{{ p.title }}</span>
           {% if p.description %}<span class="notes-card-desc">{{ p.description }}</span>{% endif %}
         </a>
       </li>
       {% endfor %}
     </ul>
-    <p class="notes-more"><a href="{{ get_url(path='@/notes/_index.md') }}">All engineering notes &rarr;</a></p>
+    <p class="notes-more"><a href="{{ get_url(path='@/notes/_index.md') }}">All notes &rarr;</a></p>
   </div>
 </section>
 {% endif %}

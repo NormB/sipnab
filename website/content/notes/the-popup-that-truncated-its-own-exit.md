@@ -1,7 +1,7 @@
 +++
 title = "A popup that cut off the only key that closes it"
 date = 2026-09-01
-description = "A 60-column constant against a 66-column hint dropped `Esc cancel` off the right edge, silently. Writing the general gate found three more dialogs with the same defect and two crashes, one of them at 66x12."
+description = "A 60-column constant against a 66-column hint dropped the words Esc cancel off the right edge, silently. Writing the general gate found three more dialogs with the same defect and two crashes, one of them at 66x12."
 
 [extra]
 kind = "postmortem"

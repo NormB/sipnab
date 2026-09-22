@@ -1,7 +1,7 @@
 +++
 title = "What 0.5.128 added to the vCon exporter"
 date = 2026-08-27
-description = "Seven fields the format defines and sipnab was not emitting, transfer objects for observed REFERs, a configurable media ceiling, tombstones for withheld dialogs, and [RFC 9457](https://www.rfc-editor.org/rfc/rfc9457) errors. What each one is for."
+description = "Seven fields the format defines and sipnab was not emitting, transfer objects for observed REFERs, a configurable media ceiling, tombstones for withheld dialogs, and RFC 9457 problem-detail errors. What each one is for."
 
 [extra]
 kind = "feature"

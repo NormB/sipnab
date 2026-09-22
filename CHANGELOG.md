@@ -68,6 +68,19 @@ entry that carries them.
 
 ### Changed
 
+- **The site's notes lead with how-tos.** The homepage notes block, now titled
+  "How-tos and walkthroughs", shows how-tos and feature notes and never a
+  post-mortem. The notes sidebar collapses its post-mortems behind a
+  disclosure, as the notes index already did, and opens it only on a
+  post-mortem's own page. Kind chips read "How-to", "Feature" and
+  "Post-mortem" instead of the front-matter slug. Dates no longer carry a
+  leading space on the first nine days of a month. Three note descriptions
+  that printed raw Markdown are plain text.
+- **Call-IDs in code blocks survive the CDN.** Cloudflare's Email Obfuscation
+  rewrote Call-IDs such as `busy-3a2b1c@192.0.2.30` to `[email protected]`
+  for readers without JavaScript. Every page's content now sits inside the
+  CDN's `<!--email_off-->` markers.
+
 - **`--max-gunzip-bytes` bounds a `-I capture.pcap.gz` too.** sipnab inflated
   a compressed capture to a temporary file with no bound at all, and the
   documentation said libpcap did it. The ceiling now covers that file and every

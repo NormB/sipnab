@@ -278,8 +278,19 @@
     </div>
   </div>
 
+  {#- Cloudflare's Email Obfuscation rewrites anything shaped like an address
+      into "[email protected]" plus a decoding script. Nothing on this site
+      shaped like an address is one: a Call-ID such as busy-3a2b1c@192.0.2.30
+      and a SIP URI such as user@host sit in code blocks a reader copies, and a
+      reader without JavaScript got the placeholder. The CDN skips whatever
+      sits between these two markers (its Scrape Shield documentation gives
+      the syntax). Turning the feature off for the zone is the complete fix;
+      this keeps the content correct while it is on.
+      every_page_body_is_inside_the_email_obfuscation_opt_out pins it. -#}
   <main id="main">
+    <!--email_off-->
     {% block content %}{% endblock content %}
+    <!--/email_off-->
   </main>
 
   {% block footer %}

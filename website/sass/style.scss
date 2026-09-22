@@ -2228,6 +2228,43 @@ input:focus-visible,
   }
 }
 
+// The post-mortem group collapses, as it does on the notes index. The summary
+// keeps the look of a group title and gains a marker that shows its state.
+.notes-nav-archive {
+  > summary {
+    cursor: pointer;
+    list-style: none;
+    display: flex;
+    align-items: baseline;
+    gap: 0.45rem;
+
+    &::-webkit-details-marker { display: none; }
+    &::before {
+      content: "\25b8";
+      color: $ayu-orange;
+      transition: transform 120ms ease;
+    }
+    &:focus-visible {
+      outline: 2px solid $link;
+      outline-offset: 3px;
+      border-radius: 3px;
+    }
+  }
+  &[open] > summary::before { transform: rotate(90deg); }
+  @media (prefers-reduced-motion: reduce) {
+    > summary::before { transition: none; }
+  }
+}
+
+.notes-nav-count {
+  font-family: $font-mono;
+  font-size: 0.75rem;
+  padding: 0 0.4rem;
+  border: 1px solid rgba($ayu-orange, 0.45);
+  border-radius: 99px;
+  color: $ayu-orange;
+}
+
 .notes-nav-title {
   display: block;
   line-height: 1.35;

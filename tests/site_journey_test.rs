@@ -9943,3 +9943,70 @@ fn the_dimmed_paragraph_scan_finds_the_ones_axe_reported() {
         );
     }
 }
+
+/// Every page's content sits inside Cloudflare's email-obfuscation opt-out.
+///
+/// The CDN's Email Obfuscation rewrites anything shaped like an address into
+/// `[email protected]` plus a decoding script. On this site nothing shaped like
+/// an address IS one: `busy-3a2b1c@192.0.2.30` is a Call-ID, `user@host` is a
+/// SIP URI, and both sit in code blocks a reader copies. A reader without
+/// JavaScript, a crawler and an agent reading the HTML all got the
+/// placeholder. Cloudflare leaves alone whatever sits between
+/// `<!--email_off-->` and `<!--/email_off-->` (the syntax in its Scrape Shield
+/// documentation), so the base template wraps the content block in that pair,
+/// and every page template must reach the reader through that block.
+#[test]
+fn every_page_body_is_inside_the_email_obfuscation_opt_out() {
+    const OFF: &str = "<!--email_off-->";
+    const ON: &str = "<!--/email_off-->";
+    let base = read("website/templates/base.html");
+    let main_open = base.find("<main").expect("base.html has no <main>");
+    let main_close = base.find("</main>").expect("base.html has no </main>");
+    let main = &base[main_open..main_close];
+
+    let off = main
+        .find(OFF)
+        .unwrap_or_else(|| panic!("<main> in base.html does not open with {OFF}:\n{main}"));
+    let on = main
+        .find(ON)
+        .unwrap_or_else(|| panic!("<main> in base.html never closes the opt-out with {ON}"));
+    let block = main
+        .find("{% block content %}")
+        .expect("<main> no longer holds the content block");
+    let endblock = main
+        .find("{% endblock content %}")
+        .expect("<main> no longer closes the content block");
+    assert!(
+        off < block && endblock < on,
+        "the content block is not wholly between {OFF} and {ON}, so part of \
+         every page is still rewritten by the CDN"
+    );
+    assert_eq!(
+        base.matches(OFF).count(),
+        1,
+        "base.html opens the opt-out more than once; a second opener hides a \
+         missing closer"
+    );
+
+    // Each page template reaches the reader through that block and only that
+    // block: it extends base.html. One that did not would ship unwrapped.
+    let mut pages = 0;
+    for entry in std::fs::read_dir(repo().join("website/templates")).expect("templates dir") {
+        let p = entry.expect("entry").path();
+        let name = p.file_name().expect("name").to_string_lossy().to_string();
+        if !name.ends_with(".html") || name == "base.html" || name == "macros.html" {
+            continue;
+        }
+        pages += 1;
+        let text = std::fs::read_to_string(&p).expect("read template");
+        assert!(
+            text.trim_start().starts_with("{% extends \"base.html\" %}"),
+            "{name} does not extend base.html, so its content is outside the \
+             email-obfuscation opt-out"
+        );
+    }
+    assert!(
+        pages >= 8,
+        "found {pages} page template(s); the scan is not reading them"
+    );
+}
