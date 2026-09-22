@@ -471,8 +471,9 @@ mod tests {
         assert_eq!(decode(b"i0e").expect("plain zero is fine"), Value::Int(0));
     }
 
-    /// Shaped like the live `offer` in `tests/fixtures/rtpengine-ng-hep.pcap`
-    /// (rtpengine 12.5.1): keys unsorted, and an SDP body containing CRLF.
+    /// Shaped like the `offer` a live rtpengine 12.5.1 sent, which
+    /// `tests/fixtures/rtpengine-ng-hep.pcap` keeps: keys unsorted, and an SDP
+    /// body containing CRLF.
     ///
     /// The SDP's length prefix is COMPUTED rather than typed. Writing it by
     /// hand is how this test first failed -- a miscount produced a message no

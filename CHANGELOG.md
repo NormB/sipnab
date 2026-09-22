@@ -10,6 +10,23 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Changed
+
+- **Five committed captures are now built by a generator anyone can run.**
+  Two rtpengine relay fixtures were live captures from the lab network, a
+  fuzz seed was a copy of a third-party capture, and the two oldest fixtures
+  used private addresses. `tests/support/synthetic_captures.rs` now builds
+  all five, plus the empty fuzz seed, on RFC 5737 addresses and RFC 7042 MAC
+  addresses, and `cargo run --features native --bin gen_fixture` writes them.
+  `tests/synthetic_captures_test.rs` rebuilds each one and fails on the first
+  byte that differs. The relay pair keeps what the live exchange showed:
+  rtpengine's unsorted `ng` keys, replies with no `call-id`, the relay's ports
+  and timing, kernel forwarding after the third packet, and a `delete` reply
+  whose second fragment the capture never saw. Its addresses now match the
+  output `docs/rtpengine.md` already printed. Tests that quoted an old address
+  or Call-ID quote the new one, and each says why. Git history still holds
+  the old bytes.
+
 ### Fixed
 
 - **One timeout no longer reads as the site being down.** The daily

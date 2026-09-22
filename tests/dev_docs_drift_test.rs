@@ -731,7 +731,15 @@ fn linked_code_targets_exist() {
     // and no other page changed.
     // 445 + 1 = 446: the HEP sender roster branch counted its one against 432
     // and merged after the three above.
-    const EXPECTED_CODE_LINKS: usize = 446;
+    // 446 -> 449: three, for the rebuilt capture fixtures. Two in
+    // `docs/internals/rtpengine-control-plane.md`, whose "Proving the claim"
+    // section now links the generator `tests/support/synthetic_captures.rs`
+    // and `tests/synthetic_captures_test.rs`, and one in
+    // `docs/internals/testing.md`, whose fixtures row links the generator.
+    // Attributed by counting every page under `docs/internals/` against HEAD:
+    // rtpengine-control-plane.md moved 23 -> 25, testing.md 97 -> 98, and no
+    // other page changed.
+    const EXPECTED_CODE_LINKS: usize = 449;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \

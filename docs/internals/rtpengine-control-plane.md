@@ -66,7 +66,7 @@ Decoded from the committed fixture, every packet carries it:
 
 ```text
 HEP #1 capture-proto=0x3d correlation-id='km-670bd208@sipnab'  d7:command5:offer...
-HEP #2 capture-proto=0x3d correlation-id='km-670bd208@sipnab'  d3:sdp136:v=0...   <- reply
+HEP #2 capture-proto=0x3d correlation-id='km-670bd208@sipnab'  d3:sdp138:v=0...   <- reply
 ```
 
 The passive sniffer stays on the roadmap as a second delivery path behind the
@@ -193,10 +193,16 @@ caught.
 
 ## Proving the claim
 
-[`tests/fixtures/rtpengine-ng-hep.pcap`](../../tests/fixtures/rtpengine-ng-hep.pcap) is a live capture, not a construction:
-rtpengine 12.5.1 with `--homer-enable-ng`, six HEP packets covering
+[`tests/fixtures/rtpengine-ng-hep.pcap`](../../tests/fixtures/rtpengine-ng-hep.pcap) holds six HEP packets covering
 offer/answer/delete with their replies, and forty relayed RTP packets on the
-four sockets those commands allocated.
+four sockets those commands allocated. It started as a live capture from
+rtpengine 12.5.1 with `--homer-enable-ng`.
+[`tests/support/synthetic_captures.rs`](../../tests/support/synthetic_captures.rs) now builds it, keeping the live
+exchange's key order, reply shapes, ports and timing and replacing every
+address, MAC address and cookie with a documentation value. The repository
+publishes nothing from the lab's network, and
+[`tests/synthetic_captures_test.rs`](../../tests/synthetic_captures_test.rs) rebuilds the file byte for byte and
+checks those wire shapes on the committed bytes.
 
 Two properties make it discriminating rather than merely convenient, and
 [`tests/rtpengine_ng_test.rs`](../../tests/rtpengine_ng_test.rs) asserts both instead of describing them:

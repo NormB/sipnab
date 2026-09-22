@@ -12,7 +12,7 @@ mirror and ties the media to the call. A call that was already up when the
 capture opened left no control message for the mirror to carry, so
 `--rtpengine-control` asks the relay for that one directly.
 
-## The problem, on a real capture
+## The problem, on a relay capture
 
 Both runs below read the same forty RTP packets on the same four sockets. The
 only difference is whether the six control-plane packets are in the file.

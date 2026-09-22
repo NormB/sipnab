@@ -8042,7 +8042,7 @@ mirror and ties the media to the call. A call that was already up when the
 capture opened left no control message for the mirror to carry, so
 `--rtpengine-control` asks the relay for that one directly.
 
-## The problem, on a real capture
+## The problem, on a relay capture
 
 Both runs below read the same forty RTP packets on the same four sockets. The
 only difference is whether the six control-plane packets are in the file.
@@ -27428,7 +27428,7 @@ and a consumer parses it before indexing into it.
             "dscp": 0,
             "dst": "192.0.2.2",
             "dst_port": 5060,
-            "frame": "…/tests/fixtures/sip_call.pcap#0@bdb6cdb98013efe4",
+            "frame": "…/tests/fixtures/sip_call.pcap#0@4ed7f4560fa79e74",
             "from": "<sip:1001@192.0.2.1>;tag=1928301774",
             "is_request": true,
             "method": "INVITE",
@@ -29265,7 +29265,7 @@ carrier with both timestamps, because the gap between your `BYE` and their
   [example 10](#10-conformance-findings-move-with-the-vantage-point) needs.
 - [Output formats](output-formats.md#one-object-per-dialog) — every field these
   examples read out of `--json-dialogs`, with its type and meaning.
-- [Attribute media on an rtpengine relay](rtpengine.md#the-problem-on-a-real-capture)
+- [Attribute media on an rtpengine relay](rtpengine.md#the-problem-on-a-relay-capture)
   — what to do when the media in a capture like these arrives with no call
   attached to it.
 
@@ -30668,7 +30668,7 @@ drifted.
 
 | Artifact | Regenerate with |
 |---|---|
-| [`tests/fixtures/`](../../tests/fixtures) — synthetic pcaps | `cargo run --features native --bin gen_fixture` |
+| [`tests/fixtures/`](../../tests/fixtures) — capture fixtures | Six captures, among them the two fuzz seeds in `fuzz/corpus/pcap_reader/` named `truncated-sip` and `empty-classic`, come from [`tests/support/synthetic_captures.rs`](../../tests/support/synthetic_captures.rs). `cargo run --features native --bin gen_fixture` writes them, and `synthetic_captures_test` fails when a committed byte differs from what the generator builds. The rest of the directory stays as checked in. |
 | [`tests/snapshots/`](../../tests/snapshots) — TUI buffers | `cargo insta test --features tui --accept` (needs `cargo install cargo-insta`) |
 | [`tests/cli/`](../../tests/cli) — trycmd goldens | `TRYCMD=overwrite cargo test --features full --test cli_goldens` |
 | [`tests/schemas/`](../../tests/schemas) — JSON Schemas | Hand-maintained; `json_schema_test` validates output against them. |
@@ -32745,7 +32745,7 @@ Decoded from the committed fixture, every packet carries it:
 
 ```text
 HEP #1 capture-proto=0x3d correlation-id='km-670bd208@sipnab'  d7:command5:offer...
-HEP #2 capture-proto=0x3d correlation-id='km-670bd208@sipnab'  d3:sdp136:v=0...   <- reply
+HEP #2 capture-proto=0x3d correlation-id='km-670bd208@sipnab'  d3:sdp138:v=0...   <- reply
 ```
 
 The passive sniffer stays on the roadmap as a second delivery path behind the
@@ -32872,10 +32872,16 @@ caught.
 
 ## Proving the claim
 
-[`tests/fixtures/rtpengine-ng-hep.pcap`](../../tests/fixtures/rtpengine-ng-hep.pcap) is a live capture, not a construction:
-rtpengine 12.5.1 with `--homer-enable-ng`, six HEP packets covering
+[`tests/fixtures/rtpengine-ng-hep.pcap`](../../tests/fixtures/rtpengine-ng-hep.pcap) holds six HEP packets covering
 offer/answer/delete with their replies, and forty relayed RTP packets on the
-four sockets those commands allocated.
+four sockets those commands allocated. It started as a live capture from
+rtpengine 12.5.1 with `--homer-enable-ng`.
+[`tests/support/synthetic_captures.rs`](../../tests/support/synthetic_captures.rs) now builds it, keeping the live
+exchange's key order, reply shapes, ports and timing and replacing every
+address, MAC address and cookie with a documentation value. The repository
+publishes nothing from the lab's network, and
+[`tests/synthetic_captures_test.rs`](../../tests/synthetic_captures_test.rs) rebuilds the file byte for byte and
+checks those wire shapes on the committed bytes.
 
 Two properties make it discriminating rather than merely convenient, and
 [`tests/rtpengine_ng_test.rs`](../../tests/rtpengine_ng_test.rs) asserts both instead of describing them:

@@ -5,13 +5,20 @@
 //!
 //! # The fixture
 //!
-//! `tests/fixtures/rtpengine-ng-hep.pcap` was captured from a live relay, not
-//! constructed. rtpengine 12.5.1 on a Debian 13 host, configured with
-//! `--homer-enable-ng` so it mirrors its `ng` control plane to a Homer
-//! collector, with a call driven through it and its media relayed. The capture
-//! holds six HEP packets — `offer`, `answer` and `delete`, each with its reply
-//! — and forty relayed RTP packets on the four sockets those commands
-//! allocated.
+//! `tests/fixtures/rtpengine-ng-hep.pcap` is what a capture on a standalone
+//! rtpengine relay holds when the relay mirrors its `ng` control plane to a
+//! Homer collector with `--homer-enable-ng`: six HEP packets — `offer`,
+//! `answer` and `delete`, each with its reply — and forty relayed RTP packets
+//! on the four sockets those commands allocated.
+//!
+//! It began as a live capture from rtpengine 12.5.1 on a lab relay. In
+//! September 2026 it was rebuilt by `tests/support/synthetic_captures.rs` so
+//! that no address, MAC address or cookie from that network is committed. The
+//! rebuild keeps the live exchange's wire shapes, ports and timing, and
+//! `tests/synthetic_captures_test.rs` asserts those shapes on the committed
+//! bytes. Addresses map one to one from the lab's private ones: the relay is
+//! 192.0.2.40 and the host running the parties and the collector 192.0.2.60,
+//! which is why the constants below changed.
 //!
 //! Two properties make it the right fixture rather than merely a convenient
 //! one:
@@ -37,10 +44,11 @@ use std::process::Command;
 
 /// The relay Call-ID the control plane assigned, from the capture itself.
 const CALL_ID: &str = "km-670bd208@sipnab";
-/// The relay's own allocated ports, one per leg.
-const RELAY_PORTS: [&str; 2] = ["10.0.0.40:38156", "10.0.0.40:38664"];
+/// The relay's own allocated ports, one per leg. Only the address changed in
+/// the rebuild; the ports are the ones the live relay allocated.
+const RELAY_PORTS: [&str; 2] = ["192.0.2.40:38156", "192.0.2.40:38664"];
 /// The two endpoints whose media the relay is forwarding.
-const PARTY_PORTS: [&str; 2] = ["10.0.0.60:40001", "10.0.0.60:40002"];
+const PARTY_PORTS: [&str; 2] = ["192.0.2.60:40001", "192.0.2.60:40002"];
 
 fn fixture() -> String {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))

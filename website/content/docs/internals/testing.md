@@ -65,7 +65,7 @@ drifted.
 
 | Artifact | Regenerate with |
 |---|---|
-| [`tests/fixtures/`](https://github.com/NormB/sipnab/blob/main/tests/fixtures) — synthetic pcaps | `cargo run --features native --bin gen_fixture` |
+| [`tests/fixtures/`](https://github.com/NormB/sipnab/blob/main/tests/fixtures) — capture fixtures | Six captures, among them the two fuzz seeds in `fuzz/corpus/pcap_reader/` named `truncated-sip` and `empty-classic`, come from [`tests/support/synthetic_captures.rs`](https://github.com/NormB/sipnab/blob/main/tests/support/synthetic_captures.rs). `cargo run --features native --bin gen_fixture` writes them, and `synthetic_captures_test` fails when a committed byte differs from what the generator builds. The rest of the directory stays as checked in. |
 | [`tests/snapshots/`](https://github.com/NormB/sipnab/blob/main/tests/snapshots) — TUI buffers | `cargo insta test --features tui --accept` (needs `cargo install cargo-insta`) |
 | [`tests/cli/`](https://github.com/NormB/sipnab/blob/main/tests/cli) — trycmd goldens | `TRYCMD=overwrite cargo test --features full --test cli_goldens` |
 | [`tests/schemas/`](https://github.com/NormB/sipnab/blob/main/tests/schemas) — JSON Schemas | Hand-maintained; `json_schema_test` validates output against them. |
