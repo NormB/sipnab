@@ -2462,16 +2462,28 @@ pub fn install_archive_passwords(cli: &Cli) -> Result<(), String> {
             .as_deref()
             .map(str::parse::<password::Encoding>)
             .transpose()?;
-        if !cfg.any() {
+        let prompter = archive_prompter(cli);
+        if !cfg.any() && prompter.is_none() {
             return Ok(());
         }
-        guard_core_dumps_for_passwords(cli.tls_args.allow_coredump)?;
-        let candidates = password::collect(&cfg, &mut std::io::stdin().lock())?;
+        let candidates = if cfg.any() {
+            guard_core_dumps_for_passwords(cli.tls_args.allow_coredump)?;
+            password::collect(&cfg, &mut std::io::stdin().lock())?
+        } else {
+            Vec::new()
+        };
         tracing::debug!(
-            "{} archive password candidate(s) configured",
-            candidates.len()
+            "{} archive password candidate(s) configured, prompt {}",
+            candidates.len(),
+            if prompter.is_some() {
+                "available"
+            } else {
+                "off"
+            }
         );
-        password::install_run_keyring(password::Keyring::new(candidates, pinned));
+        let mut keyring = password::Keyring::new(candidates, pinned);
+        keyring.set_prompter(prompter);
+        password::install_run_keyring(keyring);
         Ok(())
     }
     #[cfg(not(feature = "archive"))]
@@ -2485,6 +2497,39 @@ pub fn install_archive_passwords(cli: &Cli) -> Result<(), String> {
         }
         Ok(())
     }
+}
+
+/// The terminal prompt for archive passwords, when this run may ask: a
+/// controlling terminal opens, `--no-password-prompt` is off, and the run is
+/// not the TUI, which asks in its own popup.
+#[cfg(feature = "archive")]
+fn archive_prompter(cli: &Cli) -> Option<Box<dyn crate::capture::archive::password::Prompter>> {
+    if cli.archive_args.no_password_prompt || runs_the_tui(cli) {
+        return None;
+    }
+    #[cfg(unix)]
+    {
+        crate::capture::archive::tty::TtyPrompter::open(cli.tls_args.allow_coredump)
+            .map(|p| Box::new(p) as Box<dyn crate::capture::archive::password::Prompter>)
+    }
+    #[cfg(not(unix))]
+    {
+        None
+    }
+}
+
+/// Stop asking for archive passwords on the terminal.
+///
+/// Called once the run has resolved `-I`. Everything after that is a server
+/// answering requests (REST, MCP) or a capture already under way, and
+/// neither may stop to wait on a keyboard.
+pub fn end_archive_prompts() {
+    #[cfg(feature = "archive")]
+    crate::capture::archive::password::with_run_keyring(|k| {
+        if let Some(k) = k {
+            drop(k.take_prompter());
+        }
+    });
 }
 
 /// Keep a password out of a core file: suppress dumps, or, when the operator

@@ -53,6 +53,8 @@ pub mod codepage;
 #[cfg(feature = "archive")]
 pub mod password;
 pub mod tar;
+#[cfg(all(feature = "archive", unix))]
+pub mod tty;
 #[cfg(feature = "archive")]
 pub mod zipped;
 
@@ -1560,6 +1562,9 @@ fn same_owner(_a: &std::fs::Metadata, _b: &std::fs::Metadata) -> bool {
 pub struct KeptExtraction {
     /// Extracted member files, whose labels are registered.
     paths: Vec<PathBuf>,
+    /// Of those, the ones decrypted with a password, registered in
+    /// [`DECRYPTED`] for as long as this extraction lives.
+    decrypted: Vec<PathBuf>,
     /// The directory itself. Dropped after the labels are withdrawn.
     _dir: ExtractDir,
 }
@@ -1575,7 +1580,25 @@ impl KeptExtraction {
             map.insert(path.clone(), std::sync::Arc::from(label));
             paths.push(path);
         }
-        Self { paths, _dir: dir }
+        Self {
+            paths,
+            decrypted: Vec::new(),
+            _dir: dir,
+        }
+    }
+
+    /// Record which of this extraction's files were decrypted with a
+    /// password, so a writer of their data can say it is writing them out
+    /// unencrypted.
+    #[must_use]
+    pub fn with_decrypted(mut self, decrypted: Vec<PathBuf>) -> Self {
+        let mut set = DECRYPTED.write();
+        for p in &decrypted {
+            set.insert(p.clone());
+        }
+        drop(set);
+        self.decrypted = decrypted;
+        self
     }
 
     /// The directory the members were extracted into.
@@ -1593,7 +1616,48 @@ impl Drop for KeptExtraction {
         for p in &self.paths {
             map.remove(p);
         }
+        drop(map);
+        let mut set = DECRYPTED.write();
+        for p in &self.decrypted {
+            set.remove(p);
+        }
     }
+}
+
+/// Extracted member files decrypted with a password. See
+/// [`KeptExtraction::with_decrypted`].
+static DECRYPTED: std::sync::LazyLock<parking_lot::RwLock<std::collections::HashSet<PathBuf>>> =
+    std::sync::LazyLock::new(|| parking_lot::RwLock::new(std::collections::HashSet::new()));
+
+/// Whether `path` is an archive member that was decrypted with a password.
+#[must_use]
+pub fn is_decrypted_member(path: &Path) -> bool {
+    DECRYPTED.read().contains(path)
+}
+
+/// Outputs already warned about by [`warn_decrypted_export`].
+static EXPORT_WARNED: parking_lot::Mutex<Vec<PathBuf>> = parking_lot::Mutex::new(Vec::new());
+
+/// The warning a writer gives before it writes data decrypted from a
+/// password-protected archive, unencrypted, to `output`.
+#[must_use]
+pub fn decrypted_export_warning(flag: &str, output: &Path) -> String {
+    format!(
+        "{flag} '{}' receives capture data decrypted from a password-protected archive, \
+         and writes it unencrypted. Protect or delete it as you would the unpacked archive.",
+        output.display()
+    )
+}
+
+/// Warn, once per output, that `output` receives decrypted data.
+pub fn warn_decrypted_export(flag: &str, output: &Path) {
+    let mut warned = EXPORT_WARNED.lock();
+    if warned.iter().any(|p| p == output) {
+        return;
+    }
+    warned.push(output.to_path_buf());
+    drop(warned);
+    tracing::warn!("{}", decrypted_export_warning(flag, output));
 }
 
 /// Extracted member file -> the label it goes by.

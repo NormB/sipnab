@@ -239,7 +239,7 @@ fn place<'a>(
 }
 
 /// The section comment of an annotated copy.
-fn provenance(input_label: &str, notes: usize) -> String {
+fn provenance(input_label: &str, notes: usize, from_password_archive: bool) -> String {
     format!(
         "Produced by sipnab {} by --write-annotated from '{input_label}'.\n\
          \n\
@@ -256,7 +256,14 @@ fn provenance(input_label: &str, notes: usize) -> String {
          finer than a microsecond.",
         env!("CARGO_PKG_VERSION"),
         section_sentence(notes),
-    )
+    ) + if from_password_archive {
+        "\n\n\
+         The capture was decrypted out of a password-protected archive to be \
+         read, and this copy is NOT encrypted: protect it as you would the \
+         unpacked archive."
+    } else {
+        ""
+    }
 }
 
 /// Write an annotated pcapng copy of `input` to `output`.
@@ -314,7 +321,11 @@ pub fn write_annotated_copy(
         // Raw: an annotated copy is for sending, and never carries secrets.
         crate::capture::PcapExportMode::Raw,
         Some(input_label),
-        Some(provenance(input_label, notes.len())),
+        Some(provenance(
+            input_label,
+            notes.len(),
+            crate::capture::archive::is_decrypted_member(input),
+        )),
     )
     .map_err(|e| CopyError::Write(format!("{e:#}")))?;
 
@@ -382,6 +393,20 @@ pub fn write_annotated_copy(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A copy of a member decrypted out of a password-protected archive says
+    /// so in its section comment, naming no password; any other copy does
+    /// not mention archives at all.
+    #[test]
+    fn the_section_comment_says_when_the_source_was_a_password_archive() {
+        let from_archive = provenance("evidence.zip/a.pcap", 0, true);
+        assert!(
+            from_archive.contains("decrypted out of a password-protected archive"),
+            "{from_archive}"
+        );
+        let plain = provenance("a.pcap", 0, false);
+        assert!(!plain.contains("password"), "{plain}");
+    }
 
     /// A capture read out of an archive is named by its label — the name its
     /// frame pointers carry — not by the file it was extracted to. A note made

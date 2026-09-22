@@ -29,6 +29,15 @@ entry that carries them.
   protects nothing. The password appears in no log line at any level, no
   error and no output, and a run holding one turns core dumps off. New
   `archive` feature, part of `full`.
+- **sipnab asks for an archive password on the terminal.** When no
+  configured password opens a locked member, it prompts on `/dev/tty` with
+  echo off, naming the archive, the member and the attempt, three tries per
+  archive, even with stdin redirected. An empty entry skips the archive,
+  Ctrl-C stops the run, and the terminal comes back on every path. With no
+  terminal, or with the new `--no-password-prompt`, it never asks and never
+  waits. `-O`, `--strip-secrets` and `--write-annotated` from a decrypted
+  member warn once that they write the data unencrypted, and a
+  `--write-annotated` copy's section comment says so.
 - **`-I` reads archives of captures.** A `.tar`, `.tgz` or `.tar.gz` reads like
   a directory: every capture inside joins the set in capture order, and the
   answer matches reading the unpacked directory. gzip-compressed members and

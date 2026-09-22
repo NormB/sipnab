@@ -602,8 +602,14 @@ fn expand_archive(
             unread_reasons(&exp)
         );
     }
+    let decrypted: Vec<PathBuf> = exp
+        .members
+        .iter()
+        .filter(|m| m.encryption != archive::Encryption::None)
+        .map(|m| m.path.clone())
+        .collect();
     if let Some(dir) = exp.take_dir() {
-        extractions.push(archive::KeptExtraction::new(dir, labels));
+        extractions.push(archive::KeptExtraction::new(dir, labels).with_decrypted(decrypted));
     }
     Ok(())
 }

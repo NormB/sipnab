@@ -483,6 +483,12 @@ pub struct ArchiveArgs {
         value_parser = parse_password_encoding
     )]
     pub archive_password_encoding: Option<String>,
+
+    /// Never ask for an archive password on the terminal. Without it, a
+    /// locked member no configured password opens is asked about on
+    /// `/dev/tty` whenever there is one, whatever stdin is.
+    #[arg(help_heading = "Archives", long = "no-password-prompt")]
+    pub no_password_prompt: bool,
 }
 
 impl ArchiveArgs {
@@ -494,6 +500,7 @@ impl ArchiveArgs {
             || self.archive_password_stdin
             || self.archive_password.is_some()
             || self.archive_password_encoding.is_some()
+            || self.no_password_prompt
     }
 }
 

@@ -11483,6 +11483,7 @@ release binaries include it.
 | `--archive-password-stdin` | -- | off | Read an archive password from the first line of stdin, like `docker login --password-stdin` |
 | `--archive-password` | `<PASSWORD>` | -- | An archive password on the command line. **Insecure**, and sipnab warns on every use: other local users can read it in `ps`, and your shell saves it in its history |
 | `--archive-password-encoding` | `<ENC>` | all | Try passwords in one encoding only: `utf-8`, `cp437`, `cp850` or `cp1252` |
+| `--no-password-prompt` | -- | off | Never ask for an archive password on the terminal |
 
 **Where a password comes from, best first.** sipnab tries every source you
 configure, in this order, before it gives up on a member:
@@ -11499,6 +11500,16 @@ configure, in this order, before it gives up on a member:
    source above because a process's environment leaks: child processes
    inherit it, and systemd and OWASP both advise against secrets there.
 6. `--archive-password`, which warns on every use.
+7. The prompt. When no configured password opens a member, sipnab asks on
+   the terminal, the way ssh and sudo do: `Password for evidence.zip (member
+   voip/call3.pcap, attempt 1 of 3):`. It reads `/dev/tty`, not stdin, so it
+   still asks with stdin redirected, and it echoes nothing. Each archive gets
+   three attempts. An empty entry, or Ctrl-D, skips that archive's locked
+   members, Ctrl-U clears the line, and Ctrl-C stops the run. sipnab restores
+   the terminal on every one of those paths. With no terminal, as in cron, CI
+   or a detached agent, or with `--no-password-prompt`, it never asks and
+   never waits, and locked members count as `encrypted_no_password`. The TUI
+   asks in its own window instead.
 
 **How sipnab tries them.** The password that opened one member of an archive
 goes first for that archive's other members, and never for another archive
@@ -11528,6 +11539,11 @@ run succeeds and the closing `-I resolved to` line counts the rest.
 output format or export contains it. A run that holds a password turns core
 dumps off, and `--allow-coredump` warns that a dump would contain it.
 
+**Exports carry the data out unencrypted.** `-O`, `--strip-secrets` and
+`--write-annotated` from a member decrypted out of a password archive each warn
+once that they write that data unencrypted. The section comment of a
+`--write-annotated` copy says so too, and names no password.
+
 **Examples**
 
 - `sipnab -N -I evidence.zip --archive-password-file ~/.config/sipnab/pcaps.pw --report` — read a password-protected ZIP with the password in an owner-only file
@@ -11539,6 +11555,9 @@ dumps off, and `--allow-coredump` warns that a dump would contain it.
 - `sipnab -N -I 'captures/*.zip' --archive-password-command 'op read op://lab/pcaps/password' --json-dialogs --no-cli-print` — open every ZIP a glob finds with one password from 1Password's CLI
 - `sipnab -N -I evidence.zip --archive-password 'correct horse' --report` — a throwaway lab archive only: the password lands in `ps` and your shell history, and sipnab warns
 - `sipnab -N -I lab.zip --archive-password "$LAB_PW" --report` — the same trade-off from a variable, which still shows in `ps`; prefer `--archive-password-stdin`
+- `sipnab -N -I evidence.zip --report` — no password configured: sipnab asks on the terminal for each locked archive, three tries each
+- `sipnab -N -I evidence.zip --no-password-prompt --json-dialogs --no-cli-print` — in a script that must never wait on a keyboard: sipnab skips and counts the locked members instead
+- `sipnab -N -I 'drop/*.zip' --archive-password-file pw.txt --no-password-prompt --report` — try the configured passwords and nothing else, even from a terminal
 
 ## Mode
 
@@ -31334,7 +31353,7 @@ compiles, which is exactly why CI has a feature matrix.
 see a data race: the tests exercise the capture thread, the channel, and the
 processing thread, but a test that passes and a test that raced are
 indistinguishable to `cargo test`. The borrow checker does not help here either
-— it stops at `unsafe`, and most of this crate's 112 `unsafe` blocks are libc
+— it stops at `unsafe`, and most of this crate's 119 `unsafe` blocks are libc
 FFI, concentrated in privilege dropping ([`privilege.rs`](../../src/privilege.rs)
 and [`process_isolation.rs`](../../src/process_isolation.rs)) and capture setup.
 Recount with `grep -rc 'unsafe {' src/` rather than trusting that figure — this

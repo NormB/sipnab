@@ -80,6 +80,10 @@ pub struct ProtectedInputs {
     /// resolved the set (the MCP server, which must not re-open every capture
     /// to answer one export) would otherwise have nothing to compare against.
     globs: Vec<String>,
+    /// Whether any file this run reads was decrypted out of a
+    /// password-protected archive, so every output written from it says it
+    /// is writing that data unencrypted.
+    from_password_archive: bool,
 }
 
 impl ProtectedInputs {
@@ -99,6 +103,9 @@ impl ProtectedInputs {
     /// * `recursive` — whether `--recursive` was given, which decides whether a
     ///   subdirectory of an `-I` directory is also being read.
     pub fn new(specs: &[String], resolved: &[PathBuf], recursive: bool) -> Self {
+        let from_password_archive = resolved
+            .iter()
+            .any(|p| crate::capture::archive::is_decrypted_member(p));
         let mut files: Vec<PathBuf> = resolved.iter().map(|p| canonical_target(p)).collect();
         let mut dirs: Vec<(PathBuf, bool)> = Vec::new();
         let mut globs: Vec<String> = Vec::new();
@@ -121,7 +128,12 @@ impl ProtectedInputs {
             }
         }
 
-        Self { files, dirs, globs }
+        Self {
+            files,
+            dirs,
+            globs,
+            from_password_archive,
+        }
     }
 
     /// True when nothing is protected (no `-I` at all — a live capture).
@@ -210,6 +222,9 @@ impl ProtectedInputs {
             }
         }
 
+        if self.from_password_archive {
+            crate::capture::archive::warn_decrypted_export(flag, output);
+        }
         Ok(())
     }
 }

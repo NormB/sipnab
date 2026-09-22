@@ -170,6 +170,9 @@ fn main() {
         Ok(plan) => plan,
         Err(e) => e.exit(),
     };
+    // `-I` is resolved: from here on nothing waits on the terminal for an
+    // archive password.
+    bootstrap::end_archive_prompts();
 
     // 8. Multi-core offline reconstruction bypasses the capture thread.
     //
