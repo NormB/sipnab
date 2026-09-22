@@ -171,6 +171,9 @@ pub(in crate::tui) fn render_app(
                     resolver: app.resolver.as_ref(),
                     name_mode: app.name_mode,
                     offline: app.capture_mode.starts_with("Offline"),
+                    hidden: app
+                        .cached_dialog_count
+                        .saturating_sub(app.cached_displayed_count),
                 },
             );
         }
@@ -548,7 +551,8 @@ pub(in crate::tui) fn render_app(
             // Clamp the scroll to the content height so you can't scroll past
             // the end (self-corrects an over-eager PgDn on the next frame).
             let visible = main_area.height.saturating_sub(2) as usize;
-            let max_scroll = help::help_line_count().saturating_sub(visible) as u16;
+            let inner_width = main_area.width.saturating_sub(2) as usize;
+            let max_scroll = help::help_line_count(inner_width).saturating_sub(visible) as u16;
             let clamped = app.help_scroll.min(max_scroll);
             fb.help_scroll = Some(clamped);
             help::render_help(
@@ -620,6 +624,7 @@ pub(in crate::tui) fn render_app(
         fkey_area,
         &app.current_view,
         &app.active_popup,
+        app.file_open.manual_mode,
         &app.theme,
     );
 
@@ -781,18 +786,17 @@ pub(in crate::tui) fn statistics_text(ds: &DialogStore, ss: &StreamStore) -> Str
     });
 
     let mut text = format!(
-        "sipnab Statistics\n\n\
-         Dialogs:           {dialog_count}\n\
-         Active Dialogs:    {active_dialogs}\n\
-         Calls In Progress: {active_calls}\n\
-         Total Messages:    {total_messages}\n\
-         RTP Streams:       {stream_count}\n\
-         Orphaned Streams:  {orphaned}\n"
+        "Dialogs:           {dialog_count}\n\
+         Active dialogs:    {active_dialogs}\n\
+         Calls in progress: {active_calls}\n\
+         Total messages:    {total_messages}\n\
+         RTP streams:       {stream_count}\n\
+         Orphaned streams:  {orphaned}\n"
     );
 
     // State breakdown
     if !state_counts.is_empty() {
-        text.push_str("\nDialog States:\n");
+        text.push_str("\nDialog states:\n");
         let mut states: Vec<(&&str, &usize)> = state_counts.iter().collect();
         crate::sort::sort_by_dyn(&mut states, &mut |a, b| {
             b.1.cmp(a.1).then_with(|| a.0.cmp(b.0))
@@ -804,7 +808,7 @@ pub(in crate::tui) fn statistics_text(ds: &DialogStore, ss: &StreamStore) -> Str
 
     // Method distribution
     if !methods.is_empty() {
-        text.push_str("\nMethod Distribution:\n");
+        text.push_str("\nMethod distribution:\n");
         for (method, count) in methods {
             text.push_str(&format!("  {:<16} {count}\n", method));
         }
@@ -846,21 +850,7 @@ pub(in crate::tui) fn render_statistics(
     } else {
         &app.stats.text
     };
-
-    // Clamp the scroll to the content height (End jumps to the last page).
-    let total_rows = text.lines().count() as u16;
-    let viewport = area.height.saturating_sub(2);
-    let stats_scroll = app.stats_scroll.min(total_rows.saturating_sub(viewport));
-
-    let block = Block::default().borders(Borders::ALL).title(" Statistics ");
-
-    let paragraph = Paragraph::new(text)
-        .block(block)
-        .style(Style::default().fg(app.theme.foreground))
-        .scroll((stats_scroll, 0));
-
-    frame.render_widget(paragraph, area);
-    stats_scroll
+    render_text_panel(frame, area, app, " Statistics ", text, app.stats_scroll)
 }
 
 /// Build the talkers ranking text: participants ranked by dialog count, busiest
@@ -891,13 +881,13 @@ pub(in crate::tui) fn talkers_text(ds: &DialogStore) -> String {
             .then_with(|| a.0.cmp(b.0))
     });
 
-    let mut text = String::from("Top Talkers (by source IP)\n\n");
+    let mut text = String::new();
     if rows.is_empty() {
         text.push_str("No dialogs captured yet.\n");
     } else {
         text.push_str(&format!(
             "{:<3} {:<24} {:>7} {:>8} {:>7} {:>8} {:>6}\n",
-            "#", "Source IP", "Dialogs", "Msgs", "INVITEs", "Answered", "Failed"
+            "#", "Source IP", "Dialogs", "Messages", "INVITEs", "Answered", "Failed"
         ));
         for (i, (key, acc)) in rows.iter().enumerate() {
             text.push_str(&format!(
@@ -911,7 +901,10 @@ pub(in crate::tui) fn talkers_text(ds: &DialogStore) -> String {
                 acc.failed
             ));
         }
-        text.push_str(&format!("\n{} distinct talker(s).\n", rows.len()));
+        text.push_str(&format!(
+            "\n{}.\n",
+            crate::tui::count_noun(rows.len(), "distinct talker", "distinct talkers")
+        ));
         text.push_str(
             "A participant is credited for every dialog it took part in, so shares overlap.\n",
         );
@@ -944,21 +937,14 @@ pub(in crate::tui) fn render_talkers(
     } else {
         &app.talkers.text
     };
-
-    let total_rows = text.lines().count() as u16;
-    let viewport = area.height.saturating_sub(2);
-    let scroll = app.talkers_scroll.min(total_rows.saturating_sub(viewport));
-
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(" Top Talkers ");
-    let paragraph = Paragraph::new(text)
-        .block(block)
-        .style(Style::default().fg(app.theme.foreground))
-        .scroll((scroll, 0));
-
-    frame.render_widget(paragraph, area);
-    scroll
+    render_text_panel(
+        frame,
+        area,
+        app,
+        " Top talkers (by source IP) ",
+        text,
+        app.talkers_scroll,
+    )
 }
 
 /// Build the carrier-metrics table: ASR/NER/ACD per destination IP.
@@ -999,7 +985,7 @@ pub(in crate::tui) fn carrier_metrics_text(ds: &DialogStore, ss: &StreamStore) -
         }
     };
 
-    let mut text = String::from("Carrier Metrics (by destination IP)\n\n");
+    let mut text = String::new();
     if rows.is_empty() {
         text.push_str("No dialogs captured yet.\n");
     } else {
@@ -1018,13 +1004,22 @@ pub(in crate::tui) fn carrier_metrics_text(ds: &DialogStore, ss: &StreamStore) -
             ));
         }
         text.push_str(&format!(
-            "\n{} destination(s). ASR = answered / seizures, NER = delivered / \
-             seizures, ACD = mean conversation seconds.\n",
-            rows.len()
+            "\n{}.\n\n",
+            crate::tui::count_noun(rows.len(), "destination", "destinations")
         ));
+        // One defined term per line: the old single-sentence legend ran past
+        // the right border at 80 columns and never said what the letters were.
+        // A call attempt is an INVITE that got a final response (a seizure).
         text.push_str(
-            "A dash means the group had no decided call attempt (no INVITE reached a \
-             final response).\n",
+            "  ASR  Answer-seizure ratio: the share of call attempts that were \
+             answered (2xx).\n\
+             \x20 NER  Network effectiveness ratio: the share of call attempts the \
+             far end answered or refused (busy, unavailable, declined) rather \
+             than ones the network lost.\n\
+             \x20 ACD  Average call duration: mean seconds of the calls answered \
+             and hung up inside the capture.\n\n\
+             A call attempt is an INVITE that got a final response. A dash means \
+             no call attempt in that group did.\n",
         );
     }
     text.push_str("\nPress Esc to return.");
@@ -1058,23 +1053,14 @@ pub(in crate::tui) fn render_carrier_metrics(
     } else {
         &app.carrier_metrics.text
     };
-
-    let total_rows = text.lines().count() as u16;
-    let viewport = area.height.saturating_sub(2);
-    let scroll = app
-        .carrier_metrics_scroll
-        .min(total_rows.saturating_sub(viewport));
-
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(" Carrier Metrics ");
-    let paragraph = Paragraph::new(text)
-        .block(block)
-        .style(Style::default().fg(app.theme.foreground))
-        .scroll((scroll, 0));
-
-    frame.render_widget(paragraph, area);
-    scroll
+    render_text_panel(
+        frame,
+        area,
+        app,
+        " Carrier metrics (by destination IP) ",
+        text,
+        app.carrier_metrics_scroll,
+    )
 }
 
 /// Build the two-call comparison table over the shared
@@ -1095,7 +1081,7 @@ pub(in crate::tui) fn compare_dialogs_text(ds: &DialogStore, a_id: &str, b_id: &
     use std::fmt::Write as _;
 
     let (Some(a), Some(b)) = (ds.get(a_id), ds.get(b_id)) else {
-        let mut out = String::from("Compare two calls\n\n");
+        let mut out = String::new();
         if ds.get(a_id).is_none() {
             let _ = writeln!(out, "  Call A ({a_id}) is no longer in the capture.");
         }
@@ -1116,15 +1102,13 @@ pub(in crate::tui) fn compare_dialogs_text(ds: &DialogStore, a_id: &str, b_id: &
     let status = |code: Option<u16>| code.map_or_else(|| "—".to_string(), |c| c.to_string());
 
     let mut out = String::new();
-    let _ = writeln!(out, "Compare two calls");
-    let _ = writeln!(out);
     let _ = writeln!(out, "  A: {}", cmp.a.call_id);
     let _ = writeln!(out, "  B: {}", cmp.b.call_id);
     let _ = writeln!(out);
     let _ = writeln!(
         out,
         "  {:<14}A: {:<28}B: {}{}",
-        "state",
+        "State",
         cmp.a.state,
         cmp.b.state,
         differs("state")
@@ -1132,7 +1116,7 @@ pub(in crate::tui) fn compare_dialogs_text(ds: &DialogStore, a_id: &str, b_id: &
     let _ = writeln!(
         out,
         "  {:<14}A: {:<28}B: {}{}",
-        "final status",
+        "Final status",
         status(cmp.a.final_status_code),
         status(cmp.b.final_status_code),
         differs("final_status_code")
@@ -1140,7 +1124,7 @@ pub(in crate::tui) fn compare_dialogs_text(ds: &DialogStore, a_id: &str, b_id: &
     let _ = writeln!(
         out,
         "  {:<14}A: {:<28}B: {}{}",
-        "messages",
+        "Messages",
         cmp.a.msg_count,
         cmp.b.msg_count,
         differs("msg_count")
@@ -1148,7 +1132,7 @@ pub(in crate::tui) fn compare_dialogs_text(ds: &DialogStore, a_id: &str, b_id: &
     let _ = writeln!(
         out,
         "  {:<14}A: {:<28}B: {}{}",
-        "methods",
+        "Methods",
         cmp.a.methods.join(","),
         cmp.b.methods.join(","),
         differs("methods")
@@ -1160,7 +1144,12 @@ pub(in crate::tui) fn compare_dialogs_text(ds: &DialogStore, a_id: &str, b_id: &
             "  Differences: none — the two calls match on every compared field"
         );
     } else {
-        let _ = writeln!(out, "  Differences: {}", cmp.differences.join(", "));
+        let names: Vec<&str> = cmp
+            .differences
+            .iter()
+            .map(|d| compare_field_name(d))
+            .collect();
+        let _ = writeln!(out, "  Differences: {}", names.join(", "));
     }
     for (label, hints) in [("A", &cmp.a.hints), ("B", &cmp.b.hints)] {
         if !hints.is_empty() {
@@ -1172,6 +1161,20 @@ pub(in crate::tui) fn compare_dialogs_text(ds: &DialogStore, a_id: &str, b_id: &
         }
     }
     out
+}
+
+/// The human name of a compared field, for the compare view's `Differences`
+/// line. The shared rule names fields by their JSON keys (`msg_count`), which
+/// the REST and MCP surfaces keep; a person reading a terminal gets words. An
+/// unknown key is shown as it is, so a field added to the rule still appears.
+fn compare_field_name(field: &str) -> &str {
+    match field {
+        "state" => "state",
+        "final_status_code" => "final status",
+        "msg_count" => "message count",
+        "methods" => "methods",
+        other => other,
+    }
 }
 
 /// Recent-dialog page size for the endpoint rollup — bounds `recent_call_ids`,
@@ -1203,7 +1206,7 @@ pub(in crate::tui) fn endpoint_text(
     };
 
     let mut out = String::new();
-    let _ = writeln!(out, "Endpoint {} {}", r.kind, r.value);
+    let _ = writeln!(out, "Endpoint {}", r.value);
     let _ = writeln!(out);
     let _ = writeln!(
         out,
@@ -1241,9 +1244,9 @@ pub(in crate::tui) fn endpoint_text(
     let _ = writeln!(out);
 
     if r.banners.is_empty() {
-        let _ = writeln!(out, "  Banners: none");
+        let _ = writeln!(out, "  User-Agent/Server: none seen");
     } else {
-        let _ = writeln!(out, "  Banners:");
+        let _ = writeln!(out, "  User-Agent/Server:");
         for b in &r.banners {
             let _ = writeln!(out, "    {}: {} (x{})", b.header, b.value, b.count);
         }
@@ -1272,7 +1275,7 @@ pub(in crate::tui) fn endpoint_text(
     let shown = r.recent_call_ids.len();
     if shown > 0 {
         let _ = writeln!(out);
-        let _ = writeln!(out, "  Recent calls ({shown}/{}):", r.dialogs);
+        let _ = writeln!(out, "  Recent calls ({shown} of {}):", r.dialogs);
         for id in &r.recent_call_ids {
             let _ = writeln!(out, "    {id}");
         }
@@ -1317,8 +1320,6 @@ pub(in crate::tui) fn sdp_timeline_text(
     use std::fmt::Write as _;
 
     let mut out = String::new();
-    let _ = writeln!(out, "SDP offer/answer timeline");
-    let _ = writeln!(out);
     if exchanges.is_empty() {
         let _ = writeln!(out, "  No SDP offers or answers in this call.");
         return out;
@@ -1362,28 +1363,36 @@ pub(in crate::tui) fn sdp_timeline_text(
 /// outcome as an argument so the conversion is pure.
 ///
 /// STUB — filled in after the failing test.
-pub(in crate::tui) fn conformance_text(outcome: &crate::sip::lint::LintOutcome) -> String {
+pub(in crate::tui) fn conformance_text(
+    outcome: &crate::sip::lint::LintOutcome,
+    message_count: usize,
+) -> String {
     use std::fmt::Write as _;
 
     let mut out = String::new();
-    let _ = writeln!(out, "RFC conformance findings");
-    let _ = writeln!(out);
     if outcome.findings.is_empty() {
         let _ = writeln!(out, "  No RFC conformance findings — this call is clean.");
         return out;
     }
-    let plural = if outcome.findings.len() == 1 { "" } else { "s" };
-    let _ = writeln!(out, "  {} finding{plural}", outcome.findings.len());
+    let _ = writeln!(
+        out,
+        "  {}",
+        crate::tui::count_noun(outcome.findings.len(), "finding", "findings")
+    );
     for f in &outcome.findings {
         let _ = writeln!(out);
+        // Counted from 1, as the ladder a reader compares it with is: the
+        // zero-based `msg #0` pointed one row above the message it meant.
         let _ = writeln!(
             out,
-            "  [{}]  {}  (msg #{})  {}",
+            "  [{}]  {}, message {} of {message_count}",
             f.severity.as_str().to_uppercase(),
             f.citation(),
-            f.message_index,
-            f.rule_id,
+            f.message_index + 1,
         );
+        // The rule ID on its own line: beside the citation it ran past the
+        // right border at 80 columns.
+        let _ = writeln!(out, "    {}", f.rule_id);
         let _ = writeln!(out, "    observed:  {}", f.observed);
         let _ = writeln!(out, "    expected:  {}", f.expected);
         let _ = writeln!(out, "    {}", f.explanation);
@@ -1412,28 +1421,18 @@ pub(in crate::tui) fn render_conformance(
             let media = crate::sip::lint::ObservedMedia::from_streams(ss.streams_for(call_id));
             let outcome = crate::sip::lint::Linter::new(crate::sip::lint::LintConfig::new())
                 .lint_dialog_with_media_detailed(dialog, &media);
-            conformance_text(&outcome)
+            conformance_text(&outcome, dialog.messages.len())
         }
-        None => {
-            format!("RFC conformance findings\n\n  Call {call_id} is no longer in the capture.\n")
-        }
+        None => format!("  Call {call_id} is no longer in the capture.\n"),
     };
-    let total_rows = text.lines().count() as u16;
-    let viewport = area.height.saturating_sub(2);
-    let scroll = app
-        .conformance_scroll
-        .min(total_rows.saturating_sub(viewport));
-
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(" RFC conformance ");
-    let paragraph = Paragraph::new(text)
-        .block(block)
-        .style(Style::default().fg(app.theme.foreground))
-        .scroll((scroll, 0));
-
-    frame.render_widget(paragraph, area);
-    scroll
+    render_text_panel(
+        frame,
+        area,
+        app,
+        " RFC conformance ",
+        &text,
+        app.conformance_scroll,
+    )
 }
 
 /// Render a dialog's SDP offer/answer timeline. Parameterized by the Call-ID on
@@ -1452,26 +1451,16 @@ pub(in crate::tui) fn render_sdp_timeline(
 ) -> u16 {
     let text = match ds.get(call_id) {
         Some(d) => sdp_timeline_text(&d.sdp_timeline),
-        None => {
-            format!("SDP offer/answer timeline\n\n  Call {call_id} is no longer in the capture.\n")
-        }
+        None => format!("  Call {call_id} is no longer in the capture.\n"),
     };
-    let total_rows = text.lines().count() as u16;
-    let viewport = area.height.saturating_sub(2);
-    let scroll = app
-        .sdp_timeline_scroll
-        .min(total_rows.saturating_sub(viewport));
-
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(" SDP timeline ");
-    let paragraph = Paragraph::new(text)
-        .block(block)
-        .style(Style::default().fg(app.theme.foreground))
-        .scroll((scroll, 0));
-
-    frame.render_widget(paragraph, area);
-    scroll
+    render_text_panel(
+        frame,
+        area,
+        app,
+        " SDP offer/answer timeline ",
+        &text,
+        app.sdp_timeline_scroll,
+    )
 }
 
 /// Render the two-call comparison view. Parameterized by the two Call-IDs on
@@ -1490,20 +1479,14 @@ pub(in crate::tui) fn render_compare(
     b_id: &str,
 ) -> u16 {
     let text = compare_dialogs_text(ds, a_id, b_id);
-    let total_rows = text.lines().count() as u16;
-    let viewport = area.height.saturating_sub(2);
-    let scroll = app.compare_scroll.min(total_rows.saturating_sub(viewport));
-
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(" Compare two calls ");
-    let paragraph = Paragraph::new(text)
-        .block(block)
-        .style(Style::default().fg(app.theme.foreground))
-        .scroll((scroll, 0));
-
-    frame.render_widget(paragraph, area);
-    scroll
+    render_text_panel(
+        frame,
+        area,
+        app,
+        " Compare two calls ",
+        &text,
+        app.compare_scroll,
+    )
 }
 
 /// Render the per-endpoint rollup view. Serves the cross-tick cache
@@ -1525,7 +1508,7 @@ pub(in crate::tui) fn render_endpoint(
         fallback = match &app.current_view {
             View::EndpointRollup { ip } => match ip.parse::<std::net::IpAddr>() {
                 Ok(addr) => endpoint_text(ds, ss, &crate::sip::endpoint::Selector::Ip(addr)),
-                Err(_) => format!("Endpoint ip {ip}\n\n  (not a valid address)\n"),
+                Err(_) => format!("Endpoint {ip}\n\n  (not a valid address)\n"),
             },
             _ => String::new(),
         };
@@ -1533,19 +1516,7 @@ pub(in crate::tui) fn render_endpoint(
     } else {
         &app.endpoint.text
     };
-
-    let total_rows = text.lines().count() as u16;
-    let viewport = area.height.saturating_sub(2);
-    let scroll = app.endpoint_scroll.min(total_rows.saturating_sub(viewport));
-
-    let block = Block::default().borders(Borders::ALL).title(" Endpoint ");
-    let paragraph = Paragraph::new(text)
-        .block(block)
-        .style(Style::default().fg(app.theme.foreground))
-        .scroll((scroll, 0));
-
-    frame.render_widget(paragraph, area);
-    scroll
+    render_text_panel(frame, area, app, " Endpoint ", text, app.endpoint_scroll)
 }
 
 /// Build the capture-health panel from a
@@ -1561,8 +1532,6 @@ pub(in crate::tui) fn capture_health_text(q: &crate::output::prometheus::Capture
     use std::fmt::Write as _;
 
     let mut out = String::new();
-    let _ = writeln!(out, "Capture health");
-    let _ = writeln!(out);
     if q.degraded() {
         let _ = writeln!(
             out,
@@ -1644,8 +1613,6 @@ pub(in crate::tui) fn volume_histogram_text(ds: &DialogStore, width_seconds: u64
 
     let buckets = ds.timeline_buckets(width_seconds);
     let mut out = String::new();
-    let _ = writeln!(out, "Call volume — {width_seconds}s buckets");
-    let _ = writeln!(out);
     if buckets.is_empty() {
         let _ = writeln!(out, "  No calls in the capture.");
         return out;
@@ -1684,23 +1651,8 @@ pub(in crate::tui) fn render_call_volume(
     } else {
         &app.call_volume.text
     };
-
-    let total_rows = text.lines().count() as u16;
-    let viewport = area.height.saturating_sub(2);
-    let scroll = app
-        .call_volume_scroll
-        .min(total_rows.saturating_sub(viewport));
-
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(" Call volume ");
-    let paragraph = Paragraph::new(text)
-        .block(block)
-        .style(Style::default().fg(app.theme.foreground))
-        .scroll((scroll, 0));
-
-    frame.render_widget(paragraph, area);
-    scroll
+    let title = format!(" Call volume ({VOLUME_BUCKET_SECONDS}-second buckets) ");
+    render_text_panel(frame, area, app, &title, text, app.call_volume_scroll)
 }
 
 /// Render the capture-health view. Reads the process-global counters through
@@ -1721,22 +1673,14 @@ pub(in crate::tui) fn render_capture_health(
         text.push_str(&line);
         text.push('\n');
     }
-    let total_rows = text.lines().count() as u16;
-    let viewport = area.height.saturating_sub(2);
-    let scroll = app
-        .capture_health_scroll
-        .min(total_rows.saturating_sub(viewport));
-
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(" Capture health ");
-    let paragraph = Paragraph::new(text)
-        .block(block)
-        .style(Style::default().fg(app.theme.foreground))
-        .scroll((scroll, 0));
-
-    frame.render_widget(paragraph, area);
-    scroll
+    render_text_panel(
+        frame,
+        area,
+        app,
+        " Capture health ",
+        &text,
+        app.capture_health_scroll,
+    )
 }
 
 /// The HEP senders report as this session's capture meter carries it, built
@@ -1770,20 +1714,14 @@ pub(in crate::tui) fn render_hep_senders(
     app: &App,
 ) -> u16 {
     let text = hep_senders_report(app).to_text();
-    let total_rows = text.lines().count() as u16;
-    let viewport = area.height.saturating_sub(2);
-    let scroll = app
-        .hep_senders_scroll
-        .min(total_rows.saturating_sub(viewport));
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(" HEP senders ");
-    let paragraph = Paragraph::new(text)
-        .block(block)
-        .style(Style::default().fg(app.theme.foreground))
-        .scroll((scroll, 0));
-    frame.render_widget(paragraph, area);
-    scroll
+    render_text_panel(
+        frame,
+        area,
+        app,
+        " HEP senders ",
+        &text,
+        app.hep_senders_scroll,
+    )
 }
 
 /// Build the security-findings panel from a
@@ -1799,8 +1737,6 @@ pub(in crate::tui) fn findings_text(report: &crate::security::findings::Findings
     use std::fmt::Write as _;
 
     let mut out = String::new();
-    let _ = writeln!(out, "Security findings");
-    let _ = writeln!(out);
     if report.armed_kinds.is_empty() {
         let _ = writeln!(out, "  Detectors armed: none");
     } else {
@@ -1817,12 +1753,11 @@ pub(in crate::tui) fn findings_text(report: &crate::security::findings::Findings
         }
         return out;
     }
-    let plural = if report.rows.len() == 1 { "" } else { "s" };
     let _ = writeln!(out);
     let _ = writeln!(
         out,
-        "  {} finding{plural} (of {}):",
-        report.rows.len(),
+        "  {} (of {}):",
+        crate::tui::count_noun(report.rows.len(), "finding", "findings"),
         report.total_matched
     );
     for f in &report.rows {
@@ -1872,20 +1807,14 @@ pub(in crate::tui) fn render_security(
     };
     let text = findings_text(&report);
 
-    let total_rows = text.lines().count() as u16;
-    let viewport = area.height.saturating_sub(2);
-    let scroll = app.security_scroll.min(total_rows.saturating_sub(viewport));
-
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(" Security findings ");
-    let paragraph = Paragraph::new(text)
-        .block(block)
-        .style(Style::default().fg(app.theme.foreground))
-        .scroll((scroll, 0));
-
-    frame.render_widget(paragraph, area);
-    scroll
+    render_text_panel(
+        frame,
+        area,
+        app,
+        " Security findings ",
+        &text,
+        app.security_scroll,
+    )
 }
 
 /// Render the TFPS-observe view: the enforcing peer's banned sources or drop
@@ -1916,18 +1845,7 @@ pub(in crate::tui) fn render_tfps(
         &app.tfps.text
     };
 
-    let total_rows = text.lines().count() as u16;
-    let viewport = area.height.saturating_sub(2);
-    let scroll = app.tfps_scroll.min(total_rows.saturating_sub(viewport));
-
-    let block = Block::default().borders(Borders::ALL).title(title);
-    let paragraph = Paragraph::new(text)
-        .block(block)
-        .style(Style::default().fg(app.theme.foreground))
-        .scroll((scroll, 0));
-
-    frame.render_widget(paragraph, area);
-    scroll
+    render_text_panel(frame, area, app, title, text, app.tfps_scroll)
 }
 
 /// Render the relay-statistics view (ST8): the live relay's own counters, the
@@ -1967,20 +1885,7 @@ pub(in crate::tui) fn render_relay_stats(
         &app.relay_stats.text
     };
 
-    let total_rows = text.lines().count() as u16;
-    let viewport = area.height.saturating_sub(2);
-    let relay_stats_scroll = app
-        .relay_stats_scroll
-        .min(total_rows.saturating_sub(viewport));
-
-    let block = Block::default().borders(Borders::ALL).title(title);
-    let paragraph = Paragraph::new(text)
-        .block(block)
-        .style(Style::default().fg(app.theme.foreground))
-        .scroll((relay_stats_scroll, 0));
-
-    frame.render_widget(paragraph, area);
-    relay_stats_scroll
+    render_text_panel(frame, area, app, title, text, app.relay_stats_scroll)
 }
 
 /// Rows the editor's input box occupies at the bottom of the popup: a bordered
@@ -2081,6 +1986,108 @@ fn estimated_wrapped_rows(lines: &[Line<'_>], width: u16) -> u16 {
         .min(u16::MAX as usize) as u16
 }
 
+/// Word-wrap `text` to `width` columns with a hanging indent: a logical line
+/// that overflows continues on rows indented to where its text starts, so an
+/// indented explanation stays one readable block. A line shaped like a
+/// definition (`  ASR  Answer-seizure ratio: ...`, a short term then two or
+/// more spaces) hangs under the definition rather than under the term. A
+/// line that fits is left exactly as written (a table row's column gaps
+/// included). When the indent would leave fewer than [`HANGING_MIN_TEXT`]
+/// columns for text, the line wraps flush left instead. No row is ever wider
+/// than `width`. Pure.
+fn wrap_hanging(text: &str, width: u16) -> Vec<String> {
+    use unicode_width::UnicodeWidthStr;
+    let w = width as usize;
+    let mut rows = Vec::new();
+    for logical in text.split('\n') {
+        if logical.width() <= w {
+            rows.push(logical.to_string());
+            continue;
+        }
+        let hang = hanging_indent(logical);
+        let (head, body) = if w.saturating_sub(hang) >= HANGING_MIN_TEXT {
+            logical.split_at(hang)
+        } else {
+            ("", logical)
+        };
+        let pad = " ".repeat(head.width());
+        let text_width = u16::try_from(w - head.width()).unwrap_or(u16::MAX);
+        for (i, row) in wrap_to_width(body, text_width).into_iter().enumerate() {
+            let lead = if i == 0 { head } else { pad.as_str() };
+            rows.push(format!("{lead}{row}"));
+        }
+    }
+    rows
+}
+
+/// Byte offset where a line's wrappable text starts: after its leading
+/// spaces, and after a short definition term and its gap when the line has
+/// one (a term of at most [`HANGING_MAX_TERM`] characters followed by two or
+/// more spaces). Leading spaces and gaps are ASCII, so byte and column
+/// offsets agree. Pure.
+fn hanging_indent(line: &str) -> usize {
+    let lead = line.len() - line.trim_start_matches(' ').len();
+    let rest = &line[lead..];
+    if let Some(gap) = rest.find("  ")
+        && gap > 0
+        && gap <= HANGING_MAX_TERM
+        && !rest[..gap].contains(' ')
+    {
+        let after = rest[gap..].len() - rest[gap..].trim_start_matches(' ').len();
+        return lead + gap + after;
+    }
+    lead
+}
+
+/// The longest term a definition line may have for its text to hang under
+/// the definition.
+const HANGING_MAX_TERM: usize = 12;
+
+/// The fewest text columns a hanging indent may leave on a wrapped row.
+const HANGING_MIN_TEXT: usize = 8;
+
+/// Draw a bordered, scrollable text panel: the shared body of every analysis
+/// view (statistics, talkers, carrier metrics, conformance, and the rest).
+///
+/// The text is wrapped with [`wrap_hanging`] to the panel's inner width and
+/// those exact rows are drawn, so the scroll clamp counts what renders. These
+/// panels used to be unwrapped paragraphs: every sentence past the right
+/// border was cut off, and the reader never learned what ASR stood for.
+///
+/// # Arguments
+/// * `frame` - Frame to draw into.
+/// * `area` - Main-pane area for the view.
+/// * `app` - Application state (theme).
+/// * `title` - Block title, spaces included (`" Carrier metrics "`).
+/// * `text` - The panel body.
+/// * `scroll` - Requested scroll offset in wrapped rows.
+///
+/// # Returns
+/// The scroll offset clamped to the wrapped content, for `RenderFeedback`.
+pub(in crate::tui) fn render_text_panel(
+    frame: &mut ratatui::Frame,
+    area: ratatui::layout::Rect,
+    app: &App,
+    title: &str,
+    text: &str,
+    scroll: u16,
+) -> u16 {
+    let rows = wrap_hanging(text, area.width.saturating_sub(2));
+    let total_rows = u16::try_from(rows.len()).unwrap_or(u16::MAX);
+    let viewport = area.height.saturating_sub(2);
+    let clamped = scroll.min(total_rows.saturating_sub(viewport));
+    let lines: Vec<Line<'_>> = rows.into_iter().map(Line::from).collect();
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(title.to_string());
+    let paragraph = Paragraph::new(lines)
+        .block(block)
+        .style(Style::default().fg(app.theme.foreground))
+        .scroll((clamped, 0));
+    frame.render_widget(paragraph, area);
+    clamped
+}
+
 /// Greedy word-wrap `text` to `width` display columns, one `String` per visual
 /// row, so the row count the scroll clamps against is exactly what renders.
 ///
@@ -2095,7 +2102,7 @@ fn estimated_wrapped_rows(lines: &[Line<'_>], width: u16) -> u16 {
 /// counts as two columns. `width == 0` returns the text unwrapped (a degenerate
 /// popup the caller never produces); embedded newlines split logical lines
 /// first. Pure.
-fn wrap_to_width(text: &str, width: u16) -> Vec<String> {
+pub(in crate::tui) fn wrap_to_width(text: &str, width: u16) -> Vec<String> {
     use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
     let w = width as usize;
     if w == 0 {
@@ -2562,7 +2569,7 @@ mod tests {
     fn render_app_call_list_empty_and_populated() {
         let mut empty = App::new_test();
         let out = render_to_string(&mut empty, 80, 24);
-        assert!(out.contains("Current Mode"));
+        assert!(out.contains("Live capture:"));
         assert!(out.contains("Dialogs:"));
 
         let mut app = app_with_dialog();
@@ -2747,8 +2754,8 @@ mod tests {
             .find(|l| l.contains("Differences:"))
             .expect("a differences line");
         assert!(
-            diff_line.contains("final_status_code"),
-            "differences names final_status_code: {diff_line}"
+            diff_line.contains("final status") && !diff_line.contains("final_status_code"),
+            "differences names the final status in words, not its JSON key: {diff_line}"
         );
         assert!(
             !diff_line.contains("methods"),
@@ -2759,7 +2766,7 @@ mod tests {
         // unflagged — its own field→row mapping, distinct from the shared rule.
         let fs_row = text
             .lines()
-            .find(|l| l.contains("final status"))
+            .find(|l| l.contains("Final status"))
             .expect("a final-status row");
         assert!(
             fs_row.contains("(differs)"),
@@ -2767,7 +2774,7 @@ mod tests {
         );
         let methods_row = text
             .lines()
-            .find(|l| l.trim_start().starts_with("methods"))
+            .find(|l| l.trim_start().starts_with("Methods"))
             .expect("a methods row");
         assert!(
             !methods_row.contains("(differs)"),
@@ -2873,10 +2880,19 @@ mod tests {
             withheld: WithheldCounts::default(),
         };
 
-        let text = conformance_text(&outcome);
+        let text = conformance_text(&outcome, 4);
         assert!(
-            text.contains("via-branch-missing"),
-            "the rule id renders:\n{text}"
+            text.lines().any(|l| l.trim() == "via-branch-missing"),
+            "the rule id renders on its own line:\n{text}"
+        );
+        // Counted from 1, like the ladder: index 2 is the third message.
+        assert!(
+            text.contains("message 3 of 4") && text.contains("message 1 of 4"),
+            "the message is named 1-based, out of the dialog's count:\n{text}"
+        );
+        assert!(
+            !text.contains("msg #"),
+            "the zero-based form is back:\n{text}"
         );
         assert!(
             text.to_uppercase().contains("ERROR") && text.to_uppercase().contains("WARNING"),
@@ -3217,15 +3233,15 @@ mod tests {
 
     // ── Status line variants ───────────────────────────────────────
 
-    /// Status line 1 shows PAUSED and the [A] autoscroll indicator.
+    /// Status line 1 shows PAUSED and says autoscroll is on.
     #[test]
     fn render_app_status_line1_paused_and_autoscroll() {
         let mut app = app_with_dialog();
         app.paused = true;
         let out = render_to_string(&mut app, 100, 24);
         assert!(out.contains("PAUSED"));
-        // autoscroll indicator [A] (default autoscroll on for call list)
-        assert!(out.contains("[A]"));
+        // Autoscroll defaults to on for the call list, and says so in words.
+        assert!(out.contains("Autoscroll: on"));
     }
 
     /// Status line 1 shows the Offline capture mode text.
@@ -3234,7 +3250,7 @@ mod tests {
         let mut app = app_with_dialog();
         app.capture_mode = "Offline (capture.pcap)".to_string();
         let out = render_to_string(&mut app, 100, 24);
-        assert!(out.contains("Offline"));
+        assert!(out.contains("File: capture.pcap"));
     }
 
     /// With search active, status line 3 shows the `/query` overlay.
@@ -3247,12 +3263,12 @@ mod tests {
         assert!(out.contains("/invite"));
     }
 
-    /// A status message containing "fail"/"error" renders on line 3 via
-    /// the error color path.
+    /// A message raised as an error renders on line 3 via the error color
+    /// path.
     #[test]
     fn render_app_status_line3_error_message() {
         let mut app = app_with_dialog();
-        app.status_error = Some("save failed: disk full".to_string());
+        app.set_status_error("save failed: disk full");
         let out = render_to_string(&mut app, 100, 24);
         assert!(out.contains("save failed"));
     }
@@ -3262,21 +3278,105 @@ mod tests {
     #[test]
     fn render_app_status_line3_info_message() {
         let mut app = app_with_dialog();
-        // No "error"/"fail" → uses foreground color path.
+        // Written directly, not raised: the information color path.
         app.status_error = Some("saved 3 dialogs".to_string());
         let out = render_to_string(&mut app, 100, 24);
         assert!(out.contains("saved 3 dialogs"));
     }
 
-    /// Status line 2 shows both the match expression and the BPF filter.
+    /// Line 2 shows the capture filter and line 3 the view filter.
     #[test]
     fn render_app_status_line2_filter_and_bpf() {
         let mut app = app_with_dialog();
         app.active_filter_text = "method == 'INVITE'".to_string();
         app.bpf_filter = "udp port 5060".to_string();
         let out = render_to_string(&mut app, 120, 24);
-        assert!(out.contains("Match Expression"));
-        assert!(out.contains("udp port 5060"));
+        assert!(out.contains("Capture filter (BPF): udp port 5060"));
+        assert!(out.contains("View filter: method == 'INVITE'"));
+    }
+
+    /// An analysis paragraph that overflows continues under its own first
+    /// word, so an indented explanation stays readable as one block instead
+    /// of being cut at the right border (the old unwrapped panels lost the
+    /// tail of every sentence past 80 columns).
+    #[test]
+    fn wrap_hanging_keeps_a_continuation_under_its_first_word() {
+        assert_eq!(
+            wrap_hanging("    alpha beta gamma", 14),
+            vec!["    alpha beta".to_string(), "    gamma".to_string()]
+        );
+    }
+
+    /// A definition line hangs its continuation under the definition, not
+    /// under the term, so the term stays alone in its column.
+    #[test]
+    fn wrap_hanging_hangs_a_definition_under_its_text() {
+        assert_eq!(
+            wrap_hanging("  ASR  answered share of attempts", 22),
+            vec![
+                "  ASR  answered share".to_string(),
+                "       of attempts".to_string()
+            ]
+        );
+    }
+
+    /// A line that fits is left exactly as written, internal spacing (a
+    /// table's column gaps) included.
+    #[test]
+    fn wrap_hanging_leaves_a_fitting_line_untouched() {
+        assert_eq!(
+            wrap_hanging("  10.0.0.2      3    66.7%", 40),
+            vec!["  10.0.0.2      3    66.7%".to_string()]
+        );
+    }
+
+    /// No wrapped row is ever wider than the panel, even when the indent
+    /// leaves almost no room for text.
+    #[test]
+    fn wrap_hanging_never_exceeds_the_width() {
+        let text = "          Via is one of the six fields calls mandatory in all requests";
+        for width in [4u16, 8, 12, 20, 40, 80] {
+            for row in wrap_hanging(text, width) {
+                assert!(
+                    unicode_width::UnicodeWidthStr::width(row.as_str()) <= width as usize,
+                    "row {row:?} is wider than {width}"
+                );
+            }
+        }
+    }
+
+    /// Each logical line wraps on its own; blank lines survive.
+    #[test]
+    fn wrap_hanging_splits_on_newlines() {
+        assert_eq!(
+            wrap_hanging("a\n\n  bbbb cccc dddd", 12),
+            vec![
+                "a".to_string(),
+                String::new(),
+                "  bbbb cccc".to_string(),
+                "  dddd".to_string()
+            ]
+        );
+    }
+
+    /// The text panel clamps its scroll against the WRAPPED row count, so the
+    /// last wrapped row of a long paragraph is reachable.
+    #[test]
+    fn text_panel_scroll_clamps_to_the_wrapped_rows() {
+        let app = App::new_test();
+        let text = "word ".repeat(40); // 200 columns, one logical line
+        let mut terminal = Terminal::new(TestBackend::new(22, 6)).unwrap();
+        let mut clamped = 0;
+        terminal
+            .draw(|frame| {
+                clamped =
+                    render_text_panel(frame, Rect::new(0, 0, 22, 6), &app, " T ", &text, u16::MAX);
+            })
+            .unwrap();
+        // 20 inner columns hold four "word" tokens per row: 10 rows, 4 visible.
+        let rows = wrap_hanging(&text, 20).len() as u16;
+        assert_eq!(rows, 10, "fixture assumption");
+        assert_eq!(clamped, rows - 4, "scroll must reach the last wrapped row");
     }
 
     /// A short filter that fits stays on one row, unchanged.
@@ -3430,7 +3530,7 @@ mod tests {
         app.active_popup = Some(Popup::SaveDialog);
         app.set_save_path("/tmp/out.pcap");
         let out = render_to_string(&mut app, 90, 30);
-        assert!(out.contains("Save Capture"));
+        assert!(out.contains("Save capture"));
         assert!(out.contains("/tmp/out.pcap"));
     }
 
@@ -3445,7 +3545,7 @@ mod tests {
         app.set_save_path("/tmp/out.pcap");
         let out = render_to_string(&mut app, 90, 40);
         for label in [
-            "PCAP", "TXT", "SIPp", "JSON", "CSV", "HTML", "MD", "WAV", "RTP",
+            "PCAP", "TXT", "SIPp", "JSON", "CSV", "HTML", "Markdown", "WAV", "RTP JSON",
         ] {
             assert!(out.contains(label), "format {label} missing:\n{out}");
         }
@@ -3476,7 +3576,7 @@ mod tests {
         app.active_popup = Some(Popup::FileOpenDialog);
         app.file_open.manual_mode = false;
         let out = render_to_string(&mut app, 100, 30);
-        assert!(out.contains("Open PCAP File"));
+        assert!(out.contains("Open capture file"));
         assert!(out.contains("Dir:"));
     }
 
@@ -3487,7 +3587,7 @@ mod tests {
         app.active_popup = Some(Popup::FileOpenDialog);
         app.file_open.manual_mode = true;
         let out = render_to_string(&mut app, 100, 30);
-        assert!(out.contains("Open PCAP File"));
+        assert!(out.contains("Open capture file"));
         assert!(out.contains("Path:"));
     }
 
@@ -3498,17 +3598,17 @@ mod tests {
         app.active_popup = Some(Popup::SettingsDialog);
         let out = render_to_string(&mut app, 100, 30);
         assert!(out.contains("Settings"));
-        assert!(out.contains("Color Mode"));
+        assert!(out.contains("Colors:"));
     }
 
-    /// The filter popup overlays with its title and SIP From field.
+    /// The filter popup overlays with its title and From user field.
     #[test]
     fn render_app_filter_popup_overlay() {
         let mut app = App::new_test();
         app.active_popup = Some(Popup::FilterDialog);
         let out = render_to_string(&mut app, 100, 30);
         assert!(out.contains("Filter"));
-        assert!(out.contains("SIP From"));
+        assert!(out.contains("From user:"));
     }
 
     // ── Direct popup function tests ────────────────────────────────

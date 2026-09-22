@@ -2,10 +2,10 @@
 source: tests/tui_snapshot_test.rs
 expression: output
 ---
- Current Mode: Online (any)    Dialogs: 0 (0 displayed)  [A]
- Match Expression:     BPF Filter:
- Display Filter:
-┌ Help (↑/↓ scroll, Esc to close) ─────────────────────────────────────────────┐
+ Live capture: any    Dialogs: 0 shown of 0    Autoscroll: on
+ Capture filter (BPF): none
+ View filter: none
+┌ Help (↑/↓ scroll, Esc close) ────────────────────────────────────────────────┐
 │sipnab — Keyboard Shortcuts                                                   │
 │v0.0.0-test                                                                   │
 │libpcap version 0.0.0-test; alternate capture backends named: none            │
@@ -16,7 +16,7 @@ expression: output
 │  Home/End          Jump to first/last                                        │
 │  Enter             Open call flow                                            │
 │  Space             Select/deselect dialog                                    │
-│  Esc, q            Quit (asks first; Ctrl-C quits at once)                   │
+│  Esc, q            Quit (asks first, Ctrl+C quits at once)                   │
 │  < / >             Change sort column                                        │
 │  Z                 Reverse sort direction                                    │
 │  A                 Toggle autoscroll                                         │
@@ -25,20 +25,20 @@ expression: output
 │  i                 Clear non-matching dialogs                                │
 │  I                 Clear matching dialogs                                    │
 │  F1, ?             This help (? works in every view)                         │
-│  F2                Save capture (Tab cycles PCAP/TXT/JSON/WAV/Mermaid/...)   │
+│  F2                Save capture: PCAP, PCAP-NG, TXT, SIPp, JSON, NDJSON, CSV,│
+│                    HTML (Mermaid ladder), Markdown, WAV, RTP JSON, NOTES (Tab│
+│                    cycles)                                                   │
 │  F3                Search (same as /)                                        │
 │  F5, Ctrl+L        Clear calls                                               │
 │  r, F6             Show raw SIP message                                      │
 │  F7                Filter dialog                                             │
 │  F8                Settings                                                  │
-│  t                 Cycle timestamps (absolute / delta-prev / delta-first /   │
-│scaled)                                                                       │
+│  t                 Cycle timestamps (absolute / delta from previous / delta  │
+│                    from first / scaled)                                      │
 │  u                 Cycle From/To (default/host:port/user/user@host:port)     │
 │  n                 Cycle name resolution (off/static/DNS) — global           │
 │  N                 Name selected address (IP -> host / FQDN)                 │
 │  O                 Open pcap file                                            │
 │  s                 Statistics view                                           │
-│  g                 Top talkers (busiest participants, by source IP)          │
-│  m                 Carrier metrics (ASR/NER/ACD by destination IP)           │
 └──────────────────────────────────────────────────────────────────────────────┘
-Esc Back
+Esc Close  ↑↓ Scroll  PgUp/Dn Page

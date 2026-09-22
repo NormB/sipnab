@@ -2,8 +2,8 @@
 source: tests/tui_snapshot_test.rs
 expression: output
 ---
- Current Mode: Online (any)    Dialogs: 3 (3 displayed)  [A]
- Match Expression:     BPF Filter:
+ Live capture: any    Dialogs: 3 shown of 3    Autoscroll: on
+ Capture filter (BPF): none
  Mark set
              10.0.0.1:5060                    10.0.0.2:5060 ┌ [2/4] 180 Ringing ───────────────────┐
              │                                    Δ +1.000s │SIP/2.0 180 Ringing                   │
@@ -31,4 +31,4 @@ expression: output
                                                             │                                      │
              │                                            │ │                                      │
              10.0.0.1:5060                    10.0.0.2:5060 └──────────────────────────────────────┘
-Esc Back  ↑↓ Nav  Enter Raw  Space Diff  d SDP  t Time  c Color  R Split
+Esc Back  F1 Help  ↑↓ Move  Enter Raw  d SDP  t Time  c Color  R Detail

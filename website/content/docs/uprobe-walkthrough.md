@@ -56,7 +56,7 @@ operational terms.
   need it rather than leaving it attached.
 
 If your threat model does not allow reading process memory on that host, this
-feature is not for you — use [`--keylog`](@/docs/cookbook.md#7-decrypt-sip-tls-via-sslkeylogfile)
+feature is not for you — use [`--keylog`](@/docs/cookbook.md#7-decrypt-sip-over-tls-when-you-can-restart-the-phone-or-server-key-log-file-sslkeylogfile)
 with a key the endpoint produces deliberately.
 
 ## Can your system run this at all?

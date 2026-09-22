@@ -1044,7 +1044,7 @@ network has no legitimate reading, and neither does a Contact whose host differs
 from the source. Both survive the attacker changing address, User-Agent and
 prefix. Block the destination prefix at the trunk as well as the source, because
 the source is disposable and the prefix is what pays.
-[Cookbook recipe 10c](examples.md#10c-detect-toll-fraud-and-wangiri-call-back-bait)
+[Cookbook recipe 10d](examples.md#10d-detect-toll-fraud-and-wangiri-call-back-bait)
 covers the fraud heuristics that run over this pattern live.
 
 ---
@@ -1163,6 +1163,6 @@ carrier with both timestamps, because the gap between your `BYE` and their
   [example 10](#10-conformance-findings-move-with-the-vantage-point) needs.
 - [Output formats](output-formats.md#one-object-per-dialog) — every field these
   examples read out of `--json-dialogs`, with its type and meaning.
-- [Attribute media on an rtpengine relay](rtpengine.md#the-problem-on-a-real-capture)
+- [Attribute media on an rtpengine relay](rtpengine.md#the-problem-on-a-relay-capture)
   — what to do when the media in a capture like these arrives with no call
   attached to it.

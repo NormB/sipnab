@@ -25,6 +25,7 @@ the cause from there.
 | A HEP collector (`-L`) shows no calls, or one proxy's calls are missing | [A HEP collector that receives nothing](#a-hep-collector-that-receives-nothing) |
 | SIP is over TLS and the calls never appear | [Encrypted SIP that does not decrypt](#encrypted-sip-that-does-not-decrypt) |
 | Somebody handed you a `.tgz` or `.tar` of captures, and the run looks short | [An archive of captures](#an-archive-of-captures) |
+| `--export-vcon` refuses, cannot find the call, or writes no audio | [A vCon export that fails](#a-vcon-export-that-fails) |
 | Nothing yet -- you have a capture and a complaint | [Start here](#start-here-one-pass-over-everything) |
 
 Whatever the symptom, three things decide whether the answer is in the capture
@@ -70,9 +71,9 @@ sipnab -N -I capture.pcap --problems --json
 > or stream. sipnab reports those separately, with the numbers that name them:
 >
 > ```text
-> NOT DECODED: 49 of 49 frame(s) (100.0%) produced nothing and are in none of
-> the counts above. Reasons: unsupported link type 0 (49). NOTHING IN THIS
-> CAPTURE WAS READ -- every frame failed to decode, so the totals above
+> NOT DECODED: 3 of 3 frame(s) (100.0%) produced nothing and are in none of
+> the counts above. Reasons: unsupported link type 147 (3). NOTHING IN THIS
+> CAPTURE WAS READ — every frame failed to decode, so the totals above
 > describe no traffic whatsoever and a zero among them is not evidence of
 > absence.
 > ```
@@ -86,9 +87,10 @@ sipnab -N -I capture.pcap --problems --json
 >
 > | Reason | What it means | What to do |
 > |---|---|---|
-> | `unsupported link type N` | The pcap's DLT has no decoder here. `0` is `DLT_NULL` (BSD loopback), `9` is PPP, `276` is Linux cooked v2. | Convert it: `editcap -T ether in.pcap out.pcap`. If the link type is one sipnab should read, open an issue naming the number. |
+> | `unsupported link type N` | The pcap's DLT has no decoder here. [Link types](encapsulations.md#link-types) lists the ones sipnab reads, and `147` to `162` are the private-use `DLT_USER` range. | Convert it: `editcap -T ether in.pcap out.pcap`. If the link type is one sipnab should read, open an issue naming the number. |
 > | `not IP (EtherType 0xNNNN)` | The frame decoded and carried no IP. `0x0806` is ARP, `0x8847` MPLS, `0x88CC` LLDP. | ARP and LLDP are ordinary background -- expect a few on any Ethernet capture. A large MPLS or PPPoE share means the mirror is giving you the encapsulated form. |
-> | `no transport (IP protocol N)` | IP decoded; its payload is no transport sipnab handles. `50` is ESP, `47` GRE, `89` OSPF. | ESP encrypts the SIP inside it, so the capture cannot yield it; take the capture inside the tunnel instead. |
+> | `ESP not NULL-encrypted (IP protocol 50)` | IPsec ESP whose payload failed the checks that prove NULL encryption, so it carries real encryption, or a protection sipnab cannot read. | sipnab takes no ESP keys. Take the capture inside the tunnel, or run the lab with NULL encryption, which sipnab reads. See [Tunnels above the link layer](encapsulations.md#tunnels-above-the-link-layer). |
+> | `no transport (IP protocol N)` | IP decoded, and its payload is no transport sipnab handles. `2` is IGMP, `89` OSPF, `103` PIM. | Routing and multicast control traffic is ordinary background. A large share of another number means a tunnel sipnab does not strip. |
 > | `truncated frame` | The frame is shorter than a header it declares. | Raise `--snaplen` on the capture, or re-take it. |
 > | `decode error` | The decoder rejected the bytes outright. | Usually a corrupt or mis-declared file; try `editcap` or `tshark -r` on it. |
 
@@ -327,10 +329,14 @@ page fires. Counting comfort-noise frames does not find it either: those frames
 say "I am sending silence", and this gateway is not saying anything.
 
 So sipnab measures the audio itself. It needs the samples, which means
-`--retain-audio`:
+`--retain-audio`. Set `CALL_ID` to the call that went quiet, then run:
 
 ```bash
-sipnab -N -I capture.pcap --retain-audio --call-report <call-id> --json
+CALL_ID='a84b4c76e66710@pc33.atlanta.example.com'
+```
+
+```bash
+sipnab -N -I capture.pcap --retain-audio --call-report "$CALL_ID" --json
 ```
 
 The `diagnosis.amplitude` object appears only on a run that kept the samples.
@@ -702,53 +708,20 @@ sipnab -N -I capture.pcap --json-dialogs --no-cli-print --quiet \
 
 ---
 
-## Generating reports
+## Reports, audio and the browser analyzer
 
-Export call data for tickets, post-mortems, or automated pipelines.
+These are tasks rather than symptoms, so the cookbook carries them:
 
-A Markdown report for one call, to attach to a ticket. The redirect overwrites `report.md` in the current directory, and `--no-cli-print` keeps the capture's per-message dump out of it:
-
-```bash
-sipnab -N -I capture.pcap --call-report "abc123@host" --markdown --no-cli-print > report.md
-```
-
-A JSON export of every failed call, to feed a monitoring system. This one overwrites `failed_calls.json`:
-
-```bash
-sipnab -N -I capture.pcap --filter "state == 'Failed'" --json > failed_calls.json
-```
-
-A failure count per response code, written to the terminal rather than a file:
-
-```bash
-sipnab -N -I capture.pcap --filter "state == 'Failed'" --json \
-  | jq -r 'select(.is_request == false) | .status_code' \
-  | sort | uniq -c | sort -rn
-```
-
----
-
-## Quick browser analysis
-
-No install, no upload, no data leaves your machine.
-
-Drop a pcap file at [sipnab.com/analyze/](https://sipnab.com/analyze/) -- your browser does all the work via WebAssembly. The analyzer provides two tabs: **Dialogs** (SIP call list with flow diagrams) and **Streams** (full RTP quality data including MOS, jitter, loss, and per-stream detail). Useful for quick triage when you can't install the CLI, or for sharing a link with a colleague who doesn't have sipnab.
-
----
-
-## Export call audio
-
-When metrics aren't enough — export the actual audio to hear what the caller heard.
-
-In the TUI: select a dialog, press **F2**, Tab to **WAV** format, type a filename, press Enter.
-
-sipnab decodes G.711 audio (mu-law/A-law) from captured RTP streams and writes a standard WAV file. If the dialog has two RTP streams (one per direction), the export produces a **stereo WAV** with caller on the left channel and callee on the right.
-
-- **Supported codecs:** PCMU (PT 0), PCMA (PT 8)
-- **Buffer:** Last ~30 seconds of audio per stream (configurable: `[limits] max_audio_frames`)
-- **Output:** 16-bit PCM WAV at the stream's sample rate (typically 8000 Hz)
-
-Open the WAV in any audio player or Audacity.
+- A Markdown or JSON report of one call, for a ticket:
+  [recipe 12](examples.md#12-generate-a-call-report-text--markdown--json).
+  A failure count per response code:
+  [recipe 3](examples.md#3-find-every-failed-call-grouped-by-response-code).
+- The call's audio as a WAV, to hear what the caller heard:
+  [recipe 13](examples.md#13-export-rtp-audio-as-wav). It lists the codecs
+  sipnab decodes, and a call with two streams exports as one stereo file with
+  the first stream on the left channel.
+- A capture read in the browser with nothing installed and nothing uploaded:
+  [recipe 14](examples.md#14-analyze-a-pcap-without-installing-anything).
 
 ---
 
@@ -999,11 +972,10 @@ A missing `/sys/kernel/btf/vmlinux` is **not** a reason to expect failure.
 eCapture falls back to its own non-CO-RE bytecode and logs which file it
 loaded.
 
-## Still stuck?
+## A vCon export that fails
 
-Build custom queries with the [Filter DSL](filter-dsl.md) -- 33 fields, regex support, boolean logic. See the [CLI Reference](cli-reference.md) for every flag and more recipes.
-
-If the capture itself is the problem -- drops on a busy link, a full kernel ring buffer, or loss that appears on every call at once -- see [Tuning capture on a busy server](tuning-capture.md).
+`--export-vcon` refuses to run, cannot find the call, or writes a container
+with no audio in it. Each has one usual cause.
 
 ### sipnab refuses `--export-vcon`
 
@@ -1051,3 +1023,11 @@ silent — the container is careful to say so, and a consumer should read the
 The usual cause is that the run did not retain the RTP payload. Audio also has
 an inline budget. A recording over it draws an out-loud refusal rather than a
 silent truncation, and the caveat names the size it turned down.
+
+---
+
+## Still stuck?
+
+Build custom queries with the [Filter DSL](filter-dsl.md) -- 32 fields plus any header by name, regex support, boolean logic. See the [CLI Reference](cli-reference.md) for every flag and more recipes.
+
+If the capture itself is the problem -- drops on a busy link, a full kernel ring buffer, or loss that appears on every call at once -- see [Tuning capture on a busy server](tuning-capture.md).

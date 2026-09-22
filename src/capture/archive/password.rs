@@ -1125,11 +1125,42 @@ pub fn clear_run_keyring() {
     }
 }
 
-/// Run `f` with the run's keyring, installing an empty one first when there
-/// is none: for a surface that brings its own prompter, such as the TUI.
-pub fn with_run_keyring_or_default<R>(f: impl FnOnce(&mut Keyring) -> R) -> R {
-    let mut guard = RUN_KEYRING.lock();
-    f(guard.get_or_insert_with(Keyring::default))
+std::thread_local! {
+    /// A keyring one thread's walks use instead of the run's: a TUI load's,
+    /// with the prompter that asks that TUI, or a REST request's, with the
+    /// password its header carried. See [`with_thread_keyring`].
+    static THREAD_KEYRING: std::cell::RefCell<Option<Keyring>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Run `f` with `keyring` as the one every walk on this thread uses, and hand
+/// it back afterwards with whatever it learned.
+///
+/// Per thread rather than per process, so two loads, or two requests, never
+/// see each other's passwords or prompters.
+pub fn with_thread_keyring<R>(keyring: Keyring, f: impl FnOnce() -> R) -> (R, Keyring) {
+    let previous = THREAD_KEYRING.with(|k| k.borrow_mut().replace(keyring));
+    let out = f();
+    let used = THREAD_KEYRING
+        .with(|k| std::mem::replace(&mut *k.borrow_mut(), previous))
+        .unwrap_or_default();
+    (out, used)
+}
+
+/// Run `f` with the keyring a walk on this thread uses: the thread's own,
+/// when [`with_thread_keyring`] installed one, otherwise the run's.
+pub fn keyring_in_use<R>(f: impl FnOnce(Option<&mut Keyring>) -> R) -> R {
+    // Taken out for the call rather than borrowed across it, so a walk that
+    // somehow re-enters cannot trip the RefCell.
+    let taken = THREAD_KEYRING.with(|k| k.borrow_mut().take());
+    match taken {
+        Some(mut keyring) => {
+            let out = f(Some(&mut keyring));
+            THREAD_KEYRING.with(|k| *k.borrow_mut() = Some(keyring));
+            out
+        }
+        None => with_run_keyring(f),
+    }
 }
 
 /// Run `f` with the run's keyring, if one is installed.
@@ -1626,6 +1657,31 @@ mod tests {
             "skipping asks no more about that archive"
         );
         assert_eq!(tries.get(), 0);
+    }
+
+    /// A keyring installed for one thread is the one every walk on that
+    /// thread uses, instead of the run's, and another thread never sees it:
+    /// two TUI loads, or two REST requests, cannot hand each other their
+    /// passwords or their prompters.
+    #[test]
+    fn a_thread_keyring_is_used_on_its_thread_only() {
+        let mine = Keyring::new(vec![candidate("thread-mine")], None);
+        let (seen, back) = with_thread_keyring(mine, || {
+            let here = keyring_in_use(|k| k.map(|k| k.candidates().len()));
+            let elsewhere = std::thread::spawn(|| {
+                keyring_in_use(|k| k.map(|k| k.candidates().len()).unwrap_or(0))
+            })
+            .join()
+            .expect("thread");
+            (here, elsewhere)
+        });
+        assert_eq!(seen.0, Some(1), "the walk on this thread sees it");
+        assert_ne!(seen.1, 1, "another thread does not");
+        assert_eq!(back.candidates().len(), 1, "it comes back to the caller");
+        assert!(
+            keyring_in_use(|k| k.map(|k| k.candidates().len())) != Some(1),
+            "and is gone from the thread afterwards"
+        );
     }
 
     #[test]

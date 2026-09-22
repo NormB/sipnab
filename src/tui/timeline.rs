@@ -180,7 +180,7 @@ pub fn render_timeline(f: &mut Frame, app: &App, area: Rect, call_id: &str) {
     let theme = &app.theme;
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(format!(" Call Timeline — {call_id} "));
+        .title(format!(" Call timeline — {call_id} "));
 
     // Resolve the dialog without blocking: the render pass already holds a
     // read guard on the shared store, so a plain re-lock could stall behind

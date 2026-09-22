@@ -48,6 +48,25 @@ entry that carries them.
   `archive_password_accepted` or `archive_locked_members_skipped` by archive
   name, and the status line counts locked members and marks ZipCrypto. A TUI
   run asks for its `-I` archives on the terminal before it draws.
+
+## [0.5.186] - 2026-09-22
+
+### Added
+
+- **Every committed capture has to say where it came from.**
+  `every_committed_capture_is_public_or_synthetic` reads the index, finds
+  each capture by its leading bytes whatever the file is called (classic pcap
+  in either byte order and either timestamp precision, pcapng, NetMon 2.x, and
+  gzip around any of them), and fails on one with no entry in
+  `tests/PROVENANCE.md`. An entry is `public`, with the URL and the license,
+  or `synthetic`, with the tracked generator that writes it, and carries the
+  SHA-256 of the bytes it vouches for, so replacing a fixture's bytes means
+  saying again where they came from. An entry for a file that is gone fails
+  too. `tests/pcap-samples/` keeps its own manifest and gate. A capture that
+  is neither goes on a list that only shrinks, with its reason. Eight started
+  there and all eight now have generators, so the list is empty and its
+  ceiling is zero.
+
 - **`-I` reads archives of captures.** A `.tar`, `.tgz` or `.tar.gz` reads like
   a directory: every capture inside joins the set in capture order, and the
   answer matches reading the unpacked directory. gzip-compressed members and
@@ -77,6 +96,18 @@ entry that carries them.
   `--json-dialogs` trailer and a line in the `INCOMPLETE RUN` block say when
   sipnab could not unpack an archive to its end, and the run exits `1`, because
   members past that point are in no report.
+- **sipnab reads SIP inside ESP with NULL encryption.** An IMS lab protects
+  the phone-to-P-CSCF interface with IPsec ESP and often runs it with NULL
+  encryption, so the SIP travels in the clear between an ESP header and
+  trailer. sipnab now peels them when the trailer, the padding and the inner
+  TCP or UDP checksum prove NULL encryption, over IPv4, IPv6 and fragmented
+  datagrams. ESP that fails those checks stays unread, and the `NOT DECODED`
+  line now names it `ESP not NULL-encrypted (IP protocol 50)`. The decryption
+  matrix test carries an ESP row through all five wrappers.
+- **The capture-quality line counts holes in TCP streams.** When a capture
+  missed a segment, sipnab now resumes at the next SIP message behind the hole
+  and says how many holes it skipped and how many bytes of sequence space they
+  spanned.
 
 - **Filter on any header: `header.<name>`.** The DSL could match `from.user`,
   `ua`, `call_id` and the rest of a closed list, and everything else only
@@ -92,12 +123,107 @@ entry that carries them.
 
 ### Changed
 
+- **The cookbook, troubleshooting and reference pages read task-first.** The
+  cookbook's goal table is grouped into eight tasks and now lists recipes
+  13b, 60 and 65, recipes 7 and 8 are named for what the reader wants to do,
+  and the second recipe 10c is 10d. Troubleshooting gives vCon export
+  failures their own section and symptom row, and sends report, audio and
+  browser tasks to the cookbook. The filter page opens with examples, and its
+  quick start keeps `-N` so the TUI does not open. The output page starts
+  with a "Which output do I want?" table. The authentication page puts its
+  steps before the token format, and the minimal config example sets the
+  device, the signaling ports and a diagnosis threshold.
+- **The documentation index lists each page once, by task.** Tutorials are
+  install, the command-line triage and the TUI walkthrough. MCP deployment and
+  TLS-without-keys moved to the how-to guides, which are grouped by what the
+  reader is doing, and the filter page and MCP pages no longer appear twice.
+- **Maintainer detail moved out of the user pages.** The encapsulations page
+  opens with a "Can sipnab read my capture?" table, including what a live
+  capture needs for each wrapper, and keeps its sources and history at the
+  end. The CLI reference's 600-word note on the generated BPF filter is now
+  two sentences, with the detail on the encapsulations page. The install
+  page's release-gate rationale sits in a collapsed "Why / how we know"
+  block. The MCP deployment page is retitled "Connect an AI agent to sipnab"
+  and says plainly which scenarios were last run on which release, and the
+  MCP page shows how to query the server with only the installed binary and
+  `jq`.
+- **A command-line tutorial.** `docs/first-cli-triage.md` takes a new reader
+  from a downloaded sample call to a per-call table, the failed calls, one
+  call's report and a `jq` pipeline, showing the real output of each step.
+- **A glossary, and a sample capture to start with.** `docs/glossary.md`
+  defines PDD, MOS, B2BUA, HEP and the other terms the pages use, one short
+  definition each, checked against how sipnab computes them. The README's
+  first run and the TUI walkthrough define each term at first use, link the
+  glossary, and start with `curl -LO https://sipnab.com/demos/sample-call.pcap`
+  for a reader with no capture of their own.
+
+- **The TUI reads as plain words.** The header names the source
+  (`Live capture: eth0`, `File: call.pcap`, now true for a `-I` session, which
+  said `Online (any)`), counts `Dialogs: 3 shown of 5`, and spells out
+  autoscroll. Line 2 is the capture (BPF) filter and line 3 the view filter,
+  where both used to repeat the view filter. Analysis panels wrap instead of
+  cutting sentences at the border, and carrier metrics defines ASR, NER and
+  ACD one per line. Every view's key bar offers `F1 Help`, and `F1` and `?`
+  now open help from the analysis views too. The split pane is the "detail
+  pane" everywhere, settings and status values use the words the help uses,
+  and the help gains a TERMS section. Errors carry their severity in the code,
+  so `File not found` draws red, and the clipboard error says to install
+  xclip or press F12 and drag. The quality dashboard names each MOS band in a
+  word, the save dialog keeps its path, count and keys on a 24-row screen, and
+  the default text color follows the terminal, so light terminals read.
+
+- **Five committed captures are now built by a generator anyone can run.**
+  Two rtpengine relay fixtures were live captures from the lab network, a
+  fuzz seed was a copy of a third-party capture, and the two oldest fixtures
+  used private addresses. `tests/support/synthetic_captures.rs` now builds
+  all five, plus the empty fuzz seed, on [RFC 5737](https://www.rfc-editor.org/rfc/rfc5737) addresses and [RFC 7042](https://www.rfc-editor.org/rfc/rfc7042) MAC
+  addresses, and `cargo run --features native --bin gen_fixture` writes them.
+  `tests/synthetic_captures_test.rs` rebuilds each one and fails on the first
+  byte that differs. The relay pair keeps what the live exchange showed:
+  rtpengine's unsorted `ng` keys, replies with no `call-id`, the relay's ports
+  and timing, kernel forwarding after the third packet, and a `delete` reply
+  whose second fragment the capture never saw. Its addresses now match the
+  output `docs/rtpengine.md` already printed. Tests that quoted an old address
+  or Call-ID quote the new one, and each says why. Git history still holds
+  the old bytes.
+
+- **The last eight committed captures without a generator now have one.** The
+  two media files SIPp plays in the harness, `g711a.pcap` and `g722.pcap`,
+  were copies of a third-party repository that states no license. They are now
+  tones encoded as G.711 A-law and G.722, with the old files' packet counts,
+  payload types and 20 ms framing. sipnab decodes no G.722, so
+  `tests/support/codecs.rs` carries an ITU-T G.722 encoder, and the suite
+  checks it byte for byte against spandsp and FFmpeg on three inputs. The two
+  OpenSIPS relay fixtures had carried the start of that third-party G.722.
+  They keep their control plane, the relay's G.722-to-PCMU transcode and
+  their timing, and move to 198.51.100.0/24, so the Call-ID the tests quote is
+  now `1-4062@198.51.100.21`. The four STUN, TURN and ICE fixtures had been
+  built by hand with no generator. `ice_checks.pcap` and `turn_relay.pcap`
+  come out byte-identical. The two NAT fixtures change only their MAC
+  addresses, which were outside the RFC 7042 documentation block, and in
+  `stun_sdp_mismatch.pcap` the two SDP bodies' `Content-Length`, which said 126
+  for 134 bytes. Its [RFC 1918](https://www.rfc-editor.org/rfc/rfc1918) address stays, because it is the mismatch the
+  fixture shows, and the test that checks for documentation addresses lists
+  it as the one deliberate exception.
+
+- **The OpenSIPS relay test counts the relay-named streams for real.** It
+  checked the call's row with `contains('2')`, which the Call-ID alone
+  satisfies, so a report that named only one leg passed. It now reads the
+  Streams column, and a report that counts one stream fails it.
+
+
 - **`--max-gunzip-bytes` bounds a `-I capture.pcap.gz` too.** sipnab inflated
   a compressed capture to a temporary file with no bound at all, and the
   documentation said libpcap did it. The ceiling now covers that file and every
   gzip layer of an archive, summed across the layers of one input, so a nested
   gzip bomb stops at the same ceiling. A `.pcap.gz` that inflates past 1 GiB
   now needs `--max-gunzip-bytes` raised.
+- **A new YANG revision, `sipnab-diagnosis@2026-09-22`.** The ICMP media
+  finding's unit changed, and a unit is part of an identity's description in
+  the module, so the module gains a revision rather than editing the published
+  one. Descriptions only: no node, identity or type changed, and
+  `pyang --check-update-from` holds the pair to [RFC 7950 section 11](https://www.rfc-editor.org/rfc/rfc7950#section-11). The
+  2026-09-21 file stays beside it.
 - **A member whose link type sipnab does not decode no longer ends a filtered
   run.** When a BPF filter cannot compile against such a file — an LTE MAC log
   in a set of SIP captures — both readers skip it with a line saying why. A
@@ -127,10 +253,90 @@ entry that carries them.
 
 ### Fixed
 
+- **A-law audio decoded with inverted polarity.** ITU-T G.711 reads an A-law
+  byte's sign after XOR with 0x55, and a set bit 7 is positive. sipnab's decode
+  table had it the other way round, so every PCMA sample came out negated:
+  `0xD5` decoded to -8 and `0x55` to +8, the reverse of sox and FFmpeg. The
+  magnitudes were right, so levels, clipping and MOS were unaffected, but an
+  exported WAV was phase-inverted against every other tool's decode. The table
+  is now computed from the G.711 formula at compile time.
+- **An oversized REST request body is a 413, not a 400.** Every `POST` route
+  takes its JSON body fallibly so the API key is checked first, and that turned
+  the 1 MiB body limit's own 413 into a 400 that told the client its JSON was
+  malformed. `POST /v1/persistence`, `/v1/tfps/ban`, `/v1/tfps/unban` and
+  `/v1/vcon/validate` now answer 413, and the OpenAPI document lists it.
+- **`--srtp-keys` warns when it loads keys.** Loading a manual SRTP key file
+  logged only at the info level, so a run at `-q` or `SIPNAB_LOG=warn` never
+  said hand-supplied key material was in use. It now also logs `manual SRTP
+  keys loaded from <file> — use only in test environments` as a warning.
+- **`--reg-flood` matches a challenge without a `Via` branch.** A 401 or 407
+  settled a credentialed REGISTER only through the top `Via` branch, which an
+  [RFC 2543](https://www.rfc-editor.org/rfc/rfc2543) client does not send, so a branchless credential-stuffing run
+  counted no failures at all. The detector now falls back to the `Call-ID` and
+  `CSeq` that identify the transaction when there is no branch.
+- **`--reg-flood` no longer counts a challenge to an expired REGISTER.** A
+  pending REGISTER stayed open until its source aged out, so a 401 minutes
+  later still counted as a failure. A REGISTER's transaction now closes at
+  Timer F, 32 seconds ([RFC 3261 section 17.1.2.2](https://www.rfc-editor.org/rfc/rfc3261#section-17.1.2.2)).
+
+- **Troubleshooting's decode example matches this release.** It quoted
+  `unsupported link type 0` and said DLT 0, 9 and 276 had no decoder, while
+  sipnab decodes all three. The example is now a real run over link type 147,
+  and the table points at the list of link types sipnab reads. Its audio
+  section, which said only G.711 exports, now defers to the cookbook recipe,
+  which also lists Opus.
+- **Documented commands paste and run as written.** 31 lines across the
+  install, cookbook, troubleshooting and vCon harness pages put a placeholder
+  such as `<call-id>`, `<version>` or `<uuid>` inside a shell block. The shell
+  reads `<word>` as "redirect input from a file named word", so a pasted command
+  failed with a file-not-found error, and a `v<version>` download URL fetched
+  nothing. Each now sets a shell variable on its own line and uses it, and
+  `tests/no_placeholder_in_shell_blocks_test.rs` fails on any placeholder in a
+  shell block of the README or a `docs/` page.
+- **The documentation says what sipnab actually does.** Cookbook recipe 1 said
+  `sipnab -N -I capture.pcap` printed "dialog count, methods, average PDD". It
+  prints one line per SIP message, and the recipe now shows `--report` for the
+  per-call view and says what `--problems` selects. The TUI walkthrough said
+  selected dialogs show `▸`, and they show `[*]`. The REST API guide told a release
+  user to compile with `--features api`, which every release binary already
+  has, and put the API key on the command line where `ps` shows it. It now
+  checks `--version` and reads `SIPNAB_API_KEY` from the environment, passed
+  through `sudo --preserve-env`. The install page called sipnab one static
+  binary depending on libpcap (only the musl build is static and needs nothing
+  else), left `plugins`, `bpf` and `vcon` out of what needs `native`, sent MCP
+  deployment readers to the wrong page, and said the packages remove
+  `/etc/sipnab/sipnab.toml` (none ships or removes it). Troubleshooting counted
+  33 filter fields where the DSL has 32 plus any header by name. Three
+  sentences in the README and the CLI reference had been damaged by a
+  find-and-replace into non-sentences, and read plainly again.
+
 - **An empty `xcid_headers` list is obeyed.** `with_xcid_headers(vec![])` was
   ignored, so a configuration that deliberately turned correlation headers off
   got the built-in default back instead.
 
+- **A missing TCP segment no longer hides the rest of the connection.** A
+  segment the capture never held left a hole that no later packet filled, and
+  sipnab held every later byte on that direction behind it until a buffer
+  ceiling, a FIN or eviction, so the SIP after it never appeared. sipnab now
+  resumes at the next message start behind the hole once one more packet
+  shows the hole is not a reordering, and releases what is still held at the
+  end of the input, in both readers.
+- **A retransmission no longer counts as a second message.** On a connection
+  the capture joined after its SYN, sipnab rewound to every earlier segment it
+  saw, so each TCP retransmission, and each copy another interface recorded,
+  reported its SIP message again. A direction silent for longer than the
+  reassembly TTL, measured in capture time, now starts afresh, so a later
+  connection on the same address and port pair still reads.
+- **Duplicate IP fragments no longer drop the datagram.** A capture on `any`
+  records a forwarded fragmented datagram once per interface, and sipnab read
+  the second copy of a fragment as an overlap and discarded the datagram, and
+  the SIP in it. An exact copy of a fragment already held is now ignored, as
+  [RFC 8200 section 4.5](https://www.rfc-editor.org/rfc/rfc8200#section-4.5) allows. Overlaps that differ still drop the datagram.
+- **A failed DNS lookup is no longer reported as undeliverable media.** An
+  ICMP error quoting a DNS message whose random ID starts with RTP's version
+  bits read as RTP, and joined the critical `ICMP: media undeliverable`
+  finding. The quoted DNS question now marks it as not media. That finding
+  also counted ICMP errors while labeling them flows, and now says errors.
 - **A killed kill-worker no longer reads as alive for a moment after the
   defense has been disabled.** A SIGKILLed process closes its pipes on the way
   out, before the kernel lets it be reaped. In that window the reader had seen
@@ -153,6 +359,23 @@ entry that carries them.
   reader skipped the file that sorts first before opening it, nothing signaled
   readiness and the run died with `Capture thread exited before signaling
   ready`. The first file actually read now signals it.
+
+### Internal
+
+- **Tests that exist only in a reduced build now run.** The feature-gate
+  refusals, the `mcp`-without-`mcp-http` startup error and the no-`audio` TUI
+  snapshot compiled only where a feature is absent, and CI only type-checked
+  those builds. Three `features` legs now run them with `cargo test`, and the
+  matrix gains `audio` and `plugins` on their own, which nothing built alone
+  before.
+- **Every `#[ignore]` names its reason and its runner.** A gate test fails on
+  a bare `#[ignore]`, and on an ignored test that no workflow runs with
+  `--ignored`, that its own file does not spawn, and that is not on an explicit
+  manual-only list with the reason. The PTY TUI tests gained their reasons, and
+  the one `CAP_NET_RAW` fanout test is listed as manual-only.
+- **`--alert reg-flood:50/10s:5m` is tested end to end.** A capture drives the
+  real rule string through the detector and the alert engine and proves a
+  second flood from the same source inside five minutes raises no alert.
 
 ## [0.5.185] - 2026-09-22
 
@@ -6923,7 +7146,7 @@ carried in the source tarball and the docs, not in the code.
   "Uprobe TLS Capture" — both the same exotic eBPF path, named after the kernel
   mechanism rather than the goal, and both demanding root, BTF and a
   non-default build. The ordinary route, a key log from the endpoint, sat
-  inside the cookbook as [recipe 7, "Decrypt SIP/TLS via SSLKEYLOGFILE"](docs/examples.md#7-decrypt-siptls-via-sslkeylogfile). The menu advertised the hard road and hid the easy
+  inside the cookbook as [recipe 7, "Decrypt SIP/TLS via SSLKEYLOGFILE"](docs/examples.md#7-decrypt-sip-over-tls-when-you-can-restart-the-phone-or-server--key-log-file-sslkeylogfile). The menu advertised the hard road and hid the easy
   one.
 
   The new page opens with a table you read down until you reach a row you can

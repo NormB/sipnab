@@ -685,7 +685,8 @@ pub struct CaptureCompareParams {
 /// Per-request wall-clock cap. The API is request/response (no streaming), so a
 /// blanket timeout is safe and stops a slow client from pinning a connection.
 const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
-/// Max request body accepted (defense in depth; the API is GET-only today).
+/// Max request body accepted. Past it every route that reads a body answers
+/// 413, through [`json_body`].
 const MAX_REQUEST_BODY_BYTES: usize = 1024 * 1024; // 1 MiB
 
 /// Longest rate window this route will wait out before answering.
@@ -2676,6 +2677,7 @@ async fn get_lint(
         (status = 200, description = "The verdict and any findings.", body = schema::VconValidation),
         (status = 400, description = "The body is not a JSON object.", body = schema::ProblemJson, content_type = "application/problem+json"),
         (status = 401, description = "No bearer credential, or one this server does not accept.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 413, description = "The body is over the 1 MiB request limit.", body = schema::ProblemJson, content_type = "application/problem+json"),
         (status = 503, description = "Over the per-source-IP rate limit of 100 requests per second.", body = schema::ProblemJson, content_type = "application/problem+json"),
     )
 )]
@@ -2687,12 +2689,7 @@ async fn post_vcon_validate(
 ) -> Result<impl IntoResponse, Problem> {
     guard(&state, &headers, addr.ip())?;
 
-    let Json(container) = body.map_err(|_| {
-        Problem::detailed(
-            StatusCode::BAD_REQUEST,
-            "the body must be a JSON vCon container",
-        )
-    })?;
+    let container = json_body(body, Some("the body must be a JSON vCon container"))?;
     if !container.is_object() {
         return Err(Problem::detailed(
             StatusCode::BAD_REQUEST,
@@ -3243,6 +3240,7 @@ async fn get_persistence(
                                       reading of \"I could not understand this\" is \
                                       `enabled: true`.", body = schema::ProblemJson, content_type = "application/problem+json"),
         (status = 401, description = "No bearer credential, or one this server does not accept.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 413, description = "The body is over the 1 MiB request limit.", body = schema::ProblemJson, content_type = "application/problem+json"),
         (status = 503, description = "Over the per-source-IP rate limit of 100 requests per second.", body = schema::ProblemJson, content_type = "application/problem+json"),
     )
 )]
@@ -3258,9 +3256,7 @@ async fn set_persistence(
     // itself, before the guard ran, telling an unauthenticated caller whether
     // its JSON parsed. And a rejection has to stay a rejection: the dangerous
     // reading of "I could not understand this request" is `enabled: true`.
-    let Ok(Json(raw)) = body else {
-        return Err(Problem::new(StatusCode::BAD_REQUEST));
-    };
+    let raw = json_body(body, None)?;
     // A JSON object, and nothing else. Extracting straight into the struct
     // looks equivalent and is not: a derived `Deserialize` also accepts a
     // SEQUENCE, filling the fields in declaration order, so the body `[true]`
@@ -3357,13 +3353,35 @@ where
 fn object_body<T: serde::de::DeserializeOwned>(
     body: Result<Json<Value>, axum::extract::rejection::JsonRejection>,
 ) -> Result<T, Problem> {
-    let Ok(Json(raw)) = body else {
-        return Err(Problem::new(StatusCode::BAD_REQUEST));
-    };
+    let raw = json_body(body, None)?;
     if !raw.is_object() {
         return Err(Problem::new(StatusCode::BAD_REQUEST));
     }
     serde_json::from_value(raw).map_err(|_| Problem::new(StatusCode::BAD_REQUEST))
+}
+
+/// A JSON request body, or the problem that refuses it.
+///
+/// One rule for every route that reads a body. Each takes its body fallibly,
+/// so that the guard runs first and a rejection stays a rejection, and that
+/// used to turn the body limit's own 413 into a 400: a client whose JSON was
+/// only too long was told it was malformed. A body past
+/// [`MAX_REQUEST_BODY_BYTES`] is a 413 here, and any other rejection is a 400
+/// carrying `detail` when the route has one.
+fn json_body(
+    body: Result<Json<Value>, axum::extract::rejection::JsonRejection>,
+    detail: Option<&str>,
+) -> Result<Value, Problem> {
+    match body {
+        Ok(Json(raw)) => Ok(raw),
+        Err(rejection) if rejection.status() == StatusCode::PAYLOAD_TOO_LARGE => {
+            Err(Problem::new(StatusCode::PAYLOAD_TOO_LARGE))
+        }
+        Err(_) => Err(match detail {
+            Some(detail) => Problem::detailed(StatusCode::BAD_REQUEST, detail),
+            None => Problem::new(StatusCode::BAD_REQUEST),
+        }),
+    }
 }
 
 /// Parse an address out of a request, refusing anything TFPS cannot hold.
@@ -3503,6 +3521,7 @@ async fn get_tfps_labels(
         (status = 200, description = "`installed: false` with `reason`, or `installed: true` with what TFPS did under `action`. A refusal is `applied: false` with `refused` saying why, not an error.", body = crate::security::tfps::TfpsActionAnswer),
         (status = 400, description = "The body was not a JSON object with an `ip` that is an address, or it carried an unknown key.", body = schema::ProblemJson, content_type = "application/problem+json"),
         (status = 401, description = "No bearer credential, or one this server does not accept.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 413, description = "The body is over the 1 MiB request limit.", body = schema::ProblemJson, content_type = "application/problem+json"),
         (status = 502, description = "`tfps_ctl` failed; `detail` carries its standard error verbatim.", body = schema::ProblemJson, content_type = "application/problem+json"),
         (status = 503, description = "Over the per-source-IP rate limit of 100 requests per second.", body = schema::ProblemJson, content_type = "application/problem+json"),
     )
@@ -3534,6 +3553,7 @@ async fn post_tfps_ban(
         (status = 200, description = "`installed: false` with `reason`, or `installed: true` with what TFPS did under `action`.", body = crate::security::tfps::TfpsActionAnswer),
         (status = 400, description = "The body was not a JSON object with an `ip` that is an address, or it carried an unknown key.", body = schema::ProblemJson, content_type = "application/problem+json"),
         (status = 401, description = "No bearer credential, or one this server does not accept.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 413, description = "The body is over the 1 MiB request limit.", body = schema::ProblemJson, content_type = "application/problem+json"),
         (status = 502, description = "`tfps_ctl` failed; `detail` carries its standard error verbatim.", body = schema::ProblemJson, content_type = "application/problem+json"),
         (status = 503, description = "Over the per-source-IP rate limit of 100 requests per second.", body = schema::ProblemJson, content_type = "application/problem+json"),
     )
@@ -3787,7 +3807,7 @@ async fn get_stream(
     params(CaptureReportParams),
     security(("bearer" = [])),
     responses(
-        (status = 200, description = "The whole-capture analysis. `application/json` is sipnab's own encoding. `application/yang-data+json`, answered for `format=yang-json`, is the same analysis RFC 7951-encoded against the YANG module `sipnab-diagnosis` (https://sipnab.com/yang/sipnab-diagnosis@2026-09-21.yang, or `sipnab --print-yang-module`); the module is its schema.", content(
+        (status = 200, description = "The whole-capture analysis. `application/json` is sipnab's own encoding. `application/yang-data+json`, answered for `format=yang-json`, is the same analysis RFC 7951-encoded against the YANG module `sipnab-diagnosis` (https://sipnab.com/yang/sipnab-diagnosis@2026-09-22.yang, or `sipnab --print-yang-module`); the module is its schema.", content(
             (schema::CaptureReport = "application/json"),
             ("application/yang-data+json"),
         )),
@@ -11794,6 +11814,76 @@ mod tests {
             "reading the gate is as guarded as moving it: it reports whether \
              this capture is writing content"
         );
+    }
+
+    /// A request body past the documented 1 MiB is a 413 on every route
+    /// that reads one, never the 400 a malformed body earns.
+    ///
+    /// Every POST route takes its JSON body fallibly, so that the guard runs
+    /// first and a rejection stays a rejection. That also swallowed the body
+    /// limit's own 413 and answered 400, telling a client its JSON was wrong
+    /// when it was only too long. The body is valid JSON padded with spaces, so
+    /// the only thing wrong with it is its size. The same body at exactly the
+    /// limit is read and obeyed, which proves the limit sits at the documented
+    /// 1 MiB and not below it.
+    #[tokio::test]
+    async fn oversized_request_body_is_rejected_with_413() {
+        let padded = |len: usize| {
+            let json = r#"{"enabled":false}"#;
+            format!("{json}{}", " ".repeat(len - json.len()))
+        };
+        // The documented figure, written out rather than read from the
+        // constant, so a changed constant is a failure here and not a test
+        // that moves with it.
+        const DOCUMENTED_LIMIT: usize = 1024 * 1024;
+        let over = padded(DOCUMENTED_LIMIT + 1);
+        let under = padded(DOCUMENTED_LIMIT);
+
+        let gate = Arc::new(crate::output::persistence::PersistenceGate::new(true));
+        let resp = build_router(make_state_with_gate(&gate))
+            .oneshot(test_post_with_key("/v1/persistence", &over, GATE_KEY))
+            .await
+            .expect("oneshot");
+        assert_eq!(
+            resp.status(),
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "/v1/persistence"
+        );
+        assert!(
+            gate.writes_permitted(),
+            "a refused body must not move the gate"
+        );
+        let resp = build_router(make_state_with_gate(&gate))
+            .oneshot(test_post_with_key("/v1/persistence", &under, GATE_KEY))
+            .await
+            .expect("oneshot");
+        assert_eq!(
+            resp.status(),
+            StatusCode::OK,
+            "a body at the limit is read, and this one closes the gate"
+        );
+
+        let empty = tempfile::tempdir().expect("tempdir");
+        for uri in ["/v1/tfps/ban", "/v1/tfps/unban"] {
+            let resp = build_router(state_without_tfps(&empty))
+                .oneshot(test_post_with_key(uri, &over, TFPS_KEY))
+                .await
+                .expect("oneshot");
+            assert_eq!(resp.status(), StatusCode::PAYLOAD_TOO_LARGE, "{uri}");
+        }
+
+        #[cfg(feature = "vcon")]
+        {
+            let resp = build_router(make_state())
+                .oneshot(test_post("/v1/vcon/validate", &over))
+                .await
+                .expect("oneshot");
+            assert_eq!(
+                resp.status(),
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "/v1/vcon/validate"
+            );
+        }
     }
 
     /// Closing over REST is visible to the next read, and to the exporter.

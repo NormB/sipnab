@@ -1,21 +1,26 @@
-# MCP walkthrough — every deployment scenario, step by step
+# Connect an AI agent to sipnab
 
-[MCP server](mcp.md) introduces the surface and points at the tool and protocol
-references. This page walks a **first-time sipnab user** through each deployment
-scenario, command by command, on every machine involved. Each step carries a tag with the
+Every way to put sipnab in front of an AI agent, from an agent on the same
+machine to a remote server running sipnab as a service. MCP (Model Context
+Protocol) is how the agent calls sipnab's analysis as tools, and
+[MCP server](mcp.md) introduces it. This page walks a **first-time sipnab
+user** through each deployment scenario, command by command, on every machine
+involved. Each step carries a tag with the
 host they run on: **[server]** (where sipnab runs), **[laptop]** (where
 your MCP client / Claude Code runs), or **[proxy]** (your SIP proxy, in
 the HEP scenario).
 
-Every command here ran end to end against a real build at 0.5.20. The
-`docs_drift_test` holds the flag names to the current CLI, but most of the
-walkthrough has not been re-run since, so treat those transcripts as
-illustrative rather than freshly measured. Two sections are the exception:
-everything under [Follow one call across an SBC and its PBXes](mcp-estate.md#follow-one-call-across-an-sbc-and-its-pbxes)
-and [Drive it from a script](#drive-it-from-a-script) were re-run end to end
-against 0.5.95 — three sipnab processes on one box, against captures this repo
-ships — and where no run could confirm a claim, those sections say so outright
-rather than presenting it as fact.
+**What was last verified, and when.** On 2026-09-22, against 0.5.185, the
+stdio server answered an `initialize` handshake and a `triage_call` request
+for a capture file, which is the same-machine setup. The remote scenarios (SSH,
+the HTTP service, systemd) were last run end to end at 0.5.20. Their commands
+still parse, because `docs_drift_test` checks every flag name here against the
+current CLI, but their transcripts come from that run. [Drive it from a
+script](#drive-it-from-a-script) and
+[Follow one call across an SBC and its PBXes](mcp-estate.md#follow-one-call-across-an-sbc-and-its-pbxes)
+were last run at 0.5.95, with three sipnab processes on one box against
+captures this repository ships, and they say outright wherever no run could
+confirm a claim.
 
 The client steps use Claude Code; the server side is identical for every
 MCP-capable agent. If you drive Codex CLI, Cursor, VS Code, Gemini CLI, or
@@ -117,7 +122,7 @@ itself):
 
    ```bash
    sipnab --version
-   # sipnab 0.5.185 (...) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,vcon,bpf
+   # sipnab 0.5.186 (...) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,vcon,bpf
    # libpcap version 1.10.5 (with TPACKET_V3); alternate capture backends named: none
    ```
 
@@ -1266,7 +1271,7 @@ Then confirm the build can do what you are about to ask of it:
 ```json
 {
   "schema_version": 1,
-  "version": "0.5.185",
+  "version": "0.5.186",
   "features": ["api", "audio", "hep", "mcp", "mcp-http", "metrics",
                "native", "plugins", "tls", "tui"],
   "can_decrypt": true,
@@ -1837,7 +1842,7 @@ stdin and the `sleep`s pace the handshake — so paste it as a unit:
 Expected first line of response:
 
 ```json
-{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"sipnab","version": "0.5.185"},"instructions":"sipnab MCP server — queries captured SIP dialogs ..."}}
+{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"sipnab","version": "0.5.186"},"instructions":"sipnab MCP server — queries captured SIP dialogs ..."}}
 ```
 
 ### Test the HTTP wire by hand

@@ -2,12 +2,10 @@
 source: tests/tui_snapshot_test.rs
 expression: output
 ---
- Current Mode: Online (any)    Dialogs: 3 (3 displayed)  [A]
- Match Expression:     BPF Filter:
- Display Filter:
-┌ Call volume ─────────────────────────────────────────────────────────────────┐
-│Call volume — 60s buckets                                                     │
-│                                                                              │
+ Live capture: any    Dialogs: 3 shown of 3    Autoscroll: on
+ Capture filter (BPF): none
+ View filter: none
+┌ Call volume (60-second buckets) ─────────────────────────────────────────────┐
 │  2024-06-15 12:00:00  ████████████████████████████████████████  3            │
 │                                                                              │
 │                                                                              │
@@ -20,5 +18,7 @@ expression: output
 │                                                                              │
 │                                                                              │
 │                                                                              │
+│                                                                              │
+│                                                                              │
 └──────────────────────────────────────────────────────────────────────────────┘
-Esc Back
+Esc Back  F1 Help  ↑↓ Scroll  PgUp/Dn Page

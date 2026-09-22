@@ -17,49 +17,8 @@ sipnab supports two token kinds, checked with a constant-time comparison:
 > server refuses to start otherwise. On loopback with no token configured,
 > requests pass (unchanged legacy behavior).
 
-## Token format
-
-```text
-s2.<base64url(payload)>.<base64url(HMAC-SHA256)>
-```
-
-- `payload` is compact JSON
-  `{"id":"<jti>","exp":<unix_seconds>,"aud":"<api|mcp>","scope":"<metrics|read>"}`.
-- The signature is `HMAC-SHA256(signing_key, "s2." + base64url(payload))`.
-- base64url is URL-safe, no padding.
-
-`scope` appears **only when it narrows something**. A `full` token — the
-default — omits the claim, so its payload is the three-field
-`{"id":...,"exp":...,"aud":...}` form, and a payload carrying no `scope`
-means `full`. Seeing `scope` in a decoded payload therefore always means
-"restricted". See [*Scope*](#scope-what-a-token-may-reach) below.
-
-Verification is **stateless**: the server recomputes the HMAC, compares it in
-constant time against every configured signing key, then checks the audience,
-`exp > now`, the scope the route demands, and that `id` is not revoked. A
-malformed token loses (fail-closed).
-
-## Audience binding
-
-`aud` names the surface a token belongs to. The HTTP MCP endpoint turns away a
-token minted from `--api-signing-key`, and the REST API turns away one minted
-from `--mcp-signing-key` — **even when both surfaces carry the same signing
-key**. Since the two surfaces read separate
-flags and separate environment variables, reusing one secret across them is an
-easy mistake. Before audience binding it silently granted cross-surface access.
-
-The version prefix is part of the signed input, so an `s2` token cannot be
-rewritten as `s1` to shed its binding — the signature no longer matches.
-
-### Why the server refuses legacy `s1` tokens
-
-The pre-`aud` `s1` format is **no longer accepted**. It carried no audience, so
-an `s1` token authenticated against both surfaces — honoring it would have left
-the binding above best-effort rather than absolute.
-
-If you are still holding an `s1` token, it now returns `401`. Re-mint with
-`--mint-token`. Since the default TTL is one hour, most callers have
-rotated naturally already. Long-TTL tokens are the ones to check.
+The numbered steps below set up signed tokens from scratch. What a token
+contains, and how its audience binds it to one server, follow the steps.
 
 ## 1. Configure a signing key
 
@@ -224,6 +183,50 @@ is **re-read when its mtime changes**, so appending an id revokes that token
 within the next request — no restart required. (Because signed tokens are
 otherwise valid until `exp`, a denylist is the revocation mechanism for the
 stateless model.)
+
+## Token format
+
+```text
+s2.<base64url(payload)>.<base64url(HMAC-SHA256)>
+```
+
+- `payload` is compact JSON
+  `{"id":"<jti>","exp":<unix_seconds>,"aud":"<api|mcp>","scope":"<metrics|read>"}`.
+- The signature is `HMAC-SHA256(signing_key, "s2." + base64url(payload))`.
+- base64url is URL-safe, no padding.
+
+`scope` appears **only when it narrows something**. A `full` token — the
+default — omits the claim, so its payload is the three-field
+`{"id":...,"exp":...,"aud":...}` form, and a payload carrying no `scope`
+means `full`. Seeing `scope` in a decoded payload therefore always means
+"restricted". See [*Scope*](#scope-what-a-token-may-reach) below.
+
+Verification is **stateless**: the server recomputes the HMAC, compares it in
+constant time against every configured signing key, then checks the audience,
+`exp > now`, the scope the route demands, and that `id` is not revoked. A
+malformed token loses (fail-closed).
+
+## Audience binding
+
+`aud` names the surface a token belongs to. The HTTP MCP endpoint turns away a
+token minted from `--api-signing-key`, and the REST API turns away one minted
+from `--mcp-signing-key` — **even when both surfaces carry the same signing
+key**. Since the two surfaces read separate
+flags and separate environment variables, reusing one secret across them is an
+easy mistake. Before audience binding it silently granted cross-surface access.
+
+The version prefix is part of the signed input, so an `s2` token cannot be
+rewritten as `s1` to shed its binding — the signature no longer matches.
+
+### Why the server refuses legacy `s1` tokens
+
+The pre-`aud` `s1` format is **no longer accepted**. It carried no audience, so
+an `s1` token authenticated against both surfaces — honoring it would have left
+the binding above best-effort rather than absolute.
+
+If you are still holding an `s1` token, it now returns `401`. Re-mint with
+`--mint-token`. Since the default TTL is one hour, most callers have
+rotated naturally already. Long-TTL tokens are the ones to check.
 
 ## Security notes
 

@@ -251,7 +251,7 @@ pub(in crate::tui) fn handle_file_open_manual_key(app: &mut App, key: KeyEvent) 
         KeyCode::Enter => {
             let path = expand_tilde(&app.file_open.path);
             if path.is_empty() {
-                app.status_error = Some("No file path specified".to_string());
+                app.set_status_error("No file path specified");
                 app.active_popup = None;
                 return;
             }
@@ -399,6 +399,7 @@ fn run_pcap_load(
             || message.contains("encrypted_wrong_password"))
         .then(|| (filename.clone(), 0, 1)),
         message,
+        failed: true,
         sip_count: 0,
         capture_mode: capture_mode.clone(),
         file_names: Vec::new(),
@@ -447,14 +448,21 @@ fn run_pcap_load(
         String::new()
     };
     let names_suffix = if !totals.file_names.is_empty() {
-        format!(", {} name(s)", totals.file_names.len())
+        format!(
+            ", {}",
+            crate::tui::count_noun(totals.file_names.len(), "name", "names")
+        )
     } else {
         String::new()
     };
-    let secrets_suffix = if totals.secrets_present > 0 {
+    let key_log_note = if totals.embedded_key_logs > 0 {
         format!(
-            " \u{26a0} file contains {} embedded decryption secret(s)",
-            totals.secrets_present
+            " \u{26a0} file contains {}",
+            crate::tui::count_noun(
+                totals.embedded_key_logs,
+                "embedded decryption secret",
+                "embedded decryption secrets"
+            )
         )
     } else {
         String::new()
@@ -464,9 +472,15 @@ fn run_pcap_load(
     let archive_suffix = match &set {
         Some(set) => {
             let not_read = set.members_not_read() + totals.members_not_read;
-            let mut text = format!("; {} capture(s) from the archive", totals.captures_read);
+            let mut text = format!(
+                "; {} from the archive",
+                crate::tui::count_noun(totals.captures_read, "capture", "captures")
+            );
             if not_read > 0 {
-                text.push_str(&format!(", {not_read} member(s) not read"));
+                text.push_str(&format!(
+                    ", {} not read",
+                    crate::tui::count_noun(not_read, "member", "members")
+                ));
             }
             if set.incomplete() {
                 text.push_str(", archive cut short");
@@ -487,9 +501,13 @@ fn run_pcap_load(
     PcapLoadOutcome {
         message: format!(
             "Loaded {} SIP, {} RTP{rtcp_suffix}{names_suffix} from {} packets across \
-             {stream_count} stream(s) ({filename}{archive_suffix}){secrets_suffix}",
-            totals.sip, totals.rtp, totals.packets
+             {} ({filename}{archive_suffix}){key_log_note}",
+            totals.sip,
+            totals.rtp,
+            totals.packets,
+            crate::tui::count_noun(stream_count, "stream", "streams")
         ),
+        failed: false,
         sip_count: totals.sip,
         capture_mode,
         file_names: totals.file_names,
@@ -527,7 +545,7 @@ struct LoadTotals {
     /// Embedded pcapng names.
     file_names: Vec<(std::net::IpAddr, String)>,
     /// Embedded decryption secrets seen.
-    secrets_present: usize,
+    embedded_key_logs: usize,
 }
 
 /// Read one capture file into the stores, adding to `totals`.
@@ -675,7 +693,7 @@ fn load_one_capture(
     // carries keys.
     if let Ok(meta) = crate::capture::pcapng_meta::read_pcapng_metadata(path) {
         totals.file_names.extend(meta.names);
-        totals.secrets_present += meta.tls_secrets.len();
+        totals.embedded_key_logs += meta.key_log_blocks;
     }
     Ok(())
 }
@@ -780,14 +798,14 @@ pub(in crate::tui) fn begin_pcap_load_confirmed(
     let other_capture = !is_the_capture_on_screen(app, path_str);
     if app.pcap_load.is_some() {
         let msg = "A pcap load is already in progress".to_string();
-        app.status_error = Some(msg.clone());
+        app.set_status_error(msg.clone());
         app.record_action("capture_swapped", path_str, "", "refused", &msg);
         return;
     }
     let path = std::path::Path::new(path_str);
     if !path.exists() {
         let msg = format!("File not found: {path_str}");
-        app.status_error = Some(msg.clone());
+        app.set_status_error(msg.clone());
         app.record_action("capture_swapped", path_str, "", "failed", &msg);
         return;
     }
@@ -804,7 +822,7 @@ pub(in crate::tui) fn begin_pcap_load_confirmed(
 
     reset_for_load(app);
     #[cfg(feature = "archive")]
-    let asks = arm_archive_prompt(app, other_capture);
+    let (session_keys, asks) = arm_archive_prompt(app, other_capture);
 
     let filename = path
         .file_name()
@@ -821,20 +839,30 @@ pub(in crate::tui) fn begin_pcap_load_confirmed(
     let spawned = std::thread::Builder::new()
         .name("pcap-load".to_string())
         .spawn(move || {
-            let outcome = run_pcap_load(
-                &path_owned,
-                &dialog_store,
-                &stream_store,
-                &worker_progress,
-                filter_owned.as_deref(),
-            );
-            // Before `done`: the next load must not find this one's prompter.
+            let load = || {
+                run_pcap_load(
+                    &path_owned,
+                    &dialog_store,
+                    &stream_store,
+                    &worker_progress,
+                    filter_owned.as_deref(),
+                )
+            };
+            // This load's walks use the session's keyring, with the prompter
+            // that asks this TUI, on this thread alone. It goes back to the
+            // session afterwards, without the prompter, holding what it
+            // learned, before `done` lets another load start.
             #[cfg(feature = "archive")]
-            crate::capture::archive::password::with_run_keyring(|k| {
-                if let Some(k) = k {
-                    drop(k.take_prompter());
-                }
-            });
+            let outcome = {
+                let keys = session_keys.lock().take().unwrap_or_default();
+                let (outcome, mut keys) =
+                    crate::capture::archive::password::with_thread_keyring(keys, load);
+                drop(keys.take_prompter());
+                *session_keys.lock() = Some(keys);
+                outcome
+            };
+            #[cfg(not(feature = "archive"))]
+            let outcome = load();
             *worker_progress.result.lock() = Some(outcome);
             worker_progress
                 .done
@@ -864,7 +892,7 @@ pub(in crate::tui) fn begin_pcap_load_confirmed(
         }
         Err(e) => {
             let msg = format!("Failed to start the load worker: {e}");
-            app.status_error = Some(msg.clone());
+            app.set_status_error(msg.clone());
             app.record_action("capture_swapped", path_str, "", "failed", &msg);
         }
     }
@@ -895,7 +923,11 @@ pub(in crate::tui) fn poll_pcap_load(app: &mut App) {
             }
         }
         if let Some(outcome) = progress.result.lock().take() {
-            app.status_error = Some(outcome.message.clone());
+            app.show_status(if outcome.failed {
+                StatusMessage::error(outcome.message.clone())
+            } else {
+                StatusMessage::info(outcome.message.clone())
+            });
             apply_load_outcome(app, outcome);
             // A completed load is a discrete event, not churn: every view
             // must reflect the new stores on the next tick, floor or not.
@@ -909,25 +941,35 @@ pub(in crate::tui) fn poll_pcap_load(app: &mut App) {
     }
 }
 
-/// Give the run keyring a prompter that asks this TUI, for the load about to
-/// start, and return where its questions arrive.
+/// The session keyring's handle, armed with a prompter that asks this TUI
+/// for the load about to start, and where that prompter's questions arrive.
 ///
-/// A different capture also forgets every archive password the session
-/// remembered, clearing each: they were for the capture that is going.
+/// The session keyring starts from the operator's configured passwords. A
+/// different capture forgets every password the session remembered,
+/// clearing each: they were for the capture that is going.
 #[cfg(feature = "archive")]
 fn arm_archive_prompt(
     app: &mut App,
     other_capture: bool,
-) -> std::sync::mpsc::Receiver<crate::tui::archive_password::PasswordAsk> {
+) -> (
+    crate::tui::SessionKeyring,
+    std::sync::mpsc::Receiver<crate::tui::archive_password::PasswordAsk>,
+) {
+    use crate::capture::archive::password;
     let (prompter, asks) = crate::tui::archive_password::PopupPrompter::channel();
-    crate::capture::archive::password::with_run_keyring_or_default(|k| {
+    {
+        let mut guard = app.archive_keyring.lock();
+        let keys = guard.get_or_insert_with(|| {
+            let (candidates, pinned) = password::run_candidates();
+            password::Keyring::new(candidates, pinned)
+        });
         if other_capture {
-            k.forget_remembered();
+            keys.forget_remembered();
         }
-        k.set_prompter(Some(Box::new(prompter)));
-    });
+        keys.set_prompter(Some(Box::new(prompter)));
+    }
     app.archive_entry = None;
-    asks
+    (Arc::clone(&app.archive_keyring), asks)
 }
 
 /// Open the password popup for a question the load is parked on, when no
@@ -1378,6 +1420,10 @@ mod tests {
             "got: {:?}",
             app.status_error
         );
+        assert!(
+            app.status_is_error(),
+            "a file that is not there is an error, whatever the words say"
+        );
     }
 
     /// A second load while one is in flight is refused and the running
@@ -1701,11 +1747,7 @@ mod browser_tests {
         );
         assert_eq!(ds.read().len(), da.read().len() + db.read().len());
         assert!(out.message.contains("2 capture"), "{}", out.message);
-        assert!(
-            out.message.contains("1 member(s) not read"),
-            "{}",
-            out.message
-        );
+        assert!(out.message.contains("1 member not read"), "{}", out.message);
     }
 
     /// Opening the dialog clears the previous visit's filter, manual path and
@@ -2051,6 +2093,7 @@ mod browser_tests {
             out.message.starts_with("Failed to open"),
             "the load does not report an open failure"
         );
+        assert!(out.failed, "a load that read nothing reports a failure");
         assert_eq!(out.sip_count, 0);
         assert_eq!(out.capture_mode, "Offline (garbage.pcap)");
         assert!(ds.read().is_empty() && ss.read().is_empty());
@@ -2069,6 +2112,7 @@ mod browser_tests {
             msg.starts_with("Loaded 0 SIP, 150 RTP, 2 RTCP"),
             "got: {msg}"
         );
+        assert!(!app.status_is_error(), "a load that worked is not an error");
         assert_eq!(app.current_view, View::StreamList);
     }
 
@@ -2103,18 +2147,14 @@ mod browser_tests {
     }
 }
 
-/// The password popup and the load that waits on it.
-///
-/// Serialized: the run keyring is process-global, and each of these installs
-/// a prompter on it for the load it starts.
+/// The password popup and the load that waits on it. Each test's load uses
+/// its own session keyring on its own thread, so they run in parallel.
 #[cfg(test)]
 #[cfg(feature = "archive")]
 mod archive_password_tests {
     use super::*;
     use crate::capture::archive::zipped::testutil::{Lock, build};
     use crossterm::event::{KeyEvent, KeyModifiers};
-
-    static SERIAL: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
 
     fn secret(label: &str) -> &'static str {
         crate::test_material::key_str(label)
@@ -2171,7 +2211,6 @@ mod archive_password_tests {
 
     #[test]
     fn a_load_parks_on_a_locked_member_and_resumes_with_the_answer() {
-        let _serial = SERIAL.lock();
         let tmp = tempfile::tempdir().expect("tmp");
         let trail_path = tmp.path().join("trail.jsonl");
         let zip = locked_zip(tmp.path(), secret("tui-right"));
@@ -2214,7 +2253,7 @@ mod archive_password_tests {
         assert!(!app.dialog_store.read().is_empty(), "the member was read");
         assert!(!popup_open(&app));
         let status = app.status_error.clone().unwrap_or_default();
-        assert!(status.contains("capture(s) from the archive"), "{status}");
+        assert!(status.contains("from the archive"), "{status}");
 
         // The trail says the archive opened, and never what opened it.
         let trail = std::fs::read_to_string(&trail_path).expect("trail");
@@ -2225,23 +2264,26 @@ mod archive_password_tests {
 
         // The session remembers the password for this archive, and forgets it
         // the moment another capture opens.
-        let remembered = crate::capture::archive::password::with_run_keyring(|k| {
-            k.map_or(0, |k| k.remembered_count())
-        });
+        let remembered = app
+            .archive_keyring
+            .lock()
+            .as_ref()
+            .map_or(0, |k| k.remembered_count());
         assert_eq!(remembered, 1);
         let other =
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/sip_call.pcap");
         begin_pcap_load_confirmed(&mut app, &other.display().to_string(), None);
-        let remembered = crate::capture::archive::password::with_run_keyring(|k| {
-            k.map_or(0, |k| k.remembered_count())
-        });
+        let remembered = app
+            .archive_keyring
+            .lock()
+            .as_ref()
+            .map_or(0, |k| k.remembered_count());
         assert_eq!(remembered, 0, "cleared on capture change");
         pump_until(&mut app, "the second load", |a| a.pcap_load.is_none());
     }
 
     #[test]
     fn esc_skips_the_archive_and_the_load_finishes() {
-        let _serial = SERIAL.lock();
         let tmp = tempfile::tempdir().expect("tmp");
         let trail_path = tmp.path().join("trail.jsonl");
         let zip = locked_zip(tmp.path(), secret("tui-esc"));

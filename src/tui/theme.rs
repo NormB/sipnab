@@ -39,7 +39,11 @@ impl Default for Theme {
     fn default() -> Self {
         Self {
             background: Color::Reset,
-            foreground: Color::White,
+            // The terminal's own text color: white was near-invisible on a
+            // light terminal. The status band sets its own contrasting text
+            // (`render::status::status_bar_style`), so nothing drawn on a
+            // background this theme paints relies on this being white.
+            foreground: Color::Reset,
             header: Color::Cyan,
             selected: Color::Yellow,
             accent: Color::Magenta,

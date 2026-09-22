@@ -262,6 +262,49 @@ fn capture_opened_target(cli: &Cli) -> String {
     }
 }
 
+/// The capture-mode label the status bar opens with.
+///
+/// Resolved from the same flags, in the same order, as the capture that
+/// actually opens (`bootstrap::plan`): `-I` beats `-d`, `-d` beats the config
+/// file's device, and a HEP listener with no interface is named as the
+/// listener. The bar used to say `Online (any)` for every session, a file
+/// read included. Files are named by file name only, since the status bar is
+/// on screen and a full path routinely names a customer or an incident.
+///
+/// # Returns
+///
+/// `Offline (<names>)` or `Online (<source>)`, the shape
+/// `render_status_line1` turns into words.
+fn tui_capture_mode(cli: &Cli, config: &Config) -> String {
+    if !cli.capture_args.input.is_empty() {
+        let names: Vec<String> = cli
+            .capture_args
+            .input
+            .iter()
+            .map(|p| {
+                std::path::Path::new(p)
+                    .file_name()
+                    .map_or_else(|| p.clone(), |n| n.to_string_lossy().into_owned())
+            })
+            .collect();
+        return format!("Offline ({})", names.join(", "));
+    }
+    let device = cli
+        .capture_args
+        .device
+        .as_ref()
+        .or(config.capture.device.as_ref());
+    match (device, cli.hep_args.hep_listen.as_ref()) {
+        (Some(device), Some(hep)) => format!("Online ({device} + HEP listener {hep})"),
+        (Some(device), None) => format!("Online ({device})"),
+        (None, Some(hep)) => format!("Online (HEP listener {hep})"),
+        // The capture layer's own default: the `any` pseudo-device on Linux,
+        // the routing table's choice elsewhere.
+        (None, None) if cfg!(target_os = "linux") => "Online (any)".to_string(),
+        (None, None) => "Online (default interface)".to_string(),
+    }
+}
+
 /// The From/To column's starting mode: the CLI flag wins, then the
 /// `[display] from_to` config value (warned about and ignored when it names
 /// no mode), else the built-in default.
@@ -927,6 +970,7 @@ pub fn run_tui_mode(
             reconfigure_outcomes,
             // The editor re-scans a single offline input under a new filter;
             // a multi-file input or a live device leaves this None.
+            capture_mode: Some(tui_capture_mode(&cli, &config)),
             rescan_path: (cli.capture_args.input.len() == 1)
                 .then(|| std::path::PathBuf::from(&cli.capture_args.input[0])),
             notes,
@@ -1543,6 +1587,42 @@ mod tests {
         assert_eq!(
             super::capture_opened_target(&cli_from(&[])),
             "(default interface)"
+        );
+    }
+
+    // ── The status bar's capture source ───────────────────────────────────
+
+    /// `-I` names the files the session reads, by file name. The status bar
+    /// used to say `Online (any)` for every session, a file read included.
+    #[test]
+    fn the_status_bar_names_the_files_a_session_reads() {
+        let cli = cli_from(&["-I", "/cases/a.pcap", "-I", "b.pcapng"]);
+        assert_eq!(
+            super::tui_capture_mode(&cli, &Config::default()),
+            "Offline (a.pcap, b.pcapng)"
+        );
+    }
+
+    /// `-d` names the interface, and beats the config file's device.
+    #[test]
+    fn the_status_bar_names_the_interface_a_session_captures_on() {
+        let mut config = Config::default();
+        config.capture.device = Some("eth1".to_string());
+        let cli = cli_from(&["-d", "eth0"]);
+        assert_eq!(super::tui_capture_mode(&cli, &config), "Online (eth0)");
+        assert_eq!(
+            super::tui_capture_mode(&cli_from(&[]), &config),
+            "Online (eth1)"
+        );
+    }
+
+    /// A HEP listener with no interface is named as the listener it is.
+    #[test]
+    fn the_status_bar_names_a_hep_listener() {
+        let cli = cli_from(&["-L", "udp:0.0.0.0:9060"]);
+        assert_eq!(
+            super::tui_capture_mode(&cli, &Config::default()),
+            "Online (HEP listener udp:0.0.0.0:9060)"
         );
     }
 

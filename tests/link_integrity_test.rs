@@ -913,12 +913,47 @@ fn wiki_intra_docs_links_resolve() {
     // HEAD with this gate's rule; no other page moved.
     // 784 + 8 = 792: the HEP sender roster branch counted its eight against
     // 763 and merged after the three above.
+    // 792 -> 793 by docs/internals/testing.md +1: its fixtures row links
+    // tests/PROVENANCE.md, the manifest the committed-capture gate reads.
+    // Measured by this gate: 792 at HEAD, 793 with that row, and no other
+    // docs/ page is in the change.
     // 792 -> 794 by archive input: docs/cli-reference.md +1 (the `-I` row to
     // the new "Archives read like directories" section), docs/troubleshooting.md
     // +2 (the symptom row, and the pointer from the new section to the CLI
     // reference), docs/mcp-tools.md -1 (the rewritten `open_capture`
     // paragraph no longer links `list_captures`). Counted per file against
     // HEAD with this gate's rule; no other page moved.
+    // 794 -> 795 by ESP with NULL encryption: docs/troubleshooting.md +1 (the
+    // new `ESP not NULL-encrypted` row points at the encapsulations page's
+    // "Tunnels above the link layer" section, which states the rule). Counted
+    // per file against HEAD with this gate's rule; no other page moved.
+    // Merge of the fixtures branch with main: 792 +1 (fixtures) +3 (archive
+    // input and ESP) = 796. Each side's attribution is above.
+    // 795 -> 816 by the readability pass that added the glossary and the
+    // command-line triage tutorial. Attributed per file against HEAD:
+    // docs/first-cli-triage.md +7 and docs/glossary.md +3 (both new),
+    // docs/tui-walkthrough.md +7 (a glossary link at the first use of each
+    // term, and the tutorial), docs/README.md +2 (the two new pages) and
+    // docs/install.md +2 (the MCP deployment page the install section had
+    // misnamed, and a same-page link to the download section). Every other
+    // changed page held its count.
+    // 816 -> 815 by the docs index listing each page once. Attributed per
+    // file against HEAD: docs/README.md -5 (filter-dsl.md, mcp.md,
+    // mcp-deploy.md, mcp-tools.md and architecture.md each appeared twice),
+    // docs/encapsulations.md +3 (the new summary table's links to its own
+    // sections and to troubleshooting, and the cooked-capture note) and
+    // docs/cli-reference.md +1 (the BPF filter note now links to the
+    // encapsulations page that carries the detail).
+    // 815 -> 836 by the task-first pass over the cookbook, troubleshooting,
+    // output and CLI pages. Attributed per file against HEAD:
+    // docs/output-formats.md +10 (the "Which output do I want?" table's nine
+    // section links and the REST API), docs/troubleshooting.md +6 (the vCon
+    // symptom row, the cookbook recipes the how-tos now point at, and the
+    // link-type list), docs/examples.md +3 (goal-table rows for recipes 13b,
+    // 60 and 65, which had none) and docs/cli-reference.md +2 (the "More:"
+    // links that replaced two long cells).
+    // Merge of docs-readability with main: 795 +41 (docs pass, above) +1
+    // (fixtures) = 837.
     // 794 -> 796 by password-protected archives: docs/cli-reference.md +2
     // (the archive section's pointer to the new Archives section, and the
     // Archives section's pointer back). Counted per file against HEAD; no
@@ -927,7 +962,8 @@ fn wiki_intra_docs_links_resolve() {
     // (the popup section's pointer to the CLI reference's Archives section)
     // and docs/cli-reference.md +1 (the prompt paragraph's pointer to the
     // popup). Counted per file against HEAD; no other page moved.
-    const EXPECTED_WIKI_LINKS: usize = 798;
+    // Merge of archive-passwords with main: 837 +4 (above) = 841.
+    const EXPECTED_WIKI_LINKS: usize = 841;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe 6d in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file
@@ -1022,7 +1058,9 @@ fn root_community_file_links_resolve() {
     /// has ever carried, on a visual analysis tool), `docs/install.md` and
     /// `docs/examples.md`. The moved funding badges are a wash: removed from
     /// the header, re-added under "Support the project".
-    const EXPECTED_COMMUNITY_LINKS: usize = 49;
+    // 49 -> 52: README.md links the glossary, the command-line triage
+    // tutorial and the keybindings page from its first-run and TUI sections.
+    const EXPECTED_COMMUNITY_LINKS: usize = 52;
     const ROOT_FILES: &[&str] = &[
         "README.md",
         "SUPPORT.md",
@@ -2103,7 +2141,8 @@ fn every_docs_page_is_linked_from_the_index() {
     // Attributed with `git status --short docs/` before the number moved: one
     // added file, no others.
     // 52 -> 53: docs/client-examples.md, linked from the documentation index.
-    const EXPECTED_DOCS_PAGES: usize = 53;
+    // 53 -> 55: docs/glossary.md and docs/first-cli-triage.md.
+    const EXPECTED_DOCS_PAGES: usize = 55;
     // Links are extracted from PROSE, not from the file's bytes. A raw
     // `contains("](backers.md")` counted a link that had been wrapped in an
     // HTML comment: the substring was still there, the page was reachable from

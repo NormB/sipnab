@@ -148,7 +148,7 @@ fn run_helper_bounded(cmd: &str, args: &[&str], text: &str, timeout: std::time::
 /// A human-readable outcome for the status line, e.g.
 /// `"Copied 813 bytes (OSC 52 + xclip)"`, with a truncation note when
 /// the OSC 52 bound cut the text.
-pub(in crate::tui) fn copy_to_clipboard(text: &str) -> String {
+pub(in crate::tui) fn copy_to_clipboard(text: &str) -> crate::tui::StatusMessage {
     let (sequence, copied, truncated) = osc52_sequence(text);
     let osc_ok = emit_osc52(&sequence).is_ok();
     // The helper gets the SAME (possibly truncated) slice: both mechanisms
@@ -173,20 +173,27 @@ fn copy_outcome(
     copied: usize,
     total: usize,
     truncated: bool,
-) -> String {
+) -> crate::tui::StatusMessage {
+    use crate::tui::StatusMessage;
     let mechanisms = match (osc_ok, helper) {
         (true, Some(h)) => format!("OSC 52 + {h}"),
         (true, None) => "OSC 52".to_string(),
         (false, Some(h)) => h.to_string(),
         (false, None) => {
-            return "Clipboard error: OSC 52 write failed and no pbcopy/xclip helper".to_string();
+            // What to do next, not only what failed: the helper this module
+            // runs on Linux is xclip, and F12 turns mouse capture off so the
+            // terminal's own drag-to-select copies instead.
+            return StatusMessage::error(
+                "Clipboard error: OSC 52 write failed and no pbcopy/xclip helper. \
+                 Install xclip, or press F12 and drag to select.",
+            );
         }
     };
-    if truncated {
+    StatusMessage::info(if truncated {
         format!("Copied first {copied} of {total} bytes ({mechanisms})")
     } else {
         format!("Copied {copied} bytes ({mechanisms})")
-    }
+    })
 }
 
 /// Copy `text` to the system clipboard on a detached worker thread,
@@ -198,7 +205,7 @@ fn copy_outcome(
 /// * `messages` - shared queue the worker (or a failed spawn) reports into.
 pub(in crate::tui) fn spawn_clipboard_copy(
     text: String,
-    messages: Arc<parking_lot::Mutex<Vec<String>>>,
+    messages: Arc<parking_lot::Mutex<Vec<crate::tui::StatusMessage>>>,
 ) {
     spawn_copy_worker(text, messages, copy_to_clipboard);
 }
@@ -210,8 +217,8 @@ pub(in crate::tui) fn spawn_clipboard_copy(
 /// clipboard; production passes [`copy_to_clipboard`].
 pub(in crate::tui) fn spawn_copy_worker(
     text: String,
-    messages: Arc<parking_lot::Mutex<Vec<String>>>,
-    copy: fn(&str) -> String,
+    messages: Arc<parking_lot::Mutex<Vec<crate::tui::StatusMessage>>>,
+    copy: fn(&str) -> crate::tui::StatusMessage,
 ) {
     let worker_messages = Arc::clone(&messages);
     let spawned = std::thread::Builder::new()
@@ -221,7 +228,9 @@ pub(in crate::tui) fn spawn_copy_worker(
             worker_messages.lock().push(msg);
         });
     if let Err(e) = spawned {
-        messages.lock().push(format!("Clipboard: {e}"));
+        messages
+            .lock()
+            .push(crate::tui::StatusMessage::error(format!("Clipboard: {e}")));
     }
 }
 
@@ -307,22 +316,30 @@ mod seam_tests {
     /// an error rather than a claim that something was copied.
     #[test]
     fn the_outcome_names_every_mechanism_that_worked() {
+        use crate::tui::StatusMessage;
         assert_eq!(
             copy_outcome(true, Some("xclip"), 5, 5, false),
-            "Copied 5 bytes (OSC 52 + xclip)"
+            StatusMessage::info("Copied 5 bytes (OSC 52 + xclip)")
         );
         assert_eq!(
             copy_outcome(true, None, 5, 5, false),
-            "Copied 5 bytes (OSC 52)"
+            StatusMessage::info("Copied 5 bytes (OSC 52)")
         );
         assert_eq!(
             copy_outcome(false, Some("pbcopy"), 5, 5, false),
-            "Copied 5 bytes (pbcopy)"
+            StatusMessage::info("Copied 5 bytes (pbcopy)")
         );
-        assert_eq!(
-            copy_outcome(false, None, 5, 5, false),
-            "Clipboard error: OSC 52 write failed and no pbcopy/xclip helper"
+        let failed = copy_outcome(false, None, 5, 5, false);
+        assert!(failed.is_error, "a copy that reached nothing is an error");
+        assert!(
+            failed
+                .text
+                .starts_with("Clipboard error: OSC 52 write failed"),
+            "{failed:?}"
         );
+        // It says what to do next, and F12 really does hand selection to the
+        // terminal (`toggle_mouse_capture`).
+        assert!(failed.text.contains("press F12 and drag"), "{failed:?}");
     }
 
     /// A copy cut by the OSC 52 bound says how much of how much went; a copy
@@ -330,10 +347,14 @@ mod seam_tests {
     #[test]
     fn a_truncated_copy_says_how_much_of_the_text_went() {
         assert_eq!(
-            copy_outcome(true, None, OSC52_MAX_RAW_BYTES, 80_000, true),
+            copy_outcome(true, None, OSC52_MAX_RAW_BYTES, 80_000, true).text,
             format!("Copied first {OSC52_MAX_RAW_BYTES} of 80000 bytes (OSC 52)")
         );
-        assert!(copy_outcome(false, None, 10, 20, true).starts_with("Clipboard error"));
+        assert!(
+            copy_outcome(false, None, 10, 20, true)
+                .text
+                .starts_with("Clipboard error")
+        );
     }
 
     /// With the bound landing INSIDE a two-byte character, the cut backs off
@@ -472,7 +493,10 @@ mod seam_tests {
             Arc::clone(&messages),
             |text: &str| {
                 let thread = std::thread::current();
-                format!("{text} @ {}", thread.name().unwrap_or("unnamed"))
+                crate::tui::StatusMessage::info(format!(
+                    "{text} @ {}",
+                    thread.name().unwrap_or("unnamed")
+                ))
             },
         );
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
@@ -483,6 +507,9 @@ mod seam_tests {
             );
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
-        assert_eq!(*messages.lock(), vec!["graph TD; @ clipboard".to_string()]);
+        assert_eq!(
+            *messages.lock(),
+            vec![crate::tui::StatusMessage::info("graph TD; @ clipboard")]
+        );
     }
 }

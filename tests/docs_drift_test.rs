@@ -58,6 +58,18 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             "website/content/docs/internals/uprobe-capture.md",
         ],
     ),
+    // jq's, named by the command-line triage tutorial. `--arg id "$CALL_ID"`
+    // hands the shell variable to the jq program as `$id` rather than pasting
+    // it into the program text. It is a jq flag, not a sipnab one.
+    ("arg", &["docs/first-cli-triage.md"]),
+    // sudo's, named by the REST API page's live-capture step.
+    // `--preserve-env=SIPNAB_API_KEY` passes the key through sudo's cleared
+    // environment, so the key never has to go on sipnab's command line where
+    // `ps` shows it. It is a sudo flag, not a sipnab one.
+    (
+        "preserve-env",
+        &["docs/rest-api.md", "website/content/docs/api.md"],
+    ),
     // curl's, named by the REST API page's `POST /v1/vcon/validate` example.
     // `--data-binary` sends the JSON container's bytes exactly. It is a curl
     // flag, not a sipnab one, and documenting how to POST a container must not
@@ -1607,6 +1619,16 @@ fn docs_current_version_markers_match_cargo() {
             "docs/install.md",
             include_str!("../docs/install.md"),
             r"e\.g\. (\d+\.\d+\.\d+)",
+        ),
+        // The download recipes read the release from a `VERSION=` line set on
+        // its own, so the pasted block never carries a `<version>` placeholder
+        // the shell would read as a redirection. That line names a release a
+        // reader fetches, so it tracks published_version like every marker
+        // here.
+        (
+            "docs/install.md",
+            include_str!("../docs/install.md"),
+            r"(?m)^VERSION=(\d+\.\d+\.\d+)$",
         ),
         // Every rpm variant, not just the x86_64 standard one. The pattern was
         // `-1\.x86_64\.rpm`, which pinned line one of three `rpm -i` recipes
@@ -3350,7 +3372,19 @@ fn no_documentation_table_repeats_a_row() {
     // lists exactly that one new .md path. No website mirror.
     // 220 -> 223: docs/client-examples.md and its site mirror, plus the new
     // site mirror of docs/library.md. Measured by this gate on 2026-09-19.
-    const EXPECTED_MARKDOWN_FILES: usize = 223;
+    // 223 -> 224 by tests/PROVENANCE.md, the record of where every committed
+    // capture outside tests/pcap-samples/ came from, which
+    // `every_committed_capture_is_public_or_synthetic` reads. ONE file: it
+    // lives beside the gate rather than under docs/, so it has no website
+    // mirror. Attributed against the staged diff -- `--diff-filter=A` lists
+    // exactly one new `.md` path, and it is that one.
+    // 223 -> 225 by docs/glossary.md and docs/first-cli-triage.md.
+    // `git diff --cached --diff-filter=A` lists exactly those two new .md
+    // paths. No site mirrors yet: both pages are on the wiki, and their site
+    // registration waits on the docs nav templates.
+    // Merge of docs-readability with main: 223 +2 (glossary, first-cli-triage)
+    // +1 (tests/PROVENANCE.md) = 226.
+    const EXPECTED_MARKDOWN_FILES: usize = 226;
     /// How many tables this gate expects to walk.
     ///
     /// Named rather than written twice. The count and the failure message
@@ -3753,6 +3787,11 @@ fn no_documentation_table_repeats_a_row() {
     // against HEAD: exactly those seven files moved.
     // 939 + 9 = 948: the HEP sender roster branch counted its nine against 932
     // and merged after the RFC 7951 export and operator notes.
+    // 948 -> 950: the "Can sipnab read my capture?" table that now opens
+    // docs/encapsulations.md, and its site mirror.
+    // 950 -> 966: the cookbook's goal table split into eight task groups (+7)
+    // and the "Which output do I want?" table on the output-formats page (+1),
+    // each counted again in its site mirror.
     // 948 -> 950: the password-protected archive flags' table in
     // docs/cli-reference.md's new Archives section, and its site mirror.
     // Attributed by counting table separators per file against HEAD: exactly
@@ -3760,7 +3799,9 @@ fn no_documentation_table_repeats_a_row() {
     // 950 -> 952: the Archive password popup's key table in
     // docs/keybindings.md, and its site mirror. Attributed by counting table
     // separators per file against HEAD: exactly those two files moved.
-    const EXPECTED_TABLES: usize = 952;
+    // Merge of archive-passwords with main: 966 +4 (the two tables above,
+    // each with its mirror) = 970.
+    const EXPECTED_TABLES: usize = 970;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")
@@ -4249,6 +4290,7 @@ fn how_to_headings_stay_task_first() {
         "inspect",
         "install",
         "keep",
+        "let",
         "listen",
         "live",
         "look",

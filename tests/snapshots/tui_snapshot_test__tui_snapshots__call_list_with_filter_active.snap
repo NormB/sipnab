@@ -2,11 +2,11 @@
 source: tests/tui_snapshot_test.rs
 expression: output
 ---
- Current Mode: Online (any)    Dialogs: 3 (1 displayed)  [A]
- Match Expression: from.user =~ '1003'    BPF Filter:
- Display Filter: from.user =~ '1003'
-  # ▲   Method    From To    Source          Destination     State      Msgs +Prev    PDD    Duratio
-> [ ]1  INVITE    1003 1004  10.0.0.1        10.0.0.2        FAILED ⚠   2    +0.000s         1.0s
+ Live capture: any    Dialogs: 1 shown of 3    Autoscroll: on
+ Capture filter (BPF): none
+ View filter: from.user =~ '1003'
+  # ▲    Method    From To   Source          Destination     State      Msgs +Prev    PDD    Duratio
+> [ ] 1  INVITE    1003 1004 10.0.0.1        10.0.0.2        FAILED ⚠   2    +0.000s         1.0s
 
 
 
@@ -25,4 +25,4 @@ expression: output
 
 
 
-Esc Quit  F1 Help  Enter Show  Tab Streams  F2 Save  F3 Search  F6 Raw  F7 Filter  F9 Unfilter
+Esc Quit  F1 Help  Enter Open call  Tab Streams  O Open file  F2 Save  F7 Filter  F9 Clear filter

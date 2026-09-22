@@ -132,7 +132,7 @@ pub(in crate::tui) fn handle_key_event(app: &mut App, key: KeyEvent) {
         // pager owns `n` above.
         if key.code == KeyCode::Char('?') && !matches!(app.current_view, View::RelayStats { .. }) {
             let help = KeyEvent::new(app.keymap.help, KeyModifiers::NONE);
-            dispatch_view_key(app, help);
+            dispatch_help_or_view_key(app, help);
             return;
         }
         // F12 toggles mouse capture so the terminal's native drag-to-select
@@ -144,6 +144,38 @@ pub(in crate::tui) fn handle_key_event(app: &mut App, key: KeyEvent) {
         }
     }
 
+    dispatch_help_or_view_key(app, key);
+}
+
+/// Whether `view` answers the help key itself. The list, ladder and pager
+/// views bind it in their own keymaps; every other view leaves it to
+/// [`dispatch_help_or_view_key`].
+pub(in crate::tui) fn view_binds_help(view: &View) -> bool {
+    matches!(
+        view,
+        View::CallList
+            | View::CallFlow(_)
+            | View::RawMessage { .. }
+            | View::MessageDiff { .. }
+            | View::CombinedDetail { .. }
+            | View::StreamList
+            | View::StreamDetail(_)
+            | View::Help
+            | View::BpfFilter
+    )
+}
+
+/// Route `key` to the current view, except that the help key opens help from
+/// a view that has no binding for it. The analysis views never bound it, so
+/// F1 and `?` did nothing there while the help promised `?` in every view.
+///
+/// # Side effects
+/// Either switches to [`View::Help`] or whatever the view's handler does.
+fn dispatch_help_or_view_key(app: &mut App, key: KeyEvent) {
+    if key.code == app.keymap.help && !view_binds_help(&app.current_view) {
+        app.current_view = View::Help;
+        return;
+    }
     dispatch_view_key(app, key);
 }
 
@@ -382,7 +414,7 @@ pub(in crate::tui) fn handle_bpf_filter_key(app: &mut App, key: KeyEvent) {
                         app.status_error = Some(format!("filter OK (compiles): {composed}"));
                     }
                 }
-                Err(msg) => app.status_error = Some(format!("filter rejected: {msg}")),
+                Err(msg) => app.set_status_error(format!("filter rejected: {msg}")),
             }
         }
         KeyCode::Tab => app.bpf_editor.toggle_mode(),
@@ -2766,10 +2798,25 @@ mod async_feedback_tests {
     #[test]
     fn drain_async_messages_moves_worker_results_into_status() {
         let mut app = App::new_test();
-        app.async_messages.lock().push("Copied!".to_string());
+        app.async_messages
+            .lock()
+            .push(crate::tui::StatusMessage::info("Copied!"));
         app.drain_async_messages();
         assert_eq!(app.status_error.as_deref(), Some("Copied!"));
+        assert!(!app.status_is_error());
         assert!(app.async_messages.lock().is_empty());
+    }
+
+    /// A worker's failure keeps its severity across the thread: the drained
+    /// message draws as an error because the worker said so.
+    #[test]
+    fn a_drained_worker_error_stays_an_error() {
+        let mut app = App::new_test();
+        app.async_messages
+            .lock()
+            .push(crate::tui::StatusMessage::error("Clipboard error: nope"));
+        app.drain_async_messages();
+        assert!(app.status_is_error(), "{:?}", app.status_error);
     }
 
     /// Released by the test below once it has checked the copy is still
@@ -2779,15 +2826,15 @@ mod async_feedback_tests {
     /// A stand-in for the real copy that blocks until [`COPY_GATE`] opens (or
     /// gives up after 10 s), so it never touches the system clipboard: the
     /// real copy writes OSC 52 to the developer's terminal and runs xclip.
-    fn gated_copy(text: &str) -> String {
+    fn gated_copy(text: &str) -> crate::tui::StatusMessage {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         while !COPY_GATE.load(std::sync::atomic::Ordering::SeqCst) {
             if std::time::Instant::now() >= deadline {
-                return "the gate never opened".to_string();
+                return crate::tui::StatusMessage::info("the gate never opened");
             }
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
-        format!("copied {text}")
+        crate::tui::StatusMessage::info(format!("copied {text}"))
     }
 
     /// The clipboard copy must not run on the UI thread: a wedged xclip
@@ -2819,7 +2866,7 @@ mod async_feedback_tests {
         }
         assert_eq!(
             *app.async_messages.lock(),
-            vec!["copied graph TD;".to_string()]
+            vec![crate::tui::StatusMessage::info("copied graph TD;")]
         );
     }
 }
@@ -2924,6 +2971,49 @@ mod question_mark_help_tests {
             KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE),
         );
         assert!(matches!(app.current_view, View::Help));
+    }
+
+    /// The analysis views (statistics, carrier metrics, conformance, ...)
+    /// have no help binding of their own, so '?' and F1 were re-dispatched
+    /// to a view that ignored them: the help said "? works in every view" and
+    /// in these views it did nothing. Both keys open help from all of them.
+    #[test]
+    fn help_opens_from_the_views_that_do_not_bind_it() {
+        let views = [
+            View::Statistics,
+            View::Talkers,
+            View::CarrierMetrics,
+            View::CallVolume,
+            View::CaptureHealth,
+            View::HepSenders,
+            View::SecurityFindings,
+            View::QualityDashboard,
+            View::Conformance {
+                call_id: "c".to_string(),
+            },
+            View::SdpTimeline {
+                call_id: "c".to_string(),
+            },
+            View::EndpointRollup {
+                ip: "10.0.0.1".to_string(),
+            },
+            View::CompareDialogs {
+                a: "a".to_string(),
+                b: "b".to_string(),
+            },
+        ];
+        for view in views {
+            for code in [KeyCode::F(1), KeyCode::Char('?')] {
+                let mut app = App::new_test();
+                app.current_view = view.clone();
+                handle_key_event(&mut app, KeyEvent::new(code, KeyModifiers::NONE));
+                assert!(
+                    matches!(app.current_view, View::Help),
+                    "{code:?} in {view:?} left the view at {:?}",
+                    app.current_view
+                );
+            }
+        }
     }
 
     /// A '?' rebound by the user must keep its rebound meaning.

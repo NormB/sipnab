@@ -666,7 +666,7 @@ pub fn expand_filtered(
 ) -> io::Result<Expansion> {
     #[cfg(feature = "archive")]
     {
-        password::with_run_keyring(|keyring| expand_filtered_with(path, limits, keep, keyring))
+        password::keyring_in_use(|keyring| expand_filtered_with(path, limits, keep, keyring))
     }
     #[cfg(not(feature = "archive"))]
     {
@@ -741,7 +741,7 @@ pub fn extract_member(
 ) -> io::Result<Option<(Member, ExtractDir)>> {
     #[cfg(feature = "archive")]
     {
-        password::with_run_keyring(|keyring| extract_member_with(path, label, limits, keyring))
+        password::keyring_in_use(|keyring| extract_member_with(path, label, limits, keyring))
     }
     #[cfg(not(feature = "archive"))]
     {
@@ -1438,6 +1438,10 @@ pub const DIR_PREFIX: &str = "sipnab-archive-";
 /// The lock file inside each extraction directory.
 const LOCK_NAME: &str = ".owner.lock";
 
+/// The name the lock file is created and locked under, before it is renamed to
+/// [`LOCK_NAME`]. See [`ExtractDir::create_in_observed`].
+const LOCK_STAGING_NAME: &str = ".owner.lock.new";
+
 impl ExtractDir {
     /// Create a fresh directory under `root`, after removing any abandoned
     /// ones there.
@@ -1446,19 +1450,41 @@ impl ExtractDir {
     ///
     /// When the directory or its lock file cannot be created.
     pub fn create_in(root: &Path) -> io::Result<Self> {
+        Self::create_in_observed(root, &mut |_| {})
+    }
+
+    /// [`Self::create_in`], calling `step` with the directory's path after
+    /// each step that changes what a concurrent sweep would see.
+    ///
+    /// The seam exists for one test: a sweep run from inside `step` is a sweep
+    /// that landed in that window, which is the only way to reproduce a race
+    /// that is otherwise microseconds wide.
+    fn create_in_observed(root: &Path, step: &mut dyn FnMut(&Path)) -> io::Result<Self> {
         let dir = tempfile::Builder::new()
             .prefix(DIR_PREFIX)
             .tempdir_in(root)?;
+        step(dir.path());
+        // Lock the file BEFORE it carries the name a sweep looks for. A sweep
+        // that finds `LOCK_NAME` takes it as abandoned if it can lock it, so
+        // the file must never be visible under that name unlocked. Until the
+        // rename, a sweep sees a directory with no lock file, which it leaves
+        // alone unless it is an hour old. The lock belongs to the open file,
+        // not the name, so it survives the rename.
+        let staging = dir.path().join(LOCK_STAGING_NAME);
         let lock = std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
-            .open(dir.path().join(LOCK_NAME))?;
+            .open(&staging)?;
+        step(dir.path());
         lock.try_lock().map_err(|e| match e {
             std::fs::TryLockError::Error(e) => e,
             std::fs::TryLockError::WouldBlock => {
                 io::Error::other("a freshly created lock file is already locked")
             }
         })?;
+        step(dir.path());
+        std::fs::rename(&staging, dir.path().join(LOCK_NAME))?;
+        step(dir.path());
         let removed = sweep_abandoned(root, dir.path());
         if removed > 0 {
             tracing::info!(
@@ -2327,6 +2353,36 @@ mod tests {
         assert!(alive.path().is_dir(), "a live one was removed");
         assert!(ours.path().is_dir());
         assert!(other.is_dir());
+    }
+
+    /// A sweep that lands while a directory is still being created leaves it
+    /// alone, at every step of the creation.
+    ///
+    /// The lock file used to be created under its final name and locked a
+    /// moment later. A sweep in that gap found the lock takeable and removed a
+    /// live directory, and the walk that owned it then failed to write its
+    /// first member and returned none. It surfaced as
+    /// `a_truncated_archive_keeps_what_arrived` finding 0 members on macOS CI,
+    /// where parallel tests share the system temp directory and sweep it.
+    #[test]
+    fn a_sweep_inside_creation_never_removes_the_directory_being_made() {
+        let root = tempfile::tempdir().expect("root");
+        // The sweeper needs a real directory of its own to compare owners with.
+        let sweeper = root.path().join("sweeper");
+        std::fs::create_dir(&sweeper).expect("mkdir");
+        let mut steps = 0;
+        let made = ExtractDir::create_in_observed(root.path(), &mut |dir| {
+            steps += 1;
+            let removed = sweep_abandoned(root.path(), &sweeper);
+            assert!(
+                dir.is_dir() && removed == 0,
+                "a sweep at creation step {steps} removed the directory being made"
+            );
+        })
+        .expect("create");
+        assert!(steps >= 3, "only {steps} step(s) observed");
+        assert!(made.path().join(LOCK_NAME).exists());
+        std::fs::write(made.path().join("m00000.pcap"), b"x").expect("still writable");
     }
 
     /// A symlink carrying our prefix is never followed into, whatever it

@@ -6,50 +6,45 @@
 use crate::tui::*;
 use unicode_width::UnicodeWidthStr;
 
-/// Fixed leading label of status line 1.
-const L1_PREFIX: &str = " Current Mode: ";
-/// Paused indicator appended to status line 1 (leading spacer included).
-const L1_PAUSED: &str = "  PAUSED";
-/// Autoscroll indicator appended to status line 1 (leading spacer included).
-const L1_AUTOSCROLL: &str = "  [A]";
-/// Fixed leading label of status line 2.
-const L2_PREFIX: &str = " Match Expression: ";
-/// Fixed separator label between the match expression and the BPF filter.
-const L2_MID: &str = "    BPF Filter: ";
+/// Leading indent of status line 1, before the capture source.
+const L1_INDENT: &str = " ";
+/// Gap between the segments of status line 1.
+const L1_GAP: &str = "    ";
+/// Fixed leading label of status line 2: the capture (BPF) filter.
+const L2_PREFIX: &str = " Capture filter (BPF): ";
+/// Fixed leading label of status line 3: the view filter.
+const L3_PREFIX: &str = " View filter: ";
+/// What an unset filter slot says. A bare label read as a rendering fault.
+const FILTER_NONE: &str = "none";
+
+/// Status line 1's capture-source phrase, from the capture-mode label.
+///
+/// The label is `Online (<interface>)` for a live capture and
+/// `Offline (<file>)` for a file, a shape the loaders own. This turns it into
+/// words a reader does not have to decode: `Live capture: eth0`,
+/// `File: call.pcap`. A label in neither shape is shown as it is. Pure.
+pub(in crate::tui) fn capture_source_phrase(mode: &str) -> String {
+    let inner = |prefix: &str| {
+        mode.strip_prefix(prefix)
+            .and_then(|rest| rest.strip_suffix(')'))
+    };
+    if let Some(device) = inner("Online (") {
+        format!("Live capture: {device}")
+    } else if let Some(file) = inner("Offline (") {
+        format!("File: {file}")
+    } else {
+        mode.to_string()
+    }
+}
 
 /// Rendered column span of `s`.
 ///
-/// Thin wrapper over `unicode-width` so status-line fill and offset math is
-/// measured by the columns a terminal actually paints, not by UTF-8 byte
-/// length. The two diverge for non-ASCII text — an accented or CJK pcap
-/// filename shown as the capture-mode label, or multibyte filter text — and
-/// byte length would then mis-size the trailing fill.
+/// Thin wrapper over `unicode-width` so the BPF slot's budget is measured by
+/// the columns a terminal actually paints, not by UTF-8 byte length. The two
+/// diverge for non-ASCII text (multibyte filter text), and byte length would
+/// then mis-size the cut.
 fn display_cols(s: &str) -> usize {
     UnicodeWidthStr::width(s)
-}
-
-/// Display columns consumed by status line 1 for the given capture-mode
-/// label, counts segment and active indicators. Drives the trailing fill so
-/// the status background stays solid regardless of the label's script.
-fn line1_used_cols(mode: &str, counts: &str, paused: bool, autoscroll: bool) -> usize {
-    display_cols(L1_PREFIX)
-        + display_cols(mode)
-        + display_cols(counts)
-        + if paused { display_cols(L1_PAUSED) } else { 0 }
-        + if autoscroll {
-            display_cols(L1_AUTOSCROLL)
-        } else {
-            0
-        }
-}
-
-/// Display columns consumed by status line 2's fixed labels plus the
-/// variable match-expression and BPF texts. Drives the trailing fill.
-fn line2_used_cols(filter_text: &str, bpf_text: &str) -> usize {
-    display_cols(L2_PREFIX)
-        + display_cols(filter_text)
-        + display_cols(L2_MID)
-        + display_cols(bpf_text)
 }
 
 /// Fit `bpf` into `cols` rendered columns, marking any cut with `…`.
@@ -122,11 +117,12 @@ fn bpf_display(generated: bool, bpf: &str, live_only: bool, cols: usize) -> Stri
     fit_bpf_to_cols(&shown, cols)
 }
 
-/// Render status line 1: `Current Mode: Online (any)    Dialogs: N (N displayed)`
+/// Render status line 1: `Live capture: any    Dialogs: 3 shown of 5    Autoscroll: on`.
 ///
-/// The mode is colored good/bad for online/offline; a bold `PAUSED`
-/// indicator and the `[A]` autoscroll marker are appended when active.
-/// Counts come from the cached values on `App` (no store access).
+/// The capture source is colored good/bad for live/offline; a bold `PAUSED`
+/// indicator is appended while the capture is paused. Counts come from the
+/// cached values on `App` (no store access). The row's background comes from
+/// the paragraph style, which fills the whole area, so no padding is drawn.
 ///
 /// # Arguments
 /// * `frame` - Frame to draw into.
@@ -147,20 +143,26 @@ pub(in crate::tui) fn render_status_line1(frame: &mut ratatui::Frame, area: Rect
         Style::default().fg(app.theme.bad)
     };
 
-    let counts = format!("    Dialogs: {total_count} ({displayed_count} displayed)");
-
-    // Assemble the line from discrete spans so the styled capture-mode
-    // segment is placed by rendered width. The previous approach sliced a
-    // char-count-padded string with byte offsets and located `PAUSED` with
-    // `str::find`, mixing byte and char indexing — brittle for a non-ASCII
-    // capture-mode label (an offline pcap with an accented/CJK filename).
+    // Discrete spans, so the styled capture-source segment is placed by
+    // rendered width and never by byte offsets into a padded string (a
+    // non-ASCII pcap filename would skew those).
     let mut spans = vec![
-        Span::raw(L1_PREFIX),
-        Span::styled(app.capture_mode.clone(), mode_style),
-        Span::raw(counts.clone()),
+        Span::raw(L1_INDENT),
+        Span::styled(capture_source_phrase(&app.capture_mode), mode_style),
+        Span::raw(format!(
+            "{L1_GAP}Dialogs: {displayed_count} shown of {total_count}"
+        )),
+        Span::raw(format!(
+            "{L1_GAP}Autoscroll: {}",
+            if app.call_list.autoscroll {
+                "on"
+            } else {
+                "off"
+            }
+        )),
     ];
     if app.paused {
-        spans.push(Span::raw("  "));
+        spans.push(Span::raw(L1_GAP));
         spans.push(Span::styled(
             "PAUSED",
             Style::default()
@@ -168,80 +170,72 @@ pub(in crate::tui) fn render_status_line1(frame: &mut ratatui::Frame, area: Rect
                 .add_modifier(Modifier::BOLD),
         ));
     }
-    if app.call_list.autoscroll {
-        spans.push(Span::raw(L1_AUTOSCROLL));
-    }
 
-    // Fill the remaining columns so the status background stays solid.
-    let used = line1_used_cols(
-        &app.capture_mode,
-        &counts,
-        app.paused,
-        app.call_list.autoscroll,
-    );
-    spans.push(Span::raw(
-        " ".repeat((area.width as usize).saturating_sub(used)),
-    ));
-
-    let line1 = Paragraph::new(Line::from(spans)).style(Style::default().bg(app.theme.status_bg));
+    let line1 = Paragraph::new(Line::from(spans)).style(status_bar_style(&app.theme));
     frame.render_widget(line1, area);
 }
 
-/// Render status line 2: `Match Expression: <expr>    BPF Filter: <bpf>`
+/// The style of every status row and the f-key bar: the status background,
+/// with text in the color that reads against it. The band is a fixed color,
+/// so its text cannot be the terminal default, which is dark on a light
+/// terminal. `Reset` (the NO_COLOR theme) sets no text color at all.
+fn status_bar_style(theme: &Theme) -> Style {
+    let style = Style::default().bg(theme.status_bg);
+    match crate::tui::call_list::header_foreground(theme.status_bg) {
+        Some(fg) => style.fg(fg),
+        None => style,
+    }
+}
+
+/// Render status line 2: `Capture filter (BPF): <bpf>`.
+///
+/// Only the capture filter lives here; the view filter is on line 3. Both
+/// rows used to print the view filter, so the header said one thing twice.
 ///
 /// # Arguments
 /// * `frame` - Frame to draw into.
 /// * `area` - The one-row status line 2 area.
-/// * `app` - Application state (active filter text, BPF filter, theme).
+/// * `app` - Application state (BPF filter, theme).
 ///
 /// # Side effects
 /// Draws to `frame` only; no state is mutated.
 pub(in crate::tui) fn render_status_line2(frame: &mut ratatui::Frame, area: Rect, app: &App) {
     let yellow = Style::default().fg(app.theme.selected);
 
-    // Build styled spans with trailing padding for solid background. The
-    // fill is sized by display width (via `line2_used_cols`): filter/BPF
-    // text can be multibyte or wide, and byte length would over-count and
-    // under-fill the row.
-    let filter_text = &app.active_filter_text;
     // `app.bpf_filter` is the expression this session's capture was compiled
     // with, so on a live capture it is populated even when the operator typed
-    // nothing — an empty slot here means no filter was compiled, not that
-    // none was asked for. It can be far wider than the row (see
-    // `fit_bpf_to_cols`), so what gets drawn is the fitted text and the fill
-    // is measured from that.
+    // nothing — `none` here means no filter was compiled, not that none was
+    // asked for. It can be far wider than the row (see `fit_bpf_to_cols`), so
+    // what gets drawn is the fitted text.
     //
-    // After an in-session `O` open, the label above reads `Offline (...)` while
-    // this filter still belongs to the live capture that is running behind it.
-    // Unmarked, the two read as one statement about one source (#190). The
-    // filter is not cleared: it is still in force for the live half, and
-    // blanking it would claim no filter was compiled, which is a different and
-    // false thing to say.
+    // After an in-session `O` open, line 1 names the file while this filter
+    // still belongs to the live capture that is running behind it. Unmarked,
+    // the two read as one statement about one source (#190). The filter is not
+    // cleared: it is still in force for the live half, and blanking it would
+    // claim no filter was compiled, which is a different and false thing to
+    // say.
     let bpf_text = bpf_display(
         app.bpf_filter_generated,
         &app.bpf_filter,
         app.bpf_is_live_only(),
-        (area.width as usize).saturating_sub(line2_used_cols(filter_text, "")),
+        (area.width as usize).saturating_sub(display_cols(L2_PREFIX)),
     );
-    let used = line2_used_cols(filter_text, &bpf_text);
-    let trailing_pad = " ".repeat((area.width as usize).saturating_sub(used));
+    let shown = if bpf_text.is_empty() {
+        FILTER_NONE.to_string()
+    } else {
+        bpf_text
+    };
 
-    let spans = vec![
-        Span::raw(L2_PREFIX),
-        Span::styled(filter_text.clone(), yellow),
-        Span::raw(L2_MID),
-        Span::styled(bpf_text, yellow),
-        Span::raw(trailing_pad),
-    ];
-
-    let line2 = Paragraph::new(Line::from(spans)).style(Style::default().bg(app.theme.status_bg));
+    let spans = vec![Span::raw(L2_PREFIX), Span::styled(shown, yellow)];
+    let line2 = Paragraph::new(Line::from(spans)).style(status_bar_style(&app.theme));
     frame.render_widget(line2, area);
 }
 
-/// Render status line 3: `Display Filter: <filter>` or search/error overlay.
+/// Render status line 3: `View filter: <filter>` or search/error overlay.
 ///
 /// Priority order: an active search input (`/query`) wins; then a status
-/// message (error-colored when it contains "error"/"fail", info otherwise);
+/// message (error-colored when it was raised with `App::set_status_error`,
+/// info otherwise);
 /// then the persistent mouse-capture-off reminder (F12 toggle); then, in
 /// the call-flow view, the display-mode hints (time/SDP/color modes,
 /// split percentage, focused pane); otherwise the display filter plus any
@@ -265,18 +259,18 @@ pub(in crate::tui) fn render_status_line3(frame: &mut ratatui::Frame, area: Rect
         )]
     } else if let Some(ref err) = app.status_error {
         let content = format!(" {}", err);
-        // Use bright foreground + bold for high contrast on the dark status bar.
-        // Actual errors (containing "error" or "fail") get the bad/red color.
-        let is_error =
-            err.to_ascii_lowercase().contains("error") || err.to_ascii_lowercase().contains("fail");
-        let fg = if is_error {
-            app.theme.bad
+        // Bold for contrast on the status bar. A message raised as an error
+        // (`App::set_status_error`) takes the bad color; its words decide
+        // nothing, so "File not found" is an error and "Cleared 3 failed
+        // dialogs" is not.
+        let style = if app.status_is_error() {
+            Style::default().fg(app.theme.bad)
         } else {
-            app.theme.foreground
+            Style::default()
         };
         vec![Span::styled(
             format!("{:<width$}", content, width = w),
-            Style::default().fg(fg).add_modifier(Modifier::BOLD),
+            style.add_modifier(Modifier::BOLD),
         )]
     } else if !app.mouse_capture_enabled {
         // Persistent reminder while native drag-to-select is active:
@@ -300,47 +294,41 @@ pub(in crate::tui) fn render_status_line3(frame: &mut ratatui::Frame, area: Rect
         } else {
             ""
         };
+        let detail = if app.flow.raw_preview {
+            format!("{}%", app.flow.raw_preview_pct)
+        } else {
+            "off".to_string()
+        };
         let content = format!(
-            " {} | {} | {} | Split: {}%{}",
+            " {} | {} | {} | Detail: {detail}{focus}",
             app.timestamp_mode.label(),
             app.sdp_display_mode.label(),
             app.color_mode.label(),
-            if app.flow.raw_preview {
-                app.flow.raw_preview_pct
-            } else {
-                0
-            },
-            focus,
         );
-        let trailing = " ".repeat(w.saturating_sub(content.len()));
-        vec![Span::styled(content, cyan), Span::raw(trailing)]
+        vec![Span::styled(content, cyan)]
     } else {
         let yellow = Style::default().fg(app.theme.selected);
-        let prefix = " Display Filter: ";
-        let filter_text = &app.active_filter_text;
+        let filter_text = if app.active_filter_text.is_empty() {
+            FILTER_NONE
+        } else {
+            app.active_filter_text.as_str()
+        };
         // A search query persisted with Enter keeps narrowing the list, so
-        // it must stay visible here — an invisible query makes the match
-        // expression look broken ("148 dialogs, 4 displayed").
+        // it must stay visible here — an invisible query makes the view
+        // filter look broken ("148 dialogs, 4 shown").
         let search_text = if app.search_query.is_empty() {
             String::new()
         } else {
             format!("    Search: /{} (F9 clears)", app.search_query)
         };
-        let used = prefix.len() + filter_text.len() + search_text.len();
-        let trailing = if used < w {
-            " ".repeat(w - used)
-        } else {
-            String::new()
-        };
         vec![
-            Span::raw(prefix),
-            Span::styled(filter_text.clone(), yellow),
+            Span::raw(L3_PREFIX),
+            Span::styled(filter_text.to_string(), yellow),
             Span::styled(search_text, yellow),
-            Span::raw(trailing),
         ]
     };
 
-    let line3 = Paragraph::new(Line::from(spans)).style(Style::default().bg(app.theme.status_bg));
+    let line3 = Paragraph::new(Line::from(spans)).style(status_bar_style(&app.theme));
     frame.render_widget(line3, area);
 }
 
@@ -360,6 +348,7 @@ pub(in crate::tui) fn fkey_bar_items(
     view: &View,
     popup: &Option<Popup>,
     width: u16,
+    file_open_manual: bool,
 ) -> Vec<(&'static str, &'static str)> {
     if let Some(p) = popup {
         match p {
@@ -384,124 +373,163 @@ pub(in crate::tui) fn fkey_bar_items(
             }
             Popup::SettingsDialog => {
                 vec![
-                    ("Up/Down", "Navigate"),
+                    ("\u{2191}\u{2193}", "Move"),
                     ("Enter", "Toggle"),
                     ("Esc", "Close"),
                 ]
             }
+            // The dialog has two modes with different keys: in the typed-path
+            // field Backspace deletes a character and Tab switches to the
+            // browser, so the browser's bar would misdescribe both.
+            Popup::FileOpenDialog if file_open_manual => {
+                vec![("Enter", "Open"), ("Tab", "Browse"), ("Esc", "Cancel")]
+            }
             Popup::FileOpenDialog => vec![
-                ("Enter", "Open/Cd"),
-                ("\u{21E7}\u{21E9}", "Nav"),
-                ("Backspace", "Up"),
+                ("Enter", "Open"),
+                ("\u{2191}\u{2193}", "Move"),
+                ("Backspace", "Parent dir"),
                 ("Tab", "Type path"),
                 ("Esc", "Cancel"),
             ],
             Popup::NameAddress => vec![("Tab", "Endpoint"), ("Enter", "Save"), ("Esc", "Cancel")],
         }
     } else {
+        // The keys every scroll-only analysis view answers (statistics,
+        // talkers, carrier metrics, conformance, ...): the help lists them
+        // per view, and F1 opens help from each of them.
+        let scroll_view = vec![
+            ("Esc", "Back"),
+            ("F1", "Help"),
+            ("\u{2191}\u{2193}", "Scroll"),
+            ("PgUp/Dn", "Page"),
+        ];
         match view {
             // The thresholds are the measured column cost of each set, not
             // round numbers: `every_fkey_bar_tier_fits_the_width_that_selects_it`
             // recomputes them, so a label edited without a threshold edit
             // fails rather than silently clipping the tail of the row.
             //
-            // F9 is `Unfilter`, not `Clear`: F5 already clears the CALL LIST,
-            // and two entries both reading "Clear" would leave the operator
-            // guessing which one drops their capture. It read `Addrs` until
-            // 2026-08-06 — the label of the `N` binding one row down — so
-            // pressing it cleared an unset filter and looked like a dead key.
+            // F9 is `Clear filter`, never a bare `Clear`: F5 already clears the
+            // CALL LIST (`Clear calls`), and two entries both reading "Clear"
+            // would leave the operator guessing which one drops their capture.
+            // It read `Addrs` until 2026-08-06 — the label of the `N` binding —
+            // so pressing it cleared an unset filter and looked like a dead key.
             View::CallList => {
-                if width < 96 {
-                    // 62 columns.
+                if width < 67 {
+                    // 58 columns: the narrowest set, for a 60-column terminal.
                     vec![
                         ("Esc", "Quit"),
                         ("F1", "Help"),
-                        ("Enter", "Show"),
+                        ("Enter", "Open call"),
+                        ("Tab", "Streams"),
+                        ("F7", "Filter"),
+                    ]
+                } else if width < 97 {
+                    // 67 columns.
+                    vec![
+                        ("Esc", "Quit"),
+                        ("F1", "Help"),
+                        ("Enter", "Open call"),
                         ("Tab", "Streams"),
                         ("F2", "Save"),
                         ("F7", "Filter"),
                     ]
-                } else if width < 112 {
-                    // 94 columns.
+                } else if width < 124 {
+                    // 97 columns. This tier exists so a ~120-column terminal
+                    // — the common wide default — still gets `O Open file`.
                     vec![
                         ("Esc", "Quit"),
                         ("F1", "Help"),
-                        ("Enter", "Show"),
+                        ("Enter", "Open call"),
                         ("Tab", "Streams"),
+                        ("O", "Open file"),
                         ("F2", "Save"),
-                        ("F3", "Search"),
-                        ("F6", "Raw"),
                         ("F7", "Filter"),
-                        ("F9", "Unfilter"),
+                        ("F9", "Clear filter"),
                     ]
-                } else if width < 142 {
-                    // 112 columns. This tier exists so a ~120-column terminal
-                    // — the common wide default — still gets `O Open` and
-                    // `F5 Clear`. Without it they would sit only in the
-                    // 142-column set and be invisible on most wide screens.
+                } else if width < 164 {
+                    // 124 columns.
                     vec![
                         ("Esc", "Quit"),
                         ("F1", "Help"),
-                        ("Enter", "Show"),
+                        ("Enter", "Open call"),
                         ("Tab", "Streams"),
-                        ("O", "Open"),
+                        ("O", "Open file"),
                         ("F2", "Save"),
                         ("F3", "Search"),
-                        ("F5", "Clear"),
-                        ("F6", "Raw"),
+                        ("F5", "Clear calls"),
                         ("F7", "Filter"),
-                        ("F9", "Unfilter"),
+                        ("F9", "Clear filter"),
                     ]
                 } else {
-                    // 142 columns.
+                    // 164 columns.
                     vec![
                         ("Esc", "Quit"),
                         ("F1", "Help"),
-                        ("Enter", "Show"),
+                        ("Enter", "Open call"),
                         ("Tab", "Streams"),
-                        ("O", "Open"),
+                        ("O", "Open file"),
                         ("F2", "Save"),
                         ("F3", "Search"),
                         ("F4", "Extend"),
-                        ("F5", "Clear"),
+                        ("F5", "Clear calls"),
                         ("F6", "Raw"),
                         ("F7", "Filter"),
-                        ("F9", "Unfilter"),
-                        ("F10", "Cols"),
-                        ("N", "Addrs"),
+                        ("F9", "Clear filter"),
+                        ("F10", "Columns"),
+                        ("N", "Name"),
                     ]
                 }
             }
             View::CallFlow(_) => {
                 if width < 80 {
+                    // 37 columns.
                     vec![
                         ("Esc", "Back"),
-                        ("\u{2191}\u{2193}", "Nav"),
+                        ("F1", "Help"),
+                        ("\u{2191}\u{2193}", "Move"),
                         ("Enter", "Raw"),
                     ]
-                } else if width < 126 {
+                } else if width < 107 {
+                    // 71 columns.
                     vec![
                         ("Esc", "Back"),
-                        ("\u{2191}\u{2193}", "Nav"),
+                        ("F1", "Help"),
+                        ("\u{2191}\u{2193}", "Move"),
+                        ("Enter", "Raw"),
+                        ("d", "SDP"),
+                        ("t", "Time"),
+                        ("c", "Color"),
+                        ("R", "Detail"),
+                    ]
+                } else if width < 137 {
+                    // 107 columns.
+                    vec![
+                        ("Esc", "Back"),
+                        ("F1", "Help"),
+                        ("\u{2191}\u{2193}", "Move"),
                         ("Enter", "Raw"),
                         ("Space", "Diff"),
                         ("d", "SDP"),
                         ("t", "Time"),
                         ("c", "Color"),
-                        ("R", "Split"),
+                        ("R", "Detail"),
+                        ("a/A", "Combined"),
+                        ("f", "Filter"),
                     ]
                 } else {
-                    // 126 columns.
+                    // 137 columns.
                     vec![
                         ("Esc", "Back"),
-                        ("\u{2191}\u{2193}", "Nav"),
+                        ("F1", "Help"),
+                        ("\u{2191}\u{2193}", "Move"),
                         ("Enter", "Raw"),
                         ("Space", "Diff"),
                         ("d", "SDP"),
                         ("t", "Time"),
                         ("c", "Color"),
-                        ("R", "Split"),
-                        ("a/A", "Txn/Dlg"),
+                        ("R", "Detail"),
+                        ("a/A", "Combined"),
                         ("f", "Filter"),
                         ("F4", "Extend"),
                         ("r", "Streams"),
@@ -512,26 +540,39 @@ pub(in crate::tui) fn fkey_bar_items(
             View::CombinedDetail { .. } => {
                 vec![
                     ("Esc", "Back"),
+                    ("F1", "Help"),
                     ("\u{2191}\u{2193}", "Scroll"),
                     ("PgUp/Dn", "Page"),
                 ]
             }
             View::RawMessage { .. } => {
                 if width < 80 {
-                    vec![("Esc", "Back"), ("s", "Highlight"), ("F2", "Save")]
+                    vec![
+                        ("Esc", "Back"),
+                        ("F1", "Help"),
+                        ("s", "Highlight"),
+                        ("F2", "Save"),
+                    ]
                 } else {
                     vec![
                         ("Esc", "Back"),
+                        ("F1", "Help"),
                         ("s", "Highlight"),
                         ("c", "Color"),
                         ("/", "Search"),
+                        ("y", "Copy"),
                         ("F2", "Save"),
                     ]
                 }
             }
-            View::MessageDiff { .. } => vec![("Esc", "Back")],
+            View::MessageDiff { .. } => vec![
+                ("Esc", "Back"),
+                ("F1", "Help"),
+                ("\u{2191}\u{2193}", "Scroll"),
+            ],
             View::StreamList => vec![
                 ("Esc", "Back"),
+                ("F1", "Help"),
                 ("Enter", "Detail"),
                 ("Tab", "Calls"),
                 ("F2", "Save WAV"),
@@ -542,26 +583,32 @@ pub(in crate::tui) fn fkey_bar_items(
                 {
                     vec![
                         ("Esc", "Back"),
+                        ("F1", "Help"),
                         ("j/k", "Scroll"),
                         ("PgUp/Dn", "Page"),
                         ("P", "Play"),
                         ("F2", "Save WAV"),
+                        ("L", "Loss map"),
                     ]
                 }
                 #[cfg(not(feature = "audio"))]
                 {
                     vec![
                         ("Esc", "Back"),
+                        ("F1", "Help"),
                         ("j/k", "Scroll"),
                         ("PgUp/Dn", "Page"),
                         ("F2", "Save WAV"),
+                        ("L", "Loss map"),
                     ]
                 }
             }
             View::RelayStats { .. } => vec![
                 ("Esc/S", "Close"),
+                ("F1", "Help"),
                 ("?", "Names"),
                 ("K", "Compare"),
+                ("H", "Holdings"),
                 ("\u{2191}\u{2193}", "Scroll"),
             ],
             View::BpfFilter => vec![
@@ -570,7 +617,43 @@ pub(in crate::tui) fn fkey_bar_items(
                 ("Enter", "Check"),
                 ("\u{2191}\u{2193}", "Scroll"),
             ],
-            _ => vec![("Esc", "Back")],
+            View::Help => vec![
+                ("Esc", "Close"),
+                ("\u{2191}\u{2193}", "Scroll"),
+                ("PgUp/Dn", "Page"),
+            ],
+            View::CaptureHealth => {
+                let mut items = scroll_view;
+                items.push(("s", "HEP senders"));
+                items
+            }
+            View::TfpsObserve { .. } => vec![
+                ("Esc", "Back"),
+                ("F1", "Help"),
+                ("b", "Banned"),
+                ("d", "Drops"),
+                ("\u{2191}\u{2193}", "Scroll"),
+            ],
+            View::QualityDashboard => vec![
+                ("Esc", "Back"),
+                ("F1", "Help"),
+                ("\u{2191}\u{2193}", "Select"),
+                ("Enter", "Detail"),
+                ("L", "Loss map"),
+            ],
+            View::CallTimeline(_) | View::StreamLossMap(_) => {
+                vec![("Esc", "Back"), ("F1", "Help")]
+            }
+            View::Statistics
+            | View::Talkers
+            | View::CarrierMetrics
+            | View::CompareDialogs { .. }
+            | View::EndpointRollup { .. }
+            | View::HepSenders
+            | View::CallVolume
+            | View::SdpTimeline { .. }
+            | View::Conformance { .. }
+            | View::SecurityFindings => scroll_view,
         }
     }
 }
@@ -596,18 +679,19 @@ pub(in crate::tui) fn render_fkey_bar(
     area: Rect,
     view: &View,
     popup: &Option<Popup>,
+    file_open_manual: bool,
     theme: &Theme,
 ) {
-    let key_style = Style::default()
-        .fg(theme.foreground)
-        .add_modifier(Modifier::BOLD);
-    let label_style = Style::default().fg(theme.foreground);
+    // No color of their own: both inherit the bar's text color, which is
+    // chosen against the bar's background.
+    let key_style = Style::default().add_modifier(Modifier::BOLD);
+    let label_style = Style::default();
 
     let width = area.width;
 
     // Full item sets per view; items near the end are lower priority.
     // Popup-specific bars take precedence.
-    let items = fkey_bar_items(view, popup, width);
+    let items = fkey_bar_items(view, popup, width, file_open_manual);
 
     let mut spans: Vec<Span> = Vec::new();
     for (i, (key, label)) in items.iter().enumerate() {
@@ -618,13 +702,7 @@ pub(in crate::tui) fn render_fkey_bar(
         spans.push(Span::styled((*label).to_string(), label_style));
     }
 
-    // Pad to full width for solid background
-    let content_len: usize = spans.iter().map(|s| s.content.len()).sum();
-    if content_len < width as usize {
-        spans.push(Span::raw(" ".repeat(width as usize - content_len)));
-    }
-
-    let bar = Paragraph::new(Line::from(spans)).style(Style::default().bg(theme.status_bg));
+    let bar = Paragraph::new(Line::from(spans)).style(status_bar_style(theme));
     frame.render_widget(bar, area);
 }
 
@@ -700,19 +778,173 @@ mod tests {
         assert_eq!(bpf_display(false, "", true, 40), "");
     }
 
-    /// The fill accounting for status line 2 measures the filter and BPF
-    /// text by rendered columns, not UTF-8 bytes. `"日本語"` is 9 bytes but
-    /// 6 columns; a byte-based count over-sizes the used width and would
-    /// under-fill the row.
+    /// A live capture is named by its interface, in words: the old
+    /// `Current Mode: Online (any)` made the reader decode "mode" and
+    /// "online" into "which traffic am I looking at".
     #[test]
-    fn line2_used_cols_is_display_width_not_bytes() {
-        assert_eq!(display_cols("日本語"), 6);
-        assert_eq!("日本語".len(), 9); // pins the byte/column divergence
-        // 19 (prefix) + 6 (filter cols) + 16 (mid) + 3 (bpf) = 44.
+    fn a_live_capture_is_named_by_its_interface() {
+        assert_eq!(capture_source_phrase("Online (eth0)"), "Live capture: eth0");
+        assert_eq!(capture_source_phrase("Online (any)"), "Live capture: any");
+    }
+
+    /// An offline capture is named by its file, non-ASCII names intact.
+    #[test]
+    fn an_offline_capture_is_named_by_its_file() {
         assert_eq!(
-            line2_used_cols("日本語", "udp"),
-            L2_PREFIX.len() + 6 + L2_MID.len() + 3
+            capture_source_phrase("Offline (café.pcap)"),
+            "File: café.pcap"
         );
+    }
+
+    /// A label in neither shape is shown verbatim rather than mangled.
+    #[test]
+    fn an_unrecognized_capture_label_is_shown_as_is() {
+        assert_eq!(capture_source_phrase("HEP listener"), "HEP listener");
+    }
+
+    /// Status line 1 reads as words: the source, the dialog counts as
+    /// "N shown of M", and autoscroll spelled out rather than a bare `[A]`.
+    #[test]
+    fn status_line1_reads_as_words() {
+        let app = App::new_test();
+        let row = status_row(&app, 100, render_status_line1);
+        assert!(row.contains("Live capture: any"), "source missing: {row:?}");
+        assert!(
+            row.contains("Dialogs: 0 shown of 0"),
+            "counts missing: {row:?}"
+        );
+        assert!(
+            row.contains("Autoscroll: on"),
+            "autoscroll missing: {row:?}"
+        );
+        assert!(!row.contains("[A]"), "the bare [A] marker is back: {row:?}");
+        assert!(!row.contains("Current Mode"), "old label is back: {row:?}");
+    }
+
+    /// Line 2 carries the capture (BPF) filter and ONLY that; the view
+    /// filter lives on line 3. Both lines used to print the view filter, so
+    /// the header said the same thing twice and the BPF slot was easy to miss.
+    #[test]
+    fn the_view_filter_is_on_line3_and_not_on_line2() {
+        let mut app = App::new_test();
+        app.active_filter_text = "method == 'BYE'".to_string();
+        app.bpf_filter = "udp port 5060".to_string();
+        let line2 = status_row(&app, 100, render_status_line2);
+        let line3 = status_row(&app, 100, render_status_line3);
+        assert!(
+            line2.contains("Capture filter (BPF): udp port 5060"),
+            "capture filter missing from line 2: {line2:?}"
+        );
+        assert!(
+            !line2.contains("method =="),
+            "the view filter is duplicated on line 2: {line2:?}"
+        );
+        assert!(
+            line3.contains("View filter: method == 'BYE'"),
+            "view filter missing from line 3: {line3:?}"
+        );
+    }
+
+    /// With no view filter and no capture filter, both slots say `none`
+    /// instead of ending on a bare label.
+    #[test]
+    fn unset_filters_read_none() {
+        let app = App::new_test();
+        let line2 = status_row(&app, 100, render_status_line2);
+        let line3 = status_row(&app, 100, render_status_line3);
+        assert!(
+            line2.trim_end().ends_with("Capture filter (BPF): none"),
+            "{line2:?}"
+        );
+        assert!(line3.trim_end().ends_with("View filter: none"), "{line3:?}");
+    }
+
+    /// The color of the first message column on status line 3.
+    fn status_message_fg(app: &App) -> ratatui::style::Color {
+        let mut terminal = Terminal::new(TestBackend::new(60, 2)).unwrap();
+        terminal
+            .draw(|frame| render_status_line3(frame, Rect::new(0, 0, 60, 1), app))
+            .unwrap();
+        terminal.backend().buffer().cell((1, 0)).unwrap().fg
+    }
+
+    /// A message raised as an error draws in the error color, whatever its
+    /// words. "File not found" contains neither "error" nor "fail", and the
+    /// old substring test drew it as plain information.
+    #[test]
+    fn a_raised_error_draws_in_the_error_color() {
+        let mut app = App::new_test();
+        app.set_status_error("File not found: /nope.pcap");
+        assert_eq!(status_message_fg(&app), app.theme.bad);
+    }
+
+    /// Information draws as information even when its words contain "fail":
+    /// severity is what the code said, not what the sentence happens to say.
+    #[test]
+    fn information_that_mentions_failure_is_not_drawn_as_an_error() {
+        let mut app = App::new_test();
+        app.status_error = Some("Cleared 3 failed dialogs".to_string());
+        assert_ne!(status_message_fg(&app), app.theme.bad);
+    }
+
+    /// A later information message replaces an error without inheriting its
+    /// color: severity belongs to the message it was raised with.
+    #[test]
+    fn an_error_does_not_color_the_message_that_replaces_it() {
+        let mut app = App::new_test();
+        app.set_status_error("Save failed: disk full");
+        app.status_error = Some("Saved 3 packets".to_string());
+        assert_ne!(status_message_fg(&app), app.theme.bad);
+    }
+
+    /// The default body text follows the terminal's own foreground, so a
+    /// light terminal gets dark text. Hardcoded white was near-invisible on
+    /// a white background.
+    #[test]
+    fn the_default_foreground_follows_the_terminal() {
+        assert_eq!(Theme::default().foreground, ratatui::style::Color::Reset);
+    }
+
+    /// The status rows and the key bar paint their own background, so their
+    /// text takes the color chosen against that background, never the
+    /// terminal default (dark text on the dark band on a light terminal).
+    #[test]
+    fn status_bar_text_contrasts_with_its_background() {
+        let app = App::new_test();
+        let want = crate::tui::call_list::header_foreground(app.theme.status_bg)
+            .expect("the default status band is a real color");
+        let mut terminal = Terminal::new(TestBackend::new(80, 2)).unwrap();
+        terminal
+            .draw(|frame| {
+                render_fkey_bar(
+                    frame,
+                    Rect::new(0, 0, 80, 1),
+                    &View::CallList,
+                    &None,
+                    false,
+                    &app.theme,
+                );
+                render_status_line1(frame, Rect::new(0, 1, 80, 1), &app);
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        assert_eq!(buf.cell((0, 0)).unwrap().fg, want, "key bar key");
+        assert_eq!(buf.cell((4, 0)).unwrap().fg, want, "key bar label");
+        // Column 0 of line 1 is the indent, drawn in the row's own style.
+        assert_eq!(buf.cell((0, 1)).unwrap().fg, want, "status line 1");
+    }
+
+    /// Draw one status row with `render` into a `width`-wide backend and
+    /// return it as text.
+    fn status_row(app: &App, width: u16, render: fn(&mut ratatui::Frame, Rect, &App)) -> String {
+        let mut terminal = Terminal::new(TestBackend::new(width, 2)).unwrap();
+        terminal
+            .draw(|frame| render(frame, Rect::new(0, 0, width, 1), app))
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        (0..width)
+            .map(|x| buf.cell((x, 0)).unwrap().symbol().to_string())
+            .collect()
     }
 
     /// A filter that fits the row is left exactly as the capture compiled
@@ -760,29 +992,9 @@ mod tests {
         assert_eq!(fit_bpf_to_cols("udp port 5060", 1), "…");
     }
 
-    /// The fill accounting for status line 1 measures the capture-mode
-    /// label (which for offline captures is a filename that may be
-    /// non-ASCII) by rendered columns, not bytes.
-    #[test]
-    fn line1_used_cols_is_display_width_not_bytes() {
-        let mode = "Offline (日本語.pcap)"; // 9 + 6 + 6 = 21 columns, 24 bytes
-        let counts = "    Dialogs: 0 (0 displayed)"; // ASCII: bytes == columns
-        assert_eq!(display_cols(mode), 21);
-        assert_eq!(mode.len(), 24); // pins the byte/column divergence
-        assert_eq!(
-            line1_used_cols(mode, counts, false, false),
-            L1_PREFIX.len() + 21 + counts.len()
-        );
-        // Active indicators add their own rendered width.
-        assert_eq!(
-            line1_used_cols(mode, counts, true, true),
-            L1_PREFIX.len() + 21 + counts.len() + L1_PAUSED.len() + L1_AUTOSCROLL.len()
-        );
-    }
-
     /// A non-ASCII offline filename renders intact and the styled
-    /// capture-mode span lands on the mode text (offline "bad" color at the
-    /// first mode column), proving the styled segment is not shifted by
+    /// capture-source span lands on the source text (offline "bad" color at
+    /// the first source column), proving the styled segment is not shifted by
     /// byte/char index skew.
     #[test]
     fn render_status_line1_non_ascii_filename_alignment() {
@@ -797,20 +1009,19 @@ mod tests {
         let row: String = (0..w)
             .map(|x| buf.cell((x, 0)).unwrap().symbol().to_string())
             .collect();
-        assert!(row.contains("café.pcap"), "filename missing: {row:?}");
-        let mode_col = L1_PREFIX.len() as u16;
-        let cell = buf.cell((mode_col, 0)).unwrap();
-        assert_eq!(cell.symbol(), "O", "mode span misaligned: {row:?}");
-        assert_eq!(cell.fg, app.theme.bad, "mode span not styled");
+        assert!(row.contains("File: café.pcap"), "filename missing: {row:?}");
+        let src_col = L1_INDENT.len() as u16;
+        let cell = buf.cell((src_col, 0)).unwrap();
+        assert_eq!(cell.symbol(), "F", "source span misaligned: {row:?}");
+        assert_eq!(cell.fg, app.theme.bad, "source span not styled");
     }
 
-    /// A wide-character (CJK) match expression renders intact under status
+    /// A wide-character (CJK) capture filter renders intact under status
     /// line 2 without truncation or panic.
     #[test]
     fn render_status_line2_wide_char_filter() {
         let mut app = App::new_test();
-        app.active_filter_text = "日本語".to_string();
-        app.bpf_filter = "udp".to_string();
+        app.bpf_filter = "日本語".to_string();
         let w = 80u16;
         let mut terminal = Terminal::new(TestBackend::new(w, 4)).unwrap();
         terminal
@@ -826,7 +1037,10 @@ mod tests {
             ['日', '本', '語'].iter().all(|c| row.contains(*c)),
             "wide filter text missing: {row:?}"
         );
-        assert!(row.contains("BPF Filter:"), "bpf label missing: {row:?}");
+        assert!(
+            row.contains("Capture filter (BPF):"),
+            "bpf label missing: {row:?}"
+        );
     }
 
     /// Outside call flow, status line 3 shows the display filter.
@@ -846,7 +1060,7 @@ mod tests {
         for x in 0..buf.area.width {
             row.push_str(buf.cell((x, 0)).unwrap().symbol());
         }
-        assert!(row.contains("Display Filter"));
+        assert!(row.contains("View filter"));
     }
 
     /// While mouse capture is toggled off (F12), status line 3 shows the
@@ -892,7 +1106,7 @@ mod tests {
         for x in 0..buf.area.width {
             row.push_str(buf.cell((x, 0)).unwrap().symbol());
         }
-        assert!(row.contains("Split:"));
+        assert!(row.contains("Detail: "), "{row:?}");
     }
 
     // ── render_fkey_bar across views ───────────────────────────────
@@ -921,7 +1135,7 @@ mod tests {
             terminal
                 .draw(|frame| {
                     let area = Rect::new(0, 0, 120, 1);
-                    render_fkey_bar(frame, area, &view, &None, &theme);
+                    render_fkey_bar(frame, area, &view, &None, false, &theme);
                 })
                 .unwrap();
             let buf = terminal.backend().buffer();
@@ -949,6 +1163,7 @@ mod tests {
                     area,
                     &View::CallList,
                     &Some(Popup::SaveDialog),
+                    false,
                     &theme,
                 );
             })
@@ -959,6 +1174,28 @@ mod tests {
             row.push_str(buf.cell((x, 0)).unwrap().symbol());
         }
         assert!(row.contains("Format"));
+    }
+
+    /// The file-open dialog's bar names the keys of the mode it is in. It
+    /// used to show the browser's keys (with a Shift-arrow glyph for plain
+    /// arrows) over the typed-path field, where Backspace edits the path
+    /// rather than going up a directory.
+    #[test]
+    fn the_file_open_bar_follows_the_dialog_mode() {
+        let popup = Some(Popup::FileOpenDialog);
+        let manual = fkey_bar_items(&View::CallList, &popup, 120, true);
+        assert!(manual.contains(&("Tab", "Browse")), "{manual:?}");
+        assert!(
+            !manual.iter().any(|(k, _)| *k == "Backspace"),
+            "typed-path mode advertises the browser's Backspace: {manual:?}"
+        );
+        let browse = fkey_bar_items(&View::CallList, &popup, 120, false);
+        assert!(browse.contains(&("Tab", "Type path")), "{browse:?}");
+        assert!(browse.contains(&("\u{2191}\u{2193}", "Move")), "{browse:?}");
+        assert!(
+            !browse.iter().any(|(k, _)| k.contains('\u{21E7}')),
+            "plain arrows drawn as Shift-arrows: {browse:?}"
+        );
     }
 
     // ── The f-key bar must not misrepresent the keymap ──────────────
@@ -982,9 +1219,6 @@ mod tests {
         // Glyph legends are single entries that name a pair of keys.
         match legend {
             "\u{2191}\u{2193}" | "Up/Down" => {
-                return vec![plain(KeyCode::Up), plain(KeyCode::Down)];
-            }
-            "\u{21E7}\u{21E9}" => {
                 return vec![plain(KeyCode::Up), plain(KeyCode::Down)];
             }
             "PgUp/Dn" => return vec![plain(KeyCode::PageUp), plain(KeyCode::PageDown)],
@@ -1023,6 +1257,140 @@ mod tests {
             .collect()
     }
 
+    /// A key-event predicate: whether a view's own keymap answers a key.
+    type Bound = fn(&Keymap, KeyEvent) -> bool;
+
+    /// Every view with an f-key bar, paired with its pure key-to-action
+    /// mapper. One list, so the bound gate, the width gate and the help gate
+    /// cannot cover different views.
+    fn bar_views() -> Vec<(View, Bound)> {
+        use crate::rtp::stream::StreamKey;
+        use crate::tui::tfps_observe::TfpsMode;
+        use std::net::SocketAddr;
+
+        let addr =
+            |s: &str| -> SocketAddr { s.parse().expect("test-local literal socket address") };
+        let key = StreamKey {
+            ssrc: 1,
+            src: addr("192.0.2.1:5004"),
+            dst: addr("192.0.2.2:5004"),
+        };
+        let id = || String::from("call-id");
+        vec![
+            (View::CallList, |km, k| call_list_action(km, k).is_some()),
+            (View::CallFlow(id()), |km, k| {
+                call_flow_action(km, k).is_some()
+            }),
+            (
+                View::RawMessage {
+                    call_id: id(),
+                    message_index: 0,
+                },
+                |km, k| raw_message_action(km, k).is_some(),
+            ),
+            (
+                View::MessageDiff {
+                    call_id: id(),
+                    msg1_idx: 0,
+                    msg2_idx: 1,
+                },
+                |km, k| message_diff_action(km, k).is_some(),
+            ),
+            (
+                View::CombinedDetail {
+                    call_id: id(),
+                    indices: vec![0],
+                    scope: "dialog",
+                },
+                |km, k| combined_detail_action(km, k).is_some(),
+            ),
+            (View::StreamList, |km, k| {
+                stream_list_action(km, k).is_some()
+            }),
+            (View::StreamDetail(key.clone()), |km, k| {
+                stream_detail_action(km, k).is_some()
+            }),
+            (View::Help, |km, k| help_action(km, k).is_some()),
+            (View::Statistics, |km, k| statistics_action(km, k).is_some()),
+            (View::Talkers, |km, k| talkers_action(km, k).is_some()),
+            (View::CarrierMetrics, |km, k| {
+                carrier_metrics_action(km, k).is_some()
+            }),
+            (View::CompareDialogs { a: id(), b: id() }, |km, k| {
+                compare_dialogs_action(km, k).is_some()
+            }),
+            (
+                View::EndpointRollup {
+                    ip: String::from("192.0.2.1"),
+                },
+                |km, k| endpoint_rollup_action(km, k).is_some(),
+            ),
+            (View::CaptureHealth, |km, k| {
+                capture_health_action(km, k).is_some()
+            }),
+            (View::HepSenders, |km, k| {
+                hep_senders_action(km, k).is_some()
+            }),
+            (View::CallVolume, |km, k| {
+                call_volume_action(km, k).is_some()
+            }),
+            (View::SdpTimeline { call_id: id() }, |km, k| {
+                sdp_timeline_action(km, k).is_some()
+            }),
+            (View::Conformance { call_id: id() }, |km, k| {
+                conformance_action(km, k).is_some()
+            }),
+            (
+                View::TfpsObserve {
+                    mode: TfpsMode::Banned,
+                },
+                |km, k| tfps_observe_action(km, k).is_some(),
+            ),
+            (View::SecurityFindings, |km, k| {
+                security_findings_action(km, k).is_some()
+            }),
+            (
+                View::RelayStats {
+                    call_id: None,
+                    mode: RelayStatsMode::Counters,
+                },
+                |km, k| relay_stats_action(km, k).is_some(),
+            ),
+            (View::QualityDashboard, |km, k| {
+                dashboard_action(km, k).is_some()
+            }),
+            (View::CallTimeline(id()), |km, k| {
+                timeline_action(km, k).is_some()
+            }),
+            (View::StreamLossMap(key), |km, k| {
+                loss_map_action(km, k).is_some()
+            }),
+        ]
+    }
+
+    /// **Every view's bar names the help key**, at every width. The bar is
+    /// where an operator looks for a way out of not knowing; eleven views had
+    /// a bar with no F1 on it, and in most of those F1 did nothing either.
+    #[test]
+    fn every_view_bar_offers_help_at_every_width() {
+        let mut missing = Vec::new();
+        for (view, _) in bar_views() {
+            if view == View::Help {
+                continue; // F1 closes help; the bar says Esc Close instead.
+            }
+            for width in [60u16, 79, 80, 96, 112, 126, 142, 200] {
+                if !fkey_bar_items(&view, &None, width, false).contains(&("F1", "Help")) {
+                    missing.push(format!("{view:?} @ {width}"));
+                }
+            }
+        }
+        assert!(
+            missing.is_empty(),
+            "bars without F1 Help:\n  {}",
+            missing.join("\n  ")
+        );
+    }
+
     /// **Every key the f-key bar advertises must be bound in the view that
     /// shows it.** The bar is the only place most operators ever learn a
     /// binding, so an entry naming a key the view ignores is not cosmetic:
@@ -1042,65 +1410,21 @@ mod tests {
     /// than a silent one.
     #[test]
     fn every_advertised_fkey_is_bound_in_its_view() {
-        // Every per-view mapper is re-exported from `crate::tui`, which this
-        // module already glob-imports.
-        use crate::rtp::stream::StreamKey;
-        use std::net::SocketAddr;
-
-        let addr =
-            |s: &str| -> SocketAddr { s.parse().expect("test-local literal socket address") };
         let km = Keymap::default();
         // Widths straddle every tier boundary in `fkey_bar_items`.
         let widths = [60u16, 79, 95, 96, 111, 112, 125, 126, 141, 142, 200];
-
-        type Bound = fn(&Keymap, KeyEvent) -> bool;
-        let views: Vec<(View, Bound)> = vec![
-            (View::CallList, |km, k| call_list_action(km, k).is_some()),
-            (View::CallFlow(String::from("call-id")), |km, k| {
-                call_flow_action(km, k).is_some()
-            }),
-            (
-                View::RawMessage {
-                    call_id: String::from("call-id"),
-                    message_index: 0,
-                },
-                |km, k| raw_message_action(km, k).is_some(),
-            ),
-            (
-                View::MessageDiff {
-                    call_id: String::from("call-id"),
-                    msg1_idx: 0,
-                    msg2_idx: 1,
-                },
-                |km, k| message_diff_action(km, k).is_some(),
-            ),
-            (
-                View::CombinedDetail {
-                    call_id: String::from("call-id"),
-                    indices: vec![0],
-                    scope: "dialog",
-                },
-                |km, k| combined_detail_action(km, k).is_some(),
-            ),
-            (View::StreamList, |km, k| {
-                stream_list_action(km, k).is_some()
-            }),
-            (
-                View::StreamDetail(StreamKey {
-                    ssrc: 1,
-                    src: addr("192.0.2.1:5004"),
-                    dst: addr("192.0.2.2:5004"),
-                }),
-                |km, k| stream_detail_action(km, k).is_some(),
-            ),
-        ];
+        let views = bar_views();
 
         let mut unbound: Vec<String> = Vec::new();
         for (view, is_bound) in &views {
             for width in widths {
-                for (legend, label) in fkey_bar_items(view, &None, width) {
+                for (legend, label) in fkey_bar_items(view, &None, width, false) {
                     for key in bar_legend_keys(legend) {
-                        if !is_bound(&km, key) {
+                        // The help key is also answered globally, for every
+                        // view that does not bind it itself.
+                        let global_help =
+                            key.code == km.help && !crate::tui::controllers::view_binds_help(view);
+                        if !(is_bound(&km, key) || global_help) {
                             unbound.push(format!(
                                 "{view:?} @ width {width}: bar advertises \
                                  {legend:?} {label:?} but {key:?} is not bound in that view"
@@ -1129,6 +1453,17 @@ mod tests {
             + items.len().saturating_sub(1) * 2
     }
 
+    /// The call list is the first screen, so its bar fits a 60-column
+    /// terminal too: the narrowest tier used to be 62 columns wide, and at 60
+    /// the last entry was cut to `F7 Filt`.
+    #[test]
+    fn the_call_list_bar_fits_a_60_column_terminal() {
+        for width in [60u16, 66] {
+            let items = fkey_bar_items(&View::CallList, &None, width, false);
+            assert!(bar_cols(&items) <= width as usize, "{width}: {items:?}");
+        }
+    }
+
     /// **A bar tier must fit the narrowest terminal that selects it.**
     ///
     /// `render_fkey_bar` draws into a one-row `Paragraph` with no wrap, so
@@ -1142,30 +1477,12 @@ mod tests {
     /// tier is at its tightest relative to its budget.
     #[test]
     fn every_fkey_bar_tier_fits_the_width_that_selects_it() {
-        use crate::rtp::stream::StreamKey;
-        use std::net::SocketAddr;
-
-        let addr =
-            |s: &str| -> SocketAddr { s.parse().expect("test-local literal socket address") };
-        let views = [
-            View::CallList,
-            View::CallFlow(String::from("call-id")),
-            View::StreamList,
-            View::StreamDetail(StreamKey {
-                ssrc: 1,
-                src: addr("192.0.2.1:5004"),
-                dst: addr("192.0.2.2:5004"),
-            }),
-            View::RawMessage {
-                call_id: String::from("call-id"),
-                message_index: 0,
-            },
-        ];
+        let views: Vec<View> = bar_views().into_iter().map(|(v, _)| v).collect();
 
         let mut overflow: Vec<String> = Vec::new();
         for view in &views {
-            for width in [79u16, 95, 96, 111, 112, 125, 126, 141, 142, 200] {
-                let items = fkey_bar_items(view, &None, width);
+            for width in [79u16, 80, 95, 96, 111, 112, 125, 126, 141, 142, 200] {
+                let items = fkey_bar_items(view, &None, width, false);
                 let cols = bar_cols(&items);
                 if cols > width as usize {
                     overflow.push(format!(

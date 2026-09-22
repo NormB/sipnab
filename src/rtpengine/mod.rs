@@ -50,8 +50,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 ///
 /// `--homer-ng-capture-proto` can change it, so this is a default and not a
 /// certainty; [`is_ng_over_hep`] therefore also accepts a payload that parses
-/// as `ng` under any protocol number. Confirmed as 0x3d against rtpengine
-/// 12.5.1 in `tests/fixtures/rtpengine-ng-hep.pcap`.
+/// as `ng` under any protocol number. Confirmed as 0x3d against a live
+/// rtpengine 12.5.1, whose wire shapes `tests/fixtures/rtpengine-ng-hep.pcap`
+/// keeps.
 pub const NG_HEP_CAPTURE_PROTO: u8 = 0x3d;
 
 /// Does this HEP packet carry an rtpengine `ng` message?

@@ -409,7 +409,9 @@ impl FindingKind {
                 "icmp_unreachable_media",
                 Severity::Critical,
                 "ICMP: media undeliverable",
-                "flow",
+                // Every ICMP error on a media flow is counted, as the endpoint
+                // finding counts its errors: "flow" labeled that count wrong.
+                "error",
                 "A router answered a media datagram with an ICMP error: the audio was sent to a \
                  socket that was not listening. Check that the media relay is running and that \
                  the port the SDP advertised is the port it is bound to.",
@@ -3361,6 +3363,11 @@ mod tests {
         assert_eq!(
             f.occurrences, 42,
             "every error on the two media flows, and none of the 900 that were not media"
+        );
+        assert_eq!(
+            f.unit, "error",
+            "the count is of errors, so the unit must say errors: two flows hit 42 times \
+             read as \"42 flow(s)\""
         );
         assert_eq!(f.evidence.len(), 2);
         let ev = &f.evidence[0];

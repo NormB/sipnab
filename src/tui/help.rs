@@ -9,7 +9,7 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, Paragraph};
 
 /// The full help text as a constant for testing.
 pub const HELP_TEXT: &str = "\
@@ -21,7 +21,7 @@ CALL LIST:
   Home/End         Jump to first/last
   Enter            Open call flow
   Space            Select/deselect dialog
-  Esc, q           Quit (asks first; Ctrl-C quits at once)
+  Esc, q           Quit (asks first, Ctrl+C quits at once)
   < / >            Change sort column
   Z                Reverse sort direction
   A                Toggle autoscroll
@@ -30,13 +30,13 @@ CALL LIST:
   i                Clear non-matching dialogs
   I                Clear matching dialogs
   F1, ?            This help (? works in every view)
-  F2               Save capture (Tab cycles PCAP/TXT/JSON/WAV/Mermaid/...)
+  F2               Save capture: PCAP, PCAP-NG, TXT, SIPp, JSON, NDJSON, CSV, HTML (Mermaid ladder), Markdown, WAV, RTP JSON, NOTES (Tab cycles)
   F3               Search (same as /)
   F5, Ctrl+L       Clear calls
   r, F6            Show raw SIP message
   F7               Filter dialog
   F8               Settings
-  t                Cycle timestamps (absolute / delta-prev / delta-first / scaled)
+  t                Cycle timestamps (absolute / delta from previous / delta from first / scaled)
   u                Cycle From/To (default/host:port/user/user@host:port)
   n                Cycle name resolution (off/static/DNS) \u{2014} global
   N                Name selected address (IP -> host / FQDN)
@@ -56,13 +56,13 @@ CALL LIST:
   B                Edit the BPF capture filter (append)
   D                Quality dashboard (live MOS/jitter/loss)
   T                Call timeline (selected dialog)
-  F9               Clear active filter
-  F10              Column selector
-  Tab              Switch to RTP Streams
+  F9               Clear the view filter and search
+  F10              Choose columns
+  Tab              Switch to RTP streams
   v                Show version / git commit \u{2014} global
 
 CALL FLOW:
-  \u{2191}/\u{2193}             Navigate messages (detail panel updates)
+  \u{2191}/\u{2193}             Move through messages, or scroll the detail pane when it has focus
   PgUp/PgDn       Page through messages
   Home/End         First/last message
   Enter            Full-screen raw message
@@ -71,25 +71,24 @@ CALL FLOW:
   f                Filter ladder to this transaction (toggle)
   Esc              Back to call list
   Tab              Switch focus: ladder <-> detail pane
-  \u{2191}/\u{2193}             Navigate ladder, or scroll detail when focused
-  d                Cycle SDP display (none / summary / full)
-  t                Cycle timestamps (absolute / delta-prev / delta-first / scaled)
-  c                Cycle colors (method / call-id / cseq)
+  d                Cycle SDP display (hidden / summary / full)
+  t                Cycle timestamps (absolute / delta from previous / delta from first / scaled)
+  c                Cycle colors (method / Call-ID / CSeq)
   h                Header names (as captured / expanded / compact)
-  R                Toggle detail panel
-  w                Toggle line wrap in the detail panel
+  R                Show or hide the detail pane
+  w                Toggle line wrap in the detail pane
   m / M            Mark message / clear marks
   e                Fold / expand retransmits
   E                Export Mermaid sequence diagram
   C                Operator note on this message (yours, never analysis)
-  9/0, +/-, ←/→    Resize ladder/detail split
+  9/0, +/-, ←/→    Resize the detail pane
   ←/→              Scroll detail horizontally (focused, wrap off)
-  [ / ]            Scroll detail panel (any focus)
+  [ / ]            Scroll the detail pane (any focus)
   F2               Save
   F4, x            Extended multi-leg flow
-  F6, Ctrl-R       Toggle RTP display
+  F6, Ctrl+R       Toggle RTP display
   r                Jump to RTP Streams
-  N                Name endpoints (Tab/Shift-Tab between participants)
+  N                Name endpoints (Tab/Shift+Tab between participants)
 
 RAW MESSAGE:
   \u{2191}/\u{2193}             Scroll
@@ -97,7 +96,7 @@ RAW MESSAGE:
   Home/End         Jump to top/bottom
   /                Search in message
   n / N            Next / previous search match (wraps)
-  s                Toggle syntax highlighting
+  s                Toggle syntax colors
   c                Cycle colors
   h                Header names (as captured / expanded / compact)
   y                Copy displayed message to clipboard (OSC 52)
@@ -193,7 +192,7 @@ QUALITY DASHBOARD:
   Home/End         Jump to best/worst
   Enter            Open stream detail
   L                Packet loss map (RTP loss pattern)
-  Esc, q, D        Close dashboard
+  Esc, q, D        Close
 
 RTP STREAMS (Tab):
   \u{2191}/\u{2193}             Navigate streams
@@ -201,18 +200,29 @@ RTP STREAMS (Tab):
   /                Search streams (arrows work while typing; Enter opens)
   Enter            Stream detail
   D                Quality dashboard (live MOS/jitter/loss)
-  Tab              Switch to Call List
+  Tab              Switch to the call list
   F1               Help
   F7               Filter
   N                Name selected address (IP -> host / FQDN)
-  Esc              Back to Call List
+  Esc              Back to the call list
 
 STREAM DETAIL:
   \u{2191}/\u{2193}             Scroll
   PgUp/PgDn, Home/End  Page / jump
   Shift+P          Play / stop audio (G.711, audio build)
   L                Packet loss map (RTP loss pattern)
-  Esc              Back to RTP Streams
+  Esc              Back to RTP streams
+
+TERMS:
+  ASR      Answer-seizure ratio: share of call attempts answered
+  NER      Network effectiveness ratio: far end answered or refused
+  ACD      Average call duration of answered calls
+  PDD      Post-dial delay: INVITE to the first 180 or 183
+  MOS      Mean opinion score: call quality, 1 to 5, higher is better
+  SSRC     Synchronization source: the ID of one RTP stream
+  BPF      Berkeley Packet Filter: the kernel's capture filter
+  HEP      Homer Encapsulation Protocol: SIP mirrored by a proxy
+  TFPS     Optional peer that bans sources (sipnab only asks it)
 
 ARCHIVE PASSWORD (a load waits on an encrypted archive member):
   Enter            Try the password (three attempts per archive)
@@ -221,23 +231,13 @@ ARCHIVE PASSWORD (a load waits on an encrypted archive member):
   Ctrl-U           Clear the entry
 
 COPY & PASTE:
-  y                Copy displayed message to clipboard (Raw Message view)
-  E                Export Mermaid diagram to clipboard (Call Flow view)
+  y                Copy displayed message to clipboard (raw message view)
+  E                Export Mermaid diagram to clipboard (call flow view)
   F12              Toggle mouse capture for native drag-to-select \u{2014} global
 
 VCON EXPORT (one call, for handing to somebody else):
-This program exports one call as a vCon container, the IETF interchange
-format for a conversation record. It holds what sipnab observed: the ladder
-on screen, and the audio too when the run kept the RTP payload, carried
-inline. sipnab signs nothing \u{2014} it watched this call rather than taking
-part in it. Each party shows what the From and To headers claimed,
-never an identity anyone checked. Every container also states what it lost:
-messages idle compaction discarded, SIP a port gate dropped, blind spots the
-capture analysis ranked. Read that note before you treat one as a record of
-the call.
-Ask for a container over REST at GET /v1/dialogs/<call-id>/vcon, or reach for
-the command-line and MCP surfaces. A build carries the exporter when the
-version line above lists the vcon feature.
+A call exports as a vCon of what sipnab observed (the ladder, audio if kept).
+sipnab signs nothing, and each states what it lost: GET /v1/dialogs/<id>/vcon
 
 Copies use OSC 52, which works over SSH (most modern terminals support it).
 Mouse wheel scrolls or moves the selection in the scrollable views while
@@ -262,7 +262,7 @@ Press Esc or F1 to close this help.";
 ///
 /// # Side effects
 ///
-/// Draws a bordered, wrapped paragraph widget into `frame`.
+/// Draws a bordered paragraph of pre-wrapped rows into `frame`.
 pub fn render_help(
     frame: &mut Frame,
     area: Rect,
@@ -280,21 +280,22 @@ pub fn render_help(
 
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(" Help (\u{2191}/\u{2193} scroll, Esc to close) ");
+        .title(" Help (\u{2191}/\u{2193} scroll, Esc close) ");
 
-    let paragraph = Paragraph::new(lines)
-        .block(block)
-        .wrap(Wrap { trim: false })
-        .scroll((scroll, 0));
+    // Pre-wrapped by `build_help_lines`, so the rows drawn are the rows
+    // `help_line_count` counts.
+    let paragraph = Paragraph::new(lines).block(block).scroll((scroll, 0));
 
     frame.render_widget(paragraph, area);
 }
 
-/// Number of rendered help lines (one per `HELP_TEXT` line, plus the version
-/// and libpcap lines inserted under the title). Used to clamp the scroll
-/// offset.
-pub fn help_line_count() -> usize {
-    HELP_TEXT.lines().count() + 2
+/// Number of rendered help rows at `inner_width` columns: every `HELP_TEXT`
+/// line as the builder wraps it, plus the version and libpcap rows inserted
+/// under the title. Used to clamp the scroll offset, so it counts exactly
+/// what [`render_help`] draws; counting source lines instead left the end of
+/// the help unreachable once wrapped lines outnumbered the slack.
+pub fn help_line_count(inner_width: usize) -> usize {
+    build_help_lines(&super::Theme::default(), "", "", inner_width).len()
 }
 
 /// Build styled help lines from the help text.
@@ -360,26 +361,49 @@ fn build_help_lines(
             if let Some(split_pos) = find_description_start(trimmed) {
                 let key_part = &trimmed[..split_pos];
                 let desc_part = trimmed[split_pos..].trim_start();
-                lines.push(Line::from(vec![
-                    Span::raw("  "),
-                    Span::styled(format!("{:<18}", key_part), Style::default().fg(theme.good)),
-                    Span::raw(desc_part.to_string()),
-                ]));
+                // The description wraps under itself, never under the key
+                // column, so a long line still reads as one binding. The key
+                // always keeps a space after it, even when it overflows the
+                // column (`PgUp/PgDn, Home/End` ran into its description).
+                let rows = crate::tui::render::wrap_to_width(
+                    desc_part,
+                    u16::try_from(inner_width.saturating_sub(HELP_DESC_COL))
+                        .unwrap_or(u16::MAX)
+                        .max(HELP_MIN_DESC_COLS),
+                );
+                for (i, row) in rows.into_iter().enumerate() {
+                    let key = if i == 0 { key_part } else { "" };
+                    lines.push(Line::from(vec![
+                        Span::raw("  "),
+                        Span::styled(format!("{key:<17} "), Style::default().fg(theme.good)),
+                        Span::raw(row),
+                    ]));
+                }
             } else {
                 lines.push(Line::from(Span::raw(text_line.to_string())));
             }
         } else if text_line.trim().is_empty() {
             lines.push(Line::from(""));
         } else {
-            lines.push(Line::from(Span::styled(
-                text_line.to_string(),
-                Style::default().fg(theme.muted),
-            )));
+            let width = u16::try_from(inner_width).unwrap_or(u16::MAX).max(1);
+            for row in crate::tui::render::wrap_to_width(text_line, width) {
+                lines.push(Line::from(Span::styled(
+                    row,
+                    Style::default().fg(theme.muted),
+                )));
+            }
         }
     }
 
     lines
 }
+
+/// The column a binding's description starts at: two spaces of indent plus
+/// the 18-column key field.
+const HELP_DESC_COL: usize = 20;
+
+/// The narrowest a wrapped description is allowed to get on a tiny screen.
+const HELP_MIN_DESC_COLS: u16 = 10;
 
 /// Find the position where the description starts in a key binding line.
 ///
@@ -497,8 +521,10 @@ mod tests {
     #[test]
     fn rendered_help_line_count_matches_help_line_count() {
         let theme = crate::tui::Theme::default();
-        let lines = build_help_lines(&theme, "1.2.3", "libpcap version 1.2.3", 78);
-        assert_eq!(lines.len(), help_line_count());
+        for width in [40usize, 78, 120] {
+            let lines = build_help_lines(&theme, "1.2.3", "libpcap version 1.2.3", width);
+            assert_eq!(lines.len(), help_line_count(width), "at {width} columns");
+        }
     }
 
     /// The styled-line builder produces a substantial number of lines.

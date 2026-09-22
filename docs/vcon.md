@@ -259,7 +259,7 @@ and a consumer parses it before indexing into it.
             "dscp": 0,
             "dst": "192.0.2.2",
             "dst_port": 5060,
-            "frame": "…/tests/fixtures/sip_call.pcap#0@bdb6cdb98013efe4",
+            "frame": "…/tests/fixtures/sip_call.pcap#0@4ed7f4560fa79e74",
             "from": "<sip:1001@192.0.2.1>;tag=1928301774",
             "is_request": true,
             "method": "INVITE",

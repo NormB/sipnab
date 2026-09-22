@@ -243,7 +243,10 @@ fn apply_name_dialog(app: &mut App) -> bool {
         (0, 0) => None,
         (1, 0) => last,
         (s, 0) => Some(format!("Named {s} endpoints")),
-        (0, c) => Some(format!("Cleared {c} name(s)")),
+        (0, c) => Some(format!(
+            "Cleared {}",
+            crate::tui::count_noun(c, "name", "names")
+        )),
         (s, c) => Some(format!("Named {s}, cleared {c}")),
     };
     // Collect every write failure instead of letting a later one overwrite an
@@ -271,7 +274,7 @@ fn apply_name_dialog(app: &mut App) -> bool {
         }
     }
     if !write_errors.is_empty() {
-        app.status_error = Some(format!("Named, but {}", write_errors.join("; ")));
+        app.set_status_error(format!("Named, but {}", write_errors.join("; ")));
     }
     true
 }

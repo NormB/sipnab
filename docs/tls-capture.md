@@ -79,7 +79,7 @@ sipnab -I tls-capture.pcap --keylog /tmp/sip-keys.log
 
 The full recipes, including exporting a decrypted pcap for Wireshark and
 keeping keys off disk entirely, are cookbook recipes 7a to 7f, under
-[recipe 7, "Decrypt SIP/TLS via SSLKEYLOGFILE"](examples.md#7-decrypt-siptls-via-sslkeylogfile).
+[recipe 7, "Decrypt SIP over TLS with a key log file"](examples.md#7-decrypt-sip-over-tls-when-you-can-restart-the-phone-or-server--key-log-file-sslkeylogfile).
 
 ## 2. Check what you have before going further
 

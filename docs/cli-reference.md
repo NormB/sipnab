@@ -223,7 +223,7 @@ sipnab -d eth0,eth1 --multi-device --delta-time
 | `-B`, `--buffer` | `<MIB>` | `64` | Kernel capture buffer size in MiB (per device). See [Tuning capture](tuning-capture.md) |
 | `--buffer-budget` | `<MIB>` | `64` | Memory budget for the in-flight capture→processing queue. The queue grows under load up to this budget (capped, never OOM) and shrinks when idle; overrides `[capture] buffer_budget_mb` |
 | `--snaplen` | `<BYTES>` | `65535` | Snapshot length for packet capture (bytes) |
-| `--capture-profile` | `signaling\|full` | -- | Picks a `--snaplen` for you. `signaling` uses 1500, keeping every SIP header whole while dropping the bulk of an RTP stream; `full` uses 65535, which is what sipnab has always done. A large snaplen costs on EVERY packet — the kernel copy and the ring occupancy — and that is what makes a busy server drop, so the saving is real. It is a named profile rather than a smaller default because truncation is not free: it breaks `--retain-audio`, WAV export and Opus decode, which need RTP payload and not just headers, and it degrades `-O` re-emit to truncated frames. 1500 rather than a tighter 200-400: one INVITE with a full `Record-Route` set, a long `Contact`, ISUP encapsulation or a fat SDP offer passes 400 bytes routinely, and a snaplen that cuts a header makes the message stop parsing — reporting the peer that sent a valid message as broken. An explicit `--snaplen` overrides it. See `sipnab_capture_snapped_frames_total` for how much of a capture arrived truncated |
+| `--capture-profile` | `signaling\|full` | -- | Picks a `--snaplen` for you: `signaling` is 1500 bytes, which keeps every SIP header whole and drops most of each RTP payload, and `full` is 65535. An explicit `--snaplen` overrides it. More: [Tuning capture](tuning-capture.md#4-snapshot-length---snaplen--and-why-it-decides-your-ring-capacity) |
 | `-S`, `--limitlen` | `<BYTES>` | -- | Parse only the first N bytes of each packet. Caps what the SIP parser and matchers inspect, independent of `--snaplen` (capture length) and `--payload-limit` (display truncation) |
 | `--no-reassembly` | -- | off | Disable IP-fragment and TCP-segment reassembly; sipnab parses every packet standalone (inverse of segment reassembly). Useful for pure single-packet UDP scanning |
 | `-x`, `--quiet-bad-parse` | -- | off | Suppress the per-packet "SIP parse error" diagnostic emitted when a SIP-looking packet fails to parse. sipnab drops the packet either way; this only silences the notice on a noisy link |
@@ -244,50 +244,12 @@ sipnab -d eth0,eth1 --multi-device --delta-time
 | `<BPF_FILTER>...` | positional | -- | BPF display filter expression (trailing positional args) |
 
 > **The auto-generated filter looks through VLAN, QinQ, PPPoE and MPLS.**
-> On a live capture with no filter of your own, sipnab installs one built from
-> `--portrange`. It is not a bare `portrange 5060-5061`: that one matches the
-> outer headers only, so on a tagged trunk, a PPPoE access link or an MPLS
-> core it matches **nothing**, and the kernel discards the frames where no
-> sipnab counter, metric or report can see them. You get "No SIP traffic
-> found" on a link carrying calls.
->
-> The generated filter adds an encapsulated arm instead, covering one VLAN tag
-> (802.1Q, 802.1ad or 0x9100), QinQ, PPPoE Session, VLAN over PPPoE, and one or
-> two MPLS labels, for IPv4 and IPv6, UDP and TCP. The arm still demands a
-> signaling port, so it matches more of the *same* traffic, not a new class of
-> it: VLAN-tagged RTP reaches sipnab no more often than untagged RTP did.
->
-> **It covers cooked captures too**, so omitting `-d` costs you nothing. The
-> arm asks "does this frame carry an encapsulation?" through libpcap's
-> `ether proto`, which resolves to the right byte offset for whatever link type
-> the filter compiles against — offset 12 on Ethernet, 14 on Linux cooked v1,
-> 0 on Linux cooked v2, and a constant false on raw IP and the two loopback
-> link types, which carry no protocol field at all. Measured on a capture of
-> each type with `tcpdump -d`.
->
-> Asking the same question with a fixed `ether[12:2]` is the trap this avoids.
-> That offset holds the EtherType on Ethernet and part of the link-layer
-> address on a cooked capture, so an arm written that way compiles, runs and
-> matches nothing there: 1 of 11 encapsulated SIP frames on cooked v1 and
-> cooked v2, against 11 of 11 on Ethernet. Cooked is what Linux gives you when
-> you name no interface, so that shape would have left the default invocation
-> blind.
->
-> Two limits worth knowing. On the encapsulated arm an IPv4 header carrying
-> **options** stays unmatched. A BPF byte offset has to be a constant, so the
-> arm cannot multiply the IHL nibble into the port offset the way libpcap's own
-> `portrange` does. The untagged `portrange` handles those, so this costs you
-> only IPv4-options traffic that is *also* encapsulated.
->
-> And one filter string serving three link types has to carry all three sets of
-> inner offsets, because BPF offers no way to ask which link type it compiled
-> against. Seven offsets get probed on every link type, four of which belong to
-> a different link header. Those four can fire only on a frame that already
-> carries one of the six encapsulating protocols, and only if its bytes at the
-> wrong offset spell a complete IPv4-or-IPv6 header with a signaling port —
-> so the worst case is a stray tagged packet reaching userspace, where the
-> parser rejects it. Ordinary traffic never reaches those probes, because the
-> outer `ether proto` test is exact.
+> With no filter of your own on a live capture, sipnab builds one from
+> `--portrange` that also matches SIP inside one VLAN tag, QinQ, PPPoE Session
+> and one or two MPLS labels, on Ethernet and on Linux cooked captures. A bare
+> `portrange` would match none of that traffic. See
+> [How the generated filter reaches encapsulated SIP](encapsulations.md#how-the-generated-filter-reaches-encapsulated-sip)
+> for the offsets it probes and its two limits.
 >
 > **UDP tunnels are opt-in.** GTP-U, VXLAN and GENEVE are not covered by
 > default and sipnab says so at startup. BPF cannot parse a variable-length
@@ -306,7 +268,7 @@ sipnab -d eth0,eth1 --multi-device --delta-time
 > | Linux | the `any` pseudo-device | **every interface at once**, loopback included |
 > | macOS / BSD | libpcap's default device, from the routing table; otherwise the first non-loopback interface | **one interface** |
 >
-> On Linux this is deliberate and matches the terminal viewer: a SIP proxy often talks to
+> On Linux this default is deliberate: a SIP proxy often talks to
 > itself over loopback, so capturing only `eth0` silently misses it. Pass
 > `-d any` to say so explicitly. Promiscuous mode does not apply to `any`, so
 > `--no-promisc` changes nothing there.
@@ -741,7 +703,7 @@ selects only problem calls from user 1001.
 | `--plugin` | `<PATH>` | -- | Load a WASM plugin that contributes its own dialog detections; repeatable. Findings appear under `plugin_findings`. Requires the `plugins` Cargo feature (**not** in the default set). A plugin runs with no imports — no filesystem, network or clock — but still sees each message's headers, so loading one is a trust decision. See [wasm-plugin-api.md](design/wasm-plugin-api.md) |
 | `--report` | -- | off | Generate summary report after capture completes. Requires `-N` |
 | `--call-report` | `<CALL-ID>` | -- | Generate a detailed report for a specific Call-ID. Implies non-interactive |
-| `--export-vcon` | `<CALL-ID>` | -- | Export one dialog as a vCon container ([`draft-ietf-vcon-vcon-core`](https://datatracker.ietf.org/doc/draft-ietf-vcon-vcon-core/), syntax `0.4.0`), the interchange format a conversation travels in when it leaves the system that captured it. What sipnab writes is an **observer** vCon and says so in its own parties: sipnab watched packets go past a tap, so it signs nothing, no party carries a `name` — a `From` header is what the sender chose to write, not an identity anyone established — and no URL ever points at media held elsewhere, because sipnab hosts nothing. Audio this run RETAINED travels INSIDE the container as a `recording` Dialog Object -- the WAV inline as base64url with a `sha512` `content_hash` -- carrying the same "not a recording made by the endpoints" note the exported file carries; a `recording-set` wraps it when the payload ring dropped frames, so the call's clock and the file's stand side by side. Above a measured 5 MiB budget sipnab REFUSES the media out loud instead of dropping it, because one probed store answers 204 and discards the payload without telling the producer. What the capture MISSED travels with it: undecodable frames, SIP a port gate discarded, messages a retention cap evicted, and the blind spots the capture analysis ranked. vCon has no field meaning "this record is incomplete" (`dialog.type: "incomplete"` says the CALL did not complete, which accuses the traffic rather than the tap), so that caveat rides in the analysis object AND in a `sipnab-capture-completeness` attachment, both built from one value so the two cannot disagree. Goes to stdout unless `--vcon-out` names a file, and OWNS stdout when it goes there, silencing the per-message stream, because one stray line makes the container unparseable. Implies non-interactive. Needs the `vcon` Cargo feature (in `full`, **not** in the default set); a build without it refuses the flag by name |
+| `--export-vcon` | `<CALL-ID>` | -- | Export one dialog as an observer vCon container ([`draft-ietf-vcon-vcon-core`](https://datatracker.ietf.org/doc/draft-ietf-vcon-vcon-core/), syntax `0.4.0`): unsigned, with no party names, with the audio this run retained inline up to `--vcon-max-inline-media`, and with what the capture missed attached. Goes to stdout unless `--vcon-out` names a file, and then silences the per-message stream so the container stays parseable. Implies non-interactive. Needs the `vcon` Cargo feature, which `full` has and the default set does not. More: [Export a call as a vCon](vcon.md) |
 | `--export-vcon-when` | `<EXPR>` | -- | Emit a vCon for every dialog matching this filter expression, one container per dialog, into `--export-vcon-dir`. `EXPR` is the language `--filter` already speaks ([`docs/filter-dsl.md`](https://github.com/NormB/sipnab/blob/main/docs/filter-dsl.md)), so `state == 'Failed'` and `response_code >= 400 and rtp.codec == 'PCMU'` work without new syntax. Reusing the language rather than growing a flag per policy is deliberate: one flag for failures, another for calls with media, another for a duration threshold, and so on enumerates the cases somebody thought of. The case nobody thought of is the one an operator needs at three in the morning. Parsed before the capture opens, so a malformed expression fails the run instead of leaving an empty directory a reader takes for "nothing matched". Conflicts with `--export-vcon`, which answers the same question for one named call. Implies non-interactive, and unlike `--export-vcon` it leaves stdout alone, because the containers go to a directory. Needs the `vcon` Cargo feature |
 | `--export-vcon-dir` | `<DIR>` | -- | Directory for the containers `--export-vcon-when` produces, created if absent. Each file takes its Call-ID as a name, with every character outside `A-Za-z0-9._-` becoming `_` and the whole truncated, because a Call-ID is text whoever placed the call chose and this is the first path sipnab builds from one. Requires `--export-vcon-when`: a destination for containers no predicate selects is a flag that does nothing |
 | `--vcon-max-inline-media` | `<MIB>` | `5` | Largest inline media body a vCon may carry, in MiB. The shipped 5 comes from a measurement rather than taste: one probed vCon store answered HTTP 204 for a roughly 12 MB container, wrote the record to its database, and then had its file spool refuse the payload, with neither transport reporting the partial write. That budget is a property of the CONSUMER and not of the format, so raise it once you know what reads your containers. `0` refuses every inline body, which says "never inline media" without turning the exporter off, and the refusal still appears in the completeness caveat. Batch export, the REST server and the MCP server all read this one value. Needs the `vcon` Cargo feature |
@@ -800,9 +762,9 @@ selects only problem calls from user 1001.
 - `sipnab -N -I capture.pcap --analyze --filter "state == 'Failed'" --no-cli-print` — narrow the DIALOG findings to failed calls; the capture-level evidence (undecodable frames, discarded ports, dropped records) is deliberately not narrowed, because it bounds every count in the report
 - `sipnab -N -I capture.pcap --json-analyze --no-cli-print | jq '.findings[] | select(.severity == "critical")'` — the critical findings only, for a pipeline
 - `sipnab -N -I capture.pcap --json-analyze --no-cli-print | jq '.complete'` — whether the capture decoded fully. `false` means every count in the analysis is a floor, so do not trust a clean-looking verdict
-- `sipnab -N -I capture.pcap --yang-analyze --no-cli-print > analysis.json` — the capture analysis as a YANG instance document; `yanglint -t data sipnab-diagnosis@2026-09-21.yang analysis.json` validates it
+- `sipnab -N -I capture.pcap --yang-analyze --no-cli-print > analysis.json` — the capture analysis as a YANG instance document; `yanglint -t data sipnab-diagnosis@2026-09-22.yang analysis.json` validates it
 - `sipnab -N -I capture.pcap --json-analyze --yang-analyze --no-cli-print` — both encodings of ONE analysis, one line each: the same findings, the same counts, the same `rank` order
-- `sipnab --print-yang-module > sipnab-diagnosis@2026-09-21.yang` — save the YANG module this build's RFC 7951 export validates against, under the file name [RFC 7950](https://www.rfc-editor.org/rfc/rfc7950) gives it, for `yanglint` or `pyang`
+- `sipnab --print-yang-module > sipnab-diagnosis@2026-09-22.yang` — save the YANG module this build's RFC 7951 export validates against, under the file name [RFC 7950](https://www.rfc-editor.org/rfc/rfc7950) gives it, for `yanglint` or `pyang`
 - `sipnab --print-yang-module | pyang -f tree` — the shape of the capture analysis as a YANG tree: every node, its type, and which are lists
 - `sipnab -N -I capture.pcap --json-dialogs --no-cli-print --quiet | jq -c 'select(.state == "Failed")'` — one line per failed call, each carrying the code that failed it, instead of every message of every failed dialog
 - `sudo sipnab -d eth0 -N --json-dialogs --no-cli-print --line-buffer > calls.ndjson` — record one summary object per call from live traffic, flushed per line for a downstream collector

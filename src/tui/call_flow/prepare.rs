@@ -1731,7 +1731,7 @@ mod tests {
     /// messages touching the 7th endpoint onto columns 0/1 — drawn between
     /// the WRONG participants. All endpoints become columns and no row is
     /// dropped; when the geometry cannot fit them the renderer paints its
-    /// explicit "Terminal too narrow for ladder" notice instead.
+    /// explicit `TOO_NARROW_NOTICE` instead.
     #[test]
     fn prepare_seven_endpoints_never_misattributes_columns() {
         let theme = Theme::default();

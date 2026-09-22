@@ -6,8 +6,9 @@
 //! # The handshake
 //!
 //! A capture load runs on the `pcap-load` thread. When it meets an encrypted
-//! member that no configured or remembered password opens, the run keyring
-//! asks its prompter, which here is a [`PopupPrompter`]. That sends a
+//! member that no configured or remembered password opens, the keyring that
+//! load's thread uses (the session's, borrowed for the load) asks its
+//! prompter, which here is a [`PopupPrompter`]. That sends a
 //! [`PasswordAsk`] to the UI thread and parks on the reply. The event loop
 //! sees the ask on its next tick, opens [`crate::tui::state::Popup::ArchivePassword`],
 //! and the operator's Enter or Esc sends the reply that resumes the load. It

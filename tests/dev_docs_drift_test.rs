@@ -731,21 +731,37 @@ fn linked_code_targets_exist() {
     // and no other page changed.
     // 445 + 1 = 446: the HEP sender roster branch counted its one against 432
     // and merged after the three above.
+    // 446 -> 449: three, for the rebuilt capture fixtures. Two in
+    // `docs/internals/rtpengine-control-plane.md`, whose "Proving the claim"
+    // section now links the generator `tests/support/synthetic_captures.rs`
+    // and `tests/synthetic_captures_test.rs`, and one in
+    // `docs/internals/testing.md`, whose fixtures row links the generator.
+    // Attributed by counting every page under `docs/internals/` against HEAD:
+    // rtpengine-control-plane.md moved 23 -> 25, testing.md 97 -> 98, and no
+    // other page changed.
+    // 449 -> 450: one, in `docs/internals/rtpengine-control-plane.md`, whose
+    // OpenSIPS pair paragraph now says the generator rebuilt that pair too and
+    // links it. Attributed by counting `](../../` links on every page under
+    // `docs/internals/` against HEAD: rtpengine-control-plane.md moved
+    // 25 -> 26, and no other page changed.
     // 446 -> 448: two, in `docs/internals/invariants.md`, where invariant 4
     // gains the bounds on an archive named with `-I` and links
     // `src/capture/archive/mod.rs`, the walk that enforces them, and
     // `src/capture/archive/tar.rs`, whose long-name cap it names. Attributed
     // by diffing `docs/internals/` against HEAD: invariants.md gained exactly
     // those two links and no other page changed.
-    // 448 -> 452: four, in `docs/internals/invariants.md`. Invariant 4
-    // gains the ZIP and password bounds and links
-    // `src/capture/archive/zipped.rs` and `src/capture/archive/password.rs`;
-    // invariant 5 gains the archive-password paragraph and links
-    // `password.rs` again for `ArchivePassword`, and names the sentinel test
-    // `tests/archive_password_test.rs` that proves the password never
-    // reaches output. Attributed by diffing `docs/internals/` against HEAD:
-    // invariants.md gained exactly those four and no other page changed.
-    const EXPECTED_CODE_LINKS: usize = 452;
+    // Merge of the fixtures branch with main: 446 +4 (fixtures) +2 (archive
+    // invariants) = 452. Each side's attribution is above.
+    // 452 -> 456 by password-protected archives: four, in
+    // `docs/internals/invariants.md`. Invariant 4 gains the ZIP and password
+    // bounds and links `src/capture/archive/zipped.rs` and
+    // `src/capture/archive/password.rs`; invariant 5 gains the
+    // archive-password paragraph, links `password.rs` again for
+    // `ArchivePassword`, and names the sentinel test
+    // `tests/archive_password_test.rs`. Attributed by diffing
+    // `docs/internals/` against the merge base: invariants.md gained exactly
+    // those four and no other page changed.
+    const EXPECTED_CODE_LINKS: usize = 456;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \

@@ -2,10 +2,10 @@
 source: tests/tui_snapshot_test.rs
 expression: output
 ---
- Current Mode: Online (any)    Dialogs: 0 (0 displayed)  [A]
- Match Expression:     BPF Filter:
- Display Filter:
-┌ Packet Loss Map ─────────────────────────────────────────────────────────────────────────────────┐
+ Live capture: any    Dialogs: 0 shown of 0    Autoscroll: on
+ Capture filter (BPF): none
+ View filter: none
+┌ Packet loss map ─────────────────────────────────────────────────────────────────────────────────┐
 │  SSRC 0xAAAABBBB   10.0.0.1:20000 → 10.0.0.2:30000                                               │
 │  Loss 70.92%   100 lost / 141 packets                                                            │
 │  Bursts 1   Pattern Bursty   Avg burst 2000ms                                                    │
@@ -19,4 +19,4 @@ expression: output
 │                                                                                                  │
 │                                                                                                  │
 └──────────────────────────────────────────────────────────────────────────────────────────────────┘
-Esc Back
+Esc Back  F1 Help

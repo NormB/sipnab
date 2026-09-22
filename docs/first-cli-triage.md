@@ -1,0 +1,200 @@
+# Triage a capture from the command line
+
+Your first analysis without the TUI, one command at a time: list the calls in a
+capture, find the ones that went wrong, explain one of them, and hand the
+answer to another tool as JSON. Every command reads a file, so none of them
+needs root.
+
+Each step shows the output it prints. sipnab also writes progress lines, such
+as `Reading from 'sample-call.pcap'`, to stderr. The outputs below leave those
+out. The [Glossary](glossary.md) defines any term you do not recognize.
+
+## 1. Download a capture
+
+Download the sample call the website uses. It holds one phone call between
+Alice and Bob, plus the registrations, subscriptions and keepalives around it:
+
+```bash
+curl -LO https://sipnab.com/demos/sample-call.pcap
+```
+
+## 2. List the calls
+
+Ask for one line per [dialog](glossary.md#dialog), meaning every SIP message
+that shares a Call-ID. `-N` skips the TUI, `--report` prints the per-call
+table, and `--no-cli-print` leaves out the per-message lines that would
+otherwise come first:
+
+```bash
+sipnab -N -I sample-call.pcap --report --no-cli-print
+```
+
+The table comes first, then the RTP streams:
+
+```text
+Call-ID                          From           To             State        Code   Duration   Msgs   PDD      Tags
+-------------------------------------------------------------------------------------------------------------------------
+reg-alice-4f2a19@192.0.2.10      alice          alice          Registered   -      0s         4      -        -
+reg-bob-7c3d02@192.0.2.30        bob            bob            Expired      -      14s        8      -        -
+sub-alice-mwi-2b81@192.0.2.10    alice          alice          Active       -      0s         3      -        -
+sub-bob-blf-9e42@192.0.2.30      bob            bob            Pending      -      0s         3      -        -
+sub-alice-pres-5c07@192.0.2.10   alice          alice          Terminated   -      14s        6      -        -
+opt-8b7c02@192.0.2.20            pbx            alice          Completed    -      0s         2      -        -
+call-2c9d47@192.0.2.10           alice          bob            Completed    200    8s         7      0.2s     -
+
+RTP Streams:
+SSRC         PT   Codec    Clock  Source                Destination           Pkts    Lost   Loss%   Jitter   Dur    Kbps
+--------------------------------------------------------------------------------------------------------------------------
+0x1a2b3c4d   0    PCMU     8000   192.0.2.10:10000      192.0.2.20:10002      300     0      0.0%    0ms      6s     64
+0x5e6f7a8b   0    PCMU     8000   192.0.2.20:10002      192.0.2.10:10000      300     0      0.0%    0ms      6s     64
+```
+
+Read it left to right. The last row is the phone call: an INVITE that got a
+`200` answer, lasted 8 seconds, and waited 0.2 seconds for the first ringing
+response. That wait is the [PDD](glossary.md#pdd) (post-dial delay). The two
+streams below it are the call's audio, one per direction, with no loss.
+
+The rows above it are not calls. They are registrations (`reg-`),
+subscriptions (`sub-`) and an OPTIONS keepalive (`opt-`), which sipnab tracks
+as dialogs too. The `Code` column reads INVITE answers only, so those rows
+show `-`.
+
+## 3. Find the calls that went wrong
+
+`--problems` keeps only the dialogs that failed, or that show one-way audio,
+high loss or jitter, a NAT mismatch, retransmits, slow setup, or a media
+asymmetry. Combined with `--report`, it prints the same table filtered to
+those calls:
+
+```bash
+sipnab -N -I sample-call.pcap --problems --report --no-cli-print
+```
+
+On the sample, the table is empty apart from its header, because nothing in it
+went wrong. **An empty answer is a result:** sipnab looked at every call and
+found no problem.
+
+To see what a problem looks like, download a second sample from the
+repository. It holds five calls, four of which failed:
+
+```bash
+curl -LO https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-problem-call.pcap
+```
+
+```bash
+sipnab -N -I sip-problem-call.pcap --problems --report --no-cli-print
+```
+
+```text
+Call-ID                          From           To             State        Code   Duration   Msgs   PDD      Tags
+-------------------------------------------------------------------------------------------------------------------------
+busy-3a2b1c@192.0.2.30           carol          dave           Failed       486    1s         4      -        -
+decline-7c6d5e@198.51.100.30     erin           frank          Failed       603    1s         4      -        -
+notfound-1b2c3d@203.0.113.30     grace          heidi          Failed       404    1s         4      -        -
+unavail-4e5f60@192.0.2.50        ivan           judy           Failed       503    1s         4      -        -
+```
+
+The completed call drops out, and the four failures remain with the response
+code that ended each one: busy, declined, not found, and unavailable.
+
+## 4. Explain one call
+
+Pick a Call-ID from the table and ask for its report. Set it in a shell
+variable first, because most Call-IDs contain an `@` and some contain
+characters the shell would otherwise interpret:
+
+```bash
+CALL_ID='call-2c9d47@192.0.2.10'
+```
+
+```bash
+sipnab -N -I sample-call.pcap --call-report "$CALL_ID" --no-cli-print
+```
+
+```text
+Call Report: call-2c9d47@192.0.2.10
+════════════════════════════════════════
+Time:       2023-11-14 22:13:25 -> 22:13:33 (8s)
+From:       "Alice" <sip:alice@...>
+To:         <sip:bob@...>
+Result:     Completed (BYE)
+Frame:      sample-call.pcap#19@db3d2ea0ae5df067
+
+Timing:
+  PDD:        0.18s
+  Setup:      2.42s
+  Ring:       2.24s
+  Teardown:   0.01s
+  Retransmits: 0
+
+SIP Transactions:
+  INVITE -> 100 (6ms) -> 180 (180ms) -> 200 (2420ms)
+  ACK
+  BYE -> 200 (8468ms)
+
+Media Streams:
+  RTP 192.0.2.10->192.0.2.20 PCMU SSRC=0x1a2b3c4d pkts=300 jitter=0ms loss=0.0%
+  RTP 192.0.2.20->192.0.2.10 PCMU SSRC=0x5e6f7a8b pkts=300 jitter=0ms loss=0.0%
+
+Issues Detected: None
+```
+
+The `SIP Transactions` line is the call in one row: the INVITE got `100
+Trying` after 6 ms, `180 Ringing` after 180 ms, and `200 OK` after 2.4
+seconds, when Bob answered. `Frame` names the packet the report starts from,
+so you can find the same bytes in Wireshark. `Issues Detected: None` is the
+verdict.
+
+Try the same command on `sip-problem-call.pcap` with
+`CALL_ID='busy-3a2b1c@192.0.2.30'`. Its report ends with
+`Final failure: 486 Busy Here` under `Signaling Issues`, and names the message
+that says so.
+
+## 5. Hand the answer to another tool
+
+`--json` prints one JSON object per SIP message, which `jq` can slice. This
+lists the call's messages in order, with the time of each:
+
+```bash
+sipnab -N -I sample-call.pcap --json | jq -r --arg id "$CALL_ID" 'select(.call_id == $id) | [.timestamp, .method // (.status_code | tostring)] | @tsv'
+```
+
+```text
+2023-11-14T22:13:25+00:00	INVITE
+2023-11-14T22:13:25.006+00:00	100
+2023-11-14T22:13:25.180+00:00	180
+2023-11-14T22:13:27.420+00:00	200
+2023-11-14T22:13:27.430+00:00	ACK
+2023-11-14T22:13:33.460+00:00	BYE
+2023-11-14T22:13:33.468+00:00	200
+```
+
+`--json-dialogs` prints one JSON object per call instead, and needs
+`--no-cli-print` so the per-message lines stay out of the JSON. Its `timing`
+object carries the numbers from the report, in milliseconds:
+
+```bash
+sipnab -N -I sample-call.pcap --json-dialogs --no-cli-print | jq --arg id "$CALL_ID" 'select(.call_id == $id) | .timing'
+```
+
+```json
+{
+  "pdd_ms": 180,
+  "retransmits": 0,
+  "ring_ms": 2240,
+  "setup_ms": 2420,
+  "teardown_ms": 8,
+  "trying_delay_ms": 6
+}
+```
+
+## Where to go next
+
+- [Troubleshooting](troubleshooting.md) starts from a complaint, such as
+  one-way audio or a call that drops after 30 seconds, and says which command
+  answers it.
+- [Examples & recipes](examples.md) has a recipe for each task, from live
+  capture to scanner blocking.
+- [Output formats](output-formats.md) lists every JSON field these commands
+  print.
+- [TUI walkthrough](tui-walkthrough.md) reads the same capture interactively.

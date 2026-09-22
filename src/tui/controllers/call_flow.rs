@@ -245,16 +245,16 @@ fn grow_detail(app: &mut App) {
         app.flow.raw_preview_pct_user_set = true;
         if app.flow.raw_preview_pct < 80 {
             app.flow.raw_preview_pct = (app.flow.raw_preview_pct + 5).min(80);
-            app.status_error = Some(format!("Detail panel: {}%", app.flow.raw_preview_pct));
+            app.status_error = Some(format!("Detail pane: {}%", app.flow.raw_preview_pct));
         } else {
             // The status line used to live inside the range check, so a press at
             // the limit produced nothing at all — the same "the key did nothing
             // and said nothing" this ticket exists to remove.
-            app.status_error = Some("Detail panel: 80% (maximum)".to_string());
+            app.status_error = Some("Detail pane: 80% (maximum)".to_string());
         }
     } else {
         // Not a silent no-op: say why nothing resized.
-        app.status_error = Some("Split view is off — press R to enable it".to_string());
+        app.status_error = Some("The detail pane is off — press R to show it".to_string());
     }
 }
 
@@ -271,12 +271,12 @@ fn shrink_detail(app: &mut App) {
         app.flow.raw_preview_pct_user_set = true;
         if app.flow.raw_preview_pct > 10 {
             app.flow.raw_preview_pct = app.flow.raw_preview_pct.saturating_sub(5).max(10);
-            app.status_error = Some(format!("Detail panel: {}%", app.flow.raw_preview_pct));
+            app.status_error = Some(format!("Detail pane: {}%", app.flow.raw_preview_pct));
         } else {
-            app.status_error = Some("Detail panel: 10% (minimum)".to_string());
+            app.status_error = Some("Detail pane: 10% (minimum)".to_string());
         }
     } else {
-        app.status_error = Some("Split view is off — press R to enable it".to_string());
+        app.status_error = Some("The detail pane is off — press R to show it".to_string());
     }
 }
 
@@ -502,9 +502,9 @@ fn execute_call_flow_action(app: &mut App, action: CallFlowAction) {
         CallFlowAction::ToggleRtpInFlow => {
             app.flow.show_rtp = !app.flow.show_rtp;
             app.status_error = Some(if app.flow.show_rtp {
-                "RTP in flow: ON".to_string()
+                "RTP in flow: on".to_string()
             } else {
-                "RTP in flow: OFF".to_string()
+                "RTP in flow: off".to_string()
             });
         }
         CallFlowAction::JumpToStreams => {
@@ -516,15 +516,15 @@ fn execute_call_flow_action(app: &mut App, action: CallFlowAction) {
         CallFlowAction::ToggleTransactionFilter => toggle_transaction_filter(app),
         CallFlowAction::CycleSdpMode => {
             app.sdp_display_mode = app.sdp_display_mode.next();
-            app.status_error = Some(app.sdp_display_mode.label().to_string());
+            app.status_error = Some(app.sdp_display_mode.label());
         }
         CallFlowAction::CycleTimestampMode => {
             app.timestamp_mode = app.timestamp_mode.next();
-            app.status_error = Some(app.timestamp_mode.label().to_string());
+            app.status_error = Some(app.timestamp_mode.label());
         }
         CallFlowAction::CycleColorMode => {
             app.color_mode = app.color_mode.next();
-            app.status_error = Some(app.color_mode.label().to_string());
+            app.status_error = Some(app.color_mode.label());
         }
         CallFlowAction::CycleHeaderForm => cycle_header_form(app),
         CallFlowAction::ToggleSplit => {
@@ -534,9 +534,9 @@ fn execute_call_flow_action(app: &mut App, action: CallFlowAction) {
                 app.flow.detail_focused = false;
             }
             app.status_error = Some(if app.flow.raw_preview {
-                "Raw preview: ON".to_string()
+                "Detail pane: on".to_string()
             } else {
-                "Raw preview: OFF".to_string()
+                "Detail pane: off".to_string()
             });
         }
         CallFlowAction::GrowDetail => grow_detail(app),
@@ -551,9 +551,9 @@ fn execute_call_flow_action(app: &mut App, action: CallFlowAction) {
             app.flow.detail_wrap = !app.flow.detail_wrap;
             app.flow.detail_hscroll = 0;
             app.status_error = Some(if app.flow.detail_wrap {
-                "Detail wrap: ON".to_string()
+                "Detail wrap: on".to_string()
             } else {
-                "Detail wrap: OFF (←/→ scroll when focused)".to_string()
+                "Detail wrap: off (←/→ scroll when focused)".to_string()
             });
         }
         CallFlowAction::DetailScrollUp => {
@@ -565,9 +565,9 @@ fn execute_call_flow_action(app: &mut App, action: CallFlowAction) {
         CallFlowAction::ToggleExtended => {
             app.flow.extended = !app.flow.extended;
             app.status_error = Some(if app.flow.extended {
-                "Extended flow: ON (multi-leg)".to_string()
+                "Extended flow: on (multi-leg)".to_string()
             } else {
-                "Extended flow: OFF".to_string()
+                "Extended flow: off".to_string()
             });
         }
         CallFlowAction::SetMark => {
@@ -743,7 +743,7 @@ fn activate_selected(app: &mut App, msg_count: usize) {
                 app.stream_detail_return_view = Some(app.current_view.clone());
                 app.current_view = View::StreamDetail(key);
             } else {
-                app.status_error = Some("No RTP streams found".to_string());
+                app.set_status_error("No RTP streams found for this call");
             }
         } else {
             // Open full-screen raw message view for the selected message —
@@ -773,7 +773,7 @@ fn note_selected(app: &mut App, msg_count: usize) {
         return;
     }
     if app.flow.cached_rtp_bar_indices.contains(&app.flow.selected) {
-        app.status_error = Some("A note goes on a SIP message, not on an RTP bar".to_string());
+        app.set_status_error("A note goes on a SIP message, not on an RTP bar");
         return;
     }
     let anchor = call_id.clone();
@@ -806,7 +806,7 @@ fn diff_select(app: &mut App, msg_count: usize) {
                 // must therefore come from the same dialog.
                 if first_cid != cur_cid {
                     app.flow.diff_selected = None;
-                    app.status_error = Some("Diff across dialogs is not supported".to_string());
+                    app.set_status_error("Diff across dialogs is not supported");
                     return;
                 }
                 app.flow.diff_selected = None;
@@ -955,6 +955,9 @@ fn toggle_transaction_filter(app: &mut App) {
 /// the worker's outcome lands later through the async-messages drain.
 /// Reports "No messages to export" for an empty dialog.
 fn export_mermaid_to_clipboard(app: &mut App) {
+    // Raised after the block: the store guard the `if let` holds borrows
+    // `app` until the block ends.
+    let mut nothing_to_export = false;
     if let View::CallFlow(ref call_id) = app.current_view
         && let Some(store) = app.dialog_store.try_read()
     {
@@ -993,8 +996,11 @@ fn export_mermaid_to_clipboard(app: &mut App) {
             crate::tui::clipboard::spawn_clipboard_copy(mermaid, Arc::clone(&app.async_messages));
             app.status_error = Some("Copying Mermaid diagram to clipboard…".to_string());
         } else {
-            app.status_error = Some("No messages to export".to_string());
+            nothing_to_export = true;
         }
+    }
+    if nothing_to_export {
+        app.set_status_error("No messages to export");
     }
 }
 
@@ -1198,14 +1204,14 @@ fn execute_raw_message_action(app: &mut App, action: RawMessageAction) {
         RawMessageAction::ToggleSyntaxHighlight => {
             app.syntax_highlight = !app.syntax_highlight;
             app.status_error = Some(if app.syntax_highlight {
-                "Syntax highlighting: ON".to_string()
+                "Syntax colors: on".to_string()
             } else {
-                "Syntax highlighting: OFF".to_string()
+                "Syntax colors: off".to_string()
             });
         }
         RawMessageAction::CycleColorMode => {
             app.color_mode = app.color_mode.next();
-            app.status_error = Some(app.color_mode.label().to_string());
+            app.status_error = Some(app.color_mode.label());
         }
         RawMessageAction::CycleHeaderForm => cycle_header_form(app),
         RawMessageAction::CopyMessage => copy_raw_message(app),
@@ -1258,7 +1264,7 @@ fn copy_raw_message(app: &mut App) {
             crate::tui::clipboard::spawn_clipboard_copy(text, Arc::clone(&app.async_messages));
             app.status_error = Some("Copying message to clipboard…".to_string());
         }
-        None => app.status_error = Some("Message not available".to_string()),
+        None => app.set_status_error("Message not available"),
     }
 }
 
@@ -2290,8 +2296,8 @@ mod tests {
         }
         let msg = app.async_messages.lock().remove(0);
         assert!(
-            msg.starts_with("Copied "),
-            "unexpected worker report: {msg}"
+            msg.text.starts_with("Copied "),
+            "unexpected worker report: {msg:?}"
         );
     }
 
