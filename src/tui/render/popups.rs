@@ -104,7 +104,7 @@ pub(in crate::tui) fn render_save_popup(frame: &mut ratatui::Frame, area: Rect, 
     // Build vertical format list grouped by category.
     let all_formats = [
         SaveFormat::Pcap,
-        SaveFormat::PcapNg, // Packet Capture
+        SaveFormat::PcapNg, // Packet capture
         SaveFormat::Txt,
         SaveFormat::SippXml, // SIP-Specific
         SaveFormat::Json,
@@ -153,74 +153,97 @@ pub(in crate::tui) fn render_save_popup(frame: &mut ratatui::Frame, area: Rect, 
         };
         fmt_lines.push(Line::from(vec![
             Span::styled(format!("    {marker}"), label_style),
-            Span::styled(format!("{:<7}", fmt.label()), label_style),
+            Span::styled(format!("{:<9}", fmt.label()), label_style),
             Span::styled(format!(" {}", fmt.description()), desc_style),
         ]));
     }
 
+    // What the save will write: the checked calls, or every call when none
+    // is checked. "0 selected" read as "nothing will be saved".
+    let selection = if app.save.selected_count == 0 {
+        "none checked, so all are saved".to_string()
+    } else {
+        format!("{} checked", app.save.selected_count)
+    };
     let info_line = format!(
-        "  Dialogs: {} ({} selected) \u{00B7} Messages: {}",
-        app.save.dialog_count, app.save.selected_count, app.save.message_count
+        "  Dialogs: {} ({selection}) \u{00B7} Messages: {}",
+        app.save.dialog_count, app.save.message_count
     );
 
     // Build the path display with a visible cursor (reverse video at cursor position)
     let path_spans =
         path_with_cursor_spans("  Save to: ", &app.save.path, app.save.cursor, &app.theme);
 
-    let mut lines: Vec<Line<'_>> = vec![Line::from(""), Line::from(path_spans), Line::from("")];
-    lines.extend(fmt_lines);
-    lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled(
-        info_line,
-        Style::default().fg(app.theme.muted),
-    )));
-    lines.push(Line::from(""));
-    lines.push(Line::from(vec![
-        Span::styled(
-            "  [Enter]",
-            Style::default()
-                .fg(app.theme.good)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::raw(" Save  "),
-        Span::styled(
-            "[Tab/\u{21E7}Tab]",
-            Style::default()
-                .fg(app.theme.header)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::raw(" Format  "),
-        Span::styled(
-            "[Esc]",
-            Style::default()
-                .fg(app.theme.warning)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::raw(" Cancel"),
-    ]));
+    // Three regions: the path and the selection count pinned at the top, the
+    // key line pinned at the bottom, and the format list between them. Only
+    // the list scrolls. The dialog used to scroll as one paragraph, so on a
+    // 24-row terminal the count and the keys fell off the bottom, and
+    // selecting a late format (WAV) pushed the path off the top.
+    let header: Vec<Line<'_>> = vec![
+        Line::from(""),
+        Line::from(path_spans),
+        Line::from(Span::styled(
+            info_line,
+            Style::default().fg(app.theme.muted),
+        )),
+        Line::from(""),
+    ];
+    let footer: Vec<Line<'_>> = vec![
+        Line::from(""),
+        Line::from(vec![
+            Span::styled(
+                "  [Enter]",
+                Style::default()
+                    .fg(app.theme.good)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" Save  "),
+            Span::styled(
+                "[Tab/\u{21E7}Tab]",
+                Style::default()
+                    .fg(app.theme.header)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" Format  "),
+            Span::styled(
+                "[Esc]",
+                Style::default()
+                    .fg(app.theme.warning)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" Cancel"),
+        ]),
+    ];
 
-    // Size the popup to its content (the old fixed 20 rows clipped the
-    // last format category — WAV/RTP JSON — off the bottom), clamped to
-    // the terminal by centered_popup.
-    let needed_height = lines.len() as u16 + 2;
+    // Size the popup to its content, clamped to the terminal by
+    // centered_popup.
+    let needed_height = (header.len() + fmt_lines.len() + footer.len()) as u16 + 2;
     let popup_area = centered_popup(area, popup_width, needed_height);
     frame.render_widget(Clear, popup_area);
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(" Save Capture ")
+        .title(" Save capture ")
         .style(Style::default().bg(app.theme.background));
     let inner = block.inner(popup_area);
     frame.render_widget(block, popup_area);
 
-    // On a terminal too short for everything, scroll so the SELECTED
-    // format row stays visible (stream views default to WAV, which lived
-    // in the clipped tail).
-    let selected_line = 3 + selected_fmt_line as u16; // blank + path + blank
-    let scroll = (selected_line + 1).saturating_sub(inner.height);
-    let para = Paragraph::new(lines)
-        .scroll((scroll, 0))
-        .style(Style::default().bg(app.theme.background));
-    frame.render_widget(para, inner);
+    let [header_area, list_area, footer_area] = Layout::vertical([
+        Constraint::Length(header.len() as u16),
+        Constraint::Min(1),
+        Constraint::Length(footer.len() as u16),
+    ])
+    .areas(inner);
+    let bg = Style::default().bg(app.theme.background);
+    frame.render_widget(Paragraph::new(header).style(bg), header_area);
+    frame.render_widget(Paragraph::new(footer).style(bg), footer_area);
+
+    // Scroll the list so the SELECTED format row stays visible (stream views
+    // default to WAV, which lives in the tail).
+    let scroll = (selected_fmt_line as u16 + 1).saturating_sub(list_area.height);
+    frame.render_widget(
+        Paragraph::new(fmt_lines).scroll((scroll, 0)).style(bg),
+        list_area,
+    );
 }
 
 /// Render the "Name Address" popup: a row of the view's endpoints (Tab to
@@ -420,8 +443,9 @@ fn unsaved_notes_lines(app: &App) -> [Line<'static>; 2] {
     [
         Line::from(Span::styled(
             format!(
-                "  {} operator note(s) are not saved to a notes file.",
-                app.notes.len()
+                "  {} {} not saved to a notes file.",
+                crate::tui::count_noun(app.notes.len(), "operator note", "operator notes"),
+                if app.notes.len() == 1 { "is" } else { "are" }
             ),
             Style::default().fg(app.theme.warning),
         )),
@@ -546,7 +570,7 @@ pub(in crate::tui) fn render_file_open_popup(frame: &mut ratatui::Frame, area: R
 
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(" Open PCAP File ")
+        .title(" Open capture file ")
         .style(Style::default().bg(app.theme.background));
 
     let inner = block.inner(popup_area);
@@ -786,8 +810,11 @@ pub(in crate::tui) fn render_file_open_manual(frame: &mut ratatui::Frame, inner:
 
 /// State for a single filter text input field.
 pub(in crate::tui) struct FilterTextField<'a> {
-    /// Label painted before the bracketed field (e.g. "  SIP From:    ").
+    /// Label painted before the bracketed field (e.g. "  From user:       ").
     label: &'a str,
+    /// Muted example shown while the field is empty (the format it wants);
+    /// empty for none.
+    placeholder: &'a str,
     /// Current text content of the field.
     value: &'a str,
     /// Total field width in columns, brackets included.
@@ -936,6 +963,23 @@ pub(in crate::tui) fn render_filter_text_field(
         }
     }
 
+    // The placeholder: a muted example of what the field wants, drawn only
+    // while it is empty, after the cursor cell when focused so the cursor
+    // stays where typing will land.
+    if value.is_empty() && !field.placeholder.is_empty() {
+        let offset = usize::from(focused);
+        let room = inner_width.saturating_sub(offset);
+        let shown: String = field.placeholder.chars().take(room).collect();
+        set_string_clipped(
+            buf,
+            bounds,
+            content_x + offset as u16,
+            y,
+            &shown,
+            Style::default().fg(theme.muted),
+        );
+    }
+
     // Closing bracket (saturating so a zero-width field cannot underflow)
     set_string_clipped(
         buf,
@@ -1024,15 +1068,31 @@ pub(in crate::tui) fn render_filter_popup(
     let iw = inner.width;
 
     // ── Text input fields ──────────────────────────────────────────
+    // Each label says what its field is matched against (see
+    // `FilterDialogState::build_filter_expression`): From/To match the URI's
+    // user part, Source/Destination the IP, and the text field greps every
+    // SIP message of the call. Header takes `Name: text` (or a bare name),
+    // and After/Before take an RFC 3339 timestamp, so those three show an
+    // example while empty.
     let labels = [
-        "  SIP From:    ",
-        "  SIP To:      ",
-        "  Source:      ",
-        "  Destination: ",
-        "  Payload:     ",
-        "  Header:      ",
-        "  After:       ",
-        "  Before:      ",
+        "  From user:       ",
+        "  To user:         ",
+        "  Source IP:       ",
+        "  Destination IP:  ",
+        "  Text in message: ",
+        "  Header:          ",
+        "  After:           ",
+        "  Before:          ",
+    ];
+    let placeholders = [
+        "",
+        "",
+        "",
+        "",
+        "",
+        "Name: text",
+        "2026-07-07T08:00:00Z",
+        "2026-07-07T09:00:00Z",
     ];
     let field_width = iw.saturating_sub(labels[0].len() as u16 + 2); // +2 for margin
 
@@ -1049,6 +1109,7 @@ pub(in crate::tui) fn render_filter_popup(
                 field_width,
                 focused,
                 cursor_pos: cursor,
+                placeholder: placeholders[i],
             },
             theme,
         );
@@ -1226,39 +1287,25 @@ pub(in crate::tui) fn render_settings_popup(frame: &mut ratatui::Frame, area: Re
     let ix = inner.x;
     let iy = inner.y;
 
+    // The same words the status line and the help use for each value, from
+    // the one place each mode names itself.
+    let on_off = |on: bool| if on { "On" } else { "Off" };
     let labels = [
-        "Color Mode:",
-        "Timestamp Mode:",
+        "Colors:",
+        "Timestamps:",
         "Autoscroll:",
-        "Raw Preview:",
-        "SDP Display:",
-        "Syntax Highlight:",
+        "Detail pane:",
+        "SDP:",
+        "Syntax colors:",
     ];
 
     let values = [
-        match app.color_mode {
-            ColorMode::Method => "Method",
-            ColorMode::CallId => "CallId",
-            ColorMode::CSeq => "CSeq",
-        },
-        match app.timestamp_mode {
-            TimestampMode::Absolute => "Absolute",
-            TimestampMode::DeltaPrev => "DeltaPrev",
-            TimestampMode::DeltaFirst => "DeltaFirst",
-            TimestampMode::Scaled => "Scaled",
-        },
-        if app.call_list.autoscroll {
-            "ON"
-        } else {
-            "OFF"
-        },
-        if app.flow.raw_preview { "ON" } else { "OFF" },
-        match app.sdp_display_mode {
-            SdpDisplayMode::None => "None",
-            SdpDisplayMode::Summary => "Summary",
-            SdpDisplayMode::Full => "Full",
-        },
-        if app.syntax_highlight { "ON" } else { "OFF" },
+        app.color_mode.name(),
+        app.timestamp_mode.name(),
+        on_off(app.call_list.autoscroll),
+        on_off(app.flow.raw_preview),
+        app.sdp_display_mode.name(),
+        on_off(app.syntax_highlight),
     ];
 
     for (i, (label, value)) in labels.iter().zip(values.iter()).enumerate() {
@@ -2078,7 +2125,7 @@ mod tests {
             for x in 0..buf.area.width {
                 row.push_str(buf.cell((x, y)).unwrap().symbol());
             }
-            if row.contains("Save Capture") {
+            if row.contains("Save capture") {
                 found = true;
             }
         }
@@ -2205,6 +2252,7 @@ mod tests {
             field_width: 20,
             focused: true,
             cursor_pos: 2,
+            placeholder: "",
         };
         render_filter_text_field(&mut buf, 0, 0, &field, &theme);
         let mut row = String::new();
@@ -2222,6 +2270,7 @@ mod tests {
             field_width: 12,
             focused: false,
             cursor_pos: 0,
+            placeholder: "",
         };
         render_filter_text_field(&mut buf2, 0, 0, &field2, &theme);
         let mut row2 = String::new();
@@ -2229,6 +2278,52 @@ mod tests {
             row2.push_str(buf2.cell((x, 0)).unwrap().symbol());
         }
         assert!(row2.contains("To:"));
+    }
+
+    /// An empty field shows its placeholder (the format it wants), muted; a
+    /// field with a value never does. The After/Before fields took an RFC 3339
+    /// timestamp and gave no hint of the format.
+    #[test]
+    fn an_empty_field_shows_its_placeholder() {
+        let theme = Theme::default();
+        let row_of = |value: &str, focused: bool| {
+            let mut buf = ratatui::buffer::Buffer::empty(Rect::new(0, 0, 60, 1));
+            let field = FilterTextField {
+                label: "After: ",
+                value,
+                field_width: 30,
+                focused,
+                cursor_pos: 0,
+                placeholder: "2026-07-07T08:00:00Z",
+            };
+            render_filter_text_field(&mut buf, 0, 0, &field, &theme);
+            (0..60)
+                .map(|x| buf.cell((x, 0)).unwrap().symbol().to_string())
+                .collect::<String>()
+        };
+        assert!(row_of("", false).contains("2026-07-07T08:00:00Z"));
+        assert!(row_of("", true).contains("2026-07-07T08:00:00Z"));
+        assert!(!row_of("x", false).contains("2026-07-07"));
+    }
+
+    /// The settings popup speaks in the same words as the rest of the TUI:
+    /// "Delta from previous", not the enum name `DeltaPrev`; "Detail pane",
+    /// not "Raw Preview"; On/Off, not ON/OFF.
+    #[test]
+    fn settings_values_are_words() {
+        let mut app = App::new_test();
+        app.active_popup = Some(Popup::SettingsDialog);
+        let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        terminal
+            .draw(|frame| render_settings_popup(frame, Rect::new(0, 0, 100, 30), &app))
+            .unwrap();
+        let text = frame_text(terminal.backend().buffer());
+        for needle in ["[Delta from previous]", "Detail pane:", "[On]", "[Hidden]"] {
+            assert!(text.contains(needle), "{needle:?} missing:\n{text}");
+        }
+        for stale in ["DeltaPrev", "Raw Preview", "[ON]", "[None]"] {
+            assert!(!text.contains(stale), "{stale:?} is back:\n{text}");
+        }
     }
 
     /// A block cursor sitting on a multibyte character renders that whole
@@ -2243,6 +2338,7 @@ mod tests {
             field_width: 20,
             focused: true,
             cursor_pos: 1, // on the two-byte 'é'
+            placeholder: "",
         };
         render_filter_text_field(&mut buf, 0, 0, &field, &theme);
         let mut row = String::new();
@@ -2264,6 +2360,7 @@ mod tests {
             field_width: 10, // inner width 8, cursor well beyond it
             focused: true,
             cursor_pos: 10,
+            placeholder: "",
         };
         render_filter_text_field(&mut buf, 0, 0, &field, &theme);
     }
@@ -2280,6 +2377,7 @@ mod tests {
             field_width: 11,     // inner width 9 — mid-character in bytes
             focused: false,
             cursor_pos: 0,
+            placeholder: "",
         };
         render_filter_text_field(&mut buf, 0, 0, &field, &theme);
     }
@@ -2329,6 +2427,7 @@ mod tests {
             field_width: 20,
             focused: true,
             cursor_pos: 2, // at end == value.len()
+            placeholder: "",
         };
         render_filter_text_field(&mut buf, 0, 0, &field, &theme);
         // Renders block cursor at end without panic.
@@ -2350,6 +2449,7 @@ mod tests {
                     field_width,
                     focused,
                     cursor_pos: 1,
+                    placeholder: "",
                 };
                 // Would panic with "attempt to subtract with overflow" before
                 // the saturating guard.

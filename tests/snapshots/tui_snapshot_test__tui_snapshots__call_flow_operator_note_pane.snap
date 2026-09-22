@@ -2,8 +2,8 @@
 source: tests/tui_snapshot_test.rs
 expression: output
 ---
- Current Mode: Online (any)    Dialogs: 1 (1 displayed)  [A]
- Match Expression:     BPF Filter:
+ Live capture: any    Dialogs: 1 shown of 1    Autoscroll: on
+ Capture filter (BPF): none
  Note kept. F2 then NOTES saves the notes; PCAP-NG writes them into the capture
              10.0.0.1:5060                    10.0.0.2:5060 ┌ [1/2] INVITE ────────────────────────┐
              │                                            │ │INVITE sip:1002@example.com SIP/2.0   │
@@ -31,4 +31,4 @@ expression: output
 ┌ operator note — not sipnab analysis ─────────────────────────────────────────────────────────────┐
 │the far end answered before the 183                                                               │
 └──────────────────────────────────────────────────────────────────────────────────────────────────┘
-Esc Back  ↑↓ Nav  Enter Raw  Space Diff  d SDP  t Time  c Color  R Split
+Esc Back  F1 Help  ↑↓ Move  Enter Raw  d SDP  t Time  c Color  R Detail

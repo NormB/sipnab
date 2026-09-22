@@ -2,8 +2,8 @@
 source: tests/tui_snapshot_test.rs
 expression: output
 ---
- Current Mode: Online (any)    Dialogs: 3 (3 displayed)  [A]
- Match Expression:     BPF Filter:
+ Live capture: any    Dialogs: 3 shown of 3    Autoscroll: on
+ Capture filter (BPF): none
  Selected: message 1 (press Space on another to diff)
 ┌ Message 1 ─────────────────────────────────────┐┌ Message 2 ─────────────────────────────────────┐
 │ Message 1                                      ││ Message 2                                      │
@@ -31,4 +31,4 @@ expression: output
 │                                                ││                                                │
 │                                                ││                                                │
 └────────────────────────────────────────────────┘└────────────────────────────────────────────────┘
-Esc Back
+Esc Back  F1 Help  ↑↓ Scroll

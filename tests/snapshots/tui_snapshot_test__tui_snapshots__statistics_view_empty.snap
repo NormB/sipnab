@@ -2,23 +2,23 @@
 source: tests/tui_snapshot_test.rs
 expression: output
 ---
- Current Mode: Online (any)    Dialogs: 0 (0 displayed)  [A]
- Match Expression:     BPF Filter:
- Display Filter:
+ Live capture: any    Dialogs: 0 shown of 0    Autoscroll: o
+ Capture filter (BPF): none
+ View filter: none
 ┌ Statistics ──────────────────────────────────────────────┐
-│sipnab Statistics                                         │
-│                                                          │
 │Dialogs:           0                                      │
-│Active Dialogs:    0                                      │
-│Calls In Progress: 0                                      │
-│Total Messages:    0                                      │
-│RTP Streams:       0                                      │
-│Orphaned Streams:  0                                      │
+│Active dialogs:    0                                      │
+│Calls in progress: 0                                      │
+│Total messages:    0                                      │
+│RTP streams:       0                                      │
+│Orphaned streams:  0                                      │
 │                                                          │
 │Press Esc to return.                                      │
 │                                                          │
 │                                                          │
 │                                                          │
 │                                                          │
+│                                                          │
+│                                                          │
 └──────────────────────────────────────────────────────────┘
-Esc Back
+Esc Back  F1 Help  ↑↓ Scroll  PgUp/Dn Page

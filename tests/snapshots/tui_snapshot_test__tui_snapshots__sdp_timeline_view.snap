@@ -2,12 +2,10 @@
 source: tests/tui_snapshot_test.rs
 expression: output
 ---
- Current Mode: Online (any)    Dialogs: 3 (3 displayed)  [A]
- Match Expression:     BPF Filter:
- Display Filter:
-┌ SDP timeline ────────────────────────────────────────────────────────────────┐
-│SDP offer/answer timeline                                                     │
-│                                                                              │
+ Live capture: any    Dialogs: 3 shown of 3    Autoscroll: on
+ Capture filter (BPF): none
+ View filter: none
+┌ SDP offer/answer timeline ───────────────────────────────────────────────────┐
 │  No SDP offers or answers in this call.                                      │
 │                                                                              │
 │                                                                              │
@@ -20,5 +18,7 @@ expression: output
 │                                                                              │
 │                                                                              │
 │                                                                              │
+│                                                                              │
+│                                                                              │
 └──────────────────────────────────────────────────────────────────────────────┘
-Esc Back
+Esc Back  F1 Help  ↑↓ Scroll  PgUp/Dn Page

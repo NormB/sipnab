@@ -137,8 +137,15 @@ pub struct App {
     active_time_after: Option<chrono::DateTime<chrono::Utc>>,
     /// Active time-window upper bound (exclusive) — the dialog's `Before` field.
     active_time_before: Option<chrono::DateTime<chrono::Utc>>,
-    /// Transient status bar error message (cleared on next view change).
+    /// Transient status-line message (cleared on next view change). Despite
+    /// the name it carries information as well as errors: whether it draws as
+    /// an error is decided by `status_alert`, never by its words.
     status_error: Option<String>,
+    /// The status message that was raised as an error with
+    /// [`App::set_status_error`]. The message on the line is an error exactly
+    /// when it equals this, so a later information message written straight
+    /// into `status_error` can never inherit an earlier error's color.
+    status_alert: Option<String>,
     /// Call flow ladder state (selection, scroll, toggles, render caches).
     flow: CallFlowViewState,
     /// Horizontal headroom the call-flow detail pane had at the last frame
@@ -317,7 +324,7 @@ pub struct App {
     pending_save: Option<PendingSave>,
     /// Completion messages pushed by detached workers (clipboard export),
     /// drained into the status line each tick.
-    async_messages: Arc<parking_lot::Mutex<Vec<String>>>,
+    async_messages: Arc<parking_lot::Mutex<Vec<StatusMessage>>>,
     /// Whether the terminal should capture mouse events (wheel scrolling).
     /// Toggled with F12; while `false` the terminal's native drag-to-select
     /// works, at the cost of wheel scrolling. The event loop reconciles the
@@ -453,6 +460,7 @@ impl App {
             active_time_after: None,
             active_time_before: None,
             status_error: None,
+            status_alert: None,
             flow: CallFlowViewState::default(),
             flow_detail_max_hscroll: None,
             bpf_is_live_only: false,
@@ -625,7 +633,7 @@ impl App {
             outcome,
             error,
         }) {
-            self.status_error = Some(warning);
+            self.set_status_error(warning);
         }
     }
 
@@ -652,6 +660,20 @@ impl App {
         self.active_time_after = None;
         self.active_time_before = None;
         self.record_action("filter_cleared", "", "", "ok", "");
+    }
+
+    /// Show `msg` on the status line as an error: something did not happen
+    /// and the operator should know. Information is written to `status_error`
+    /// directly.
+    pub(crate) fn set_status_error(&mut self, msg: impl Into<String>) {
+        let msg = msg.into();
+        self.status_alert = Some(msg.clone());
+        self.status_error = Some(msg);
+    }
+
+    /// Whether the message on the status line now was raised as an error.
+    pub(crate) fn status_is_error(&self) -> bool {
+        self.status_error.is_some() && self.status_error == self.status_alert
     }
 
     /// Set the capture mode label (`mode`) displayed in the status bar.
@@ -740,7 +762,7 @@ impl App {
                         && pending_gen == generation
                     {
                         self.bpf_pending = None;
-                        self.status_error = Some(format!("filter rejected: {error}"));
+                        self.set_status_error(format!("filter rejected: {error}"));
                     }
                 }
             }
@@ -762,9 +784,21 @@ impl App {
     /// non-empty, removes its first entry and overwrites `status_error`
     /// with it.
     pub(crate) fn drain_async_messages(&mut self) {
-        let mut queue = self.async_messages.lock();
-        if !queue.is_empty() {
-            self.status_error = Some(queue.remove(0));
+        let next = {
+            let mut queue = self.async_messages.lock();
+            (!queue.is_empty()).then(|| queue.remove(0))
+        };
+        if let Some(msg) = next {
+            self.show_status(msg);
+        }
+    }
+
+    /// Put `msg` on the status line with the severity it carries.
+    pub(crate) fn show_status(&mut self, msg: StatusMessage) {
+        if msg.is_error {
+            self.set_status_error(msg.text);
+        } else {
+            self.status_error = Some(msg.text);
         }
     }
 
@@ -793,7 +827,7 @@ impl App {
                 Ok(player) => self.audio_player = Some(player),
                 Err(e) => {
                     let msg = format!("Audio init failed: {e}");
-                    self.status_error = Some(msg.clone());
+                    self.set_status_error(msg.clone());
                     self.audio_init_error = Some(msg);
                     return;
                 }
@@ -809,8 +843,10 @@ impl App {
             };
             match result {
                 Some(Ok(msg)) => self.status_error = Some(msg),
-                Some(Err(e)) => self.status_error = Some(format!("Playback error: {e}")),
-                None => self.status_error = Some("Stream not found".to_string()),
+                Some(Err(e)) => self.set_status_error(format!("Playback error: {e}")),
+                None => self.set_status_error(
+                    "Stream not found: it is no longer in memory. Esc returns to the stream list.",
+                ),
             }
         }
     }
@@ -846,7 +882,7 @@ impl App {
             // capture they were reading" is exactly what a review is looking
             // for, and a trail holding only what succeeded answers the
             // opposite question.
-            self.status_error = Some(msg.clone());
+            self.set_status_error(msg.clone());
             // AFTER the status line is set, never before: a failed trail write
             // replaces the status message with its own warning, and doing this
             // the other way round would overwrite the one notice the operator
@@ -872,7 +908,13 @@ impl App {
         // which is why the trail is written here and not in each writer: a
         // record in ten of eleven places is not a record.
         let outcome = save::export_outcome(&msg);
-        self.status_error = Some(msg.clone());
+        // The trail's own ok/failed rule decides the color too, so the status
+        // line and the record can never disagree about whether it worked.
+        if outcome == "ok" {
+            self.status_error = Some(msg.clone());
+        } else {
+            self.set_status_error(msg.clone());
+        }
         // After the status line, for the reason given in the refused branch
         // above.
         self.record_action(
@@ -1259,7 +1301,7 @@ impl App {
                         &ss,
                         &crate::sip::endpoint::Selector::Ip(addr),
                     ),
-                    Err(_) => format!("Endpoint ip {ip}\n\n  (not a valid address)\n"),
+                    Err(_) => format!("Endpoint {ip}\n\n  (not a valid address)\n"),
                 };
                 self.endpoint.key = Some(key);
                 self.endpoint.floor.mark();
@@ -1972,6 +2014,43 @@ pub fn run_tui_with_pause(
     Ok(())
 }
 
+/// A status-line message and whether it reports a failure. Carried by
+/// messages that cross a thread (the clipboard worker's outcome), where the
+/// sender, not the words, knows whether something went wrong.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct StatusMessage {
+    /// The text to show.
+    pub(crate) text: String,
+    /// Whether it draws as an error.
+    pub(crate) is_error: bool,
+}
+
+impl StatusMessage {
+    /// A message that reports what happened.
+    pub(crate) fn info(text: impl Into<String>) -> Self {
+        Self {
+            text: text.into(),
+            is_error: false,
+        }
+    }
+
+    /// A message that reports something did not happen.
+    pub(crate) fn error(text: impl Into<String>) -> Self {
+        Self {
+            text: text.into(),
+            is_error: true,
+        }
+    }
+}
+
+/// `n` followed by the noun that agrees with it: `1 finding`, `0 findings`.
+///
+/// The one place the TUI decides singular or plural, so no screen falls back
+/// to `destination(s)`. Pure.
+pub(crate) fn count_noun(n: usize, singular: &str, plural: &str) -> String {
+    format!("{n} {}", if n == 1 { singular } else { plural })
+}
+
 /// Unit tests for the App event-loop contracts: cache churn floors,
 /// contended-store render ticks, multi-selection flows, filter/search
 /// visibility, and the display-mode enum cycles.
@@ -1979,13 +2058,24 @@ pub fn run_tui_with_pause(
 mod tests {
     use super::*;
 
+    /// One of a thing is singular; zero and many are plural. The screens used
+    /// `destination(s)` and `talker(s)`, which make the reader do the grammar.
+    #[test]
+    fn count_noun_agrees_with_its_number() {
+        assert_eq!(count_noun(1, "finding", "findings"), "1 finding");
+        assert_eq!(count_noun(0, "finding", "findings"), "0 findings");
+        assert_eq!(count_noun(7, "finding", "findings"), "7 findings");
+        assert_eq!(count_noun(1, "dialog", "dialogs"), "1 dialog");
+        assert_eq!(count_noun(2, "match", "matches"), "2 matches");
+    }
+
     /// F1 opens the help overlay, but nothing on a POPULATED call list
     /// said so (only the empty-state message did) — the f-key bar listed
     /// F2..F10 but never F1. Help must be advertised at every width.
     #[test]
     fn fkey_bar_advertises_help_on_call_list_at_all_widths() {
         for width in [60u16, 90, 120] {
-            let items = fkey_bar_items(&View::CallList, &None, width);
+            let items = fkey_bar_items(&View::CallList, &None, width, false);
             assert!(
                 items.contains(&("F1", "Help")),
                 "width {width}: F1 Help missing from f-key bar: {items:?}"
@@ -3392,8 +3482,8 @@ mod tests {
         }
         assert_eq!(SaveFormat::Pcap.extension(), "pcap");
         assert_eq!(SaveFormat::RtpJson.extension(), "rtp.json");
-        assert_eq!(SaveFormat::Pcap.category(), "Packet Capture");
-        assert_eq!(SaveFormat::Json.category(), "Structured/Analytics");
+        assert_eq!(SaveFormat::Pcap.category(), "Packet capture");
+        assert_eq!(SaveFormat::Json.category(), "Structured/analytics");
     }
 
     // ── Display-mode enum cycles ────────────────────────────────────

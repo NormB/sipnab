@@ -2,23 +2,23 @@
 source: tests/tui_snapshot_test.rs
 expression: output
 ---
- Current Mode: Online (any)    Dialogs: 3 (3 displayed)  [A]
- Match Expression:     BPF Filter:
- Display Filter:
-┌ Carrier Metrics ─────────────────────────────────────────────────────────────┐
-│Carrier Metrics (by destination IP)                                           │
-│                                                                              │
+ Live capture: any    Dialogs: 3 shown of 3    Autoscroll: on
+ Capture filter (BPF): none
+ View filter: none
+┌ Carrier metrics (by destination IP) ─────────────────────────────────────────┐
 │Destination IP            Calls      ASR      NER       ACD                   │
 │10.0.0.2                      3    66.7%    66.7%     60.0s                   │
 │                                                                              │
-│1 destination(s). ASR = answered / seizures, NER = delivered / seizures, ACD =│
-│A dash means the group had no decided call attempt (no INVITE reached a final │
+│1 destination.                                                                │
 │                                                                              │
-│Press Esc to return.                                                          │
+│  ASR  Answer-seizure ratio: the share of call attempts that were answered    │
+│       (2xx).                                                                 │
+│  NER  Network effectiveness ratio: the share of call attempts the far end    │
+│       answered or refused (busy, unavailable, declined) rather than ones the │
+│       network lost.                                                          │
+│  ACD  Average call duration: mean seconds of the calls answered and hung up  │
+│       inside the capture.                                                    │
 │                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
+│A call attempt is an INVITE that got a final response. A dash means no call   │
 └──────────────────────────────────────────────────────────────────────────────┘
-Esc Back
+Esc Back  F1 Help  ↑↓ Scroll  PgUp/Dn Page
