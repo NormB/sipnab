@@ -633,6 +633,16 @@ pub fn sip_call_frames(
 /// `secrets` is embedded as a TLS key-log DSB (`TLSK`), the type Wireshark and
 /// sipnab both write for `--tls-key` material.
 pub fn write_pcapng_with_dsb(path: &Path, secrets: &str, frame: &[u8]) {
+    write_pcapng_with_dsb_frames(path, secrets, &[frame.to_vec()]);
+}
+
+/// [`write_pcapng_with_dsb`] with any number of frames, the n-th stamped n ms
+/// after the epoch (the first at zero, as the single-frame writer has always
+/// stamped it).
+///
+/// A decryption test needs a whole session after the secrets: the handshake
+/// the keys belong to and the records they open.
+pub fn write_pcapng_with_dsb_frames(path: &Path, secrets: &str, frames: &[Vec<u8>]) {
     fn block(kind: u32, body: &[u8]) -> Vec<u8> {
         // total = 12 (type + 2x length) + padded body
         let pad = (4 - body.len() % 4) % 4;
@@ -670,17 +680,20 @@ pub fn write_pcapng_with_dsb(path: &Path, secrets: &str, frame: &[u8]) {
     dsb.extend_from_slice(secrets.as_bytes());
     out.extend_from_slice(&block(0x0000_000a, &dsb));
 
-    // Enhanced Packet: interface 0, zero timestamp, one frame.
-    let mut epb = Vec::new();
-    epb.extend_from_slice(&0u32.to_le_bytes());
-    epb.extend_from_slice(&0u32.to_le_bytes());
-    epb.extend_from_slice(&0u32.to_le_bytes());
-    epb.extend_from_slice(&(frame.len() as u32).to_le_bytes());
-    epb.extend_from_slice(&(frame.len() as u32).to_le_bytes());
-    epb.extend_from_slice(frame);
-    let pad = (4 - frame.len() % 4) % 4;
-    epb.extend(std::iter::repeat_n(0u8, pad));
-    out.extend_from_slice(&block(0x0000_0006, &epb));
+    // Enhanced Packets: interface 0, microsecond timestamps split high/low.
+    for (i, frame) in frames.iter().enumerate() {
+        let ts = i as u64 * 1_000;
+        let mut epb = Vec::new();
+        epb.extend_from_slice(&0u32.to_le_bytes());
+        epb.extend_from_slice(&((ts >> 32) as u32).to_le_bytes());
+        epb.extend_from_slice(&(ts as u32).to_le_bytes());
+        epb.extend_from_slice(&(frame.len() as u32).to_le_bytes());
+        epb.extend_from_slice(&(frame.len() as u32).to_le_bytes());
+        epb.extend_from_slice(frame);
+        let pad = (4 - frame.len() % 4) % 4;
+        epb.extend(std::iter::repeat_n(0u8, pad));
+        out.extend_from_slice(&block(0x0000_0006, &epb));
+    }
 
     std::fs::write(path, out).expect("write pcapng");
 }

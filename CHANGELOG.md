@@ -26,6 +26,12 @@ entry that carries them.
   set of captures it holds, and so do MCP `open_capture`, `find_in_captures`,
   `compare_captures` and the REST compare route. `--cores` reads an archive's
   members exactly as the single-threaded reader does.
+- **A test proves decryption answers the same through every wrapper.** It runs TLS
+  with `--keylog`, TLS with a pcapng's embedded secrets, SRTP keyed by SDES,
+  and DTLS-SRTP over one synthetic capture presented plain, gzip-compressed,
+  as a tar member, as a `.tgz` member and gzip-compressed inside a `.tgz`, and
+  requires identical plaintext from all five. Before archive input, sipnab
+  could not open the three archive columns at all.
 - **Frame pointers name archive members, and resolve.** A packet read out of
   an archive carries `<archive>/<member>#<ordinal>` as its frame pointer, and
   `--show-frame`, MCP `show_evidence`, `decode_frame` and `decode_ng_frame`

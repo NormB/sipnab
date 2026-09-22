@@ -11453,6 +11453,10 @@ first, and the answer matches what reading the unpacked directory gives.
 - **`--input-name` filters members** by file name, the same way it filters a
   directory's files. On a single compressed capture it still refuses, because
   there is nothing to choose between.
+- **Decryption works on members exactly as on plain files.** `--keylog`, the
+  secrets a pcapng embeds, SDES keys in the SDP and `--dtls-keylog` each decrypt
+  a member the same whether it arrived plain, gzip-compressed, in a tar, in a
+  `.tgz`, or gzip-compressed inside a `.tgz`.
 
 A run that dies without cleaning up, from a crash or `kill -9`, leaves its
 directory behind holding a lock that died with it. The next run that unpacks an

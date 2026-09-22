@@ -1465,6 +1465,65 @@ mod browser_tests {
         (out, ds, ss)
     }
 
+    /// A pcapng carrying a Decryption Secrets Block warns the operator that
+    /// the file holds keys, from inside an archive exactly as on its own. The
+    /// metadata reader opens each member's own file, never the archive.
+    #[test]
+    fn embedded_secrets_are_announced_from_inside_an_archive() {
+        use crate::capture::archive::tar::testutil::{Spec, build};
+        use std::io::Write;
+        fn block(kind: u32, body: &[u8]) -> Vec<u8> {
+            let pad = (4 - body.len() % 4) % 4;
+            let total = (12 + body.len() + pad) as u32;
+            let mut b = kind.to_le_bytes().to_vec();
+            b.extend_from_slice(&total.to_le_bytes());
+            b.extend_from_slice(body);
+            b.extend(std::iter::repeat_n(0u8, pad));
+            b.extend_from_slice(&total.to_le_bytes());
+            b
+        }
+        let secrets = format!("CLIENT_RANDOM {} {}\n", "ab".repeat(32), "cd".repeat(48));
+        let mut shb = 0x1a2b_3c4du32.to_le_bytes().to_vec();
+        shb.extend_from_slice(&[1, 0, 0, 0]);
+        shb.extend_from_slice(&(-1i64).to_le_bytes());
+        let mut idb = vec![1u8, 0, 0, 0];
+        idb.extend_from_slice(&65_535u32.to_le_bytes());
+        let mut dsb = 0x544c_534bu32.to_le_bytes().to_vec();
+        dsb.extend_from_slice(&(secrets.len() as u32).to_le_bytes());
+        dsb.extend_from_slice(secrets.as_bytes());
+        let frame = [0u8; 60];
+        let mut epb = vec![0u8; 12];
+        epb.extend_from_slice(&60u32.to_le_bytes());
+        epb.extend_from_slice(&60u32.to_le_bytes());
+        epb.extend_from_slice(&frame);
+        let mut pcapng = block(0x0a0d_0d0a, &shb);
+        pcapng.extend(block(1, &idb));
+        pcapng.extend(block(0x0a, &dsb));
+        pcapng.extend(block(6, &epb));
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let plain = dir.path().join("keys.pcapng");
+        std::fs::write(&plain, &pcapng).expect("pcapng");
+        let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        enc.write_all(&build(&[Spec::file("k/keys.pcapng", &pcapng)]))
+            .expect("gzip");
+        let tgz = dir.path().join("keys.tgz");
+        std::fs::write(&tgz, enc.finish().expect("gzip")).expect("tgz");
+
+        let (plain_out, _, _) = load_into_fresh_stores(&plain);
+        let (tgz_out, _, _) = load_into_fresh_stores(&tgz);
+        assert!(
+            plain_out.message.contains("1 embedded decryption secret"),
+            "{}",
+            plain_out.message
+        );
+        assert!(
+            tgz_out.message.contains("1 embedded decryption secret"),
+            "{}",
+            tgz_out.message
+        );
+    }
+
     /// Opening an archive in the browser loads the set of captures it holds —
     /// the same dialogs and SIP count as loading each member in turn.
     #[test]
