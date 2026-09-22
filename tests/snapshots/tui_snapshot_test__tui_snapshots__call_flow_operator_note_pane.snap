@@ -1,0 +1,34 @@
+---
+source: tests/tui_snapshot_test.rs
+expression: output
+---
+ Current Mode: Online (any)    Dialogs: 1 (1 displayed)  [A]
+ Match Expression:     BPF Filter:
+ Note kept. F2 then NOTES saves the notes; PCAP-NG writes them into the capture
+             10.0.0.1:5060                    10.0.0.2:5060 ┌ [1/2] INVITE ────────────────────────┐
+             │                                            │ │INVITE sip:1002@example.com SIP/2.0   │
+     +0.000s✎│───────────────── INVITE ──────────────────▶│ │From: "1001" <sip:1001@example.com>;ta│
+     +0.080s │◀╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌ 200 OK ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌│ │g=t1                                  │
+                                                            │To: "1002" <sip:1002@example.com>     │
+                                                            │Call-ID: note-snap@test               │
+                                                            │CSeq: 1 INVITE                        │
+                                                            │Content-Length: 0                     │
+                                                            │                                      │
+                                                            │                                      │
+                                                            │                                      │
+                                                            │                                      │
+                                                            │                                      │
+                                                            │                                      │
+                                                            │                                      │
+                                                            │                                      │
+                                                            │                                      │
+                                                            │                                      │
+                                                            │                                      │
+                                                            │                                      │
+                                                            │                                      │
+             │                                            │ │                                      │
+             10.0.0.1:5060                    10.0.0.2:5060 └──────────────────────────────────────┘
+┌ operator note — not sipnab analysis ─────────────────────────────────────────────────────────────┐
+│the far end answered before the 183                                                               │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+Esc Back  ↑↓ Nav  Enter Raw  Space Diff  d SDP  t Time  c Color  R Split

@@ -24,6 +24,16 @@ entry that carries them.
   key-log line or a digest `response=` value, is refused. sipnab never reads a
   packet comment back: `--json` over the copy is what it is over the original.
   The notes file format is in `docs/output-formats.md`.
+- **Operator notes in the TUI.** `C` on a message in the call flow or the raw
+  message view opens a one-line editor. The note is shown under the flow in a
+  pane titled "operator note — not sipnab analysis", the ladder marks the row
+  with `✎`, and a PCAP-NG save writes it as the packet comment on that
+  message's frame, with the pointer to the frame it was typed on. The save
+  dialog's new NOTES format writes the notes file, and `sipnab -I <capture>
+  --notes FILE` resumes from it. A classic PCAP save refuses rather than drop
+  the notes, and quitting or opening another capture with notes not saved to a
+  notes file asks first. The TUI action trail records which frame a note was
+  set on or removed from, never its text.
 
 ### Changed
 

@@ -412,6 +412,12 @@ impl App {
         self.save.cursor = path.len();
     }
 
+    /// The session's operator notes (test helper).
+    #[doc(hidden)]
+    pub fn notes_for_test(&self) -> &crate::annotate::Notes {
+        &self.notes
+    }
+
     /// Return a reference to the shared dialog store (for tests).
     pub fn dialog_store_ref(&self) -> &Arc<RwLock<DialogStore>> {
         &self.dialog_store

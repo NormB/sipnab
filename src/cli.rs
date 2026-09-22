@@ -789,9 +789,11 @@ pub struct NameResolutionArgs {
     )]
     pub show_frame: Option<String>,
 
-    /// Operator notes to write with `--write-annotated`: a JSON Lines file,
-    /// one `{"frame": "<pointer>", "note": "<text>"}` per line, the pointer
-    /// taken from the `frame` field of `--json`.
+    /// Operator notes: a JSON Lines file, one
+    /// `{"frame": "<pointer>", "note": "<text>"}` per line, the pointer taken
+    /// from the `frame` field of `--json`. With `--write-annotated`, the notes
+    /// to write into the copy. In the TUI, the session's notes file: loaded at
+    /// start when it exists, and where the save dialog's NOTES format writes.
     ///
     /// A note is a person's text, never analysis. sipnab writes it into a
     /// pcapng packet comment and never reads a comment back. A note over 4096

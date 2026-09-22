@@ -91,16 +91,22 @@ use crate::app::audit::AuditSink;
 #[derive(Debug, Clone, Copy)]
 pub struct ActionRecord<'a> {
     /// What was done, from a fixed set: `capture_opened`, `capture_swapped`,
-    /// `filter_applied`, `filter_cleared`, `export`, and the `session_end`
-    /// line [`ActionTrail::close_session`] writes.
+    /// `filter_applied`, `filter_cleared`, `export`, `note_set`,
+    /// `note_removed`, and the `session_end` line
+    /// [`ActionTrail::close_session`] writes.
+    ///
+    /// The two note actions name the FRAME the operator's note is on, never
+    /// what it says: a note is free text about a call, like a search term, and
+    /// this file is kept. A reviewer can count the edits and see which frames
+    /// carried notes; the text travels only in the files the operator saved.
     ///
     /// A fixed vocabulary and not free text: a reader grepping for every
     /// export in a month's trails is doing so on this value, and one call
     /// site inventing a synonym makes that search quietly incomplete.
     pub action: &'a str,
     /// What the action was done TO or WITH: the capture path, the filter
-    /// expression, the export destination. Empty when the action has no
-    /// object, which only `filter_cleared` does.
+    /// expression, the export destination, the frame a note is on. Empty
+    /// when the action has no object, which only `filter_cleared` does.
     pub target: &'a str,
     /// Export format (`pcap`, `json`, …), empty for every other action.
     pub format: &'a str,

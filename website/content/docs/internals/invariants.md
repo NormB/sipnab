@@ -557,7 +557,12 @@ and [`src/capture/writer.rs`](https://github.com/NormB/sipnab/blob/main/src/capt
 [`src/analysis.rs`](https://github.com/NormB/sipnab/blob/main/src/analysis.rs) as forbidden outright. The writer
 puts a comment on a frame only through `PcapWriter::write_annotated`, which
 takes an `EpbComment` that only the annotate module can build, so MCP's
-`export_capture` has no way to write one.
+`export_capture` has no way to write one. The annotate module refuses, rather
+than cuts, a comment longer than the 16-bit option length, `MAX_COMMENT_BYTES`
+(65,535). In the TUI the note pane and the editor draw the text from inside the
+annotate module, the action trail records the frame a note is on and never its
+text (`an_operator_note_never_reaches_the_trail`), and nothing else in
+`src/tui/` can read a note.
 
 **Fails as.** An operator's guess about a call, read back by a later run or
 an agent as though the capture said it. Or a decryption key, typed into a

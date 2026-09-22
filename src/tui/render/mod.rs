@@ -216,6 +216,28 @@ pub(in crate::tui) fn render_app(
                 let store = ds;
                 let cid = call_id.clone();
                 let sel = app.flow.selected;
+                // The selected message's operator note, if it has one, gets a
+                // labeled pane under the flow. The row -> message mapping is
+                // the one the key handlers use (the previous frame's cache,
+                // falling back to the row position).
+                let selected_raw = app
+                    .flow
+                    .cached_raw_indices
+                    .get(sel)
+                    .copied()
+                    .flatten()
+                    .unwrap_or(sel);
+                let main_area = match row_message(app, store, &cid, selected_raw)
+                    .and_then(|m| m.frame.as_ref())
+                    .and_then(|f| app.notes.get(f))
+                {
+                    Some(note) => {
+                        let (flow_area, pane_area) = split_note_pane(main_area, note);
+                        render_note_pane(frame, pane_area, note, &app.theme);
+                        flow_area
+                    }
+                    None => main_area,
+                };
 
                 // Horizontal split: ladder on left, raw detail on right (
                 // style). The ladder width is widened past the configured split
@@ -341,6 +363,7 @@ pub(in crate::tui) fn render_app(
                         scroll_offset: scroll,
                         mark_index: app.flow.mark_index,
                         selected_index: sel,
+                        noted: noted_rows(app, store, &cid, &raw_indices),
                     },
                     &app.theme,
                 );
@@ -436,6 +459,19 @@ pub(in crate::tui) fn render_app(
         } => {
             {
                 let store = ds;
+                let main_area = match store
+                    .get(call_id)
+                    .and_then(|d| d.messages.get(*message_index))
+                    .and_then(|m| m.frame.as_ref())
+                    .and_then(|f| app.notes.get(f))
+                {
+                    Some(note) => {
+                        let (text_area, pane_area) = split_note_pane(main_area, note);
+                        render_note_pane(frame, pane_area, note, &app.theme);
+                        text_area
+                    }
+                    None => main_area,
+                };
                 let total_rows = msg_raw::render_raw_message(
                     frame,
                     main_area,
@@ -596,6 +632,8 @@ pub(in crate::tui) fn render_app(
             Popup::QuitConfirm => {
                 render_quit_confirm_popup(frame, area, app);
             }
+            Popup::NoteEditor => render_note_editor_popup(frame, area, app),
+            Popup::UnsavedNotes => render_unsaved_notes_popup(frame, area, app),
         }
     }
 
@@ -605,6 +643,90 @@ pub(in crate::tui) fn render_app(
     }
 
     fb
+}
+
+/// The message a call-flow ladder row shows, by the row's `raw_index`.
+///
+/// The same three projections the detail pane resolves: a merged or extended
+/// ladder carries each row's own dialog in its index map, a transaction filter
+/// renders a subset of the anchor dialog, and otherwise the index is the
+/// anchor dialog's own.
+fn row_message<'s>(
+    app: &App,
+    store: &'s DialogStore,
+    anchor: &str,
+    raw: usize,
+) -> Option<&'s crate::sip::SipMessage> {
+    if let Some((cid, idx)) = app.flow.ladder.index_map.get(raw) {
+        return store.get(cid).and_then(|d| d.messages.get(*idx));
+    }
+    let dialog = store.get(anchor)?;
+    match app.flow.transaction_filter.as_ref() {
+        Some(key) => dialog
+            .messages
+            .iter()
+            .filter(|m| call_flow::transaction_key(m).as_ref() == Some(key))
+            .nth(raw),
+        None => dialog.messages.get(raw),
+    }
+}
+
+/// The sorted `raw_index`es of the ladder rows whose message carries an
+/// operator note, for the ladder's marker.
+fn noted_rows(
+    app: &App,
+    store: &DialogStore,
+    anchor: &str,
+    raw_indices: &[Option<usize>],
+) -> Vec<usize> {
+    if app.notes.is_empty() {
+        return Vec::new();
+    }
+    let mut out: Vec<usize> = raw_indices
+        .iter()
+        .flatten()
+        .copied()
+        .filter(|&raw| {
+            row_message(app, store, anchor, raw)
+                .and_then(|m| m.frame.as_ref())
+                .is_some_and(|f| app.notes.get(f).is_some())
+        })
+        .collect();
+    out.sort_unstable();
+    out.dedup();
+    out
+}
+
+/// Split `area` into the view above and a note pane below, sized to the note
+/// (at most six rows, and never more than half the area).
+fn split_note_pane(area: Rect, note: &crate::annotate::NoteText) -> (Rect, Rect) {
+    let lines = crate::annotate::tui::note_lines(note, Style::default()).len();
+    let wanted = u16::try_from(lines).unwrap_or(u16::MAX).saturating_add(2);
+    let height = wanted.min(6).min(area.height / 2).max(3);
+    let [top, bottom] =
+        Layout::vertical([Constraint::Min(0), Constraint::Length(height)]).areas(area);
+    (top, bottom)
+}
+
+/// Draw an operator note in its pane, under a title that says it is not
+/// sipnab's analysis.
+fn render_note_pane(
+    frame: &mut ratatui::Frame,
+    area: Rect,
+    note: &crate::annotate::NoteText,
+    theme: &Theme,
+) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(crate::annotate::tui::PANE_TITLE)
+        .border_style(Style::default().fg(theme.accent));
+    let lines = crate::annotate::tui::note_lines(note, Style::default().fg(theme.foreground));
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(block)
+            .wrap(ratatui::widgets::Wrap { trim: false }),
+        area,
+    );
 }
 
 /// Compose the statistics view's aggregate text — a full pass over every

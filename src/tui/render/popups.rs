@@ -114,6 +114,7 @@ pub(in crate::tui) fn render_save_popup(frame: &mut ratatui::Frame, area: Rect, 
         SaveFormat::Markdown, // Reporting
         SaveFormat::Wav,
         SaveFormat::RtpJson, // RTP/Media
+        SaveFormat::Notes,   // Operator notes
     ];
     let mut fmt_lines: Vec<Line<'_>> = Vec::new();
     let mut selected_fmt_line = 0usize;
@@ -359,7 +360,7 @@ pub(in crate::tui) fn render_name_popup(frame: &mut ratatui::Frame, area: Rect, 
 /// Draws to `frame` (clearing the cells behind the popup); no state is
 /// mutated.
 pub(in crate::tui) fn render_quit_confirm_popup(frame: &mut ratatui::Frame, area: Rect, app: &App) {
-    let lines: Vec<Line<'_>> = vec![
+    let mut lines: Vec<Line<'_>> = vec![
         Line::from(""),
         Line::from(Span::styled(
             "  Are you sure you want to quit?",
@@ -377,6 +378,12 @@ pub(in crate::tui) fn render_quit_confirm_popup(frame: &mut ratatui::Frame, area
             Style::default().fg(app.theme.muted),
         )),
     ];
+    // Notes the operator typed and has not saved exist nowhere else, so the
+    // question says what quitting costs.
+    if app.notes.is_unsaved() {
+        lines.push(Line::from(""));
+        lines.extend(unsaved_notes_lines(app));
+    }
 
     // Sized to what it says, for the reason spelled out in `render_name_popup`:
     // `Paragraph` truncates in silence here, and the line that would go is the
@@ -405,6 +412,115 @@ pub(in crate::tui) fn render_quit_confirm_popup(frame: &mut ratatui::Frame, area
     frame.render_widget(block, popup_area);
 
     frame.render_widget(Paragraph::new(lines), inner);
+}
+
+/// The two lines that say operator notes are not saved, shared by the quit
+/// confirmation and the capture-swap question.
+fn unsaved_notes_lines(app: &App) -> [Line<'static>; 2] {
+    [
+        Line::from(Span::styled(
+            format!(
+                "  {} operator note(s) are not saved to a notes file.",
+                app.notes.len()
+            ),
+            Style::default().fg(app.theme.warning),
+        )),
+        Line::from(Span::styled(
+            "  F2, then the NOTES format, saves them.",
+            Style::default().fg(app.theme.muted),
+        )),
+    ]
+}
+
+/// The centered area a popup of `lines` under `title` needs inside `area`.
+fn sized_popup_area(area: Rect, title: &str, lines: &[Line<'_>]) -> Rect {
+    let content = lines
+        .iter()
+        .map(ratatui::text::Line::width)
+        .max()
+        .unwrap_or(0);
+    let desired = u16::try_from(content.max(title.len()).saturating_add(3)).unwrap_or(u16::MAX);
+    let popup_width = desired.clamp(20, area.width.saturating_sub(4).max(20));
+    let rows = u16::try_from(lines.len()).unwrap_or(u16::MAX);
+    let popup_height = rows
+        .saturating_add(2)
+        .min(area.height.saturating_sub(2))
+        .max(3);
+    centered_popup(area, popup_width, popup_height)
+}
+
+/// Draw the border, `title` and `lines` of a popup into `popup_area`, which
+/// the caller has already cleared.
+fn draw_popup_body(
+    frame: &mut ratatui::Frame,
+    popup_area: Rect,
+    app: &App,
+    title: &str,
+    lines: Vec<Line<'_>>,
+) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(title.to_string())
+        .style(Style::default().bg(app.theme.background));
+    let inner = block.inner(popup_area);
+    frame.render_widget(block, popup_area);
+    frame.render_widget(Paragraph::new(lines), inner);
+}
+
+/// Render the operator-note editor: the line being typed, what Enter and Esc
+/// do, and that a note is the operator's and not sipnab's analysis.
+pub(in crate::tui) fn render_note_editor_popup(frame: &mut ratatui::Frame, area: Rect, app: &App) {
+    let Some(state) = app.note_editor.as_ref() else {
+        return;
+    };
+    let mut editor_line = state.editor.line(Style::default().fg(app.theme.foreground));
+    editor_line.spans.insert(0, Span::raw("  "));
+    let lines = vec![
+        Line::from(""),
+        editor_line,
+        Line::from(""),
+        Line::from(Span::styled(
+            "  Enter keeps it · an empty note removes it · Esc cancels",
+            Style::default().fg(app.theme.muted),
+        )),
+        Line::from(Span::styled(
+            "  Yours, not analysis: it goes into PCAP-NG saves and the NOTES file.",
+            Style::default().fg(app.theme.muted),
+        )),
+    ];
+    let title = " Operator note ";
+    let popup_area = sized_popup_area(area, title, &lines);
+    frame.render_widget(Clear, popup_area);
+    draw_popup_body(frame, popup_area, app, title, lines);
+}
+
+/// Render the question a capture swap asks while notes are not saved.
+pub(in crate::tui) fn render_unsaved_notes_popup(
+    frame: &mut ratatui::Frame,
+    area: Rect,
+    app: &App,
+) {
+    let [count, how] = unsaved_notes_lines(app);
+    let lines = vec![
+        Line::from(""),
+        count,
+        Line::from(Span::styled(
+            "  They are about this capture's frames: opening another drops them.",
+            Style::default().fg(app.theme.header),
+        )),
+        how,
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  Y", Style::default().add_modifier(Modifier::BOLD)),
+            Span::styled(" open anyway", Style::default().fg(app.theme.muted)),
+            Span::styled("    N/Esc", Style::default().add_modifier(Modifier::BOLD)),
+            Span::styled(" keep this capture", Style::default().fg(app.theme.muted)),
+        ]),
+    ];
+    let title = " Unsaved notes ";
+    let popup_area = sized_popup_area(area, title, &lines);
+    frame.render_widget(Clear, popup_area);
+    draw_popup_body(frame, popup_area, app, title, lines);
 }
 
 /// Render the file-open dialog as a centered popup overlay.
@@ -1317,6 +1433,22 @@ mod tests {
             }),
             ("quit_confirm", |f, a, app| {
                 render_quit_confirm_popup(f, a, app)
+            }),
+            // The editor draws only while a note is being typed, so it is
+            // rendered here with one open, on an operator's longest line.
+            ("note_editor", |f, a, _app| {
+                let mut app = App::new_test();
+                let frame = crate::capture::resolve::parse_pointer("cap.pcap#0@00000000000000a1")
+                    .expect("a test pointer");
+                let mut editor = crate::annotate::tui::NoteEditor::new(None);
+                for c in "the 183 here carried a second SDP answer the SBC never acked".chars() {
+                    editor.insert(c);
+                }
+                app.note_editor = Some(NoteEditorState { frame, editor });
+                render_note_editor_popup(f, a, &app)
+            }),
+            ("unsaved_notes", |f, a, app| {
+                render_unsaved_notes_popup(f, a, app)
             }),
         ]
     }

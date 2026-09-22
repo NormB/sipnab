@@ -81,6 +81,49 @@ pub enum RunMode {
     CoresFile,
 }
 
+/// The mode the flags select.
+///
+/// One function because two places ask: the plan below, and
+/// `run_startup_commands`, which refuses `--notes` in a run where nothing would
+/// read it. Two copies of the rule would agree today and disagree the next
+/// time a mode is added.
+pub(crate) fn select_run_mode(cli: &Cli) -> RunMode {
+    if cli.limits_args.cores > 1 && cli.has_input() && !cli.capture_args.multi_device {
+        return RunMode::CoresFile;
+    }
+    #[cfg(feature = "mcp")]
+    let use_tui = !cli.mode_args.no_tui && !cli.mcp_args.mcp;
+    #[cfg(all(feature = "tui", not(feature = "mcp")))]
+    let use_tui = !cli.mode_args.no_tui;
+    #[cfg(not(any(feature = "tui", feature = "mcp")))]
+    let use_tui = false;
+    if use_tui {
+        RunMode::Tui
+    } else {
+        RunMode::Batch
+    }
+}
+
+/// Why the TUI would refuse the notes file at `path`, if it would.
+#[cfg(feature = "tui")]
+fn tui_notes_refusal(path: &str) -> Option<String> {
+    crate::app::tui_mode::tui_notes(Some(path))
+        .err()
+        .map(|e| e.to_string())
+}
+
+/// A build without the TUI never reaches the notes file: `--notes` is refused
+/// earlier, as a flag nothing in this run reads.
+#[cfg(not(feature = "tui"))]
+fn tui_notes_refusal(_path: &str) -> Option<String> {
+    None
+}
+
+/// Whether this run is the interactive TUI.
+fn runs_the_tui(cli: &Cli) -> bool {
+    matches!(select_run_mode(cli), RunMode::Tui)
+}
+
 /// Everything main() needs to run, decided up front from CLI + config.
 pub struct RunPlan {
     /// The capture source; `None` defers to device auto-detection in
@@ -942,21 +985,7 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
         tracing::warn!("{msg}");
     }
 
-    let mode = if cli.limits_args.cores > 1 && cli.has_input() && !cli.capture_args.multi_device {
-        RunMode::CoresFile
-    } else {
-        #[cfg(feature = "mcp")]
-        let use_tui = !cli.mode_args.no_tui && !cli.mcp_args.mcp;
-        #[cfg(all(feature = "tui", not(feature = "mcp")))]
-        let use_tui = !cli.mode_args.no_tui;
-        #[cfg(not(any(feature = "tui", feature = "mcp")))]
-        let use_tui = false;
-        if use_tui {
-            RunMode::Tui
-        } else {
-            RunMode::Batch
-        }
-    };
+    let mode = select_run_mode(cli);
 
     // Whether a detector will exist at all is a property of the MODE, so it
     // cannot be answered with the warnings above, which run before the mode is
@@ -2340,14 +2369,23 @@ pub fn run_startup_commands(cli: &Cli) -> Option<i32> {
     if let Some(ref out) = cli.name_args.write_annotated {
         return Some(write_annotated(cli, out));
     }
-    // `--notes` names the notes `--write-annotated` writes. On its own, in a
-    // run that is not the TUI, nothing would read it, and a flag that is
+    // `--notes` names the notes `--write-annotated` writes, or the TUI's
+    // notes file. In any other run nothing would read it, and a flag that is
     // accepted and ignored reads as a note that was written.
-    if cli.name_args.notes.is_some() {
+    if cli.name_args.notes.is_some() && !runs_the_tui(cli) {
         tracing::error!(
-            "--notes names the notes for --write-annotated, and this run has no \
-             --write-annotated: nothing would read them"
+            "--notes names the notes for --write-annotated or the TUI's notes file, \
+             and this run is neither: nothing would read them"
         );
+        return Some(2);
+    }
+    // The TUI reads the notes file again once it starts, but a file sipnab
+    // refuses is refused HERE, before any capture opens: stopping later would
+    // leave a running capture thread behind (Invariant 12).
+    if let Some(path) = cli.name_args.notes.as_deref()
+        && let Some(refusal) = tui_notes_refusal(path)
+    {
+        tracing::error!("--notes {path}: {refusal}");
         return Some(2);
     }
 

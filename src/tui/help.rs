@@ -81,6 +81,7 @@ CALL FLOW:
   m / M            Mark message / clear marks
   e                Fold / expand retransmits
   E                Export Mermaid sequence diagram
+  C                Operator note on this message (yours, never analysis)
   9/0, +/-, ←/→    Resize ladder/detail split
   ←/→              Scroll detail horizontally (focused, wrap off)
   [ / ]            Scroll detail panel (any focus)
@@ -100,6 +101,7 @@ RAW MESSAGE:
   c                Cycle colors
   h                Header names (as captured / expanded / compact)
   y                Copy displayed message to clipboard (OSC 52)
+  C                Operator note on this message
   Esc              Back to previous view
 
 MESSAGE DIFF / COMBINED DETAIL / STATISTICS:

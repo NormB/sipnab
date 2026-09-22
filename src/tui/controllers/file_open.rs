@@ -210,8 +210,10 @@ pub(in crate::tui) fn handle_file_open_popup_key(app: &mut App, key: KeyEvent) {
                 refresh_file_entries(app);
             } else {
                 let path = entry.path.to_string_lossy().into_owned();
-                begin_pcap_load(app, &path, None);
+                // Closed first: the load may open the unsaved-notes question
+                // in its place.
                 app.active_popup = None;
+                begin_pcap_load(app, &path, None);
             }
         }
         KeyCode::Backspace => {
@@ -261,8 +263,9 @@ pub(in crate::tui) fn handle_file_open_manual_key(app: &mut App, key: KeyEvent) 
                 app.active_popup = None;
                 return;
             }
-            begin_pcap_load(app, &path, None);
+            // Closed first, as in the browser: the load may ask about notes.
             app.active_popup = None;
+            begin_pcap_load(app, &path, None);
         }
         KeyCode::Backspace => {
             if app.file_open.cursor > 0 {
@@ -615,6 +618,39 @@ fn apply_load_outcome(app: &mut App, outcome: PcapLoadOutcome) {
 /// paints a "Loading…" status. A failed thread spawn is reported on the
 /// status line.
 pub(in crate::tui) fn begin_pcap_load(app: &mut App, path_str: &str, bpf_filter: Option<&str>) {
+    // Operator notes are about frames of the capture on screen. Opening a
+    // different one drops them, so notes not saved to a notes file stop the
+    // swap and ask. A re-scan of the same file keeps them and does not ask.
+    if app.notes.is_unsaved() && !is_the_capture_on_screen(app, path_str) {
+        app.pending_swap = Some(PendingSwap {
+            path: path_str.to_string(),
+            filter: bpf_filter.map(str::to_string),
+        });
+        app.active_popup = Some(Popup::UnsavedNotes);
+        return;
+    }
+    begin_pcap_load_confirmed(app, path_str, bpf_filter);
+}
+
+/// Whether `path_str` names the capture the session is showing.
+fn is_the_capture_on_screen(app: &App, path_str: &str) -> bool {
+    app.rescan_path.as_deref() == Some(std::path::Path::new(path_str))
+}
+
+/// [`begin_pcap_load`] once any question about unsaved notes is answered.
+///
+/// # Side effects
+/// As [`begin_pcap_load`], and a different capture drops the session's notes
+/// and its notes-file default, which belonged to the capture that is gone: a
+/// later save to the old `--notes` file would otherwise overwrite it with
+/// notes about another capture.
+pub(in crate::tui) fn begin_pcap_load_confirmed(
+    app: &mut App,
+    path_str: &str,
+    bpf_filter: Option<&str>,
+) {
+    // Read before `rescan_path` is re-pointed at the file being opened.
+    let other_capture = !is_the_capture_on_screen(app, path_str);
     if app.pcap_load.is_some() {
         let msg = "A pcap load is already in progress".to_string();
         app.status_error = Some(msg.clone());
@@ -633,6 +669,11 @@ pub(in crate::tui) fn begin_pcap_load(app: &mut App, path_str: &str, bpf_filter:
     // This file is now what the BPF editor re-scans under a new filter — an
     // in-session `O` open re-targets the re-scan at the file on screen.
     app.rescan_path = Some(path.to_path_buf());
+    // Only now, with the file known to exist and the load about to replace
+    // the stores: a refused open must not cost the operator their notes.
+    if other_capture {
+        app.set_notes(crate::annotate::Notes::new(), None);
+    }
 
     reset_for_load(app);
 

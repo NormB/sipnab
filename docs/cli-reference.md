@@ -557,13 +557,14 @@ packet comment back: a note is output, never part of the analysis.
 
 | Flag | Value | Default | Description |
 |------|-------|---------|-------------|
-| `--notes` | `<FILE>` | -- | The notes to write with `--write-annotated`: a JSON Lines file, one `{"frame": "<pointer>", "note": "<text>"}` per line. Take each pointer from the `frame` field of `--json`. sipnab refuses a note over 4096 bytes, or one holding a control character other than newline and tab, an SDES `inline:` key, a TLS key-log line or a digest `response=` value, and one bad line refuses the whole file. The format is in [output formats](output-formats.md#operator-notes-file). |
+| `--notes` | `<FILE>` | -- | A JSON Lines file of notes, one `{"frame": "<pointer>", "note": "<text>"}` per line. With `--write-annotated`, the notes to write into the copy; take each pointer from the `frame` field of `--json`. In the TUI, the session's notes file: sipnab loads it at start when it exists, and the save dialog's NOTES format writes there (`C` on a message types a note; see [keybindings](keybindings.md#call-flow)). In any other run sipnab refuses the flag, because nothing would read it. sipnab refuses a note over 4096 bytes, or one holding a control character other than newline and tab, an SDES `inline:` key, a TLS key-log line or a digest `response=` value, and one bad line refuses the whole file. The format is in [output formats](output-formats.md#operator-notes-file). |
 | `--write-annotated` | `<OUTPUT>` | -- | With `-I <capture>` and `--notes`, write a pcapng copy of that one capture to `<OUTPUT>` with each note as a packet comment on the frame it names, then exit. sipnab never touches the input. Every note must name its frame with a digest (`#<ordinal>@<digest>`), and the frame's bytes must still match it: when the capture changed after someone wrote the note, sipnab refuses, exits 1, and writes nothing. The copy carries the original frames byte for byte, drops decryption secrets, name resolution blocks and the input's own comments, and says so in its section comment. sipnab refuses a `.pcap` or `.cap` output, because classic pcap has no field for a comment. |
 
 **Examples**
 
 - `sipnab -N -I call.pcap --notes call.notes.jsonl --write-annotated call-annotated.pcapng` — hand a carrier the call with your notes on the frames they are about, readable in Wireshark
 - `sipnab -N -I ticket-4711.pcapng --notes ticket-4711.notes.jsonl --write-annotated ticket-4711-for-vendor.pcapng` — annotate a copy of a pcapng from a ticket without touching the original, which keeps its decryption secrets and the copy does not
+- `sipnab -I call.pcap --notes call.notes.jsonl` — open the call in the TUI with the notes you saved last time, and save new ones back to the same file
 
 
 ## Diagnostic aliases

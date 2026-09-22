@@ -887,7 +887,11 @@ fn wiki_intra_docs_links_resolve() {
     // 766 -> 767: the `--notes` row in docs/cli-reference.md links the notes
     // file format in output-formats.md rather than restating it. Measured by
     // this gate.
-    const EXPECTED_WIKI_LINKS: usize = 767;
+    // 767 -> 770: the TUI's operator notes. The two `C` rows in
+    // docs/keybindings.md (call flow, raw message) link its new Operator notes
+    // section, and the `--notes` row in docs/cli-reference.md links the
+    // call-flow keys. Measured by this gate.
+    const EXPECTED_WIKI_LINKS: usize = 770;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe 6d in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

@@ -153,6 +153,7 @@ active filter.
 | m | Set mark at current message — navigate to another message and sipnab shows the **delta** between the mark and the cursor, for measuring the delay between two specific SIP messages |
 | M | Clear mark |
 | E | Export Mermaid sequence diagram to clipboard |
+| C | Write, amend or remove your note on the selected message. The note is yours, never sipnab's analysis: sipnab shows it in a pane titled so, marks the row with `✎`, writes it as a packet comment when you save PCAP-NG, and saves it to a notes file with the NOTES save format. See [Operator notes](#operator-notes) |
 | x / F4 | Toggle extended multi-leg flow **(configurable: `extended_flow`)** — shows related B2BUA/SBC call legs together, for tracing a call through proxies and back-to-back user agents |
 | r | Jump to RTP Streams view |
 | N | Name endpoints (map IP → host/FQDN; Tab/Shift-Tab switch between the offered participants) |
@@ -169,6 +170,25 @@ and gets a highlighted border. When either pane has more rows than fit, a
 vertical scrollbar appears on its right edge. `[` and `]` always scroll the
 detail pane regardless of focus.
 
+### Operator notes
+
+`C` opens a one-line editor on the selected message. Enter keeps the note, an
+empty note removes it, and Esc leaves it as it was. sipnab refuses a note over
+4096 bytes, or one holding a control character, an SDES `inline:` key, a TLS
+key-log line or a digest `response=` value, and says why on the status line
+without repeating it. A message sipnab read from no frame takes no note.
+
+The note goes three places. The pane under the flow, titled "operator note —
+not sipnab analysis". A PCAP-NG save, as the packet comment on that message's
+frame, with a line naming the frame you typed it on. And the NOTES format of
+the save dialog (`F2`, Tab to NOTES), which writes the file `--notes` resumes
+from. A classic PCAP save refuses rather than drop the notes. sipnab never
+reads a packet comment back.
+
+Quitting with notes you have not saved to a notes file says so in the quit
+confirmation. Opening another capture asks first, because the notes are about
+this capture's frames and opening another drops them.
+
 ## Raw message
 
 | Key | Action |
@@ -184,6 +204,7 @@ detail pane regardless of focus.
 | c | Cycle color scheme |
 | h | Cycle header-name display (as captured / expanded / compact) |
 | y | Copy the displayed message's raw text to the clipboard (OSC 52, works over SSH — see [Copying text](#copying-text)) |
+| C | Write, amend or remove your note on this message — see [Operator notes](#operator-notes) |
 | F1 / ? | Help **(configurable: `help`)** |
 | F2 | Save **(configurable: `save`)** |
 | q | Quit, after a confirmation **(configurable: `quit`)** |

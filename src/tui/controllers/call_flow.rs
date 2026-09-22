@@ -159,6 +159,8 @@ pub enum CallFlowAction {
     /// F9 — drop the active filter, its display text, and the persisted
     /// search query (every narrowing input, matching the call list's F9).
     ClearFilter,
+    /// `C` — write, amend or remove the operator note on the selected message.
+    EditNote,
 }
 
 /// Pure key→action mapping for the call flow view (keymap-aware); arm
@@ -221,6 +223,9 @@ pub fn call_flow_action(km: &Keymap, key: KeyEvent) -> Option<CallFlowAction> {
         k if k == km.clear_calls => ResetCompare,
         k if k == km.filter => OpenFilterDialog,
         KeyCode::F(9) => ClearFilter,
+        // After every configurable arm, so a key an operator rebinds to `C`
+        // keeps working here.
+        KeyCode::Char('C') => EditNote,
         _ => return None,
     })
 }
@@ -492,6 +497,7 @@ fn execute_call_flow_action(app: &mut App, action: CallFlowAction) {
             app.flow.detail_scroll = 0;
         }
         CallFlowAction::Activate => activate_selected(app, msg_count),
+        CallFlowAction::EditNote => note_selected(app, msg_count),
         CallFlowAction::DiffSelect => diff_select(app, msg_count),
         CallFlowAction::ToggleRtpInFlow => {
             app.flow.show_rtp = !app.flow.show_rtp;
@@ -751,6 +757,28 @@ fn activate_selected(app: &mut App, msg_count: usize) {
             };
         }
     }
+}
+
+/// `C`: open the note editor for the selected message.
+///
+/// # Side effects
+/// An RTP bar is not a message and takes no note, which the status line says;
+/// a message row opens the editor through [`open_note_editor`], resolved to
+/// the row's own dialog in a merged or extended flow.
+fn note_selected(app: &mut App, msg_count: usize) {
+    let View::CallFlow(ref call_id) = app.current_view else {
+        return;
+    };
+    if app.flow.selected >= msg_count && msg_count > 0 {
+        return;
+    }
+    if app.flow.cached_rtp_bar_indices.contains(&app.flow.selected) {
+        app.status_error = Some("A note goes on a SIP message, not on an RTP bar".to_string());
+        return;
+    }
+    let anchor = call_id.clone();
+    let (cid, index) = flow_selected_message(app, &anchor);
+    open_note_editor(app, &cid, index);
 }
 
 /// Space: select a message for diff comparison; the second selection
@@ -1076,6 +1104,8 @@ pub enum RawMessageAction {
     Help,
     /// The configured save key — open the save dialog.
     OpenSaveDialog,
+    /// `C` — write, amend or remove the operator note on this message.
+    EditNote,
 }
 
 /// Pure key→action mapping for the raw message view (keymap-aware).
@@ -1111,6 +1141,8 @@ pub fn raw_message_action(km: &Keymap, key: KeyEvent) -> Option<RawMessageAction
         KeyCode::Esc => Back,
         k if k == km.help => Help,
         k if k == km.save => OpenSaveDialog,
+        // After the configurable arms, as in the call flow.
+        KeyCode::Char('C') => EditNote,
         _ => return None,
     })
 }
@@ -1186,6 +1218,16 @@ fn execute_raw_message_action(app: &mut App, action: RawMessageAction) {
         }
         RawMessageAction::Help => app.current_view = View::Help,
         RawMessageAction::OpenSaveDialog => open_save_popup(app),
+        RawMessageAction::EditNote => {
+            if let View::RawMessage {
+                ref call_id,
+                message_index,
+            } = app.current_view
+            {
+                let cid = call_id.clone();
+                open_note_editor(app, &cid, message_index);
+            }
+        }
     }
 }
 

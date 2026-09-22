@@ -2668,7 +2668,7 @@ mod tui_state {
         assert_eq!(app.active_popup(), None);
     }
 
-    /// Tab cycles through all 11 save formats in order and wraps back to Pcap.
+    /// Tab cycles through all 12 save formats in order and wraps back to Pcap.
     #[test]
     fn save_popup_tab_cycles_format() {
         let mut app = app_with_three_dialogs();
@@ -2694,17 +2694,21 @@ mod tui_state {
         assert_eq!(app.save_format(), SaveFormat::SippXml);
         app.handle_key(KeyCode::Tab);
         assert_eq!(app.save_format(), SaveFormat::RtpJson);
+        app.handle_key(KeyCode::Tab);
+        assert_eq!(app.save_format(), SaveFormat::Notes);
         // Wraps back to Pcap
         app.handle_key(KeyCode::Tab);
         assert_eq!(app.save_format(), SaveFormat::Pcap);
     }
 
-    /// BackTab cycles formats in reverse (Pcap, RtpJson, SippXml).
+    /// BackTab cycles formats in reverse (Pcap, Notes, RtpJson, SippXml).
     #[test]
     fn save_popup_backtab_reverse_cycles() {
         let mut app = app_with_three_dialogs();
         app.handle_key(KeyCode::F(2));
-        // From Pcap, BackTab should go to RtpJson (last format)
+        // From Pcap, BackTab goes to Notes (the last format), then RtpJson.
+        app.handle_key(KeyCode::BackTab);
+        assert_eq!(app.save_format(), SaveFormat::Notes);
         app.handle_key(KeyCode::BackTab);
         assert_eq!(app.save_format(), SaveFormat::RtpJson);
         // And one more BackTab goes to SippXml

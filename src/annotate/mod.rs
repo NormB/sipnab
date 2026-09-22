@@ -22,7 +22,8 @@
 //! outputs:
 //!
 //! - a pcapng packet comment in a file sipnab writes ([`pcapng::EpbComment`]);
-//! - the TUI's own note pane, labeled as not being analysis (`tui` module);
+//! - the TUI's own note pane, labeled as not being analysis (the `tui`
+//!   submodule, built with the `tui` feature);
 //! - the notes file an operator saves to resume a session
 //!   ([`Notes::save`]), written `0600`.
 //!
@@ -58,6 +59,8 @@ use crate::capture::packet::FrameRef;
 
 pub mod copy;
 pub mod pcapng;
+#[cfg(feature = "tui")]
+pub mod tui;
 
 /// Longest note, in BYTES of UTF-8.
 ///

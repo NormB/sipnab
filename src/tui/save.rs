@@ -98,6 +98,42 @@ pub(super) fn save_to_pcap_path(app: &App, path_str: &str, pcapng: bool) -> Stri
         return "No messages to save".to_string();
     }
 
+    // The operator's notes on these messages, one comment per noted message.
+    // Each names the ORIGINAL frame, because the frame written here is rebuilt
+    // and its bytes are not the ones the note was typed against.
+    let mut comments: Vec<Option<crate::annotate::pcapng::EpbComment>> =
+        Vec::with_capacity(messages.len());
+    for msg in &messages {
+        let noted = msg
+            .frame
+            .as_ref()
+            .and_then(|frame| app.notes.get(frame).map(|note| (frame, note)));
+        comments.push(match noted {
+            Some((frame, note)) => {
+                match crate::annotate::pcapng::EpbComment::on_rebuilt_frame(note, frame) {
+                    Ok(comment) => Some(comment),
+                    Err(e) => return format!("Save failed: {e}"),
+                }
+            }
+            None => None,
+        });
+    }
+    let note_count = comments.iter().flatten().count();
+    // Refused, never dropped: a classic file written without the notes would
+    // look annotated to the operator who saved it, and not be.
+    if note_count > 0 && !pcapng {
+        return format!(
+            "Save failed: {note_count} operator note(s) are on these messages, and classic \
+             pcap has no field for them. Save as PCAP-NG to keep them."
+        );
+    }
+    let mut provenance =
+        crate::output::synthetic::rebuilt_frames_note("the TUI save dialog", messages.len());
+    if note_count > 0 {
+        provenance.push_str("\n\n");
+        provenance.push_str(&crate::annotate::pcapng::section_sentence(note_count));
+    }
+
     // Create writer (DLT_EN10MB = 1). The section comment says the frames
     // were rebuilt: this file is what gets forwarded, and whoever opens it has
     // no other way to learn that everything below the SIP layer was invented.
@@ -110,10 +146,7 @@ pub(super) fn save_to_pcap_path(app: &App, path_str: &str, pcapng: bool) -> Stri
         pcapng,
         crate::capture::PcapExportMode::Raw,
         None,
-        Some(crate::output::synthetic::rebuilt_frames_note(
-            "the TUI save dialog",
-            messages.len(),
-        )),
+        Some(provenance),
     ) {
         Ok(w) => w,
         Err(e) => return format!("Save failed: {e}"),
@@ -132,9 +165,9 @@ pub(super) fn save_to_pcap_path(app: &App, path_str: &str, pcapng: bool) -> Stri
 
     let fmt_label = if pcapng { "pcapng" } else { "pcap" };
     let mut count = 0;
-    for msg in &messages {
+    for (msg, comment) in messages.iter().zip(&comments) {
         let pkt = crate::output::synthetic::build_synthetic_packet(msg);
-        if let Err(e) = writer.write(&pkt) {
+        if let Err(e) = writer.write_annotated(&pkt, comment.as_slice()) {
             return format!("Write error after {count} packets: {e}");
         }
         count += 1;
@@ -147,6 +180,34 @@ pub(super) fn save_to_pcap_path(app: &App, path_str: &str, pcapng: bool) -> Stri
     }
 
     format!("Saved {count} packets ({fmt_label}) to {}", path.display())
+}
+
+/// Save the operator's notes as the notes file `--notes` resumes from.
+///
+/// # Arguments
+///
+/// * `app` — application state; its notes are marked saved on success.
+/// * `path_str` — destination file path.
+///
+/// # Returns
+///
+/// `"Saved N note(s) (notes) to path"` on success; `"No notes to save"` when
+/// there are none; `"Save failed ..."` when the write fails.
+///
+/// # Side effects
+///
+/// Atomically replaces the file at `path_str`, mode `0600` (temp file +
+/// rename); a failed write leaves any prior file intact and the notes still
+/// marked unsaved.
+pub(super) fn save_to_notes_path(app: &mut App, path_str: &str) -> String {
+    if app.notes.is_empty() {
+        return "No notes to save".to_string();
+    }
+    let n = app.notes.len();
+    match app.notes.save(std::path::Path::new(path_str)) {
+        Ok(()) => format!("Saved {n} note(s) (notes) to {path_str}"),
+        Err(e) => format!("Save failed: {e}"),
+    }
 }
 
 /// Save all dialogs as plain text SIP messages.

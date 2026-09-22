@@ -389,6 +389,52 @@ fn a_search_term_never_reaches_the_trail() {
     );
 }
 
+/// An operator's note never reaches the trail. The fact of an edit does, as
+/// a count a reviewer can read, keyed by the frame it was on.
+///
+/// Mirrors [`a_search_term_never_reaches_the_trail`]: a note is free text an
+/// operator typed about a call, and may carry a number or a name. The trail is
+/// a file somebody keeps.
+#[test]
+fn an_operator_note_never_reaches_the_trail() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let trail_path = dir.path().join("trail.jsonl");
+    // A call whose INVITE carries a frame pointer, which a note needs.
+    let t0 = fixtures::base_ts();
+    let mut invite = fixtures::make_invite("trail-1@test", "1001", "1002", t0);
+    invite.frame = Some(
+        sipnab::capture::resolve::parse_pointer("trail.pcap#0@00000000000000a1")
+            .expect("a test pointer"),
+    );
+    let mut app = App::with_processed_messages(vec![invite]);
+    let trail = Arc::new(ActionTrail::open(&trail_path).expect("open trail"));
+    app.set_action_trail(Some(Arc::clone(&trail)));
+    const NOTE: &str = "subscriber 15558675309 says the SBC hung up";
+    app.handle_key(KeyCode::Enter);
+    app.handle_key(KeyCode::Char('C'));
+    for c in NOTE.chars() {
+        app.handle_key(KeyCode::Char(c));
+    }
+    app.handle_key(KeyCode::Enter);
+    assert_eq!(
+        app.notes_for_test().len(),
+        1,
+        "the note must be kept, or this test proves nothing"
+    );
+    let text = std::fs::read_to_string(&trail_path).expect("read trail");
+    assert!(
+        !text.contains("15558675309") && !text.contains("hung up"),
+        "the note's text reached the audit file: {text}"
+    );
+    let recs = records(&trail_path);
+    let set = actions(&recs, "note_set");
+    assert_eq!(set.len(), 1, "the edit is recorded once: {recs:#?}");
+    assert_eq!(
+        set[0]["target"], "trail.pcap#0@00000000000000a1",
+        "keyed by the frame the note is on, never by what it says"
+    );
+}
+
 /// Off by default: no trail attached, nothing written, and every action still
 /// works.
 #[test]

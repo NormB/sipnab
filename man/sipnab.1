@@ -144,8 +144,9 @@ per line, each pointer taken from the
 .B frame
 field of
 .BR \-\-json .
-A note is a person's text and never analysis; sipnab writes it into a packet
-comment and never reads one back.
+In the TUI, the session's notes file: loaded when it exists, and where the save
+dialog's NOTES format writes. A note is a person's text and never analysis;
+sipnab writes it into a packet comment and never reads one back.
 .TP
 .BI \-\-write\-annotated " output"
 With
@@ -206,6 +207,13 @@ Toggle extended multi-leg call flow.
 .TP
 .B Space
 Select messages for side-by-side diff comparison.
+.TP
+.B C
+Write, amend or remove your note on the selected message. The note is shown in
+a pane titled as not being sipnab's analysis, written as a packet comment in a
+PCAP-NG save, and saved with the NOTES save format for
+.B \-\-notes
+to resume.
 .SH ENVIRONMENT
 .TP
 .B SIPNAB_LOG
