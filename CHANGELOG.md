@@ -66,16 +66,6 @@ entry that carries them.
   for readers without JavaScript. Every page's content now sits inside the
   CDN's `<!--email_off-->` markers.
 
-### Fixed
-
-- **CI is green again after 0.5.186.** Seven first mentions of an RFC were
-  unlinked, which no Rust gate checked but `scripts/rfc-links.py` fixes. CI
-  runs the fixer's own tests before `cargo test`, those tests apply the
-  fixer to the checkout, and the newly linked `docs/keybindings.md` then
-  made `site_pages_mirror_is_current` fail. The links are applied, and
-  `the_tree_is_at_the_rfc_fixers_fixed_point` fails locally when the fixer
-  would change anything.
-
 ## [0.5.186] - 2026-09-22
 
 ### Added
@@ -388,6 +378,15 @@ entry that carries them.
   ready`. The first file actually read now signals it.
 
 ### Internal
+
+- **The RFC link check can fail, and its tests leave the checkout alone.**
+  `scripts/rfc-links.py` without `--apply` reported what it would link and
+  exited 0 regardless, so the test calling it the tree's gate passed on every
+  tree. Two other tests ran `--apply` on the real checkout. In CI that linked
+  three first mentions before `cargo test` ran, and
+  `site_pages_mirror_is_current` failed over a page the commit did not hold,
+  which no local run reproduced. Check mode now exits 1 when anything would
+  change, and those tests run a copy of the script in a throwaway repository.
 
 - **Tests that exist only in a reduced build now run.** The feature-gate
   refusals, the `mcp`-without-`mcp-http` startup error and the no-`audio` TUI

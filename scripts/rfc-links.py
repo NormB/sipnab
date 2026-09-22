@@ -243,3 +243,9 @@ if __name__ == "__main__":
                 f.write_text(out)
     verb = "LINKED" if apply else "WOULD LINK"
     print(f"{verb} {tot_s} section citations + {tot_b} first mentions across {files} files")
+    # Check mode is a gate: it fails when `--apply` would change anything.
+    # It exited 0 whatever it found, so the test that calls it the tree's
+    # gate could never fail, and the first-mention half of the rule was
+    # enforced only by tests that ran `--apply` on the real checkout.
+    if files and not apply:
+        sys.exit(1)
