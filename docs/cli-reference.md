@@ -216,9 +216,9 @@ sipnab -d eth0,eth1 --multi-device --delta-time
 | Flag | Value | Default | Description |
 |------|-------|---------|-------------|
 | `-d`, `--device` | `<IFACE>` | platform default | Network interface to capture on. With no `-d`, no `-I` file and no `-L` HEP listener, sipnab picks a default that differs by platform — see the note below |
-| `-I`, `--input` | `<FILE\|DIR\|GLOB>` | -- | Read packets from a capture file, a directory of them, or a glob, instead of live capture. **Repeatable.** sipnab reads the files in capture order, never in filename order — see the note below |
+| `-I`, `--input` | `<FILE\|DIR\|GLOB>` | -- | Read packets from a capture file, a directory of them, an archive of them, or a glob, instead of live capture. **Repeatable.** sipnab reads the files in capture order, never in filename order — see the note below. A `.tar`, `.tgz` or `.tar.gz` reads like a directory: see [Archives read like directories](#archives-read-like-directories) |
 | `--recursive` | -- | off | Descend into subdirectories when `-I` names a directory |
-| `--input-name` | `<GLOB>` | -- | Read only files whose *name* matches this pattern when `-I` names a directory. Applies at every depth under `--recursive` |
+| `--input-name` | `<GLOB>` | -- | Read only files whose *name* matches this pattern when `-I` names a directory or an archive. Applies at every depth under `--recursive`, and to an archive's members at every depth |
 | `-O`, `--output` | `<FILE>` | -- | Write captured packets to a pcap file |
 | `-B`, `--buffer` | `<MIB>` | `64` | Kernel capture buffer size in MiB (per device). See [Tuning capture](tuning-capture.md) |
 | `--buffer-budget` | `<MIB>` | `64` | Memory budget for the in-flight capture→processing queue. The queue grows under load up to this budget (capped, never OOM) and shrinks when idle; overrides `[capture] buffer_budget_mb` |
@@ -415,6 +415,7 @@ sipnab -d eth0,eth1 --multi-device --delta-time
 - `sipnab -N --input /var/captures/ --json-dialogs --no-cli-print` — read every capture in a directory as one timeline, so a call split across the ring buffer resolves to one dialog instead of two fragments
 - `sipnab -N --input /var/captures/ --recursive --input-name '*.pcap.gz' --json-dialogs --no-cli-print` — descend into per-day subdirectories and read only the compressed archives
 - `sipnab -N --input 'captures/tg.pcap[0-4]' --report` — analyze the first five members of a ring buffer with a glob sipnab expands itself, no shell needed
+- `sipnab -N --input session.tgz --report` — analyze every capture in an archive as one timeline without unpacking it, each member not read named with the reason
 - `sipnab -N --input a.pcap --input b.pcap --json-dialogs --no-cli-print` — read two named captures as a single set, ordered by their packets
 - `sipnab -N --input /var/captures/ --input-name 'edge1-*' --recursive --json` — pick one host's captures out of a tree holding several
 - `sipnab -N --input capture.pcap --limitlen 512 --no-reassembly --quiet-bad-parse` — scan a pcap quickly: parse only the first 512 bytes of each packet, every packet standalone (no reassembly), without parse-error noise
@@ -428,6 +429,44 @@ sipnab -d eth0,eth1 --multi-device --delta-time
 - `sipnab -N --input webrtc.pcap --ws-portrange 8081-8081 --portrange 1-65535 --json-dialogs --no-cli-print` — a WSS listener behind a reverse proxy that forwards to 8081: without the range the entire WebRTC signaling leg is invisible, and sipnab reports how many messages it skipped and on which port
 - `sudo sipnab -d eth0 --ws-portrange 1-65535 --portrange 1-65535` — unwrap SIP-over-WebSocket wherever it appears on a box whose WSS port you do not know yet, then read the skip line to learn which ports were carrying it
 
+
+### Archives read like directories
+
+Point `-I` at a `.tar`, a `.tgz` or a `.tar.gz` and sipnab reads it the way it
+reads a directory. Every capture inside joins the set, in capture order,
+alongside anything else `-I` named. Nobody has to unpack it
+first, and the answer matches what reading the unpacked directory gives.
+
+- **Layers nest.** A gzip-compressed member such as `ring-3.pcap.gz`, a tar
+  inside a `.tgz`, or both, unwrap on the way to the capture, up to four layers
+  deep. sipnab identifies each layer by its first bytes, never by its name, so
+  a gzip file named `c.pcap` still opens.
+- **sipnab accounts for every member.** A member that is not a capture gets a
+  `Skipping` line naming it and the reason: empty, not a capture (with its
+  first four bytes), a link, a device node, a sparse file, or a format sipnab
+  does not unwrap, such as ZIP, 7-Zip, `zstd`, `xz` or `bzip2`. The closing `-I
+  resolved to` line counts them. A member whose link type sipnab does not
+  decode, such as an LTE MAC log, gets a line naming it, and its frames count
+  as not decoded. A BPF filter that cannot compile against that link type
+  skips the member instead of ending the run.
+- **Names come from the archive, paths never do.** sipnab writes each member
+  to a file it names itself, in a private directory under `$TMPDIR`, and
+  deletes that directory when the run ends. A member called `../../etc/x`
+  lands in that directory like any other. Output, logs and frame pointers name
+  a member `<archive>/<member>`, for example `session.tgz/ring/a.pcap#12`, and
+  `--show-frame` reads that member straight back out of the archive.
+- **Inflation stops at a ceiling.** Every byte any gzip layer produces counts
+  against `--max-gunzip-bytes`, summed across the layers of one input, and one
+  archive may hold at most 10,000 entries. An archive cut short, or stopped at
+  a ceiling, keeps what arrived and marks the run incomplete: exit status `1`,
+  and `archives.cut_short` in the `sipnab_run` record.
+- **`--input-name` filters members** by file name, the same way it filters a
+  directory's files. On a single compressed capture it still refuses, because
+  there is nothing to choose between.
+
+A run that dies without cleaning up, from a crash or `kill -9`, leaves its
+directory behind holding a lock that died with it. The next run that unpacks an
+archive removes it.
 
 ## Mode
 
@@ -1272,7 +1311,7 @@ CoreAudio the moment anything touches it.
 | `--lint-no-suppress` | -- | off | Ignore any `.sipnablint`, including one named by `--lint-suppress-file`. The "show me everything, including what we have agreed to live with" switch; it wins over both the explicit file and discovery, so a wrapper script that always passes a suppression file can still be overridden from the command line. Needs `--lint` |
 | `--cores` | `<N>` | `1` | CPU cores for offline pcap reconstruction (`-I`). 1 = single-threaded; >1 shards by host pair for multi-core throughput (dialog+RTP reconstruction, `--report`/`--json`). At 2 or more cores sipnab reads a plain uncompressed `.pcap` by mapping it, which is where most of the multi-core gain comes from; pcapng, gzip, a non-regular file, or any run with a BPF filter reads through libpcap instead, exactly as before. Set `SIPNAB_NO_MMAP=1` to force the libpcap path everywhere — an escape hatch for a filesystem where mapping misbehaves, such as some network or FUSE mounts. Results are identical either way. With `--retain-audio` the payload cap applies PER WORKER, so the run's ceiling is `[limits] max_audio_frames` times this number times `--max-streams` |
 | `--max-metadata-file-bytes` | `<BYTES>` | `2147483648` | Bytes of pcapng sipnab reads into memory for embedded names and TLS secrets. A `tcpdump -C` or `dumpcap -b` ring member passes 2 GiB on a host with the RAM to spare, and the refusal is fatal. **A memory-exhaustion guard on untrusted input:** raising it to N lets ONE file claim N bytes of this host's RAM, roughly 2N while `--strip-secrets` writes its copy, on nothing but a file size and before sipnab can tell the file is a capture at all. Raise it for captures you produced. Config: `[limits] max_metadata_file_bytes` |
-| `--max-gunzip-bytes` | `<BYTES>` | `1073741824` | Bytes a gzip-compressed capture may inflate to where sipnab does the inflating: the embedded names and TLS secrets it reads out of a `.pcapng.gz`, the copy `--strip-secrets` rewrites, and the whole capture in the browser build. libpcap inflates the packet stream of a `-I capture.pcap.gz` run, and this does not bound that. The documented alternative — gunzip the file and open the plain one — costs the disk the compression was saving. **A gzip-bomb guard:** inflation stops one byte past the ceiling, so raising it to N lets a few kilobytes of input claim N bytes of RAM. Raise it for archives you compressed yourself. Config: `[limits] max_gunzip_bytes` |
+| `--max-gunzip-bytes` | `<BYTES>` | `1073741824` | Bytes sipnab may inflate out of one gzip-compressed input: a `-I capture.pcap.gz`, every gzip layer of an archive summed across the layers of one input, the embedded names and TLS secrets it reads out of a `.pcapng.gz`, the copy `--strip-secrets` rewrites, and the whole capture in the browser build. The documented alternative — gunzip the file and open the plain one — costs the disk the compression was saving. **A gzip-bomb guard:** inflation stops one byte past the ceiling, so raising it to N lets a few kilobytes of input claim N bytes of RAM or disk. Raise it for archives you compressed yourself. Config: `[limits] max_gunzip_bytes` |
 | `--max-tcp-buffer` | `<BYTES>` | `65536` | Bytes one SIP/TCP direction may buffer before sipnab flushes it. **The only limit here that destroys data rather than truncating a report.** TCP sets no such ceiling and neither does RFC 3261: on a carrier trunk a message carrying ISUP encapsulation, a long `Record-Route` set or a fat SDP offer passes 64 KiB legitimately, and sipnab then flushes the buffer mid-message — both halves parse as malformed, the cut destroys the framing for every message behind it, and the peer that sent a valid message is the one sipnab reports as broken. Raising it to N lets one TCP direction hold N bytes. The floor is one SIP header line (8192), below which no message survives, and sipnab refuses a smaller value by name. Config: `[limits] max_tcp_buffer` |
 
 **Examples**
@@ -1365,11 +1404,15 @@ deliver the whole answer also says so in its output:
 - **`--report`** ends with an `INCOMPLETE RUN` block naming each reason.
 
 ```json
-{"sipnab_run":{"input_complete":false,"reasons":["1 of 1 capture file(s) was not read to the end; every report from this run rests on a partial read"],"files":{"given":1,"read_in_full":0,"stopped_early":1,"skipped":0,"not_reached":0},"plugins":{"requested":0,"loaded":0,"failed":0},"retention":{"messages_dropped":0}}}
+{"sipnab_run":{"input_complete":false,"reasons":["1 of 1 capture file(s) was not read to the end; every report from this run rests on a partial read"],"files":{"given":1,"read_in_full":0,"stopped_early":1,"skipped":0,"not_reached":0},"plugins":{"requested":0,"loaded":0,"failed":0},"retention":{"messages_dropped":0},"archives":{"cut_short":false}}}
 ```
 
 `input_complete` is the same predicate as the exit status, so a script reading
 stdout and a script reading `$?` cannot reach different verdicts.
+`archives.cut_short` is `true` when sipnab could not unpack an archive `-I`
+named to its end: the archive stops early, a header fails its checksum, or the
+walk reaches a ceiling. Members past that point are in no report. That is data missing
+from the input, and it fails the run like a truncated file does.
 `retention.messages_dropped` counts captured messages that idle compaction
 discarded (`[limits] idle_compact_after_secs`) — it appears because those
 ladders are short, and it is deliberately NOT a failure, because a retention

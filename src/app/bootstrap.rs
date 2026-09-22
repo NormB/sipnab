@@ -48,7 +48,7 @@ impl PlanError {
     /// with the planned exit code. Never returns.
     pub fn exit(self) -> ! {
         tracing::error!("{}", self.message);
-        std::process::exit(self.exit_code);
+        crate::capture::archive::release_run_and_exit(self.exit_code);
     }
 
     /// Like [`exit`](Self::exit), but runs `cleanup` between reporting and
@@ -66,7 +66,7 @@ impl PlanError {
     pub fn exit_after(self, cleanup: impl FnOnce()) -> ! {
         tracing::error!("{}", self.message);
         cleanup();
-        std::process::exit(self.exit_code);
+        crate::capture::archive::release_run_and_exit(self.exit_code);
     }
 }
 
@@ -538,7 +538,7 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
             tracing::info!(
                 "Reading {} capture files in timestamp order (first: '{}')",
                 resolved.len(),
-                resolved[0].path.display()
+                resolved[0].name()
             );
         }
         let paths: Vec<std::path::PathBuf> = resolved.into_iter().map(|r| r.path).collect();
@@ -954,7 +954,7 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
                 cli.limits_args.cores,
                 unsupported.join(", ")
             );
-            std::process::exit(2);
+            crate::capture::archive::release_run_and_exit(2);
         }
     }
 
@@ -1724,12 +1724,12 @@ pub fn launch(
     #[cfg(not(feature = "mcp"))]
     if cli.mcp_args.mcp {
         tracing::error!("--mcp requires the 'mcp' feature (not compiled in)");
-        std::process::exit(2);
+        crate::capture::archive::release_run_and_exit(2);
     }
     #[cfg(not(feature = "hep"))]
     if cli.hep_args.hep_listen.is_some() {
         tracing::error!("--hep-listen requires the 'hep' feature (not compiled in)");
-        std::process::exit(2);
+        crate::capture::archive::release_run_and_exit(2);
     }
 
     let source = match source {
@@ -1756,7 +1756,7 @@ pub fn launch(
                             devices[0]
                         );
                     }
-                    std::process::exit(1);
+                    crate::capture::archive::release_run_and_exit(1);
                 }
             }
         }
@@ -1819,7 +1819,7 @@ pub fn launch(
             CaptureSource::Live { device } => device.clone(),
             _ => {
                 tracing::error!("--multi-device requires a live capture device (-d)");
-                std::process::exit(2);
+                crate::capture::archive::release_run_and_exit(2);
             }
         };
         match capture::start_multi_capture(&device_str, capture_config.clone(), tx, Some(ready_tx))
@@ -1827,7 +1827,7 @@ pub fn launch(
             Ok(h) => h,
             Err(e) => {
                 tracing::error!("Failed to start multi-device capture: {e}");
-                std::process::exit(1);
+                crate::capture::archive::release_run_and_exit(1);
             }
         }
     } else {
@@ -1841,7 +1841,7 @@ pub fn launch(
             Ok(h) => h,
             Err(e) => {
                 tracing::error!("Failed to start capture: {e}");
-                std::process::exit(1);
+                crate::capture::archive::release_run_and_exit(1);
             }
         }
     };
@@ -1891,12 +1891,12 @@ pub fn launch(
                 tracing::error!("Capture source failed to open: {e}");
             }
             capture::stop_and_join(handle, rx);
-            std::process::exit(1);
+            crate::capture::archive::release_run_and_exit(1);
         }
         Err(_) => {
             tracing::error!("Capture thread exited before signaling ready");
             capture::stop_and_join(handle, rx);
-            std::process::exit(1);
+            crate::capture::archive::release_run_and_exit(1);
         }
     }
 
@@ -1944,7 +1944,7 @@ pub fn launch(
                                      --kill-spoof ephemeral."
                                 );
                                 capture::stop_and_join(handle, rx);
-                                std::process::exit(1);
+                                crate::capture::archive::release_run_and_exit(1);
                             }
                             tracing::warn!(
                                 "Scanner-kill: raw socket unavailable ({e}); falling back to ephemeral \
@@ -1975,7 +1975,7 @@ pub fn launch(
     {
         tracing::error!("Failed to chroot: {e}");
         capture::stop_and_join(handle, rx);
-        std::process::exit(1);
+        crate::capture::archive::release_run_and_exit(1);
     }
 
     // 15b. Open the keylog source while still privileged, for the same reason
@@ -1995,7 +1995,7 @@ pub fn launch(
     if cli.tls_args.keylog_fd.is_some() {
         tracing::error!("--keylog-fd requires the 'tls' feature (not compiled in)");
         capture::stop_and_join(handle, rx);
-        std::process::exit(2);
+        crate::capture::archive::release_run_and_exit(2);
     }
 
     // 16a. Drop privileges now that capture devices are open and chroot is applied (D15)
@@ -2005,7 +2005,7 @@ pub fn launch(
     if let Err(e) = privilege::drop_privileges(effective_user, effective_no_priv_drop) {
         tracing::error!("Failed to drop privileges: {e}");
         capture::stop_and_join(handle, rx);
-        std::process::exit(1);
+        crate::capture::archive::release_run_and_exit(1);
     }
 
     // 16b. Initialize syslog if --syslog is set
@@ -2018,7 +2018,7 @@ pub fn launch(
     if cli.hep_args.hep_send.is_some() {
         tracing::error!("HEP support requires --features hep");
         capture::stop_and_join(handle, rx);
-        std::process::exit(2);
+        crate::capture::archive::release_run_and_exit(2);
     }
 
     // 16d. Validate --hep-parse requires hep feature
@@ -2026,7 +2026,7 @@ pub fn launch(
     if cli.hep_args.hep_parse {
         tracing::error!("HEP support requires --features hep");
         capture::stop_and_join(handle, rx);
-        std::process::exit(2);
+        crate::capture::archive::release_run_and_exit(2);
     }
 
     // 16d2. Validate TLS flags require tls feature
@@ -2035,22 +2035,22 @@ pub fn launch(
         if cli.tls_args.tls_key.is_some() {
             tracing::error!("--tls-key requires the 'tls' feature (not compiled in)");
             capture::stop_and_join(handle, rx);
-            std::process::exit(2);
+            crate::capture::archive::release_run_and_exit(2);
         }
         if cli.tls_args.keylog.is_some() {
             tracing::error!("--keylog requires the 'tls' feature (not compiled in)");
             capture::stop_and_join(handle, rx);
-            std::process::exit(2);
+            crate::capture::archive::release_run_and_exit(2);
         }
         if cli.tls_args.keylog_watch {
             tracing::error!("--keylog-watch requires the 'tls' feature (not compiled in)");
             capture::stop_and_join(handle, rx);
-            std::process::exit(2);
+            crate::capture::archive::release_run_and_exit(2);
         }
         if cli.tls_args.srtp_keys.is_some() {
             tracing::error!("--srtp-keys requires the 'tls' feature (not compiled in)");
             capture::stop_and_join(handle, rx);
-            std::process::exit(2);
+            crate::capture::archive::release_run_and_exit(2);
         }
     }
 
@@ -2060,22 +2060,22 @@ pub fn launch(
         if cli.listener_args.api.is_some() {
             tracing::error!("--api requires the 'api' feature (not compiled in)");
             capture::stop_and_join(handle, rx);
-            std::process::exit(2);
+            crate::capture::archive::release_run_and_exit(2);
         }
         if cli.listener_args.api_key.is_some() {
             tracing::error!("--api-key requires the 'api' feature (not compiled in)");
             capture::stop_and_join(handle, rx);
-            std::process::exit(2);
+            crate::capture::archive::release_run_and_exit(2);
         }
         if cli.listener_args.api_tls_cert.is_some() {
             tracing::error!("--api-tls-cert requires the 'api' feature (not compiled in)");
             capture::stop_and_join(handle, rx);
-            std::process::exit(2);
+            crate::capture::archive::release_run_and_exit(2);
         }
         if cli.listener_args.api_tls_key.is_some() {
             tracing::error!("--api-tls-key requires the 'api' feature (not compiled in)");
             capture::stop_and_join(handle, rx);
-            std::process::exit(2);
+            crate::capture::archive::release_run_and_exit(2);
         }
     }
 
@@ -2087,7 +2087,7 @@ pub fn launch(
                 "Invalid --pcap-export-mode '{other}': must be 'decrypted', 'encrypted+dsb', or 'raw'"
             );
             capture::stop_and_join(handle, rx);
-            std::process::exit(2);
+            crate::capture::archive::release_run_and_exit(2);
         }
     }
 
@@ -2097,14 +2097,14 @@ pub fn launch(
     if cli.tls_args.dtls_keylog.is_some() {
         tracing::error!("--dtls-keylog requires the 'tls' feature (not compiled in)");
         capture::stop_and_join(handle, rx);
-        std::process::exit(2);
+        crate::capture::archive::release_run_and_exit(2);
     }
 
     // 16g. Validate --api-tls-cert/--api-tls-key consistency
     if cli.listener_args.api_tls_cert.is_some() != cli.listener_args.api_tls_key.is_some() {
         tracing::error!("--api-tls-cert and --api-tls-key must both be specified together");
         capture::stop_and_join(handle, rx);
-        std::process::exit(2);
+        crate::capture::archive::release_run_and_exit(2);
     }
 
     // 17. Disable core dumps if any decryption keys are loaded (D19)
@@ -2122,7 +2122,7 @@ pub fn launch(
     {
         tracing::error!("Failed to disable core dumps: {e}");
         capture::stop_and_join(handle, rx);
-        std::process::exit(1);
+        crate::capture::archive::release_run_and_exit(1);
     }
 
     // Same trigger as core dumps: key material is resident in this process.
@@ -2163,7 +2163,7 @@ pub fn launch(
     if let Err(refusal) = crate::sandbox::requirement_verdict(sandbox_mode(cli), &sandbox_status) {
         tracing::error!("{refusal}");
         capture::stop_and_join(handle, rx);
-        std::process::exit(1);
+        crate::capture::archive::release_run_and_exit(1);
     }
 
     // 19. Record what this run asks the kernel for, if asked to.
@@ -2250,7 +2250,7 @@ fn install_path_sandbox(cli: &Cli, config: &Config) -> crate::sandbox::LandlockS
     if mode == crate::sandbox::SandboxMode::Off {
         return crate::sandbox::LandlockStatus::Disabled;
     }
-    let paths = sandbox_paths(cli, config);
+    let paths = sandbox_paths(cli, config, &crate::capture::archive::run_extraction_dirs());
     let status = crate::sandbox::install(&paths);
     let line = crate::sandbox::startup_line(&status);
     if status.is_enforced() {
@@ -2266,12 +2266,24 @@ fn install_path_sandbox(cli: &Cli, config: &Config) -> crate::sandbox::LandlockS
 /// Directories rather than files wherever the run creates names later: the
 /// output writer is lazy and `--split` invents siblings, so a rule anchored on
 /// the file that exists today would deny the one written in an hour.
-fn sandbox_paths(cli: &Cli, config: &Config) -> crate::sandbox::SandboxPaths {
+///
+/// `extracted` is where `-I` unpacked archive members. Passed in rather than
+/// read from the run's holder here, so the plan is a function of its
+/// arguments and a test of it cannot see another test's extraction.
+fn sandbox_paths(
+    cli: &Cli,
+    config: &Config,
+    extracted: &[std::path::PathBuf],
+) -> crate::sandbox::SandboxPaths {
     let mut paths = crate::sandbox::SandboxPaths::default();
 
     for input in &cli.capture_args.input {
         paths.inputs.push(std::path::PathBuf::from(input));
     }
+    // Members `-I` extracted from an archive are read from here, and the run
+    // deletes them on its way out, so the directory is writable rather than
+    // read-only. It holds nothing but sipnab's own copies.
+    paths.output_dirs.extend(extracted.iter().cloned());
     if let Some(out) = cli
         .capture_args
         .output
@@ -2591,7 +2603,7 @@ pub fn run_startup_commands(cli: &Cli) -> Option<i32> {
             return Some(2);
         }
 
-        let input = resolved[0].path.display().to_string();
+        let input = resolved[0].name().to_string();
         return Some(
             match crate::capture::pcapng_meta::strip_secrets(
                 &resolved[0].path,
@@ -2702,8 +2714,9 @@ fn write_annotated(cli: &Cli, out: &str) -> i32 {
     let input = &resolved[0].path;
     // As the operator spelled it, never made absolute: this string goes into
     // a file that leaves the box, and an absolute path carries the account
-    // name.
-    let label = input.display().to_string();
+    // name. For a member of an archive it is `<archive>/<member>`, the name
+    // the member's frame pointers carry, never the file it was extracted to.
+    let label = resolved[0].name().to_string();
     match crate::annotate::copy::write_annotated_copy(
         input,
         &label,
@@ -6663,7 +6676,7 @@ mod startup_refusal_tests {
     #[test]
     fn the_sandbox_grants_each_input_and_the_output_directory_not_the_file() {
         let cli = cli_from(&["-I", "a.pcap", "-I", "caps/", "-O", "/srv/out/run.pcap"]);
-        let paths = sandbox_paths(&cli, &Config::default());
+        let paths = sandbox_paths(&cli, &Config::default(), &[]);
         assert_eq!(
             paths.inputs,
             vec![
@@ -6680,9 +6693,23 @@ mod startup_refusal_tests {
 
     /// A bare output filename has an empty parent, and an empty path is not a
     /// directory to grant: nothing is added rather than a rule on "".
+    /// Where `-I` unpacked an archive is granted as a writable directory: the
+    /// capture thread reads the members there, and the run deletes them.
+    #[test]
+    fn the_sandbox_grants_the_archive_extraction_directory() {
+        let extracted = std::path::PathBuf::from("/tmp/sipnab-archive-test");
+        let paths = sandbox_paths(
+            &cli_from(&["-I", "set.tgz"]),
+            &Config::default(),
+            std::slice::from_ref(&extracted),
+        );
+        assert_eq!(paths.inputs, vec![std::path::PathBuf::from("set.tgz")]);
+        assert_eq!(paths.output_dirs, vec![extracted]);
+    }
+
     #[test]
     fn a_bare_output_filename_adds_no_output_directory() {
-        let paths = sandbox_paths(&cli_from(&["-O", "run.pcap"]), &Config::default());
+        let paths = sandbox_paths(&cli_from(&["-O", "run.pcap"]), &Config::default(), &[]);
         assert!(paths.output_dirs.is_empty(), "got {:?}", paths.output_dirs);
     }
 
@@ -6692,7 +6719,7 @@ mod startup_refusal_tests {
     #[test]
     fn the_keylog_and_the_tls_key_are_granted_as_files_to_read() {
         let cli = cli_from(&["--keylog", "keys.log", "--tls-key", "server.pem"]);
-        let paths = sandbox_paths(&cli, &Config::default());
+        let paths = sandbox_paths(&cli, &Config::default(), &[]);
         assert_eq!(
             paths.read_files,
             vec![
@@ -6708,7 +6735,7 @@ mod startup_refusal_tests {
     fn the_crash_directory_granted_is_the_configured_report_directory() {
         let mut config = Config::default();
         config.crash.report_dir = Some(std::path::PathBuf::from("/var/crash/sipnab"));
-        let paths = sandbox_paths(&cli_from(&[]), &config);
+        let paths = sandbox_paths(&cli_from(&[]), &config, &[]);
         assert_eq!(
             paths.crash_dir,
             Some(std::path::PathBuf::from("/var/crash/sipnab"))

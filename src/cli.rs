@@ -446,12 +446,17 @@ pub struct CaptureArgs {
     )]
     pub device: Option<String>,
 
-    /// Read packets from a capture file, directory, or glob instead of live
-    /// capture. Repeatable.
+    /// Read packets from a capture file, directory, archive, or glob instead
+    /// of live capture. Repeatable.
     ///
     /// Files are read in the order their packets were captured, never by
     /// filename — `tcpdump -C -W` writes a ring buffer that wraps, so
     /// `tg.pcap7` can hold older traffic than `tg.pcap0`.
+    ///
+    /// A `.tar`, `.tgz` or `.tar.gz` is read like a directory: every capture
+    /// inside joins the set, gzip-compressed members and archives nested in
+    /// archives included, and every member that is not a capture is named
+    /// with the reason. Layers are recognized by their bytes, not their names.
     #[arg(
         help_heading = "Capture",
         short = 'I',
@@ -469,7 +474,7 @@ pub struct CaptureArgs {
     pub recursive: bool,
 
     /// Read only files whose name matches this pattern when `-I` names a
-    /// directory, e.g. `--input-name 'tg.pcap[0-4]'`.
+    /// directory or an archive, e.g. `--input-name 'tg.pcap[0-4]'`.
     ///
     /// Matched against the filename alone, so it behaves the same at every
     /// depth under `--recursive`.
@@ -3679,10 +3684,11 @@ pub struct LimitsArgs {
     ///
     /// The documented workaround for the refusal — gunzip the file and open
     /// the plain one — costs the disk the compression was saving, which is why
-    /// this moves. It bounds what sipnab inflates itself: the embedded names
-    /// and TLS secrets in a `.pcapng.gz`, the copy `--strip-secrets` rewrites,
-    /// and the whole capture in the browser build. A `-I capture.pcap.gz`
-    /// packet stream is inflated by libpcap and is not bounded by this.
+    /// this moves. It bounds everything sipnab inflates: a `-I capture.pcap.gz`,
+    /// every gzip layer of an archive (summed across the layers of one input,
+    /// so a nested bomb meets the same ceiling), the embedded names and TLS
+    /// secrets in a `.pcapng.gz`, the copy `--strip-secrets` rewrites, and the
+    /// whole capture in the browser build.
     ///
     /// It is a gzip-bomb guard: inflation stops one byte past the cap, so
     /// raising it to N lets a few kilobytes claim N bytes of RAM. Raise it for

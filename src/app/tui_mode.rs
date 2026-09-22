@@ -515,7 +515,7 @@ pub fn run_tui_mode(
                         "--tui-audit-file {path}: {e}. sipnab refuses to run the TUI \
                          without the action trail it was asked for"
                     );
-                    std::process::exit(2);
+                    crate::capture::archive::release_run_and_exit(2);
                 });
             // The first action of the session, and the one every later record
             // is relative to: a filter or an export means nothing without the
@@ -543,7 +543,7 @@ pub fn run_tui_mode(
             "--notes {}: {e}. sipnab will not start the TUI on it",
             cli.name_args.notes.as_deref().unwrap_or_default()
         );
-        std::process::exit(2);
+        crate::capture::archive::release_run_and_exit(2);
     });
 
     // Read before the capture config moves into the processing thread below.
@@ -819,7 +819,7 @@ pub fn run_tui_mode(
         Ok(handle) => handle,
         Err(e) => {
             tracing::error!("Failed to spawn processing thread: {e}");
-            std::process::exit(1);
+            crate::capture::archive::release_run_and_exit(1);
         }
     };
 
@@ -865,7 +865,7 @@ pub fn run_tui_mode(
     )
     .unwrap_or_else(|e| {
         tracing::error!("{e}");
-        std::process::exit(2);
+        crate::capture::archive::release_run_and_exit(2);
     });
 
     // Build resolved theme and keymap from config

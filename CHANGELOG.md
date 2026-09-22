@@ -10,6 +10,46 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Added
+
+- **`-I` reads archives of captures.** A `.tar`, `.tgz` or `.tar.gz` reads like
+  a directory: every capture inside joins the set in capture order, and the
+  answer matches reading the unpacked directory. gzip-compressed members and
+  archives nested in archives unwrap too, up to four layers, each recognized by
+  its bytes rather than its name. Every member sipnab does not read gets a
+  `Skipping` line with the reason — empty, not a capture, a link, a device
+  node, a sparse file, or a format it does not unwrap such as ZIP or `zstd` —
+  and the closing `-I resolved to` line counts them. `--input-name` filters an
+  archive's members. It used to fail with libpcap's `unknown file format`.
+- **The same archives open everywhere a capture does.** The TUI file browser
+  and MCP `list_captures` list `.tar`, `.tgz` and `.tar.gz` and load one as the
+  set of captures it holds, and so do MCP `open_capture`, `find_in_captures`,
+  `compare_captures` and the REST compare route. `--cores` reads an archive's
+  members exactly as the single-threaded reader does.
+- **Frame pointers name archive members, and resolve.** A packet read out of
+  an archive carries `<archive>/<member>#<ordinal>` as its frame pointer, and
+  `--show-frame`, MCP `show_evidence`, `decode_frame` and `decode_ng_frame`
+  read that member back out of the archive to follow it. MCP confines the
+  archive to `--mcp-file-root` by name, as it does a capture.
+- **`sipnab_run` reports an archive cut short.** `archives.cut_short` in the
+  `--json-dialogs` trailer and a line in the `INCOMPLETE RUN` block say when
+  sipnab could not unpack an archive to its end, and the run exits `1`, because
+  members past that point are in no report.
+
+### Changed
+
+- **`--max-gunzip-bytes` bounds a `-I capture.pcap.gz` too.** sipnab inflated
+  a compressed capture to a temporary file with no bound at all, and the
+  documentation said libpcap did it. The ceiling now covers that file and every
+  gzip layer of an archive, summed across the layers of one input, so a nested
+  gzip bomb stops at the same ceiling. A `.pcap.gz` that inflates past 1 GiB
+  now needs `--max-gunzip-bytes` raised.
+- **A member whose link type sipnab does not decode no longer ends a filtered
+  run.** When a BPF filter cannot compile against such a file — an LTE MAC log
+  in a set of SIP captures — both readers skip it with a line saying why. A
+  filter that fails against a link type sipnab does decode still ends the run.
+  Every file of that kind now also gets a line naming its link type.
+
 ### Fixed
 
 - **A killed kill-worker no longer reads as alive for a moment after the
@@ -29,6 +69,11 @@ entry that carries them.
   three times and stops at the first answer, a refusal from the edge included.
   It reports `000` only when no attempt got a response, where it used to print
   `000000`.
+
+- **Skipping the first file of a set no longer kills the run.** When the
+  reader skipped the file that sorts first before opening it, nothing signaled
+  readiness and the run died with `Capture thread exited before signaling
+  ready`. The first file actually read now signals it.
 
 ## [0.5.185] - 2026-09-22
 

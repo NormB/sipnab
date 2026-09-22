@@ -24,9 +24,15 @@ use crate::signals;
 /// Wireshark: if the file starts with the gzip magic (`1f 8b`), decompress it
 /// to a temporary file and open that instead.
 ///
-/// Returns the open capture together with an optional temp-file guard. The
-/// guard owns the decompressed file and deletes it on drop, so the caller MUST
-/// keep it alive for as long as it reads from the capture.
+/// The decompression is [`crate::capture::archive`]'s, so it runs under the
+/// same `--max-gunzip-bytes` ceiling as every archive layer; it used to inflate
+/// to disk with no bound at all. An ARCHIVE of several captures is refused by
+/// name: this opens one capture, and an archive is a set, which `-I`, the TUI
+/// file browser and MCP `open_capture` each read as one.
+///
+/// Returns the open capture together with an optional guard. The guard owns
+/// the decompressed file and deletes it on drop, so the caller MUST keep it
+/// alive for as long as it reads from the capture.
 ///
 /// # Arguments
 ///
@@ -42,49 +48,86 @@ use crate::signals;
 /// Reads `path` (twice for gzip input: magic peek, then decompression) and,
 /// for gzip input, writes a decompressed copy to a temporary file that is
 /// deleted when the returned guard drops.
-pub fn open_offline(
+pub fn open_offline(path: &Path) -> Result<(pcap::Capture<pcap::Offline>, Option<OfflineGuard>)> {
+    open_offline_with(path, &crate::capture::archive::Limits::for_run())
+}
+
+/// Owns whatever [`open_offline`] decompressed, and deletes it on drop.
+#[derive(Debug)]
+pub struct OfflineGuard {
+    /// The unwrapped capture and its directory.
+    _expansion: crate::capture::archive::Expansion,
+}
+
+/// [`open_offline`] with explicit inflation limits.
+///
+/// # Errors
+///
+/// As [`open_offline`].
+pub fn open_offline_with(
     path: &Path,
-) -> Result<(pcap::Capture<pcap::Offline>, Option<tempfile::TempPath>)> {
-    use std::io::Read;
+    limits: &crate::capture::archive::Limits,
+) -> Result<(pcap::Capture<pcap::Offline>, Option<OfflineGuard>)> {
+    use crate::capture::archive::{self, Format};
 
-    // Peek the first two bytes for the gzip magic. A file too short to hold a
-    // magic number isn't gzip; let libpcap report on it as before.
-    let is_gzip = {
-        let mut magic = [0u8; 2];
-        let read_two = std::fs::File::open(path)
-            .and_then(|mut f| f.read(&mut magic))
-            .map(|n| n == 2)
-            .unwrap_or(false);
-        read_two && magic == [0x1f, 0x8b]
-    };
-
-    if !is_gzip {
-        let cap = pcap::Capture::from_file(path)
-            .with_context(|| format!("Failed to open pcap file '{}'", path.display()))?;
-        return Ok((cap, None));
+    match archive::container_format(path) {
+        Ok(Some(Format::Gzip | Format::Tar)) => {}
+        Ok(Some(other)) => anyhow::bail!(
+            "Failed to open '{}': {}",
+            crate::capture::archive::source_name(path),
+            archive::SkipReason::Unsupported(other)
+        ),
+        // A capture, or something libpcap will judge and name.
+        Ok(None) | Err(_) => {
+            let cap = pcap::Capture::from_file(path).with_context(|| {
+                format!(
+                    "Failed to open pcap file '{}'",
+                    crate::capture::archive::source_name(path)
+                )
+            })?;
+            return Ok((cap, None));
+        }
     }
 
-    // Decompress to a temp file libpcap can open. MultiGzDecoder handles
-    // concatenated gzip members, which some capture tools emit.
-    let input = std::fs::File::open(path)
-        .with_context(|| format!("Failed to open '{}'", path.display()))?;
-    let mut decoder = flate2::read::MultiGzDecoder::new(std::io::BufReader::new(input));
-    let mut temp = tempfile::Builder::new()
-        .prefix("sipnab-gz-")
-        .suffix(".pcap")
-        .tempfile()
-        .context("Failed to create temp file for gzip decompression")?;
-    std::io::copy(&mut decoder, temp.as_file_mut())
-        .with_context(|| format!("Failed to decompress gzip capture '{}'", path.display()))?;
-    let temp_path = temp.into_temp_path();
-
-    let cap = pcap::Capture::from_file(&temp_path).with_context(|| {
+    let exp = archive::expand(path, limits).with_context(|| {
         format!(
-            "Failed to open decompressed capture from '{}'",
-            path.display()
+            "Failed to unpack '{}'",
+            crate::capture::archive::source_name(path)
         )
     })?;
-    Ok((cap, Some(temp_path)))
+    if let Some(stop) = exp.stops.first() {
+        anyhow::bail!(
+            "Failed to open '{}': {stop}",
+            crate::capture::archive::source_name(path)
+        );
+    }
+    // A compressed capture unwraps to exactly one member that keeps the
+    // file's own name. Anything else is an archive: a set, not a capture.
+    let own_name = crate::capture::archive::source_name(path).to_string();
+    match exp.members.as_slice() {
+        [only] if only.label == own_name => {
+            let cap = pcap::Capture::from_file(&only.path).with_context(|| {
+                format!(
+                    "Failed to open decompressed capture from '{}'",
+                    crate::capture::archive::source_name(path)
+                )
+            })?;
+            Ok((cap, Some(OfflineGuard { _expansion: exp })))
+        }
+        [] => match exp.skipped.first() {
+            Some(s) => anyhow::bail!("Failed to open '{}': {}", s.label, s.reason),
+            None => anyhow::bail!(
+                "Failed to open '{}': it holds no capture",
+                crate::capture::archive::source_name(path)
+            ),
+        },
+        members => anyhow::bail!(
+            "'{}' is an archive holding {} capture(s), and this opens one capture. \
+             Read it as a set: -I takes an archive the way it takes a directory",
+            crate::capture::archive::source_name(path),
+            members.len()
+        ),
+    }
 }
 
 /// Read packets from a pcap file and send them through the channel.
@@ -202,12 +245,12 @@ fn read_merged(
     tx: &PacketTx,
     count: &mut u64,
 ) -> Result<u64> {
-    let source: std::sync::Arc<str> = std::sync::Arc::from(path.display().to_string());
+    let source: std::sync::Arc<str> = crate::capture::archive::source_arc(path);
     let types: Vec<String> = merged.link_types().iter().map(i32::to_string).collect();
     tracing::info!(
         "Reading '{}' with the merged-pcapng decoder: libpcap refuses a file \
          whose interfaces disagree. Link types present: {}",
-        path.display(),
+        crate::capture::archive::source_name(path),
         types.join(", ")
     );
 
@@ -263,11 +306,14 @@ fn read_merged(
         tracing::warn!(
             "{skipped} block(s) in '{}' named an interface the file never \
              described and were not read",
-            path.display()
+            crate::capture::archive::source_name(path)
         );
     }
     let read = *count - started_at;
-    tracing::info!("Read {read} packets from '{}'", path.display());
+    tracing::info!(
+        "Read {read} packets from '{}'",
+        crate::capture::archive::source_name(path)
+    );
     Ok(read)
 }
 
@@ -494,26 +540,32 @@ fn read_set(
         prev_end: None,
     };
 
-    // The first file owns readiness: opening it is what proves the whole set
-    // is usable, and the consumer starts as soon as it is signaled.
-    if !read_member(first, config, tx, start, &mut state, ready_tx)? {
-        return Ok(());
-    }
-
-    for path in rest {
-        if !read_member(path, config, tx, start, &mut state, None)? {
+    // The first file READ owns readiness: opening it is what proves the whole
+    // set is usable, and the consumer starts as soon as it is signaled. That
+    // is the first file unless it is skipped outright — an undecodable link
+    // type the filter cannot apply to — in which case the next one inherits
+    // it, or the consumer would wait on a signal nothing will ever send.
+    let mut ready = ready_tx;
+    for path in std::iter::once(first).chain(rest) {
+        if !read_member(path, config, tx, start, &mut state, &mut ready)? {
             break;
         }
+    }
+    if let Some(ready) = ready {
+        let _ = ready.send(Err(
+            "no file of the set could be read: every one was skipped".to_string(),
+        ));
+        anyhow::bail!("no file of the set could be read: every one was skipped");
     }
     Ok(())
 }
 
 /// Read one file of a set. Returns whether the set should continue.
 ///
-/// `ready_tx` is `Some` only for the FIRST file, and that is the one asymmetry
-/// left between the members: a first file that will not open has proved the
-/// whole set unusable before the consumer started, so it fails the run, while
-/// a later one is logged and skipped. The set was already probed during
+/// `ready_tx` is `Some` only until a file takes it — the first file read —
+/// and that is the one asymmetry left between the members: a first file that
+/// will not open has proved the whole set unusable before the consumer
+/// started, so it fails the run, while a later one is logged and skipped. The set was already probed during
 /// resolution, so a later open failure means something changed underneath us
 /// mid-read — a rotating capture directory being cleaned up while it is
 /// analyzed — and losing one file of a set is bad where losing the analysis of
@@ -527,7 +579,7 @@ fn read_member(
     tx: &PacketTx,
     start: std::time::Instant,
     state: &mut SetState,
-    ready_tx: Option<crossbeam_channel::Sender<Result<(), String>>>,
+    ready_tx: &mut Option<crossbeam_channel::Sender<Result<(), String>>>,
 ) -> Result<bool> {
     // A set may hold a merged pcapng; same up-front check as the single-file
     // path, for the same reason. Skipping it would drop a whole member while
@@ -535,7 +587,7 @@ fn read_member(
     if crate::capture::merged::is_merged(path)
         && let Ok(merged) = crate::capture::merged::MergedPcapNg::open(path)
     {
-        if let Some(ready) = ready_tx {
+        if let Some(ready) = ready_tx.take() {
             let _ = ready.send(Ok(()));
         }
         // Counted into the set tally like any other member, or the closing
@@ -550,30 +602,54 @@ fn read_member(
     let (mut cap, _gz_guard) = match open_offline(path) {
         Ok(opened) => opened,
         Err(e) => {
-            if let Some(ready) = ready_tx {
+            if let Some(ready) = ready_tx.take() {
                 let _ = ready.send(Err(format!("{e:#}")));
                 return Err(e);
             }
             state.tally.skipped += 1;
             state.tally.lost = true;
-            tracing::error!("Skipping '{}': {e:#}", path.display());
+            tracing::error!(
+                "Skipping '{}': {e:#}",
+                crate::capture::archive::source_name(path)
+            );
             return Ok(true);
         }
     };
 
+    let link_type = cap.get_datalink().0;
     if let Some(ref bpf) = config.bpf_filter
         && let Err(e) = cap.filter(bpf, true)
     {
+        // A member sipnab could not decode a frame of anyway loses nothing by
+        // being skipped, so a filter that will not compile against ITS link
+        // type is no reason to end the set. The rule below still holds for
+        // every link type sipnab decodes: skipping one of those would drop
+        // real traffic while the run reported success.
+        if let Some(line) = undecodable_filter_skip(path, link_type, bpf, &e) {
+            state.tally.skipped += 1;
+            tracing::warn!("{line}");
+            return Ok(true);
+        }
         let err = filter_failure(bpf, path, e);
         state.tally.skipped += 1;
         state.tally.lost = true;
-        if let Some(ready) = ready_tx {
+        if let Some(ready) = ready_tx.take() {
             let _ = ready.send(Err(format!("{err:#}")));
         }
         return Err(err);
     }
+    if !crate::capture::parse::link_type_is_decoded(link_type) {
+        // Read anyway: every frame is then counted, by reason, in the
+        // undecodable tally the run summary reports. This line says WHICH
+        // file those frames came from, which the tally cannot.
+        tracing::warn!(
+            "'{}' has link type {link_type}, which sipnab does not decode; its frames \
+             are counted as not decoded",
+            crate::capture::archive::source_name(path)
+        );
+    }
 
-    if let Some(ready) = ready_tx {
+    if let Some(ready) = ready_tx.take() {
         let _ = ready.send(Ok(()));
     }
 
@@ -600,7 +676,7 @@ fn read_member(
             state.tally.lost = true;
             tracing::error!(
                 "Stopped reading '{}' early: {e:#}. Continuing with the rest of the set.",
-                path.display()
+                crate::capture::archive::source_name(path)
             );
             return Ok(true);
         }
@@ -626,6 +702,30 @@ fn read_member(
     Ok(read.reached_eof)
 }
 
+/// The warning to log when a BPF filter that will not compile against `path`
+/// should SKIP it rather than end the set — or `None` when it must end the set.
+///
+/// Skipped only when sipnab does not decode `link_type` at all: every frame of
+/// such a file would be counted as not decoded whatever the filter said, so
+/// skipping it loses nothing a filter could have selected. For a link type
+/// sipnab DOES decode, [`filter_failure`]'s refusal stands. One rule for both
+/// readers, so `--cores` cannot come to skip what `--cores 1` refuses.
+pub(crate) fn undecodable_filter_skip(
+    path: &Path,
+    link_type: i32,
+    bpf: &str,
+    e: &pcap::Error,
+) -> Option<String> {
+    if crate::capture::parse::link_type_is_decoded(link_type) {
+        return None;
+    }
+    Some(format!(
+        "Skipping '{}': link type {link_type}, which sipnab does not decode, and the \
+         BPF filter '{bpf}' does not compile against it ({e})",
+        crate::capture::archive::source_name(path)
+    ))
+}
+
 /// The error for a BPF filter that will not compile against a file.
 ///
 /// The same error whichever file of the set it happens on. The two arms used to
@@ -649,7 +749,7 @@ fn read_member(
 pub(crate) fn filter_failure(bpf: &str, path: &Path, e: pcap::Error) -> anyhow::Error {
     anyhow::Error::new(e).context(format!(
         "Failed to compile BPF filter '{bpf}' against '{}'",
-        path.display()
+        crate::capture::archive::source_name(path)
     ))
 }
 
@@ -682,8 +782,8 @@ fn overlap_message(
     Some(format!(
         "'{}' starts at {next_start} but '{}' runs to {prev_end} — they overlap by {by} ms, \
          so packets present in both are counted twice",
-        next.display(),
-        prev.display()
+        crate::capture::archive::source_name(next),
+        crate::capture::archive::source_name(prev)
     ))
 }
 
@@ -809,7 +909,7 @@ fn read_opened_inner(
     // constant. Cheap enough that no packet is left unstamped, which matters:
     // an unstamped packet is one the pcapng writer cannot tell apart from the
     // previous file's, and it then names the wrong file as its origin.
-    let source: std::sync::Arc<str> = std::sync::Arc::from(path.display().to_string());
+    let source: std::sync::Arc<str> = crate::capture::archive::source_arc(path);
     // Position within THIS file, which is not the same question as `count`.
     // `count` is run-global: it drives `--count` and the "N packets total"
     // summary, and it keeps rising across a set. This one restarts at zero for
@@ -824,9 +924,15 @@ fn read_opened_inner(
     let mut span: Option<(DateTime<Utc>, DateTime<Utc>)> = None;
 
     if replay {
-        tracing::info!("Replaying from '{}' with original timing", path.display());
+        tracing::info!(
+            "Replaying from '{}' with original timing",
+            crate::capture::archive::source_name(path)
+        );
     } else {
-        tracing::info!("Reading from '{}'", path.display());
+        tracing::info!(
+            "Reading from '{}'",
+            crate::capture::archive::source_name(path)
+        );
     }
 
     // Batch sends for the plain read of a regular file; see [`SendBatcher`]
@@ -963,7 +1069,10 @@ fn read_opened_inner(
                 {
                     *count = count.saturating_sub(lost);
                 }
-                tracing::error!("Error reading pcap file '{}': {e}", path.display());
+                tracing::error!(
+                    "Error reading pcap file '{}': {e}",
+                    crate::capture::archive::source_name(path)
+                );
                 return Err(e).context("Error reading pcap file");
             }
         }
@@ -978,7 +1087,7 @@ fn read_opened_inner(
 
     tracing::info!(
         "File reader finished: {count} packets total, through '{}'",
-        path.display()
+        crate::capture::archive::source_name(path)
     );
     Ok(FileRead {
         reached_eof: true,
@@ -1441,6 +1550,167 @@ mod tests {
                 "a replayed packet names the file it came from"
             );
         }
+    }
+
+    /// A classic pcap of `link_type` holding one record stamped `secs`.
+    fn one_record(link_type: u32, secs: u32, frame: &[u8]) -> Vec<u8> {
+        let mut f = Vec::new();
+        f.extend_from_slice(&0xa1b2_c3d4u32.to_le_bytes());
+        f.extend_from_slice(&2u16.to_le_bytes());
+        f.extend_from_slice(&4u16.to_le_bytes());
+        for v in [0u32, 0, 65_535, link_type, secs, 0] {
+            f.extend_from_slice(&v.to_le_bytes());
+        }
+        f.extend_from_slice(&(frame.len() as u32).to_le_bytes());
+        f.extend_from_slice(&(frame.len() as u32).to_le_bytes());
+        f.extend_from_slice(frame);
+        f
+    }
+
+    fn gzip(data: &[u8]) -> Vec<u8> {
+        use std::io::Write;
+        let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        enc.write_all(data).expect("gzip");
+        enc.finish().expect("gzip")
+    }
+
+    fn tgz(entries: &[(&str, &[u8])]) -> Vec<u8> {
+        use crate::capture::archive::tar::testutil::{Spec, build};
+        let specs: Vec<Spec<'_>> = entries.iter().map(|(n, d)| Spec::file(n, d)).collect();
+        gzip(&build(&specs))
+    }
+
+    /// A packet read out of an archive member is stamped with the member's
+    /// label — the name its frame pointers resolve through — never with the
+    /// temporary file it happened to be read from.
+    #[test]
+    fn each_archive_member_stamps_its_label_as_the_source() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let path = root.path().join("two.tgz");
+        let frame = [0xabu8; 60];
+        std::fs::write(
+            &path,
+            tgz(&[
+                ("a.pcap", &one_record(1, 1_000, &frame)),
+                ("b.pcap", &one_record(1, 2_000, &frame)),
+            ]),
+        )
+        .expect("write");
+        let set = crate::capture::input_set::resolve_set(
+            &[path.display().to_string()],
+            &crate::capture::input_set::ResolveOptions::default(),
+        )
+        .expect("resolve");
+
+        let (tx, rx) = packet_channel(TEST_CAP);
+        capture_files(&set.paths(), &CaptureConfig::default(), tx, None).expect("read");
+        let sources: Vec<String> = rx
+            .try_iter()
+            .map(|p| p.interface.as_deref().unwrap_or_default().to_string())
+            .collect();
+        let root_name = path.display().to_string();
+        assert_eq!(
+            sources,
+            vec![format!("{root_name}/a.pcap"), format!("{root_name}/b.pcap")]
+        );
+    }
+
+    /// `open_offline` opens ONE capture. Handed an archive of several it says
+    /// what the file is and how to read it, instead of libpcap's "unknown file
+    /// format".
+    #[test]
+    fn open_offline_names_an_archive_instead_of_failing_obscurely() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let path = root.path().join("set.tgz");
+        let rec = one_record(1, 1_000, &[0u8; 60]);
+        std::fs::write(&path, tgz(&[("a.pcap", &rec), ("b.pcap", &rec)])).expect("write");
+        let err = open_offline(&path)
+            .map(|_| ())
+            .expect_err("an archive is a set");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("archive") && msg.contains("2 capture"),
+            "{msg}"
+        );
+    }
+
+    /// A `.pcap.gz` is inflated under the same ceiling as an archive. It used
+    /// to be inflated to disk with no bound at all, so a few kilobytes could
+    /// claim the whole temp filesystem.
+    #[test]
+    fn open_offline_bounds_a_compressed_capture() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let mut big = one_record(1, 1_000, &[0u8; 60]);
+        big.resize(4 * 1024 * 1024, 0);
+        let path = root.path().join("bomb.pcap.gz");
+        std::fs::write(&path, gzip(&big)).expect("write");
+        let limits = crate::capture::archive::Limits {
+            max_inflated_bytes: 1024 * 1024,
+            ..crate::capture::archive::Limits::for_run()
+        };
+        let err = open_offline_with(&path, &limits)
+            .map(|_| ())
+            .expect_err("over the ceiling");
+        assert!(format!("{err:#}").contains("ceiling"), "{err:#}");
+
+        let small = root.path().join("ok.pcap.gz");
+        std::fs::write(&small, gzip(&one_record(1, 1_000, &[0u8; 60]))).expect("write");
+        let (mut cap, _guard) = open_offline_with(&small, &limits).expect("within the ceiling");
+        assert!(cap.next_packet().is_ok());
+    }
+
+    /// A member whose link type sipnab cannot decode is skipped when the BPF
+    /// filter will not compile against it — nothing decodable is lost by
+    /// that — instead of ending the whole set, as a filter failure on a
+    /// decodable member still does.
+    #[test]
+    fn an_undecodable_link_type_is_skipped_not_fatal_under_a_filter() {
+        let root = tempfile::tempdir().expect("tempdir");
+        // DLT 149 (USER2): what an LTE/NR MAC capture from a test handset uses,
+        // which libpcap cannot compile a filter against.
+        let mac = root.path().join("mac.pcap");
+        std::fs::write(&mac, one_record(149, 1_000, &[0x42u8; 40])).expect("write");
+        let eth = sample_pcap();
+        let config = CaptureConfig {
+            bpf_filter: Some("udp".to_string()),
+            ..CaptureConfig::default()
+        };
+        let mut tally = ReadTally {
+            given: 2,
+            ..ReadTally::default()
+        };
+        let mut count = 0u64;
+        let (tx, _rx) = packet_channel(TEST_CAP);
+        read_set(&[eth, mac], &config, &tx, None, &mut tally, &mut count)
+            .expect("an undecodable member must not end the set");
+        assert_eq!(tally.complete, 1, "{tally:?}");
+        assert_eq!(tally.skipped, 1, "{tally:?}");
+        assert!(!tally.lost, "nothing sipnab could decode was skipped");
+        assert!(count > 0);
+    }
+
+    /// When the file that sorts FIRST is the one skipped, readiness passes to
+    /// the next file. It used to be owned by the first file alone, so skipping
+    /// it left the consumer waiting for a signal that never came and the run
+    /// died with "exited before signaling ready".
+    #[test]
+    fn readiness_passes_on_when_the_first_file_is_skipped() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let mac = root.path().join("mac.pcap");
+        std::fs::write(&mac, one_record(149, 1_000, &[0x42u8; 40])).expect("write");
+        let config = CaptureConfig {
+            bpf_filter: Some("udp".to_string()),
+            ..CaptureConfig::default()
+        };
+        let (tx, rx) = packet_channel(TEST_CAP);
+        let (ready_tx, ready_rx) = crossbeam_channel::bounded(1);
+        capture_files(&[mac, sample_pcap()], &config, tx, Some(ready_tx)).expect("read");
+        assert_eq!(
+            ready_rx.try_recv(),
+            Ok(Ok(())),
+            "the second file signals readiness"
+        );
+        assert!(rx.try_iter().count() > 0);
     }
 
     /// Every packet of a two-file set names the file it was actually read

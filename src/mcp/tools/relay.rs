@@ -955,7 +955,7 @@ fn decode_ng_one(server: &SipnabMcp, pointer: &str) -> NgDecode {
         );
     }
 
-    let Some(leaf) = std::path::Path::new(parsed.source.as_ref())
+    let Some(_) = std::path::Path::new(parsed.source.as_ref())
         .file_name()
         .map(|s| s.to_string_lossy().into_owned())
     else {
@@ -970,8 +970,8 @@ fn decode_ng_one(server: &SipnabMcp, pointer: &str) -> NgDecode {
         );
     };
 
-    let path = match server.resolve_in_root(&leaf) {
-        Ok(p) => p,
+    let (confined_source, leaf) = match server.confine_pointer_source(&parsed.source) {
+        Ok(found) => found,
         Err(e) => {
             return ng_unresolvable(
                 pointer,
@@ -988,11 +988,14 @@ fn decode_ng_one(server: &SipnabMcp, pointer: &str) -> NgDecode {
     let confined = crate::capture::packet::FrameRef {
         // Confinement rewrites where to look, never what was asked for.
         bytes: parsed.bytes.clone(),
-        source: path.display().to_string().into(),
+        source: confined_source.into(),
         origin: parsed.origin,
         kind: parsed.kind.clone(),
     };
-    let resolution = match crate::capture::resolve::resolve(&confined) {
+    // The link type comes back from the same open that found the frame. It
+    // decides how many bytes precede the IP header, and a pointer into an
+    // archive member has no file of its own to reopen for it.
+    let (resolution, link_type) = match crate::capture::resolve::resolve_with_link_type(&confined) {
         Ok(r) => r,
         Err(e) => return ng_unresolvable(pointer, e.to_string()),
     };
@@ -1001,24 +1004,6 @@ fn decode_ng_one(server: &SipnabMcp, pointer: &str) -> NgDecode {
         "verified"
     } else {
         "unverified"
-    };
-
-    // The link type decides how many bytes precede the IP header, and decoding
-    // an SLL or PPPoE capture as Ethernet produces addressing that looks
-    // decoded and is wrong.
-    let link_type = match crate::capture::file::open_offline(&path) {
-        Ok((cap, _guard)) => cap.get_datalink().0,
-        Err(e) => {
-            return ng_unresolvable(
-                pointer,
-                format!(
-                    "the frame resolved, but '{leaf}' would not reopen for its \
-                     link-layer type: {e:#}. Decoding it as Ethernet would be a \
-                     guess about the wire format, and a wrong guess reads as a \
-                     decoded message."
-                ),
-            );
-        }
     };
 
     let packet = crate::capture::packet::Packet::with_source(

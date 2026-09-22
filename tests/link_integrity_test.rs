@@ -913,7 +913,13 @@ fn wiki_intra_docs_links_resolve() {
     // HEAD with this gate's rule; no other page moved.
     // 784 + 8 = 792: the HEP sender roster branch counted its eight against
     // 763 and merged after the three above.
-    const EXPECTED_WIKI_LINKS: usize = 792;
+    // 792 -> 794 by archive input: docs/cli-reference.md +1 (the `-I` row to
+    // the new "Archives read like directories" section), docs/troubleshooting.md
+    // +2 (the symptom row, and the pointer from the new section to the CLI
+    // reference), docs/mcp-tools.md -1 (the rewritten `open_capture`
+    // paragraph no longer links `list_captures`). Counted per file against
+    // HEAD with this gate's rule; no other page moved.
+    const EXPECTED_WIKI_LINKS: usize = 794;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe 6d in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

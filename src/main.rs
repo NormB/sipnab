@@ -64,7 +64,7 @@ fn main() {
     //    sets up its own logging and hardening and exits. See
     //    `process_isolation::worker_process`.
     if let Some(code) = sipnab::process_isolation::worker_process::run_if_requested() {
-        std::process::exit(code);
+        sipnab::capture::archive::release_run_and_exit(code);
     }
 
     // 1. Parse CLI arguments and set up logging.
@@ -74,7 +74,7 @@ fn main() {
     // 2. Immediate commands that run before config load (--setup-caps,
     //    --strip-secrets).
     if let Some(code) = bootstrap::run_startup_commands(&cli) {
-        std::process::exit(code);
+        sipnab::capture::archive::release_run_and_exit(code);
     }
 
     // 2b. Give up the ability to gain privileges through exec, for every run
@@ -104,7 +104,7 @@ fn main() {
     signals::install_handlers();
     if let Err(msg) = cli.validate() {
         tracing::error!("{}", msg);
-        std::process::exit(2);
+        sipnab::capture::archive::release_run_and_exit(2);
     }
     // 3b. Record how this run was invoked, when --run-provenance-file named a
     //     file. Here and not later: everything above this point either exits
@@ -118,12 +118,12 @@ fn main() {
     //     here: no packet has been read.
     if let Err(msg) = sipnab::app::run_provenance::write_record(&cli) {
         tracing::error!("{msg}");
-        std::process::exit(2);
+        sipnab::capture::archive::release_run_and_exit(2);
     }
 
     // 4. --mint-token: mint a signed bearer token and exit.
     if let Some(code) = bootstrap::run_mint_token(&cli) {
-        std::process::exit(code);
+        sipnab::capture::archive::release_run_and_exit(code);
     }
 
     // 5. Load configuration and apply [limits].
@@ -145,14 +145,14 @@ fn main() {
 
     // 6. --dump-config: print the effective config and exit.
     if cli.config_args.dump_config {
-        std::process::exit(bootstrap::dump_config(&loaded));
+        sipnab::capture::archive::release_run_and_exit(bootstrap::dump_config(&loaded));
     }
 
     // 6b. --uprobe-list: report which TLS libraries this host is running and
     //     exit, without installing anything in the kernel. Answers the question
     //     that decides whether a uprobe capture is worth starting.
     if cli.tls_args.uprobe_list {
-        std::process::exit(bootstrap::uprobe_list(&cli));
+        sipnab::capture::archive::release_run_and_exit(bootstrap::uprobe_list(&cli));
     }
 
     // 7. Decide everything up front: source, capture config, portrange,
@@ -189,6 +189,9 @@ fn main() {
             plan.filter_expr.as_ref(),
             plan.vcon_filter_expr.as_ref(),
         );
+        // Returning from `main` runs no destructor for a static, so the
+        // members `-I` extracted are released explicitly on this way out too.
+        sipnab::capture::archive::release_run();
         return;
     }
 
@@ -242,4 +245,7 @@ fn main() {
         // the capture is launched, so this match never sees it.
         RunMode::CoresFile => unreachable!("handled before launch"),
     }
+    // A run that ends by returning, rather than through
+    // `release_run_and_exit`, releases what `-I` extracted here.
+    sipnab::capture::archive::release_run();
 }

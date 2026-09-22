@@ -3137,9 +3137,12 @@ pub fn file_export_notice(
         .iter()
         .take(NOTICE_MAX_NAMED_FILES)
         .map(|p| {
-            p.file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_else(|| p.to_string_lossy().into_owned())
+            // A member of an archive is named by its label, not by the file
+            // it was extracted to.
+            let shown = crate::capture::archive::source_name(p);
+            std::path::Path::new(&shown)
+                .file_name()
+                .map_or_else(|| shown.clone(), |n| n.to_string_lossy().into_owned())
         })
         .collect();
     let listed = named.join(", ");

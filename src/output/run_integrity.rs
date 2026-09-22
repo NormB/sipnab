@@ -76,6 +76,8 @@ static PLUGINS_REQUESTED: AtomicU64 = AtomicU64::new(0);
 static PLUGINS_FAILED: AtomicU64 = AtomicU64::new(0);
 /// Captured messages idle compaction discarded over the whole run.
 static RETENTION_MESSAGES_DROPPED: AtomicU64 = AtomicU64::new(0);
+/// Whether an archive in the `-I` set could not be unpacked to its end.
+static ARCHIVES_CUT_SHORT: AtomicBool = AtomicBool::new(false);
 
 /// The outcome of reading one `-I` set, as [`record_files_read`] takes it.
 ///
@@ -132,6 +134,10 @@ pub struct RunIntegrity {
     /// as the dialogs of the run. A number that looks measured and is not is
     /// worse here than a number that is absent.
     pub retention_messages_dropped: u64,
+    /// An archive in the `-I` set could not be unpacked to its end: a
+    /// decompression ceiling, an entry cap, a broken header, or the archive
+    /// ended inside a member. Its later members are not in the run.
+    pub archives_cut_short: bool,
 }
 
 impl RunIntegrity {
@@ -142,7 +148,7 @@ impl RunIntegrity {
     /// evaluated once.
     #[must_use]
     pub fn input_complete(&self) -> bool {
-        !self.input_lost && self.plugins_failed == 0
+        !self.input_lost && !self.archives_cut_short && self.plugins_failed == 0
     }
 
     /// Whether anything at all is worth saying about this run.
@@ -165,6 +171,13 @@ impl RunIntegrity {
     #[must_use]
     pub fn reasons(&self) -> Vec<String> {
         let mut out = Vec::new();
+        if self.archives_cut_short {
+            out.push(
+                "an archive in the input could not be unpacked to its end; \
+                 members past that point are in no report from this run"
+                    .to_string(),
+            );
+        }
         if self.input_lost {
             out.push(format!(
                 "{} of {} capture file(s) was not read to the end; \
@@ -235,6 +248,9 @@ impl RunIntegrity {
                 },
                 "retention": {
                     "messages_dropped": self.retention_messages_dropped,
+                },
+                "archives": {
+                    "cut_short": self.archives_cut_short,
                 },
             }
         })
@@ -389,6 +405,15 @@ pub(crate) fn record_plugins(outcome: PluginLoadOutcome) {
     PLUGINS_FAILED.fetch_add(outcome.failed as u64, Ordering::Relaxed);
 }
 
+/// Record that an archive in the `-I` set could not be unpacked to its end.
+///
+/// Data lost from the input, the same as a file whose read broke: the members
+/// past the break are not in any report, and nothing else in the run's output
+/// would say so.
+pub(crate) fn record_archives_cut_short() {
+    ARCHIVES_CUT_SHORT.store(true, Ordering::Relaxed);
+}
+
 /// Record the run's lifetime count of messages dropped by idle compaction.
 ///
 /// Set rather than added: the store's counter is already a lifetime total, so
@@ -414,6 +439,7 @@ pub fn snapshot() -> RunIntegrity {
         plugins_requested: PLUGINS_REQUESTED.load(Ordering::Relaxed),
         plugins_failed: PLUGINS_FAILED.load(Ordering::Relaxed),
         retention_messages_dropped: RETENTION_MESSAGES_DROPPED.load(Ordering::Relaxed),
+        archives_cut_short: ARCHIVES_CUT_SHORT.load(Ordering::Relaxed),
     }
 }
 
@@ -487,6 +513,27 @@ mod tests {
         let line = lost.ndjson_line().unwrap_or_default();
         assert!(line.ends_with('\n'), "NDJSON line must end in a newline");
         assert!(!line[..line.len() - 1].contains('\n'), "one line: {line}");
+    }
+
+    /// An archive that could not be unpacked to its end is data missing from
+    /// the input even when every capture that DID come out was read in full,
+    /// and the reason says the archive, not "0 of 20 files".
+    #[test]
+    fn an_archive_cut_short_is_incomplete_and_says_so() {
+        let cut = RunIntegrity {
+            files_given: 20,
+            files_read_in_full: 20,
+            archives_cut_short: true,
+            ..RunIntegrity::default()
+        };
+        assert!(!cut.input_complete());
+        let reasons = cut.reasons();
+        assert_eq!(reasons.len(), 1, "{reasons:?}");
+        assert!(reasons[0].contains("archive"), "{reasons:?}");
+        assert_eq!(
+            cut.to_json()["sipnab_run"]["archives"]["cut_short"],
+            serde_json::json!(true)
+        );
     }
 
     #[test]

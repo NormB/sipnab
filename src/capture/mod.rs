@@ -8,6 +8,8 @@
 //! a capture thread and returns a [`CaptureHandle`] for lifecycle management.
 
 #[cfg(feature = "native")]
+pub mod archive;
+#[cfg(feature = "native")]
 pub mod atomic;
 #[cfg(feature = "native")]
 pub mod bpf_filter;

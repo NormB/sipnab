@@ -599,6 +599,13 @@ fn tshark_input_file(files: &[PathBuf], output: Option<&str>) -> Result<String, 
              to save the live capture so tshark has a file to read"
                 .to_string()
         }),
+        // A member of an archive exists only as a file sipnab extracted and
+        // will delete; `tshark -r` cannot read inside the archive either.
+        [one] if crate::capture::archive::is_extracted_member(one) => Err(format!(
+            "the input '{}' is a member of an archive, and `tshark -r` reads one \
+             capture file; extract that member and point tshark at it",
+            crate::capture::archive::source_name(one)
+        )),
         [one] => Ok(one.display().to_string()),
         many => Err(format!(
             "the input is {} files and `tshark -r` reads one, so no single \
@@ -607,7 +614,7 @@ fn tshark_input_file(files: &[PathBuf], output: Option<&str>) -> Result<String, 
              a subset. Files: {}",
             many.len(),
             many.iter()
-                .map(|p| p.display().to_string())
+                .map(|p| crate::capture::archive::source_name(p))
                 .collect::<Vec<_>>()
                 .join(", ")
         )),
@@ -939,7 +946,7 @@ fn run_lint_stage(cli: &Cli, config: &Config, ds: &crate::sip::dialog_store::Dia
             // to tell "this capture is non-conformant" apart from "sipnab was
             // asked to read a file that is not there", and only the first is a
             // fact about the traffic.
-            std::process::exit(2);
+            crate::capture::archive::release_run_and_exit(2);
         }
     };
 
@@ -1092,7 +1099,7 @@ pub fn run_cores_file(
         // so loudly anyway rather than exiting 0 with an empty report, which is
         // precisely the failure this path used to have.
         tracing::error!("--cores: no capture files to read");
-        std::process::exit(1);
+        crate::capture::archive::release_run_and_exit(1);
     }
     let no_rtp = cli.capture_args.no_rtp || config.capture.no_rtp.unwrap_or(false);
     let pcfg = parallel_config(cli, config, portrange, no_rtp);
@@ -1117,15 +1124,15 @@ pub fn run_cores_file(
             // through the one `ReadTally::report`, so the two paths cannot
             // reach different verdicts about the same file set.
             if !reports_ok || crate::output::run_integrity::run_failed() {
-                std::process::exit(1);
+                crate::capture::archive::release_run_and_exit(1);
             }
             if lint_tripped {
-                std::process::exit(3);
+                crate::capture::archive::release_run_and_exit(3);
             }
         }
         Err(e) => {
             tracing::error!("multi-core reconstruction failed: {e:#}");
-            std::process::exit(1);
+            crate::capture::archive::release_run_and_exit(1);
         }
     }
 }
@@ -2328,7 +2335,7 @@ pub fn run(
             batch.vcon_filter_expr.as_ref(),
         );
         if !reports_ok {
-            std::process::exit(1);
+            crate::capture::archive::release_run_and_exit(1);
         }
         return;
     }
@@ -3489,7 +3496,7 @@ impl BatchRunner {
                     }
                     Err(e) => {
                         tracing::error!("Failed to open output file: {e}");
-                        std::process::exit(1);
+                        crate::capture::archive::release_run_and_exit(1);
                     }
                 }
             }
@@ -3809,7 +3816,7 @@ impl BatchRunner {
                 total_count,
                 gate,
             ) {
-                std::process::exit(1);
+                crate::capture::archive::release_run_and_exit(1);
             }
         }
 
@@ -3819,7 +3826,7 @@ impl BatchRunner {
         if cli.hep_args.hep_senders
             && !print_hep_senders(capture_meter.hep_roster(), cli.output_args.json)
         {
-            std::process::exit(1);
+            crate::capture::archive::release_run_and_exit(1);
         }
 
         // 21-hep-send. What the exporter delivered and what failed, said once
@@ -4170,7 +4177,7 @@ impl BatchRunner {
         // CAPTURE is non-conformant — so spending it here would erase the
         // distinction it exists to make.
         if output_failed || capture_failed || crate::output::run_integrity::run_failed() {
-            std::process::exit(1);
+            crate::capture::archive::release_run_and_exit(1);
         }
         // 3, not 1. A pipeline has to tell "sipnab broke" from "the capture is
         // non-conformant": the first means investigate the tool, the second
@@ -4182,7 +4189,7 @@ impl BatchRunner {
         // write its output and found lint errors reports the failure — the
         // findings came from a partial read and are not trustworthy anyway.
         if lint_gate_tripped {
-            std::process::exit(3);
+            crate::capture::archive::release_run_and_exit(3);
         }
     }
 }
