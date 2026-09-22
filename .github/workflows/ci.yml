@@ -472,6 +472,12 @@ jobs:
           # this leg is what proves it still builds WITHOUT tui, tls, api or
           # mcp, which is the class of break `--all-features` cannot see.
           - vcon
+          # `audio` and `plugins` are each in `full` and so built by
+          # `--all-features`, but never ALONE until these legs: a
+          # `#[cfg(feature = "audio")]` or `"plugins"` block that leans on a
+          # sibling feature for an import compiles there and nowhere else.
+          - audio
+          - plugins
           - wasm
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -538,6 +544,23 @@ jobs:
       - name: Test (headless recipe)
         if: matrix.features == 'native,hep,api,mcp,mcp-http'
         run: cargo test --no-default-features --features "${{ matrix.features }}"
+
+      # Tests that exist only where a feature is ABSENT. `--all-features` and
+      # the pre-commit hook's `--features full` compile them out, and `cargo
+      # check --tests` above builds them without running them, so before
+      # these steps nothing executed them anywhere. Each runs in the leg whose
+      # combo is the absence it tests.
+      - name: Test (feature-gate refusals, no mcp and no hep)
+        if: matrix.features == 'native'
+        run: cargo test --no-default-features --features native --test feature_gate_test
+
+      - name: Test (mcp without mcp-http)
+        if: matrix.features == 'mcp'
+        run: cargo test --no-default-features --features mcp --test app_servers_test
+
+      - name: Test (TUI snapshots without audio)
+        if: matrix.features == 'native,tui,tls,hep,api'
+        run: cargo test --no-default-features --features "${{ matrix.features }}" --test tui_snapshot_test
 
   # What `cargo publish` would upload, built from its own files alone.
   # `tests/crate_package_test.rs` packages without compiling, so it catches a

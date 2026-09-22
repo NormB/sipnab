@@ -270,7 +270,7 @@ mod tui_e2e {
 
     /// The real binary starts under tmux, loads the pcap, and shows INVITE in the call list.
     #[test]
-    #[ignore] // needs tmux; slower than unit tests
+    #[ignore = "needs tmux on PATH; run by CI with --ignored"]
     fn tui_launches_with_pcap_and_shows_call_list() {
         let s = TuiSession::launch_sip_call();
         // INVITE in the call-list body proves the TUI launched and loaded the pcap.
@@ -279,7 +279,7 @@ mod tui_e2e {
 
     /// Tab in the real TUI switches to the stream list (the SSRC column header appears).
     #[test]
-    #[ignore]
+    #[ignore = "needs tmux on PATH; run by CI with --ignored"]
     fn tui_tab_switches_to_stream_list() {
         let s = TuiSession::launch_sip_call();
         s.wait_for("Dialogs:");
@@ -289,7 +289,7 @@ mod tui_e2e {
 
     /// F1 in the real TUI opens the Help screen.
     #[test]
-    #[ignore]
+    #[ignore = "needs tmux on PATH; run by CI with --ignored"]
     fn tui_f1_shows_help() {
         let s = TuiSession::launch_sip_call();
         s.wait_for("Dialogs:");
@@ -299,7 +299,7 @@ mod tui_e2e {
 
     /// Enter in the real TUI opens the call-flow ladder.
     #[test]
-    #[ignore]
+    #[ignore = "needs tmux on PATH; run by CI with --ignored"]
     fn tui_enter_opens_call_flow() {
         let s = TuiSession::launch_sip_call();
         s.wait_for("Dialogs:");
@@ -314,7 +314,7 @@ mod tui_e2e {
     /// so a build where `q` quit outright would end the session before the
     /// question appeared and fail here rather than pass for the wrong reason.
     #[test]
-    #[ignore]
+    #[ignore = "needs tmux on PATH; run by CI with --ignored"]
     fn tui_quit_exits_cleanly() {
         let s = TuiSession::launch_sip_call();
         s.wait_for("Dialogs:");
@@ -333,7 +333,7 @@ mod tui_e2e {
     /// The half that matters for the accident #283 reports: a reflexive key
     /// must be recoverable, and a capture that was running is still running.
     #[test]
-    #[ignore]
+    #[ignore = "needs tmux on PATH; run by CI with --ignored"]
     fn tui_quit_confirmation_can_be_declined() {
         let s = TuiSession::launch_sip_call();
         s.wait_for("Dialogs:");
@@ -349,7 +349,7 @@ mod tui_e2e {
 
     /// Esc opens the same question rather than ending the session.
     #[test]
-    #[ignore]
+    #[ignore = "needs tmux on PATH; run by CI with --ignored"]
     fn tui_esc_asks_before_quitting() {
         let s = TuiSession::launch_sip_call();
         s.wait_for("Dialogs:");
@@ -362,7 +362,7 @@ mod tui_e2e {
 
     /// Tab in the call flow toggles the focus indicator Ladder, Detail, and back to Ladder.
     #[test]
-    #[ignore]
+    #[ignore = "needs tmux on PATH; run by CI with --ignored"]
     fn tui_tab_switches_call_flow_pane_focus() {
         let s = TuiSession::launch_sip_call();
         s.wait_for("Dialogs:");
@@ -377,7 +377,7 @@ mod tui_e2e {
 
     /// `v` shows a version line that includes the git commit in parentheses.
     #[test]
-    #[ignore]
+    #[ignore = "needs tmux on PATH; run by CI with --ignored"]
     fn tui_v_shows_version_with_commit() {
         let s = TuiSession::launch_sip_call();
         s.wait_for("Dialogs:");
@@ -392,7 +392,7 @@ mod tui_e2e {
 
     /// On a 14-row terminal the detail pane overflows, so the scrollbar thumb glyph must render.
     #[test]
-    #[ignore]
+    #[ignore = "needs tmux on PATH; run by CI with --ignored"]
     fn tui_call_flow_detail_scrollbar_appears_when_overflowing() {
         // A short terminal forces the detail pane to overflow → scrollbar.
         let s = TuiSession::launch(120, 14, fixtures_dir(), &["-I", "sip_call.pcap"]);
@@ -409,7 +409,7 @@ mod tui_e2e {
 
     /// `O` opens the file browser listing the pcaps in the working directory.
     #[test]
-    #[ignore]
+    #[ignore = "needs tmux on PATH; run by CI with --ignored"]
     fn tui_file_open_lists_pcaps_in_cwd() {
         // cwd is the fixtures dir, which contains sip_call.pcap + udp_5060.pcap.
         let s = TuiSession::launch_sip_call();
@@ -420,7 +420,7 @@ mod tui_e2e {
 
     /// `N` names an address: the name shows in the Source column until name mode is cycled back to Off.
     #[test]
-    #[ignore]
+    #[ignore = "needs tmux on PATH; run by CI with --ignored"]
     fn tui_name_address_resolves_in_columns() {
         let s = TuiSession::launch_sip_call();
         s.wait_for("Dialogs:");
@@ -452,7 +452,7 @@ mod tui_e2e {
     /// all modes except Scaled, so the number of visible messages changed
     /// with the time-unit setting.
     #[test]
-    #[ignore] // needs tmux; slower than unit tests
+    #[ignore = "needs tmux on PATH; run by CI with --ignored"]
     fn keepalive_messages_visible_in_every_timestamp_mode() {
         let samples = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/pcap-samples");
         let s = TuiSession::launch(

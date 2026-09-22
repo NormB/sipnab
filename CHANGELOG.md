@@ -159,6 +159,20 @@ entry that carries them.
   readiness and the run died with `Capture thread exited before signaling
   ready`. The first file actually read now signals it.
 
+### Internal
+
+- **Tests that exist only in a reduced build now run.** The feature-gate
+  refusals, the `mcp`-without-`mcp-http` startup error and the no-`audio` TUI
+  snapshot compiled only where a feature is absent, and CI only type-checked
+  those builds. Three `features` legs now run them with `cargo test`, and the
+  matrix gains `audio` and `plugins` on their own, which nothing built alone
+  before.
+- **Every `#[ignore]` names its reason and its runner.** A gate test fails on
+  a bare `#[ignore]`, and on an ignored test that no workflow runs with
+  `--ignored`, that its own file does not spawn, and that is not on an explicit
+  manual-only list with the reason. The PTY TUI tests gained their reasons, and
+  the one `CAP_NET_RAW` fanout test is listed as manual-only.
+
 ## [0.5.185] - 2026-09-22
 
 ### Added
