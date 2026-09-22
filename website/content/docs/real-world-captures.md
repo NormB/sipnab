@@ -1049,7 +1049,7 @@ network has no legitimate reading, and neither does a Contact whose host differs
 from the source. Both survive the attacker changing address, User-Agent and
 prefix. Block the destination prefix at the trunk as well as the source, because
 the source is disposable and the prefix is what pays.
-[Cookbook recipe 10c](@/docs/cookbook.md#10c-detect-toll-fraud-and-wangiri-call-back-bait)
+[Cookbook recipe 10d](@/docs/cookbook.md#10d-detect-toll-fraud-and-wangiri-call-back-bait)
 covers the fraud heuristics that run over this pattern live.
 
 ---

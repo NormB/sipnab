@@ -82,6 +82,40 @@ entry that carries them.
 
 ### Changed
 
+- **The cookbook, troubleshooting and reference pages read task-first.** The
+  cookbook's goal table is grouped into eight tasks and now lists recipes
+  13b, 60 and 65, recipes 7 and 8 are named for what the reader wants to do,
+  and the second recipe 10c is 10d. Troubleshooting gives vCon export
+  failures their own section and symptom row, and sends report, audio and
+  browser tasks to the cookbook. The filter page opens with examples, and its
+  quick start keeps `-N` so the TUI does not open. The output page starts
+  with a "Which output do I want?" table. The authentication page puts its
+  steps before the token format, and the minimal config example sets the
+  device, the signaling ports and a diagnosis threshold.
+- **The documentation index lists each page once, by task.** Tutorials are
+  install, the command-line triage and the TUI walkthrough. MCP deployment and
+  TLS-without-keys moved to the how-to guides, which are grouped by what the
+  reader is doing, and the filter page and MCP pages no longer appear twice.
+- **Maintainer detail moved out of the user pages.** The encapsulations page
+  opens with a "Can sipnab read my capture?" table, including what a live
+  capture needs for each wrapper, and keeps its sources and history at the
+  end. The CLI reference's 600-word note on the generated BPF filter is now
+  two sentences, with the detail on the encapsulations page. The install
+  page's release-gate rationale sits in a collapsed "Why / how we know"
+  block. The MCP deployment page is retitled "Connect an AI agent to sipnab"
+  and says plainly which scenarios were last run on which release, and the
+  MCP page shows how to query the server with only the installed binary and
+  `jq`.
+- **A command-line tutorial.** `docs/first-cli-triage.md` takes a new reader
+  from a downloaded sample call to a per-call table, the failed calls, one
+  call's report and a `jq` pipeline, showing the real output of each step.
+- **A glossary, and a sample capture to start with.** `docs/glossary.md`
+  defines PDD, MOS, B2BUA, HEP and the other terms the pages use, one short
+  definition each, checked against how sipnab computes them. The README's
+  first run and the TUI walkthrough define each term at first use, link the
+  glossary, and start with `curl -LO https://sipnab.com/demos/sample-call.pcap`
+  for a reader with no capture of their own.
+
 - **Five committed captures are now built by a generator anyone can run.**
   Two rtpengine relay fixtures were live captures from the lab network, a
   fuzz seed was a copy of a third-party capture, and the two oldest fixtures
@@ -188,6 +222,37 @@ entry that carries them.
   pending REGISTER stayed open until its source aged out, so a 401 minutes
   later still counted as a failure. A REGISTER's transaction now closes at
   Timer F, 32 seconds ([RFC 3261 section 17.1.2.2](https://www.rfc-editor.org/rfc/rfc3261#section-17.1.2.2)).
+
+- **Troubleshooting's decode example matches this release.** It quoted
+  `unsupported link type 0` and said DLT 0, 9 and 276 had no decoder, while
+  sipnab decodes all three. The example is now a real run over link type 147,
+  and the table points at the list of link types sipnab reads. Its audio
+  section, which said only G.711 exports, now defers to the cookbook recipe,
+  which also lists Opus.
+- **Documented commands paste and run as written.** 31 lines across the
+  install, cookbook, troubleshooting and vCon harness pages put a placeholder
+  such as `<call-id>`, `<version>` or `<uuid>` inside a shell block. The shell
+  reads `<word>` as "redirect input from a file named word", so a pasted command
+  failed with a file-not-found error, and a `v<version>` download URL fetched
+  nothing. Each now sets a shell variable on its own line and uses it, and
+  `tests/no_placeholder_in_shell_blocks_test.rs` fails on any placeholder in a
+  shell block of the README or a `docs/` page.
+- **The documentation says what sipnab actually does.** Cookbook recipe 1 said
+  `sipnab -N -I capture.pcap` printed "dialog count, methods, average PDD". It
+  prints one line per SIP message, and the recipe now shows `--report` for the
+  per-call view and says what `--problems` selects. The TUI walkthrough said
+  selected dialogs show `▸`, and they show `[*]`. The REST API guide told a release
+  user to compile with `--features api`, which every release binary already
+  has, and put the API key on the command line where `ps` shows it. It now
+  checks `--version` and reads `SIPNAB_API_KEY` from the environment, passed
+  through `sudo --preserve-env`. The install page called sipnab one static
+  binary depending on libpcap (only the musl build is static and needs nothing
+  else), left `plugins`, `bpf` and `vcon` out of what needs `native`, sent MCP
+  deployment readers to the wrong page, and said the packages remove
+  `/etc/sipnab/sipnab.toml` (none ships or removes it). Troubleshooting counted
+  33 filter fields where the DSL has 32 plus any header by name. Three
+  sentences in the README and the CLI reference had been damaged by a
+  find-and-replace into non-sentences, and read plainly again.
 
 - **An empty `xcid_headers` list is obeyed.** `with_xcid_headers(vec![])` was
   ignored, so a configuration that deliberately turned correlation headers off
@@ -7025,7 +7090,7 @@ carried in the source tarball and the docs, not in the code.
   "Uprobe TLS Capture" — both the same exotic eBPF path, named after the kernel
   mechanism rather than the goal, and both demanding root, BTF and a
   non-default build. The ordinary route, a key log from the endpoint, sat
-  inside the cookbook as [recipe 7, "Decrypt SIP/TLS via SSLKEYLOGFILE"](docs/examples.md#7-decrypt-siptls-via-sslkeylogfile). The menu advertised the hard road and hid the easy
+  inside the cookbook as [recipe 7, "Decrypt SIP/TLS via SSLKEYLOGFILE"](docs/examples.md#7-decrypt-sip-over-tls-when-you-can-restart-the-phone-or-server--key-log-file-sslkeylogfile). The menu advertised the hard road and hid the easy
   one.
 
   The new page opens with a table you read down until you reach a row you can

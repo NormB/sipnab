@@ -10,19 +10,27 @@ the ladder, measure a delay, and inspect RTP.
 
 > New to sipnab? Start here. This is a guided first run through the interactive
 > TUI. It names every key you press, and the full reference lives in
-> [Keybindings](@/docs/keybindings.md). If you prefer the command line, see the
-> [Cookbook](@/docs/cookbook.md) instead.
+> [Keybindings](@/docs/keybindings.md). If you prefer the command line, follow
+> [Triage a capture from the command line](https://github.com/NormB/sipnab/blob/main/docs/first-cli-triage.md) instead.
+> The [Glossary](https://github.com/NormB/sipnab/blob/main/docs/glossary.md) defines any term you do not recognize.
 
 ## 1. Open a capture
 
-Point sipnab at a pcap and it drops you straight into the **Call List**:
+No capture handy? Download the sample call the website uses:
 
 ```bash
-sipnab -I capture.pcap
+curl -LO https://sipnab.com/demos/sample-call.pcap
 ```
 
-No file handy? Capture live on an interface instead — this needs `sudo`,
-because opening a capture device needs privilege:
+Point sipnab at a pcap (packet capture) file and it drops you straight into the
+**Call List**:
+
+```bash
+sipnab -I sample-call.pcap
+```
+
+To watch live traffic on an interface instead, run it with `sudo`, because
+opening a capture device needs privilege:
 
 ```bash
 sudo sipnab -d eth0
@@ -39,8 +47,10 @@ You can open a different capture at any time with `O` -- no restart needed.
 
 ## 2. Find your way around the call list
 
-The Call List is the home view: one row per SIP dialog, with method, endpoints,
-state, message count, and PDD (post-dial delay).
+The Call List is the home view: one row per SIP [dialog](https://github.com/NormB/sipnab/blob/main/docs/glossary.md#dialog)
+(every message that shares a Call-ID), with method, endpoints, state, message
+count, and [PDD](https://github.com/NormB/sipnab/blob/main/docs/glossary.md#pdd) (post-dial delay, the wait between the INVITE
+and the first ringing response).
 
 - `j` / `k` (or `Down` / `Up`) move the selection; `PgUp` / `PgDn`, `Home`, `End` jump around.
 - `<` / `>` sort by the previous / next column; `Z` reverses the direction. Sort by **State** to bring `Failed` calls to the top, or by **PDD** to find slow setups.
@@ -88,11 +98,14 @@ line-by-line comparison. `Esc` returns to the ladder.
 ## 7. Inspect RTP quality
 
 Press `Tab` to switch from the Call List to the **RTP Streams** view: every
-media stream with codec, packet count, jitter and loss. Streams flagged
-`orphan` have no matching SIP dialog (often a NAT/ALG symptom).
+media stream with codec, packet count, [jitter](https://github.com/NormB/sipnab/blob/main/docs/glossary.md#jitter) (how much
+packet spacing varies) and loss. Streams flagged `orphan` have no matching SIP
+dialog, which is often a sign that NAT or a SIP-aware router rewrote the media
+address.
 
 Press `Enter` on a stream -- or on an `██ RTP ██` bar back in the Call Flow --
-to open **Stream Detail**: MOS, jitter statistics, quality intervals, burst/gap
+to open **Stream Detail**: [MOS](https://github.com/NormB/sipnab/blob/main/docs/glossary.md#mos) (mean opinion score, an
+estimate of how the call sounded), jitter statistics, quality intervals, burst/gap
 analysis, silence detection, and MOS/jitter sparklines. A stream whose far end
 sent RTCP XR gains a **Reported by Far End (RTCP XR)** section at the bottom,
 holding that endpoint's own R-factor, MOS-LQ, MOS-CQ, delays and discard rate.
@@ -103,25 +116,27 @@ those numbers. With an `audio` build,
 
 ## 8. Trace a call through proxies (multi-leg)
 
-If a call crossed a B2BUA or SBC, press `x` (or `F4`) in the Call Flow to toggle
+If a call crossed a [B2BUA](https://github.com/NormB/sipnab/blob/main/docs/glossary.md#b2bua) or [SBC](https://github.com/NormB/sipnab/blob/main/docs/glossary.md#sbc) (a
+box that ends the call on one side and starts a new one on the other, so each
+side has its own Call-ID), press `x` (or `F4`) in the Call Flow to toggle
 **extended multi-leg flow** -- the related legs render together in one ladder,
 so you can follow the call end-to-end through the middle boxes.
 
 ## 9. Save what you found
 
-Select the dialogs you want with `Space` in the Call List (they show a `▸`),
+Select the dialogs you want with `Space` in the Call List (their checkbox
+changes from `[ ]` to `[*]`),
 then press `F2`. In the Save dialog, `Tab` cycles the format -- PCAP, PCAP-NG,
 TXT, JSON, NDJSON, CSV, **HTML** (a self-contained ladder diagram, drawn with
 Mermaid, for your ticket or wiki), Markdown, WAV, SIPp XML, RTP JSON -- and
 `Enter` writes the file. `Shift+Tab` or `Up` / `Down` cycle the same list. With
 nothing selected, it saves everything.
 
-**The diagram carries at most `MAX_MESSAGES` (200) arrows.** The renderer sipnab
-ships refuses a diagram past `RENDERER_MAX_EDGES` (500) outright — it draws
-nothing at all rather than degrading — so a long dialog would otherwise export
-as a blank panel with no error. Past the cap the diagram says so in a note
-inside itself, naming how many messages the call actually had: a picture that
-quietly omits half a call is worse than one that admits it.
+**The HTML diagram draws at most 200 messages.** A call with more exports its
+first 200 as arrows, and a note inside the diagram names how many messages the
+call really had. The cap exists because the diagram renderer draws nothing at
+all past 500 arrows and notes, so without it a long call would export as a blank panel
+with no error.
 
 ## 10. Send your notes with the frames they are about
 
@@ -145,3 +160,16 @@ carries your notes, and sipnab never reads them back as analysis.
 - [Theme Guide](@/docs/theme.md) -- recolor the TUI to taste.
 - [Cookbook](@/docs/cookbook.md) -- the same investigations as one-shot CLI
   commands, for scripting and CI.
+
+<details>
+<summary>Why / how we know</summary>
+
+The 200-message cap is `MAX_MESSAGES` (200) in
+[`src/mermaid.rs`](https://github.com/NormB/sipnab/blob/main/src/mermaid.rs),
+and the renderer's limit is `RENDERER_MAX_EDGES` (500) in the same file. The
+vendored Mermaid build refuses a diagram past that many edges outright rather
+than drawing part of it, and every arrow and every note is one edge. The TUI's
+HTML export, the MCP `render_ladder` tool and the browser analyzer all draw
+through that one generator, so they share the cap.
+
+</details>

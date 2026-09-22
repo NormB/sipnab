@@ -28,7 +28,7 @@ tasks = [
   { title = "Diagnose one-way audio", cmd = "sipnab -I dump.pcap --one-way", href = "/docs/troubleshooting/#one-way-audio" },
   { title = "Find failed calls", cmd = "sipnab -N -I dump.pcap --problems", href = "/docs/troubleshooting/#failed-calls" },
   { title = "Set up a HEP capture server", cmd = "sipnab --hep-listen 0.0.0.0:9060", href = "/docs/cookbook/#6-wire-hep-from-your-sip-stack-to-a-central-sipnab" },
-  { title = "Decrypt TLS / SRTP", cmd = "sipnab -I tls.pcap --keylog keys.log", href = "/docs/cookbook/#7-decrypt-sip-tls-via-sslkeylogfile" },
+  { title = "Decrypt TLS / SRTP", cmd = "sipnab -I tls.pcap --keylog keys.log", href = "/docs/cookbook/#7-decrypt-sip-over-tls-when-you-can-restart-the-phone-or-server-key-log-file-sslkeylogfile" },
   { title = "Detect scanners & fraud", cmd = "sudo sipnab -N -d eth0 --fraud-detect", href = "/docs/cookbook/#10-detect-sip-scanners-and-auto-block-via-fail2ban" },
   { title = "Drive sipnab from an AI agent", cmd = "sipnab --mcp", href = "/docs/mcp/" },
 ]

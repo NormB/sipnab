@@ -19,8 +19,41 @@ sipnab --mcp -N -I capture.pcap
 
 That is the whole server. It speaks JSON-RPC on stdout and waits.
 
-To ask it something without wiring up a client first, the repo ships a one-shot
-helper. Here it is answering *why did this call fail?*:
+To ask it something with nothing but the installed binary and `jq`, pipe the
+three messages a client would send into it. This sample capture holds four
+failed calls:
+
+```bash
+curl -LO https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-problem-call.pcap
+```
+
+The first message opens the session, the second confirms it, and the third
+asks `triage_call` why one call failed. The server exits when its input ends:
+
+```bash
+printf '%s\n' \
+  '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"shell","version":"0"}}}' \
+  '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
+  '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"triage_call","arguments":{"call_id":"busy-3a2b1c@192.0.2.30"}}}' \
+  | sipnab --mcp -N -I sip-problem-call.pcap --quiet \
+  | jq 'select(.id == 2) | .result.content[0].text | fromjson | {verdict, final_status_code, signaling}'
+```
+
+```json
+{
+  "verdict": "signaling",
+  "final_status_code": 486,
+  "signaling": {
+    "hints": [
+      "Call failed: 486 Busy Here."
+    ],
+    "problem": true
+  }
+}
+```
+
+From a source checkout, a one-shot helper does the same with less typing and
+prints the whole answer:
 
 ```bash
 demos/mcp-stdio.sh tests/pcap-samples/sip-problem-call.pcap \
