@@ -66,7 +66,7 @@ Decoded from the committed fixture, every packet carries it:
 
 ```text
 HEP #1 capture-proto=0x3d correlation-id='km-670bd208@sipnab'  d7:command5:offer...
-HEP #2 capture-proto=0x3d correlation-id='km-670bd208@sipnab'  d3:sdp136:v=0...   <- reply
+HEP #2 capture-proto=0x3d correlation-id='km-670bd208@sipnab'  d3:sdp138:v=0...   <- reply
 ```
 
 The passive sniffer stays on the roadmap as a second delivery path behind the
@@ -193,10 +193,16 @@ caught.
 
 ## Proving the claim
 
-[`tests/fixtures/rtpengine-ng-hep.pcap`](../../tests/fixtures/rtpengine-ng-hep.pcap) is a live capture, not a construction:
-rtpengine 12.5.1 with `--homer-enable-ng`, six HEP packets covering
+[`tests/fixtures/rtpengine-ng-hep.pcap`](../../tests/fixtures/rtpengine-ng-hep.pcap) holds six HEP packets covering
 offer/answer/delete with their replies, and forty relayed RTP packets on the
-four sockets those commands allocated.
+four sockets those commands allocated. It started as a live capture from
+rtpengine 12.5.1 with `--homer-enable-ng`.
+[`tests/support/synthetic_captures.rs`](../../tests/support/synthetic_captures.rs) now builds it, keeping the live
+exchange's key order, reply shapes, ports and timing and replacing every
+address, MAC address and cookie with a documentation value. The repository
+publishes nothing from the lab's network, and
+[`tests/synthetic_captures_test.rs`](../../tests/synthetic_captures_test.rs) rebuilds the file byte for byte and
+checks those wire shapes on the committed bytes.
 
 Two properties make it discriminating rather than merely convenient, and
 [`tests/rtpengine_ng_test.rs`](../../tests/rtpengine_ng_test.rs) asserts both instead of describing them:
@@ -219,13 +225,19 @@ Both fixtures above carry an `ng` exchange this project generated itself. That
 proves the decoder and proves nothing about whether a real proxy and a real
 relay, talking to each other, produce something sipnab can use.
 
-`rtpengine-opensips-ng.pcap` closes that. It is a SIPp call driven through
-OpenSIPS and rtpengine in the harness, with `--homer-enable-ng` set, filtered
-to what a SEPARATE relay host would see: media and the relay's own control
-plane, no SIP. The Call-ID it recovers is OpenSIPS's, so the name travels
-proxy to rtpengine to HEP to sipnab and arrives on a host that captured no
-signaling at all. `rtpengine-opensips-media-only.pcap` is the same capture
-with the sixteen control-plane packets removed.
+`rtpengine-opensips-ng.pcap` closes that. It began as a SIPp call driven
+through OpenSIPS and rtpengine in the harness, with `--homer-enable-ng` set,
+filtered to what a SEPARATE relay host would see: media and the relay's own
+control plane, no SIP. The Call-ID it recovers is the one OpenSIPS handed the
+relay, so the name travels proxy to rtpengine to HEP to sipnab and arrives on
+a host that captured no signaling at all. `rtpengine-opensips-media-only.pcap`
+is the same capture with the four control-plane packets removed.
+
+The harness capture carried the opening of a third-party G.722 recording, so
+in September 2026 [`tests/support/synthetic_captures.rs`](../../tests/support/synthetic_captures.rs) rebuilt the pair. The
+rebuild keeps OpenSIPS's key order, the relay's conversion from G.722 to PCMU,
+and the timing, puts synthetic G.722 in the caller's packets, and moves the
+addresses into 198.51.100.0/24.
 
 Two things came out of building it that the synthetic test could not reach.
 

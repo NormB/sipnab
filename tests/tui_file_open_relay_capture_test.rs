@@ -22,9 +22,11 @@ use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use sipnab::tui::{App, View};
 
-/// The Call-ID OpenSIPS gave the relay, cut to the eleven characters the
-/// stream list's Call-ID column shows.
-const CALL_ID_CELL: &str = "1-4062@172.";
+/// The Call-ID OpenSIPS gave the relay, `1-4062@198.51.100.21`, cut to the
+/// eleven characters the stream list's Call-ID column shows. Its host part
+/// was a container address until September 2026, when the fixture pair was
+/// rebuilt from a generator on documentation addresses.
+const CALL_ID_CELL: &str = "1-4062@198.";
 
 /// Open `fixture` through the file browser the way a user would — `O`, step
 /// past `..`, Enter — and return the app once the background load has settled.

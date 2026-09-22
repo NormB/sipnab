@@ -226,7 +226,12 @@ it on the box.
 
 Capture corpora are the same rule one layer down. The captures this project is
 proven against carry real signaling; they live outside the tree, they are never
-committed, and pages do not say where they are.
+committed, and pages do not say where they are. A capture that IS committed is
+public, with a source and a license, or synthetic, with the generator that
+writes it, and says which: in `tests/pcap-samples/PROVENANCE.md` for that
+directory and in `tests/PROVENANCE.md` for everything else.
+`every_committed_capture_is_public_or_synthetic` finds captures by their
+leading bytes, not their names, and refuses a staged one with no entry.
 
 ## Documentation
 **Prose is US English.** `behavior`, `normalize`, `recognize`, `analyze`.

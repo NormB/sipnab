@@ -83,7 +83,7 @@ fn chunk(out: &mut Vec<u8>, chunk_type: u16, data: &[u8]) {
 
 /// An rtpengine `ng` REPLY: no `call-id` of its own, so the correlation-id
 /// chunk is the only thing that can name the call. Shaped exactly like the
-/// live reply in `tests/fixtures/rtpengine-ng-hep.pcap`.
+/// reply in `tests/fixtures/rtpengine-ng-hep.pcap`.
 fn ng_reply(media_ip: [u8; 4], media_port: u16) -> Vec<u8> {
     let sdp = format!(
         "v=0\r\no=- 1 1 IN IP4 {a}.{b}.{c}.{d}\r\ns=-\r\nc=IN IP4 {a}.{b}.{c}.{d}\r\nt=0 0\r\n\
