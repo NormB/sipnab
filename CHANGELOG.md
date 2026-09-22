@@ -145,6 +145,20 @@ entry that carries them.
   write left a short file and the status line still read "Saved N packets". It
   now reports the write error.
 
+### Internal
+
+- **The testing matrix credits a flag to a test only when the test hands it
+  to sipnab.** `scripts/coverage-matrix.py` counted any file that called
+  `Command::new` as one that runs sipnab. So tshark's `-T`, `-e` and `-n` in
+  the pcapng writer's tests counted as end-to-end evidence for `--text-dump`,
+  `--match` and `--count`. So did tmux's `-x` for `--quiet-bad-parse`, and
+  clap parse lists in `src/app/bootstrap.rs` for `--tls-key`, `--uprobe-tls`
+  and `--uprobe-list`. Those four rows now say `parsed` or `referenced`, as
+  their tests do. In the other direction, a test that runs sipnab through
+  `tests/support/run.rs`, `server.rs` or `mcp.rs` has no `Command::new` of its
+  own and read as a mere mention. With that fixed, 52 rows move up to `e2e`,
+  and the matrix reads 210 `e2e` flags where it read 162.
+
 ## [0.5.184] - 2026-09-21
 
 ### Changed

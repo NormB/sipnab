@@ -97,22 +97,105 @@ def corpus():
     return files
 
 
+# Every way a file in this tree starts the sipnab binary itself.
+#
+# `Command::new` is not one of them. It was, and it credited every file that
+# starts ANY program: when the pcapng writer's tests began running tshark with
+# `-T fields -e frame.comment -n`, src/capture/writer.rs became the cited e2e
+# evidence for sipnab's `--text-dump`, `--match` and `--count`, flags that file
+# never hands to sipnab. The harness modules are here instead because a test
+# that includes one drives sipnab through it: tests/support/run.rs, server.rs
+# and mcp.rs each spawn `env!("CARGO_BIN_EXE_sipnab")` with the arguments the
+# test gives them, and a file using them has no `Command::new` of its own.
+# `.join("sipnab")` is the binary found beside the test executable from
+# `current_exe()`, the way tests/metrics_headless_test.rs and
+# tests/sandbox_test.rs locate it.
+SIPNAB_LAUNCHERS = (
+    "CARGO_BIN_EXE_sipnab",
+    '.join("sipnab")',
+    "cargo_bin",
+    "assert_cmd",
+    '"support/run.rs"',
+    '"support/server.rs"',
+    '"support/mcp.rs"',
+)
+
+
 def runs_the_binary(text):
-    return "Command::new" in text or "cargo_bin" in text or "assert_cmd" in text
+    """Does this file start sipnab, directly or through the test harness?"""
+    return any(marker in text for marker in SIPNAB_LAUNCHERS)
+
+
+def statement_end(text, i):
+    """Offset of the `;` ending the statement that contains offset `i`, or of
+    the bracket that closes the block around it. String literals are skipped,
+    so a `;` or a bracket inside one ends nothing."""
+    depth, n = 0, len(text)
+    while i < n:
+        c = text[i]
+        if c == '"':
+            i += 1
+            while i < n and text[i] != '"':
+                i += 2 if text[i] == "\\" else 1
+        elif c in "([{":
+            depth += 1
+        elif c in ")]}":
+            depth -= 1
+            if depth < 0:
+                return i
+        elif c == ";" and depth == 0:
+            return i
+        i += 1
+    return n
+
+
+# A program named by a string literal: `Command::new("tshark")`. sipnab is
+# never started that way (it is always `env!("CARGO_BIN_EXE_sipnab")`), so such
+# a command runs another tool, or wraps sipnab in one (`sudo`, `tmux`).
+FOREIGN_COMMAND = re.compile(r'Command::new\(\s*"[^"]*"\s*\)')
+FOREIGN_BINDING = re.compile(
+    r'let\s+(?:mut\s+)?(\w+)\s*=\s*(?:std::process::)?Command::new\(\s*"[^"]*"\s*\)'
+)
+
+
+def foreign_spans(text):
+    """(start, end) of every statement that hands arguments to another program.
+
+    Two shapes: the chained `Command::new("tshark").args([..])`, and a command
+    bound to a name and given its arguments in later statements
+    (`let mut t = Command::new("tshark"); t.args([..]);`). A statement that
+    names the sipnab binary is a wrapper launching sipnab, as in `sudo -n
+    <sipnab> -N -I ..`, and is left in: its list is sipnab's argument list.
+    """
+    spans = []
+    for m in FOREIGN_COMMAND.finditer(text):
+        spans.append((m.start(), statement_end(text, m.end())))
+    for m in FOREIGN_BINDING.finditer(text):
+        use = re.compile(rf"\b{re.escape(m.group(1))}\s*\.\s*args?\s*\(")
+        for u in use.finditer(text, m.end()):
+            spans.append((u.start(), statement_end(text, u.end())))
+    return [(a, b) for a, b in spans if "CARGO_BIN_EXE_sipnab" not in text[a:b]]
 
 
 def arg_literals(text):
-    """Text of every bracketed literal and `.arg("...")`, where CLI arguments
-    are actually written.
+    """Text of every bracketed literal and `.arg("...")` that could be part of
+    sipnab's command line.
 
     Membership in one of these is the difference between "a test that runs the
     binary happens to name this flag somewhere in the file" and "a test passed
     this flag to the binary". The first is worth almost nothing, and a
-    file-level check quietly reports it as the second.
+    file-level check quietly reports it as the second. A list handed to
+    another program is left out for the same reason: tshark's `-T` is not
+    sipnab's `--text-dump`.
     """
-    out = re.findall(r"\[[^\[\]]{0,400}\]", text, re.S)
-    out += re.findall(r'\.arg\(\s*"[^"]+"\s*\)', text)
-    return out
+    spans = foreign_spans(text)
+    found = list(re.finditer(r"\[[^\[\]]{0,400}\]", text, re.S))
+    found += re.finditer(r'\.arg\(\s*"[^"]+"\s*\)', text)
+    return [
+        m.group()
+        for m in found
+        if not any(a <= m.start() < b for a, b in spans)
+    ]
 
 
 def parse_call_spans(text):
