@@ -1572,24 +1572,39 @@ fn writer_warns_on_path_traversal() {
 
 /// M6: Scanner kill per-destination rate limiter must cap responses to
 /// the same destination IP at 3 per minute.
+///
+/// Driven through the real worker process: the limiter lives there, in the
+/// process holding the send sockets, so a test against anything else would be
+/// a test of something the run does not do.
 #[cfg(feature = "native")]
 #[test]
 fn scanner_kill_per_destination_rate_limit() {
-    use sipnab::process_isolation::{KillRequest, KillResponse, spawn_scanner_kill_worker};
+    use sipnab::process_isolation::{
+        KillRequest, KillResponse, KillWorkerSpawn, spawn_scanner_kill_worker,
+    };
     use sipnab::security::transmit_guard::TransmitPermit;
 
     // The worker only exists for a live source; a run reading a capture file
     // gets no permit and therefore no worker (see `transmit_guard`). This test
-    // is about the rate limiter, so it declares the live source explicitly and
-    // sends only to loopback.
+    // is about the rate limiter, so it declares the live source explicitly.
     let permit = TransmitPermit::for_source(&sipnab::capture::CaptureSource::Live {
         device: "lo".to_string(),
     })
     .expect("a live source grants a transmit permit");
-    let mut handle = spawn_scanner_kill_worker(Some(100), None, permit).expect("spawn worker");
+    let spawn = KillWorkerSpawn {
+        // This file's executable is a test harness; the worker is the binary.
+        program: env!("CARGO_BIN_EXE_sipnab").into(),
+        rate_limit: Some(100),
+        run_as: None,
+        log_level: "warn".to_string(),
+    };
+    let mut handle = spawn_scanner_kill_worker(&spawn, None, permit).expect("spawn worker");
 
-    // Loopback destination so the real UDP send never leaves the host.
-    let dst = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 50));
+    // The destination is a listener this test binds on loopback, so the real
+    // UDP sends reach nothing but it.
+    let listener = std::net::UdpSocket::bind("127.0.0.1:0").expect("bind listener");
+    let dst = IpAddr::V4(Ipv4Addr::LOCALHOST);
+    let dst_port = listener.local_addr().expect("listener address").port();
     let response_bytes = b"SIP/2.0 200 OK\r\nContent-Length: 0\r\n\r\n".to_vec();
 
     // Send 5 kill requests to the same destination IP
@@ -1597,7 +1612,7 @@ fn scanner_kill_per_destination_rate_limit() {
         handle
             .send_kill(KillRequest::SendResponse {
                 dst_addr: dst,
-                dst_port: 5060,
+                dst_port,
                 src_addr: dst,
                 src_port: 5060,
                 response_bytes: response_bytes.clone(),
@@ -1612,7 +1627,7 @@ fn scanner_kill_per_destination_rate_limit() {
     wait_until(std::time::Duration::from_secs(5), || {
         while let Some(resp) = handle.try_recv_response() {
             match resp {
-                KillResponse::Sent => sent += 1,
+                KillResponse::Sent { .. } => sent += 1,
                 KillResponse::RateLimited => limited += 1,
                 _ => {}
             }

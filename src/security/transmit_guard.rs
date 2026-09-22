@@ -23,13 +23,27 @@
 //! The failure is silent and irreversible, so it must not depend on anyone
 //! remembering. [`TransmitPermit`] has a private field, so the only way to
 //! obtain one anywhere in the crate is [`TransmitPermit::for_source`], which
-//! inspects the capture source. Every function in the kill path that reaches a
-//! socket takes one by reference. A new call site therefore cannot compile a
-//! send without first proving, from the capture source, that the run is live —
-//! there is no code path to forget, and no flag to get wrong.
+//! inspects the capture source. Every function that CREATES a kill-path send
+//! socket takes one: the raw socket's `open` and the ephemeral UDP socket's
+//! `bind` by reference, and `spawn_scanner_kill_worker`, which starts the
+//! worker process and hands it those sockets, by value. A new call site
+//! therefore cannot make a socket to send through without first proving, from
+//! the capture source, that the run is live — there is no code path to
+//! forget, and no flag to get wrong.
+//!
+//! # Why the sends themselves take no permit
+//!
+//! The sends happen in the scanner-kill worker, a separate process
+//! (`process_isolation::worker_process`), and a proof token cannot cross a
+//! pipe: a worker that re-derived one from an argument would be deciding its
+//! own permission. So the permit never leaves the parent. The worker's
+//! capability is the set of descriptors it inherited, it never calls
+//! `socket()` itself, and holding none it refuses every request. Only a
+//! parent holding a permit could have created what it holds, which makes "no
+//! permit" and "no descriptor" one refusal.
 //!
 //! That is deliberately paired with a wiring-time refusal (`app::bootstrap`
-//! declines to spawn the kill worker at all, and says why): the type is what
+//! declines to start the kill worker at all, and says why): the type is what
 //! makes the guarantee, and the message is what tells the operator their
 //! defense is not armed. Neither substitutes for the other — a type-only guard
 //! leaves someone believing the kill fired, and a message-only guard is one
@@ -108,8 +122,8 @@ impl TransmitPermit {
             // application handed them to its TLS library and never saw a
             // socket, so there is nowhere a response could honestly go. This is
             // the structural half of the same refusal `InputOrigin::Uprobe`
-            // makes at the packet level -- the permit cannot be built, so the
-            // kill worker cannot be spawned and its sends cannot compile.
+            // makes at the packet level -- the permit cannot be built, so no
+            // send socket can be created and no kill worker started.
             CaptureSource::File { .. } | CaptureSource::Uprobe { .. } => None,
         }
     }

@@ -1035,10 +1035,12 @@ pub struct Launched {
     pub handle: capture::CaptureHandle,
     /// Receiving side of the packet channel.
     pub rx: capture::channel::PacketRx,
-    /// Raw socket for source-spoofed scanner-kill responses, opened in the
-    /// privileged window when the kill feature is active and `--kill-spoof`
-    /// permits it. `None` → the worker uses the ephemeral UDP send.
-    pub raw_kill_sock: Option<crate::process_isolation::RawKillSocket>,
+    /// The scanner-kill worker process, started in the privileged window when
+    /// this run answers scanners (a live source, batch mode, and
+    /// `--kill-scanner`, `[security] kill_scanner` or `-K`). It holds every
+    /// kill-path send descriptor; this process holds none. `None` when the
+    /// defense is off for this run, or could not be started (already logged).
+    pub kill_worker: Option<crate::process_isolation::ScannerKillHandle>,
     /// Streaming keylog source — a FIFO named by `--keylog`, or the descriptor
     /// given to `--keylog-fd` — opened in the privileged window, before a
     /// `--chroot` or a privilege drop could put it out of reach.
@@ -1662,15 +1664,16 @@ fn relay_startup_snapshot(cli: &Cli, source: Option<&CaptureSource>) -> RelayCon
 /// # Returns
 ///
 /// A `Launched` bundle: the capture-thread handle, the packet receiver,
-/// and the optional raw scanner-kill socket.
+/// and the scanner-kill worker process when this run answers scanners.
 ///
 /// # Side effects
 ///
 /// In order: fails fast on flags whose feature is not compiled in; creates
 /// the bounded packet channel; spawns the capture thread (single- or
-/// multi-device) and blocks on its readiness handshake; chroots when
-/// configured (root only); opens a CAP_NET_RAW raw socket for spoofed
-/// scanner-kill responses while still privileged; drops privileges
+/// multi-device) and blocks on its readiness handshake; starts the
+/// scanner-kill worker process (after opening a CAP_NET_RAW raw socket for
+/// spoofed responses) while still privileged and before any chroot or
+/// sandbox; chroots when configured (root only); drops privileges
 /// (setgroups/setgid/setuid); initializes syslog for `--syslog`; validates
 /// the remaining feature-gated flags and `--pcap-export-mode`; and
 /// disables core dumps when decryption keys are loaded. Every failure path
@@ -1681,6 +1684,7 @@ pub fn launch(
     config: &Config,
     source: Option<CaptureSource>,
     capture_config: &CaptureConfig,
+    mode: &RunMode,
 ) -> Launched {
     // 13a. Feature gates that must fail fast, BEFORE any capture device is
     // opened: without them the flag silently degrades (--mcp used to run a
@@ -1730,8 +1734,7 @@ pub fn launch(
     // Whether this run may put a packet on the network at all — decided from
     // the source that was actually resolved (auto-detection included), before
     // it is moved into the capture thread. See `security::transmit_guard`.
-    let may_transmit =
-        crate::security::transmit_guard::TransmitPermit::for_source(&source).is_some();
+    let transmit_permit = crate::security::transmit_guard::TransmitPermit::for_source(&source);
 
     // RE4's startup snapshot, taken from the RESOLVED source for the same
     // reason `may_transmit` is: `-d any` and device auto-detection mean the
@@ -1866,6 +1869,69 @@ pub fn launch(
         }
     }
 
+    // 16-kill. Start the scanner-kill worker process BEFORE the chroot and
+    //         both sandboxes below. It is this binary re-executed, and each of
+    //         those can stop an exec: a chroot hides the binary and its loader,
+    //         a Landlock ruleset need not grant execute on it, and an
+    //         enforcing seccomp list derived from a capture need not allow
+    //         execve at all. Started here, it is also started before the
+    //         privilege drop, so it drops its own privileges (to the same
+    //         target user, never keeping root) -- and this process closes every
+    //         send descriptor it gave it before a single captured byte is
+    //         parsed.
+    //
+    //         Its raw socket is opened first, while this process still holds
+    //         CAP_NET_RAW, and only when --kill-spoof permits it.
+    //
+    //         Reading a capture file grants no transmit permit, so no worker is
+    //         started and no raw socket is opened -- which also keeps
+    //         `--kill-spoof raw -I file.pcap` from failing the run over a
+    //         socket it was never going to use. The operator has already been
+    //         told (in `plan`) that the kill response is off for this run.
+    //         Debug-level here: one warning per run, not one per decision
+    //         point.
+    let kill_worker = if matches!(mode, RunMode::Batch) && kill_worker_wanted(cli, config) {
+        match transmit_permit {
+            None => {
+                tracing::debug!("Scanner-kill: offline run, not starting a worker process");
+                None
+            }
+            Some(permit) => {
+                let raw_kill_sock = if cli.security_args.kill_spoof
+                    != crate::cli::KillSpoof::Ephemeral
+                {
+                    match crate::process_isolation::RawKillSocket::open(&permit) {
+                        Ok(sock) => {
+                            tracing::info!("Scanner-kill: source-spoofing enabled (raw socket)");
+                            Some(sock)
+                        }
+                        Err(e) => {
+                            if cli.security_args.kill_spoof == crate::cli::KillSpoof::Raw {
+                                tracing::error!(
+                                    "--kill-spoof raw requires a raw socket but it could not be opened: {e}. \
+                                     Grant CAP_NET_RAW (sipnab --setup-caps / run under sudo) or use \
+                                     --kill-spoof ephemeral."
+                                );
+                                capture::stop_and_join(handle, rx);
+                                std::process::exit(1);
+                            }
+                            tracing::warn!(
+                                "Scanner-kill: raw socket unavailable ({e}); falling back to ephemeral \
+                                 source port. Kill responses will come from sipnab's own port."
+                            );
+                            None
+                        }
+                    }
+                } else {
+                    None
+                };
+                spawn_kill_worker(cli, config, raw_kill_sock, permit)
+            }
+        }
+    } else {
+        None
+    };
+
     // 16. Chroot BEFORE dropping privileges (chroot requires root).
     // Correct POSIX sequence: chroot → chdir("/") → setgroups → setgid → setuid
     let effective_chroot = cli
@@ -1881,53 +1947,8 @@ pub fn launch(
         std::process::exit(1);
     }
 
-    // 16-kill. Open the raw scanner-kill socket while still privileged (it
-    //         needs CAP_NET_RAW, which the drop below sheds). Only when the
-    //         kill feature is active and --kill-spoof permits it.
-    //
-    //         Reading a capture file grants no transmit permit, so no kill
-    //         worker will be spawned and the socket would have nothing to send.
-    //         Skipping the open here also keeps `--kill-spoof raw -I file.pcap`
-    //         from failing the run over a raw socket it was never going to
-    //         use — the operator has already been told (in `plan`) that the
-    //         kill response is off for this run. Debug-level here: one warning
-    //         per run, not one per decision point.
-    let kill_active = cli.security_args.kill_scanner || !cli.security_args.kill_target.is_empty();
-    if kill_active && !may_transmit {
-        tracing::debug!("Scanner-kill: offline run, not opening a raw send socket");
-    }
-    let raw_kill_sock = if kill_active
-        && may_transmit
-        && cli.security_args.kill_spoof != crate::cli::KillSpoof::Ephemeral
-    {
-        match crate::process_isolation::RawKillSocket::open() {
-            Ok(sock) => {
-                tracing::info!("Scanner-kill: source-spoofing enabled (raw socket)");
-                Some(sock)
-            }
-            Err(e) => {
-                if cli.security_args.kill_spoof == crate::cli::KillSpoof::Raw {
-                    tracing::error!(
-                        "--kill-spoof raw requires a raw socket but it could not be opened: {e}. \
-                         Grant CAP_NET_RAW (sipnab --setup-caps / run under sudo) or use \
-                         --kill-spoof ephemeral."
-                    );
-                    capture::stop_and_join(handle, rx);
-                    std::process::exit(1);
-                }
-                tracing::warn!(
-                    "Scanner-kill: raw socket unavailable ({e}); falling back to ephemeral \
-                     source port. Kill responses will come from sipnab's own port."
-                );
-                None
-            }
-        }
-    } else {
-        None
-    };
-
     // 15b. Open the keylog source while still privileged, for the same reason
-    // the raw kill socket is opened above: after 16a this process may have
+    // the raw kill socket is opened before the drop: after 16a this process may have
     // dropped to an unprivileged user and chrooted, and the producer's pipe
     // usually lives somewhere it can then no longer reach (`/run/...`).
     //
@@ -1947,11 +1968,7 @@ pub fn launch(
     }
 
     // 16a. Drop privileges now that capture devices are open and chroot is applied (D15)
-    let effective_user = cli
-        .privilege_args
-        .user
-        .as_deref()
-        .or(config.privilege.user.as_deref());
+    let effective_user = effective_user(cli, config);
     let effective_no_priv_drop =
         cli.privilege_args.no_priv_drop || config.privilege.no_priv_drop.unwrap_or(false);
     if let Err(e) = privilege::drop_privileges(effective_user, effective_no_priv_drop) {
@@ -2142,7 +2159,7 @@ pub fn launch(
     Launched {
         handle,
         rx,
-        raw_kill_sock,
+        kill_worker,
         #[cfg(feature = "tls")]
         keylog_source,
         relay,
@@ -2262,16 +2279,7 @@ fn sandbox_paths(cli: &Cli, config: &Config) -> crate::sandbox::SandboxPaths {
 /// (errors from double initialization are ignored). Reads the
 /// `SIPNAB_LOG` environment variable.
 pub fn init_logging(cli: &Cli) {
-    // TUI mode: suppress log output to avoid corruption of the alternate screen.
-    // Logs are only visible in CLI mode (-N) or when SIPNAB_LOG is explicitly set.
-    let tui_active = !cli.mode_args.no_tui;
-    let default_level = if cli.mode_args.quiet {
-        "warn"
-    } else if tui_active && std::env::var("SIPNAB_LOG").is_err() {
-        "error"
-    } else {
-        "info"
-    };
+    let default_level = default_log_level(cli);
     // The tracing subscriber writes to stderr — preserves the stdio MCP
     // invariant that stdout is the JSON-RPC wire.
     // tracing-log routes any remaining `log::*` events from third-party deps
@@ -2286,6 +2294,96 @@ pub fn init_logging(cli: &Cli) {
         .finish();
     let _ = tracing::subscriber::set_global_default(subscriber);
     let _ = tracing_log::LogTracer::init();
+}
+
+/// The tracing level a run logs at when `SIPNAB_LOG` does not say.
+///
+/// One rule for both processes: the scanner-kill worker is handed this level,
+/// so it is exactly as quiet as the run that started it.
+fn default_log_level(cli: &Cli) -> &'static str {
+    // TUI mode: suppress log output to avoid corruption of the alternate screen.
+    // Logs are only visible in CLI mode (-N) or when SIPNAB_LOG is explicitly set.
+    let tui_active = !cli.mode_args.no_tui;
+    if cli.mode_args.quiet {
+        "warn"
+    } else if tui_active && std::env::var("SIPNAB_LOG").is_err() {
+        "error"
+    } else {
+        "info"
+    }
+}
+
+/// The account this run drops to: `--user`, else `[privilege] user`.
+///
+/// Shared by the privilege drop and the scanner-kill worker, which becomes the
+/// same account (or `nobody`) when it starts as root.
+fn effective_user<'a>(cli: &'a Cli, config: &'a Config) -> Option<&'a str> {
+    cli.privilege_args
+        .user
+        .as_deref()
+        .or(config.privilege.user.as_deref())
+}
+
+/// Whether this run asks for kill responses at all: `--kill-scanner`,
+/// `[security] kill_scanner`, or any `-K` target.
+///
+/// The one rule for starting the worker process. Whether it may actually
+/// transmit is the permit's question, answered separately from the source.
+pub(crate) fn kill_worker_wanted(cli: &Cli, config: &Config) -> bool {
+    cli.security_args.kill_scanner
+        || config.security.kill_scanner.unwrap_or(false)
+        || !cli.security_args.kill_target.is_empty()
+}
+
+/// How this run starts its scanner-kill worker: its own executable, its
+/// transmit ceiling, its drop target and its log level.
+///
+/// Separate from [`spawn_kill_worker`] so the wiring from flags to the
+/// worker's command line is testable without starting a process.
+///
+/// # Errors
+///
+/// This process cannot read its own executable's path.
+pub(crate) fn kill_worker_spawn(
+    cli: &Cli,
+    config: &Config,
+) -> std::io::Result<crate::process_isolation::KillWorkerSpawn> {
+    crate::process_isolation::KillWorkerSpawn::from_current_exe(
+        Some(cli.kill_rate_limit(config)),
+        effective_user(cli, config).map(str::to_string),
+        default_log_level(cli),
+    )
+}
+
+/// Start the scanner-kill worker process, or say why the defense is off.
+///
+/// # Side effects
+///
+/// Starts a process that TRANSMITS UDP. Requires a `TransmitPermit`, which only
+/// a live source can produce. On failure the defense is disabled for the run
+/// and the capture continues: there is no fallback to answering scanners from
+/// this process, which would quietly restore the exposure the process exists
+/// to remove.
+fn spawn_kill_worker(
+    cli: &Cli,
+    config: &Config,
+    raw_kill_sock: Option<crate::process_isolation::RawKillSocket>,
+    permit: crate::security::transmit_guard::TransmitPermit,
+) -> Option<crate::process_isolation::ScannerKillHandle> {
+    let started = kill_worker_spawn(cli, config).and_then(|spawn| {
+        crate::process_isolation::spawn_scanner_kill_worker(&spawn, raw_kill_sock, permit)
+    });
+    match started {
+        Ok(handle) => Some(handle),
+        Err(e) => {
+            tracing::error!(
+                "Could not start the scanner-kill worker process: {e}. The \
+                 --kill-scanner defense is DISABLED for this run; detection, \
+                 alerting and reporting continue."
+            );
+            None
+        }
+    }
 }
 
 /// Handle the commands that run before config load and exit immediately
@@ -4525,6 +4623,40 @@ mod tests {
             scanner_pattern_unread_refusal(&cli, &config).is_none(),
             "`[security] kill_scanner = true` arms the same detector"
         );
+    }
+
+    /// The kill worker is wanted by every spelling of "answer scanners": the
+    /// flag, the config key, and a `-K` target alone -- and by nothing else.
+    ///
+    /// One rule for starting the worker. The raw socket used to be opened on
+    /// the flag and `-K` only, so `[security] kill_scanner = true` got a
+    /// worker that could never spoof even with `CAP_NET_RAW` in hand: the key
+    /// did less than the flag it stands for.
+    #[test]
+    fn every_spelling_of_the_kill_defense_wants_the_worker_and_nothing_else_does() {
+        let plain = Cli::parse_from_args(["sipnab", "-N"]);
+        assert!(
+            !kill_worker_wanted(&plain, &Config::default()),
+            "a run that asks for no kill response must not start a transmitting process"
+        );
+
+        let flag = Cli::parse_from_args(["sipnab", "-N", "--kill-scanner"]);
+        assert!(kill_worker_wanted(&flag, &Config::default()));
+
+        let target = Cli::parse_from_args(["sipnab", "-N", "-K", "192.0.2.7"]);
+        assert!(
+            kill_worker_wanted(&target, &Config::default()),
+            "-K starts the worker on its own; --kill-scanner is not required"
+        );
+
+        let mut config = Config::default();
+        config.security.kill_scanner = Some(true);
+        assert!(
+            kill_worker_wanted(&plain, &config),
+            "`[security] kill_scanner = true` is the flag, spelled in the config file"
+        );
+        config.security.kill_scanner = Some(false);
+        assert!(!kill_worker_wanted(&plain, &config));
     }
 
     // ── detection flags on a mode that builds no detector ──────────────

@@ -321,18 +321,41 @@ fn memory_lock_outcome(result: std::io::Result<()>) -> MemoryLock {
 /// The `prctl` (Linux) or `setrlimit` (macOS) failing, or being built for a
 /// platform with neither.
 pub fn disable_core_dumps() -> Result<()> {
+    if let Err(e) = make_undumpable() {
+        bail!(
+            "{e}. Decryption keys are resident in this process and a crash \
+             would write them to a core file; pass --allow-coredump to run anyway"
+        );
+    }
+    tracing::info!("Core dumps disabled (decryption active)");
+    Ok(())
+}
+
+/// Make this process undumpable: `PR_SET_DUMPABLE` on Linux, a zero
+/// `RLIMIT_CORE` on macOS.
+///
+/// The mechanism alone, without [`disable_core_dumps`]'s reason or its log
+/// line. The scanner-kill worker process needs it too, and holds no key
+/// material: it is undumpable so no other process of the same user can take
+/// its send descriptors through `/proc/<pid>/fd` or `ptrace`, and a message
+/// about decryption would describe a process that is not decrypting anything.
+///
+/// # Errors
+///
+/// The `prctl` (Linux) or `setrlimit` (macOS) failing, or being built for a
+/// platform with neither. The message names the call.
+pub fn make_undumpable() -> std::io::Result<()> {
     #[cfg(target_os = "linux")]
     {
         // SAFETY: prctl with PR_SET_DUMPABLE is a simple flag toggle;
         // the trailing arguments are unused but required by the syscall ABI.
         unsafe {
             if libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0) != 0 {
-                bail!(
-                    "prctl(PR_SET_DUMPABLE, 0) failed: {}. Decryption keys are \
-                     resident in this process and a crash would write them to a \
-                     core file; pass --allow-coredump to run anyway",
-                    std::io::Error::last_os_error()
-                );
+                let e = std::io::Error::last_os_error();
+                return Err(std::io::Error::new(
+                    e.kind(),
+                    format!("prctl(PR_SET_DUMPABLE, 0) failed: {e}"),
+                ));
             }
         }
     }
@@ -347,29 +370,24 @@ pub fn disable_core_dumps() -> Result<()> {
                 rlim_max: 0,
             };
             if libc::setrlimit(libc::RLIMIT_CORE, &rlimit) != 0 {
-                bail!(
-                    "setrlimit(RLIMIT_CORE, 0) failed: {}. Decryption keys are \
-                     resident in this process and a crash would write them to a \
-                     core file; pass --allow-coredump to run anyway",
-                    std::io::Error::last_os_error()
-                );
+                let e = std::io::Error::last_os_error();
+                return Err(std::io::Error::new(
+                    e.kind(),
+                    format!("setrlimit(RLIMIT_CORE, 0) failed: {e}"),
+                ));
             }
         }
     }
 
     // Neither arm compiled in: nothing was done, so nothing may be claimed.
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-    bail!(
-        "disabling core dumps is not implemented for this platform, so \
-         decryption keys resident in this process could still reach a core \
-         file; pass --allow-coredump to run anyway"
-    );
+    return Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "making a process undumpable is not implemented for this platform",
+    ));
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]
-    {
-        tracing::info!("Core dumps disabled (decryption active)");
-        Ok(())
-    }
+    Ok(())
 }
 
 /// Resolve a username to its UID and primary GID via the system password database.

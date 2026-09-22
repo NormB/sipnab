@@ -18,7 +18,7 @@ use crate::capture::{self, CaptureConfig, ParsedPacket, PcapExportMode, PcapWrit
 use crate::cli::Cli;
 use crate::config::Config;
 use crate::output::{self, EventExecEngine, OutputOptions, ReportFormat};
-use crate::process_isolation::{self, KillRequest, ScannerKillHandle};
+use crate::process_isolation::{KillRequest, ScannerKillHandle};
 use crate::rtp::{self, stream_store::StreamStore};
 use crate::security::{
     self as sec, AlertEngine, AlertRule, DigestLeakDetector, FraudDetector, RegFloodDetector,
@@ -211,8 +211,8 @@ struct DetectionEngines {
     /// Shared with the MCP server (when --mcp is on) so the
     /// `security_findings` tool can read the FindingsHistory ring buffer.
     alerts: Arc<RwLock<AlertEngine>>,
-    /// Channel to the isolated scanner-kill worker thread; `None` when no
-    /// kill feature is active (or the worker failed to spawn).
+    /// Channel to the scanner-kill worker process; `None` when no kill
+    /// feature is active (or the worker failed to start).
     kill_handle: Option<ScannerKillHandle>,
     /// SIP status code sent in kill responses (`--kill-response`).
     kill_response_code: u16,
@@ -819,32 +819,6 @@ fn spawn_relay_stats_poller(
         Err(e) => {
             tracing::warn!("could not start the relay statistics poller ({e}); nothing polled");
             (None, None)
-        }
-    }
-}
-
-/// Spawn the scanner-kill worker with this run's transmit ceiling.
-///
-/// A function rather than an inline `match` so the ceiling is provably applied:
-/// the worker reads `None` as "use your own default", so the wiring is
-/// invisible from the call site and the unit test below drives this instead.
-///
-/// # Side effects
-///
-/// Starts a thread that TRANSMITS UDP. Requires a `TransmitPermit`, which only
-/// a live source can produce.
-fn spawn_kill_worker(
-    cli: &Cli,
-    config: &Config,
-    raw_kill_sock: Option<crate::process_isolation::RawKillSocket>,
-    permit: crate::security::transmit_guard::TransmitPermit,
-) -> Option<ScannerKillHandle> {
-    let rate = cli.kill_rate_limit(config);
-    match process_isolation::spawn_scanner_kill_worker(Some(rate), raw_kill_sock, permit) {
-        Ok(handle) => Some(handle),
-        Err(e) => {
-            tracing::error!("Failed to spawn scanner-kill worker: {e}");
-            None
         }
     }
 }
@@ -2313,16 +2287,16 @@ fn report_icmp_summary(streams: &crate::rtp::stream_store::StreamStore) {
 /// * `rx` — receiving side of the packet channel.
 /// * `batch` — pre-built matcher/filter/output/event-exec components.
 /// * `policy` — split/autostop policy resolved from the CLI.
-/// * `raw_kill_sock` — raw socket opened during the privileged window for
-///   source-spoofed kill responses, when active.
+/// * `kill_worker` — the scanner-kill worker process `bootstrap::launch`
+///   started, when this run answers scanners.
 ///
 /// # Side effects
 ///
 /// The multi-core arm spawns worker threads, joins the capture thread, and
 /// prints reports; the single-threaded arm builds a `BatchRunner` (which
-/// spawns the kill worker and companion-server thread) and drives its
-/// receive loop to completion. Either way this function blocks until the
-/// batch run is over.
+/// takes over the kill worker process and spawns the companion-server
+/// thread) and drives its receive loop to completion. Either way this
+/// function blocks until the batch run is over.
 #[expect(clippy::too_many_arguments)]
 pub fn run(
     cli: Cli,
@@ -2332,7 +2306,7 @@ pub fn run(
     rx: capture::channel::PacketRx,
     batch: BatchProcessing,
     policy: CapturePolicy,
-    raw_kill_sock: Option<crate::process_isolation::RawKillSocket>,
+    kill_worker: Option<ScannerKillHandle>,
 ) {
     let portrange = policy.portrange;
     let no_rtp = cli.capture_args.no_rtp || config.capture.no_rtp.unwrap_or(false);
@@ -2371,7 +2345,7 @@ pub fn run(
         config,
         batch,
         policy,
-        raw_kill_sock,
+        kill_worker,
         transmit_permit,
         // Taken before `rx` is moved into `run_loop`: the meter is a cheap
         // clonable view of the same queue, so the metrics thread can read the
@@ -2497,8 +2471,8 @@ impl BatchRunner {
     /// * `cli` / `config` — parsed flags and loaded configuration.
     /// * `batch` — pre-built matcher/filter/output/event-exec components.
     /// * `policy` — split/autostop policy resolved from the CLI.
-    /// * `raw_kill_sock` — raw socket for spoofed kill responses, handed to
-    ///   the kill worker when spawned.
+    /// * `kill_worker` — the scanner-kill worker process, started by
+    ///   `bootstrap::launch` in the privileged window.
     /// * `capture_meter` — cheaply-clonable view of the packet queue's depth,
     ///   taken from the receiver in `run` because this is where the metrics
     ///   server is started. Threaded through rather than left `None`:
@@ -2508,8 +2482,8 @@ impl BatchRunner {
     ///
     /// # Side effects
     ///
-    /// Spawns the isolated scanner-kill worker thread when any kill feature
-    /// is active; reads TLS keylog / RSA key / SRTP key / DTLS keylog files
+    /// Takes over the scanner-kill worker process `bootstrap::launch`
+    /// started, when any kill feature is active; reads TLS keylog / RSA key / SRTP key / DTLS keylog files
     /// and embedded pcapng secrets from disk; starts the companion REST
     /// API + MCP servers on their shared runtime thread; logs progress via
     /// `tracing`.
@@ -2531,7 +2505,7 @@ impl BatchRunner {
         config: &Config,
         mut batch: BatchProcessing,
         policy: CapturePolicy,
-        raw_kill_sock: Option<crate::process_isolation::RawKillSocket>,
+        kill_worker: Option<ScannerKillHandle>,
         transmit_permit: Option<crate::security::transmit_guard::TransmitPermit>,
         capture_meter: crate::capture::channel::CaptureMeter,
     ) -> Result<Self, crate::app::bootstrap::PlanError> {
@@ -2721,7 +2695,7 @@ impl BatchRunner {
         // detection-driven (--kill-scanner) OR targeted (-K) — and permitted
         // only when this run watches a live source. `transmit_permit` is None
         // for a capture file, and the worker's constructor takes one by value,
-        // so an offline run cannot build a transmitting worker at all. The
+        // so an offline run cannot start a transmitting worker at all. The
         // operator was told why in `bootstrap::plan`; detection, alerting,
         // `--fail2ban` output and reporting all continue below.
         let kill_worker_active =
@@ -2805,12 +2779,14 @@ impl BatchRunner {
             );
         }
 
-        // 17a-2. Spawn scanner-kill worker thread (D16: process isolation)
+        // 17a-2. The scanner-kill worker process (D16: process isolation).
+        // Started by `bootstrap::launch` in the privileged window -- before
+        // the chroot and the sandboxes, each of which can stop the exec it
+        // needs -- from `bootstrap::kill_worker_wanted` and the same permit. The filter is the backstop for the two rules ever
+        // disagreeing: a worker this run would not use is shut down here
+        // rather than left holding send descriptors.
         let scanner_kill_handle: Option<ScannerKillHandle> =
-            match (kill_worker_active, transmit_permit) {
-                (true, Some(permit)) => spawn_kill_worker(&cli, config, raw_kill_sock, permit),
-                _ => None,
-            };
+            kill_worker.filter(|_| kill_worker_active);
         let kill_response_code = cli.kill_response_code(config);
 
         let fraud_detector = build_fraud_detector(&cli, config);
@@ -11653,72 +11629,79 @@ mod tests {
 
     // ── Operator-set thresholds reach the things that enforce them ───────
 
-    /// `--kill-rate-limit` bounds the responses the worker actually sends.
+    /// `--kill-rate-limit` bounds the responses the worker actually admits.
     ///
-    /// The observation is the worker's own ledger of what went on the wire,
-    /// not the number handed to the constructor: the worker reads `None` as
-    /// "use your own default", so a wiring that forgot the ceiling would still
-    /// produce a worker, still rate-limit at 10/s, and pass any test that only
-    /// looked at the resolver.
+    /// The observation is the decision loop's own outcomes, not the number
+    /// handed to a constructor: the worker is given its ceiling on its command
+    /// line, so a wiring that dropped it would still produce a worker, still
+    /// rate-limit at the built-in 10/s, and pass any test that only looked at
+    /// the resolver. So the chain is driven end to end short of the exec --
+    /// flags to `bootstrap::kill_worker_spawn`, that to the worker's argv, the
+    /// argv through the worker's OWN parser, and the parsed ceiling into the
+    /// loop that decides. `tests/scanner_kill_process_test.rs` drives the exec
+    /// hop itself, with a real worker process.
     ///
-    /// Each request goes to a DIFFERENT loopback destination, because a
-    /// per-destination cap of 3/minute sits underneath the global one and
-    /// would otherwise be what bounds the run. Every packet is addressed to
-    /// `127.0.0.0/8`, so nothing leaves the machine.
+    /// Each request goes to a DIFFERENT destination, because a per-destination
+    /// cap of 3/minute sits underneath the global one and would otherwise be
+    /// what bounds the run. Nothing is transmitted: the loop holds no socket,
+    /// so an admitted request reports that it had nothing to send on -- which
+    /// is exactly how it shows it got past both limiters.
     #[test]
     fn the_configured_kill_rate_limit_bounds_what_the_worker_sends() {
-        use crate::security::transmit_guard::TransmitPermit;
+        use crate::process_isolation::worker_process::{FdPlan, decisions_for_argv};
+        use crate::process_isolation::{KillResponse, worker_args};
 
-        /// Send `n` kill responses to `n` distinct loopback destinations
-        /// through a worker built from `args`, and return what it did.
-        fn sent_under(args: &[&str], n: u8) -> crate::process_isolation::KillCounts {
+        /// Run `n` kill requests to `n` distinct destinations through the
+        /// decision loop a worker started for `args` would run, and return
+        /// `(admitted, rate_limited)`.
+        fn admitted_under(args: &[&str], n: u8) -> (usize, usize) {
             let cli = Cli::parse_from_args(args.iter().copied());
-            let config = Config::default();
-            let permit = TransmitPermit::for_source(&crate::capture::CaptureSource::Live {
-                device: "lo".to_string(),
-            })
-            .expect("a live source yields a permit");
-            let mut handle = spawn_kill_worker(&cli, &config, None, permit)
-                .expect("the worker thread must spawn");
-            for i in 0..n {
-                let dst = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2 + i));
-                let _ = handle.send_kill(KillRequest::SendResponse {
-                    dst_addr: dst,
+            let spawn = crate::app::bootstrap::kill_worker_spawn(&cli, &Config::default())
+                .expect("this test binary can read its own path");
+            let argv = worker_args(&spawn, FdPlan::new([])).to_args();
+            let requests = (0..n)
+                .map(|i| KillRequest::SendResponse {
+                    dst_addr: IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1 + i)),
                     dst_port: 9,
-                    src_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
+                    src_addr: IpAddr::V4(Ipv4Addr::new(192, 0, 2, 200)),
                     src_port: 5060,
                     response_bytes: b"SIP/2.0 200 OK\r\nContent-Length: 0\r\n\r\n".to_vec(),
-                });
-            }
-            handle.shutdown();
-            handle.counts()
+                })
+                .collect();
+            let outcomes = decisions_for_argv(&argv, requests);
+            assert_eq!(
+                outcomes.len(),
+                usize::from(n),
+                "every request must reach an outcome, or the counts below mean nothing"
+            );
+            let admitted = outcomes
+                .iter()
+                .filter(|o| matches!(o, KillResponse::Error { .. }))
+                .count();
+            let limited = outcomes
+                .iter()
+                .filter(|o| matches!(o, KillResponse::RateLimited))
+                .count();
+            (admitted, limited)
         }
 
-        let tight = sent_under(&["sipnab", "--kill-rate-limit", "1"], 20);
+        let (admitted, limited) = admitted_under(&["sipnab", "--kill-rate-limit", "1"], 20);
         assert_eq!(
-            tight.outcomes(),
-            20,
-            "every request must reach an outcome, or the counts below mean nothing"
+            admitted, 1,
+            "--kill-rate-limit 1 must let exactly one response through in the \
+             first second; the worker admitted {admitted}"
         );
         assert_eq!(
-            tight.sent, 1,
-            "--kill-rate-limit 1 must let exactly one response onto the wire in \
-             the first second; the worker sent {}",
-            tight.sent
-        );
-        assert!(
-            tight.rate_limited >= 19,
-            "the other 19 must be suppressed, not sent; got {} suppressed",
-            tight.rate_limited
+            limited, 19,
+            "the other 19 must be suppressed, not sent; got {limited} suppressed"
         );
 
         // And a ceiling ABOVE the built-in 10 is honored, or the setting can
         // only ever tighten — half a knob.
-        let wide = sent_under(&["sipnab", "--kill-rate-limit", "100"], 20);
+        let (_, limited) = admitted_under(&["sipnab", "--kill-rate-limit", "100"], 20);
         assert_eq!(
-            wide.rate_limited, 0,
-            "--kill-rate-limit 100 must not suppress 20 responses; got {} suppressed",
-            wide.rate_limited
+            limited, 0,
+            "--kill-rate-limit 100 must not suppress 20 responses; got {limited} suppressed"
         );
     }
 

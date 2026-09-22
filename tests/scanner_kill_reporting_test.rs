@@ -63,25 +63,34 @@ impl tracing::Subscriber for EventCapture {
 #[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
 #[test]
 fn shutdown_reports_what_the_kill_defense_did() {
-    use sipnab::process_isolation::{KillRequest, spawn_scanner_kill_worker};
+    use sipnab::process_isolation::{KillRequest, KillWorkerSpawn, spawn_scanner_kill_worker};
     use sipnab::security::transmit_guard::TransmitPermit;
     use std::net::{IpAddr, Ipv4Addr};
     use std::time::{Duration, Instant};
 
     // The worker only exists for a live source; a run reading a capture file
     // gets no permit and therefore no worker. This test declares the live
-    // source exactly as a real run does and sends only to loopback.
+    // source exactly as a real run does.
     let permit = TransmitPermit::for_source(&sipnab::capture::CaptureSource::Live {
         device: "lo".to_string(),
     })
     .expect("a live source grants a transmit permit");
-    let mut handle = spawn_scanner_kill_worker(Some(10), None, permit).expect("spawn worker");
+    let spawn = KillWorkerSpawn {
+        // This file's executable is a test harness; the worker is the binary.
+        program: env!("CARGO_BIN_EXE_sipnab").into(),
+        rate_limit: Some(10),
+        run_as: None,
+        log_level: "warn".to_string(),
+    };
+    let mut handle = spawn_scanner_kill_worker(&spawn, None, permit).expect("spawn worker");
 
+    // The response goes to a listener this test binds on loopback.
+    let listener = std::net::UdpSocket::bind("127.0.0.1:0").expect("bind listener");
     let loopback = IpAddr::V4(Ipv4Addr::LOCALHOST);
     handle
         .send_kill(KillRequest::SendResponse {
             dst_addr: loopback,
-            dst_port: 59_994,
+            dst_port: listener.local_addr().expect("listener address").port(),
             src_addr: loopback,
             src_port: 5060,
             response_bytes: b"SIP/2.0 200 OK\r\nContent-Length: 0\r\n\r\n".to_vec(),

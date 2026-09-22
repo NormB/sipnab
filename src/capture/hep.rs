@@ -3586,7 +3586,8 @@ impl HepSender {
     /// [`HepExportPermit`], which needs an [`OperatorDestination`], which
     /// cannot be built from anything the capture supplied. `_permit` is unread
     /// on purpose — the proof is in holding one, exactly as in the
-    /// scanner-kill path's `RawKillSocket::send_to_v4`.
+    /// scanner-kill path's `RawKillSocket::open`, which a kill-path socket
+    /// cannot be created without.
     ///
     /// # Errors
     ///

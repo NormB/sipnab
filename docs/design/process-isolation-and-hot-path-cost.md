@@ -1,6 +1,9 @@
 # Process isolation, and what actually costs us on the hot path
 
 **Status:** analysis, 2026-08-03. Verified against `main` at `f158afd`.
+**Update, 2026-09-21:** R3 is done. Scanner-kill now runs as a process of its
+own, and the parsing process holds none of its sockets; R3 below records
+how. The rest of this page is the analysis as written.
 Answers two questions asked together: *should sipnab fork more?* and *would C
 or assembler make capture faster?* They share one answer — **no, and the
 measured bottleneck is somewhere else** — so they share one page.
@@ -55,13 +58,10 @@ with `fork` before privilege drop, a Unix socket pair, and — at
 [`:2508`](https://github.com/NormB/sipnab/blob/main/docs/design/implementation-plan-v6.md#L2508) — acceptance gates reading *"verified by
 checking PID differs from main"*.
 
-Neither shipped as a process. Scanner-kill became a thread
-([`src/process_isolation.rs:5`](https://github.com/NormB/sipnab/blob/main/src/process_isolation.rs#L5): *"Provides
-thread-based isolation"*), and the module still carries the aspiration at
-[`:28`](https://github.com/NormB/sipnab/blob/main/src/process_isolation.rs#L28):
-
-> Future enhancement: replace threads with `fork()`/`Command` for true
-> process-level isolation with separate address spaces.
+Neither shipped as a process. Scanner-kill became a thread, and the module
+carried the aspiration — "replace threads with `fork()`/`Command` for true
+process-level isolation" — until R3 below made it true
+([`src/process_isolation.rs`](../../src/process_isolation.rs)).
 
 The REST API became a tokio task on a shared thread reading the same
 `Arc<RwLock<..>>` stores as the capture loop
@@ -140,7 +140,8 @@ address space that also holds:
 - TLS key material (`--tls-key`, keylog secrets),
 - MCP and REST bearer tokens ([`src/auth.rs`](../../src/auth.rs)),
 - the raw `CAP_NET_RAW` socket opened *before* the privilege drop and held for
-  the whole run ([`process_isolation.rs:107-136`](https://github.com/NormB/sipnab/blob/main/src/process_isolation.rs#L107-L136)),
+  the whole run (since R3, held by the scanner-kill worker process instead, and
+  closed in this one before the first packet is parsed),
 - the dialog and stream stores.
 
 This is the one argument that survives scrutiny. Note what it argues for: it
@@ -289,11 +290,26 @@ and drain them after the guards drop. Then add the missing lock-ordering rule to
 `invariants.md`.
 
 ### R3 — Scanner-kill as a real child process *(P2, weeks — do only if `--kill-scanner` gets real use)*
+
+**Done, 2026-09-21.** `bootstrap::launch` re-executes the binary as the worker
+before the chroot and both sandboxes, each of which can refuse the exec, and
+so before the privilege drop that follows the chroot. The parent creates every descriptor the worker sends through
+— the raw sockets and two ephemeral UDP sockets — under a `TransmitPermit`,
+places them at fixed descriptor numbers, and closes its own copies. The
+permit never crosses: the worker's capability is what it inherited, it never
+calls `socket()`, and holding nothing it refuses every request. The worker
+drops root, every capability and dumpability, and speaks the length-prefixed
+JSON wire over stdin and stdout. `send_kill` still only offers to a bounded
+queue; a forwarding thread owns the pipe write. What the boundary does not
+cover — ordinary UDP from the parsing process, a `--setup-caps` run keeping
+its file capabilities, no seccomp filter on the worker yet — is stated in the
+module documentation. The analysis below is as written before the change.
+
 The single cleanest fork candidate in the tree, and the one D16 asked for. It
 holds a `CAP_NET_RAW` raw socket that outlives the privilege drop, it
 *transmits*, and it already has no shared state — it talks over a crossbeam
 channel with messages that are **already**
-`Serialize`/`Deserialize` ([`process_isolation.rs:307, 329`](../../src/process_isolation.rs)),
+`Serialize`/`Deserialize` ([`process_isolation.rs`](../../src/process_isolation.rs)),
 which is otherwise unexplained and is a fossil of the D16 IPC design.
 
 `--rtpengine-control` transmits too, and is not a second candidate: its
