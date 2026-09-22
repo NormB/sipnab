@@ -26,6 +26,12 @@ mod support;
 
 use support::schema::{assert_valid, load_validator};
 
+/// The Call-ID of the one dialog in `tests/fixtures/sip_call.pcap`. Its host
+/// part moved to RFC 5737 documentation addresses in September 2026, when the
+/// fixture was regenerated so that no committed capture carries an address from
+/// a private network.
+const SIP_CALL_ID: &str = "test-call-1@192.0.2.1";
+
 /// Run the built binary with the determinism contract and return stdout.
 ///
 /// # Arguments
@@ -113,7 +119,7 @@ fn call_report_schema_validates_output() {
         "-I",
         "tests/fixtures/sip_call.pcap",
         "--call-report",
-        "test-call-1@10.0.0.1",
+        SIP_CALL_ID,
         "--json",
         "--no-cli-print",
     ]);
@@ -233,7 +239,7 @@ fn call_report_schema_rejects_malformed() {
         "-I",
         "tests/fixtures/sip_call.pcap",
         "--call-report",
-        "test-call-1@10.0.0.1",
+        SIP_CALL_ID,
         "--json",
         "--no-cli-print",
     ]);
@@ -650,7 +656,7 @@ fn a_termination_block_validates_against_the_call_report_schema() {
         "-I",
         "tests/fixtures/sip_call.pcap",
         "--call-report",
-        "test-call-1@10.0.0.1",
+        SIP_CALL_ID,
         "--json",
         "--no-cli-print",
     ]);
@@ -677,7 +683,7 @@ fn a_termination_block_without_its_required_fields_is_refused() {
         "-I",
         "tests/fixtures/sip_call.pcap",
         "--call-report",
-        "test-call-1@10.0.0.1",
+        SIP_CALL_ID,
         "--json",
         "--no-cli-print",
     ]);

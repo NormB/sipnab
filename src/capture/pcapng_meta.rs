@@ -93,6 +93,14 @@ pub struct PcapngMetadata {
     pub names: Vec<(IpAddr, String)>,
     /// TLS Key Log lines from Decryption Secrets Blocks.
     pub tls_secrets: Vec<String>,
+    /// How many Decryption Secrets Blocks were read into `tls_secrets`.
+    ///
+    /// Counted where each block is read, not taken from `tls_secrets.len()`,
+    /// so a caller that only reports how many key logs a file carries never
+    /// touches the key material. CodeQL's `rust/cleartext-logging` follows a
+    /// value out of any field named for secrets, `.len()` included, and flagged
+    /// the TUI's load message for printing that count.
+    pub key_log_blocks: usize,
     /// Name-resolution or secrets blocks whose frame was sound but whose
     /// contents could not be decoded, and were skipped.
     pub malformed_blocks: usize,
@@ -189,6 +197,7 @@ pub fn read_pcapng_metadata(path: &Path) -> std::io::Result<PcapngMetadata> {
                 Some(Block::Unknown(u)) if u.type_ == DSB_TYPE => {
                     if let Some(secret) = parse_dsb_tls_secret(u.value.as_ref()) {
                         meta.tls_secrets.push(secret);
+                        meta.key_log_blocks += 1;
                     }
                 }
                 _ => meta.malformed_blocks += 1,
@@ -514,11 +523,16 @@ mod tests {
         }
 
         let meta = read_pcapng_metadata(&path).unwrap();
-        assert_eq!(meta.tls_secrets.len(), 1, "secrets: {:?}", meta.tls_secrets);
+        // No assertion here prints the key-log text. The fixture's key is fake,
+        // but CodeQL's rust/cleartext-logging cannot tell, and the repository
+        // keeps test code clean at the source rather than dismissing alerts.
+        assert_eq!(meta.tls_secrets.len(), 1, "one DSB was written");
+        // The count a caller may DISPLAY, kept apart from the secret text so
+        // that saying "1 embedded key log" never reads the key material.
+        assert_eq!(meta.key_log_blocks, 1, "the block read must be counted");
         assert!(
             meta.tls_secrets[0].contains("CLIENT_RANDOM aabbccdd 00112233"),
-            "secret content: {:?}",
-            meta.tls_secrets[0]
+            "the key-log line written was not read back intact"
         );
     }
 
@@ -797,6 +811,7 @@ mod malformed_block_tests {
             1,
             "the DSB after the bad block was lost"
         );
+        assert_eq!(meta.key_log_blocks, 1, "a skipped block is not a key log");
         assert_eq!(meta.malformed_blocks, 1);
         assert_eq!(meta.stopped_at, None);
     }

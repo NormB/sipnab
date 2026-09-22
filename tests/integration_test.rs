@@ -20,6 +20,12 @@ fn sip_call_fixture() -> PathBuf {
         .join("sip_call.pcap")
 }
 
+/// The Call-ID of the one dialog in the SIP call fixture. Its host part moved
+/// to RFC 5737 documentation addresses in September 2026, when the fixture was
+/// regenerated so that no committed capture carries an address from a private
+/// network.
+const SIP_CALL_ID: &str = "test-call-1@192.0.2.1";
+
 /// Path to the original minimal fixture (10 bare 200 OK packets).
 fn udp_5060_fixture() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -95,7 +101,7 @@ fn sip_messages_detected_and_output_as_json() {
     let first: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
     assert_eq!(first["method"], "INVITE");
     assert_eq!(first["is_request"], true);
-    assert_eq!(first["call_id"], "test-call-1@10.0.0.1");
+    assert_eq!(first["call_id"], SIP_CALL_ID);
 
     // Fourth message should be a 200 OK response
     let fourth: serde_json::Value = serde_json::from_str(lines[3]).unwrap();
@@ -115,7 +121,7 @@ fn report_contains_dialog_info() {
 
     // Report should contain the Call-ID
     assert!(
-        stdout.contains("test-call-1@10.0.0.1"),
+        stdout.contains(SIP_CALL_ID),
         "report should contain the Call-ID"
     );
 

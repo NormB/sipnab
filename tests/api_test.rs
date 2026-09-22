@@ -20,8 +20,11 @@ use support::schema::{assert_valid, load_validator};
 include!("support/timeout.rs");
 
 /// The Call-ID of the single dialog in the default `sip_call.pcap` fixture,
-/// used to address per-dialog endpoints.
-const CALL_ID: &str = "test-call-1@10.0.0.1";
+/// used to address per-dialog endpoints. Its host part, like the caller's
+/// address below, moved to RFC 5737 documentation addresses in September 2026,
+/// when the fixture was regenerated so that no committed capture carries an
+/// address from a private network.
+const CALL_ID: &str = "test-call-1@192.0.2.1";
 
 /// `GET /health` returns 200 with the literal body `ok`.
 #[test]
@@ -203,16 +206,16 @@ fn talkers_answer_with_the_ranking_envelope() {
 /// `GET /v1/endpoints` answers over the shipped binary with the describe
 /// envelope (PAR3): the selector echoed, dialog and message counts, the banner
 /// rows, the call and registration facets, and a page of recent dialogs. The
-/// fixture's caller `10.0.0.1` sent the one dialog, so it is a real endpoint.
+/// fixture's caller `192.0.2.1` sent the one dialog, so it is a real endpoint.
 #[test]
 fn endpoints_answer_with_the_describe_envelope() {
     let srv = ApiServer::spawn(&[]);
-    let resp = srv.get("/v1/endpoints?ip=10.0.0.1");
+    let resp = srv.get("/v1/endpoints?ip=192.0.2.1");
     assert_eq!(resp.status, 200, "/v1/endpoints status");
     let body = resp.json();
     assert_eq!(body["schema_version"], 1);
     assert_eq!(body["endpoint_kind"], "ip");
-    assert_eq!(body["endpoint"], "10.0.0.1");
+    assert_eq!(body["endpoint"], "192.0.2.1");
     assert!(body["dialogs"].is_number(), "dialog count present");
     assert!(
         body["messages_sent"].as_u64().expect("messages_sent") >= 1,

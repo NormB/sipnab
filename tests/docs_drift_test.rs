@@ -3358,11 +3358,19 @@ fn no_documentation_table_repeats_a_row() {
     // lists exactly that one new .md path. No website mirror.
     // 220 -> 223: docs/client-examples.md and its site mirror, plus the new
     // site mirror of docs/library.md. Measured by this gate on 2026-09-19.
+    // 223 -> 224 by tests/PROVENANCE.md, the record of where every committed
+    // capture outside tests/pcap-samples/ came from, which
+    // `every_committed_capture_is_public_or_synthetic` reads. ONE file: it
+    // lives beside the gate rather than under docs/, so it has no website
+    // mirror. Attributed against the staged diff -- `--diff-filter=A` lists
+    // exactly one new `.md` path, and it is that one.
     // 223 -> 225 by docs/glossary.md and docs/first-cli-triage.md.
     // `git diff --cached --diff-filter=A` lists exactly those two new .md
     // paths. No site mirrors yet: both pages are on the wiki, and their site
     // registration waits on the docs nav templates.
-    const EXPECTED_MARKDOWN_FILES: usize = 225;
+    // Merge of docs-readability with main: 223 +2 (glossary, first-cli-triage)
+    // +1 (tests/PROVENANCE.md) = 226.
+    const EXPECTED_MARKDOWN_FILES: usize = 226;
     /// How many tables this gate expects to walk.
     ///
     /// Named rather than written twice. The count and the failure message

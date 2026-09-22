@@ -37,7 +37,9 @@ results/
 # Generated media fixtures. `make-pcma-pcap.py` produces these deterministically
 # and the setup docs tell you to run it, so committing the output would put a
 # megabyte of binary in the tree that can drift from the generator that claims
-# to produce it. The stock g711a.pcap/g722.pcap are third-party captures and
-# stay tracked.
+# to produce it. g711a.pcap and g722.pcap are different: they are tracked,
+# and tests/support/synthetic_captures.rs builds them (`cargo run --features
+# native --bin gen_fixture`), with a test that fails when a committed byte
+# differs from what it builds.
 sipp/scenarios/g711a_answer.pcap
 sipp/scenarios/g711a_caller.pcap
