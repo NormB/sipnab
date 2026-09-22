@@ -880,7 +880,10 @@ fn wiki_intra_docs_links_resolve() {
     // this extractor, which counts links between wiki pages only, reads +34.
     // 759 -> 763: the index link to client-examples.md and that page's three
     // links to the harness, library and cookbook. Measured by this gate.
-    const EXPECTED_WIKI_LINKS: usize = 763;
+    // 763 -> 765: the RFC 7951 export. docs/rest-api.md and docs/mcp-tools.md
+    // each send the reader to output-formats.md for the differences between
+    // the two encodings; those are the only .md links the change adds.
+    const EXPECTED_WIKI_LINKS: usize = 765;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe 6d in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

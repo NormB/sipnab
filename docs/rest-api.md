@@ -1823,9 +1823,34 @@ and it opens with `schema_version`. The published contract is
 spliced into the OpenAPI document as `CaptureReport`. `filter` never appears
 here: this route analyzes every dialog in the store.
 
-The MCP `get_capture_report` tool answers the same question. So do
-`sipnab --analyze` and `sipnab --json-analyze` on the command line. Not
-`--report`, which is the tabular per-dialog summary and ranks nothing.
+**Query parameter:**
+
+| Name | Legal values | If omitted |
+|---|---|---|
+| `format` | `json`, or `yang-json` for the same analysis [RFC 7951](https://www.rfc-editor.org/rfc/rfc7951)-encoded against the YANG module `sipnab-diagnosis`. Anything else is a `400`. | `json` |
+
+`?format=yang-json` answers `Content-Type: application/yang-data+json`, the
+media type [RFC 8040](https://www.rfc-editor.org/rfc/rfc8040) registers for YANG data. The body validates against the
+module `sipnab --print-yang-module` prints:
+
+```bash
+curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" \
+  'http://127.0.0.1:8080/v1/report?format=yang-json' > analysis.json
+```
+
+```bash
+yanglint -t data sipnab-diagnosis@2026-09-21.yang analysis.json
+```
+
+It is the same analysis in a different encoding: the YANG section of
+[Output formats](output-formats.md) lists every difference. This is not a
+RESTCONF server: the route, the guard and the bearer token are the ones every
+other route uses.
+
+The MCP `get_capture_report` tool answers the same question, with the same
+`format` spellings. So do `sipnab --analyze`, `--json-analyze` and
+`--yang-analyze` on the command line. Not `--report`, which is the tabular
+per-dialog summary and ranks nothing.
 
 ---
 

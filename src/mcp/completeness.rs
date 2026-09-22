@@ -322,6 +322,33 @@ pub fn stamp(tool: &str, source_exhausted: bool, stopped_early: bool, result: &m
     };
 
     match value {
+        Value::Object(mut map) if is_instance_document(&map) => {
+            // An RFC 7951 instance document (`get_capture_report` in its
+            // `yang-json` format). Section 4 of that RFC admits only
+            // module-qualified members at its top, so the two facts cannot be
+            // inserted there without making the document invalid for every
+            // YANG validator -- they go in a block of their own, the way an
+            // array payload's do. What IS inside is still corrected: a
+            // `complete: true` over a partial read is the VAL4 defect again,
+            // one level down.
+            if !answer_is_whole(source_exhausted, stopped_early) {
+                for container in map.values_mut() {
+                    if let Value::Object(inner) = container {
+                        refuse_complete(inner);
+                    }
+                }
+            }
+            let Ok(text) = serde_json::to_string(&Value::Object(map)) else {
+                return;
+            };
+            result.content[0] = ContentBlock::text(text);
+            let mut envelope = Map::new();
+            insert_facts(&mut envelope, source_exhausted, stopped_early);
+            let Ok(text) = serde_json::to_string(&Value::Object(envelope)) else {
+                return;
+            };
+            result.content.push(ContentBlock::text(text));
+        }
         Value::Object(mut map) => {
             apply(&mut map, tool, source_exhausted, stopped_early);
             let Ok(text) = serde_json::to_string(&Value::Object(map)) else {
@@ -436,9 +463,21 @@ fn apply(map: &mut Map<String, Value>, tool: &str, source_exhausted: bool, stopp
     {
         map.remove(TRUNCATED_KEY);
     }
+    refuse_complete(map);
+}
+
+/// Take back a `complete: true` the answer has not earned. See [`stamp`].
+fn refuse_complete(map: &mut Map<String, Value>) {
     if map.get(COMPLETE_KEY) == Some(&Value::Bool(true)) {
         map.insert(COMPLETE_KEY.to_string(), Value::Bool(false));
     }
+}
+
+/// Whether a payload is an RFC 7951 instance document: an object whose every
+/// top-level member is module-qualified (`module:node`). No other answer on
+/// this surface has a colon in a top-level key.
+fn is_instance_document(map: &Map<String, Value>) -> bool {
+    !map.is_empty() && map.keys().all(|k| k.contains(':'))
 }
 
 #[cfg(test)]
@@ -527,6 +566,55 @@ mod tests {
             Value::Bool(false),
             "`complete` says sipnab read all of its input"
         );
+    }
+
+    /// An RFC 7951 document keeps its top level qualified, carries the two
+    /// facts in a block beside it, and still cannot say `complete: true` over
+    /// a partial read.
+    ///
+    /// Inserting `source_exhausted` beside `sipnab-diagnosis:capture-analysis`
+    /// the way every other object gets it would publish a document every YANG
+    /// validator refuses: [RFC 7951 section 4](https://www.rfc-editor.org/rfc/rfc7951#section-4) admits nothing unqualified at the
+    /// top. And the forced `false` has to reach one level down, where the
+    /// document keeps its `complete`.
+    #[test]
+    fn an_instance_document_carries_the_facts_beside_it_and_cannot_claim_complete() {
+        let mut result = json_result(
+            r#"{"sipnab-diagnosis:capture-analysis":{"frames-read":"312","complete":true}}"#,
+        );
+        stamp("get_capture_report", false, false, &mut result);
+
+        let doc = payload(&result);
+        let top = doc.as_object().expect("an object");
+        assert!(
+            top.keys().all(|k| k.contains(':')),
+            "an unqualified member reached the top of the document: {doc}"
+        );
+        assert_eq!(
+            doc["sipnab-diagnosis:capture-analysis"]["complete"],
+            Value::Bool(false),
+            "`complete` read `true` over a partial read inside the document"
+        );
+        let ContentBlock::Text(envelope) = &result.content[1] else {
+            panic!("the facts must follow the document as a block of their own");
+        };
+        let envelope: Value = serde_json::from_str(&envelope.text).expect("JSON");
+        assert_eq!(envelope["source_exhausted"], Value::Bool(false));
+        assert_eq!(envelope["source_stopped_early"], Value::Bool(false));
+    }
+
+    /// Read in full, the document is left exactly as the tool wrote it.
+    #[test]
+    fn a_whole_instance_document_is_untouched() {
+        let text = r#"{"sipnab-diagnosis:capture-analysis":{"complete":true}}"#;
+        let mut result = json_result(text);
+        stamp("get_capture_report", true, false, &mut result);
+
+        assert_eq!(
+            payload(&result),
+            serde_json::from_str::<Value>(text).expect("JSON")
+        );
+        assert_eq!(result.content.len(), 2, "the facts still travel beside it");
     }
 
     /// And is left alone once the file really has been read.

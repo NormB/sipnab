@@ -36,7 +36,12 @@ const MATRIX: &str = "docs/design/surface-capability-matrix.md";
 /// passes a surface's question but is not built there yet. Closing one means
 /// flipping its cell to a present spelling and decrementing this; opening one
 /// (PAR2 naming a new hole) means raising it and adding the hole to PAR3/4/5.
-const EXPECTED_GAPS: usize = 15;
+///
+/// 16 since the RFC 7951 export: writing the whole-capture row found that its
+/// TUI cell named `Statistics`, a view that shows totals, dialog states and
+/// methods and not one finding. The TUI has no view of the capture analysis,
+/// so that cell is a gap, not a present spelling.
+const EXPECTED_GAPS: usize = 16;
 
 fn root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).to_path_buf()

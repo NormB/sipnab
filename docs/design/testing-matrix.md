@@ -49,7 +49,7 @@ was driving all of them.
 
 | Surface | Rows | `e2e` | `parsed` | `referenced` | `none` |
 |---|---|---|---|---|---|
-| CLI flags | 273 | 161 | 43 | 68 | 1 |
+| CLI flags | 274 | 162 | 43 | 68 | 1 |
 | HTTP routes | 39 | 39 | -- | 0 | 0 |
 | MCP tools | 68 | 68 | -- | 0 | 0 |
 
@@ -86,7 +86,7 @@ behind them.
 | `--help` | `-h` |  | Options | e2e | `tests/cli_test.rs`, `tests/doc_commands_run_test.rs` +1 |  |  |
 | `--version` | `-V` |  | Options | e2e | `tests/branch_protection_drift_test.rs`, `tests/cli_test.rs` +5 |  |  |
 | `--device` | `-d` | `IFACE` | Capture | e2e | `tests/capture_probe_test.rs`, `tests/cli_flag_behavior_test.rs` +3 |  |  |
-| `--input` | `-I` |  | Capture | e2e | `src/app/bootstrap.rs`, `tests/analyze_test.rs` +62 |  |  |
+| `--input` | `-I` |  | Capture | e2e | `src/app/bootstrap.rs`, `tests/analyze_test.rs` +63 |  |  |
 | `--recursive` |  |  | Capture | e2e | `tests/input_set_accounting_test.rs`, `tests/multi_input_test.rs` |  |  |
 | `--input-name` |  | `GLOB` | Capture | e2e | `tests/multi_input_test.rs` |  |  |
 | `--output` | `-O` | `FILE` | Capture | e2e | `src/app/bootstrap.rs`, `tests/batch_run_paths_test.rs` +9 |  |  |
@@ -97,7 +97,7 @@ behind them.
 | `--limitlen` | `-S` | `BYTES` | Capture | parsed | `src/cli.rs` |  |  |
 | `--no-reassembly` |  |  | Capture | parsed | `src/cli.rs` |  |  |
 | `--quiet-bad-parse` | `-x` |  | Capture | e2e | `tests/tui_e2e_test.rs` |  |  |
-| `--portrange` |  | `RANGE` | Capture | e2e | `tests/analyze_test.rs`, `tests/config_wiring_test.rs` +5 |  |  |
+| `--portrange` |  | `RANGE` | Capture | e2e | `tests/analyze_test.rs`, `tests/config_wiring_test.rs` +6 |  |  |
 | `--ws-portrange` |  | `RANGE` | Capture | parsed | `src/cli.rs` |  |  |
 | `--multi-device` |  |  | Capture | parsed | `src/cli.rs` |  |  |
 | `--no-rtp` |  |  | Capture | e2e | `tests/cli_test.rs` |  |  |
@@ -111,7 +111,7 @@ behind them.
 | `--split-keep` |  | `N` | Capture | e2e | `tests/cli_flag_behavior_test.rs` |  |  |
 | `--replay` |  |  | Capture | e2e | `tests/mcp_stdio_shutdown_test.rs` |  |  |
 | `--pcapng` |  |  | Capture | e2e | `tests/cli_flag_behavior_test.rs`, `tests/integration_test.rs` +3 |  |  |
-| `--no-tui` | `-N` |  | Mode | e2e | `src/app/bootstrap.rs`, `tests/analyze_test.rs` +64 |  |  |
+| `--no-tui` | `-N` |  | Mode | e2e | `src/app/bootstrap.rs`, `tests/analyze_test.rs` +65 |  |  |
 | `--calls-only` | `-c` |  | Mode | e2e | `src/output/event_exec.rs`, `src/security/alerting.rs` +8 |  |  |
 | `--telephone-event` | `-t` |  | Mode | e2e | `tests/dtmf_retransmission_test.rs`, `tests/tui_e2e_test.rs` |  |  |
 | `--dtmf-cleartext` |  |  | Mode | referenced | `tests/dtmf_masking_test.rs` | **behavior** | dtmf_cleartext_emits_the_digit_value_at_debug_level (tests/dtmf_masking_test.rs), with an anti-vacuity guard |
@@ -146,7 +146,8 @@ behind them.
 | `--stun` |  |  | Output | e2e | `tests/stun_test.rs`, `tests/turn_test.rs` |  |  |
 | `--json-stun` |  |  | Output | e2e | `tests/stun_test.rs`, `tests/turn_test.rs` |  |  |
 | `--analyze` |  |  | Output | e2e | `tests/analyze_test.rs` |  |  |
-| `--json-analyze` |  |  | Output | e2e | `tests/analyze_test.rs`, `tests/json_schema_test.rs` +2 |  |  |
+| `--json-analyze` |  |  | Output | e2e | `tests/analyze_test.rs`, `tests/json_schema_test.rs` +3 |  |  |
+| `--yang-analyze` |  |  | Output | e2e | `tests/analyze_test.rs`, `tests/yang_export_test.rs` |  |  |
 | `--print-yang-module` |  |  | Output | e2e | `tests/yang_module_test.rs` |  |  |
 | `--call-report` |  |  | Output | e2e | `tests/cli_flag_behavior_test.rs`, `tests/cli_test.rs` +3 |  |  |
 | `--export-vcon` |  |  | Output | e2e | `tests/batch_run_paths_test.rs`, `tests/vcon_cli_test.rs` |  |  |
@@ -171,7 +172,7 @@ behind them.
 | `--color` |  | `WHEN` | Output | e2e | `tests/config_wiring_test.rs` |  |  |
 | `--payload-limit` |  | `BYTES` | Output | referenced | `tests/cli_options_test.rs` | **behavior** | payload_limit_truncates_raw_dump: [truncated] appears, User-Agent disappears, against a no-flag baseline |
 | `--text-dump` | `-T` |  | Output | e2e | `tests/cli_flag_behavior_test.rs`, `tests/integration_test.rs` |  |  |
-| `--no-cli-print` |  |  | Output | e2e | `tests/analyze_test.rs`, `tests/batch_run_paths_test.rs` +25 |  |  |
+| `--no-cli-print` |  |  | Output | e2e | `tests/analyze_test.rs`, `tests/batch_run_paths_test.rs` +26 |  |  |
 | `--wireshark` |  |  | Output | e2e | `tests/batch_run_paths_test.rs` | **behavior** | golden tests/cli/out/wireshark.trycmd adds two lines absent from the flagless golden |
 | `--lint` |  |  | Output | e2e | `tests/config_wiring_test.rs` |  |  |
 | `--lint-fail-on` |  | `SEVERITY` | Output | referenced | `tests/cli_options_test.rs` | **parse-only** | EXIT 3 IS NEVER OBSERVED. The assertion is guarded behind `if findings > 0` and no checked-in capture produces a lint finding |
@@ -385,7 +386,7 @@ behind them.
 | `/v1/relay/stats` | exercised | `tests/app_servers_wiring_test.rs`, `tests/relay_rest_test.rs` |
 | `/v1/relay/stats/call/{call_id}` | exercised | `tests/relay_rest_test.rs` |
 | `/v1/relay/stats/names` | exercised | `tests/relay_rest_test.rs` |
-| `/v1/report` | exercised | `tests/api_test.rs` |
+| `/v1/report` | exercised | `tests/api_test.rs`, `tests/yang_export_test.rs` |
 | `/v1/runtime` | exercised | `tests/api_test.rs` |
 | `/v1/security/findings` | exercised | `tests/api_test.rs` |
 | `/v1/stats` | exercised | `tests/api_test.rs`, `tests/api_token_test.rs` +3 |
@@ -431,7 +432,7 @@ behind them.
 | `generate_repro` | exercised | `tests/mcp_completeness_test.rs`, `tests/mcp_expectations_test.rs` +1 |
 | `generate_wireshark_filter` | exercised | `tests/mcp_completeness_test.rs`, `tests/mcp_expectations_test.rs` +1 |
 | `get_call_tree` | exercised | `tests/mcp_completeness_test.rs`, `tests/mcp_stdio_test.rs` +1 |
-| `get_capture_report` | exercised | `tests/mcp_completeness_test.rs`, `tests/mcp_stdio_test.rs` |
+| `get_capture_report` | exercised | `tests/mcp_completeness_test.rs`, `tests/mcp_stdio_test.rs` +1 |
 | `get_dialog` | exercised | `tests/mcp_completeness_test.rs`, `tests/mcp_operator_flows_test.rs` +3 |
 | `get_dialog_report` | exercised | `tests/mcp_completeness_test.rs`, `tests/mcp_operator_flows_test.rs` +1 |
 | `get_message` | exercised | `tests/mcp_completeness_test.rs`, `tests/mcp_output_injection_test.rs` +1 |

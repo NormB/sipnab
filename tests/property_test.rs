@@ -183,3 +183,167 @@ proptest! {
             );
     }
 }
+
+// ── The capture analysis, RFC 7951-encoded ──────────────────────────
+
+/// `sipnab::analysis` exists only in native builds, and this file compiles in
+/// every feature combination CI checks.
+#[cfg(feature = "native")]
+mod rfc7951_round_trip {
+    use proptest::prelude::*;
+
+    /// A string for an evidence field: printable ASCII most of the time, any
+    /// character at all some of the time, and — deliberately, since arbitrary
+    /// Unicode almost never lands on them — strings dense with the characters
+    /// YANG's `string` type cannot carry: C0 controls, U+FFFE and U+FFFF.
+    /// Without that third arm a mutation that stopped replacing them passed
+    /// this test.
+    fn evidence_text() -> impl Strategy<Value = String> {
+        prop_oneof![
+            3 => "[ -~]{0,24}",
+            1 => any::<String>(),
+            1 => "[a-z\\x00-\\x1F\\x{FFFE}\\x{FFFF}]{1,12}",
+        ]
+    }
+
+    /// One evidence row with every field independently present or absent.
+    fn evidence() -> impl Strategy<Value = sipnab::analysis::Evidence> {
+        use sipnab::analysis::CountLabel;
+        (
+            proptest::option::of(evidence_text()),
+            proptest::collection::vec(evidence_text(), 0..3),
+            proptest::option::of(0i64..4_000_000_000_000),
+            proptest::sample::subsequence(CountLabel::ALL.to_vec(), 0..4),
+            proptest::collection::vec(any::<u64>(), 4),
+            proptest::option::of(evidence_text()),
+        )
+            .prop_map(|(call_id, endpoints, at_ms, labels, values, note)| {
+                sipnab::analysis::Evidence {
+                    call_id,
+                    endpoints,
+                    at: at_ms.and_then(chrono::DateTime::from_timestamp_millis),
+                    counts: labels.into_iter().zip(values).collect(),
+                    note,
+                }
+            })
+    }
+
+    /// An analysis: any subset of kinds, each with any counts and evidence.
+    ///
+    /// The kinds are a subsequence of `FindingKind::ALL`, so at most one finding
+    /// per kind — the property the YANG list key depends on and the accumulator
+    /// guarantees.
+    fn capture_analysis() -> impl Strategy<Value = sipnab::analysis::CaptureAnalysis> {
+        use sipnab::analysis::{
+            CAPTURE_ANALYSIS_SCHEMA_VERSION, CaptureAnalysis, Finding, FindingKind,
+        };
+        let finding = |kind: FindingKind| {
+            (
+                any::<u64>(),
+                proptest::collection::vec(evidence(), 0..4),
+                any::<u64>(),
+            )
+                .prop_map(move |(occurrences, evidence, evidence_omitted)| Finding {
+                    kind,
+                    severity: kind.meta().severity,
+                    occurrences,
+                    unit: kind.meta().unit,
+                    evidence,
+                    evidence_omitted,
+                })
+        };
+        (
+            proptest::option::of(evidence_text()),
+            any::<u64>(),
+            any::<u32>(),
+            any::<u32>(),
+            any::<bool>(),
+            proptest::sample::subsequence(FindingKind::ALL.to_vec(), 0..6),
+        )
+            .prop_flat_map(move |(filter, frames, dialogs, streams, complete, kinds)| {
+                let findings: Vec<_> = kinds.into_iter().map(finding).collect();
+                (Just((filter, frames, dialogs, streams, complete)), findings)
+            })
+            .prop_map(
+                |((filter, frames_read, dialogs, streams, complete), findings)| CaptureAnalysis {
+                    schema_version: CAPTURE_ANALYSIS_SCHEMA_VERSION,
+                    filter,
+                    frames_read,
+                    dialogs_examined: dialogs as usize,
+                    streams_examined: streams as usize,
+                    complete,
+                    findings,
+                },
+            )
+    }
+
+    /// Every string in a plain JSON value, as the RFC 7951 encoding writes it.
+    fn yang_strings(v: &serde_json::Value) -> serde_json::Value {
+        use serde_json::Value;
+        match v {
+            Value::String(s) => Value::String(sipnab::analysis::yang::yang_string(s)),
+            Value::Array(items) => Value::Array(items.iter().map(yang_strings).collect()),
+            Value::Object(map) => Value::Object(
+                map.iter()
+                    .map(|(k, v)| (k.clone(), yang_strings(v)))
+                    .collect(),
+            ),
+            other => other.clone(),
+        }
+    }
+
+    /// The structural rules of RFC 7951 and of the module, checked on a document.
+    fn assert_rfc7951_shape(doc: &serde_json::Value) {
+        use serde_json::Value;
+        let top = doc.as_object().expect("the document is an object");
+        assert_eq!(top.len(), 1, "exactly one top-level member: {doc}");
+        let body = &top["sipnab-diagnosis:capture-analysis"];
+        for key in ["frames-read", "dialogs-examined", "streams-examined"] {
+            assert!(
+                body[key].is_string(),
+                "{key} is a uint64, so a string: {body}"
+            );
+        }
+        assert!(
+            body["schema-version"].is_u64(),
+            "schema-version is a uint32"
+        );
+        let findings = body["finding"].as_array().map(Vec::as_slice).unwrap_or(&[]);
+        for (i, f) in findings.iter().enumerate() {
+            assert_eq!(f["rank"], Value::from(i + 1), "rank counts from 1 in order");
+            for key in ["occurrences", "evidence-omitted"] {
+                assert!(f[key].is_string(), "{key} is a uint64: {f}");
+            }
+            let evidence = f["evidence"].as_array().map(Vec::as_slice).unwrap_or(&[]);
+            for (j, e) in evidence.iter().enumerate() {
+                assert_eq!(e["index"], Value::from(j + 1), "index counts from 1");
+                for c in e["count"].as_array().map(Vec::as_slice).unwrap_or(&[]) {
+                    assert!(c["value"].is_string(), "a count is a uint64: {c}");
+                }
+                for s in ["call-id", "note"] {
+                    if let Some(text) = e.get(s).and_then(Value::as_str) {
+                        assert!(
+                            text.chars().all(sipnab::analysis::yang::yang_string_char),
+                            "{s} holds a character YANG cannot carry: {text:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    proptest! {
+        /// Every analysis encodes, the document obeys RFC 7951's rules, and it
+        /// decodes back to the plain JSON of the same analysis — the one change
+        /// being a character YANG cannot carry, written as U+FFFD.
+        #[test]
+        fn every_analysis_survives_the_rfc_7951_round_trip(analysis in capture_analysis()) {
+            use sipnab::analysis::yang;
+            let plain = serde_json::to_value(&analysis).expect("serializes");
+            let doc = yang::to_rfc7951(&analysis).expect("every analysis encodes");
+            assert_rfc7951_shape(&doc);
+            let back = yang::decode(&doc).expect("every document decodes");
+            prop_assert_eq!(back, yang_strings(&plain));
+        }
+    }
+}

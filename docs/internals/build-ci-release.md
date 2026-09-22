@@ -437,7 +437,9 @@ because a test generates the module under `yang/`: [`tests/yang_module_test.rs`]
 proves the committed file is what the analysis's tables produce, and only a
 YANG implementation that did not write it can say the text is valid YANG.
 `pyang --lint` and `yanglint` from `libyang` compile it, and
-`pyang --check-update-from` holds each new revision to the last under
+`yanglint -t data` validates every [RFC 7951](https://www.rfc-editor.org/rfc/rfc7951) document the CLI, REST and MCP
+doors write for each fixture, and `pyang --check-update-from` holds each new
+revision to the last under
 [RFC 7950 section 11](https://www.rfc-editor.org/rfc/rfc7950#section-11). A
 machine without either tool reports `NOT CHECKED` and names the fix. CI's
 `check` job installs both (`libyang2-tools`, and `pyang` from the hashed

@@ -18,9 +18,9 @@
 //!   file under `yang/` is this function's output, blessed the way the
 //!   OpenAPI document is, so a kind added to the analysis and not to the
 //!   module fails a test instead of a consumer;
-//! * **the encoder** — `encode` walks the same table over the plain JSON,
+//! * **the encoder** — [`encode`] walks the same table over the plain JSON,
 //!   so the two encodings are one value written twice, never two values;
-//! * **the decoder** — `decode` is the inverse, strict, and exists so that
+//! * **the decoder** — [`decode`] is the inverse, strict, and exists so that
 //!   claim can be tested: a document decoded back must equal the plain JSON of
 //!   the same run.
 //!
@@ -48,7 +48,9 @@
 //! the model. A new fact lands in [`crate::analysis::CaptureAnalysis`] first
 //! and reaches both encodings, which is the only way the two can stay one.
 
-use super::{CountLabel, FindingKind, Severity};
+use serde_json::{Map, Value};
+
+use super::{CaptureAnalysis, CountLabel, FindingKind, Severity};
 
 /// The module's current revision, as a literal so `include_str!` can name the
 /// committed file. Written once here; [`REVISION`] and [`REVISIONS`] read it.
@@ -454,6 +456,466 @@ const TOP_DESCRIPTION: &str = "Everything sipnab's capture analysis found, ranke
                                analysis aggregates and ranks them and adds no judgement of \
                                its own.";
 
+/// Why an RFC 7951 document could not be produced or read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CodecError(String);
+
+impl std::fmt::Display for CodecError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for CodecError {}
+
+/// Shorthand for a [`CodecError`] result.
+fn fail<T>(msg: impl Into<String>) -> Result<T, CodecError> {
+    Err(CodecError(msg.into()))
+}
+
+/// The analysis, RFC 7951-encoded against `sipnab-diagnosis`.
+///
+/// Computed from the analysis's own serialization, so it is the plain JSON
+/// value written the other way and never a second reading of the model.
+///
+/// # Errors
+///
+/// Only if the serialization and [`CAPTURE_ANALYSIS`] disagree — a field the
+/// table does not know, a value of the wrong type. That is a defect in this
+/// module, and the census tests below exist so it cannot ship.
+pub fn to_rfc7951(analysis: &CaptureAnalysis) -> Result<Value, CodecError> {
+    let plain = serde_json::to_value(analysis)
+        .map_err(|e| CodecError(format!("the analysis did not serialize: {e}")))?;
+    encode(&plain)
+}
+
+/// A document as one line of JSON, newline-terminated: how `--yang-analyze`
+/// prints it, one line per run like `--json-analyze`.
+///
+/// # Errors
+///
+/// Only if `doc` does not serialize, which a `Value` always does.
+pub fn to_line(doc: &Value) -> Result<String, CodecError> {
+    let mut line = serde_json::to_string(doc)
+        .map_err(|e| CodecError(format!("the document did not serialize: {e}")))?;
+    line.push('\n');
+    Ok(line)
+}
+
+/// The plain JSON encoding of an analysis, RFC 7951-encoded.
+///
+/// # Errors
+///
+/// When `plain` is not an analysis this table describes: an unknown or
+/// missing member, or a value of the wrong JSON type.
+pub fn encode(plain: &Value) -> Result<Value, CodecError> {
+    let Value::Object(obj) = plain else {
+        return fail("the analysis is not a JSON object");
+    };
+    let body = encode_object(obj, CAPTURE_ANALYSIS, None, TOP)?;
+    let mut doc = Map::new();
+    doc.insert(format!("{MODULE}:{TOP}"), Value::Object(body));
+    Ok(Value::Object(doc))
+}
+
+/// An RFC 7951 document, decoded back into the plain JSON encoding.
+///
+/// Strict: an unknown member, a `uint64` written as a number, a `uint32`
+/// written as a string, an identity the module does not define, a duplicate
+/// key or a gap in `rank` or `index` is refused rather than repaired. The
+/// test that proves the two encodings carry one value depends on that.
+///
+/// # Errors
+///
+/// When `doc` is not a `sipnab-diagnosis` document this table describes.
+pub fn decode(doc: &Value) -> Result<Value, CodecError> {
+    let Value::Object(top) = doc else {
+        return fail("the document is not a JSON object");
+    };
+    let qualified = format!("{MODULE}:{TOP}");
+    if top.len() != 1 {
+        let names: Vec<&String> = top.keys().collect();
+        return fail(format!(
+            "the document must hold exactly one member, `{qualified}`; it holds {names:?}"
+        ));
+    }
+    let Some(Value::Object(body)) = top.get(&qualified) else {
+        return fail(format!("the document holds no `{qualified}` container"));
+    };
+    Ok(Value::Object(decode_object(body, CAPTURE_ANALYSIS, TOP)?))
+}
+
+/// Encode one plain JSON object through `nodes`.
+///
+/// `position` is the entry's 1-based place in its array, for a
+/// [`Origin::Position`] node; `None` at the top level, where there is none.
+fn encode_object(
+    obj: &Map<String, Value>,
+    nodes: &[Node],
+    position: Option<usize>,
+    at: &str,
+) -> Result<Map<String, Value>, CodecError> {
+    for name in obj.keys() {
+        if !nodes
+            .iter()
+            .any(|n| matches!(n.origin, Origin::Field(f) if f == name))
+        {
+            return fail(format!("{at}: `{name}` has no node in the module"));
+        }
+    }
+    let mut out = Map::new();
+    for node in nodes {
+        let path = format!("{at}/{}", node.name);
+        let value = match node.origin {
+            Origin::Position => match position {
+                Some(p) => Some(Value::from(p)),
+                None => return fail(format!("{path}: a position node outside a list")),
+            },
+            Origin::Field(field) => obj.get(field).cloned(),
+        };
+        let Some(value) = value else {
+            if matches!(
+                node.body,
+                Body::Leaf {
+                    mandatory: true,
+                    ..
+                }
+            ) {
+                return fail(format!("{path}: mandatory and absent"));
+            }
+            continue;
+        };
+        if let Some(encoded) = encode_node(node, &value, &path)? {
+            out.insert(node.name.to_string(), encoded);
+        }
+    }
+    Ok(out)
+}
+
+/// Encode one node's value. `None` for an empty collection, which RFC 7951
+/// has no way to write for a list.
+fn encode_node(node: &Node, value: &Value, path: &str) -> Result<Option<Value>, CodecError> {
+    match node.body {
+        Body::Leaf { ty, .. } => encode_scalar(ty, value, path).map(Some),
+        Body::LeafList { ty, .. } => {
+            let items = as_array(value, path)?;
+            if items.is_empty() {
+                return Ok(None);
+            }
+            let out = items
+                .iter()
+                .map(|v| encode_scalar(ty, v, path))
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(Some(Value::Array(out)))
+        }
+        Body::List { children, .. } => {
+            let items = as_array(value, path)?;
+            if items.is_empty() {
+                return Ok(None);
+            }
+            let mut out = Vec::with_capacity(items.len());
+            for (i, item) in items.iter().enumerate() {
+                let Value::Object(entry) = item else {
+                    return fail(format!("{path}[{i}]: not an object"));
+                };
+                let at = format!("{path}[{}]", i + 1);
+                out.push(Value::Object(encode_object(
+                    entry,
+                    children,
+                    Some(i + 1),
+                    &at,
+                )?));
+            }
+            Ok(Some(Value::Array(out)))
+        }
+        Body::Map {
+            key,
+            key_ty,
+            value: value_name,
+            value_ty,
+            ..
+        } => {
+            let Value::Object(map) = value else {
+                return fail(format!("{path}: not an object"));
+            };
+            if map.is_empty() {
+                return Ok(None);
+            }
+            let mut out = Vec::with_capacity(map.len());
+            for (name, v) in map {
+                let mut entry = Map::new();
+                entry.insert(
+                    key.to_string(),
+                    encode_scalar(key_ty, &Value::String(name.clone()), path)?,
+                );
+                entry.insert(value_name.to_string(), encode_scalar(value_ty, v, path)?);
+                out.push(Value::Object(entry));
+            }
+            Ok(Some(Value::Array(out)))
+        }
+    }
+}
+
+/// The array `value` must be.
+fn as_array<'a>(value: &'a Value, path: &str) -> Result<&'a Vec<Value>, CodecError> {
+    match value {
+        Value::Array(items) => Ok(items),
+        other => fail(format!("{path}: expected an array, found {other}")),
+    }
+}
+
+/// Encode one scalar from its plain JSON form.
+fn encode_scalar(ty: Type, value: &Value, path: &str) -> Result<Value, CodecError> {
+    match (ty, value) {
+        (Type::Uint32, Value::Number(n)) => match n.as_u64() {
+            Some(v) if u32::try_from(v).is_ok() => Ok(Value::from(v)),
+            _ => fail(format!("{path}: {n} is not a uint32")),
+        },
+        // RFC 7951 section 6.1: a 64-bit integer is a JSON string.
+        (Type::Uint64, Value::Number(n)) => match n.as_u64() {
+            Some(v) => Ok(Value::String(v.to_string())),
+            None => fail(format!("{path}: {n} is not a uint64")),
+        },
+        (Type::Boolean, Value::Bool(b)) => Ok(Value::Bool(*b)),
+        (Type::String, Value::String(s)) => Ok(Value::String(yang_string(s))),
+        (Type::DateAndTime, Value::String(s)) => Ok(Value::String(s.clone())),
+        (Type::Severity | Type::FindingKind | Type::CountLabel, Value::String(s)) => {
+            check_enumerated(ty, s, path)?;
+            Ok(Value::String(s.clone()))
+        }
+        _ => fail(format!("{path}: {value} is not a {ty:?}")),
+    }
+}
+
+/// Whether YANG's `string` type can carry `c`.
+///
+/// [RFC 7950 section 9.4](https://www.rfc-editor.org/rfc/rfc7950#section-9.4) admits the characters XML does: tab, carriage return, line
+/// feed, and everything from U+0020 up except U+FFFE and U+FFFF (a Rust `char`
+/// is never a surrogate). libyang enforces it — a note holding U+001B fails
+/// validation outright.
+#[must_use]
+pub fn yang_string_char(c: char) -> bool {
+    matches!(c, '\t' | '\n' | '\r') || (c >= '\u{20}' && c != '\u{FFFE}' && c != '\u{FFFF}')
+}
+
+/// `s` with every character YANG's `string` cannot carry written as U+FFFD.
+///
+/// The one place the two encodings of an analysis can differ, and it is
+/// forced rather than chosen: evidence carries text from the wire — a reason
+/// phrase, a Call-ID — and nothing guarantees a capture keeps control
+/// characters out of it. The alternatives were worse. Refusing the export
+/// would let one hostile packet take the RFC 7951 door down for the whole
+/// capture, and emitting the character would publish a document every YANG
+/// validator rejects. U+FFFD is the character Unicode reserves for exactly
+/// this, and it stays visible where the substitution happened.
+#[must_use]
+pub fn yang_string(s: &str) -> String {
+    if s.chars().all(yang_string_char) {
+        return s.to_string();
+    }
+    s.chars()
+        .map(|c| if yang_string_char(c) { c } else { '\u{FFFD}' })
+        .collect()
+}
+
+/// Refuse a severity, kind or label the module does not define.
+fn check_enumerated(ty: Type, s: &str, path: &str) -> Result<(), CodecError> {
+    let known = match ty {
+        Type::Severity => Severity::ALL.iter().any(|v| v.as_str() == s),
+        Type::FindingKind => FindingKind::ALL.iter().any(|v| v.meta().id == s),
+        Type::CountLabel => CountLabel::ALL.iter().any(|v| v.as_str() == s),
+        _ => true,
+    };
+    if known {
+        Ok(())
+    } else {
+        fail(format!("{path}: `{s}` is not a {ty:?} the module defines"))
+    }
+}
+
+/// Decode one RFC 7951 object through `nodes`, dropping position nodes.
+fn decode_object(
+    obj: &Map<String, Value>,
+    nodes: &[Node],
+    at: &str,
+) -> Result<Map<String, Value>, CodecError> {
+    for name in obj.keys() {
+        if !nodes.iter().any(|n| n.name == name) {
+            return fail(format!("{at}: `{name}` is not a node of the module"));
+        }
+    }
+    let mut out = Map::new();
+    for node in nodes {
+        let path = format!("{at}/{}", node.name);
+        let Origin::Field(field) = node.origin else {
+            // A position is consumed by the list that holds this entry.
+            continue;
+        };
+        match obj.get(node.name) {
+            Some(value) => {
+                out.insert(field.to_string(), decode_node(node, value, &path)?);
+            }
+            None => match node.body {
+                Body::Leaf {
+                    mandatory: true, ..
+                } => {
+                    return fail(format!("{path}: mandatory and absent"));
+                }
+                Body::List {
+                    when_empty: WhenEmpty::Written,
+                    ..
+                }
+                | Body::LeafList {
+                    when_empty: WhenEmpty::Written,
+                    ..
+                } => {
+                    out.insert(field.to_string(), Value::Array(Vec::new()));
+                }
+                Body::Map {
+                    when_empty: WhenEmpty::Written,
+                    ..
+                } => {
+                    out.insert(field.to_string(), Value::Object(Map::new()));
+                }
+                _ => {}
+            },
+        }
+    }
+    Ok(out)
+}
+
+/// Decode one node's RFC 7951 value into its plain JSON form.
+fn decode_node(node: &Node, value: &Value, path: &str) -> Result<Value, CodecError> {
+    match node.body {
+        Body::Leaf { ty, .. } => decode_scalar(ty, value, path),
+        Body::LeafList { ty, .. } => {
+            let items = as_array(value, path)?;
+            if items.is_empty() {
+                return fail(format!("{path}: an empty leaf-list is written as absent"));
+            }
+            Ok(Value::Array(
+                items
+                    .iter()
+                    .map(|v| decode_scalar(ty, v, path))
+                    .collect::<Result<Vec<_>, _>>()?,
+            ))
+        }
+        Body::List { key, children, .. } => {
+            let items = as_array(value, path)?;
+            if items.is_empty() {
+                return fail(format!("{path}: an empty list is written as absent"));
+            }
+            let position = children
+                .iter()
+                .find(|n| n.origin == Origin::Position)
+                .map(|n| n.name);
+            let mut keyed: Vec<(u64, Map<String, Value>)> = Vec::with_capacity(items.len());
+            let mut keys = std::collections::BTreeSet::new();
+            for (i, item) in items.iter().enumerate() {
+                let Value::Object(entry) = item else {
+                    return fail(format!("{path}[{i}]: not an object"));
+                };
+                let Some(key_value) = entry.get(key) else {
+                    return fail(format!("{path}[{i}]: no `{key}`"));
+                };
+                if !keys.insert(key_value.to_string()) {
+                    return fail(format!("{path}: `{key}` {key_value} appears twice"));
+                }
+                let place = match position {
+                    Some(p) => match entry.get(p).and_then(Value::as_u64) {
+                        Some(v) => v,
+                        None => return fail(format!("{path}[{i}]: no numeric `{p}`")),
+                    },
+                    None => (i + 1) as u64,
+                };
+                keyed.push((
+                    place,
+                    decode_object(entry, children, &format!("{path}[{i}]"))?,
+                ));
+            }
+            keyed.sort_by_key(|(place, _)| *place);
+            for (i, (place, _)) in keyed.iter().enumerate() {
+                if *place != (i + 1) as u64 {
+                    return fail(format!(
+                        "{path}: positions must run 1..={} without a gap; found {place} at {}",
+                        keyed.len(),
+                        i + 1
+                    ));
+                }
+            }
+            Ok(Value::Array(
+                keyed.into_iter().map(|(_, e)| Value::Object(e)).collect(),
+            ))
+        }
+        Body::Map {
+            key,
+            key_ty,
+            value: value_name,
+            value_ty,
+            ..
+        } => {
+            let items = as_array(value, path)?;
+            if items.is_empty() {
+                return fail(format!("{path}: an empty list is written as absent"));
+            }
+            let mut out = Map::new();
+            for (i, item) in items.iter().enumerate() {
+                let Value::Object(entry) = item else {
+                    return fail(format!("{path}[{i}]: not an object"));
+                };
+                if entry.len() != 2 {
+                    return fail(format!("{path}[{i}]: expected `{key}` and `{value_name}`"));
+                }
+                let name = match entry.get(key).map(|k| decode_scalar(key_ty, k, path)) {
+                    Some(Ok(Value::String(name))) => name,
+                    Some(Err(e)) => return Err(e),
+                    _ => return fail(format!("{path}[{i}]: no `{key}`")),
+                };
+                let Some(v) = entry.get(value_name) else {
+                    return fail(format!("{path}[{i}]: no `{value_name}`"));
+                };
+                if out
+                    .insert(name.clone(), decode_scalar(value_ty, v, path)?)
+                    .is_some()
+                {
+                    return fail(format!("{path}: `{name}` appears twice"));
+                }
+            }
+            Ok(Value::Object(out))
+        }
+    }
+}
+
+/// Decode one scalar back into its plain JSON form.
+fn decode_scalar(ty: Type, value: &Value, path: &str) -> Result<Value, CodecError> {
+    match (ty, value) {
+        (Type::Uint32, Value::Number(n)) => match n.as_u64() {
+            Some(v) if u32::try_from(v).is_ok() => Ok(Value::from(v)),
+            _ => fail(format!("{path}: {n} is not a uint32")),
+        },
+        (Type::Uint64, Value::String(s)) => {
+            // RFC 7950 section 9.2.1 lexical form, restricted to what this
+            // module writes: decimal digits, no sign, no leading zero.
+            let canonical = !s.is_empty()
+                && s.bytes().all(|b| b.is_ascii_digit())
+                && (s == "0" || !s.starts_with('0'));
+            match s.parse::<u64>() {
+                Ok(v) if canonical => Ok(Value::from(v)),
+                _ => fail(format!("{path}: \"{s}\" is not a uint64 string")),
+            }
+        }
+        (Type::Boolean, Value::Bool(b)) => Ok(Value::Bool(*b)),
+        (Type::String | Type::DateAndTime, Value::String(s)) => Ok(Value::String(s.clone())),
+        (Type::Severity | Type::FindingKind | Type::CountLabel, Value::String(s)) => {
+            check_enumerated(ty, s, path)?;
+            Ok(Value::String(s.clone()))
+        }
+        _ => fail(format!(
+            "{path}: {value} is not the RFC 7951 form of a {ty:?}"
+        )),
+    }
+}
+
 // ── The module text ────────────────────────────────────────────────────
 
 /// Escape a string for a YANG double-quoted string ([RFC 7950 section 6.1.3](https://www.rfc-editor.org/rfc/rfc7950#section-6.1.3)).
@@ -755,7 +1217,7 @@ mod tests {
     use serde_json::Value;
 
     use super::*;
-    use crate::analysis::{CAPTURE_ANALYSIS_SCHEMA_VERSION, CaptureAnalysis, Evidence, Finding};
+    use crate::analysis::{CAPTURE_ANALYSIS_SCHEMA_VERSION, Evidence, Finding};
 
     /// An analysis with every optional field present and every collection
     /// non-empty, so every node has something to encode.
@@ -1033,6 +1495,161 @@ mod tests {
             text.lines()
                 .all(|l| l.chars().count() <= WIDTH || !l.contains(' ')),
             "a line runs past the page width"
+        );
+    }
+
+    /// The one member of an RFC 7951 document.
+    fn body(doc: &Value) -> &Value {
+        &doc["sipnab-diagnosis:capture-analysis"]
+    }
+
+    /// [RFC 7951 section 6.1](https://www.rfc-editor.org/rfc/rfc7951#section-6.1): every `uint64` is a JSON string and every
+    /// `uint32` stays a number.
+    #[test]
+    fn a_uint64_is_a_string_and_a_uint32_is_a_number() {
+        let doc = to_rfc7951(&populated()).expect("encodes");
+        let top = body(&doc);
+        assert_eq!(top["frames-read"], Value::from("5000000000"));
+        assert_eq!(top["dialogs-examined"], Value::from("3"));
+        assert_eq!(top["streams-examined"], Value::from("4"));
+        assert_eq!(top["schema-version"], Value::from(1));
+        let finding = &top["finding"][1];
+        assert_eq!(finding["occurrences"], Value::from("12"));
+        assert_eq!(finding["evidence-omitted"], Value::from("10"));
+        assert_eq!(finding["rank"], Value::from(2));
+        let evidence = &finding["evidence"][0];
+        assert_eq!(evidence["index"], Value::from(1));
+        assert_eq!(
+            evidence["count"],
+            serde_json::json!([
+                {"name": "rtp_packets", "value": "425"},
+                {"name": "streams", "value": "1"}
+            ])
+        );
+    }
+
+    /// [RFC 7951 section 4](https://www.rfc-editor.org/rfc/rfc7951#section-4): the top-level member is qualified by the module
+    /// name, and nothing below it is.
+    #[test]
+    fn only_the_top_level_member_is_qualified() {
+        let doc = to_rfc7951(&populated()).expect("encodes");
+        assert_eq!(
+            keys(&doc),
+            BTreeSet::from(["sipnab-diagnosis:capture-analysis"])
+        );
+        fn no_colon_below(v: &Value, at: &str) {
+            match v {
+                Value::Object(map) => {
+                    for (k, child) in map {
+                        assert!(!k.contains(':'), "{at}/{k} is qualified");
+                        no_colon_below(child, &format!("{at}/{k}"));
+                    }
+                }
+                Value::Array(items) => items.iter().for_each(|i| no_colon_below(i, at)),
+                _ => {}
+            }
+        }
+        no_colon_below(body(&doc), "");
+        // An identity in the same module takes the simple form (RFC 7951
+        // section 6.8), which is the plain JSON's own string.
+        assert_eq!(body(&doc)["finding"][0]["kind"], "undecodable_frames");
+    }
+
+    /// The document decodes back to the plain JSON it was encoded from.
+    #[test]
+    fn decode_inverts_encode() {
+        for analysis in [populated(), CaptureAnalysis::default()] {
+            let plain = serde_json::to_value(&analysis).expect("serializes");
+            let doc = to_rfc7951(&analysis).expect("encodes");
+            assert_eq!(decode(&doc).expect("decodes"), plain);
+        }
+    }
+
+    /// The decoder refuses what RFC 7951 and the module forbid, rather than
+    /// repairing it: the mirror test is only as strong as this.
+    #[test]
+    fn the_decoder_refuses_what_the_encoding_forbids() {
+        let good = to_rfc7951(&populated()).expect("encodes");
+        /// What the case breaks, and how.
+        type Corruption = (&'static str, fn(&mut Value));
+        let corrupt: [Corruption; 9] = [
+            ("a uint64 as a number", |d| {
+                d["sipnab-diagnosis:capture-analysis"]["frames-read"] = Value::from(5);
+            }),
+            ("a uint32 as a string", |d| {
+                d["sipnab-diagnosis:capture-analysis"]["schema-version"] = Value::from("1");
+            }),
+            ("an unqualified top-level member", |d| {
+                let v = d
+                    .as_object_mut()
+                    .and_then(|m| m.remove("sipnab-diagnosis:capture-analysis"))
+                    .unwrap_or_default();
+                d["capture-analysis"] = v;
+            }),
+            ("a second top-level member", |d| {
+                d["source_exhausted"] = Value::Bool(true);
+            }),
+            ("an unknown member", |d| {
+                d["sipnab-diagnosis:capture-analysis"]["surprise"] = Value::from(1);
+            }),
+            ("an unknown identity", |d| {
+                d["sipnab-diagnosis:capture-analysis"]["finding"][0]["kind"] =
+                    Value::from("no_such_kind");
+            }),
+            ("a gap in rank", |d| {
+                d["sipnab-diagnosis:capture-analysis"]["finding"][1]["rank"] = Value::from(3);
+            }),
+            ("a missing mandatory leaf", |d| {
+                if let Some(m) = d["sipnab-diagnosis:capture-analysis"].as_object_mut() {
+                    m.remove("complete");
+                }
+            }),
+            ("a uint64 with a leading zero", |d| {
+                d["sipnab-diagnosis:capture-analysis"]["frames-read"] = Value::from("05");
+            }),
+        ];
+        assert!(decode(&good).is_ok(), "sanity: the document itself decodes");
+        for (what, f) in corrupt {
+            let mut bad = good.clone();
+            f(&mut bad);
+            assert!(decode(&bad).is_err(), "the decoder accepted {what}");
+        }
+    }
+
+    /// The ranking survives the trip even when a consumer reorders the list.
+    ///
+    /// [RFC 7950 section 7.7.7](https://www.rfc-editor.org/rfc/rfc7950#section-7.7.7) lets a YANG tool reorder state data, so the
+    /// decoder must restore order from `rank` and `index` and never from
+    /// array position.
+    #[test]
+    fn the_decoder_orders_by_rank_and_index_not_by_position() {
+        let plain = serde_json::to_value(populated()).expect("serializes");
+        let mut doc = to_rfc7951(&populated()).expect("encodes");
+        let top = &mut doc["sipnab-diagnosis:capture-analysis"];
+        if let Some(findings) = top["finding"].as_array_mut() {
+            findings.reverse();
+        }
+        if let Some(evidence) = top["finding"][0]["evidence"].as_array_mut() {
+            evidence.reverse();
+        }
+        assert_eq!(decode(&doc).expect("decodes"), plain);
+    }
+
+    /// A character YANG's string type cannot carry is written as U+FFFD, and
+    /// nothing else about the string changes.
+    #[test]
+    fn a_character_yang_cannot_carry_becomes_the_replacement_character() {
+        assert_eq!(yang_string("a\u{1b}[31mb"), "a\u{FFFD}[31mb");
+        assert_eq!(yang_string("x\u{FFFE}y\u{FFFF}"), "x\u{FFFD}y\u{FFFD}");
+        let kept = "tab\tcr\rlf\n del\u{7f} nel\u{85} \u{10FFFD}";
+        assert_eq!(yang_string(kept), kept, "legal characters are untouched");
+
+        let mut analysis = populated();
+        analysis.findings[1].evidence[0].note = Some("bell\u{7}".to_string());
+        let doc = to_rfc7951(&analysis).expect("encodes");
+        assert_eq!(
+            body(&doc)["finding"][1]["evidence"][0]["note"],
+            "bell\u{FFFD}"
         );
     }
 }

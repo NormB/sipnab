@@ -304,7 +304,7 @@ fn the_ranked_output_is_identical_across_runs() {
 /// scribbles over — silently, because the report was still generated.
 #[test]
 fn the_analyze_flags_require_non_interactive_mode() {
-    for flag in ["--analyze", "--json-analyze"] {
+    for flag in ["--analyze", "--json-analyze", "--yang-analyze"] {
         let (_, stderr, code) = run(&["-I", &clean_call(), flag]);
         assert_ne!(code, 0, "{flag} without -N must be refused");
         assert!(
@@ -325,7 +325,7 @@ fn the_analyze_flags_require_non_interactive_mode() {
 #[cfg(feature = "mcp")]
 #[test]
 fn the_analyze_flags_are_refused_under_mcp() {
-    for flag in ["--analyze", "--json-analyze"] {
+    for flag in ["--analyze", "--json-analyze", "--yang-analyze"] {
         let (_, stderr, code) = run(&["-N", "--mcp", "-I", &clean_call(), flag]);
         assert_ne!(code, 0, "{flag} under --mcp must be refused");
         assert!(

@@ -413,15 +413,18 @@ else
 	esac
 fi
 
-# -- Hard gate: the YANG module is valid YANG ---------------------------------
+# -- Hard gate: the YANG module, and real RFC 7951 exports -------------------
 #
 # `yang/sipnab-diagnosis@<revision>.yang` is generated from the analysis's own
 # tables, and tests/yang_module_test.rs holds the committed file equal to that
 # generator. What no Rust test can say is whether the TEXT is valid YANG --
 # that takes an implementation that did not write it. scripts/check-yang.py
-# asks two: `pyang --lint` and `yanglint` compile the newest revision, and
+# asks two: `pyang --lint` and `yanglint` compile the newest revision,
 # `pyang --check-update-from` holds each new revision to the one before it
-# (RFC 7950 section 11: a published module may only grow).
+# (RFC 7950 section 11: a published module may only grow), and `yanglint -t
+# data` validates every document tests/yang_export_test.rs writes -- CLI, REST
+# and MCP, per fixture. libyang refuses a uint64 written as a JSON number,
+# which is RFC 7951 section 6.1 and the rule the encoder exists to keep.
 #
 # NOT CHECKED rather than blocking when either tool is absent -- the rule zola,
 # tmux and the prose linters follow in this hook. A contributor without libyang
@@ -433,7 +436,7 @@ if [ ! -f "$YANG_GATE" ]; then
 	printf '%b  YANG: NOT CHECKED -- scripts/check-yang.py is missing%b\n' "$YELLOW" "$NC"
 	printf '    CI validates the module and blocks there.\n'
 else
-	printf '  YANG module (pyang, yanglint) ... '
+	printf '  YANG module + RFC 7951 exports (pyang, yanglint) ... '
 	set +e
 	YANG_OUTPUT=$(python3 "$YANG_GATE" 2>&1)
 	YANG_RC=$?
@@ -454,7 +457,7 @@ else
 		printf '%s\n' "$YANG_OUTPUT" | head -24 | sed 's/^/  /'
 		printf '  Full output: %s\n' "$YANG_LOG"
 		printf '\n'
-		printf '%bPush blocked: the YANG module is not valid.%b\n' "$RED" "$NC"
+		printf '%bPush blocked: the YANG module or an export is not valid.%b\n' "$RED" "$NC"
 		printf 'Reproduce with:\n'
 		printf '    python3 scripts/check-yang.py\n'
 		printf '\n'

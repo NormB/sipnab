@@ -759,11 +759,22 @@ could expand it.
 
 | Name | Type | Legal values | If omitted |
 |---|---|---|---|
-| `format` | string? | `"json"`, `"markdown"` or `"text"`. Anything else fails with `unknown format 'x', expected json\|markdown\|text`. | `"json"`. |
+| `format` | string? | `"json"`, `"yang-json"`, `"markdown"` or `"text"`. Anything else fails with `unknown format 'x', expected json\|yang-json\|markdown\|text`. | `"json"`. |
 
 Frames read comes from the same process-global counter the Prometheus scrape
 reports (`sipnab_capture_packets_total`), so the denominator here is the one
 every other number in the run measures against.
+
+**`yang-json`** answers the same analysis as `json`, encoded per
+[RFC 7951](https://www.rfc-editor.org/rfc/rfc7951) against the YANG module
+`sipnab-diagnosis`, which `sipnab --print-yang-module` prints. The document is
+the first content block, and its one top-level member is
+`sipnab-diagnosis:capture-analysis`. RFC 7951 allows no other member there, so
+`source_exhausted` and `source_stopped_early` arrive in a second block instead
+of inside the document. `complete` inside the document still reads `false`
+while the capture loads, as it does in `json`.
+The YANG section of [Output formats](output-formats.md) lists every difference
+between the two encodings.
 
 A capture with no findings still answers with the clean line rather than an
 empty body, because silence is indistinguishable from the tool not having run:

@@ -5561,7 +5561,12 @@ fn packaging_scripts_reference_existing_paths() {
     // all). The step's copy destination, `website/static/yang`, is a deploy
     // output and sits in GENERATED. Attributed by measurement: with HEAD's
     // ci.yml swapped back in the scan reads 105, with HEAD's pages.yml 107.
-    const EXPECTED_REFERENCES: usize = 108;
+    // 108 -> 109: one, in `.github/workflows/ci.yml`, whose Test step now
+    // sets the directory `tests/yang_export_test.rs` writes its RFC 7951
+    // exports to, and names that test in its comment. Attributed by
+    // measurement: with the previous ci.yml swapped back in, the scan reads
+    // 108.
+    const EXPECTED_REFERENCES: usize = 109;
     assert_eq!(
         checked, EXPECTED_REFERENCES,
         "packaging path scan saw {checked} references, expected \

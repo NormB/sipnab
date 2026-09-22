@@ -157,7 +157,7 @@ thirteen in [`.githooks/pre-push`](../../.githooks/pre-push), each marked
 `clippy --workspace --all-features --all-targets`, `cargo doc` with `-D warnings`,
 a `fuzz` workspace check, the release-delivery tests, the reduced feature
 combinations, CI's full thirteen-combination feature matrix, the non-Linux arm
-of every platform cfg, the validity of the YANG module, the test count
+of every platform cfg, the YANG module and its [RFC 7951](https://www.rfc-editor.org/rfc/rfc7951) exports, the test count
 a commit message claims, the refusal to tag `v*` at a commit whose CI is not
 green, the prose linters, and a `zola build` of the website. Plus the conditional corpus gate, and the CI jobs behind
 them.

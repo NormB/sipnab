@@ -3714,7 +3714,11 @@ fn no_documentation_table_repeats_a_row() {
     // its site mirror.
     // 927 -> 932: the client-examples table and its site mirror, plus three
     // tables in the new library site mirror. Measured by this gate.
-    const EXPECTED_TABLES: usize = 932;
+    // 932 -> 936: the RFC 7951 export. The encoding-differences table in
+    // docs/output-formats.md and the `format` parameter table under
+    // `GET /v1/report` in docs/rest-api.md, each counted once in docs/ and
+    // once in its site mirror.
+    const EXPECTED_TABLES: usize = 936;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

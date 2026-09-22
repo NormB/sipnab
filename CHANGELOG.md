@@ -29,6 +29,16 @@ entry that carries them.
   when a kind is added without it. `pyang --lint` and `yanglint` check it in
   CI and in the pre-push hook, which reports NOT CHECKED where neither tool is
   installed.
+- **The capture analysis as [RFC 7951](https://www.rfc-editor.org/rfc/rfc7951) JSON, on every door.**
+  `--yang-analyze`, `GET /v1/report?format=yang-json` (answered as
+  `application/yang-data+json`) and MCP `get_capture_report` with
+  `format: "yang-json"` write the same analysis as a document that validates
+  against `sipnab-diagnosis`. Integers wider than 32 bits are strings, as RFC
+  7951 requires, and each finding carries an explicit `rank`. A test decodes
+  every door's document and compares it with the plain JSON of the same run,
+  and CI hands every door's output to `yanglint -t data`. A character YANG
+  cannot carry, such as a control character in a reason phrase, becomes
+  U+FFFD. sipnab runs no NETCONF or RESTCONF server.
 - **A filtered analysis says it was filtered.** When `--filter` or a
   diagnostic alias narrowed the dialogs, `--json-analyze` carries `filter`,
   the expression that ran, and `--analyze` prints the same sentence. Before,
