@@ -513,7 +513,14 @@ pub(in crate::tui) fn render_app(
             let max_scroll = help::help_line_count().saturating_sub(visible) as u16;
             let clamped = app.help_scroll.min(max_scroll);
             fb.help_scroll = Some(clamped);
-            help::render_help(frame, main_area, &app.theme, &app.version, clamped);
+            help::render_help(
+                frame,
+                main_area,
+                &app.theme,
+                &app.version,
+                &app.libpcap,
+                clamped,
+            );
         }
         View::Statistics => {
             fb.stats_scroll = Some(render_statistics(frame, main_area, app, ds, ss));

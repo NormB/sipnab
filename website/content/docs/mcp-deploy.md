@@ -126,6 +126,7 @@ itself):
    ```bash
    sipnab --version
    # sipnab 0.5.184 (...) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,vcon,bpf
+   # libpcap version 1.10.5 (with TPACKET_V3); alternate capture backends named: none
    ```
 
    If `mcp` is missing you have a source build without features — rebuild
@@ -1288,6 +1289,10 @@ Then confirm the build can do what you are about to ask of it:
   }
 }
 ```
+
+A real answer also carries a `libpcap` block: the libpcap this server
+captures through and the alternate capture backends its banner names.
+[`server_capabilities`](@/docs/mcp-tools.md#server-capabilities) walks through it.
 
 Asking for TLS decryption on a build without `tls` otherwise fails in a way
 that reads like a key problem. `features` describes the binary you are talking

@@ -1967,6 +1967,11 @@ curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" http://127.0.0.1:8080/v1/capa
   "can_plugins": false,
   "runtime": {
     "api_allow_relay_query": false
+  },
+  "libpcap": {
+    "banner": "libpcap version 1.10.5 (with TPACKET_V3)",
+    "version": "1.10.5",
+    "named_backends": []
   }
 }
 ```
@@ -1982,9 +1987,20 @@ missing feature, and a program that blurs the two retries something that can
 never work. `api_allow_relay_query` is off unless this run may transmit a relay
 query.
 
+**`libpcap` names the library this process captures through.** It is
+`pcap_lib_version()` asked at runtime, so a gnu build or a package reports the
+host's libpcap (the sample above is Debian 13's) while a static musl build
+reports the 1.10.6 it carries. `named_backends` lists the alternate capture
+backends (`netmap`, `dpdk`, `dag`, `snf`) that the banner names, and it is
+`[]` when the banner names none. That is not proof the library has none: libpcap names netmap in
+its banner only from 1.10.6, and DPDK only in a DPDK-only build. See [which
+capture backends an artifact can
+reach](install.md#which-capture-backends-an-artifact-can-reach).
+
 The MCP tool `server_capabilities` returns the same feature set from the same
-`compiled_features` list, so the two surfaces cannot claim different builds of
-one binary.
+`compiled_features` list, and the same `libpcap` block from the same report
+the second line of `sipnab --version` prints, so the surfaces cannot claim
+different builds of one binary or different libraries behind it.
 
 ### GET /v1/stats
 

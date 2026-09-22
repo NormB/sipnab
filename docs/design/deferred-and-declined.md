@@ -288,7 +288,7 @@ The argument below does not depend on the number. Four
 of them touch something other than the stores: `export_capture`
 ([`server.rs:7343`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L7343)) writes a pcap, `export_audio`
 ([`server.rs:7396`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L7396)) writes a WAV, `list_captures`
-([`server.rs:7127`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L7127)) reads a directory, and
+([`server.rs:7157`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L7157)) reads a directory, and
 `shutdown_server` ([`server.rs:7869`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L7869)) ends the process.
 
 **None of them mutates a store.** `shutdown_server` reads `dialog_store` and
@@ -738,7 +738,7 @@ documents *"the tool server; cloned per HTTP session"* and
 built once at startup ([`servers.rs:224-249`](https://github.com/NormB/sipnab/blob/main/src/app/servers.rs#L224-L249)) with
 `name` taken from `cli.primary_input()` — which returns only the *first* `-I`
 argument ([`cli.rs:1363-1365`](https://github.com/NormB/sipnab/blob/main/src/cli.rs#L1363-L1365)). So after an `open_capture`,
-`capture_status` ([`server.rs:5621`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5621)) would keep naming
+`capture_status` ([`server.rs:5648`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5648)) would keep naming
 the old file, in the calling session as well as every other one, unless the
 field moves behind a shared lock. Two agents on one HTTP server would read the
 same store and disagree about which capture it is.
@@ -818,7 +818,7 @@ decision was taken, not as it stands now:
    a `SipnabMcp` cloned per HTTP session
    ([`transport.rs:192`](https://github.com/NormB/sipnab/blob/main/src/mcp/transport.rs#L192)). Until it moves behind
    a shared lock, a swap leaves `capture_status`
-   ([`server.rs:5621`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5621)) naming the old file in the
+   ([`server.rs:5648`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5648)) naming the old file in the
    calling session and in every other one.
 2. **Capture identity must be visible on the wire.** `DialogStore::generation`
    ([`dialog_store.rs:709`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L709)) is bumped by every

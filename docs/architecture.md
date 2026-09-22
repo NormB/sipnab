@@ -101,6 +101,7 @@ src/
 ├── capture/              # sources + L2-L4
 │   ├── mod.rs            # PacketProcessor: decap, IP-frag/TCP reassembly, TCP SIP framing
 │   ├── live.rs / file.rs / pcap_reader.rs   # libpcap live, libpcap file, pure-Rust reader
+│   ├── libpcap.rs        # which libpcap runs + the backends its banner names (--version, capabilities)
 │   ├── channel.rs        # capped packet channel (capture → processing)
 │   ├── parse.rs          # link/IP/transport decap → ParsedPacket
 │   ├── reassembly.rs     # IPv4/IPv6 fragments + TCP segments (RFC-annotated)

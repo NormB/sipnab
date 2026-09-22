@@ -546,6 +546,30 @@ irrelevant. Look outside sipnab:
 - **A tap or SPAN port that is already oversubscribed** — if the mirror source is
   dropping, nothing on the capture host can recover it.
 
+### A different capture backend: `netmap:`
+
+libpcap can read through netmap instead of the kernel's packet socket, and the
+device name selects it: `--device netmap:eth0`. The libpcap behind a binary
+decides whether it can, and that libpcap differs by artifact. [Which capture
+backends an artifact can
+reach](@/docs/install.md#which-capture-backends-an-artifact-can-reach) has the table,
+and the second line of `sipnab --version` names the libpcap your binary
+runs and the alternate backends its banner names. On 0.5.183 and earlier the
+musl tarballs' netmap module speaks only netmap API 13, which current netmap
+kernel modules refuse, and 0.5.184 moves to API 14. That page has the
+details, including a known crash when you stop a `netmap:` capture that has
+captured traffic.
+
+> **Warning:** use a `netmap:` device only on an interface dedicated to
+> capture, such as a SPAN or mirror port, never on one the host needs. netmap
+> takes the interface's rings away from the kernel, so the host stops
+> receiving that interface's traffic for as long as the capture runs.
+> Measured on a veth pair: a UDP socket on the host received 0 of 5 datagrams
+> during a `netmap:` capture, and 5 of 5 during an ordinary capture on the same
+> interface. On the interface carrying your SIP service, that is an outage.
+
+No other measurement on this page went through netmap.
+
 ---
 
 ## 8. Offline: `--cores`

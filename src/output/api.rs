@@ -1185,16 +1185,20 @@ async fn health_check() -> &'static str {
 ///
 /// # Returns
 ///
-/// 200 with the compiled feature set and the run's opt-ins; 401/503 from the
-/// guard.
+/// 200 with the compiled feature set, the run's opt-ins and the running
+/// libpcap; 401/503 from the guard.
+///
+/// # Side effects
+///
+/// One call into libpcap (`pcap_lib_version()`); mutates the rate limiter.
 #[utoipa::path(
     get,
     path = "/v1/capabilities",
     tag = "operations",
     summary = "Server capabilities",
-    description = "The build's compiled feature set — the same canonical list `--version` and the MCP `server_capabilities` tool report — and the REST server's runtime opt-ins.\n\nA program reads this before it asks: a capability absent from `features` is one this binary cannot do, and a runtime opt-in that is off is one this run did not turn on. A mid-integration refusal would blur those two facts, and this route keeps them apart.",
+    description = "The build's compiled feature set — the same canonical list `--version` and the MCP `server_capabilities` tool report — the REST server's runtime opt-ins, and the libpcap this process runs.\n\nA program reads this before it asks: a capability absent from `features` is one this binary cannot do, and a runtime opt-in that is off is one this run did not turn on. A mid-integration refusal would blur those two facts, and this route keeps them apart.\n\n`libpcap` is `pcap_lib_version()` as the running process sees it, with the alternate capture backends (`netmap`, `dpdk`, `dag`, `snf`) its banner names. A backend missing from `named_backends` is unconfirmed rather than absent: libpcap names DPDK only in a DPDK-only build.",
     responses(
-        (status = 200, description = "The build's features and the run's opt-ins.", body = schema::Capabilities),
+        (status = 200, description = "The build's features, the run's opt-ins and the running libpcap.", body = schema::Capabilities),
         (status = 401, description = "No bearer credential, or one this server does not accept.", body = schema::ProblemJson, content_type = "application/problem+json"),
         (status = 503, description = "Over the per-source-IP rate limit of 100 requests per second.", body = schema::ProblemJson, content_type = "application/problem+json"),
     )
@@ -1224,6 +1228,9 @@ async fn get_capabilities(
         runtime: schema::CapabilitiesRuntime {
             api_allow_relay_query: state.relay_query.permit.is_some(),
         },
+        // The one report `--version`, the TUI help and MCP give, so no two
+        // surfaces can describe different libraries.
+        libpcap: schema::Libpcap::from(&crate::capture::libpcap::running()),
     }))
 }
 
@@ -4874,6 +4881,38 @@ pub mod schema {
         pub can_plugins: bool,
         /// The REST server's runtime opt-ins.
         pub runtime: CapabilitiesRuntime,
+        /// The libpcap this process runs and the alternate capture backends
+        /// its banner names — the report `--version` prints.
+        pub libpcap: Libpcap,
+    }
+
+    /// The libpcap this server runs, as `pcap_lib_version()` reports it. The
+    /// same fields the MCP `server_capabilities` tool returns, from the one
+    /// `capture::libpcap::running` report.
+    #[derive(Debug, Clone, serde::Serialize, ToSchema)]
+    pub struct Libpcap {
+        /// `pcap_lib_version()` verbatim.
+        #[schema(example = "libpcap version 1.10.6 (64-bit time_t, with TPACKET_V3 and netmap)")]
+        pub banner: String,
+        /// The version after `libpcap version`, or null when the banner has
+        /// none.
+        #[schema(example = "1.10.6")]
+        pub version: Option<String>,
+        /// Alternate capture backends the banner names (`netmap`, `dpdk`,
+        /// `dag`, `snf`). Empty means the banner names none, which does not
+        /// prove the library has none: libpcap names DPDK only in a DPDK-only
+        /// build.
+        pub named_backends: Vec<String>,
+    }
+
+    impl From<&crate::capture::libpcap::LibpcapReport> for Libpcap {
+        fn from(r: &crate::capture::libpcap::LibpcapReport) -> Self {
+            Self {
+                banner: r.banner.clone(),
+                version: r.version.clone(),
+                named_backends: r.named_backends.iter().map(|b| (*b).to_string()).collect(),
+            }
+        }
     }
 
     /// The REST server's startup opt-ins, each off by default, so a client can
@@ -6248,6 +6287,7 @@ impl utoipa::Modify for BearerAuth {
         schema::ProblemJson,
         schema::Capabilities,
         schema::CapabilitiesRuntime,
+        schema::Libpcap,
         schema::CorrelatedLeg,
         schema::Correlated,
         schema::CallTreeLeg,
@@ -8740,6 +8780,52 @@ mod tests {
             .collect();
         want.sort();
         assert_eq!(got, want);
+    }
+
+    /// `GET /v1/capabilities` names the libpcap this process runs — the same
+    /// report `--version` and MCP `server_capabilities` give, from the one
+    /// `capture::libpcap::running` — so a client can learn whether the library
+    /// behind this server names netmap without shell access to run `strings`.
+    #[tokio::test]
+    async fn capabilities_reports_the_running_libpcap() {
+        let state = make_state();
+        let app = build_router(state);
+
+        let resp = app
+            .oneshot(test_request("/v1/capabilities"))
+            .await
+            .expect("oneshot");
+        let body = body_to_string(resp.into_body()).await;
+        let parsed: Value = serde_json::from_str(&body).expect("valid JSON");
+        let want = crate::capture::libpcap::running();
+        assert_eq!(parsed["libpcap"]["banner"], want.banner.as_str());
+        assert_eq!(
+            parsed["libpcap"]["version"],
+            serde_json::json!(want.version)
+        );
+        assert_eq!(
+            parsed["libpcap"]["named_backends"],
+            serde_json::json!(want.named_backends)
+        );
+    }
+
+    /// The conversion carries every field, driven by the published musl
+    /// banner so `named_backends` is non-empty: the host running this test
+    /// links a distribution libpcap that names none, and a conversion that
+    /// dropped the list would pass against it.
+    #[test]
+    fn the_libpcap_component_carries_what_the_banner_names() {
+        let report = crate::capture::libpcap::parse_banner(
+            "libpcap version 1.10.6 (64-bit time_t, with TPACKET_V3 and netmap)",
+        );
+        assert_eq!(
+            serde_json::to_value(schema::Libpcap::from(&report)).expect("serializes"),
+            serde_json::json!({
+                "banner": "libpcap version 1.10.6 (64-bit time_t, with TPACKET_V3 and netmap)",
+                "version": "1.10.6",
+                "named_backends": ["netmap"],
+            })
+        );
     }
 
     /// The response carries the REST opt-ins the operator set, so a client can

@@ -129,12 +129,22 @@ rustc --print deployment-target --target aarch64-apple-darwin
 libpcap selects a capture backend from the device name, and sipnab passes the
 name through: `--device netmap:eth0` reaches libpcap's netmap module when the
 libpcap behind that binary carries one. **Which artifact you installed
-decides whether it was**, and the two families differ:
+decides whether it was**, and the three families differ:
 
 | Artifact family | libpcap | netmap | DPDK | AF_XDP |
 |---|---|---|---|---|
-| `*-linux-musl.tar.gz` | statically linked, 1.10.6 | yes | no | no |
-| `*-linux-gnu.tar.gz`, `.deb`, `.rpm`, Docker image | the host's, at runtime | whatever your distribution built | almost never | no |
+| `*-linux-musl.tar.gz` | statically linked, 1.10.6 | compiled in: netmap API 14 from 0.5.184, API 13 on 0.5.183 and earlier (see below) | no | no |
+| `*-linux-gnu.tar.gz`, `.deb`, `.rpm`, Docker image, Homebrew on Linux | the host's, at runtime | whatever your distribution built | almost never | no |
+| `*-apple-darwin.tar.gz`, Homebrew on macOS | the one macOS ships, `/usr/lib/libpcap.A.dylib`, at runtime | no | no | no |
+
+> **Warning:** capture on a `netmap:` device only on an interface dedicated to
+> capture, such as a SPAN or mirror port, never on one the host needs.
+> libpcap's netmap module takes the interface's rings away from the kernel, so
+> the host stops receiving that interface's traffic for as long as the capture
+> runs. Measured on a veth pair: a UDP socket on the host received 0 of 5
+> datagrams during a `netmap:` capture, and 5 of 5 during an ordinary capture
+> on the same interface. Point it at the interface carrying your SIP service
+> and the service goes dark until sipnab exits.
 
 Debian and Ubuntu build libpcap without netmap, so the `.deb`, the `.rpm` and
 the Docker image answer `No such device exists` for a `netmap:` name. The
@@ -143,10 +153,61 @@ a different error, and the difference is the whole point: the first says the
 module is absent, the second says the module tried and your kernel has no
 netmap device.
 
-Neither family reaches DPDK, and no libpcap has an AF_XDP backend at all, so
-an `xdp:` name is never a capture path.
+**On 0.5.183 and earlier, the musl tarballs' netmap module does not work
+with a current netmap kernel module.** Those builds compiled libpcap against
+netmap's `v13.0` headers, which speak netmap API 13, and a netmap module built
+from current netmap sources accepts API 14 and later. On Debian 13
+(kernel 6.12) the open fails with
+`nm_open [948] NIOCREGIF failed: Invalid argument netmap:<iface>`, and the
+kernel log says `Minimum supported API is 14 (requested 13)`. netmap `v13.0`
+itself no longer compiles against that kernel, so there is no older module to
+pair it with. The same libpcap 1.10.6 built against current netmap headers
+captures through `netmap:` on that host, and the 0.5.184 build uses them:
+its published x86_64-musl binary captured 5 of 5 SIP messages through
+`netmap:` there. On 0.5.183 and earlier, treat the musl netmap column as not
+usable.
 
-Check what your own binary carries:
+One known defect remains: stopping a `netmap:` capture after it has captured
+traffic can crash sipnab at shutdown, after it has written the messages it
+captured. An idle `netmap:` capture stops cleanly. The crash is under
+investigation.
+
+macOS builds libpcap on BPF alone, with netmap and DPDK both left out, and
+Homebrew on macOS installs the same darwin tarball rather than bringing a
+libpcap of its own. A `netmap:` or `dpdk:` name on a Mac reaches nothing.
+
+No artifact sipnab publishes carries DPDK, and no libpcap has an AF_XDP
+backend at all, so an `xdp:` name is never a capture path.
+
+Ask sipnab what its own binary runs. The second line of `--version` is the
+libpcap it loaded, asked of the library at runtime rather than recorded at
+build time, so on a gnu build it names your host's library:
+
+```bash
+sipnab --version
+```
+
+On a musl tarball that line reads:
+
+```text
+libpcap version 1.10.6 (64-bit time_t, with TPACKET_V3 and netmap); alternate capture backends named: netmap
+```
+
+and on Debian 13's libpcap:
+
+```text
+libpcap version 1.10.5 (with TPACKET_V3); alternate capture backends named: none
+```
+
+A backend the banner does not name remains unconfirmed rather than absent. libpcap
+puts netmap in its banner only from 1.10.6, and names DPDK only in a build
+that captures from DPDK alone. The same report is the `libpcap` block of the
+MCP [`server_capabilities`](mcp-tools.md#server_capabilities) tool and of the
+REST [`GET /v1/capabilities`](rest-api.md#get-v1capabilities) route, and it
+sits under the version in the TUI help view (F1).
+
+A sipnab that predates the report prints only the first line. For one of
+those, look for the banner yourself:
 
 ```bash
 strings "$(command -v sipnab)" | grep 'libpcap version'
@@ -636,17 +697,24 @@ report wants:
 sipnab -D
 ```
 
-`--version` lists the Cargo features compiled into the binary, e.g.
+`--version` lists the Cargo features compiled into the binary, and on a
+second line the libpcap it is running, e.g.
 
 ```text
 sipnab 0.5.184 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf,vcon
+libpcap version 1.10.5 (with TPACKET_V3); alternate capture backends named: none
 ```
 
 This is the fastest way to confirm a build carries the feature set
-you expected (e.g. that `mcp-http` is present on a server build).
+you expected (e.g. that `mcp-http` is present on a server build). The second
+line names the libpcap that decides whether a `netmap:` device can work — see
+[which capture backends an artifact can
+reach](#which-capture-backends-an-artifact-can-reach). `-V` prints only the
+first line.
 
 The list differs by artifact, and deliberately. The example above is a
-`*-linux-gnu` release binary: those carry `bpf`, the uprobe backend that can
+`*-linux-gnu` release binary on a Debian 13 host, whose libpcap names no
+alternate backend. Those binaries carry `bpf`, the uprobe backend that can
 report the peer address a TLS session went out to. The static musl tarballs and
 the macOS builds do not — musl has no room under the published size ceiling and
 `aya` is Linux-only — so on those, `--uprobe-tls` falls back to the `tracefs`

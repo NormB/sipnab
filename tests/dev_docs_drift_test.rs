@@ -705,7 +705,12 @@ fn linked_code_targets_exist() {
     // spawn harness uses, so a SIGKILLed child no longer drops its coverage.
     // Attributed by counting every page under `docs/internals/` against HEAD:
     // testing.md moved 96 -> 97 and no other page changed.
-    const EXPECTED_CODE_LINKS: usize = 432;
+    // 432 -> 433: one, in `docs/internals/subsystem-guide.md`, where the Source
+    // hop gains the paragraph on how a device name selects libpcap's backend
+    // and links `src/capture/libpcap.rs`, the one report every surface gives.
+    // Attributed by counting every page under `docs/internals/` against HEAD:
+    // subsystem-guide.md moved 32 -> 33 and no other page changed.
+    const EXPECTED_CODE_LINKS: usize = 433;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \

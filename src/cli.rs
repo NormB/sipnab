@@ -214,6 +214,33 @@ pub fn build_version() -> String {
     format!("{version} ({parts}){features_part}")
 }
 
+/// `--version`'s long form: [`build_version`], then the libpcap this process
+/// runs on a line of its own.
+///
+/// The build line is compile-time; the libpcap line is not, because a gnu
+/// build or a package loads whatever libpcap the host has, so it is asked at
+/// runtime through [`crate::capture::libpcap::running`] — the same report MCP
+/// `server_capabilities`, REST `GET /v1/capabilities` and the TUI help give.
+/// Its own line, so the build line every parser and doc sample reads stays
+/// byte-for-byte what it was; `-V` keeps printing only that line.
+///
+/// Example:
+/// - `0.5.183 (v0.5.183 b7a366b8) features: native,tui\nlibpcap version 1.10.6
+///   (64-bit time_t, with TPACKET_V3 and netmap); alternate capture backends
+///   named: netmap`
+///
+/// # Side effects
+///
+/// One call into libpcap (`pcap_lib_version()`).
+#[must_use]
+pub fn build_long_version() -> String {
+    format!(
+        "{}\n{}",
+        build_version(),
+        crate::capture::libpcap::running().summary_line()
+    )
+}
+
 /// List of Cargo features compiled into this binary.
 ///
 /// Walked statically via `cfg!(feature = "...")`. Every feature declared in
@@ -286,6 +313,7 @@ pub fn compiled_features() -> Vec<&'static str> {
 #[command(
     name = "sipnab",
     version = build_version(),
+    long_version = build_long_version(),
     about = "SIP & RTP capture, analysis, and security",
     long_about = "sipnab — SIP & RTP capture, analysis, and security tool.\n\n\
         Live capture, call-flow TUI and text search, with security analysis, RTP quality \
@@ -5307,6 +5335,36 @@ fn parse_quality_threshold(s: &str) -> Result<f64, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── --version and the libpcap it runs on (CT6b) ─────────────────────
+
+    /// `--version` names the libpcap this process runs, on a line of its own
+    /// under the build line, so the build line every parser and every doc
+    /// sample reads (`sipnab X.Y.Z (…) features: …`) is unchanged. `-V` stays
+    /// that one line.
+    #[test]
+    fn long_version_adds_the_running_libpcap_on_its_own_line() {
+        use clap::CommandFactory;
+        let cmd = Cli::command();
+        let build_line = format!("sipnab {}", build_version());
+
+        let long = cmd.render_long_version();
+        let lines: Vec<&str> = long.lines().collect();
+        assert_eq!(
+            lines,
+            vec![
+                build_line.as_str(),
+                crate::capture::libpcap::running().summary_line().as_str(),
+            ],
+            "--version must print the build line, then the running libpcap"
+        );
+
+        assert_eq!(
+            cmd.render_version().trim_end(),
+            build_line,
+            "-V is the short form and stays the single build line"
+        );
+    }
 
     // ── Help-heading placement (P2 item 1) ──────────────────────────────
 

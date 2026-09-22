@@ -32,6 +32,11 @@ pub mod input_set;
 #[cfg(feature = "tls")]
 pub mod keylog_source;
 
+// Which libpcap this process runs and which alternate backends it names —
+// the one answer `--version`, the TUI help, MCP and REST all report. Native
+// because it asks libpcap, which the wasm build does not link.
+#[cfg(feature = "native")]
+pub mod libpcap;
 #[cfg(feature = "native")]
 pub mod live;
 #[cfg(feature = "native")]

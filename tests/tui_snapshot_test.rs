@@ -928,6 +928,36 @@ mod tui_snapshots {
         );
     }
 
+    /// The help view names the libpcap this binary runs, on its own row under
+    /// the version, so an operator at the console can see whether its libpcap
+    /// names netmap before typing a `netmap:` device.
+    #[test]
+    fn help_view_shows_the_libpcap_line() {
+        let backend = TestBackend::new(120, 40);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new_test();
+        app.set_libpcap_for_test(
+            "libpcap version 1.10.6 (64-bit time_t, with TPACKET_V3 and netmap); \
+             alternate capture backends named: netmap",
+        );
+        app.handle_key(crossterm::event::KeyCode::F(1)); // open help
+
+        terminal.draw(|frame| app.render(frame)).unwrap();
+        let output = buffer_to_string(&terminal);
+        let rows: Vec<&str> = output.lines().collect();
+        let version_row = rows
+            .iter()
+            .position(|r| r.contains("v0.0.0-test"))
+            .unwrap_or_else(|| panic!("version row missing:\n{output}"));
+        assert!(
+            rows[version_row + 1].contains(
+                "libpcap version 1.10.6 (64-bit time_t, with TPACKET_V3 and netmap); \
+                 alternate capture backends named: netmap"
+            ),
+            "the row under the version must be the libpcap line:\n{output}"
+        );
+    }
+
     /// The F1 help exceeds an 80x40 screen, so it must be scrollable: bindings
     /// in later sections become visible after scrolling down.
     #[test]
