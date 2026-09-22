@@ -627,6 +627,10 @@ fn the_worker_starts_before_anything_that_could_stop_an_exec() {
 }
 
 /// Reads whatever `child` writes on stderr into a channel, line by line.
+///
+/// Gated with its only caller: without `hep` it is dead code, and the feature
+/// matrix builds every test with `-D warnings`.
+#[cfg(feature = "hep")]
 fn stderr_lines(child: &mut Child) -> crossbeam_channel::Receiver<String> {
     let stderr = child.stderr.take().expect("stderr piped");
     let (tx, rx) = crossbeam_channel::unbounded();
