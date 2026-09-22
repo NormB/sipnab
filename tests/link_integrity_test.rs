@@ -919,7 +919,11 @@ fn wiki_intra_docs_links_resolve() {
     // reference), docs/mcp-tools.md -1 (the rewritten `open_capture`
     // paragraph no longer links `list_captures`). Counted per file against
     // HEAD with this gate's rule; no other page moved.
-    const EXPECTED_WIKI_LINKS: usize = 794;
+    // 794 -> 795 by ESP with NULL encryption: docs/troubleshooting.md +1 (the
+    // new `ESP not NULL-encrypted` row points at the encapsulations page's
+    // "Tunnels above the link layer" section, which states the rule). Counted
+    // per file against HEAD with this gate's rule; no other page moved.
+    const EXPECTED_WIKI_LINKS: usize = 795;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe 6d in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

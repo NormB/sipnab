@@ -539,16 +539,16 @@ To check it, save the module this sipnab writes against, then hand both to
 `yanglint`:
 
 ```bash
-sipnab --print-yang-module > sipnab-diagnosis@2026-09-21.yang
+sipnab --print-yang-module > sipnab-diagnosis@2026-09-22.yang
 ```
 
 ```bash
-yanglint -t data sipnab-diagnosis@2026-09-21.yang analysis.json
+yanglint -t data sipnab-diagnosis@2026-09-22.yang analysis.json
 ```
 
 `--print-yang-module` prints the module this sipnab validates against. The
 repository commits the same file at
-[`yang/sipnab-diagnosis@2026-09-21.yang`](https://github.com/NormB/sipnab/blob/main/yang/sipnab-diagnosis@2026-09-21.yang).
+[`yang/sipnab-diagnosis@2026-09-22.yang`](https://github.com/NormB/sipnab/blob/main/yang/sipnab-diagnosis@2026-09-22.yang).
 
 The document has one member, `sipnab-diagnosis:capture-analysis`, and differs
 from the `--json-analyze` object only in how it writes the same facts:

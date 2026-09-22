@@ -179,7 +179,7 @@ what the walk does not follow.
 | GRE Transparent Ethernet Bridging | GRE proto `0x6558` | [RFC 7637 section 3.2](https://www.rfc-editor.org/rfc/rfc7637#section-3.2) | decoded |
 | MPLS-in-IP | IP proto 137 | [RFC 4023](https://www.rfc-editor.org/rfc/rfc4023) | decoded |
 | AH | IP proto 51 | [RFC 4302](https://www.rfc-editor.org/rfc/rfc4302) | **traversed** — AH authenticates without encrypting, so the payload is readable |
-| ESP | IP proto 50 | [RFC 4303](https://www.rfc-editor.org/rfc/rfc4303) | encrypted — sipnab names it, never guesses |
+| ESP | IP proto 50 | [RFC 4303](https://www.rfc-editor.org/rfc/rfc4303) | **decoded when NULL-encrypted** — see below; otherwise named, never guessed |
 | GTP-U | UDP 2152 | 3GPP TS 29.281 | decoded |
 | VXLAN | UDP 4789 | [RFC 7348](https://www.rfc-editor.org/rfc/rfc7348) | decoded |
 | GENEVE | UDP 6081 | [RFC 8926](https://www.rfc-editor.org/rfc/rfc8926) | decoded |
@@ -198,6 +198,19 @@ what the walk does not follow.
 The cookie runs to 0, 4 or 8 octets, and only the control channel carries that
 length — along with the pseudowire type. Guessing between those is precisely
 how a decapsulator invents a flow.
+
+**sipnab reads ESP only when the payload proves NULL encryption.** An IMS core commonly
+protects the Gm interface between a phone and its P-CSCF with IPsec ESP, and a
+lab or test network often runs it with NULL encryption ([RFC 2410](https://www.rfc-editor.org/rfc/rfc2410)): the
+SIP travels in the clear inside an ESP header and trailer. Nothing in the ESP
+header says which, so sipnab reads the payload as NULL-encrypted only when all
+of these hold: an integrity check value of 12, 16, 24 or 32 octets, the
+default padding of [RFC 4303 section 2.4](https://www.rfc-editor.org/rfc/rfc4303#section-2.4) and 4-octet alignment, a next
+header of TCP or UDP, and a TCP or UDP header that fits the recovered segment
+and whose checksum verifies. A UDP checksum of zero means "none" and passes
+over IPv4 only, as [RFC 768](https://www.rfc-editor.org/rfc/rfc768) and [RFC 8200 section 8.1](https://www.rfc-editor.org/rfc/rfc8200#section-8.1) allow. A frame that fails any of them joins the
+`NOT DECODED` line as `ESP not NULL-encrypted (IP protocol 50)`. sipnab
+takes no keys for encrypted ESP, so capture inside the tunnel instead.
 
 **One shared budget bounds nesting.** It covers every layer of a frame, so a
 frame combining MACsec, MPLS, GTP-U and IP-in-IP cannot walk further than one
