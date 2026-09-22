@@ -672,3 +672,40 @@ fn the_link_extractor_actually_finds_links() {
         "no absolute URL found at all"
     );
 }
+
+/// The tree is at the RFC fixer's fixed point: running it would change nothing.
+///
+/// `rfc_section_citations_are_linked` gates section citations only, while
+/// `scripts/rfc-links.py` also links the first bare `RFC N` of each page. So
+/// a page could commit an unlinked first mention with every Rust gate green,
+/// and CI then went red on 0.5.186 for a reason three steps removed: CI runs
+/// `pytest scripts/tests` before `cargo test`, the fixer's idempotence test
+/// applies the fixer to the checkout, the fixer linked `RFC 3339` in
+/// `docs/keybindings.md`, and `site_pages_mirror_is_current` then found the
+/// site mirror stale. A gate narrower than its fixer is how that happens, so
+/// this asks the fixer itself, in its dry-run mode.
+#[test]
+fn the_tree_is_at_the_rfc_fixers_fixed_point() {
+    let out = Command::new("python3")
+        .arg(repo().join("scripts/rfc-links.py"))
+        .current_dir(repo())
+        .output()
+        .expect("run scripts/rfc-links.py — python3 must be on PATH");
+    assert!(
+        out.status.success(),
+        "scripts/rfc-links.py failed:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let summary = stdout
+        .lines()
+        .rev()
+        .find(|l| l.starts_with("WOULD LINK"))
+        .unwrap_or_else(|| panic!("the fixer printed no summary line:\n{stdout}"));
+    assert_eq!(
+        summary, "WOULD LINK 0 section citations + 0 first mentions across 0 files",
+        "scripts/rfc-links.py would still change the tree:\n{stdout}\n\
+         Run `python3 scripts/rfc-links.py --apply`, then \
+         `python3 scripts/build-site-pages.py` for any docs/ page it touched."
+    );
+}

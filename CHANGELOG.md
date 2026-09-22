@@ -66,6 +66,16 @@ entry that carries them.
   for readers without JavaScript. Every page's content now sits inside the
   CDN's `<!--email_off-->` markers.
 
+### Fixed
+
+- **CI is green again after 0.5.186.** Seven first mentions of an RFC were
+  unlinked, which no Rust gate checked but `scripts/rfc-links.py` fixes. CI
+  runs the fixer's own tests before `cargo test`, those tests apply the
+  fixer to the checkout, and the newly linked `docs/keybindings.md` then
+  made `site_pages_mirror_is_current` fail. The links are applied, and
+  `the_tree_is_at_the_rfc_fixers_fixed_point` fails locally when the fixer
+  would change anything.
+
 ## [0.5.186] - 2026-09-22
 
 ### Added
@@ -193,7 +203,7 @@ entry that carries them.
   Two rtpengine relay fixtures were live captures from the lab network, a
   fuzz seed was a copy of a third-party capture, and the two oldest fixtures
   used private addresses. `tests/support/synthetic_captures.rs` now builds
-  all five, plus the empty fuzz seed, on RFC 5737 addresses and RFC 7042 MAC
+  all five, plus the empty fuzz seed, on [RFC 5737](https://www.rfc-editor.org/rfc/rfc5737) addresses and [RFC 7042](https://www.rfc-editor.org/rfc/rfc7042) MAC
   addresses, and `cargo run --features native --bin gen_fixture` writes them.
   `tests/synthetic_captures_test.rs` rebuilds each one and fails on the first
   byte that differs. The relay pair keeps what the live exchange showed:
@@ -219,7 +229,7 @@ entry that carries them.
   come out byte-identical. The two NAT fixtures change only their MAC
   addresses, which were outside the RFC 7042 documentation block, and in
   `stun_sdp_mismatch.pcap` the two SDP bodies' `Content-Length`, which said 126
-  for 134 bytes. Its RFC 1918 address stays, because it is the mismatch the
+  for 134 bytes. Its [RFC 1918](https://www.rfc-editor.org/rfc/rfc1918) address stays, because it is the mismatch the
   fixture shows, and the test that checks for documentation addresses lists
   it as the one deliberate exception.
 

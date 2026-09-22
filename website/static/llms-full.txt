@@ -10820,7 +10820,7 @@ Each label says what its field matches: From user and To user match the
 user part of the URI, Source IP and Destination IP the addresses, and Text in
 message searches every SIP message of the call. Header takes `Name: text`, or
 a bare header name to find the calls that carry it. After and Before take an
-RFC 3339 timestamp, and the empty fields show an example in gray.
+[RFC 3339](https://www.rfc-editor.org/rfc/rfc3339) timestamp, and the empty fields show an example in gray.
 
 > **Tip:** Press `F9` to clear every field and the method boxes at once. For
 anything the fields cannot say, the [Filter DSL](filter-dsl.md) takes the full
