@@ -72,6 +72,30 @@ const MAX_EXPRESSION_NODES: usize = 1024;
 /// Maximum regex size in bytes (D17).
 const REGEX_SIZE_LIMIT: usize = 1_000_000;
 
+/// Longest header name a `header.<name>` field accepts, in bytes.
+///
+/// RFC 3261 puts no length on a `token`, so this is sipnab's bound, and it is
+/// generous on purpose: a SIP header name is a word or a few hyphenated words,
+/// and a user-defined one is no different. What it refuses is a pasted blob in
+/// field position — refused at parse time with the limit named, instead of a
+/// filter that compiles and silently matches nothing.
+///
+/// Evaluation needs no bound of its own. A `header.` comparison walks each
+/// retained message's header list and compares borrowed names and values,
+/// allocating nothing; the parser already caps the headers per message
+/// (`[limits] max_headers`) and the dialog store the messages per dialog
+/// (`[limits] max_messages_per_dialog`), and [`MAX_EXPRESSION_NODES`] caps how
+/// many comparisons one filter holds.
+const MAX_HEADER_NAME_LEN: usize = 256;
+
+/// The prefix of the one field family whose name the operator chooses:
+/// `header.<name>` reads any SIP header by name.
+const HEADER_FIELD_PREFIX: &str = "header.";
+
+/// How the header family is written in the parse-error field list, beside the
+/// fixed names of [`FIELD_NAMES`].
+const HEADER_FIELD_HINT: &str = "header.<name>";
+
 // ── Public types ────────────────────────────────────────────────────
 
 /// A compiled filter expression ready for evaluation against SIP dialogs.
@@ -216,9 +240,12 @@ fn count_nodes(expr: &Expr) -> usize {
     count
 }
 
-/// Addressable fields in the filter DSL. Each variant maps to one entry in
-/// `FIELD_NAMES`; extraction semantics live in `eval_compare`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Addressable fields in the filter DSL. Each variant but [`Field::Header`]
+/// maps to one entry in `FIELD_NAMES`; extraction semantics live in
+/// `eval_compare`.
+///
+/// `Clone` rather than `Copy` because [`Field::Header`] owns the name it reads.
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum Field {
     /// `from.user` — user part of the dialog's From URI.
     FromUser,
@@ -319,6 +346,27 @@ enum Field {
     DurationAsymmetry,
     /// `late_media` — RTP began long after the 200 OK.
     LateMedia,
+    /// `header.<name>` — the value of any SIP header, named by the operator.
+    ///
+    /// Holds the name in the long form the parser stores headers under: a
+    /// compact name is expanded through the parser's own table (RFC 3261
+    /// section 7.3.3), so `header.k` and `header.Supported` read the same
+    /// header whichever form it crossed the wire in. Names compare
+    /// case-insensitively ([RFC 3261 section 7.3.1](https://www.rfc-editor.org/rfc/rfc3261#section-7.3.1)); values compare exactly, as
+    /// on every other string field.
+    ///
+    /// Matches when ANY header of that name, on ANY message of the dialog,
+    /// satisfies the comparison — the `payload` rule, applied per header line
+    /// so a repeated header offers each of its values. A dialog carrying no
+    /// such header matches no comparison at all, `!=` included, the rule every
+    /// optional field here follows.
+    ///
+    /// Nothing about the name is interpreted. [RFC 6648 section 2](https://www.rfc-editor.org/rfc/rfc6648#section-2) forbids
+    /// assuming anything about a parameter from an `X-` in its name, and this
+    /// field does not: `X-Foo` and `Foo` are two unrelated names, neither is
+    /// stripped to the other, and a user-defined header is read exactly like a
+    /// registered one.
+    Header(Box<str>),
 }
 
 impl Field {
@@ -326,7 +374,7 @@ impl Field {
     /// [`MediaDiagnosis`] (rather than the dialog or streams directly).
     /// Drives the parse-time `needs_diagnosis` flag; keep in sync with the
     /// diagnosis arms of `eval_compare`.
-    fn is_diagnosis(self) -> bool {
+    fn is_diagnosis(&self) -> bool {
         matches!(
             self,
             Field::OneWay
@@ -665,7 +713,10 @@ impl FilterExpr {
         let (remaining, expr) = parse_or_expr(trimmed).map_err(|e| match e {
             nom::Err::Error(err) | nom::Err::Failure(err) => {
                 let pos = trimmed.len() - err.input.len();
-                anyhow::anyhow!("{}", render_parse_error(trimmed, pos, "unexpected input"))
+                anyhow::anyhow!(
+                    "{}",
+                    render_parse_error(trimmed, pos, &parse_problem(err.code))
+                )
             }
             nom::Err::Incomplete(_) => anyhow::anyhow!("incomplete filter expression"),
         })?;
@@ -1063,7 +1114,7 @@ fn parse_comparison(input: &str) -> IResult<&str, Expr, NomErr<'_>> {
     let (input, _) = multispace0(input)?;
     let (input, op) = parse_operator(input)?;
     let (input, _) = multispace0(input)?;
-    let (input, value) = parse_value(input, field, op)?;
+    let (input, value) = parse_value(input, &field, op)?;
 
     Ok((input, Expr::Compare(field, op, value)))
 }
@@ -1154,6 +1205,12 @@ fn response_class_set(value: &str) -> Option<&'static [u16]> {
 /// is not a known field produces a nom `Failure` (not `Error`) so
 /// alternatives cannot mask the unknown-field diagnostic.
 fn parse_field(input: &str) -> IResult<&str, Field, NomErr<'_>> {
+    // Before the fixed names: `header.X-Foo` would otherwise be read as the
+    // two-segment identifier `header.X` and refused as an unknown field.
+    if input.starts_with(HEADER_FIELD_PREFIX) {
+        return parse_header_field(input);
+    }
+
     let (rest, ident) = recognize((
         take_while1(|c: char| c.is_ascii_alphanumeric() || c == '_'),
         opt(preceded(
@@ -1205,6 +1262,85 @@ fn parse_field(input: &str) -> IResult<&str, Field, NomErr<'_>> {
     };
 
     Ok((rest, field))
+}
+
+/// The nom error kind [`parse_header_field`] raises for a name over
+/// [`MAX_HEADER_NAME_LEN`], so [`FilterExpr::parse`] can name the limit.
+///
+/// A kind nothing else in this parser produces — no combinator used here
+/// raises it — which is what makes it safe to read back as this one problem.
+const HEADER_NAME_TOO_LONG: nom::error::ErrorKind = nom::error::ErrorKind::TooLarge;
+
+/// The nom error kind [`parse_header_field`] raises for a name that is empty
+/// or not an RFC 3261 `token`. Unused by every combinator here, like
+/// [`HEADER_NAME_TOO_LONG`].
+const HEADER_NAME_INVALID: nom::error::ErrorKind = nom::error::ErrorKind::Not;
+
+/// The headline for a parse error of `kind`.
+///
+/// Only the two header-name problems get words of their own: every other
+/// failure is positional, and the caret under the expression says more than a
+/// kind name would.
+fn parse_problem(kind: nom::error::ErrorKind) -> String {
+    match kind {
+        HEADER_NAME_TOO_LONG => {
+            format!("header name longer than {MAX_HEADER_NAME_LEN} bytes")
+        }
+        HEADER_NAME_INVALID => "header name missing or not an RFC 3261 token \
+             (quote any other name: header.\"Name\")"
+            .to_string(),
+        _ => "unexpected input".to_string(),
+    }
+}
+
+/// Whether `c` ends a bare `header.<name>`.
+///
+/// Whitespace, the characters that begin an operator or a group, and the quote
+/// characters. Everything else is gathered into the name and then validated as
+/// a token, so a stray `:` or a non-ASCII letter is reported as a bad header
+/// name rather than as an unexpected character somewhere after it.
+fn ends_bare_header_name(c: char) -> bool {
+    c.is_whitespace() || matches!(c, '=' | '!' | '<' | '>' | '(' | ')' | '\'' | '"')
+}
+
+/// Parse `header.<name>` into [`Field::Header`].
+///
+/// The name is bare (`header.X-Trunk`) or quoted (`header."P-Asserted-Identity"`,
+/// `header.'Odd!Name'`). A bare name stops at whitespace, an operator, a
+/// parenthesis or a quote; a quoted one takes the same escapes as a string
+/// literal. Either way the result must be a non-empty RFC 3261 `token` of at
+/// most [`MAX_HEADER_NAME_LEN`] bytes — the parser's own definition, through
+/// [`super::parser::is_token_byte`] — and a compact name is expanded through
+/// the parser's own table.
+///
+/// # Returns
+///
+/// The unconsumed remainder and the field, or a nom `Failure` positioned at
+/// the start of the field: [`HEADER_NAME_TOO_LONG`] for a name over the cap,
+/// [`HEADER_NAME_INVALID`] for one that is empty, unterminated or not a token.
+fn parse_header_field(input: &str) -> IResult<&str, Field, NomErr<'_>> {
+    let fail = |kind| nom::Err::Failure(nom::error::Error::new(input, kind));
+    let after = &input[HEADER_FIELD_PREFIX.len()..];
+    let (name, rest) = match after.chars().next() {
+        Some(quote @ ('\'' | '"')) => {
+            scan_quoted_string(&after[1..], quote).ok_or_else(|| fail(HEADER_NAME_INVALID))?
+        }
+        _ => {
+            let end = after
+                .char_indices()
+                .find(|&(_, c)| ends_bare_header_name(c))
+                .map_or(after.len(), |(i, _)| i);
+            (after[..end].to_string(), &after[end..])
+        }
+    };
+    if name.len() > MAX_HEADER_NAME_LEN {
+        return Err(fail(HEADER_NAME_TOO_LONG));
+    }
+    if name.is_empty() || !name.bytes().all(super::parser::is_token_byte) {
+        return Err(fail(HEADER_NAME_INVALID));
+    }
+    let long = super::parser::expand_compact_header(&name);
+    Ok((rest, Field::Header(long.into_owned().into_boxed_str())))
 }
 
 /// Render a filter parse error as a multi-line diagnostic: the (possibly
@@ -1317,16 +1453,23 @@ fn render_parse_error(expr: &str, pos: usize, problem: &str) -> String {
     let in_field_position = ["=~", "==", "!=", "<=", ">=", "<", ">"]
         .iter()
         .any(|op| rest_after.starts_with(op));
+    // A `header.` token that failed is a bad header NAME, and its own headline
+    // already says so; "unknown field 'header.'" would send the reader looking
+    // for a field that does exist.
     if !quoting_hinted
         && looks_like_field
         && in_field_position
         && !FIELD_NAMES.contains(&offending_raw)
+        && !offending_raw.starts_with(HEADER_FIELD_PREFIX)
     {
         out.push_str(&format!("\nhint: unknown field '{offending_raw}'"));
         if let Some(best) = closest_field(offending_raw) {
             out.push_str(&format!(" \u{2014} did you mean '{best}'?"));
         }
-        out.push_str(&format!("\nvalid fields: {}", FIELD_NAMES.join(", ")));
+        out.push_str(&format!(
+            "\nvalid fields: {}, {HEADER_FIELD_HINT}",
+            FIELD_NAMES.join(", ")
+        ));
     }
 
     out.push_str("\nvalid operators: ==, !=, <, <=, >, >=, =~ (regex)");
@@ -1457,7 +1600,11 @@ fn scan_quoted_string(body: &str, quote: char) -> Option<(String, &str)> {
 /// matched case-insensitively and only when not a prefix of a longer
 /// identifier; an unterminated string or an invalid/oversized regex
 /// yields a nom `Failure`; any other token must parse as an `f64`.
-fn parse_value(input: &str, field: Field, op: Operator) -> IResult<&str, Value, NomErr<'_>> {
+fn parse_value<'a>(
+    input: &'a str,
+    field: &Field,
+    op: Operator,
+) -> IResult<&'a str, Value, NomErr<'a>> {
     let (input, _) = multispace0(input)?;
 
     // Try boolean literals first
@@ -1493,7 +1640,7 @@ fn parse_value(input: &str, field: Field, op: Operator) -> IResult<&str, Value, 
         if op == Operator::Regex {
             // `payload` greps the raw message bytes, so its regex is compiled
             // with the byte engine to match without a lossy UTF-8 copy.
-            if field == Field::Payload {
+            if *field == Field::Payload {
                 let re = regex::bytes::RegexBuilder::new(&string_val)
                     .size_limit(REGEX_SIZE_LIMIT)
                     .build()
@@ -1648,6 +1795,14 @@ fn eval_compare(
                 .iter()
                 .any(|s| compare_str(&format!("{:#010x}", s.key.ssrc), op, value))
         }
+        // Every header of that name on every message, each line its own value.
+        // Borrowed name and value, so a comparison allocates nothing however
+        // many headers the dialog holds.
+        Field::Header(name) => dialog.messages.iter().any(|m| {
+            m.headers
+                .iter()
+                .any(|h| h.name.eq_ignore_ascii_case(name) && compare_str(&h.value, op, value))
+        }),
 
         // ── Numeric fields ─────────────────────────────────────────
         // Ports come from the dialog's captured initial-message values,
@@ -4418,5 +4573,271 @@ mod parse_error_render_robustness_tests {
         ] {
             let _ = FilterExpr::parse(expr); // must not panic
         }
+    }
+}
+
+/// Tests for `header.<name>`: matching any named SIP header, the way RFC 3261
+/// reads header names, and RFC 6648's rule that an `X-` prefix is only part of
+/// a name.
+#[cfg(test)]
+mod header_field_tests {
+    use std::net::{IpAddr, Ipv4Addr};
+
+    use super::*;
+    use crate::net::TransportProto;
+    use crate::sip::parser::parse_sip;
+    use crate::test_utils::build_sip_message as build_sip;
+
+    /// Parse one message carrying the standard dialog headers plus `extra`.
+    fn message(first_line: &str, cseq: &str, extra: &[&str]) -> crate::sip::SipMessage {
+        let mut headers = vec![
+            "Via: SIP/2.0/UDP 192.0.2.1:5060;branch=z9hG4bKhdr",
+            "From: <sip:1001@example.com>;tag=t1",
+            "To: <sip:2002@example.com>",
+            "Call-ID: header-field@example.com",
+        ];
+        headers.push(cseq);
+        headers.extend_from_slice(extra);
+        headers.push("Content-Length: 0");
+        let raw = build_sip(first_line, &headers, b"");
+        let ip = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1));
+        parse_sip(
+            &raw,
+            chrono::TimeZone::with_ymd_and_hms(&chrono::Utc, 2026, 9, 22, 12, 0, 0).unwrap(),
+            ip,
+            ip,
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("the test message parses")
+    }
+
+    /// A dialog whose INVITE carries `invite_extra` and whose 200 OK carries
+    /// `ok_extra`, so a test can put a header on either message.
+    fn dialog(invite_extra: &[&str], ok_extra: &[&str]) -> SipDialog {
+        let invite = message(
+            "INVITE sip:2002@example.com SIP/2.0",
+            "CSeq: 1 INVITE",
+            invite_extra,
+        );
+        let mut dialog = SipDialog::new(&invite).expect("an INVITE opens a dialog");
+        dialog
+            .messages
+            .push(message("SIP/2.0 200 OK", "CSeq: 1 INVITE", ok_extra));
+        dialog
+    }
+
+    /// Whether `expr` parses and selects `dialog`.
+    fn selects(expr: &str, dialog: &SipDialog) -> bool {
+        FilterExpr::parse(expr)
+            .unwrap_or_else(|e| panic!("{expr:?} must parse: {e}"))
+            .matches_dialog(dialog, &[], CaptureMedia::Absent, MosDelay::unknown())
+    }
+
+    /// Header names compare case-insensitively ([RFC 3261 section 7.3.1](https://www.rfc-editor.org/rfc/rfc3261#section-7.3.1));
+    /// values compare the way every other string field does, exactly.
+    #[test]
+    fn a_header_name_matches_in_any_case_and_the_value_exactly() {
+        let d = dialog(&["X-Trunk: north-east"], &[]);
+        assert!(selects("header.X-Trunk == 'north-east'", &d));
+        assert!(selects("header.x-trunk == 'north-east'", &d));
+        assert!(selects("header.X-TRUNK == \"north-east\"", &d));
+        assert!(!selects("header.X-Trunk == 'south'", &d));
+        assert!(
+            !selects("header.X-Trunk == 'NORTH-EAST'", &d),
+            "a value comparison is case-sensitive, as on every string field"
+        );
+        assert!(selects("header.X-Trunk =~ '(?i)NORTH'", &d));
+    }
+
+    /// A header on ANY message of the dialog counts — the `payload` rule —
+    /// so a header only the answer carries still selects the call.
+    #[test]
+    fn a_header_on_any_message_of_the_dialog_counts() {
+        let d = dialog(&[], &["P-Charge-Info: <sip:+15551230000@example.com>"]);
+        assert!(selects("header.P-Charge-Info =~ '5551230000'", &d));
+    }
+
+    /// Every instance of a repeated header is its own candidate, and a value
+    /// is the whole header line: a comma-combined line is one value.
+    #[test]
+    fn every_repeated_header_is_considered() {
+        let d = dialog(&["Foo-Bar: first", "Foo-Bar: second"], &["Foo-Bar: third"]);
+        for v in ["first", "second", "third"] {
+            assert!(selects(&format!("header.Foo-Bar == '{v}'"), &d), "{v}");
+        }
+        let combined = dialog(&["Foo-Bar: a, b"], &[]);
+        assert!(!selects("header.Foo-Bar == 'a'", &combined));
+        assert!(selects("header.Foo-Bar == 'a, b'", &combined));
+        assert!(selects("header.Foo-Bar =~ '(^|,\\s*)b(,|$)'", &combined));
+    }
+
+    /// A compact form names the same header as its long form, in the filter
+    /// and on the wire, in all four combinations ([RFC 3261 section 7.3.3](https://www.rfc-editor.org/rfc/rfc3261#section-7.3.3)).
+    #[test]
+    fn compact_forms_are_honored_on_both_sides() {
+        let compact_wire = dialog(&["k: 100rel"], &[]);
+        assert!(selects("header.Supported == '100rel'", &compact_wire));
+        assert!(selects("header.k == '100rel'", &compact_wire));
+        assert!(selects("header.K == '100rel'", &compact_wire));
+        let long_wire = dialog(&["Supported: timer"], &[]);
+        assert!(selects("header.k == 'timer'", &long_wire));
+        assert!(selects("header.supported == 'timer'", &long_wire));
+    }
+
+    /// `x` alone is the compact form of `Session-Expires` (RFC 4028), not an
+    /// `X-` anything: the letter is a registered name, and the prefix is not a
+    /// category.
+    #[test]
+    fn the_compact_x_is_session_expires_and_not_a_prefix() {
+        let d = dialog(&["X-Foo: 1800"], &["Session-Expires: 1800"]);
+        assert!(selects("header.x == '1800'", &d));
+        let only_x_foo = dialog(&["X-Foo: 1800"], &[]);
+        assert!(!selects("header.x == '1800'", &only_x_foo));
+    }
+
+    /// An absent header matches no comparison, `!=` included — the rule every
+    /// optional field here follows. Presence and absence have idioms of their
+    /// own: an empty regex matches any value.
+    #[test]
+    fn an_absent_header_matches_no_comparison() {
+        let d = dialog(&["X-Trunk: north"], &[]);
+        assert!(!selects("header.X-Missing != 'anything'", &d));
+        assert!(!selects("header.X-Missing == ''", &d));
+        assert!(!selects("header.X-Missing =~ ''", &d));
+        assert!(selects("NOT header.X-Missing =~ ''", &d));
+        assert!(selects("header.X-Trunk =~ ''", &d));
+    }
+
+    /// A header with an empty value is present, and its value is the empty
+    /// string.
+    #[test]
+    fn an_empty_value_is_present_and_empty() {
+        let d = dialog(&["X-Empty:"], &[]);
+        assert!(selects("header.X-Empty == ''", &d));
+        assert!(selects("header.X-Empty =~ ''", &d));
+    }
+
+    /// [RFC 6648 section 2](https://www.rfc-editor.org/rfc/rfc6648#section-2): nothing is read into the `X-` prefix. `Foo` and
+    /// `X-Foo` are two unrelated names — neither is stripped to the other —
+    /// and one filter on each selects symmetrically.
+    #[test]
+    fn an_x_prefix_is_part_of_the_name_and_nothing_more() {
+        let plain = dialog(&["Foo: v"], &[]);
+        let prefixed = dialog(&["X-Foo: v"], &[]);
+        assert!(selects("header.Foo == 'v'", &plain));
+        assert!(selects("header.X-Foo == 'v'", &prefixed));
+        assert!(!selects("header.Foo == 'v'", &prefixed));
+        assert!(!selects("header.X-Foo == 'v'", &plain));
+    }
+
+    /// The quoted form takes any RFC 3261 token, including the characters the
+    /// bare form stops at.
+    #[test]
+    fn a_quoted_name_takes_any_token() {
+        let d = dialog(
+            &[
+                "P-Asserted-Identity: <sip:alice@example.com>",
+                "Odd!Name: yes",
+            ],
+            &[],
+        );
+        assert!(selects("header.\"P-Asserted-Identity\" =~ 'alice'", &d));
+        assert!(selects("header.'P-Asserted-Identity' =~ 'alice'", &d));
+        assert!(selects("header.\"Odd!Name\" == 'yes'", &d));
+    }
+
+    /// Ordering and `in_subnet` read a header value the way they read any
+    /// string field.
+    #[test]
+    fn every_string_operator_applies() {
+        let d = dialog(&["Real-Source: 198.51.100.7"], &[]);
+        assert!(selects(
+            "header.Real-Source in_subnet '198.51.100.0/24'",
+            &d
+        ));
+        assert!(!selects(
+            "header.Real-Source in_subnet '203.0.113.0/24'",
+            &d
+        ));
+        assert!(selects("header.Real-Source > '198'", &d));
+        assert!(selects("header.Real-Source != '10.0.0.1'", &d));
+    }
+
+    /// Composes with the rest of the language.
+    #[test]
+    fn composes_with_boolean_combinators() {
+        let d = dialog(&["X-Trunk: north"], &[]);
+        assert!(selects(
+            "method == 'INVITE' AND header.X-Trunk == 'north'",
+            &d
+        ));
+        assert!(selects(
+            "(header.X-Trunk == 'south' OR header.X-Trunk == 'north')",
+            &d
+        ));
+        assert!(!selects("NOT header.X-Trunk == 'north'", &d));
+    }
+
+    /// A malformed name is refused at parse time with a message that says what
+    /// is wrong, rather than a filter that silently matches nothing.
+    #[test]
+    fn a_malformed_name_is_refused_and_named() {
+        for bad in [
+            "header. == 'x'",
+            "header.\"\" == 'x'",
+            "header.\"two words\" == 'x'",
+            "header.\"colon:\" == 'x'",
+            "header.'unterminated == 'x'",
+        ] {
+            let msg = FilterExpr::parse(bad)
+                .expect_err(&format!("{bad:?} must not parse"))
+                .to_string();
+            assert!(
+                msg.contains("header name"),
+                "{bad:?} must say the header name is the problem: {msg}"
+            );
+            assert!(
+                !msg.contains("unknown field"),
+                "{bad:?} is not an unknown field: {msg}"
+            );
+        }
+    }
+
+    /// The name is bounded: a name past `MAX_HEADER_NAME_LEN` is refused and
+    /// the limit is named, and one at the limit parses.
+    #[test]
+    fn the_name_length_is_bounded() {
+        let at = "A".repeat(MAX_HEADER_NAME_LEN);
+        assert!(FilterExpr::parse(&format!("header.{at} == 'x'")).is_ok());
+        let over = "A".repeat(MAX_HEADER_NAME_LEN + 1);
+        let msg = FilterExpr::parse(&format!("header.{over} == 'x'"))
+            .expect_err("over the cap")
+            .to_string();
+        assert!(msg.contains(&MAX_HEADER_NAME_LEN.to_string()), "{msg}");
+        let quoted = FilterExpr::parse(&format!("header.\"{over}\" == 'x'"))
+            .expect_err("over the cap when quoted too")
+            .to_string();
+        assert!(
+            quoted.contains(&MAX_HEADER_NAME_LEN.to_string()),
+            "{quoted}"
+        );
+    }
+
+    /// A header filter reads no diagnosis, so it must not pay for one.
+    #[test]
+    fn a_header_filter_needs_no_diagnosis() {
+        let f = FilterExpr::parse("header.X-Trunk == 'north'").expect("parses");
+        assert!(!f.needs_diagnosis);
+    }
+
+    /// The unknown-field hint lists the header family beside the fixed names.
+    #[test]
+    fn the_field_hint_names_the_header_family() {
+        let msg = FilterExpr::parse("zzzzqqq == 'x'")
+            .expect_err("unknown")
+            .to_string();
+        assert!(msg.contains("header.<name>"), "{msg}");
     }
 }

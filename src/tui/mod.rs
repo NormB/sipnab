@@ -3691,6 +3691,150 @@ mod tests {
         assert_eq!(st.cursor_pos, 5);
     }
 
+    /// A one-message INVITE dialog carrying `extra` headers, for the
+    /// Header-field tests.
+    fn header_test_dialog(call_id: &str, extra: &[&str]) -> crate::sip::dialog::SipDialog {
+        let mut headers = vec![
+            "Via: SIP/2.0/UDP 192.0.2.1:5060;branch=z9hG4bKtui",
+            "From: <sip:1001@example.com>;tag=t1",
+            "To: <sip:2002@example.com>",
+        ];
+        let cid = format!("Call-ID: {call_id}");
+        headers.push(&cid);
+        headers.push("CSeq: 1 INVITE");
+        headers.extend_from_slice(extra);
+        headers.push("Content-Length: 0");
+        let raw = crate::test_utils::build_sip_message(
+            "INVITE sip:2002@example.com SIP/2.0",
+            &headers,
+            b"",
+        );
+        let ip: std::net::IpAddr = "192.0.2.1".parse().expect("an address");
+        let msg = crate::sip::parser::parse_sip(
+            &raw,
+            chrono::Utc::now(),
+            ip,
+            ip,
+            5060,
+            5060,
+            crate::net::TransportProto::Udp,
+        )
+        .expect("the test INVITE parses");
+        crate::sip::dialog::SipDialog::new(&msg).expect("an INVITE opens a dialog")
+    }
+
+    /// Whether the dialog's built expression selects `dialog`.
+    fn dialog_selects(st: &FilterDialogState, dialog: &crate::sip::dialog::SipDialog) -> bool {
+        let expr = st.build_filter_expression().expect("a header term");
+        FilterExpr::parse(&expr)
+            .unwrap_or_else(|e| panic!("the dialog built {expr:?}, which must parse: {e}"))
+            .matches_dialog(
+                dialog,
+                &[],
+                crate::rtp::diagnosis::CaptureMedia::Absent,
+                crate::rtp::quality::MosDelay::unknown(),
+            )
+    }
+
+    /// The Header field takes `Name: text` and selects the calls carrying that
+    /// header with that text in its value — literally, like every other text
+    /// field here, so a `.` is a dot and not "any character".
+    #[test]
+    fn filter_dialog_header_field_matches_name_and_literal_text() {
+        let st = FilterDialogState {
+            header: "x-trunk: north.east".to_string(),
+            ..Default::default()
+        };
+        let hit = header_test_dialog("h1@test", &["X-Trunk: north.east-7"]);
+        let regex_only = header_test_dialog("h2@test", &["X-Trunk: northXeast"]);
+        let other_header = header_test_dialog("h3@test", &["Foo-Bar: north.east"]);
+        let none = header_test_dialog("h4@test", &[]);
+        assert!(
+            dialog_selects(&st, &hit),
+            "name any case, text as a substring"
+        );
+        assert!(!dialog_selects(&st, &regex_only), "the text is literal");
+        assert!(!dialog_selects(&st, &other_header), "only the named header");
+        assert!(!dialog_selects(&st, &none));
+    }
+
+    /// A bare name, or a name and colon with no text, selects the calls that
+    /// carry the header at all.
+    #[test]
+    fn filter_dialog_header_field_bare_name_means_present() {
+        let with = header_test_dialog("p1@test", &["P-Asserted-Identity: <sip:a@example.com>"]);
+        let without = header_test_dialog("p2@test", &[]);
+        for typed in [
+            "P-Asserted-Identity",
+            "p-asserted-identity:",
+            " P-Asserted-Identity :  ",
+        ] {
+            let st = FilterDialogState {
+                header: typed.to_string(),
+                ..Default::default()
+            };
+            assert!(dialog_selects(&st, &with), "{typed:?} selects the carrier");
+            assert!(!dialog_selects(&st, &without), "{typed:?} skips the rest");
+        }
+    }
+
+    /// A compact name typed in the Header field reads its long form.
+    #[test]
+    fn filter_dialog_header_field_honors_compact_names() {
+        let st = FilterDialogState {
+            header: "k: 100rel".to_string(),
+            ..Default::default()
+        };
+        assert!(dialog_selects(
+            &st,
+            &header_test_dialog("k1@test", &["Supported: 100rel"])
+        ));
+    }
+
+    /// A name that is not a header name is a parse error the dialog shows, not
+    /// a filter that silently matches nothing.
+    #[test]
+    fn filter_dialog_header_field_rejects_a_non_token_name() {
+        let st = FilterDialogState {
+            header: "two words: x".to_string(),
+            ..Default::default()
+        };
+        let expr = st.build_filter_expression().expect("a header term");
+        let err = FilterExpr::parse(&expr)
+            .expect_err("not a token")
+            .to_string();
+        assert!(err.contains("header name"), "{err}");
+    }
+
+    /// The Header field is text field 5, after Payload, and the time bounds
+    /// follow it; `clear()` and `is_empty()` both know it.
+    #[test]
+    fn filter_dialog_header_field_is_a_text_field() {
+        let mut st = FilterDialogState {
+            payload: "p".to_string(),
+            header: "h".to_string(),
+            time_after: "a".to_string(),
+            time_before: "b".to_string(),
+            ..Default::default()
+        };
+        assert_eq!(st.text_field(4), "p");
+        assert_eq!(st.text_field(5), "h");
+        assert_eq!(st.text_field(6), "a");
+        assert_eq!(st.text_field(7), "b");
+        assert_eq!(FILTER_TEXT_FIELD_COUNT, 8);
+        if let Some(s) = st.text_field_mut(5) {
+            s.push('x');
+        }
+        assert_eq!(st.header, "hx");
+        st.time_after.clear();
+        st.time_before.clear();
+        st.payload.clear();
+        assert!(!st.is_empty(), "a typed header is a filter");
+        st.clear();
+        assert!(st.header.is_empty());
+        assert!(st.is_empty());
+    }
+
     // ── FromToMode ───────────────────────────────────────────────────
 
     /// Default mode shows the user, falls back to host, then "-".

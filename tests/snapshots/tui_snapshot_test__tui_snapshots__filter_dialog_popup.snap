@@ -2,14 +2,14 @@
 source: tests/tui_snapshot_test.rs
 expression: output
 ---
- Current Mode: Online (any)    Dialogs: 0 (0 displayed)  [A]
- Match Expre┌ Filter ──────────────────────────────────────────────┐
- Display Fil│                                                      │
-# ▲   Method│  SIP From:    [                                   ]  │   Duratio
-            │  SIP To:      [                                   ]  │
-  No SIP dia│  Source:      [                                   ]  │
-            │  Destination: [                                   ]  │
-  Waiting fo│  Payload:     [                                   ]  │
+ Current Mod┌ Filter ──────────────────────────────────────────────┐
+ Match Expre│                                                      │
+ Display Fil│  SIP From:    [                                   ]  │
+# ▲   Method│  SIP To:      [                                   ]  │   Duratio
+            │  Source:      [                                   ]  │
+  No SIP dia│  Destination: [                                   ]  │
+            │  Payload:     [                                   ]  │
+  Waiting fo│  Header:      [                                   ]  │
   Press 'q' │  After:       [                                   ]  │
             │  Before:      [                                   ]  │
             │  ──────────────────────────────────────────────────  │
