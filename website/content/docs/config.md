@@ -17,14 +17,16 @@ If you only need to override a few defaults, keep it short:
 # ~/.config/sipnab/sipnab.toml
 [capture]
 device = "eth0"
+# Your trunks also use 5080: widen the signaling ports.
+portrange = "5060-5080"
 
-[display]
-delta_time = true
-
-[theme]
-background = "#1e1e2e"
-foreground = "#cdd6f4"
+[diagnosis]
+# Local traffic: report setup slower than 6 seconds.
+post_dial_delay_secs = 6.0
 ```
+
+`sipnab -D` prints the configuration it loaded, so you can check the file took
+effect.
 
 ## File Locations
 

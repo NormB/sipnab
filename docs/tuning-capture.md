@@ -1,8 +1,9 @@
 # Tuning capture on a busy server
 
-sipnab defaults to a busy production link rather than a laptop
-demo. This page is what to change when they are still not enough, in the order
-worth changing them.
+Use this page when a live capture drops packets. sipnab's defaults already
+suit a busy production link, so check first whether you are dropping anything
+at all. If you are, change the settings below in the order they appear, which
+is the order that helps most.
 
 **Start here, always:** find out whether you are actually dropping packets. Every
 other decision on this page depends on that number, and sipnab reports it.
@@ -312,13 +313,21 @@ packet. `full` is 65535, the default. An explicit `--snaplen` wins over the
 profile, because someone who typed a number has already answered the question
 the profile asks.
 
+It is a named profile rather than a smaller default because truncation is not
+free, as the note below says. It stops at 1500 rather than a tighter 200 to 400
+bytes because one INVITE with a full `Record-Route` set, a long `Contact`, ISUP
+encapsulation or a fat SDP offer passes 400 bytes routinely. A snaplen that
+cuts a header stops the message parsing, which reports the peer that sent a
+valid message as broken. `sipnab_capture_snapped_frames_total` counts how many
+frames arrived truncated.
+
 ```bash
 sudo sipnab -N -d eth0 --capture-profile signaling
 ```
 
 > **Truncation is lossy, and not everything survives it.** A small `--snaplen`
-> breaks audio reconstruction — the TUI's WAV save and the MCP `export_audio`
-> tool both need whole RTP payloads — and it degrades `-O` capture re-emit to
+> breaks audio reconstruction — `--retain-audio`, Opus decode, the TUI's WAV
+> save and the MCP `export_audio` tool all need whole RTP payloads — and it degrades `-O` capture re-emit to
 > truncated frames. sipnab tracks captured versus original length per packet, so
 > truncation is visible rather than inferred — but choose the value
 > deliberately, not reflexively.

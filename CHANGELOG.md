@@ -68,6 +68,16 @@ entry that carries them.
 
 ### Changed
 
+- **The cookbook, troubleshooting and reference pages read task-first.** The
+  cookbook's goal table is grouped into eight tasks and now lists recipes
+  13b, 60 and 65, recipes 7 and 8 are named for what the reader wants to do,
+  and the second recipe 10c is 10d. Troubleshooting gives vCon export
+  failures their own section and symptom row, and sends report, audio and
+  browser tasks to the cookbook. The filter page opens with examples, and its
+  quick start keeps `-N` so the TUI does not open. The output page starts
+  with a "Which output do I want?" table. The authentication page puts its
+  steps before the token format, and the minimal config example sets the
+  device, the signaling ports and a diagnosis threshold.
 - **The documentation index lists each page once, by task.** Tutorials are
   install, the command-line triage and the TUI walkthrough. MCP deployment and
   TLS-without-keys moved to the how-to guides, which are grouped by what the
@@ -133,6 +143,12 @@ entry that carries them.
 
 ### Fixed
 
+- **Troubleshooting's decode example matches this release.** It quoted
+  `unsupported link type 0` and said DLT 0, 9 and 276 had no decoder, while
+  sipnab decodes all three. The example is now a real run over link type 147,
+  and the table points at the list of link types sipnab reads. Its audio
+  section, which said only G.711 exports, now defers to the cookbook recipe,
+  which also lists Opus.
 - **Documented commands paste and run as written.** 31 lines across the
   install, cookbook, troubleshooting and vCon harness pages put a placeholder
   such as `<call-id>`, `<version>` or `<uuid>` inside a shell block. The shell
@@ -6977,7 +6993,7 @@ carried in the source tarball and the docs, not in the code.
   "Uprobe TLS Capture" — both the same exotic eBPF path, named after the kernel
   mechanism rather than the goal, and both demanding root, BTF and a
   non-default build. The ordinary route, a key log from the endpoint, sat
-  inside the cookbook as [recipe 7, "Decrypt SIP/TLS via SSLKEYLOGFILE"](docs/examples.md#7-decrypt-siptls-via-sslkeylogfile). The menu advertised the hard road and hid the easy
+  inside the cookbook as [recipe 7, "Decrypt SIP/TLS via SSLKEYLOGFILE"](docs/examples.md#7-decrypt-sip-over-tls-when-you-can-restart-the-phone-or-server--key-log-file-sslkeylogfile). The menu advertised the hard road and hid the easy
   one.
 
   The new page opens with a table you read down until you reach a row you can

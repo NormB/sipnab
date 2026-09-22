@@ -2,7 +2,8 @@
 
 **What the quality number means, and when it means nothing.**
 
-sipnab reports a MOS for every RTP stream. This page says where that number
+sipnab reports a MOS (mean opinion score, an estimate from 1.0 to 4.5 of how
+the call sounded) for every RTP stream. This page says where that number
 comes from, which codecs have a published basis for it, and — the part that
 matters during an incident — **which ones do not**.
 

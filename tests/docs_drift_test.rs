@@ -3767,7 +3767,10 @@ fn no_documentation_table_repeats_a_row() {
     // and merged after the RFC 7951 export and operator notes.
     // 948 -> 950: the "Can sipnab read my capture?" table that now opens
     // docs/encapsulations.md, and its site mirror.
-    const EXPECTED_TABLES: usize = 950;
+    // 950 -> 966: the cookbook's goal table split into eight task groups (+7)
+    // and the "Which output do I want?" table on the output-formats page (+1),
+    // each counted again in its site mirror.
+    const EXPECTED_TABLES: usize = 966;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")
@@ -4256,6 +4259,7 @@ fn how_to_headings_stay_task_first() {
         "inspect",
         "install",
         "keep",
+        "let",
         "listen",
         "live",
         "look",

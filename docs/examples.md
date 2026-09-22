@@ -7,74 +7,115 @@ are new, recipe 1 is the broadest starting point.
 
 ## What do you want to do?
 
+**Find out what went wrong**
+
 | I want to… | Recipe |
 |---|---|
 | Work out whether anything is wrong with a capture | [1. Triage a pcap fast](#1-triage-a-pcap-fast) |
-| Watch one user's traffic live | [2. Live capture, narrow to a single user](#2-live-capture-narrow-to-a-single-user) |
 | See which calls failed, and why | [3. Find every failed call, grouped by response code](#3-find-every-failed-call-grouped-by-response-code) |
+| Write a filter for common triage | [5. Filter for the five things you look for most](#5-filter-for-the-five-things-you-look-for-most) |
+| Read a busy capture call by call | [18. Collect messages by call, host or method](#18-collect-messages-by-call-host-or-method) |
+| Find every call that mentions a string | [38. Search a capture for a header or a body string](#38-search-a-capture-for-a-header-or-a-body-string) |
+| Get one machine-readable verdict per capture | [16. Analyze a capture into one machine-readable verdict](#16-analyze-a-capture-into-one-machine-readable-verdict) |
+| Read the timers behind a slow call | [41. Measure the gap between consecutive messages](#41-measure-the-gap-between-consecutive-messages) |
+| Chase calls that answer and then drop | [30. Find calls that answered and were never acknowledged](#30-find-calls-that-answered-and-were-never-acknowledged) |
+| Work out why a capture shows almost no SIP | [29. Read a capture whose SIP is not on port 5060](#29-read-a-capture-whose-sip-is-not-on-port-5060) |
+| Read a load test that reuses one Call-ID | [47. Follow a load generator's traffic by transaction, not by call](#47-follow-a-load-generators-traffic-by-transaction-not-by-call) |
+| Settle "we sent it" / "we never got it" | [27. Compare the same call at two nodes](#27-compare-the-same-call-at-two-nodes) |
+
+**Chase audio and quality complaints**
+
+| I want to… | Recipe |
+|---|---|
 | Chase a "no audio" or "one-way audio" complaint | [4. Diagnose a one-way audio complaint](#4-diagnose-a-one-way-audio-complaint) |
 | Work out why a call sounds bad in one direction | [11. Find why a call sounds bad in one direction only](#11-find-why-a-call-sounds-bad-in-one-direction-only) |
-| Write a filter for common triage | [5. Filter for the five things you look for most](#5-filter-for-the-five-things-you-look-for-most) |
-| Collect traffic from proxies I cannot install on | [6. Wire HEP from your SIP stack to a central sipnab](#6-wire-hep-from-your-sip-stack-to-a-central-sipnab) |
-| Read encrypted SIP or SRTP | [7. Decrypt SIP/TLS via SSLKEYLOGFILE](#7-decrypt-siptls-via-sslkeylogfile) |
-| Read TLS with **no keys at all** (eBPF) | [7g. Read TLS with no keys](#7g-read-tls-with-no-keys-at-all) and [7h. …and who the peer was](#7h-read-tls-and-who-the-peer-was) |
-| Understand what reading TLS without keys costs and requires | [TLS-without-keys walkthrough](uprobe-walkthrough.md) — security implications, and whether your kernel supports it |
-| Drive sipnab from an AI agent | [8. Run sipnab as an MCP server](#8-run-sipnab-as-an-mcp-server) |
-| Graph traffic over time | [9. Graph call rate, response codes and PDD over time](#9-graph-call-rate-response-codes-and-pdd-over-time) |
-| Detect and block scanners or fraud | [10. Detect SIP scanners and auto-block via fail2ban](#10-detect-sip-scanners-and-auto-block-via-fail2ban) |
-| Hand someone a written summary of a call | [12. Generate a call report (text / Markdown / JSON)](#12-generate-a-call-report-text--markdown--json) |
-| Listen to the audio | [13. Export RTP audio as WAV](#13-export-rtp-audio-as-wav) |
-| Look at a pcap with nothing installed | [14. Analyze a pcap without installing anything](#14-analyze-a-pcap-without-installing-anything) |
-| Check signaling against the RFCs | [15. Check a capture against the RFCs](#15-check-a-capture-against-the-rfcs) |
-| Get one machine-readable verdict per capture | [16. Analyze a capture into one machine-readable verdict](#16-analyze-a-capture-into-one-machine-readable-verdict) |
-| See what NAT/STUN/TURN did | [17. Inspect what NAT did to a call](#17-inspect-what-nat-did-to-a-call) |
-| Read a busy capture call by call | [18. Collect messages by call, host or method](#18-collect-messages-by-call-host-or-method) |
-| Read a very large capture faster | [19. Read a very large capture faster](#19-read-a-very-large-capture-faster) |
-| Prove a finding with the exact bytes | [20. Verify the exact bytes behind a finding](#20-verify-the-exact-bytes-behind-a-finding) |
-| Add my own detection | [21. Detect your own fault patterns with a plugin](#21-detect-your-own-fault-patterns-with-a-plugin) |
 | Know whether the loss is mine or the network's | [22. Measure whether the loss is yours or the network's](#22-measure-whether-the-loss-is-yours-or-the-networks) |
-| Chase a device flooding REGISTER | [23. Find the device flooding REGISTER](#23-find-the-device-flooding-register) |
+| Explain one-way findings on a VoLTE trunk | [45. Check whether comfort noise explains a one-way finding](#45-check-whether-comfort-noise-explains-a-one-way-finding) |
 | Diagnose a codec mismatch to a vendor | [24. Diagnose a codec mismatch](#24-diagnose-a-codec-mismatch) |
 | Work out why DTMF never lands | [25. Find out why DTMF does not reach the IVR](#25-find-out-why-dtmf-does-not-reach-the-ivr) |
-| Collect HEP *and* forward it upstream | [26. Run sipnab as a HEP relay](#26-run-sipnab-as-a-hep-relay) |
-| Settle "we sent it" / "we never got it" | [27. Compare the same call at two nodes](#27-compare-the-same-call-at-two-nodes) |
-| Keep a capture running across reboots | [28. Run sipnab as a service](#28-run-sipnab-as-a-service) |
-| Work out why a capture shows almost no SIP | [29. Read a capture whose SIP is not on port 5060](#29-read-a-capture-whose-sip-is-not-on-port-5060) |
-| Chase calls that answer and then drop | [30. Find calls that answered and were never acknowledged](#30-find-calls-that-answered-and-were-never-acknowledged) |
+| See what NAT/STUN/TURN did | [17. Inspect what NAT did to a call](#17-inspect-what-nat-did-to-a-call) |
+| Know what a media-address claim is worth | [54. Find out where a stream's endpoint came from](#54-find-out-where-a-streams-endpoint-came-from) |
 | Decide what counts as bad audio on my network | [31. Set the quality thresholds to your own network](#31-set-the-quality-thresholds-to-your-own-network) |
-| Send a vendor only the calls that concern them | [32. Export one customer's calls as a smaller capture](#32-export-one-customers-calls-as-a-smaller-capture) |
-| See what a STIR/SHAKEN token actually claims | [33. Check what a STIR/SHAKEN Identity header actually claims](#33-check-what-a-stirshaken-identity-header-actually-claims) |
-| Audit how the phones authenticate | [34. Detect weak digest authentication on a registrar](#34-detect-weak-digest-authentication-on-a-registrar) |
+| Listen to the audio | [13. Export RTP audio as WAV](#13-export-rtp-audio-as-wav) |
+
+**Capture live, at scale, or through tunnels**
+
+| I want to… | Recipe |
+|---|---|
+| Watch one user's traffic live | [2. Live capture, narrow to a single user](#2-live-capture-narrow-to-a-single-user) |
+| Capture without running as root | [48. Run a live capture without giving sipnab root](#48-run-a-live-capture-without-giving-sipnab-root) |
+| Keep a capture running across reboots | [28. Run sipnab as a service](#28-run-sipnab-as-a-service) |
+| Capture overnight without filling the disk | [44. Run a capture that stops on its own](#44-run-a-capture-that-stops-on-its-own) |
+| Stop a week-long capture from eating the box | [43. Keep a long-running capture inside a memory budget](#43-keep-a-long-running-capture-inside-a-memory-budget) |
+| Read a very large capture faster | [19. Read a very large capture faster](#19-read-a-very-large-capture-faster) |
+| Read a call that spans several capture files | [39. Collect a directory of rotated captures into one analysis](#39-collect-a-directory-of-rotated-captures-into-one-analysis) |
 | Read SIP split across TCP segments | [35. Read SIP that arrives in TCP segments or IP fragments](#35-read-sip-that-arrives-in-tcp-segments-or-ip-fragments) |
 | See the WebRTC leg of a call | [36. Read SIP over WebSocket from a WebRTC gateway](#36-read-sip-over-websocket-from-a-webrtc-gateway) |
 | Capture SIP inside a mobile or fabric tunnel | [37. Read SIP carried inside a GTP-U or VXLAN tunnel](#37-read-sip-carried-inside-a-gtp-u-or-vxlan-tunnel) |
-| Find every call that mentions a string | [38. Search a capture for a header or a body string](#38-search-a-capture-for-a-header-or-a-body-string) |
-| Read a call that spans several capture files | [39. Collect a directory of rotated captures into one analysis](#39-collect-a-directory-of-rotated-captures-into-one-analysis) |
-| Hand the same packets to Wireshark | [40. Open the same evidence in Wireshark](#40-open-the-same-evidence-in-wireshark) |
-| Read the timers behind a slow call | [41. Measure the gap between consecutive messages](#41-measure-the-gap-between-consecutive-messages) |
-| Prove which command produced a report | [42. Record which invocation produced a report](#42-record-which-invocation-produced-a-report) |
-| Stop a week-long capture from eating the box | [43. Keep a long-running capture inside a memory budget](#43-keep-a-long-running-capture-inside-a-memory-budget) |
-| Capture overnight without filling the disk | [44. Run a capture that stops on its own](#44-run-a-capture-that-stops-on-its-own) |
-| Explain one-way findings on a VoLTE trunk | [45. Check whether comfort noise explains a one-way finding](#45-check-whether-comfort-noise-explains-a-one-way-finding) |
-| Catch calls placed at three in the morning | [46. Detect fraud placed outside business hours](#46-detect-fraud-placed-outside-business-hours) |
-| Read a load test that reuses one Call-ID | [47. Follow a load generator's traffic by transaction, not by call](#47-follow-a-load-generators-traffic-by-transaction-not-by-call) |
-| Capture without running as root | [48. Run a live capture without giving sipnab root](#48-run-a-live-capture-without-giving-sipnab-root) |
 | Move eleven flags into a config file | [49. Configure sipnab from a file instead of a long command line](#49-configure-sipnab-from-a-file-instead-of-a-long-command-line) |
 | Stop typing flags from memory | [50. Install shell completions](#50-install-shell-completions) |
-| Ship failed calls to an archive without the numbers | [51. Export every failed call as a redacted vCon in one pass](#51-export-every-failed-call-as-a-redacted-vcon-in-one-pass) |
-| Validate a vCon before a store refuses it | [52. Check a vCon against the schema before a store rejects it](#52-check-a-vcon-against-the-schema-before-a-store-rejects-it) |
-| Export a whole set of calls in one agent call | [53. Export a vCon per failed call in one round trip](#53-export-a-vcon-per-failed-call-in-one-round-trip) |
-| Know what a media-address claim is worth | [54. Find out where a stream's endpoint came from](#54-find-out-where-a-streams-endpoint-came-from) |
-| Expose MCP to an agent I do not host | [55. Set up the MCP server for a hosted agent](#55-set-up-the-mcp-server-for-a-hosted-agent) |
-| Let an agent read TLS with no keys | [56. Read TLS from an agent, with no keys and no restart](#56-read-tls-from-an-agent-with-no-keys-and-no-restart) |
-| Get a count an agent cannot miscount | [57. Ask the capture how many calls failed](#57-ask-the-capture-how-many-calls-failed) |
-| Get the facts behind a MOS score | [58. Ask why the MOS is what it is](#58-ask-why-the-mos-is-what-it-is) |
+
+**Read encrypted traffic**
+
+| I want to… | Recipe |
+|---|---|
+| Read encrypted SIP or SRTP | [7. Decrypt SIP over TLS with a key log file](#7-decrypt-sip-over-tls-when-you-can-restart-the-phone-or-server--key-log-file-sslkeylogfile) |
+| Read TLS with **no keys at all** (eBPF) | [7g. Read TLS with no keys](#7g-read-tls-with-no-keys-at-all) and [7h. …and who the peer was](#7h-read-tls-and-who-the-peer-was) |
+| Understand what reading TLS without keys costs and requires | [TLS-without-keys walkthrough](uprobe-walkthrough.md) — security implications, and whether your kernel supports it |
 | Decrypt TLS from a server private key | [59. Decrypt TLS with the server's private key](#59-decrypt-tls-with-the-servers-private-key) |
+
+**Collect from proxies, relays and recorders**
+
+| I want to… | Recipe |
+|---|---|
+| Collect traffic from proxies I cannot install on | [6. Wire HEP from your SIP stack to a central sipnab](#6-wire-hep-from-your-sip-stack-to-a-central-sipnab) |
+| Collect HEP *and* forward it upstream | [26. Run sipnab as a HEP relay](#26-run-sipnab-as-a-hep-relay) |
+| Graph traffic over time | [9. Graph call rate, response codes and PDD over time](#9-graph-call-rate-response-codes-and-pdd-over-time) |
+| See who is on a recorded call | [60. See who is on a recorded call](#60-see-who-is-on-a-recorded-call) |
 | Ask a media relay whether it is dropping packets | [61. Ask a relay whether it is dropping packets](#61-ask-a-relay-whether-it-is-dropping-packets) |
 | See if a relay is holding sessions nobody released | [62. Ask a relay what it is still holding](#62-ask-a-relay-what-it-is-still-holding) |
 | Compare a relay's view of a call with mine | [63. Compare a relay's per-call count with your capture](#63-compare-a-relays-per-call-count-with-your-capture) |
 | Tell a relay's reported loss from the loss I measured | [64. Read a relay's loss beside the loss you measured](#64-read-a-relays-loss-beside-the-loss-you-measured) |
-| Just find a command to copy | [Look up a one-liner by task](#look-up-a-one-liner-by-task) |
+
+**Detect abuse and fraud**
+
+| I want to… | Recipe |
+|---|---|
+| Detect and block scanners or fraud | [10. Detect SIP scanners and auto-block via fail2ban](#10-detect-sip-scanners-and-auto-block-via-fail2ban) |
+| Chase a device flooding REGISTER | [23. Find the device flooding REGISTER](#23-find-the-device-flooding-register) |
+| Catch calls placed at three in the morning | [46. Detect fraud placed outside business hours](#46-detect-fraud-placed-outside-business-hours) |
+| See what a STIR/SHAKEN token actually claims | [33. Check what a STIR/SHAKEN Identity header actually claims](#33-check-what-a-stirshaken-identity-header-actually-claims) |
+| Audit how the phones authenticate | [34. Detect weak digest authentication on a registrar](#34-detect-weak-digest-authentication-on-a-registrar) |
+| Add my own detection | [21. Detect your own fault patterns with a plugin](#21-detect-your-own-fault-patterns-with-a-plugin) |
+
+**Share the evidence**
+
+| I want to… | Recipe |
+|---|---|
+| Hand someone a written summary of a call | [12. Generate a call report (text / Markdown / JSON)](#12-generate-a-call-report-text--markdown--json) |
+| Check signaling against the RFCs | [15. Check a capture against the RFCs](#15-check-a-capture-against-the-rfcs) |
+| Prove a finding with the exact bytes | [20. Verify the exact bytes behind a finding](#20-verify-the-exact-bytes-behind-a-finding) |
+| Hand the same packets to Wireshark | [40. Open the same evidence in Wireshark](#40-open-the-same-evidence-in-wireshark) |
+| Send a carrier the capture with my notes on the frames | [65. Send a carrier the capture with your notes on the frames](#65-send-a-carrier-the-capture-with-your-notes-on-the-frames) |
+| Send a vendor only the calls that concern them | [32. Export one customer's calls as a smaller capture](#32-export-one-customers-calls-as-a-smaller-capture) |
+| Prove which command produced a report | [42. Record which invocation produced a report](#42-record-which-invocation-produced-a-report) |
+| Look at a pcap with nothing installed | [14. Analyze a pcap without installing anything](#14-analyze-a-pcap-without-installing-anything) |
+| Export one call to a conversation archive | [13b. Export one call to a conversation archive as a vCon](#13b-export-one-call-to-a-conversation-archive-as-a-vcon) |
+| Ship failed calls to an archive without the numbers | [51. Export every failed call as a redacted vCon in one pass](#51-export-every-failed-call-as-a-redacted-vcon-in-one-pass) |
+| Validate a vCon before a store refuses it | [52. Check a vCon against the schema before a store rejects it](#52-check-a-vcon-against-the-schema-before-a-store-rejects-it) |
+
+**Let an AI agent do it**
+
+| I want to… | Recipe |
+|---|---|
+| Drive sipnab from an AI agent | [8. Let an AI agent ask sipnab about your calls](#8-let-an-ai-agent-ask-sipnab-about-your-calls--model-context-protocol) |
+| Expose MCP to an agent I do not host | [55. Set up the MCP server for a hosted agent](#55-set-up-the-mcp-server-for-a-hosted-agent) |
+| Let an agent read TLS with no keys | [56. Read TLS from an agent, with no keys and no restart](#56-read-tls-from-an-agent-with-no-keys-and-no-restart) |
+| Get a count an agent cannot miscount | [57. Ask the capture how many calls failed](#57-ask-the-capture-how-many-calls-failed) |
+| Get the facts behind a MOS score | [58. Ask why the MOS is what it is](#58-ask-why-the-mos-is-what-it-is) |
+| Export a whole set of calls in one agent call | [53. Export a vCon per failed call in one round trip](#53-export-a-vcon-per-failed-call-in-one-round-trip) |
+
+Just want a command to copy? [Look up a one-liner by task](#look-up-a-one-liner-by-task).
 
 ### Where a recipe fits
 
@@ -584,7 +625,7 @@ sipnab persists none of it.
 
 ---
 
-## 7. Decrypt SIP/TLS via SSLKEYLOGFILE
+## 7. Decrypt SIP over TLS when you can restart the phone or server — key log file (SSLKEYLOGFILE)
 
 **Problem:** TLS-encrypted SIP captures are unreadable without keys.
 
@@ -944,7 +985,7 @@ tls-split-invite-1@127.0.0.1  uac    echo   Completed   200   7
 
 ---
 
-## 8. Run sipnab as an MCP server
+## 8. Let an AI agent ask sipnab about your calls — Model Context Protocol
 
 **Problem:** You want an AI agent (Claude Code, Claude Desktop, anything MCP-capable) to query a capture without you typing CLI flags.
 
@@ -1308,7 +1349,7 @@ Verify the filter against a real log file before enabling the jail, and check th
 fail2ban-regex /var/log/sipnab/fail2ban.log /etc/fail2ban/filter.d/sipnab.conf
 ```
 
-### 10c. Detect toll fraud and wangiri call-back bait
+### 10d. Detect toll fraud and wangiri call-back bait
 
 **Symptom:** an unexpected spike of international or premium-rate calls, bursts of short calls to one number prefix (wangiri call-back bait), or sequential dialing through a number range.
 
@@ -1343,7 +1384,7 @@ You should see alert lines like:
 
 **What to look for:** a `Wangiri` alert on a premium-rate prefix (`+44 9xx`, `+2xx` IRSF ranges) is the classic revenue-fraud signature — block the destination prefix at the trunk, not just the source IP. `SequentialScanning` from an external source usually precedes a toll-fraud attempt: feed the source IP to fail2ban (10b) and review outbound dial permissions.
 
-### 10d. Run your own script when an alert fires
+### 10e. Run your own script when an alert fires
 
 For exec hooks instead of syslog/fail2ban:
 

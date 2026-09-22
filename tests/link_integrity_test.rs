@@ -938,7 +938,15 @@ fn wiki_intra_docs_links_resolve() {
     // sections and to troubleshooting, and the cooked-capture note) and
     // docs/cli-reference.md +1 (the BPF filter note now links to the
     // encapsulations page that carries the detail).
-    const EXPECTED_WIKI_LINKS: usize = 815;
+    // 815 -> 836 by the task-first pass over the cookbook, troubleshooting,
+    // output and CLI pages. Attributed per file against HEAD:
+    // docs/output-formats.md +10 (the "Which output do I want?" table's nine
+    // section links and the REST API), docs/troubleshooting.md +6 (the vCon
+    // symptom row, the cookbook recipes the how-tos now point at, and the
+    // link-type list), docs/examples.md +3 (goal-table rows for recipes 13b,
+    // 60 and 65, which had none) and docs/cli-reference.md +2 (the "More:"
+    // links that replaced two long cells).
+    const EXPECTED_WIKI_LINKS: usize = 836;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe 6d in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file
