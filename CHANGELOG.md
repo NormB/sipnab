@@ -10,6 +10,25 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Added
+
+- **Every committed capture has to say where it came from.**
+  `every_committed_capture_is_public_or_synthetic` reads the index, finds
+  each capture by its leading bytes whatever the file is called (classic pcap
+  in either byte order and either timestamp precision, pcapng, NetMon 2.x, and
+  gzip around any of them), and fails on one with no entry in
+  `tests/PROVENANCE.md`. An entry is `public`, with the URL and the license,
+  or `synthetic`, with the tracked generator that writes it, and carries the
+  SHA-256 of the bytes it vouches for, so replacing a fixture's bytes means
+  saying again where they came from. An entry for a file that is gone fails
+  too. `tests/pcap-samples/` keeps its own manifest and gate. Eight captures
+  are neither yet and sit on a list that only shrinks, each with its reason:
+  the two SIPp media files in `harness/sipp/scenarios/`, which are not the
+  files SIPp publishes but match a third-party repository that states no
+  license; the two OpenSIPS relay fixtures whose audio came from one of them;
+  and four hand-built STUN, TURN and ICE fixtures that no committed generator
+  writes.
+
 ### Changed
 
 - **Five committed captures are now built by a generator anyone can run.**

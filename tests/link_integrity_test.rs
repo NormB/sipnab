@@ -913,7 +913,11 @@ fn wiki_intra_docs_links_resolve() {
     // HEAD with this gate's rule; no other page moved.
     // 784 + 8 = 792: the HEP sender roster branch counted its eight against
     // 763 and merged after the three above.
-    const EXPECTED_WIKI_LINKS: usize = 792;
+    // 792 -> 793 by docs/internals/testing.md +1: its fixtures row links
+    // tests/PROVENANCE.md, the manifest the committed-capture gate reads.
+    // Measured by this gate: 792 at HEAD, 793 with that row, and no other
+    // docs/ page is in the change.
+    const EXPECTED_WIKI_LINKS: usize = 793;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe 6d in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

@@ -3336,7 +3336,13 @@ fn no_documentation_table_repeats_a_row() {
     // lists exactly that one new .md path. No website mirror.
     // 220 -> 223: docs/client-examples.md and its site mirror, plus the new
     // site mirror of docs/library.md. Measured by this gate on 2026-09-19.
-    const EXPECTED_MARKDOWN_FILES: usize = 223;
+    // 223 -> 224 by tests/PROVENANCE.md, the record of where every committed
+    // capture outside tests/pcap-samples/ came from, which
+    // `every_committed_capture_is_public_or_synthetic` reads. ONE file: it
+    // lives beside the gate rather than under docs/, so it has no website
+    // mirror. Attributed against the staged diff -- `--diff-filter=A` lists
+    // exactly one new `.md` path, and it is that one.
+    const EXPECTED_MARKDOWN_FILES: usize = 224;
     /// How many tables this gate expects to walk.
     ///
     /// Named rather than written twice. The count and the failure message

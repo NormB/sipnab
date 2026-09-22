@@ -60,7 +60,7 @@ drifted.
 
 | Artifact | Regenerate with |
 |---|---|
-| [`tests/fixtures/`](../../tests/fixtures) — capture fixtures | Six captures, among them the two fuzz seeds in `fuzz/corpus/pcap_reader/` named `truncated-sip` and `empty-classic`, come from [`tests/support/synthetic_captures.rs`](../../tests/support/synthetic_captures.rs). `cargo run --features native --bin gen_fixture` writes them, and `synthetic_captures_test` fails when a committed byte differs from what the generator builds. The rest of the directory stays as checked in. |
+| [`tests/fixtures/`](../../tests/fixtures) — capture fixtures | Six captures, among them the two fuzz seeds in `fuzz/corpus/pcap_reader/` named `truncated-sip` and `empty-classic`, come from [`tests/support/synthetic_captures.rs`](../../tests/support/synthetic_captures.rs). `cargo run --features native --bin gen_fixture` writes them, and `synthetic_captures_test` fails when a committed byte differs from what the generator builds. The rest of the directory stays as checked in. [`tests/PROVENANCE.md`](../../tests/PROVENANCE.md) records where every capture outside `tests/pcap-samples/` came from, and `every_committed_capture_is_public_or_synthetic` refuses one with no entry, finding captures by their leading bytes rather than their names. |
 | [`tests/snapshots/`](../../tests/snapshots) — TUI buffers | `cargo insta test --features tui --accept` (needs `cargo install cargo-insta`) |
 | [`tests/cli/`](../../tests/cli) — trycmd goldens | `TRYCMD=overwrite cargo test --features full --test cli_goldens` |
 | [`tests/schemas/`](../../tests/schemas) — JSON Schemas | Hand-maintained; `json_schema_test` validates output against them. |
