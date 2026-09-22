@@ -3662,6 +3662,8 @@ Metric names emitted by [`src/output/prometheus.rs`](https://github.com/NormB/si
 | `sipnab_hep_senders` | gauge | Senders the `--hep-listen` listener is tracking, each keyed by the capture id it claims and the address it sent from. Present only on a run with a HEP listener: a zero would claim a listener that heard nothing. **Aggregates only, never a series per sender** — sender addresses describe the estate, and a `metrics`-scoped token must not read what the full-scope [`GET /v1/hep/senders`](rest-api.md#get-v1hepsenders) withholds from it; a spoofed flood would also set the label cardinality. For which sender stopped, ask that route, the MCP `hep_senders` tool, or `--hep-senders`. Both servers fill it. |
 | `sipnab_hep_datagrams_received_total` | counter | HEP packets the listener received, admitted or refused. With the refused family below, `received - sum(refused)` is what reached the capture. |
 | `sipnab_hep_datagrams_refused_total{reason}` | counter | HEP packets the listener refused, by why: `allowlist`, `rate_limit_global`, `rate_limit_per_peer`, `peer_tracking_full`, `malformed`, `auth_missing`, `auth_mismatch`, and the five `hmac_*` reasons (`hmac_bad_format`, `hmac_unsupported_version`, `hmac_timestamp_out_of_window`, `hmac_bad_mac`, `hmac_replay`). Every reason appears on every scrape of a run with a listener, at `0` where the listener refused nothing for it, so a rule on `auth_mismatch` reads zero rather than no-data. A climbing `auth_mismatch` or `hmac_bad_mac` is a sender with the wrong key; `hmac_timestamp_out_of_window` is a sender with a drifting clock. Both servers fill it. |
+| `sipnab_hep_export_packets_total` | counter | Packets the `--hep-send` exporter delivered as far as its transport can tell. Over TCP and TLS the exporter wrote it to the connection. **Over UDP the exporter handed it to the kernel**, and a collector that is down produces no error, so on UDP this series climbs just the same with nobody listening — pair it with the collector's own `sipnab_hep_senders` or its roster rather than reading it as delivery. Present only on a run that exports. |
+| `sipnab_hep_export_failures_total{kind}` | counter | Packets the exporter failed to deliver, by the step that failed: `connect` (the collector refused, or the sender could not reach it, when the sender dialled again), `tls_handshake` (it connected and the certificate was not one the sender accepts, or the session broke), `write` (an established connection or the socket refused the packet). Every kind appears, at `0` where nothing failed. A climbing `tls_handshake` after a collector rebuild is a certificate the sender does not trust. Present only on a run that exports. |
 | `sipnab_diagnosis_total{type}` | counter | Tracked dialogs whose media diagnosis raises each finding. A dialog with two findings counts under both. **Seven label values, in three groups an alert rule has to keep apart.** `one_way_audio`, `nat_mismatch` and `no_media` appear on every scrape, at `0` where nothing raises them, so a rule watching for the first one reads zero rather than no-data. `private_media_address` — the SDP `c=` line offered an address the far end cannot route back to — and `private_media_address_confirmed` — the subset where STUN evidence also shows nothing rewrote that address — appear only once a dialog raises them, so both series stay absent until the first one does. The ratio of the second to the first is how much of the fleet's warning the capture confirms. `dead_air` and `clipping` are the third group: they are amplitude measurements on the decoded audio, so they tick only on a run started with `--retain-audio` and stay absent otherwise. Absent means the run kept no samples, never that the calls were fine — an alert rule that treats a missing `dead_air` series as a healthy fleet is reading a capture setting as a finding. Both servers run the diagnosis during the scrape, so scrape cost grows with the number of tracked dialogs (capped by `-l`/`--limit`). |
 | `sipnab_security_alerts_total{type}` | counter | Security alerts by the detector that fired: `scanner`, `fraud`, `digest`, `reg_flood`. Only types that have fired appear, so the family is absent before the first alert. A rule name can come from packet data, so sipnab caps the family at 128 distinct names and folds everything past the cap into `type="other"` — the total stays right even where the breakdown cannot. |
 | `sipnab_mcp_tool_calls_total{tool,outcome}` | counter | MCP tool calls, by the tool asked for and how the call ended: `ok`, `tool_error` (the tool answered and said the answer is an error), or `refused` (the rate limit, the concurrency cap, a scope check, unknown arguments, or a name no tool answers to). The name comes from the CLIENT, so a name no tool answers to still counts — probing is what this series is for — and sipnab caps the distinct names at 256 (`MAX_TOOLS`), well above the tool surface, folding everything past the cap into `tool="other"` so a peer looping over invented names cannot grow the series set. Absent until the first tool call, like `sipnab_security_alerts_total`. sipnab counts at the same point it writes the `mcp_audit` log line, so the two always agree. |
@@ -5553,7 +5555,7 @@ The MCP `get_capture_report` tool answers the same question. So does
 
 What sipnab is doing, and what it is costing the host it runs on.
 
-sipnab exports 35 Prometheus metrics, and the listener that serves them is off
+sipnab exports 37 Prometheus metrics, and the listener that serves them is off
 by default — so on most deployments those numbers exist inside the process and
 nothing can read them. This endpoint answers the same questions without one,
 and adds two things that did not exist anywhere: sipnab's own resource use, and
@@ -5597,6 +5599,26 @@ curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" http://127.0.0.1:8080/v1/runt
   "uptime_seconds": 41
 }
 ```
+
+On a `--hep-send` run the envelope also carries `hep_export`, what the exporter
+delivered and what failed:
+
+```json
+"hep_export": {
+  "transport": "tcp",
+  "packets_sent": 18204,
+  "failures": { "connect": 3, "tls_handshake": 0, "write": 0 },
+  "reconnects": 1,
+  "delivery": "written to the connection: a write that fails is counted, and the next packet dials again"
+}
+```
+
+Every failure kind appears, zeros included. `connect` is a collector that
+refused, or that the sender could not reach, when the sender dialled again, `tls_handshake`
+a collector whose certificate the sender does not accept, and `write` a packet
+an established connection refused. **Over UDP `packets_sent` means handed to
+the kernel**, and a collector that is down produces no failure at all, which
+`delivery` says in words. The key is absent on a run that exports nothing.
 
 **An absent field means "not readable here", never zero.** Every value under
 `process` and `host` is optional because the sources are platform-specific. A
@@ -9434,6 +9456,14 @@ The roster names senders by the capture id each claims and the address it
 sends from. Give each sender its own id (`--hep-id` on a sipnab agent) so two
 agents on one host stay apart.
 
+When the sender is itself a sipnab (`--hep-send`), ask it too. Its
+`runtime_stats` or `GET /v1/runtime` carries `hep_export`, and a headless run
+ends with a `HEP export to ...` line: `connect` failures are a collector that is
+down or unreachable, and `tls_handshake` failures are a collector whose
+certificate the sender does not accept. Over UDP the sender cannot tell: a
+collector that is down produces no failure, so the collector's roster is the
+only witness.
+
 ## Encrypted SIP that does not decrypt
 
 The calls are on port 5061 and sipnab reports nothing, or reports fewer
@@ -11701,7 +11731,7 @@ Unprivileged runs (`sipnab --setup-caps`) now do too.
 | `--api-file-root` | `<DIR>` | -- | Directory of capture files `GET /v1/captures/compare` may diff. The REST counterpart of `--mcp-file-root`, off for the same reason: every other REST answer comes from bytes sipnab already holds, while this reads FILES a client names. It takes a bare FILENAME, never a path: sipnab rejects a separator, a `..` or an absolute prefix before touching the filesystem, and refuses a symlink that resolves out of the root at open, by the same check `-O` uses. Without this flag the compare route answers `503`. Naming one directory means the worst a client can do is name files inside it. Feature: `api` |
 | `--metrics-max-conn` | `<N>` | `16` | Metrics scrapes served at once before further ones get `503`. The gate stops a burst of slow clients exhausting threads and taking monitoring down, and sixteen suits one Prometheus; an HA pair, a federating parent, a `remote_write` shard, an alertmanager sidecar and one engineer's `curl` reach it without anything unusual happening. A refused scrape leaves a hole in the series that reads as a capture that died rather than as a busy endpoint. Config: `[limits] metrics_max_conn` Feature: `metrics` |
 | `-L`, `--hep-listen` | `<ADDR>` | -- | Listen for HEP (Homer Encapsulation Protocol) packets. **Combines with `-d <iface>`**: HEP then supplies signaling while the interface supplies the RTP a HEP feed cannot carry, and streams bind to dialogs by SDP media endpoint. Give that run an explicit media-only BPF expression (`sipnab -N -d eth0 -L 127.0.0.1:9060 "udp portrange 10000-20000"`) — without one the interface gets the auto-generated *signaling* filter, captures no media, and sees every mirrored message a second time. One interface and one listener only: `--multi-device` with `-L`, `-I` with `-L`, and `-O` alongside the pair are each refused with the reason. See [cookbook recipe 6d](examples.md#6d-take-signaling-from-hep-and-media-off-the-wire-in-one-process). Feature: `hep` |
-| `-H`, `--hep-send` | `<ADDR>` | -- | Send captured packets via HEP to a remote collector: SIP as protocol type 1 and RTCP as type 5, so the collector can report media quality and not only call setup. RTP is never forwarded. **On `-I <file>` this forwards the file's contents**: every SIP message and RTCP report sipnab reads out of the capture goes to `<ADDR>` as recorded, redacted in no way. sipnab announces that at startup, naming the flag, the destination and the capture files, before it reads the first packet. See [What `--hep-send` sends](#what---hep-send-sends). Feature: `hep` |
+| `-H`, `--hep-send` | `<ADDR>` | -- | Send captured packets via HEP to a remote collector: SIP as protocol type 1 and RTCP as type 5, so the collector can report media quality and not only call setup. RTP is never forwarded. **On `-I <file>` this forwards the file's contents**: every SIP message and RTCP report sipnab reads out of the capture goes to `<ADDR>` as recorded, redacted in no way. sipnab announces that at startup, naming the flag, the destination and the capture files, before it reads the first packet. See [What `--hep-send` sends](#what---hep-send-sends). **A headless run ends with one line saying what it exported**: packets sent, failures by kind (`connect`, `tls_handshake`, `write`) and reconnects, at `warn` when anything failed. Over UDP "sent" means handed to the kernel, and a collector that is down produces no failure; the line says so. `runtime_stats`, `GET /v1/runtime` (`hep_export`) and the Prometheus `sipnab_hep_export_*` series carry the same counts while it runs. Feature: `hep` |
 | `--hep-send-transport` | `<udp\|tcp\|tls>` | `udp` | Transport `--hep-send` uses to reach the collector. Homer's collectors accept all three. HEP v3 carries its own total length, so a `tcp` or `tls` feed is packets laid end to end with no extra framing, and sipnab sets `TCP_NODELAY` because these are small packets whose value is timeliness. A write that fails drops the connection and the next packet dials again — one reconnect per packet, never a loop, so a collector that is down does not turn forwarding into a spin. Refused without `--hep-send`, which is the side it governs. Feature: `hep` |
 | `--hep-listen-transport` | `<udp\|tcp\|tls>` | `udp` | Transport `--hep-listen` accepts. A `tcp` or `tls` listener serves several agents at once, one connection each, and reads every connection as HEP v3 packets delimited by the total length in each header. **HEP v2 is datagram-only**: it declares no total length, so nothing can delimit it on a stream. A peer that sends bytes that are not HEP v3 loses its connection, because a stream offers no point to resynchronize at. Refused without `--hep-listen`, which is the side it governs. Feature: `hep` |
 | `--hep-tls-ca` | `<FILE>` | -- | Certificate authority (PEM) this sender checks the collector's certificate against under `--hep-send-transport tls`. A named CA **replaces** the trust store rather than joining it, so a private collector's issuer is the whole of what this sender accepts; a file sipnab cannot read, or that holds no certificate, raises an error rather than an empty store. Omit it to use the host's CA bundle (`$SSL_CERT_FILE`, else `/etc/ssl/certs/ca-certificates.crt` and its equivalents). sipnab refuses it unless `--hep-send-transport tls` names the transport. Feature: `hep` |
@@ -18478,7 +18508,7 @@ says whether this RUN did.
 
 What sipnab is doing, and what it is costing the host it runs on.
 
-sipnab exports 35 Prometheus metrics, and the listener that serves them is off
+sipnab exports 37 Prometheus metrics, and the listener that serves them is off
 by default — so on most deployments those numbers exist inside the process and
 nothing can read them. An agent asked "is this server healthy" could not enable
 a listener to find out. This answers without one.
@@ -18512,6 +18542,12 @@ parameter, `sample_seconds`, buys a rate at the cost of a wait that long.
   "uptime_seconds": 41
 }
 ```
+
+A `--hep-send` run also carries `hep_export`: the transport, `packets_sent`,
+`failures` by kind (`connect`, `tls_handshake`, `write`, every kind present),
+`reconnects`, and `delivery`, which says what "sent" means on that transport.
+Over UDP it means handed to the kernel: a collector that is down produces no
+failure. The shape is the same as `GET /v1/runtime`'s, from the same collector.
 
 **An absent field means "not readable here", never zero.** Every value under
 `process` and `host` is optional, because the sources are platform-specific. A

@@ -462,7 +462,14 @@ fn undocumented_numeric_ceilings_do_not_increase() {
 // and `CaptureComparisonView`, the `GET /v1/captures/compare` response.
 // Response-only, same reason. Four components. (`GET /v1/dialogs/{id}/audio`
 // added no component — its body is binary `audio/wav`, not JSON.)
-const PERMISSIVE_SCHEMA_COMPONENTS: usize = 59;
+// 59 -> 60 for `RuntimeHepExport`, the `hep_export` object `GET /v1/runtime`
+// carries on a `--hep-send` run. Response-only like `RuntimeRates`, and pinned
+// the same way: `the_runtime_schema_names_every_field_the_route_sends` checks
+// it among the nested components, so an undocumented field reaching a client
+// fails there. One component, attributed by counting `ToSchema` derives in
+// api.rs against HEAD. (`GET /v1/hep/senders` added none here: its components
+// derive `ToSchema` on the model in `src/output/model.rs`.)
+const PERMISSIVE_SCHEMA_COMPONENTS: usize = 60;
 
 #[test]
 fn permissive_rest_schema_components_do_not_increase() {

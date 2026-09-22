@@ -1831,7 +1831,7 @@ The MCP `get_capture_report` tool answers the same question. So does
 
 What sipnab is doing, and what it is costing the host it runs on.
 
-sipnab exports 35 Prometheus metrics, and the listener that serves them is off
+sipnab exports 37 Prometheus metrics, and the listener that serves them is off
 by default — so on most deployments those numbers exist inside the process and
 nothing can read them. This endpoint answers the same questions without one,
 and adds two things that did not exist anywhere: sipnab's own resource use, and
@@ -1875,6 +1875,26 @@ curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" http://127.0.0.1:8080/v1/runt
   "uptime_seconds": 41
 }
 ```
+
+On a `--hep-send` run the envelope also carries `hep_export`, what the exporter
+delivered and what failed:
+
+```json
+"hep_export": {
+  "transport": "tcp",
+  "packets_sent": 18204,
+  "failures": { "connect": 3, "tls_handshake": 0, "write": 0 },
+  "reconnects": 1,
+  "delivery": "written to the connection: a write that fails is counted, and the next packet dials again"
+}
+```
+
+Every failure kind appears, zeros included. `connect` is a collector that
+refused, or that the sender could not reach, when the sender dialled again, `tls_handshake`
+a collector whose certificate the sender does not accept, and `write` a packet
+an established connection refused. **Over UDP `packets_sent` means handed to
+the kernel**, and a collector that is down produces no failure at all, which
+`delivery` says in words. The key is absent on a run that exports nothing.
 
 **An absent field means "not readable here", never zero.** Every value under
 `process` and `host` is optional because the sources are platform-specific. A

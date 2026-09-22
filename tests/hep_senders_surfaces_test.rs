@@ -173,3 +173,80 @@ async fn rest_and_mcp_return_the_same_bytes_for_one_roster() {
     let mcp_one = mcp_text(meter, Some(1)).await;
     assert_eq!(rest_one, mcp_one, "the same limit gives the same bytes");
 }
+
+/// **`GET /v1/runtime` and `runtime_stats` report the same `hep_export`** for
+/// one exporter — they share one collector — and neither carries the key on
+/// a run with no exporter.
+#[tokio::test]
+async fn rest_runtime_and_mcp_runtime_stats_agree_on_the_exporter() {
+    use sipnab::capture::hep_export::{ExportFailure, HepExportCounters};
+    use sipnab::mcp::server::RuntimeStatsParams;
+
+    async fn both(
+        meter: sipnab::capture::channel::CaptureMeter,
+    ) -> (serde_json::Value, serde_json::Value) {
+        let rest: serde_json::Value =
+            serde_json::from_str(&rest_body(rest_state(meter.clone()), "/v1/runtime").await)
+                .expect("json");
+        let srv = SipnabMcp::new(
+            Arc::new(RwLock::new(DialogStore::new(100, false))),
+            Arc::new(RwLock::new(StreamStore::new(100))),
+        )
+        .with_capture_meter(Some(meter));
+        let result = srv
+            .runtime_stats(
+                Parameters(RuntimeStatsParams {
+                    sample_seconds: None,
+                }),
+                rmcp::handler::server::tool::Extension(sipnab::mcp::progress::Progress::silent()),
+            )
+            .await
+            .expect("the tool answers");
+        let text = result
+            .content
+            .iter()
+            .find_map(|c| c.as_text())
+            .map(|t| t.text.clone())
+            .expect("a JSON block");
+        (rest, serde_json::from_str(&text).expect("json"))
+    }
+
+    let counters = HepExportCounters::new("tcp");
+    for _ in 0..3 {
+        counters.record_sent();
+    }
+    counters.record_failure(ExportFailure::Connect);
+    counters.record_failure(ExportFailure::Connect);
+    counters.record_failure(ExportFailure::TlsHandshake);
+    counters.record_reconnect();
+    let (_tx, rx) = sipnab::capture::channel::packet_channel(8);
+    let meter = rx.meter();
+    assert!(meter.attach_hep_export(counters), "a fresh meter");
+
+    let (rest, mcp) = both(meter).await;
+    assert_eq!(
+        rest["hep_export"], mcp["hep_export"],
+        "one collector, one answer"
+    );
+    let export = &rest["hep_export"];
+    assert_eq!(export["transport"], "tcp", "{rest}");
+    assert_eq!(export["packets_sent"], 3);
+    assert_eq!(export["failures"]["connect"], 2);
+    assert_eq!(export["failures"]["tls_handshake"], 1);
+    assert_eq!(
+        export["failures"]["write"], 0,
+        "every kind is present, zeros included"
+    );
+    assert_eq!(export["reconnects"], 1);
+
+    let (_tx2, rx2) = sipnab::capture::channel::packet_channel(8);
+    let (rest, mcp) = both(rx2.meter()).await;
+    assert!(
+        rest.get("hep_export").is_none(),
+        "no exporter, no key: {rest}"
+    );
+    assert!(
+        mcp.get("hep_export").is_none(),
+        "no exporter, no key: {mcp}"
+    );
+}

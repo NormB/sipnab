@@ -469,7 +469,7 @@ says whether this RUN did.
 
 What sipnab is doing, and what it is costing the host it runs on.
 
-sipnab exports 35 Prometheus metrics, and the listener that serves them is off
+sipnab exports 37 Prometheus metrics, and the listener that serves them is off
 by default — so on most deployments those numbers exist inside the process and
 nothing can read them. An agent asked "is this server healthy" could not enable
 a listener to find out. This answers without one.
@@ -503,6 +503,12 @@ parameter, `sample_seconds`, buys a rate at the cost of a wait that long.
   "uptime_seconds": 41
 }
 ```
+
+A `--hep-send` run also carries `hep_export`: the transport, `packets_sent`,
+`failures` by kind (`connect`, `tls_handshake`, `write`, every kind present),
+`reconnects`, and `delivery`, which says what "sent" means on that transport.
+Over UDP it means handed to the kernel: a collector that is down produces no
+failure. The shape is the same as `GET /v1/runtime`'s, from the same collector.
 
 **An absent field means "not readable here", never zero.** Every value under
 `process` and `host` is optional, because the sources are platform-specific. A

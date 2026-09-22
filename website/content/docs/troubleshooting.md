@@ -852,6 +852,14 @@ The roster names senders by the capture id each claims and the address it
 sends from. Give each sender its own id (`--hep-id` on a sipnab agent) so two
 agents on one host stay apart.
 
+When the sender is itself a sipnab (`--hep-send`), ask it too. Its
+`runtime_stats` or `GET /v1/runtime` carries `hep_export`, and a headless run
+ends with a `HEP export to ...` line: `connect` failures are a collector that is
+down or unreachable, and `tls_handshake` failures are a collector whose
+certificate the sender does not accept. Over UDP the sender cannot tell: a
+collector that is down produces no failure, so the collector's roster is the
+only witness.
+
 ## Encrypted SIP that does not decrypt
 
 The calls are on port 5061 and sipnab reports nothing, or reports fewer

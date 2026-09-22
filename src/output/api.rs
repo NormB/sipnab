@@ -5784,6 +5784,28 @@ pub mod schema {
         /// Rates across the sampled window. Present only when the caller sent
         /// `sample_seconds`.
         pub rates: Option<RuntimeRates>,
+        /// The `--hep-send` exporter's deliveries and failures. Present only on
+        /// a run that exports.
+        pub hep_export: Option<RuntimeHepExport>,
+    }
+
+    /// What a `--hep-send` exporter reports about its own deliveries.
+    #[derive(Debug, Clone, ToSchema)]
+    pub struct RuntimeHepExport {
+        /// The transport it speaks.
+        #[schema(example = "tcp")]
+        pub transport: String,
+        /// Packets delivered as far as the transport can tell: written to the
+        /// connection over TCP and TLS, handed to the kernel over UDP.
+        pub packets_sent: u64,
+        /// Failures by kind: `connect`, `tls_handshake` and `write`, every kind
+        /// present, zeros included.
+        pub failures: std::collections::BTreeMap<String, u64>,
+        /// Connections rebuilt after one broke (TCP and TLS only).
+        pub reconnects: u64,
+        /// What `packets_sent` means on this transport, in words. Over UDP a
+        /// collector that is down produces no failure at all.
+        pub delivery: String,
     }
 
     /// Rates measured across a sampling window.

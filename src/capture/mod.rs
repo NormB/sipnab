@@ -31,6 +31,11 @@ pub mod hep;
 // `hep` would put a feature gate on every field that holds it.
 #[cfg(feature = "native")]
 pub mod hep_roster;
+// Beside the roster and for the same reason: `--hep-send` writes these
+// counters, and the runtime collector and the metrics exposition read them
+// from modules not behind `hep`.
+#[cfg(feature = "native")]
+pub mod hep_export;
 #[cfg(feature = "native")]
 pub mod input_set;
 

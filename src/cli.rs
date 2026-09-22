@@ -167,14 +167,23 @@ impl std::str::FromStr for HepTransport {
     }
 }
 
-impl std::fmt::Display for HepTransport {
-    /// The spelling the operator typed, so a log line and a flag value match.
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
+impl HepTransport {
+    /// The spelling the operator typed, so a log line, a flag value and the
+    /// `transport` every export counter reports all match.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
             Self::Udp => "udp",
             Self::Tcp => "tcp",
             Self::Tls => "tls",
-        })
+        }
+    }
+}
+
+impl std::fmt::Display for HepTransport {
+    /// The spelling the operator typed, so a log line and a flag value match.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
     }
 }
 

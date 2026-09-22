@@ -2594,6 +2594,11 @@ impl BatchRunner {
                              {capture_id}{})",
                             if authenticated { ", authenticated" } else { "" }
                         );
+                        // On the meter every surface already holds, so
+                        // `runtime_stats`, `GET /v1/runtime`, the metrics
+                        // exposition and the end-of-run line read one set of
+                        // counters.
+                        capture_meter.attach_hep_export(sender.counters());
                         Some(sender)
                     }
                     Err(e) => {
@@ -3839,6 +3844,22 @@ impl BatchRunner {
             && !print_hep_senders(capture_meter.hep_roster(), cli.output_args.json)
         {
             std::process::exit(1);
+        }
+
+        // 21-hep-send. What the exporter delivered and what failed, said once
+        //      the capture has drained. At `warn` when anything failed, so a
+        //      collector that went away is visible at the default level where
+        //      the per-packet failure line is `debug`.
+        if let (Some(counters), Some(dest)) =
+            (capture_meter.hep_export(), cli.hep_args.hep_send.as_deref())
+        {
+            let snap = counters.snapshot();
+            let line = snap.summary_line(dest);
+            if snap.failed() > 0 {
+                tracing::warn!("{line}");
+            } else {
+                tracing::info!("{line}");
+            }
         }
 
         // 21b. --relay-compare <CALL-ID>: the relay's own per-call RTP count

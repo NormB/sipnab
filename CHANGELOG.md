@@ -36,6 +36,15 @@ entry that carries them.
   `sipnab_hep_datagrams_refused_total{reason}` with every reason present, and
   no per-sender label. `capture_health` carries the listener's counts as
   integers under `hep`.
+- **A `--hep-send` agent says when its exports fail.** A failed forward was a
+  `debug` line and nothing else, so an agent whose collector was down kept
+  reporting nothing wrong. The exporter now counts packets sent, failures by
+  the step that failed (`connect`, `tls_handshake`, `write`) and reconnects.
+  A headless run ends with one line saying so (`warn` when anything failed);
+  `runtime_stats` and `GET /v1/runtime` carry `hep_export`; Prometheus gains
+  `sipnab_hep_export_packets_total` and `sipnab_hep_export_failures_total{kind}`.
+  Over UDP "sent" means handed to the kernel, because a collector that is down
+  produces no error, and every surface says so rather than claiming delivery.
 
 ### Changed
 

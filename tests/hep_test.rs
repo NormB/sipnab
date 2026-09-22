@@ -600,6 +600,42 @@ fn hep_send_forwards_captured_sip_as_hep3() {
     let _ = terminate(&mut child);
 }
 
+/// A `--hep-send` run ends by saying what it exported: how many packets,
+/// how many failed and why, over which transport, and what "sent" means
+/// there. Before this a failed forward was one `debug!` line, so an agent
+/// whose collector was gone reported nothing wrong at the default level.
+#[test]
+fn hep_send_reports_its_exports_at_the_end_of_the_run() {
+    let collector = UdpSocket::bind("127.0.0.1:0").expect("bind collector");
+    let target = format!("127.0.0.1:{}", collector.local_addr().unwrap().port());
+    let pcap = format!(
+        "{}/tests/fixtures/sip_call.pcap",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let out = Command::new(env!("CARGO_BIN_EXE_sipnab"))
+        .args(["-N", "-I", &pcap, "--hep-send", &target])
+        .env("SIPNAB_LOG", "info")
+        .env("NO_COLOR", "1")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("run sipnab --hep-send");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let line = stderr
+        .lines()
+        .find(|l| l.contains(&format!("HEP export to {target} over udp")))
+        .unwrap_or_else(|| panic!("no end-of-run export line in:\n{stderr}"));
+    assert!(line.contains("none failed"), "{line}");
+    assert!(line.contains("UDP reports no delivery"), "{line}");
+    let sent: u64 = line
+        .split_once("over udp: ")
+        .and_then(|(_, rest)| rest.split(' ').next())
+        .and_then(|n| n.parse().ok())
+        .unwrap_or_else(|| panic!("no packet count in: {line}"));
+    assert!(sent > 0, "the capture's SIP was forwarded: {line}");
+}
+
 /// `--hep-send` on a TCP trunk stamps every SIP datagram with IP protocol
 /// 6, through the real binary and the real batch loop.
 ///

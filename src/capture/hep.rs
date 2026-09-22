@@ -2731,8 +2731,36 @@ fn capture_hep_udp(
 ///
 /// A boxed closure rather than the socket itself: the three transports have
 /// three unrelated types, only one of which is `Sync`, and the packet path
-/// must not care which one it got.
-type HepSink = Box<dyn FnMut(&[u8]) -> std::io::Result<()> + Send>;
+/// must not care which one it got. It says how a packet went — delivered, or
+/// delivered over a connection it had to rebuild — and on failure WHICH step
+/// failed, so the export counters can tell a collector that is gone from one
+/// whose certificate is no longer acceptable.
+type HepSink = Box<dyn FnMut(&[u8]) -> std::result::Result<Delivery, SinkFailure> + Send>;
+
+/// How a packet reached the sink's transport.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Delivery {
+    /// Over the connection (or socket) already in place.
+    Direct,
+    /// Over a connection the sink had to dial again first.
+    Reconnected,
+}
+
+/// Why a sink could not deliver a packet: the failing step, and the error.
+#[derive(Debug)]
+struct SinkFailure {
+    /// The step that failed, as the export counters name it.
+    kind: super::hep_export::ExportFailure,
+    /// What the operating system or TLS said.
+    error: std::io::Error,
+}
+
+impl SinkFailure {
+    /// A failure at `kind`, carrying `error`.
+    fn at(kind: super::hep_export::ExportFailure, error: std::io::Error) -> Self {
+        Self { kind, error }
+    }
+}
 
 /// TLS handshake budget for one HEP connection, either direction.
 ///
@@ -3181,6 +3209,10 @@ pub struct HepSender {
     nonce_salt: u64,
     /// Monotonic per-message counter forming the low half of each nonce.
     nonce_counter: std::sync::atomic::AtomicU64,
+    /// What this exporter has delivered and what failed, by kind. Shared with
+    /// the runtime collector and the metrics exposition through the capture
+    /// meter.
+    counters: super::hep_export::HepExportCounters,
     /// Proof that the operator named this destination, minted once at
     /// construction and required by [`Self::transmit`]. Held rather than
     /// passed in from outside for the same reason the scanner-kill worker
@@ -3264,16 +3296,18 @@ fn hep_tcp_sink(
     let mut conn = Some(first);
     Ok((
         Box::new(move |pkt: &[u8]| {
+            use super::hep_export::ExportFailure;
             if let Some(s) = conn.as_mut() {
                 match s.write_all(pkt) {
-                    Ok(()) => return Ok(()),
+                    Ok(()) => return Ok(Delivery::Direct),
                     Err(_) => conn = None,
                 }
             }
-            let mut s = dial(dest)?;
+            let mut s = dial(dest).map_err(|e| SinkFailure::at(ExportFailure::Connect, e))?;
             let r = s.write_all(pkt);
             conn = Some(s);
-            r
+            r.map(|()| Delivery::Reconnected)
+                .map_err(|e| SinkFailure::at(ExportFailure::Write, e))
         }),
         local,
     ))
@@ -3330,25 +3364,34 @@ fn hep_tls_sink(
         })?
         .to_owned();
 
+    /// Connect and complete the handshake, naming which of the two failed:
+    /// the TCP connection is `Connect`, everything after it `TlsHandshake`.
     fn dial(
         cfg: &std::sync::Arc<rustls::ClientConfig>,
         name: &rustls::pki_types::ServerName<'static>,
         dest: std::net::SocketAddr,
-    ) -> std::io::Result<rustls::StreamOwned<rustls::ClientConnection, TcpStream>> {
-        let mut sock = TcpStream::connect(dest)?;
-        sock.set_nodelay(true)?;
-        sock.set_read_timeout(Some(HEP_TLS_HANDSHAKE_TIMEOUT))?;
-        sock.set_write_timeout(Some(HEP_TLS_HANDSHAKE_TIMEOUT))?;
+    ) -> std::result::Result<rustls::StreamOwned<rustls::ClientConnection, TcpStream>, SinkFailure>
+    {
+        use super::hep_export::ExportFailure;
+        let connect = |e| SinkFailure::at(ExportFailure::Connect, e);
+        let handshake = |e| SinkFailure::at(ExportFailure::TlsHandshake, e);
+        let mut sock = TcpStream::connect(dest).map_err(connect)?;
+        sock.set_nodelay(true).map_err(connect)?;
+        sock.set_read_timeout(Some(HEP_TLS_HANDSHAKE_TIMEOUT))
+            .map_err(connect)?;
+        sock.set_write_timeout(Some(HEP_TLS_HANDSHAKE_TIMEOUT))
+            .map_err(connect)?;
         let mut conn = rustls::ClientConnection::new(cfg.clone(), name.clone())
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+            .map_err(|e| handshake(std::io::Error::new(std::io::ErrorKind::InvalidData, e)))?;
         while conn.is_handshaking() {
-            conn.complete_io(&mut sock)?;
+            conn.complete_io(&mut sock).map_err(handshake)?;
         }
-        sock.set_read_timeout(None)?;
+        sock.set_read_timeout(None).map_err(handshake)?;
         Ok(rustls::StreamOwned::new(conn, sock))
     }
 
     let first = dial(&config, &name, dest)
+        .map_err(|f| f.error)
         .with_context(|| format!("Failed to establish a TLS session with '{dest}'"))?;
     let local = first
         .sock
@@ -3359,14 +3402,15 @@ fn hep_tls_sink(
         Box::new(move |pkt: &[u8]| {
             if let Some(s) = stream.as_mut() {
                 match s.write_all(pkt).and_then(|()| s.flush()) {
-                    Ok(()) => return Ok(()),
+                    Ok(()) => return Ok(Delivery::Direct),
                     Err(_) => stream = None,
                 }
             }
             let mut s = dial(&config, &name, dest)?;
             let r = s.write_all(pkt).and_then(|()| s.flush());
             stream = Some(s);
-            r
+            r.map(|()| Delivery::Reconnected)
+                .map_err(|e| SinkFailure::at(super::hep_export::ExportFailure::Write, e))
         }),
         local,
     ))
@@ -3483,7 +3527,12 @@ impl HepSender {
                 let bound = socket
                     .local_addr()
                     .with_context(|| "Failed to read the local address of the HEP UDP sender")?;
-                let sink: HepSink = Box::new(move |pkt: &[u8]| socket.send(pkt).map(|_| ()));
+                let sink: HepSink = Box::new(move |pkt: &[u8]| {
+                    socket
+                        .send(pkt)
+                        .map(|_| Delivery::Direct)
+                        .map_err(|e| SinkFailure::at(super::hep_export::ExportFailure::Write, e))
+                });
                 (sink, bound)
             }
             HepTransport::Tcp => hep_tcp_sink(dest, dest_addr)?,
@@ -3510,8 +3559,16 @@ impl HepSender {
             auth_mode,
             nonce_salt,
             nonce_counter: std::sync::atomic::AtomicU64::new(0),
+            counters: super::hep_export::HepExportCounters::new(transport.as_str()),
             permit,
         })
+    }
+
+    /// This exporter's delivery counters: a handle on the same atomics every
+    /// send counts into.
+    #[must_use]
+    pub fn counters(&self) -> super::hep_export::HepExportCounters {
+        self.counters.clone()
     }
 
     /// The local address this sender's socket bound.
@@ -3694,9 +3751,21 @@ impl HepSender {
     /// Transmits one datagram on the connected UDP socket.
     fn transmit(&self, _permit: &HepExportPermit, pkt: &[u8]) -> Result<()> {
         let mut sink = self.sink.lock();
-        sink(pkt).with_context(|| "Failed to send HEP v3 packet")?;
-
-        Ok(())
+        // Counted here, where every packet passes, so no transport can add a
+        // path that delivers or fails without the counters hearing of it.
+        match sink(pkt) {
+            Ok(delivery) => {
+                self.counters.record_sent();
+                if delivery == Delivery::Reconnected {
+                    self.counters.record_reconnect();
+                }
+                Ok(())
+            }
+            Err(failure) => {
+                self.counters.record_failure(failure.kind);
+                Err(anyhow::Error::new(failure.error).context("Failed to send HEP v3 packet"))
+            }
+        }
     }
 }
 
@@ -4346,6 +4415,230 @@ mod tests {
         assert!(
             parse_hep(&frames[0]).expect("parse").payload != b"first",
             "the rebuilt connection carries a LATER packet, not a replay"
+        );
+    }
+
+    // ── Export counters: what the sending side can say about itself ──────
+
+    /// A small SIP-shaped payload sent through `sender` as HEP.
+    fn send_one(sender: &HepSender) -> Result<()> {
+        let endpoint = HepEndpoint {
+            src_addr: IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)),
+            dst_addr: IpAddr::V4(Ipv4Addr::new(192, 0, 2, 2)),
+            src_port: 5060,
+            dst_port: 5060,
+            transport: TransportProto::Udp,
+        };
+        sender.send_payload(&endpoint, Utc::now(), HepProtocol::Sip, b"OPTIONS")
+    }
+
+    /// Keep offering `sender` packets until `done` holds or the deadline
+    /// passes; the kernel decides how many writes it takes to notice a broken
+    /// connection, so no fixed count is right on every platform.
+    fn send_until(sender: &HepSender, done: impl Fn() -> bool) -> bool {
+        let deadline = Instant::now() + MUST_ARRIVE;
+        while Instant::now() < deadline {
+            if done() {
+                return true;
+            }
+            let _ = send_one(sender);
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        done()
+    }
+
+    /// **A collector that goes away counts as a `connect` failure** once the
+    /// sender tries to dial it again.
+    ///
+    /// The port stays BOUND and not listening, held by `socket2`, so the
+    /// redial is refused on the spot and no other test's listener can take
+    /// the number in between: a refused connection must be this sender's
+    /// own collector refusing, not a race.
+    #[test]
+    fn a_refused_reconnect_counts_as_a_connect_failure() {
+        use crate::capture::hep_export::ExportFailure;
+        let collector = std::net::TcpListener::bind("127.0.0.1:0").expect("bind collector");
+        let addr = collector.local_addr().expect("collector addr");
+        let destination = OperatorDestination::from_cli_flag(HEP_SEND_FLAG, &addr.to_string());
+        let sender = HepSender::for_destination(
+            &destination,
+            HepSenderOpts {
+                transport: HepTransport::Tcp,
+                ..HepSenderOpts::default()
+            },
+        )
+        .expect("connect");
+        send_one(&sender).expect("the first packet crosses the live connection");
+        drop(accept_within(&collector, "the first connection"));
+        drop(collector);
+
+        let hold = socket2::Socket::new(socket2::Domain::IPV4, socket2::Type::STREAM, None)
+            .expect("socket");
+        hold.set_reuse_address(true).expect("reuse");
+        hold.bind(&addr.into())
+            .expect("hold the port, not listening");
+
+        let counters = sender.counters();
+        assert!(
+            send_until(&sender, || counters.failures(ExportFailure::Connect) > 0),
+            "a redial refused by the collector's port must count as a connect failure: {:?}",
+            counters.snapshot()
+        );
+        let snap = counters.snapshot();
+        assert!(snap.sent >= 1, "the first packet counted as sent: {snap:?}");
+        assert_eq!(
+            snap.failures[ExportFailure::TlsHandshake.index()],
+            0,
+            "a plain TCP exporter never fails a handshake: {snap:?}"
+        );
+    }
+
+    /// **A collector the sender no longer trusts counts as a `tls_handshake`
+    /// failure.**
+    ///
+    /// The first collector presents a certificate from the CA the sender was
+    /// given; it goes away and a second one comes up on the same port with a
+    /// certificate from a stranger CA — a collector replaced, or an impostor.
+    /// The TCP connection succeeds and the handshake does not, and that is
+    /// what the count must say rather than "connect".
+    #[test]
+    fn a_collector_the_sender_no_longer_trusts_counts_as_a_tls_handshake_failure() {
+        use crate::capture::hep_export::ExportFailure;
+        let trusted = tempfile::tempdir().expect("tempdir");
+        let (ca, cert, key) = test_chain(trusted.path());
+        let stranger = tempfile::tempdir().expect("tempdir");
+        let (_, other_cert, other_key) = test_chain(stranger.path());
+
+        let bind = free_tcp_port();
+        let first = CaptureConfig {
+            duration: Some(Duration::from_secs(2)),
+            ..CaptureConfig::default()
+        };
+        let (_rx1, done1) = start_listener(
+            &bind,
+            HepTransport::Tls,
+            Some((cert, key)),
+            vec![],
+            None,
+            first,
+        );
+        let destination = OperatorDestination::from_cli_flag(HEP_SEND_FLAG, &bind);
+        let sender = HepSender::for_destination(
+            &destination,
+            HepSenderOpts {
+                transport: HepTransport::Tls,
+                tls_ca: Some(&ca),
+                ..HepSenderOpts::default()
+            },
+        )
+        .expect("the trusted collector's handshake");
+        send_one(&sender).expect("the first packet crosses the trusted session");
+        let _ = done1.recv_timeout(MUST_ARRIVE);
+
+        let second = CaptureConfig {
+            duration: Some(Duration::from_secs(15)),
+            ..CaptureConfig::default()
+        };
+        let (_rx2, _done2) = start_listener(
+            &bind,
+            HepTransport::Tls,
+            Some((other_cert, other_key)),
+            vec![],
+            None,
+            second,
+        );
+        let counters = sender.counters();
+        assert!(
+            send_until(&sender, || counters.failures(ExportFailure::TlsHandshake)
+                > 0),
+            "a collector presenting an untrusted certificate must count as a TLS \
+             handshake failure: {:?}",
+            counters.snapshot()
+        );
+    }
+
+    /// A sender whose sink is `sink`, for driving `transmit` without a network.
+    fn sender_with_sink(sink: HepSink) -> HepSender {
+        let destination = OperatorDestination::from_cli_flag(HEP_SEND_FLAG, "192.0.2.10:9061");
+        HepSender {
+            sink: parking_lot::Mutex::new(sink),
+            local_addr: "127.0.0.1:0".parse().expect("literal"),
+            transport: HepTransport::Tcp,
+            capture_id: 1,
+            auth_key: None,
+            auth_mode: HepAuthMode::Plain,
+            nonce_salt: 0,
+            nonce_counter: std::sync::atomic::AtomicU64::new(0),
+            counters: crate::capture::hep_export::HepExportCounters::new("tcp"),
+            permit: HepExportPermit::for_destination(&destination),
+        }
+    }
+
+    /// **Every kind of failure a sink reports lands under its own count**,
+    /// for every kind there is: the loop walks `ExportFailure::ALL`, so a new
+    /// kind is covered the day it is added. A distinct number of failures per
+    /// kind, so one counted under a neighbor's name shows as a wrong number.
+    /// A delivery over a rebuilt connection counts as sent AND as a reconnect.
+    #[test]
+    fn every_failure_kind_a_sink_reports_is_counted_under_its_own_name() {
+        use crate::capture::hep_export::ExportFailure;
+        let script: std::sync::Arc<
+            parking_lot::Mutex<Vec<std::result::Result<Delivery, ExportFailure>>>,
+        > = std::sync::Arc::new(parking_lot::Mutex::new(Vec::new()));
+        {
+            let mut plan = script.lock();
+            for kind in ExportFailure::ALL {
+                for _ in 0..=kind.index() {
+                    plan.push(Err(kind));
+                }
+            }
+            plan.push(Ok(Delivery::Direct));
+            plan.push(Ok(Delivery::Reconnected));
+        }
+        let feed = std::sync::Arc::clone(&script);
+        let sender = sender_with_sink(Box::new(move |_pkt: &[u8]| match feed.lock().remove(0) {
+            Ok(d) => Ok(d),
+            Err(kind) => Err(SinkFailure::at(kind, std::io::Error::other("scripted"))),
+        }));
+        let total = script.lock().len();
+        for _ in 0..total {
+            let _ = send_one(&sender);
+        }
+        let snap = sender.counters().snapshot();
+        for kind in ExportFailure::ALL {
+            assert_eq!(
+                snap.failures[kind.index()],
+                kind.index() as u64 + 1,
+                "{} miscounted: {snap:?}",
+                kind.as_str()
+            );
+        }
+        assert_eq!(snap.sent, 2, "both deliveries count as sent: {snap:?}");
+        assert_eq!(
+            snap.reconnects, 1,
+            "only the rebuilt one is a reconnect: {snap:?}"
+        );
+    }
+
+    /// **A UDP exporter counts sends and claims nothing about delivery.** The
+    /// kernel takes every datagram whether or not anything listens, so the
+    /// count is of sends, and the snapshot says so in words.
+    #[test]
+    fn a_udp_sender_counts_sends_and_claims_no_delivery() {
+        let collector = UdpSocket::bind("127.0.0.1:0").expect("bind collector");
+        let dest = collector.local_addr().expect("addr").to_string();
+        let sender = HepSender::new(&dest, 1, None, HepAuthMode::Plain).expect("sender");
+        for _ in 0..3 {
+            send_one(&sender).expect("send");
+        }
+        let snap = sender.counters().snapshot();
+        assert_eq!(snap.transport, "udp");
+        assert_eq!(snap.sent, 3);
+        assert_eq!(snap.failed(), 0);
+        assert!(
+            snap.delivery().contains("no delivery"),
+            "{}",
+            snap.delivery()
         );
     }
 
