@@ -1149,9 +1149,16 @@ fn a_blocked_check_has_its_own_exit_code() {
 /// who this is.
 #[test]
 fn the_watcher_identifies_itself_to_the_cdn() {
-    let wf = watcher();
+    // The request is sent by `classify-origin-cert.sh --probe`, which the
+    // workflow calls; that is where the agent has to be named.
+    let probe_src = std::fs::read_to_string(repo().join("scripts/classify-origin-cert.sh"))
+        .expect("the probe script is in the tree");
     assert!(
-        wf.contains("--user-agent") || wf.contains("-A "),
+        watcher().contains("classify-origin-cert.sh --probe"),
+        "the workflow no longer takes its site status from the probe"
+    );
+    assert!(
+        probe_src.contains("--user-agent") || probe_src.contains("-A "),
         "the site check sends no user agent, so the CDN sees an anonymous \
          client and may refuse it — which is how the first run scored a 403 \
          as the site being down"
@@ -1226,5 +1233,121 @@ fn the_watcher_warns_when_the_advertisement_check_is_refused() {
         wf.contains("::warning::The CDN refused the advertisement check"),
         "a refused advertisement check produces no annotation, so the release \
          goes unverified and nothing says so"
+    );
+}
+
+// ── Asking whether the site serves, without mistaking one timeout for an outage ──
+
+/// Run `classify-origin-cert.sh --probe` against a stub `curl` that answers
+/// each call with the next of `responses` (`(status it prints, exit code)`),
+/// repeating the last. Returns `(exit code, stdout, number of curl calls)`.
+///
+/// The stub stands in for the network on purpose: the defect this pins
+/// (2026-09-22, the v0.5.185 tag's run) was one runner timing out once, which
+/// no test can make the real network do on demand.
+#[cfg(unix)]
+fn probe(responses: &[(&str, i32)]) -> (i32, String, usize) {
+    use std::os::unix::fs::PermissionsExt as _;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let lines: String = responses
+        .iter()
+        .map(|(status, exit)| format!("{status} {exit}\n"))
+        .collect();
+    std::fs::write(dir.path().join("responses"), lines).expect("write responses");
+    let stub = dir.path().join("curl");
+    std::fs::write(
+        &stub,
+        "#!/bin/sh\n\
+         echo x >> \"$STUB_DIR/calls\"\n\
+         n=$(wc -l < \"$STUB_DIR/calls\")\n\
+         line=$(sed -n \"${n}p\" \"$STUB_DIR/responses\")\n\
+         [ -n \"$line\" ] || line=$(tail -n 1 \"$STUB_DIR/responses\")\n\
+         set -- $line\n\
+         printf '%s' \"$1\"\n\
+         exit \"$2\"\n",
+    )
+    .expect("write the stub");
+    std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    let path = format!(
+        "{}:{}",
+        dir.path().display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let out = Command::new("sh")
+        .arg(repo().join("scripts/classify-origin-cert.sh"))
+        .args(["--probe", "https://sipnab.com/"])
+        .env("PATH", path)
+        .env("STUB_DIR", dir.path())
+        .env("SIPNAB_PROBE_PAUSE", "0")
+        .current_dir(repo())
+        .output()
+        .expect("the probe runs");
+    let calls = std::fs::read_to_string(dir.path().join("calls"))
+        .map(|s| s.lines().count())
+        .unwrap_or(0);
+    (
+        out.status.code().unwrap_or(-1),
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+        calls,
+    )
+}
+
+/// One timeout is asked again, not reported as the site being down.
+///
+/// The v0.5.185 tag's run: the runner's single `curl` got no answer inside
+/// 20 s, the status came back `000`, and with the origin certificate already
+/// dead that read as the 2026-09-11 outage. The site answered 200 from
+/// everywhere else, and the re-run passed. One sample cannot tell a network
+/// hiccup from a site that is down.
+#[cfg(unix)]
+#[test]
+fn one_timeout_is_asked_again_rather_than_reported_as_an_outage() {
+    let (code, out, calls) = probe(&[("000", 28), ("200", 0)]);
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(out.trim(), "200", "the second answer is the verdict");
+    assert_eq!(calls, 2, "stops asking once the site answers");
+}
+
+/// A site that never answers reads as `000`, once.
+///
+/// The inline probe printed `000000`: curl's `-w` writes `000` when it gets
+/// no response, and the `|| printf '000'` fallback added a second one.
+#[cfg(unix)]
+#[test]
+fn a_site_that_never_answers_reads_as_a_single_000_after_every_attempt() {
+    let (code, out, calls) = probe(&[("000", 28)]);
+    assert_eq!(code, 0, "the probe reports; the classifier judges: {out}");
+    assert_eq!(out.trim(), "000", "exactly one no-response code: {out:?}");
+    assert_eq!(calls, 3, "three attempts before giving up");
+}
+
+/// The first answer is final, whatever it says.
+#[cfg(unix)]
+#[test]
+fn the_first_answer_is_final() {
+    let (_, out, calls) = probe(&[("200", 0)]);
+    assert_eq!((out.trim(), calls), ("200", 1));
+}
+
+/// An edge that refuses the checker has answered: that is the classifier's
+/// BLOCKED case, not a reason to keep knocking.
+#[cfg(unix)]
+#[test]
+fn an_edge_refusal_is_an_answer_and_is_not_retried() {
+    let (_, out, calls) = probe(&[("403", 0)]);
+    assert_eq!((out.trim(), calls), ("403", 1));
+}
+
+/// The watcher asks the probe, rather than keeping its own one-shot `curl`.
+#[test]
+fn the_watcher_asks_the_probe_for_the_site_status() {
+    let wf = watcher();
+    assert!(
+        wf.contains("classify-origin-cert.sh --probe"),
+        "cert-expiry.yml must take the site status from the retrying probe"
+    );
+    assert!(
+        !wf.contains("|| printf '000')"),
+        "the one-shot inline probe, with its doubled 000, is still in the workflow"
     );
 }

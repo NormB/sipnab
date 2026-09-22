@@ -8,6 +8,19 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Fixed
+
+- **One timeout no longer reads as the site being down.** The daily
+  certificate watcher asked sipnab.com once. On the v0.5.185 tag's run the
+  runner got no answer inside 20 seconds, and with the origin certificate
+  already dead (tolerated since 2026-09-11) that read as the outage, while the
+  site served everyone else and the re-run passed. The watcher now asks up to
+  three times and stops at the first answer, a refusal from the edge included.
+  It reports `000` only when no attempt got a response, where it used to print
+  `000000`.
+
 ## [0.5.185] - 2026-09-22
 
 ### Added

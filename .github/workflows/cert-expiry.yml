@@ -97,13 +97,11 @@ jobs:
           set -uo pipefail
           sh scripts/check-cert-expiry.sh sipnab.com || cert=$?
           cert=${cert:-0}
-          # Named, not anonymous. The first real run of this step got a 403
-          # from the edge's bot protection and the verdict came back as an
-          # outage; a checker that says who it is gets through, and whoever
-          # reads the CDN logs can see what it was.
-          status=$(curl -sS --max-time 20 -o /dev/null -w '%{http_code}' \
-            --user-agent 'sipnab-cert-watcher/1.0 (+https://github.com/NormB/sipnab)' \
-            https://sipnab.com/ 2>/dev/null || printf '000')
+          # Asked up to three times, named rather than anonymous: one timeout
+          # from this runner read as an outage on 2026-09-22 while the site
+          # served everyone else. The probe prints one status, 000 only when
+          # no attempt got an answer.
+          status=$(sh scripts/classify-origin-cert.sh --probe https://sipnab.com/)
           verdict=$(sh scripts/classify-origin-cert.sh --classify "$cert" "$status") \
             && rc=0 || rc=$?
           printf '%s\n' "$verdict"

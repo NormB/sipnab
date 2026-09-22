@@ -99,6 +99,59 @@ classify() {
 	return 1
 }
 
+# ── Asking whether the site serves ──────────────────────────────────────────
+#
+# One sample cannot tell a network hiccup from a site that is down. On
+# 2026-09-22 a runner's single curl got no answer inside 20 s, the status came
+# back 000, and with the origin certificate already dead that read as the
+# outage above; the re-run passed. So ask up to three times, stop at the first
+# answer -- any HTTP status, a 403 included, because the edge answered -- and
+# print exactly one code: 000 only when no attempt got a response.
+#
+# The inline probe this replaces printed 000000 on a failure: curl's -w writes
+# 000 when nothing answers, and its `|| printf '000'` fallback added another.
+#
+# Named, not anonymous: the first real run of the watcher got a 403 from the
+# edge's bot protection, and a checker that says who it is gets through.
+probe() {
+	url=$1
+	attempts=3
+	pause=${SIPNAB_PROBE_PAUSE:-10}
+	case "$pause" in
+	'' | *[!0-9]*)
+		printf 'SIPNAB_PROBE_PAUSE must be whole seconds, not %s\n' "$pause" >&2
+		return 64
+		;;
+	esac
+	i=1
+	while :; do
+		code=$(curl -sS --max-time 20 -o /dev/null -w '%{http_code}' \
+			--user-agent 'sipnab-cert-watcher/1.0 (+https://github.com/NormB/sipnab)' \
+			"$url" 2>/dev/null) || true
+		case "$code" in
+		'' | 000) ;;
+		*)
+			printf '%s\n' "$code"
+			return 0
+			;;
+		esac
+		[ "$i" -ge "$attempts" ] && break
+		i=$((i + 1))
+		sleep "$pause"
+	done
+	printf '000\n'
+	return 0
+}
+
+if [ "${1:-}" = "--probe" ]; then
+	[ $# -ge 2 ] || {
+		printf 'usage: %s --probe <url>\n' "$0" >&2
+		exit 64
+	}
+	probe "$2"
+	exit $?
+fi
+
 if [ "${1:-}" = "--classify" ]; then
 	[ $# -ge 3 ] || {
 		printf 'usage: %s --classify <cert exit code> <site status>\n' "$0" >&2
@@ -108,5 +161,5 @@ if [ "${1:-}" = "--classify" ]; then
 	exit $?
 fi
 
-printf 'usage: %s --classify <cert exit code> <site status>\n' "$0" >&2
+printf 'usage: %s --classify <cert exit code> <site status>\n       %s --probe <url>\n' "$0" "$0" >&2
 exit 64

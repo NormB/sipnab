@@ -5566,7 +5566,11 @@ fn packaging_scripts_reference_existing_paths() {
     // exports to, and names that test in its comment. Attributed by
     // measurement: with the previous ci.yml swapped back in, the scan reads
     // 108.
-    const EXPECTED_REFERENCES: usize = 109;
+    // 109 -> 110: one, in `.github/workflows/cert-expiry.yml`, whose site
+    // probe now runs `scripts/classify-origin-cert.sh --probe` instead of an
+    // inline one-shot `curl`. Attributed by measurement: with the previous
+    // cert-expiry.yml swapped back in, the scan reads 109.
+    const EXPECTED_REFERENCES: usize = 110;
     assert_eq!(
         checked, EXPECTED_REFERENCES,
         "packaging path scan saw {checked} references, expected \
