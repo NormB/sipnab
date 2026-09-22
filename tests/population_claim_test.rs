@@ -449,7 +449,7 @@ fn hep_chunk(out: &mut Vec<u8>, chunk_type: u16, data: &[u8]) {
 
 /// A mirrored rtpengine `ng` REPLY under HEP, naming `call_id`'s allocation.
 ///
-/// Shaped like the live reply in `tests/fixtures/rtpengine-ng-hep.pcap`, and
+/// Shaped like the reply in `tests/fixtures/rtpengine-ng-hep.pcap`, and
 /// like the one `rtpengine_sniffed_ng_gate_test` proves is believed on the HEP
 /// port. A reply carries no `call-id` of its own, so the correlation-id chunk
 /// is what names the call.

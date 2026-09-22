@@ -16,6 +16,12 @@ mod run_support;
 /// tests here.
 const FIXTURE: &str = "tests/fixtures/sip_call.pcap";
 
+/// The Call-ID of the one dialog in [`FIXTURE`]. Its host part, like every
+/// address in the fixture, moved to RFC 5737 documentation addresses in
+/// September 2026, when the fixture was regenerated so that no committed
+/// capture carries an address from a private network.
+const FIXTURE_CALL_ID: &str = "test-call-1@192.0.2.1";
+
 /// Run the binary under the shared test baseline (see [`run_support::run`])
 /// with `SIPNAB_LOG=off`; return stdout, asserting the process exited 0.
 ///
@@ -78,7 +84,7 @@ fn text_dump_emits_raw_sip() {
     // --text-dump prints the raw SIP message text (request line + headers).
     let out = run(&["-N", "-I", FIXTURE, "--text-dump"]);
     assert!(
-        out.contains("INVITE sip:1002@10.0.0.2 SIP/2.0"),
+        out.contains("INVITE sip:1002@192.0.2.2 SIP/2.0"),
         "--text-dump must contain the raw SIP request line"
     );
     assert!(out.contains("Via: SIP/2.0/UDP"), "raw headers expected");
@@ -1375,7 +1381,7 @@ fn call_report_resolves_by_call_id_in_branch_mode() {
             "--dialog-track",
             "branch",
             "--call-report",
-            "test-call-1@10.0.0.1",
+            FIXTURE_CALL_ID,
             "--no-cli-print",
         ],
         Some("error"),

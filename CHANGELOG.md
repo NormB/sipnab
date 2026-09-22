@@ -12,6 +12,20 @@ entry that carries them.
 
 ### Added
 
+- **Every committed capture has to say where it came from.**
+  `every_committed_capture_is_public_or_synthetic` reads the index, finds
+  each capture by its leading bytes whatever the file is called (classic pcap
+  in either byte order and either timestamp precision, pcapng, NetMon 2.x, and
+  gzip around any of them), and fails on one with no entry in
+  `tests/PROVENANCE.md`. An entry is `public`, with the URL and the license,
+  or `synthetic`, with the tracked generator that writes it, and carries the
+  SHA-256 of the bytes it vouches for, so replacing a fixture's bytes means
+  saying again where they came from. An entry for a file that is gone fails
+  too. `tests/pcap-samples/` keeps its own manifest and gate. A capture that
+  is neither goes on a list that only shrinks, with its reason. Eight started
+  there and all eight now have generators, so the list is empty and its
+  ceiling is zero.
+
 - **`-I` reads archives of captures.** A `.tar`, `.tgz` or `.tar.gz` reads like
   a directory: every capture inside joins the set in capture order, and the
   answer matches reading the unpacked directory. gzip-compressed members and
@@ -67,6 +81,46 @@ entry that carries them.
   `--filter`, the TUI filter dialog, REST and MCP.
 
 ### Changed
+
+- **Five committed captures are now built by a generator anyone can run.**
+  Two rtpengine relay fixtures were live captures from the lab network, a
+  fuzz seed was a copy of a third-party capture, and the two oldest fixtures
+  used private addresses. `tests/support/synthetic_captures.rs` now builds
+  all five, plus the empty fuzz seed, on RFC 5737 addresses and RFC 7042 MAC
+  addresses, and `cargo run --features native --bin gen_fixture` writes them.
+  `tests/synthetic_captures_test.rs` rebuilds each one and fails on the first
+  byte that differs. The relay pair keeps what the live exchange showed:
+  rtpengine's unsorted `ng` keys, replies with no `call-id`, the relay's ports
+  and timing, kernel forwarding after the third packet, and a `delete` reply
+  whose second fragment the capture never saw. Its addresses now match the
+  output `docs/rtpengine.md` already printed. Tests that quoted an old address
+  or Call-ID quote the new one, and each says why. Git history still holds
+  the old bytes.
+
+- **The last eight committed captures without a generator now have one.** The
+  two media files SIPp plays in the harness, `g711a.pcap` and `g722.pcap`,
+  were copies of a third-party repository that states no license. They are now
+  tones encoded as G.711 A-law and G.722, with the old files' packet counts,
+  payload types and 20 ms framing. sipnab decodes no G.722, so
+  `tests/support/codecs.rs` carries an ITU-T G.722 encoder, and the suite
+  checks it byte for byte against spandsp and FFmpeg on three inputs. The two
+  OpenSIPS relay fixtures had carried the start of that third-party G.722.
+  They keep their control plane, the relay's G.722-to-PCMU transcode and
+  their timing, and move to 198.51.100.0/24, so the Call-ID the tests quote is
+  now `1-4062@198.51.100.21`. The four STUN, TURN and ICE fixtures had been
+  built by hand with no generator. `ice_checks.pcap` and `turn_relay.pcap`
+  come out byte-identical. The two NAT fixtures change only their MAC
+  addresses, which were outside the RFC 7042 documentation block, and in
+  `stun_sdp_mismatch.pcap` the two SDP bodies' `Content-Length`, which said 126
+  for 134 bytes. Its RFC 1918 address stays, because it is the mismatch the
+  fixture shows, and the test that checks for documentation addresses lists
+  it as the one deliberate exception.
+
+- **The OpenSIPS relay test counts the relay-named streams for real.** It
+  checked the call's row with `contains('2')`, which the Call-ID alone
+  satisfies, so a report that named only one leg passed. It now reads the
+  Streams column, and a report that counts one stream fails it.
+
 
 - **`--max-gunzip-bytes` bounds a `-I capture.pcap.gz` too.** sipnab inflated
   a compressed capture to a temporary file with no bound at all, and the

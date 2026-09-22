@@ -24,8 +24,10 @@ use pcap_build::{udp_frame, write_pcap, write_pcapng_with_dsb};
 
 /// The committed two-party call every flag-only case reads.
 const SIP_CALL: &str = "tests/fixtures/sip_call.pcap";
-/// The one dialog in [`SIP_CALL`].
-const SIP_CALL_ID: &str = "test-call-1@10.0.0.1";
+/// The one dialog in [`SIP_CALL`]. The host part moved to RFC 5737
+/// documentation addresses in September 2026, when the fixture was regenerated
+/// so that no committed capture carries an address from a private network.
+const SIP_CALL_ID: &str = "test-call-1@192.0.2.1";
 
 /// What one finished run left behind.
 struct Outcome {

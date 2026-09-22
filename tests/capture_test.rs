@@ -378,7 +378,7 @@ fn start_capture_file_source() {
 
 // ── Packet parsing integration ────────────────────────────────────────
 
-/// `parse_packet` on every fixture packet yields UDP 5060→5060 from 10.0.0.1
+/// `parse_packet` on every fixture packet yields UDP 5060→5060 from 192.0.2.1
 /// with a non-empty payload containing `SIP/2.0`.
 #[test]
 fn fixture_packets_parse_to_valid_udp() {
@@ -398,10 +398,14 @@ fn fixture_packets_parse_to_valid_udp() {
         assert_eq!(parsed.src_port, 5060, "Packet {i} src_port");
         assert_eq!(parsed.dst_port, 5060, "Packet {i} dst_port");
 
-        // Source IP should be 10.0.0.1 (from the gen_fixture tool)
+        // Source IP is 192.0.2.1, the sender that
+        // tests/support/synthetic_captures.rs writes. It moved to RFC 5737
+        // documentation addresses in September 2026, when the fixture was
+        // regenerated so that no committed capture carries an address from a
+        // private network.
         assert_eq!(
             parsed.src_addr,
-            "10.0.0.1".parse::<std::net::IpAddr>().unwrap(),
+            "192.0.2.1".parse::<std::net::IpAddr>().unwrap(),
             "Packet {i} src_addr"
         );
 
