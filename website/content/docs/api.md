@@ -15,15 +15,17 @@ sipnab includes an optional REST API and Prometheus metrics endpoint, enabled wi
 
 ## Getting started
 
-### Step 1: Build with API support
+### Step 1: Check your binary has the API
 
-sipnab's REST API requires the `api` feature flag:
+The REST API is the `api` feature. Every release binary and package includes
+it, and a `cargo install` or source build without `--features api` or
+`--features full` does not. The first line of `--version` lists the features:
 
 ```bash
-cargo build --release --features api
+sipnab --version
 ```
 
-That is additive to the default features, so it gives you the REST API on top of the TUI, audio, and the standalone metrics server. Build `full` instead when you also want the MCP server, HEP forwarding, and the TLS-gated features (STIR/SHAKEN claim reporting, SRTP decryption) in the same binary — the REST API itself is identical either way, so choose on what else you need:
+If `api` is missing from that list, build a binary that has it:
 
 ```bash
 cargo build --release --features full
@@ -31,26 +33,32 @@ cargo build --release --features full
 
 ### Step 2: Choose an API key
 
-You create the API key yourself -- there's no registration. Pick any string:
+You create the API key yourself. There is no registration. Generate a random
+one and keep it in the environment, where sipnab reads it from
+`SIPNAB_API_KEY`:
 
 ```bash
-export SIPNAB_API_KEY="my-secret-token-change-this"
+export SIPNAB_API_KEY="$(openssl rand -hex 32)"
 ```
 
-> **Security:** Use a strong random string in production. Every request carries the key as a Bearer token. An environment variable keeps it out of `ps` output.
+> **Security:** every request carries the key as a Bearer token. Keeping it in
+> the environment rather than on the command line keeps it out of `ps` output,
+> which is why the commands below never pass `--api-key`.
 
 ### Step 3: Start sipnab with the API
 
-**Live capture:**
+To analyze a pcap file, run it in the same shell, so it inherits the variable:
 
 ```bash
-sudo sipnab --api 127.0.0.1:8080 --api-key "$SIPNAB_API_KEY"
+sipnab -N -I capture.pcap --api 127.0.0.1:8080
 ```
 
-**Analyze a pcap file:**
+For live capture under `sudo`, pass the variable through. `sudo` drops the
+caller's environment by default, and without the key an API on a loopback
+address accepts every request unauthenticated:
 
 ```bash
-sipnab -N -I capture.pcap --api 127.0.0.1:8080 --api-key "$SIPNAB_API_KEY"
+sudo --preserve-env=SIPNAB_API_KEY sipnab -N -d eth0 --api 127.0.0.1:8080
 ```
 
 The process stays alive serving the API until you press Ctrl-C.
@@ -84,14 +92,15 @@ signing-key rotation, and revocation denylists — see
 A shared secret with **no expiry**. Simplest to set up, and you revoke it by
 restarting with a different key.
 
-Both lines below are one procedure — the server reads the variable the first
-line sets. Run the second on its own and `$SIPNAB_API_KEY` is empty, which on
-this loopback bind starts an API that accepts every request unauthenticated:
+Both lines below are one procedure: the server reads `SIPNAB_API_KEY` from the
+environment the first line sets. Run the second on its own and the variable is
+unset, which on this loopback bind starts an API that accepts every request
+unauthenticated:
 
 ```bash
 # Run all of these, in order.
 export SIPNAB_API_KEY="$(openssl rand -hex 32)"
-sipnab --api 127.0.0.1:8080 --api-key "$SIPNAB_API_KEY"
+sipnab --api 127.0.0.1:8080
 ```
 
 | Setting | Purpose |

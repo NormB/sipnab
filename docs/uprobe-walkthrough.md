@@ -51,7 +51,7 @@ operational terms.
   need it rather than leaving it attached.
 
 If your threat model does not allow reading process memory on that host, this
-feature is not for you — use [`--keylog`](examples.md#7-decrypt-siptls-via-sslkeylogfile)
+feature is not for you — use [`--keylog`](examples.md#7-decrypt-sip-over-tls-when-you-can-restart-the-phone-or-server--key-log-file-sslkeylogfile)
 with a key the endpoint produces deliberately.
 
 ## Can your system run this at all?
