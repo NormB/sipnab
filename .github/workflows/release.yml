@@ -589,7 +589,12 @@ jobs:
         run: |
           set -uo pipefail
           bin="target/${{ matrix.target }}/release/sipnab"
-          banner=$(strings "$bin" | grep -m1 'libpcap version' || true)
+          # libpcap's banner is a NUL-terminated C string, so `strings` gives it a
+          # line of its own that starts `libpcap version <digits>`. Match that,
+          # not the words: sipnab's own "libpcap version" text sits packed
+          # between other Rust literals, and taking the first line with the
+          # words read it as the banner and failed 0.5.185's musl builds.
+          banner=$(strings "$bin" | grep -m1 -E '^libpcap version [0-9]+\.[0-9]+' || true)
           case "${{ matrix.target }}" in
             *-linux-musl)
               if [ -z "$banner" ]; then

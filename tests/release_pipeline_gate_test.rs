@@ -793,3 +793,109 @@ ee5cc4e74838d322291a815c511c790723a4bfd37ac548cbed78640e4b2bb2a6  sipnab-audio-9
         String::from_utf8_lossy(&out.stdout)
     );
 }
+
+/// What `strings` shows of a musl binary around the banner: sipnab's own
+/// `libpcap version` text packed between neighboring Rust literals, the way
+/// the 0.5.185 x86_64-musl build printed it when this check failed that
+/// release.
+const DECOY: &[u8] =
+    b"\x01\x02Linux SLL packetEthernet (DLT 1)libpcap version sipnab-diagnosiscapture-analysis\x00";
+
+/// The same text where a non-printable byte happens to precede it, so
+/// `strings` starts a line with it. Only the version number tells it from the
+/// banner.
+const LINE_START_DECOY: &[u8] = b"\x7flibpcap version sipnab-diagnosis\x00";
+
+/// libpcap's own banner, a NUL-terminated C string, as the musl images build it.
+const REAL_WITH_NETMAP: &[u8] =
+    b"\x00libpcap version 1.10.6 (64-bit time_t, with TPACKET_V3 and netmap)\x00";
+
+/// The same banner from a libpcap built without the netmap module.
+const REAL_WITHOUT_NETMAP: &[u8] =
+    b"\x00libpcap version 1.10.6 (64-bit time_t, with TPACKET_V3)\x00";
+
+/// Run `release.yml`'s "Record the capture backends this artifact carries"
+/// step for `target` over a binary made of `parts`, placed where the step
+/// reads it. Returns whether it passed and what it printed. `None` when this
+/// host has no `strings`, which the step itself needs.
+fn backend_record(target: &str, parts: &[&[u8]]) -> Option<(bool, String)> {
+    if std::process::Command::new("strings")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        eprintln!("SKIPPED: no `strings` on this host; the release runner has binutils");
+        return None;
+    }
+    let script = step_script(
+        ".github/workflows/release.yml",
+        "Record the capture backends this artifact carries",
+    )
+    .replace("${{ matrix.target }}", target);
+    let dir = tempfile::tempdir().expect("tempdir");
+    let bin_dir = dir.path().join(format!("target/{target}/release"));
+    std::fs::create_dir_all(&bin_dir).expect("create the binary's directory");
+    std::fs::write(bin_dir.join("sipnab"), parts.concat()).expect("write the fixture binary");
+    let out = std::process::Command::new("bash")
+        .arg("-c")
+        .arg(&script)
+        .current_dir(dir.path())
+        .output()
+        .expect("run the step with bash");
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    Some((out.status.success(), text))
+}
+
+/// The step reads libpcap's banner, not sipnab's own text that happens to say
+/// "libpcap version". Taking the first `strings` line with those words failed
+/// 0.5.185's two musl builds, which carried netmap, before any asset was
+/// published.
+#[test]
+fn the_backend_record_reads_libpcap_s_banner_not_sipnab_s_own_text() {
+    let Some((ok, out)) = backend_record("x86_64-unknown-linux-musl", &[DECOY, REAL_WITH_NETMAP])
+    else {
+        return;
+    };
+    assert!(
+        ok,
+        "a musl binary whose libpcap has netmap must pass:\n{out}"
+    );
+    assert!(
+        out.contains(
+            "embedded: libpcap version 1.10.6 (64-bit time_t, with TPACKET_V3 and netmap)"
+        ),
+        "the step must report libpcap's banner:\n{out}"
+    );
+}
+
+/// Reading the right line must not cost the check its point: a musl libpcap
+/// without netmap still fails the release.
+#[test]
+fn the_backend_record_still_refuses_a_musl_libpcap_without_netmap() {
+    let Some((ok, out)) =
+        backend_record("x86_64-unknown-linux-musl", &[DECOY, REAL_WITHOUT_NETMAP])
+    else {
+        return;
+    };
+    assert!(
+        !ok,
+        "a musl libpcap without netmap must fail the release:\n{out}"
+    );
+    assert!(out.contains("has no netmap module"), "{out}");
+}
+
+/// sipnab's own text is not a libpcap banner, so a musl binary carrying only
+/// that is reported as carrying no libpcap at all.
+#[test]
+fn the_backend_record_refuses_a_musl_binary_with_no_libpcap_banner() {
+    let Some((ok, out)) = backend_record("x86_64-unknown-linux-musl", &[DECOY, LINE_START_DECOY])
+    else {
+        return;
+    };
+    assert!(!ok, "no banner must fail a musl build:\n{out}");
+    assert!(out.contains("embeds no libpcap version banner"), "{out}");
+}

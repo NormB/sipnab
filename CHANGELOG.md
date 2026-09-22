@@ -234,6 +234,16 @@ entry that carries them.
   `&'static str` the listener takes. Setting the "wrong" key equal to the right
   one turns the two refusal tests red.
 
+- **The release reads libpcap's banner, not sipnab's own words about it.**
+  The musl builds check that the embedded libpcap carries netmap by reading
+  its version banner with `strings`. The check took the first line holding
+  the words "libpcap version". From this release sipnab's own text says
+  that, packed between other literals, so both musl builds failed a netmap
+  check they pass, and nothing was published. The step now matches the banner
+  itself (`libpcap version <digits>` at the start of a line). Tests run the
+  step's own script against a binary with decoys and with the real banner,
+  with and without netmap.
+
 ## [0.5.184] - 2026-09-21
 
 ### Changed
