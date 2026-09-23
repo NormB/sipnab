@@ -5748,7 +5748,14 @@ fn packaging_scripts_reference_existing_paths() {
     // probe now runs `scripts/classify-origin-cert.sh --probe` instead of an
     // inline one-shot `curl`. Attributed by measurement: with the previous
     // cert-expiry.yml swapped back in, the scan reads 109.
-    const EXPECTED_REFERENCES: usize = 110;
+    // 110 -> 114: release.yml runs `scripts/split-debuginfo.sh` from both
+    // build steps and the symbol-split step, and names
+    // `tests/split_debuginfo_test.rs` in that step's comment. Attributed from
+    // the staged diff of every scanned .yml/.sh: those four and no other.
+    // 114 -> 117: ci.yml's `symbol-split` job names `scripts/split-debuginfo.sh`
+    // in its header comment, its build step and its proof step. Attributed
+    // from the diff of ci.yml: those three and no other.
+    const EXPECTED_REFERENCES: usize = 117;
     assert_eq!(
         checked, EXPECTED_REFERENCES,
         "packaging path scan saw {checked} references, expected \

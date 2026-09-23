@@ -989,7 +989,16 @@ fn wiki_intra_docs_links_resolve() {
     // docs/cli-reference.md, the `reg_flood_transaction_timeout_ms` row in
     // docs/config-reference.md and the reg-flood tuning paragraph in
     // docs/examples.md each link troubleshooting.md#registration-flood-timers.
-    const EXPECTED_WIKI_LINKS: usize = 943;
+    // 940 -> 941: docs/internals/build-ci-release.md's release-asset count
+    // points at its new "Symbol files" section. Counted per file against
+    // HEAD; no other page moved.
+    // 941 -> 945: links to the troubleshooting page's new "Send us a crash
+    // report" section, measured by swapping each file back to HEAD: +1 in
+    // docs/troubleshooting.md (its symptom table), +2 in docs/install.md (the
+    // symbol-file row and the release profile), +1 in
+    // docs/internals/build-ci-release.md.
+    // Merge of DBGSYM-1 with NM1+REG1: 940 +3 (REG1) +5 (DBGSYM-1) = 948.
+    const EXPECTED_WIKI_LINKS: usize = 948;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe 6d in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

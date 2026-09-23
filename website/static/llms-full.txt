@@ -7637,7 +7637,9 @@ covers every file, and the tarballs additionally ship an individual
 | `sipnab-<version>-aarch64-unknown-linux-gnu.tar.gz` | aarch64 / arm64 | glibc >= 2.36 + libpcap | full features including audio |
 | `sipnab-<version>-x86_64-apple-darwin.tar.gz` | Intel | macOS 10.12+ | Intel Macs |
 | `sipnab-<version>-aarch64-apple-darwin.tar.gz` | Apple Silicon | macOS 11.0+ | M-series Macs |
-| `SHA256SUMS.txt` | — | — | checksums for every package, tarball, and SBOM |
+| `sipnab-<version>-<target>.debug` | per target | — | Linux symbol file for the binary of the same name, for reading a [crash report](troubleshooting.md#send-us-a-crash-report) or a core dump. One per tarball, plus `-noaudio` ones for the `-noaudio` packages |
+| `sipnab-<version>-<target>.dSYM.zip` | per target | — | macOS symbol bundle, the same for the two macOS tarballs |
+| `SHA256SUMS.txt` | — | — | checksums for every package, tarball, symbol file, and SBOM |
 | `sipnab-<version>.cdx.json` | — | — | CycloneDX SBOM — full dependency tree |
 | `sipnab-audio-<version>.cdx.json` | — | — | CycloneDX SBOM — audio feature subtree |
 | `v<version>.tar.gz`, `v<version>.zip` | — | anywhere Rust 1.98+ builds | tagged source tree |
@@ -8093,8 +8095,8 @@ and accompanied by a CycloneDX SBOM. The installer script verifies the sha256
 for you. These steps are for manual downloads, mirrors, and anything that
 reached you by a route you did not choose.
 
-**Checksum.** `SHA256SUMS.txt` covers every tarball, `.deb`, `.rpm`, and SBOM
-in the release:
+**Checksum.** `SHA256SUMS.txt` covers every tarball, `.deb`, `.rpm`, symbol
+file, and SBOM in the release:
 
 ```bash
 sha256sum -c SHA256SUMS.txt --ignore-missing
@@ -8235,8 +8237,8 @@ including token-file generation and the systemd unit.
 ## Release profile
 
 The release build uses LTO, a single codegen unit, and symbol stripping for a
-small binary. It also aborts on panic rather than unwinding, and keeps
-line-table debug info so a crash report still names a line:
+small binary. It also aborts on panic rather than unwinding, and compiles
+line-table debug info:
 
 ```toml
 [profile.release]
@@ -8248,6 +8250,17 @@ debug = "line-tables-only"
 ```
 
 Target binary size (musl, stripped): <= 17 MB.
+
+A local `cargo build --release` strips at link time, so the line tables never
+reach the binary. The release workflow appends `-C strip=none` to the same
+profile instead, and
+[`scripts/split-debuginfo.sh`](https://github.com/NormB/sipnab/blob/main/scripts/split-debuginfo.sh)
+moves the symbols into the `.debug` file each release publishes before it
+strips the binary. The published binary carries the same code either way and
+is within 100 bytes of the same size (the split drops `.comment` and adds a
+`.gnu_debuglink`), and the
+symbol file resolves the addresses in a
+[crash report](troubleshooting.md#send-us-a-crash-report) or a core dump.
 
 ## Cross-compilation
 
@@ -9301,6 +9314,7 @@ the cause from there.
 | SIP is over TLS and the calls never appear | [Encrypted SIP that does not decrypt](#encrypted-sip-that-does-not-decrypt) |
 | Somebody handed you a `.tgz` or `.tar` of captures, and the run looks short | [An archive of captures](#an-archive-of-captures) |
 | `--export-vcon` refuses, cannot find the call, or writes no audio | [A vCon export that fails](#a-vcon-export-that-fails) |
+| sipnab itself stopped with "sipnab panicked at" | [Send us a crash report](#send-us-a-crash-report) |
 | Nothing yet -- you have a capture and a complaint | [Start here](#start-here-one-pass-over-everything) |
 
 Whatever the symptom, three things decide whether the answer is in the capture
@@ -10406,6 +10420,125 @@ silent — the container is careful to say so, and a consumer should read the
 The usual cause is that the run did not retain the RTP payload. Audio also has
 an inline budget. A recording over it draws an out-loud refusal rather than a
 silent truncation, and the caveat names the size it turned down.
+
+---
+
+## Send us a crash report
+
+When sipnab hits a bug it cannot recover from, it stops and prints two lines
+to the terminal:
+
+```text
+sipnab panicked at src/main.rs:152:9:
+crash report written to /home/you/.local/state/sipnab/sipnab-crash-20260923-191230-2507858-0.log
+```
+
+That file is what we need. You do not have to reproduce the crash or install
+anything extra.
+
+**1. Find the report.** It is the path on the `crash report written to` line.
+By default reports land in `~/.local/state/sipnab/`, named
+`sipnab-crash-<date>-<time>-<pid>-<n>.log`. A `report_dir` in the
+[`[crash]` config section](config-reference.md#crash) moves them. If you
+closed the terminal, list the newest one:
+
+```bash
+ls -t ~/.local/state/sipnab/sipnab-crash-*.log | head -1
+```
+
+**2. Check what it contains before you send it.** The report is plain text:
+the panic message, the source line, the thread name, the version, the
+build ID of the executable, its load address, and one raw address per stack
+frame, up to `MAX_FRAMES` (256) frames.
+It contains no capture data and no packets, but the panic message can quote a
+value sipnab was handling, and the path names your home directory. Read it and
+redact what you need to.
+
+**3. Send it.** [Open an issue](https://github.com/NormB/sipnab/issues/new/choose),
+attach the `.log` file, and add the output of `sipnab --version` and the command
+you ran.
+
+A core dump is not needed, and it is not safe to share. A core holds the
+process's memory, which includes the SIP messages and media it had captured.
+Only turn on `core = true` if we ask for a core, and then keep it on your side.
+
+### What the report records, and how we read it
+
+The release strips every sipnab binary it publishes, so the backtrace in the
+report cannot name a function, and most of its lines read `<unknown>`. The `Image:`
+and `Raw frames` sections are what make it readable anyway:
+
+```text
+Image:
+  Path:      /usr/bin/sipnab
+  Build ID:  edbd855707e15a8b69f6e0fb3f0ac2bf925c23b1
+  Load base: 0xaaaac4090000
+  Target:    aarch64-unknown-linux-gnu
+
+Raw frames (runtime return address, then image+address of the call in
+that image's file. Resolve these against the symbol file named by
+the ID above):
+    0  0xaaaac4a904d4  sipnab+0xa004d3
+    1  0xaaaac4a8ffe8  sipnab+0x9fffe7
+```
+
+Each release publishes a symbol file for every binary it ships, built by the
+same compile:
+`sipnab-<version>-<target>.debug` for Linux, and
+`sipnab-<version>-<target>.dSYM.zip` for macOS. The `-noaudio` binaries inside
+the `-noaudio` `.deb` and `.rpm` packages have their own, with `-noaudio` in the
+name. The `Build ID` (Linux) or `UUID` (macOS) line pairs the report with
+exactly one of them, so a rebuild cannot stand in for it.
+
+To resolve a report yourself, download the symbol file named by the report's
+version and `Target:` line from the
+[release page](https://github.com/NormB/sipnab/releases). Name it once in a
+shell variable, here for an aarch64 glibc report, so the commands below paste
+as they are:
+
+```bash
+DEBUG=$(ls sipnab-*-aarch64-unknown-linux-gnu.debug)
+```
+
+Check that it is the right one:
+
+```bash
+readelf -n "$DEBUG" | grep 'Build ID'
+```
+
+The ID must equal the report's `Build ID` line. Then pass each `sipnab+0x…`
+address to `addr2line`. The two below are the first frames of the example
+report above:
+
+```bash
+addr2line -f -C -i -e "$DEBUG" 0xa004d3 0x9fffe7
+```
+
+Or to `llvm-symbolizer`, if you have LLVM:
+
+```bash
+llvm-symbolizer --obj="$DEBUG" 0xa004d3 0x9fffe7
+```
+
+Each address prints the function and the `src/…rs:line` it came from. The
+numbers after `+` are addresses inside the file, so they work however the
+system placed the binary in memory. They point at the call instruction, one
+byte before the return address in the first column, so each frame names the
+line that made the call.
+
+On macOS, unzip the `.dSYM.zip`, compare `dwarfdump --uuid sipnab.dSYM` with
+the report's `UUID` line, and pass the numbers after `sipnab+` to `atos`. On
+macOS they are addresses in the binary's own layout, which starts at
+`0x100000000`, so they look larger than the Linux ones. Put them in `ADDRS`,
+separated by spaces:
+
+```bash
+atos -o sipnab.dSYM/Contents/Resources/DWARF/sipnab $ADDRS
+```
+
+For `gdb` or a core file on Linux, put the `.debug` file in the same directory
+as the `sipnab` binary. The binary's `.gnu_debuglink` names that file, and
+`gdb` loads it from there without further setup.
 
 ---
 
@@ -33488,7 +33621,7 @@ processing thread, but a test that passes and a test that raced are
 indistinguishable to `cargo test`.
 
 The borrow checker does not help here either
-— it stops at `unsafe`, and most of this crate's 122 `unsafe` blocks are libc
+— it stops at `unsafe`, and most of this crate's 130 `unsafe` blocks are libc
 FFI, concentrated in privilege dropping ([`privilege.rs`](../../src/privilege.rs)
 and [`process_isolation.rs`](../../src/process_isolation.rs)) and capture setup.
 Recount with `grep -rc 'unsafe {' src/` rather than trusting that figure — this
@@ -33650,10 +33783,10 @@ by design.
 
 ### What actually gates a merge
 
-`ci-success` requires every other job in `ci.yml` — twelve of them: **`check`,
+`ci-success` requires every other job in `ci.yml` — thirteen of them: **`check`,
 `install-sh`, `deb-package`, `rpm-packaging`, `homebrew-formula`,
 `tsan-verdict`, `bench-scripts`, `features`, `crate-package`, `audit`,
-`fuzz-check`, `code-scanning-clean`**.
+`fuzz-check`, `code-scanning-clean`, `symbol-split`**.
 
 `ci_success_gates_every_job` in
 [`site_journey_test`](../../tests/site_journey_test.rs) holds the list to that,
@@ -34224,9 +34357,10 @@ getting this wrong fails the suite instead of the visitor.
 **Tag a commit whose CI is green.** A tag is not a request to build — it
 publishes immediately and irreversibly, whatever that commit contains: fourteen
 installable artifacts (six `.tar.gz`, four `.deb`, four `.rpm`), a `.sha256`
-beside each tarball, a combined `SHA256SUMS.txt`, two SBOMs, a provenance
-attestation, a GHCR image, and a Homebrew formula — twenty-three release assets in
-all. The order is therefore: land the release commit, wait for CI, then tag the
+beside each tarball, eight symbol files (one per build, see
+[Symbol files](#symbol-files)), a combined `SHA256SUMS.txt`, two SBOMs, a
+provenance attestation, a GHCR image, and a Homebrew formula — thirty-one
+release assets in all. The order is therefore: land the release commit, wait for CI, then tag the
 commit that passed.
 
 **crates.io gets the release from the `crates-io` job in `release.yml`, after
@@ -34339,7 +34473,7 @@ a setting somebody can switch off.
 
 None of this touches tags: branch protection targets `refs/heads/main`, and a
 release is a pushed `refs/tags/v*`. The `pre-push` gate below is still what stands
-between a red commit and twenty-three published artifacts.
+between a red commit and thirty-one published artifacts.
 
 A hook enforces this rather than merely advising it. [`pre-push`](../../.githooks/pre-push)
 refuses a `v*` tag whose commit has a failed run, has runs still in flight, or
@@ -34487,6 +34621,88 @@ The same mechanism gates the test count in [`website/templates/index.html`](../.
 `ci.yml` against the real suite total. That check is Linux-only: platform-gated
 tests mean the macOS leg runs a handful fewer, so one advertised number cannot
 be true of both, and the figure describes the Linux run.
+
+### Symbol files
+
+The release strips every binary it publishes, so a crash report from a user
+carries frame addresses and a build ID, not function names. The symbols that resolve
+those addresses exist only in the compile that produced the binary. A rebuild
+later is not byte-identical, so its symbols describe a different binary. The
+release therefore publishes them with the binary, one symbol file per build:
+`sipnab-<version>-<target><suffix>.debug` for each Linux build, `-noaudio`
+builds included since their binaries ship in the `-noaudio` packages, and
+`sipnab-<version>-<target>.dSYM.zip` for each macOS build.
+
+The split happens in the step
+`Split the debug symbols from the shipped binary`, which runs
+[`scripts/split-debuginfo.sh`](../../scripts/split-debuginfo.sh) straight after
+the build:
+
+- **Linux.** The build appends `-C strip=none` through
+  `--config 'build.rustflags=["-C","strip=none"]'`, so the linker keeps
+  `.symtab` and the line tables `[profile.release] debug = "line-tables-only"`
+  produces. The script copies them into the `.debug` file
+  with compressed sections, strips the binary in place, and adds a
+  `.gnu_debuglink` naming the `.debug` file. The GNU build ID pairs the two,
+  and `build.rs` asks the linker for one on every Linux build. Stripping
+  removes only non-allocated sections, so the code and data that load are the
+  ones the linker wrote.
+- **macOS.** The build keeps rustc's own strip and appends
+  `-C split-debuginfo=packed` the same way, so rustc runs `dsymutil` before it
+  strips and leaves `sipnab.dSYM` beside the binary. The script
+  checks that the bundle's UUID is the binary's, then zips it.
+
+**Why `rustflags` and not the profile.** Setting `profile.release.strip = false`
+works, and changes the code. Cargo hashes the profile into every crate's
+`-C metadata`, which reseeds symbol hashes, and on an aarch64 build of the same
+tree `.text` came out 8,064 bytes smaller than the linker-stripped build. Cargo
+keeps `rustflags` out of that hash, and rustc obeys the last `-C strip` on its
+command line. So the profile keeps `strip = true`, the `rustflags` entry
+overrides it at the link, and `.text`, `.data`, `.eh_frame` and the program headers of the split
+binary match the linker-stripped build byte for byte. A `RUSTFLAGS` variable in
+the environment would replace `build.rustflags`, the link would strip, and the
+split would refuse the binary for having no line tables.
+
+Both build steps take the `--config` value from
+`split-debuginfo.sh --cargo-config <target>`, so the build and the split read
+one rule. The script uses `llvm-objcopy` from the `llvm-tools` `rustup`
+component, which the workflow installs: the host's GNU `objcopy` cannot read an
+aarch64 binary on an x86_64 runner, the same failure that made the old
+`strip || true` step a silent no-op on every cross build.
+
+The step comes before every step that reads the binary, so the stripped-binary
+check, the smoke test, the glibc floor, the size ceiling and the packages all
+see the file that ships. The size ceiling in [`website/config.toml`](../../website/config.toml) measures the
+binary alone. The symbol files are separate downloads and count against no
+published size.
+
+The script refuses a binary with no build ID or no line tables rather than
+publish a symbol file nothing can use.
+[`tests/split_debuginfo_test.rs`](../../tests/split_debuginfo_test.rs) drives
+it on every commit against a small program built with the release profile's
+codegen settings, for the host architecture and a foreign one, and resolves an
+address from the stripped program to its function through the `.debug` file.
+[`tests/release_debug_symbols_test.rs`](../../tests/release_debug_symbols_test.rs)
+holds the workflow to the step order, the uploads and the checksums, and runs
+the split step's own shell.
+
+The release runs only on a tag, and the macOS half of the split runs on no
+other job there, so a break in it would first show on a tag that is already
+public. The `symbol-split` job in `ci.yml` closes that gap on every push. It
+builds the release profile with the same `--cargo-config` flags on
+`x86_64-unknown-linux-gnu` and `aarch64-apple-darwin`, runs the split, and
+checks the result with the platform's own tools: on Linux, that the `.debug`
+build ID equals the binary's and that the binary has no `.symtab` and has a
+`.gnu_debuglink`, and on macOS, that the `.dSYM.zip` exists and the bundle's
+UUID from `dwarfdump --uuid` is the binary's. The release-workflow tests run
+that step's own shell against real and deliberately broken splits.
+
+The crash report records what the symbol file needs: the build ID or UUID of
+the executable, its load base, the target triple, and the raw address of every
+frame as `sipnab+0x…`. The number after `+` is the address inside the file, the
+form `addr2line`, `llvm-symbolizer` and `atos` take.
+[Send us a crash report](../troubleshooting.md#send-us-a-crash-report) is the
+user's side of it.
 
 ### The changelog
 

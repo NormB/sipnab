@@ -101,7 +101,9 @@ covers every file, and the tarballs additionally ship an individual
 | `sipnab-<version>-aarch64-unknown-linux-gnu.tar.gz` | aarch64 / arm64 | glibc >= 2.36 + libpcap | full features including audio |
 | `sipnab-<version>-x86_64-apple-darwin.tar.gz` | Intel | macOS 10.12+ | Intel Macs |
 | `sipnab-<version>-aarch64-apple-darwin.tar.gz` | Apple Silicon | macOS 11.0+ | M-series Macs |
-| `SHA256SUMS.txt` | — | — | checksums for every package, tarball, and SBOM |
+| `sipnab-<version>-<target>.debug` | per target | — | Linux symbol file for the binary of the same name, for reading a [crash report](troubleshooting.md#send-us-a-crash-report) or a core dump. One per tarball, plus `-noaudio` ones for the `-noaudio` packages |
+| `sipnab-<version>-<target>.dSYM.zip` | per target | — | macOS symbol bundle, the same for the two macOS tarballs |
+| `SHA256SUMS.txt` | — | — | checksums for every package, tarball, symbol file, and SBOM |
 | `sipnab-<version>.cdx.json` | — | — | CycloneDX SBOM — full dependency tree |
 | `sipnab-audio-<version>.cdx.json` | — | — | CycloneDX SBOM — audio feature subtree |
 | `v<version>.tar.gz`, `v<version>.zip` | — | anywhere Rust 1.98+ builds | tagged source tree |
@@ -557,8 +559,8 @@ and accompanied by a CycloneDX SBOM. The installer script verifies the sha256
 for you. These steps are for manual downloads, mirrors, and anything that
 reached you by a route you did not choose.
 
-**Checksum.** `SHA256SUMS.txt` covers every tarball, `.deb`, `.rpm`, and SBOM
-in the release:
+**Checksum.** `SHA256SUMS.txt` covers every tarball, `.deb`, `.rpm`, symbol
+file, and SBOM in the release:
 
 ```bash
 sha256sum -c SHA256SUMS.txt --ignore-missing
@@ -699,8 +701,8 @@ including token-file generation and the systemd unit.
 ## Release profile
 
 The release build uses LTO, a single codegen unit, and symbol stripping for a
-small binary. It also aborts on panic rather than unwinding, and keeps
-line-table debug info so a crash report still names a line:
+small binary. It also aborts on panic rather than unwinding, and compiles
+line-table debug info:
 
 ```toml
 [profile.release]
@@ -712,6 +714,17 @@ debug = "line-tables-only"
 ```
 
 Target binary size (musl, stripped): <= 17 MB.
+
+A local `cargo build --release` strips at link time, so the line tables never
+reach the binary. The release workflow appends `-C strip=none` to the same
+profile instead, and
+[`scripts/split-debuginfo.sh`](https://github.com/NormB/sipnab/blob/main/scripts/split-debuginfo.sh)
+moves the symbols into the `.debug` file each release publishes before it
+strips the binary. The published binary carries the same code either way and
+is within 100 bytes of the same size (the split drops `.comment` and adds a
+`.gnu_debuglink`), and the
+symbol file resolves the addresses in a
+[crash report](troubleshooting.md#send-us-a-crash-report) or a core dump.
 
 ## Cross-compilation
 

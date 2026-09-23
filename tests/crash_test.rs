@@ -145,3 +145,119 @@ fn backtrace_false_report_says_disabled() {
     assert!(!contents.contains("Backtrace:"));
     assert!(contents.to_ascii_lowercase().contains("disabled"));
 }
+
+#[cfg(target_os = "linux")]
+#[path = "support/dbgsym.rs"]
+mod dbgsym;
+
+/// The one crash report written under the default policy, as text.
+fn default_report() -> String {
+    let (status, stderr, dir) = run_selftest("");
+    assert_eq!(status.code(), Some(101), "stderr:\n{stderr}");
+    let files = report_files(&dir);
+    assert_eq!(files.len(), 1, "stderr:\n{stderr}");
+    std::fs::read_to_string(&files[0]).unwrap()
+}
+
+/// The `image+0x…` address of every frame the report attributes to the
+/// executable itself.
+fn executable_frames(report: &str) -> Vec<String> {
+    report
+        .lines()
+        .filter_map(|l| l.split_whitespace().nth(2))
+        .filter_map(|w| w.strip_prefix("sipnab+"))
+        .map(str::to_string)
+        .collect()
+}
+
+/// (c) A stripped release binary's backtrace names no functions, so the report
+/// records what survives stripping: the executable's GNU build ID (Linux) or
+/// Mach-O UUID (macOS), its load base, the target triple, and the raw address
+/// of every frame. The build ID is checked against the binary on disk.
+#[test]
+fn the_report_records_the_image_identity_and_raw_frames() {
+    let report = default_report();
+    assert!(report.contains("Load base: 0x"), "no load base:\n{report}");
+    assert!(report.contains("Raw frames"), "no raw frames:\n{report}");
+    let target = report
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("Target:"))
+        .map(str::trim)
+        .unwrap_or_default();
+    assert!(
+        target.matches('-').count() >= 2,
+        "no target triple naming the symbol file to fetch:\n{report}"
+    );
+    assert!(
+        executable_frames(&report).len() >= 2,
+        "fewer than two frames attributed to the executable:\n{report}"
+    );
+
+    #[cfg(target_os = "linux")]
+    {
+        let on_disk = dbgsym::build_id(std::path::Path::new(env!("CARGO_BIN_EXE_sipnab")))
+            .expect("the test binary carries a build ID");
+        assert!(
+            report.contains(&format!("Build ID:  {on_disk}")),
+            "the report must carry the binary's build ID {on_disk}:\n{report}"
+        );
+    }
+    #[cfg(target_os = "macos")]
+    assert!(report.contains("UUID:  "), "no Mach-O UUID:\n{report}");
+}
+
+/// (b)+(c) The whole chain on the real binary: split a copy of it into a
+/// stripped binary and a `.debug` file, then resolve the report's frame
+/// addresses against the `.debug` file. One must land on the exact line of the
+/// `--panic-selftest` panic in `src/main.rs`, as the report's `Location:`
+/// names it.
+#[test]
+#[cfg(target_os = "linux")]
+fn the_report_frames_resolve_against_the_published_symbol_file() {
+    if !dbgsym::have("llvm-symbolizer") && !dbgsym::have("addr2line") {
+        eprintln!("SKIPPED: neither llvm-symbolizer nor addr2line is installed");
+        return;
+    }
+    let report = default_report();
+    let frames = executable_frames(&report);
+    assert!(!frames.is_empty(), "no executable frames:\n{report}");
+
+    let dir = tempfile::tempdir().unwrap();
+    let copy = dir.path().join("sipnab");
+    std::fs::copy(env!("CARGO_BIN_EXE_sipnab"), &copy).unwrap();
+    let out = dbgsym::split(&copy, &dir.path().join("sipnab-test"));
+    assert!(
+        out.status.success(),
+        "split failed:\n{}",
+        dbgsym::text(&out)
+    );
+    let debug = dir.path().join("sipnab-test.debug");
+
+    let resolved: String = frames
+        .iter()
+        .map(|f| dbgsym::symbolize(&debug, f).unwrap_or_default())
+        .collect::<Vec<_>>()
+        .join("");
+    // The panic's own `Location:` line, minus the column: a frame must
+    // resolve to exactly that line. This does NOT pin the call-site rule
+    // (return address minus one): in this unoptimized test binary both
+    // resolve to the same line, measured by mutation. The unit test
+    // `the_render_records_identity_load_base_and_raw_frames` pins it, and on
+    // an optimized release build the return address resolved `sipnab::main`
+    // to line 175 while the call site gave the panic's 152.
+    let location = report
+        .lines()
+        .find_map(|l| l.strip_prefix("Location: "))
+        .expect("report has a Location line")
+        .trim();
+    let file_line = location.rsplit_once(':').map_or(location, |(fl, _col)| fl);
+    assert!(
+        file_line.starts_with("src/main.rs:"),
+        "the self-test panics in src/main.rs, report says {location}"
+    );
+    assert!(
+        resolved.contains(file_line),
+        "no frame resolved to the panic at {file_line}.\nframes: {frames:?}\n\
+         resolved:\n{resolved}\nreport:\n{report}"
+    );
+}

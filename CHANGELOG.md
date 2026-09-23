@@ -31,6 +31,27 @@ entry that carries them.
   timers](docs/troubleshooting.md#registration-flood-timers) says which value
   matches an OpenSIPS `fr_timeout` or Kamailio `fr_timer`.
 
+- **Each release publishes a symbol file for every binary it ships.**
+  Published binaries are stripped, so a crash backtrace or a core dump from
+  one names no functions: on an aarch64 release build, twelve of the fourteen
+  frames in a crash report read `<unknown>`. The release now keeps the line
+  tables through the build and splits them into
+  `sipnab-<version>-<target>.debug` (Linux, `-noaudio` builds included) and
+  `sipnab-<version>-<target>.dSYM.zip` (macOS), paired with the binary by its
+  GNU build ID or Mach-O UUID, then strips the binary as before. The shipped
+  code is unchanged: on aarch64, `.text` matches the previous linker-stripped
+  build byte for byte.
+- **A crash report records what the published symbol file resolves.** The
+  report gains an `Image:` section with the executable's GNU build ID
+  (Linux) or Mach-O UUID (macOS), its load base and the target triple, and a
+  `Raw frames` list giving each frame as `sipnab+0x…`, the address of the
+  call in the file. `addr2line`, `llvm-symbolizer` or `atos` resolve those
+  against the matching `.debug` or `.dSYM`: on an aarch64 release build the
+  self-test panic's frames resolve to `sipnab::main` at `src/main.rs:152`,
+  the line the report's `Location:` names.
+  [Send us a crash report](docs/troubleshooting.md#send-us-a-crash-report)
+  covers what to send and how to read it.
+
 ### Fixed
 
 - **A `netmap:` capture no longer crashes on the first frame its filter

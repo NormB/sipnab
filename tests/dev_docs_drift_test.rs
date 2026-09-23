@@ -773,7 +773,11 @@ fn linked_code_targets_exist() {
     // where `--hep-parse` calls the same HEP transport rule (issue #301).
     // Attributed by diffing `docs/internals/` against HEAD: that one link and
     // no other page changed.
-    const EXPECTED_CODE_LINKS: usize = 459;
+    // 459 -> 463: build-ci-release.md's "Symbol files" section links
+    // `scripts/split-debuginfo.sh`, the two test files that drive it, and
+    // `website/config.toml` (the size ceiling). Attributed by diffing
+    // `docs/internals/` against HEAD: those four links and no other page.
+    const EXPECTED_CODE_LINKS: usize = 463;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \
@@ -1840,9 +1844,25 @@ fn release_artifact_counts_match_the_build_matrix() {
         .iter()
         .filter(|e| pkg_targets.contains(&target_of(e).as_str()))
         .count();
-    // Every tarball carries a sibling .sha256; then SHA256SUMS.txt and 2 SBOMs.
+    // One symbol file per build (`.debug` or `.dSYM.zip`) from the split step,
+    // which runs for every matrix entry: read its condition rather than assume
+    // it, so a split narrowed to some builds changes the count here.
+    let split = yaml
+        .split_once("      - name: Split the debug symbols from the shipped binary\n")
+        .expect("release.yml no longer splits the debug symbols")
+        .1;
+    let split_if = split.lines().next().unwrap_or("").trim();
+    assert!(
+        !split_if.starts_with("if:"),
+        "the symbol split now has a condition (`{split_if}`), so it no longer \
+         publishes one symbol file per build and this count must be re-derived"
+    );
+    let symbol_files = builds;
+
+    // Every tarball carries a sibling .sha256; then SHA256SUMS.txt, 2 SBOMs,
+    // and the symbol files.
     let installable = tarballs + packages * 2;
-    let assets = tarballs * 2 + packages * 2 + 1 + 2;
+    let assets = tarballs * 2 + packages * 2 + 1 + 2 + symbol_files;
 
     // Normalize: the prose is hard-wrapped, so every claim spans line breaks.
     // Lowercased too — these counts appear mid-sentence and at sentence starts,
