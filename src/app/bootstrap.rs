@@ -1100,13 +1100,19 @@ pub struct Launched {
         Option<crossbeam_channel::Receiver<crate::capture::reconfigure::FilterApplyOutcome>>,
 }
 
-/// Open a streaming keylog source, if this run has one, while still privileged.
+/// Open the keylog source, if this run has one, while still privileged.
 ///
-/// Returns `None` when `--keylog` names an ordinary file, which the decryptor
-/// opens for itself, or when no keylog was requested at all. A failure here is
+/// A FIFO or `--keylog-fd` becomes a live stream. An ordinary `--keylog` file
+/// is opened too, and read from its start by the decryptor: a proxy's keylog is
+/// usually readable by the proxy's user alone, and a file left for the
+/// decryptor to open after the privilege drop could not be read at all (found
+/// reproducing issue #301).
+///
+/// Returns `None` when no keylog was requested. A stream that fails to open is
 /// reported and downgraded to `None` rather than killed: the run can still
-/// capture, and the operator gets a named reason instead of a silent absence of
-/// decryption.
+/// capture. An ordinary file that fails to open returns `None` quietly, and the
+/// decryptor's own attempt reports the failure with its cause, so the operator
+/// reads one error rather than two.
 #[cfg(feature = "tls")]
 fn open_privileged_keylog_source(cli: &Cli) -> Option<crate::capture::keylog_source::KeylogSource> {
     use crate::capture::keylog_source::KeylogSource;
@@ -1127,7 +1133,19 @@ fn open_privileged_keylog_source(cli: &Cli) -> Option<crate::capture::keylog_sou
     let path = cli.tls_args.keylog.as_deref()?;
     let path = std::path::Path::new(path);
     if !KeylogSource::is_fifo(path) {
-        return None;
+        return match KeylogSource::open_file_now(path) {
+            Ok(s) => {
+                tracing::debug!(
+                    "TLS decryption: opened keylog {} while privileged",
+                    path.display()
+                );
+                Some(s)
+            }
+            Err(e) => {
+                tracing::debug!("{e:#}; the decryptor will report it");
+                None
+            }
+        };
     }
 
     match KeylogSource::open_auto(path) {
@@ -1986,9 +2004,10 @@ pub fn launch(
     // An inherited descriptor (`--keylog-fd`) needs no privilege at all, but is
     // adopted here too so both spellings reach the decryptor by one path.
     //
-    // A regular-file `--keylog` is deliberately NOT opened here: `TlsDecryptor`
-    // parses it eagerly at construction, and doing that twice would load every
-    // secret twice.
+    // A regular-file `--keylog` is opened here as well, and the decryptor then
+    // reads it through this source instead of opening the path itself, so each
+    // secret still loads once. Left for after the drop, a keylog private to the
+    // proxy that wrote it could not be read at all.
     #[cfg(feature = "tls")]
     let keylog_source = open_privileged_keylog_source(cli);
     #[cfg(not(feature = "tls"))]
@@ -7125,12 +7144,41 @@ mod startup_refusal_tests {
 
     // ── The privileged keylog opener ──────────────────────────────────
 
-    /// An ordinary keylog file is left for the decryptor to open itself.
+    /// An ordinary keylog file is opened in the privileged window, and what
+    /// it held stays readable through that handle after access to the path
+    /// is gone, which is what a privilege drop does to a proxy's private
+    /// keylog. Removing read permission stands in for the drop: a unit test
+    /// cannot drop privileges without taking the test binary with it, so the
+    /// real drop is covered by `a_keylog_only_root_can_read_is_loaded_before_the_drop`
+    /// in `tests/privilege_drop_test.rs`.
+    #[cfg(all(feature = "tls", unix))]
+    #[test]
+    fn an_ordinary_keylog_file_is_opened_while_still_privileged() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let mut file = tempfile::NamedTempFile::new().expect("tempfile");
+        std::io::Write::write_all(&mut file, b"CLIENT_RANDOM aa bb\n").expect("write");
+        let cli = cli_from(&["--keylog", file.path().to_str().expect("utf-8 path")]);
+        let mut source =
+            open_privileged_keylog_source(&cli).expect("an ordinary keylog is opened now");
+        std::fs::set_permissions(file.path(), std::fs::Permissions::from_mode(0o000))
+            .expect("revoke access");
+        let lines = source.poll().expect("poll").lines;
+        std::fs::set_permissions(file.path(), std::fs::Permissions::from_mode(0o600))
+            .expect("restore access");
+        assert_eq!(
+            lines, "CLIENT_RANDOM aa bb\n",
+            "read through the held handle"
+        );
+    }
+
+    /// A keylog file that does not exist yields no source here; the decryptor
+    /// reports it, with its cause, so the operator reads one error.
     #[cfg(feature = "tls")]
     #[test]
-    fn an_ordinary_keylog_file_is_not_opened_as_a_stream() {
-        let file = tempfile::NamedTempFile::new().expect("tempfile");
-        let cli = cli_from(&["--keylog", file.path().to_str().expect("utf-8 path")]);
+    fn a_missing_keylog_file_is_left_for_the_decryptor_to_report() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let missing = dir.path().join("absent.keys");
+        let cli = cli_from(&["--keylog", missing.to_str().expect("utf-8 path")]);
         assert!(open_privileged_keylog_source(&cli).is_none());
     }
 

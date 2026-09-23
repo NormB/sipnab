@@ -785,8 +785,8 @@ extractor from a supervisor and hand sipnab the read end.
 
 **Pitfalls:**
 
-- sipnab opens a FIFO named by `--keylog` **before** it drops privileges, for
-  the same reason it opens capture devices there. A path under `/run` is
+- sipnab opens whatever `--keylog` names, a FIFO or a file, **before** it
+  drops privileges, for the same reason it opens capture devices there. A path under `/run` is
   unreachable once sipnab has dropped to an unprivileged user or entered a
   `--chroot`.
 - An inherited descriptor needs no privilege at all, so `--keylog-fd` works
@@ -2812,7 +2812,7 @@ sudo sipnab -N -d eth0 --user sipnab --chroot /var/empty
 **Pitfalls:**
 
 - **`setcap` does not survive a new binary.** Every upgrade, every rebuild, every package update drops it, and the failure looks like a permissions problem that appeared from nowhere. Re-run `--setup-caps` after an upgrade.
-- sipnab opens anything it must reach by path — a keylog FIFO, an output file, a config — **before** the drop and the chroot. A path under `/run` is unreachable afterwards ([7f. Decrypt without writing the keys to disk](#7f-decrypt-without-writing-the-keys-to-disk)).
+- sipnab opens anything it must reach by path — a keylog file or FIFO, an output file, a config — **before** the drop and the chroot. A path under `/run` is unreachable afterwards ([7f. Decrypt without writing the keys to disk](#7f-decrypt-without-writing-the-keys-to-disk)).
 - `--no-priv-drop` keeps the privileges for the rest of the run, and it is not the way to fix a permissions error. Forging kill responses does not need it: sipnab opens the raw socket before the drop and hands it to the scanner-kill worker process, which never keeps root either way.
 
 ---

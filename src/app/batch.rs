@@ -2987,7 +2987,11 @@ impl BatchRunner {
                     Some(d)
                 }
                 Err(e) => {
-                    tracing::error!("Failed to initialize TLS decryptor: {e}");
+                    // `{:#}`: the whole chain. `{}` printed only the outermost
+                    // context, "Loading keylog from <path>", which reads the
+                    // same for a typo, a permission problem and a file the
+                    // producer has not written yet.
+                    tracing::error!("Failed to initialize TLS decryptor: {e:#}");
                     None
                 }
             }

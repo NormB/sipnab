@@ -43,6 +43,15 @@ entry that carries them.
   test pins. Reported by Giovanni
   Maruzzelli ([@gmaruzz](https://github.com/gmaruzz)) in
   [#301](https://github.com/NormB/sipnab/issues/301).
+- **`--keylog` is read before sipnab drops privileges.** A FIFO and
+  `--keylog-fd` already were, and an ordinary keylog file was opened only
+  after the drop. A proxy's keylog is usually readable by the proxy's user
+  alone, so a run as root that dropped to `nobody` could capture the wire and
+  not read its own keys. The error then said only `Failed to initialize TLS
+  decryptor: Loading keylog from <path>`, and now it carries the reason, such
+  as `No such file or directory`. `--keylog-watch` keeps reading what the
+  producer appends through the file opened before the drop. Found while
+  reproducing [#301](https://github.com/NormB/sipnab/issues/301).
 - **Key recovery under `--keylog-watch` no longer loses the packet that
   follows the keys.** When keys arrive for TLS records sipnab held, the next
   packet runs the recovery, whatever that packet is, and the recovered

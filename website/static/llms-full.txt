@@ -1003,8 +1003,8 @@ extractor from a supervisor and hand sipnab the read end.
 
 **Pitfalls:**
 
-- sipnab opens a FIFO named by `--keylog` **before** it drops privileges, for
-  the same reason it opens capture devices there. A path under `/run` is
+- sipnab opens whatever `--keylog` names, a FIFO or a file, **before** it
+  drops privileges, for the same reason it opens capture devices there. A path under `/run` is
   unreachable once sipnab has dropped to an unprivileged user or entered a
   `--chroot`.
 - An inherited descriptor needs no privilege at all, so `--keylog-fd` works
@@ -3030,7 +3030,7 @@ sudo sipnab -N -d eth0 --user sipnab --chroot /var/empty
 **Pitfalls:**
 
 - **`setcap` does not survive a new binary.** Every upgrade, every rebuild, every package update drops it, and the failure looks like a permissions problem that appeared from nowhere. Re-run `--setup-caps` after an upgrade.
-- sipnab opens anything it must reach by path — a keylog FIFO, an output file, a config — **before** the drop and the chroot. A path under `/run` is unreachable afterwards ([7f. Decrypt without writing the keys to disk](#7f-decrypt-without-writing-the-keys-to-disk)).
+- sipnab opens anything it must reach by path — a keylog file or FIFO, an output file, a config — **before** the drop and the chroot. A path under `/run` is unreachable afterwards ([7f. Decrypt without writing the keys to disk](#7f-decrypt-without-writing-the-keys-to-disk)).
 - `--no-priv-drop` keeps the privileges for the rest of the run, and it is not the way to fix a permissions error. Forging kill responses does not need it: sipnab opens the raw socket before the drop and hands it to the scanner-kill worker process, which never keeps root either way.
 
 ---
@@ -12939,7 +12939,7 @@ it. See [MCP Server](mcp.md) for the full guide. [Network Listeners](#network-li
 | Flag | Value | Default | Description |
 |------|-------|---------|-------------|
 | `-k`, `--tls-key` | `<FILE>` | -- | RSA private key (PEM) for TLS 1.2 RSA-key-exchange decryption. Non-PFS RSA only; ECDHE/DHE handshakes need `--keylog`. Feature: `tls` |
-| `--keylog` | `<FILE>` | -- | TLS key log file (NSS `SSLKEYLOGFILE` format). Accepts a **FIFO** here and reads it as a live stream, so a producer can feed secrets in without writing them to disk. Feature: `tls` |
+| `--keylog` | `<FILE>` | -- | TLS key log file (NSS `SSLKEYLOGFILE` format). Accepts a **FIFO** here and reads it as a live stream, so a producer can feed secrets in without writing them to disk. sipnab opens the file **before** it drops privileges, so a keylog only the proxy's user can read still loads when sipnab runs as root and drops to `nobody`, and `--keylog-watch` keeps reading what the producer appends through that open file. A producer that replaces the file after the drop needs it reachable by the user sipnab dropped to. When sipnab cannot read the keylog, its error names the reason, such as `No such file or directory`. Feature: `tls` |
 | `--keylog-fd` | `<N>` | -- | Read NSS keylog lines from an already-open descriptor, for a privileged producer that hands secrets over a pipe rather than a file. **Implies `--keylog-watch`**, and conflicts with `--keylog` — pass one, never both. sipnab **cannot start that producer itself**: it sets `PR_SET_NO_NEW_PRIVS` at startup and every child inherits it, so a child can never acquire the `CAP_BPF` an eBPF extractor needs. Start it from a supervisor and pass the read end here. Feature: `tls` |
 | `--keylog-watch` | -- | off | Watch the key log for new entries (live decryption). Feature: `tls` |
 | `--tls-lockon-window` | `<RECORDS>` | 1048576 | How far into an established TLS connection a capture may start and still be readable. No TLS version puts the record number on the wire, so a capture that joined a running connection searches for it, widening only as records fail to open — raising this costs nothing on a connection captured from its handshake, because the search stops at the first candidate that authenticates. Raise it for a carrier trunk held open for days; lower it where key material for unrelated connections is common. Feature: `tls` |

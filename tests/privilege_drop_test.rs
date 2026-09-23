@@ -841,3 +841,100 @@ fn child_core_dumps_are_off_after_the_call() {
     );
     println!("{CHILD_COMPLETE}");
 }
+
+// ── The keylog is read before the drop ────────────────────────────────────
+
+/// One TLS 1.3 session's secrets, as a TLS stack writes them.
+#[cfg(feature = "tls")]
+const KEYLOG: &str = "CLIENT_TRAFFIC_SECRET_0 \
+    5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a \
+    3131313131313131313131313131313131313131313131313131313131313131\n";
+
+/// **A keylog only root can read still loads when sipnab drops to `nobody`.**
+///
+/// The keylog a proxy writes is usually private to it, and sipnab runs as root
+/// to capture, then drops privileges before it parses a byte. It read an
+/// ordinary `--keylog` file only AFTER the drop, so a run that could capture
+/// the wire could not read its own keys, and said only "Failed to initialize
+/// TLS decryptor: Loading keylog from ..." with no cause (found reproducing
+/// issue #301 with OpenSIPS). The file here sits in a 0700 directory owned by
+/// the test's user: root can read it, `nobody` cannot.
+#[cfg(feature = "tls")]
+#[test]
+fn a_keylog_only_root_can_read_is_loaded_before_the_drop() {
+    if !sudo_available() {
+        announce_skip(
+            "a_keylog_only_root_can_read_is_loaded_before_the_drop",
+            "passwordless sudo is not available, so sipnab cannot be run as root here",
+        );
+        return;
+    }
+    let fixture = world_readable_fixture("keylog-before-drop");
+    use std::os::unix::fs::PermissionsExt as _;
+    let private = tempfile::tempdir().expect("a private directory");
+    // Set explicitly: `tempdir` honors the umask, which left it 0775 here and
+    // let `nobody` read the file, so the test passed without the fix.
+    std::fs::set_permissions(private.path(), std::fs::Permissions::from_mode(0o700))
+        .expect("make the directory private");
+    let keylog = private.path().join("proxy.keys");
+    std::fs::write(&keylog, KEYLOG).expect("write the keylog");
+    std::fs::set_permissions(&keylog, std::fs::Permissions::from_mode(0o600))
+        .expect("make the keylog private");
+    let out = Command::new("sudo")
+        .args([
+            "-n",
+            env!("CARGO_BIN_EXE_sipnab"),
+            "-N",
+            "-I",
+            fixture.to_str().unwrap(),
+            "--keylog",
+            keylog.to_str().unwrap(),
+            "--user",
+            "nobody",
+        ])
+        .env("SIPNAB_LOG", "info")
+        .output()
+        .expect("spawn sipnab under sudo");
+    let _ = std::fs::remove_file(&fixture);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{stderr}");
+    assert!(
+        !stderr.contains("Failed to initialize TLS decryptor"),
+        "the keylog must be read while still root:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("TLS decryption active"),
+        "and its keys loaded:\n{stderr}"
+    );
+}
+
+/// A keylog that cannot be read says WHY. The message used to stop at
+/// "Loading keylog from <path>", which reads the same for a typo, a
+/// permission problem and a file the producer has not created yet.
+#[cfg(feature = "tls")]
+#[test]
+fn a_keylog_that_cannot_be_read_names_the_cause() {
+    let fixture = world_readable_fixture("keylog-cause");
+    let dir = tempfile::tempdir().expect("a directory");
+    let missing = dir.path().join("not-written-yet.keys");
+    let out = Command::new(env!("CARGO_BIN_EXE_sipnab"))
+        .args([
+            "-N",
+            "-I",
+            fixture.to_str().unwrap(),
+            "--keylog",
+            missing.to_str().unwrap(),
+        ])
+        .output()
+        .expect("spawn sipnab");
+    let _ = std::fs::remove_file(&fixture);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let line = stderr
+        .lines()
+        .find(|l| l.contains("Failed to initialize TLS decryptor"))
+        .unwrap_or_else(|| panic!("the failure must be reported:\n{stderr}"));
+    assert!(
+        line.contains("No such file or directory"),
+        "the report must carry the operating system's reason: {line}"
+    );
+}

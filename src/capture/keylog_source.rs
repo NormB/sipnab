@@ -104,6 +104,35 @@ impl KeylogSource {
         })
     }
 
+    /// Open a regular file NOW, reading from its start.
+    ///
+    /// For a caller about to lose the right to open it: sipnab reads the keylog
+    /// while still root and then drops privileges, and a proxy's keylog is
+    /// usually readable by the proxy's user alone. The held handle keeps
+    /// reading what the producer appends after the drop. A producer that
+    /// REPLACES the file after the drop is reopened by path, which the dropped
+    /// process may no longer be allowed to do.
+    ///
+    /// # Errors
+    ///
+    /// The open failed; the error names the path and carries the system's
+    /// reason.
+    pub fn open_file_now(path: &Path) -> Result<Self> {
+        use anyhow::Context as _;
+        let file = std::fs::File::open(path)
+            .with_context(|| format!("opening keylog {}", path.display()))?;
+        let id = file.metadata().ok().map(|m| file_id(&m));
+        Ok(Self {
+            mode: Mode::File {
+                path: path.to_path_buf(),
+                handle: Some(file),
+                id,
+                consumed: 0,
+            },
+            partial: String::new(),
+        })
+    }
+
     /// Open a regular file positioned at its current end.
     ///
     /// For callers that have just read the existing contents themselves and
