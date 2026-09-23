@@ -12,11 +12,15 @@
 //! arrived, the closing line did not, and the test passed every time it ran
 //! alone.
 //!
-//! `test_utils::capture_logs` rebuilds the cache after installing its
-//! subscriber, the fix two integration tests already carried. The race itself
-//! needs a second thread to reach a call site at the wrong instant, so it
-//! cannot be driven on demand. What CAN be held is the rule: no unit test calls
-//! `with_default` itself, so there is one place the fix lives.
+//! `test_utils::capture_logs` keeps a second dispatcher registered for the
+//! whole run, which turns off tracing-core's one-dispatcher shortcut (the
+//! shortcut asks only the registering thread, and a thread with no subscriber
+//! answers "never"), and it rebuilds the cache after installing its
+//! subscriber. The unit test
+//! `capture_logs_sees_a_call_site_another_thread_registered_first` in
+//! `src/test_utils.rs` drives the race deterministically when run alone. What
+//! this file holds is the rule: no unit test calls `with_default` itself, so
+//! there is one place the fix lives.
 
 #![cfg(feature = "full")]
 
