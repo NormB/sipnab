@@ -237,28 +237,6 @@ mod tests {
         );
     }
 
-    /// A `tracing` writer that keeps every line, so a test can read what the
-    /// loop told the operator.
-    #[derive(Clone, Default)]
-    struct CaptureBuf(Arc<parking_lot::Mutex<Vec<u8>>>);
-
-    impl std::io::Write for CaptureBuf {
-        fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
-            self.0.lock().extend_from_slice(b);
-            Ok(b.len())
-        }
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
-    }
-
-    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for CaptureBuf {
-        type Writer = CaptureBuf;
-        fn make_writer(&'a self) -> Self::Writer {
-            self.clone()
-        }
-    }
-
     /// Run the loop on this thread over `sockets` and return what it logged.
     ///
     /// The log IS the loop's output: it returns nothing, and the only other
@@ -272,17 +250,9 @@ mod tests {
         }
         drop(sink);
 
-        let buf = CaptureBuf::default();
-        let subscriber = tracing_subscriber::fmt()
-            .with_max_level(tracing::Level::INFO)
-            .with_ansi(false)
-            .with_writer(buf.clone())
-            .finish();
-        tracing::subscriber::with_default(subscriber, || {
+        crate::test_utils::capture_logs(tracing::Level::INFO, || {
             run(reconciler, &permit(), &rx, &store);
-        });
-        let bytes = buf.0.lock().clone();
-        String::from_utf8_lossy(&bytes).into_owned()
+        })
     }
 
     /// A relay that attributes nothing: it cannot be reached, or it names

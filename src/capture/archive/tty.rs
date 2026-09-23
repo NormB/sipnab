@@ -11,7 +11,7 @@
 //! # The terminal always comes back
 //!
 //! While the operator types, the terminal is in raw mode: no echo, no line
-//! editing by the kernel, and no signals from the keyboard. [`RawMode`]
+//! editing by the kernel, and no signals from the keyboard. `RawMode`
 //! restores what it found when it drops, on Enter, on an error, and on
 //! Ctrl-C, which arrives as a byte this module handles rather than as a
 //! signal that could kill the process with echo still off. A SIGTERM from

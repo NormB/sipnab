@@ -2553,43 +2553,11 @@ mod quiet_bad_parse_tests {
     use super::*;
     use crate::capture::parse::{ParsedPacket, TransportProto};
     use chrono::Utc;
-    use parking_lot::Mutex;
     use std::net::{IpAddr, Ipv4Addr};
-    use std::sync::Arc;
-
-    /// A `tracing` writer that accumulates every emitted line into a shared
-    /// buffer so a test can assert on what was (or was not) logged.
-    #[derive(Clone, Default)]
-    struct CaptureBuf(Arc<Mutex<Vec<u8>>>);
-
-    impl std::io::Write for CaptureBuf {
-        fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
-            self.0.lock().extend_from_slice(b);
-            Ok(b.len())
-        }
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
-    }
-
-    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for CaptureBuf {
-        type Writer = CaptureBuf;
-        fn make_writer(&'a self) -> Self::Writer {
-            self.clone()
-        }
-    }
 
     /// Run `f` with a thread-local DEBUG subscriber and return captured output.
     fn capture_logs(f: impl FnOnce()) -> String {
-        let buf = CaptureBuf::default();
-        let subscriber = tracing_subscriber::fmt()
-            .with_max_level(tracing::Level::DEBUG)
-            .with_ansi(false)
-            .with_writer(buf.clone())
-            .finish();
-        tracing::subscriber::with_default(subscriber, f);
-        let bytes = buf.0.lock().clone();
-        String::from_utf8_lossy(&bytes).into_owned()
+        crate::test_utils::capture_logs(tracing::Level::DEBUG, f)
     }
 
     /// Build a UDP `ParsedPacket` from 10.0.0.1:5060 → 10.0.0.2:5060 carrying

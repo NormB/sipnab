@@ -152,6 +152,17 @@ entry that carries them.
 
 ### Internal
 
+- **Unit tests capture logs through one helper, which cannot miss an
+  event.** `tracing` caches per call site, for the whole process, whether any
+  subscriber wants its events, and `with_default` covers one thread. A test
+  thread running with no subscriber could leave "nobody" cached, and
+  `a_relay_that_is_down_is_reported_once_not_once_per_stream` then lost its
+  closing line in one CI leg while passing every time alone. Five copies of
+  the capture helper are now `test_utils::capture_logs`, which rebuilds that
+  cache after installing its subscriber, and
+  `tests/log_capture_hygiene_test.rs` fails on any other `with_default` call
+  under `src/`.
+
 - **The blocked-script homepage test refuses the script the way a browser
   does.** It cut `<script>` elements out with a regular expression, which
   CodeQL flagged as an incomplete HTML filter (alert 423) and which tested a

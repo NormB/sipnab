@@ -615,38 +615,9 @@ mod tests {
         assert!(!logs.contains("dropped"), "{logs}");
     }
 
-    /// A `tracing` writer that keeps what was logged for the test to read.
-    #[derive(Clone, Default)]
-    struct CaptureBuf(Arc<std::sync::Mutex<Vec<u8>>>);
-
-    impl std::io::Write for CaptureBuf {
-        fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
-            self.0.lock().expect("log buffer").extend_from_slice(b);
-            Ok(b.len())
-        }
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
-    }
-
-    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for CaptureBuf {
-        type Writer = CaptureBuf;
-        fn make_writer(&'a self) -> Self::Writer {
-            self.clone()
-        }
-    }
-
     /// Run `f` under a thread-local subscriber and return what it logged.
     fn capture_logs(f: impl FnOnce()) -> String {
-        let buf = CaptureBuf::default();
-        let subscriber = tracing_subscriber::fmt()
-            .with_max_level(tracing::Level::DEBUG)
-            .with_ansi(false)
-            .with_writer(buf.clone())
-            .finish();
-        tracing::subscriber::with_default(subscriber, f);
-        let bytes = buf.0.lock().expect("log buffer").clone();
-        String::from_utf8_lossy(&bytes).into_owned()
+        crate::test_utils::capture_logs(tracing::Level::DEBUG, f)
     }
 
     // ── Attaching, against a stand-in tracefs ────────────────────────────

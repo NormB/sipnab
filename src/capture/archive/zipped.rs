@@ -11,7 +11,7 @@
 //!
 //! # Encrypted members
 //!
-//! Each encrypted member is offered to the [`Keyring`]: the password that
+//! Each encrypted member is offered to the [`Keyring`](crate::capture::archive::password::Keyring): the password that
 //! opened this archive before, then every configured candidate, then the
 //! prompt. A wrong password is caught by the format's own check, which is the
 //! ZipCrypto check byte or the AES verifier. ZipCrypto's check byte lets one

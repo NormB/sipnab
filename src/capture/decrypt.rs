@@ -3245,32 +3245,8 @@ mod tests {
     #[cfg(all(feature = "tls", feature = "native"))]
     #[test]
     fn disagreeing_traffic_secrets_are_reported_not_silently_chosen() {
-        #[derive(Clone, Default)]
-        struct CaptureBuf(std::sync::Arc<parking_lot::Mutex<Vec<u8>>>);
-        impl std::io::Write for CaptureBuf {
-            fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
-                self.0.lock().extend_from_slice(b);
-                Ok(b.len())
-            }
-            fn flush(&mut self) -> std::io::Result<()> {
-                Ok(())
-            }
-        }
-        impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for CaptureBuf {
-            type Writer = CaptureBuf;
-            fn make_writer(&'a self) -> Self::Writer {
-                self.clone()
-            }
-        }
         fn capture(f: impl FnOnce()) -> String {
-            let buf = CaptureBuf::default();
-            let sub = tracing_subscriber::fmt()
-                .with_max_level(tracing::Level::DEBUG)
-                .with_ansi(false)
-                .with_writer(buf.clone())
-                .finish();
-            tracing::subscriber::with_default(sub, f);
-            String::from_utf8_lossy(&buf.0.lock().clone()).into_owned()
+            crate::test_utils::capture_logs(tracing::Level::DEBUG, f)
         }
 
         let entry = |label: &str, cr: &[u8], secret: u8| KeyLogEntry {
