@@ -8,6 +8,21 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Added
+
+- **Each release publishes a symbol file for every binary it ships.**
+  Published binaries are stripped, so a crash backtrace or a core dump from
+  one names no functions: on an aarch64 release build, twelve of the fourteen
+  frames in a crash report read `<unknown>`. The release now keeps the line
+  tables through the build and splits them into
+  `sipnab-<version>-<target>.debug` (Linux, `-noaudio` builds included) and
+  `sipnab-<version>-<target>.dSYM.zip` (macOS), paired with the binary by its
+  GNU build ID or Mach-O UUID, then strips the binary as before. The shipped
+  code is unchanged: on aarch64, `.text` matches the previous linker-stripped
+  build byte for byte.
+
 ## [0.5.188] - 2026-09-23
 
 ### Fixed

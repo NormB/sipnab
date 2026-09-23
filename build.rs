@@ -39,6 +39,18 @@ fn main() {
     println!("cargo:rustc-env=SIPNAB_GIT_TAG={tag}");
     println!("cargo:rustc-env=SIPNAB_GIT_DIRTY={dirty}");
 
+    // A GNU build ID in every Linux binary. It is what pairs a stripped
+    // release binary, and the crash report it writes, with the symbol file
+    // `scripts/split-debuginfo.sh` publishes beside it. Debian's gcc adds one
+    // by default, but that is the toolchain's choice rather than this
+    // project's, and a cross toolchain configured otherwise would ship
+    // binaries nothing can be matched to. The split refuses such a binary, so
+    // the omission would surface only at release time; asking for the ID here
+    // means it never arises.
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("linux") {
+        println!("cargo:rustc-link-arg-bins=-Wl,--build-id");
+    }
+
     // The `audio` feature no longer links libasound into the binary: device
     // output lives in the `sipnab-audio` cdylib plugin, which the binary
     // dlopen's lazily. The binary thus starts fine without libasound — only

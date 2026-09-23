@@ -33,6 +33,16 @@ mod markdown;
 /// would still fail this guard instead of being silently whitelisted. The
 /// label is the first element of each `docs` tuple in `readme_long_flags_exist_in_cli`.
 const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
+    // `scripts/split-debuginfo.sh --cargo-config <target>`, named by the
+    // release page's "Symbol files" section: the mode that prints the cargo
+    // setting the release build needs. A script's flag, not sipnab's.
+    (
+        "cargo-config",
+        &[
+            "docs/internals/build-ci-release.md",
+            "website/content/docs/internals/build-ci-release.md",
+        ],
+    ),
     // restic's and Docker's, named by the Archives section, which ranks
     // sipnab's archive password sources against the tools operators already
     // know (`restic --password-command`, `docker login --password-stdin`).

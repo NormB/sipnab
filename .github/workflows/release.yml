@@ -134,10 +134,14 @@ jobs:
           # third-party actions to read. Nothing here pushes with it:
           # wiki-sync and release pass the token explicitly via GH_TOKEN.
           persist-credentials: false
+      # llvm-tools carries llvm-objcopy, which the symbol split below needs: it
+      # reads every architecture, where the host's GNU objcopy cannot open the
+      # aarch64 binaries this x86_64 runner cross-compiles.
       - name: Install Rust
         uses: dtolnay/rust-toolchain@ce678459e9fc7500d337468f904b95f1b5c10b5e # 1.98.1
         with:
           targets: ${{ matrix.target }}
+          components: llvm-tools
 
       - name: Install cross (Linux)
         if: matrix.cross
@@ -390,18 +394,25 @@ jobs:
         if: matrix.cross
         env:
           SIPNAB_BPF_REQUIRED: ${{ steps.features.outputs.bpf_required }}
-        run: cross build --release --target ${{ matrix.target }} --no-default-features --features ${{ steps.features.outputs.features }} --bin sipnab
+        run: cross build --release --config "$(bash scripts/split-debuginfo.sh --cargo-config ${{ matrix.target }})" --target ${{ matrix.target }} --no-default-features --features ${{ steps.features.outputs.features }} --bin sipnab
 
       # SIPNAB_BPF_REQUIRED=1 turns build.rs's degrading default into a hard
       # error. Without it, a runner missing bpf-linker or nightly would embed an
       # EMPTY placeholder object and publish a binary that advertises `bpf` in
       # --version and refuses on every host that runs it. The degrade is right
       # for a contributor and wrong for an artefact people install.
+      #
+      # `--config` from split-debuginfo.sh keeps the symbols this build makes
+      # until the split step below takes them: rustflags `-C strip=none` on
+      # Linux, `-C split-debuginfo=packed` on macOS. Rustflags rather than the
+      # profile, because cargo hashes the profile into `-C metadata` and that
+      # changes the generated code. Both build steps take it from the script,
+      # so the build and the split read one rule.
       - name: Build (native)
         if: '!matrix.cross'
         env:
           SIPNAB_BPF_REQUIRED: ${{ steps.features.outputs.bpf_required }}
-        run: cargo build --release --target ${{ matrix.target }} --no-default-features --features ${{ steps.features.outputs.features }} --bin sipnab
+        run: cargo build --release --config "$(bash scripts/split-debuginfo.sh --cargo-config ${{ matrix.target }})" --target ${{ matrix.target }} --no-default-features --features ${{ steps.features.outputs.features }} --bin sipnab
 
       - name: Build audio plugin (cross)
         if: matrix.cross && steps.features.outputs.audio_plugin == 'yes'
@@ -411,22 +422,45 @@ jobs:
         if: '!matrix.cross && steps.features.outputs.audio_plugin == ''yes'''
         run: cargo build --release --target ${{ matrix.target }} -p sipnab-audio
 
-      # There is no strip step, deliberately. `[profile.release] strip = true`
-      # in Cargo.toml strips at link time, for every target, as part of the
-      # build that just ran.
+      # Publish the symbols, ship the binary stripped.
       #
-      # A separate `strip` invocation used to run here under `|| true`. On the
-      # cross-compiled targets the host's GNU strip cannot even read the output
-      # ("Unable to recognize the format of the input file") and had been
-      # failing on every single release for the project's history; on native
-      # targets it was a no-op against an already-stripped binary. `|| true`
-      # meant neither outcome was visible, so it looked like the thing doing the
-      # stripping while doing nothing at all.
+      # A crash report from a user holds frame addresses and a build ID, and a
+      # stripped binary cannot turn either into a function name. The symbols
+      # exist only in THIS compile: a rebuild later is not byte-identical, so
+      # its symbols would describe a different binary. So the build above kept
+      # them, and this step moves them into sipnab-<version>-<target>.debug
+      # (Linux, paired by GNU build ID) or .dSYM.zip (macOS, paired by Mach-O
+      # UUID) in dist/, and strips the Linux binary in place. Every step after
+      # this one sees the stripped binary, which is what ships. The script
+      # refuses a binary with no build ID or no line tables rather than publish
+      # a symbol file nothing can use; tests/split_debuginfo_test.rs drives it
+      # on a real optimized binary on every commit.
       #
-      # Removing the guesswork and asserting the property is the useful half.
-      # readelf reads cross-architecture ELF happily, which is why it can check
-      # what strip could not even open. Linux only: macOS artifacts are Mach-O
-      # and readelf does not apply.
+      # It runs for every matrix entry, noaudio included: those binaries are
+      # the ones inside the .deb and .rpm, and they have their own build IDs.
+      - name: Split the debug symbols from the shipped binary
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+          SUFFIX: ${{ steps.features.outputs.suffix }}
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          [ "$version" = "${GITHUB_REF_NAME}" ] && version="dev"
+          mkdir -p dist
+          bash scripts/split-debuginfo.sh "target/${TARGET}/release/sipnab" "dist/sipnab-${version}-${TARGET}${SUFFIX}"
+
+      # The split above is the strip step for Linux. A separate `strip` used to
+      # run here under `|| true`: on the cross-compiled targets the host's GNU
+      # strip cannot even read the output ("Unable to recognize the format of
+      # the input file") and had failed on every release for the project's
+      # history, and `|| true` hid it. The split uses llvm-objcopy, which reads
+      # every architecture, and fails loudly.
+      #
+      # This step asserts the property on the file that ships, independently of
+      # the tool that produced it. readelf reads cross-architecture ELF happily.
+      # Linux only: macOS artifacts are Mach-O, stripped by rustc itself, and
+      # readelf does not apply.
       - name: Verify the binary is stripped
         if: contains(matrix.target, 'linux')
         shell: bash
@@ -873,7 +907,7 @@ jobs:
       - name: Generate combined checksums
         run: |
           cd artifacts
-          sha256sum *.tar.gz *.deb *.rpm *.cdx.json > SHA256SUMS.txt
+          sha256sum *.tar.gz *.deb *.rpm *.cdx.json *.debug *.dSYM.zip > SHA256SUMS.txt
           cat SHA256SUMS.txt
 
       # Sigstore build provenance for every artifact: cryptographic proof it
@@ -888,6 +922,8 @@ jobs:
             artifacts/*.deb
             artifacts/*.rpm
             artifacts/*.cdx.json
+            artifacts/*.debug
+            artifacts/*.dSYM.zip
             artifacts/SHA256SUMS.txt
 
       # Run the exact command the docs tell downloaders to run.
@@ -954,6 +990,8 @@ jobs:
             artifacts/*.deb
             artifacts/*.rpm
             artifacts/*.cdx.json
+            artifacts/*.debug
+            artifacts/*.dSYM.zip
             artifacts/SHA256SUMS.txt
 
   crates-io:

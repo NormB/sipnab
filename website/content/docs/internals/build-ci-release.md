@@ -832,9 +832,10 @@ getting this wrong fails the suite instead of the visitor.
 **Tag a commit whose CI is green.** A tag is not a request to build — it
 publishes immediately and irreversibly, whatever that commit contains: fourteen
 installable artifacts (six `.tar.gz`, four `.deb`, four `.rpm`), a `.sha256`
-beside each tarball, a combined `SHA256SUMS.txt`, two SBOMs, a provenance
-attestation, a GHCR image, and a Homebrew formula — twenty-three release assets in
-all. The order is therefore: land the release commit, wait for CI, then tag the
+beside each tarball, eight symbol files (one per build, see
+[Symbol files](#symbol-files)), a combined `SHA256SUMS.txt`, two SBOMs, a
+provenance attestation, a GHCR image, and a Homebrew formula — thirty-one
+release assets in all. The order is therefore: land the release commit, wait for CI, then tag the
 commit that passed.
 
 **crates.io gets the release from the `crates-io` job in `release.yml`, after
@@ -947,7 +948,7 @@ a setting somebody can switch off.
 
 None of this touches tags: branch protection targets `refs/heads/main`, and a
 release is a pushed `refs/tags/v*`. The `pre-push` gate below is still what stands
-between a red commit and twenty-three published artifacts.
+between a red commit and thirty-one published artifacts.
 
 A hook enforces this rather than merely advising it. [`pre-push`](https://github.com/NormB/sipnab/blob/main/.githooks/pre-push)
 refuses a `v*` tag whose commit has a failed run, has runs still in flight, or
@@ -1095,6 +1096,71 @@ The same mechanism gates the test count in [`website/templates/index.html`](http
 `ci.yml` against the real suite total. That check is Linux-only: platform-gated
 tests mean the macOS leg runs a handful fewer, so one advertised number cannot
 be true of both, and the figure describes the Linux run.
+
+### Symbol files
+
+The release strips every binary it publishes, so a crash report or a core
+dump from a user carries frame addresses, not function names. The symbols that resolve
+those addresses exist only in the compile that produced the binary. A rebuild
+later is not byte-identical, so its symbols describe a different binary. The
+release therefore publishes them with the binary, one symbol file per build:
+`sipnab-<version>-<target><suffix>.debug` for each Linux build, `-noaudio`
+builds included since their binaries ship in the `-noaudio` packages, and
+`sipnab-<version>-<target>.dSYM.zip` for each macOS build.
+
+The split happens in the step
+`Split the debug symbols from the shipped binary`, which runs
+[`scripts/split-debuginfo.sh`](https://github.com/NormB/sipnab/blob/main/scripts/split-debuginfo.sh) straight after
+the build:
+
+- **Linux.** The build appends `-C strip=none` through
+  `--config 'build.rustflags=["-C","strip=none"]'`, so the linker keeps
+  `.symtab` and the line tables `[profile.release] debug = "line-tables-only"`
+  produces. The script copies them into the `.debug` file
+  with compressed sections, strips the binary in place, and adds a
+  `.gnu_debuglink` naming the `.debug` file. The GNU build ID pairs the two,
+  and `build.rs` asks the linker for one on every Linux build. Stripping
+  removes only non-allocated sections, so the code and data that load are the
+  ones the linker wrote.
+- **macOS.** The build keeps rustc's own strip and appends
+  `-C split-debuginfo=packed` the same way, so rustc runs `dsymutil` before it
+  strips and leaves `sipnab.dSYM` beside the binary. The script
+  checks that the bundle's UUID is the binary's, then zips it.
+
+**Why `rustflags` and not the profile.** Setting `profile.release.strip = false`
+works, and changes the code. Cargo hashes the profile into every crate's
+`-C metadata`, which reseeds symbol hashes, and on an aarch64 build of the same
+tree `.text` came out 8,064 bytes smaller than the linker-stripped build. Cargo
+keeps `rustflags` out of that hash, and rustc obeys the last `-C strip` on its
+command line. So the profile keeps `strip = true`, the `rustflags` entry
+overrides it at the link, and `.text`, `.data`, `.eh_frame` and the program headers of the split
+binary match the linker-stripped build byte for byte. A `RUSTFLAGS` variable in
+the environment would replace `build.rustflags`, the link would strip, and the
+split would refuse the binary for having no line tables.
+
+Both build steps take the `--config` value from
+`split-debuginfo.sh --cargo-config <target>`, so the build and the split read
+one rule. The script uses `llvm-objcopy` from the `llvm-tools` `rustup`
+component, which the workflow installs: the host's GNU `objcopy` cannot read an
+aarch64 binary on an x86_64 runner, the same failure that made the old
+`strip || true` step a silent no-op on every cross build.
+
+The step comes before every step that reads the binary, so the stripped-binary
+check, the smoke test, the glibc floor, the size ceiling and the packages all
+see the file that ships. The size ceiling in [`website/config.toml`](https://github.com/NormB/sipnab/blob/main/website/config.toml) measures the
+binary alone. The symbol files are separate downloads and count against no
+published size.
+
+The script refuses a binary with no build ID or no line tables rather than
+publish a symbol file nothing can use.
+[`tests/split_debuginfo_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/split_debuginfo_test.rs) drives
+it on every commit against a small program built with the release profile's
+codegen settings, for the host architecture and a foreign one, and resolves an
+address from the stripped program to its function through the `.debug` file.
+[`tests/release_debug_symbols_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/release_debug_symbols_test.rs)
+holds the workflow to the step order, the uploads and the checksums, and runs
+the split step's own shell. The macOS half runs only on the release's darwin
+runners.
 
 ### The changelog
 
