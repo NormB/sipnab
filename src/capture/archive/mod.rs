@@ -584,6 +584,46 @@ pub fn is_password_like_name(name: &str) -> bool {
         .any(|w| folded.contains(w))
 }
 
+/// The fuzz entry point for the archive and password layer: the one body
+/// both `fuzz/fuzz_targets/archive_password.rs` and the replay test in
+/// `tests/archive_fuzz_replay_test.rs` drive.
+///
+/// `data` is a length byte, that many bytes of password, then an archive.
+/// The archive is written to a private temporary file and walked with small
+/// bounds and a keyring holding that one password, so every layer, every
+/// encryption and the trial and rollback logic see hostile bytes. Whatever
+/// happens is discarded: the contract is only that it returns.
+#[doc(hidden)]
+#[cfg(feature = "archive")]
+pub fn fuzz_one_archive(data: &[u8]) {
+    let Some((&n, rest)) = data.split_first() else {
+        return;
+    };
+    let n = usize::from(n).min(rest.len());
+    let (pw, archive) = rest.split_at(n);
+    let Ok(mut file) = tempfile::NamedTempFile::new() else {
+        return;
+    };
+    if io::Write::write_all(&mut file, archive).is_err() {
+        return;
+    }
+    let candidates = password::ArchivePassword::from_bytes(pw)
+        .map(|password| {
+            vec![password::Candidate {
+                password,
+                source: password::Source::Request,
+            }]
+        })
+        .unwrap_or_default();
+    let mut keyring = password::Keyring::new(candidates, None);
+    let limits = Limits {
+        max_inflated_bytes: 1 << 20,
+        max_entries: 64,
+        max_depth: MAX_DEPTH,
+    };
+    let _ = expand_filtered_with(file.path(), &limits, None, Some(&mut keyring));
+}
+
 /// Whether this build unwraps `format` rather than handing it to libpcap or
 /// naming it unsupported: gzip and tar always, ZIP with the `archive`
 /// feature.

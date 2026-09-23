@@ -64,6 +64,13 @@ entry that carries them.
   tried from the same sources as a ZIP's in its NFC and NFD forms, since 7z
   stores a password as UTF-16 text. An archive asking for more than 2^24
   key-derivation rounds is refused as `bound_exceeded (7z key derivation)`.
+- **A fuzz target for the archive and password layer.**
+  `fuzz_archive_password` feeds hostile bytes, and a password taken from
+  them, through every archive layer: ZIP in all three encryptions, 7z with
+  and without encrypted headers, gzip and tar, nested, with trial and
+  rollback. ClusterFuzzLite builds it with the others, and
+  `tests/archive_fuzz_replay_test.rs` replays the same entry point over
+  truncations and byte flips of real archives on every `cargo test`.
 - **MCP takes no archive password, on any tool.** A call carrying a
   password-like argument is refused before dispatch and audited as
   `[REDACTED]`, and the file-opening tools refuse unknown arguments.
