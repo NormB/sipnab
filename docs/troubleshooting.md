@@ -692,6 +692,61 @@ sipnab -N -I capture.pcap --filter "ua =~ 'friendly-scanner|sipcli|sipvicious'"
 
 ---
 
+## Registration-flood timers
+
+`--reg-flood` counts a failure only when a registrar's `401` or `407` answers a
+REGISTER that already carried credentials, on the same transaction, before that
+transaction ends. Three settings decide what it reports:
+
+- `--reg-flood-threshold` (`[security] reg_flood_threshold`, default 50): how
+  many such failures from one source make a flood.
+- `--reg-flood-window` (`[security] reg_flood_window_secs`, default 1 second):
+  how much capture time one count spans. Raise it to catch a slow guessing run,
+  such as one refused REGISTER every few seconds.
+- `--reg-flood-transaction-timeout` (`[security] reg_flood_transaction_timeout_ms`,
+  default 32000 ms): how long a REGISTER stays open to its challenge. sipnab
+  treats a challenge that arrives later as a stray and never counts it.
+
+These are not the `--alert reg-flood:50/10s:5m` rule. That rule sits on top:
+it counts the flood findings this detector files, per source, and decides when
+to raise an alert and how long to stay quiet afterward. The settings above
+decide whether a finding exists at all.
+
+**Set the transaction timeout to your Timer F.** [RFC 3261 section
+17.1.2.2](https://www.rfc-editor.org/rfc/rfc3261#section-17.1.2.2) ends a
+non-INVITE transaction, REGISTER included, at Timer F, 64 times T1. [Section
+17.1.1.1](https://www.rfc-editor.org/rfc/rfc3261#section-17.1.1.1) sets T1 to
+500 ms by default and recommends a larger value on links known to have a
+longer round trip, which is where the default 32 seconds comes from. Pick the
+value this way:
+
+1. Your phones or SBC run T1 above 500 ms: set `64 x T1`. T1 at 1 s gives
+   `64000`, T1 at 2 s gives `128000`.
+2. You capture on the registrar side of a stateful proxy whose final-response
+   timer is longer than that: set the proxy's timer instead, because the proxy
+   keeps relaying the registrar's answer until that timer fires.
+   - OpenSIPS: the [`tm` module](https://opensips.org/docs/modules/3.6.x/tm.html)
+     `fr_timeout` is in **seconds** (default 30), so multiply by 1000. Its
+     `T1_timer` is in milliseconds (default 500).
+   - Kamailio: the [`tm` module](https://www.kamailio.org/docs/modules/stable/modules/tm.html)
+     `fr_timer` is already in **milliseconds** (default 30000). Its
+     `retr_timer1` is T1 in milliseconds (default 500), and
+     `max_noninv_lifetime` (default 32000) caps a non-INVITE transaction at
+     Timer F.
+3. Neither applies: leave the default. Both proxies ship a 30-second
+   final-response timer, inside the default 32 seconds.
+
+`fr_inv_timeout` (OpenSIPS) and `fr_inv_timer` (Kamailio) govern INVITE
+transactions only, so they never apply to a REGISTER.
+
+**Symptom of a timeout set too short:** a registrar on a slow or congested
+link that answers late gets its `401`s dropped as strays, so a
+credential-stuffing run against it never reaches the threshold. **Symptom of
+one set too long:** a stray challenge on a reused branch can settle a REGISTER
+that the client gave up on long ago. The accepted range is 1000-600000 ms.
+
+---
+
 ## Registration failures
 
 REGISTER rejected with `401 Unauthorized`, `403 Forbidden`, or `423 Interval Too Brief`? Phones not registering means no inbound calls and potentially no outbound.

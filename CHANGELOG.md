@@ -8,6 +8,29 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Added
+
+- **`--reg-flood` takes its counting window and transaction timeout from you.**
+  The detector counted refused credentialed REGISTERs inside a fixed
+  one-second window and dropped any challenge that arrived more than 32 seconds
+  after its REGISTER. That figure is Timer F from
+  [RFC 3261 section 17.1.2.2](https://www.rfc-editor.org/rfc/rfc3261#section-17.1.2.2)
+  at the default T1 of 500 ms, and it is wrong for a network that runs a longer T1, which
+  [section 17.1.1.1](https://www.rfc-editor.org/rfc/rfc3261#section-17.1.1.1)
+  recommends on slow links, or behind a proxy whose final-response timer runs
+  longer. `--reg-flood-window <SECS>` (`[security] reg_flood_window_secs`,
+  default 1, range 1-3600) sets the window, and
+  `--reg-flood-transaction-timeout <MS>` (`[security]
+  reg_flood_transaction_timeout_ms`, default 32000, range 1000-600000) sets the
+  timeout. Both refuse a value outside the range by name, from the flag and
+  from the file. The defaults are unchanged. The detector-state sweep now
+  outlasts both, so a declared ten-minute timeout is not cut to the
+  two-minute sweep. [Registration-flood
+  timers](docs/troubleshooting.md#registration-flood-timers) says which value
+  matches an OpenSIPS `fr_timeout` or Kamailio `fr_timer`.
+
 ## [0.5.188] - 2026-09-23
 
 ### Fixed

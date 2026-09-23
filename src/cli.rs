@@ -2056,16 +2056,17 @@ pub struct SecurityArgs {
     /// Detect registration floods: credentialed REGISTERs the registrar keeps
     /// refusing. sipnab reports a source when the REGISTERs it sent with
     /// `Authorization` that drew a `401`/`407` on the same transaction exceed
-    /// `--reg-flood-threshold` inside one second of capture time. A REGISTER
+    /// `--reg-flood-threshold` inside one `--reg-flood-window` of capture time
+    /// (one second unless set). A REGISTER
     /// on its own is never evidence, so a re-REGISTER storm the registrar
     /// accepts after a restart is the customer's SBC and not a flood, and any
     /// `2xx` to a REGISTER clears the source's count.
     #[arg(help_heading = "Security", long)]
     pub reg_flood: bool,
 
-    /// Challenged failures per second from one source before `--reg-flood`
-    /// reports a flood: REGISTERs that carried credentials and drew a `401`
-    /// or `407`.
+    /// Challenged failures from one source inside one `--reg-flood-window`
+    /// (one second unless set) before `--reg-flood` reports a flood:
+    /// REGISTERs that carried credentials and drew a `401` or `407`.
     ///
     /// No clap `default_value`, so `[security] reg_flood_threshold` can take
     /// effect; the default lives in [`Cli::DEFAULT_REG_FLOOD_THRESHOLD`] and
@@ -2083,6 +2084,41 @@ pub struct SecurityArgs {
         value_parser = clap::value_parser!(u32).range(1..)
     )]
     pub reg_flood_threshold: Option<u32>,
+
+    /// How much capture time one `--reg-flood` counting window spans, in
+    /// seconds (1-3600).
+    ///
+    /// `--reg-flood-threshold` counts failures per window, so this decides how
+    /// concentrated a credential-guessing run has to be before it is a flood.
+    /// One refusal every two seconds never puts two inside the shipped
+    /// one-second window, whatever the threshold.
+    #[arg(
+        help_heading = "Security",
+        long = "reg-flood-window",
+        value_name = "SECS",
+        value_parser = clap::value_parser!(u64)
+            .range(1..=crate::security::reg_flood::MAX_WINDOW_SECS)
+    )]
+    pub reg_flood_window_secs: Option<u64>,
+
+    /// How long a credentialed REGISTER stays open to the challenge that
+    /// answers it, in milliseconds (1000-600000).
+    ///
+    /// The shipped 32000 is RFC 3261 Timer F, 64*T1 at the default T1 of
+    /// 500 ms. A `401` that arrives later answers a transaction that has ended
+    /// and never counts as a failure. Set 64 times the T1 your network runs,
+    /// or your registrar-side proxy's final-response timer (`fr_timeout` in
+    /// OpenSIPS, `fr_timer` in Kamailio) when that is longer.
+    #[arg(
+        help_heading = "Security",
+        long = "reg-flood-transaction-timeout",
+        value_name = "MS",
+        value_parser = clap::value_parser!(u64).range(
+            crate::security::reg_flood::MIN_TRANSACTION_TIMEOUT_MS
+                ..=crate::security::reg_flood::MAX_TRANSACTION_TIMEOUT_MS
+        )
+    )]
+    pub reg_flood_transaction_timeout_ms: Option<u64>,
 
     /// Scanner-kill responses per second sipnab may put on the wire.
     ///
@@ -4614,6 +4650,32 @@ impl Cli {
             .unwrap_or(Self::DEFAULT_REG_FLOOD_THRESHOLD)
     }
 
+    /// Registration-flood policy: each flag, else its `[security]` key, else
+    /// the built-in. See [`Self::dialog_limit`] for the precedence rule.
+    ///
+    /// The threshold is read through [`Self::reg_flood_threshold`], so the one
+    /// knob that predates the policy resolves in exactly one place.
+    #[must_use]
+    pub fn reg_flood_policy(
+        &self,
+        config: &crate::config::Config,
+    ) -> crate::security::RegFloodPolicy {
+        let built_in = crate::security::RegFloodPolicy::BUILT_IN;
+        crate::security::RegFloodPolicy {
+            threshold: self.reg_flood_threshold(config),
+            window_secs: self
+                .security_args
+                .reg_flood_window_secs
+                .or(config.security.reg_flood_window_secs)
+                .unwrap_or(built_in.window_secs),
+            transaction_timeout_ms: self
+                .security_args
+                .reg_flood_transaction_timeout_ms
+                .or(config.security.reg_flood_transaction_timeout_ms)
+                .unwrap_or(built_in.transaction_timeout_ms),
+        }
+    }
+
     /// Scanner-kill transmit ceiling: `--kill-rate-limit`, else
     /// `[security] kill_rate_limit`, else the default.
     ///
@@ -4743,12 +4805,20 @@ impl Cli {
     /// derivation reaches 120 on its own today — the sequential-scanning
     /// window is a fixed 60 and counts toward the widest — and the floor is
     /// what keeps that guarantee true whichever windows the set holds later.
+    ///
+    /// The registration-flood window and transaction timeout count toward the
+    /// widest as well: the sweep drops a source together with the REGISTERs it
+    /// has pending, so a sweep shorter than the declared Timer F discards the
+    /// transactions a late challenge would settle.
     #[must_use]
     pub fn security_sweep_max_age(&self, config: &crate::config::Config) -> std::time::Duration {
+        let reg_flood = self.reg_flood_policy(config);
         let widest = self
             .fraud_thresholds(config)
             .widest_window_secs()
-            .max(self.scanner_thresholds(config).window_secs);
+            .max(self.scanner_thresholds(config).window_secs)
+            .max(reg_flood.window_secs)
+            .max(reg_flood.transaction_timeout_ms.div_ceil(1000));
         std::time::Duration::from_secs(widest.saturating_mul(2).max(Self::SHIPPED_SWEEP_MAX_AGE))
     }
 
@@ -7811,6 +7881,30 @@ mod tests {
         }
     }
 
+    /// The detector-state sweep outlasts the registration-flood window and
+    /// transaction timeout too.
+    ///
+    /// The sweep drops a source together with the REGISTERs it has pending, so
+    /// a sweep younger than the declared Timer F throws away the very
+    /// transactions a late challenge would settle: an operator who sets a
+    /// ten-minute timeout would get two minutes, and nothing would say so.
+    #[test]
+    fn the_sweep_age_outlasts_the_reg_flood_window_and_timeout() {
+        let bare = Cli::parse_from_args(["sipnab", "-I", "x.pcap"]);
+        for (window, timeout_ms) in [(3_600, 32_000), (1, 600_000), (1, 64_000)] {
+            let mut config = crate::config::Config::default();
+            config.security.reg_flood_window_secs = Some(window);
+            config.security.reg_flood_transaction_timeout_ms = Some(timeout_ms);
+            let age = bare.security_sweep_max_age(&config).as_secs();
+            let widest = window.max(timeout_ms.div_ceil(1000));
+            assert!(
+                age > widest,
+                "reg_flood window {window}s / timeout {timeout_ms}ms swept at {age}s: \
+                 the sweep discards pending REGISTERs before their transaction ends"
+            );
+        }
+    }
+
     /// A run that declares nothing sweeps at exactly the age it always did.
     ///
     /// The derivation replaced a constant, so this is the anti-regression half:
@@ -8190,6 +8284,103 @@ mod tests {
                 err.to_string().contains("0"),
                 "{flag} must refuse 0 and say so: {err}"
             );
+        }
+    }
+
+    /// The registration-flood policy resolves flag over `[security]` key over
+    /// the built-in, field by field, and a run that sets nothing gets the
+    /// shipped 50 failures, one-second window and 32-second Timer F.
+    #[test]
+    fn reg_flood_policy_resolves_flag_over_key_over_built_in() {
+        use crate::security::RegFloodPolicy;
+        let bare = Cli::parse_from_args(["sipnab", "-I", "x.pcap"]);
+        let none = crate::config::Config::default();
+        assert_eq!(bare.reg_flood_policy(&none), RegFloodPolicy::BUILT_IN);
+        assert_eq!(
+            RegFloodPolicy::BUILT_IN,
+            RegFloodPolicy {
+                threshold: 50,
+                window_secs: 1,
+                transaction_timeout_ms: 32_000
+            },
+            "the shipped policy must not move"
+        );
+
+        let mut keyed = crate::config::Config::default();
+        keyed.security.reg_flood_threshold = Some(7);
+        keyed.security.reg_flood_window_secs = Some(10);
+        keyed.security.reg_flood_transaction_timeout_ms = Some(64_000);
+        assert_eq!(
+            bare.reg_flood_policy(&keyed),
+            RegFloodPolicy {
+                threshold: 7,
+                window_secs: 10,
+                transaction_timeout_ms: 64_000
+            },
+            "each [security] key must reach the policy"
+        );
+
+        let flagged = Cli::parse_from_args([
+            "sipnab",
+            "-I",
+            "x.pcap",
+            "--reg-flood-threshold",
+            "9",
+            "--reg-flood-window",
+            "30",
+            "--reg-flood-transaction-timeout",
+            "40000",
+        ]);
+        assert_eq!(
+            flagged.reg_flood_policy(&keyed),
+            RegFloodPolicy {
+                threshold: 9,
+                window_secs: 30,
+                transaction_timeout_ms: 40_000
+            },
+            "each flag must beat its key"
+        );
+    }
+
+    /// clap refuses the same absurd values `SecurityConfig::validate` refuses
+    /// for the two registration-flood policy flags, so neither door is the
+    /// lenient way in.
+    #[test]
+    fn reg_flood_policy_flags_refuse_absurd_values() {
+        use crate::security::reg_flood::{
+            MAX_TRANSACTION_TIMEOUT_MS, MAX_WINDOW_SECS, MIN_TRANSACTION_TIMEOUT_MS,
+        };
+        let cases: [(&str, u64, [u64; 2]); 2] = [
+            (
+                "--reg-flood-window",
+                MAX_WINDOW_SECS,
+                [0, MAX_WINDOW_SECS + 1],
+            ),
+            (
+                "--reg-flood-transaction-timeout",
+                MIN_TRANSACTION_TIMEOUT_MS,
+                [
+                    MIN_TRANSACTION_TIMEOUT_MS - 1,
+                    MAX_TRANSACTION_TIMEOUT_MS + 1,
+                ],
+            ),
+        ];
+        for (flag, edge, bad) in cases {
+            let edge = edge.to_string();
+            assert!(
+                Cli::try_parse_from(["sipnab", "-N", "-I", "x.pcap", flag, &edge]).is_ok(),
+                "{flag} {edge} is inside the range and must parse, or this test is vacuous"
+            );
+            for v in bad {
+                let v = v.to_string();
+                let err = Cli::try_parse_from(["sipnab", "-N", "-I", "x.pcap", flag, &v])
+                    .expect_err("an out-of-range value must be refused");
+                let msg = err.to_string();
+                assert!(
+                    msg.contains(flag) && msg.contains(&v),
+                    "the refusal must name {flag} and {v}: {msg}"
+                );
+            }
         }
     }
 

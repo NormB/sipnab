@@ -2764,7 +2764,7 @@ impl BatchRunner {
         // Built here, ahead of the warning below, because it is one of the
         // three producers that warning has to consult.
         let reg_flood_detector = if cli.security_args.reg_flood {
-            Some(RegFloodDetector::new(cli.reg_flood_threshold(config)))
+            Some(RegFloodDetector::with_policy(cli.reg_flood_policy(config)))
         } else {
             None
         };

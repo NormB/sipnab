@@ -39,7 +39,7 @@ pub mod transmit_guard;
 pub use alerting::{AlertEngine, AlertRule};
 pub use digest_leak::{DigestAlert, DigestLeakDetector, DigestVulnerability};
 pub use fraud_detect::{FraudAlert, FraudDetector, FraudType};
-pub use reg_flood::{RegFloodAlert, RegFloodDetector};
+pub use reg_flood::{RegFloodAlert, RegFloodDetector, RegFloodPolicy};
 pub use scanner_detect::{ScannerAlert, ScannerDetector};
 
 // ── Alert counter ─────────────────────────────────────────────────────

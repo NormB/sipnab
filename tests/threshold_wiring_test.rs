@@ -368,6 +368,168 @@ fn reg_flood_threshold_decides_when_a_burst_is_a_flood() {
     );
 }
 
+// ── [security] reg_flood_window_secs / reg_flood_transaction_timeout_ms ──
+
+/// Three credentialed REGISTERs, each refused, two seconds of capture apart.
+fn paced_refusals(dir: &tempfile::TempDir) -> String {
+    let frames: Vec<(Vec<u8>, u64)> = (0..3)
+        .flat_map(|i| {
+            let at = i as u64 * 2_000_000;
+            [(register(i), at), (refused_register(i), at + 1_000)]
+        })
+        .collect();
+    arg(&write_capture(dir, "paced", &frames))
+}
+
+/// The declared counting window decides how concentrated refusals must be.
+///
+/// Three refusals two seconds apart never share the shipped one-second window,
+/// so threshold 2 never sees more than one. A declared ten-second window holds
+/// all three, from the flag and from the key, and the flag beats the key.
+#[test]
+fn reg_flood_window_secs_decides_how_concentrated_refusals_must_be() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let pcap = paced_refusals(&dir);
+    let base = [
+        "-N",
+        "-I",
+        &pcap,
+        "--reg-flood",
+        "--reg-flood-threshold",
+        "2",
+    ];
+    let with = |extra: &[&str]| {
+        let mut args = base.to_vec();
+        args.extend_from_slice(extra);
+        run(&args).1
+    };
+
+    let shipped = with(&["--no-config"]);
+    assert!(
+        !alerted(&shipped, "reg_flood"),
+        "three refusals two seconds apart must not fire in a one-second window:\n{shipped}"
+    );
+    let flagged = with(&["--no-config", "--reg-flood-window", "10"]);
+    assert!(
+        alerted(&flagged, "reg_flood"),
+        "--reg-flood-window 10 must reach the detector:\n{flagged}"
+    );
+    let cfg = arg(&write_config(
+        &dir,
+        "[security]\nreg_flood_window_secs = 10\n",
+    ));
+    let keyed = with(&["--config", &cfg]);
+    assert!(
+        alerted(&keyed, "reg_flood"),
+        "[security] reg_flood_window_secs = 10 must reach the detector:\n{keyed}"
+    );
+    let overridden = with(&["--config", &cfg, "--reg-flood-window", "1"]);
+    assert!(
+        !alerted(&overridden, "reg_flood"),
+        "--reg-flood-window must beat the config key:\n{overridden}"
+    );
+}
+
+/// The declared transaction timeout decides whether a late challenge counts.
+///
+/// A credentialed REGISTER at 0 s, then a fresh refused one at 40 s, then the
+/// registrar's 401 to the first, also at 40 s. Under the shipped 32 s Timer F
+/// the late 401 answers an ended transaction and threshold 1 sees one failure.
+/// A network running T1 at one second has a 64 s Timer F, where the same 401
+/// is a second failure and fires.
+#[test]
+fn reg_flood_transaction_timeout_decides_whether_a_late_challenge_counts() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let late = 40_000_000;
+    let frames = vec![
+        (register(0), 0),
+        (register(1), late),
+        (refused_register(1), late + 1_000),
+        (refused_register(0), late + 2_000),
+    ];
+    let pcap = arg(&write_capture(&dir, "late", &frames));
+    let base = [
+        "-N",
+        "-I",
+        &pcap,
+        "--reg-flood",
+        "--reg-flood-threshold",
+        "1",
+    ];
+    let with = |extra: &[&str]| {
+        let mut args = base.to_vec();
+        args.extend_from_slice(extra);
+        run(&args).1
+    };
+
+    let shipped = with(&["--no-config"]);
+    assert!(
+        !alerted(&shipped, "reg_flood"),
+        "a 401 forty seconds late must not count under the shipped 32 s:\n{shipped}"
+    );
+    let flagged = with(&["--no-config", "--reg-flood-transaction-timeout", "64000"]);
+    assert!(
+        alerted(&flagged, "reg_flood"),
+        "--reg-flood-transaction-timeout 64000 must reach the detector:\n{flagged}"
+    );
+    let cfg = arg(&write_config(
+        &dir,
+        "[security]\nreg_flood_transaction_timeout_ms = 64000\n",
+    ));
+    let keyed = with(&["--config", &cfg]);
+    assert!(
+        alerted(&keyed, "reg_flood"),
+        "[security] reg_flood_transaction_timeout_ms must reach the detector:\n{keyed}"
+    );
+    let overridden = with(&["--config", &cfg, "--reg-flood-transaction-timeout", "32000"]);
+    assert!(
+        !alerted(&overridden, "reg_flood"),
+        "--reg-flood-transaction-timeout must beat the config key:\n{overridden}"
+    );
+}
+
+/// An absurd registration-flood window or timeout fails the run by name, from
+/// the flag and from the key.
+#[test]
+fn an_absurd_reg_flood_policy_is_refused_by_name() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let pcap = paced_refusals(&dir);
+    for (flag, key, bad) in [
+        ("--reg-flood-window", "reg_flood_window_secs", "0"),
+        ("--reg-flood-window", "reg_flood_window_secs", "3601"),
+        (
+            "--reg-flood-transaction-timeout",
+            "reg_flood_transaction_timeout_ms",
+            "999",
+        ),
+        (
+            "--reg-flood-transaction-timeout",
+            "reg_flood_transaction_timeout_ms",
+            "600001",
+        ),
+    ] {
+        let (_, stderr, code) = run_support::run(
+            &["-N", "-I", &pcap, "--reg-flood", "--no-config", flag, bad],
+            Some("error"),
+        );
+        assert_ne!(code, Some(0), "{flag} {bad} must fail the run");
+        assert!(
+            stderr.contains(flag) && stderr.contains(bad),
+            "the refusal must name {flag} and {bad}; got {stderr}"
+        );
+        let cfg = arg(&write_config(&dir, &format!("[security]\n{key} = {bad}\n")));
+        let (_, stderr, code) = run_support::run(
+            &["-N", "-I", &pcap, "--reg-flood", "--config", &cfg],
+            Some("error"),
+        );
+        assert_ne!(code, Some(0), "{key} = {bad} must fail the run");
+        assert!(
+            stderr.contains(key) && stderr.contains(bad),
+            "the refusal must name {key} and {bad}; got {stderr}"
+        );
+    }
+}
+
 // ── [security] fraud_* ──────────────────────────────────────────────────
 
 /// The declared short-call duration decides which calls count as lures.

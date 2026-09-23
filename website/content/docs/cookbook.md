@@ -1298,6 +1298,15 @@ sipnab -N -I trunk.pcap --kill-scanner --fail2ban | grep -oE 'src=[^ ]+' | sort 
 
 Every address in that list is one the jail below would ban. Use `ignoreip` in the jail for the peers you already trust.
 
+`--reg-flood` counts refused credentialed REGISTERs per source inside a one-second window of capture time, and treats a `401` that arrives more than 32 seconds after its REGISTER (RFC 3261 Timer F) as a stray. A site that sees slow guessing runs, or whose phones run a longer T1, tunes both:
+
+```bash
+sipnab -N -I registrar.pcap --reg-flood --reg-flood-threshold 20 \
+       --reg-flood-window 60 --reg-flood-transaction-timeout 64000
+```
+
+[Registration-flood timers](@/docs/troubleshooting.md#registration-flood-timers) explains which transaction timeout matches your proxy's `fr_timer`/`fr_timeout` and T1.
+
 ### 10c. Block a scanner with a rule sipnab wrote, after reading the evidence
 
 Counting `src=` fields tells you who. It does not tell you whether banning them costs you a customer. `--recommend-block` groups the detections by source and prints one block per accused address, carrying the evidence, the counter-evidence and a rule in the dialect you name (`fail2ban`, `nftables`, `iptables` or `all`):

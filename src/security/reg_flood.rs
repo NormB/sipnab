@@ -4,7 +4,8 @@
 //!
 //! Counts, per source, the REGISTERs that carried credentials and were
 //! refused by the registrar, and alerts when those FAILURES cross the
-//! configured threshold inside a one-second window.
+//! configured threshold inside the configured counting window (one second of
+//! capture time unless `--reg-flood-window` says otherwise).
 //!
 //! The evidence is an outcome, never a volume. This detector shipped for a
 //! long time firing on the REGISTER count alone, and the peer that produces
@@ -26,8 +27,61 @@ use chrono::{DateTime, TimeDelta, Utc};
 use crate::lru::LruMap;
 use crate::sip::{SipMessage, SipMethod};
 
-/// Default challenged-failures-per-second threshold.
+/// Default challenged-failures-per-window threshold.
 const DEFAULT_THRESHOLD: u32 = 50;
+
+/// What decides a registration flood: how many challenged failures, inside how
+/// wide a window, and how long a REGISTER's transaction stays open to the
+/// challenge that makes it one.
+///
+/// Resolved from `--reg-flood-threshold` / `--reg-flood-window` /
+/// `--reg-flood-transaction-timeout` and their `[security]` keys by
+/// `Cli::reg_flood_policy`; [`Self::BUILT_IN`] is what a run that sets none of
+/// them gets, and is what the detector shipped with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RegFloodPolicy {
+    /// Challenged failures from one source inside one window, above which the
+    /// source is reported.
+    pub threshold: u32,
+    /// How much capture time one counting window spans, in seconds.
+    pub window_secs: u64,
+    /// How long a credentialed REGISTER stays open to the challenge that
+    /// answers it, in milliseconds: the observer's Timer F. See
+    /// [`BUILT_IN_TRANSACTION_TIMEOUT_MS`].
+    pub transaction_timeout_ms: u64,
+}
+
+/// Widest counting window an operator may declare, in seconds: one hour.
+///
+/// Past an hour the count is no longer a rate of refusals but a tally of
+/// them, and a phone with a stale password re-registering every minute
+/// crosses any threshold given enough of the day.
+pub const MAX_WINDOW_SECS: u64 = 3_600;
+
+/// Shortest transaction timeout an operator may declare, in milliseconds.
+///
+/// One second is 64*T1 at a T1 of about 16 ms. Below it the timeout is shorter
+/// than an ordinary registrar's answer, so every challenge would arrive after
+/// its transaction had "ended" and the detector would count nothing.
+pub const MIN_TRANSACTION_TIMEOUT_MS: u64 = 1_000;
+
+/// Longest transaction timeout an operator may declare, in milliseconds: ten
+/// minutes.
+///
+/// That is 64*T1 at a T1 above nine seconds, far past any round trip SIP
+/// runs over, and five times the longest `fr_inv_timeout` default the proxies
+/// ship. Past it a pending REGISTER is not waiting on an answer.
+pub const MAX_TRANSACTION_TIMEOUT_MS: u64 = 600_000;
+
+impl RegFloodPolicy {
+    /// The shipped policy: 50 failures inside one second, and a 32-second
+    /// transaction timeout.
+    pub const BUILT_IN: Self = Self {
+        threshold: DEFAULT_THRESHOLD,
+        window_secs: 1,
+        transaction_timeout_ms: BUILT_IN_TRANSACTION_TIMEOUT_MS,
+    };
+}
 
 /// Cap on credentialed REGISTER transactions awaiting an answer, per source.
 ///
@@ -49,7 +103,7 @@ struct RegFloodState {
     /// `Authorization` or `Proxy-Authorization` and was answered 401 or 407 on
     /// the same transaction. This is the count the threshold applies to.
     auth_fail_count: u32,
-    /// Start of the current one-second measurement window, in capture time.
+    /// Start of the current counting window, in capture time.
     window_start: DateTime<Utc>,
     /// Capture time of the newest message from or to this source, which is
     /// what [`RegFloodDetector::sweep`] ages against.
@@ -57,7 +111,7 @@ struct RegFloodState {
     /// Credentialed REGISTER transactions this source has open, keyed by
     /// [`transaction_key`], oldest first, each with the capture time it was
     /// sent. A challenge is a failure only when it names one of these that is
-    /// younger than [`TRANSACTION_TIMEOUT`]. Bounded by
+    /// younger than the detector's transaction timeout. Bounded by
     /// [`MAX_PENDING_PER_SOURCE`]; past it the oldest is forgotten, in
     /// constant time.
     pending: LruMap<String, DateTime<Utc>>,
@@ -75,11 +129,11 @@ impl RegFloodState {
         }
     }
 
-    /// Start a fresh one-second window at `now` if the current one has
+    /// Start a fresh counting window of width `window` at `now` if the current one has
     /// elapsed. Both counts restart; the open transactions do not, because a
     /// REGISTER sent late in one window is answered in the next.
-    fn roll_window(&mut self, now: DateTime<Utc>) {
-        if window_elapsed(self.window_start, now) {
+    fn roll_window(&mut self, now: DateTime<Utc>, window: TimeDelta) {
+        if window_elapsed(self.window_start, now, window) {
             self.register_count = 0;
             self.auth_fail_count = 0;
             self.window_start = now;
@@ -106,7 +160,7 @@ pub struct RegFloodAlert {
 /// evicts the least recently touched one, in constant time: see [`LruMap`].
 const MAX_SOURCE_ENTRIES: usize = 10_000;
 
-/// Whether the one-second window that opened at `window_start` has elapsed
+/// Whether the `window`-wide counting window that opened at `window_start` has elapsed
 /// at `now`, both in capture time.
 ///
 /// Capture time, not the wall clock. A file is read as fast as the disk
@@ -114,19 +168,28 @@ const MAX_SOURCE_ENTRIES: usize = 10_000;
 /// a phone re-registering once a minute for an hour became sixty REGISTERs in
 /// one wall-clock second, and `--fail2ban` banned it from a replay of
 /// yesterday's traffic. The scanner detector moved for the same reason.
-fn window_elapsed(window_start: DateTime<Utc>, now: DateTime<Utc>) -> bool {
-    now.signed_duration_since(window_start) >= TimeDelta::seconds(1)
+fn window_elapsed(window_start: DateTime<Utc>, now: DateTime<Utc>, window: TimeDelta) -> bool {
+    now.signed_duration_since(window_start) >= window
 }
 
-/// How long a REGISTER's transaction stays open to a challenge: Timer F.
+/// How long a REGISTER's transaction stays open to a challenge, by default:
+/// Timer F, in milliseconds.
 ///
 /// [RFC 3261 section 17.1.2.2](https://www.rfc-editor.org/rfc/rfc3261#section-17.1.2.2) ends a non-INVITE client transaction at Timer F,
-/// 64*T1 with T1 at its 500 ms default, so 32 seconds. A 401 that names a
-/// REGISTER older than that answers a transaction that has already ended, and
-/// counting it would let every unanswered REGISTER wait in the map to be
-/// charged by a stray. Not the one-second failure window: a REGISTER sent late
-/// in one window is routinely answered in the next.
-const TRANSACTION_TIMEOUT: TimeDelta = TimeDelta::seconds(32);
+/// 64*T1, and [section 17.1.1.1](https://www.rfc-editor.org/rfc/rfc3261#section-17.1.1.1) puts T1 at 500 ms by default, so 32 seconds.
+/// A 401 that names a REGISTER older than that answers a transaction that has
+/// already ended, and counting it would let every unanswered REGISTER wait in
+/// the map to be charged by a stray. Not the failure window: a REGISTER sent
+/// late in one window is routinely answered in the next.
+///
+/// Only a default. Section 17.1.1.1 RECOMMENDS a larger T1 on a link known to
+/// have a longer round trip, which stretches Timer F with it, and a stateful
+/// proxy in the path keeps relaying a late answer until its own final-response
+/// timer fires: `fr_timeout` in the OpenSIPS `tm` module (seconds, default
+/// 30) and `fr_timer` in the Kamailio `tm` module (milliseconds, default
+/// 30000). An operator who raised either sets
+/// `[security] reg_flood_transaction_timeout_ms` to match.
+pub const BUILT_IN_TRANSACTION_TIMEOUT_MS: u64 = 32_000;
 
 /// The client transaction a REGISTER or its response belongs to.
 ///
@@ -180,8 +243,12 @@ fn is_flood(auth_fail_count: u32, threshold: u32) -> bool {
 pub struct RegFloodDetector {
     /// Per-source tracking state, least recently touched first.
     sources: LruMap<IpAddr, RegFloodState>,
-    /// Challenged-failures-per-second alert threshold.
+    /// Challenged-failures-per-window alert threshold.
     threshold: u32,
+    /// Width of one counting window, in capture time.
+    window: TimeDelta,
+    /// How long a credentialed REGISTER stays open to its challenge.
+    transaction_timeout: TimeDelta,
     /// Capture time of the newest message seen, which is the clock `sweep`
     /// reads. `None` before the first message.
     latest_packet: Option<DateTime<Utc>>,
@@ -192,16 +259,43 @@ impl RegFloodDetector {
     ///
     /// # Arguments
     ///
-    /// * `threshold` — Challenged failures per second from one source before
-    ///   alerting. Use `0` for the default threshold of 50/sec.
+    /// * `threshold` — Challenged failures from one source inside the
+    ///   built-in one-second window before alerting. Use `0` for the default
+    ///   threshold of 50. [`Self::with_policy`] sets the window and the
+    ///   transaction timeout as well.
     pub fn new(threshold: u32) -> Self {
+        Self::with_policy(RegFloodPolicy {
+            threshold,
+            ..RegFloodPolicy::BUILT_IN
+        })
+    }
+
+    /// Create a detector that applies `policy`: its threshold, its counting
+    /// window and its transaction timeout.
+    ///
+    /// A zero in any field selects the built-in value for that field. The
+    /// configuration layer refuses zero before it gets here, so this is only
+    /// the last guard against a window that would reset on every packet.
+    pub fn with_policy(policy: RegFloodPolicy) -> Self {
+        let built_in = RegFloodPolicy::BUILT_IN;
+        let pick = |v: u64, d: u64| if v == 0 { d } else { v };
         Self {
             sources: LruMap::new(MAX_SOURCE_ENTRIES),
-            threshold: if threshold == 0 {
+            threshold: if policy.threshold == 0 {
                 DEFAULT_THRESHOLD
             } else {
-                threshold
+                policy.threshold
             },
+            window: TimeDelta::seconds(
+                i64::try_from(pick(policy.window_secs, built_in.window_secs)).unwrap_or(i64::MAX),
+            ),
+            transaction_timeout: TimeDelta::milliseconds(
+                i64::try_from(pick(
+                    policy.transaction_timeout_ms,
+                    built_in.transaction_timeout_ms,
+                ))
+                .unwrap_or(i64::MAX),
+            ),
             latest_packet: None,
         }
     }
@@ -243,7 +337,7 @@ impl RegFloodDetector {
             .sources
             .get_or_insert_with(msg.src_addr, || RegFloodState::new(now));
         state.last_seen = now;
-        state.roll_window(now);
+        state.roll_window(now, self.window);
         state.register_count += 1;
 
         if carries_credentials(msg)
@@ -287,11 +381,11 @@ impl RegFloodDetector {
         // One sent longer ago than Timer F answers a transaction that has
         // already ended.
         let sent = state.pending.remove(&transaction_key(msg)?)?;
-        if now.signed_duration_since(sent) > TRANSACTION_TIMEOUT {
+        if now.signed_duration_since(sent) > self.transaction_timeout {
             return None;
         }
 
-        state.roll_window(now);
+        state.roll_window(now, self.window);
         state.auth_fail_count += 1;
         is_flood(state.auth_fail_count, self.threshold).then_some(RegFloodAlert {
             src_ip: msg.dst_addr,
@@ -827,6 +921,101 @@ mod tests {
         assert!(
             run(10),
             "control: thirty seconds is inside Timer F, so the same 401 counts"
+        );
+    }
+
+    /// Whether a 401 arriving `answered_after` seconds after its credentialed
+    /// REGISTER is charged as a failure under `timeout_ms`.
+    ///
+    /// One fresh failure is filed first at threshold 1, so the late challenge
+    /// fires exactly when it is counted.
+    fn late_challenge_counts(timeout_ms: u64, answered_after: i64) -> bool {
+        let mut det = RegFloodDetector::with_policy(RegFloodPolicy {
+            threshold: 1,
+            transaction_timeout_ms: timeout_ms,
+            ..RegFloodPolicy::BUILT_IN
+        });
+        let _ = det.check(&register_at(attacker_ip(), "z9hG4bK-late", true, at(0)));
+        let later = at(answered_after);
+        let _ = det.check(&register_at(attacker_ip(), "z9hG4bK-fresh", true, later));
+        assert!(
+            det.check(&response_at(401, attacker_ip(), "z9hG4bK-fresh", later))
+                .is_none(),
+            "fixture: one failure is under threshold 1"
+        );
+        det.check(&response_at(401, attacker_ip(), "z9hG4bK-late", later))
+            .is_some()
+    }
+
+    /// The transaction timeout is the operator's Timer F, not a constant.
+    ///
+    /// A network running T1 at one second has a Timer F of 64 seconds
+    /// ([RFC 3261 section 17.1.2.2](https://www.rfc-editor.org/rfc/rfc3261#section-17.1.2.2)), so a registrar's 401 forty seconds after the
+    /// REGISTER answers a transaction that is still open, and it is a failure.
+    /// Under the shipped 32 seconds the same 401 is a stray.
+    #[test]
+    fn the_transaction_timeout_decides_whether_a_late_challenge_counts() {
+        assert!(
+            late_challenge_counts(64_000, 40),
+            "a 401 forty seconds after its REGISTER was not counted under a 64 s \
+             transaction timeout (T1 = 1 s): the configured Timer F is not reaching \
+             the detector"
+        );
+        assert!(
+            !late_challenge_counts(32_000, 40),
+            "a 401 forty seconds after its REGISTER was counted under a 32 s \
+             transaction timeout: that transaction had already ended"
+        );
+        assert!(
+            !late_challenge_counts(RegFloodPolicy::BUILT_IN.transaction_timeout_ms, 40),
+            "the built-in transaction timeout must stay at 32 s"
+        );
+    }
+
+    /// Whether three challenged failures, `spacing_ms` apart, fire under
+    /// `threshold` and a `window_secs` counting window.
+    fn three_failures_fire(threshold: u32, window_secs: u64, spacing_ms: i64) -> bool {
+        let mut det = RegFloodDetector::with_policy(RegFloodPolicy {
+            threshold,
+            window_secs,
+            ..RegFloodPolicy::BUILT_IN
+        });
+        let mut fired = false;
+        for i in 0..3 {
+            let when = ts() + chrono::TimeDelta::milliseconds(i * spacing_ms);
+            let branch = format!("z9hG4bK-policy-{i}");
+            let _ = det.check(&register_at(attacker_ip(), &branch, true, when));
+            fired |= det
+                .check(&response_at(401, attacker_ip(), &branch, when))
+                .is_some();
+        }
+        fired
+    }
+
+    /// The counting window is the operator's, in both directions: three
+    /// failures two seconds apart never share the shipped one-second window,
+    /// and all share a ten-second one.
+    #[test]
+    fn the_counting_window_decides_how_concentrated_the_failures_must_be() {
+        assert!(
+            !three_failures_fire(2, 1, 2_000),
+            "three failures two seconds apart fired under a one-second window"
+        );
+        assert!(
+            three_failures_fire(2, 10, 2_000),
+            "three failures two seconds apart did not fire under a ten-second window: \
+             the configured window is not reaching the detector"
+        );
+    }
+
+    /// The threshold from the policy decides, in both directions: three
+    /// failures inside one second cross 2 and do not cross 3.
+    #[test]
+    fn the_policy_threshold_decides_how_many_failures_are_a_flood() {
+        assert!(three_failures_fire(2, 1, 10), "three failures must cross 2");
+        assert!(
+            !three_failures_fire(3, 1, 10),
+            "three failures crossed threshold 3: the policy threshold is not applied"
         );
     }
 

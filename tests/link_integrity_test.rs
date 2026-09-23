@@ -985,7 +985,11 @@ fn wiki_intra_docs_links_resolve() {
     // 939 -> 940: docs/cli-reference.md's `--hep-parse` row now points at the
     // same section, since that flag reads HEP by the same rule. Counted per
     // file against HEAD; no other page moved.
-    const EXPECTED_WIKI_LINKS: usize = 940;
+    // 940 -> 943: the `--reg-flood-transaction-timeout` row in
+    // docs/cli-reference.md, the `reg_flood_transaction_timeout_ms` row in
+    // docs/config-reference.md and the reg-flood tuning paragraph in
+    // docs/examples.md each link troubleshooting.md#registration-flood-timers.
+    const EXPECTED_WIKI_LINKS: usize = 943;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe 6d in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file
