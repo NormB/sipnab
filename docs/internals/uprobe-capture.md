@@ -313,6 +313,7 @@ nobody has loaded fails the suite:
 | 0.5.184 | x86_64-unknown-linux-gnu | Debian 13, x86_64 | 6.12.105+deb13-amd64 | 2026-09-22 | attached, 2 libraries plus `tcp_sendmsg` |
 | 0.5.185 | x86_64-unknown-linux-gnu | Debian 13, x86_64 | 6.12.105+deb13-amd64 | 2026-09-22 | attached, 2 libraries plus `tcp_sendmsg` |
 | 0.5.186 | x86_64-unknown-linux-gnu | Debian 13, x86_64 | 6.12.105+deb13-amd64 | 2026-09-23 | attached, 2 libraries plus `tcp_sendmsg` |
+| 0.5.187 | x86_64-unknown-linux-gnu | Debian 13, x86_64 | 6.12.105+deb13-amd64 | 2026-09-23 | attached, 2 libraries plus `tcp_sendmsg` |
 
 That requirement makes this file part of every phase-two release commit, which
 the classifier deciding what a phase-two commit looks like has to agree with.
