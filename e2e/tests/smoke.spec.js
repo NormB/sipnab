@@ -79,13 +79,25 @@ test.describe('homepage content does not wait on a script', () => {
 
   // Scripting on, but the page's inline script refused, which is what a
   // browser does between a deploy and the CSP job that pins the new hash.
+  // Refused the way the browser refuses it: a policy with no inline hash.
+  // The first version cut the <script> elements out with a regex, which
+  // CodeQL (js/bad-tag-filter) rightly calls an incomplete HTML filter, and
+  // which tested a page with no script rather than a page whose script the
+  // browser would not run.
   test('every card and tile is opaque when the inline script is blocked', async ({ page }) => {
     await page.route('**/', async (route) => {
       const res = await route.fetch();
-      const body = (await res.text()).replace(/<script>[\s\S]*?<\/script>/g, '');
-      await route.fulfill({ response: res, body });
+      await route.fulfill({
+        response: res,
+        headers: { ...res.headers(), 'content-security-policy': "script-src 'self'" },
+      });
+    });
+    const refused = [];
+    page.on('console', (msg) => {
+      if (msg.type() === 'error' && /Content Security Policy/i.test(msg.text())) refused.push(msg.text());
     });
     await page.goto('/');
+    expect(refused.length, 'the policy refused no inline script, so this proves nothing').toBeGreaterThan(0);
     const all = await opacities(page);
     expect(all.length, 'found no cards or tiles at all').toBeGreaterThan(8);
     expect(all.filter((o) => !o.endsWith(' 1'))).toEqual([]);
