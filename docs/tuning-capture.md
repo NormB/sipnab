@@ -581,8 +581,8 @@ runs and the alternate backends its banner names.
 On 0.5.183 and earlier the
 musl tarballs' netmap module speaks only netmap API 13, which current netmap
 kernel modules refuse, and 0.5.184 moves to API 14. That page has the
-details, including a known crash when you stop a `netmap:` capture that has
-captured traffic.
+details, including a crash on 0.5.188 and earlier when a `netmap:` capture
+that has captured traffic sees a frame its filter drops.
 
 > **Warning:** use a `netmap:` device only on an interface dedicated to
 > capture, such as a SPAN or mirror port, never on one the host needs. netmap

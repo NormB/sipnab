@@ -7671,10 +7671,22 @@ its published x86_64-musl binary captured 5 of 5 SIP messages through
 `netmap:` there. On 0.5.183 and earlier, treat the musl netmap column as not
 usable.
 
-One known defect remains: stopping a `netmap:` capture after it has captured
-traffic can crash sipnab at shutdown, after it has written the messages it
-captured. An idle `netmap:` capture stops cleanly. The crash is under
-investigation.
+**On 0.5.188 and earlier, a `netmap:` capture crashes on the first frame its
+filter drops after it has captured a packet.** libpcap's netmap module reports
+a frame its BPF filter rejects as a successful read that delivers no data, and
+those builds then copied the previous packet's length from address 0. The
+kernel log names the capture thread: `capture-netmap:[...]: segfault at 0`.
+It looked like a crash at shutdown because the dropped frame is usually link
+chatter, such as an IPv6 router solicitation, that arrives while the capture
+sits idle. An idle capture survived only because no packet had yet set a
+length to copy. Later builds check that a read delivered a packet before they
+copy it.
+
+A `netmap:` capture on a link that carries no traffic at all does not stop on
+SIGTERM until a frame arrives. libpcap's netmap module waits for a frame inside
+its own read and never hands control back to sipnab while the link is silent.
+Measured on the same host, a capture on a veth pair with IPv6 turned off was
+still running 8 seconds after SIGTERM.
 
 macOS builds libpcap on BPF alone, with netmap and DPDK both left out, and
 Homebrew on macOS installs the same darwin tarball rather than bringing a
@@ -27590,8 +27602,8 @@ runs and the alternate backends its banner names.
 On 0.5.183 and earlier the
 musl tarballs' netmap module speaks only netmap API 13, which current netmap
 kernel modules refuse, and 0.5.184 moves to API 14. That page has the
-details, including a known crash when you stop a `netmap:` capture that has
-captured traffic.
+details, including a crash on 0.5.188 and earlier when a `netmap:` capture
+that has captured traffic sees a frame its filter drops.
 
 > **Warning:** use a `netmap:` device only on an interface dedicated to
 > capture, such as a SPAN or mirror port, never on one the host needs. netmap
@@ -33350,7 +33362,7 @@ processing thread, but a test that passes and a test that raced are
 indistinguishable to `cargo test`.
 
 The borrow checker does not help here either
-— it stops at `unsafe`, and most of this crate's 119 `unsafe` blocks are libc
+— it stops at `unsafe`, and most of this crate's 122 `unsafe` blocks are libc
 FFI, concentrated in privilege dropping ([`privilege.rs`](../../src/privilege.rs)
 and [`process_isolation.rs`](../../src/process_isolation.rs)) and capture setup.
 Recount with `grep -rc 'unsafe {' src/` rather than trusting that figure — this

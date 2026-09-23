@@ -55,6 +55,10 @@ pub mod live;
 pub mod mapped;
 #[cfg(feature = "native")]
 pub mod merged;
+// One `pcap_next_ex` read that checks a packet was delivered before copying
+// it: libpcap's netmap module reports filter-rejected frames as reads (NM1).
+#[cfg(feature = "native")]
+pub(crate) mod next_ex;
 #[cfg(feature = "native")]
 pub mod output_guard;
 pub mod packet;

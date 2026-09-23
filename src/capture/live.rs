@@ -737,8 +737,15 @@ fn capture_live_group(
         // still blocks up to POLL_INTERVAL and then re-checks
         // shutdown/count/duration at the top — so `--duration` and Ctrl-C stay
         // as responsive as before. A busy link now makes zero poll syscalls.
-        match cap.next_packet() {
-            Ok(pkt) => {
+        //
+        // The read goes through `next_ex::next_packet`, not the crate's
+        // `Capture::next_packet`: libpcap's netmap module reports a frame its
+        // filter rejected as a successful read with no data, and the crate
+        // turns that into a slice over address 0 (NM1). `Ok(None)` is that
+        // read. The frame is already gone, so the loop simply reads again.
+        match super::next_ex::next_packet(&mut cap) {
+            Ok(None) => continue,
+            Ok(Some(pkt)) => {
                 let ts = pcap_ts_to_chrono(pkt.header.ts);
                 let mut packet = Packet::new(
                     ts,
@@ -1031,6 +1038,32 @@ pub(crate) fn pcap_ts_to_chrono(ts: libc::timeval) -> DateTime<Utc> {
 #[cfg(test)]
 mod fanout_plan_tests {
     use super::*;
+
+    /// The live loop reads through `next_ex::next_packet`, never the `pcap`
+    /// crate's `Capture::next_packet`, which builds a slice over address 0
+    /// when libpcap's netmap module reports a filter-rejected frame as a read
+    /// (NM1). No test can hand this loop a netmap device, so the wiring is
+    /// pinned on the source: code lines only, comments stripped.
+    #[test]
+    fn the_live_loop_reads_through_the_delivery_checking_reader() {
+        let src = include_str!("live.rs");
+        let body = src.split("#[cfg(test)]").next().expect("source has a body");
+        let code: Vec<&str> = body
+            .lines()
+            .map(|l| l.split("//").next().unwrap_or(""))
+            .collect();
+        let direct = code.iter().filter(|l| l.contains(".next_packet()")).count();
+        let checked = code
+            .iter()
+            .filter(|l| l.contains("next_ex::next_packet(&mut cap)"))
+            .count();
+        assert_eq!(
+            (direct, checked),
+            (0, 1),
+            "the live capture loop must read with next_ex::next_packet, once, \
+             and never call Capture::next_packet directly"
+        );
+    }
 
     /// One socket is not a fanout group, and asking for zero is the same
     /// request. Both take the ordinary single-socket path — never a group of

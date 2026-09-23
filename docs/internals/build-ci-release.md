@@ -87,7 +87,7 @@ processing thread, but a test that passes and a test that raced are
 indistinguishable to `cargo test`.
 
 The borrow checker does not help here either
-— it stops at `unsafe`, and most of this crate's 119 `unsafe` blocks are libc
+— it stops at `unsafe`, and most of this crate's 122 `unsafe` blocks are libc
 FFI, concentrated in privilege dropping ([`privilege.rs`](../../src/privilege.rs)
 and [`process_isolation.rs`](../../src/process_isolation.rs)) and capture setup.
 Recount with `grep -rc 'unsafe {' src/` rather than trusting that figure — this

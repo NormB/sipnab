@@ -8,6 +8,26 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Fixed
+
+- **A `netmap:` capture no longer crashes on the first frame its filter
+  drops.** libpcap's netmap module counts a frame its BPF filter rejects as a
+  successful read and delivers no data for it. `pcap_next_ex` then returns 1
+  with a null data pointer and the previous packet's header, and sipnab copied
+  that header's length from address 0. The capture thread died with
+  `capture-netmap:[...]: segfault at 0` in the kernel log, in `memcpy` called
+  from `capture_live_group`. It looked like a crash at shutdown because the
+  dropped frame is usually IPv6 link chatter, such as a neighbor solicitation,
+  that arrives while the capture sits idle. The live capture loop now reads
+  through a check that a packet was delivered before it copies anything, and
+  reads again when none was. Measured on the x86_64 OpenSIPS VM (Debian 13,
+  kernel 6.12.105, netmap 389daea) with 5 SIP messages through `netmap:nmv0`
+  on a veth pair, 3 s idle, then SIGTERM. Before the fix, 10 of 10 runs
+  crashed before the SIGTERM, after 1 to 4 messages. After it, 10 of 10 runs
+  captured all 5, printed the summary and exited 0.
+
 ## [0.5.188] - 2026-09-23
 
 ### Fixed
