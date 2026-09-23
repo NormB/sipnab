@@ -1,5 +1,5 @@
 +++
-title = "MCP Server"
+title = "Connect an AI agent (MCP)"
 weight = 14
 description = "Drive sipnab from an AI agent over the Model Context Protocol: what it is, a first working example, and where to go for deployment, the tool reference, and the protocol contract."
 +++

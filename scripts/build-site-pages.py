@@ -38,12 +38,12 @@ from lib_markdown import code_link_re, sub_outside_code  # noqa: E402
 PAGES: list[tuple[str, str, str, str, int, str]] = [
     (
         "docs/library.md", "library.md", "Using sipnab as a library",
-        "Library API", 70,
+        "Use sipnab as a Rust library", 70,
         "Use the Rust parser and analysis types from an external application.",
     ),
     (
         "docs/client-examples.md", "examples.md", "Runnable client examples",
-        "Runnable Examples", 71,
+        "Run the example Python clients", 71,
         "Run Python clients for correlation, MCP queries and vCon inspection, with local regression tests.",
     ),
     (
@@ -53,7 +53,7 @@ PAGES: list[tuple[str, str, str, str, int, str]] = [
         # match the title would break every one of them to fix a word.
         "cookbook.md",
         "Examples & Recipes",
-        "Examples & Recipes",
+        "Recipes for common tasks",
         2,
         "Worked examples with real output: triage, filtering, HEP, TLS "
         "decryption, MCP, observability, security and audio export, each one "
@@ -63,7 +63,7 @@ PAGES: list[tuple[str, str, str, str, int, str]] = [
         "docs/prometheus-metrics.md",
         "metrics.md",
         "Prometheus metrics",
-        "Prometheus Metrics",
+        "Scrape Prometheus metrics",
         # 34, not 12: weight only has to be UNIQUE
         # (`docs_page_weights_are_unique_and_descriptions_present`), and 12 is
         # api-clients.md. Sidebar order comes from the explicit path lists in
@@ -73,7 +73,7 @@ PAGES: list[tuple[str, str, str, str, int, str]] = [
         # SIP and the other carries numbers.
         36,
         "Every metric family sipnab emits, what each one means, which are "
-        "counters and which are gauges, and the scrape config -- split out of "
+        "counters and which are gauges, and the scrape config. Split out of "
         "the REST API page, which a scrape target's reader never needs.",
     ),
     (
@@ -92,7 +92,7 @@ PAGES: list[tuple[str, str, str, str, int, str]] = [
         # entry directly below in the same nav group. The `/metrics` endpoint
         # is still documented here because the `api` feature is what serves it;
         # what the metric NAMES mean lives on the metrics page.
-        "REST API",
+        "Query the REST API",
         11,
         "sipnab's REST API: authentication, every endpoint with its response "
         "shape, status codes, curl recipes, and the security model. Metric "
@@ -105,7 +105,7 @@ PAGES: list[tuple[str, str, str, str, int, str]] = [
         # weight) are the originals — changing them here silently relabels and
         # reorders the docs nav.
         "MCP server",
-        "MCP Server",
+        "Connect an AI agent (MCP)",
         14,
         "Drive sipnab from an AI agent over the Model Context Protocol: what "
         "it is, a first working example, and where to go for deployment, the "
@@ -124,15 +124,16 @@ PAGES: list[tuple[str, str, str, str, int, str]] = [
         "docs/install.md",
         "install.md",
         "Installing sipnab",
-        "Installation",
+        "Install sipnab",
         1,
-        "Install sipnab from pre-built binaries, cargo, or package managers.",
+        "Install sipnab from a pre-built binary, a package, Homebrew or cargo, "
+        "then check the download is genuine.",
     ),
     (
         "docs/rtpengine.md",
         "rtpengine.md",
         "Attribute media on an rtpengine relay",
-        "rtpengine Relays",
+        "Name calls on an rtpengine relay",
         32,
         "Media captured on a standalone rtpengine relay comes back orphaned "
         "because a relay carries no SIP. Read rtpengine's own control plane "
@@ -142,24 +143,25 @@ PAGES: list[tuple[str, str, str, str, int, str]] = [
         "docs/troubleshooting.md",
         "troubleshooting.md",
         "Troubleshooting",
-        "Troubleshooting",
+        "Troubleshoot a call",
         3,
-        "Real-world VoIP diagnostic workflows with exact commands.",
+        "Start from what the caller reports, find the matching section, and run "
+        "the commands it gives, in order.",
     ),
     (
         "docs/tui-walkthrough.md",
         "tui.md",
         "TUI Walkthrough",
-        "TUI Walkthrough",
+        "Walk through the terminal UI",
         4,
-        "Your first analysis in the interactive TUI, step by step -- open a "
+        "Your first analysis in the interactive TUI, step by step: open a "
         "capture, read the ladder, measure a delay, and inspect RTP.",
     ),
     (
         "docs/keybindings.md",
         "keybindings.md",
         "Keybindings",
-        "Keybindings",
+        "Look up a key binding",
         5,
         "Complete TUI keyboard shortcut reference for all views.",
     ),
@@ -167,7 +169,7 @@ PAGES: list[tuple[str, str, str, str, int, str]] = [
         "docs/theme-guide.md",
         "theme.md",
         "Theme customization guide",
-        "Theme Guide",
+        "Change the terminal UI colors",
         6,
         "Customize sipnab's TUI colors with 11 semantic color slots and "
         "preset themes.",
@@ -176,9 +178,10 @@ PAGES: list[tuple[str, str, str, str, int, str]] = [
         "docs/cli-reference.md",
         "cli.md",
         "CLI reference",
-        "CLI Reference",
+        "Look up a command-line flag",
         7,
-        "Complete flag reference for sipnab, organized by functional group.",
+        "Every flag sipnab takes, grouped by job: capture, matching, output, "
+        "analysis, security, the listeners and MCP.",
     ),
     (
         "docs/filter-dsl.md",
@@ -186,7 +189,7 @@ PAGES: list[tuple[str, str, str, str, int, str]] = [
         # Source H1 is "Filter DSL reference"; the sidebar label is the
         # shorter site original.
         "Filter DSL reference",
-        "Filter DSL",
+        "Filter calls and streams",
         8,
         "Declarative filter language for matching SIP dialogs and RTP "
         "streams.",
@@ -195,7 +198,7 @@ PAGES: list[tuple[str, str, str, str, int, str]] = [
         "docs/sip-header-fields.md",
         "sip-header-fields.md",
         "SIP header fields",
-        "Header Fields",
+        "Look up a SIP header field",
         22,
         "Every SIP header field in the IANA registry, its compact form, and the "
         "RFC that defines it.",
@@ -204,7 +207,7 @@ PAGES: list[tuple[str, str, str, str, int, str]] = [
         "docs/sip-methods.md",
         "sip-methods.md",
         "SIP request methods",
-        "Request Methods",
+        "Look up a SIP method",
         21,
         "Every SIP method in the IANA registry, the RFC section defining it, and "
         "which dialog state machine sipnab runs it through.",
@@ -213,7 +216,7 @@ PAGES: list[tuple[str, str, str, str, int, str]] = [
         "docs/sip-parameters.md",
         "sip-parameters.md",
         "SIP parameters",
-        "Parameters",
+        "Look up a SIP parameter",
         23,
         "Every SIP URI parameter, header-field parameter and option tag in the "
         "IANA registry, with the RFC that defines it.",
@@ -222,7 +225,7 @@ PAGES: list[tuple[str, str, str, str, int, str]] = [
         "docs/mos-and-codecs.md",
         "mos-and-codecs.md",
         "MOS and codecs",
-        "MOS & Codecs",
+        "Understand MOS and codecs",
         24,
         "Where the quality score comes from, which codecs have a published "
         "impairment factor behind it, and which report a placeholder.",
@@ -231,7 +234,7 @@ PAGES: list[tuple[str, str, str, str, int, str]] = [
         "docs/sip-response-codes.md",
         "sip-response-codes.md",
         "SIP response codes",
-        "Response Codes",
+        "Look up a SIP response code",
         20,
         "Every SIP response code in the IANA registry, the RFC section that "
         "defines it, and whether it means the call failed.",
@@ -240,7 +243,7 @@ PAGES: list[tuple[str, str, str, str, int, str]] = [
         "docs/output-formats.md",
         "output-formats.md",
         "Output formats",
-        "Output Formats",
+        "Choose an output format",
         9,
         "Machine-readable output: NDJSON, summary reports, dialog/stream "
         "JSON, and pcap/pcapng.",
@@ -249,7 +252,7 @@ PAGES: list[tuple[str, str, str, str, int, str]] = [
         "docs/config-reference.md",
         "config.md",
         "Config reference",
-        "Config Reference",
+        "Configure sipnab",
         10,
         "TOML configuration file format and all configurable sections.",
     ),
@@ -257,7 +260,7 @@ PAGES: list[tuple[str, str, str, str, int, str]] = [
         "docs/uprobe-walkthrough.md",
         "uprobe-walkthrough.md",
         "Reading SIP over TLS without keys — step by step",
-        "TLS Without Keys",
+        "Read TLS without keys (eBPF)",
         28,
         "What uprobe and eBPF capture is and is NOT, its security "
         "implications, whether your kernel supports it at all, and how to "
@@ -267,7 +270,7 @@ PAGES: list[tuple[str, str, str, str, int, str]] = [
         "docs/mcp-deploy.md",
         "mcp-deploy.md",
         "Connect an AI agent to sipnab",
-        "MCP Deployment",
+        "Deploy the MCP server",
         15,
         "Step-by-step MCP deployment scenarios: same-box stdio, remote "
         "production servers over SSH or HTTP, HEP capture hosts, TLS "
@@ -277,7 +280,7 @@ PAGES: list[tuple[str, str, str, str, int, str]] = [
         "docs/mcp-estate.md",
         "mcp-estate.md",
         "Run MCP across an estate, not one box",
-        "MCP Across an Estate",
+        "Use MCP across many servers",
         16,
         "Several SIP servers feeding one capture host, reaching sipnab from "
         "outside the network, one agent holding many capture hosts, and "
@@ -287,7 +290,7 @@ PAGES: list[tuple[str, str, str, str, int, str]] = [
         "docs/mcp-tools.md",
         "mcp-tools.md",
         "MCP tool reference",
-        "MCP Tools",
+        "Look up an MCP tool",
         17,
         "Every MCP tool sipnab exposes, what question each answers, and the "
         "fields it returns.",
@@ -296,7 +299,7 @@ PAGES: list[tuple[str, str, str, str, int, str]] = [
         "docs/mcp-protocol.md",
         "mcp-protocol.md",
         "MCP protocol",
-        "MCP Protocol",
+        "Check the MCP protocol contract",
         18,
         "The MCP wire contract: security model, what the write verbs may do, "
         "untrusted capture text, the stdio invariant, and error semantics.",
@@ -310,7 +313,7 @@ PAGES: list[tuple[str, str, str, str, int, str]] = [
         "docs/sip-lint-rules.md",
         "sip-lint-rules.md",
         "SIP conformance rules",
-        "SIP Conformance Rules",
+        "Look up a SIP conformance rule",
         25,
         "Every rule the SIP conformance linter runs, the RFC section behind "
         "it, the severity and basis it reports under, and how to suppress it "
@@ -325,14 +328,14 @@ PAGES: list[tuple[str, str, str, str, int, str]] = [
         "docs/tuning-capture.md",
         "tuning-capture.md",
         "Tuning capture on a busy server",
-        "Tuning Capture",
+        "Stop a capture dropping packets",
         # 24, not 12: weight 12 was already taken by api-clients.md, and
         # `docs_page_weights_are_unique_and_descriptions_present` requires it to
         # be unique. Ordering in the sidebar comes from the explicit path lists
         # in the nav_group macros, not from this number.
         26,
         "Size the kernel capture ring, read the kernel and interface drop "
-        "counters, tell the two apart, and decide between the `any` device "
+        "counters, tell the two apart, and decide between the any device "
         "and a named interface.",
     ),
     # Registered with the page itself, for the reason the two entries above
@@ -348,19 +351,19 @@ PAGES: list[tuple[str, str, str, str, int, str]] = [
         "docs/vcon-harness.md",
         "vcon-harness.md",
         "The vCon capture stack",
-        "vCon Capture Stack",
+        "Build a vCon capture stack",
         # 38, the next free weight on the SITE side, which is where
         # `docs_page_weights_are_unique_and_descriptions_present` reads.
         38,
-        "Build a two-point vCon capture stack -- OpenSIPS, rtpengine, sipnab "
-        "and a conserver -- then operate it, verify a stored call carries its "
+        "Build a two-point vCon capture stack (OpenSIPS, rtpengine, sipnab "
+        "and a conserver), then operate it, verify a stored call carries its "
         "media, and recognize the failures that look like success.",
     ),
     (
         "docs/vcon.md",
         "vcon.md",
         "Export one observed call as a vCon",
-        "vCon Export",
+        "Export a call as a vCon",
         # 37, the next free weight -- checked against the SITE pages
         # (`website/content/docs/*.md`), which is where the uniqueness gate
         # reads from. 29 was picked first by counting the `docs/` sources, and
@@ -377,7 +380,7 @@ PAGES: list[tuple[str, str, str, str, int, str]] = [
         "docs/encapsulations.md",
         "encapsulations.md",
         "Encapsulations",
-        "Encapsulations",
+        "Read SIP inside tunnels",
         # 25: the next free weight. `docs_page_weights_are_unique_and_
         # descriptions_present` requires uniqueness; sidebar order comes from
         # the nav_group path lists, not from this number.
@@ -390,14 +393,14 @@ PAGES: list[tuple[str, str, str, str, int, str]] = [
         "docs/real-world-captures.md",
         "real-world-captures.md",
         "Examples from real traffic",
-        "Examples from real traffic",
+        "Learn from real captures",
         # 39, the next free weight on the SITE side, which is where
         # `docs_page_weights_are_unique_and_descriptions_present` reads.
         # Sidebar order comes from the nav_group path lists, not from this
         # number.
         39,
         "Twelve findings read out of live carrier and PBX traffic, with the "
-        "command, the output and what an operator does next -- the retransmit "
+        "command, the output and what an operator does next: the retransmit "
         "storms, false-positive detections and misleading aggregates that a "
         "curated fixture cannot show.",
     ),
@@ -431,7 +434,7 @@ PAGES: list[tuple[str, str, str, str, int, str]] = [
         "docs/auth.md",
         "auth.md",
         "Bearer-token authentication",
-        "Authentication",
+        "Authenticate API and MCP clients",
         31,
         "Bearer-token authentication for the REST API and MCP server: token "
         "format, audience binding, configuring a signing key, minting tokens, "
@@ -542,17 +545,12 @@ def render(src: str, text: str, want_h1: str, title: str, weight: int,
     # string comparison.
     body, has_diagrams = _INT.convert_mermaid(body)
 
-    lines = [
-        "+++",
-        f"title = {_INT.toml_str(title)}",
-        f"weight = {weight}",
-        f"description = {_INT.toml_str(description)}",
-    ]
-    if has_diagrams:
-        # Gates the 3.4 MB mermaid bundle: page.html loads it only when a page
-        # declares this, so pages without diagrams pay nothing.
-        lines += ["", "[extra]", "has_diagrams = true"]
-    head = "\n".join(lines + ["+++", ""])
+    # One front-matter writer for both generators, so the mermaid gate and
+    # the lead_in_body mark (see `_INT.lead_repeats`) cannot differ between
+    # an operator page and a developer page.
+    head = _INT.frontmatter(
+        title, weight, description, has_diagrams, _INT.lead_repeats(description, body)
+    )
     return head + BANNER.format(src=src) + body
 
 

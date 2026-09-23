@@ -1,5 +1,5 @@
 +++
-title = "vCon Export"
+title = "Export a call as a vCon"
 weight = 37
 description = "Export one observed dialog as a vCon container: what the format is, how to produce one, and what an observer's record does and does not let a consumer conclude."
 +++

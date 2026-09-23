@@ -143,3 +143,68 @@ test.describe('no page ships a broken asset', () => {
     expect(failed, `assets the homepage could not load:\n${failed.join('\n')}`).toEqual([]);
   });
 });
+
+// A code block's language badge and copy button sat on top of the command's
+// first line. On a phone the command runs wider than the screen, so its end
+// scrolled under them: /docs/first-cli-triage/ showed "curl -LO
+// https://sipnab.com/demos/sampl" with the rest hidden behind "BASH". And the
+// copy button only appeared on hover, which a touch screen never sends.
+// /download faded its header, platform tabs and open panel in over 0.6s.
+// That is the same pattern that left the homepage blank when its script did
+// not run, and it made the first thing a reader sees arrive late.
+test('the download page shows its content without an entrance animation', async ({ page }) => {
+  await page.goto('/download/', { waitUntil: 'domcontentloaded' });
+  const states = await page.evaluate(() => ['.dl-hero', '.dl-tabs', '.dl-panel.active'].map((sel) => {
+    const e = document.querySelector(sel);
+    if (!e) return `${sel} missing`;
+    const cs = getComputedStyle(e);
+    return `${sel} opacity=${cs.opacity} animation=${cs.animationName}`;
+  }));
+  expect(states).toEqual([
+    '.dl-hero opacity=1 animation=none',
+    '.dl-tabs opacity=1 animation=none',
+    '.dl-panel.active opacity=1 animation=none',
+  ]);
+});
+
+// The Scalar viewer renders the OpenAPI document's own title ("sipnab REST
+// API") as a second h1 under the page's "OpenAPI reference", so a screen
+// reader's page outline had two top-level headings.
+test('the API reference page has one top-level heading', async ({ page }) => {
+  await page.goto('/api-reference/');
+  await page.waitForSelector('#scalar-app h1', { timeout: 15000 });
+  await page.waitForTimeout(500);
+  const levels = await page.evaluate(() => [...document.querySelectorAll('h1')].map(
+    (h) => h.getAttribute('aria-level') || '1',
+  ));
+  expect(levels.filter((l) => l === '1')).toEqual(['1']);
+});
+
+test.describe('docs code blocks on a phone', () => {
+  test('the badge and copy button sit above the code, and the button shows', async ({ browser }) => {
+    const context = await browser.newContext({
+      viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true,
+    });
+    const page = await context.newPage();
+    await page.goto('/docs/first-cli-triage/');
+    const blocks = await page.evaluate(() => [...document.querySelectorAll('.doc-body pre:not(.mermaid)')]
+      .slice(0, 6)
+      .map((pre) => {
+        const box = pre.getBoundingClientRect();
+        const codeTop = box.top + parseFloat(getComputedStyle(pre).paddingTop);
+        const btn = pre.querySelector('.doc-copy-btn');
+        const b = btn.getBoundingClientRect();
+        const badge = getComputedStyle(pre, '::before');
+        const badgeBottom = badge.content === 'none' || badge.display === 'none' ? box.top
+          : box.top + parseFloat(badge.top || '0') + parseFloat(badge.height || '0');
+        return { buttonBottom: b.bottom, badgeBottom, codeTop, opacity: getComputedStyle(btn).opacity };
+      }));
+    expect(blocks.length, 'no code blocks found').toBeGreaterThan(2);
+    for (const b of blocks) {
+      expect(b.buttonBottom, 'the copy button overlaps the first line of code').toBeLessThanOrEqual(b.codeTop + 1);
+      expect(b.badgeBottom, 'the language badge overlaps the first line of code').toBeLessThanOrEqual(b.codeTop + 1);
+      expect(b.opacity, 'the copy button is invisible on a touch screen').toBe('1');
+    }
+    await context.close();
+  });
+});

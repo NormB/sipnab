@@ -429,17 +429,66 @@ def convert_mermaid(text: str) -> tuple[str, bool]:
     return "\n".join(out) + "\n", found
 
 
-def frontmatter(title: str, weight: int, description: str, has_diagrams: bool) -> str:
+def _words(text: str) -> set[str]:
+    """The content words of a text: lowercased, four letters or longer."""
+    return {w for w in re.findall(r"[a-z0-9]+", text.lower()) if len(w) > 3}
+
+
+def first_paragraph(body: str) -> str:
+    """The first prose paragraph of a page body.
+
+    Skips HTML comments (the generated-file banner), headings, fences, tables,
+    quotes, lists and images, none of which a reader takes for the opening.
+    """
+    for block in re.split(r"\n\s*\n", body):
+        text = block.strip()
+        if not text or text.startswith(("<!--", "#", "```", "~~~", "|", ">", "-", "*", "!", "<")):
+            continue
+        return " ".join(text.split())
+    return ""
+
+
+def lead_repeats(description: str, body: str) -> bool:
+    """Whether the page body opens by restating its own description.
+
+    page.html shows the description as the grey lead under the title. Most
+    docs/ pages open with a paragraph that says the same thing, because on
+    GitHub and the wiki that paragraph is the lead, so the site showed it twice.
+    A repeat is a first paragraph holding at least 60% of the description's
+    content words. Measured over the site: every page a reader would call a
+    repeat scores 0.6 or more, and the highest page that is not one (the
+    domain primer's "Written for the Rust engineer...") scores 0.56.
+    """
+    want = _words(description)
+    if not want:
+        return False
+    return len(want & _words(first_paragraph(body))) / len(want) >= 0.6
+
+
+def frontmatter(
+    title: str,
+    weight: int,
+    description: str,
+    has_diagrams: bool,
+    lead_in_body: bool = False,
+) -> str:
     lines = [
         "+++",
         f"title = {toml_str(title)}",
         f"weight = {weight}",
         f"description = {toml_str(description)}",
     ]
+    extra = []
     if has_diagrams:
         # Read by page.html: only a page that declares this loads the mermaid
         # bundle, so the 3.4 MB payload never reaches a page without a diagram.
-        lines += ["", "[extra]", "has_diagrams = true"]
+        extra.append("has_diagrams = true")
+    if lead_in_body:
+        # Read by page.html: the body's first paragraph already says what the
+        # description says, so the grey lead is skipped (see lead_repeats).
+        extra.append("lead_in_body = true")
+    if extra:
+        lines += ["", "[extra]", *extra]
     lines += ["+++", ""]
     return "\n".join(lines)
 
@@ -461,7 +510,7 @@ def render(src_rel: str, src_text: str, title: str, weight: int, description: st
     body = sub_outside_code(CODE_LINK_RE, rewrite_code_link, body)
     body, has_diagrams = convert_mermaid(body)
     return (
-        frontmatter(title, weight, description, has_diagrams)
+        frontmatter(title, weight, description, has_diagrams, lead_repeats(description, body))
         + BANNER.format(src=f"docs/internals/{src_rel}")
         + body
     )

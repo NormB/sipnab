@@ -1,5 +1,5 @@
 +++
-title = "MOS & Codecs"
+title = "Understand MOS and codecs"
 weight = 24
 description = "Where the quality score comes from, which codecs have a published impairment factor behind it, and which report a placeholder."
 +++

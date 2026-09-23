@@ -1,5 +1,5 @@
 +++
-title = "TLS Without Keys"
+title = "Read TLS without keys (eBPF)"
 weight = 28
 description = "What uprobe and eBPF capture is and is NOT, its security implications, whether your kernel supports it at all, and how to run both backends step by step."
 +++

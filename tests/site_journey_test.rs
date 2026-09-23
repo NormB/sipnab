@@ -10567,3 +10567,177 @@ fn no_hand_written_page_repeats_its_title_as_an_h1() {
         "found {seen} hand-written page(s); the scan is broken"
     );
 }
+
+/// Every hand-written or generated page description on the site is plain text.
+///
+/// A description is printed as plain text in four places: the grey lead under
+/// a page's title, the docs index card, `<meta name="description">` and
+/// `llms.txt`. None of them renders Markdown, so a backtick or a `--` written
+/// for GitHub showed up literally: /docs/tuning-capture/ read "decide between
+/// the `any` device", and five pages carried "--" where a dash belonged.
+#[test]
+fn no_site_description_carries_raw_markdown() {
+    let mut files = Vec::new();
+    let mut dirs = vec![repo().join("website/content")];
+    while let Some(dir) = dirs.pop() {
+        for entry in std::fs::read_dir(&dir).expect("read content dir").flatten() {
+            let p = entry.path();
+            if p.is_dir() {
+                dirs.push(p);
+            } else if p.extension().is_some_and(|x| x == "md") {
+                files.push(p);
+            }
+        }
+    }
+    let mut seen = 0;
+    let mut bad = Vec::new();
+    for p in files {
+        let text = std::fs::read_to_string(&p).expect("read page");
+        let Some(desc) = text
+            .lines()
+            .take_while(|l| !l.starts_with("[extra]"))
+            .find_map(|l| l.strip_prefix("description = "))
+        else {
+            continue;
+        };
+        seen += 1;
+        for mark in ["`", " -- ", "](", "**"] {
+            if desc.contains(mark) {
+                bad.push(format!("{}: {mark:?} in {desc}", p.display()));
+            }
+        }
+    }
+    assert!(seen >= 60, "read {seen} description(s); the scan is broken");
+    assert!(
+        bad.is_empty(),
+        "page descriptions carry Markdown that renders literally:\n{}",
+        bad.join("\n")
+    );
+}
+
+/// The docs lead is skipped where the page body already opens with it.
+///
+/// `scripts/build-site-internals.py::lead_repeats` decides which pages repeat
+/// their description in their first paragraph and marks them
+/// `lead_in_body = true`; this holds the template to honoring the mark, and
+/// holds the generated pages to carrying it where the rule says so.
+#[test]
+fn the_docs_lead_is_not_shown_twice() {
+    let page = read("website/templates/page.html");
+    let lead_at = page
+        .find("<p class=\"doc-lead\">")
+        .expect("page.html no longer renders a doc-lead");
+    let guard = &page[..lead_at];
+    let open = guard
+        .rfind("{% if")
+        .expect("the doc-lead is not inside any condition");
+    assert!(
+        guard[open..].contains("page.extra.lead_in_body"),
+        "page.html renders the lead without checking lead_in_body, so a page \
+         whose first paragraph restates its description shows it twice"
+    );
+    let marked = [
+        "glossary.md",
+        "first-cli-triage.md",
+        "tui.md",
+        "sip-methods.md",
+    ];
+    for name in marked {
+        let text = read(&format!("website/content/docs/{name}"));
+        assert!(
+            text.contains("lead_in_body = true"),
+            "website/content/docs/{name} repeats its description in its first \
+             paragraph and is not marked lead_in_body"
+        );
+    }
+    let text = read("website/content/docs/cookbook.md");
+    assert!(
+        !text.contains("lead_in_body"),
+        "the cookbook's first paragraph says something its description does \
+         not, and it was marked lead_in_body anyway"
+    );
+}
+
+/// Every "Rust X.Y+" a reader is told matches the crate's `rust-version`.
+///
+/// /download and the install page said "Rust 1.98+" while the build page, the
+/// one a source builder reads, said "Rust 1.97+". A reader on 1.97 followed
+/// the build page and met a compiler error. `download_page_msrv_matches_cargo`
+/// held one page to Cargo.toml and nothing held the rest.
+#[test]
+fn every_published_rust_minimum_matches_cargo() {
+    let cargo = read("Cargo.toml");
+    let msrv = regex::Regex::new(r#"(?m)^rust-version = "([0-9]+\.[0-9]+)""#)
+        .unwrap()
+        .captures(&cargo)
+        .expect("Cargo.toml has no rust-version")[1]
+        .to_string();
+    let claim = regex::Regex::new(r"Rust ([0-9]+\.[0-9]+)\+").unwrap();
+    let mut roots = vec![
+        repo().join("docs"),
+        repo().join("website/content"),
+        repo().join("website/templates"),
+    ];
+    let mut files = vec![repo().join("README.md")];
+    while let Some(dir) = roots.pop() {
+        for entry in std::fs::read_dir(&dir).expect("read dir").flatten() {
+            let p = entry.path();
+            if p.is_dir() {
+                // Design notes and the changelog-like archive record past
+                // floors on purpose.
+                if !p.ends_with("design") {
+                    roots.push(p);
+                }
+            } else if p.extension().is_some_and(|x| x == "md" || x == "html") {
+                files.push(p);
+            }
+        }
+    }
+    let mut seen = 0;
+    let mut wrong = Vec::new();
+    for p in files {
+        let text = std::fs::read_to_string(&p).unwrap_or_default();
+        for c in claim.captures_iter(&text) {
+            seen += 1;
+            if c[1] != msrv {
+                wrong.push(format!("{}: Rust {}+", p.display(), &c[1]));
+            }
+        }
+    }
+    assert!(
+        seen >= 3,
+        "found {seen} Rust floor claim(s); the scan is broken"
+    );
+    assert!(
+        wrong.is_empty(),
+        "these pages state a Rust floor other than Cargo.toml's {msrv}:\n{}",
+        wrong.join("\n")
+    );
+}
+
+/// The analyze drop zone names every container the page actually opens.
+///
+/// analyze.js recognizes zip and tar archives and opens the captures inside
+/// them, while the drop zone said "Drop a .pcap here" and listed only pcap,
+/// pcapng and gzip, so a reader holding a zip of captures had no reason to
+/// think it would work.
+#[test]
+fn the_analyze_drop_zone_names_the_archives_it_opens() {
+    let js = read("website/static/js/analyze.js");
+    let page = read("website/templates/analyze.html");
+    let zone = element_span(&page, "<div class=\"dropzone-formats\"", "div");
+    let chips = &page[zone.start..zone.end];
+    for (kind, word) in [("zip", "zip"), ("tar", "tar")] {
+        if js.contains(&format!("return \"{kind}\"")) {
+            assert!(
+                chips.contains(word),
+                "analyze.js opens {kind} archives and the drop zone does not \
+                 say so:\n{chips}"
+            );
+        }
+    }
+    assert!(
+        !page.contains("Drop a .pcap here"),
+        "the drop zone asks for a .pcap when it takes pcapng and archives too"
+    );
+}

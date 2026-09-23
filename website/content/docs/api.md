@@ -1,5 +1,5 @@
 +++
-title = "REST API"
+title = "Query the REST API"
 weight = 11
 description = "sipnab's REST API: authentication, every endpoint with its response shape, status codes, curl recipes, and the security model. Metric names and their meaning are on the Prometheus metrics page."
 +++
@@ -69,7 +69,7 @@ The process stays alive serving the API until you press Ctrl-C.
 curl -H "Authorization: Bearer $SIPNAB_API_KEY" http://127.0.0.1:8080/v1/dialogs
 ```
 
-> **More client code and integrations:** ready-to-adapt clients in several languages live in [API Client Examples](https://sipnab.com/docs/api-clients/); HEP forwarding, event hooks, fail2ban, and syslog live in [Integrations](https://sipnab.com/docs/integrations/).
+> **More client code and integrations:** for ready-to-adapt clients in several languages, read [Call the REST API from code](https://sipnab.com/docs/api-clients/). For HEP forwarding, event hooks, fail2ban and syslog, read [Connect sipnab to Homer, fail2ban and syslog](https://sipnab.com/docs/integrations/).
 
 ## Authentication
 
@@ -85,7 +85,7 @@ curl -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8080/v1/dialogs
 There are **two kinds of credential**, and the server accepts either. For the
 full lifecycle of the signed kind — minting with `--mint-token`, TTLs,
 signing-key rotation, and revocation denylists — see
-[Bearer-token authentication](@/docs/auth.md).
+[Authenticate API and MCP clients](@/docs/auth.md).
 
 ### Method 1 — static API key
 

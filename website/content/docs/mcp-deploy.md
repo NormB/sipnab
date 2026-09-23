@@ -1,5 +1,5 @@
 +++
-title = "MCP Deployment"
+title = "Deploy the MCP server"
 weight = 15
 description = "Step-by-step MCP deployment scenarios: same-box stdio, remote production servers over SSH or HTTP, HEP capture hosts, TLS endpoints, fleets, and headless automation."
 

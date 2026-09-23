@@ -1,5 +1,5 @@
 +++
-title = "Authentication"
+title = "Authenticate API and MCP clients"
 weight = 31
 description = "Bearer-token authentication for the REST API and MCP server: token format, audience binding, configuring a signing key, minting tokens, expiry and key rotation."
 +++

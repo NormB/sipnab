@@ -1,5 +1,5 @@
 +++
-title = "SIP Conformance Rules"
+title = "Look up a SIP conformance rule"
 weight = 25
 description = "Every rule the SIP conformance linter runs, the RFC section behind it, the severity and basis it reports under, and how to suppress it in CI."
 +++

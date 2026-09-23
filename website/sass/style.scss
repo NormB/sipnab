@@ -1867,11 +1867,15 @@ input:focus-visible,
     + .note-group { margin-top: 3rem; }
   }
 
+  // A real heading, not a caption: at 0.8rem in dim monospace it read as a
+  // divider, and on a phone "How-tos" looked like a stray label above a rule.
   .note-group-title {
     margin: 0;
-    font-size: 0.8rem;
-    font-family: $font-mono;
-    color: $text-dim;
+    font-size: 1.25rem;
+    color: $text;
+    padding-bottom: 0.5rem;
+
+    + .note-list { margin-top: 0; }
   }
 
   // The post-mortem archive: a record worth keeping and a poor front page.
@@ -2086,12 +2090,16 @@ input:focus-visible,
   }
 
   // -- Code blocks --
+  // The top padding is a band for the language badge (top left) and the
+  // copy button (top right). Both used to sit over the first line, so a
+  // command wider than a phone scrolled its end underneath them.
+  // e2e/tests/smoke.spec.js measures that neither reaches the code.
   pre {
     position: relative;
     background: $bg;
     border: 1px solid $border;
     border-radius: 10px;
-    padding: 1.1rem 1.25rem;
+    padding: 2.4rem 1.25rem 1.1rem;
     overflow-x: auto;
     margin: 0 0 1.6rem;
     font-size: 0.86rem;
@@ -2105,16 +2113,16 @@ input:focus-visible,
       content: attr(data-lang);
       position: absolute;
       top: 0;
-      right: 0;
+      left: 0;
       font-family: $font-mono;
       font-size: 0.75rem;
       letter-spacing: 0.08em;
       text-transform: uppercase;
       color: $text-dim;
       background: $surface;
-      border-left: 1px solid $border;
+      border-right: 1px solid $border;
       border-bottom: 1px solid $border;
-      border-radius: 0 10px 0 8px;
+      border-radius: 10px 0 8px 0;
       padding: 0.25rem 0.65rem;
       pointer-events: none;
     }
@@ -2521,8 +2529,6 @@ input:focus-visible,
     padding: 0.6rem 0.9rem;
     font-family: $font-mono;
     font-size: 0.75rem;
-    letter-spacing: 0.12em;
-    text-transform: uppercase;
     color: $text-dim;
   }
 
@@ -2553,10 +2559,11 @@ input:focus-visible,
 .doc-body pre:hover .doc-copy-btn,
 .doc-copy-btn:focus-visible { opacity: 1; }
 
-// The data-lang badge shares the top-right corner: fade it out while the
-// copy button is visible so they swap in place instead of overlapping.
-.doc-body pre[data-lang]::before { transition: opacity 0.15s ease; }
-.doc-body pre:hover[data-lang]::before { opacity: 0; }
+// A touch screen sends no hover, so the button that appears on hover never
+// appeared there. Show it outright wherever there is no hover.
+@media (hover: none) {
+  .doc-copy-btn { opacity: 1; }
+}
 
 // -- Mermaid diagrams (developer docs) --
 // Rendered by static/js/diagram-viewer.js, which replaces each
@@ -3134,7 +3141,7 @@ input:focus-visible,
 .dl-layout .dl { margin: 0; padding: 2rem 0 6rem; }
 .dl-layout .dl [id] { scroll-margin-top: calc(#{$nav-height} + 1.25rem); }
 
-.dl-hero { text-align: center; margin-bottom: 2.75rem; animation: dlUp 0.6s ease both; }
+.dl-hero { text-align: center; margin-bottom: 2.75rem; }
 .dl-kicker { font-family: $font-mono; font-size: 0.75rem; color: $accent; margin: 0; }
 .dl-hero h1 { font-size: clamp(2.1rem, 5vw, 3rem); margin: 0.6rem 0 0; letter-spacing: -0.02em; }
 .dl-sub { color: $text-dim; margin: 0.95rem auto 0; max-width: 32rem; line-height: 1.6; }
@@ -3144,7 +3151,6 @@ input:focus-visible,
   display: flex; gap: 0.3rem; justify-content: center; flex-wrap: wrap;
   background: $surface; border: 1px solid $border; border-radius: 12px;
   padding: 0.3rem; margin: 0 auto 2.25rem; width: fit-content; max-width: 100%;
-  animation: dlUp 0.6s 0.05s ease both;
 }
 .dl-tab {
   display: inline-flex; align-items: center; gap: 0.5rem; padding: 0.55rem 1rem;
@@ -3165,7 +3171,9 @@ input:focus-visible,
 }
 
 .dl-panel { display: none; }
-.dl-panel.active { display: block; animation: dlUp 0.4s ease both; }
+// No entrance animation on the header, tabs or panels: the first thing a
+// reader sees arrives with the page (smoke.spec.js checks it).
+.dl-panel.active { display: block; }
 
 .dl-method-head { display: flex; align-items: center; gap: 0.65rem; margin-bottom: 1rem; }
 // A second install method within a panel (e.g. RHEL/Fedora after Debian) must
@@ -3239,7 +3247,11 @@ input:focus-visible,
   text-transform: uppercase; color: $text-dim; margin-bottom: 0.8rem;
 }
 .dl-tiles { display: grid; grid-template-columns: repeat(2, 1fr); gap: 0.75rem; }
+// position: relative on every tile, not only the marked one. Switching it on
+// when the CPU hint lands re-snaps the tile's subpixel position, and the text
+// inside moved by 1px once the panels stopped animating in.
 .dl-tile {
+  position: relative;
   display: flex; align-items: center; gap: 0.85rem; padding: 0.9rem 1rem;
   background: $surface; border: 1px solid $border; border-radius: 10px;
   text-decoration: none; transition: border-color 0.15s, transform 0.15s, background 0.15s;
@@ -3247,10 +3259,10 @@ input:focus-visible,
 .dl-tile:hover { border-color: $accent; transform: translateY(-2px); background: lighten($surface, 2%); }
 // The tile built for the visitor's CPU, marked by the client hint after paint.
 // Everything here is paint, not layout: the border keeps its width, and the
-// badge is absolutely positioned (position: relative on a flex item moves
-// nothing, and an absolute child takes no part in the flex row) -- so a hint
+// badge is absolutely positioned against the tile (every .dl-tile is
+// position: relative, and an absolute child takes no part in the flex row) -- so a hint
 // that arrives late cannot shift the page. Same badge as the tab's "you".
-.dl-tile--cpu { position: relative; border-color: $code-green; }
+.dl-tile--cpu { border-color: $code-green; }
 .dl-tile--cpu::after {
   content: 'your CPU'; position: absolute; top: -0.5rem; right: 0.75rem;
   font-family: $font-mono; font-size: 0.58rem; font-weight: 700; line-height: 1;
@@ -3369,7 +3381,6 @@ input:focus-visible,
   overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
 }
 
-@keyframes dlUp { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: none; } }
 
 @media (max-width: 560px) {
   // Tighten the top rhythm so the installer CTA sits closer to the fold.

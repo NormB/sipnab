@@ -1,14 +1,12 @@
 +++
-title = "API Client Examples"
+title = "Call the REST API from code"
 weight = 12
-description = "Client code for the sipnab REST API in curl, Python, Node/TypeScript, Rust, and Go."
+description = "Ready-to-adapt clients for the REST API in curl, Python, Node/TypeScript, Rust and Go."
 +++
-
-Ready-to-adapt clients for the [REST API](@/docs/api.md) in curl, Python, Node/TypeScript, Rust, and Go.
 
 ## Client examples
 
-End-to-end examples in five languages. Each one covers: bearer-token auth, listing dialogs filtered by state, fetching a single dialog with pagination, scraping `/metrics`, and error handling. Adapt to your environment.
+End-to-end examples in five languages for the [REST API](@/docs/api.md). Each one covers: bearer-token auth, listing dialogs filtered by state, fetching a single dialog with pagination, scraping `/metrics`, and error handling. Adapt to your environment.
 
 > **Filter parameters:** the REST API accepts `state` (e.g. `Failed`, `Completed`, `InCall`) and `from` (regex on the From header) as query parameters on `/v1/dialogs`, plus `orphaned` and `mos_below` on `/v1/streams`. Full DSL filtering — anything more complex than a single state/from match — is **not** available over REST. For arbitrary DSL queries, use the [MCP server](@/docs/mcp.md)'s `list_dialogs` tool, which accepts a `filter` argument that runs through the same evaluator as `sipnab --filter`.
 
@@ -622,9 +620,9 @@ SIPNAB_API_KEY=my-secret-token go run sipnab-client.go
 
 ---
 
-## Common Patterns
+## Common patterns
 
-### Monitor failed calls in real-time (Python)
+### Monitor failed calls in real time (Python)
 
 ```python
 import time

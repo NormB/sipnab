@@ -1,5 +1,5 @@
 +++
-title = "Library API"
+title = "Use sipnab as a Rust library"
 weight = 70
 description = "Use the Rust parser and analysis types from an external application."
 +++

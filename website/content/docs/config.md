@@ -1,5 +1,5 @@
 +++
-title = "Config Reference"
+title = "Configure sipnab"
 weight = 10
 description = "TOML configuration file format and all configurable sections."
 +++

@@ -1,12 +1,10 @@
 +++
-title = "Integrations"
+title = "Connect sipnab to Homer, fail2ban and syslog"
 weight = 13
-description = "Forward to HEP/Homer, run event-exec hooks, and emit fail2ban and syslog alerts."
+description = "Forward captured traffic to HEP/Homer, run external commands on dialog and quality events, and emit fail2ban and syslog security alerts."
 +++
 
-Wire sipnab into your wider stack: forward captured traffic to HEP/Homer, run external commands on dialog and quality events, and emit fail2ban and syslog security alerts.
-
-## HEP Protocol
+## Forward to Homer over HEP
 
 sipnab supports HEP v2/v3 (Homer Encapsulation Protocol, [specification](https://github.com/sipcapture/HEP)) for integration with Homer/SIPCAPTURE.
 
@@ -32,7 +30,7 @@ Mirror captured traffic to a Homer collector:
 sipnab -d eth0 -H 192.0.2.50:9060
 ```
 
-## Event execution
+## Run a command on an event
 
 sipnab can execute external commands on dialog state changes or quality drops. The command receives event data via `SIPNAB_*` environment variables (`SIPNAB_JSON` carries the full dialog JSON) — never on stdin and never interpolated into the command line. Event execution works in **all modes** (TUI, CLI, and API) -- it is not specific to the API feature.
 
@@ -57,7 +55,7 @@ sipnab -d eth0 --on-dialog-exec "logger" --exec-rate-limit 5
 
 > **Warning:** Always use `--exec-rate-limit` in production to prevent response amplification. Under a SIP flood, an unthrottled exec handler could fork-bomb the system. The default limit of 10/sec is conservative -- adjust based on your use case.
 
-## Fail2ban Integration
+## Block scanners with fail2ban
 
 `--fail2ban` switches sipnab's per-message output to log lines fail2ban can
 read. It selects a **format** and detects nothing on its own: `--kill-scanner`
@@ -138,7 +136,7 @@ fail2ban-regex /var/log/sipnab-fail2ban.log /etc/fail2ban/filter.d/sipnab.conf
 
 > **Tip:** Combine `--kill-scanner` with `--kill-ua "friendly-scanner|sipvicious"` to target specific scanner signatures. The `--kill-response` flag (default: 200) picks the SIP response code that goes back to detected scanners. Reading a capture file, `--kill-scanner` detects and reports but never transmits — only a live capture arms the response.
 
-## Syslog alerts
+## Send alerts to syslog
 
 Send security alerts to syslog:
 

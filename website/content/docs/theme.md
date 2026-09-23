@@ -1,5 +1,5 @@
 +++
-title = "Theme Guide"
+title = "Change the terminal UI colors"
 weight = 6
 description = "Customize sipnab's TUI colors with 11 semantic color slots and preset themes."
 +++

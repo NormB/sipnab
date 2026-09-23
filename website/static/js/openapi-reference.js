@@ -76,4 +76,21 @@
     showSidebar: true,
     documentDownloadType: 'json',
   });
+
+  // Scalar renders the OpenAPI document's own title ("sipnab REST API") as an
+  // h1, under the page's "OpenAPI reference" h1, and has no option to render
+  // it lower. Marking it level 2 keeps a screen reader's outline to one
+  // top-level heading without touching the markup Scalar owns. Scalar
+  // re-renders as the reader moves around, so the mark is reapplied.
+  function demote() {
+    var heads = mount.querySelectorAll('h1:not([aria-level])');
+    for (var i = 0; i < heads.length; i++) {
+      heads[i].setAttribute('role', 'heading');
+      heads[i].setAttribute('aria-level', '2');
+    }
+  }
+  demote();
+  if (typeof MutationObserver === 'function') {
+    new MutationObserver(demote).observe(mount, { childList: true, subtree: true });
+  }
 })();

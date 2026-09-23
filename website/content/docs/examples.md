@@ -1,5 +1,5 @@
 +++
-title = "Runnable Examples"
+title = "Run the example Python clients"
 weight = 71
 description = "Run Python clients for correlation, MCP queries and vCon inspection, with local regression tests."
 +++

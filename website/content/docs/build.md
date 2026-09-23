@@ -1,12 +1,12 @@
 +++
-title = "Build from Source"
+title = "Build sipnab from source"
 weight = 30
 description = "Build sipnab from source: cargo, the feature-flag matrix, release profile, and cross-compilation."
 +++
 
 Most users should [install a binary](@/docs/install.md). Build from source when you need a custom feature set or target.
 
-## Cargo (from source)
+## Install from crates.io with cargo
 
 ```bash
 cargo install sipnab --features full
@@ -16,7 +16,7 @@ cargo install sipnab --features full
 
 ### Build prerequisites
 
-- **Rust 1.97+**
+- **Rust 1.98+**
 - **libpcap headers** (`libpcap-dev` on Debian/Ubuntu, `libpcap-devel` on RHEL/Fedora)
 - **pkg-config** (for libpcap detection during build)
 

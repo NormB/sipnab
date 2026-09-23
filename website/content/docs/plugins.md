@@ -1,5 +1,5 @@
 +++
-title = "WASM plugins"
+title = "Add a detection with a WASM plugin"
 weight = 33
 description = "Add your own detection to sipnab's diagnosis without forking it: what a sandboxed WebAssembly plugin can and cannot do, what trusting one costs you, and a worked example from crate to finding."
 +++
