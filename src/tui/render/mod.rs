@@ -2937,6 +2937,7 @@ mod tests {
             detection_armed: true,
             note: None,
             truncated: false,
+            observation_gaps: Vec::new(),
         };
         let text = findings_text(&armed);
         assert!(
@@ -2959,6 +2960,7 @@ mod tests {
             detection_armed: false,
             note: Some(NO_DETECTOR_NOTE.to_string()),
             truncated: false,
+            observation_gaps: Vec::new(),
         };
         let idle_text = findings_text(&idle);
         assert!(

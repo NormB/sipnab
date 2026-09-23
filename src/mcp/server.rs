@@ -2783,6 +2783,29 @@ pub struct FindingsPage {
     /// pass on rather than leaving it to infer from an empty list.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
+    /// What an armed detector says it cannot establish from this capture,
+    /// narrowed by `kinds`. Always present, empty when there is nothing to
+    /// say. An empty `findings` beside an entry here means "could not tell",
+    /// not "nothing tripped".
+    pub observation_gaps: Vec<ObservationGapJson>,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+/// A standing statement that an armed detector cannot establish, from this
+/// capture, the evidence it decides on. Names no source.
+pub struct ObservationGapJson {
+    /// The detector — `reg_flood` today.
+    pub rule_name: String,
+    /// `no_answers` (requests seen, no final response to any captured) or
+    /// `unanswered` (some drew none before their transaction timeout).
+    pub reason: String,
+    /// Requests the statement is about.
+    pub seen: u64,
+    /// Of those, how many have no established outcome.
+    pub unestablished: u64,
+    /// One sentence for a human: what is missing and what to change.
+    pub detail: String,
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
@@ -5776,6 +5799,17 @@ impl SipnabMcp {
             armed_kinds: report.armed_kinds,
             detection_armed: report.detection_armed,
             note: report.note,
+            observation_gaps: report
+                .observation_gaps
+                .into_iter()
+                .map(|g| ObservationGapJson {
+                    rule_name: g.rule_name,
+                    reason: g.reason,
+                    seen: g.seen,
+                    unestablished: g.unestablished,
+                    detail: g.detail,
+                })
+                .collect(),
         };
         Ok(CallToolResult::success(vec![
             ContentBlock::json(page)?,
@@ -12345,6 +12379,46 @@ mod tests {
         assert_eq!(v["truncated"], false);
         assert_eq!(arr[0]["rule_name"], "scanner");
         assert_eq!(arr[0]["src_ip"], "127.0.0.1");
+    }
+
+    /// The findings page carries each armed detector's observation gap, so an
+    /// agent handed an empty `findings` list from a one-way capture is told
+    /// the detector could not see, rather than left to report a clean bill.
+    #[tokio::test]
+    async fn security_findings_carries_the_observation_gaps() {
+        let mut engine = AlertEngine::new(vec![], None);
+        engine.set_observation_gap(
+            "reg_flood",
+            Some(crate::security::ObservationGap {
+                rule_name: "reg_flood".to_string(),
+                reason: "unanswered".to_string(),
+                seen: 5,
+                unestablished: 2,
+                detail: "reg_flood cannot establish the outcome of 2 of 5".to_string(),
+            }),
+        );
+        let server = empty_server()
+            .with_alert_engine(Arc::new(RwLock::new(engine)))
+            .with_armed_detections(["reg_flood"]);
+        let result = server
+            .security_findings(Parameters(SecurityFindingsParams::default()))
+            .await
+            .expect("security_findings should succeed");
+        let v: serde_json::Value = serde_json::from_str(&text_of(&result)).unwrap();
+        let gaps = v["observation_gaps"]
+            .as_array()
+            .expect("observation_gaps array");
+        assert_eq!(gaps.len(), 1, "{v}");
+        assert_eq!(gaps[0]["rule_name"], "reg_flood");
+        assert_eq!(gaps[0]["reason"], "unanswered");
+        assert_eq!(gaps[0]["seen"], 5);
+        assert_eq!(gaps[0]["unestablished"], 2);
+        assert!(
+            gaps[0]["detail"]
+                .as_str()
+                .is_some_and(|d| d.contains("2 of 5")),
+            "{v}"
+        );
     }
 
     /// A capped findings page reports how many it withheld.

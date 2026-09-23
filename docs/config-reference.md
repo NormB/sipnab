@@ -179,7 +179,9 @@ Security detection defaults.
 | `fraud_detect` | boolean | `false` | Enable fraud detection heuristics |
 | `alert` | array of strings | `[]` | Alert channels: `"syslog"`, `"json"`, `"exec"` |
 | `alert_exec` | string | -- | Command to execute on alert |
-| `reg_flood_threshold` | integer | `50` | Challenged failures per second from one source before `--reg-flood` reports a flood: REGISTERs that carried credentials and drew a `401` or `407` on the same transaction. The default is a carrier-registrar figure: it never sees the ten-a-second brute force a small PBX gets. Counted in capture time, so a file replays as the traffic it recorded. `--reg-flood-threshold` overrides it. `0` fails validation and names the key |
+| `reg_flood_threshold` | integer | `50` | Challenged failures from one source inside one `reg_flood_window_secs` window before `--reg-flood` reports a flood: REGISTERs that carried credentials and drew a `401` or `407` on the same transaction. The default is a carrier-registrar figure: it never sees the ten-a-second brute force a small PBX gets. Counted in capture time, so a file replays as the traffic it recorded. `--reg-flood-threshold` overrides it. `0` fails validation and names the key |
+| `reg_flood_window_secs` | integer | `1` | How much capture time one registration-flood counting window spans, in seconds. `reg_flood_threshold` counts failures per window, so this decides how concentrated a credential-guessing run has to be: one refusal every two seconds never puts two inside the default one-second window. Range 1-3600. sipnab refuses `0`, which would reset the count on every packet, and anything past an hour, where the count is a daily tally rather than a rate, and names the key. `--reg-flood-window` overrides it |
+| `reg_flood_transaction_timeout_ms` | integer | `32000` | How long a credentialed REGISTER stays open to the `401`/`407` that answers it, in milliseconds. The default is [RFC 3261 Timer F](https://www.rfc-editor.org/rfc/rfc3261#section-17.1.2.2), 64 times T1 at the [default T1 of 500 ms](https://www.rfc-editor.org/rfc/rfc3261#section-17.1.1.1). sipnab never counts a challenge that arrives later as a failure. Set it to 64 times your network's T1, or to your registrar-side proxy's final-response timer when that is longer (see [Registration-flood timers](troubleshooting.md#registration-flood-timers)). Range 1000-600000. Below one second every challenge arrives after its transaction ends and the detector counts nothing, so sipnab refuses the value and names the key. `--reg-flood-transaction-timeout` overrides it |
 | `kill_rate_limit` | integer | `10` | Scanner-kill responses per second sipnab may put on the wire. This bounds the one feature that answers an address out of the capture, and whoever forged the source address chose where each response goes, so there is no unlimited setting and `0` fails validation. A per-destination cap of 3 per minute applies underneath, so raising this widens how many distinct hosts sipnab answers, never how hard it hits one. `--kill-rate-limit` overrides it |
 | `business_hours` | string | -- | Business hours as `"START-END"` in whole UTC hours, for example `"8-18"`. A wrapping range such as `"22-6"` is the overnight window. This is what makes the off-hours fraud detection reachable: with no window declared there is no outside for a call to fall in. `--business-hours` overrides it |
 | `fraud_short_call_secs` | integer | `3` | Measured call duration below which `--fraud-detect` counts a completed call as short for wangiri detection. Three seconds is under a normal ring-no-answer on some carriers, which reports ordinary unanswered calls as lures. `--fraud-short-call` overrides it |
@@ -214,6 +216,14 @@ sender could replay it against a third party, and could point a published
 `--hep-allow-kill` control somewhere nobody issued it for. v2 covers them. There is no
 flag to accept v1 again, deliberately.
 
+sipnab bounds `reg_flood_window_secs` and `reg_flood_transaction_timeout_ms`
+at both ends, and a value outside the range fails validation with the key, the
+range and the value in the message. The `--reg-flood-window` and
+`--reg-flood-transaction-timeout` flags refuse the same values, because both
+doors read the same constants in [`src/security/reg_flood.rs`](https://github.com/NormB/sipnab/blob/main/src/security/reg_flood.rs):
+`MAX_WINDOW_SECS` (3,600), `MIN_TRANSACTION_TIMEOUT_MS` (1,000) and
+`MAX_TRANSACTION_TIMEOUT_MS` (600,000).
+
 Every `scanner_*` key above rejects `0` and names the key. A zero count reports
 the first probe of any kind as a scanner, a zero window resets the counters on
 every packet so nothing ever accumulates, and a zero grace restores the very
@@ -229,6 +239,8 @@ business_hours = "8-18"
 fraud_short_call_secs = 2
 fraud_wangiri_window_secs = 900
 reg_flood_threshold = 10
+reg_flood_window_secs = 10
+reg_flood_transaction_timeout_ms = 64000
 scanner_window_secs = 60
 scanner_behavioral_probes = 40
 scanner_enumeration_targets = 12
@@ -618,7 +630,9 @@ kill_response = 403                # Reply to scanners with 403
 fraud_detect = true                # Heuristic fraud detection
 alert = ["syslog", "json"]        # Send alerts to syslog and JSON log
 alert_exec = "/usr/local/bin/sipnab-alert.sh"  # Custom alert handler
-reg_flood_threshold = 10           # Refused credentialed REGISTERs/sec that is a flood
+reg_flood_threshold = 10           # Refused credentialed REGISTERs per window that is a flood
+reg_flood_window_secs = 1          # The counting window, in seconds of capture time
+reg_flood_transaction_timeout_ms = 32000  # RFC 3261 Timer F: 64 x T1 (500 ms)
 kill_rate_limit = 10               # Kill responses/sec sipnab may transmit
 business_hours = "8-18"            # Enables off-hours fraud detection (UTC hours)
 scanner_window_secs = 60           # Wide enough to hold a sweep paced at one probe/10s

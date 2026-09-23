@@ -1516,6 +1516,15 @@ sipnab -N -I trunk.pcap --kill-scanner --fail2ban | grep -oE 'src=[^ ]+' | sort 
 
 Every address in that list is one the jail below would ban. Use `ignoreip` in the jail for the peers you already trust.
 
+`--reg-flood` counts refused credentialed REGISTERs per source inside a one-second window of capture time, and treats a `401` that arrives more than 32 seconds after its REGISTER (RFC 3261 Timer F) as a stray. A site that sees slow guessing runs, or whose phones run a longer T1, tunes both:
+
+```bash
+sipnab -N -I registrar.pcap --reg-flood --reg-flood-threshold 20 \
+       --reg-flood-window 60 --reg-flood-transaction-timeout 64000
+```
+
+[Registration-flood timers](troubleshooting.md#registration-flood-timers) explains which transaction timeout matches your proxy's `fr_timer`/`fr_timeout` and T1.
+
 ### 10c. Block a scanner with a rule sipnab wrote, after reading the evidence
 
 Counting `src=` fields tells you who. It does not tell you whether banning them costs you a customer. `--recommend-block` groups the detections by source and prints one block per accused address, carrying the evidence, the counter-evidence and a rule in the dialect you name (`fail2ban`, `nftables`, `iptables` or `all`):
@@ -6854,7 +6863,8 @@ curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" "http://127.0.0.1:8080/v1/sec
   "total_matched": 1,
   "truncated": false,
   "armed_kinds": ["scanner"],
-  "detection_armed": true
+  "detection_armed": true,
+  "observation_gaps": []
 }
 ```
 
@@ -6865,6 +6875,16 @@ reader must NOT take an empty list for a clean bill of health. When it is
 `true`, an empty list means the armed detectors saw nothing to report. Arm a
 detector with `--kill-scanner`, `--fraud-detect`, `--digest-leak` or
 `--reg-flood`.
+
+**An armed detector can also say it could not see.** `observation_gaps` lists,
+per detector and narrowed by `kinds`, what it cannot establish from this
+capture: `{ rule_name, reason, seen, unestablished, detail }`. `reg_flood`
+files `reason: "no_answers"` when the capture holds REGISTERs and no final
+response to any of them, and `reason: "unanswered"` when some credentialed
+REGISTERs drew no final response inside `--reg-flood-transaction-timeout`. An
+empty `findings` beside an entry here means "could not tell", not "clean". The
+entry names no source and never becomes a finding. The array is always present
+and empty when there is nothing to say.
 
 `total_matched` counts every finding the filter admits across the
 whole retained ring (bounded by `--findings-history`), so a `limit`-bounded page
@@ -9947,6 +9967,73 @@ sipnab -N -I capture.pcap --filter "ua =~ 'friendly-scanner|sipcli|sipvicious'"
 
 ---
 
+## Registration-flood timers
+
+`--reg-flood` counts a failure only when a registrar's `401` or `407` answers a
+REGISTER that already carried credentials, on the same transaction, before that
+transaction ends. Three settings decide what it reports:
+
+- `--reg-flood-threshold` (`[security] reg_flood_threshold`, default 50): how
+  many such failures from one source make a flood.
+- `--reg-flood-window` (`[security] reg_flood_window_secs`, default 1 second):
+  how much capture time one count spans. Raise it to catch a slow guessing run,
+  such as one refused REGISTER every few seconds.
+- `--reg-flood-transaction-timeout` (`[security] reg_flood_transaction_timeout_ms`,
+  default 32000 ms): how long a REGISTER stays open to its challenge. sipnab
+  treats a challenge that arrives later as a stray and never counts it.
+
+These are not the `--alert reg-flood:50/10s:5m` rule. That rule sits on top:
+it counts the flood findings this detector files, per source, and decides when
+to raise an alert and how long to stay quiet afterward. The settings above
+decide whether a finding exists at all.
+
+**Set the transaction timeout to your Timer F.** [RFC 3261 section
+17.1.2.2](https://www.rfc-editor.org/rfc/rfc3261#section-17.1.2.2) ends a
+non-INVITE transaction, REGISTER included, at Timer F, 64 times T1. [Section
+17.1.1.1](https://www.rfc-editor.org/rfc/rfc3261#section-17.1.1.1) sets T1 to
+500 ms by default and recommends a larger value on links known to have a
+longer round trip, which is where the default 32 seconds comes from. Pick the
+value this way:
+
+1. Your phones or SBC run T1 above 500 ms: set `64 x T1`. T1 at 1 s gives
+   `64000`, T1 at 2 s gives `128000`.
+2. You capture on the registrar side of a stateful proxy whose final-response
+   timer is longer than that: set the proxy's timer instead, because the proxy
+   keeps relaying the registrar's answer until that timer fires.
+   - OpenSIPS: the [`tm` module](https://opensips.org/docs/modules/3.6.x/tm.html)
+     `fr_timeout` is in **seconds** (default 30), so multiply by 1000. Its
+     `T1_timer` is in milliseconds (default 500).
+   - Kamailio: the [`tm` module](https://www.kamailio.org/docs/modules/stable/modules/tm.html)
+     `fr_timer` is already in **milliseconds** (default 30000). Its
+     `retr_timer1` is T1 in milliseconds (default 500), and
+     `max_noninv_lifetime` (default 32000) caps a non-INVITE transaction at
+     Timer F.
+3. Neither applies: leave the default. Both proxies ship a 30-second
+   final-response timer, inside the default 32 seconds.
+
+`fr_inv_timeout` (OpenSIPS) and `fr_inv_timer` (Kamailio) govern INVITE
+transactions only, so they never apply to a REGISTER.
+
+**When the capture cannot show a failure.** The detector counts the
+registrar's answers, so a capture without them gives it nothing to count. At
+the end of the run `--reg-flood` then warns `reg_flood cannot establish
+credential failures` (the capture holds no answer to any REGISTER) or `reg_flood
+cannot establish the outcome of N of M credentialed REGISTER(s)` (some went
+unanswered inside the transaction timeout). The MCP `security_findings` tool
+and `GET /v1/security/findings` carry the same statement in
+`observation_gaps`. It names no source and bans nothing. Fix the capture
+first: capture both directions of the registrar's traffic, and check that no
+capture filter keeps requests only. If the answers are present but slow, raise
+`--reg-flood-transaction-timeout` as described above.
+
+**Symptom of a timeout set too short:** a registrar on a slow or congested
+link that answers late gets its `401`s dropped as strays, so a
+credential-stuffing run against it never reaches the threshold. **Symptom of
+one set too long:** a stray challenge on a reused branch can settle a REGISTER
+that the client gave up on long ago. The accepted range is 1000-600000 ms.
+
+---
+
 ## Registration failures
 
 REGISTER rejected with `401 Unauthorized`, `403 Forbidden`, or `423 Interval Too Brief`? Phones not registering means no inbound calls and potentially no outbound.
@@ -12598,8 +12685,10 @@ report a healthy network in the middle of an outage.
 | `--scanner-window` | `<SECS>` | `5` | How much capture time one scanner window spans. Every scanner count above is per window, so this is the binding constraint on a paced sweep rather than the counts: one probe every ten seconds never puts two inside the shipped five-second window, so the rate and the spread both stay at one however low the counts go. Config: `[security] scanner_window_secs` |
 | `--scanner-established-factor` | `<N>` | `4` | How much more evidence `--kill-scanner` needs from a source that has completed a registration or a call. A registered endpoint that starts probing is a compromised phone worth reporting, but it is also the peer whose ordinary working traffic looks most like probing, and the peer a false positive costs most. Config: `[security] scanner_established_factor` |
 | `--scanner-answer-grace` | `<MS>` | `500` | How long a probe may go without a response before `--kill-scanner` counts it as unanswered. The default is RFC 3261's Timer T1, the round-trip estimate at which SIP itself gives up waiting and retransmits. Raise it on a link whose round trip runs longer than that, where the default reports every probe still in flight as one nobody answered. Config: `[security] scanner_answer_grace_ms` |
-| `--reg-flood` | -- | off | Detect registration floods: credentialed REGISTERs the registrar keeps refusing. sipnab reports a source when the REGISTERs it sent with `Authorization` that drew a `401`/`407` on the same transaction exceed `--reg-flood-threshold` inside one second of capture time. A REGISTER on its own is never evidence, so a re-REGISTER storm the registrar accepts after a restart is the customer's SBC and not a flood, and any `2xx` to a REGISTER clears the source's count |
-| `--reg-flood-threshold` | `<N>` | `50` | Challenged failures per second from one source before `--reg-flood` reports a flood: REGISTERs that carried credentials and drew a `401` or `407`. The default is a carrier-registrar figure: it never sees the ten-a-second brute force a small PBX gets. Counted in capture time, so a file replays as the traffic it recorded rather than as fast as the disk reads it. Config: `[security] reg_flood_threshold` |
+| `--reg-flood` | -- | off | Detect registration floods: credentialed REGISTERs the registrar keeps refusing. sipnab reports a source when the REGISTERs it sent with `Authorization` that drew a `401`/`407` on the same transaction exceed `--reg-flood-threshold` inside one `--reg-flood-window` of capture time, one second by default. A REGISTER on its own is never evidence, so a re-REGISTER storm the registrar accepts after a restart is the customer's SBC and not a flood, and any `2xx` to a REGISTER clears the source's count |
+| `--reg-flood-threshold` | `<N>` | `50` | Challenged failures from one source inside one `--reg-flood-window` before `--reg-flood` reports a flood: REGISTERs that carried credentials and drew a `401` or `407`. The default is a carrier-registrar figure: it never sees the ten-a-second brute force a small PBX gets. Counted in capture time, so a file replays as the traffic it recorded rather than as fast as the disk reads it. Config: `[security] reg_flood_threshold` |
+| `--reg-flood-window` | `<SECS>` | `1` | How much capture time one `--reg-flood` counting window spans, 1-3600 seconds. The threshold counts failures per window, so this decides how concentrated a credential-guessing run has to be: one refusal every two seconds never puts two inside the default one-second window, whatever the threshold. sipnab refuses `0` and anything past an hour. Config: `[security] reg_flood_window_secs` |
+| `--reg-flood-transaction-timeout` | `<MS>` | `32000` | How long a credentialed REGISTER stays open to the `401`/`407` that answers it, 1000-600000 milliseconds. The default is [RFC 3261 Timer F](https://www.rfc-editor.org/rfc/rfc3261#section-17.1.2.2), 64 times T1 at the default T1 of 500 ms. sipnab never counts a challenge that arrives later as a failure. Set it to 64 times the T1 your network runs, or to your registrar-side proxy's final-response timer when that is longer: `fr_timeout` in OpenSIPS (seconds, so multiply by 1000) or `fr_timer` in Kamailio (already milliseconds). See [Registration-flood timers](troubleshooting.md#registration-flood-timers). Config: `[security] reg_flood_transaction_timeout_ms` |
 | `--digest-leak` | -- | off | Detect digest credential leaks in SIP messages |
 | `--tfps-ctl` | `<PATH>` | -- | Where the toll-fraud prevention system's `tfps_ctl` program is, for the `tfps_*` MCP tools and the `/v1/tfps/` REST routes. TFPS is optional peer software that condemns sources and enforces the decision in the firewall; sipnab asks it and never bans anything itself. Absent: sipnab looks for `tfps_ctl` on `PATH` only the moment a TFPS tool runs, and a machine without one answers `installed: false` rather than failing. Config: `[tfps] ctl`; the database goes in `[tfps] db` |
 | `--recommend-block` | `<DIALECT>` | -- | Print a firewall rule for every source the detectors accused: `fail2ban`, `nftables`, `iptables` or `all`. **sipnab recommends and does not apply** — the rule is text on stdout, and nothing here reaches a firewall or holds a credential. Each block carries its evidence (how many findings named the address, which rules they tripped, and when) and its COUNTER-evidence beside it: a source that also completed a registration or a call is one a block would disconnect, so the address-specific dialects comment their commands out for it and the fail2ban dialect puts it in `ignoreip`. Needs a detector armed beside it; with none, nothing is ever accused and the empty output says which silence that is rather than reading as an all-clear. Requires `-N` |
@@ -12634,6 +12723,8 @@ report a healthy network in the middle of an outage.
 - `sipnab -N -I capture.pcap --stir-shaken --digest-leak --alert-json` — offline audit of a pcap for digest leaks and STIR/SHAKEN attestation claims (as the originator presented them — sipnab checks no signature), emitting structured JSON alerts
 - `sudo sipnab -N -d eth0 --reg-flood --reg-flood-threshold 10 --fraud-detect --business-hours 8-18 --fraud-short-call 1` — tune the detectors to a small PBX: ten REGISTERs a second is a brute force here, calls outside office hours are worth a line, and a one-second call is the only one short enough to be a lure
 - `sudo sipnab -N -d eth0 --reg-flood --reg-flood-threshold 400 --fraud-detect --business-hours 22-6` — the carrier-registrar shape instead: only a genuine flood clears 400 REGISTERs a second, and the quiet window is overnight
+- `sudo sipnab -N -d eth0 --reg-flood --reg-flood-threshold 20 --reg-flood-window 60` — a slow credential-guessing run: twenty refused credentialed REGISTERs from one source inside a minute is a flood, even when no single second holds more than one
+- `sipnab -N -I registrar.pcap --reg-flood --reg-flood-transaction-timeout 64000` — a network whose phones run T1 at one second, so RFC 3261 Timer F is 64 seconds and a registrar challenge forty seconds after the REGISTER still answers an open transaction
 - `sipnab -N -I trunk.pcap --fraud-detect --fraud-short-call 6 --fraud-wangiri-calls 5 --fraud-sequential-calls 6` — audit a wholesale trunk where short calls are ordinary, so a lure needs five of them and a dial-plan walk needs six consecutive dead numbers
 - `sipnab -d eth0 -N --kill-scanner --evidence-out -` — publish findings on standard output for a reader to consume: sipnab says what it saw, and whatever consumes the stream decides what to do about it
 - `sipnab -N -I trunk.pcap --kill-scanner --reg-flood --evidence-out findings.jsonl` — replay a capture and collect every source-naming finding in one file, to read before you wire anything to a response
@@ -15728,7 +15819,9 @@ Security detection defaults.
 | `fraud_detect` | boolean | `false` | Enable fraud detection heuristics |
 | `alert` | array of strings | `[]` | Alert channels: `"syslog"`, `"json"`, `"exec"` |
 | `alert_exec` | string | -- | Command to execute on alert |
-| `reg_flood_threshold` | integer | `50` | Challenged failures per second from one source before `--reg-flood` reports a flood: REGISTERs that carried credentials and drew a `401` or `407` on the same transaction. The default is a carrier-registrar figure: it never sees the ten-a-second brute force a small PBX gets. Counted in capture time, so a file replays as the traffic it recorded. `--reg-flood-threshold` overrides it. `0` fails validation and names the key |
+| `reg_flood_threshold` | integer | `50` | Challenged failures from one source inside one `reg_flood_window_secs` window before `--reg-flood` reports a flood: REGISTERs that carried credentials and drew a `401` or `407` on the same transaction. The default is a carrier-registrar figure: it never sees the ten-a-second brute force a small PBX gets. Counted in capture time, so a file replays as the traffic it recorded. `--reg-flood-threshold` overrides it. `0` fails validation and names the key |
+| `reg_flood_window_secs` | integer | `1` | How much capture time one registration-flood counting window spans, in seconds. `reg_flood_threshold` counts failures per window, so this decides how concentrated a credential-guessing run has to be: one refusal every two seconds never puts two inside the default one-second window. Range 1-3600. sipnab refuses `0`, which would reset the count on every packet, and anything past an hour, where the count is a daily tally rather than a rate, and names the key. `--reg-flood-window` overrides it |
+| `reg_flood_transaction_timeout_ms` | integer | `32000` | How long a credentialed REGISTER stays open to the `401`/`407` that answers it, in milliseconds. The default is [RFC 3261 Timer F](https://www.rfc-editor.org/rfc/rfc3261#section-17.1.2.2), 64 times T1 at the [default T1 of 500 ms](https://www.rfc-editor.org/rfc/rfc3261#section-17.1.1.1). sipnab never counts a challenge that arrives later as a failure. Set it to 64 times your network's T1, or to your registrar-side proxy's final-response timer when that is longer (see [Registration-flood timers](troubleshooting.md#registration-flood-timers)). Range 1000-600000. Below one second every challenge arrives after its transaction ends and the detector counts nothing, so sipnab refuses the value and names the key. `--reg-flood-transaction-timeout` overrides it |
 | `kill_rate_limit` | integer | `10` | Scanner-kill responses per second sipnab may put on the wire. This bounds the one feature that answers an address out of the capture, and whoever forged the source address chose where each response goes, so there is no unlimited setting and `0` fails validation. A per-destination cap of 3 per minute applies underneath, so raising this widens how many distinct hosts sipnab answers, never how hard it hits one. `--kill-rate-limit` overrides it |
 | `business_hours` | string | -- | Business hours as `"START-END"` in whole UTC hours, for example `"8-18"`. A wrapping range such as `"22-6"` is the overnight window. This is what makes the off-hours fraud detection reachable: with no window declared there is no outside for a call to fall in. `--business-hours` overrides it |
 | `fraud_short_call_secs` | integer | `3` | Measured call duration below which `--fraud-detect` counts a completed call as short for wangiri detection. Three seconds is under a normal ring-no-answer on some carriers, which reports ordinary unanswered calls as lures. `--fraud-short-call` overrides it |
@@ -15763,6 +15856,14 @@ sender could replay it against a third party, and could point a published
 `--hep-allow-kill` control somewhere nobody issued it for. v2 covers them. There is no
 flag to accept v1 again, deliberately.
 
+sipnab bounds `reg_flood_window_secs` and `reg_flood_transaction_timeout_ms`
+at both ends, and a value outside the range fails validation with the key, the
+range and the value in the message. The `--reg-flood-window` and
+`--reg-flood-transaction-timeout` flags refuse the same values, because both
+doors read the same constants in [`src/security/reg_flood.rs`](https://github.com/NormB/sipnab/blob/main/src/security/reg_flood.rs):
+`MAX_WINDOW_SECS` (3,600), `MIN_TRANSACTION_TIMEOUT_MS` (1,000) and
+`MAX_TRANSACTION_TIMEOUT_MS` (600,000).
+
 Every `scanner_*` key above rejects `0` and names the key. A zero count reports
 the first probe of any kind as a scanner, a zero window resets the counters on
 every packet so nothing ever accumulates, and a zero grace restores the very
@@ -15778,6 +15879,8 @@ business_hours = "8-18"
 fraud_short_call_secs = 2
 fraud_wangiri_window_secs = 900
 reg_flood_threshold = 10
+reg_flood_window_secs = 10
+reg_flood_transaction_timeout_ms = 64000
 scanner_window_secs = 60
 scanner_behavioral_probes = 40
 scanner_enumeration_targets = 12
@@ -16167,7 +16270,9 @@ kill_response = 403                # Reply to scanners with 403
 fraud_detect = true                # Heuristic fraud detection
 alert = ["syslog", "json"]        # Send alerts to syslog and JSON log
 alert_exec = "/usr/local/bin/sipnab-alert.sh"  # Custom alert handler
-reg_flood_threshold = 10           # Refused credentialed REGISTERs/sec that is a flood
+reg_flood_threshold = 10           # Refused credentialed REGISTERs per window that is a flood
+reg_flood_window_secs = 1          # The counting window, in seconds of capture time
+reg_flood_transaction_timeout_ms = 32000  # RFC 3261 Timer F: 64 x T1 (500 ms)
 kill_rate_limit = 10               # Kill responses/sec sipnab may transmit
 business_hours = "8-18"            # Enables off-hours fraud detection (UTC hours)
 scanner_window_secs = 60           # Wide enough to hold a sweep paced at one probe/10s
@@ -23706,6 +23811,7 @@ reg-flood, etc.). Backed by the AlertEngine's bounded ring buffer
 | `armed_kinds` | string[] | The detectors this server runs. Empty means it runs none, so `findings` could only ever be empty. |
 | `detection_armed` | bool | `false` when `armed_kinds` is empty, stated separately so a caller can branch on one field. |
 | `note` | string? | Present **only** when no detector runs, saying so in words. |
+| `observation_gaps` | object[] | What an armed detector says it **cannot establish** from this capture: `{ rule_name, reason, seen, unestablished, detail }`, narrowed by `kinds`. Always present, empty when there is nothing to say. See below. |
 | `schema_version` | u32 | `1` for this shape. |
 
 > **Read `armed_kinds` before you read `findings`.** An empty findings list
@@ -23752,9 +23858,29 @@ on a server started with `--digest-leak`:
   "total_matched": 1,
   "truncated": false,
   "armed_kinds": ["digest"],
-  "detection_armed": true
+  "detection_armed": true,
+  "observation_gaps": []
 }
 ```
+
+**`observation_gaps` is the third reading of an empty list.** An armed detector
+can still fail to see its evidence. `reg_flood` counts a failure only
+when the registrar's `401`/`407` answers a credentialed REGISTER, so a capture
+that holds the REGISTERs and not the answers, such as a one-way tap or a
+request-only capture filter, leaves it nothing to count. It then files one
+entry here instead of staying silent:
+
+- `reason: "no_answers"`: the capture shows REGISTERs (`seen`) and no final
+  response to any of them. sipnab cannot establish any outcome.
+- `reason: "unanswered"`: some credentialed REGISTERs (`unestablished` of
+  `seen`) drew no final response inside `--reg-flood-transaction-timeout`
+  (RFC 3261 Timer F, 32 s by default), so they count as neither failures nor
+  successes.
+
+An entry names no source and never becomes a finding, an alert or a jail line:
+a REGISTER count with no outcome behind it is a volume, and `reg_flood` does not
+act on volume. A live server refreshes it every five seconds of capture time,
+and the end of a file input settles it.
 
 The same tool on a server started without a detection flag answers with an
 empty `findings` list, `armed_kinds: []`, `detection_armed: false` and a `note`

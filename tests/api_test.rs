@@ -9,6 +9,8 @@
 //! validation here (their CLI surfaces don't emit these shapes).
 #![cfg(feature = "api")]
 
+#[path = "support/pcap_build.rs"]
+mod pcap_build;
 #[path = "support/server.rs"]
 mod server;
 #[path = "support/mod.rs"]
@@ -284,7 +286,67 @@ fn security_findings_reflects_an_armed_detector() {
     assert!(body["note"].is_null(), "an armed server attaches no note");
 }
 
-/// `GET /v1/dialogs/{call_id}/audio` answers over the shipped binary with a WAV
+/// A `--reg-flood` run over a capture that holds REGISTERs and no answer to
+/// any of them files an observation gap the REST findings page carries, over
+/// the shipped binary: the route a SOC dashboard polls says the detector could
+/// not see, instead of an empty list that reads as a quiet registrar.
+#[test]
+fn security_findings_reports_what_reg_flood_could_not_establish() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("oneway.pcap");
+    let frames: Vec<(Vec<u8>, u64)> = (0..3)
+        .map(|i| {
+            let msg = format!(
+                "REGISTER sip:10.2.0.1 SIP/2.0\r\n\
+                 Via: SIP/2.0/UDP 10.1.0.1:5060;branch=z9hG4bKoneway{i}\r\n\
+                 Max-Forwards: 70\r\n\
+                 From: <sip:alice@10.1.0.1>;tag=t{i}\r\n\
+                 To: <sip:alice@10.2.0.1>\r\n\
+                 Call-ID: oneway-{i}@10.1.0.1\r\n\
+                 CSeq: 1 REGISTER\r\n\
+                 Content-Length: 0\r\n\r\n"
+            );
+            let frame =
+                pcap_build::udp_frame([10, 1, 0, 1], [10, 2, 0, 1], 5060, 5060, msg.as_bytes());
+            (frame, i as u64 * 10_000)
+        })
+        .collect();
+    pcap_build::write_pcap_at(&path, &frames, 1);
+    let srv = ApiServer::spawn_with_pcap(path.to_str().expect("utf-8"), &["--reg-flood"]);
+
+    // The gap is filed when the input ends, which races the first request, so
+    // poll for it inside a bounded wait. The periodic refresh a LIVE capture
+    // gets every five seconds is not reachable from a file whose end files the
+    // final word anyway; `outcome_gap(false)` is unit-tested in reg_flood.rs.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    let body = loop {
+        let resp = srv.get("/v1/security/findings?kinds=reg_flood");
+        assert_eq!(resp.status, 200, "/v1/security/findings status");
+        let body = resp.json();
+        if body["observation_gaps"]
+            .as_array()
+            .is_some_and(|g| !g.is_empty())
+        {
+            break body;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "no observation gap was filed for a capture with no REGISTER answers: {body}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    };
+    let gap = &body["observation_gaps"][0];
+    assert_eq!(gap["rule_name"], "reg_flood");
+    assert_eq!(gap["reason"], "no_answers");
+    assert_eq!(gap["seen"], 3);
+    assert_eq!(gap["unestablished"], 3);
+    assert!(
+        body["findings"].as_array().is_some_and(Vec::is_empty),
+        "the gap is advisory and files no finding: {body}"
+    );
+}
+
+/// `GET /v1/dialogs/{call_id}/audio` answers over the shipped binary with a WAV/// `GET /v1/dialogs/{call_id}/audio` answers over the shipped binary with a WAV
 /// (PAR3). With `--retain-audio` and a G.711 fixture, the route returns
 /// `audio/wav` bytes that begin with the RIFF/WAVE magic and carry the embedded
 /// provenance note — the same bytes the file export and the vCon inliner make.

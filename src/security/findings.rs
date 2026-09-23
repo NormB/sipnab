@@ -14,7 +14,7 @@
 //! surface renders it — MCP fences the attacker-controlled banner half of the
 //! `detail`, REST hands a SOC dashboard the value it keys on.
 
-use crate::security::alerting::AlertEngine;
+use crate::security::alerting::{AlertEngine, ObservationGap};
 use chrono::{DateTime, Utc};
 use std::net::IpAddr;
 
@@ -68,6 +68,10 @@ pub struct FindingsReport {
     pub detection_armed: bool,
     /// Present only when `detection_armed` is false.
     pub note: Option<String>,
+    /// What an armed detector says it cannot see in this capture, narrowed to
+    /// `kinds`. Empty rows beside a non-empty entry here mean "could not
+    /// tell", not "nothing tripped".
+    pub observation_gaps: Vec<ObservationGap>,
 }
 
 /// Validate a `kinds` filter and parse a `since` cursor.
@@ -125,6 +129,10 @@ pub fn build_report(
     since: Option<DateTime<Utc>>,
     limit: usize,
 ) -> FindingsReport {
+    let observation_gaps = engine.map_or_else(Vec::new, |e| {
+        let kinds_ref: Vec<&str> = kinds.iter().map(String::as_str).collect();
+        e.observation_gaps(&kinds_ref)
+    });
     let (rows, total_matched) = match engine {
         Some(e) => {
             let kinds_ref: Vec<&str> = kinds.iter().map(String::as_str).collect();
@@ -152,6 +160,7 @@ pub fn build_report(
         armed_kinds: armed.to_vec(),
         detection_armed,
         note: (!detection_armed).then(|| NO_DETECTOR_NOTE.to_string()),
+        observation_gaps,
     }
 }
 
@@ -248,6 +257,41 @@ mod tests {
         assert_eq!(r.rows[0].rule_name, "fraud");
         // Raw: the detail is the detector's own line, unfenced.
         assert_eq!(r.rows[0].detail, "irsf destination");
+    }
+
+    /// A detector's standing observation gap rides on the page beside the
+    /// findings, narrowed by the same `kinds` filter, and a detector that
+    /// withdraws it takes it off the page.
+    #[test]
+    fn build_report_carries_the_observation_gaps() {
+        let mut engine = seeded_engine();
+        let gap = ObservationGap {
+            rule_name: "reg_flood".to_string(),
+            reason: "no_answers".to_string(),
+            seen: 12,
+            unestablished: 12,
+            detail: "no answers".to_string(),
+        };
+        engine.set_observation_gap("reg_flood", Some(gap.clone()));
+        let armed = vec!["reg_flood".to_string()];
+
+        let all = build_report(Some(&engine), &armed, &[], None, 50);
+        assert_eq!(all.observation_gaps, vec![gap.clone()]);
+        let flood = build_report(Some(&engine), &armed, &["reg_flood".to_string()], None, 50);
+        assert_eq!(flood.observation_gaps, vec![gap]);
+        let scanner = build_report(Some(&engine), &armed, &["scanner".to_string()], None, 50);
+        assert!(
+            scanner.observation_gaps.is_empty(),
+            "a kinds filter that excludes reg_flood excludes its gap"
+        );
+
+        engine.set_observation_gap("reg_flood", None);
+        assert!(
+            build_report(Some(&engine), &armed, &[], None, 50)
+                .observation_gaps
+                .is_empty(),
+            "a withdrawn gap leaves the page"
+        );
     }
 
     /// With no engine and nothing armed, the page is empty AND carries the note

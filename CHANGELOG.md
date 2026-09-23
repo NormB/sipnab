@@ -10,6 +10,27 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Added
+
+- **`--reg-flood` takes its counting window and transaction timeout from you.**
+  The detector counted refused credentialed REGISTERs inside a fixed
+  one-second window and dropped any challenge that arrived more than 32 seconds
+  after its REGISTER. That figure is Timer F from
+  [RFC 3261 section 17.1.2.2](https://www.rfc-editor.org/rfc/rfc3261#section-17.1.2.2)
+  at the default T1 of 500 ms, and it is wrong for a network that runs a longer T1, which
+  [section 17.1.1.1](https://www.rfc-editor.org/rfc/rfc3261#section-17.1.1.1)
+  recommends on slow links, or behind a proxy whose final-response timer runs
+  longer. `--reg-flood-window <SECS>` (`[security] reg_flood_window_secs`,
+  default 1, range 1-3600) sets the window, and
+  `--reg-flood-transaction-timeout <MS>` (`[security]
+  reg_flood_transaction_timeout_ms`, default 32000, range 1000-600000) sets the
+  timeout. Both refuse a value outside the range by name, from the flag and
+  from the file. The defaults are unchanged. The detector-state sweep now
+  outlasts both, so a declared ten-minute timeout is not cut to the
+  two-minute sweep. [Registration-flood
+  timers](docs/troubleshooting.md#registration-flood-timers) says which value
+  matches an OpenSIPS `fr_timeout` or Kamailio `fr_timer`.
+
 ### Fixed
 
 - **A `netmap:` capture no longer crashes on the first frame its filter
@@ -27,6 +48,22 @@ entry that carries them.
   on a veth pair, 3 s idle, then SIGTERM. Before the fix, 10 of 10 runs
   crashed before the SIGTERM, after 1 to 4 messages. After it, 10 of 10 runs
   captured all 5, printed the summary and exited 0.
+
+- **`--reg-flood` says when the capture cannot show a credential failure.**
+  The detector counts the registrar's `401`/`407` to a credentialed REGISTER,
+  so a capture holding the REGISTERs and not the answers, such as a one-way
+  tap or a request-only filter, gave it nothing to count, and it reported
+  nothing, which reads as "nobody was guessing passwords". It now warns at the
+  end of the run, `reg_flood cannot establish credential failures` when no
+  REGISTER drew a captured final response, or `reg_flood cannot establish the
+  outcome of N of M credentialed REGISTER(s)` when some went unanswered inside
+  the transaction timeout. The MCP `security_findings` tool and
+  `GET /v1/security/findings` carry the same statement in a new, always-present
+  `observation_gaps` array, refreshed every five seconds of capture time on a
+  live run. The statement names no source, files no finding and never reaches
+  a jail line: a REGISTER count with no outcome behind it is a volume, and the
+  detector still refuses to act on volume. A retransmitted REGISTER counts
+  once.
 
 ## [0.5.188] - 2026-09-23
 

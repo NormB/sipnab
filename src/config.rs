@@ -124,6 +124,8 @@ static KNOWN_KEYS: LazyLock<HashMap<&'static str, &'static [&'static str]>> = La
             "alert",
             "alert_exec",
             "reg_flood_threshold",
+            "reg_flood_window_secs",
+            "reg_flood_transaction_timeout_ms",
             "kill_rate_limit",
             "business_hours",
             "fraud_short_call_secs",
@@ -572,14 +574,32 @@ pub struct SecurityConfig {
     pub alert: Option<Vec<String>>,
     /// Command to execute on alert.
     pub alert_exec: Option<String>,
-    /// Challenged failures per second from one source before a registration
-    /// flood is reported (default: 50): REGISTERs that carried credentials
-    /// and drew a 401 or 407 on the same transaction.
+    /// Challenged failures from one source inside one
+    /// `reg_flood_window_secs` window before a registration flood is reported
+    /// (default: 50): REGISTERs that carried credentials and drew a 401 or 407
+    /// on the same transaction.
     ///
     /// The default is a carrier-registrar figure. It is invisible to the
     /// ten-a-second brute force a small PBX actually sees, so the right value
     /// belongs to the registrar being watched rather than to sipnab.
     pub reg_flood_threshold: Option<u32>,
+    /// How much capture time one registration-flood counting window spans, in
+    /// seconds (default: 1, at most one hour).
+    ///
+    /// `reg_flood_threshold` counts failures per window, so this decides how
+    /// concentrated a credential-guessing run must be: a slow run of one
+    /// refusal every two seconds never puts two inside the shipped one-second
+    /// window.
+    pub reg_flood_window_secs: Option<u64>,
+    /// How long a credentialed REGISTER stays open to the challenge that
+    /// answers it, in milliseconds (default: 32000, RFC 3261 Timer F at the
+    /// default T1; 1000 to 600000).
+    ///
+    /// A 401 that arrives later is a stray and never counts as a failure. Set
+    /// it to 64 times the T1 the network runs, or to the registrar-side
+    /// proxy's final-response timer (`fr_timeout` in OpenSIPS, `fr_timer` in
+    /// Kamailio) when that is longer.
+    pub reg_flood_transaction_timeout_ms: Option<u64>,
     /// Scanner-kill responses per second sipnab may put on the wire
     /// (default: 10).
     pub kill_rate_limit: Option<u32>,
@@ -711,6 +731,35 @@ impl SecurityConfig {
                  REGISTER as a flood; to switch the detector off, drop --reg-flood)"
                     .into(),
             ));
+        }
+        // The two registration-flood policy keys are bounded at BOTH ends, by
+        // the constants the clap flags use. A zero window resets the count on
+        // every packet and a zero timeout expires every transaction before its
+        // challenge arrives: either way the detector silently reports nothing.
+        // Past the ceilings the window is a tally rather than a rate and the
+        // timeout is no longer describing any SIP timer.
+        {
+            use crate::security::reg_flood::{
+                MAX_TRANSACTION_TIMEOUT_MS, MAX_WINDOW_SECS, MIN_TRANSACTION_TIMEOUT_MS,
+            };
+            if let Some(v) = self.reg_flood_window_secs
+                && !(1..=MAX_WINDOW_SECS).contains(&v)
+            {
+                return Err(crate::Error::ConfigInvalid(format!(
+                    "[security] reg_flood_window_secs must be 1-{MAX_WINDOW_SECS} \
+                     (seconds of capture time one failure count spans), got {v}"
+                )));
+            }
+            if let Some(v) = self.reg_flood_transaction_timeout_ms
+                && !(MIN_TRANSACTION_TIMEOUT_MS..=MAX_TRANSACTION_TIMEOUT_MS).contains(&v)
+            {
+                return Err(crate::Error::ConfigInvalid(format!(
+                    "[security] reg_flood_transaction_timeout_ms must be \
+                     {MIN_TRANSACTION_TIMEOUT_MS}-{MAX_TRANSACTION_TIMEOUT_MS} \
+                     (milliseconds; RFC 3261 Timer F is 64*T1, 32000 at the \
+                     default T1 of 500 ms), got {v}"
+                )));
+            }
         }
         // This one bounds packets sipnab TRANSMITS, so it is the most
         // conservative of the set: 0 is refused rather than read as
@@ -3312,6 +3361,57 @@ column_selector = "F10"
                 err.to_string().contains(key),
                 "the refusal must name {key}, got: {err}"
             );
+        }
+    }
+
+    /// The two `[security] reg_flood_*` policy keys parse, are REGISTERED, and
+    /// refuse zero and absurd values by name, with the range in the message.
+    ///
+    /// The bounds come from the detector's own constants, the ones the clap
+    /// flags use, so the file and the flag cannot disagree about what is
+    /// absurd.
+    #[test]
+    fn reg_flood_policy_keys_parse_are_registered_and_refuse_absurd_values() {
+        use crate::security::reg_flood::{
+            MAX_TRANSACTION_TIMEOUT_MS, MAX_WINDOW_SECS, MIN_TRANSACTION_TIMEOUT_MS,
+        };
+        let cases: [(&str, u64, &[u64]); 2] = [
+            ("reg_flood_window_secs", 10, &[0, MAX_WINDOW_SECS + 1]),
+            (
+                "reg_flood_transaction_timeout_ms",
+                64_000,
+                &[
+                    0,
+                    MIN_TRANSACTION_TIMEOUT_MS - 1,
+                    MAX_TRANSACTION_TIMEOUT_MS + 1,
+                ],
+            ),
+        ];
+        for (key, good, bad) in cases {
+            let set = format!("[security]\n{key} = {good}\n");
+            let cfg: Config = toml::from_str(&set).expect("valid");
+            assert!(
+                Config::unknown_keys(&set).expect("scan").is_empty(),
+                "{key} must be registered in KNOWN_KEYS, or a file that sets it \
+                 warns on every start"
+            );
+            assert!(
+                cfg.security.validate().is_ok(),
+                "{key} = {good} must validate"
+            );
+            for &v in bad {
+                let text = format!("[security]\n{key} = {v}\n");
+                let cfg: Config = toml::from_str(&text).expect("parses");
+                let err = cfg
+                    .security
+                    .validate()
+                    .expect_err("an absurd value must be refused");
+                let msg = err.to_string();
+                assert!(
+                    msg.contains(key) && msg.contains(&v.to_string()),
+                    "the refusal of {key} = {v} must name the key and the value, got: {msg}"
+                );
+            }
         }
     }
 

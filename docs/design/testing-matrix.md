@@ -49,7 +49,7 @@ was driving all of them.
 
 | Surface | Rows | `e2e` | `parsed` | `referenced` | `none` |
 |---|---|---|---|---|---|
-| CLI flags | 285 | 219 | 39 | 26 | 1 |
+| CLI flags | 287 | 221 | 39 | 26 | 1 |
 | HTTP routes | 40 | 40 | -- | 0 | 0 |
 | MCP tools | 69 | 69 | -- | 0 | 0 |
 
@@ -58,14 +58,14 @@ was driving all of them.
 ## What a person found that the detector could not
 
 The generator understates. Of the 26 flags it could only call
-`referenced`, a read of the tests found 65 with a real behavior test --
+`referenced`, a read of the tests found 67 with a real behavior test --
 evidence that arrives through a config-file equivalent sharing the flag's
 resolver, through a golden file, or through a library-level test, none of
 which a token search can see.
 
 | Audited verdict | Flags | What it means |
 |---|---|---|
-| `behavior` | 65 | a test asserts an observable effect; it fails if the flag stops working |
+| `behavior` | 67 | a test asserts an observable effect; it fails if the flag stops working |
 | `parse-only` | 13 | a test drives it through clap and asserts nothing downstream |
 | `mention-only` | 5 | the token appears; nothing exercises it |
 
@@ -225,6 +225,8 @@ behind them.
 | `--fraud-destination` |  |  | Security | parsed | `src/cli.rs` |  |  |
 | `--reg-flood` |  |  | Security | e2e | `src/app/tui_mode.rs`, `tests/cli_flag_behavior_test.rs` +2 | **behavior** | reg_flood_threshold_decides_when_a_burst_is_a_flood (tests/threshold_wiring_test.rs); an inert flag fails it |
 | `--reg-flood-threshold` |  | `N` | Security | e2e | `tests/cli_flag_behavior_test.rs`, `tests/threshold_wiring_test.rs` | **behavior** | same test, third run: the flag silences a burst the config key raised |
+| `--reg-flood-window` |  | `SECS` | Security | e2e | `tests/threshold_wiring_test.rs` | **behavior** | reg_flood_window_secs_decides_how_concentrated_refusals_must_be (tests/threshold_wiring_test.rs); an inert flag fails it |
+| `--reg-flood-transaction-timeout` |  | `MS` | Security | e2e | `tests/threshold_wiring_test.rs` | **behavior** | reg_flood_transaction_timeout_decides_whether_a_late_challenge_counts (tests/threshold_wiring_test.rs); an inert flag fails it |
 | `--kill-rate-limit` |  | `N` | Security | parsed | `src/cli.rs` |  |  |
 | `--business-hours` |  |  | Security | e2e | `tests/threshold_wiring_test.rs` | **behavior** | business_hours_make_the_off_hours_detection_reachable |
 | `--fraud-short-call` |  | `SECS` | Security | e2e | `tests/review_regressions_test.rs`, `tests/threshold_wiring_test.rs` | **behavior** | fraud_short_call_secs_decides_which_calls_are_short |
@@ -331,12 +333,12 @@ behind them.
 | `--hep-hmac-window` |  | `SECS` | HEP | e2e | `tests/hep_test.rs` |  |  |
 | `--hep-silence-warn` |  | `SECS` | HEP | e2e | `tests/hep_test.rs` |  |  |
 | `--hep-senders` |  |  | HEP | e2e | `tests/hep_test.rs` |  |  |
-| `--hep-parse` | `-E` |  | HEP | e2e | `tests/cli_flag_behavior_test.rs`, `tests/scanner_kill_process_test.rs` |  |  |
+| `--hep-parse` | `-E` |  | HEP | e2e | `tests/cli_flag_behavior_test.rs`, `tests/hep_test.rs` +1 |  |  |
 | `--hep-allow` |  | `ADDR` | HEP | e2e | `tests/config_wiring_test.rs`, `tests/doc_commands_run_test.rs` +1 |  |  |
 | `--hep-rate-limit` |  | `N` | HEP | e2e | `tests/hep_test.rs` |  |  |
 | `--hep-rate-limit-per-peer` |  |  | HEP | e2e | `tests/config_wiring_test.rs` |  |  |
 | `--tls-key` | `-k` | `FILE` | TLS / Decryption | referenced | `src/app/batch.rs`, `src/app/bootstrap.rs` | **behavior** | DECRYPTION MATERIAL. A real TLS 1.2 GCM record decrypts back to a REGISTER. The flag's file-load hop (RsaKey::from_pem_file) is untested |
-| `--keylog` |  | `FILE` | TLS / Decryption | e2e | `tests/batch_run_paths_test.rs`, `tests/decryption_wrapper_matrix_test.rs` +1 |  |  |
+| `--keylog` |  | `FILE` | TLS / Decryption | e2e | `tests/batch_run_paths_test.rs`, `tests/decryption_wrapper_matrix_test.rs` +2 |  |  |
 | `--keylog-fd` |  | `N` | TLS / Decryption | parsed | `src/cli.rs` |  |  |
 | `--keylog-watch` |  |  | TLS / Decryption | referenced | `src/app/batch.rs`, `src/app/bootstrap.rs` | **mention-only** | DECRYPTION. The live keylog poll and the late-decrypt hold have no test tying them to the flag. CHANGELOG records a prior regression here |
 | `--tls-lockon-window` |  | `RECORDS` | TLS / Decryption | parsed | `tests/cli_defaults_test.rs` |  |  |

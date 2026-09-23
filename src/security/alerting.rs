@@ -405,6 +405,29 @@ pub struct Finding {
     pub timestamp: chrono::DateTime<chrono::Utc>,
 }
 
+/// A standing statement that an armed detector cannot establish, from this
+/// capture, the evidence it decides on.
+///
+/// Not a finding. It names no source, is never rate-limited or cooled down,
+/// never reaches `--alert-exec`, syslog or a jail line, and a detector replaces
+/// its own statement as the capture goes on. It exists so that "no findings"
+/// is never read as "the traffic was clean" when the detector could not have
+/// seen a finding if there were one. `registration flood` is the first
+/// detector to file one: see `crate::security::reg_flood::OutcomeGap`.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct ObservationGap {
+    /// The detector's rule name, one of the findings vocabulary.
+    pub rule_name: String,
+    /// Machine-readable reason: `no_answers` or `unanswered` for `reg_flood`.
+    pub reason: String,
+    /// Requests the detector saw that this statement is about.
+    pub seen: u64,
+    /// Of those, how many the detector could not establish an outcome for.
+    pub unestablished: u64,
+    /// One sentence for a human: what is missing, and what to do about it.
+    pub detail: String,
+}
+
 /// Key an alert is tracked under: the source and the rule it matched.
 type AlertKey = (IpAddr, String);
 
@@ -491,6 +514,9 @@ pub struct AlertEngine {
     findings: std::collections::VecDeque<Finding>,
     /// Capacity of the findings ring buffer. Zero disables retention.
     findings_capacity: usize,
+    /// The standing observation gap each detector last filed, by rule name.
+    /// At most one per detector, so bounded by the findings vocabulary.
+    observation_gaps: std::collections::BTreeMap<String, ObservationGap>,
 }
 
 impl AlertEngine {
@@ -524,7 +550,32 @@ impl AlertEngine {
             exec_spawned: 0,
             findings: std::collections::VecDeque::with_capacity(DEFAULT_FINDINGS_HISTORY),
             findings_capacity: DEFAULT_FINDINGS_HISTORY,
+            observation_gaps: std::collections::BTreeMap::new(),
         }
+    }
+
+    /// File (`Some`) or withdraw (`None`) `rule`'s standing observation gap,
+    /// replacing whatever it filed before.
+    pub fn set_observation_gap(&mut self, rule: &str, gap: Option<ObservationGap>) {
+        match gap {
+            Some(gap) => {
+                self.observation_gaps.insert(rule.to_string(), gap);
+            }
+            None => {
+                self.observation_gaps.remove(rule);
+            }
+        }
+    }
+
+    /// The standing observation gaps, sorted by rule name, narrowed to
+    /// `kinds` (empty = all).
+    #[must_use]
+    pub fn observation_gaps(&self, kinds: &[&str]) -> Vec<ObservationGap> {
+        self.observation_gaps
+            .iter()
+            .filter(|(rule, _)| kinds.is_empty() || kinds.contains(&rule.as_str()))
+            .map(|(_, gap)| gap.clone())
+            .collect()
     }
 
     /// Override the default findings-history capacity. Setting 0 disables

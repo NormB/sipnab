@@ -378,7 +378,7 @@ impl LiveDetectors {
         let reg_flood = cli
             .security_args
             .reg_flood
-            .then(|| crate::security::RegFloodDetector::new(cli.reg_flood_threshold(config)));
+            .then(|| crate::security::RegFloodDetector::with_policy(cli.reg_flood_policy(config)));
         Self {
             kill_targets,
             scanner,

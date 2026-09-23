@@ -34,6 +34,8 @@
 --kill-ua	behavior	FIXED THIS PASS. Was a silent no-op without --kill-scanner; now refused, and kill_ua_pattern_reaches_the_detector_that_reads_it asserts the match
 --reg-flood	behavior	reg_flood_threshold_decides_when_a_burst_is_a_flood (tests/threshold_wiring_test.rs); an inert flag fails it
 --reg-flood-threshold	behavior	same test, third run: the flag silences a burst the config key raised
+--reg-flood-transaction-timeout	behavior	reg_flood_transaction_timeout_decides_whether_a_late_challenge_counts (tests/threshold_wiring_test.rs); an inert flag fails it
+--reg-flood-window	behavior	reg_flood_window_secs_decides_how_concentrated_refusals_must_be (tests/threshold_wiring_test.rs); an inert flag fails it
 --business-hours	behavior	business_hours_make_the_off_hours_detection_reachable
 --fraud-short-call	behavior	fraud_short_call_secs_decides_which_calls_are_short
 --fraud-wangiri-calls	behavior	fraud_wangiri_calls_decides_how_many_short_calls_are_a_lure
