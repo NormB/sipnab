@@ -24,12 +24,15 @@ entry that carries them.
   sipnab read only 6, 17 and 132, so every such message counted as a NOT
   DECODED frame (`no transport (IP protocol 22)`, and `ESP not NULL-encrypted
   (IP protocol 50)`), and the encrypted legs never appeared next to the wire
-  capture. A HEP message now decodes as TLS for 22 and as WS for 50. For 22,
-  a top Via of `SIP/2.0/WS` or `SIP/2.0/WSS` makes it WS, which is how a
-  Kamailio WebSocket leg keeps its transport. sipnab reports WSS as WS, and the
-  message's own Via still says WSS. The reading applies to HEP input only: on
-  a captured frame 50 is still a real ESP packet and 22 is still refused. Any
-  other unknown number stays NOT DECODED, by number. Reported by Giovanni
+  capture. A HEP message now decodes as TLS for 22 and as WS for 50, and a
+  top Via of `SIP/2.0/WS` or `SIP/2.0/WSS` narrows either to WS or WSS, the
+  new transport name for secure WebSocket. The Via also narrows a 6 to WS or
+  WSS: Kamailio traces a message it sends with the protocol of its sending
+  socket ([`siptrace.c`](https://github.com/kamailio/kamailio/blob/24cbec17f6030f7a9a3c632f0a0842a37b46bdf5/src/modules/siptrace/siptrace.c#L1393)),
+  and a WebSocket connection's socket is TCP, so its replies to a WS client
+  arrive as 6. The reading applies to HEP input only: on a captured frame 50
+  is still a real ESP packet, 22 is still refused, and 6 is TCP. Any other
+  unknown number stays NOT DECODED, by number. Reported by Giovanni
   Maruzzelli ([@gmaruzz](https://github.com/gmaruzz)) in
   [#301](https://github.com/NormB/sipnab/issues/301).
 - **`-L` no longer loses every HEP message marked TCP.** A HEP sender marks a

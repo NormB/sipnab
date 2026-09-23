@@ -1694,44 +1694,60 @@ const HEP_FAKE_PROTO_TLS: u8 = 22;
 /// ([`modules/proto_hep/proto_hep.c` lines 1132-1138](https://github.com/OpenSIPS/opensips/blob/5fa4e627187f23544e702db0a47dbe877a407117/modules/proto_hep/proto_hep.c#L1132-L1138)).
 const HEP_FAKE_PROTO_WS: u8 = 50;
 
-/// The SIP transport a HEP sender named with a fake IP protocol number.
+/// The SIP transport of a message a HEP wrapper delivered.
 ///
-/// Called ONLY for a packet a HEP wrapper delivered, and only after
-/// [`ip_protocol_to_transport`] declined the number. On a raw frame 50 is a
+/// Called ONLY for a packet a HEP wrapper delivered. On a raw frame 50 is a
 /// real ESP packet and 22 is XNS IDP, and neither may ever be relabeled.
 ///
-/// 50 is WebSocket: OpenSIPS sends it for WS and WSS, and nothing else does.
-/// 22 is TLS unless the message's top Via names WS or WSS, because Kamailio
-/// sends 22 for all three. The top Via names the transport of the hop a
-/// message travels on in both directions: a request's was added by its
-/// sender for that hop, and a response's is the Via its recipient added
+/// The number is a floor, and the top Via can only narrow it to WebSocket:
+///
+/// - 22 is TLS, or WS / WSS when the Via says so. Kamailio sends 22 for TLS,
+///   WS and WSS alike.
+/// - 50 is WS, or WSS when the Via says so. OpenSIPS sends 50 for both.
+/// - 6 is TCP, or WS / WSS when the Via says so. Kamailio traces a message
+///   it SENDS with the protocol of its sending socket
+///   ([`siptrace.c` line 1393](https://github.com/kamailio/kamailio/blob/24cbec17f6030f7a9a3c632f0a0842a37b46bdf5/src/modules/siptrace/siptrace.c#L1393),
+///   named by [`siptrace_send.c` lines 387-403](https://github.com/kamailio/kamailio/blob/24cbec17f6030f7a9a3c632f0a0842a37b46bdf5/src/modules/siptrace/siptrace_send.c#L387-L403)),
+///   and a WebSocket connection's socket is TCP (or TLS for WSS), so a reply
+///   to a WS client arrives as 6.
+/// - Every other number reads as [`ip_protocol_to_transport`] reads it, and
+///   an unknown one stays unknown.
+///
+/// The top Via names the transport of the hop a message travels on in both
+/// directions: a request's was added by its sender for that hop, and a
+/// response's is the Via its recipient added
 /// ([RFC 3261 section 18.2.2](https://www.rfc-editor.org/rfc/rfc3261#section-18.2.2)).
-/// [`TransportProto`] has no WSS variant, so WSS reports as WS. The raw
-/// message keeps its `SIP/2.0/WSS` Via.
-///
-/// # Returns
-///
-/// `None` for every number that is not one of the two conventions.
-fn hep_fake_proto_transport(ip_protocol: u8, payload: &[u8]) -> Option<TransportProto> {
+/// Only WS and WSS narrow the number. A Via saying UDP on a 6 is not allowed
+/// to turn a TCP leg into UDP, and a Via saying TLS on a 6 names nothing a
+/// tracer does.
+fn hep_transport(ip_protocol: u8, payload: &[u8]) -> Option<TransportProto> {
+    let websocket = || {
+        top_via_transport(payload).filter(|t| matches!(t, TransportProto::Ws | TransportProto::Wss))
+    };
     match ip_protocol {
-        HEP_FAKE_PROTO_WS => Some(TransportProto::Ws),
-        HEP_FAKE_PROTO_TLS if top_via_is_websocket(payload) => Some(TransportProto::Ws),
-        HEP_FAKE_PROTO_TLS => Some(TransportProto::Tls),
-        _ => None,
+        HEP_FAKE_PROTO_TLS => Some(websocket().unwrap_or(TransportProto::Tls)),
+        HEP_FAKE_PROTO_WS => Some(websocket().unwrap_or(TransportProto::Ws)),
+        6 => Some(websocket().unwrap_or(TransportProto::Tcp)),
+        other => ip_protocol_to_transport(other),
     }
 }
 
-/// Whether the top Via header of the SIP message in `payload` names WS or
-/// WSS as its transport.
+/// The transport the top Via header of the SIP message in `payload` names.
 ///
 /// Reads header lines between the start line and the first blank line, takes
-/// the first `Via` (or compact `v`) header, and compares the third
+/// the first `Via` (or compact `v`) header, and reads the third
 /// slash-separated field of its sent-protocol, trimmed, as
 /// [RFC 3261 section 20.42](https://www.rfc-editor.org/rfc/rfc3261#section-20.42)
-/// allows whitespace around each slash. Any shape it cannot read is `false`.
-fn top_via_is_websocket(payload: &[u8]) -> bool {
+/// allows whitespace around each slash. `WS` and `WSS` come from
+/// [RFC 7118 section 5.1](https://www.rfc-editor.org/rfc/rfc7118#section-5.1).
+///
+/// # Returns
+///
+/// `None` for no Via, a shape it cannot read, or a token other than UDP,
+/// TCP, TLS, SCTP, WS and WSS.
+fn top_via_transport(payload: &[u8]) -> Option<TransportProto> {
     let mut lines = payload.split(|&b| b == b'\n').skip(1);
-    let Some(value) = lines
+    let value = lines
         .find_map(|line| {
             let line = line.strip_suffix(b"\r").unwrap_or(line);
             if line.is_empty() {
@@ -1742,20 +1758,23 @@ fn top_via_is_websocket(payload: &[u8]) -> bool {
             (name.eq_ignore_ascii_case(b"via") || name.eq_ignore_ascii_case(b"v"))
                 .then(|| Some(&line[colon + 1..]))
         })
-        .flatten()
-    else {
-        return false;
-    };
-    let Some(transport) = value.split(|&b| b == b'/').nth(2) else {
-        return false;
-    };
-    let transport = transport.trim_ascii_start();
+        .flatten()?;
+    let transport = value.split(|&b| b == b'/').nth(2)?.trim_ascii_start();
     let end = transport
         .iter()
         .position(|b| b.is_ascii_whitespace())
         .unwrap_or(transport.len());
-    let transport = &transport[..end];
-    transport.eq_ignore_ascii_case(b"WS") || transport.eq_ignore_ascii_case(b"WSS")
+    let token = &transport[..end];
+    [
+        (&b"UDP"[..], TransportProto::Udp),
+        (b"TCP", TransportProto::Tcp),
+        (b"TLS", TransportProto::Tls),
+        (b"SCTP", TransportProto::Sctp),
+        (b"WS", TransportProto::Ws),
+        (b"WSS", TransportProto::Wss),
+    ]
+    .into_iter()
+    .find_map(|(name, t)| token.eq_ignore_ascii_case(name).then_some(t))
 }
 
 // ── SCTP ──────────────────────────────────────────────────────────────
@@ -2485,16 +2504,17 @@ fn parse_packet_unstamped(packet: &Packet) -> Result<ParsedPacket, CaptureError>
     if let Some(meta) = &packet.pre_parsed {
         // A non-SIP transport (not UDP/TCP/SCTP) carries no message we can
         // label without guessing; reject it so downstream never sees a
-        // mislabeled transport (e.g. ESP silently reported as UDP). The one
-        // exception is a number a HEP wrapper asserted: OpenSIPS and Kamailio
-        // name a decrypted TLS or WebSocket leg with 22 or 50 (issue #301).
+        // mislabeled transport (e.g. ESP silently reported as UDP). A number a
+        // HEP wrapper asserted reads by the proxies' conventions instead:
+        // OpenSIPS and Kamailio name a decrypted TLS or WebSocket leg with 22,
+        // 50 or 6, and the top Via narrows it (issue #301, `hep_transport`).
         // A uprobe read has no wrapper and gets no such reading.
-        let transport = ip_protocol_to_transport(meta.ip_protocol)
-            .or_else(|| {
-                meta.hep.as_ref()?;
-                hep_fake_proto_transport(meta.ip_protocol, &packet.data)
-            })
-            .ok_or(CaptureError::UnsupportedIpProtocol(meta.ip_protocol))?;
+        let transport = if meta.hep.is_some() {
+            hep_transport(meta.ip_protocol, &packet.data)
+        } else {
+            ip_protocol_to_transport(meta.ip_protocol)
+        }
+        .ok_or(CaptureError::UnsupportedIpProtocol(meta.ip_protocol))?;
         return Ok(ParsedPacket {
             // Carried, not dropped. A uprobe read's whole provenance is this
             // pointer -- it is the only thing that says which process the
@@ -5339,13 +5359,18 @@ mod tests {
         );
     }
 
-    /// OpenSIPS `tracer` sends 50 for a WS or WSS leg.
+    /// OpenSIPS `tracer` sends 50 for a WS or WSS leg, and the top Via says
+    /// which. With no WebSocket Via to read, 50 is WS.
     #[test]
     fn hep_ip_protocol_50_is_sip_over_websocket() {
-        for via in ["WS", "WSS"] {
+        for (via, want) in [
+            ("WS", TransportProto::Ws),
+            ("WSS", TransportProto::Wss),
+            ("TLS", TransportProto::Ws),
+        ] {
             let parsed = parse_packet(&hep_packet(50, &traced_invite(via)))
                 .unwrap_or_else(|e| panic!("HEP protocol 50 (Via {via}) refused: {e:?}"));
-            assert_eq!(parsed.transport, TransportProto::Ws, "Via {via}");
+            assert_eq!(parsed.transport, want, "Via {via}");
         }
     }
 
@@ -5354,17 +5379,41 @@ mod tests {
     /// the transport of the hop the message travels on.
     #[test]
     fn hep_ip_protocol_22_with_a_websocket_via_is_websocket() {
-        for via in ["WS", "WSS", "wss"] {
+        for (via, want) in [
+            ("WS", TransportProto::Ws),
+            ("WSS", TransportProto::Wss),
+            ("wss", TransportProto::Wss),
+        ] {
             let parsed = parse_packet(&hep_packet(22, &traced_invite(via)))
                 .unwrap_or_else(|e| panic!("HEP protocol 22 (Via {via}) refused: {e:?}"));
-            assert_eq!(parsed.transport, TransportProto::Ws, "Via {via}");
+            assert_eq!(parsed.transport, want, "Via {via}");
         }
         // Compact form, spacing around the slashes, and a response.
         let compact = b"SIP/2.0 200 OK\r\nv: SIP / 2.0 / WSS abc.invalid;branch=z9hG4bK1\r\n\r\n";
         assert_eq!(
             parse_packet(&hep_packet(22, compact)).unwrap().transport,
-            TransportProto::Ws
+            TransportProto::Wss
         );
+    }
+
+    /// Kamailio traces a message it SENDS with the protocol of the socket it
+    /// sends from, and a WebSocket connection's socket is TCP (or TLS for
+    /// WSS). A reply to a WS client therefore arrives as 6, and only its top
+    /// Via says WebSocket. A 6 whose Via names anything else stays TCP: the
+    /// Via may say WebSocket over a TCP socket and nothing more.
+    #[test]
+    fn hep_ip_protocol_6_with_a_websocket_via_is_websocket() {
+        for (via, want) in [
+            ("WS", TransportProto::Ws),
+            ("WSS", TransportProto::Wss),
+            ("TCP", TransportProto::Tcp),
+            ("TLS", TransportProto::Tcp),
+            ("UDP", TransportProto::Tcp),
+        ] {
+            let parsed = parse_packet(&hep_packet(6, &traced_invite(via)))
+                .unwrap_or_else(|e| panic!("HEP protocol 6 (Via {via}) refused: {e:?}"));
+            assert_eq!(parsed.transport, want, "Via {via}");
+        }
     }
 
     /// 22 with no Via, or a Via naming anything but WS or WSS, stays TLS:
@@ -5392,19 +5441,27 @@ mod tests {
 
     /// The convention belongs to HEP senders. A pre-parsed packet nothing
     /// wrapped (a uprobe read) carries a real protocol number, and 22 or 50
-    /// there is still refused, never relabeled.
+    /// there is still refused, never relabeled. Nor does its Via relabel a 6.
     #[test]
     fn the_hep_transport_convention_is_not_applied_without_a_hep_wrapper() {
-        for p in [22u8, 50] {
+        let unwrapped = |p: u8| {
             let mut pkt = hep_packet(p, &traced_invite("WSS"));
             pkt.interface = Some("uprobe:opensips/1234".into());
             pkt.pre_parsed.as_mut().unwrap().hep = None;
-            let err = parse_packet(&pkt).expect_err("no HEP wrapper, no convention");
+            parse_packet(&pkt)
+        };
+        for p in [22u8, 50] {
+            let err = unwrapped(p).expect_err("no HEP wrapper, no convention");
             assert!(
                 matches!(err, CaptureError::UnsupportedIpProtocol(n) if n == p),
                 "protocol {p}: {err:?}"
             );
         }
+        assert_eq!(
+            unwrapped(6).expect("TCP").transport,
+            TransportProto::Tcp,
+            "a Via reading is a HEP convention too"
+        );
     }
 
     /// A number neither tracer uses stays undecodable and named, so the
@@ -5421,14 +5478,12 @@ mod tests {
         }
     }
 
-    /// 6, 17 and 132 from a HEP sender mean what they always meant.
+    /// 17 and 132 from a HEP sender mean what they always meant, whatever
+    /// the Via says: no tracer runs WebSocket over them. 6 with a Via that is
+    /// not WebSocket is TCP.
     #[test]
     fn hep_real_ip_protocols_are_unchanged() {
-        for (p, want) in [
-            (6u8, TransportProto::Tcp),
-            (17, TransportProto::Udp),
-            (132, TransportProto::Sctp),
-        ] {
+        for (p, want) in [(17u8, TransportProto::Udp), (132, TransportProto::Sctp)] {
             let parsed =
                 parse_packet(&hep_packet(p, &traced_invite("WSS"))).expect("real protocol");
             assert_eq!(parsed.transport, want, "protocol {p}");

@@ -86,9 +86,10 @@ Every mode is the same six hops. Only who performs hop 5 differs.
 
    A HEP packet arrives pre-parsed: its addresses, ports and IP protocol
    number come from HEP chunks, and `parse_packet_unstamped` maps the number
-   to a transport. Only there, and only when a HEP wrapper delivered the
-   packet, 22 reads as TLS and 50 as WS, the fake numbers OpenSIPS and
-   Kamailio send for decrypted TLS and WebSocket legs. A captured frame never
+   to a transport in `hep_transport`. Only there, and only when a HEP wrapper
+   delivered the packet, 22 reads as TLS and 50 as WS, the fake numbers
+   OpenSIPS and Kamailio send for decrypted TLS and WebSocket legs, and the
+   message's top Via narrows 22, 50 or 6 to WS or WSS. A captured frame never
    takes that reading. See
    [How `--hep-listen` reads the transport](../cli-reference.md#how---hep-listen-reads-the-transport).
 

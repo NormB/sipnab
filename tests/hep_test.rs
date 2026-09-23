@@ -612,59 +612,50 @@ fn traced_invite(via: &str, call_id: &str) -> Vec<u8> {
 /// **Decrypted TLS and WebSocket legs traced by OpenSIPS or Kamailio are SIP,
 /// not undecodable frames** (issue #301, reported by Giovanni Maruzzelli).
 ///
-/// Four datagrams reach a real `--hep-listen`: OpenSIPS's TLS (22), OpenSIPS's
-/// WSS (50), Kamailio's WSS (22, told apart by its Via), and a number no tracer
-/// uses (99). The first three surface as SIP messages with the transport
-/// named; only 99 is left in the NOT DECODED notice, by number.
+/// The datagrams reproduce what a lab running OpenSIPS 4.0.1 and Kamailio
+/// 6.0.1 put on the wire: OpenSIPS's TLS (22) and WSS (50), Kamailio's WS and
+/// WSS (22), Kamailio's reply to a WS client (6, sent from the TCP socket the
+/// connection rides), and a number no tracer uses (99). The first five surface
+/// as SIP messages with the transport their Via names; only 99 is left in the
+/// NOT DECODED notice, by number.
 #[test]
 fn hep_fake_ip_protocols_from_proxy_tracers_are_decoded() {
-    let srv = HepListener::spawn_reporting(&["--hep-allow", "127.0.0.1/32", "--count", "4"]);
     let sends = [
-        (22u8, "TLS", "hep301-tls@192.0.2.10"),
-        (50, "WSS", "hep301-wss@192.0.2.10"),
-        (22, "WSS", "hep301-kamailio-wss@192.0.2.10"),
-        (99, "TLS", "hep301-unknown@192.0.2.10"),
+        (22u8, "TLS", "hep301-opensips-tls@192.0.2.10", Some("TLS")),
+        (50, "WSS", "hep301-opensips-wss@192.0.2.10", Some("WSS")),
+        (22, "WS", "hep301-kamailio-ws@192.0.2.10", Some("WS")),
+        (22, "WSS", "hep301-kamailio-wss@192.0.2.10", Some("WSS")),
+        (6, "WS", "hep301-kamailio-ws-reply@192.0.2.10", Some("WS")),
+        (99, "TLS", "hep301-unknown@192.0.2.10", None),
     ];
-    for (proto, via, call_id) in sends {
+    let count = sends.len().to_string();
+    let srv = HepListener::spawn_reporting(&["--hep-allow", "127.0.0.1/32", "--count", &count]);
+    for (proto, via, call_id, _) in sends {
         srv.send(&hep3_with_ip_proto(proto, &traced_invite(via, call_id)));
         thread::sleep(Duration::from_millis(20));
     }
 
-    // `--count 4` ends the run once the fourth datagram is read, which closes
+    // `--count` ends the run once the last datagram is read, which closes
     // both streams; draining them to the end collects the summary too.
     let (stdout, stderr) = drain_until_exit(&srv);
-    let transport_of = |call_id: &str| transport_of(&stdout, call_id);
-    assert_eq!(
-        transport_of("hep301-tls@192.0.2.10").as_deref(),
-        Some("TLS"),
-        "{stdout:#?}"
-    );
-    assert_eq!(
-        transport_of("hep301-wss@192.0.2.10").as_deref(),
-        Some("WS"),
-        "{stdout:#?}"
-    );
-    assert_eq!(
-        transport_of("hep301-kamailio-wss@192.0.2.10").as_deref(),
-        Some("WS"),
-        "Kamailio names WSS with 22, and the Via says which: {stdout:#?}"
-    );
-    assert_eq!(
-        transport_of("hep301-unknown@192.0.2.10"),
-        None,
-        "{stdout:#?}"
-    );
+    for (proto, via, call_id, want) in sends {
+        assert_eq!(
+            transport_of(&stdout, call_id).as_deref(),
+            want,
+            "HEP protocol {proto} with Via {via}: {stdout:#?}"
+        );
+    }
 
     assert!(
-        stderr.contains("4 packets captured, 3 SIP messages"),
-        "three of the four datagrams are SIP messages: {stderr}"
+        stderr.contains("6 packets captured, 5 SIP messages"),
+        "five of the six datagrams are SIP messages: {stderr}"
     );
     let not_decoded = stderr
         .lines()
         .find(|l| l.starts_with("NOT DECODED:"))
         .unwrap_or_else(|| panic!("the unknown protocol must still be reported: {stderr}"));
     assert!(
-        not_decoded.starts_with("NOT DECODED: 1 of 4 frame(s)"),
+        not_decoded.starts_with("NOT DECODED: 1 of 6 frame(s)"),
         "only the unknown protocol is undecodable: {not_decoded}"
     );
     assert!(not_decoded.contains("IP protocol 99"), "{not_decoded}");

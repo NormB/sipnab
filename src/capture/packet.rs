@@ -49,8 +49,9 @@ pub struct PreParsed {
     pub dst_port: u16,
     /// IANA IP protocol number (17 = UDP, 6 = TCP, 132 = SCTP), as the source
     /// stated it. From a HEP sender it may also be 22 or 50, the numbers
-    /// OpenSIPS and Kamailio use to name a decrypted TLS or WebSocket message,
-    /// which the parser honors only when `hep` is set.
+    /// OpenSIPS and Kamailio use to name a decrypted TLS or WebSocket message.
+    /// The parser honors those, and reads the top Via to tell WS and WSS
+    /// apart, only when `hep` is set.
     pub ip_protocol: u8,
     /// What the HEP wrapper said, when this packet came through a HEP source.
     ///

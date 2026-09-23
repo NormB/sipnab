@@ -42,8 +42,9 @@ use crate::signals;
 /// Chunk type: IP protocol family (1 byte: 2=IPv4, 10=IPv6).
 const CHUNK_IP_FAMILY: u16 = 0x0001;
 /// Chunk type: IP protocol ID (1 byte: 6=TCP, 17=UDP, 132=SCTP). OpenSIPS and
-/// Kamailio also send 22 for TLS and 50 for WebSocket, which the parser reads
-/// on this path only (see `hep_fake_proto_transport` in `capture::parse`).
+/// Kamailio also send 22 for TLS and 50 for WebSocket, which the parser reads,
+/// with the top Via, on this path only (see `hep_transport` in
+/// `capture::parse`).
 const CHUNK_IP_PROTO: u16 = 0x0002;
 /// Chunk type: Source IPv4 address (4 bytes).
 const CHUNK_SRC_IPV4: u16 = 0x0003;
