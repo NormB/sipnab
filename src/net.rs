@@ -23,8 +23,15 @@ pub enum TransportProto {
     Sctp,
     /// TLS-encrypted TCP.
     Tls,
-    /// WebSocket (SIP over WS).
+    /// WebSocket (SIP over WS, [RFC 7118](https://www.rfc-editor.org/rfc/rfc7118)).
     Ws,
+    /// Secure WebSocket (SIP over WSS, RFC 7118): WebSocket inside TLS.
+    ///
+    /// Only a source that states it produces this: a HEP message whose top Via
+    /// says `SIP/2.0/WSS`. The wire capture cannot tell WSS from WS, because
+    /// WebSocket frames are only visible once the TLS around them is
+    /// decrypted, and it reports `Ws`.
+    Wss,
 }
 
 impl TransportProto {
@@ -36,18 +43,19 @@ impl TransportProto {
             Self::Sctp => "SCTP",
             Self::Tls => "TLS",
             Self::Ws => "WS",
+            Self::Wss => "WSS",
         }
     }
 
     /// IANA IP protocol number of the underlying transport.
     ///
-    /// TLS and WebSocket are application framings over TCP, so both report
+    /// TLS and WebSocket (WS and WSS) are application framings over TCP, so all report
     /// TCP's number (6) — the number identifies the IP-layer transport, not
     /// the SIP framing.
     pub fn ip_proto_number(self) -> u8 {
         match self {
             Self::Udp => 17,
-            Self::Tcp | Self::Tls | Self::Ws => 6,
+            Self::Tcp | Self::Tls | Self::Ws | Self::Wss => 6,
             Self::Sctp => 132,
         }
     }
@@ -290,6 +298,7 @@ mod tests {
             (TransportProto::Sctp, "SCTP"),
             (TransportProto::Tls, "TLS"),
             (TransportProto::Ws, "WS"),
+            (TransportProto::Wss, "WSS"),
         ] {
             assert_eq!(proto.as_str(), s);
             assert_eq!(proto.to_string(), s);
@@ -307,6 +316,7 @@ mod tests {
         assert_eq!(TransportProto::Sctp.ip_proto_number(), 132);
         assert_eq!(TransportProto::Tls.ip_proto_number(), 6);
         assert_eq!(TransportProto::Ws.ip_proto_number(), 6);
+        assert_eq!(TransportProto::Wss.ip_proto_number(), 6);
     }
     /// An IPv6 endpoint is bracketed, so it can be read back.
     ///

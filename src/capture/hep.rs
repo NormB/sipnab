@@ -1349,12 +1349,10 @@ impl HepEndpoint {
     ///
     /// TLS and WebSocket report 6: the chunk answers "what was on the wire",
     /// and both ride TCP, so a collector filtering `proto=tcp` must find them.
+    /// The number comes from [`TransportProto::ip_proto_number`], the one
+    /// place that rule lives.
     fn ip_protocol(&self) -> u8 {
-        match self.transport {
-            TransportProto::Udp => 17,
-            TransportProto::Tcp | TransportProto::Tls | TransportProto::Ws => 6,
-            TransportProto::Sctp => 132,
-        }
+        self.transport.ip_proto_number()
     }
 }
 
@@ -5933,6 +5931,11 @@ mod tests {
             (TransportProto::Tcp, 6, "TCP"),
             (TransportProto::Tls, 6, "TLS rides TCP"),
             (TransportProto::Ws, 6, "WebSocket rides TCP"),
+            (
+                TransportProto::Wss,
+                6,
+                "secure WebSocket rides TLS over TCP",
+            ),
             (TransportProto::Sctp, 132, "SCTP"),
         ] {
             let endpoint = HepEndpoint {

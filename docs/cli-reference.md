@@ -755,7 +755,7 @@ selects only problem calls from user 1001.
 | `--delta-time` | -- | off | Show delta time between consecutive messages |
 | `-A`, `--after` | `<N>` | -- | Show N messages after each match (like `grep -A`) |
 | `--show-empty` (`--full`) | -- | off | Show the full header block of bodyless messages (responses, OPTIONS, REGISTER, ACK, BYE); by default they show only the summary line |
-| `--proto-number` | -- | off | Annotate the transport tag with the IANA IP protocol number, e.g. `UDP(17)` / `TCP(6)`. Long-only because `-N` is `--no-tui` here; TLS/WS report their TCP carrier's number (6) |
+| `--proto-number` | -- | off | Annotate the transport tag with the IANA IP protocol number, e.g. `UDP(17)` / `TCP(6)`. Long-only because `-N` is `--no-tui` here; TLS, WS and WSS report their TCP carrier's number (6) |
 | `--line-buffer` | -- | off | Flush output after each line (useful for piping) |
 | `--color` | `<WHEN>` | `auto` | Color output mode: `auto`, `always`, `never` |
 | `--from-to-mode` | `<MODE>` | `default` | Default TUI From/To column display: `default` (user else host:port), `host-port`, `user`, `user-host-port`. Cycle at runtime with `u`. Overrides `[display] from_to` |
