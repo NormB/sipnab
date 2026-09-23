@@ -67,13 +67,28 @@ fn position(name: &str) -> usize {
 /// The full text of the step called `name`, from its `- name:` line to the
 /// next item at the same indentation.
 fn step_block(name: &str) -> Vec<String> {
-    let text = read(RELEASE);
+    step_block_in(RELEASE, name)
+}
+
+/// [`step_block`] for any workflow file. Panics unless exactly one step has
+/// that name, so a decoy cannot shadow the real step.
+fn step_block_in(workflow: &str, name: &str) -> Vec<String> {
+    let text = read(workflow);
     let lines: Vec<&str> = text.lines().collect();
     let needle = format!("- name: {name}");
-    let start = lines
+    let hits: Vec<usize> = lines
         .iter()
-        .position(|l| l.trim() == needle)
-        .unwrap_or_else(|| panic!("{RELEASE} has no step {name:?}"));
+        .enumerate()
+        .filter(|(_, l)| l.trim() == needle)
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(
+        hits.len(),
+        1,
+        "{workflow} has {} steps named {name:?}; expected exactly one",
+        hits.len()
+    );
+    let start = hits[0];
     let indent = lines[start].len() - lines[start].trim_start().len();
     let mut body = vec![lines[start].to_string()];
     for l in &lines[start + 1..] {
@@ -93,7 +108,12 @@ fn step_block(name: &str) -> Vec<String> {
 
 /// The dedented `run:` script of the step called `name`.
 fn step_script(name: &str) -> String {
-    let body = step_block(name);
+    step_script_in(RELEASE, name)
+}
+
+/// [`step_script`] for any workflow file.
+fn step_script_in(workflow: &str, name: &str) -> String {
+    let body = step_block_in(workflow, name);
     let run_at = body
         .iter()
         .position(|l| l.trim_start().starts_with("run:"))
@@ -468,4 +488,297 @@ fn the_workflow_scan_reads_the_real_workflow() {
     assert!(Path::new(&repo().join(RELEASE)).is_file());
     assert!(step_names().len() > 20, "step scan found too few steps");
     assert!(matrix().iter().any(|(t, _)| t == "aarch64-apple-darwin"));
+}
+
+// ---------------------------------------------------------------------------
+// Ordinary CI proves the split before a tag depends on it.
+// ---------------------------------------------------------------------------
+
+const CI: &str = ".github/workflows/ci.yml";
+const CI_BUILD_STEP: &str = "Build the release profile with the release's symbol flags";
+const CI_PROVE_STEP: &str = "Prove the release symbol split";
+
+/// The ci.yml job that holds `step`: the text from the job's two-space key to
+/// the next one.
+fn ci_job_holding(step: &str) -> String {
+    let text = read(CI);
+    let needle = format!("- name: {step}");
+    let at = text
+        .find(&needle)
+        .unwrap_or_else(|| panic!("{CI} has no step {step:?}"));
+    let is_job_key = |l: &str| {
+        l.len() > 2 && l.starts_with("  ") && !l.starts_with("   ") && l.trim_end().ends_with(':')
+    };
+    let mut start = 0;
+    let mut offset = 0;
+    for line in text.lines() {
+        if offset > at {
+            break;
+        }
+        if is_job_key(line) {
+            start = offset;
+        }
+        offset += line.len() + 1;
+    }
+    let rest = &text[start..];
+    let mut end = rest.len();
+    let mut off = 0;
+    for (i, line) in rest.lines().enumerate() {
+        if i > 0 && is_job_key(line) {
+            end = off;
+            break;
+        }
+        off += line.len() + 1;
+    }
+    rest[..end].to_string()
+}
+
+/// The macOS half of the split exists only on the release's darwin runners,
+/// which run at tag time, when a failure costs a published tag. So ordinary
+/// CI, on every push, builds the release profile with the SAME symbol flags
+/// (taken from `split-debuginfo.sh --cargo-config`, as release.yml does) on
+/// one Linux x86_64 and one macOS runner, runs the split, and checks what the
+/// release relies on.
+#[test]
+fn ci_proves_the_split_on_linux_and_macos_before_a_tag() {
+    let job = ci_job_holding(CI_PROVE_STEP);
+    assert_eq!(
+        job,
+        ci_job_holding(CI_BUILD_STEP),
+        "the build and the proof must be one job, or the proof reads nothing"
+    );
+    assert!(
+        job.contains("os: ubuntu-latest") && job.contains("target: x86_64-unknown-linux-gnu"),
+        "the split job must run x86_64 Linux on ubuntu-latest:\n{job}"
+    );
+    assert!(
+        job.contains("os: macos-latest") && job.contains("target: aarch64-apple-darwin"),
+        "the split job must run aarch64 macOS on macos-latest:\n{job}"
+    );
+    assert!(
+        job.contains("components: llvm-tools"),
+        "the split needs llvm-objcopy from llvm-tools:\n{job}"
+    );
+    assert!(
+        job.contains("timeout-minutes:"),
+        "an unbounded job holds its concurrency group:\n{job}"
+    );
+
+    let build = step_script_in(CI, CI_BUILD_STEP);
+    assert!(
+        build.contains("cargo build --release")
+            && build.contains("--config \"$(bash scripts/split-debuginfo.sh --cargo-config"),
+        "CI must build the RELEASE profile with the flags release.yml takes \
+         from the script, or it proves a different build:\n{build}"
+    );
+    let build_pos = position_in(CI, CI_BUILD_STEP);
+    let prove_pos = position_in(CI, CI_PROVE_STEP);
+    assert!(build_pos < prove_pos, "the proof must run after the build");
+
+    let prove = step_script_in(CI, CI_PROVE_STEP);
+    for needle in [
+        "bash scripts/split-debuginfo.sh",
+        "Build ID",
+        ".symtab",
+        ".gnu_debuglink",
+        "dwarfdump --uuid",
+        ".dSYM.zip",
+    ] {
+        assert!(
+            prove.contains(needle),
+            "{CI_PROVE_STEP} does not check {needle:?}:\n{prove}"
+        );
+    }
+}
+
+/// Position of the step called `name` among `workflow`'s steps.
+fn position_in(workflow: &str, name: &str) -> usize {
+    read(workflow)
+        .lines()
+        .filter_map(|l| l.trim().strip_prefix("- name: "))
+        .position(|n| n.trim() == name)
+        .unwrap_or_else(|| panic!("{workflow} has no step {name:?}"))
+}
+
+/// How [`the_ci_proof_step_catches_what_it_must`] prepares its tree.
+#[cfg(target_os = "linux")]
+#[derive(Clone, Copy, PartialEq)]
+enum ProofCase {
+    /// A real binary with symbols and the real split script.
+    Good,
+    /// The binary stripped at link time, as a build without the flag leaves it.
+    StrippedFirst,
+    /// A split script that copies the unstripped binary to the `.debug` path
+    /// and succeeds: the build IDs match, so only the step's own `.symtab`
+    /// check can catch it.
+    LyingScript,
+    /// A split script that strips the binary and links it to an EMPTY
+    /// `.debug`: only the step's build-ID comparison can catch it.
+    EmptyDebug,
+    /// A split script that strips the binary and writes a matching `.debug`
+    /// but adds no debug link: only the step's `.gnu_debuglink` check can
+    /// catch it.
+    NoDebuglink,
+}
+
+/// Executed: the CI proof step's own shell passes a real split, fails a
+/// binary the linker already stripped, and fails a split script that lies
+/// about having stripped. The last case matters because the real script
+/// would refuse the first two by itself, so without it the step's own checks
+/// could be deleted and this test would stay green.
+#[test]
+#[cfg(target_os = "linux")]
+fn the_ci_proof_step_catches_what_it_must() {
+    let host = dbgsym::host_triple();
+    let prove = step_script_in(CI, CI_PROVE_STEP);
+    let run = |case: ProofCase| {
+        let dir = tempfile::tempdir().unwrap();
+        let work = dir.path().to_path_buf();
+        let rel = work.join("target").join(&host).join("release");
+        std::fs::create_dir_all(&rel).unwrap();
+        let fixture = dbgsym::build_fixture(&work, None, true).expect("host fixture");
+        let bin = rel.join("sipnab");
+        std::fs::copy(&fixture, &bin).unwrap();
+        std::fs::create_dir_all(work.join("scripts")).unwrap();
+        let script = work.join("scripts/split-debuginfo.sh");
+        let stub = match case {
+            ProofCase::LyingScript => Some("cp \"$1\" \"$2.debug\""),
+            ProofCase::EmptyDebug => Some(
+                ": > \"$2.debug\"; strip \"$1\"; \
+                 objcopy --add-gnu-debuglink=\"$2.debug\" \"$1\"",
+            ),
+            ProofCase::NoDebuglink => {
+                Some("objcopy --only-keep-debug \"$1\" \"$2.debug\"; strip \"$1\"")
+            }
+            ProofCase::Good | ProofCase::StrippedFirst => None,
+        };
+        match stub {
+            Some(body) => std::fs::write(
+                &script,
+                format!("set -e\nmkdir -p \"$(dirname \"$2\")\"\n{body}\n"),
+            )
+            .unwrap(),
+            None => {
+                std::fs::copy(dbgsym::script(), &script).unwrap();
+            }
+        }
+        if case == ProofCase::StrippedFirst {
+            let s = Command::new("strip").arg(&bin).status().expect("strip");
+            assert!(s.success());
+        }
+        let out = Command::new("bash")
+            .arg("-c")
+            .arg(&prove)
+            .current_dir(&work)
+            .env("TARGET", &host)
+            .output()
+            .unwrap();
+        (out, dir)
+    };
+    let (good, _d1) = run(ProofCase::Good);
+    assert!(
+        good.status.success(),
+        "the proof failed a good split:\n{}",
+        text(&good)
+    );
+    let (stripped, _d2) = run(ProofCase::StrippedFirst);
+    assert!(
+        !stripped.status.success(),
+        "the proof passed a binary stripped before the split:\n{}",
+        text(&stripped)
+    );
+    let (lying, _d3) = run(ProofCase::LyingScript);
+    assert!(
+        !lying.status.success(),
+        "the proof passed a binary that still has its .symtab:\n{}",
+        text(&lying)
+    );
+    assert!(
+        String::from_utf8_lossy(&lying.stdout).contains(".symtab"),
+        "the refusal must come from the step's own .symtab check:\n{}",
+        text(&lying)
+    );
+    let (empty, _d4) = run(ProofCase::EmptyDebug);
+    assert!(
+        !empty.status.success()
+            && String::from_utf8_lossy(&empty.stdout).contains("build ID mismatch"),
+        "the step's build-ID comparison did not catch an empty .debug:\n{}",
+        text(&empty)
+    );
+    let (nolink, _d5) = run(ProofCase::NoDebuglink);
+    assert!(
+        !nolink.status.success()
+            && String::from_utf8_lossy(&nolink.stdout).contains(".gnu_debuglink"),
+        "the step's .gnu_debuglink check did not catch a missing link:\n{}",
+        text(&nolink)
+    );
+}
+
+/// Executed: the CI proof step's macOS branch, run on this host with stub
+/// `dwarfdump` and split scripts standing in for Xcode's tools. It passes a
+/// zip beside a bundle whose UUID matches the binary, and fails a missing zip
+/// or a mismatched UUID. The real tools run on the macOS CI leg; this proves
+/// the step's own logic can go red, which reading its text cannot.
+#[test]
+#[cfg(unix)]
+fn the_ci_proof_step_macos_branch_checks_the_zip_and_the_uuid() {
+    let prove = step_script_in(CI, CI_PROVE_STEP);
+    let target = "aarch64-apple-darwin";
+    let run = |make_zip: bool, dsym_uuid: &str| {
+        let dir = tempfile::tempdir().unwrap();
+        let w = dir.path().to_path_buf();
+        let rel = w.join("target").join(target).join("release");
+        std::fs::create_dir_all(rel.join("sipnab.dSYM")).unwrap();
+        std::fs::write(rel.join("sipnab"), b"stand-in").unwrap();
+        std::fs::create_dir_all(w.join("scripts")).unwrap();
+        let split = if make_zip {
+            "mkdir -p \"$(dirname \"$2\")\"; echo zip > \"$2.dSYM.zip\"\n"
+        } else {
+            "exit 0\n"
+        };
+        std::fs::write(w.join("scripts/split-debuginfo.sh"), split).unwrap();
+        let bin = w.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let stub = format!(
+            "#!/bin/sh\ncase \"$2\" in\n  *.dSYM) echo \"UUID: {dsym_uuid} (arm64) $2\" ;;\n  \
+             *) echo \"UUID: AAAA-1111 (arm64) $2\" ;;\nesac\n"
+        );
+        let dd = bin.join("dwarfdump");
+        std::fs::write(&dd, stub).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&dd, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let path = format!(
+            "{}:{}",
+            bin.display(),
+            std::env::var("PATH").unwrap_or_default()
+        );
+        let out = Command::new("bash")
+            .arg("-c")
+            .arg(&prove)
+            .current_dir(&w)
+            .env("TARGET", target)
+            .env("PATH", path)
+            .output()
+            .unwrap();
+        (out, dir)
+    };
+    let (good, _a) = run(true, "AAAA-1111");
+    assert!(
+        good.status.success(),
+        "the macOS proof failed a good split:\n{}",
+        text(&good)
+    );
+    let (nozip, _b) = run(false, "AAAA-1111");
+    assert!(
+        !nozip.status.success() && String::from_utf8_lossy(&nozip.stdout).contains(".dSYM.zip"),
+        "the macOS proof passed with no .dSYM.zip:\n{}",
+        text(&nozip)
+    );
+    let (mismatch, _c) = run(true, "BBBB-2222");
+    assert!(
+        !mismatch.status.success()
+            && String::from_utf8_lossy(&mismatch.stdout).contains("UUID mismatch"),
+        "the macOS proof passed a .dSYM whose UUID is not the binary's:\n{}",
+        text(&mismatch)
+    );
 }

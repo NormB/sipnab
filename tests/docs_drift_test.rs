@@ -43,11 +43,15 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             "website/content/docs/troubleshooting.md",
         ],
     ),
+    // Also named by the release page's "Symbol files" section, for what the
+    // `symbol-split` CI job checks on macOS.
     (
         "uuid",
         &[
             "docs/troubleshooting.md",
             "website/content/docs/troubleshooting.md",
+            "docs/internals/build-ci-release.md",
+            "website/content/docs/internals/build-ci-release.md",
         ],
     ),
     // `scripts/split-debuginfo.sh --cargo-config <target>`, named by the

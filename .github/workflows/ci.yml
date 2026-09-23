@@ -238,6 +238,125 @@ jobs:
   # Installer: unit tests for the platform/glibc detection and artifact
   # selection in website/static/install.sh (served at sipnab.com/install.sh).
   # Pure POSIX sh — no Rust toolchain needed.
+  # The release splits each binary's debug symbols into a published .debug
+  # (Linux) or .dSYM.zip (macOS) with scripts/split-debuginfo.sh. release.yml
+  # runs only on a tag, so a split that breaks, above all the macOS half,
+  # which no other job exercises, would first fail when a tag is already
+  # public. This job builds the RELEASE profile with the same symbol flags
+  # release.yml takes from `split-debuginfo.sh --cargo-config`, on one Linux
+  # x86_64 and one macOS runner, runs the split, and checks the pairing.
+  # A minimal feature set keeps it cheap: the flags and the link are what
+  # decide whether the symbols survive, not which features are compiled.
+  symbol-split:
+    # Bounds how long this job can hold the main-branch concurrency group.
+    # A cold release build with LTO: not yet observed in CI, bounded like the
+    # check job.
+    timeout-minutes: 40
+    name: Symbol split (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: macos-latest
+            target: aarch64-apple-darwin
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # Do not leave GITHUB_TOKEN in .git/config for later steps or
+          # third-party actions to read. Nothing here pushes with it.
+          persist-credentials: false
+      - name: Free disk space (Linux)
+        if: runner.os == 'Linux'
+        uses: ./.github/actions/free-disk
+
+      - name: Install system deps (Linux)
+        if: runner.os == 'Linux'
+        uses: ./.github/actions/system-deps
+        with:
+          packages: libpcap-dev
+
+      - uses: dtolnay/rust-toolchain@ce678459e9fc7500d337468f904b95f1b5c10b5e # 1.98.1
+        with:
+          targets: ${{ matrix.target }}
+          # llvm-objcopy, which the split uses on Linux.
+          components: llvm-tools
+
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-symbol-split-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-symbol-split-${{ matrix.target }}-
+
+      - name: Build the release profile with the release's symbol flags
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+        run: cargo build --release --config "$(bash scripts/split-debuginfo.sh --cargo-config "$TARGET")" --target "$TARGET" --no-default-features --features native --bin sipnab
+
+      # The script verifies the pairing itself. This step checks the result
+      # again with the platform's own tools, so a script that passed its own
+      # checks by mistake still goes red here.
+      - name: Prove the release symbol split
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          bin="target/${TARGET}/release/sipnab"
+          stem="dist/sipnab-ci-${TARGET}"
+          bash scripts/split-debuginfo.sh "$bin" "$stem"
+          case "$TARGET" in
+            *-linux-*)
+              dbg="${stem}.debug"
+              # `|| true`: under pipefail a readelf that cannot read the file
+              # would end the step silently here, before the error below
+              # could name the mismatch.
+              bid=$(readelf -n "$bin" 2>/dev/null | sed -n 's/.*Build ID: *\([0-9a-f]*\).*/\1/p' | head -1) || true
+              did=$(readelf -n "$dbg" 2>/dev/null | sed -n 's/.*Build ID: *\([0-9a-f]*\).*/\1/p' | head -1) || true
+              if [ -z "$bid" ] || [ "$bid" != "$did" ]; then
+                echo "::error::build ID mismatch: $bin is '${bid}', $dbg is '${did}'"
+                exit 1
+              fi
+              # Captured once, then searched: `readelf | grep -q` under
+              # pipefail can report a match as failure when grep exits first.
+              secs=$(readelf -S -W "$bin")
+              if printf '%s\n' "$secs" | grep -E '\] \.symtab ' >/dev/null; then
+                echo "::error::$bin still has a .symtab after the split"
+                exit 1
+              fi
+              if ! printf '%s\n' "$secs" | grep -E '\] \.gnu_debuglink ' >/dev/null; then
+                echo "::error::$bin has no .gnu_debuglink after the split"
+                exit 1
+              fi
+              echo "Linux split OK: build ID $bid, $(wc -c < "$dbg" | tr -d ' ') byte .debug"
+              ;;
+            *-apple-darwin)
+              zip="${stem}.dSYM.zip"
+              if [ ! -s "$zip" ]; then
+                echo "::error::no $zip after the split"
+                exit 1
+              fi
+              bu=$(dwarfdump --uuid "$bin" | awk '/^UUID:/ { print $2; exit }')
+              du=$(dwarfdump --uuid "$bin.dSYM" | awk '/^UUID:/ { print $2; exit }')
+              if [ -z "$bu" ] || [ "$bu" != "$du" ]; then
+                echo "::error::UUID mismatch: $bin is '${bu}', $bin.dSYM is '${du}'"
+                exit 1
+              fi
+              echo "macOS split OK: UUID $bu, $(wc -c < "$zip" | tr -d ' ') byte .dSYM.zip"
+              ;;
+            *)
+              echo "::error::no symbol-split check for $TARGET"
+              exit 1
+              ;;
+          esac
+
   install-sh:
     # Bounds how long this job can hold the main-branch concurrency
     # group, which never supersedes. Observed: 0.1 min.
@@ -703,7 +822,7 @@ jobs:
 
   ci-success:
     # Bounds how long this job can hold the main-branch concurrency
-    # group, which never supersedes. Observed: 0.0 min, but it waits on 12 needs.
+    # group, which never supersedes. Observed: 0.0 min, but it waits on 13 needs.
     timeout-minutes: 10
     name: CI success
     if: always()
@@ -714,7 +833,7 @@ jobs:
     # check on main still green.
     needs: [check, install-sh, deb-package, rpm-packaging, homebrew-formula,
             tsan-verdict, bench-scripts, features, crate-package, audit,
-            fuzz-check, code-scanning-clean]
+            fuzz-check, code-scanning-clean, symbol-split]
     runs-on: ubuntu-latest
     steps:
       - name: Verify all required jobs succeeded

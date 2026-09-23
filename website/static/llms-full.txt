@@ -33645,10 +33645,10 @@ by design.
 
 ### What actually gates a merge
 
-`ci-success` requires every other job in `ci.yml` — twelve of them: **`check`,
+`ci-success` requires every other job in `ci.yml` — thirteen of them: **`check`,
 `install-sh`, `deb-package`, `rpm-packaging`, `homebrew-formula`,
 `tsan-verdict`, `bench-scripts`, `features`, `crate-package`, `audit`,
-`fuzz-check`, `code-scanning-clean`**.
+`fuzz-check`, `code-scanning-clean`, `symbol-split`**.
 
 `ci_success_gates_every_job` in
 [`site_journey_test`](../../tests/site_journey_test.rs) holds the list to that,
@@ -34546,8 +34546,18 @@ codegen settings, for the host architecture and a foreign one, and resolves an
 address from the stripped program to its function through the `.debug` file.
 [`tests/release_debug_symbols_test.rs`](../../tests/release_debug_symbols_test.rs)
 holds the workflow to the step order, the uploads and the checksums, and runs
-the split step's own shell. The macOS half runs only on the release's darwin
-runners.
+the split step's own shell.
+
+The release runs only on a tag, and the macOS half of the split runs on no
+other job there, so a break in it would first show on a tag that is already
+public. The `symbol-split` job in `ci.yml` closes that gap on every push. It
+builds the release profile with the same `--cargo-config` flags on
+`x86_64-unknown-linux-gnu` and `aarch64-apple-darwin`, runs the split, and
+checks the result with the platform's own tools: on Linux, that the `.debug`
+build ID equals the binary's and that the binary has no `.symtab` and has a
+`.gnu_debuglink`, and on macOS, that the `.dSYM.zip` exists and the bundle's
+UUID from `dwarfdump --uuid` is the binary's. The release-workflow tests run
+that step's own shell against real and deliberately broken splits.
 
 The crash report records what the symbol file needs: the build ID or UUID of
 the executable, its load base, the target triple, and the raw address of every
