@@ -20,7 +20,7 @@
 use std::net::{IpAddr, Ipv4Addr};
 
 use sipnab::capture::PacketProcessor;
-use sipnab::capture::packet::{Packet, PreParsed};
+use sipnab::capture::packet::{HepOrigin, Packet, PreParsed};
 
 /// TCP, as a TLS session is.
 const TCP: u8 = 6;
@@ -95,20 +95,70 @@ fn a_uprobe_read_with_no_peer_passes_through_too() {
     assert_eq!(out[0].payload.as_ref(), REGISTER);
 }
 
-/// The bypass must be narrow. A real TCP packet still belongs to the
-/// reassembler — widening this to all pre-parsed input would take HEP with it,
-/// and HEP carries genuine segments.
+/// A HEP message is not a segment either (issue #301).
+///
+/// A proxy's tracer hands its HEP module one whole SIP message, already parsed
+/// out of its connection, and HEP carries no TCP sequence number or flags. The
+/// reassembler needs both and returns nothing without them, so every HEP
+/// message a sender marked TCP (IP protocol 6) vanished: not decoded, not
+/// counted as undecodable, simply gone.
 #[test]
-fn a_hep_packet_is_not_given_the_uprobe_bypass() {
+fn a_hep_tcp_message_is_not_held_by_the_tcp_reassembler() {
     let mut processor = PacketProcessor::new();
-    // Same shape, but the source name says HEP rather than uprobe, which is
-    // what `InputOrigin` is derived from.
-    let out = processor.process(&uprobe_packet("hep:10.0.0.5", 5060, 5060));
-    assert!(
-        out.len() <= 1,
-        "this asserts only that HEP takes the ordinary path; what that path \
-         decides is the reassembler's business, not this test's"
+    let mut packet = uprobe_packet("hep:10.0.0.5:9060", 5060, 5060);
+    packet.pre_parsed.as_mut().expect("pre-parsed").hep = Some(HepOrigin {
+        protocol: 1,
+        correlation_id: None,
+    });
+    let out = processor.process(&packet);
+    assert_eq!(
+        out.len(),
+        1,
+        "a HEP TCP message must pass through whole. Zero is the failure: the \
+         sender's TCP legs missing with nothing counted against them"
     );
+    assert_eq!(out[0].payload.as_ref(), REGISTER);
+    assert_eq!(out[0].transport, sipnab::net::TransportProto::Tcp);
+}
+
+/// The bypass is by origin, not by missing sequence numbers alone: a real
+/// TCP segment read from a capture still goes through the reassembler, which
+/// holds a segment until the one before it arrives.
+#[test]
+fn a_captured_tcp_segment_still_belongs_to_the_reassembler() {
+    let mut processor = PacketProcessor::new();
+    // A segment whose predecessor never arrived: SYN at 1000, data at 2000.
+    let syn = eth_ipv4_tcp(1000, 0x02, b"");
+    let late = eth_ipv4_tcp(2000, 0x18, REGISTER);
+    assert!(
+        processor.process(&syn).is_empty(),
+        "a bare SYN carries nothing"
+    );
+    assert!(
+        processor.process(&late).is_empty(),
+        "a segment past a hole is held for the missing bytes, which is what \
+         reassembly is; the HEP bypass must not reach captured frames"
+    );
+}
+
+/// An Ethernet + IPv4 + TCP frame from 192.0.2.1:40000 to 192.0.2.2:5060.
+fn eth_ipv4_tcp(seq: u32, flags: u8, payload: &[u8]) -> Packet {
+    let mut tcp = 40000u16.to_be_bytes().to_vec();
+    tcp.extend_from_slice(&5060u16.to_be_bytes());
+    tcp.extend_from_slice(&seq.to_be_bytes());
+    tcp.extend_from_slice(&0u32.to_be_bytes());
+    tcp.extend_from_slice(&[0x50, flags, 0xff, 0xff, 0, 0, 0, 0]);
+    tcp.extend_from_slice(payload);
+    let mut ip = vec![0x45, 0];
+    ip.extend_from_slice(&((20 + tcp.len()) as u16).to_be_bytes());
+    ip.extend_from_slice(&[0, 1, 0x40, 0, 64, 6, 0, 0, 192, 0, 2, 1, 192, 0, 2, 2]);
+    ip.extend_from_slice(&tcp);
+    let mut frame = vec![0xaa; 6];
+    frame.extend_from_slice(&[0xbb; 6]);
+    frame.extend_from_slice(&[0x08, 0x00]);
+    frame.extend_from_slice(&ip);
+    let len = frame.len();
+    Packet::new(chrono::Utc::now(), frame, len, len, None, 1)
 }
 
 /// **`TK7`: the plaintext reaches every output surface LABELED, and its

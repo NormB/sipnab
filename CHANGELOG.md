@@ -32,6 +32,17 @@ entry that carries them.
   other unknown number stays NOT DECODED, by number. Reported by Giovanni
   Maruzzelli ([@gmaruzz](https://github.com/gmaruzz)) in
   [#301](https://github.com/NormB/sipnab/issues/301).
+- **`-L` no longer loses every HEP message marked TCP.** A HEP sender marks a
+  TCP leg with IP protocol 6, and sipnab handed each such message to its TCP
+  stream reassembler. The reassembler orders segments by sequence number, HEP
+  carries none, and so it returned nothing: the message appeared nowhere and
+  counted as neither SIP nor NOT DECODED. A run said `26 packets captured, 12
+  SIP messages` with seven TCP-leg messages unaccounted for. A HEP payload is
+  one whole message the proxy already parsed, and sipnab now reads it that way,
+  as it already did for uprobe reads. TCP captured from an interface or a file
+  still goes through reassembly. Found while reproducing
+  [#301](https://github.com/NormB/sipnab/issues/301) against OpenSIPS and
+  Kamailio.
 
 ## [0.5.187] - 2026-09-22
 

@@ -118,6 +118,8 @@ Every mode is the same six hops. Only who performs hop 5 differs.
    defragmentation, TCP reassembly, tunnel unwrapping — via
    [`parse_packet()`](https://github.com/NormB/sipnab/blob/main/src/capture/parse.rs). One frame can yield several
    messages, which is why the return type is plural.
+   A HEP message and a uprobe read skip TCP reassembly: each is one whole
+   message and carries no TCP sequence number for the reassembler to order.
 4. **Classify.** [`classify_packet()`](https://github.com/NormB/sipnab/blob/main/src/pipeline.rs) decides what the
    packet *means* and returns a `PacketAction` — `Sip { msg, sdp_links }`,
    `Rtp { .. }`, `Rtcp(..)` or `None`. WebSocket-SIP unwrap, SDP link

@@ -632,33 +632,8 @@ fn hep_fake_ip_protocols_from_proxy_tracers_are_decoded() {
 
     // `--count 4` ends the run once the fourth datagram is read, which closes
     // both streams; draining them to the end collects the summary too.
-    let deadline = Instant::now() + test_timeout(15);
-    let mut stdout = Vec::new();
-    let mut stderr = Vec::new();
-    let mut open = (true, true);
-    while (open.0 || open.1) && Instant::now() < deadline {
-        match srv.stdout_rx.recv_timeout(Duration::from_millis(50)) {
-            Ok(line) => stdout.push(line),
-            Err(mpsc::RecvTimeoutError::Disconnected) => open.0 = false,
-            Err(mpsc::RecvTimeoutError::Timeout) => {}
-        }
-        match srv.stderr_rx.recv_timeout(Duration::from_millis(50)) {
-            Ok(line) => stderr.push(line),
-            Err(mpsc::RecvTimeoutError::Disconnected) => open.1 = false,
-            Err(mpsc::RecvTimeoutError::Timeout) => {}
-        }
-    }
-    assert!(
-        !open.0 && !open.1,
-        "--count 4 did not end the run: {stderr:#?}"
-    );
-
-    let transport_of = |call_id: &str| -> Option<String> {
-        stdout.iter().find_map(|line| {
-            let v: serde_json::Value = serde_json::from_str(line).ok()?;
-            (v["call_id"] == call_id).then(|| v["transport"].as_str().unwrap_or("").to_string())
-        })
-    };
+    let (stdout, stderr) = drain_until_exit(&srv);
+    let transport_of = |call_id: &str| transport_of(&stdout, call_id);
     assert_eq!(
         transport_of("hep301-tls@192.0.2.10").as_deref(),
         Some("TLS"),
@@ -680,7 +655,6 @@ fn hep_fake_ip_protocols_from_proxy_tracers_are_decoded() {
         "{stdout:#?}"
     );
 
-    let stderr = stderr.join("\n");
     assert!(
         stderr.contains("4 packets captured, 3 SIP messages"),
         "three of the four datagrams are SIP messages: {stderr}"
@@ -700,6 +674,70 @@ fn hep_fake_ip_protocols_from_proxy_tracers_are_decoded() {
             "{gone} is decoded now: {not_decoded}"
         );
     }
+}
+
+/// **A HEP message marked TCP is a SIP message, not a lost segment.**
+///
+/// Before this, HEP IP protocol 6 went to the TCP reassembler, which needs a
+/// sequence number HEP does not carry, and the message vanished without being
+/// counted anywhere: `N packets captured, 0 SIP messages`, and no NOT DECODED
+/// line to explain it. OpenSIPS and Kamailio both send 6 for every TCP leg.
+#[test]
+fn hep_tcp_messages_are_decoded_whole() {
+    let srv = HepListener::spawn_reporting(&["--hep-allow", "127.0.0.1/32", "--count", "2"]);
+    for call_id in ["hep-tcp-1@192.0.2.10", "hep-tcp-2@192.0.2.10"] {
+        srv.send(&hep3_with_ip_proto(6, &traced_invite("TCP", call_id)));
+        thread::sleep(Duration::from_millis(20));
+    }
+    let (stdout, stderr) = drain_until_exit(&srv);
+    for call_id in ["hep-tcp-1@192.0.2.10", "hep-tcp-2@192.0.2.10"] {
+        assert_eq!(
+            transport_of(&stdout, call_id).as_deref(),
+            Some("TCP"),
+            "{call_id}: {stdout:#?}\n{stderr}"
+        );
+    }
+    assert!(
+        stderr.contains("2 packets captured, 2 SIP messages"),
+        "both datagrams are SIP messages: {stderr}"
+    );
+    assert!(!stderr.contains("NOT DECODED"), "{stderr}");
+}
+
+/// Read a `--count` listener's stdout and stderr to the end of its run.
+///
+/// # Returns
+/// The stdout lines, and stderr joined into one string.
+fn drain_until_exit(srv: &HepListener) -> (Vec<String>, String) {
+    let deadline = Instant::now() + test_timeout(15);
+    let mut stdout = Vec::new();
+    let mut stderr = Vec::new();
+    let mut open = (true, true);
+    while (open.0 || open.1) && Instant::now() < deadline {
+        match srv.stdout_rx.recv_timeout(Duration::from_millis(50)) {
+            Ok(line) => stdout.push(line),
+            Err(mpsc::RecvTimeoutError::Disconnected) => open.0 = false,
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+        }
+        match srv.stderr_rx.recv_timeout(Duration::from_millis(50)) {
+            Ok(line) => stderr.push(line),
+            Err(mpsc::RecvTimeoutError::Disconnected) => open.1 = false,
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+        }
+    }
+    assert!(
+        !open.0 && !open.1,
+        "--count did not end the run: {stderr:#?}"
+    );
+    (stdout, stderr.join("\n"))
+}
+
+/// The `transport` of the `--json` message line whose Call-ID is `call_id`.
+fn transport_of(stdout: &[String], call_id: &str) -> Option<String> {
+    stdout.iter().find_map(|line| {
+        let v: serde_json::Value = serde_json::from_str(line).ok()?;
+        (v["call_id"] == call_id).then(|| v["transport"].as_str().unwrap_or("").to_string())
+    })
 }
 
 /// A 20-datagram burst against `--hep-rate-limit 1` logs a

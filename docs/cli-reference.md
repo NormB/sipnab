@@ -1294,8 +1294,9 @@ and Kamailio
 
 sipnab has one WebSocket transport, so a WSS leg reports as WS. The message's
 own Via still reads `SIP/2.0/WSS`, which is where to look when the difference
-matters. A filter such as `transport == TLS` or `transport == WS` finds these
-legs next to the wire capture.
+matters. The `transport` field of each `--json` message carries the name, so
+`jq 'select(.transport == "TLS")'` picks these legs out of a run that also
+captures the wire.
 
 sipnab honors 22 and 50 on HEP input only. On a frame read from an interface
 or a file, 50 is a real IPsec ESP packet and sipnab refuses 22, as before. Any

@@ -1213,7 +1213,17 @@ impl PacketProcessor {
         // packet carries `tcp_seq: None`, and every message was held for
         // neighbors that would never arrive. Both uprobe backends captured
         // packets and produced zero SIP messages.
-        if parsed.input_origin == parse::InputOrigin::Uprobe {
+        //
+        // A HEP message is the same shape for the same reason (issue #301).
+        // The sender's tracer hands its HEP module one whole SIP message it has
+        // already parsed out of its connection, and HEP carries no sequence
+        // number or flags. The reassembler returns nothing without both, so
+        // every message a HEP sender marked TCP (IP protocol 6) vanished
+        // without even counting as undecodable.
+        if matches!(
+            parsed.input_origin,
+            parse::InputOrigin::Uprobe | parse::InputOrigin::Hep
+        ) {
             return smallvec![parsed];
         }
 
