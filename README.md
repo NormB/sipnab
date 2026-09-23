@@ -229,7 +229,7 @@ Docker Desktop, or similar) and `cross` (`cargo install cross`).
 | `plugins`  | WASM plugin host (`--plugin`): sandboxed third-party dialog detections  | no      |
 | `bpf`      | eBPF TLS capture (`--uprobe-backend bpf`): reads SIP plaintext **and the peer addresses** with no key. Needs a nightly toolchain and `bpf-linker` to build, and a kernel with `CONFIG_DEBUG_INFO_BTF` to run | no      |
 | `vcon`     | vCon export: one observed dialog as an unsigned conversation container, with the audio inline when the run retained it. sipnab writes it as an OBSERVER — no signature and no party name | no      |
-| `archive`  | Password-protected ZIP input (`-I evidence.zip` with `--archive-password-file` and friends): reads the captures inside without leaving a decrypted copy | no      |
+| `archive`  | Password-protected ZIP and 7z input (`-I evidence.zip` with `--archive-password-file` and friends): reads the captures inside without leaving a decrypted copy | no      |
 | `full`     | `native` + `tui` + `tls` + `hep` + `api` + `audio` + `mcp` + `mcp-http` + `metrics` + `plugins` + `vcon` + `archive` | no      |
 
 Build with specific features. Adding TLS decryption and HEP to the default set:

@@ -26,11 +26,11 @@ use std::io::{self, Read};
 use super::password::{Container, Trial, Unlock};
 use super::{Encryption, Flow, Inflating, Layer, SkipReason, Stop, Walker, member_name};
 
-/// The ZIP a walk reads: a file it can seek in, and the copy to delete after,
-/// when it had to make one.
-struct Seekable {
+/// The archive a walk reads: a file it can seek in, and the copy to delete
+/// after, when it had to make one.
+pub(super) struct Seekable {
     /// The archive's bytes.
-    file: std::fs::File,
+    pub(super) file: std::fs::File,
     /// The copy this walk made of a nested archive.
     spill: Option<std::path::PathBuf>,
 }
@@ -56,11 +56,16 @@ struct EntryInfo {
 }
 
 impl Walker<'_> {
-    /// Open the ZIP `label` names, from `src`, for walking.
+    /// Open the archive `label` names, from `src`, for reading by seeking.
     ///
     /// The archive the walk started from is reopened as a file. Anything
-    /// nested is copied out first.
-    fn zip_source(&mut self, src: &mut dyn Read, label: &str) -> Result<Seekable, Flow> {
+    /// nested is copied out first, into a file named for its `kind`.
+    pub(super) fn seekable_source(
+        &mut self,
+        src: &mut dyn Read,
+        label: &str,
+        kind: &str,
+    ) -> Result<Seekable, Flow> {
         if let Some(root) = self.root
             && label == self.root_label
         {
@@ -70,7 +75,7 @@ impl Walker<'_> {
         }
         let dir = self.extract_dir().ok_or(Flow::Abort)?;
         self.spills += 1;
-        let path = dir.join(format!("z{:05}.zip", self.spills));
+        let path = dir.join(format!("z{:05}.{kind}", self.spills));
         let copied = std::fs::OpenOptions::new()
             .write(true)
             .read(true)
@@ -104,7 +109,7 @@ impl Walker<'_> {
         layers: &[Layer],
         depth: usize,
     ) -> Flow {
-        let source = match self.zip_source(src, label) {
+        let source = match self.seekable_source(src, label, "zip") {
             Ok(s) => s,
             Err(flow) => return flow,
         };

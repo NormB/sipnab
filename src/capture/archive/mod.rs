@@ -52,6 +52,8 @@
 pub mod codepage;
 #[cfg(feature = "archive")]
 pub mod password;
+#[cfg(feature = "archive")]
+pub mod sevenz;
 pub mod tar;
 #[cfg(all(feature = "archive", unix))]
 pub mod tty;
@@ -197,6 +199,8 @@ pub enum Layer {
     Tar,
     /// A ZIP archive.
     Zip,
+    /// A 7-Zip archive.
+    SevenZip,
 }
 
 impl Layer {
@@ -207,6 +211,7 @@ impl Layer {
             Self::Gzip => "gzip",
             Self::Tar => "tar",
             Self::Zip => "zip",
+            Self::SevenZip => "7z",
         }
     }
 }
@@ -226,6 +231,8 @@ pub enum Encryption {
     Aes192,
     /// WinZip AES with a 256-bit key.
     Aes256,
+    /// 7-Zip's AES-256 with SHA-256 key derivation.
+    SevenZipAes256,
 }
 
 impl Encryption {
@@ -239,6 +246,7 @@ impl Encryption {
             Self::Aes128 => "aes-128",
             Self::Aes192 => "aes-192",
             Self::Aes256 => "aes-256",
+            Self::SevenZipAes256 => "7z-aes-256",
         }
     }
 }
@@ -335,6 +343,8 @@ pub enum SkipReason {
     EncryptionUnsupported(String),
     /// A ZIP member compressed with a method sipnab does not inflate.
     ZipMethod(u16),
+    /// Opening it would cross a bound: which one.
+    BoundExceeded(String),
 }
 
 impl std::fmt::Display for SkipReason {
@@ -381,6 +391,11 @@ impl std::fmt::Display for SkipReason {
             Self::EncryptionUnsupported(why) => {
                 write!(f, "encrypted in a way sipnab cannot decrypt ({why})")
             }
+            Self::BoundExceeded(which) => write!(
+                f,
+                "bound_exceeded ({which}): the archive asks for more work than sipnab allows \
+                 an input, which is how a denial-of-service archive is built"
+            ),
             Self::ZipMethod(m) => write!(
                 f,
                 "compressed with ZIP method {m}, which sipnab does not inflate; unpack it \
@@ -408,6 +423,7 @@ impl SkipReason {
             Self::EncryptedWrongPassword => "encrypted, wrong password",
             Self::EncryptionUnsupported(_) => "encryption unsupported",
             Self::ZipMethod(_) => "unsupported compression",
+            Self::BoundExceeded(_) => "bound exceeded",
         }
     }
 
@@ -429,6 +445,7 @@ impl SkipReason {
             Self::EncryptedWrongPassword => "encrypted_wrong_password",
             Self::EncryptionUnsupported(_) => "encryption_unsupported",
             Self::ZipMethod(_) => "unsupported_compression",
+            Self::BoundExceeded(_) => "bound_exceeded",
         }
     }
 
@@ -573,7 +590,7 @@ pub fn is_password_like_name(name: &str) -> bool {
 #[must_use]
 pub fn unwraps(format: Format) -> bool {
     matches!(format, Format::Gzip | Format::Tar)
-        || (format == Format::Zip && cfg!(feature = "archive"))
+        || (matches!(format, Format::Zip | Format::SevenZip) && cfg!(feature = "archive"))
 }
 
 /// Whether `path` is a wrapper this module unwraps, and which.
@@ -616,8 +633,8 @@ pub fn is_capture_file_name(name: &str) -> bool {
         // A bare ".tar" is a dotfile, not an archive of anything.
         return !matches!(lower.as_str(), ".tar" | ".tgz" | ".tar.gz");
     }
-    if cfg!(feature = "archive") && lower.ends_with(".zip") {
-        return lower != ".zip";
+    if cfg!(feature = "archive") && (lower.ends_with(".zip") || lower.ends_with(".7z")) {
+        return lower != ".zip" && lower != ".7z";
     }
     // Peel an optional `.gz` so `foo.pcap.gz` is judged by its `.pcap` stem.
     let stem = lower.strip_suffix(".gz").unwrap_or(lower.as_str());
@@ -644,7 +661,7 @@ pub fn holds_members(path: &Path) -> bool {
     };
     match sniff(&head[..n]) {
         Format::Tar => true,
-        Format::Zip => unwraps(Format::Zip),
+        Format::Zip | Format::SevenZip => unwraps(Format::SevenZip),
         Format::Gzip => {
             let mut dec = flate2::read::MultiGzDecoder::new((&head[..n]).chain(src));
             let mut inner = [0u8; tar::BLOCK];
@@ -1178,7 +1195,7 @@ impl<'l> Walker<'l> {
                 Flow::Continue
             }
             #[cfg(feature = "archive")]
-            Format::Zip if depth >= self.limits.max_depth => {
+            Format::Zip | Format::SevenZip if depth >= self.limits.max_depth => {
                 self.skip(label, SkipReason::TooDeep);
                 Flow::Continue
             }
@@ -1206,7 +1223,14 @@ impl<'l> Walker<'l> {
                 self.skip(label, SkipReason::Unsupported(format));
                 Flow::Continue
             }
-            Format::SevenZip | Format::Zstd | Format::Xz | Format::Bzip2 | Format::Lz4 => {
+            #[cfg(feature = "archive")]
+            Format::SevenZip => self.walk_7z(&mut chained, label, layers, depth + 1),
+            #[cfg(not(feature = "archive"))]
+            Format::SevenZip => {
+                self.skip(label, SkipReason::Unsupported(format));
+                Flow::Continue
+            }
+            Format::Zstd | Format::Xz | Format::Bzip2 | Format::Lz4 => {
                 self.skip(label, SkipReason::Unsupported(format));
                 Flow::Continue
             }

@@ -765,7 +765,11 @@ fn linked_code_targets_exist() {
     // REST wrong-password limiter and links `src/output/api.rs`. Attributed
     // by diffing `docs/internals/` against HEAD: that one link and no other
     // page changed.
-    const EXPECTED_CODE_LINKS: usize = 457;
+    // 457 -> 458: invariant 4 names 7z's key-derivation bound and links
+    // `src/capture/archive/sevenz.rs`, which reports it. Attributed by
+    // diffing `docs/internals/` against HEAD: that one link and no other page
+    // changed.
+    const EXPECTED_CODE_LINKS: usize = 458;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \

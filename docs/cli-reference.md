@@ -493,7 +493,14 @@ to. All of those spellings count as one attempt. Passwords may be up to 4096
 bytes, and sipnab refuses a longer one whole rather than cutting it short.
 
 **What it reads.** ZIP members stored or deflated, unencrypted, encrypted with
-WinZip AES (128, 192 or 256-bit), or encrypted with the legacy ZipCrypto.
+WinZip AES (128, 192 or 256-bit), or encrypted with the legacy ZipCrypto. 7z
+archives compressed with LZMA or LZMA2, unencrypted or AES-256, with or without
+an encrypted member list. A 7z password covers the whole archive, and the
+format stores it as UTF-16 text, so sipnab tries its NFC and NFD forms but no
+code pages. A 7z sets how much work deriving its key takes, and sipnab refuses
+one asking for more than 7-Zip's own ceiling of 2^24 rounds as
+`bound_exceeded (7z key derivation)`, since a crafted archive could otherwise
+make one attempt take hours.
 sipnab reads ZipCrypto and warns once per archive that it protects nothing:
 the `bkcrack` tool recovers its keys from 12 known bytes, and a capture's first bytes are
 predictable. A wrong password fails the format's own check. For the one wrong

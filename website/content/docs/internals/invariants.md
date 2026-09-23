@@ -253,7 +253,11 @@ stops at the ceiling as well. The password layer has bounds of its own in
 (4096) per password, refused whole and never truncated,
 `MAX_PASSWORD_FILE_BYTES` (64 KiB) per password file, `MAX_COMMAND_OUTPUT`
 (64 KiB) and `COMMAND_TIMEOUT` (120 s) for `--archive-password-command`, and
-`PROMPT_ATTEMPTS` (3) prompts per archive. The REST wrong-password limiter
+`PROMPT_ATTEMPTS` (3) prompts per archive. A 7z's key derivation costs
+`2^NumCyclesPower` SHA-256 rounds, a number the archive chooses: the
+`sevenz-rust2` crate refuses a power above 24, 7-Zip's own ceiling, and
+[`sevenz.rs`](https://github.com/NormB/sipnab/blob/main/src/capture/archive/sevenz.rs) reports the refusal as
+`bound_exceeded (7z key derivation)`. The REST wrong-password limiter
 in [`api.rs`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs) keys on a client and an archive
 name, both of which a client chooses, so it holds at most
 `WRONG_PASSWORD_KEYS` (4,096) pairs and forgets the pair whose last wrong
@@ -325,7 +329,15 @@ never what it supplied. [`tests/archive_password_test.rs`](https://github.com/No
 `SIPNAB_LOG=trace` and requires that no byte of stdout or stderr contains the
 password. Decrypted members go to owner-only files, mode 0600, named `m00007.pcap`
 and never after the member, inside the private 0700 extraction directory that
-the run deletes on exit.
+the run deletes on exit. Two copies sit outside that control, in crates
+sipnab uses unmodified, as its no-forks rule requires. The `zip` crate clears
+the AES key it derives, but keeps a ZipCrypto archive's three key words in a
+reader state it never clears, which dies with the member's reader. `sevenz-rust2` takes its
+password as a `Password` that derives `Debug` and `Clone` and clears nothing, so
+sipnab builds one only for the call that needs it and drops it straight after.
+That crate also keeps the last 7z key it derived in a process-wide cache that
+is never cleared, so a 7z key outlives its archive until another 7z replaces it
+or the process exits.
 
 **Fails as.** Keys recoverable from a crash report, a core file, or a swap
 device read long after the process exited — an exposure with no error message

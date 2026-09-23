@@ -58,6 +58,12 @@ entry that carries them.
   Every such response is `Cache-Control: no-store`, and a locked archive
   answers 422 naming `encrypted_no_password` or `encrypted_wrong_password`.
   OpenAPI documents the header as `format: password`.
+- **`-I` reads 7z archives, password-protected ones included.** LZMA and
+  LZMA2 members, unencrypted or AES-256, with or without an encrypted member
+  list, nested in a tar or holding one. One password opens the whole archive,
+  tried from the same sources as a ZIP's in its NFC and NFD forms, since 7z
+  stores a password as UTF-16 text. An archive asking for more than 2^24
+  key-derivation rounds is refused as `bound_exceeded (7z key derivation)`.
 - **MCP takes no archive password, on any tool.** A call carrying a
   password-like argument is refused before dispatch and audited as
   `[REDACTED]`, and the file-opening tools refuse unknown arguments.

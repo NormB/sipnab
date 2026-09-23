@@ -707,6 +707,9 @@ pub enum Container {
     /// ZIP: the password's bytes are hashed as they are, in whatever encoding
     /// the creator's tool used.
     Zip,
+    /// 7-Zip: the format defines the password as UTF-16LE text, so its
+    /// spellings are the Unicode forms of the text, each then encoded.
+    SevenZip,
 }
 
 /// An encoding `--archive-password-encoding` pins.
@@ -779,6 +782,9 @@ pub fn variants(
 ) -> Vec<Zeroizing<Vec<u8>>> {
     let exact = pw.expose();
     let text = std::str::from_utf8(exact).ok();
+    if container == Container::SevenZip {
+        return seven_zip_spellings(text);
+    }
     let to_page = |page: CodePage, text: &str| -> Option<Zeroizing<Vec<u8>>> {
         let source = normalized(text, true)?;
         let composed = std::str::from_utf8(&source).ok()?;
@@ -814,10 +820,36 @@ pub fn variants(
     };
     add(normalized(text, true), &mut out);
     add(normalized(text, false), &mut out);
-    match container {
-        Container::Zip => {
-            for page in CodePage::ALL {
-                add(to_page(page, text), &mut out);
+    if container == Container::Zip {
+        for page in CodePage::ALL {
+            add(to_page(page, text), &mut out);
+        }
+    }
+    out
+}
+
+/// A 7z password's spellings: the text as given, then its NFC and NFD
+/// forms, each as UTF-16LE, which is what the format hashes. Nothing for a
+/// password that is not text, since 7z has no way to hold one.
+fn seven_zip_spellings(text: Option<&str>) -> Vec<Zeroizing<Vec<u8>>> {
+    let Some(text) = text else {
+        return Vec::new();
+    };
+    let utf16 = |s: &str| {
+        let mut out = Zeroizing::new(Vec::with_capacity(s.len() * 4));
+        for unit in s.encode_utf16() {
+            out.extend_from_slice(&unit.to_le_bytes());
+        }
+        out
+    };
+    let mut out = vec![utf16(text)];
+    for form in [normalized(text, true), normalized(text, false)] {
+        if let Some(bytes) = form
+            && let Ok(s) = std::str::from_utf8(&bytes)
+        {
+            let v = utf16(s);
+            if !out.iter().any(|o| o.as_slice() == v.as_slice()) {
+                out.push(v);
             }
         }
     }

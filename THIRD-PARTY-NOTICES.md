@@ -39,7 +39,7 @@ These offer a copyleft option alongside permissive ones. sipnab elects the permi
 | r-efi | MIT OR Apache-2.0 OR LGPL-2.1-or-later | **Apache-2.0** |
 | termina | MIT OR MPL-2.0 | **MIT** |
 
-## Rust crates (409)
+## Rust crates (411)
 
 | Crate | Version | License |
 |---|---|---|
@@ -217,6 +217,7 @@ These offer a copyleft option alongside permissive ones. sipnab elects the permi
 | lock_api | 0.4.14 | MIT OR Apache-2.0 |
 | log | 0.4.34 | MIT OR Apache-2.0 |
 | lru | 0.18.2 | MIT |
+| lzma-rust2 | 0.21.0 | Apache-2.0 |
 | mac_address | 1.1.8 | MIT OR Apache-2.0 |
 | matchers | 0.2.0 | MIT |
 | matchit | 0.8.4 | MIT AND BSD-3-Clause |
@@ -318,6 +319,7 @@ These offer a copyleft option alongside permissive ones. sipnab elects the permi
 | serde_path_to_error | 0.1.20 | MIT OR Apache-2.0 |
 | serde_spanned | 1.1.1 | MIT OR Apache-2.0 |
 | serde_urlencoded | 0.7.1 | MIT/Apache-2.0 |
+| sevenz-rust2 | 0.23.0 | Apache-2.0 |
 | sha1 | 0.11.0 | MIT OR Apache-2.0 |
 | sha2 | 0.10.9 | MIT OR Apache-2.0 |
 | sha2 | 0.11.0 | MIT OR Apache-2.0 |

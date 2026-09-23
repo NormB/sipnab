@@ -474,6 +474,7 @@ fn an_unknown_password_encoding_is_refused() {
 /// This host's address on its default route, which is not loopback: what a
 /// request from "elsewhere" looks like to a server bound to every interface.
 /// Found by connecting a UDP socket, which sends nothing.
+#[cfg(feature = "api")]
 fn non_loopback_address() -> Option<std::net::IpAddr> {
     let s = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
     s.connect("192.0.2.1:9").ok()?;
@@ -579,4 +580,59 @@ fn a_remote_client_s_password_header_needs_api_accept_archive_passwords() {
         let _ = child.wait();
         assert_eq!(code, want, "flags {extra:?}");
     }
+}
+
+/// A 7z, AES-256 with its member list encrypted too, `password`-locked.
+fn locked_7z(dir: &Path, call_id: &str, password: &str) -> PathBuf {
+    use sevenz_rust2::encoder_options::AesEncoderOptions;
+    use sevenz_rust2::{ArchiveEntry, ArchiveWriter, EncoderMethod, Password};
+    let mut w = ArchiveWriter::new(std::io::Cursor::new(Vec::new())).expect("writer");
+    w.set_content_methods(vec![
+        AesEncoderOptions::new(Password::from(password)).into(),
+        EncoderMethod::LZMA2.into(),
+    ]);
+    w.set_encrypt_header(true);
+    let pcap = capture(call_id);
+    w.push_archive_entry(ArchiveEntry::new_file("calls/a.pcap"), Some(&pcap[..]))
+        .expect("entry");
+    let path = dir.join("evidence.7z");
+    std::fs::write(&path, w.finish().expect("finish").into_inner()).expect("write");
+    path
+}
+
+#[test]
+fn a_password_7z_opens_from_a_password_file_and_fails_named_without_one() {
+    let root = tempfile::tempdir().expect("root");
+    let tmp = tempfile::tempdir().expect("tmp");
+    let password = mint("7z");
+    let archive = locked_7z(root.path(), "sevenz@test", &password);
+    let spec = archive.display().to_string();
+    let file = root.path().join("pw");
+    private_file(&file, &format!("{password}\n"));
+    let mut args = read_args(&spec);
+    args.extend([
+        "--archive-password-file".to_string(),
+        file.display().to_string(),
+    ]);
+    let r = run(
+        &args.iter().map(String::as_str).collect::<Vec<_>>(),
+        &[],
+        None,
+        tmp.path(),
+    );
+    assert_eq!(r.code, Some(0), "{}", r.stderr);
+    assert!(r.stdout.contains("sevenz@test"), "{}", r.stderr);
+    assert_sealed(&r, &password);
+
+    let r = run(
+        &read_args(&spec)
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        &[],
+        None,
+        tmp.path(),
+    );
+    assert_eq!(r.code, Some(1), "{}", r.stderr);
+    assert!(r.stderr.contains("encrypted_no_password"), "{}", r.stderr);
 }

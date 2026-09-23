@@ -209,6 +209,11 @@ utoipa = { version = "5", optional = true }
 # bzip2, xz or zopfli C code, only inflate through the flate2 already here.
 zip = { version = "8.6", default-features = false, features = ["aes-crypto", "deflate-flate2"], optional = true }
 unicode-normalization = { version = "0.1", optional = true }
+# 7-Zip members, AES-256 included (feature `archive`). READ only; default
+# features off, so no encoder, bzip2 or PPMd: LZMA and LZMA2 decode plus the
+# AES-256 key derivation, which the crate caps at 7-Zip's own NumCyclesPower
+# of 24 so a crafted archive cannot make one attempt take hours.
+sevenz-rust2 = { version = "0.23", default-features = false, features = ["aes256"], optional = true }
 
 # Phase 8.1: MCP server (Model Context Protocol)
 rmcp = { version = "3", default-features = false, features = ["server", "transport-io", "macros", "schemars"], optional = true }
@@ -245,6 +250,9 @@ mimalloc = { version = "0.1", default-features = false }
 # Assembles WAT fixtures for the WASM plugin host's own tests, so they do
 # not need a wasm32 toolchain to run.
 wat = "1"
+# Writes 7-Zip fixtures, AES-encrypted ones included, inside the tests that
+# read them: no encrypted blob is committed. The encoder is DEV ONLY.
+sevenz-rust2 = { version = "0.23", default-features = false, features = ["aes256", "compress"] }
 # Generates the private CA and the end-entity server certificate the HEP TLS
 # tests hand to rustls. DEV ONLY -- sipnab issues no certificates. It replaces
 # shelling out to `openssl`, whose x509 subcommands differ between the OpenSSL
@@ -339,7 +347,7 @@ vcon = ["native", "dep:sha2", "dep:hmac", "dep:base64"]
 # `full`, so the pre-commit hook's `cargo test --features full` covers it.
 # `zeroize` is what clears a password when it is dropped; `unicode-normalization`
 # produces the NFC and NFD spellings a password may have been typed in.
-archive = ["native", "dep:zip", "dep:zeroize", "dep:unicode-normalization"]
+archive = ["native", "dep:zip", "dep:zeroize", "dep:unicode-normalization", "dep:sevenz-rust2"]
 full = ["native", "tui", "tls", "hep", "api", "audio", "mcp", "mcp-http", "metrics", "plugins", "vcon", "archive"]
 
 # Userspace half of the eBPF backend. Stable Rust; only the KERNEL half needs
