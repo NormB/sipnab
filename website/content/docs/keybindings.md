@@ -68,9 +68,11 @@ Clipboard copies (`y` in the Raw Message view, `E` in the Call Flow view) use
 **OSC 52**, an escape sequence the terminal maps to your system clipboard. It
 travels in-band over the pty, so it works across SSH with no X11 forwarding —
 your terminal must support it, and most modern ones (kitty, WezTerm, iTerm2,
-Windows Terminal, foot, recent xterm) do. On top of OSC 52, sipnab also feeds
+Windows Terminal, foot, recent xterm) do.
+
+On top of OSC 52, sipnab also feeds
 `pbcopy`/`xclip` silently when one is available. Copies stop at 72 KiB
-(terminals limit OSC 52 payloads); the status line reports how much it copied.
+(terminals limit OSC 52 payloads). The status line reports how much it copied.
 
 To select arbitrary screen text with the mouse, press `F12` to turn mouse
 capture off and drag as usual, then `F12` again to get wheel scrolling back.
@@ -119,7 +121,7 @@ without toggling anything.
 | F10 | Column selector **(configurable: `column_selector`)** — a popup to show/hide any of the eleven Call List columns (#, Method, From, To, Source, Destination, State, Msgs, Date, PDD, Duration) |
 
 A search committed with Enter keeps narrowing the list and appears on the
-status line as `Search: /query (F9 clears)`; F9 clears it together with any
+status line as `Search: /query (F9 clears)`. F9 clears it together with any
 active filter.
 
 > **Gotcha:** the `clear_calls` action binds `F5` in *both* views — in the Call List it clears calls, in the Call Flow it resets a pending message-compare selection. Rebinding `clear_calls` moves both.
@@ -336,8 +338,10 @@ A session with no listener says so. Open with `s` from Capture health.
 The live relay's own view of media, asked over its control socket — distinct
 from the **Statistics** view above, which is about what this capture saw. Open
 with `S`: from the Call List it asks the relay's global counters, and from a
-call's flow view it scopes them to that call. Needs a relay control address and
-a live capture; a run reading a file reports that it may not ask. The ask runs
+call's flow view it scopes them to that call.
+
+It needs a relay control address and
+a live capture. A run reading a file reports that it may not ask. The ask runs
 in the background, so the view never freezes waiting on a slow relay.
 
 | Key | Action |
@@ -430,6 +434,7 @@ gzip-compressed forms (`*.pcap.gz`, …), and archives of captures (`.tar`,
 `.tgz`, `.tar.gz`). sipnab decompresses on the fly, and loads an archive as the
 set of captures it holds, member by member into one view. The status line says
 how many captures came out of the archive and how many members it did not read.
+
 If sipnab cannot read the directory — most often because it started with
 `sudo` and dropped privileges to an unprivileged user that can't read your
 home directory — the dialog shows the reason instead of a blank list. Run
@@ -493,18 +498,18 @@ labels, and the RTP stream views. Press **`n`** to cycle the mode (shown
 briefly in the status line):
 
 1. **Off** (default) -- raw `ip:port`
-2. **Static** -- operator mappings + the system `/etc/hosts`; no network traffic
+2. **Static** -- operator mappings + the system `/etc/hosts`. No network traffic
 3. **DNS** -- additionally resolves via reverse DNS (PTR), looked up on a
    background worker and cached (so the UI never blocks)
 
 Names come from four sources, highest priority first: operator-entered
 mappings, then `/etc/hosts` (or a `--names` / `[names] hosts_file`), then any
 Name Resolution Block in the capture you opened, then reverse DNS.
-Substitution touches only the IP; the `:port` stays (`sbc-edge:5060`).
+Substitution touches only the IP. The `:port` stays (`sbc-edge:5060`).
 
 To name an address **in context**, select a call-list row, stream row, or
-call-flow message and press **`N`**. A popup opens pre-filled with that IP;
-type a host/FQDN and press Enter (an empty name clears the mapping). Naming an
+call-flow message and press **`N`**. A popup opens pre-filled with that IP.
+Type a host/FQDN and press Enter (an empty name clears the mapping). Naming an
 address turns resolution on automatically, and sipnab saves the mapping to
 `$XDG_CONFIG_HOME/sipnab/hosts` (`~/.config/sipnab/hosts`) so it persists
 across runs.
@@ -523,7 +528,7 @@ When saving a capture as **PCAP-NG** with resolution active, sipnab embeds the
 mappings as a Name Resolution Block, and reads them back when you reopen the file.
 
 Related flags: `--resolve` (start with resolution on), `--reverse-dns` (enable
-PTR lookups; implies `--resolve`), `--names <FILE>` (preload an
+PTR lookups, which implies `--resolve`), `--names <FILE>` (preload an
 `/etc/hosts`-format mapping file, repeatable). See
 [cli-reference.md](@/docs/cli.md#name-resolution) and the `[names]` section of
 [config-reference.md](@/docs/config.md#names).
@@ -560,7 +565,9 @@ the source (`Live capture: eth0` or `File: call.pcap`), how many dialogs the
 list shows out of how many sipnab holds, and whether autoscroll is on. Line 2
 is the capture (BPF) filter the kernel applies, `none` when sipnab compiled
 no filter. Line 3 is the view filter from `F7` and any search you kept with
-Enter, and it also carries status messages, with errors in red. The key bar
+Enter, and it also carries status messages, with errors in red.
+
+The key bar
 at the bottom lists the keys of the view you are in, `F1 Help` first after the
 way out, and fewer of them on a narrow terminal.
 

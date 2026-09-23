@@ -41,7 +41,9 @@ capture platform: many nodes, no infrastructure behind it
 ([the position](https://github.com/NormB/sipnab/blob/main/docs/design/positioning.md)).
 Kamailio, OpenSIPS and Asterisk already speak HEP, so they mirror their
 signaling to one sipnab listener and that single process answers for the whole
-estate — nothing goes on the production hosts. Throughput is what keeps that
+estate — nothing goes on the production hosts.
+
+Throughput is what keeps that
 arrangement honest. A listener that falls behind the fan-in sends you back to
 capture agents feeding a collector, which is the deployment project sipnab
 exists to skip.
@@ -120,9 +122,13 @@ above reach the mapped reader.
 
 **The A/B that measured this is not on this page**, and this page drops the
 sentences that used to quote its spread and its per-core gaps rather than
-carrying them forward. They described a session whose table was never published here, so a
+carrying them forward.
+
+They described a session whose table was never published here, so a
 reader had no way to check them — the same defect as a stale number, wearing the
-shape of a measurement it cannot produce. What survives is the mechanism, and
+shape of a measurement it cannot produce.
+
+What survives is the mechanism, and
 the table above, which measures where the curve actually stops on the current
 release: four cores is the peak and eight is slower.
 
@@ -156,7 +162,9 @@ reader, the one stage `--cores` waits on: a single thread reads, copies and
 host-pair-peeks every packet while the workers idle. That charged it about 240
 bytes of dependent multiplies per packet — over this corpus that is arithmetic
 rather than a measurement: 535,000 packets × ~240 bytes ≈ 128 MB hashed a byte
-at a time. 0.5.89 moves the hash to the workers, computing the same FNV-1a
+at a time.
+
+0.5.89 moves the hash to the workers, computing the same FNV-1a
 over the same bytes, so pointers already written down still resolve. Because
 the work now spreads across workers, the recovery scales with them: about 81%
 of the loss at four cores, about 34% at two.
@@ -164,11 +172,15 @@ of the loss at four cores, about 34% at two.
 **Why 0.5.91 overshot.** Two further changes, both from the same profile.
 `parse_packet` stopped building a `FrameRef` per packet — a `FrameRef` owns an
 `Arc<str>`, so each one cost an atomic pair for a pointer that ~93% of frames
-never keep. The reader also stopped allocating each frame separately: it now
+never keep.
+
+The reader also stopped allocating each frame separately: it now
 cuts them from a shared 64 KiB block, so the allocator's cross-thread free path
 runs once per ~270 frames instead of once per frame. Together those put
 four-core throughput **above** where it was before the regression — 2.32M
-against 0.5.47's 2.02M. The second change beat its own predicted ceiling,
+against 0.5.47's 2.02M.
+
+The second change beat its own predicted ceiling,
 because frames sharing a block are also sequential in memory, which a
 diagnostic that scattered them into an arena could not show.
 
@@ -248,7 +260,9 @@ and the same host as the table above.
 **Honest read:** throughput is flat from 8k calls up — reconstruction cost is
 per-packet, not per-dialog, and 40k concurrent streams do not degrade it. The
 smaller corpora post lower figures because startup is inside the clock and a
-53.5k-packet read is over in ~24 ms. Memory grows close to linearly with
+53.5k-packet read is over in ~24 ms.
+
+Memory grows close to linearly with
 tracked state, about 25 KiB per call (dialog + two RTP streams + jitter/loss
 accounting), reaching 495 MiB at 20k calls. That linearity is the useful property: it is predictable, so capacity
 planning is arithmetic rather than guesswork.
@@ -270,11 +284,17 @@ Full instructions, including artifact download and checksum verification, are in
 In short — the generator runs first, because both harnesses read the corpus it
 writes:
 
-```sh
-# Run all of these, in order.
-python3 bench/carrier.py --calls 5000 --out corpus.pcap
-bench/scaling.sh "$BIN" corpus.pcap 535000 --cores 1,2,4,8 --runs 5
-```
+1. Generate the corpus:
+
+   ```sh
+   python3 bench/carrier.py --calls 5000 --out corpus.pcap
+   ```
+
+2. Run the scaling harness against it:
+
+   ```sh
+   bench/scaling.sh "$BIN" corpus.pcap 535000 --cores 1,2,4,8 --runs 5
+   ```
 
 sipnab 0.5.108 at four cores, with the per-message stream suppressed so only the
 end-of-run report prints:

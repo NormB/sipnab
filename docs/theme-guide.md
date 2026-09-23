@@ -21,7 +21,7 @@ sipnab's TUI uses 11 semantic color slots (plus `highlight`, a legacy alias for 
 | `status_bg` | `#303040` | Status bar background band, kept distinct from the terminal background so the status line stays visible |
 | `highlight` | -- | Legacy alias for `selected` (backward compatibility only) |
 
-`status_bg` is configurable like every other color above; its dark blue-gray
+`status_bg` is configurable like every other color above. Its dark blue-gray
 default stays readable on both dark and light terminals.
 
 ## Supported color syntax

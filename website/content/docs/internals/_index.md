@@ -24,12 +24,12 @@ A reading order, not a table of contents:
 
 1. [Domain primer](@/docs/internals/domain-primer.md) — the SIP and RTP model the code assumes
    you already have. Start here if you are a Rust engineer rather than a VoIP
-   engineer; nearly every subtle bug in this tree is a protocol-semantics bug
+   engineer. Nearly every subtle bug in this tree is a protocol-semantics bug
    wearing a Rust costume.
 2. [Subsystem guide](@/docs/internals/subsystem-guide.md) — one packet's journey from the wire
    to the screen, across all four packet paths.
 3. [Invariants](@/docs/internals/invariants.md) — the rules that must not break. Read before
-   your first pull request; each entry names what enforces it.
+   your first pull request. Each entry names what enforces it.
 4. [Testing](@/docs/internals/testing.md) — the test tiers and the self-enforcing gate tests.
    Read when one of them fails you.
 5. [Walkthroughs](@/docs/internals/walkthroughs.md) — ordered checklists for the common
@@ -107,7 +107,9 @@ toxic waste — [`crypto.rs`](https://github.com/NormB/sipnab/blob/main/src/cryp
 first-class: [`stream_store.rs`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs) discovers
 streams with no SIP at all), D15/D16 (privilege drop and process isolation),
 D17 (warn and continue on malformed input), D18 (localhost default for every
-listener). Beware the numbering collision noted above. **D22, D23, and D24**
+listener). Beware the numbering collision noted above.
+
+**D22, D23, and D24**
 also exist, but only in
 [`../design/implementation-plan-phases-8-10.md`](https://github.com/NormB/sipnab/blob/main/docs/design/implementation-plan-phases-8-10.md)
 — v6's catalog stops at D21. D22 is competitive-feature-borrowing discipline,
@@ -157,9 +159,13 @@ exports in sync, the homepage *test count*, sub-gate 5b for the site version —
 a different claim from the crate version — no TODO stubs, and an
 advisory notice when a commit touches code these pages cite. The TODO scan and
 that notice are the two advisory gates, printing `WARN`/`REVIEW` and letting the
-commit through). Version markers are not in that list: one Rust test asserts
+commit through).
+
+Version markers are not in that list: one Rust test asserts
 them and runs here *and* in CI, because two implementations of one rule
-diverge — as the shell copy the hook once carried did. Also
+diverge — as the shell copy the hook once carried did.
+
+Also
 thirteen in [`.githooks/pre-push`](https://github.com/NormB/sipnab/blob/main/.githooks/pre-push), each marked
 `# -- Hard gate` in the hook: `fmt`,
 `clippy --workspace --all-features --all-targets`, `cargo doc` with `-D warnings`,
@@ -193,10 +199,10 @@ process, so the floor is not optional.
 ## Conventions for these pages
 
 - **Cite code as a link, never as `file:line`.** Line numbers rot within a
-  commit; a path plus a `()`-suffixed symbol in the link text survives, and
+  commit. A path plus a `()`-suffixed symbol in the link text survives, and
   [`dev_docs_drift_test`](https://github.com/NormB/sipnab/blob/main/tests/dev_docs_drift_test.rs) checks both.
 - **Relative links only.** An absolute `github.com/NormB/sipnab/blob/main/…`
-  URL pins a branch and goes stale silently;
+  URL pins a branch and goes stale silently.
   [`build-wiki.py`](https://github.com/NormB/sipnab/blob/main/scripts/build-wiki.py) rewrites the relative form
   into a blob URL when publishing to the wiki.
 - **Write heading anchors in GitHub's spelling.** That is the spelling readers of `docs/` see,
@@ -205,8 +211,10 @@ process, so the floor is not optional.
   anchor to Zola's slug when it emits a site link, because the two renderers
   disagree — GitHub drops an em dash and keeps its surrounding spaces
   (`step-0--install-…`) where Zola collapses the run (`step-0-install-…`), and
-  GitHub keeps an underscore where Zola makes it a dash. `generated_site_anchors_resolve_under_zola`
-  checks the generated tree under Zola's rule alone; the older
+  GitHub keeps an underscore where Zola makes it a dash.
+
+  `generated_site_anchors_resolve_under_zola`
+  checks the generated tree under Zola's rule alone. The older
   `anchor_candidates` unions all three slug rules, which is right for `docs/`
   and too generous for a page only Zola ever renders.
 - **Diagrams are mermaid `sequenceDiagram`, and a prose line precedes every
@@ -216,24 +224,30 @@ process, so the floor is not optional.
   request.** The hard gate is `dev_docs_drift_test` in CI.
 - **These pages publish twice, and this tree is the source of both.**
   [`build-wiki.py`](https://github.com/NormB/sipnab/blob/main/scripts/build-wiki.py) renders them into the GitHub
-  wiki; [`build-site-internals.py`](https://github.com/NormB/sipnab/blob/main/scripts/build-site-internals.py)
+  wiki. [`build-site-internals.py`](https://github.com/NormB/sipnab/blob/main/scripts/build-site-internals.py)
   renders them into [`website/content/docs/internals/`](https://github.com/NormB/sipnab/blob/main/website/content/docs/internals), which the repo commits so
   the site builds with Zola alone. Never edit either mirror — regenerate it.
   `dev_docs_drift_test` re-runs the site generator and fails if the committed
-  output is stale. The same arrangement covers the operator
+  output is stale.
+
+  The same arrangement covers the operator
   pages: [`build-site-pages.py`](https://github.com/NormB/sipnab/blob/main/scripts/build-site-pages.py) renders
   each entry in its `PAGES` registry from `docs/` into [`website/content/docs/`](https://github.com/NormB/sipnab/blob/main/website/content/docs),
   gated by `site_pages_mirror_is_current`. That same script also writes
   `llms.txt` and `llms-full.txt` into `website/static/`, from ALL the published
   pages — `docs/internals/` included — and `llms_aggregates_are_current` gates
-  them. Which script owns them is the trap: `build-site-internals.py` does not
+  them.
+
+  Which script owns them is the trap: `build-site-internals.py` does not
   touch the aggregates, so editing an internals page and regenerating only the
   internals mirror satisfies the gate that checks the mirror and leaves the
-  aggregates stale. Run both generators, or run `build-site-pages.py` last. Every page in that registry got
+  aggregates stale. Run both generators, or run `build-site-pages.py` last.
+
+  Every page in that registry got
   there the same way — hand-maintained on both sides until they diverged. Read
   the registry for what it holds today, not this sentence. The cookbook shared
-  2 of its 36 commands with the site copy; the REST API page was 430 lines
-  against the site's 893, each side holding sections the other lacked; the MCP
+  2 of its 36 commands with the site copy. The REST API page was 430 lines
+  against the site's 893, each side holding sections the other lacked. The MCP
   page was 672 lines against the site's 440, and its tool table listed 7 of the
   11 registered tools where the site's listed all 11. The rest were the same
   story: the site's Filter DSL page carried fourteen operational recipes
@@ -244,6 +258,8 @@ process, so the floor is not optional.
   (`benchmark_tables_match_between_docs_and_website`), because the framing
   around them should differ.
   The wiki renders from `docs/`, so it showed whichever copy was thinner as
-  though it were the whole page. Register a page there. Never copy the script. The site mirror exists because GitHub's wiki mermaid viewer
+  though it were the whole page. Register a page there. Never copy the script.
+
+  The site mirror exists because GitHub's wiki mermaid viewer
   pins its controls over the diagram with no way to move them. The site
   renders the same diagrams with a viewer this repo controls.

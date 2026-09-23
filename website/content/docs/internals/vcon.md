@@ -156,6 +156,7 @@ vocabulary gap: none of the five type values in
 [section 4.3.1 of the core draft](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-4.3.1) describes a conversation
 known to have occurred whose content the container does not carry or
 reference, which is the ordinary result for an observer that retains no media.
+
 The second is a prose/schema inconsistency:
 [section 4.3 of the core draft](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-4.3) says "it is possible to have a
 Dialog Object with no parameters in it", and the schema published beside that
@@ -165,7 +166,9 @@ sipnab needs only the first requirement relaxed — it knows the start time — 
 the vendored copy removes `type` from `required` and leaves `start`. Read that
 as a documented compatibility deviation rather than a fix: making a required
 field optional changes validation behavior and obliges consumers to handle a
-state the schema used to guarantee away. The cleaner long-term answer is an
+state the schema used to guarantee away.
+
+The cleaner long-term answer is an
 explicit sixth type for the content-unavailable state, which an absent `type`
 cannot distinguish from a producer that simply omitted it. `start`, `party`
 and `dialog` stay mandatory on every attachment.
@@ -175,23 +178,31 @@ names no type at all.** Of the five values
 [section 4.3.1 of the core draft](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-4.3.1) defines, none is true of a
 signaling-only object: four promise content it does not hold, and `incomplete`
 names a call that "failed to be setup", which is a claim about the
-CONVERSATION. sipnab emitted `incomplete` there until 0.5.128, so every
+CONVERSATION.
+
+sipnab emitted `incomplete` there until 0.5.128, so every
 signaling-only export of a successful call shipped a container reporting a
 setup failure — read months later beside a switch's CDR showing a connected
-ninety-second call, the container is the thing that looks wrong. sipnab now keeps `incomplete`
+ninety-second call, the container is the thing that looks wrong.
+
+sipnab now keeps `incomplete`
 for a dialog whose final response it OBSERVED to be a failure, and `dialog_object()` decides the type and the disposition in one
 expression because
 [section 4.3.1 of the core draft](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-4.3.1)
 couples them: an incomplete object MUST name a
 disposition, and a disposition is only nameable when sipnab saw a failure. The
 media path types the object `recording` when audio actually arrives, and clears
-`disposition` with it. Typing an object `recording` when it carries no
+`disposition` with it.
+
+Typing an object `recording` when it carries no
 content — which this module did until 0.5.125 — is an ingest hazard rather than
 an imprecise label. The conserver's transcription link selects
 `type == "recording"` and then reads `dialog["url"]` with a bracket, so the
 link raises, and the conserver dead-letters the entire container. The converse
 costs as much: every `type == "recording"` selector skips audio left on an
-`incomplete` object, so the WAV sits in the container unreachable. `audio_never_rides_on_an_object_typed_incomplete`
+`incomplete` object, so the WAV sits in the container unreachable.
+
+`audio_never_rides_on_an_object_typed_incomplete`
 and `nothing_is_typed_a_recording_without_content_to_reach` pin both directions,
 and the second lives in the SIGNALING-ONLY test file on purpose: over a media
 fixture every object has a body, so the assertion passes vacuously and the
@@ -205,6 +216,7 @@ recorded in a `$comment` beside the line it changes.
 tripwire: re-vendoring the file from the draft is a correct-looking action that
 silently restores the contradiction, and whoever does it lands on that test and
 reads why before deciding.
+
 `a_container_validates_against_the_working_group_schema` in
 [`tests/vcon_ingest_contract_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/vcon_ingest_contract_test.rs)
 validates a real export against it. That one test found six violations that the
@@ -285,7 +297,9 @@ on the node ALONE, spending 62 of the 74 available bits on a value identical
 for every dialog on the box. Two dialogs opening in the same
 millisecond on one node had 12 bits between them, so roughly one pair in 4096
 collided — and [section 4.1.2 of the core draft](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-4.1.2) makes the uuid globally unique because a store KEYS on
-it. A collision raises nothing. It overwrites the record already there, losing
+it.
+
+A collision raises nothing. It overwrites the record already there, losing
 one capture with no error anywhere.
 
 An earlier version of this page called that "inherent in the layout the draft
@@ -337,7 +351,9 @@ The old text here predicted its own resolution: "giving that projection a
 `headers` field is an ordinary, sensible change to a debugging surface, and it
 would start putting digest credentials into a container that leaves this
 machine." That is what 0.5.125 did — and the two halves landed in ONE change,
-deliberately. The `sip-signaling` extension names `headers` in its message
+deliberately.
+
+The `sip-signaling` extension names `headers` in its message
 structure and a SIP trace without them is a summary of a trace, so the field
 was going to arrive. A field that publishes credentials must never land in a
 release ahead of the filter that removes them.

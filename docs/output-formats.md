@@ -112,19 +112,25 @@ wire form (`"Name: value"`) and in wire order, one entry per header line.
 `Call-ID`, `From`, `To`, `Contact`, `User-Agent` and `CSeq` never appear —
 those are fields of their own — and sipnab drops nothing else, so `Via`,
 `Max-Forwards` and `Content-Length` join the vendor-specific headers this
-exists for. The list keeps duplicates and wire order: three `Via` lines are
+exists for.
+
+The list keeps duplicates and wire order: three `Via` lines are
 three entries in the order they arrived. A message whose
 every header is already a field omits the key rather than sending an empty
 array.
 
 `input_origin` names the capture source that delivered the message — `wire`,
-`hep` or `uprobe` — and it is what keeps `frame` honest. A uprobe read carries a
+`hep` or `uprobe` — and it is what keeps `frame` honest.
+
+A uprobe read carries a
 pointer of the same shape as a capture offset (`uprobe:opensips/954#3` beside
 `capture.pcap#4212`), and only one of the two leads back to bytes anyone can
 read: `wire` came from an IP header sipnab observed, `hep` carries addressing a
 remote HEP sender asserted, and `uprobe` names plaintext sipnab lifted out of a
 process's TLS library, which was never on a wire at all. Feeding a `uprobe:` pointer to `--show-frame`
-therefore gets a refusal that names the process, not a frame. The field drops
+therefore gets a refusal that names the process, not a frame.
+
+The field drops
 out when the message came from no captured packet, because `wire` there would
 claim an observation sipnab never made.
 
@@ -262,6 +268,7 @@ the code.
 dialog.** A `REGISTER` rejected `403`, an `OPTIONS` that timed out `408`, a
 failed `SUBSCRIBE` — each carries `state: "Failed"` and no
 `final_status_code` at all, because no INVITE CSeq exists to take a code from.
+
 The recipe above is therefore a *call* recipe: point it at registration or
 keepalive traffic and every row comes back empty. For those, read
 `signaling_diagnosis` instead — `final_failure.code` carries the status for any
@@ -326,7 +333,9 @@ hint: `port unreachable` means the host answered and no service holds that
 port, so the fault is the service. `administratively prohibited` means a
 firewall or router ACL refused the packet -- the peer may be perfectly healthy
 and the fix is the filter. `host unreachable` means nothing reached the host at
-all, so the capture says nothing about its ports. On one real corpus a single capture
+all, so the capture says nothing about its ports.
+
+On one real corpus a single capture
 held 433 host-unreachable, 262 administratively prohibited and 63
 port-unreachable errors, so one sentence for all three would have been wrong
 for most of them.
@@ -357,7 +366,9 @@ than as a second finding.
 
 `observed_offset_secs` exists because the correlation is by **client IP alone**.
 Nothing in a Binding Request names a Call-ID, so a probe from the right address
-matches this dialog whether it happened during setup or an hour earlier. Inside
+matches this dialog whether it happened during setup or an hour earlier.
+
+Inside
 a two-minute window the finding is an observation of this call. Well outside it,
 the same finding is an inference that the client's NAT-discovery failure
 persisted — usually true, and not the same claim. Past that window the hint
@@ -368,7 +379,9 @@ every time is one nobody reads.
 **omitted** on any capture with no TURN relay in it. It answers "where did this
 call's audio actually go", which for a relayed call nothing else in the capture
 answers: `client`, `server`, `relayed_address` (the address the far end really
-sends to), `channel`, `peer`, and `lapsed`. `lapsed: true` is the capture-level
+sends to), `channel`, `peer`, and `lapsed`.
+
+`lapsed: true` is the capture-level
 `turn_allocation_lapsed` finding narrowed to **this** call's media, and is the
 only shape that also adds a hint — a relay doing its job needs no sentence in a
 list an operator reads for problems.
@@ -384,6 +397,7 @@ nothing, and flagging it would fire on every LAN-only capture.
 `retransmissions` and `icmp_unreachable` frequently appear on the same dialog,
 and they are not two views of one thing. `retransmissions` measures how hard the
 sender tried before giving up. `icmp_unreachable` states why nothing came back.
+
 So the ICMP fact **annotates** the retransmission finding rather than replacing
 it. sipnab sets `retransmissions.icmp_cause` to the ICMP description. The hint
 stops guessing at "a one-way path or an unreachable peer". The `count` and
@@ -456,7 +470,9 @@ teardown.
 `channel` number, the `peer` the ChannelBind named (absent when no bind appears
 in the capture — the frames still attribute, and the far side is simply not in
 this file), `bound`, `frames`, `bytes`, `first_seen` / `last_seen`, and the
-`ssrcs` observed inside the frames. Those SSRCs are the join to the stream
+`ssrcs` observed inside the frames.
+
+Those SSRCs are the join to the stream
 list: sipnab unwraps ChannelData and the RTP inside reaches the stream store as
 an ordinary stream — but that stream carries **phone-to-relay** addresses, so
 without this nothing said the relay had carried it at all, and a lapsed
@@ -576,7 +592,9 @@ from the `--json-analyze` object only in how it writes the same facts:
 `kind` keeps the same strings in both encodings, such as `one_way_audio`. Each
 finding kind and each count label is an identity in the module, and its
 description is the kind's title and one-sentence explanation. That makes the
-module a catalog of everything the analysis can report. When a string from the
+module a catalog of everything the analysis can report.
+
+When a string from the
 capture holds a character YANG cannot carry, such as a control character in a
 reason phrase, sipnab writes U+FFFD in its place. That substitution is the only
 change to the text itself.

@@ -248,8 +248,9 @@ alert_exec = "/usr/local/bin/sipnab-alert.sh"
 > through its `tfps_ctl` program in JSON mode, the `--json` flag. TFPS gained
 > that mode in [sippulse/tfps#6](https://github.com/sippulse/tfps/pull/6),
 > merged on 2026-09-18, and no tagged release carries it yet: v0.2.1, the
-> newest, rejects `--json`. Until the next release, build TFPS from its
-> `master` branch. To check the `tfps_ctl` you have, run
+> newest, rejects `--json`.
+>
+> Until the next release, build TFPS from its `master` branch. To check the `tfps_ctl` you have, run
 > `tfps_ctl status --json`. One line of JSON means it is ready, and
 > `unknown option: --json` means it predates the mode. Against an older
 > `tfps_ctl` these answer with that error and name what to install.
@@ -333,7 +334,9 @@ iLBC = 11.0
 Where the quality color column turns yellow, and where it turns red. A number
 here decides only what catches an operator's eye during triage, which is a
 different question from `[diagnosis]`: that one decides whether a call that is
-working counts as broken. The defaults suit a general-purpose trunk, and the
+working counts as broken.
+
+The defaults suit a general-purpose trunk, and the
 right values belong to the network you are watching -- 30 ms of jitter is
 already a fault on a LAN PBX, and 1 percent loss is unremarkable on an
 international one.

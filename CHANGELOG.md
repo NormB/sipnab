@@ -12,6 +12,20 @@ entry that carries them.
 
 ### Changed
 
+- **The docs read one idea at a time.** Long paragraphs across the user and
+  developer docs are split into one idea each, and sentences joined
+  by semicolons are split in two, with no fact dropped. References such as
+  "recipe 11", "the 2C tunnel" and "Section 4" now name their target and link
+  to it. Setup blocks that ran several commands from one copy button are now
+  numbered steps with one command each, where the commands are independent.
+  The command-line reference opens with a "Start here" list of the six flags
+  a first run needs. The filter language page explains MOS thresholds without
+  naming internal source functions.
+- **The REST API client examples work when pasted.** The curl examples put
+  the bearer token in a shell variable that word splitting broke into four
+  words, quotes included, so every authenticated call sent a malformed
+  header. Each example is now its own block with the header written out, and the note on
+  status codes says which limits answer 503.
 - **Docs pages are titled for the job they do.** Page titles, and so the
   Docs menu and sidebar, read as tasks: "Install sipnab", "Look up a
   command-line flag", "Stop a capture dropping packets", "Read TLS without

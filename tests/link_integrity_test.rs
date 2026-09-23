@@ -954,7 +954,16 @@ fn wiki_intra_docs_links_resolve() {
     // links that replaced two long cells).
     // Merge of docs-readability with main: 795 +41 (docs pass, above) +1
     // (fixtures) = 837.
-    const EXPECTED_WIKI_LINKS: usize = 837;
+    // 837 -> 930 by the site-wave2 prose pass, which replaced bare references
+    // ("recipe 11", "7e and 7f", "the 2C tunnel", "Section 4") with links
+    // that name their target: about 40 in docs/examples.md, 21 in
+    // docs/mcp-deploy.md, 20 in docs/mcp-estate.md, 25 in
+    // docs/tuning-capture.md (mostly relabeled, some new) and 8 in
+    // docs/real-world-captures.md, plus the six "Start here" links in
+    // docs/cli-reference.md. A diff of docs/ counts about 98 link targets
+    // added net, the extractor 93; the gap is links inside fences, which the
+    // extractor does not count.
+    const EXPECTED_WIKI_LINKS: usize = 930;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe 6d in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

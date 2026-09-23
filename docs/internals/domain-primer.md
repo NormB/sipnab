@@ -27,14 +27,18 @@ sipnab's [`DialogStore`](../../src/sip/dialog_store.rs) keys its map on
 [`SipDialog`](../../src/sip/dialog.rs). That is a deliberate simplification for
 a capture tool: at capture time the To-tag does not exist yet (it arrives in
 the first response), so keying on the full triple would mean re-keying every
-dialog mid-flight. sipnab still captures the tags — `to_tag` fills in the first
+dialog mid-flight.
+
+sipnab still captures the tags — `to_tag` fills in the first
 time a response carries one — and it tells forked calls that share a Call-ID
 apart downstream rather than by the map key.
 
 Two things must be knowable before a message gets a dialog at all: its Call-ID,
 and its method. The method requirement is the less obvious one, and it exists
 because [`SipDialog::method`](../../src/sip/dialog.rs) takes its value once at creation
-and never corrected. A response derives it from CSeq, so a malformed response —
+and never corrected.
+
+A response derives it from CSeq, so a malformed response —
 Call-ID present, CSeq absent — used to create a dialog under that Call-ID
 labeled with an invented method, and the genuine INVITE arriving afterwards
 matched that entry instead of creating its own. The label then outlived the
@@ -184,7 +188,9 @@ The transaction is a coordinate of the table rather than a filter the code
 applies afterwards, and this exchange shows why. A capture may open on any of
 these five messages. Open on the `CANCEL` or the `487` and the caller gave up.
 Open on the `200` and nothing yet says how the call ended — same family, same
-code that establishes a call one line above, opposite meaning. The sibling case
+code that establishes a call one line above, opposite meaning.
+
+The sibling case
 runs the other way: a `2xx` answering a `BYE` *is* evidence the session ended
 ([RFC 3261 section 15.1.2](https://www.rfc-editor.org/rfc/rfc3261#section-15.1.2)), so
 a call whose `BYE` fell outside the capture still leaves `InCall`.
@@ -325,7 +331,9 @@ The delay term is the one input a passive tap cannot measure, so
 [`MosDelay`](../../src/rtp/quality.rs) resolves it per stream and every surface
 scores through that: what the operator declared, then what an endpoint reported
 in an RTCP XR VoIP-metrics block, then what sipnab derives from a receiver
-report's sender-report echo, then a labeled assumption. Score a stream any
+report's sender-report echo, then a labeled assumption.
+
+Score a stream any
 other way and two surfaces report two numbers for one call — G.107's delay
 penalty has a knee at 177.3 ms, and a call past it reads more than a full MOS
 point too high on the assumption.

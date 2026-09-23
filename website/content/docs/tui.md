@@ -61,8 +61,8 @@ shows out of how many sipnab holds, then the capture (BPF) filter, then the view
 filter. The bar at the bottom lists the keys of the view you are in, and `F1`
 opens the help from any view.
 
-- `j` / `k` (or `Down` / `Up`) move the selection; `PgUp` / `PgDn`, `Home`, `End` jump around.
-- `<` / `>` sort by the previous / next column; `Z` reverses the direction. Sort by **State** to bring `Failed` calls to the top, or by **PDD** to find slow setups.
+- `j` / `k` (or `Down` / `Up`) move the selection. `PgUp` / `PgDn`, `Home`, `End` jump around.
+- `<` / `>` sort by the previous / next column. `Z` reverses the direction. Sort by **State** to bring `Failed` calls to the top, or by **PDD** to find slow setups.
 - `t` cycles the timestamp mode (absolute → delta from previous → delta from first → scaled). Delta from previous is the one that makes latency spikes jump out.
 - Too many columns, or missing one you want (Source IP, PDD)? `F10` opens the column selector.
 
@@ -77,7 +77,7 @@ host it touched (UAC → proxy → UAS), with a detail pane beside it.
 - `d` cycles how the detail pane shows SDP (hidden / summary / full).
 - `w` toggles line wrapping in the detail pane. With wrap off, long lines truncate and a horizontal scrollbar appears. Press `Tab` to put the cursor in the detail pane, and `Left` / `Right` then scroll it sideways. Without that focus the same two keys resize the detail pane instead. `R` hides or shows it.
 - `Enter` on a message opens the full-screen **Raw Message** view (`/` searches within it, `n` / `N` jump between matches, `Esc` returns).
-- `c` recolors the ladder by method, Call-ID, or CSeq; `t` shares the timestamp mode with the Call List.
+- `c` recolors the ladder by method, Call-ID, or CSeq. `t` shares the timestamp mode with the Call List.
 
 `Esc` takes you back to the Call List at any time.
 
@@ -101,7 +101,7 @@ line-by-line comparison. `Esc` returns to the ladder.
 ## 6. Search and filter
 
 - `/` searches the current view (Call List, Raw Message, or RTP Streams).
-- `F7` opens the **Filter dialog**, which offers From/To, source/destination, payload, time bounds and method fields. These fields build a filter; there is no free-form expression field. Pass the full [Filter DSL](@/docs/filter-dsl.md) through CLI `--filter`, for example `rtp.mos < 3.0`.
+- `F7` opens the **Filter dialog**, which offers From/To, source/destination, payload, time bounds and method fields. These fields build a filter. There is no free-form expression field. Pass the full [Filter DSL](@/docs/filter-dsl.md) through CLI `--filter`, for example `rtp.mos < 3.0`.
 - `F9` clears the view filter and any kept search. `i` prunes the dialogs that do *not* match, keeping only the matches, and `I` prunes the ones that do.
 
 ## 7. Inspect RTP quality
@@ -115,11 +115,15 @@ address.
 Press `Enter` on a stream -- or on an `██ RTP ██` bar back in the Call Flow --
 to open **Stream Detail**: [MOS](@/docs/glossary.md#mos) (mean opinion score, an
 estimate of how the call sounded), jitter statistics, quality intervals, burst/gap
-analysis, silence detection, and MOS/jitter sparklines. A stream whose far end
+analysis, silence detection, and MOS/jitter sparklines.
+
+A stream whose far end
 sent RTCP XR gains a **Reported by Far End (RTCP XR)** section at the bottom,
 holding that endpoint's own R-factor, MOS-LQ, MOS-CQ, delays and discard rate.
 Everything above that section is what sipnab measured, and nothing in it moves
-those numbers. With an `audio` build,
+those numbers.
+
+With an `audio` build,
 `Shift+P` plays the stream (G.711). `Esc` returns to the RTP Streams list, and
 `Tab` there switches back to the Call List.
 
@@ -156,7 +160,9 @@ text to remove it.
 
 To hand the capture over, press `F2`, Tab to PCAP-NG and save: each note is the
 packet comment on its message's frame, which Wireshark shows, with a line naming
-the frame you typed it on. To pick the session up later, Tab to NOTES instead,
+the frame you typed it on.
+
+To pick the session up later, Tab to NOTES instead,
 then start sipnab again with `--notes` and that file. The capture you send
 carries your notes, and sipnab never reads them back as analysis.
 

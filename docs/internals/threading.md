@@ -50,7 +50,9 @@ capture thread(s)              │                          │
 The mode column above is the part to keep true, and it is worth saying why.
 An earlier revision of this diagram drew every auxiliary thread as a child of
 the TUI event loop. Not one of them is: both run modes start four of them, and
-batch alone starts the scanner-kill worker. That is not a cosmetic error —
+batch alone starts the scanner-kill worker.
+
+That is not a cosmetic error —
 `--metrics` really did ship wired to the TUI path alone, so every
 headless `-N` deployment (which is every container and systemd unit) got no
 metrics at all, and this page said nothing that would have contradicted it.
@@ -69,7 +71,9 @@ The Prometheus listener is **not** a task on the shared tokio runtime, and the
 distinction matters when reasoning about blocking: it is a raw
 [`TcpListener`](../../src/output/prometheus_server.rs) accept loop on its own
 thread, deliberately independent of tokio and axum so metrics stay scrapable
-when the async servers are not compiled in at all. Each accepted scrape runs
+when the async servers are not compiled in at all.
+
+Each accepted scrape runs
 on a short-lived `metrics-conn` thread, and a `ConnGate` bounds those
 to 16 in flight — beyond that new connections get an immediate `503` rather
 than a thread (SN-02, CWE-770).
@@ -181,30 +185,35 @@ flow's packets share a host pair and therefore a worker.
   at all). Each store is then locked for writing **once per packet**, which
   makes writes the most frequent lock operation in the process, not the rarest.
 - **Lock ordering:** when a path needs both stores, dialog store first, then
-  stream store; if it also needs the alert engine, that comes last. The
+  stream store. If it also needs the alert engine, that comes last. The
   ordering is what carries the safety, because the guards are **not** always
-  disjoint. [`process_packet()`](../../src/pipeline.rs) on the live path and
+  disjoint.
+
+  [`process_packet()`](../../src/pipeline.rs) on the live path and
   [`run_pcap_load()`](../../src/tui/controllers/file_open.rs) for the file-open
   worker above each take one store at a time and release it before the other
   — *"briefly"* is accurate there. The batch applier
   ([`batch.rs`](../../src/app/batch.rs)) does **not** work that way: it holds
-  **both** write guards across the entire per-packet body. This page
-  previously said both write locks were never held at once; that was never
+  **both** write guards across the entire per-packet body.
+
+  This page
+  previously said both write locks were never held at once. That was never
   true of the batch path.
 - **The guards queue side effects rather than performing them.** Alert
   findings, per-message output and the `--alert-exec` / `--on-dialog-exec` /
   `--on-quality-exec` spawns accumulate while the code holds the guards, and
   replayed by `DeferredEffects::drain` after both drop, so no `fork`/`exec`, no
   stdout write and no `AlertEngine` lock happens inside the critical section.
+
   Until that change the batch loop took the alert engine's write lock nested
   inside both store guards — a third lock deep in the hot path, with a
   `posix_spawn` beside it. The full rule and what would re-create that edge are
   in [Invariants, section 2, "Dialog before stream, then alerts — one consistent order"](invariants.md#2-dialog-before-stream-then-alerts--one-consistent-order).
 - **The TUI never blocks:** all render-side store access is `try_read()`.
   On contention the frame renders with the previous data (counts may be one
-  frame stale — this is deliberate; an adaptive 10 fps active / 2 fps idle
+  frame stale — this is deliberate. An adaptive 10 fps active / 2 fps idle
   tick bounds staleness).
-- **Pause** is an `AtomicBool` checked by the processing thread; no lock.
+- **Pause** is an `AtomicBool` checked by the processing thread. No lock.
 - `mcp/` denies `clippy::await_holding_lock` — parking_lot guards must never
   live across an `.await`.
 

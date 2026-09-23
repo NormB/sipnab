@@ -1,6 +1,8 @@
 # REST API & metrics
 
-sipnab includes an optional REST API and Prometheus metrics endpoint, enabled with the `api` feature flag. The API runs as a thread inside the sipnab process, reading the same in-memory dialog/stream stores as the capture pipeline. Reads never alter the capture, with one deliberate exception: `POST /v1/persistence` sets the persistence gate, so a bearer token can stop and start recording to disk. Every other route only reads.
+sipnab includes an optional REST API and Prometheus metrics endpoint, enabled with the `api` feature flag. The API runs as a thread inside the sipnab process, reading the same in-memory dialog/stream stores as the capture pipeline.
+
+Reads never alter the capture, with one deliberate exception: `POST /v1/persistence` sets the persistence gate, so a bearer token can stop and start recording to disk. Every other route only reads.
 
 [CLI Reference](cli-reference.md#network-listeners) catalogs every API flag.
 
@@ -92,11 +94,17 @@ environment the first line sets. Run the second on its own and the variable is
 unset, which on this loopback bind starts an API that accepts every request
 unauthenticated:
 
-```bash
-# Run all of these, in order.
-export SIPNAB_API_KEY="$(openssl rand -hex 32)"
-sipnab --api 127.0.0.1:8080
-```
+1. Generate a key and export it:
+
+   ```bash
+   export SIPNAB_API_KEY="$(openssl rand -hex 32)"
+   ```
+
+2. Start the API in the same shell:
+
+   ```bash
+   sipnab --api 127.0.0.1:8080
+   ```
 
 | Setting | Purpose |
 |---|---|
@@ -116,7 +124,9 @@ s2.<base64url(payload)>.<base64url(HMAC-SHA256)>
 
 where `payload` is compact JSON
 `{"id":"<jti>","exp":<unix_seconds>,"aud":"<api|mcp>"}` and the signature is
-`HMAC-SHA256(signing_key, "s2." + base64url(payload))`. Verification is
+`HMAC-SHA256(signing_key, "s2." + base64url(payload))`.
+
+Verification is
 stateless: the server recomputes the HMAC, compares it in constant time against
 every configured signing key, then requires the audience to match, `exp > now`,
 and that `id` is not revoked. A malformed token loses, every time (fail-closed).
@@ -125,9 +135,13 @@ and that `id` is not revoked. A malformed token loses, every time (fail-closed).
 MCP endpoint turns away a token minted from `--api-signing-key`, and vice versa —
 **even when both carry the same signing key**. The
 version prefix is part of the signed input, so an `s2` token cannot be rewritten
-as `s1` to shed its binding. sipnab **rejects** the pre-`aud` `s1` format — it
+as `s1` to shed its binding.
+
+sipnab **rejects** the pre-`aud` `s1` format — it
 carries no audience, so honoring it would leave this binding best-effort. An
-`s1` token returns `401`. Re-mint with `--mint-token`. Note that **static**
+`s1` token returns `401`. Re-mint with `--mint-token`.
+
+Note that **static**
 `--api-key` secrets carry no audience — the binding applies to signed tokens
 only.
 
@@ -445,7 +459,9 @@ the filtered set rather than the page, and leads with the dominant class.
 Whatever the deployment does most dominates a dialog list, and in the field that
 is usually the keepalive plane rather than the calls -- on one real capture 98 of
 110 rows carried OPTIONS. Read it before you read the rows, or the page's
-composition passes for the deployment's. The MCP `list_dialogs` and
+composition passes for the deployment's.
+
+The MCP `list_dialogs` and
 `find_problems` tools return the same breakdown beside their own
 `total_matched`, from the same derivation.
 
@@ -629,7 +645,9 @@ console.log(`State: ${dialog.state}`);
 `quality_intervals` is empty above because the window has not closed yet. On a
 call long enough to fill one, each entry carries its own `mos`, `r_factor` and
 a three-state `verdict` — `acceptable`, `degraded`, or `not_scorable` for a
-codec with no published impairment value. The stream-level MOS is a mean over
+codec with no published impairment value.
+
+The stream-level MOS is a mean over
 the whole call and hides a burst shorter than the window, which is what the
 per-interval figures exist to show. The window is five seconds by default and
 `--quality-interval` narrows it without shortening the hour of call time the
@@ -656,7 +674,9 @@ find is **absent from the object**, not present with a null value: `tags` when
 empty, `from_display` / `to_display` when the headers carried no display name,
 `final_status_code` / `final_status_reason` when there was no final INVITE
 response, and `signaling_diagnosis` when the signaling detections found
-nothing. Decode into a type with optional fields: a strict decoder that requires every
+nothing.
+
+Decode into a type with optional fields: a strict decoder that requires every
 key above rejects most real dialogs.
 
 A failed call adds the `signaling_diagnosis` object, which is where the answer
@@ -712,10 +732,20 @@ and the detection threshold behind each.
 
 **Additional dialog fields:**
 
-- **`final_status_code` / `final_status_reason`** -- read INVITE transactions only. A `REGISTER`, `OPTIONS` or `SUBSCRIBE` dialog omits both however it ended; `signaling_diagnosis.final_failure.code` carries the status for any dialog.
-- **`diagnosis`** -- Four booleans and a `hints` array, all five always present. `one_way_audio`, `nat_mismatch` and `no_media` each name a media fault. `private_media_address` is a warning rather than a fault: the SDP `c=` line offered an [RFC 1918](https://www.rfc-editor.org/rfc/rfc1918) or link-local address to a peer that is not itself private, which stays correct inside one LAN and correct behind an SBC or media proxy that rewrites the SDP downstream. Two further keys drop out rather than reading null -- `stun_sdp_mismatch`, the STUN evidence that settles `private_media_address`, absent on a capture holding no STUN, and `media_relay`, the TURN relay this call's media crossed, absent on a capture holding no relay. [Output Formats](output-formats.md#stun-evidence-inside-the-media-diagnosis) covers both field by field.
+- **`final_status_code` / `final_status_reason`** -- read INVITE transactions only. A `REGISTER`, `OPTIONS` or `SUBSCRIBE` dialog omits both however it ended. `signaling_diagnosis.final_failure.code` carries the status for any dialog.
+- **`diagnosis`** -- Four booleans and a `hints` array, all five always present. `one_way_audio`, `nat_mismatch` and `no_media` each name a media fault.
+
+  `private_media_address` is a warning rather than a fault: the SDP `c=` line offered an [RFC 1918](https://www.rfc-editor.org/rfc/rfc1918) or link-local address to a peer that is not itself private, which stays correct inside one LAN and correct behind an SBC or media proxy that rewrites the SDP downstream.
+
+  Two further keys drop out rather than reading null -- `stun_sdp_mismatch`, the STUN evidence that settles `private_media_address`, absent on a capture holding no STUN, and `media_relay`, the TURN relay this call's media crossed, absent on a capture holding no relay. [Output Formats](output-formats.md#stun-evidence-inside-the-media-diagnosis) covers both field by field.
 - **`diagnosis.hints`** -- Free-text diagnostic strings from the media analyzer: one-way audio, NAT mismatch (SDP `c=` address vs. actual RTP source), comfort-noise asymmetry (shown in the example above), codec / payload-type / ptime / duration asymmetry, and late media. Empty array when the analyzer found nothing.
-- **STIR/SHAKEN** -- With `--stir-shaken` active (requires the `tls` build feature), sipnab writes the attestation level, orig/dest TNs, and verification status to the capture log. That status is `NotChecked` or `Expired` and never anything stronger: sipnab decodes the PASSporT but does not fetch the referenced certificate, so it checks no signature and the attestation remains the originator's claim rather than a confirmed fact. They are **not** part of the REST dialog JSON: there is no `stir_shaken` field, and the results do not appear in `diagnosis.hints`. sipnab marks a token `Expired` per [RFC 8224](https://www.rfc-editor.org/rfc/rfc8224) Section 4.4 when its `iat` (issued-at) claim sits more than 60 seconds from the **capture timestamp of the packet that carried it** -- not from the time you run the analysis. A capture you read a year later still reports which tokens were fresh on the wire.
+- **STIR/SHAKEN** -- With `--stir-shaken` active (requires the `tls` build feature), sipnab writes the attestation level, orig/dest TNs, and verification status to the capture log.
+
+  That status is `NotChecked` or `Expired` and never anything stronger: sipnab decodes the PASSporT but does not fetch the referenced certificate, so it checks no signature and the attestation remains the originator's claim rather than a confirmed fact.
+
+  They are **not** part of the REST dialog JSON: there is no `stir_shaken` field, and the results do not appear in `diagnosis.hints`.
+
+  sipnab marks a token `Expired` per [RFC 8224](https://www.rfc-editor.org/rfc/rfc8224) Section 4.4 when its `iat` (issued-at) claim sits more than 60 seconds from the **capture timestamp of the packet that carried it** -- not from the time you run the analysis. A capture you read a year later still reports which tokens were fresh on the wire.
 
 Returns `404` if the Call-ID is not found.
 
@@ -1066,9 +1096,13 @@ permission to keep the result, and four absences follow from that:
 - **No media by default — but `--retain-audio` changes that.** Without it the
   container carries signaling only, and an empty `streams` list elsewhere in
   this API means "no RTP reached this capture" while a vCon says nothing at all
-  about audio. With `--retain-audio` the export decodes the dialog's RTP and
+  about audio.
+
+  With `--retain-audio` the export decodes the dialog's RTP and
   emits the WAV **inline as base64**, up to a 5 MiB budget, refusing with a
-  note above it rather than truncating. That is call CONTENT, not metadata, and
+  note above it rather than truncating.
+
+  That is call CONTENT, not metadata, and
   the operator opted into it: treat such a container as a recording for every
   retention and disclosure purpose. [vCon](vcon.md) documents the same
   behavior.
@@ -1088,7 +1122,9 @@ permission to keep the result, and four absences follow from that:
 the call.** vCon has no field for "this container is an incomplete record", so
 sipnab writes the caveat into two places a consumer walks past: the `analysis`
 body and the `sipnab-capture-completeness` attachment. Both come from one
-value, so they cannot disagree. The note names what this run read and what it
+value, so they cannot disagree.
+
+The note names what this run read and what it
 dropped — messages idle compaction discarded, SIP a port gate refused, blind
 spots the capture analysis ranked — which is the difference between a short
 call and a capture that missed most of one.
@@ -1133,7 +1169,9 @@ short of the call — so a program branches on it without parsing the RIFF chunk
 mechanism (`sipnab-capture`), the version that wrote it, and — when the file is
 partial — how: a wrapped payload ring, a stream sipnab could not decode, a
 direction the capture never saw. So a `.wav` forwarded and played months later
-still says what it is and what it leaves out. The audio carries only what the
+still says what it is and what it leaves out.
+
+The audio carries only what the
 capture point saw and what retention kept. It is not a recording the endpoints
 made.
 
@@ -1215,8 +1253,9 @@ answer to whether a capture is recording.
 > through its `tfps_ctl` program in JSON mode, the `--json` flag. TFPS gained
 > that mode in [sippulse/tfps#6](https://github.com/sippulse/tfps/pull/6),
 > merged on 2026-09-18, and no tagged release carries it yet: v0.2.1, the
-> newest, rejects `--json`. Until the next release, build TFPS from its
-> `master` branch. To check the `tfps_ctl` you have, run
+> newest, rejects `--json`.
+>
+> Until the next release, build TFPS from its `master` branch. To check the `tfps_ctl` you have, run
 > `tfps_ctl status --json`. One line of JSON means it is ready, and
 > `unknown option: --json` means it predates the mode. Against an older
 > `tfps_ctl` these answer with that error and name what to install.
@@ -1274,13 +1313,17 @@ its status:
 ```
 
 Every field is present on every answer and `null` when TFPS does not know it.
+
 `map` names the block map TFPS read: `own map id N` for the one its daemon
 loaded, `pinned map <path>` for a pinned one. It is `null`, with `enforcement`
 `inactive` and `blocked_now` `0`, when TFPS could open none. `mode` and
 `interface` are always `null`: TFPS's JSON mode does not fill them yet.
+
 `pairs` and `peers` count what TFPS has learned and are `null` when TFPS
 cannot read its database. TFPS currently reports the same number for both.
-`last_checkpoint` is Unix seconds, `null` before the first. A `tfps_ctl` that
+`last_checkpoint` is Unix seconds, `null` before the first.
+
+A `tfps_ctl` that
 exits non-zero, hangs past ten seconds, or prints something other than the
 agreed JSON answers `502 Bad Gateway` as `application/problem+json`, with its
 standard error verbatim in `detail`. When the cause is a `tfps_ctl` without
@@ -1455,9 +1498,13 @@ curl -s -X POST -H "Authorization: Bearer $SIPNAB_API_KEY" \
 
 **Body shape:** a JSON object with `ip`, required and an IPv4 address. The
 TFPS block map is IPv4, and `tfps_ctl` fails outright on an IPv6 address
-rather than refusing it, so sipnab answers `400` for one and never asks. `ttl_secs` is optional: seconds the ban lasts, `0` for forever, and the
+rather than refusing it, so sipnab answers `400` for one and never asks.
+
+`ttl_secs` is optional: seconds the ban lasts, `0` for forever, and the
 TFPS default of an hour when absent. The TFPS `ban` command records no
-free-text reason, so the body carries none. Anything else — a missing or malformed
+free-text reason, so the body carries none.
+
+Anything else — a missing or malformed
 `ip`, an unknown key, an array — answers `400` and TFPS is never asked. The
 address and the duration reach `tfps_ctl` as arguments and never through a
 shell.
@@ -1674,7 +1721,9 @@ Two things stop a score existing, and they are different answers. G.113
 publishes no impairment for that mode in that context, which is a gap in the
 tables: three of the nine modes have no diotic value at all. Or the stream lost
 packets and G.113 publishes no robustness factor for its mode, which makes this
-one stream impossible to score rather than the tables silent. **AMR-WB under
+one stream impossible to score rather than the tables silent.
+
+**AMR-WB under
 loss on a handset is not computable from published data**, and sipnab says so
 rather than substituting the figure from the other listening context.
 
@@ -1714,7 +1763,7 @@ by MOS and shows the worst ten fills with streams nobody ever scored.
 
 > **`schema_version` 2.** Version 1 served `mos` with no grounding beside it,
 > and its `mos_below` filter selected placeholders. A client that reads only
-> the fields it knows sees no change; a client asserting on the exact key set
+> the fields it knows sees no change. A client asserting on the exact key set
 > does.
 
 The MCP `rtp_stats` tool carries the same three keys, and the TUI's stream
@@ -2150,7 +2199,9 @@ query.
 **`libpcap` names the library this process captures through.** It is
 `pcap_lib_version()` asked at runtime, so a gnu build or a package reports the
 host's libpcap (the sample above is Debian 13's) while a static musl build
-reports the 1.10.6 it carries. `named_backends` lists the alternate capture
+reports the 1.10.6 it carries.
+
+`named_backends` lists the alternate capture
 backends (`netmap`, `dpdk`, `dag`, `snf`) that the banner names, and it is
 `[]` when the banner names none. That is not proof the library has none: libpcap names netmap in
 its banner only from 1.10.6, and DPDK only in a DPDK-only build. See [which
@@ -2425,7 +2476,9 @@ rather than the host. Nothing dropped it and no byte is missing: the frames
 arrived intact and no decoder here could read them, so the analysis saw none of
 their contents. It is what separates *this capture holds no SIP* from *sipnab
 could not read this capture* — both of which otherwise report `dialogs.total`
-as `0`. Which link types, EtherTypes and IP protocols this covers appears in
+as `0`.
+
+Which link types, EtherTypes and IP protocols this covers appears in
 `sipnab_capture_undecodable_frames_total{reason}` on `/metrics`, and the
 proportion is `sipnab_capture_undecoded_fraction`.
 
@@ -2435,7 +2488,9 @@ included it would be true always and useful never.
 
 `snapped_frames` is a fifth channel, and neither loss nor a decode failure: the
 frames arrived, most of them decoded, and what is missing is payload — which is
-exactly what a signaling-only capture sets out to discard. It matters because
+exactly what a signaling-only capture sets out to discard.
+
+It matters because
 the `--snaplen` warnings fire once per run and cannot say how MUCH of a capture
 came in truncated. A run that decoded every packet and snapped 94% of them is
 not a clean capture, and no other key here says so. Raise `--snaplen` when you
@@ -2481,7 +2536,7 @@ answered over the store rather than the model.
 - `filter` (optional) — a DSL expression narrowing which dialogs the count
   includes, the same language `/v1/dialogs?filter=` compiles. A malformed
   expression is a `400`.
-- `top_n` (optional) — keep the largest N buckets; the rest fold into
+- `top_n` (optional) — keep the largest N buckets. The rest fold into
   `other_count`.
 
 **curl:**
@@ -2668,7 +2723,7 @@ the MCP `group_dialogs` tool computes.
 - `filter` (optional) — a DSL expression narrowing which dialogs the route
   groups, the language `/v1/dialogs?filter=` compiles. A malformed expression is
   a `400`.
-- `top_n` (optional) — keep the largest N groups by dialog count; the rest fold
+- `top_n` (optional) — keep the largest N groups by dialog count. The rest fold
   into `other_count`. Clamped to the server's row cap.
 
 **curl:**
@@ -2755,7 +2810,9 @@ curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" "http://127.0.0.1:8080/v1/tal
 shares sum above 100% — `/v1/aggregate` answers the one-bucket-per-dialog
 question instead. Rows rank by dialogs, then messages, then the key, so one
 store always answers in the same order. `distinct_talkers` counts every talker,
-so a `limit`-bounded page never reads as the whole ranking. The `ip` key is the
+so a `limit`-bounded page never reads as the whole ranking.
+
+The `ip` key is the
 message SENDER, so a proxy does not top the ranking for calls it only forwarded.
 A `ua` key is a banner a stranger typed and comes back verbatim, so a program
 that renders it treats it as untrusted text.
@@ -2841,10 +2898,14 @@ curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" "http://127.0.0.1:8080/v1/end
 true when the endpoint's dialog total exceeds what that page carries. An `ip`
 selector reads a socket, so `messages_sent`/`messages_received` count what the
 address sent and received. A `user` selector names a party with no socket of its
-own, so both are `0`, and its streams are the ones linked to its dialogs. Banner
+own, so both are `0`, and its streams are the ones linked to its dialogs.
+
+Banner
 values and codec tokens come back **raw** — the values a program keys on, unlike
 the MCP surface which fences them. `contact_rewrite` is `null` unless the
-endpoint sent a REGISTER. **Security findings are not here:** the alert engine
+endpoint sent a REGISTER.
+
+**Security findings are not here:** the alert engine
 files them against a source address in a ring this route does not hold, so they
 are the separate `security_findings` capability.
 
@@ -2863,7 +2924,7 @@ The same ring the MCP `security_findings` tool reads.
   `reg_flood`. Omitted returns every kind. Any other name is a `400` naming the
   four. A URL query cannot repeat a key into a list, so the kinds ride in one
   comma-separated value (`kinds=scanner,fraud`).
-- `since` (optional) — an RFC 3339 timestamp; the route returns only findings
+- `since` (optional) — an RFC 3339 timestamp. The route returns only findings
   recorded strictly after it. A malformed value is a `400`.
 - `limit` (optional) — the most findings to return, clamped to the server's row
   cap. `total_matched` still counts every match.
@@ -2896,9 +2957,13 @@ have fired — the response then carries a `note` saying exactly that, and a
 reader must NOT take an empty list for a clean bill of health. When it is
 `true`, an empty list means the armed detectors saw nothing to report. Arm a
 detector with `--kill-scanner`, `--fraud-detect`, `--digest-leak` or
-`--reg-flood`. `total_matched` counts every finding the filter admits across the
+`--reg-flood`.
+
+`total_matched` counts every finding the filter admits across the
 whole retained ring (bounded by `--findings-history`), so a `limit`-bounded page
-is never mistaken for the whole history. The `detail` line is a string the
+is never mistaken for the whole history.
+
+The `detail` line is a string the
 detector built from observed traffic — its `ua=` half is a banner a stranger
 typed — and it comes back **raw**, the value a program keys on, unlike the MCP
 tool which fences it.
@@ -2956,7 +3021,9 @@ curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" "http://127.0.0.1:8080/v1/cap
 bucket is usually the one that changed least, so ranking by movement puts the
 answer first. A value present in one capture only reads as zero on the other
 side, because "this appeared today" is the finding. `dialogs_dropped` above zero
-means that side hit the dialog ceiling and its counts are a floor. Bucket values
+means that side hit the dialog ceiling and its counts are a floor.
+
+Bucket values
 come back **raw**: a `ua` or `from.user` bucket is a banner a stranger typed, and
 this route hands a program the value it keys on, unlike the MCP tool which fences
 those dimensions.
@@ -3130,16 +3197,28 @@ Every recipe here reads `$API`, and every one but the health check also reads
 `$KEY`, so running the second on its own builds an `Authorization` header with
 no token in it and every authenticated recipe then returns `401`:
 
-```bash
-# Run all of these, in order.
-API="http://127.0.0.1:8080"; KEY="my-secret-token"
-H="-H 'Authorization: Bearer $KEY'"
-```
+1. Set the API address:
+
+   ```bash
+   API="http://127.0.0.1:8080"
+   ```
+
+2. Set your key:
+
+   ```bash
+   KEY="my-secret-token"
+   ```
+
+3. Build the header from the key:
+
+   ```bash
+   H="-H 'Authorization: Bearer $KEY'"
+   ```
 
 Each recipe below is a complete command in its own right, and they are
 alternatives rather than a sequence — run the one that answers your question:
 
-- `curl -fsS $API/health` — health check; `/health` is the one endpoint that takes no credential
+- `curl -fsS $API/health` — health check. `/health` is the one endpoint that takes no credential
 - `curl -fsS "$API/v1/dialogs?state=Failed&limit=20" $H | jq` — the most recent failed dialogs
 - `curl -fsS "$API/v1/dialogs?from=alice&limit=20"   $H | jq` — dialogs from one user (`from=` is a regex)
 - `curl -fsS "$API/v1/dialogs/abc123@host"        $H | jq` — one aggregated dialog by Call-ID
@@ -3177,10 +3256,10 @@ Full end-to-end clients (bearer auth, pagination, `/metrics` scraping, error han
 - Rate limiting on every guarded endpoint (100 RPS per source IP by default). Two exceptions worth knowing: `/health` sits outside the guard entirely — no auth, no rate limit — and `--api-rate-limit-per-peer 0` turns the cap off altogether
 - Bearer token authentication required on every REST endpoint except `/health` — `/metrics` on the `--api` server sits on the same guarded router and takes the same credential (the *standalone* `--metrics` server is the one that uses HTTP Basic instead)
 - Constant-time key comparison prevents timing attacks
-- TLS not terminated in-process; run behind a reverse proxy (see [API TLS](#api-tls))
+- TLS not terminated in-process. Run behind a reverse proxy (see [API TLS](#api-tls))
 - Connection limits prevent resource exhaustion
 
-> **Note:** The API runs as a thread in the sipnab process, sharing the in-memory dialog/stream stores read-only. It never touches capture file descriptors or TLS key material, and exposes only dialog/stream metadata — but it is not a separate OS process; treat the API bind address and key accordingly.
+> **Note:** The API runs as a thread in the sipnab process, sharing the in-memory dialog/stream stores read-only. It never touches capture file descriptors or TLS key material, and exposes only dialog/stream metadata — but it is not a separate OS process. Treat the API bind address and key accordingly.
 
 ### GET /metrics
 

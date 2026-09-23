@@ -11,7 +11,9 @@ has_diagrams = true
 Every way to put sipnab in front of an AI agent, from an agent on the same
 machine to a remote server running sipnab as a service. MCP (Model Context
 Protocol) is how the agent calls sipnab's analysis as tools, and
-[MCP server](@/docs/mcp.md) introduces it. This page walks a **first-time sipnab
+[MCP server](@/docs/mcp.md) introduces it.
+
+This page walks a **first-time sipnab
 user** through each deployment scenario, command by command, on every machine
 involved. Each step carries a tag with the
 host they run on: **[server]** (where sipnab runs), **[laptop]** (where
@@ -20,17 +22,21 @@ the HEP scenario).
 
 **What was last verified, and when.** On 2026-09-22, against 0.5.185, the
 stdio server answered an `initialize` handshake and a `triage_call` request
-for a capture file, which is the same-machine setup. The remote scenarios (SSH,
+for a capture file, which is the same-machine setup.
+
+The remote scenarios (SSH,
 the HTTP service, systemd) were last run end to end at 0.5.20. Their commands
 still parse, because `docs_drift_test` checks every flag name here against the
-current CLI, but their transcripts come from that run. [Drive it from a
+current CLI, but their transcripts come from that run.
+
+[Drive it from a
 script](#drive-it-from-a-script) and
 [Follow one call across an SBC and its PBXes](@/docs/mcp-estate.md#follow-one-call-across-an-sbc-and-its-pbxes)
 were last run at 0.5.95, with three sipnab processes on one box against
 captures this repository ships, and they say outright wherever no run could
 confirm a claim.
 
-The client steps use Claude Code; the server side is identical for every
+The client steps use Claude Code. The server side is identical for every
 MCP-capable agent. If you drive Codex CLI, Cursor, VS Code, Gemini CLI, or
 Windsurf instead, do the same scenario and swap the registration step —
 [Registering other MCP clients](#use-an-agent-other-than-claude-code)
@@ -112,8 +118,9 @@ Two invariants that apply everywhere:
 
 ## Step 0 — install sipnab (every server, once)
 
-On each machine that *runs* sipnab (in scenario 1 that's the laptop
-itself):
+On each machine that *runs* sipnab (in
+[Run sipnab and your agent on the same machine (1)](#run-sipnab-and-your-agent-on-the-same-machine)
+that's the laptop itself):
 
 1. **[server]** Install. The installer picks the right build for your OS,
    CPU, and glibc, verifies its sha256, and installs to `/usr/local/bin`:
@@ -249,8 +256,9 @@ running as root.
    traffic, and ask the agent for `capture_status` — `dialog_count` should climb.
 
 State is per-session: the capture starts when the agent connects and dies
-with it. For "always capturing, query whenever" on one box, use the
-scenario-2B service bound to `127.0.0.1` (loopback needs no token) and add
+with it. For "always capturing, query whenever" on one box, use
+[the token service (2B)](#keep-a-capture-running-between-agent-sessions)
+bound to `127.0.0.1` (loopback needs no token) and add
 it with `claude mcp add --transport http sipnab http://127.0.0.1:8731/mcp`.
 
 ---
@@ -271,7 +279,7 @@ capture-control group. Three wirings, in increasing order of setup.
 
 ### Connect Claude Code on your laptop to sipnab on a server
 
-*Shape 2. Ad-hoc. Nothing listens on the server; SSH-launched stdio.*
+*Shape 2. Ad-hoc. Nothing listens on the server. SSH-launched stdio.*
 
 <pre class="mermaid">
 sequenceDiagram
@@ -361,7 +369,7 @@ sudo setcap cap_net_raw+ep /usr/local/bin/sipnab
 > touches the interface. It warns on stderr, but the run still succeeds and the
 > output looks exactly like a live capture — so an agent reading stdout answers
 > questions about a stale file with complete confidence. If you are adapting the
-> pcap command above, **delete the `-I` line**; do not just add `-d` beside it.
+> pcap command above, **delete the `-I` line**. Do not just add `-d` beside it.
 
 Each agent session spawns a fresh sipnab, so capture starts when the session
 starts and stops when it ends. That is right for a post-mortem and wrong for
@@ -403,21 +411,34 @@ instead.
    ```
 
    Then grant the binary capture rights. Skip this second command if you'll
-   feed HEP instead (scenario 3): a HEP listener is a plain UDP socket, so
+   feed HEP instead
+   ([Collect captures from several SIP servers in one place (3)](@/docs/mcp-estate.md#collect-captures-from-several-sip-servers-in-one-place)):
+   a HEP listener is a plain UDP socket, so
    `cap_net_raw` would be privilege the service never uses.
 
    ```bash
    sudo setcap cap_net_raw+ep /usr/local/bin/sipnab
    ```
 
-3. **[server]** Generate the bearer token file:
+3. **[server]** Generate the bearer token file, in this order:
 
-   ```bash
-   # Run all of these, in order.
-   sudo mkdir -p /etc/sipnab
-   head -c 32 /dev/urandom | base64 | sudo tee /etc/sipnab/mcp.token >/dev/null
-   sudo chmod 600 /etc/sipnab/mcp.token
-   ```
+   1. Create the configuration directory:
+
+      ```bash
+      sudo mkdir -p /etc/sipnab
+      ```
+
+   2. Write 32 random bytes, base64-encoded, as the token:
+
+      ```bash
+      head -c 32 /dev/urandom | base64 | sudo tee /etc/sipnab/mcp.token >/dev/null
+      ```
+
+   3. Make the token file readable by root only:
+
+      ```bash
+      sudo chmod 600 /etc/sipnab/mcp.token
+      ```
 
 4. **[server]** Install the systemd unit as
    `/etc/systemd/system/sipnab-mcp.service`. `--mcp-allowed-host` must
@@ -451,14 +472,25 @@ instead.
    WantedBy=multi-user.target
    ```
 
-5. **[server]** Start it and check it came up:
+5. **[server]** Start it and check it came up, in this order:
 
-   ```bash
-   # Run all of these, in order.
-   sudo systemctl daemon-reload
-   sudo systemctl enable --now sipnab-mcp
-   systemctl status sipnab-mcp --no-pager
-   ```
+   1. Reload systemd so it reads the new unit:
+
+      ```bash
+      sudo systemctl daemon-reload
+      ```
+
+   2. Enable the service and start it now:
+
+      ```bash
+      sudo systemctl enable --now sipnab-mcp
+      ```
+
+   3. Check its status:
+
+      ```bash
+      systemctl status sipnab-mcp --no-pager
+      ```
 
    If it exits immediately with a token error, you bound non-loopback
    without a readable token file — that refusal is deliberate (fail
@@ -539,7 +571,9 @@ The best of both: the service runs continuously but binds only loopback,
 so there's no token to manage and no port to firewall. The SSH tunnel is
 the auth *and* the encryption.
 
-1. **[server]** Follow 2B steps 1–2, then install the same unit **with two
+1. **[server]** Follow steps 1–2 of
+   [Keep a capture running between agent sessions (2B)](#keep-a-capture-running-between-agent-sessions),
+   then install the same unit **with two
    changes**: bind loopback and drop the token/allowed-host flags
    (loopback binds require neither):
 
@@ -553,8 +587,9 @@ the auth *and* the encryption.
    sudo systemctl daemon-reload && sudo systemctl enable --now sipnab-mcp
    ```
 
-2. **[server]** Verify locally — same curl as 2B step 6, minus the
-   `Authorization` header.
+2. **[server]** Verify locally — same curl as step 6 of
+   [Keep a capture running between agent sessions (2B)](#keep-a-capture-running-between-agent-sessions),
+   minus the `Authorization` header.
 
 3. **[laptop]** Open the tunnel (add `autossh` or a systemd user unit if
    you want it self-healing):
@@ -577,7 +612,7 @@ the auth *and* the encryption.
    ```
 
 5. **[laptop]** When the tunnel drops (laptop sleep, network change), MCP
-   calls fail with connection errors; re-run step 3. That's the one
+   calls fail with connection errors. Re-run step 3. That's the one
    operational cost of this shape.
 
 ### Which remote setup should I use?
@@ -607,18 +642,31 @@ permit installing anything.
 
 You do not need three machines to prove the wiring — three sipnab processes on
 one box behave, to a client, exactly like three nodes. From a source checkout,
-against captures the repo already ships (an installed `sipnab` works the same;
-the paths are what tie these to the repo):
+against captures the repo already ships. An installed `sipnab` works the same.
+The paths are what tie these to the repo.
 
-```bash
-# Run all of these, in order. Each backgrounds itself with &.
-./target/debug/sipnab -N --mcp --mcp-transport http --mcp-bind 127.0.0.1:8811 \
-    --node-name sbc-edge-1 -I tests/pcap-samples/b2bua-asterisk.pcapng &
-./target/debug/sipnab -N --mcp --mcp-transport http --mcp-bind 127.0.0.1:8822 \
-    --node-name proxy-1 -I tests/pcap-samples/sip-proxy.pcap &
-./target/debug/sipnab -N --mcp --mcp-transport http --mcp-bind 127.0.0.1:8823 \
-    --node-name pbx-1 -I tests/pcap-samples/sip-rtp-g711.pcap &
-```
+Start the three in this order. Each command backgrounds itself with `&`:
+
+1. Start the SBC node on port 8811:
+
+   ```bash
+   ./target/debug/sipnab -N --mcp --mcp-transport http --mcp-bind 127.0.0.1:8811 \
+       --node-name sbc-edge-1 -I tests/pcap-samples/b2bua-asterisk.pcapng &
+   ```
+
+2. Start the proxy node on port 8822:
+
+   ```bash
+   ./target/debug/sipnab -N --mcp --mcp-transport http --mcp-bind 127.0.0.1:8822 \
+       --node-name proxy-1 -I tests/pcap-samples/sip-proxy.pcap &
+   ```
+
+3. Start the PBX node on port 8823:
+
+   ```bash
+   ./target/debug/sipnab -N --mcp --mcp-transport http --mcp-bind 127.0.0.1:8823 \
+       --node-name pbx-1 -I tests/pcap-samples/sip-rtp-g711.pcap &
+   ```
 
 Give each one its own `--node-name`: that is the string the client reads back
 as `capture_identity.node`, and with three servers answering it is the only
@@ -680,11 +728,12 @@ python3 contrib/mcp/trace-call.py \
 
 Omit `--call-id` and it traces the newest INVITE the edge node holds, which is
 enough to prove the plumbing before you have a complaint to chase. Add
-`--token-file ~/.config/sipnab/prod01.token` for the 2B shape.
+`--token-file ~/.config/sipnab/prod01.token` for
+[the token service (2B)](#keep-a-capture-running-between-agent-sessions).
 
 ### Get the transport right, because three details are not obvious
 
-Running a client turned up each of these; reading the spec did not. Each one
+Running a client turned up each of these. Reading the spec did not. Each one
 fails in a way that does not look like its cause.
 
 **1. The response is `text/event-stream`, not JSON.** A single reply still
@@ -734,7 +783,7 @@ before any tool runs, so nothing in the error mentions sipnab, the capture, or
 the tool you were calling.
 
 **3. `initialize` hands back a session id you must echo.** The response carries
-an `mcp-session-id` header; every later request must send it back as
+an `mcp-session-id` header. Every later request must send it back as
 `Mcp-Session-Id`. Drop it and the server does not answer "no session" — it
 answers as though you never completed the handshake at all:
 
@@ -826,9 +875,17 @@ opening a ticket when the count is nonzero).
 
 ## Use an agent other than Claude Code
 
-Every scenario above is client-agnostic on the server side: stdio wirings
-(1, 2A) hand the client a command to launch, HTTP wirings (2B, 2C, 4) hand
-it a URL plus a bearer token. Only the registration step differs per
+Every scenario above is client-agnostic on the server side:
+
+- stdio wirings hand the client a command to launch. They are
+  [Run sipnab and your agent on the same machine (1)](#run-sipnab-and-your-agent-on-the-same-machine)
+  and [Connect Claude Code on your laptop to sipnab on a server (2A)](#connect-claude-code-on-your-laptop-to-sipnab-on-a-server).
+- HTTP wirings hand it a URL plus a bearer token. They are
+  [Keep a capture running between agent sessions (2B)](#keep-a-capture-running-between-agent-sessions),
+  [Keep a capture running without exposing a port (2C)](#keep-a-capture-running-without-exposing-a-port)
+  and [Reach sipnab from outside your network (4)](@/docs/mcp-estate.md#reach-sipnab-from-outside-your-network).
+
+Only the registration step differs per
 agent. The table maps it, and snippets follow.
 
 | Client | Config lives in | stdio | Streamable HTTP |
@@ -841,7 +898,9 @@ agent. The table maps it, and snippets follow.
 | Gemini CLI | `~/.gemini/settings.json` | ✓ `command` | ✓ `httpUrl` + `headers` |
 | Windsurf (Cascade) | `~/.codeium/windsurf/mcp_config.json` | ✓ `command`/`args` | ✓ `serverUrl` + `headers` |
 
-For the remote-stdio wiring (scenario 2A), every stdio snippet below works
+For the remote-stdio wiring
+([Connect Claude Code on your laptop to sipnab on a server (2A)](#connect-claude-code-on-your-laptop-to-sipnab-on-a-server)),
+every stdio snippet below works
 unchanged with `command` set to `ssh` and the sipnab invocation moved into
 `args` — exactly as in the Claude Code example there.
 
@@ -942,7 +1001,8 @@ Use `httpUrl` for sipnab:
 
 `~/.codeium/windsurf/mcp_config.json` — remote servers use `serverUrl`,
 and `${file:...}` interpolation reads the token straight from the file you
-copied in scenario 2B step 8:
+copied in step 8 of
+[Keep a capture running between agent sessions (2B)](#keep-a-capture-running-between-agent-sessions):
 
 ```json
 {
@@ -962,7 +1022,9 @@ copied in scenario 2B step 8:
 Two universal gotchas, regardless of client: the `Host:` your client sends
 must be in sipnab's `--mcp-allowed-host` allowlist (403 otherwise), and
 plaintext-HTTP registrations belong on trusted networks only — the same
-rules as scenarios 2B and 4.
+rules as
+[Keep a capture running between agent sessions (2B)](#keep-a-capture-running-between-agent-sessions)
+and [Reach sipnab from outside your network (4)](@/docs/mcp-estate.md#reach-sipnab-from-outside-your-network).
 
 ---
 
@@ -1130,7 +1192,9 @@ The blocks below run against
 `total_matched` against `returned` is the field to read first. They differ
 whenever the capture holds more problems than one page, and `truncated` says so
 outright — without it, a bare list of 50 rows is indistinguishable from a
-capture that holds exactly 50 problems. `by_method` splits that same total by
+capture that holds exactly 50 problems.
+
+`by_method` splits that same total by
 the method that opened each dialog, which is what stops a keepalive flood from
 reading as a wave of failed calls: one REGISTER here, and on a real fleet
 usually a page of OPTIONS.
@@ -1170,13 +1234,19 @@ REGISTER exchange:
 }
 ```
 
-Three fields carry the diagnosis. `kind` separates a **rejection** from an
-**auth loop** — a phone retrying forever against a bad password looks nothing
-like a 403 and needs a different fix. `evidence` gives message indices you
-can pull with `get_message`. And `requested_expiry_sec` against
-`granted_expiry_sec` catches the case where registration *succeeds* but the
-server grants a shorter lifetime than the phone asked for, so it silently drops
-off between refreshes. Both read `null` above because neither message in this
+Three fields carry the diagnosis:
+
+- `kind` separates a **rejection** from an
+  **auth loop** — a phone retrying forever against a bad password looks nothing
+  like a 403 and needs a different fix.
+- `evidence` gives message indices you
+  can pull with `get_message`.
+- `requested_expiry_sec` against
+  `granted_expiry_sec` catches the case where registration *succeeds* but the
+  server grants a shorter lifetime than the phone asked for, so it silently drops
+  off between refreshes.
+
+Both expiry fields read `null` above because neither message in this
 exchange named an expiry — `null` means "the capture never said", not "zero".
 
 `auth_loop` being `null` here matters: this failed once and stopped.
@@ -1363,14 +1433,16 @@ one core's budget. What actually costs:
   `hep_rate_limit` (default 50k pps) hard-caps what sipnab accepts.
 - **Memory has a ceiling, not an open end**: `[limits]` defaults cap tracked
   dialogs (100k), RTP streams (50k), messages per dialog (500), and TCP
-  reassembly (10k). Tighten these on a shared box; a
+  reassembly (10k). Tighten these on a shared box. A
   `dialog_limit = 20000`-class config keeps sipnab a well-behaved tenant.
 
 **The MCP query path** is noise by comparison: read-only lookups against
 in-memory stores, every response bounded (`limit` ≤ 1000, snippets ≤ 4 KB,
 ≤ 1000 messages per page). An agent conversation makes a handful of tool
 calls. There is no polling loop unless you build one. If you want *zero*
-load on the SIP server itself, that's scenario 3: the proxy pays only for
+load on the SIP server itself, that's
+[Collect captures from several SIP servers in one place (3)](@/docs/mcp-estate.md#collect-captures-from-several-sip-servers-in-one-place):
+the proxy pays only for
 HEP mirroring and sipnab lives elsewhere.
 
 ## Security implications
@@ -1389,16 +1461,19 @@ What the design already gives you (details in
 - **One tool creates kernel state, and it has the sharpest opt-in.**
   `start_tls_capture` installs uprobes on a running process's TLS library and
   reads its plaintext — sessions belonging to processes the agent does not own.
+
   It needs `--mcp-allow-tls-capture`, deliberately separate from
   `--mcp-allow-open-capture`, because reading a file an operator placed in a
   directory and attaching probes to a live daemon are not the same act. It also
   needs the server to still be root, and refuses if a live source is already
-  running. `list_tls_libraries` — which only *reports* what a capture would
+  running.
+
+  `list_tls_libraries` — which only *reports* what a capture would
   see — needs no opt-in at all, so an agent can always tell you whether the
   answer is reachable without being able to go and get it.
 - **Fail-closed remote access.** Non-loopback HTTP binds refuse to start
-  without a bearer token; tokens compare in constant time; DNS-rebind
-  protection rejects unexpected `Host:` headers; the listener binds after
+  without a bearer token. Tokens compare in constant time. DNS-rebind
+  protection rejects unexpected `Host:` headers. The listener binds after
   privilege drop.
 
 What remains **your** call:
@@ -1410,15 +1485,21 @@ What remains **your** call:
   to the agent's model provider — if that's a cloud LLM, capture content
   leaves your network by design. Scope what the server can see (BPF
   filter, signaling-only HEP) to what you're comfortable exporting.
-- **Prefer wirings with no listening surface.** 2A/2C expose nothing;
-  2B is plaintext HTTP (LAN/VPN only); 4 is the only shape that belongs
+- **Prefer wirings with no listening surface.**
+  [SSH stdio (2A)](#connect-claude-code-on-your-laptop-to-sipnab-on-a-server)
+  and [the SSH tunnel (2C)](#keep-a-capture-running-without-exposing-a-port)
+  expose nothing.
+  [The token service (2B)](#keep-a-capture-running-between-agent-sessions)
+  is plaintext HTTP (LAN/VPN only).
+  [The nginx TLS endpoint (4)](@/docs/mcp-estate.md#reach-sipnab-from-outside-your-network)
+  is the only shape that belongs
   on the public internet, and even there sipnab stays on loopback behind
   TLS with a token.
 - **Token hygiene.** Use `--mcp-token-file` (0600, root-owned) rather than
   `--mcp-token`/env — flags and environments leak via `ps` and unit files.
   Rotation/expiry via signed tokens is available ([auth.md](@/docs/auth.md)).
 - **Contain the process.** Run as a dedicated user with the systemd
-  hardening shown above (`NoNewPrivileges`, `ProtectSystem`); HEP ingest
+  hardening shown above (`NoNewPrivileges`, `ProtectSystem`). HEP ingest
   needs no capabilities at all.
 
 ## Fix it when it does not connect
@@ -1438,7 +1519,9 @@ HTTP status decoder: `401` wrong/missing bearer token — the reply's
 [`--mcp-resource-url`](#check-what-a-client-sees-when-it-has-no-token-mcp-resource-url)
 set it also names the metadata document · `403` `Host:` not
 in the allowlist (`--mcp-allowed-host`) · `404` the request never reached the MCP route (a proxy rewrite, not a trailing slash) ·
-`406` missing `Accept: application/json, text/event-stream`. More in
+`406` missing `Accept: application/json, text/event-stream`.
+
+More in
 [Troubleshooting](#troubleshooting) further down this page. The
 [raw HTTP test](#test-the-http-wire-by-hand) there is a working curl carrying every
 required header.
@@ -1565,7 +1648,7 @@ The agent then connects to `https://your-host/mcp` with a `Bearer
   credential — either a static token (`--mcp-token` / `--mcp-token-file` /
   `SIPNAB_MCP_TOKEN`) or a signing key for self-describing signed bearer
   tokens (`--mcp-signing-key` / `--mcp-signing-key-file` /
-  `SIPNAB_MCP_SIGNING_KEY`); otherwise sipnab refuses to start (D18).
+  `SIPNAB_MCP_SIGNING_KEY`). Otherwise sipnab refuses to start (D18).
 - Prefer `--mcp-token-file` to `--mcp-token`/`SIPNAB_MCP_TOKEN`
   (no token in `ps` output or unit files).
 - For TLS, terminate it in nginx in front of sipnab. Bind sipnab to
@@ -1573,16 +1656,28 @@ The agent then connects to `https://your-host/mcp` with a `Bearer
 
 ### Issue a token the client can present
 
-Non-loopback binds require a bearer token. Generate one once — the middle
-command overwrites any token already in that file, and every agent still
-configured with the old value is then locked out:
+Non-loopback binds require a bearer token. Generate one once, in this order.
 
-```bash
-# Run all of these, in order.
-sudo mkdir -p /etc/sipnab
-head -c 32 /dev/urandom | base64 | sudo tee /etc/sipnab/mcp.token >/dev/null
-sudo chmod 600 /etc/sipnab/mcp.token
-```
+> **Watch out:** step 2 overwrites any token already in that file, and every
+> agent still configured with the old value is then locked out.
+
+1. Create the configuration directory:
+
+   ```bash
+   sudo mkdir -p /etc/sipnab
+   ```
+
+2. Write 32 random bytes, base64-encoded, as the token:
+
+   ```bash
+   head -c 32 /dev/urandom | base64 | sudo tee /etc/sipnab/mcp.token >/dev/null
+   ```
+
+3. Make the token file readable by root only:
+
+   ```bash
+   sudo chmod 600 /etc/sipnab/mcp.token
+   ```
 
 Give the client the token:
 
@@ -1673,10 +1768,12 @@ curl -s https://capture.example.com/.well-known/oauth-protected-resource/mcp
 ```
 
 **Give the URL, do not expect sipnab to work it out.** Behind the nginx that
-terminates TLS, sipnab sees a cleartext request and no scheme; anything it
+terminates TLS, sipnab sees a cleartext request and no scheme. Anything it
 derived from its own socket would say `http://` for a resource the client
 reached over `https://`, and [RFC 9728 section 3.3](https://www.rfc-editor.org/rfc/rfc9728#section-3.3) tells a conformant client to
-discard a document whose `resource` does not match the URL it used. sipnab
+discard a document whose `resource` does not match the URL it used.
+
+sipnab
 does not read `X-Forwarded-Proto` here for the same reason it ignores
 `X-Forwarded-For` when rate limiting: a header the client sets is not
 evidence. A malformed value is a startup error, not a wrong document.
@@ -1732,11 +1829,19 @@ RestartSec=5
 WantedBy=multi-user.target
 ```
 
-```bash
-# Run all of these, in order.
-sudo systemctl daemon-reload
-sudo systemctl enable --now sipnab-mcp
-```
+Then start it, in this order:
+
+1. Reload systemd so it reads the new unit:
+
+   ```bash
+   sudo systemctl daemon-reload
+   ```
+
+2. Enable the service and start it now:
+
+   ```bash
+   sudo systemctl enable --now sipnab-mcp
+   ```
 
 The HEP listener needs no capture privileges (plain UDP socket), so the
 unit runs as an unprivileged user. For live interface capture instead of
@@ -1856,13 +1961,19 @@ Expected first line of response:
 ### Test the HTTP wire by hand
 
 Set the token and endpoint once. Every request below expands `$TOKEN` and
-`$URL`, so run them in the same shell:
+`$URL`, so run them in the same shell, in this order:
 
-```bash
-# Run all of these, in order.
-TOKEN=$(cat /etc/sipnab/mcp.token)
-URL="http://capture.example.com:8731/mcp"
-```
+1. Read the token into `$TOKEN`:
+
+   ```bash
+   TOKEN=$(cat /etc/sipnab/mcp.token)
+   ```
+
+2. Set the endpoint in `$URL`:
+
+   ```bash
+   URL="http://capture.example.com:8731/mcp"
+   ```
 
 Initialize the session, keeping the session id the server hands back. Every
 later request must carry it in `Mcp-Session-Id`. The transport rejects a
@@ -2079,13 +2190,19 @@ if __name__ == "__main__":
     asyncio.run(main(sys.argv[1] if len(sys.argv) > 1 else "capture.pcap"))
 ```
 
-Install + run:
+Install + run, in this order:
 
-```bash
-# Run all of these, in order.
-pip install 'mcp>=1.0'
-python sipnab_mcp.py /path/to/capture.pcap
-```
+1. Install the MCP SDK:
+
+   ```bash
+   pip install 'mcp>=1.0'
+   ```
+
+2. Run the client against a capture:
+
+   ```bash
+   python sipnab_mcp.py /path/to/capture.pcap
+   ```
 
 ### Drive it from TypeScript
 

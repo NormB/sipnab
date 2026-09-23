@@ -116,14 +116,24 @@ than entering as a lesser citizen.
 
 ### 4. Build and run it
 
-```sh
-# Run all of these, in order.
-rustup target add wasm32-unknown-unknown
-cargo build --release --target wasm32-unknown-unknown -p sipnab-plugin-example
+1. Add the WebAssembly target:
 
-sipnab -N -I capture.pcap --json-dialogs --no-cli-print \
-  --plugin target/wasm32-unknown-unknown/release/sipnab_plugin_example.wasm
-```
+   ```sh
+   rustup target add wasm32-unknown-unknown
+   ```
+
+2. Build the plugin:
+
+   ```sh
+   cargo build --release --target wasm32-unknown-unknown -p sipnab-plugin-example
+   ```
+
+3. Run sipnab with the plugin loaded:
+
+   ```sh
+   sipnab -N -I capture.pcap --json-dialogs --no-cli-print \
+     --plugin target/wasm32-unknown-unknown/release/sipnab_plugin_example.wasm
+   ```
 
 `--plugin` is repeatable. Each plugin gets its own sandbox, and a failure in
 one never stops the capture or the others.

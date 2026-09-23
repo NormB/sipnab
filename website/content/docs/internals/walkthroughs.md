@@ -15,7 +15,9 @@ the test that fails if you skip it. Where no test enforces a step, it carries
 are the steps to be deliberate about.
 
 Checking the enforcement claims here meant making the change and watching the
-gate fail — or, more often than expected, watching it pass. Where the first
+gate fail — or, more often than expected, watching it pass.
+
+Where the first
 draft of this page and reality disagreed, reality won: adding a CLI flag does
 *not* trip `docs_drift_test`, the compiler turns away an MCP tool that holds a
 lock across an await before clippy gets a word in, and **three of the six
@@ -105,7 +107,7 @@ places.
    [`tui_snapshot_test`](https://github.com/NormB/sipnab/blob/main/tests/tui_snapshot_test.rs) — at minimum the
    populated case and the empty/degenerate case.
 8. Mirror the keybinding into [`website/content/docs/keybindings.md`](https://github.com/NormB/sipnab/blob/main/website/content/docs/keybindings.md).
-   **(unenforced for a new key — the mirroring obligation is a convention; see
+   **(unenforced for a new key — the mirroring obligation is a convention. See
    CONTRIBUTING.)**
 
 Verified: binding `KeyCode::Char('Y')` in the call-list controller without
@@ -120,8 +122,11 @@ touching the help failed two assertions in `keybinding_drift_test`.
    instruct the model to "trust", "verify", "act on" or "ensure" anything about
    the content — that is the prompt-injection rule (D22 in
    [`../design/implementation-plan-phases-8-10.md`](https://github.com/NormB/sipnab/blob/main/docs/design/implementation-plan-phases-8-10.md)).
+
    **(Enforced by [`tests/mcp_tool_descriptions_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/mcp_tool_descriptions_test.rs),
-   which fails on any of those four words in a tool description. Corrected
+   which fails on any of those four words in a tool description.)**
+
+   **(Corrected
    2026-08-05: this used to call the rule unenforced and to claim `server.rs`
    cited a `scripts/check-tool-descriptions.sh` that does not exist. Both halves
    are now wrong — `server.rs` no longer carries the citation, and the rule shipped
@@ -190,7 +195,9 @@ sequenceDiagram
    the finding as an `Effect` for the batch loop to file, and emit through the
    alert engine in
    [`alerting.rs`](https://github.com/NormB/sipnab/blob/main/src/security/alerting.rs) rather than printing, so
-   every sink (CLI, TUI, `fail2ban`, MCP `security_findings`) gets it. A new
+   every sink (CLI, TUI, `fail2ban`, MCP `security_findings`) gets it.
+
+   A new
    rule name also belongs in `SECURITY_FINDING_KINDS`
    ([`mcp/server.rs`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs)) and in
    `DetectionEngines::armed_kinds` ([`batch.rs`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs)): the first is the
@@ -252,7 +259,9 @@ it. Steps 1, 2, and 4 are still convention with no gate behind them.
    checks. Then add it to
    [`tests/schemas/capture_analysis.schema.json`](https://github.com/NormB/sipnab/blob/main/tests/schemas/capture_analysis.schema.json):
    `json_schema_test` fails until the `kind` enum or the `counts` properties
-   name it. Last, the YANG module. Users already hold its current revision,
+   name it.
+
+   Last, the YANG module. Users already hold its current revision,
    so do not bless over it: add an entry to `REVISIONS` in
    [`src/analysis/yang.rs`](https://github.com/NormB/sipnab/blob/main/src/analysis/yang.rs) with the day's date,
    point `MODULE_TEXT`'s `include_str!` at the new file name, run
@@ -280,7 +289,7 @@ it. Steps 1, 2, and 4 are still convention with no gate behind them.
    itself.)**
 4. Add the same entry point to
    [`smoke_fuzz_test`](https://github.com/NormB/sipnab/blob/main/tests/smoke_fuzz_test.rs). Coverage-guided fuzzing
-   needs nightly and runs weekly; the smoke floor runs in every `cargo test`,
+   needs nightly and runs weekly. The smoke floor runs in every `cargo test`,
    and it is what actually catches the regression.
 5. When a target finds a crash, commit the reproducer into the corpus in the
    same change as the fix — and, because step 3's replay does not read the

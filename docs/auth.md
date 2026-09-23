@@ -162,7 +162,7 @@ Two independent mechanisms:
   clients over, and let the old token lapse. Multiple tokens are valid
   simultaneously.
 - **Signing-key rotation:** pass `--api-signing-key`/`--mcp-signing-key` more
-  than once. The **first** key mints; **all** keys verify. To roll a key:
+  than once. The **first** key mints. **All** keys verify. To roll a key:
   add the new key alongside the old, mint with the new key, migrate clients,
   then drop the old key on the next restart.
 
@@ -172,14 +172,21 @@ To kill a still-valid token before its `exp`, add its `id` to a denylist file
 and point the server at it. Both steps matter — an id in a file no server
 reads revokes nothing:
 
-```bash
-# Run all of these, in order.
-echo "ci-runner-1" >> /etc/sipnab/revoked.txt
-sipnab ... --api-signing-key "$KEY" --api-revoked-file /etc/sipnab/revoked.txt
-```
+1. Add the token's `id` to the denylist file:
 
-The file is one token `id` per line (blank lines and `#` comments ignored). It
-is **re-read when its mtime changes**, so appending an id revokes that token
+   ```bash
+   echo "ci-runner-1" >> /etc/sipnab/revoked.txt
+   ```
+
+2. Start the server with the denylist file:
+
+   ```bash
+   sipnab ... --api-signing-key "$KEY" --api-revoked-file /etc/sipnab/revoked.txt
+   ```
+
+The file is one token `id` per line (blank lines and `#` comments ignored).
+
+It is **re-read when its mtime changes**, so appending an id revokes that token
 within the next request — no restart required. (Because signed tokens are
 otherwise valid until `exp`, a denylist is the revocation mechanism for the
 stateless model.)
@@ -199,7 +206,7 @@ s2.<base64url(payload)>.<base64url(HMAC-SHA256)>
 default — omits the claim, so its payload is the three-field
 `{"id":...,"exp":...,"aud":...}` form, and a payload carrying no `scope`
 means `full`. Seeing `scope` in a decoded payload therefore always means
-"restricted". See [*Scope*](#scope-what-a-token-may-reach) below.
+"restricted". See [Scope: what a token may reach](#scope-what-a-token-may-reach) above.
 
 Verification is **stateless**: the server recomputes the HMAC, compares it in
 constant time against every configured signing key, then checks the audience,

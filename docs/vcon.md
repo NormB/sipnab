@@ -11,9 +11,13 @@ parties, what passed between them, and what some tool concluded about it.
 sipnab fills that shape from signaling it watched go past a tap. Each container
 carries the SIP ladder, the parties the `From` and `To` headers named, a
 diagnosis of the call, and — in two places, deliberately — a statement of what
-the capture missed. When the run retained the RTP payload, the container also
+the capture missed.
+
+When the run retained the RTP payload, the container also
 carries the audio, inline. None of them carries a signature or any claim that
-somebody consented to anything. **A sipnab vCon records what an instrument
+somebody consented to anything.
+
+**A sipnab vCon records what an instrument
 saw, not what the parties said.** The honesty section below is the one part of
 this page to read before you trust a container.
 
@@ -98,7 +102,9 @@ on.
 **A name resolves to a whole container, or to nothing.** Every write stages the
 bytes under a dot-prefixed sibling, flushes them to the filesystem, and renames
 into place. A reader polling the directory therefore never sees a truncated
-container, and a write that fails leaves the previous one intact. Staging is
+container, and a write that fails leaves the previous one intact.
+
+Staging is
 deliberately in the DESTINATION directory rather than in the system temp dir:
 `rename` is atomic only within one filesystem, and across a mount boundary it
 either fails outright or degrades into a copy, which puts the partial file
@@ -114,7 +120,9 @@ from its Call-ID, with an underscore replacing every character outside
 `[A-Za-z0-9._-]`. Re-exporting
 the same dialog to the same directory overwrites its file rather than
 accumulating a second one, which is what makes the directory a queue and not a
-log. Two dialogs whose Call-IDs differ only outside that character set land on
+log.
+
+Two dialogs whose Call-IDs differ only outside that character set land on
 one name. If that matters to you, consume the directory rather than trusting
 the name to be unique.
 
@@ -371,7 +379,9 @@ The empty row is the one [section 4.3 of the core draft](https://datatracker.iet
 to have a Dialog Object with no parameters in it". Reaching for `incomplete`
 there is the mistake sipnab shipped until 0.5.128, and it is not a matter of
 taste — it made every container for a call that answered assert a setup failure
-that never happened. Reaching for `recording` instead is worse still: an object
+that never happened.
+
+Reaching for `recording` instead is worse still: an object
 typed `recording` carrying neither `url` nor `body` promises content that is
 not there, and a conserver chain link that selects `type == "recording"` reads
 `dialog["url"]` unguarded — it raises, and the conserver dead-letters the
@@ -551,6 +561,7 @@ the header name, and an array of its values so a repeated `Via` or
 Four headers never travel — `Authorization`, `Proxy-Authorization`,
 `WWW-Authenticate` and `Proxy-Authenticate` — because a digest challenge and
 its response are credential material and a container is a publication surface.
+
 That filter is worth one honest sentence: until 0.5.125 it did nothing,
 because the trace carried no raw headers for it to find. The test guarding it
 passed for that reason rather than because the filter worked. Headers and the
@@ -590,15 +601,19 @@ Stated here rather than discovered later.
 
 - **It does not link to audio held elsewhere.** When the run retained the RTP
   payload the container carries the audio INLINE, as a `recording` Dialog
-  Object with a `sha512-` content hash; when it did not, the container says so
+  Object with a `sha512-` content hash. When it did not, the container says so
   in words and carries none. There is never a `url`, because sipnab hosts
-  nothing and cannot promise where a file lives tomorrow. Audio over the inline
+  nothing and cannot promise where a file lives tomorrow.
+
+  Audio over the inline
   budget draws an out-loud refusal rather than a silent truncation, and
   `--vcon-max-inline-media` sets that budget in MiB. It defaults to 5, a figure
   measured against a real vCon store that answered `204` for a container of
   roughly 12 MB, wrote it to its database, and had its own file spool refuse the
   payload with neither side reporting the partial write. `0` refuses every
-  inline body without turning the exporter off. Every door — batch export, REST
+  inline body without turning the exporter off.
+
+  Every door — batch export, REST
   and MCP — reads the one value, so the same call cannot come back carrying
   audio through one and a refusal through another.
 - **It does not tie the two halves of a B2BUA call together.** Two Call-IDs
