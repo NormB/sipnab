@@ -1696,7 +1696,9 @@ const HEP_FAKE_PROTO_WS: u8 = 50;
 
 /// The SIP transport of a message a HEP wrapper delivered.
 ///
-/// Called ONLY for a packet a HEP wrapper delivered. On a raw frame 50 is a
+/// The one rule both HEP inputs share: the `--hep-listen` short-circuit in
+/// [`parse_packet_unstamped`] and `--hep-parse`'s `unwrap_hep` in
+/// `app::batch`. Called ONLY for a packet a HEP wrapper delivered. On a raw frame 50 is a
 /// real ESP packet and 22 is XNS IDP, and neither may ever be relabeled.
 ///
 /// The number is a floor, and the top Via can only narrow it to WebSocket:
@@ -1720,7 +1722,7 @@ const HEP_FAKE_PROTO_WS: u8 = 50;
 /// Only WS and WSS narrow the number. A Via saying UDP on a 6 is not allowed
 /// to turn a TCP leg into UDP, and a Via saying TLS on a 6 names nothing a
 /// tracer does.
-fn hep_transport(ip_protocol: u8, payload: &[u8]) -> Option<TransportProto> {
+pub(crate) fn hep_transport(ip_protocol: u8, payload: &[u8]) -> Option<TransportProto> {
     let websocket = || {
         top_via_transport(payload).filter(|t| matches!(t, TransportProto::Ws | TransportProto::Wss))
     };

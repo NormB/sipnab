@@ -982,7 +982,10 @@ fn wiki_intra_docs_links_resolve() {
     // and docs/internals/subsystem-guide.md, all to the CLI reference's "How
     // --hep-listen reads the transport" section. Counted per file against
     // HEAD; no other page moved.
-    const EXPECTED_WIKI_LINKS: usize = 939;
+    // 939 -> 940: docs/cli-reference.md's `--hep-parse` row now points at the
+    // same section, since that flag reads HEP by the same rule. Counted per
+    // file against HEAD; no other page moved.
+    const EXPECTED_WIKI_LINKS: usize = 940;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe 6d in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

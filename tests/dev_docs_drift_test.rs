@@ -769,7 +769,11 @@ fn linked_code_targets_exist() {
     // `src/capture/archive/sevenz.rs`, which reports it. Attributed by
     // diffing `docs/internals/` against HEAD: that one link and no other page
     // changed.
-    const EXPECTED_CODE_LINKS: usize = 458;
+    // 458 -> 459: the subsystem guide's Parse hop links `src/app/batch.rs`,
+    // where `--hep-parse` calls the same HEP transport rule (issue #301).
+    // Attributed by diffing `docs/internals/` against HEAD: that one link and
+    // no other page changed.
+    const EXPECTED_CODE_LINKS: usize = 459;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \

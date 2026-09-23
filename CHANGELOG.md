@@ -32,7 +32,10 @@ entry that carries them.
   and a WebSocket connection's socket is TCP, so its replies to a WS client
   arrive as 6. The reading applies to HEP input only: on a captured frame 50
   is still a real ESP packet, 22 is still refused, and 6 is TCP. Any other
-  unknown number stays NOT DECODED, by number. Reported by Giovanni
+  unknown number stays NOT DECODED, by number. `--hep-parse`, which reads HEP
+  datagrams out of a capture file or off an interface, now applies the same
+  rule. It had labeled every unwrapped message UDP, so the same tracer feed
+  read TLS through `-L` and UDP from a file. Reported by Giovanni
   Maruzzelli ([@gmaruzz](https://github.com/gmaruzz)) in
   [#301](https://github.com/NormB/sipnab/issues/301).
 - **`-L` no longer loses every HEP message marked TCP.** A HEP sender marks a

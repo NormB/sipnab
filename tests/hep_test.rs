@@ -667,6 +667,69 @@ fn hep_fake_ip_protocols_from_proxy_tracers_are_decoded() {
     }
 }
 
+/// **`--hep-parse` reads HEP out of a capture file by the rule `-L` uses.**
+///
+/// A pcap of HEP3 datagrams on UDP/9060, as a mirror port or a `tcpdump` of a
+/// collector link records them. `--hep-parse` unwrapped each one and labeled
+/// the message UDP whatever the IP protocol chunk said, so the same OpenSIPS
+/// or Kamailio feed read TLS through `-L` and UDP from a file. Every message
+/// with a transport the rule names must surface with that name, and the one
+/// number no tracer uses must be counted NOT DECODED by number, as on `-L`.
+#[test]
+fn hep_parse_reads_the_transport_by_the_listener_rule() {
+    let sends = [
+        (22u8, "TLS", "hep301-file-tls@192.0.2.10", Some("TLS")),
+        (50, "WSS", "hep301-file-wss@192.0.2.10", Some("WSS")),
+        (6, "WS", "hep301-file-ws-reply@192.0.2.10", Some("WS")),
+        (6, "TCP", "hep301-file-tcp@192.0.2.10", Some("TCP")),
+        (17, "UDP", "hep301-file-udp@192.0.2.10", Some("UDP")),
+        (99, "TLS", "hep301-file-unknown@192.0.2.10", None),
+    ];
+    let frames: Vec<Vec<u8>> = sends
+        .iter()
+        .map(|&(proto, via, call_id, _)| {
+            let hep = hep3_with_ip_proto(proto, &traced_invite(via, call_id));
+            // HEP rides UDP/9060 by convention.
+            pcap_build::udp_frame([10, 1, 0, 1], [10, 2, 0, 1], 40000, 9060, &hep)
+        })
+        .collect();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("hep-feed.pcap");
+    pcap_build::write_pcap(&path, &frames);
+
+    let out = Command::new(env!("CARGO_BIN_EXE_sipnab"))
+        .args(["-N", "-I", path.to_str().unwrap(), "--hep-parse", "--json"])
+        .env("NO_COLOR", "1")
+        .stdin(Stdio::null())
+        .output()
+        .expect("run sipnab --hep-parse");
+    assert!(out.status.success(), "{out:?}");
+    let stdout: Vec<String> = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(str::to_string)
+        .collect();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+
+    for (proto, via, call_id, want) in sends {
+        assert_eq!(
+            transport_of(&stdout, call_id).as_deref(),
+            want,
+            "HEP protocol {proto} with Via {via}: {stdout:#?}\n{stderr}"
+        );
+    }
+    let not_decoded = stderr
+        .lines()
+        .find(|l| l.starts_with("NOT DECODED:"))
+        .unwrap_or_else(|| panic!("the unknown protocol must be reported: {stderr}"));
+    assert!(
+        not_decoded.contains("no transport (IP protocol 99) (1)"),
+        "{not_decoded}"
+    );
+    for gone in ["IP protocol 22", "IP protocol 50", "IP protocol 6)"] {
+        assert!(!not_decoded.contains(gone), "{gone}: {not_decoded}");
+    }
+}
+
 /// **A HEP message marked TCP is a SIP message, not a lost segment.**
 ///
 /// Before this, HEP IP protocol 6 went to the TCP reassembler, which needs a
