@@ -152,6 +152,12 @@ entry that carries them.
 
 ### Internal
 
+- **The blocked-script homepage test refuses the script the way a browser
+  does.** It cut `<script>` elements out with a regular expression, which
+  CodeQL flagged as an incomplete HTML filter (alert 423) and which tested a
+  page with no script at all. It now serves the real page under a policy that
+  forbids inline scripts, and it fails unless the browser reports refusing one.
+
 - **The pre-commit hook checks RFC links on every commit.** The
   first-mention rule was enforced locally only by the script tests, which the
   hook runs when `scripts/` is staged, so a docs-only commit with an unlinked
