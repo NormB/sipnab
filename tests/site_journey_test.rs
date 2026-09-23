@@ -4818,7 +4818,11 @@ fn docs_nav_list() -> Vec<NavEntry> {
             out.push(NavEntry {
                 group: group.to_string(),
                 path: e["path"].as_str().expect("entry path").to_string(),
-                label: e["label"].as_str().expect("entry label").to_string(),
+                label: e
+                    .get("label")
+                    .and_then(|l| l.as_str())
+                    .unwrap_or_default()
+                    .to_string(),
                 menu: e.get("menu").and_then(|m| m.as_bool()).unwrap_or(false),
             });
         }
@@ -4862,7 +4866,13 @@ fn every_docs_page_is_in_the_docs_nav_list() {
             e.label,
             e.path
         );
-        assert!(!e.label.trim().is_empty(), "{} has an empty label", e.path);
+        assert!(
+            e.label.is_empty(),
+            "{} carries a nav label ({:?}); both navs show the page's own title, \
+             so a label here would be read by nothing",
+            e.path,
+            e.label
+        );
     }
     for group in list.iter().map(|e| &e.group) {
         assert!(
@@ -4912,10 +4922,13 @@ fn both_docs_navs_render_the_one_list() {
         sidebar.contains("for group in nav"),
         "the docs_nav sidebar macro does not iterate the list it is given"
     );
+    // Both navs name a page by its own title, the heading the reader lands
+    // on. A separate nav label ("Fix a common problem" for a page headed
+    // "Examples & Recipes") left the reader unsure the click had worked.
     assert!(
-        sidebar.contains("{{ entry.label }}") && !sidebar.contains("{{ p.title }}"),
-        "the sidebar labels an entry with something other than its list label, \
-         so the sidebar and the dropdown can name one page two ways"
+        sidebar.contains("{{ p.title }}") && !sidebar.contains("label"),
+        "the sidebar names an entry by something other than the page's own \
+         title, so the link and the heading it lands on disagree"
     );
     for tpl in ["page.html", "section.html"] {
         let text = read(&format!("website/templates/{tpl}"));
@@ -4937,9 +4950,11 @@ fn both_docs_navs_render_the_one_list() {
     let menu_end = menu_at + base[menu_at..].find("</nav>").expect("menu inside <nav>");
     let menu = &base[menu_at..menu_end];
     assert!(
-        menu.contains("config.extra.docs_nav") && menu.contains("entry.label"),
-        "the Docs dropdown does not render config.extra.docs_nav with each \
-         entry's list label"
+        menu.contains("config.extra.docs_nav")
+            && menu.contains("{{ p.title }}")
+            && !menu.contains("entry.label"),
+        "the Docs dropdown does not render config.extra.docs_nav by each \
+         page's own title"
     );
     let literal = regex::Regex::new(r"get_url\(path='(@/[^']+)'\)").unwrap();
     let fixed: BTreeSet<String> = literal

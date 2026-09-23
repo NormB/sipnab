@@ -166,10 +166,6 @@
 
   {% block head_extra %}{% endblock head_extra %}
 
-  {# Progressive enhancement: scroll-reveal sections start hidden and are
-       revealed by an IntersectionObserver. Without JS they must stay visible,
-       or ~half the homepage renders blank. #}
-  <noscript><style>.fade-in-up { opacity: 1 !important; transform: none !important; }</style></noscript>
 </head>
 <body>
   <a class="skip-link" href="#main">Skip to content</a>
@@ -203,7 +199,7 @@
               <p class="nav-drop-label" id="nav-grp-{{ group.id }}">{{ group.title }}</p>
               {% for entry in group.pages %}{% if entry.menu %}
               {% set p = get_page(path=entry.path) %}
-              <a href="{{ p.permalink }}" role="menuitem" {% if current_path is defined and current_path == p.path %}class="active" aria-current="page"{% endif %}>{{ entry.label }}</a>
+              <a href="{{ p.permalink }}" role="menuitem" {% if current_path is defined and current_path == p.path %}class="active" aria-current="page"{% endif %}>{{ p.title }}</a>
               {% endif %}{% endfor %}
             </div>
             {% endfor %}
