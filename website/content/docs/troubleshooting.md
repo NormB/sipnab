@@ -897,6 +897,15 @@ Over UDP the sender cannot tell: a
 collector that is down produces no failure, so the collector's roster is the
 only witness.
 
+When the plaintext legs show and the proxy's TLS or WebSocket legs do not,
+look at the NOT DECODED line. Up to 0.5.187, OpenSIPS and Kamailio
+tracer messages for those legs landed there as `no transport (IP protocol 22)`
+and `ESP not NULL-encrypted (IP protocol 50)`. Both numbers are the proxies'
+way of naming TLS and WebSocket over HEP, and sipnab now decodes them, see
+[How `--hep-listen` reads the transport](@/docs/cli.md#how-hep-listen-reads-the-transport).
+Another number there is one no tracer convention covers, and the sender's
+configuration is the place to look.
+
 ## Encrypted SIP that does not decrypt
 
 The calls are on port 5061 and sipnab reports nothing, or reports fewer

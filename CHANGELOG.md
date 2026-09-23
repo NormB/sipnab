@@ -8,6 +8,31 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Fixed
+
+- **`-L` shows the TLS and WebSocket legs OpenSIPS and Kamailio trace.**
+  Both proxies send a decrypted TLS or WebSocket message over HEP with a fake
+  number in the IP protocol chunk (`0x0002`) to name its transport. OpenSIPS
+  `tracer` sends 22 (`IPPROTO_IDP`) for TLS and 50 (`IPPROTO_ESP`) for WS and
+  WSS ([`tracer.c`](https://github.com/OpenSIPS/opensips/blob/5fa4e627187f23544e702db0a47dbe877a407117/modules/tracer/tracer.c#L3584-L3591),
+  read back the same way by its own
+  [`proto_hep.c`](https://github.com/OpenSIPS/opensips/blob/5fa4e627187f23544e702db0a47dbe877a407117/modules/proto_hep/proto_hep.c#L1132-L1138)).
+  Kamailio `siptrace` sends 22 for TLS, WS and WSS alike
+  ([`siptrace_hep.c`](https://github.com/kamailio/kamailio/blob/24cbec17f6030f7a9a3c632f0a0842a37b46bdf5/src/modules/siptrace/siptrace_hep.c#L480-L495)).
+  sipnab read only 6, 17 and 132, so every such message counted as a NOT
+  DECODED frame (`no transport (IP protocol 22)`, and `ESP not NULL-encrypted
+  (IP protocol 50)`), and the encrypted legs never appeared next to the wire
+  capture. A HEP message now decodes as TLS for 22 and as WS for 50. For 22,
+  a top Via of `SIP/2.0/WS` or `SIP/2.0/WSS` makes it WS, which is how a
+  Kamailio WebSocket leg keeps its transport. sipnab reports WSS as WS, and the
+  message's own Via still says WSS. The reading applies to HEP input only: on
+  a captured frame 50 is still a real ESP packet and 22 is still refused. Any
+  other unknown number stays NOT DECODED, by number. Reported by Giovanni
+  Maruzzelli ([@gmaruzz](https://github.com/gmaruzz)) in
+  [#301](https://github.com/NormB/sipnab/issues/301).
+
 ## [0.5.187] - 2026-09-22
 
 ### Added

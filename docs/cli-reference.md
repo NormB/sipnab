@@ -1146,7 +1146,7 @@ Unprivileged runs (`sipnab --setup-caps`) now do too.
 | `--api-accept-archive-passwords` | -- | off | Accept the `Sipnab-Archive-Password` header on `GET /v1/captures/compare` from a client that is not on this host. sipnab serves plain HTTP, so the password crosses the network in the clear unless TLS terminates in front: that is your job when you pass this. Without it, only a loopback client may send one, and a remote one gets `403`. Feature: `api` |
 | `--api-file-root` | `<DIR>` | -- | Directory of capture files `GET /v1/captures/compare` may diff. The REST counterpart of `--mcp-file-root`, off for the same reason: every other REST answer comes from bytes sipnab already holds, while this reads FILES a client names. It takes a bare FILENAME, never a path: sipnab rejects a separator, a `..` or an absolute prefix before touching the filesystem, and refuses a symlink that resolves out of the root at open, by the same check `-O` uses. Without this flag the compare route answers `503`. Naming one directory means the worst a client can do is name files inside it. Feature: `api` |
 | `--metrics-max-conn` | `<N>` | `16` | Metrics scrapes served at once before further ones get `503`. The gate stops a burst of slow clients exhausting threads and taking monitoring down, and sixteen suits one Prometheus; an HA pair, a federating parent, a `remote_write` shard, an alertmanager sidecar and one engineer's `curl` reach it without anything unusual happening. A refused scrape leaves a hole in the series that reads as a capture that died rather than as a busy endpoint. Config: `[limits] metrics_max_conn` Feature: `metrics` |
-| `-L`, `--hep-listen` | `<ADDR>` | -- | Listen for HEP (Homer Encapsulation Protocol) packets. **Combines with `-d <iface>`**: HEP then supplies signaling while the interface supplies the RTP a HEP feed cannot carry, and streams bind to dialogs by SDP media endpoint. Give that run an explicit media-only BPF expression (`sipnab -N -d eth0 -L 127.0.0.1:9060 "udp portrange 10000-20000"`) — without one the interface gets the auto-generated *signaling* filter, captures no media, and sees every mirrored message a second time. One interface and one listener only: `--multi-device` with `-L`, `-I` with `-L`, and `-O` alongside the pair are each refused with the reason. See [cookbook recipe 6d](examples.md#6d-take-signaling-from-hep-and-media-off-the-wire-in-one-process). Feature: `hep` |
+| `-L`, `--hep-listen` | `<ADDR>` | -- | Listen for HEP (Homer Encapsulation Protocol) packets. **Combines with `-d <iface>`**: HEP then supplies signaling while the interface supplies the RTP a HEP feed cannot carry, and streams bind to dialogs by SDP media endpoint. Give that run an explicit media-only BPF expression (`sipnab -N -d eth0 -L 127.0.0.1:9060 "udp portrange 10000-20000"`) — without one the interface gets the auto-generated *signaling* filter, captures no media, and sees every mirrored message a second time. One interface and one listener only: `--multi-device` with `-L`, `-I` with `-L`, and `-O` alongside the pair are each refused with the reason. See [cookbook recipe 6d](examples.md#6d-take-signaling-from-hep-and-media-off-the-wire-in-one-process). The decrypted TLS and WebSocket legs OpenSIPS and Kamailio trace arrive with IP protocol 22 or 50 and decode as TLS or WS, see [How `--hep-listen` reads the transport](#how---hep-listen-reads-the-transport). Feature: `hep` |
 | `-H`, `--hep-send` | `<ADDR>` | -- | Send captured packets via HEP to a remote collector: SIP as protocol type 1 and RTCP as type 5, so the collector can report media quality and not only call setup. RTP is never forwarded. **On `-I <file>` this forwards the file's contents**: every SIP message and RTCP report sipnab reads out of the capture goes to `<ADDR>` as recorded, redacted in no way. sipnab announces that at startup, naming the flag, the destination and the capture files, before it reads the first packet. See [What `--hep-send` sends](#what---hep-send-sends). **A headless run ends with one line saying what it exported**: packets sent, failures by kind (`connect`, `tls_handshake`, `write`) and reconnects, at `warn` when anything failed. Over UDP "sent" means handed to the kernel, and a collector that is down produces no failure; the line says so. `runtime_stats`, `GET /v1/runtime` (`hep_export`) and the Prometheus `sipnab_hep_export_*` series carry the same counts while it runs. Feature: `hep` |
 | `--hep-send-transport` | `<udp\|tcp\|tls>` | `udp` | Transport `--hep-send` uses to reach the collector. Homer's collectors accept all three. HEP v3 carries its own total length, so a `tcp` or `tls` feed is packets laid end to end with no extra framing, and sipnab sets `TCP_NODELAY` because these are small packets whose value is timeliness. A write that fails drops the connection and the next packet dials again — one reconnect per packet, never a loop, so a collector that is down does not turn forwarding into a spin. Refused without `--hep-send`, which is the side it governs. Feature: `hep` |
 | `--hep-listen-transport` | `<udp\|tcp\|tls>` | `udp` | Transport `--hep-listen` accepts. A `tcp` or `tls` listener serves several agents at once, one connection each, and reads every connection as HEP v3 packets delimited by the total length in each header. **HEP v2 is datagram-only**: it declares no total length, so nothing can delimit it on a stream. A peer that sends bytes that are not HEP v3 loses its connection, because a stream offers no point to resynchronize at. Refused without `--hep-listen`, which is the side it governs. Feature: `hep` |
@@ -1267,6 +1267,40 @@ The scanner-kill path works the other way round and refuses to run offline. It
 aims at addresses recorded *inside* the capture, which belong to third parties
 who have nothing to do with your analysis, so `-I file` grants it nothing at
 all. See [Security](#security).
+
+### How `--hep-listen` reads the transport
+
+A HEP packet names the transport of the message it carries in its IP protocol
+chunk (`0x0002`). The [HEP3 specification](https://github.com/sipcapture/hep/blob/83451db00e99f43b24dc68a391c0a7b2bb749b02/docs/HEP3_Network_Protocol_Specification_REV_37.pdf)
+defines that chunk as the IP protocol ID, and sipnab reads 17 as UDP, 6 as TCP
+and 132 as SCTP.
+
+OpenSIPS and Kamailio also send a decrypted TLS or WebSocket message over
+HEP. Its payload is plain SIP, and no IP protocol number means TLS or
+WebSocket, so both proxies put a fake number in the chunk:
+
+| Number | Sender | Meaning | sipnab reports |
+|---|---|---|---|
+| 22 (`IPPROTO_IDP`) | OpenSIPS `tracer` | TLS | TLS |
+| 22 (`IPPROTO_IDP`) | Kamailio `siptrace` | TLS, WS or WSS | TLS, or WS when the top Via says `WS` or `WSS` |
+| 50 (`IPPROTO_ESP`) | OpenSIPS `tracer` | WS or WSS | WS |
+
+The sources are OpenSIPS
+[`modules/tracer/tracer.c`](https://github.com/OpenSIPS/opensips/blob/5fa4e627187f23544e702db0a47dbe877a407117/modules/tracer/tracer.c#L3584-L3591)
+and its own receiver
+[`modules/proto_hep/proto_hep.c`](https://github.com/OpenSIPS/opensips/blob/5fa4e627187f23544e702db0a47dbe877a407117/modules/proto_hep/proto_hep.c#L1132-L1138),
+and Kamailio
+[`src/modules/siptrace/siptrace_hep.c`](https://github.com/kamailio/kamailio/blob/24cbec17f6030f7a9a3c632f0a0842a37b46bdf5/src/modules/siptrace/siptrace_hep.c#L480-L495).
+
+sipnab has one WebSocket transport, so a WSS leg reports as WS. The message's
+own Via still reads `SIP/2.0/WSS`, which is where to look when the difference
+matters. A filter such as `transport == TLS` or `transport == WS` finds these
+legs next to the wire capture.
+
+sipnab honors 22 and 50 on HEP input only. On a frame read from an interface
+or a file, 50 is a real IPsec ESP packet and sipnab refuses 22, as before. Any
+other number a HEP sender puts in the chunk stays in the NOT DECODED line, by
+number.
 
 ## MCP server
 

@@ -1677,6 +1677,87 @@ fn ip_protocol_to_transport(p: u8) -> Option<TransportProto> {
     }
 }
 
+/// HEP's IP protocol chunk value for a decrypted TLS message: `IPPROTO_IDP`.
+///
+/// A convention of the proxies' tracers, not an IP protocol of any packet:
+/// OpenSIPS `tracer` sends it for TLS
+/// ([`modules/tracer/tracer.c` `pipport2su`, 4.0 branch, lines 3586-3587](https://github.com/OpenSIPS/opensips/blob/5fa4e627187f23544e702db0a47dbe877a407117/modules/tracer/tracer.c#L3586-L3587))
+/// and Kamailio `siptrace` sends it for TLS, WS and WSS alike
+/// ([`src/modules/siptrace/siptrace_hep.c` `pipport2su`, 6.1 branch, lines 484-489](https://github.com/kamailio/kamailio/blob/24cbec17f6030f7a9a3c632f0a0842a37b46bdf5/src/modules/siptrace/siptrace_hep.c#L484-L489)),
+/// both commented `/* fake proto type */`.
+const HEP_FAKE_PROTO_TLS: u8 = 22;
+
+/// HEP's IP protocol chunk value for a decrypted WebSocket message:
+/// `IPPROTO_ESP`, which OpenSIPS `tracer` sends for both `ws` and `wss`
+/// ([`modules/tracer/tracer.c` lines 3590-3591](https://github.com/OpenSIPS/opensips/blob/5fa4e627187f23544e702db0a47dbe877a407117/modules/tracer/tracer.c#L3590-L3591))
+/// and OpenSIPS's own HEP receiver reads back as `PROTO_WS`
+/// ([`modules/proto_hep/proto_hep.c` lines 1132-1138](https://github.com/OpenSIPS/opensips/blob/5fa4e627187f23544e702db0a47dbe877a407117/modules/proto_hep/proto_hep.c#L1132-L1138)).
+const HEP_FAKE_PROTO_WS: u8 = 50;
+
+/// The SIP transport a HEP sender named with a fake IP protocol number.
+///
+/// Called ONLY for a packet a HEP wrapper delivered, and only after
+/// [`ip_protocol_to_transport`] declined the number. On a raw frame 50 is a
+/// real ESP packet and 22 is XNS IDP, and neither may ever be relabeled.
+///
+/// 50 is WebSocket: OpenSIPS sends it for WS and WSS, and nothing else does.
+/// 22 is TLS unless the message's top Via names WS or WSS, because Kamailio
+/// sends 22 for all three. The top Via names the transport of the hop a
+/// message travels on in both directions: a request's was added by its
+/// sender for that hop, and a response's is the Via its recipient added
+/// ([RFC 3261 section 18.2.2](https://www.rfc-editor.org/rfc/rfc3261#section-18.2.2)).
+/// [`TransportProto`] has no WSS variant, so WSS reports as WS. The raw
+/// message keeps its `SIP/2.0/WSS` Via.
+///
+/// # Returns
+///
+/// `None` for every number that is not one of the two conventions.
+fn hep_fake_proto_transport(ip_protocol: u8, payload: &[u8]) -> Option<TransportProto> {
+    match ip_protocol {
+        HEP_FAKE_PROTO_WS => Some(TransportProto::Ws),
+        HEP_FAKE_PROTO_TLS if top_via_is_websocket(payload) => Some(TransportProto::Ws),
+        HEP_FAKE_PROTO_TLS => Some(TransportProto::Tls),
+        _ => None,
+    }
+}
+
+/// Whether the top Via header of the SIP message in `payload` names WS or
+/// WSS as its transport.
+///
+/// Reads header lines between the start line and the first blank line, takes
+/// the first `Via` (or compact `v`) header, and compares the third
+/// slash-separated field of its sent-protocol, trimmed, as
+/// [RFC 3261 section 20.42](https://www.rfc-editor.org/rfc/rfc3261#section-20.42)
+/// allows whitespace around each slash. Any shape it cannot read is `false`.
+fn top_via_is_websocket(payload: &[u8]) -> bool {
+    let mut lines = payload.split(|&b| b == b'\n').skip(1);
+    let Some(value) = lines
+        .find_map(|line| {
+            let line = line.strip_suffix(b"\r").unwrap_or(line);
+            if line.is_empty() {
+                return Some(None);
+            }
+            let colon = line.iter().position(|&b| b == b':')?;
+            let name = line[..colon].trim_ascii();
+            (name.eq_ignore_ascii_case(b"via") || name.eq_ignore_ascii_case(b"v"))
+                .then(|| Some(&line[colon + 1..]))
+        })
+        .flatten()
+    else {
+        return false;
+    };
+    let Some(transport) = value.split(|&b| b == b'/').nth(2) else {
+        return false;
+    };
+    let transport = transport.trim_ascii_start();
+    let end = transport
+        .iter()
+        .position(|b| b.is_ascii_whitespace())
+        .unwrap_or(transport.len());
+    let transport = &transport[..end];
+    transport.eq_ignore_ascii_case(b"WS") || transport.eq_ignore_ascii_case(b"WSS")
+}
+
 // ── SCTP ──────────────────────────────────────────────────────────────
 
 /// A zero-copy reference to one SCTP DATA chunk's control fields and payload.
@@ -2404,8 +2485,15 @@ fn parse_packet_unstamped(packet: &Packet) -> Result<ParsedPacket, CaptureError>
     if let Some(meta) = &packet.pre_parsed {
         // A non-SIP transport (not UDP/TCP/SCTP) carries no message we can
         // label without guessing; reject it so downstream never sees a
-        // mislabeled transport (e.g. ESP silently reported as UDP).
+        // mislabeled transport (e.g. ESP silently reported as UDP). The one
+        // exception is a number a HEP wrapper asserted: OpenSIPS and Kamailio
+        // name a decrypted TLS or WebSocket leg with 22 or 50 (issue #301).
+        // A uprobe read has no wrapper and gets no such reading.
         let transport = ip_protocol_to_transport(meta.ip_protocol)
+            .or_else(|| {
+                meta.hep.as_ref()?;
+                hep_fake_proto_transport(meta.ip_protocol, &packet.data)
+            })
             .ok_or(CaptureError::UnsupportedIpProtocol(meta.ip_protocol))?;
         return Ok(ParsedPacket {
             // Carried, not dropped. A uprobe read's whole provenance is this
@@ -5192,6 +5280,182 @@ mod tests {
 
         assert_eq!(parsed.transport, TransportProto::Tcp);
         assert_eq!(parsed.payload[..], payload[..]);
+    }
+
+    // ── HEP's fake IP protocol numbers (issue #301) ─────────────────────
+    //
+    // OpenSIPS and Kamailio trace a decrypted TLS or WebSocket message over
+    // HEP and name its transport with a protocol number that is not the IP
+    // protocol of any packet: 22 (IPPROTO_IDP) and 50 (IPPROTO_ESP). The
+    // builders below mirror what those tracers put on the wire.
+
+    /// A decrypted SIP INVITE whose top Via names `via_transport`.
+    fn traced_invite(via_transport: &str) -> Vec<u8> {
+        format!(
+            "INVITE sip:bob@example.com SIP/2.0\r\n\
+             Via: SIP/2.0/{via_transport} 192.0.2.10:5061;branch=z9hG4bK301\r\n\
+             From: <sip:alice@example.com>;tag=1\r\n\
+             To: <sip:bob@example.com>\r\n\
+             Call-ID: hep-301@192.0.2.10\r\n\
+             CSeq: 1 INVITE\r\n\
+             Content-Length: 0\r\n\r\n"
+        )
+        .into_bytes()
+    }
+
+    /// A packet as the HEP listener builds it, with the wrapper's metadata
+    /// set, so the parser knows a HEP sender asserted `ip_protocol`.
+    fn hep_packet(ip_protocol: u8, payload: &[u8]) -> Packet {
+        Packet::with_pre_parsed(
+            Utc.with_ymd_and_hms(2026, 9, 23, 12, 0, 0).unwrap(),
+            payload.to_vec(),
+            Some("hep:192.0.2.1:9060".to_string()),
+            super::super::packet::PreParsed {
+                src_addr: "192.0.2.10".parse().unwrap(),
+                dst_addr: "192.0.2.20".parse().unwrap(),
+                src_port: 5061,
+                dst_port: 5061,
+                ip_protocol,
+                hep: Some(super::super::packet::HepOrigin {
+                    protocol: 1,
+                    correlation_id: None,
+                }),
+            },
+        )
+    }
+
+    /// OpenSIPS `tracer` sends 22 for a TLS leg. The message is decoded as
+    /// SIP over TLS, not refused as an unsupported IP protocol.
+    #[test]
+    fn hep_ip_protocol_22_is_sip_over_tls() {
+        let payload = traced_invite("TLS");
+        let parsed = parse_packet(&hep_packet(22, &payload))
+            .expect("HEP protocol 22 is the tracers' name for TLS, not an unsupported protocol");
+        assert_eq!(parsed.transport, TransportProto::Tls);
+        assert_eq!(parsed.payload[..], payload[..]);
+        assert_eq!(
+            parsed.ip_protocol, 22,
+            "the number the sender asserted is kept as it arrived"
+        );
+    }
+
+    /// OpenSIPS `tracer` sends 50 for a WS or WSS leg.
+    #[test]
+    fn hep_ip_protocol_50_is_sip_over_websocket() {
+        for via in ["WS", "WSS"] {
+            let parsed = parse_packet(&hep_packet(50, &traced_invite(via)))
+                .unwrap_or_else(|e| panic!("HEP protocol 50 (Via {via}) refused: {e:?}"));
+            assert_eq!(parsed.transport, TransportProto::Ws, "Via {via}");
+        }
+    }
+
+    /// Kamailio `siptrace` sends 22 for TLS, WS and WSS alike, so the number
+    /// alone cannot tell them apart. The top Via of the message can: it names
+    /// the transport of the hop the message travels on.
+    #[test]
+    fn hep_ip_protocol_22_with_a_websocket_via_is_websocket() {
+        for via in ["WS", "WSS", "wss"] {
+            let parsed = parse_packet(&hep_packet(22, &traced_invite(via)))
+                .unwrap_or_else(|e| panic!("HEP protocol 22 (Via {via}) refused: {e:?}"));
+            assert_eq!(parsed.transport, TransportProto::Ws, "Via {via}");
+        }
+        // Compact form, spacing around the slashes, and a response.
+        let compact = b"SIP/2.0 200 OK\r\nv: SIP / 2.0 / WSS abc.invalid;branch=z9hG4bK1\r\n\r\n";
+        assert_eq!(
+            parse_packet(&hep_packet(22, compact)).unwrap().transport,
+            TransportProto::Ws
+        );
+    }
+
+    /// 22 with no Via, or a Via naming anything but WS or WSS, stays TLS:
+    /// that is what both tracers mean by 22 when WebSocket is ruled out.
+    #[test]
+    fn hep_ip_protocol_22_without_a_websocket_via_stays_tls() {
+        for payload in [
+            traced_invite("TCP"),
+            traced_invite("UDP"),
+            b"INVITE sip:bob@example.com SIP/2.0\r\n\r\n".to_vec(),
+            // A Via below the blank line is body, not a header.
+            b"INVITE sip:b SIP/2.0\r\nTo: <sip:b>\r\n\r\nVia: SIP/2.0/WSS x\r\n".to_vec(),
+            // A header whose name merely starts with "Via" is not Via.
+            b"INVITE sip:b SIP/2.0\r\nViaduct: SIP/2.0/WSS x\r\n\r\n".to_vec(),
+        ] {
+            let parsed = parse_packet(&hep_packet(22, &payload)).expect("22 is TLS");
+            assert_eq!(
+                parsed.transport,
+                TransportProto::Tls,
+                "{}",
+                String::from_utf8_lossy(&payload)
+            );
+        }
+    }
+
+    /// The convention belongs to HEP senders. A pre-parsed packet nothing
+    /// wrapped (a uprobe read) carries a real protocol number, and 22 or 50
+    /// there is still refused, never relabeled.
+    #[test]
+    fn the_hep_transport_convention_is_not_applied_without_a_hep_wrapper() {
+        for p in [22u8, 50] {
+            let mut pkt = hep_packet(p, &traced_invite("WSS"));
+            pkt.interface = Some("uprobe:opensips/1234".into());
+            pkt.pre_parsed.as_mut().unwrap().hep = None;
+            let err = parse_packet(&pkt).expect_err("no HEP wrapper, no convention");
+            assert!(
+                matches!(err, CaptureError::UnsupportedIpProtocol(n) if n == p),
+                "protocol {p}: {err:?}"
+            );
+        }
+    }
+
+    /// A number neither tracer uses stays undecodable and named, so the
+    /// not-decoded tally still says which protocol a sender claimed.
+    #[test]
+    fn hep_with_an_unknown_ip_protocol_is_still_refused_by_number() {
+        for p in [0u8, 1, 41, 99, 255] {
+            let err = parse_packet(&hep_packet(p, &traced_invite("TLS")))
+                .expect_err("an unknown HEP protocol must not be guessed");
+            assert!(
+                matches!(err, CaptureError::UnsupportedIpProtocol(n) if n == p),
+                "protocol {p}: {err:?}"
+            );
+        }
+    }
+
+    /// 6, 17 and 132 from a HEP sender mean what they always meant.
+    #[test]
+    fn hep_real_ip_protocols_are_unchanged() {
+        for (p, want) in [
+            (6u8, TransportProto::Tcp),
+            (17, TransportProto::Udp),
+            (132, TransportProto::Sctp),
+        ] {
+            let parsed =
+                parse_packet(&hep_packet(p, &traced_invite("WSS"))).expect("real protocol");
+            assert_eq!(parsed.transport, want, "protocol {p}");
+        }
+    }
+
+    /// A RAW frame is not HEP. IP protocol 50 there is a real ESP packet and
+    /// 22 is XNS IDP: neither becomes TLS or WS, even when the bytes behind
+    /// the header are a SIP message whose Via says WSS.
+    #[test]
+    fn raw_frames_never_take_the_hep_transport_convention() {
+        let sip = traced_invite("WSS");
+        for p in [22u8, 50] {
+            let ip = wrap_in_ipv4(&sip, p, [192, 0, 2, 1], [192, 0, 2, 2]);
+            let err = parse_packet(&make_packet(wrap_in_eth(&ip, ETHERTYPE_IPV4), DLT_EN10MB))
+                .expect_err("a raw frame is never relabeled");
+            assert!(
+                matches!(err, CaptureError::UnsupportedIpProtocol(n) if n == p),
+                "raw protocol {p}: {err:?}"
+            );
+        }
+        // Real ESP with NULL encryption still decodes, as the transport it
+        // protects.
+        let dg = udp_datagram(|n| pseudo_v4(ESP_SRC, ESP_DST, 17, n), 5060, 5062, &sip);
+        let parsed = parse_packet(&esp_frame_v4(&esp_null(17, &dg, 12))).expect("ESP-NULL UDP");
+        assert_eq!(parsed.transport, TransportProto::Udp);
+        assert_eq!(parsed.payload[..], sip[..]);
     }
 
     /// A 6in4 tunnel — an outer IPv4 packet with protocol 41 carrying an

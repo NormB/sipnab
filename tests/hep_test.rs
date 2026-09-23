@@ -114,8 +114,22 @@ impl HepListener {
     /// As [`spawn`], with an explicit `SIPNAB_LOG` level (the per-packet
     /// rate-limit drop is logged at `debug`, so that test needs `debug`).
     fn spawn_with_log(log: &str, extra_args: &[&str]) -> HepListener {
+        Self::spawn_inner(log, true, extra_args)
+    }
+
+    /// As [`spawn`], without `--quiet`, so the end-of-run summary and the
+    /// NOT DECODED notice reach stderr.
+    fn spawn_reporting(extra_args: &[&str]) -> HepListener {
+        Self::spawn_inner("info", false, extra_args)
+    }
+
+    /// The one spawn: `quiet` decides whether `--quiet` is passed.
+    fn spawn_inner(log: &str, quiet: bool, extra_args: &[&str]) -> HepListener {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_sipnab"));
-        cmd.args(["-N", "--hep-listen", "127.0.0.1:0", "--json", "--quiet"]);
+        cmd.args(["-N", "--hep-listen", "127.0.0.1:0", "--json"]);
+        if quiet {
+            cmd.arg("--quiet");
+        }
         cmd.args(extra_args);
         cmd.env("SIPNAB_LOG", log);
         cmd.env("NO_COLOR", "1");
@@ -545,6 +559,146 @@ fn hep_senders_reports_who_fed_the_listener_and_who_it_refused() {
     let validator = jsonschema::validator_for(&schema).expect("schema compiles");
     if let Err(e) = validator.validate(&report) {
         panic!("--hep-senders --json does not match its schema: {e}\n{report:#}");
+    }
+}
+
+// ── Fake IP protocol numbers from OpenSIPS / Kamailio (issue #301) ─────
+
+/// A HEP3 datagram carrying `payload` whose IP protocol chunk (0x0002) says
+/// `ip_proto`, the way OpenSIPS `tracer` and Kamailio `siptrace` stamp a
+/// decrypted TLS (22) or WebSocket (50) message.
+///
+/// Built with the production encoder, then the one byte of the 0x0002 chunk is
+/// rewritten: the encoder derives that byte from a real transport and cannot
+/// produce the fake numbers, which is correct for a sender.
+fn hep3_with_ip_proto(ip_proto: u8, payload: &[u8]) -> Vec<u8> {
+    let ep = HepEndpoint {
+        src_addr: "192.0.2.10".parse().unwrap(),
+        dst_addr: "192.0.2.20".parse().unwrap(),
+        src_port: 5061,
+        dst_port: 5061,
+        transport: sipnab::net::TransportProto::Udp,
+    };
+    let mut datagram = build_hep_v3(&ep, Utc::now(), HepProtocol::Sip, 0, None, payload);
+    // vendor 0x0000, type 0x0002, length 7, then the protocol byte.
+    let chunk = [0u8, 0, 0, 2, 0, 7];
+    let at = datagram
+        .windows(chunk.len())
+        .position(|w| w == chunk)
+        .expect("the encoder always writes an IP protocol chunk");
+    datagram[at + chunk.len()] = ip_proto;
+    assert_eq!(
+        parse_hep(&datagram).expect("still valid HEP3").ip_protocol,
+        ip_proto,
+        "the patched chunk must be the one the listener reads"
+    );
+    datagram
+}
+
+/// A decrypted INVITE whose top Via names `via` and whose Call-ID is `call_id`.
+fn traced_invite(via: &str, call_id: &str) -> Vec<u8> {
+    format!(
+        "INVITE sip:bob@example.com SIP/2.0\r\n\
+         Via: SIP/2.0/{via} 192.0.2.10:5061;branch=z9hG4bK{call_id}\r\n\
+         From: <sip:alice@example.com>;tag=1\r\n\
+         To: <sip:bob@example.com>\r\n\
+         Call-ID: {call_id}\r\n\
+         CSeq: 1 INVITE\r\n\
+         Content-Length: 0\r\n\r\n"
+    )
+    .into_bytes()
+}
+
+/// **Decrypted TLS and WebSocket legs traced by OpenSIPS or Kamailio are SIP,
+/// not undecodable frames** (issue #301, reported by Giovanni Maruzzelli).
+///
+/// Four datagrams reach a real `--hep-listen`: OpenSIPS's TLS (22), OpenSIPS's
+/// WSS (50), Kamailio's WSS (22, told apart by its Via), and a number no tracer
+/// uses (99). The first three surface as SIP messages with the transport
+/// named; only 99 is left in the NOT DECODED notice, by number.
+#[test]
+fn hep_fake_ip_protocols_from_proxy_tracers_are_decoded() {
+    let srv = HepListener::spawn_reporting(&["--hep-allow", "127.0.0.1/32", "--count", "4"]);
+    let sends = [
+        (22u8, "TLS", "hep301-tls@192.0.2.10"),
+        (50, "WSS", "hep301-wss@192.0.2.10"),
+        (22, "WSS", "hep301-kamailio-wss@192.0.2.10"),
+        (99, "TLS", "hep301-unknown@192.0.2.10"),
+    ];
+    for (proto, via, call_id) in sends {
+        srv.send(&hep3_with_ip_proto(proto, &traced_invite(via, call_id)));
+        thread::sleep(Duration::from_millis(20));
+    }
+
+    // `--count 4` ends the run once the fourth datagram is read, which closes
+    // both streams; draining them to the end collects the summary too.
+    let deadline = Instant::now() + test_timeout(15);
+    let mut stdout = Vec::new();
+    let mut stderr = Vec::new();
+    let mut open = (true, true);
+    while (open.0 || open.1) && Instant::now() < deadline {
+        match srv.stdout_rx.recv_timeout(Duration::from_millis(50)) {
+            Ok(line) => stdout.push(line),
+            Err(mpsc::RecvTimeoutError::Disconnected) => open.0 = false,
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+        }
+        match srv.stderr_rx.recv_timeout(Duration::from_millis(50)) {
+            Ok(line) => stderr.push(line),
+            Err(mpsc::RecvTimeoutError::Disconnected) => open.1 = false,
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+        }
+    }
+    assert!(
+        !open.0 && !open.1,
+        "--count 4 did not end the run: {stderr:#?}"
+    );
+
+    let transport_of = |call_id: &str| -> Option<String> {
+        stdout.iter().find_map(|line| {
+            let v: serde_json::Value = serde_json::from_str(line).ok()?;
+            (v["call_id"] == call_id).then(|| v["transport"].as_str().unwrap_or("").to_string())
+        })
+    };
+    assert_eq!(
+        transport_of("hep301-tls@192.0.2.10").as_deref(),
+        Some("TLS"),
+        "{stdout:#?}"
+    );
+    assert_eq!(
+        transport_of("hep301-wss@192.0.2.10").as_deref(),
+        Some("WS"),
+        "{stdout:#?}"
+    );
+    assert_eq!(
+        transport_of("hep301-kamailio-wss@192.0.2.10").as_deref(),
+        Some("WS"),
+        "Kamailio names WSS with 22, and the Via says which: {stdout:#?}"
+    );
+    assert_eq!(
+        transport_of("hep301-unknown@192.0.2.10"),
+        None,
+        "{stdout:#?}"
+    );
+
+    let stderr = stderr.join("\n");
+    assert!(
+        stderr.contains("4 packets captured, 3 SIP messages"),
+        "three of the four datagrams are SIP messages: {stderr}"
+    );
+    let not_decoded = stderr
+        .lines()
+        .find(|l| l.starts_with("NOT DECODED:"))
+        .unwrap_or_else(|| panic!("the unknown protocol must still be reported: {stderr}"));
+    assert!(
+        not_decoded.starts_with("NOT DECODED: 1 of 4 frame(s)"),
+        "only the unknown protocol is undecodable: {not_decoded}"
+    );
+    assert!(not_decoded.contains("IP protocol 99"), "{not_decoded}");
+    for gone in ["IP protocol 22", "IP protocol 50"] {
+        assert!(
+            !not_decoded.contains(gone),
+            "{gone} is decoded now: {not_decoded}"
+        );
     }
 }
 

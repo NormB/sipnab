@@ -84,6 +84,14 @@ Every mode is the same six hops. Only who performs hop 5 differs.
    `data` is a `bytes::Bytes` slice of the captured frame — no copy, here or
    anywhere downstream.
 
+   A HEP packet arrives pre-parsed: its addresses, ports and IP protocol
+   number come from HEP chunks, and `parse_packet_unstamped` maps the number
+   to a transport. Only there, and only when a HEP wrapper delivered the
+   packet, 22 reads as TLS and 50 as WS, the fake numbers OpenSIPS and
+   Kamailio send for decrypted TLS and WebSocket legs. A captured frame never
+   takes that reading. See
+   [How `--hep-listen` reads the transport](../cli-reference.md#how---hep-listen-reads-the-transport).
+
    A live device name goes to libpcap untouched, and libpcap picks the
    capture backend from it (`netmap:eth0` selects netmap), so which backends
    a binary reaches is a property of the libpcap it loads, not of sipnab.

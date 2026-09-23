@@ -977,7 +977,12 @@ fn wiki_intra_docs_links_resolve() {
     // extractor does not count.
     // Merge of site-wave2 with main: 837 +6 (archive passwords) +93 (the
     // prose pass) = 936.
-    const EXPECTED_WIKI_LINKS: usize = 936;
+    // 936 -> 939 by the HEP fake IP protocol docs (issue #301): one link each
+    // in docs/cli-reference.md (the `--hep-listen` row), docs/troubleshooting.md
+    // and docs/internals/subsystem-guide.md, all to the CLI reference's "How
+    // --hep-listen reads the transport" section. Counted per file against
+    // HEAD; no other page moved.
+    const EXPECTED_WIKI_LINKS: usize = 939;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe 6d in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

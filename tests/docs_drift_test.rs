@@ -3813,7 +3813,11 @@ fn no_documentation_table_repeats_a_row() {
     // separators per file against HEAD: exactly those two files moved.
     // Merge of archive-passwords with main: 966 +4 (the two tables above,
     // each with its mirror) = 970.
-    const EXPECTED_TABLES: usize = 970;
+    // 970 -> 972: the HEP fake IP protocol table in docs/cli-reference.md's
+    // "How --hep-listen reads the transport" section (issue #301), and its
+    // site mirror. Attributed by counting table separators per file against
+    // HEAD: exactly those two files moved.
+    const EXPECTED_TABLES: usize = 972;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")
