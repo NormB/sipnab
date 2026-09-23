@@ -415,7 +415,9 @@ fn capabilities_missing_from_the_musl_build_say_so() {
         "the musl feature set scan produced {features:?}, which is not a \
          plausible feature list — it is reading the wrong line"
     );
-    let page = homepage();
+    // The vCon claim is a standards card, and the cards moved to their own
+    // page; the qualifier has to travel with them.
+    let page = homepage() + &read("website/templates/standards.html");
     // The rows that name a feature the static build lacks. Each must carry a
     // qualifier a reader can act on, in its own row.
     for (feature, row_marker) in [

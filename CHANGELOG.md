@@ -8,6 +8,64 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Changed
+
+- **/download reads as tasks, one command per copy button.** Method headings
+  say what the reader does ("Install with Homebrew", "Download a static Linux
+  binary"), and "for the seasoned" is "every file, for scripted installs". The
+  build, Docker and raw-URL blocks each split into one block per command, so a
+  copy button never pastes two. Prose splits its semicolon-joined sentences.
+- **The glossary and the command-line triage tutorial are on the site.**
+  Both are generated from `docs/` and listed under "Start here" in the docs
+  navigation. The authentication page is generated too, so its site copy
+  follows the source's steps-first order instead of drifting from it.
+- **Smaller site fixes.** /api-reference/ has one `<h1>` instead of two. The
+  docs index says what it offers in one sentence, and "All 19 ... compact
+  header forms all resolve" reads once. Long explanatory HTML comments in the
+  site templates are Tera comments, so they no longer ship to every visitor.
+  `scripts/rfc-links.py` and its gate leave front matter alone, so a page
+  description stays plain text. Links inside the standards cards are
+  underlined, which axe requires against their dimmed text.
+- **The homepage starts with something a newcomer can run.** "Install and
+  open your first capture" now sits directly under the hero, one command per
+  block and copy button: install, download the sample capture, open it in the
+  terminal UI, print a report with `-N --report`, capture live. The MCP demo
+  wall is titled "Ask an AI agent about a capture" and says its commands run
+  from a source checkout. The hero defines HEP instead of "estate" and
+  "collector tier", its looping animation has a pause button (WCAG 2.2.2),
+  and its alt text follows the image that is showing. Capability rows are
+  shorter, headings are sentence case, and homepage prose carries no
+  semicolons. The two standards bands moved to a new `/standards/` page,
+  linked as "See the standards behind every number", and every standards
+  gate reads them there. Small text is at least 0.75rem and code on narrow
+  screens 0.85rem. Kickers, note chips and group titles are no longer
+  forced to uppercase.
+- **The site's docs navigation is one list.** The Docs dropdown and the docs
+  sidebar both render `[[extra.docs_nav]]` in `website/config.toml`, so a page
+  carries one task-first label in both ("Install sipnab", "Fix a common
+  problem", "Look up CLI flags", "Connect an AI agent (MCP)"). Groups read
+  "Start here", "Capture in hard places", "Use the terminal UI", "Script and
+  automate", "Connect other tools" and "Build and measure". The dropdown shows
+  the main pages of each group, one link to the developer docs, and "All
+  docs". The active entry comes from the page it links: "Learn from real
+  captures" no longer lights up on the cookbook page, and the library and
+  examples pages now light up at all. Group headings label their groups for
+  screen readers instead of being hidden from them.
+- **The site's notes lead with how-tos.** The homepage notes block, now titled
+  "How-tos and walkthroughs", shows how-tos and feature notes and never a
+  post-mortem. The notes sidebar collapses its post-mortems behind a
+  disclosure, as the notes index already did, and opens it only on a
+  post-mortem's own page. Kind chips read "How-to", "Feature" and
+  "Post-mortem" instead of the front-matter slug. Dates no longer carry a
+  leading space on the first nine days of a month. Three note descriptions
+  that printed raw Markdown are plain text.
+- **Call-IDs in code blocks survive the CDN.** Cloudflare's Email Obfuscation
+  rewrote Call-IDs such as `busy-3a2b1c@192.0.2.30` to `[email protected]`
+  for readers without JavaScript. Every page's content now sits inside the
+  CDN's `<!--email_off-->` markers.
+
 ## [0.5.186] - 2026-09-22
 
 ### Added

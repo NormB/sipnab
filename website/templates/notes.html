@@ -32,7 +32,7 @@
     {% set howtos = section.pages | filter(attribute="extra.kind", value="howto") %}
     {% if howtos | length > 0 %}
     <section class="note-group">
-      <h2 class="note-group-title">How-to</h2>
+      <h2 class="note-group-title">How-tos</h2>
       <ul class="note-list">
         {% for p in howtos %}
         {{ macros::note_row(p=p, kind="howto") }}

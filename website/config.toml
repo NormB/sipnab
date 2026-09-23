@@ -231,3 +231,91 @@ author = "Norm Brandinger"
 linkedin_url = "https://www.linkedin.com/in/nbrandinger"
 patreon_url = "https://www.patreon.com/c/NormB975"
 github_sponsors_url = "https://github.com/sponsors/NormB"
+
+# The docs navigation: ONE list, rendered twice. base.html builds the header
+# Docs dropdown from it and macros::docs_nav builds the docs sidebar from it,
+# so a label or a page cannot differ between the two. Each group is a
+# `[[extra.docs_nav]]` table; each entry names a page by its content path and
+# the label a reader sees. `menu = true` puts the entry in the dropdown as well
+# as the sidebar. The dropdown carries the few pages a group is visited for and
+# ends with "All docs", and the sidebar carries every entry.
+#
+# `every_docs_page_is_in_the_docs_nav_list` in tests/site_journey_test.rs
+# holds this list to website/content/docs/*.md in both directions.
+[[extra.docs_nav]]
+id = "start"
+title = "Start here"
+pages = [
+  { path = "docs/install.md", label = "Install sipnab", menu = true },
+  { path = "docs/first-cli-triage.md", label = "Triage your first capture", menu = true },
+  { path = "docs/cookbook.md", label = "Fix a common problem", menu = true },
+  { path = "docs/troubleshooting.md", label = "Diagnose a call step by step", menu = true },
+  { path = "docs/real-world-captures.md", label = "Learn from real captures", menu = true },
+  { path = "docs/glossary.md", label = "Look up a term", menu = true },
+]
+
+[[extra.docs_nav]]
+id = "capture"
+title = "Capture in hard places"
+pages = [
+  { path = "docs/tls-capture.md", label = "Capture SIP over TLS", menu = true },
+  { path = "docs/uprobe-walkthrough.md", label = "Read TLS without keys", menu = true },
+  { path = "docs/tuning-capture.md", label = "Stop dropping packets", menu = true },
+  { path = "docs/encapsulations.md", label = "Read tunneled traffic", menu = true },
+  { path = "docs/rtpengine.md", label = "Name calls on an rtpengine relay", menu = true },
+]
+
+[[extra.docs_nav]]
+id = "tui"
+title = "Use the terminal UI"
+pages = [
+  { path = "docs/tui.md", label = "Walk through the TUI", menu = true },
+  { path = "docs/keybindings.md", label = "Look up a key", menu = true },
+  { path = "docs/theme.md", label = "Change the colors", menu = false },
+]
+
+[[extra.docs_nav]]
+id = "cli"
+title = "Script and automate"
+pages = [
+  { path = "docs/cli.md", label = "Look up CLI flags", menu = true },
+  { path = "docs/filter-dsl.md", label = "Filter calls", menu = true },
+  { path = "docs/output-formats.md", label = "Choose an output format", menu = true },
+  { path = "docs/config.md", label = "Configure sipnab", menu = true },
+  { path = "docs/sip-lint-rules.md", label = "SIP conformance rules", menu = false },
+  { path = "docs/mos-and-codecs.md", label = "MOS and codecs", menu = false },
+  { path = "docs/sip-response-codes.md", label = "SIP response codes", menu = false },
+  { path = "docs/sip-methods.md", label = "SIP request methods", menu = false },
+  { path = "docs/sip-header-fields.md", label = "SIP header fields", menu = false },
+  { path = "docs/sip-parameters.md", label = "SIP parameters", menu = false },
+]
+
+[[extra.docs_nav]]
+id = "api"
+title = "Connect other tools"
+pages = [
+  { path = "docs/api.md", label = "Query the REST API", menu = true },
+  { path = "docs/mcp.md", label = "Connect an AI agent (MCP)", menu = true },
+  { path = "docs/integrations.md", label = "Send to Homer, fail2ban and syslog", menu = true },
+  { path = "docs/metrics.md", label = "Export Prometheus metrics", menu = true },
+  { path = "docs/vcon.md", label = "Export a call as a vCon", menu = true },
+  { path = "api-reference.md", label = "OpenAPI reference", menu = false },
+  { path = "docs/api-clients.md", label = "Call the API from code", menu = false },
+  { path = "docs/auth.md", label = "Authenticate API and MCP clients", menu = false },
+  { path = "docs/mcp-tools.md", label = "MCP tool reference", menu = false },
+  { path = "docs/mcp-deploy.md", label = "Deploy the MCP server", menu = false },
+  { path = "docs/mcp-estate.md", label = "Use MCP across many hosts", menu = false },
+  { path = "docs/mcp-protocol.md", label = "MCP protocol details", menu = false },
+  { path = "docs/vcon-harness.md", label = "Build a vCon capture stack", menu = false },
+  { path = "docs/plugins.md", label = "Add a detection with a WASM plugin", menu = false },
+  { path = "docs/library.md", label = "Use sipnab as a Rust library", menu = false },
+  { path = "docs/examples.md", label = "Run the example clients", menu = false },
+]
+
+[[extra.docs_nav]]
+id = "build"
+title = "Build and measure"
+pages = [
+  { path = "docs/build.md", label = "Build from source", menu = true },
+  { path = "docs/benchmarks.md", label = "Benchmarks", menu = true },
+]

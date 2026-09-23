@@ -8,7 +8,7 @@ title = "Documentation"
 # -- a duplicate a search engine collapses rather than a summary of what is
 # on it. `every_docs_page_carries_its_own_meta_description` in
 # tests/site_journey_test.rs fails if it is removed.
-description = "Task cards, role-ordered reading paths, and the full reference index for sipnab -- what it captures, what it decodes, what your build includes, and where to go next."
+description = "Start from what you need to do, from your role, or from the full index of every sipnab page."
 sort_by = "weight"
 template = "section.html"
 page_template = "page.html"
@@ -109,9 +109,9 @@ agents — no daemon, no database, no runtime to install.
 **Capture and decode.** Live interfaces, pcap/pcapng files, or a
 [HEP/EEP](/docs/cookbook/) listener fed by Kamailio, OpenSIPS, or FreeSWITCH.
 sipnab parses SIP over UDP, TCP, TLS, SCTP, and WebSocket, including IP
-fragmentation and TCP stream reassembly. All 19 [RFC 3261](https://www.rfc-editor.org/rfc/rfc3261) and IANA compact
-header forms all resolve, so a message using `f:`/`t:`/`i:` is not a blind
-spot.
+fragmentation and TCP stream reassembly. All 19 compact header forms, from
+[RFC 3261](https://www.rfc-editor.org/rfc/rfc3261) and the IANA registry,
+resolve, so a message using `f:`/`t:`/`i:` is not a blind spot.
 
 **Cross-check the proxy against the wire.** One run can take a HEP mirror and
 a live interface at once and report where the two disagree: messages the proxy
