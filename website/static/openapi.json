@@ -5999,6 +5999,19 @@
               "minimum": 0,
               "type": "integer"
             }
+          },
+          {
+            "description": "A password for an encrypted ZIP named in `a` or `b`, for this request only and never remembered. Tried after the passwords the operator configured. Accepted from a loopback client, or from anywhere when the server runs with `--api-accept-archive-passwords` behind TLS. Never send one in the URL: a password-like query parameter is refused with 400. Every response to a request carrying it is `Cache-Control: no-store`.",
+            "in": "header",
+            "name": "Sipnab-Archive-Password",
+            "required": false,
+            "schema": {
+              "format": "password",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -6020,7 +6033,7 @@
                 }
               }
             },
-            "description": "A name that is not a bare filename or resolves outside the root, two names for one file, or an unknown dimension."
+            "description": "A name that is not a bare filename or resolves outside the root, two names for one file, an unknown dimension, or a password in the URL (treat it as exposed)."
           },
           "401": {
             "content": {
@@ -6032,6 +6045,16 @@
             },
             "description": "No bearer credential, or one this server does not accept."
           },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "`Sipnab-Archive-Password` from a client that is not on this host, without `--api-accept-archive-passwords`."
+          },
           "422": {
             "content": {
               "application/problem+json": {
@@ -6040,7 +6063,17 @@
                 }
               }
             },
-            "description": "A named capture yielded no dialogs and reported why; diffing against it would show every bucket collapsing to zero."
+            "description": "A named capture yielded no dialogs and reported why; diffing against it would show every bucket collapsing to zero. An encrypted archive nothing opened names `encrypted_no_password` or `encrypted_wrong_password`."
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Too many wrong archive passwords from this client for one archive; `Retry-After` says when to try again."
           },
           "503": {
             "content": {

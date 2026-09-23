@@ -2667,6 +2667,18 @@ pub struct ListenerArgs {
     )]
     pub api_file_root: Option<String>,
 
+    /// Accept the `Sipnab-Archive-Password` request header from a client that
+    /// is not on this host. sipnab serves plain HTTP, so a password from a
+    /// remote client crosses the network in the clear unless a TLS proxy in
+    /// front terminates the connection: that is your job when you pass this.
+    /// Without it, only a loopback client (a local tool, or a proxy on this
+    /// host) may send one, and a remote one is answered 403.
+    #[arg(
+        help_heading = "Network listeners",
+        long = "api-accept-archive-passwords"
+    )]
+    pub api_accept_archive_passwords: bool,
+
     /// REST requests one client IP may make per second (`0` = unlimited,
     /// default 100). Config: `[limits] api_rate_limit_per_peer`.
     ///

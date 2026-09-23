@@ -1178,3 +1178,77 @@ fn the_published_capture_report_is_the_shared_capture_analysis_schema() {
         "the published findings items are not the finding schema"
     );
 }
+
+/// No response schema carries a password-like field, and the archive password
+/// header is documented as a password, on the compare route only.
+///
+/// An archive password goes one way, in a request header, and nothing sipnab
+/// answers repeats it. A field named like one in any response schema would be
+/// the first step to a response that echoes it.
+#[test]
+fn no_response_schema_has_a_password_field_and_the_header_is_a_password() {
+    let doc = document();
+    fn walk(node: &Value, at: &str, bad: &mut Vec<String>) {
+        match node {
+            Value::Object(map) => {
+                if let Some(Value::Object(props)) = map.get("properties") {
+                    for name in props.keys() {
+                        let folded: String = name
+                            .chars()
+                            .filter(char::is_ascii_alphanumeric)
+                            .map(|c| c.to_ascii_lowercase())
+                            .collect();
+                        if ["password", "passwd", "passphrase"]
+                            .iter()
+                            .any(|w| folded.contains(w))
+                        {
+                            bad.push(format!("{at}.{name}"));
+                        }
+                    }
+                }
+                for (k, v) in map {
+                    walk(v, &format!("{at}.{k}"), bad);
+                }
+            }
+            Value::Array(items) => {
+                for (i, v) in items.iter().enumerate() {
+                    walk(v, &format!("{at}[{i}]"), bad);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut bad = Vec::new();
+    walk(
+        &doc["components"]["schemas"],
+        "components.schemas",
+        &mut bad,
+    );
+    assert!(
+        bad.is_empty(),
+        "response schemas with password-like fields: {bad:?}"
+    );
+
+    let params = doc["paths"]["/v1/captures/compare"]["get"]["parameters"]
+        .as_array()
+        .expect("compare has parameters");
+    let header = params
+        .iter()
+        .find(|p| p["name"] == "Sipnab-Archive-Password")
+        .expect("the compare route documents Sipnab-Archive-Password");
+    assert_eq!(header["in"], "header");
+    assert_eq!(header["schema"]["format"], "password", "{header}");
+    let documented_elsewhere = doc["paths"]
+        .as_object()
+        .expect("paths")
+        .iter()
+        .filter(|(path, _)| path.as_str() != "/v1/captures/compare")
+        .any(|(_, item)| {
+            item.to_string()
+                .contains("Sipnab-Archive-Password\",\"required")
+        });
+    assert!(
+        !documented_elsewhere,
+        "only the file-opening route takes it"
+    );
+}

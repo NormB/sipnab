@@ -151,6 +151,14 @@ pub struct SipnabMcp {
     allow_shutdown: bool,
     /// Whether `open_capture` may replace the loaded capture.
     allow_open_capture: bool,
+    /// The archive passwords the OPERATOR configured when starting sipnab,
+    /// for `open_capture` to try on an encrypted archive. MCP takes no
+    /// password from a tool call; this is the only way one reaches it.
+    #[cfg(feature = "archive")]
+    archive_candidates: Arc<(
+        Vec<crate::capture::archive::password::Candidate>,
+        Option<crate::capture::archive::password::Encoding>,
+    )>,
     /// Where `query_relay` may send, and the proof that it may send at all.
     ///
     /// `None` means the tool refuses. Holding the permit here rather than a
@@ -342,6 +350,8 @@ impl SipnabMcp {
             protected_inputs: Default::default(),
             allow_shutdown: false,
             allow_open_capture: false,
+            #[cfg(feature = "archive")]
+            archive_candidates: Arc::new(crate::capture::archive::password::run_candidates()),
             relay_query: None,
             control_decoder: None,
             tfps: Default::default(),
@@ -760,6 +770,18 @@ impl SipnabMcp {
     #[must_use]
     pub fn with_tfps(mut self, locator: crate::security::tfps::TfpsLocator) -> Self {
         self.tfps = locator;
+        self
+    }
+
+    /// Try these archive passwords, instead of the run's, on an encrypted
+    /// archive `open_capture` loads.
+    #[cfg(feature = "archive")]
+    #[must_use]
+    pub fn with_archive_candidates(
+        mut self,
+        candidates: Vec<crate::capture::archive::password::Candidate>,
+    ) -> Self {
+        self.archive_candidates = Arc::new((candidates, None));
         self
     }
 
@@ -1706,8 +1728,12 @@ pub struct StartTlsCaptureParams {
 }
 
 /// Parameters for `open_capture`.
+///
+/// Unknown arguments are refused, not ignored: a password slipped in here
+/// must fail out loud rather than be silently dropped.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
 pub struct OpenCaptureParams {
     /// Bare filename inside `--mcp-file-root`, e.g. "outage-0722.pcap".
     /// A path is refused: these tools take a name.
@@ -1781,9 +1807,10 @@ pub struct CallIdParams {
     pub call_id: String,
 }
 
-/// Parameters for `find_in_captures`.
+/// Parameters for `find_in_captures`. Unknown arguments are refused.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
 pub struct FindInCapturesParams {
     /// Filter DSL expression, the same vocabulary every other filtering tool
     /// takes — `call_id == "abc@example.com"`, `state == failed`.
@@ -1924,9 +1951,10 @@ fn findings_with_refs(
         .collect()
 }
 
-/// Parameters for `show_evidence`.
+/// Parameters for `show_evidence`. Unknown arguments are refused.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
 pub struct ShowEvidenceParams {
     /// Frame pointers to follow, in the `<source>#<ordinal>@<digest>` form the
     /// query tools emit — as `frame` on a dialog, a message or a stream, and
@@ -2353,6 +2381,10 @@ pub struct LoadStatus {
     /// Why the load stopped early, when it did. A partial load keeps whatever
     /// it read; this says the capture is not all of the file.
     pub error: Option<String>,
+    /// Present when encrypted archive members stayed locked: how many, and
+    /// how the OPERATOR supplies a password. No tool takes one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub archive_passwords: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
@@ -5799,6 +5831,7 @@ impl SipnabMcp {
                     elapsed_sec: l.started.elapsed().as_secs(),
                     done: l.finished(),
                     error: outcome.as_ref().and_then(|o| o.error.clone()),
+                    archive_passwords: outcome.as_ref().and_then(|o| o.archive_note.clone()),
                 }
             });
             // Read AFTER `finished()`, never before. The loader stores this flag
@@ -7310,10 +7343,21 @@ impl SipnabMcp {
                 .flatten()
                 .and_then(|secs| chrono::DateTime::from_timestamp(secs as i64, 0))
                 .map(|dt| dt.to_rfc3339());
+            // From the ZIP's central directory alone: no password is tried,
+            // so a listing can never become a guessing loop.
+            #[cfg(feature = "archive")]
+            let encrypted = matches!(
+                crate::capture::archive::container_format(&path),
+                Ok(Some(crate::capture::archive::Format::Zip))
+            ) && crate::capture::archive::zipped::has_encrypted_members(&path)
+                .unwrap_or(false);
+            #[cfg(not(feature = "archive"))]
+            let encrypted = false;
             files.push(serde_json::json!({
                 "filename": path.file_name().and_then(|n| n.to_str()).unwrap_or_default(),
                 "bytes": size,
                 "first_packet": first_packet,
+                "encrypted": encrypted,
             }));
         }
         crate::sort::sort_by_dyn(&mut files, &mut |a, b| {
@@ -7740,6 +7784,11 @@ impl SipnabMcp {
                 Arc::clone(&self.dialog_store),
                 Arc::clone(&self.stream_store),
                 self.source_exhausted.clone(),
+                #[cfg(feature = "archive")]
+                crate::capture::archive::password::Keyring::new(
+                    self.archive_candidates.0.clone(),
+                    self.archive_candidates.1,
+                ),
             )
             .map_err(|e| {
                 rmcp::ErrorData::internal_error(format!("cannot start the load thread: {e}"), None)
@@ -8769,6 +8818,33 @@ fn scope_refusal(
     ))
 }
 
+/// Whether an argument name looks like a password: MCP takes none, on any
+/// tool. Case and separators are ignored, so `archive_password`,
+/// `ArchivePassword` and `zip-passphrase` all match.
+fn is_password_like(name: &str) -> bool {
+    crate::capture::archive::is_password_like_name(name)
+}
+
+/// The refusal for a tool call that carries a password-like argument, naming
+/// how the operator supplies one instead. `None` when there is none.
+///
+/// Refused on every tool, before dispatch, so no tool ever sees one. An
+/// argument passes through the model's context, the client's transcript and
+/// the provider's logs: OWASP LLM02:2025 says to keep such data out of model
+/// inputs, and the MCP specification says credentials never pass through the
+/// client. The message never repeats the value.
+fn password_argument_refusal(arguments: Option<&rmcp::model::JsonObject>) -> Option<String> {
+    let name = arguments?.keys().find(|k| is_password_like(k))?;
+    Some(format!(
+        "argument `{name}` refused: sipnab never takes an archive password in an MCP tool \
+         call, because an argument passes through the model's context, the client's \
+         transcript and the provider's logs. Treat the password you sent as exposed. The \
+         operator configures one when starting sipnab: --archive-password-file, \
+         --archive-password-command, --archive-password-stdin, the systemd credential \
+         archive-password, or SIPNAB_ARCHIVE_PASSWORD."
+    ))
+}
+
 /// Render the tool arguments for the audit line, bounded.
 ///
 /// The arguments are the caller's own input, and recording them is the point
@@ -8781,7 +8857,15 @@ fn audit_args(arguments: Option<&rmcp::model::JsonObject>) -> String {
     let Some(args) = arguments else {
         return "{}".to_string();
     };
-    let rendered = serde_json::to_string(args).unwrap_or_else(|_| "<unserializable>".to_string());
+    // A password-like argument is refused, and its value never reaches the
+    // record of the refusal either (Invariant 5).
+    let mut args = args.clone();
+    for (k, v) in &mut args {
+        if is_password_like(k) {
+            *v = serde_json::Value::String("[REDACTED]".to_string());
+        }
+    }
+    let rendered = serde_json::to_string(&args).unwrap_or_else(|_| "<unserializable>".to_string());
     if rendered.len() <= CAP {
         return rendered;
     }
@@ -9206,6 +9290,11 @@ impl ServerHandler for SipnabMcp {
         // one is configured, held for the whole call so it bounds tool calls
         // in flight. A call that cannot take one immediately is refused and
         // audited, never queued -- see `call_limiter` and `acquire_call_permit`.
+        if let Some(why) = password_argument_refusal(request.arguments.as_ref()) {
+            audit("refused", " error=password argument refused")?;
+            return Err(rmcp::ErrorData::invalid_params(why, None));
+        }
+
         let _permit = match acquire_call_permit(&self.call_limiter) {
             Ok(permit) => permit,
             Err(refusal) => {
@@ -16392,5 +16481,242 @@ mod in_process_handler_tests {
                 .is_some_and(|m| m.contains("not subscribed")),
             "{again}"
         );
+    }
+}
+
+/// Archive passwords on MCP: operator configuration only. No tool takes one,
+/// the audit line never carries one, and a locked archive says how the
+/// OPERATOR supplies a password rather than inviting the agent to.
+#[cfg(test)]
+#[cfg(feature = "archive")]
+mod archive_password_tests {
+    use super::*;
+    use crate::capture::archive::password::{ArchivePassword, Candidate, Source};
+    use rmcp::handler::server::tool::Extension;
+    use rmcp::handler::server::wrapper::Parameters;
+
+    fn empty_server() -> SipnabMcp {
+        SipnabMcp::new(
+            Arc::new(RwLock::new(DialogStore::new(100, false))),
+            Arc::new(RwLock::new(StreamStore::new(100))),
+        )
+    }
+
+    fn secret(label: &str) -> &'static str {
+        crate::test_material::key_str(label)
+    }
+
+    /// A file root holding an AES ZIP of the G.711 fixture, locked with the
+    /// minted password `label`.
+    fn root_with_locked_zip(tag: &str, label: &str) -> std::path::PathBuf {
+        let root = std::env::temp_dir().join(format!("sipnab-mcp-pw-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("mkdir root");
+        let pcap = std::fs::read(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/pcap-samples/sip-rtp-g711.pcap"),
+        )
+        .expect("fixture");
+        std::fs::write(
+            root.join("evidence.zip"),
+            crate::capture::archive::zipped::testutil::build(
+                &[("calls/a.pcap", &pcap)],
+                crate::capture::archive::zipped::testutil::Lock::Aes(
+                    zip::AesMode::Aes256,
+                    secret(label).as_bytes(),
+                ),
+            ),
+        )
+        .expect("write zip");
+        root
+    }
+
+    fn params_of<T: serde::de::DeserializeOwned>(v: serde_json::Value) -> Result<T, String> {
+        serde_json::from_value(v).map_err(|e| e.to_string())
+    }
+
+    #[test]
+    fn the_file_opening_tools_refuse_an_argument_they_do_not_take() {
+        let extra = |base: serde_json::Value| {
+            let mut v = base;
+            v["archive_password"] = serde_json::json!("x");
+            v
+        };
+        assert!(
+            params_of::<OpenCaptureParams>(extra(serde_json::json!({"filename": "a.zip"})))
+                .is_err()
+        );
+        assert!(
+            params_of::<FindInCapturesParams>(extra(serde_json::json!({"filter": "true"})))
+                .is_err()
+        );
+        assert!(
+            params_of::<crate::mcp::tools::compare::CompareCapturesParams>(extra(
+                serde_json::json!({"a": "a.pcap", "b": "b.pcap"})
+            ))
+            .is_err()
+        );
+        assert!(params_of::<ShowEvidenceParams>(extra(serde_json::json!({"refs": []}))).is_err());
+        // And still accept what they do take.
+        assert!(params_of::<OpenCaptureParams>(serde_json::json!({"filename": "a.zip"})).is_ok());
+    }
+
+    #[test]
+    fn a_password_argument_is_refused_naming_the_operator_s_ways() {
+        let args = |k: &str| -> rmcp::model::JsonObject {
+            let mut m = rmcp::model::JsonObject::new();
+            m.insert("filename".into(), serde_json::json!("a.zip"));
+            m.insert(k.into(), serde_json::json!(secret("mcp-arg")));
+            m
+        };
+        for key in [
+            "password",
+            "archive_password",
+            "ArchivePassword",
+            "zip_passphrase",
+        ] {
+            let why = password_argument_refusal(Some(&args(key)))
+                .unwrap_or_else(|| panic!("{key} must be refused"));
+            assert!(why.contains("--archive-password-file"), "{why}");
+            assert!(why.contains("never"), "{why}");
+            assert!(
+                !why.contains(secret("mcp-arg")),
+                "the refusal must not echo it"
+            );
+        }
+        let mut fine = rmcp::model::JsonObject::new();
+        fine.insert("filename".into(), serde_json::json!("a.zip"));
+        assert!(password_argument_refusal(Some(&fine)).is_none());
+        assert!(password_argument_refusal(None).is_none());
+    }
+
+    #[test]
+    fn the_audit_line_never_carries_a_password_like_value() {
+        let mut m = rmcp::model::JsonObject::new();
+        m.insert("filename".into(), serde_json::json!("a.zip"));
+        m.insert("password".into(), serde_json::json!(secret("mcp-audit")));
+        let line = audit_args(Some(&m));
+        assert!(!line.contains(secret("mcp-audit")), "{line}");
+        assert!(
+            line.contains("[REDACTED]") && line.contains("a.zip"),
+            "{line}"
+        );
+    }
+
+    #[test]
+    fn no_tool_input_schema_has_a_password_like_property() {
+        let server = empty_server();
+        let tools = server.tool_router.list_all();
+        assert!(tools.len() > 20, "the router lists its tools");
+        for tool in tools {
+            let props = tool
+                .input_schema
+                .get("properties")
+                .and_then(|p| p.as_object())
+                .cloned()
+                .unwrap_or_default();
+            for name in props.keys() {
+                assert!(
+                    !is_password_like(name),
+                    "{} takes `{name}`: MCP takes no password argument",
+                    tool.name
+                );
+            }
+        }
+    }
+
+    /// Poll `capture_status` until the load finishes, and return it.
+    async fn loaded(server: &SipnabMcp) -> serde_json::Value {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        loop {
+            let v: serde_json::Value =
+                serde_json::from_str(&tests_text(&server.capture_status().await.expect("status")))
+                    .expect("json");
+            if v["load"]["done"] == true {
+                return v;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the load never finished"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    }
+
+    fn tests_text(result: &CallToolResult) -> String {
+        let note = crate::mcp::shape::untrusted_note();
+        result
+            .content
+            .iter()
+            .filter_map(|c| c.as_text())
+            .map(|t| t.text.clone())
+            .find(|t| *t != note)
+            .expect("payload")
+    }
+
+    fn server_on(root: &std::path::Path) -> SipnabMcp {
+        empty_server()
+            .with_source_exhausted(Arc::new(std::sync::atomic::AtomicBool::new(true)))
+            .with_open_capture()
+            .with_file_root(root)
+    }
+
+    #[tokio::test]
+    async fn the_operator_s_configured_password_opens_an_archive() {
+        let root = root_with_locked_zip("opens", "mcp-right");
+        let server = server_on(&root).with_archive_candidates(vec![Candidate {
+            password: ArchivePassword::from_bytes(secret("mcp-right").as_bytes()).expect("valid"),
+            source: Source::File,
+        }]);
+        server
+            .open_capture(
+                Parameters(OpenCaptureParams {
+                    filename: "evidence.zip".into(),
+                }),
+                Extension(crate::mcp::elicit::Confirm::unavailable()),
+            )
+            .await
+            .expect("accepted");
+        let status = loaded(&server).await;
+        assert!(status["load"]["error"].is_null(), "{status}");
+        assert!(!server.dialog_store.read().is_empty(), "{status}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn a_locked_archive_tells_the_agent_how_the_operator_supplies_one() {
+        let root = root_with_locked_zip("locked", "mcp-locked");
+        let server = server_on(&root);
+        server
+            .open_capture(
+                Parameters(OpenCaptureParams {
+                    filename: "evidence.zip".into(),
+                }),
+                Extension(crate::mcp::elicit::Confirm::unavailable()),
+            )
+            .await
+            .expect("accepted");
+        let status = loaded(&server).await;
+        let text = status.to_string();
+        assert!(text.contains("encrypted_no_password"), "{text}");
+        assert!(text.contains("--archive-password-file"), "{text}");
+        assert!(
+            text.contains("operator"),
+            "the guidance is for the operator, not an invitation to the agent: {text}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn listing_marks_a_locked_archive_without_trying_a_password() {
+        let root = root_with_locked_zip("list", "mcp-list");
+        let server = server_on(&root);
+        let v: serde_json::Value =
+            serde_json::from_str(&tests_text(&server.list_captures().await.expect("list")))
+                .expect("json");
+        let entry = &v["captures"][0];
+        assert_eq!(entry["filename"], "evidence.zip");
+        assert_eq!(entry["encrypted"], true, "{v}");
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

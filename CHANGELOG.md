@@ -48,6 +48,22 @@ entry that carries them.
   `archive_password_accepted` or `archive_locked_members_skipped` by archive
   name, and the status line counts locked members and marks ZipCrypto. A TUI
   run asks for its `-I` archives on the terminal before it draws.
+- **REST takes an archive password in the `Sipnab-Archive-Password`
+  header,** on `GET /v1/captures/compare`, for that request only, after the
+  operator's configured ones. Only from a loopback client unless the new
+  `--api-accept-archive-passwords` is set (403 otherwise). A password-like
+  query parameter gets 400 on every route, with advice to treat it as exposed.
+  5 wrong passwords per client per archive in 15 minutes earn 429 with
+  `Retry-After`, each audited at `warn` by token fingerprint and archive name.
+  Every such response is `Cache-Control: no-store`, and a locked archive
+  answers 422 naming `encrypted_no_password` or `encrypted_wrong_password`.
+  OpenAPI documents the header as `format: password`.
+- **MCP takes no archive password, on any tool.** A call carrying a
+  password-like argument is refused before dispatch and audited as
+  `[REDACTED]`, and the file-opening tools refuse unknown arguments.
+  `open_capture` opens encrypted ZIPs with the operator's configured
+  passwords, `capture_status` says when members stayed locked and that the
+  operator supplies the password, and `list_captures` marks `encrypted`.
 
 ## [0.5.186] - 2026-09-22
 

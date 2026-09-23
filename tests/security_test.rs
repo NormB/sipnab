@@ -1378,6 +1378,7 @@ fn constant_time_eq_different_lengths_still_compares() {
         alert_engine: None,
         armed_detections: Vec::new(),
         file_root: None,
+        archive: sipnab::output::api::ArchivePasswordPolicy::default(),
     };
 
     // Build a request with wrong-length key
@@ -1438,6 +1439,7 @@ fn constant_time_eq_matching_strings() {
         alert_engine: None,
         armed_detections: Vec::new(),
         file_root: None,
+        archive: sipnab::output::api::ArchivePasswordPolicy::default(),
     };
 
     let app = build_router(state);
@@ -1508,6 +1510,7 @@ fn constant_time_eq_different_strings_same_length() {
         alert_engine: None,
         armed_detections: Vec::new(),
         file_root: None,
+        archive: sipnab::output::api::ArchivePasswordPolicy::default(),
     };
 
     let app = build_router(state);

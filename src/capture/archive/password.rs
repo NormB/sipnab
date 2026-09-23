@@ -904,6 +904,10 @@ pub struct Keyring {
     attempts: u64,
     /// Of those, how many opened nothing.
     wrong: u64,
+    /// Encrypted members left locked: no password, or none that opened them.
+    locked: u64,
+    /// Archives a typed password was tried on and did not open, by label.
+    wrong_archives: Vec<String>,
 }
 
 impl std::fmt::Debug for Keyring {
@@ -962,6 +966,19 @@ impl Keyring {
         self.wrong
     }
 
+    /// Archives a password was tried on and did not open, by label, each
+    /// once.
+    #[must_use]
+    pub fn wrong_archives(&self) -> &[String] {
+        &self.wrong_archives
+    }
+
+    /// Encrypted members this keyring left locked.
+    #[must_use]
+    pub fn locked_members(&self) -> u64 {
+        self.locked
+    }
+
     /// Archives this keyring remembers a password for.
     #[must_use]
     pub fn remembered_count(&self) -> usize {
@@ -1001,6 +1018,25 @@ impl Keyring {
     /// archive. Every spelling of one password is one attempt. The first that
     /// opens is remembered for `archive` alone.
     pub fn unlock<T>(
+        &mut self,
+        archive: &str,
+        member: &str,
+        container: Container,
+        try_one: &mut dyn FnMut(&[u8]) -> Trial<T>,
+    ) -> Unlock<T> {
+        let wrong_before = self.wrong;
+        let out = self.unlock_inner(archive, member, container, try_one);
+        if matches!(out, Unlock::NoPassword | Unlock::WrongPassword) {
+            self.locked += 1;
+        }
+        if self.wrong > wrong_before && !self.wrong_archives.iter().any(|a| a == archive) {
+            self.wrong_archives.push(archive.to_string());
+        }
+        out
+    }
+
+    /// [`Self::unlock`], before the locked count.
+    fn unlock_inner<T>(
         &mut self,
         archive: &str,
         member: &str,

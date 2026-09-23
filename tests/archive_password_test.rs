@@ -470,3 +470,113 @@ fn an_unknown_password_encoding_is_refused() {
     assert_eq!(r.code, Some(2), "{}", r.stderr);
     assert!(r.stderr.contains("cp437"), "{}", r.stderr);
 }
+
+/// This host's address on its default route, which is not loopback: what a
+/// request from "elsewhere" looks like to a server bound to every interface.
+/// Found by connecting a UDP socket, which sends nothing.
+fn non_loopback_address() -> Option<std::net::IpAddr> {
+    let s = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
+    s.connect("192.0.2.1:9").ok()?;
+    let ip = s.local_addr().ok()?.ip();
+    (!ip.is_loopback() && !ip.is_unspecified()).then_some(ip)
+}
+
+/// Start `sipnab --api` on every interface over `root`, and return the child
+/// and its port.
+#[cfg(feature = "api")]
+fn api_server(root: &Path, extra: &[&str], tmp: &Path) -> (std::process::Child, u16, String) {
+    use std::io::BufRead;
+    // No spaces: `--api-key` is trimmed, as every token secret is.
+    let key = mint("api-key").replace(' ', "");
+    let capture = root.join("plain.pcap");
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_sipnab"));
+    cmd.args([
+        "-N",
+        "-I",
+        capture.to_str().unwrap_or_default(),
+        "--api",
+        "0.0.0.0:0",
+        "--api-key",
+        &key,
+        "--api-file-root",
+        root.to_str().unwrap_or_default(),
+    ])
+    .args(extra)
+    .env("TMPDIR", tmp)
+    .env("SIPNAB_LOG", "info")
+    .env_remove("SIPNAB_ARCHIVE_PASSWORD")
+    .stdin(Stdio::null())
+    .stdout(Stdio::null())
+    .stderr(Stdio::piped());
+    let mut child = cmd.spawn().expect("spawn");
+    let stderr = child.stderr.take().expect("stderr");
+    // Drained for the child's whole life: a closed stderr would fail the
+    // server's next log write.
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        for line in std::io::BufReader::new(stderr)
+            .lines()
+            .map_while(Result::ok)
+        {
+            if let Some(addr) = line.split("listening on ").nth(1) {
+                let _ = tx.send(addr.trim().to_string());
+            }
+        }
+    });
+    let port = rx
+        .recv_timeout(std::time::Duration::from_secs(20))
+        .ok()
+        .and_then(|addr| addr.rsplit(':').next().and_then(|p| p.parse().ok()));
+    (child, port.expect("the API came up"), key)
+}
+
+/// One GET with the archive password header, returning the status code.
+#[cfg(feature = "api")]
+fn get_with_password(ip: std::net::IpAddr, port: u16, key: &str, password: &str) -> u16 {
+    use std::io::Read;
+    let mut s = std::net::TcpStream::connect((ip, port)).expect("connect");
+    write!(
+        s,
+        "GET /v1/captures/compare?a=locked.zip&b=plain.pcap HTTP/1.1\r\nHost: x\r\n\
+         Authorization: Bearer {key}\r\nSipnab-Archive-Password: {password}\r\n\
+         Connection: close\r\n\r\n"
+    )
+    .expect("send");
+    let mut reply = String::new();
+    let _ = s.read_to_string(&mut reply);
+    reply
+        .split_whitespace()
+        .nth(1)
+        .and_then(|c| c.parse().ok())
+        .unwrap_or(0)
+}
+
+#[cfg(feature = "api")]
+#[test]
+fn a_remote_client_s_password_header_needs_api_accept_archive_passwords() {
+    let Some(ip) = non_loopback_address() else {
+        eprintln!("SKIPPED: this host has no non-loopback address to send from");
+        return;
+    };
+    let root = tempfile::tempdir().expect("root");
+    let tmp = tempfile::tempdir().expect("tmp");
+    // No spaces: HTTP trims a header value's leading and trailing
+    // whitespace (RFC 9110), so such a password cannot travel in a header.
+    let password = mint("remote").replace(' ', "");
+    std::fs::write(root.path().join("plain.pcap"), capture("plain@test")).expect("pcap");
+    std::fs::write(
+        root.path().join("locked.zip"),
+        zip_of(&[("a.pcap", &capture("remote@test"), Lock::Aes(&password))]),
+    )
+    .expect("zip");
+    for (extra, want) in [
+        (&[][..], 403),
+        (&["--api-accept-archive-passwords"][..], 200),
+    ] {
+        let (mut child, port, key) = api_server(root.path(), extra, tmp.path());
+        let code = get_with_password(ip, port, &key, &password);
+        let _ = child.kill();
+        let _ = child.wait();
+        assert_eq!(code, want, "flags {extra:?}");
+    }
+}

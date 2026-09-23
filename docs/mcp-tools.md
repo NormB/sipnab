@@ -958,7 +958,10 @@ one's first packet arrived.
 
 **It lists what sipnab can open by name:** `.pcap`, `.pcapng` and `.cap`
 files, their gzip-compressed forms such as `*.pcap.gz`, and archives of captures
-(`.tar`, `.tgz`, `.tar.gz`), matched case-insensitively. It skips directories.
+(`.tar`, `.tgz`, `.tar.gz`, and `.zip` in builds with the `archive` feature),
+matched case-insensitively. Each entry carries `encrypted`: `true` for a ZIP
+holding an encrypted member, read from the archive's directory alone, so
+listing never tries a password. It skips directories.
 The TUI's file browser lists by the same rule. [`open_capture`](#open_capture)
 accepts one thing this listing leaves out, a capture with no extension at all,
 so an agent that treats the listing as the whole set it may open misses those.
@@ -5863,6 +5866,19 @@ libpcap reads is fine, and an archive (`.tar`, `.tgz`, `.tar.gz`) loads as the
 set of captures it holds, in first-packet order, into the one store. No optional
 parameters, and no way to ask for a merge: this replaces the stores rather than
 adding to them.
+
+**No password argument, on this tool or any other.** An argument passes
+through the model's context, the client's transcript and the provider's logs.
+OWASP LLM02:2025 says to keep such data out of model inputs, and the MCP
+specification says credentials never pass through the client. sipnab refuses a
+call carrying any argument named like a password before the tool runs, and its
+audit record shows the value as `[REDACTED]`. The file-opening tools
+(`open_capture`, `find_in_captures`, `compare_captures`, `show_evidence`) also
+refuse any argument they do not take, rather than ignoring it. An encrypted
+ZIP opens with the passwords the operator configured when starting sipnab, as
+described in [Archives](cli-reference.md#archives). When members stay locked,
+`capture_status` reports `load.archive_passwords`: how many, and that the
+operator must supply the password. It never invites the agent to send one.
 
 Returns `status` (`"loading"`), `filename`, `path`, the **new**
 `capture_identity`, `discarded_dialogs`, `note` and `schema_version`.

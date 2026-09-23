@@ -54,6 +54,9 @@ pub struct LoadOutcome {
     /// member, and discarding the dialogs already parsed out of it would lose
     /// more than the error costs.
     pub error: Option<String>,
+    /// How many encrypted archive members stayed locked, and how the
+    /// operator supplies a password, when any did.
+    pub archive_note: Option<String>,
 }
 
 /// Progress of one background load, shared between the worker and the pollers.
@@ -136,6 +139,7 @@ pub fn spawn(
     dialog_store: Arc<RwLock<DialogStore>>,
     stream_store: Arc<RwLock<StreamStore>>,
     source_exhausted: Option<Arc<AtomicBool>>,
+    #[cfg(feature = "archive")] keyring: crate::capture::archive::password::Keyring,
 ) -> std::io::Result<Arc<CaptureLoad>> {
     let load = Arc::new(CaptureLoad::new(filename, instance));
     if let Some(flag) = source_exhausted.as_ref() {
@@ -150,7 +154,16 @@ pub fn spawn(
     std::thread::Builder::new()
         .name("mcp-pcap-load".to_string())
         .spawn(move || {
-            let result = read_into_stores(&path, &dialog_store, &stream_store, &worker.packets);
+            let read = || read_into_stores(&path, &dialog_store, &stream_store, &worker.packets);
+            // The operator's passwords, on this thread alone, for this load.
+            #[cfg(feature = "archive")]
+            let (result, locked) = {
+                let (result, keys) =
+                    crate::capture::archive::password::with_thread_keyring(keyring, read);
+                (result, keys.locked_members())
+            };
+            #[cfg(not(feature = "archive"))]
+            let (result, locked) = (read(), 0u64);
             let (packets, error) = match result {
                 Ok(packets) => (packets, None),
                 Err((packets, e)) => (packets, Some(e)),
@@ -162,6 +175,7 @@ pub fn spawn(
                 dialogs,
                 streams,
                 error,
+                archive_note: archive_note(locked),
             });
             if let Some(flag) = source_exhausted {
                 flag.store(true, Ordering::Relaxed);
@@ -176,6 +190,24 @@ pub fn spawn(
             );
         })?;
     Ok(load)
+}
+
+/// What a load says about archive members it left locked, or `None`.
+///
+/// Guidance for the OPERATOR. MCP takes no password from a tool call, so the
+/// agent reading this is told what to ask the operator for, and never
+/// invited to pass one itself.
+#[must_use]
+pub fn archive_note(locked: u64) -> Option<String> {
+    (locked > 0).then(|| {
+        format!(
+            "{locked} encrypted archive member(s) stayed locked (encrypted_no_password or \
+             encrypted_wrong_password). MCP never takes an archive password in a tool call. \
+             Ask the operator to restart sipnab with the password configured: \
+             --archive-password-file, --archive-password-command, --archive-password-stdin, \
+             the systemd credential archive-password, or SIPNAB_ARCHIVE_PASSWORD."
+        )
+    })
 }
 
 /// Read every packet of `path` into the two stores, tracking completeness.
@@ -234,6 +266,8 @@ mod tests {
             Arc::clone(&dialog_store),
             Arc::clone(&stream_store),
             Some(Arc::clone(&exhausted)),
+            #[cfg(feature = "archive")]
+            crate::capture::archive::password::Keyring::default(),
         )
         .expect("spawn the load worker");
 
@@ -277,6 +311,8 @@ mod tests {
             dialog_store,
             stream_store,
             None,
+            #[cfg(feature = "archive")]
+            crate::capture::archive::password::Keyring::default(),
         )
         .expect("spawn the load worker");
         for _ in 0..400 {

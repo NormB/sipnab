@@ -49,7 +49,7 @@ was driving all of them.
 
 | Surface | Rows | `e2e` | `parsed` | `referenced` | `none` |
 |---|---|---|---|---|---|
-| CLI flags | 284 | 218 | 39 | 26 | 1 |
+| CLI flags | 285 | 219 | 39 | 26 | 1 |
 | HTTP routes | 40 | 40 | -- | 0 | 0 |
 | MCP tools | 69 | 69 | -- | 0 | 0 |
 
@@ -111,7 +111,7 @@ behind them.
 | `--split-keep` |  | `N` | Capture | e2e | `tests/cli_flag_behavior_test.rs` |  |  |
 | `--replay` |  |  | Capture | e2e | `tests/capture_clock_test.rs`, `tests/mcp_stdio_shutdown_test.rs` |  |  |
 | `--pcapng` |  |  | Capture | e2e | `tests/cli_flag_behavior_test.rs`, `tests/integration_test.rs` +3 |  |  |
-| `--archive-password-file` |  | `FILE` | Archives | e2e | `tests/archive_password_prompt_test.rs`, `tests/archive_password_test.rs` |  |  |
+| `--archive-password-file` |  | `FILE` | Archives | e2e | `tests/archive_password_prompt_test.rs`, `tests/archive_password_test.rs` +1 |  |  |
 | `--archive-password-command` |  | `CMD` | Archives | e2e | `tests/archive_password_test.rs` |  |  |
 | `--archive-password-stdin` |  |  | Archives | e2e | `tests/archive_password_test.rs` |  |  |
 | `--archive-password` |  | `PASSWORD` | Archives | e2e | `tests/archive_password_test.rs` |  |  |
@@ -258,8 +258,8 @@ behind them.
 | `--metrics` |  | `ADDR` | Network listeners | e2e | `tests/batch_run_paths_test.rs`, `tests/config_wiring_test.rs` +3 |  |  |
 | `--metrics-auth` |  |  | Network listeners | referenced | `src/cli.rs`, `src/output/prometheus_server.rs` +1 | **mention-only** | CREDENTIAL. Only whole-token occurrences are comments. It passes flag_coverage_test only because --metrics-auth-file contains the string |
 | `--metrics-auth-file` |  | `FILE` | Network listeners | parsed | `src/cli.rs` |  |  |
-| `--api` |  | `ADDR` | Network listeners | e2e | `tests/app_servers_wiring_test.rs`, `tests/doc_commands_run_test.rs` +2 |  |  |
-| `--api-key` |  | `KEY` | Network listeners | e2e | `tests/api_test.rs`, `tests/api_token_test.rs` +3 | **behavior** | auth_accepts_correct_bearer_and_rejects_everything_else (tests/api_test.rs): 200 vs 401 across five shapes |
+| `--api` |  | `ADDR` | Network listeners | e2e | `tests/app_servers_wiring_test.rs`, `tests/archive_password_test.rs` +3 |  |  |
+| `--api-key` |  | `KEY` | Network listeners | e2e | `tests/api_test.rs`, `tests/api_token_test.rs` +4 | **behavior** | auth_accepts_correct_bearer_and_rejects_everything_else (tests/api_test.rs): 200 vs 401 across five shapes |
 | `--api-signing-key` |  | `KEY` | Network listeners | e2e | `tests/api_token_test.rs` | **behavior** | seven tests in tests/api_token_test.rs: expiry, forgery, tampering, rotation, scope |
 | `--api-signing-key-file` |  | `FILE` | Network listeners | e2e | `tests/cli_flag_behavior_test.rs` |  |  |
 | `--api-revoked-file` |  | `FILE` | Network listeners | e2e | `tests/api_token_test.rs` | **behavior** | revoked_id_is_rejected_via_denylist_file: denylisted 401, fresh 200, both with valid tokens |
@@ -270,7 +270,8 @@ behind them.
 | `--metrics-max-conn` |  | `N` | Network listeners | referenced | `src/cli.rs` | **parse-only** | DoS BOUND (SN-02). Resolver precedence tested, ConnGate tested, the join between them is not |
 | `--api-max-rows` |  | `N` | Network listeners | referenced | `src/cli.rs`, `src/output/api.rs` | **parse-only** | Resolver tested and enforcement tested by setting state.max_rows directly; the wiring between them is not |
 | `--api-allow-relay-query` |  |  | Network listeners | e2e | `tests/app_servers_wiring_test.rs` |  |  |
-| `--api-file-root` |  | `DIR` | Network listeners | e2e | `tests/api_test.rs` |  |  |
+| `--api-file-root` |  | `DIR` | Network listeners | e2e | `tests/api_test.rs`, `tests/archive_password_test.rs` |  |  |
+| `--api-accept-archive-passwords` |  |  | Network listeners | e2e | `tests/archive_password_test.rs` |  |  |
 | `--api-rate-limit-per-peer` |  | `N` | Network listeners | referenced | `src/cli.rs` | **behavior** | via config key: probe_api_rate_limit_per_peer counts HTTP 503 refusals from one peer |
 | `--mcp` |  |  | MCP (Model Context Protocol) | e2e | `tests/analyze_test.rs`, `tests/app_servers_wiring_test.rs` +15 |  |  |
 | `--mcp-transport` |  | `TRANSPORT` | MCP (Model Context Protocol) | e2e | `tests/mcp_audit_sink_test.rs`, `tests/mcp_metrics_wiring_test.rs` +5 |  |  |
@@ -281,7 +282,7 @@ behind them.
 | `--mcp-signing-key-file` |  | `FILE` | MCP (Model Context Protocol) | e2e | `tests/cli_flag_behavior_test.rs`, `tests/mcp_token_rotation_test.rs` |  |  |
 | `--mcp-revoked-file` |  | `FILE` | MCP (Model Context Protocol) | e2e | `tests/mcp_token_test.rs` |  |  |
 | `--mcp-token-ttl` |  | `SECS` | MCP (Model Context Protocol) | e2e | `tests/mcp_token_test.rs` |  |  |
-| `--mcp-audit-file` |  | `FILE` | MCP (Model Context Protocol) | e2e | `tests/doc_commands_run_test.rs`, `tests/mcp_audit_sink_test.rs` |  |  |
+| `--mcp-audit-file` |  | `FILE` | MCP (Model Context Protocol) | e2e | `tests/doc_commands_run_test.rs`, `tests/mcp_archive_password_test.rs` +1 |  |  |
 | `--mcp-max-concurrent` |  | `N` | MCP (Model Context Protocol) | parsed | `src/cli.rs` |  |  |
 | `--mcp-tools` |  | `PROFILE` | MCP (Model Context Protocol) | e2e | `tests/doc_commands_run_test.rs`, `tests/mcp_tool_profile_test.rs` |  |  |
 | `--mcp-max-rows` |  | `N` | MCP (Model Context Protocol) | parsed | `tests/mcp_row_cap_test.rs` |  |  |
@@ -291,12 +292,12 @@ behind them.
 | `--mcp-rate-limit-per-peer` |  | `N` | MCP (Model Context Protocol) | e2e | `tests/mcp_stdio_test.rs` |  |  |
 | `--mcp-allowed-host` |  | `HOST` | MCP (Model Context Protocol) | e2e | `tests/doc_commands_run_test.rs`, `tests/mcp_http_test.rs` +1 |  |  |
 | `--mcp-resource-url` |  | `URL` | MCP (Model Context Protocol) | e2e | `tests/mcp_http_test.rs` |  |  |
-| `--mcp-file-root` |  | `DIR` | MCP (Model Context Protocol) | e2e | `tests/doc_commands_run_test.rs`, `tests/mcp_completeness_test.rs` +8 |  |  |
+| `--mcp-file-root` |  | `DIR` | MCP (Model Context Protocol) | e2e | `tests/doc_commands_run_test.rs`, `tests/mcp_archive_password_test.rs` +9 |  |  |
 | `--mcp-evidence-ring` |  | `MIB` | MCP (Model Context Protocol) | parsed | `src/cli.rs` |  |  |
 | `--mcp-sampling-budget` |  | `PER_HOUR` | MCP (Model Context Protocol) | e2e | `tests/app_servers_wiring_test.rs` |  |  |
 | `--mcp-allow-shutdown` |  |  | MCP (Model Context Protocol) | e2e | `tests/mcp_diagnostic_tools_test.rs`, `tests/mcp_elicitation_test.rs` |  |  |
 | `--retain-audio` |  |  | MCP (Model Context Protocol) | e2e | `tests/api_test.rs`, `tests/cli_flag_behavior_test.rs` +1 |  |  |
-| `--mcp-allow-open-capture` |  |  | MCP (Model Context Protocol) | e2e | `tests/mcp_completeness_test.rs`, `tests/mcp_completion_test.rs` +3 | **behavior** | the real binary runs WITH the flag; refusal without it, 1 dialog -> 1334 with it |
+| `--mcp-allow-open-capture` |  |  | MCP (Model Context Protocol) | e2e | `tests/mcp_archive_password_test.rs`, `tests/mcp_completeness_test.rs` +4 | **behavior** | the real binary runs WITH the flag; refusal without it, 1 dialog -> 1334 with it |
 | `--mcp-allow-relay-query` |  |  | MCP (Model Context Protocol) | e2e | `tests/mcp_protocol_features_test.rs` |  |  |
 | `--mcp-allow-tls-capture` |  |  | MCP (Model Context Protocol) | e2e | `tests/app_servers_wiring_test.rs` | **behavior** | default-deny and opt-in effect asserted; the one-line CLI hop is untested |
 | `--mcp-allow-save-findings` |  |  | MCP (Model Context Protocol) | e2e | `tests/app_servers_wiring_test.rs`, `tests/config_wiring_test.rs` +2 |  |  |
@@ -376,7 +377,7 @@ behind them.
 | `/metrics` | exercised | `tests/api_test.rs`, `tests/api_token_test.rs` +3 |
 | `/v1/aggregate` | exercised | `tests/api_test.rs`, `tests/openapi_contract_test.rs` |
 | `/v1/capabilities` | exercised | `tests/api_test.rs` |
-| `/v1/captures/compare` | exercised | `tests/api_test.rs`, `tests/openapi_contract_test.rs` |
+| `/v1/captures/compare` | exercised | `tests/api_test.rs`, `tests/archive_password_test.rs` +1 |
 | `/v1/dialogs` | exercised | `tests/api_operator_flows_test.rs`, `tests/api_test.rs` +4 |
 | `/v1/dialogs/compare` | exercised | `tests/api_test.rs`, `tests/openapi_contract_test.rs` |
 | `/v1/dialogs/rates` | exercised | `tests/api_test.rs`, `tests/openapi_contract_test.rs` |
@@ -421,7 +422,7 @@ behind them.
 | `await_condition` | exercised | `tests/config_wiring_test.rs`, `tests/mcp_completeness_test.rs` +2 |
 | `build_evidence_package` | exercised | `tests/mcp_completeness_test.rs`, `tests/mcp_stdio_test.rs` |
 | `capture_health` | exercised | `tests/mcp_completeness_test.rs`, `tests/mcp_protocol_features_test.rs` +1 |
-| `capture_status` | exercised | `tests/mcp_audit_sink_test.rs`, `tests/mcp_completeness_test.rs` +12 |
+| `capture_status` | exercised | `tests/mcp_archive_password_test.rs`, `tests/mcp_audit_sink_test.rs` +13 |
 | `check_codec_negotiation` | exercised | `tests/mcp_completeness_test.rs`, `tests/mcp_diagnostic_tools_test.rs` +3 |
 | `compare_captures` | exercised | `tests/mcp_stdio_test.rs`, `tests/population_claim_test.rs` |
 | `compare_dialogs` | exercised | `tests/mcp_completeness_test.rs`, `tests/mcp_diagnostic_tools_test.rs` +1 |
@@ -455,7 +456,7 @@ behind them.
 | `list_dialogs` | exercised | `tests/annotate_cli_test.rs`, `tests/config_wiring_test.rs` +14 |
 | `list_tls_libraries` | exercised | `tests/mcp_protocol_features_test.rs`, `tests/mcp_stdio_test.rs` |
 | `media_diagnostics` | exercised | `tests/mcp_completeness_test.rs`, `tests/mcp_media_diagnostics_test.rs` +1 |
-| `open_capture` | exercised | `tests/mcp_completeness_test.rs`, `tests/mcp_completion_test.rs` +4 |
+| `open_capture` | exercised | `tests/mcp_archive_password_test.rs`, `tests/mcp_completeness_test.rs` +5 |
 | `query_relay` | exercised | `tests/mcp_protocol_features_test.rs`, `tests/mcp_stdio_test.rs` |
 | `reconcile_orphans` | exercised | `tests/mcp_completeness_test.rs`, `tests/mcp_protocol_features_test.rs` +2 |
 | `relay_compare` | exercised | `tests/mcp_completeness_test.rs`, `tests/mcp_protocol_features_test.rs` +1 |

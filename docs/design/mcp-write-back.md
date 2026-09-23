@@ -144,9 +144,9 @@ concrete rather than theoretical:
 
 - `DialogSummary.from_user` / `to_user` ([`model.rs:54-56`](https://github.com/NormB/sipnab/blob/main/src/output/model.rs#L54-L56),
   populated at `:91-92`) are copied off the From/To URIs.
-- `get_message` ([`server.rs:5046`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5046)) returns headers and
+- `get_message` ([`server.rs:5075`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5075)) returns headers and
   body.
-- `search_messages` ([`server.rs:5460`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5460)) returns a
+- `search_messages` ([`server.rs:5489`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5489)) returns a
   `snippet` built at [`:1391`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1391) from
   `truncate_string(&String::from_utf8_lossy(&msg.raw), …)` — raw bytes off the
   wire, unmodified.
@@ -205,7 +205,7 @@ states the reasoning, and `:21-29` states why the fix is a type:
 > remembering.
 
 Both fixes reached MCP, and how they reached it is the point. `resolve_in_root`
-([`server.rs:858`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L858)) accepts a bare filename and rejects
+([`server.rs:939`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L939)) accepts a bare filename and rejects
 any separator, `..`, root prefix or drive letter *before* touching the
 filesystem — its doc comment (`:163-173`) argues that requiring one component
 has no middle ground, where "every clever normaliser eventually meets a symlink,
@@ -323,7 +323,7 @@ touching the analysis at all.
   Call-IDs, a verdict per call, free text — to a bare filename under
   `--mcp-file-root`.
 - It reaches the filesystem through `resolve_in_root`
-  ([`server.rs:858`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L858)) exactly as `export_capture` and
+  ([`server.rs:939`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L939)) exactly as `export_capture` and
   `export_audio` do, and therefore inherits `ProtectedInputs::check` and cannot
   land on a capture.
 - **Nothing reads it back.** No tool, no report, no REST route, no diagnosis.

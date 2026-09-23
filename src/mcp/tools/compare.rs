@@ -23,6 +23,7 @@ use serde::{Deserialize, Serialize};
 /// Parameters for `compare_captures`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
 pub struct CompareCapturesParams {
     /// Baseline capture: a bare filename inside `--mcp-file-root`.
     pub a: String,

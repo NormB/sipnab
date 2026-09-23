@@ -86,6 +86,8 @@ pub struct Problem {
     pub status: StatusCode,
     /// What went wrong THIS time, or `None` to send the kind's title alone.
     pub detail: Option<String>,
+    /// Seconds for a `Retry-After` header (RFC 9110), when waiting helps.
+    pub retry_after: Option<u64>,
 }
 
 impl Problem {
@@ -102,6 +104,7 @@ impl Problem {
         Self {
             status,
             detail: None,
+            retry_after: None,
         }
     }
 
@@ -111,7 +114,15 @@ impl Problem {
         Self {
             status,
             detail: Some(detail.into()),
+            retry_after: None,
         }
+    }
+
+    /// This problem, telling the client how many seconds to wait.
+    #[must_use]
+    pub fn retry_after(mut self, seconds: u64) -> Self {
+        self.retry_after = Some(seconds);
+        self
     }
 
     /// The slug in this problem's `type` URI.
@@ -166,6 +177,12 @@ impl IntoResponse for Problem {
             axum::http::header::CONTENT_TYPE,
             axum::http::HeaderValue::from_static("application/problem+json"),
         );
+        if let Some(seconds) = self.retry_after {
+            response.headers_mut().insert(
+                axum::http::header::RETRY_AFTER,
+                axum::http::HeaderValue::from(seconds),
+            );
+        }
         response
     }
 }
@@ -290,6 +307,119 @@ pub struct ApiState {
     /// the flag) makes that route answer `not_configured` — a file-reading
     /// capability is opt-in, like [`Self::relay_query`].
     pub file_root: Option<std::path::PathBuf>,
+    /// How this server treats archive passwords: which the operator
+    /// configured, whether a remote peer may send one, and the wrong-password
+    /// limiter.
+    pub archive: ArchivePasswordPolicy,
+}
+
+/// The request header that carries an archive password, for that request
+/// only. No `X-` prefix (RFC 6648).
+pub const ARCHIVE_PASSWORD_HEADER: &str = "Sipnab-Archive-Password";
+
+/// Wrong archive passwords one token may send for one archive within
+/// [`ARCHIVE_WRONG_WINDOW`] before it is answered 429 (CWE-307).
+pub const ARCHIVE_WRONG_LIMIT: usize = 5;
+
+/// The window [`ARCHIVE_WRONG_LIMIT`] counts over.
+pub const ARCHIVE_WRONG_WINDOW: std::time::Duration = std::time::Duration::from_secs(15 * 60);
+
+/// Token-and-archive pairs the wrong-password limiter tracks (Invariant 4).
+/// Past it, the pair with the oldest attempt is forgotten.
+pub const WRONG_PASSWORD_KEYS: usize = 4096;
+
+/// Archive password handling for the REST surface.
+#[derive(Clone, Default)]
+pub struct ArchivePasswordPolicy {
+    /// `--api-accept-archive-passwords`: accept the header from a peer that is
+    /// not loopback. TLS in front is then the operator's job.
+    pub accept_remote: bool,
+    /// The passwords the operator configured at start-up, tried first.
+    #[cfg(feature = "archive")]
+    pub candidates: Arc<(
+        Vec<crate::capture::archive::password::Candidate>,
+        Option<crate::capture::archive::password::Encoding>,
+    )>,
+    /// Wrong passwords per token per archive.
+    pub wrong: Arc<Mutex<WrongPasswordLimiter>>,
+}
+
+impl std::fmt::Debug for ArchivePasswordPolicy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ArchivePasswordPolicy")
+            .field("accept_remote", &self.accept_remote)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Wrong archive passwords, per (token, archive), over a sliding window.
+#[derive(Debug, Default)]
+pub struct WrongPasswordLimiter {
+    /// (token, archive) -> when each wrong password arrived, oldest first.
+    seen:
+        std::collections::HashMap<(String, String), std::collections::VecDeque<std::time::Instant>>,
+}
+
+impl WrongPasswordLimiter {
+    /// Pairs tracked.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.seen.len()
+    }
+
+    /// Whether nothing is tracked.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.seen.is_empty()
+    }
+
+    /// `Err(wait)` when `key` has spent its wrong passwords for now.
+    ///
+    /// # Errors
+    ///
+    /// How long until the oldest wrong password leaves the window.
+    pub fn check(
+        &mut self,
+        key: &(String, String),
+        now: std::time::Instant,
+    ) -> Result<(), std::time::Duration> {
+        let Some(times) = self.seen.get_mut(key) else {
+            return Ok(());
+        };
+        while times
+            .front()
+            .is_some_and(|t| now.saturating_duration_since(*t) >= ARCHIVE_WRONG_WINDOW)
+        {
+            times.pop_front();
+        }
+        if times.len() < ARCHIVE_WRONG_LIMIT {
+            return Ok(());
+        }
+        let oldest = times.front().copied().unwrap_or(now);
+        Err(ARCHIVE_WRONG_WINDOW.saturating_sub(now.saturating_duration_since(oldest)))
+    }
+
+    /// Count one wrong password for `key`, returning how many are in the
+    /// window now.
+    pub fn record(&mut self, key: &(String, String), now: std::time::Instant) -> usize {
+        if !self.seen.contains_key(key) && self.seen.len() >= WRONG_PASSWORD_KEYS {
+            // Forget the pair whose latest wrong password is oldest.
+            let stalest = self
+                .seen
+                .iter()
+                .min_by_key(|(_, t)| t.back().copied())
+                .map(|(k, _)| k.clone());
+            if let Some(k) = stalest {
+                self.seen.remove(&k);
+            }
+        }
+        let times = self.seen.entry(key.clone()).or_default();
+        times.push_back(now);
+        while times.len() > ARCHIVE_WRONG_LIMIT {
+            times.pop_front();
+        }
+        times.len()
+    }
 }
 
 /// Resolve a caller's `?limit=` to a row count.
@@ -752,6 +882,72 @@ async fn request_timeout_mw(
     }
 }
 
+/// Refuse any request whose URL carries a password-like query parameter
+/// (CWE-598), on every route, before any handler reads it.
+///
+/// A URL lands in proxy logs, access logs and browser history, so the
+/// refusal says to treat the password as exposed and names the header that
+/// carries one instead. The value is never echoed.
+async fn refuse_password_in_url_mw(
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    if let Some(name) = password_query_param(req.uri().query()) {
+        return Problem::detailed(
+            StatusCode::BAD_REQUEST,
+            format!(
+                "query parameter '{name}' refused: an archive password never goes in a URL. \
+                 Send it in the {ARCHIVE_PASSWORD_HEADER} request header, and treat this \
+                 password as exposed: it may be in proxy and access logs."
+            ),
+        )
+        .into_response();
+    }
+    next.run(req).await
+}
+
+/// The first password-like parameter name in a query string, decoded.
+fn password_query_param(query: Option<&str>) -> Option<String> {
+    query?
+        .split('&')
+        .map(|pair| pair.split('=').next().unwrap_or(""))
+        .map(percent_decode_lossy)
+        .find(|name| crate::capture::archive::is_password_like_name(name))
+}
+
+/// `%XX` escapes and `+` decoded, for matching a parameter name.
+fn percent_decode_lossy(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'%' if i + 2 < bytes.len() => {
+                let hex = std::str::from_utf8(&bytes[i + 1..i + 3]).ok();
+                match hex.and_then(|h| u8::from_str_radix(h, 16).ok()) {
+                    Some(b) => {
+                        out.push(b);
+                        i += 3;
+                    }
+                    None => {
+                        out.push(b'%');
+                        i += 1;
+                    }
+                }
+            }
+            b'+' => {
+                out.push(b' ');
+                i += 1;
+            }
+            b => {
+                out.push(b);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
 /// Build the axum `Router` with all API endpoints.
 ///
 /// The returned router expects an `ApiState` to be supplied as shared state.
@@ -827,6 +1023,7 @@ pub fn build_router(state: ApiState) -> Router {
         .route("/metrics", get(get_metrics))
         .with_state(state)
         // Request hardening on every route.
+        .layer(axum::middleware::from_fn(refuse_password_in_url_mw))
         .layer(axum::middleware::from_fn(request_timeout_mw))
         .layer(axum::extract::DefaultBodyLimit::max(MAX_REQUEST_BODY_BYTES))
 }
@@ -2320,13 +2517,18 @@ async fn get_security_findings(
     tag = "capture",
     summary = "Diff two capture files",
     description = "Diffs two capture files in `--api-file-root` by aggregate: per dimension, how many dialogs fell in each bucket in each capture and how far that moved, ranked so 'today is worse than yesterday, and here is where' is the first row. The poll a monitoring system makes; the same diff the MCP `compare_captures` tool answers.\n\nEach name is a bare FILENAME, never a path — a separator, a `..`, or a symlink out of the root is refused. Neither file becomes the capture this server serves. Bucket values come back raw, the values a program keys on. The route answers 503 until the server is started with `--api-file-root`, a file-reading capability that is off by default.",
-    params(CaptureCompareParams),
+    params(
+        CaptureCompareParams,
+        ("Sipnab-Archive-Password" = Option<String>, Header, format = Password, description = "A password for an encrypted ZIP named in `a` or `b`, for this request only and never remembered. Tried after the passwords the operator configured. Accepted from a loopback client, or from anywhere when the server runs with `--api-accept-archive-passwords` behind TLS. Never send one in the URL: a password-like query parameter is refused with 400. Every response to a request carrying it is `Cache-Control: no-store`."),
+    ),
     security(("bearer" = [])),
     responses(
         (status = 200, description = "The ranked per-dimension diff.", body = schema::CaptureComparisonView),
-        (status = 400, description = "A name that is not a bare filename or resolves outside the root, two names for one file, or an unknown dimension.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 400, description = "A name that is not a bare filename or resolves outside the root, two names for one file, an unknown dimension, or a password in the URL (treat it as exposed).", body = schema::ProblemJson, content_type = "application/problem+json"),
         (status = 401, description = "No bearer credential, or one this server does not accept.", body = schema::ProblemJson, content_type = "application/problem+json"),
-        (status = 422, description = "A named capture yielded no dialogs and reported why; diffing against it would show every bucket collapsing to zero.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 403, description = "`Sipnab-Archive-Password` from a client that is not on this host, without `--api-accept-archive-passwords`.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 422, description = "A named capture yielded no dialogs and reported why; diffing against it would show every bucket collapsing to zero. An encrypted archive nothing opened names `encrypted_no_password` or `encrypted_wrong_password`.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 429, description = "Too many wrong archive passwords from this client for one archive; `Retry-After` says when to try again.", body = schema::ProblemJson, content_type = "application/problem+json"),
         (status = 503, description = "The server was started without `--api-file-root`, so capture comparison is not offered.", body = schema::ProblemJson, content_type = "application/problem+json"),
     )
 )]
@@ -2335,8 +2537,74 @@ async fn get_captures_compare(
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
     Query(params): Query<CaptureCompareParams>,
-) -> Result<impl IntoResponse, Problem> {
-    guard(&state, &headers, addr.ip())?;
+) -> axum::response::Response {
+    let carried = headers.contains_key(ARCHIVE_PASSWORD_HEADER);
+    let mut involved = false;
+    let mut response = match captures_compare(state, addr, &headers, params, &mut involved).await {
+        Ok(json) => json.into_response(),
+        Err(problem) => problem.into_response(),
+    };
+    // Never cached: not a response to a request that carried a password, and
+    // not one that read a password-protected archive.
+    if carried || involved {
+        response.headers_mut().insert(
+            axum::http::header::CACHE_CONTROL,
+            axum::http::HeaderValue::from_static("no-store"),
+        );
+    }
+    response
+}
+
+/// Who sent a request, for counting its wrong archive passwords: a
+/// fingerprint of its bearer token, or its address when it sent none. Never
+/// the token itself.
+fn archive_principal(headers: &HeaderMap, ip: IpAddr) -> String {
+    use sha2::Digest as _;
+    match headers
+        .get("authorization")
+        .map(axum::http::HeaderValue::as_bytes)
+    {
+        Some(token) => {
+            let digest = sha2::Sha256::digest(token);
+            let hex: String = digest.iter().take(6).map(|b| format!("{b:02x}")).collect();
+            format!("token:{hex}")
+        }
+        None => format!("peer:{ip}"),
+    }
+}
+
+/// Whether `ip` is this host, IPv4-mapped IPv6 included.
+fn is_loopback_peer(ip: IpAddr) -> bool {
+    ip.to_canonical().is_loopback()
+}
+
+/// [`get_captures_compare`]'s work. Sets `involved` when a password-protected
+/// archive took part, whatever the outcome.
+async fn captures_compare(
+    state: ApiState,
+    addr: SocketAddr,
+    headers: &HeaderMap,
+    params: CaptureCompareParams,
+    involved: &mut bool,
+) -> Result<Json<schema::CaptureComparisonView>, Problem> {
+    guard(&state, headers, addr.ip())?;
+
+    // The header carries a password over plain HTTP (CWE-319): only from this
+    // host, where it never crossed a network, unless the operator vouched for
+    // a TLS proxy in front.
+    let header = headers.get(ARCHIVE_PASSWORD_HEADER);
+    if header.is_some() && !state.archive.accept_remote && !is_loopback_peer(addr.ip()) {
+        return Err(Problem::detailed(
+            StatusCode::FORBIDDEN,
+            format!(
+                "{ARCHIVE_PASSWORD_HEADER} is accepted only from this host: sipnab serves \
+                 plain HTTP, so a password from elsewhere crossed the network in the clear. \
+                 Treat it as exposed. Put a TLS proxy on this host in front of sipnab, or \
+                 start it with --api-accept-archive-passwords once TLS terminates in front."
+            ),
+        ));
+    }
+    let principal = archive_principal(headers, addr.ip());
 
     let a = params
         .a
@@ -2381,23 +2649,85 @@ async fn get_captures_compare(
     let max_dialogs = crate::cli::Cli::DEFAULT_DIALOG_LIMIT as usize;
     let max_streams = crate::cli::Cli::DEFAULT_MAX_STREAMS as usize;
 
+    // A token past its wrong passwords for either archive is turned away
+    // before anything is decrypted (CWE-307).
+    if header.is_some() {
+        let now = std::time::Instant::now();
+        let mut limiter = state.archive.wrong.lock();
+        for name in [&name_a, &name_b] {
+            if let Err(wait) = limiter.check(&(principal.clone(), name.clone()), now) {
+                drop(limiter);
+                return Err(Problem::detailed(
+                    StatusCode::TOO_MANY_REQUESTS,
+                    format!(
+                        "too many wrong archive passwords for '{name}' from this client; \
+                         try again in {} s",
+                        wait.as_secs().max(1)
+                    ),
+                )
+                .retry_after(wait.as_secs().max(1)));
+            }
+        }
+    }
+
+    // The operator's passwords first, then this request's, for this request
+    // alone: never remembered for the next one.
+    #[cfg(feature = "archive")]
+    let keyring = {
+        use crate::capture::archive::password;
+        let mut candidates = state.archive.candidates.0.clone();
+        if let Some(value) = header {
+            match password::ArchivePassword::from_bytes(value.as_bytes()) {
+                Ok(pw) => candidates.push(password::Candidate {
+                    password: pw,
+                    source: password::Source::Request,
+                }),
+                Err(e) => {
+                    return Err(Problem::detailed(
+                        StatusCode::BAD_REQUEST,
+                        format!("{ARCHIVE_PASSWORD_HEADER}: {e}"),
+                    ));
+                }
+            }
+        }
+        password::Keyring::new(candidates, state.archive.candidates.1)
+    };
+
     // On a blocking task: two whole captures inside the handler would hold the
     // single runtime thread the REST API and the MCP server share.
-    let comparison = tokio::task::spawn_blocking(move || {
-        crate::capture::compare::compare(
-            crate::capture::compare::CaptureRef {
-                path: &path_a,
-                name: &name_a,
-            },
-            crate::capture::compare::CaptureRef {
-                path: &path_b,
-                name: &name_b,
-            },
-            &dims,
-            max_dialogs,
-            max_streams,
-            top_n,
-        )
+    let (label_a, label_b) = (path_a.display().to_string(), path_b.display().to_string());
+    let (result, attempts, locked, wrong) = tokio::task::spawn_blocking(move || {
+        let run = || {
+            crate::capture::compare::compare(
+                crate::capture::compare::CaptureRef {
+                    path: &path_a,
+                    name: &name_a,
+                },
+                crate::capture::compare::CaptureRef {
+                    path: &path_b,
+                    name: &name_b,
+                },
+                &dims,
+                max_dialogs,
+                max_streams,
+                top_n,
+            )
+        };
+        #[cfg(feature = "archive")]
+        {
+            let (result, keys) =
+                crate::capture::archive::password::with_thread_keyring(keyring, run);
+            (
+                result,
+                keys.attempts(),
+                keys.locked_members(),
+                keys.wrong_archives().to_vec(),
+            )
+        }
+        #[cfg(not(feature = "archive"))]
+        {
+            (run(), 0u64, 0u64, Vec::<String>::new())
+        }
     })
     .await
     .map_err(|e| {
@@ -2405,8 +2735,33 @@ async fn get_captures_compare(
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("the capture read did not finish: {e}"),
         )
-    })?
-    .map_err(|e| match e {
+    })?;
+    *involved = attempts > 0 || locked > 0;
+
+    // Count and audit this client's wrong passwords, per archive. The record
+    // names the client by fingerprint and the archive by name: never the
+    // password, never its length.
+    if header.is_some() {
+        let now = std::time::Instant::now();
+        let mut limiter = state.archive.wrong.lock();
+        for label in &wrong {
+            let name = if label.starts_with(&label_a) {
+                a
+            } else if label.starts_with(&label_b) {
+                b
+            } else {
+                continue;
+            };
+            let count = limiter.record(&(principal.clone(), name.to_string()), now);
+            tracing::warn!(
+                "REST: wrong archive password from {principal} for '{name}' \
+                 ({count} of {ARCHIVE_WRONG_LIMIT} in {} min)",
+                ARCHIVE_WRONG_WINDOW.as_secs() / 60
+            );
+        }
+    }
+
+    let comparison = result.map_err(|e| match e {
         crate::capture::compare::CompareError::Unreadable { .. } => {
             Problem::detailed(StatusCode::UNPROCESSABLE_ENTITY, e.to_string())
         }
@@ -7924,6 +8279,7 @@ mod tests {
             alert_engine: None,
             armed_detections: Vec::new(),
             file_root: None,
+            archive: ArchivePasswordPolicy::default(),
         }
     }
 
@@ -8769,6 +9125,7 @@ mod tests {
             alert_engine: None,
             armed_detections: Vec::new(),
             file_root: None,
+            archive: ArchivePasswordPolicy::default(),
         }
     }
 
@@ -9491,6 +9848,7 @@ mod tests {
             alert_engine: None,
             armed_detections: Vec::new(),
             file_root: None,
+            archive: ArchivePasswordPolicy::default(),
         }
     }
 
@@ -10351,6 +10709,7 @@ mod tests {
             alert_engine: None,
             armed_detections: Vec::new(),
             file_root: None,
+            archive: ArchivePasswordPolicy::default(),
         };
         populate_dialogs(&state);
 
@@ -12209,5 +12568,288 @@ mod tests {
             "zero deltas is what a quiet capture reports; an empty window must \
              not be answered with one"
         );
+    }
+}
+
+/// Archive passwords on REST: the `Sipnab-Archive-Password` header, for one
+/// request, from a loopback peer or with `--api-accept-archive-passwords`;
+/// never the URL; wrong passwords limited per token per archive and audited;
+/// `Cache-Control: no-store` on every response that involved one.
+#[cfg(test)]
+#[cfg(feature = "archive")]
+mod archive_password_tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::Request;
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+
+    fn secret(label: &str) -> &'static str {
+        crate::test_material::key_str(label)
+    }
+
+    /// A file root holding `locked.zip` (the G.711 fixture, AES-locked with
+    /// `label`) and `plain.pcap`.
+    fn root(label: &str) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("tmp");
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/pcap-samples/sip-rtp-g711.pcap");
+        let pcap = std::fs::read(&fixture).expect("fixture");
+        std::fs::write(
+            dir.path().join("locked.zip"),
+            crate::capture::archive::zipped::testutil::build(
+                &[("calls/a.pcap", &pcap)],
+                crate::capture::archive::zipped::testutil::Lock::Aes(
+                    zip::AesMode::Aes256,
+                    secret(label).as_bytes(),
+                ),
+            ),
+        )
+        .expect("zip");
+        std::fs::copy(&fixture, dir.path().join("plain.pcap")).expect("copy");
+        dir
+    }
+
+    fn state(root: &std::path::Path, keys: &[&str]) -> ApiState {
+        ApiState {
+            file_root: Some(root.to_path_buf()),
+            verifier: Arc::new(crate::auth::TokenVerifier::new(
+                crate::auth::VerifierConfig {
+                    static_keys: keys.iter().map(|k| (*k).to_string()).collect(),
+                    ..Default::default()
+                },
+            )),
+            ..tests_make_state()
+        }
+    }
+
+    fn tests_make_state() -> ApiState {
+        ApiState {
+            relay_query: Default::default(),
+            dialog_store: Arc::new(RwLock::new(DialogStore::new(1000, false))),
+            stream_store: Arc::new(RwLock::new(StreamStore::new(1000))),
+            verifier: Arc::new(crate::auth::TokenVerifier::new(
+                crate::auth::VerifierConfig::default(),
+            )),
+            rate_limiter: Arc::new(Mutex::new(RateLimiter::new(1000, 1024))),
+            max_inline_media_bytes: None,
+            max_rows: crate::cli::Cli::DEFAULT_API_MAX_ROWS as usize,
+            capture: None,
+            source_exhausted: None,
+            capture_interfaces: Vec::new(),
+            capture_meter: None,
+            started_at: std::time::Instant::now(),
+            persistence_gate: Arc::new(crate::output::persistence::PersistenceGate::new(false)),
+            tfps: Default::default(),
+            alert_engine: None,
+            armed_detections: Vec::new(),
+            file_root: None,
+            archive: ArchivePasswordPolicy::default(),
+        }
+    }
+
+    const COMPARE: &str = "/v1/captures/compare?a=locked.zip&b=plain.pcap&dimensions=state";
+
+    fn request(uri: &str, peer: IpAddr, headers: &[(&str, &str)]) -> Request<Body> {
+        let mut b = Request::builder().uri(uri);
+        for (k, v) in headers {
+            b = b.header(*k, *v);
+        }
+        let mut req = b.body(Body::empty()).expect("request");
+        req.extensions_mut()
+            .insert(ConnectInfo(SocketAddr::new(peer, 40_000)));
+        req
+    }
+
+    fn loopback() -> IpAddr {
+        IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)
+    }
+
+    async fn send(state: &ApiState, req: Request<Body>) -> (StatusCode, HeaderMap, String) {
+        let resp = build_router(state.clone())
+            .oneshot(req)
+            .await
+            .expect("oneshot");
+        let status = resp.status();
+        let headers = resp.headers().clone();
+        let bytes = resp.into_body().collect().await.expect("body").to_bytes();
+        (
+            status,
+            headers,
+            String::from_utf8_lossy(&bytes).into_owned(),
+        )
+    }
+
+    fn no_store(h: &HeaderMap) -> bool {
+        h.get("cache-control")
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|v| v.contains("no-store"))
+    }
+
+    #[tokio::test]
+    async fn the_header_opens_for_one_request_and_is_never_remembered() {
+        let dir = root("rest-open");
+        let st = state(dir.path(), &[]);
+        let (status, headers, body) = send(
+            &st,
+            request(
+                COMPARE,
+                loopback(),
+                &[(ARCHIVE_PASSWORD_HEADER, secret("rest-open"))],
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(
+            no_store(&headers),
+            "a request carrying a password is never cached"
+        );
+        assert!(!body.contains(secret("rest-open")));
+
+        let (status, headers, body) = send(&st, request(COMPARE, loopback(), &[])).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+        assert!(body.contains("encrypted_no_password"), "{body}");
+        assert!(
+            no_store(&headers),
+            "a response that read a locked archive is not cached"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_password_in_the_url_is_refused_as_exposed() {
+        let dir = root("rest-url");
+        let st = state(dir.path(), &[]);
+        for key in ["password", "archive_password", "Archive-Password"] {
+            let uri = format!("{COMPARE}&{key}={}", secret("rest-url"));
+            let (status, _, body) = send(&st, request(&uri, loopback(), &[])).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{key}: {body}");
+            assert!(body.contains(ARCHIVE_PASSWORD_HEADER), "{body}");
+            assert!(body.contains("treat this password as exposed"), "{body}");
+            assert!(!body.contains(secret("rest-url")), "{body}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_remote_peer_needs_the_operator_s_flag() {
+        let dir = root("rest-remote");
+        let remote = IpAddr::V4(std::net::Ipv4Addr::new(192, 0, 2, 7));
+        let hdr = [(ARCHIVE_PASSWORD_HEADER, secret("rest-remote"))];
+        let st = state(dir.path(), &[]);
+        let (status, _, body) = send(&st, request(COMPARE, remote, &hdr)).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+        assert!(body.contains("--api-accept-archive-passwords"), "{body}");
+        let mut open = st.clone();
+        open.archive.accept_remote = true;
+        let (status, _, body) = send(&open, request(COMPARE, remote, &hdr)).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+    }
+
+    #[tokio::test]
+    async fn wrong_passwords_are_limited_per_token_and_audited_without_the_password() {
+        let dir = root("rest-limit");
+        let (tok_a, tok_b) = (secret("rest-tok-a"), secret("rest-tok-b"));
+        let st = state(dir.path(), &[tok_a, tok_b]);
+        let bearer_a = format!("Bearer {tok_a}");
+        let bearer_b = format!("Bearer {tok_b}");
+        let wrong = secret("rest-wrong");
+
+        let logs = std::sync::Arc::new(parking_lot::Mutex::new(Vec::<u8>::new()));
+        let sink = logs.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(move || LogSink(sink.clone()))
+            .with_max_level(tracing::Level::TRACE)
+            .with_ansi(false)
+            .finish();
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        for _ in 0..ARCHIVE_WRONG_LIMIT {
+            let (status, _, body) = send(
+                &st,
+                request(
+                    COMPARE,
+                    loopback(),
+                    &[
+                        ("authorization", &bearer_a),
+                        (ARCHIVE_PASSWORD_HEADER, wrong),
+                    ],
+                ),
+            )
+            .await;
+            assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+            assert!(body.contains("encrypted_wrong_password"), "{body}");
+        }
+        let (status, headers, body) = send(
+            &st,
+            request(
+                COMPARE,
+                loopback(),
+                &[
+                    ("authorization", &bearer_a),
+                    (ARCHIVE_PASSWORD_HEADER, wrong),
+                ],
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "{body}");
+        assert!(headers.get("retry-after").is_some(), "429 says when");
+
+        // Another token is not affected.
+        let (status, _, body) = send(
+            &st,
+            request(
+                COMPARE,
+                loopback(),
+                &[
+                    ("authorization", &bearer_b),
+                    (ARCHIVE_PASSWORD_HEADER, secret("rest-limit")),
+                ],
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+
+        let text = String::from_utf8_lossy(&logs.lock()).into_owned();
+        assert!(
+            text.lines()
+                .any(|l| l.contains("WARN") && l.contains("wrong archive password")),
+            "the audit line is a warning: {text}"
+        );
+        assert!(text.contains("locked.zip"), "{text}");
+        for s in [wrong, secret("rest-limit"), tok_a, tok_b] {
+            assert!(!text.contains(s), "a secret reached the log");
+        }
+    }
+
+    /// A `MakeWriter` into a shared buffer.
+    struct LogSink(std::sync::Arc<parking_lot::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for LogSink {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn the_wrong_password_limiter_is_bounded_and_forgets_after_its_window() {
+        let mut lim = WrongPasswordLimiter::default();
+        let t0 = std::time::Instant::now();
+        let key = ("tok".to_string(), "a.zip".to_string());
+        for _ in 0..ARCHIVE_WRONG_LIMIT {
+            assert!(lim.check(&key, t0).is_ok());
+            lim.record(&key, t0);
+        }
+        assert!(lim.check(&key, t0).is_err());
+        assert!(
+            lim.check(&key, t0 + ARCHIVE_WRONG_WINDOW).is_ok(),
+            "the window passes"
+        );
+        for i in 0..(WRONG_PASSWORD_KEYS + 10) {
+            lim.record(&(format!("t{i}"), "a.zip".into()), t0);
+        }
+        assert!(lim.len() <= WRONG_PASSWORD_KEYS, "Invariant 4: bounded");
     }
 }

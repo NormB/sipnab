@@ -2924,6 +2924,42 @@ this, no capture-vs-capture view existed on REST.
 - `top_n` (optional) — rows per dimension, clamped to the server's row cap.
   Everything past it sums into an `(other)` bucket.
 
+**Password-protected archives.** `a` or `b` may name a ZIP, encrypted or not.
+sipnab tries the passwords the operator configured at start-up first (see
+[Archives](cli-reference.md#archives)). A client may add one in the
+`Sipnab-Archive-Password` request header, and sipnab uses it for that request
+only and never remembers it:
+
+- **Only from this host.** sipnab serves plain HTTP, so it accepts the header
+  from a loopback client, meaning a local tool or a TLS proxy on the same host.
+  A remote client gets `403` unless the operator started sipnab with
+  `--api-accept-archive-passwords`, which makes TLS in front their job.
+- **Never in the URL.** A query parameter named like a password gets `400`,
+  on every route, with advice to treat that password as exposed: URLs land in
+  proxy and access logs.
+- **sipnab limits wrong passwords.** After 5 wrong passwords for one archive
+  within 15 minutes, that client gets `429` with `Retry-After` for that
+  archive. sipnab counts a client by a fingerprint of its bearer token, or by
+  its address when it sends none, and logs each wrong password at `warn` with
+  that fingerprint, the archive's name and the count. The log never holds the
+  password.
+- **No surrounding spaces.** HTTP trims leading and trailing whitespace from
+  a header value (RFC 9110), so a password that starts or ends with a space
+  cannot travel in this header. Configure it on the server instead.
+- **No cache keeps a copy.** Every response to a request carrying the header, or
+  one that read a password-protected archive, carries `Cache-Control:
+  no-store`.
+- **A locked archive answers `422`**, naming `encrypted_no_password` or
+  `encrypted_wrong_password` per member. No response repeats the password or
+  its length.
+
+`printf` is a shell builtin, so the password never appears in a process list,
+and `curl -H @-` reads the header from stdin.
+
+```bash
+printf 'Sipnab-Archive-Password: %s\n' "$(pass show pcaps/lab)" | curl -s -H @- -H "Authorization: Bearer $SIPNAB_API_KEY" "http://127.0.0.1:8080/v1/captures/compare?a=evidence.zip&b=today.pcap" | jq .
+```
+
 **curl:**
 
 ```bash

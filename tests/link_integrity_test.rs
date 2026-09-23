@@ -963,7 +963,10 @@ fn wiki_intra_docs_links_resolve() {
     // and docs/cli-reference.md +1 (the prompt paragraph's pointer to the
     // popup). Counted per file against HEAD; no other page moved.
     // Merge of archive-passwords with main: 837 +4 (above) = 841.
-    const EXPECTED_WIKI_LINKS: usize = 841;
+    // 841 -> 843 by archive passwords on REST and MCP: docs/rest-api.md +1
+    // and docs/mcp-tools.md +1, each pointing at the CLI reference's
+    // Archives section. Counted per file against HEAD; no other page moved.
+    const EXPECTED_WIKI_LINKS: usize = 843;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe 6d in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

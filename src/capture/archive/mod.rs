@@ -549,6 +549,24 @@ impl Expansion {
     }
 }
 
+/// Whether a parameter or argument NAME looks like it carries a password.
+///
+/// Case and separators are ignored, so `password`, `archive_password`,
+/// `ArchivePassword` and `zip-passphrase` all match. The one rule behind the
+/// REST surface's refusal of a password in a URL and the MCP surface's
+/// refusal of a password in a tool call.
+#[must_use]
+pub fn is_password_like_name(name: &str) -> bool {
+    let folded: String = name
+        .chars()
+        .filter(char::is_ascii_alphanumeric)
+        .map(|c| c.to_ascii_lowercase())
+        .collect();
+    ["password", "passwd", "passphrase", "pwd"]
+        .iter()
+        .any(|w| folded.contains(w))
+}
+
 /// Whether this build unwraps `format` rather than handing it to libpcap or
 /// naming it unsupported: gzip and tar always, ZIP with the `archive`
 /// feature.

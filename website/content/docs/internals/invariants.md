@@ -253,7 +253,11 @@ stops at the ceiling as well. The password layer has bounds of its own in
 (4096) per password, refused whole and never truncated,
 `MAX_PASSWORD_FILE_BYTES` (64 KiB) per password file, `MAX_COMMAND_OUTPUT`
 (64 KiB) and `COMMAND_TIMEOUT` (120 s) for `--archive-password-command`, and
-`PROMPT_ATTEMPTS` (3) prompts per archive.
+`PROMPT_ATTEMPTS` (3) prompts per archive. The REST wrong-password limiter
+in [`api.rs`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs) keys on a client and an archive
+name, both of which a client chooses, so it holds at most
+`WRONG_PASSWORD_KEYS` (4,096) pairs and forgets the pair whose last wrong
+password is oldest to admit a new one.
 The digest detector in [`digest_leak.rs`](https://github.com/NormB/sipnab/blob/main/src/security/digest_leak.rs)
 remembers at most `MAX_NONCE_ENTRIES` (10,000) challenge nonce values, each
 with the transaction that carried it, and drops an arbitrary one to admit the

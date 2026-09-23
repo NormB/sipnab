@@ -761,7 +761,11 @@ fn linked_code_targets_exist() {
     // `tests/archive_password_test.rs`. Attributed by diffing
     // `docs/internals/` against the merge base: invariants.md gained exactly
     // those four and no other page changed.
-    const EXPECTED_CODE_LINKS: usize = 456;
+    // 456 -> 457: invariant 4 in `docs/internals/invariants.md` names the
+    // REST wrong-password limiter and links `src/output/api.rs`. Attributed
+    // by diffing `docs/internals/` against HEAD: that one link and no other
+    // page changed.
+    const EXPECTED_CODE_LINKS: usize = 457;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \

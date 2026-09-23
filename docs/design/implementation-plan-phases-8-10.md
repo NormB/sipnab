@@ -1682,17 +1682,17 @@ For implementers picking this up, the bridge from each MCP tool to existing func
 | `tail_dialogs` | `DialogStore::iter` filtered by `updated_at > cursor` |
 | `security_findings` | `security::AlertEngine` history (extend with ring buffer) |
 | `snapshot_pcap` | `capture::PcapWriter` + filter on captured packets |
-| `stats` | Mirrors `GET /v1/stats` from `output::api::get_stats` ([`src/output/api.rs:4051`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L4051)) |
+| `stats` | Mirrors `GET /v1/stats` from `output::api::get_stats` ([`src/output/api.rs:4406`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L4406)) |
 
 | Phase 8 infra | Reuses |
 |---|---|
-| Bind address parsing | `output::api::parse_bind_addr` ([`src/output/api.rs:838`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L838)) |
+| Bind address parsing | `output::api::parse_bind_addr` ([`src/output/api.rs:1047`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L1047)) |
 | Bearer auth | `output::api::check_auth` + `constant_time_eq` ([`src/output/api.rs:279`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L279), `:309`) |
-| Rate limiting | `output::api::RateLimiter` ([`src/output/api.rs:398`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L398)) |
+| Rate limiting | `output::api::RateLimiter` ([`src/output/api.rs:528`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L528)) |
 | Shared store mirroring | `mirror_to_shared_stores` — **gone**; no such function exists today |
 | Server thread + tokio runtime | `start_api_server` — **gone**; see [`src/app/servers.rs`](https://github.com/NormB/sipnab/blob/main/src/app/servers.rs) |
 | Privilege drop ordering | Existing capture-ready rendezvous + `privilege::drop_privileges` (`src/main.rs:387–442`) |
-| WebSocket / SSE Router mounting | Extend `output::api::build_router` ([`src/output/api.rs:763`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L763)) with new routes; reuse the existing `guard()` middleware |
+| WebSocket / SSE Router mounting | Extend `output::api::build_router` ([`src/output/api.rs:960`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L960)) with new routes; reuse the existing `guard()` middleware |
 
 | Phase 8.4 sink | Wraps |
 |---|---|

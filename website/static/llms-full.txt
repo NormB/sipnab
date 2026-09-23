@@ -6753,6 +6753,42 @@ this, no capture-vs-capture view existed on REST.
 - `top_n` (optional) — rows per dimension, clamped to the server's row cap.
   Everything past it sums into an `(other)` bucket.
 
+**Password-protected archives.** `a` or `b` may name a ZIP, encrypted or not.
+sipnab tries the passwords the operator configured at start-up first (see
+[Archives](cli-reference.md#archives)). A client may add one in the
+`Sipnab-Archive-Password` request header, and sipnab uses it for that request
+only and never remembers it:
+
+- **Only from this host.** sipnab serves plain HTTP, so it accepts the header
+  from a loopback client, meaning a local tool or a TLS proxy on the same host.
+  A remote client gets `403` unless the operator started sipnab with
+  `--api-accept-archive-passwords`, which makes TLS in front their job.
+- **Never in the URL.** A query parameter named like a password gets `400`,
+  on every route, with advice to treat that password as exposed: URLs land in
+  proxy and access logs.
+- **sipnab limits wrong passwords.** After 5 wrong passwords for one archive
+  within 15 minutes, that client gets `429` with `Retry-After` for that
+  archive. sipnab counts a client by a fingerprint of its bearer token, or by
+  its address when it sends none, and logs each wrong password at `warn` with
+  that fingerprint, the archive's name and the count. The log never holds the
+  password.
+- **No surrounding spaces.** HTTP trims leading and trailing whitespace from
+  a header value (RFC 9110), so a password that starts or ends with a space
+  cannot travel in this header. Configure it on the server instead.
+- **No cache keeps a copy.** Every response to a request carrying the header, or
+  one that read a password-protected archive, carries `Cache-Control:
+  no-store`.
+- **A locked archive answers `422`**, naming `encrypted_no_password` or
+  `encrypted_wrong_password` per member. No response repeats the password or
+  its length.
+
+`printf` is a shell builtin, so the password never appears in a process list,
+and `curl -H @-` reads the header from stdin.
+
+```bash
+printf 'Sipnab-Archive-Password: %s\n' "$(pass show pcaps/lab)" | curl -s -H @- -H "Authorization: Bearer $SIPNAB_API_KEY" "http://127.0.0.1:8080/v1/captures/compare?a=evidence.zip&b=today.pcap" | jq .
+```
+
 **curl:**
 
 ```bash
@@ -12302,6 +12338,7 @@ Unprivileged runs (`sipnab --setup-caps`) now do too.
 | `--api-max-rows` | `<N>` | `1000` | Rows one list-style REST response returns. The REST counterpart of `--mcp-max-rows`, settable for the same reason: the right ceiling belongs to the consumer, not to sipnab. A batch consumer piping `/v1/dialogs` to a file wants every row; a dashboard drawing a table wants far fewer. A caller may always ask for less with `?limit=`, and nothing it sends asks for more than this. Config: `[limits] api_max_rows` Feature: `api` |
 | `--api-rate-limit-per-peer` | `<N>` | `100` | REST requests one client IP may make per second; `0` disables the cap, the reading `--mcp-rate-limit-per-peer` and `--hep-rate-limit` also give it. The limiter counts by source address, so a dashboard polling `/v1/streams` on a short timer, or several collectors behind one NAT, share a single allowance. A refusal is `503` rather than `429` because the limiter runs before authentication, so it says nothing about the credential. Config: `[limits] api_rate_limit_per_peer` Feature: `api` |
 | `--api-allow-relay-query` | -- | -- | Let REST clients query the relay named by `--rtpengine-control` through the `GET /v1/relay/...` routes, which transmit. The REST counterpart of `--mcp-allow-relay-query`, off for the same reason: every other REST answer comes from bytes sipnab already holds, and these put a packet on the network — at the address that flag names, never one a client chooses. Without this flag those routes answer `not_permitted`; without a relay, or on a file-backed run, `not_configured`. Each response is HTTP 200 carrying an `outcome`, so a refusal is content, not a 4xx. Polling on an interval is not offered over REST at all. Feature: `api` |
+| `--api-accept-archive-passwords` | -- | off | Accept the `Sipnab-Archive-Password` header on `GET /v1/captures/compare` from a client that is not on this host. sipnab serves plain HTTP, so the password crosses the network in the clear unless TLS terminates in front: that is your job when you pass this. Without it, only a loopback client may send one, and a remote one gets `403`. Feature: `api` |
 | `--api-file-root` | `<DIR>` | -- | Directory of capture files `GET /v1/captures/compare` may diff. The REST counterpart of `--mcp-file-root`, off for the same reason: every other REST answer comes from bytes sipnab already holds, while this reads FILES a client names. It takes a bare FILENAME, never a path: sipnab rejects a separator, a `..` or an absolute prefix before touching the filesystem, and refuses a symlink that resolves out of the root at open, by the same check `-O` uses. Without this flag the compare route answers `503`. Naming one directory means the worst a client can do is name files inside it. Feature: `api` |
 | `--metrics-max-conn` | `<N>` | `16` | Metrics scrapes served at once before further ones get `503`. The gate stops a burst of slow clients exhausting threads and taking monitoring down, and sixteen suits one Prometheus; an HA pair, a federating parent, a `remote_write` shard, an alertmanager sidecar and one engineer's `curl` reach it without anything unusual happening. A refused scrape leaves a hole in the series that reads as a capture that died rather than as a busy endpoint. Config: `[limits] metrics_max_conn` Feature: `metrics` |
 | `-L`, `--hep-listen` | `<ADDR>` | -- | Listen for HEP (Homer Encapsulation Protocol) packets. **Combines with `-d <iface>`**: HEP then supplies signaling while the interface supplies the RTP a HEP feed cannot carry, and streams bind to dialogs by SDP media endpoint. Give that run an explicit media-only BPF expression (`sipnab -N -d eth0 -L 127.0.0.1:9060 "udp portrange 10000-20000"`) — without one the interface gets the auto-generated *signaling* filter, captures no media, and sees every mirrored message a second time. One interface and one listener only: `--multi-device` with `-L`, `-I` with `-L`, and `-O` alongside the pair are each refused with the reason. See [cookbook recipe 6d](examples.md#6d-take-signaling-from-hep-and-media-off-the-wire-in-one-process). Feature: `hep` |
@@ -12336,6 +12373,9 @@ Unprivileged runs (`sipnab --setup-caps`) now do too.
 - `sudo sipnab -N -d eth0 --api 127.0.0.1:8080 --api-key s3cret --api-max-rows 200 --api-rate-limit-per-peer 600` — the opposite, for a dashboard: short pages a browser can render, and six hundred requests a second per address, so a dozen browsers refreshing twice a second behind one office NAT share an allowance that fits them
 - `sudo sipnab -N -d eth0 --api 127.0.0.1:8080 --api-key s3cret --rtpengine-control 127.0.0.1:22222 --api-allow-relay-query` — a live capture whose REST clients may also ask the relay: `GET /v1/relay/stats` returns its counters as one JSON object with an `outcome`, transmitting once per request. Off without this flag, when those routes answer `not_permitted`
 - `sipnab -N -I capture.pcap --api 127.0.0.1:8080 --api-key s3cret --api-allow-relay-query --rtpengine-control 127.0.0.1:22222` — the relay routes still answer on a file run, but with `outcome: not_permitted`: a file-backed run holds no transmit permit, so no packet reaches the relay, and the addresses in a capture belong to third parties
+- `sipnab -N -I today.pcap --api 127.0.0.1:8080 --api-key s3cret --api-file-root /srv/pcaps --archive-password-file /etc/sipnab/pcaps.pw` — the compare route opens password-protected ZIPs under `/srv/pcaps` with the operator's passwords, and a local client may add one per request in the `Sipnab-Archive-Password` header
+- `sipnab -N -I today.pcap --api 0.0.0.0:8080 --api-key s3cret --api-file-root /srv/pcaps --api-accept-archive-passwords` — behind a TLS proxy on another host: remote clients may send `Sipnab-Archive-Password`, which without the flag get `403` because the password would cross the network in the clear
+- `sipnab -N -I today.pcap --api 127.0.0.1:8080 --api-key s3cret --api-file-root /srv/pcaps --api-accept-archive-passwords --archive-password-file /etc/sipnab/pcaps.pw` — both at once: configured passwords first, then the request's
 - `sudo sipnab -N -d eth0 --api 127.0.0.1:8080 --api-key s3cret --api-file-root /var/lib/sipnab/captures` — a live capture whose REST clients may also diff rotations: `GET /v1/captures/compare?a=yesterday.pcap&b=today.pcap` reads two files from that one directory and nothing outside it, ranking what moved. Off without the flag, when the route answers `503`
 - `sipnab -N -I today.pcap --api 127.0.0.1:8080 --api-key s3cret --api-file-root /srv/pcaps` — the compare route works on a file-backed run too: it diffs the two NAMED files under `/srv/pcaps`, never the loaded `today.pcap`, so a monitoring box can poll one sipnab for a rolling day-over-day comparison
 - `sudo sipnab -N -d eth0 --metrics 127.0.0.1:9090 --metrics-max-conn 64` — an HA Prometheus pair, a federating parent, a `remote_write` shard and an alertmanager sidecar all scraping one sipnab: at sixteen slots a slow scrape turns the next one away with `503`, and the hole in the series reads as a capture that died
@@ -19714,7 +19754,10 @@ one's first packet arrived.
 
 **It lists what sipnab can open by name:** `.pcap`, `.pcapng` and `.cap`
 files, their gzip-compressed forms such as `*.pcap.gz`, and archives of captures
-(`.tar`, `.tgz`, `.tar.gz`), matched case-insensitively. It skips directories.
+(`.tar`, `.tgz`, `.tar.gz`, and `.zip` in builds with the `archive` feature),
+matched case-insensitively. Each entry carries `encrypted`: `true` for a ZIP
+holding an encrypted member, read from the archive's directory alone, so
+listing never tries a password. It skips directories.
 The TUI's file browser lists by the same rule. [`open_capture`](#open_capture)
 accepts one thing this listing leaves out, a capture with no extension at all,
 so an agent that treats the listing as the whole set it may open misses those.
@@ -24619,6 +24662,19 @@ libpcap reads is fine, and an archive (`.tar`, `.tgz`, `.tar.gz`) loads as the
 set of captures it holds, in first-packet order, into the one store. No optional
 parameters, and no way to ask for a merge: this replaces the stores rather than
 adding to them.
+
+**No password argument, on this tool or any other.** An argument passes
+through the model's context, the client's transcript and the provider's logs.
+OWASP LLM02:2025 says to keep such data out of model inputs, and the MCP
+specification says credentials never pass through the client. sipnab refuses a
+call carrying any argument named like a password before the tool runs, and its
+audit record shows the value as `[REDACTED]`. The file-opening tools
+(`open_capture`, `find_in_captures`, `compare_captures`, `show_evidence`) also
+refuse any argument they do not take, rather than ignoring it. An encrypted
+ZIP opens with the passwords the operator configured when starting sipnab, as
+described in [Archives](cli-reference.md#archives). When members stay locked,
+`capture_status` reports `load.archive_passwords`: how many, and that the
+operator must supply the password. It never invites the agent to send one.
 
 Returns `status` (`"loading"`), `filename`, `path`, the **new**
 `capture_identity`, `discarded_dialogs`, `note` and `schema_version`.
@@ -30729,7 +30785,11 @@ stops at the ceiling as well. The password layer has bounds of its own in
 (4096) per password, refused whole and never truncated,
 `MAX_PASSWORD_FILE_BYTES` (64 KiB) per password file, `MAX_COMMAND_OUTPUT`
 (64 KiB) and `COMMAND_TIMEOUT` (120 s) for `--archive-password-command`, and
-`PROMPT_ATTEMPTS` (3) prompts per archive.
+`PROMPT_ATTEMPTS` (3) prompts per archive. The REST wrong-password limiter
+in [`api.rs`](../../src/output/api.rs) keys on a client and an archive
+name, both of which a client chooses, so it holds at most
+`WRONG_PASSWORD_KEYS` (4,096) pairs and forgets the pair whose last wrong
+password is oldest to admit a new one.
 The digest detector in [`digest_leak.rs`](../../src/security/digest_leak.rs)
 remembers at most `MAX_NONCE_ENTRIES` (10,000) challenge nonce values, each
 with the transaction that carried it, and drops an arbitrary one to admit the

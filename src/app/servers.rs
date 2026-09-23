@@ -512,6 +512,12 @@ pub fn start_servers(
                 .api_file_root
                 .as_ref()
                 .map(std::path::PathBuf::from),
+            archive: crate::output::api::ArchivePasswordPolicy {
+                accept_remote: cli.listener_args.api_accept_archive_passwords,
+                #[cfg(feature = "archive")]
+                candidates: std::sync::Arc::new(crate::capture::archive::password::run_candidates()),
+                wrong: std::sync::Arc::default(),
+            },
         };
         let config = ApiServerConfig {
             max_conn: cli.listener_args.api_max_conn,
