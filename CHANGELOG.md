@@ -188,6 +188,12 @@ entry that carries them.
 
 ### Internal
 
+- **The MCP password-refusal test no longer prints the refusal on failure.**
+  CodeQL (`rust/cleartext-logging`, alerts 424 and 425) followed the test's
+  secret from the tool arguments into two assert messages. The refusal names
+  only the argument, never its value, but the asserts now fail with plain
+  text, as the repository keeps test code clean at the source.
+
 - **Unit tests capture logs through one helper, which cannot miss an
   event.** `tracing` caches per call site, for the whole process, whether any
   subscriber wants its events, and `with_default` covers one thread. A test

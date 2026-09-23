@@ -16577,8 +16577,17 @@ mod archive_password_tests {
         ] {
             let why = password_argument_refusal(Some(&args(key)))
                 .unwrap_or_else(|| panic!("{key} must be refused"));
-            assert!(why.contains("--archive-password-file"), "{why}");
-            assert!(why.contains("never"), "{why}");
+            // Plain messages: `why` is derived from arguments that carry the
+            // test secret, and CodeQL (rust/cleartext-logging, alerts 424 and
+            // 425) follows that into an assert's formatted output.
+            assert!(
+                why.contains("--archive-password-file"),
+                "the refusal of `{key}` must name the operator's password file flag"
+            );
+            assert!(
+                why.contains("never"),
+                "the refusal of `{key}` must say sipnab never takes one"
+            );
             assert!(
                 !why.contains(secret("mcp-arg")),
                 "the refusal must not echo it"
