@@ -31,6 +31,24 @@ entry that carries them.
   timers](docs/troubleshooting.md#registration-flood-timers) says which value
   matches an OpenSIPS `fr_timeout` or Kamailio `fr_timer`.
 
+### Fixed
+
+- **`--reg-flood` says when the capture cannot show a credential failure.**
+  The detector counts the registrar's `401`/`407` to a credentialed REGISTER,
+  so a capture holding the REGISTERs and not the answers, such as a one-way
+  tap or a request-only filter, gave it nothing to count, and it reported
+  nothing, which reads as "nobody was guessing passwords". It now warns at the
+  end of the run, `reg_flood cannot establish credential failures` when no
+  REGISTER drew a captured final response, or `reg_flood cannot establish the
+  outcome of N of M credentialed REGISTER(s)` when some went unanswered inside
+  the transaction timeout. The MCP `security_findings` tool and
+  `GET /v1/security/findings` carry the same statement in a new, always-present
+  `observation_gaps` array, refreshed every five seconds of capture time on a
+  live run. The statement names no source, files no finding and never reaches
+  a jail line: a REGISTER count with no outcome behind it is a volume, and the
+  detector still refuses to act on volume. A retransmitted REGISTER counts
+  once.
+
 ## [0.5.188] - 2026-09-23
 
 ### Fixed

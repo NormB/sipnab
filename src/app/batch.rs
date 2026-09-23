@@ -3440,6 +3440,12 @@ impl BatchRunner {
                 }
                 if let Some(det) = engines.reg_flood.as_mut() {
                     det.sweep(security_max_age);
+                    // Refresh what the detector says it cannot see, so the
+                    // MCP and REST findings pages carry it on a live run too.
+                    // Filed rather than logged: it is a standing condition,
+                    // not an event, and a log line every five seconds is noise.
+                    let gap = det.observation_gap(false);
+                    engines.alerts.write().set_observation_gap("reg_flood", gap);
                 }
             }
 
@@ -3793,6 +3799,20 @@ impl BatchRunner {
         {
             tracing::error!("Output file may be incomplete: {e}");
             output_failed = true;
+        }
+
+        // The capture is over, so nothing more can answer an open REGISTER:
+        // settle what `--reg-flood` could not establish, file it for the
+        // findings pages, and say it once. A warning rather than a finding —
+        // it names no source and reaches no jail, because a REGISTER count
+        // with no outcome behind it is a volume, and the detector refuses to
+        // act on volume.
+        if let Some(det) = engines.reg_flood.as_mut() {
+            let gap = det.observation_gap(true);
+            if let Some(gap) = &gap {
+                tracing::warn!("{}", gap.detail);
+            }
+            engines.alerts.write().set_observation_gap("reg_flood", gap);
         }
 
         // 19. Shut down scanner-kill worker (D16)

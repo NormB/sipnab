@@ -744,6 +744,18 @@ value this way:
 `fr_inv_timeout` (OpenSIPS) and `fr_inv_timer` (Kamailio) govern INVITE
 transactions only, so they never apply to a REGISTER.
 
+**When the capture cannot show a failure.** The detector counts the
+registrar's answers, so a capture without them gives it nothing to count. At
+the end of the run `--reg-flood` then warns `reg_flood cannot establish
+credential failures` (the capture holds no answer to any REGISTER) or `reg_flood
+cannot establish the outcome of N of M credentialed REGISTER(s)` (some went
+unanswered inside the transaction timeout). The MCP `security_findings` tool
+and `GET /v1/security/findings` carry the same statement in
+`observation_gaps`. It names no source and bans nothing. Fix the capture
+first: capture both directions of the registrar's traffic, and check that no
+capture filter keeps requests only. If the answers are present but slow, raise
+`--reg-flood-transaction-timeout` as described above.
+
 **Symptom of a timeout set too short:** a registrar on a slow or congested
 link that answers late gets its `401`s dropped as strays, so a
 credential-stuffing run against it never reaches the threshold. **Symptom of

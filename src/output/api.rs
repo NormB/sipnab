@@ -2487,6 +2487,17 @@ async fn get_security_findings(
         armed_kinds: report.armed_kinds,
         detection_armed: report.detection_armed,
         note: report.note,
+        observation_gaps: report
+            .observation_gaps
+            .into_iter()
+            .map(|g| schema::SecurityObservationGap {
+                rule_name: g.rule_name,
+                reason: g.reason,
+                seen: g.seen,
+                unestablished: g.unestablished,
+                detail: g.detail,
+            })
+            .collect(),
     }))
 }
 
@@ -5936,6 +5947,29 @@ pub mod schema {
         /// Present only when nothing is armed, saying so in words.
         #[serde(skip_serializing_if = "Option::is_none")]
         pub note: Option<String>,
+        /// What an armed detector says it cannot establish from this capture,
+        /// narrowed by `kinds`. Always present, empty when there is nothing to
+        /// say. An empty `findings` beside an entry here means the detector
+        /// could not tell, NOT that traffic was clean.
+        pub observation_gaps: Vec<SecurityObservationGap>,
+    }
+
+    /// A standing statement that an armed detector cannot establish, from
+    /// this capture, the evidence it decides on. Names no source.
+    #[derive(Debug, Clone, serde::Serialize, ToSchema)]
+    pub struct SecurityObservationGap {
+        /// The detector — `reg_flood` today.
+        pub rule_name: String,
+        /// `no_answers`: requests seen and no final response to any captured.
+        /// `unanswered`: some requests drew no final response before their
+        /// transaction timeout.
+        pub reason: String,
+        /// Requests the statement is about.
+        pub seen: u64,
+        /// Of those, how many have no established outcome.
+        pub unestablished: u64,
+        /// One sentence for a human: what is missing and what to change.
+        pub detail: String,
     }
 
     /// What reading one capture produced, for `GET /v1/captures/compare`.
@@ -6801,6 +6835,7 @@ impl utoipa::Modify for BearerAuth {
         schema::EndpointDescription,
         schema::SecurityFinding,
         schema::SecurityFindings,
+        schema::SecurityObservationGap,
         schema::CaptureSideView,
         schema::BucketDeltaView,
         schema::DimensionDiffView,
@@ -7908,6 +7943,56 @@ mod tests {
         assert!(
             !body.contains('\u{2066}') && !body.contains("untrusted"),
             "REST returns the detail unfenced: {body}"
+        );
+    }
+
+    /// A detector that cannot establish its evidence says so on the page: the
+    /// `observation_gaps` array carries the reason, the counts and the
+    /// sentence, and is present (empty) when there is nothing to say.
+    #[tokio::test]
+    async fn security_findings_carries_the_observation_gaps() {
+        let mut engine = crate::security::AlertEngine::new(Vec::new(), None);
+        engine.set_observation_gap(
+            "reg_flood",
+            Some(crate::security::ObservationGap {
+                rule_name: "reg_flood".to_string(),
+                reason: "no_answers".to_string(),
+                seen: 9,
+                unestablished: 9,
+                detail: "reg_flood cannot establish credential failures".to_string(),
+            }),
+        );
+        let state = ApiState {
+            alert_engine: Some(Arc::new(RwLock::new(engine))),
+            armed_detections: vec!["reg_flood".to_string()],
+            ..make_state()
+        };
+        let resp = build_router(state)
+            .oneshot(test_request("/v1/security/findings"))
+            .await
+            .expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::OK);
+        let parsed: Value =
+            serde_json::from_str(&body_to_string(resp.into_body()).await).expect("valid JSON");
+        let gaps = parsed["observation_gaps"]
+            .as_array()
+            .expect("observation_gaps array");
+        assert_eq!(gaps.len(), 1, "{parsed}");
+        assert_eq!(gaps[0]["rule_name"], "reg_flood");
+        assert_eq!(gaps[0]["reason"], "no_answers");
+        assert_eq!(gaps[0]["seen"], 9);
+        assert_eq!(gaps[0]["unestablished"], 9);
+
+        let resp = build_router(state_with_findings())
+            .oneshot(test_request("/v1/security/findings"))
+            .await
+            .expect("oneshot");
+        let parsed: Value =
+            serde_json::from_str(&body_to_string(resp.into_body()).await).expect("valid JSON");
+        assert_eq!(
+            parsed["observation_gaps"],
+            serde_json::json!([]),
+            "nothing to say is an empty array, never an absent field"
         );
     }
 

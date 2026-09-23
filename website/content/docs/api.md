@@ -2952,7 +2952,8 @@ curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" "http://127.0.0.1:8080/v1/sec
   "total_matched": 1,
   "truncated": false,
   "armed_kinds": ["scanner"],
-  "detection_armed": true
+  "detection_armed": true,
+  "observation_gaps": []
 }
 ```
 
@@ -2963,6 +2964,16 @@ reader must NOT take an empty list for a clean bill of health. When it is
 `true`, an empty list means the armed detectors saw nothing to report. Arm a
 detector with `--kill-scanner`, `--fraud-detect`, `--digest-leak` or
 `--reg-flood`.
+
+**An armed detector can also say it could not see.** `observation_gaps` lists,
+per detector and narrowed by `kinds`, what it cannot establish from this
+capture: `{ rule_name, reason, seen, unestablished, detail }`. `reg_flood`
+files `reason: "no_answers"` when the capture holds REGISTERs and no final
+response to any of them, and `reason: "unanswered"` when some credentialed
+REGISTERs drew no final response inside `--reg-flood-transaction-timeout`. An
+empty `findings` beside an entry here means "could not tell", not "clean". The
+entry names no source and never becomes a finding. The array is always present
+and empty when there is nothing to say.
 
 `total_matched` counts every finding the filter admits across the
 whole retained ring (bounded by `--findings-history`), so a `limit`-bounded page

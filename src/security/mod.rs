@@ -36,7 +36,7 @@ pub mod tfps;
 #[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
 pub mod transmit_guard;
 
-pub use alerting::{AlertEngine, AlertRule};
+pub use alerting::{AlertEngine, AlertRule, ObservationGap};
 pub use digest_leak::{DigestAlert, DigestLeakDetector, DigestVulnerability};
 pub use fraud_detect::{FraudAlert, FraudDetector, FraudType};
 pub use reg_flood::{RegFloodAlert, RegFloodDetector, RegFloodPolicy};

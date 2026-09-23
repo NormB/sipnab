@@ -4240,6 +4240,7 @@ reg-flood, etc.). Backed by the AlertEngine's bounded ring buffer
 | `armed_kinds` | string[] | The detectors this server runs. Empty means it runs none, so `findings` could only ever be empty. |
 | `detection_armed` | bool | `false` when `armed_kinds` is empty, stated separately so a caller can branch on one field. |
 | `note` | string? | Present **only** when no detector runs, saying so in words. |
+| `observation_gaps` | object[] | What an armed detector says it **cannot establish** from this capture: `{ rule_name, reason, seen, unestablished, detail }`, narrowed by `kinds`. Always present, empty when there is nothing to say. See below. |
 | `schema_version` | u32 | `1` for this shape. |
 
 > **Read `armed_kinds` before you read `findings`.** An empty findings list
@@ -4286,9 +4287,29 @@ on a server started with `--digest-leak`:
   "total_matched": 1,
   "truncated": false,
   "armed_kinds": ["digest"],
-  "detection_armed": true
+  "detection_armed": true,
+  "observation_gaps": []
 }
 ```
+
+**`observation_gaps` is the third reading of an empty list.** An armed detector
+can still fail to see its evidence. `reg_flood` counts a failure only
+when the registrar's `401`/`407` answers a credentialed REGISTER, so a capture
+that holds the REGISTERs and not the answers, such as a one-way tap or a
+request-only capture filter, leaves it nothing to count. It then files one
+entry here instead of staying silent:
+
+- `reason: "no_answers"`: the capture shows REGISTERs (`seen`) and no final
+  response to any of them. sipnab cannot establish any outcome.
+- `reason: "unanswered"`: some credentialed REGISTERs (`unestablished` of
+  `seen`) drew no final response inside `--reg-flood-transaction-timeout`
+  (RFC 3261 Timer F, 32 s by default), so they count as neither failures nor
+  successes.
+
+An entry names no source and never becomes a finding, an alert or a jail line:
+a REGISTER count with no outcome behind it is a volume, and `reg_flood` does not
+act on volume. A live server refreshes it every five seconds of capture time,
+and the end of a file input settles it.
 
 The same tool on a server started without a detection flag answers with an
 empty `findings` list, `armed_kinds: []`, `detection_armed: false` and a `note`

@@ -6863,7 +6863,8 @@ curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" "http://127.0.0.1:8080/v1/sec
   "total_matched": 1,
   "truncated": false,
   "armed_kinds": ["scanner"],
-  "detection_armed": true
+  "detection_armed": true,
+  "observation_gaps": []
 }
 ```
 
@@ -6874,6 +6875,16 @@ reader must NOT take an empty list for a clean bill of health. When it is
 `true`, an empty list means the armed detectors saw nothing to report. Arm a
 detector with `--kill-scanner`, `--fraud-detect`, `--digest-leak` or
 `--reg-flood`.
+
+**An armed detector can also say it could not see.** `observation_gaps` lists,
+per detector and narrowed by `kinds`, what it cannot establish from this
+capture: `{ rule_name, reason, seen, unestablished, detail }`. `reg_flood`
+files `reason: "no_answers"` when the capture holds REGISTERs and no final
+response to any of them, and `reason: "unanswered"` when some credentialed
+REGISTERs drew no final response inside `--reg-flood-transaction-timeout`. An
+empty `findings` beside an entry here means "could not tell", not "clean". The
+entry names no source and never becomes a finding. The array is always present
+and empty when there is nothing to say.
 
 `total_matched` counts every finding the filter admits across the
 whole retained ring (bounded by `--findings-history`), so a `limit`-bounded page
@@ -9990,6 +10001,18 @@ value this way:
 
 `fr_inv_timeout` (OpenSIPS) and `fr_inv_timer` (Kamailio) govern INVITE
 transactions only, so they never apply to a REGISTER.
+
+**When the capture cannot show a failure.** The detector counts the
+registrar's answers, so a capture without them gives it nothing to count. At
+the end of the run `--reg-flood` then warns `reg_flood cannot establish
+credential failures` (the capture holds no answer to any REGISTER) or `reg_flood
+cannot establish the outcome of N of M credentialed REGISTER(s)` (some went
+unanswered inside the transaction timeout). The MCP `security_findings` tool
+and `GET /v1/security/findings` carry the same statement in
+`observation_gaps`. It names no source and bans nothing. Fix the capture
+first: capture both directions of the registrar's traffic, and check that no
+capture filter keeps requests only. If the answers are present but slow, raise
+`--reg-flood-transaction-timeout` as described above.
 
 **Symptom of a timeout set too short:** a registrar on a slow or congested
 link that answers late gets its `401`s dropped as strays, so a
@@ -23776,6 +23799,7 @@ reg-flood, etc.). Backed by the AlertEngine's bounded ring buffer
 | `armed_kinds` | string[] | The detectors this server runs. Empty means it runs none, so `findings` could only ever be empty. |
 | `detection_armed` | bool | `false` when `armed_kinds` is empty, stated separately so a caller can branch on one field. |
 | `note` | string? | Present **only** when no detector runs, saying so in words. |
+| `observation_gaps` | object[] | What an armed detector says it **cannot establish** from this capture: `{ rule_name, reason, seen, unestablished, detail }`, narrowed by `kinds`. Always present, empty when there is nothing to say. See below. |
 | `schema_version` | u32 | `1` for this shape. |
 
 > **Read `armed_kinds` before you read `findings`.** An empty findings list
@@ -23822,9 +23846,29 @@ on a server started with `--digest-leak`:
   "total_matched": 1,
   "truncated": false,
   "armed_kinds": ["digest"],
-  "detection_armed": true
+  "detection_armed": true,
+  "observation_gaps": []
 }
 ```
+
+**`observation_gaps` is the third reading of an empty list.** An armed detector
+can still fail to see its evidence. `reg_flood` counts a failure only
+when the registrar's `401`/`407` answers a credentialed REGISTER, so a capture
+that holds the REGISTERs and not the answers, such as a one-way tap or a
+request-only capture filter, leaves it nothing to count. It then files one
+entry here instead of staying silent:
+
+- `reason: "no_answers"`: the capture shows REGISTERs (`seen`) and no final
+  response to any of them. sipnab cannot establish any outcome.
+- `reason: "unanswered"`: some credentialed REGISTERs (`unestablished` of
+  `seen`) drew no final response inside `--reg-flood-transaction-timeout`
+  (RFC 3261 Timer F, 32 s by default), so they count as neither failures nor
+  successes.
+
+An entry names no source and never becomes a finding, an alert or a jail line:
+a REGISTER count with no outcome behind it is a volume, and `reg_flood` does not
+act on volume. A live server refreshes it every five seconds of capture time,
+and the end of a file input settles it.
 
 The same tool on a server started without a detection flag answers with an
 empty `findings` list, `armed_kinds: []`, `detection_armed: false` and a `note`

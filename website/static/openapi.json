@@ -4076,6 +4076,13 @@
               "null"
             ]
           },
+          "observation_gaps": {
+            "description": "What an armed detector says it cannot establish from this capture,\nnarrowed by `kinds`. Always present, empty when there is nothing to\nsay. An empty `findings` beside an entry here means the detector\ncould not tell, NOT that traffic was clean.",
+            "items": {
+              "$ref": "#/components/schemas/SecurityObservationGap"
+            },
+            "type": "array"
+          },
           "returned": {
             "description": "Rows in `findings`, so counting the array is never necessary.",
             "minimum": 0,
@@ -4105,7 +4112,45 @@
           "total_matched",
           "truncated",
           "armed_kinds",
-          "detection_armed"
+          "detection_armed",
+          "observation_gaps"
+        ],
+        "type": "object"
+      },
+      "SecurityObservationGap": {
+        "description": "A standing statement that an armed detector cannot establish, from\nthis capture, the evidence it decides on. Names no source.",
+        "properties": {
+          "detail": {
+            "description": "One sentence for a human: what is missing and what to change.",
+            "type": "string"
+          },
+          "reason": {
+            "description": "`no_answers`: requests seen and no final response to any captured.\n`unanswered`: some requests drew no final response before their\ntransaction timeout.",
+            "type": "string"
+          },
+          "rule_name": {
+            "description": "The detector — `reg_flood` today.",
+            "type": "string"
+          },
+          "seen": {
+            "description": "Requests the statement is about.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "unestablished": {
+            "description": "Of those, how many have no established outcome.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "rule_name",
+          "reason",
+          "seen",
+          "unestablished",
+          "detail"
         ],
         "type": "object"
       },

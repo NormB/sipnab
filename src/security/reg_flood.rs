@@ -141,6 +141,35 @@ impl RegFloodState {
     }
 }
 
+/// Why this run cannot establish whether REGISTERs failed on credentials.
+///
+/// The detector's evidence is the registrar's answer, so a capture that never
+/// shows the answer leaves it with nothing to count, and silence would read as
+/// "no credential failures". This is what it reports instead. It is advisory:
+/// it names no source, files no finding, and never reaches a jail line or a
+/// kill, because a REGISTER count with no outcome behind it is a volume, and a
+/// volume is exactly the evidence the module doc refuses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OutcomeGap {
+    /// REGISTERs were seen and no final response to any of them was: the
+    /// capture holds one direction only, or the replies travel a path the
+    /// capture does not see. Every REGISTER's outcome is unknown.
+    NoAnswers {
+        /// REGISTER requests seen.
+        registers: u64,
+    },
+    /// Some credentialed REGISTERs drew no final response before their
+    /// transaction ended (the transaction timeout elapsed in capture time,
+    /// or the capture ended first), so the detector could not count them as
+    /// failures or as successes.
+    Unanswered {
+        /// Credentialed REGISTERs whose outcome the capture never showed.
+        unestablished: u64,
+        /// Credentialed REGISTERs seen, retransmissions counted once.
+        credentialed: u64,
+    },
+}
+
 /// Alert produced when a registration flood is detected.
 #[derive(Debug, Clone)]
 pub struct RegFloodAlert {
@@ -252,6 +281,31 @@ pub struct RegFloodDetector {
     /// Capture time of the newest message seen, which is the clock `sweep`
     /// reads. `None` before the first message.
     latest_packet: Option<DateTime<Utc>>,
+    /// What the capture has shown of REGISTER outcomes, run-wide. Read by
+    /// [`Self::outcome_gap`]; never by the flood decision.
+    observed: Observed,
+}
+
+/// Run-wide accounting of what the capture showed about REGISTER outcomes.
+///
+/// Counters only, bounded by construction: nothing here is keyed by anything
+/// an attacker chooses.
+#[derive(Debug, Default)]
+struct Observed {
+    /// REGISTER requests seen, retransmissions included.
+    registers: u64,
+    /// Capture time of the first REGISTER, which is when a capture holding no
+    /// answers at all first becomes decidable on a live run.
+    first_register: Option<DateTime<Utc>>,
+    /// Final responses (200-699) whose `CSeq` names REGISTER, sent to a source
+    /// this detector tracks.
+    register_answers: u64,
+    /// Credentialed REGISTER transactions opened, each counted once however
+    /// often it was retransmitted.
+    credentialed: u64,
+    /// Credentialed REGISTER transactions a final response settled inside the
+    /// transaction timeout: the ones whose outcome the capture showed.
+    settled: u64,
 }
 
 impl RegFloodDetector {
@@ -297,6 +351,7 @@ impl RegFloodDetector {
                 .unwrap_or(i64::MAX),
             ),
             latest_packet: None,
+            observed: Observed::default(),
         }
     }
 
@@ -339,13 +394,18 @@ impl RegFloodDetector {
         state.last_seen = now;
         state.roll_window(now, self.window);
         state.register_count += 1;
+        self.observed.registers += 1;
+        self.observed.first_register.get_or_insert(now);
 
         if carries_credentials(msg)
             && let Some(key) = transaction_key(msg)
         {
             // Past MAX_PENDING_PER_SOURCE the oldest open transaction is
-            // forgotten, in constant time as well.
-            state.pending.insert(key, now);
+            // forgotten, in constant time as well. A key already open is a
+            // retransmission of the same transaction, not a new REGISTER.
+            if state.pending.insert(key, now).is_none() {
+                self.observed.credentialed += 1;
+            }
         }
     }
 
@@ -363,15 +423,40 @@ impl RegFloodDetector {
         let status = msg.status_code?;
         let state = self.sources.get_mut(&msg.dst_addr)?;
         state.last_seen = now;
+        let timeout = self.transaction_timeout;
+        let open_in_time = |sent: DateTime<Utc>| now.signed_duration_since(sent) <= timeout;
+
+        // Every final answer to a REGISTER is an outcome the capture showed,
+        // whatever its code: it ends the transaction, and it is what
+        // `outcome_gap` needs to have seen.
+        let answers_register = status >= 200
+            && msg
+                .cseq()
+                .is_some_and(|(_, method)| method.eq_ignore_ascii_case("REGISTER"));
+        if answers_register {
+            self.observed.register_answers += 1;
+        }
 
         if completes_registration(msg) {
             state.auth_fail_count = 0;
-            if let Some(key) = transaction_key(msg) {
-                state.pending.remove(&key);
+            if let Some(key) = transaction_key(msg)
+                && let Some(sent) = state.pending.remove(&key)
+                && open_in_time(sent)
+            {
+                self.observed.settled += 1;
             }
             return None;
         }
         if !is_challenge(status) {
+            // A 403, a 5xx: not a credential challenge, so no failure, but
+            // the transaction is over and its outcome was seen.
+            if answers_register
+                && let Some(key) = transaction_key(msg)
+                && let Some(sent) = state.pending.remove(&key)
+                && open_in_time(sent)
+            {
+                self.observed.settled += 1;
+            }
             return None;
         }
         // A challenge is evidence only against the credentialed REGISTER it
@@ -381,9 +466,10 @@ impl RegFloodDetector {
         // One sent longer ago than Timer F answers a transaction that has
         // already ended.
         let sent = state.pending.remove(&transaction_key(msg)?)?;
-        if now.signed_duration_since(sent) > self.transaction_timeout {
+        if !open_in_time(sent) {
             return None;
         }
+        self.observed.settled += 1;
 
         state.roll_window(now, self.window);
         state.auth_fail_count += 1;
@@ -392,6 +478,109 @@ impl RegFloodDetector {
             register_count: state.register_count,
             auth_fail_count: state.auth_fail_count,
             threshold: self.threshold,
+        })
+    }
+
+    /// Whether this run can establish REGISTER outcomes, as of the newest
+    /// message seen: `None` when it can, else the [`OutcomeGap`] saying why
+    /// not.
+    ///
+    /// `input_ended` is true once the capture has delivered its last packet.
+    /// Before then a REGISTER still inside its transaction timeout may yet be
+    /// answered, so it is neither reported nor excused; after it, nothing
+    /// more can arrive and every open transaction is unestablished.
+    #[must_use]
+    pub fn outcome_gap(&mut self, input_ended: bool) -> Option<OutcomeGap> {
+        let now = self.latest_packet?;
+        let timeout = self.transaction_timeout;
+        let observed = &self.observed;
+
+        // Forget the transactions whose timeout has passed: they are decided,
+        // unanswered. Each source's open transactions sit oldest first, since
+        // a (re)send makes its key the most recent, so only the expired ones
+        // are visited. The flood decision loses nothing: a challenge naming
+        // one of them is refused as a stray anyway.
+        let mut open: u64 = 0;
+        for state in self.sources.values_mut() {
+            while let Some(sent) = state.pending.iter().next().map(|(_, sent)| *sent) {
+                if now.signed_duration_since(sent) <= timeout {
+                    break;
+                }
+                state.pending.pop_lru();
+            }
+            open += state.pending.len() as u64;
+        }
+        // Once the capture has ended nothing more can be answered, so what is
+        // still open is as unestablished as what expired.
+        if input_ended {
+            open = 0;
+        }
+
+        let no_answers_decidable = input_ended
+            || observed
+                .first_register
+                .is_some_and(|first| now.signed_duration_since(first) > timeout);
+        if observed.registers > 0 && observed.register_answers == 0 && no_answers_decidable {
+            return Some(OutcomeGap::NoAnswers {
+                registers: observed.registers,
+            });
+        }
+        let unestablished = observed
+            .credentialed
+            .saturating_sub(observed.settled)
+            .saturating_sub(open);
+        (unestablished > 0).then_some(OutcomeGap::Unanswered {
+            unestablished,
+            credentialed: observed.credentialed,
+        })
+    }
+
+    /// [`Self::outcome_gap`], as the statement the alert engine files for the
+    /// findings surfaces: a reason code, the counts, and a sentence saying
+    /// what is missing and what to change.
+    #[must_use]
+    pub fn observation_gap(
+        &mut self,
+        input_ended: bool,
+    ) -> Option<crate::security::alerting::ObservationGap> {
+        let timeout_ms = self.transaction_timeout.num_milliseconds();
+        let gap = self.outcome_gap(input_ended)?;
+        let (reason, seen, unestablished, detail) = match gap {
+            OutcomeGap::NoAnswers { registers } => (
+                "no_answers",
+                registers,
+                registers,
+                format!(
+                    "reg_flood cannot establish credential failures: {registers} REGISTER \
+                     request(s) seen and no final response to any of them captured, so the \
+                     401/407 challenges this detector counts are not in the capture. \
+                     Capture both directions of the registrar's traffic. No source is \
+                     reported on REGISTER volume alone."
+                ),
+            ),
+            OutcomeGap::Unanswered {
+                unestablished,
+                credentialed,
+            } => (
+                "unanswered",
+                credentialed,
+                unestablished,
+                format!(
+                    "reg_flood cannot establish the outcome of {unestablished} of \
+                     {credentialed} credentialed REGISTER(s): no final response was \
+                     captured within the {timeout_ms} ms transaction timeout, so they \
+                     count as neither failures nor successes. If the registrar answers \
+                     later than that, raise --reg-flood-transaction-timeout; if replies \
+                     are missing from the capture, capture both directions."
+                ),
+            ),
+        };
+        Some(crate::security::alerting::ObservationGap {
+            rule_name: "reg_flood".to_string(),
+            reason: reason.to_string(),
+            seen,
+            unestablished,
+            detail,
         })
     }
 
@@ -1017,6 +1206,185 @@ mod tests {
             !three_failures_fire(3, 1, 10),
             "three failures crossed threshold 3: the policy threshold is not applied"
         );
+    }
+
+    // ── Outcome gaps: when the capture cannot show a failure ─────────────
+
+    /// A capture that holds REGISTERs and no answer to any of them cannot say
+    /// whether a single one failed on credentials: the challenges live in the
+    /// direction the capture does not hold. Silence here reads as "nobody was
+    /// guessing passwords", which the capture never showed.
+    #[test]
+    fn registers_with_no_answer_cannot_establish_credential_failures() {
+        let mut det = RegFloodDetector::new(50);
+        for i in 0..10 {
+            let branch = format!("z9hG4bK-oneway-{i}");
+            let _ = det.check(&register_at(attacker_ip(), &branch, i % 2 == 0, at(i)));
+        }
+        assert_eq!(
+            det.outcome_gap(true),
+            Some(OutcomeGap::NoAnswers { registers: 10 }),
+            "ten REGISTERs with no response captured must be reported as unestablished"
+        );
+    }
+
+    /// The control: when the capture shows the challenges and the acceptances,
+    /// every outcome is established and nothing is reported.
+    #[test]
+    fn observed_challenges_leave_nothing_unestablished() {
+        let mut det = RegFloodDetector::new(50);
+        for i in 0..5 {
+            let first = format!("z9hG4bK-bare-{i}");
+            let second = format!("z9hG4bK-cred-{i}");
+            let refused = format!("z9hG4bK-refused-{i}");
+            for msg in [
+                register_at(sbc_ip(), &first, false, at(i)),
+                response_at(401, sbc_ip(), &first, at(i)),
+                register_at(sbc_ip(), &second, true, at(i)),
+                response_at(200, sbc_ip(), &second, at(i)),
+                register_at(attacker_ip(), &refused, true, at(i)),
+                response_at(401, attacker_ip(), &refused, at(i)),
+            ] {
+                let _ = det.check(&msg);
+            }
+        }
+        assert_eq!(
+            det.outcome_gap(true),
+            None,
+            "every REGISTER here drew an answer, so nothing is unestablished"
+        );
+    }
+
+    /// Credentialed REGISTERs that drew no answer are counted, once each: a
+    /// retransmission is the same transaction, not a second REGISTER.
+    #[test]
+    fn unanswered_credentialed_registers_are_counted_once_each() {
+        let mut det = RegFloodDetector::new(50);
+        for i in 0..3 {
+            let branch = format!("z9hG4bK-answered-{i}");
+            let _ = det.check(&register_at(attacker_ip(), &branch, true, at(i)));
+            let _ = det.check(&response_at(401, attacker_ip(), &branch, at(i)));
+        }
+        for i in 0..2 {
+            let branch = format!("z9hG4bK-lost-{i}");
+            // Sent, then retransmitted at T1: one transaction.
+            let _ = det.check(&register_at(attacker_ip(), &branch, true, at(i)));
+            let _ = det.check(&register_at(attacker_ip(), &branch, true, at(i)));
+        }
+        assert_eq!(
+            det.outcome_gap(true),
+            Some(OutcomeGap::Unanswered {
+                unestablished: 2,
+                credentialed: 5
+            })
+        );
+    }
+
+    /// A final response after the transaction timeout answers nothing that was
+    /// still open, so that REGISTER's outcome is unestablished too.
+    #[test]
+    fn an_answer_after_the_transaction_timeout_leaves_the_outcome_unestablished() {
+        let mut det = RegFloodDetector::new(50);
+        let _ = det.check(&register_at(attacker_ip(), "z9hG4bK-slow", true, at(0)));
+        let _ = det.check(&response_at(401, attacker_ip(), "z9hG4bK-slow", at(40)));
+        assert_eq!(
+            det.outcome_gap(true),
+            Some(OutcomeGap::Unanswered {
+                unestablished: 1,
+                credentialed: 1
+            })
+        );
+    }
+
+    /// On a live run a REGISTER inside its transaction timeout may still be
+    /// answered, so it is not reported yet. Once the capture clock passes the
+    /// timeout, it is.
+    #[test]
+    fn a_live_run_reports_only_what_the_transaction_timeout_has_decided() {
+        let mut det = RegFloodDetector::new(50);
+        let _ = det.check(&register_at(attacker_ip(), "z9hG4bK-live", true, at(0)));
+        let _ = det.check(&register_at(other_ip(), "z9hG4bK-other", false, at(10)));
+        assert_eq!(
+            det.outcome_gap(false),
+            None,
+            "ten seconds in, inside Timer F, the REGISTERs may still be answered"
+        );
+        let _ = det.check(&register_at(other_ip(), "z9hG4bK-later", false, at(40)));
+        assert_eq!(
+            det.outcome_gap(false),
+            Some(OutcomeGap::NoAnswers { registers: 3 }),
+            "forty seconds in, the first REGISTER's Timer F has fired unanswered"
+        );
+
+        // With answers flowing, a single credentialed REGISTER left behind is
+        // reported once its own timeout passes.
+        let mut det = RegFloodDetector::new(50);
+        let _ = det.check(&register_at(attacker_ip(), "z9hG4bK-behind", true, at(0)));
+        let _ = det.check(&register_at(attacker_ip(), "z9hG4bK-ok", true, at(10)));
+        let _ = det.check(&response_at(200, attacker_ip(), "z9hG4bK-ok", at(10)));
+        assert_eq!(det.outcome_gap(false), None, "inside Timer F");
+        let _ = det.check(&register_at(other_ip(), "z9hG4bK-tick", false, at(40)));
+        let _ = det.check(&response_at(401, other_ip(), "z9hG4bK-tick", at(40)));
+        assert_eq!(
+            det.outcome_gap(false),
+            Some(OutcomeGap::Unanswered {
+                unestablished: 1,
+                credentialed: 2
+            })
+        );
+    }
+
+    /// The statement filed for the findings surfaces names the detector, the
+    /// reason, both counts and the remedy, and says no source was reported on
+    /// volume alone.
+    #[test]
+    fn the_observation_gap_says_what_is_missing_and_what_to_change() {
+        let mut det = RegFloodDetector::new(50);
+        for i in 0..4 {
+            let _ = det.check(&register_at(
+                attacker_ip(),
+                &format!("z9hG4bK-o{i}"),
+                true,
+                at(i),
+            ));
+        }
+        let gap = det.observation_gap(true).expect("no answers captured");
+        assert_eq!(
+            (
+                gap.rule_name.as_str(),
+                gap.reason.as_str(),
+                gap.seen,
+                gap.unestablished
+            ),
+            ("reg_flood", "no_answers", 4, 4)
+        );
+        for needle in ["4 REGISTER", "both directions", "volume"] {
+            assert!(
+                gap.detail.contains(needle),
+                "missing {needle:?}: {}",
+                gap.detail
+            );
+        }
+
+        let mut det = RegFloodDetector::with_policy(RegFloodPolicy {
+            transaction_timeout_ms: 64_000,
+            ..RegFloodPolicy::BUILT_IN
+        });
+        let _ = det.check(&register_at(attacker_ip(), "z9hG4bK-a", true, at(0)));
+        let _ = det.check(&response_at(401, attacker_ip(), "z9hG4bK-a", at(0)));
+        let _ = det.check(&register_at(attacker_ip(), "z9hG4bK-b", true, at(1)));
+        let gap = det.observation_gap(true).expect("one left unanswered");
+        assert_eq!(
+            (gap.reason.as_str(), gap.seen, gap.unestablished),
+            ("unanswered", 2, 1)
+        );
+        for needle in ["1 of 2", "64000 ms", "--reg-flood-transaction-timeout"] {
+            assert!(
+                gap.detail.contains(needle),
+                "missing {needle:?}: {}",
+                gap.detail
+            );
+        }
     }
 
     /// A 2xx to a REGISTER is the registrar saying this source belongs here.

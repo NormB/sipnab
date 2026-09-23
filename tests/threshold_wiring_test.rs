@@ -530,6 +530,59 @@ fn an_absurd_reg_flood_policy_is_refused_by_name() {
     }
 }
 
+// ── reg_flood: when the capture cannot show a credential failure ────────
+
+/// A capture holding REGISTERs and no answer to any of them makes the run say
+/// it cannot establish credential failures, and a capture that shows the
+/// challenges does not.
+///
+/// The first is what a one-way tap or a request-only capture filter produces.
+/// With nothing to count, `--reg-flood` used to report nothing, which reads
+/// as "nobody was guessing passwords". The notice is advisory: the run still
+/// exits 0 and no source is named.
+#[test]
+fn reg_flood_says_when_the_capture_cannot_show_a_credential_failure() {
+    let notice = "reg_flood cannot establish credential failures";
+    let dir = tempfile::tempdir().expect("tempdir");
+
+    let one_way: Vec<(Vec<u8>, u64)> = (0..5).map(|i| (register(i), i as u64 * 10_000)).collect();
+    let pcap = arg(&write_capture(&dir, "oneway", &one_way));
+    let (_, stderr) = run(&["-N", "-I", &pcap, "--reg-flood", "--no-config"]);
+    assert!(
+        stderr.contains(notice) && stderr.contains("5 REGISTER"),
+        "five REGISTERs with no answer must be reported as unestablished:\n{stderr}"
+    );
+    assert!(
+        !alerted(&stderr, "reg_flood"),
+        "the notice is advisory and must not raise an alert:\n{stderr}"
+    );
+
+    let answered: Vec<(Vec<u8>, u64)> = (0..5)
+        .flat_map(|i| {
+            let at = i as u64 * 10_000;
+            [(register(i), at), (refused_register(i), at + 1_000)]
+        })
+        .collect();
+    let pcap = arg(&write_capture(&dir, "answered", &answered));
+    let (_, stderr) = run(&["-N", "-I", &pcap, "--reg-flood", "--no-config"]);
+    assert!(
+        !stderr.contains("reg_flood cannot establish"),
+        "a capture that shows every challenge establishes every outcome:\n{stderr}"
+    );
+
+    // Unarmed, the detector says nothing at all: the notice belongs to it.
+    let (_, stderr) = run(&[
+        "-N",
+        "-I",
+        &arg(&dir.path().join("oneway.pcap")),
+        "--no-config",
+    ]);
+    assert!(
+        !stderr.contains(notice),
+        "no --reg-flood, no notice:\n{stderr}"
+    );
+}
+
 // ── [security] fraud_* ──────────────────────────────────────────────────
 
 /// The declared short-call duration decides which calls count as lures.
