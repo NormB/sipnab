@@ -103,6 +103,25 @@ const OPCODE_CONTINUATION: u8 = 0;
 /// outgrows it is counted NOT DECODED and dropped rather than held.
 pub const MAX_WS_MESSAGE_SIZE: usize = 65_536;
 
+/// Most bytes the HTTP head of a WebSocket upgrade, request or `101` answer,
+/// may take before the blank line that ends it
+/// ([RFC 6455 section 4](https://www.rfc-editor.org/rfc/rfc6455#section-4)).
+/// 8 KB, the default header buffer of common web servers. A head that
+/// outgrows it is counted NOT DECODED, and the stream reads frames after it.
+pub const MAX_WS_HANDSHAKE_SIZE: usize = 8_192;
+
+/// Where one direction of a WebSocket stream is.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+enum Phase {
+    /// Nothing read yet: the first bytes say whether an HTTP head comes first.
+    #[default]
+    Start,
+    /// Inside the HTTP upgrade head, until the blank line that ends it.
+    Head,
+    /// Reading frames.
+    Frames,
+}
+
 /// One frame header, as [RFC 6455 section 5.2](https://www.rfc-editor.org/rfc/rfc6455#section-5.2) lays it out.
 ///
 /// Layout only. Whether a FIN bit, reserved bit or opcode is acceptable is
@@ -288,7 +307,9 @@ pub fn unwrap_websocket_frame(data: &[u8]) -> Result<Option<Vec<u8>>> {
 /// [`MAX_WS_MESSAGE_SIZE`] is refused. Every refusal is returned to be counted.
 #[derive(Debug, Default)]
 pub struct WsStream {
-    /// Bytes of a frame not complete yet.
+    /// Whether the HTTP upgrade head has been read past.
+    phase: Phase,
+    /// Bytes of a frame, or of the HTTP head, not complete yet.
     buf: Vec<u8>,
     /// The payload so far of a message fragmented across frames.
     message: Vec<u8>,
@@ -308,9 +329,41 @@ pub struct WsOutput {
 
 impl WsStream {
     /// Feed the next chunk of this direction's bytes.
+    ///
+    /// A direction that opens with an HTTP upgrade head (the client's `GET`,
+    /// the server's `101`) is read as that head up to the blank line that ends
+    /// it, across as many chunks as it takes, and frames start at the next
+    /// byte. OpenSIPS writes its `101` as three TLS records, the last holding
+    /// only the blank line, and reading the later two as frames lost the first
+    /// frame after them (found reproducing issue #301).
     pub fn push(&mut self, chunk: &[u8]) -> WsOutput {
         let mut out = WsOutput::default();
         self.buf.extend_from_slice(chunk);
+        if self.phase == Phase::Start {
+            match http_head_starts(&self.buf) {
+                None => return out,
+                Some(true) => self.phase = Phase::Head,
+                Some(false) => self.phase = Phase::Frames,
+            }
+        }
+        if self.phase == Phase::Head {
+            match self.buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                Some(at) => {
+                    self.buf.drain(..at + 4);
+                    self.phase = Phase::Frames;
+                }
+                None if self.buf.len() > MAX_WS_HANDSHAKE_SIZE => {
+                    out.refused.push(format!(
+                        "WebSocket upgrade head exceeds MAX_WS_HANDSHAKE_SIZE \
+                         ({MAX_WS_HANDSHAKE_SIZE} bytes) with no blank line"
+                    ));
+                    self.reset();
+                    self.phase = Phase::Frames;
+                    return out;
+                }
+                None => return out,
+            }
+        }
         loop {
             let h = match parse_frame_header(&self.buf) {
                 Ok(Some(h)) => h,
@@ -402,6 +455,10 @@ impl WsStream {
         if got == 0 {
             return None;
         }
+        if self.phase != Phase::Frames {
+            // An HTTP head with no end in sight: at least one more byte.
+            return Some((got + 1, got));
+        }
         let need = match parse_frame_header(&self.buf) {
             Ok(Some(h)) => self.message.len() + h.header_len + h.payload_len,
             _ => got + 1,
@@ -414,6 +471,26 @@ impl WsStream {
         self.buf.clear();
         self.message.clear();
         self.in_message = false;
+    }
+}
+
+/// Whether a direction's first bytes open with an HTTP head.
+///
+/// # Returns
+///
+/// `None` while the bytes held are too few to tell: a prefix of `GET ` or
+/// `HTTP/` so far.
+fn http_head_starts(buf: &[u8]) -> Option<bool> {
+    let opens = |token: &[u8]| {
+        if buf.len() < token.len() {
+            token.starts_with(buf).then_some(None)
+        } else {
+            buf.starts_with(token).then_some(Some(true))
+        }
+    };
+    match opens(b"GET ").or_else(|| opens(b"HTTP/")) {
+        Some(decided) => decided,
+        None => Some(false),
     }
 }
 
@@ -523,6 +600,46 @@ mod tests {
         let out = ws.push(&chunk);
         assert_eq!(out.messages, vec![b"INVITE".to_vec()]);
         assert!(out.refused.is_empty());
+    }
+
+    /// An HTTP head delivered one byte at a time, with a frame in the same
+    /// chunk as its last byte, yields that frame and nothing else.
+    #[test]
+    fn an_http_head_split_every_byte_then_a_frame() {
+        let mut ws = WsStream::default();
+        let head = b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n\r\n";
+        for b in &head[..head.len() - 1] {
+            let out = ws.push(std::slice::from_ref(b));
+            assert!(out.messages.is_empty() && out.refused.is_empty());
+        }
+        let mut last = vec![head[head.len() - 1]];
+        last.extend_from_slice(&frame(true, OPCODE_TEXT, b"SIP"));
+        let out = ws.push(&last);
+        assert_eq!(out.messages, vec![b"SIP".to_vec()]);
+        assert!(out.refused.is_empty(), "{:?}", out.refused);
+    }
+
+    /// A head that never ends is refused at `MAX_WS_HANDSHAKE_SIZE`, and
+    /// the stream reads frames after it.
+    #[test]
+    fn an_http_head_past_its_ceiling_is_refused() {
+        let mut ws = WsStream::default();
+        let mut head = b"GET / HTTP/1.1\r\n".to_vec();
+        head.resize(MAX_WS_HANDSHAKE_SIZE + 1, b'x');
+        let out = ws.push(&head);
+        assert_eq!(out.refused.len(), 1, "{:?}", out.refused);
+        assert!(out.refused[0].contains("MAX_WS_HANDSHAKE_SIZE"));
+        assert_eq!(ws.pending(), 0);
+        let out = ws.push(&frame(true, OPCODE_TEXT, b"next"));
+        assert_eq!(out.messages, vec![b"next".to_vec()]);
+    }
+
+    /// A stream that opens with a frame never waits for an HTTP head.
+    #[test]
+    fn a_stream_that_opens_with_a_frame_reads_it_at_once() {
+        let mut ws = WsStream::default();
+        let out = ws.push(&frame(true, OPCODE_TEXT, b"now"));
+        assert_eq!(out.messages, vec![b"now".to_vec()]);
     }
 
     /// What an abandoned stream held is reported as need and got.

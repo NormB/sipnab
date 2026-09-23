@@ -769,25 +769,55 @@ const WS_MASK: [u8; 4] = [0x37, 0xfa, 0x21, 0x3d];
 /// upgrade and its 101 as application data, then each direction's further
 /// decrypted records in order, one TLS record each.
 fn wss_session(client_records: &[Vec<u8>], server_records: &[Vec<u8>]) -> Vec<Vec<u8>> {
+    wss_session_with(
+        &[UPGRADE.as_bytes().to_vec()],
+        &[SWITCHING.as_bytes().to_vec()],
+        client_records,
+        server_records,
+    )
+}
+
+/// The client's HTTP upgrade request ([RFC 6455 section 4.1](https://www.rfc-editor.org/rfc/rfc6455#section-4.1)).
+const UPGRADE: &str = "GET / HTTP/1.1\r\nHost: 10.9.1.2:7443\r\nUpgrade: websocket\r\n\
+                       Connection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\
+                       Sec-WebSocket-Protocol: sip\r\nSec-WebSocket-Version: 13\r\n\r\n";
+
+/// The server's `101 Switching Protocols` answer.
+const SWITCHING: &str = "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n\
+                         Connection: Upgrade\r\nSec-WebSocket-Protocol: sip\r\n\
+                         Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\n\r\n";
+
+/// [`wss_session`] with each side's handshake given as the TLS records it
+/// is written in, so a test can split it the way a server does.
+fn wss_session_with(
+    client_head: &[Vec<u8>],
+    server_head: &[Vec<u8>],
+    client_records: &[Vec<u8>],
+    server_records: &[Vec<u8>],
+) -> Vec<Vec<u8>> {
     let a = [10, 9, 1, 1];
     let b = [10, 9, 1, 2];
     let (client, server) = (40_211u16, 7443u16);
-    let upgrade = "GET / HTTP/1.1\r\nHost: 10.9.1.2:7443\r\nUpgrade: websocket\r\n\
-                   Connection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\
-                   Sec-WebSocket-Protocol: sip\r\nSec-WebSocket-Version: 13\r\n\r\n";
-    let switching = "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n\
-                     Connection: Upgrade\r\nSec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\n\
-                     Sec-WebSocket-Protocol: sip\r\n\r\n";
     let (ch, sh) = tls13_hellos();
     let mut sends: Vec<(bool, Vec<u8>)> = vec![(true, ch), (false, sh)];
-    sends.push((true, tls13_record(&CLIENT_SECRET, 0, upgrade.as_bytes())));
-    sends.push((false, tls13_record(&SERVER_SECRET, 0, switching.as_bytes())));
-    // Client records first, then server records: a request, then its answer.
-    for (i, r) in client_records.iter().enumerate() {
-        sends.push((true, tls13_record(&CLIENT_SECRET, i as u64 + 1, r)));
+    let mut cseq_n = 0u64;
+    let mut sseq_n = 0u64;
+    for r in client_head {
+        sends.push((true, tls13_record(&CLIENT_SECRET, cseq_n, r)));
+        cseq_n += 1;
     }
-    for (i, r) in server_records.iter().enumerate() {
-        sends.push((false, tls13_record(&SERVER_SECRET, i as u64 + 1, r)));
+    for r in server_head {
+        sends.push((false, tls13_record(&SERVER_SECRET, sseq_n, r)));
+        sseq_n += 1;
+    }
+    // Client records first, then server records: a request, then its answer.
+    for r in client_records {
+        sends.push((true, tls13_record(&CLIENT_SECRET, cseq_n, r)));
+        cseq_n += 1;
+    }
+    for r in server_records {
+        sends.push((false, tls13_record(&SERVER_SECRET, sseq_n, r)));
+        sseq_n += 1;
     }
     let mut cseq = 1000u32;
     let mut sseq = 5000u32;
@@ -986,5 +1016,120 @@ fn an_abandoned_partial_websocket_frame_is_counted() {
         .lines()
         .find(|l| l.starts_with("NOT DECODED:"))
         .unwrap_or_else(|| panic!("the abandoned frame must be counted: {stderr}"));
+    assert!(not_decoded.contains("truncated frame (1)"), "{not_decoded}");
+}
+
+// ── The HTTP upgrade, however it is split ──────────────────────────────
+
+/// The INVITE with the 100 and 180 that answer it, all over WSS.
+fn invite_trying_ringing() -> (String, String, String, Vec<(String, String)>) {
+    let (invite, ringing) = wss_messages();
+    let trying = ringing.replace("180 Ringing", "100 Trying");
+    let want = ["INVITE", "100", "180"]
+        .iter()
+        .map(|w| (w.to_string(), "WSS".to_string()))
+        .collect();
+    (invite, trying, ringing, want)
+}
+
+/// **OpenSIPS's 101 in three records.** OpenSIPS writes `101 Switching
+/// Protocols` as the headers up to `Sec-WebSocket-Accept: `, then the 28-byte
+/// accept key, then the closing blank line alone. Only a record STARTING with
+/// the status line was taken for the handshake, so the other two were read as
+/// frame bytes, and the proxy's first reply after the upgrade was lost into a
+/// refused frame.
+#[test]
+fn a_101_split_across_three_records_is_followed_by_every_frame() {
+    let (invite, trying, ringing, want) = invite_trying_ringing();
+    let key_at = SWITCHING.find("Sec-WebSocket-Accept: ").unwrap() + "Sec-WebSocket-Accept: ".len();
+    let blank_at = SWITCHING.len() - 4;
+    let head = SWITCHING.as_bytes();
+    let frames = wss_session_with(
+        &[UPGRADE.as_bytes().to_vec()],
+        &[
+            head[..key_at].to_vec(),
+            head[key_at..blank_at].to_vec(),
+            head[blank_at..].to_vec(),
+        ],
+        &[ws_text_frame(invite.as_bytes(), Some(WS_MASK))],
+        &[
+            ws_text_frame(trying.as_bytes(), None),
+            ws_text_frame(ringing.as_bytes(), None),
+        ],
+    );
+    assert_eq!(&head[blank_at..], b"\r\n\r\n");
+    let (messages, stderr) = decrypt_wss(&frames);
+    assert_eq!(messages, want, "{stderr}");
+    assert!(!stderr.contains("NOT DECODED"), "{stderr}");
+}
+
+/// The client's upgrade request split across records, after the line that
+/// names the upgrade, so the first record already says this is WebSocket and
+/// the second is the rest of the HTTP head, not frames.
+#[test]
+fn an_upgrade_request_split_across_records_is_followed_by_every_frame() {
+    let (invite, trying, ringing, want) = invite_trying_ringing();
+    let head = UPGRADE.as_bytes();
+    let cut = UPGRADE.find("Connection: ").unwrap();
+    assert!(UPGRADE[..cut].contains("websocket"));
+    let frames = wss_session_with(
+        &[head[..cut].to_vec(), head[cut..].to_vec()],
+        &[SWITCHING.as_bytes().to_vec()],
+        &[ws_text_frame(invite.as_bytes(), Some(WS_MASK))],
+        &[
+            ws_text_frame(trying.as_bytes(), None),
+            ws_text_frame(ringing.as_bytes(), None),
+        ],
+    );
+    let (messages, stderr) = decrypt_wss(&frames);
+    assert_eq!(messages, want, "{stderr}");
+    assert!(!stderr.contains("NOT DECODED"), "{stderr}");
+}
+
+/// The 101 and the first frame in one record: frames start at the first byte
+/// after the blank line that ends the HTTP head.
+#[test]
+fn a_101_and_the_first_frame_in_one_record_both_count() {
+    let (invite, trying, ringing, want) = invite_trying_ringing();
+    let mut first = SWITCHING.as_bytes().to_vec();
+    first.extend_from_slice(&ws_text_frame(trying.as_bytes(), None));
+    let frames = wss_session_with(
+        &[UPGRADE.as_bytes().to_vec()],
+        &[first],
+        &[ws_text_frame(invite.as_bytes(), Some(WS_MASK))],
+        &[ws_text_frame(ringing.as_bytes(), None)],
+    );
+    let (mut messages, stderr) = decrypt_wss(&frames);
+    // Compared as a set: this fixture writes every handshake record before
+    // the client's INVITE, so the 100 riding in the 101's record is captured
+    // first. The point is that it counts at all.
+    let mut want = want;
+    messages.sort();
+    want.sort();
+    assert_eq!(messages, want, "{stderr}");
+    assert!(!stderr.contains("NOT DECODED"), "{stderr}");
+}
+
+/// An upgrade whose HTTP head never ends is counted, not lost in silence.
+#[test]
+fn an_upgrade_that_never_finishes_is_counted() {
+    let (invite, _, _, _) = invite_trying_ringing();
+    let key_at = SWITCHING.find("Sec-WebSocket-Accept: ").unwrap();
+    let frames = wss_session_with(
+        &[UPGRADE.as_bytes().to_vec()],
+        &[SWITCHING.as_bytes()[..key_at].to_vec()],
+        &[ws_text_frame(invite.as_bytes(), Some(WS_MASK))],
+        &[],
+    );
+    let (messages, stderr) = decrypt_wss(&frames);
+    assert_eq!(
+        messages,
+        vec![("INVITE".to_string(), "WSS".to_string())],
+        "{stderr}"
+    );
+    let not_decoded = stderr
+        .lines()
+        .find(|l| l.starts_with("NOT DECODED:"))
+        .unwrap_or_else(|| panic!("the unfinished upgrade must be counted: {stderr}"));
     assert!(not_decoded.contains("truncated frame (1)"), "{not_decoded}");
 }

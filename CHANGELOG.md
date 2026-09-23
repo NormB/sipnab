@@ -65,7 +65,13 @@ entry that carries them.
   ([RFC 6455 section 5.4](https://www.rfc-editor.org/rfc/rfc6455#section-5.4)),
   up to `MAX_WS_MESSAGE_SIZE` (65,536) bytes. A frame the capture never
   finished, or one that breaks RFC 6455, counts in the NOT DECODED line
-  instead of vanishing.
+  instead of vanishing. OpenSIPS also writes its `101 Switching Protocols`
+  answer as three TLS records, the last holding only the blank line that
+  ends the HTTP head, and the later two were read as frame bytes, which lost
+  the proxy's first reply after the upgrade. Each direction now reads the
+  HTTP upgrade head across records, up to `MAX_WS_HANDSHAKE_SIZE` (8,192)
+  bytes, and starts frames at the byte after its blank line, including a
+  frame in the same record as the `101`.
 - **`--keylog` is read before sipnab drops privileges.** A FIFO and
   `--keylog-fd` already were, and an ordinary keylog file was opened only
   after the drop. A proxy's keylog is usually readable by the proxy's user

@@ -306,10 +306,8 @@ impl TlsRecordReassembler {
             }
             self.websocket_connections.insert(conn);
         }
-        // The handshake itself is HTTP, not frames.
-        if plaintext.starts_with(b"GET ") || plaintext.starts_with(b"HTTP/1.1 ") {
-            return Some(out);
-        }
+        // The handshake is read by the stream too: it spans TLS records the
+        // way frames do, and frames start after its blank line.
         let key = (src, dst);
         if !self.websocket.contains_key(&key)
             && self.websocket.len() >= self.max_sessions
