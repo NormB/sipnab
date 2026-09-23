@@ -6773,7 +6773,7 @@ only and never remembers it:
   that fingerprint, the archive's name and the count. The log never holds the
   password.
 - **No surrounding spaces.** HTTP trims leading and trailing whitespace from
-  a header value (RFC 9110), so a password that starts or ends with a space
+  a header value ([RFC 9110](https://www.rfc-editor.org/rfc/rfc9110)), so a password that starts or ends with a space
   cannot travel in this header. Configure it on the server instead.
 - **No cache keeps a copy.** Every response to a request carrying the header, or
   one that read a password-protected archive, carries `Cache-Control:
@@ -7394,7 +7394,7 @@ Two environment variables tune it. To pin a specific version instead of taking
 whatever the latest release is:
 
 ```bash
-curl -fsSL https://sipnab.com/install.sh | SIPNAB_VERSION=0.5.185 sh
+curl -fsSL https://sipnab.com/install.sh | SIPNAB_VERSION=0.5.186 sh
 ```
 
 To install somewhere other than `/usr/local/bin` — a directory you already own,
@@ -7568,11 +7568,11 @@ canonical triples deliberately: they match `rustc -vV`, they are what
 script constructs them.
 
 Every command below reads the release number from a `VERSION` variable. Set
-it first, in the same shell, to the release you want, e.g. 0.5.185 for the
+it first, in the same shell, to the release you want, e.g. 0.5.186 for the
 latest:
 
 ```bash
-VERSION=0.5.185
+VERSION=0.5.186
 ```
 
 On Linux x86_64, the static musl tarball runs on any distro and any glibc,
@@ -7635,12 +7635,12 @@ cargo install sipnab --features full
 Download the `.deb` for your architecture from the [latest release](https://github.com/NormB/sipnab/releases/latest) and install with `apt` (it resolves the `libpcap0.8` runtime dependency). The `.deb` needs glibc >= 2.36, i.e. Debian 12+ / Ubuntu 23.04+ -- on older releases use the static musl tarball above.
 
 Download and install the amd64 (x86_64) package. Set `VERSION` to the release
-you want, e.g. 0.5.185, as in
+you want, e.g. 0.5.186, as in
 [Download a release binary yourself](#download-a-release-binary-yourself):
 
 ```bash
 # Run all of these, in order.
-VERSION=0.5.185
+VERSION=0.5.186
 curl -LO "https://github.com/NormB/sipnab/releases/download/v$VERSION/sipnab_${VERSION}_amd64.deb"
 sudo apt install "./sipnab_${VERSION}_amd64.deb"
 ```
@@ -7697,26 +7697,26 @@ dependency — for headless servers, mirroring the `.deb` variants).
 The standard package on an x86_64 host:
 
 ```bash
-sudo rpm -i sipnab-0.5.185-1.x86_64.rpm
+sudo rpm -i sipnab-0.5.186-1.x86_64.rpm
 ```
 
 The headless / no-ALSA variant on the same architecture:
 
 ```bash
-sudo rpm -i sipnab-0.5.185-1.x86_64-noaudio.rpm
+sudo rpm -i sipnab-0.5.186-1.x86_64-noaudio.rpm
 ```
 
 The standard package on an aarch64 (arm64) host — pick the variant matching
 `uname -m`:
 
 ```bash
-sudo rpm -i sipnab-0.5.185-1.aarch64.rpm
+sudo rpm -i sipnab-0.5.186-1.aarch64.rpm
 ```
 
 The headless / no-ALSA variant on aarch64:
 
 ```bash
-sudo rpm -i sipnab-0.5.185-1.aarch64-noaudio.rpm
+sudo rpm -i sipnab-0.5.186-1.aarch64-noaudio.rpm
 ```
 
 ### Homebrew (macOS)
@@ -29855,6 +29855,614 @@ carrier with both timestamps, because the gap between your `BYE` and their
 
 ---
 
+<!-- source: docs/first-cli-triage.md -->
+
+# Triage a capture from the command line
+
+Your first analysis without the TUI, one command at a time: list the calls in a
+capture, find the ones that went wrong, explain one of them, and hand the
+answer to another tool as JSON. Every command reads a file, so none of them
+needs root.
+
+Each step shows the output it prints. sipnab also writes progress lines, such
+as `Reading from 'sample-call.pcap'`, to stderr. The outputs below leave those
+out. The [Glossary](glossary.md) defines any term you do not recognize.
+
+## 1. Download a capture
+
+Download the sample call the website uses. It holds one phone call between
+Alice and Bob, plus the registrations, subscriptions and keepalives around it:
+
+```bash
+curl -LO https://sipnab.com/demos/sample-call.pcap
+```
+
+## 2. List the calls
+
+Ask for one line per [dialog](glossary.md#dialog), meaning every SIP message
+that shares a Call-ID. `-N` skips the TUI, `--report` prints the per-call
+table, and `--no-cli-print` leaves out the per-message lines that would
+otherwise come first:
+
+```bash
+sipnab -N -I sample-call.pcap --report --no-cli-print
+```
+
+The table comes first, then the RTP streams:
+
+```text
+Call-ID                          From           To             State        Code   Duration   Msgs   PDD      Tags
+-------------------------------------------------------------------------------------------------------------------------
+reg-alice-4f2a19@192.0.2.10      alice          alice          Registered   -      0s         4      -        -
+reg-bob-7c3d02@192.0.2.30        bob            bob            Expired      -      14s        8      -        -
+sub-alice-mwi-2b81@192.0.2.10    alice          alice          Active       -      0s         3      -        -
+sub-bob-blf-9e42@192.0.2.30      bob            bob            Pending      -      0s         3      -        -
+sub-alice-pres-5c07@192.0.2.10   alice          alice          Terminated   -      14s        6      -        -
+opt-8b7c02@192.0.2.20            pbx            alice          Completed    -      0s         2      -        -
+call-2c9d47@192.0.2.10           alice          bob            Completed    200    8s         7      0.2s     -
+
+RTP Streams:
+SSRC         PT   Codec    Clock  Source                Destination           Pkts    Lost   Loss%   Jitter   Dur    Kbps
+--------------------------------------------------------------------------------------------------------------------------
+0x1a2b3c4d   0    PCMU     8000   192.0.2.10:10000      192.0.2.20:10002      300     0      0.0%    0ms      6s     64
+0x5e6f7a8b   0    PCMU     8000   192.0.2.20:10002      192.0.2.10:10000      300     0      0.0%    0ms      6s     64
+```
+
+Read it left to right. The last row is the phone call: an INVITE that got a
+`200` answer, lasted 8 seconds, and waited 0.2 seconds for the first ringing
+response. That wait is the [PDD](glossary.md#pdd) (post-dial delay). The two
+streams below it are the call's audio, one per direction, with no loss.
+
+The rows above it are not calls. They are registrations (`reg-`),
+subscriptions (`sub-`) and an OPTIONS keepalive (`opt-`), which sipnab tracks
+as dialogs too. The `Code` column reads INVITE answers only, so those rows
+show `-`.
+
+## 3. Find the calls that went wrong
+
+`--problems` keeps only the dialogs that failed, or that show one-way audio,
+high loss or jitter, a NAT mismatch, retransmits, slow setup, or a media
+asymmetry. Combined with `--report`, it prints the same table filtered to
+those calls:
+
+```bash
+sipnab -N -I sample-call.pcap --problems --report --no-cli-print
+```
+
+On the sample, the table is empty apart from its header, because nothing in it
+went wrong. **An empty answer is a result:** sipnab looked at every call and
+found no problem.
+
+To see what a problem looks like, download a second sample from the
+repository. It holds five calls, four of which failed:
+
+```bash
+curl -LO https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-problem-call.pcap
+```
+
+```bash
+sipnab -N -I sip-problem-call.pcap --problems --report --no-cli-print
+```
+
+```text
+Call-ID                          From           To             State        Code   Duration   Msgs   PDD      Tags
+-------------------------------------------------------------------------------------------------------------------------
+busy-3a2b1c@192.0.2.30           carol          dave           Failed       486    1s         4      -        -
+decline-7c6d5e@198.51.100.30     erin           frank          Failed       603    1s         4      -        -
+notfound-1b2c3d@203.0.113.30     grace          heidi          Failed       404    1s         4      -        -
+unavail-4e5f60@192.0.2.50        ivan           judy           Failed       503    1s         4      -        -
+```
+
+The completed call drops out, and the four failures remain with the response
+code that ended each one: busy, declined, not found, and unavailable.
+
+## 4. Explain one call
+
+Pick a Call-ID from the table and ask for its report. Set it in a shell
+variable first, because most Call-IDs contain an `@` and some contain
+characters the shell would otherwise interpret:
+
+```bash
+CALL_ID='call-2c9d47@192.0.2.10'
+```
+
+```bash
+sipnab -N -I sample-call.pcap --call-report "$CALL_ID" --no-cli-print
+```
+
+```text
+Call Report: call-2c9d47@192.0.2.10
+════════════════════════════════════════
+Time:       2023-11-14 22:13:25 -> 22:13:33 (8s)
+From:       "Alice" <sip:alice@...>
+To:         <sip:bob@...>
+Result:     Completed (BYE)
+Frame:      sample-call.pcap#19@db3d2ea0ae5df067
+
+Timing:
+  PDD:        0.18s
+  Setup:      2.42s
+  Ring:       2.24s
+  Teardown:   0.01s
+  Retransmits: 0
+
+SIP Transactions:
+  INVITE -> 100 (6ms) -> 180 (180ms) -> 200 (2420ms)
+  ACK
+  BYE -> 200 (8468ms)
+
+Media Streams:
+  RTP 192.0.2.10->192.0.2.20 PCMU SSRC=0x1a2b3c4d pkts=300 jitter=0ms loss=0.0%
+  RTP 192.0.2.20->192.0.2.10 PCMU SSRC=0x5e6f7a8b pkts=300 jitter=0ms loss=0.0%
+
+Issues Detected: None
+```
+
+The `SIP Transactions` line is the call in one row: the INVITE got `100
+Trying` after 6 ms, `180 Ringing` after 180 ms, and `200 OK` after 2.4
+seconds, when Bob answered. `Frame` names the packet the report starts from,
+so you can find the same bytes in Wireshark. `Issues Detected: None` is the
+verdict.
+
+Try the same command on `sip-problem-call.pcap` with
+`CALL_ID='busy-3a2b1c@192.0.2.30'`. Its report ends with
+`Final failure: 486 Busy Here` under `Signaling Issues`, and names the message
+that says so.
+
+## 5. Hand the answer to another tool
+
+`--json` prints one JSON object per SIP message, which `jq` can slice. This
+lists the call's messages in order, with the time of each:
+
+```bash
+sipnab -N -I sample-call.pcap --json | jq -r --arg id "$CALL_ID" 'select(.call_id == $id) | [.timestamp, .method // (.status_code | tostring)] | @tsv'
+```
+
+```text
+2023-11-14T22:13:25+00:00	INVITE
+2023-11-14T22:13:25.006+00:00	100
+2023-11-14T22:13:25.180+00:00	180
+2023-11-14T22:13:27.420+00:00	200
+2023-11-14T22:13:27.430+00:00	ACK
+2023-11-14T22:13:33.460+00:00	BYE
+2023-11-14T22:13:33.468+00:00	200
+```
+
+`--json-dialogs` prints one JSON object per call instead, and needs
+`--no-cli-print` so the per-message lines stay out of the JSON. Its `timing`
+object carries the numbers from the report, in milliseconds:
+
+```bash
+sipnab -N -I sample-call.pcap --json-dialogs --no-cli-print | jq --arg id "$CALL_ID" 'select(.call_id == $id) | .timing'
+```
+
+```json
+{
+  "pdd_ms": 180,
+  "retransmits": 0,
+  "ring_ms": 2240,
+  "setup_ms": 2420,
+  "teardown_ms": 8,
+  "trying_delay_ms": 6
+}
+```
+
+## Where to go next
+
+- [Troubleshooting](troubleshooting.md) starts from a complaint, such as
+  one-way audio or a call that drops after 30 seconds, and says which command
+  answers it.
+- [Examples & recipes](examples.md) has a recipe for each task, from live
+  capture to scanner blocking.
+- [Output formats](output-formats.md) lists every JSON field these commands
+  print.
+- [TUI walkthrough](tui-walkthrough.md) reads the same capture interactively.
+
+---
+
+<!-- source: docs/glossary.md -->
+
+# Glossary
+
+The VoIP and sipnab terms the rest of these pages use, one short definition
+each. Every definition says what the term means **in sipnab's output**, which
+sometimes differs from a textbook.
+
+## ACD
+
+Average call duration. The mean talk time, in seconds, of the calls that were
+both answered and hung up inside the capture. A call still up when the capture
+ended does not count.
+
+## ASR
+
+Answer-seizure ratio. Of the INVITEs that reached a final response, the
+percentage answered with a 2xx. An INVITE still ringing when the capture ended
+is not counted, and a REGISTER is never a call attempt.
+
+## B2BUA
+
+Back-to-back user agent. A SIP element that ends a call on one side and starts
+a new call on the other, so each side (a **leg**) carries its own Call-ID. The
+TUI's extended flow (`x` or `F4` in the call flow) draws the legs sipnab
+matched as one ladder.
+
+## BPF
+
+Berkeley Packet Filter. The kernel filter, written in `tcpdump` syntax, that
+decides which packets reach sipnab during a live capture. sipnab builds one
+from `--portrange` unless you pass your own. The eBPF uprobe backend, which
+reads TLS without keys, uses the same kernel machinery for a different job.
+
+## Call-ID
+
+The SIP header that names one call. Every message in a dialog carries the same
+value, and sipnab keys each dialog on it, so `--call-report` and the REST and
+MCP lookups all take a Call-ID.
+
+## Dialog
+
+One SIP conversation: every message that shares a Call-ID. The call list shows
+one row per dialog, and that includes registrations and other exchanges that
+are not calls.
+
+## HEP
+
+Homer Encapsulation Protocol. A proxy such as Kamailio, OpenSIPS or Asterisk
+copies each SIP message into a HEP packet and sends it to a collector. sipnab
+can be that collector (`-L`) or a sender (`-H`), over UDP, TCP or TLS.
+
+## Jitter
+
+How much the spacing between RTP packets varies, in milliseconds. sipnab
+computes it with the interarrival algorithm of
+[RFC 3550](https://www.rfc-editor.org/rfc/rfc3550#appendix-A.8).
+
+## MCP
+
+Model Context Protocol. The protocol an AI agent uses to call tools. With
+`--mcp`, sipnab offers its analysis as MCP tools, so an agent asks the capture
+questions instead of parsing text output. See [MCP server](mcp.md).
+
+## MOS
+
+Mean opinion score. An estimate of how the audio sounded, on a scale from 1.0
+(bad) to 4.5 (excellent). sipnab derives it from loss, jitter, delay and the
+codec with the ITU-T G.107 E-model, and gives an AMR-WB stream a second,
+wideband score on its own scale. Some codecs have no
+published basis for the score, and for those sipnab reports a flagged
+placeholder. [MOS and codecs](mos-and-codecs.md) lists which.
+
+## NER
+
+Network effectiveness ratio (ITU-T E.411). Of the INVITEs that reached a final
+response, the percentage the network delivered to the far end: answered calls
+plus those the callee refused with 480, 486, 487, 600 or 603. A low NER points
+at the network. A low ASR with a normal NER means the network reached the
+called phones and people chose not to answer.
+
+## Orphan stream
+
+An RTP stream sipnab could not match to any dialog's SDP. It has no Call-ID.
+Common causes are NAT rewriting the media address, or SIP that happened
+somewhere the capture did not see.
+
+## PDD
+
+Post-dial delay. The time from the INVITE to the first 180 Ringing or 183
+Session Progress, which is how long the caller waited before hearing anything.
+
+## R-factor
+
+The E-model's transmission rating, from 0 to 100, that sipnab computes the MOS
+from. sipnab reports its own R-factor beside the MOS, and separately shows the
+far end's R-factor when that endpoint sends it in RTCP XR.
+
+## RTP and RTCP
+
+RTP (Real-time Transport Protocol) carries the audio or video. RTCP is its
+control channel: each end reports the loss and delay it sees. sipnab measures
+RTP itself and reads RTCP as the far end's own account.
+
+## SBC
+
+Session border controller. The SIP element at the edge of a network, between a
+carrier and a PBX for example. Most SBCs act as a B2BUA, so a call crossing one
+shows up as two dialogs.
+
+## SDP
+
+Session Description Protocol. The body of an INVITE or its answer that names
+the codecs and the address and port each side expects media on. sipnab reads
+it to match RTP streams to dialogs.
+
+## SIPREC, SRC and SRS
+
+SIPREC ([RFC 7866](https://www.rfc-editor.org/rfc/rfc7866)) is how a call gets
+recorded: the session recording client (SRC) sends the call's media and a
+metadata document to a session recording server (SRS). sipnab reads that
+metadata, meaning who was on the call and which stream belongs to whom. It
+is neither an SRC nor an SRS.
+
+## SSRC
+
+Synchronization source. The 32-bit number in every RTP header that names one
+media stream. Two streams on the same address and port stay apart in sipnab's
+output because their SSRCs differ.
+
+## TFPS
+
+A toll-fraud prevention system: optional separate software that decides which
+sources to ban and enforces that in the firewall. sipnab can ask it what it
+decided (the `tfps_*` MCP tools and the `/v1/tfps/` routes) and never bans
+anything itself.
+
+## TUI
+
+Text user interface. The interactive full-screen view sipnab opens when you run
+it without `-N`.
+
+## vCon
+
+A JSON container for one conversation: parties, dialog, and optionally the
+audio. sipnab writes one observed dialog as a vCon with `--export-vcon`,
+unsigned and as an observer rather than a party. See
+[Export a call as a vCon](vcon.md).
+
+---
+
+<!-- source: docs/auth.md -->
+
+# Bearer-token authentication
+
+The REST API (`--api`) and HTTP MCP server (`--mcp --mcp-transport http`, see
+[mcp.md](mcp.md)) authenticate clients with
+`Authorization: Bearer <token>`.
+[cli-reference.md](cli-reference.md#network-listeners) lists every related flag.
+sipnab supports two token kinds, checked with a constant-time comparison:
+
+1. **Static secrets** — `--api-key` / `--mcp-token` (or `--mcp-token-file`,
+   `$SIPNAB_API_KEY` / `$SIPNAB_MCP_TOKEN` env). A fixed shared secret with
+   **no expiry**. Simple, but nothing expires or revokes it short of a restart.
+2. **Signed self-describing tokens** — HMAC-signed tokens that carry their own
+   expiry and id, enabling **expiry, rotation, and revocation** without a
+   server-side session store. This page documents those.
+
+> On a non-loopback bind, a token (static or signed) is **required** — the
+> server refuses to start otherwise. On loopback with no token configured,
+> requests pass (unchanged legacy behavior).
+
+The numbered steps below set up signed tokens from scratch. What a token
+contains, and how its audience binds it to one server, follow the steps.
+
+## 1. Configure a signing key
+
+Give the server one or more HMAC signing keys (use a long, random secret). Each
+surface reads its own flag, so configure the one you are actually exposing.
+
+The REST API takes `--api-signing-key`:
+
+```bash
+sipnab -N -I capture.pcap --api 127.0.0.1:8080 \
+  --api-signing-key "$(openssl rand -hex 32)"
+```
+
+The HTTP MCP server takes `--mcp-signing-key`. Running both of these mints two
+unrelated keys — deliberate, since a token binds to one audience anyway:
+
+```bash
+sipnab -N -I capture.pcap --mcp --mcp-transport http --mcp-bind 127.0.0.1:8731 \
+  --mcp-signing-key "$(openssl rand -hex 32)"
+```
+
+You can also pass keys through `--api-signing-key-file` / `--mcp-signing-key-file`
+(file contents, trimmed) or the `$SIPNAB_API_SIGNING_KEY` /
+`$SIPNAB_MCP_SIGNING_KEY` environment variables. `--api-signing-key` /
+`--mcp-signing-key` are **repeatable** (see *Rotation*).
+
+## 2. Mint (issue) a token
+
+`--mint-token` signs a token with the **first** configured signing key, prints
+it, and exits — it does not start any capture or server.
+
+An API token at the default one-hour TTL needs nothing but the signing key:
+
+```bash
+sipnab --mint-token --api-signing-key "$KEY"
+```
+
+An MCP token for a CI runner gets a 24-hour life and an explicit id that a
+denylist can name later:
+
+```bash
+sipnab --mint-token --mcp-signing-key "$KEY" --mcp-token-ttl 86400 --token-id ci-runner-1
+```
+
+`--api-token-ttl` / `--mcp-token-ttl` (default `3600`) set the lifetime, and
+`--token-id` sets the `jti` (defaults to a generated id). Distribute the printed
+token to clients.
+
+### Scope: what a token may reach
+
+`--token-scope` narrows a token to part of its surface. It takes `full` (the
+default), `metrics`, or `read`:
+
+| Scope | Surface | What it reaches |
+|---|---|---|
+| `full` | either | Everything on the token's audience. |
+| `metrics` | REST API | `GET /metrics`, and nothing else. Every `/v1/` route answers `401`. |
+| `read` | MCP | Only the tools `tools/list` marks read-only. Calling any other tool gets a JSON-RPC error refusal, not a `401`. |
+
+Why bother: sipnab decrypts TLS, so `/v1/dialogs` and `/v1/streams` hand back
+message bodies — the call content itself. A metrics scrape needs one counter,
+not that. The same argument covers `read` on the MCP side, where a `full`
+token can also stop the server, export files, and aim the capture elsewhere.
+
+Each narrow scope names something that lives on exactly one surface, so sipnab
+refuses a cross-surface mint rather than printing a token that could never
+authorize what its scope names. `--token-scope metrics` with
+`--mcp-signing-key` fails at mint time, and so does `--token-scope read` with
+`--api-signing-key`.
+
+Mint a scrape-only token for the REST API:
+
+```bash
+TOKEN="$(sipnab --mint-token --token-scope metrics --api-signing-key "$KEY")"
+```
+
+Then **confirm the scope took effect**. A token that quietly stayed `full`
+looks identical from the outside, and the payload is the only record of what
+you minted:
+
+```bash
+python3 - "$TOKEN" <<'PY'
+import base64, sys
+p = sys.argv[1].split(".")[1]
+print(base64.urlsafe_b64decode(p + "=" * (-len(p) % 4)).decode())
+PY
+```
+
+```json
+{"id":"tok-1770000000000000","exp":1770003600,"aud":"api","scope":"metrics"}
+```
+
+`"scope":"metrics"` is the claim doing the work. A decoded payload with **no**
+`scope` field is a `full` credential — one that reads dialogs and the message
+bodies underneath — so mint it again rather than shipping it.
+
+The signature covers the claim, so a holder cannot widen a token by editing or
+stripping `scope` — the signature stops matching. Static `--api-key` /
+`--mcp-token` secrets carry no claims at all and are therefore always `full`.
+Scoping needs a signed token.
+
+## 3. Use a token
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8080/v1/dialogs
+```
+
+That returns `200` when the token is valid, unexpired, non-revoked, and wide
+enough for the route — *and* the request asks for something that exists. A
+failure is not automatically a `401`:
+
+| Status | What happened |
+|---|---|
+| `503` | The client is over its per-IP rate budget (100 requests/second) or the in-flight cap (`--api-max-conn`). **The rate limiter runs before authentication**, so this answer arrives whether the credential is good, bad, or missing — see [rest-api.md](rest-api.md#bind-address--connection-limits). |
+| `401` | Missing, non-Bearer, malformed, expired, revoked, wrong-audience, or wrong-key credential — **or a good credential scoped too narrowly for the route**. A `metrics` token verifies fine and still gets `401` on `/v1/dialogs`, because that route demands `full`. |
+| `404` | The credential passed, but nothing matches: no dialog carries that Call-ID on `/v1/dialogs/{call_id}`, or no stream carries that SSRC on `/v1/streams/{id}`. |
+| `400` | The credential passed, but the request does not parse: `/v1/streams/{id}` got an id that is not hexadecimal. |
+| `408` | The handler exceeded the request timeout. |
+
+Reading a `401` as "bad token" is safe. Reading a `503` that way is not — a
+`503` says nothing about the credential, because nothing looked at it yet.
+
+On the HTTP MCP surface a `401` also carries a `WWW-Authenticate: Bearer`
+challenge: `error="invalid_token"` when the client presented a credential that
+failed, and no error code at all when it presented none, so the two read
+differently in a log. The REST API answers with the status alone. See
+[the MCP security model](mcp-protocol.md#security-model).
+
+`/health` needs no credential and skips the rate limiter entirely.
+
+## 4. Expiry
+
+A token stops verifying (`401`) once `exp <= now` — no server action needed. Mint
+short-lived tokens for CI/automation and longer-lived ones sparingly.
+
+## 5. Rotation
+
+Two independent mechanisms:
+
+- **Token rotation:** mint a new token before the old one expires, switch
+  clients over, and let the old token lapse. Multiple tokens are valid
+  simultaneously.
+- **Signing-key rotation:** pass `--api-signing-key`/`--mcp-signing-key` more
+  than once. The **first** key mints; **all** keys verify. To roll a key:
+  add the new key alongside the old, mint with the new key, migrate clients,
+  then drop the old key on the next restart.
+
+## 6. Revocation
+
+To kill a still-valid token before its `exp`, add its `id` to a denylist file
+and point the server at it. Both steps matter — an id in a file no server
+reads revokes nothing:
+
+```bash
+# Run all of these, in order.
+echo "ci-runner-1" >> /etc/sipnab/revoked.txt
+sipnab ... --api-signing-key "$KEY" --api-revoked-file /etc/sipnab/revoked.txt
+```
+
+The file is one token `id` per line (blank lines and `#` comments ignored). It
+is **re-read when its mtime changes**, so appending an id revokes that token
+within the next request — no restart required. (Because signed tokens are
+otherwise valid until `exp`, a denylist is the revocation mechanism for the
+stateless model.)
+
+## Token format
+
+```text
+s2.<base64url(payload)>.<base64url(HMAC-SHA256)>
+```
+
+- `payload` is compact JSON
+  `{"id":"<jti>","exp":<unix_seconds>,"aud":"<api|mcp>","scope":"<metrics|read>"}`.
+- The signature is `HMAC-SHA256(signing_key, "s2." + base64url(payload))`.
+- base64url is URL-safe, no padding.
+
+`scope` appears **only when it narrows something**. A `full` token — the
+default — omits the claim, so its payload is the three-field
+`{"id":...,"exp":...,"aud":...}` form, and a payload carrying no `scope`
+means `full`. Seeing `scope` in a decoded payload therefore always means
+"restricted". See [*Scope*](#scope-what-a-token-may-reach) below.
+
+Verification is **stateless**: the server recomputes the HMAC, compares it in
+constant time against every configured signing key, then checks the audience,
+`exp > now`, the scope the route demands, and that `id` is not revoked. A
+malformed token loses (fail-closed).
+
+## Audience binding
+
+`aud` names the surface a token belongs to. The HTTP MCP endpoint turns away a
+token minted from `--api-signing-key`, and the REST API turns away one minted
+from `--mcp-signing-key` — **even when both surfaces carry the same signing
+key**. Since the two surfaces read separate
+flags and separate environment variables, reusing one secret across them is an
+easy mistake. Before audience binding it silently granted cross-surface access.
+
+The version prefix is part of the signed input, so an `s2` token cannot be
+rewritten as `s1` to shed its binding — the signature no longer matches.
+
+### Why the server refuses legacy `s1` tokens
+
+The pre-`aud` `s1` format is **no longer accepted**. It carried no audience, so
+an `s1` token authenticated against both surfaces — honoring it would have left
+the binding above best-effort rather than absolute.
+
+If you are still holding an `s1` token, it now returns `401`. Re-mint with
+`--mint-token`. Since the default TTL is one hour, most callers have
+rotated naturally already. Long-TTL tokens are the ones to check.
+
+## Security notes
+
+- Signing keys and tokens are secrets — prefer `*-signing-key-file` or env over
+  argv (argv is visible in `ps`).
+- Signature and static-secret comparison runs in **constant time**.
+- Do not choose a static `--api-key`/`--mcp-token` shaped like `s2.x.y` — it
+  would parse as a (failing) signed token rather than matching a static
+  secret. (An `s1.x.y` shape is no longer a recognized version, so it is
+  treated as an ordinary opaque secret.)
+- Static secrets carry no audience. If you set the same static
+  `--api-key` and `--mcp-token`, that one secret opens both surfaces. Audience
+  binding applies to signed tokens only.
+- TLS for the REST API is **not yet built in**. `--api-tls-cert` and
+  `--api-tls-key` exist as flags, and passing both makes sipnab refuse to
+  start — the listener errors out rather than quietly serving plaintext on a
+  port whose flags promised otherwise. Terminate TLS at a reverse proxy for
+  non-loopback deployments.
+
+---
+
 <!-- source: docs/internals/domain-primer.md -->
 
 # SIP and RTP: the model the code assumes
@@ -34227,6 +34835,7 @@ nobody has loaded fails the suite:
 | 0.5.183 | x86_64-unknown-linux-gnu | Debian 13, x86_64 | 6.12.105+deb13-amd64 | 2026-09-21 | attached, 2 libraries plus `tcp_sendmsg` |
 | 0.5.184 | x86_64-unknown-linux-gnu | Debian 13, x86_64 | 6.12.105+deb13-amd64 | 2026-09-22 | attached, 2 libraries plus `tcp_sendmsg` |
 | 0.5.185 | x86_64-unknown-linux-gnu | Debian 13, x86_64 | 6.12.105+deb13-amd64 | 2026-09-22 | attached, 2 libraries plus `tcp_sendmsg` |
+| 0.5.186 | x86_64-unknown-linux-gnu | Debian 13, x86_64 | 6.12.105+deb13-amd64 | 2026-09-23 | attached, 2 libraries plus `tcp_sendmsg` |
 
 That requirement makes this file part of every phase-two release commit, which
 the classifier deciding what a phase-two commit looks like has to agree with.

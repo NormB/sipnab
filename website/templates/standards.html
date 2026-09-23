@@ -1,0 +1,153 @@
+{% extends "base.html" %}
+
+{% block title %}{{ page.title }} -- {{ config.title }}{% endblock title %}
+{% block description %}{{ page.description }}{% endblock description %}
+{% block og_title %}{{ page.title }} -- {{ config.title }}{% endblock og_title %}
+{% block og_description %}{{ page.description }}{% endblock og_description %}
+
+{% block content %}
+{# The standards behind the numbers sipnab reports, one card per
+   specification. These were two bands on the homepage until the homepage
+   outgrew them. They are the evidence for the pitch, not the pitch, so they
+   live here and the homepage links to them. Every card is gated in
+   tests/site_journey_test.rs (STANDARDS_TEMPLATE): each item maps to code
+   that exists, each standard is cited in the docs, and each metric is a field
+   the program emits. #}
+<header class="standards-head">
+  <h1>{{ page.title }}</h1>
+  <p class="standards-lead">{{ page.description }}</p>
+</header>
+
+<section class="metrics" id="metrics">
+  <div class="metrics-inner">
+    <header class="section-head">
+      <h2>Quality metrics</h2>
+      <p class="metrics-sub">sipnab reports the metrics VoIP engineers already work in &mdash; one card per ITU-T or IETF standard, listing the figures it grounds. Every figure comes from the packets, and a figure nothing measured stays absent rather than reading as zero.</p>
+    </header>
+    <div class="metrics-grid">
+      <div class="metric-card">
+        <h3 class="metric-name"><a class="metric-std" href="https://www.itu.int/rec/T-REC-G.107" target="_blank" rel="noopener noreferrer">ITU-T G.107</a></h3>
+        <p class="metric-topic">The E-model</p>
+        <ul class="metric-list">
+          <li><strong>MOS</strong> &mdash; E-model R&nbsp;=&nbsp;93.2&nbsp;&minus;&nbsp;Id&nbsp;&minus;&nbsp;Ie-eff from delay plus jitter, codec and loss, mapped to a score by Annex&nbsp;B and clamped to [1.0, 4.5].</li>
+          <li><strong>Delay input</strong> &mdash; the one-way delay behind the score: your <code>[media] one_way_delay_ms</code>, else half an RTCP round trip, else 100 ms marked <code>assumed</code>.</li>
+        </ul>
+      </div>
+      <div class="metric-card">
+        <h3 class="metric-name"><a class="metric-std" href="https://www.itu.int/rec/T-REC-G.113" target="_blank" rel="noopener noreferrer">ITU-T G.113</a></h3>
+        <p class="metric-topic">Codec impairment</p>
+        <ul class="metric-list">
+          <li><strong>MOS grounding</strong> &mdash; the equipment impairment Ie from Table&nbsp;I.1 for G.711 and G.729, Opus scored as G.711, or your own <code>[media.codec_ie]</code>. Any other codec gets a placeholder and <code>mos_grounding: unpublished</code>.</li>
+        </ul>
+      </div>
+      <div class="metric-card">
+        <h3 class="metric-name"><a class="metric-std" href="https://www.itu.int/rec/T-REC-G.114" target="_blank" rel="noopener noreferrer">ITU-T G.114</a></h3>
+        <p class="metric-topic">Delay guidance</p>
+        <ul class="metric-list">
+          <li><strong>Round-trip verdict</strong> &mdash; warn and bad thresholds default to the 150 ms and 400 ms one-way guidance, doubled. A stream nobody reported a round trip for carries <code>round_trip_note</code>, never a pass.</li>
+        </ul>
+      </div>
+      <div class="metric-card">
+        <h3 class="metric-name"><a class="metric-std" href="https://www.rfc-editor.org/rfc/rfc3550" target="_blank" rel="noopener noreferrer">RFC 3550</a></h3>
+        <p class="metric-topic">RTP and RTCP</p>
+        <ul class="metric-list">
+          <li><strong>Jitter</strong> &mdash; interarrival jitter per stream by the running estimator the specification defines, grounded only when the clock rate is known.</li>
+          <li><strong>Packet loss</strong> &mdash; lost versus expected packets from sequence-number gaps, with the lost sequence numbers kept for the loss map.</li>
+          <li><strong>Round-trip time</strong> &mdash; from a receiver report's LSR and DLSR fields (<a href="https://www.rfc-editor.org/rfc/rfc3550#section-6.4.1">section 6.4.1</a>), anchored on when sipnab saw the report, with <code>round_trip_source</code> saying so.</li>
+          <li><strong>Reception reports</strong> &mdash; the far end's own fraction lost, cumulative loss and jitter from SR and RR blocks, kept under <code>endpoint_reported</code> and never fed to the MOS.</li>
+        </ul>
+      </div>
+      <div class="metric-card">
+        <h3 class="metric-name"><a class="metric-std" href="https://www.rfc-editor.org/rfc/rfc3611" target="_blank" rel="noopener noreferrer">RFC 3611</a></h3>
+        <p class="metric-topic">RTCP Extended Reports</p>
+        <ul class="metric-list">
+          <li><strong>VoIP Metrics</strong> &mdash; the XR (PT=207) block of Section&nbsp;4.7: the endpoint's own R-factor, MOS-LQ and MOS-CQ, loss and discard rates, burst and gap durations, round-trip and end-system delay, under <code>endpoint_reported</code>.</li>
+          <li><strong>XR round trip</strong> &mdash; the reporting endpoint's own round trip, which wins over the SR echo when both exist: <code>round_trip_source: xr_voip_metrics</code>.</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="metrics" id="standards">
+  <div class="metrics-inner">
+    <header class="section-head">
+      <h2>Standards implemented</h2>
+      <p class="metrics-sub">The protocols and formats sipnab parses, decrypts, sends and receives, one card per specification with what sipnab does under it. Every title links to the document itself.</p>
+    </header>
+    <div class="metrics-grid">
+      <div class="metric-card">
+        <h3 class="metric-name"><a class="metric-std" href="https://www.rfc-editor.org/rfc/rfc3261" target="_blank" rel="noopener noreferrer">RFC 3261</a></h3>
+        <p class="metric-topic">Session Initiation Protocol</p>
+        <ul class="metric-list">
+          <li><strong>Parsing</strong> &mdash; every request and response, header by header.</li>
+          <li><strong>Dialogs and timing</strong> &mdash; dialog tracking with post-dial delay, setup, ring and teardown times.</li>
+          <li><strong>Lint</strong> &mdash; conformance findings against the specification, each pointing at the frame that earned it.</li>
+        </ul>
+      </div>
+      <div class="metric-card">
+        <h3 class="metric-name"><a class="metric-std" href="https://www.rfc-editor.org/rfc/rfc8866" target="_blank" rel="noopener noreferrer">RFC 8866</a></h3>
+        <p class="metric-topic">Session Description Protocol</p>
+        <ul class="metric-list">
+          <li><strong>Offer/answer parsing</strong> &mdash; connection and media lines, codecs, direction attributes and <code>a=crypto</code>.</li>
+          <li><strong>SDP timeline</strong> &mdash; every offer and answer in order, with hold, resume, codec changes and media anchor moves called out.</li>
+        </ul>
+      </div>
+      <div class="metric-card">
+        <h3 class="metric-name"><a class="metric-std" href="https://www.rfc-editor.org/rfc/rfc3551" target="_blank" rel="noopener noreferrer">RFC 3551</a></h3>
+        <p class="metric-topic">RTP profile for audio and video</p>
+        <ul class="metric-list">
+          <li><strong>Codec identification</strong> &mdash; static payload types and clock rates from Tables 4 and 5, or the <code>a=rtpmap</code> an offer declared.</li>
+        </ul>
+      </div>
+      <div class="metric-card">
+        <h3 class="metric-name"><a class="metric-std" href="https://www.rfc-editor.org/rfc/rfc4733" target="_blank" rel="noopener noreferrer">RFC 4733</a></h3>
+        <p class="metric-topic">Telephone events in RTP</p>
+        <ul class="metric-list">
+          <li><strong>Digit extraction</strong> &mdash; telephone-event payloads decoded, with the repeated end packets deduplicated.</li>
+          <li><strong>Masking</strong> &mdash; every surface prints <code>x</code> for a digit until <code>--dtmf-cleartext</code> opts in, because the digits after answer are the PIN.</li>
+        </ul>
+      </div>
+      <div class="metric-card">
+        <h3 class="metric-name"><a class="metric-std" href="https://www.rfc-editor.org/rfc/rfc3711" target="_blank" rel="noopener noreferrer">RFC 3711</a></h3>
+        <p class="metric-topic">Secure RTP</p>
+        <ul class="metric-list">
+          <li><strong>Decryption</strong> &mdash; AES-CM key derivation and payload decryption with keys from SDES <code>a=crypto</code> lines or a key file.</li>
+          <li><strong>Authentication</strong> &mdash; stateful auth-tag verification, HMAC-SHA1 through the crypto backend.</li>
+        </ul>
+      </div>
+      <div class="metric-card">
+        <h3 class="metric-name"><a class="metric-std" href="https://www.rfc-editor.org/rfc/rfc8446" target="_blank" rel="noopener noreferrer">RFC 8446</a></h3>
+        <p class="metric-topic">Transport Layer Security</p>
+        <ul class="metric-list">
+          <li><strong>TLS 1.3</strong> &mdash; record decryption from the traffic secrets in an SSLKEYLOGFILE.</li>
+          <li><strong>TLS 1.2</strong> &mdash; from a <code>CLIENT_RANDOM</code> master secret plus the captured ServerHello (RFC 5246), and no plaintext sipnab cannot authenticate.</li>
+        </ul>
+      </div>
+      <div class="metric-card">
+        <h3 class="metric-name"><a class="metric-std" href="https://www.rfc-editor.org/rfc/rfc5389" target="_blank" rel="noopener noreferrer">RFC 5389</a></h3>
+        <p class="metric-topic">Session Traversal Utilities for NAT</p>
+        <ul class="metric-list">
+          <li><strong>Binding diagnosis</strong> &mdash; Binding Requests and Responses parsed, and the request that never came back reported as the reason a phone offered its private address.</li>
+        </ul>
+      </div>
+      <div class="metric-card">
+        <h3 class="metric-name"><a class="metric-std" href="https://github.com/sipcapture/HEP" target="_blank" rel="noopener noreferrer">HEP v3</a></h3>
+        <p class="metric-topic">Homer Encapsulation Protocol</p>
+        <ul class="metric-list">
+          <li><strong>Send</strong> &mdash; HEP v3 to a Homer collector with <code>-H</code>.</li>
+          <li><strong>Receive</strong> &mdash; versions 2 and 3 from every proxy that sends to it, with <code>-L</code>, behind a source allowlist and a rate limit.</li>
+        </ul>
+      </div>
+      <div class="metric-card">
+        <h3 class="metric-name"><a class="metric-std" href="https://datatracker.ietf.org/doc/draft-ietf-vcon-vcon-core/" target="_blank" rel="noopener noreferrer">draft-ietf-vcon-vcon-core</a></h3>
+        <p class="metric-topic">Virtualized Conversation</p>
+        <ul class="metric-list">
+          <li><strong>Export</strong> &mdash; one observed dialog as a vCon container: the parties, the SIP ladder, a diagnosis of the call and what the capture missed. Needs the <code>vcon</code> feature, which the gnu and macOS builds carry and the static musl builds do not.</li>
+          <li><strong>Audio inline</strong> &mdash; RTP the run retained travels inside the container as a <code>recording</code> Dialog Object with a <code>sha512</code> content hash.</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+{% endblock content %}

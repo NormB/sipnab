@@ -1896,6 +1896,10 @@ struct CardItem {
     desc: String,
 }
 
+/// The template the standards cards render from. They were a band on the
+/// homepage until the homepage outgrew them; every card gate reads them here.
+const STANDARDS_TEMPLATE: &str = "website/templates/standards.html";
+
 /// One `metric-card` on the homepage: the section it sits in, the standard
 /// its title names (text and href), and the items it lists.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2750,7 +2754,7 @@ fn homepage_cards(html: &str) -> Vec<StandardCard> {
 
 /// The real page against the real tree, docs, mirror and output docs.
 fn homepage_violations() -> Vec<Violation> {
-    let html = read("website/templates/index.html");
+    let html = read(STANDARDS_TEMPLATE);
     let docs = docs_prose();
     let mirror = site_mirror();
     let output_docs = output_schema_docs();
@@ -2771,10 +2775,10 @@ fn homepage_violations() -> Vec<Violation> {
 /// is the card's own text, never a bare URL — the demo wall above the band
 /// links the same RFCs, and the first match is the wrong one.
 fn homepage_with(from: &str, to: &str) -> String {
-    let html = read("website/templates/index.html");
+    let html = read(STANDARDS_TEMPLATE);
     assert!(
         html.contains(from),
-        "control edit did not apply: index.html no longer contains {from:?}"
+        "control edit did not apply: standards.html no longer contains {from:?}"
     );
     html.replacen(from, to, 1)
 }
@@ -2782,11 +2786,11 @@ fn homepage_with(from: &str, to: &str) -> String {
 /// The real card for a standard, verbatim, for a control that needs to
 /// duplicate or append one.
 fn homepage_card_html(label: &str) -> String {
-    let html = read("website/templates/index.html");
+    let html = read(STANDARDS_TEMPLATE);
     let needle = format!(r#">{label}</a>"#);
     let at = html
         .find(&needle)
-        .unwrap_or_else(|| panic!("index.html has no card titled {label:?}"));
+        .unwrap_or_else(|| panic!("standards.html has no card titled {label:?}"));
     let start = html[..at]
         .rfind(r#"<div class="metric-card"#)
         .expect("card open tag before the title");
@@ -2919,7 +2923,7 @@ fn homepage_card_items_map_to_code_that_exists() {
     let docs = docs_prose();
     let mirror = site_mirror();
     let output_docs = output_schema_docs();
-    let html = read("website/templates/index.html");
+    let html = read(STANDARDS_TEMPLATE);
     let hits = standard_card_violations(
         &standard_cards(&html),
         HOMEPAGE_STANDARDS,
@@ -3014,7 +3018,7 @@ fn homepage_standards_are_cited_in_the_site_mirror() {
     let mirror = mirror.replace("RFC 8446", "RFC ----");
     let docs = docs_prose();
     let output_docs = output_schema_docs();
-    let html = read("website/templates/index.html");
+    let html = read(STANDARDS_TEMPLATE);
     let hits = standard_card_violations(
         &standard_cards(&html),
         HOMEPAGE_STANDARDS,
@@ -3050,7 +3054,7 @@ fn homepage_metrics_are_fields_the_program_emits() {
     let output_docs = output_docs.replace("round_trip_ms", "round_trip_--");
     let docs = docs_prose();
     let mirror = site_mirror();
-    let html = read("website/templates/index.html");
+    let html = read(STANDARDS_TEMPLATE);
     let hits = standard_card_violations(
         &standard_cards(&html),
         HOMEPAGE_STANDARDS,
@@ -3090,7 +3094,7 @@ fn homepage_card_claims_are_no_more_specific_than_the_code() {
     let docs = docs_prose();
     let mirror = site_mirror();
     let output_docs = output_schema_docs();
-    let html = read("website/templates/index.html");
+    let html = read(STANDARDS_TEMPLATE);
     let hits = standard_card_violations(
         &standard_cards(&html),
         HOMEPAGE_STANDARDS,
@@ -3114,7 +3118,7 @@ fn homepage_card_claims_are_no_more_specific_than_the_code() {
 /// the checker cannot pass vacuously.
 #[test]
 fn homepage_standards_gate_reports_every_kind_of_wrong_card() {
-    let mut page = read("website/templates/index.html");
+    let mut page = read(STANDARDS_TEMPLATE);
     let mut edit = |from: &str, to: &str| {
         assert!(
             page.contains(from),
@@ -4651,8 +4655,13 @@ fn inline_script_edits_require_csp_hash_refresh() {
             // the wiring already derives a tab's panel from its own id -- but
             // a comment edit changes the hash exactly as much as a code edit
             // does, and shipping the old hash would blank the whole script.
+            // Re-pinned for the hero pause control (WCAG 2.2.2): the swap now
+            // also sets the alt text to describe the animation, reveals
+            // #hero-pause (by class, so no layout box appears) once the
+            // animation plays, and the button puts the
+            // still frame and its alt text back.
             "index.html",
-            "sha256-jkZDUfcMSkaA5zdJk8XtpjPoyxBG3nGNd4tUw3NiJB4=",
+            "sha256-0v4G6tae2tjaEo7PTkg590b1RvJLQSjgRyGf13h3DrA=",
         ),
         (
             "page.html",
@@ -4773,18 +4782,53 @@ fn hero_swap_keeps_the_static_frame_as_the_lcp_element() {
 }
 
 // ---------------------------------------------------------------------------
-// Docs nav drift: the docs sidebar (page.html + section.html nav_group
-// lists) and the header dropdown (base.html) are HARDCODED page lists. The
-// MCP walkthrough shipped reachable only from the /docs/ index cards
-// because none of the three was updated. Every docs page must appear in
-// all three, the two sidebar templates must agree, no nav entry may point
-// at a deleted page, and page weights must be unique (prev/next order).
+// Docs nav: ONE list, rendered twice. The docs sidebar (page.html and
+// section.html) and the header dropdown (base.html) used to be three
+// hand-kept page lists. The MCP walkthrough shipped reachable only from the
+// /docs/ index cards because none of the three was updated, and the labels
+// drifted ("Install" in one, "Installation" in the other; "Real-world
+// captures" lit up on the cookbook page). Both navs now render
+// `[[extra.docs_nav]]` from website/config.toml, so a page or a label exists
+// once, and page weights must still be unique (prev/next order).
 // ---------------------------------------------------------------------------
 
-/// The docs pages, both sidebar nav_group lists, and the header dropdown
-/// must be identical sets, and page weights must be unique.
+/// One entry of the docs nav list in config.toml.
+struct NavEntry {
+    group: String,
+    path: String,
+    label: String,
+    menu: bool,
+}
+
+/// `[[extra.docs_nav]]` from website/config.toml, in order.
+fn docs_nav_list() -> Vec<NavEntry> {
+    let cfg: toml::Value =
+        toml::from_str(&read("website/config.toml")).expect("website/config.toml parses");
+    let groups = cfg["extra"]
+        .get("docs_nav")
+        .and_then(|g| g.as_array())
+        .expect("website/config.toml has no [[extra.docs_nav]] list");
+    let mut out = Vec::new();
+    for g in groups {
+        let group = g["title"].as_str().expect("a docs_nav group has no title");
+        for e in g["pages"]
+            .as_array()
+            .expect("a docs_nav group has no pages")
+        {
+            out.push(NavEntry {
+                group: group.to_string(),
+                path: e["path"].as_str().expect("entry path").to_string(),
+                label: e["label"].as_str().expect("entry label").to_string(),
+                menu: e.get("menu").and_then(|m| m.as_bool()).unwrap_or(false),
+            });
+        }
+    }
+    out
+}
+
+/// Every docs page is in the one nav list, once, and nothing else is.
 #[test]
-fn every_docs_page_is_in_the_sidebar_and_dropdown_navs() {
+fn every_docs_page_is_in_the_docs_nav_list() {
     let docs_dir = repo().join("website/content/docs");
     let mut pages: Vec<String> = std::fs::read_dir(&docs_dir)
         .expect("docs content dir")
@@ -4793,50 +4837,40 @@ fn every_docs_page_is_in_the_sidebar_and_dropdown_navs() {
         .collect();
     pages.sort();
 
-    let nav_paths = |template: &str| -> Vec<String> {
-        let text = std::fs::read_to_string(repo().join("website/templates").join(template))
-            .expect("read template");
-        let group = regex::Regex::new(r#"nav_group\([^)]*paths=\[([^\]]*)\]"#).unwrap();
-        let entry = regex::Regex::new(r#""([^"]+\.md)""#).unwrap();
-        let mut out: Vec<String> = Vec::new();
-        for c in group.captures_iter(&text) {
-            for e in entry.captures_iter(c.get(1).expect("paths list").as_str()) {
-                out.push(e[1].to_string());
-            }
-        }
-        out.sort();
-        out
-    };
-
-    let page_nav = nav_paths("page.html");
-    let section_nav = nav_paths("section.html");
+    let list = docs_nav_list();
+    let mut listed: Vec<String> = list
+        .iter()
+        .filter_map(|e| e.path.strip_prefix("docs/").map(str::to_string))
+        .collect();
+    listed.sort();
+    let mut dedup = listed.clone();
+    dedup.dedup();
     assert_eq!(
-        page_nav, section_nav,
-        "page.html and section.html sidebar nav_group lists differ — update both"
+        listed, dedup,
+        "a docs page is listed twice in [[extra.docs_nav]]"
     );
     assert_eq!(
-        page_nav, pages,
-        "docs sidebar (page.html/section.html nav_group paths) does not match \
-         website/content/docs/*.md — a page is missing from the sidebar or a \
+        listed, pages,
+        "[[extra.docs_nav]] in website/config.toml does not match \
+         website/content/docs/*.md: a page is missing from both navs, or a \
          nav entry points at a deleted page"
     );
-
-    let base = std::fs::read_to_string(repo().join("website/templates/base.html"))
-        .expect("read base.html");
-    let dropdown =
-        regex::Regex::new(r#"get_url\(path='@/docs/([a-z0-9-]+\.md)'\)[^>]*role="menuitem""#)
-            .unwrap();
-    let mut dropdown_pages: Vec<String> = dropdown
-        .captures_iter(&base)
-        .map(|c| c[1].to_string())
-        .collect();
-    dropdown_pages.sort();
-    dropdown_pages.dedup();
-    assert_eq!(
-        dropdown_pages, pages,
-        "header dropdown (base.html role=menuitem docs links) does not match \
-         website/content/docs/*.md"
-    );
+    for e in &list {
+        assert!(
+            repo().join("website/content").join(&e.path).is_file(),
+            "docs_nav entry {:?} names {}, which does not exist",
+            e.label,
+            e.path
+        );
+        assert!(!e.label.trim().is_empty(), "{} has an empty label", e.path);
+    }
+    for group in list.iter().map(|e| &e.group) {
+        assert!(
+            list.iter().any(|e| &e.group == group && e.menu),
+            "group {group:?} puts nothing in the dropdown, so its heading \
+             would stand over an empty list"
+        );
+    }
 
     // Prev/next is weight-ordered; duplicate weights make the order arbitrary.
     let weight = regex::Regex::new(r"(?m)^weight = (\d+)$").unwrap();
@@ -4860,6 +4894,128 @@ fn every_docs_page_is_in_the_sidebar_and_dropdown_navs() {
             pair[0].0, pair[0].1, pair[1].1
         );
     }
+}
+
+/// Both navs render the one list, and label an entry with its list label.
+///
+/// A second list anywhere is the drift this replaced, so the templates may
+/// carry no hand-written docs links in either nav beyond the three fixed
+/// ones: the docs overview, the developer index and "All docs".
+#[test]
+fn both_docs_navs_render_the_one_list() {
+    let macros = read("website/templates/macros.html");
+    let at = macros
+        .find("macro docs_nav(")
+        .expect("macros.html has no docs_nav macro");
+    let sidebar = &macros[at..at + macros[at..].find("endmacro").expect("endmacro")];
+    assert!(
+        sidebar.contains("for group in nav"),
+        "the docs_nav sidebar macro does not iterate the list it is given"
+    );
+    assert!(
+        sidebar.contains("{{ entry.label }}") && !sidebar.contains("{{ p.title }}"),
+        "the sidebar labels an entry with something other than its list label, \
+         so the sidebar and the dropdown can name one page two ways"
+    );
+    for tpl in ["page.html", "section.html"] {
+        let text = read(&format!("website/templates/{tpl}"));
+        assert!(
+            text.contains("macros::docs_nav(nav=config.extra.docs_nav,"),
+            "{tpl} does not render the sidebar from macros::docs_nav over \
+             config.extra.docs_nav"
+        );
+        assert!(
+            !text.contains("nav_group("),
+            "{tpl} still carries a hand-written nav_group list"
+        );
+    }
+
+    let base = read("website/templates/base.html");
+    let menu_at = base
+        .find("class=\"nav-drop-menu\"")
+        .expect("base.html has no dropdown menu");
+    let menu_end = menu_at + base[menu_at..].find("</nav>").expect("menu inside <nav>");
+    let menu = &base[menu_at..menu_end];
+    assert!(
+        menu.contains("config.extra.docs_nav") && menu.contains("entry.label"),
+        "the Docs dropdown does not render config.extra.docs_nav with each \
+         entry's list label"
+    );
+    let literal = regex::Regex::new(r"get_url\(path='(@/[^']+)'\)").unwrap();
+    let fixed: BTreeSet<String> = literal
+        .captures_iter(menu)
+        .map(|c| c[1].to_string())
+        .collect();
+    let allowed: BTreeSet<String> = ["@/docs/_index.md", "@/docs/internals/_index.md"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    assert_eq!(
+        fixed, allowed,
+        "the Docs dropdown hand-writes links besides the overview, \"All \
+         docs\" and the developer index; every other entry belongs in \
+         [[extra.docs_nav]]"
+    );
+    assert!(
+        menu.contains("All docs"),
+        "the Docs dropdown shows a subset of the pages and does not end with \
+         a link to all of them"
+    );
+    assert!(
+        menu.contains("entry.menu"),
+        "the Docs dropdown ignores `menu`, so it lists every page again"
+    );
+}
+
+/// Active state comes from the page an entry links, never a pasted path.
+///
+/// The dropdown compared `current_path` against a literal typed beside each
+/// link, and one was pasted wrong: "Real-world captures" lit up on
+/// /docs/cookbook/, and "Library API" and "Runnable Examples" carried no
+/// comparison at all, so they never lit.
+#[test]
+fn nav_active_state_is_derived_from_the_linked_page() {
+    let base = read("website/templates/base.html");
+    let pasted = regex::Regex::new(r#"current_path == "/docs/[^"]+/""#).unwrap();
+    let hits: Vec<&str> = pasted.find_iter(&base).map(|m| m.as_str()).collect();
+    assert!(
+        hits.is_empty(),
+        "base.html compares current_path against hand-typed docs paths: {hits:?}"
+    );
+    let menu_at = base.find("class=\"nav-drop-menu\"").expect("menu");
+    let menu = &base[menu_at..];
+    assert!(
+        menu.contains("current_path == p.path"),
+        "the dropdown's active state is not taken from the linked page's own \
+         path"
+    );
+    assert!(
+        menu.contains("aria-current=\"page\""),
+        "the dropdown marks the active entry only with a color"
+    );
+}
+
+/// The dropdown's group headings label their groups for assistive tech.
+///
+/// They were `aria-hidden`, so a screen reader heard forty menu items with no
+/// grouping at all.
+#[test]
+fn dropdown_group_headings_label_their_groups() {
+    let base = read("website/templates/base.html");
+    let menu_at = base.find("class=\"nav-drop-menu\"").expect("menu");
+    let menu = &base[menu_at..menu_at + base[menu_at..].find("</nav>").expect("nav")];
+    assert!(
+        !menu.contains("nav-drop-label\" aria-hidden"),
+        "a dropdown group heading is aria-hidden"
+    );
+    assert!(
+        menu.contains("role=\"group\"") && menu.contains("aria-labelledby=\"nav-grp-{{"),
+        "the dropdown groups are not role=\"group\" labeled by their heading"
+    );
+    assert!(
+        menu.contains("id=\"nav-grp-{{"),
+        "the heading a group is labeled by has no id"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -8505,7 +8661,7 @@ fn docs_search_loads_only_same_origin_assets() {
 /// after the engine has actually loaded.
 ///
 /// The other half is what such a reader gets INSTEAD: the section template's
-/// own "Reference" index, which lists the same pages a search would have
+/// own "All docs" index, which lists the same pages a search would have
 /// reached. Hiding the box would be no improvement if the fallback were also
 /// behind JavaScript.
 #[test]
@@ -9949,4 +10105,450 @@ fn the_dimmed_paragraph_scan_finds_the_ones_axe_reported() {
              reported on 2026-09-12. Found: {found:?}"
         );
     }
+}
+
+/// Every page's content sits inside Cloudflare's email-obfuscation opt-out.
+///
+/// The CDN's Email Obfuscation rewrites anything shaped like an address into
+/// `[email protected]` plus a decoding script. On this site nothing shaped like
+/// an address IS one: `busy-3a2b1c@192.0.2.30` is a Call-ID, `user@host` is a
+/// SIP URI, and both sit in code blocks a reader copies. A reader without
+/// JavaScript, a crawler and an agent reading the HTML all got the
+/// placeholder. Cloudflare leaves alone whatever sits between
+/// `<!--email_off-->` and `<!--/email_off-->` (the syntax in its Scrape Shield
+/// documentation), so the base template wraps the content block in that pair,
+/// and every page template must reach the reader through that block.
+#[test]
+fn every_page_body_is_inside_the_email_obfuscation_opt_out() {
+    const OFF: &str = "<!--email_off-->";
+    const ON: &str = "<!--/email_off-->";
+    let base = read("website/templates/base.html");
+    let main_open = base.find("<main").expect("base.html has no <main>");
+    let main_close = base.find("</main>").expect("base.html has no </main>");
+    let main = &base[main_open..main_close];
+
+    let off = main
+        .find(OFF)
+        .unwrap_or_else(|| panic!("<main> in base.html does not open with {OFF}:\n{main}"));
+    let on = main
+        .find(ON)
+        .unwrap_or_else(|| panic!("<main> in base.html never closes the opt-out with {ON}"));
+    let block = main
+        .find("{% block content %}")
+        .expect("<main> no longer holds the content block");
+    let endblock = main
+        .find("{% endblock content %}")
+        .expect("<main> no longer closes the content block");
+    assert!(
+        off < block && endblock < on,
+        "the content block is not wholly between {OFF} and {ON}, so part of \
+         every page is still rewritten by the CDN"
+    );
+    assert_eq!(
+        base.matches(OFF).count(),
+        1,
+        "base.html opens the opt-out more than once; a second opener hides a \
+         missing closer"
+    );
+
+    // Each page template reaches the reader through that block and only that
+    // block: it extends base.html. One that did not would ship unwrapped.
+    let mut pages = 0;
+    for entry in std::fs::read_dir(repo().join("website/templates")).expect("templates dir") {
+        let p = entry.expect("entry").path();
+        let name = p.file_name().expect("name").to_string_lossy().to_string();
+        if !name.ends_with(".html") || name == "base.html" || name == "macros.html" {
+            continue;
+        }
+        pages += 1;
+        let text = std::fs::read_to_string(&p).expect("read template");
+        assert!(
+            text.trim_start().starts_with("{% extends \"base.html\" %}"),
+            "{name} does not extend base.html, so its content is outside the \
+             email-obfuscation opt-out"
+        );
+    }
+    assert!(
+        pages >= 8,
+        "found {pages} page template(s); the scan is not reading them"
+    );
+}
+
+/// Section open tags of the homepage, in document order, by class.
+fn homepage_section_order(page: &str) -> Vec<String> {
+    regex::Regex::new(r#"<section class="([a-z-]+)""#)
+        .unwrap()
+        .captures_iter(page)
+        .map(|c| c[1].to_string())
+        .collect()
+}
+
+/// The homepage reads in the order a newcomer needs it.
+///
+/// Quick Start sat below a demo wall whose first command
+/// (`demos/mcp-stdio.sh tests/pcap-samples/...`) runs only from a source
+/// checkout, so a visitor who had just installed the binary met something they
+/// could not run before anything they could. The order is: what it is, how to
+/// run it, what it does, what an agent can ask it, what it supports, the
+/// numbers, then the guides.
+#[test]
+fn the_homepage_puts_quick_start_directly_under_the_hero() {
+    let page = read("website/templates/index.html");
+    let order = homepage_section_order(&page);
+    let want = [
+        "hero",
+        "quickstart",
+        "features",
+        "demos",
+        "comparison",
+        "arch-callout",
+        "notes-callout",
+    ];
+    let seen: Vec<&str> = order
+        .iter()
+        .map(String::as_str)
+        .filter(|c| want.contains(c))
+        .collect();
+    assert_eq!(
+        seen, want,
+        "the homepage sections are out of order: {order:?}"
+    );
+    assert!(
+        page.contains("Install and open your first capture"),
+        "the Quick Start heading no longer says what the reader will do"
+    );
+}
+
+/// Each Quick Start block holds one command, so each copy button copies one.
+///
+/// The block held four commands and three comments under one Copy button, so
+/// the button put all of them on the clipboard, and pasting that into a shell
+/// ran `sudo sipnab -d eth0` along with the install.
+#[test]
+fn each_quick_start_block_holds_one_command() {
+    let page = read("website/templates/index.html");
+    let qs = element_span(&page, "<section class=\"quickstart\"", "section");
+    let body = &page[qs.start..qs.end];
+    let pre = regex::Regex::new(r"(?s)<pre[^>]*><code[^>]*>(.*?)</code></pre>").unwrap();
+    let tags = regex::Regex::new(r"<[^>]+>").unwrap();
+    let mut blocks = 0;
+    for c in pre.captures_iter(body) {
+        blocks += 1;
+        let text = tags.replace_all(&c[1], "");
+        let commands: Vec<&str> = text
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty() && !l.starts_with('#'))
+            .collect();
+        assert_eq!(
+            commands.len(),
+            1,
+            "a Quick Start block holds {} commands under one copy button: {commands:?}",
+            commands.len()
+        );
+    }
+    assert!(
+        blocks >= 3,
+        "found {blocks} Quick Start block(s); the scan is broken"
+    );
+    assert_eq!(
+        body.matches("class=\"copy-btn\"").count(),
+        blocks,
+        "every Quick Start block needs its own copy button"
+    );
+}
+
+/// The MCP demos say they are run from a source checkout.
+///
+/// Every command on the demo wall starts `demos/mcp-stdio.sh` against
+/// `tests/pcap-samples/`, both of which exist only in a clone of the
+/// repository. Presented as the first thing to try, they read as broken to
+/// anyone who installed the binary.
+#[test]
+fn the_agent_demos_say_they_run_from_a_source_checkout() {
+    let page = read("website/templates/index.html");
+    let demos = element_span(&page, "<section class=\"demos\"", "section");
+    let head = element_span(&page[demos.start..demos.end], "<header", "header");
+    let head = &page[demos.start + head.start..demos.start + head.end];
+    assert!(
+        head.contains("Ask an AI agent about a capture"),
+        "the demo section is not titled for what its commands do:\n{head}"
+    );
+    assert!(
+        head.contains("source checkout"),
+        "the demo section does not say its commands run from a source \
+         checkout:\n{head}"
+    );
+    let tablist = element_open_tag(&page, "<div class=\"demo-tabs\" role=\"tablist\"");
+    assert!(
+        tablist.contains("aria-label=\"Examples\""),
+        "the demo tablist is labeled for videos it does not contain: {tablist}"
+    );
+}
+
+/// The hero animation can be paused, and the alt text follows the image.
+///
+/// The hero swaps a still screenshot for a looping animation on `load` and
+/// offered no way to stop it, which WCAG 2.2.2 requires for motion that lasts
+/// more than five seconds. The alt text also kept describing the still frame
+/// while the animation played.
+#[test]
+fn the_hero_animation_can_be_paused_and_its_alt_follows_the_image() {
+    let page = read("website/templates/index.html");
+    let button = element_open_tag(&page, "<button type=\"button\" class=\"hero-pause\"");
+    assert!(
+        button.contains("id=\"hero-pause\"") && !button.contains("is-live"),
+        "the pause control must exist and ship not live, shown only once the \
+         animation is actually playing: {button}"
+    );
+    // Hidden by visibility, not by `hidden`: the box must exist from first
+    // paint, or revealing it after `load` is a layout change.
+    let scss = read("website/sass/style.scss");
+    let rule = scss_block(&scss, ".hero-pause {");
+    assert!(
+        rule.contains("visibility: hidden") && rule.contains("&.is-live { visibility: visible; }"),
+        "the pause control is not hidden by visibility until it is live:\n{rule}"
+    );
+    assert!(
+        !button.contains(" hidden"),
+        "the pause control uses `hidden`, so revealing it adds a layout box: {button}"
+    );
+    assert!(
+        button.contains("aria-pressed=\"false\""),
+        "the pause control does not expose its state: {button}"
+    );
+    let script = &page[page.find("<script>").expect("index.html has no script")..];
+    assert!(
+        script.contains("getElementById('hero-pause')"),
+        "nothing in the homepage script wires the pause control"
+    );
+    // Every assignment of the hero's image is followed by one of its alt
+    // text, in either direction, so no path leaves the two describing
+    // different pictures.
+    let lines: Vec<&str> = script.lines().map(str::trim).collect();
+    let swaps: Vec<usize> = lines
+        .iter()
+        .enumerate()
+        .filter(|(_, l)| l.starts_with("hero.src = "))
+        .map(|(i, _)| i)
+        .collect();
+    assert!(
+        swaps.len() >= 2,
+        "expected the script to set the hero image both ways (play and pause), \
+         found {} assignment(s)",
+        swaps.len()
+    );
+    for i in swaps {
+        assert!(
+            lines
+                .get(i + 1)
+                .is_some_and(|l| l.starts_with("hero.alt = ")),
+            "`{}` swaps the hero image without updating its alt text",
+            lines[i]
+        );
+    }
+    assert!(
+        script.contains("pause.classList.add('is-live')"),
+        "the pause control is never shown"
+    );
+}
+
+/// The standards live on their own page, and the homepage links to it.
+///
+/// Two bands of standards cards made the homepage the longest page on the
+/// site. The cards are the evidence behind the numbers, not the pitch, so
+/// they moved to /standards/ whole, and every gate that reads a card reads
+/// that page.
+#[test]
+fn the_standards_cards_live_on_their_own_page() {
+    let home = read("website/templates/index.html");
+    assert!(
+        !home.contains("class=\"metric-card"),
+        "the homepage still carries standards cards"
+    );
+    let links = anchors(&home);
+    assert!(
+        links
+            .iter()
+            .any(|(href, text)| href.contains("@/standards.md")
+                && text.contains("See the standards behind every number")),
+        "the homepage does not link to the standards page"
+    );
+    let standards = read(STANDARDS_TEMPLATE);
+    for id in ["metrics", "standards"] {
+        assert!(
+            standards.contains(&format!("<section class=\"metrics\" id=\"{id}\">")),
+            "{STANDARDS_TEMPLATE} has no `{id}` band"
+        );
+    }
+    assert!(
+        read("website/content/standards.md").contains("template = \"standards.html\""),
+        "website/content/standards.md does not render with standards.html"
+    );
+}
+
+/// Prose a reader sees, with markup, code, comments and templating removed.
+fn visible_prose(html: &str) -> String {
+    let mut s = html.to_string();
+    for re in [
+        r"(?s)<script.*?</script>",
+        r"(?s)<style.*?</style>",
+        r"(?s)<pre.*?</pre>",
+        r"(?s)<code.*?</code>",
+        r"(?s)<!--.*?-->",
+        r"(?s)\{#.*?#\}",
+        r"(?s)\{%.*?%\}",
+        r"(?s)\{\{.*?\}\}",
+        r"<[^>]+>",
+        r"&[a-zA-Z0-9#]+;",
+    ] {
+        s = regex::Regex::new(re)
+            .expect("regex")
+            .replace_all(&s, " ")
+            .into_owned();
+    }
+    s
+}
+
+/// The site's own pages write no semicolons in prose.
+///
+/// The style the prose gates enforce splits a sentence rather than joining
+/// two with a semicolon. Vale checks website/content, but the homepage and
+/// the standards page are templates and it never reads them.
+#[test]
+fn site_page_prose_carries_no_semicolons() {
+    for tpl in [
+        "website/templates/index.html",
+        STANDARDS_TEMPLATE,
+        "website/templates/download.html",
+    ] {
+        let prose = visible_prose(&read(tpl));
+        assert!(
+            prose.split_whitespace().count() > 200,
+            "{tpl}: the prose extractor found almost nothing"
+        );
+        let hits: Vec<String> = prose
+            .split(['.', '\n'])
+            .filter(|s| s.contains(';'))
+            .map(|s| s.split_whitespace().collect::<Vec<_>>().join(" "))
+            .collect();
+        assert!(
+            hits.is_empty(),
+            "{tpl} joins sentences with semicolons: {hits:#?}"
+        );
+    }
+}
+
+/// Headings are sentence case.
+///
+/// "See It In Action" and "What sipnab Does" capitalized every word, which the
+/// style guide reserves for names. A capitalized word after the first is
+/// allowed only when it is a name or an acronym.
+#[test]
+fn site_page_headings_are_sentence_case() {
+    const NAMES: &[&str] = &[
+        "Homer",
+        "Rust",
+        "Claude",
+        "Code",
+        "Kamailio",
+        "OpenSIPS",
+        "Asterisk",
+        "Wireshark",
+        "Prometheus",
+        "Homebrew",
+        "Debian",
+        "Ubuntu",
+        "Fedora",
+        "Docker",
+        "Linux",
+        "I",
+    ];
+    let heading = regex::Regex::new(r"(?s)<h([1-3])[^>]*>(.*?)</h[1-3]>").unwrap();
+    let mut seen = 0;
+    for tpl in [
+        "website/templates/index.html",
+        STANDARDS_TEMPLATE,
+        "website/templates/download.html",
+    ] {
+        let html = read(tpl);
+        for c in heading.captures_iter(&html) {
+            let text = visible_prose(&c[2]);
+            // The first WORD may be capitalized; a step number such as "1."
+            // before it is not a word.
+            let words: Vec<&str> = text
+                .split_whitespace()
+                .skip_while(|w| !w.chars().any(char::is_alphabetic))
+                .collect();
+            seen += 1;
+            for w in words.iter().skip(1) {
+                let w = w.trim_matches(|ch: char| !ch.is_alphanumeric());
+                let starts_upper = w.chars().next().is_some_and(char::is_uppercase);
+                let acronym = w.chars().filter(|ch| ch.is_uppercase()).count() >= 2
+                    || w.chars().any(|ch| ch.is_ascii_digit());
+                assert!(
+                    !starts_upper || acronym || NAMES.contains(&w),
+                    "{tpl}: heading {:?} capitalizes {w:?}, which is not a name",
+                    text.trim()
+                );
+            }
+        }
+    }
+    assert!(seen >= 8, "found {seen} heading(s); the scan is broken");
+}
+
+/// Every copy button on /download copies one command.
+///
+/// Two buttons copied two commands joined by a newline (`docker pull` and
+/// `docker run`, and the fetch and the checksum check), so one paste ran both
+/// before the reader had read the second.
+#[test]
+fn every_download_copy_button_copies_one_command() {
+    let page = read("website/templates/download.html");
+    let attr = regex::Regex::new(r#"data-copy="([^"]*)""#).unwrap();
+    let mut seen = 0;
+    for c in attr.captures_iter(&page) {
+        seen += 1;
+        assert!(
+            !c[1].contains("&#10;") && !c[1].contains('\n'),
+            "a /download copy button copies more than one command: {}",
+            &c[1]
+        );
+    }
+    assert!(seen >= 5, "found {seen} copy button(s); the scan is broken");
+}
+
+/// A hand-written page does not repeat its title as a second `<h1>`.
+///
+/// page.html renders the front-matter title as the page's `<h1>`, so a body
+/// that opens with `# Title` gives the page two. /api-reference/ did.
+#[test]
+fn no_hand_written_page_repeats_its_title_as_an_h1() {
+    let mut seen = 0;
+    for entry in std::fs::read_dir(repo().join("website/content")).expect("content dir") {
+        let p = entry.expect("entry").path();
+        if p.extension().and_then(|e| e.to_str()) != Some("md") {
+            continue;
+        }
+        seen += 1;
+        let text = std::fs::read_to_string(&p).expect("read page");
+        // The body starts after the closing `+++` of the front matter.
+        let body = text.splitn(3, "+++").nth(2).unwrap_or_default();
+        let mut fenced = false;
+        for line in body.lines() {
+            if line.trim_start().starts_with("```") {
+                fenced = !fenced;
+            }
+            assert!(
+                fenced || !line.starts_with("# "),
+                "{} opens a second <h1> with {line:?}; the template already \
+                 renders the title",
+                p.display()
+            );
+        }
+    }
+    assert!(
+        seen >= 4,
+        "found {seen} hand-written page(s); the scan is broken"
+    );
 }

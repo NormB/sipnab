@@ -10,10 +10,10 @@
   <div class="hero-bg" aria-hidden="true"></div>
   <div class="hero-inner">
     <h1 class="hero-title">sipnab <span class="version-badge" aria-hidden="true">v{{ config.extra.published_version }}</span></h1>
-    <p class="hero-tagline">The <a class="std-ref" href="https://www.rfc-editor.org/rfc/rfc3261" target="_blank" rel="noopener noreferrer">SIP</a> &amp; <a class="std-ref" href="https://www.rfc-editor.org/rfc/rfc3550" target="_blank" rel="noopener noreferrer">RTP</a> analysis tool for people who ship voice infrastructure.</p>
-    <p class="hero-sub">One binary, no database and no collector tier &mdash; reads live traffic, a pcap, or the HEP feed from every proxy in your estate, and shows you the call flow, RTP quality, and security signals.</p>
+    <p class="hero-tagline">See why a VoIP call failed, from its <a class="std-ref" href="https://www.rfc-editor.org/rfc/rfc3261" target="_blank" rel="noopener noreferrer">SIP</a> signaling and its <a class="std-ref" href="https://www.rfc-editor.org/rfc/rfc3550" target="_blank" rel="noopener noreferrer">RTP</a> audio.</p>
+    <p class="hero-sub">Reads live traffic, a pcap file, or the copies your SIP proxies send (HEP). Shows the call flow, the audio quality and security warnings. One binary, no database, no server to run.</p>
     <div class="hero-actions">
-      <a href="{{ get_url(path='@/docs/install.md') }}" class="btn btn-primary">Get Started &rarr;</a>
+      <a href="{{ get_url(path='@/docs/install.md') }}" class="btn btn-primary">Get started &rarr;</a>
       <a href="{{ get_url(path='@/analyze/_index.md') }}" class="btn btn-secondary">Try a sample capture &rarr;</a>
       <a href="{{ config.extra.github_url }}" class="btn btn-secondary">View on GitHub &rarr;</a>
     </div>
@@ -37,18 +37,130 @@
   <!-- Hero — static screenshot of the TUI -->
   <div class="terminal-wrap">
     <img id="hero-shot" src="{{ get_url(path='demos/hero-static.webp') }}?v=2" width="1200" height="700" fetchpriority="high" alt="sipnab interactive TUI — call-flow ladder of a complete call: INVITE with SDP, 100 Trying, 180 Ringing, 200 OK, ACK, the RTP media line, then BYE and its 200 OK, with the decoded INVITE in the detail pane. One of seven dialogs in the same sample capture the analyze page loads" class="hero-screenshot">
+    {# Shown by the script only once the looping animation replaces the still
+       frame. Motion that runs longer than five seconds needs a way to stop it
+       (WCAG 2.2.2), and pausing puts the still frame, and its alt text, back.
+       It ships `visibility: hidden` rather than `hidden`: the box exists from
+       first paint, so revealing it after `load` changes no layout box, which
+       the web-fonts layout-stability check measures. A hidden-visibility
+       button is out of the tab order and the accessibility tree until then. #}
+    <button type="button" class="hero-pause" id="hero-pause" aria-pressed="false">Pause animation</button>
   </div>
 </section>
 
-<!-- Demo Video -->
+<!-- Quick Start -->
+{# Directly under the hero, so the first command a visitor meets is one they
+   can run with nothing but the binary. One command per block, because the
+   copy button copies the whole block: a single block of four commands put
+   `sudo sipnab -d eth0` on the clipboard with the install line. The sample
+   capture is the file the analyze page loads, served from this site. #}
+<section class="quickstart" id="quickstart">
+  <div class="quickstart-inner">
+    <header class="section-head">
+      <h2>Install and open your first capture</h2>
+      <p class="quickstart-sub">On macOS, <code>brew install NormB/tap/sipnab</code> replaces the first step.</p>
+    </header>
+    <h3 class="qs-step">1. Install sipnab</h3>
+    <div class="code-block-wrap">
+      <div class="code-block-head">
+        <span class="code-block-dots"><i></i><i></i><i></i></span>
+        <span class="code-block-title">bash</span>
+        <button class="copy-btn" aria-label="Copy to clipboard">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
+          <span aria-live="polite">Copy</span>
+        </button>
+      </div>
+      <pre><code class="language-bash">curl -fsSL https://sipnab.com/install.sh | sh</code></pre>
+    </div>
+    <h3 class="qs-step">2. Download a sample capture</h3>
+    <div class="code-block-wrap">
+      <div class="code-block-head">
+        <span class="code-block-dots"><i></i><i></i><i></i></span>
+        <span class="code-block-title">bash</span>
+        <button class="copy-btn" aria-label="Copy to clipboard">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
+          <span aria-live="polite">Copy</span>
+        </button>
+      </div>
+      <pre><code class="language-bash">curl -fsSLO https://sipnab.com/demos/sample-call.pcap</code></pre>
+    </div>
+    <h3 class="qs-step">3. Open it in the terminal UI</h3>
+    <div class="code-block-wrap">
+      <div class="code-block-head">
+        <span class="code-block-dots"><i></i><i></i><i></i></span>
+        <span class="code-block-title">bash</span>
+        <button class="copy-btn" aria-label="Copy to clipboard">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
+          <span aria-live="polite">Copy</span>
+        </button>
+      </div>
+      <pre><code class="language-bash">sipnab -I sample-call.pcap</code></pre>
+    </div>
+    <h3 class="qs-step">4. Or print a report without the UI</h3>
+    <div class="code-block-wrap">
+      <div class="code-block-head">
+        <span class="code-block-dots"><i></i><i></i><i></i></span>
+        <span class="code-block-title">bash</span>
+        <button class="copy-btn" aria-label="Copy to clipboard">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
+          <span aria-live="polite">Copy</span>
+        </button>
+      </div>
+      <pre><code class="language-bash">sipnab -N -I sample-call.pcap --report</code></pre>
+    </div>
+    <h3 class="qs-step">5. Capture live SIP traffic</h3>
+    <div class="code-block-wrap">
+      <div class="code-block-head">
+        <span class="code-block-dots"><i></i><i></i><i></i></span>
+        <span class="code-block-title">bash</span>
+        <button class="copy-btn" aria-label="Copy to clipboard">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
+          <span aria-live="polite">Copy</span>
+        </button>
+      </div>
+      <pre><code class="language-bash">sudo sipnab -d eth0</code></pre>
+    </div>
+  </div>
+</section>
+
+<section class="features" id="features">
+  <div class="features-inner">
+    <header class="section-head">
+      <h2>What you can do with it</h2>
+    </header>
+    <div class="features-grid">
+      <a class="feature-card feature-card--amber fade-in-up" href="{{ get_url(path='@/docs/tui.md') }}">
+        <div class="feature-icon">
+          <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+        </div>
+        <h3>Inspect</h3>
+        <p>Ladder diagrams, auth collapse, retransmit folding, mark+delta timing — the whole call at a glance.</p>
+      </a>
+      <a class="feature-card feature-card--green fade-in-up" href="{{ get_url(path='@/docs/cookbook.md') }}">
+        <div class="feature-icon">
+          <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
+        </div>
+        <h3>Diagnose</h3>
+        <p>Per-stream jitter, loss, and MOS. One-way audio, NAT mismatch, post-dial delay — found, not guessed.</p>
+      </a>
+      <a class="feature-card feature-card--blue fade-in-up" href="{{ get_url(path='@/docs/output-formats.md') }}">
+        <div class="feature-icon">
+          <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+        </div>
+        <h3>Export</h3>
+        <p>PCAP-NG, JSON/NDJSON, Mermaid, Wireshark filters, fail2ban, WAV — pipe it anywhere. The full list is below.</p>
+      </a>
+    </div>
+  </div>
+</section>
+
 <section class="demos" id="demos">
   <div class="demos-inner">
     <header class="section-head">
-      <p class="section-kicker">Demos</p>
-      <h2>See It In Action</h2>
-      <p class="demos-sub">Every block below is real output from sipnab, run against a capture that ships with it &mdash; not a mock-up. The first five answer a question an engineer actually has. The rest show the interfaces those answers come from: a terminal UI, and a headless mode built for scripts. <a href="{{ get_url(path='@/analyze/_index.md') }}">Run the same analysis on your own capture &rarr;</a></p>
+      <h2>Ask an AI agent about a capture</h2>
+      <p class="demos-sub">An AI agent can query sipnab over MCP, the Model Context Protocol. Each block below is real output from sipnab against a capture that ships with it. The commands run from a source checkout, because <code>demos/mcp-stdio.sh</code> and the sample captures live in the repository. &ldquo;More demos&rdquo; shows the terminal UI and headless mode. <a href="{{ get_url(path='@/analyze/_index.md') }}">Open your own capture in the browser: a call list, the call-flow ladder, the raw SIP messages and RTP quality &rarr;</a></p>
     </header>
-    <div class="demo-tabs" role="tablist" aria-label="Demo videos">
+    <div class="demo-tabs" role="tablist" aria-label="Examples">
       <button class="demo-tab active" role="tab" aria-selected="true" id="demo-tab-0" aria-controls="demo-panel-0">Show me the whole call</button>
       <button class="demo-tab" role="tab" aria-selected="false" id="demo-tab-1" aria-controls="demo-panel-1">Why did it fail?</button>
       <button class="demo-tab" role="tab" aria-selected="false" id="demo-tab-2" aria-controls="demo-panel-2">Which RFC?</button>
@@ -66,12 +178,12 @@
          still lay out as part of the one strip. #}
       <div class="demo-tabs-more" id="demo-tabs-more" role="presentation" hidden>
         <button class="demo-tab" role="tab" aria-selected="false" id="demo-tab-5" aria-controls="demo-panel-5">Interactive TUI</button>
-        <button class="demo-tab" role="tab" aria-selected="false" id="demo-tab-6" aria-controls="demo-panel-6">Detail Pane</button>
-        <button class="demo-tab" role="tab" aria-selected="false" id="demo-tab-7" aria-controls="demo-panel-7">Mark + Delta</button>
+        <button class="demo-tab" role="tab" aria-selected="false" id="demo-tab-6" aria-controls="demo-panel-6">Detail pane</button>
+        <button class="demo-tab" role="tab" aria-selected="false" id="demo-tab-7" aria-controls="demo-panel-7">Mark and delta</button>
         <button class="demo-tab" role="tab" aria-selected="false" id="demo-tab-8" aria-controls="demo-panel-8">Search</button>
-        <button class="demo-tab" role="tab" aria-selected="false" id="demo-tab-9" aria-controls="demo-panel-9">Multi-Leg</button>
-        <button class="demo-tab" role="tab" aria-selected="false" id="demo-tab-10" aria-controls="demo-panel-10">RTP Quality</button>
-        <button class="demo-tab" role="tab" aria-selected="false" id="demo-tab-11" aria-controls="demo-panel-11">CLI &amp; JSON</button>
+        <button class="demo-tab" role="tab" aria-selected="false" id="demo-tab-9" aria-controls="demo-panel-9">Multi-leg calls</button>
+        <button class="demo-tab" role="tab" aria-selected="false" id="demo-tab-10" aria-controls="demo-panel-10">RTP quality</button>
+        <button class="demo-tab" role="tab" aria-selected="false" id="demo-tab-11" aria-controls="demo-panel-11">Headless and JSON</button>
       </div>
     </div>
     {# Outside the tablist: a tablist may own only tabs, and this is not one.
@@ -263,7 +375,7 @@ Issues Detected:
         <img src="{{ get_url(path='demos/10-multileg.webp') }}?v=10" alt="sipnab multi-leg B2BUA extended-flow demo" loading="lazy">
       </div>
       <div class="demo-panel" data-demo="10" role="tabpanel" id="demo-panel-10" aria-labelledby="demo-tab-10">
-        <p class="demo-desc"><strong>The media side, in the terminal UI.</strong> <kbd>Tab</kbd> switches from dialogs to RTP streams; selecting one opens its detail: SSRC, codec, jitter, loss and estimated MOS, with quality plotted over the life of the call.</p>
+        <p class="demo-desc"><strong>The media side, in the terminal UI.</strong> <kbd>Tab</kbd> switches from dialogs to RTP streams. Selecting one opens its detail: SSRC, codec, jitter, loss and estimated MOS, with quality plotted over the life of the call.</p>
         <img src="{{ get_url(path='demos/08-rtp-tui.webp') }}?v=9" alt="sipnab RTP streams and per-stream quality demo" loading="lazy">
       </div>
       <div class="demo-panel" data-demo="11" role="tabpanel" id="demo-panel-11" aria-labelledby="demo-tab-11">
@@ -274,77 +386,12 @@ Issues Detected:
   </div>
 </section>
 
-<!-- Why sipnab -->
-<section class="features" id="features">
-  <div class="features-inner">
-    <header class="section-head">
-      <p class="section-kicker">Capabilities</p>
-      <h2>Everything, in one binary</h2>
-    </header>
-    <div class="features-grid">
-      <a class="feature-card feature-card--amber fade-in-up" href="{{ get_url(path='@/docs/tui.md') }}">
-        <div class="feature-icon">
-          <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
-        </div>
-        <h3>Inspect</h3>
-        <p>Ladder diagrams, auth collapse, retransmit folding, mark+delta timing — the whole call at a glance.</p>
-      </a>
-      <a class="feature-card feature-card--green fade-in-up" href="{{ get_url(path='@/docs/cookbook.md') }}">
-        <div class="feature-icon">
-          <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
-        </div>
-        <h3>Diagnose</h3>
-        <p>Per-stream jitter, loss, and MOS. One-way audio, NAT mismatch, post-dial delay — found, not guessed.</p>
-      </a>
-      <a class="feature-card feature-card--blue fade-in-up" href="{{ get_url(path='@/docs/output-formats.md') }}">
-        <div class="feature-icon">
-          <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-        </div>
-        <h3>Export</h3>
-        <p>PCAP-NG, JSON/NDJSON, Mermaid, Wireshark filters, fail2ban, WAV — pipe it anywhere. The full list is below.</p>
-      </a>
-    </div>
-  </div>
-</section>
-
-<!-- Quick Start -->
-<section class="quickstart" id="quickstart">
-  <div class="quickstart-inner">
-    <header class="section-head">
-      <p class="section-kicker">Quick Start</p>
-      <h2>Up and running in one command</h2>
-    </header>
-    <div class="code-block-wrap">
-      <div class="code-block-head">
-        <span class="code-block-dots"><i></i><i></i><i></i></span>
-        <span class="code-block-title">bash</span>
-        <button class="copy-btn" aria-label="Copy to clipboard">
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
-          <span aria-live="polite">Copy</span>
-        </button>
-      </div>
-      <pre class="line-numbers"><code class="language-bash"><span class="t-comment"># Install (macOS: brew install NormB/tap/sipnab)</span>
-curl -fsSL https://sipnab.com/install.sh | sh
-
-<span class="t-comment"># Capture live SIP traffic</span>
-sudo sipnab -d eth0
-
-<span class="t-comment"># Analyze a pcap file</span>
-sipnab -I capture.pcap
-
-<span class="t-comment"># Headless: JSON out, problem calls only</span>
-sipnab -N --json -I capture.pcap --problems</code></pre>
-    </div>
-  </div>
-</section>
-
-<!-- sipnab features (no competitor comparison — only claim what we can prove) -->
+{# Capabilities: one row each, no competitor comparison. Only claim what we can prove. #}
 <section class="comparison" id="features-list">
   <div class="comparison-inner">
     <header class="section-head">
-      <p class="section-kicker">Reference</p>
-      <h2>What sipnab Does</h2>
-      <p class="comparison-sub">sipnab is <strong>run, not operated</strong>. There is no database, no web interface, no login and no service to keep alive: everything below happens inside one process you start and stop. That is a deliberate limit rather than a roadmap gap &mdash; the moment there is a schema to migrate, somebody owns a service. If you need dashboards and months of history, you want <a href="https://github.com/sipcapture/homer" target="_blank" rel="noopener noreferrer">Homer</a>, and sipnab will happily feed it over HEP.</p>
+      <h2>Check what sipnab supports</h2>
+      <p class="comparison-sub">sipnab runs as one process you start and stop. It has no database, no web interface, no login and no service to keep running, and that is on purpose. If you need dashboards and months of history, use <a href="https://github.com/sipcapture/homer" target="_blank" rel="noopener noreferrer">Homer</a>, and let sipnab feed it over HEP.</p>
     </header>
     <div class="comparison-table-wrap">
       <table class="comparison-table">
@@ -355,170 +402,32 @@ sipnab -N --json -I capture.pcap --problems</code></pre>
           </tr>
         </thead>
         <tbody>
-          <tr><td><a href="{{ get_url(path='@/docs/tui.md') }}">Interactive TUI + CLI</a></td><td>Both modes in one binary. TUI for interactive analysis, CLI for batch/scripting.</td></tr>
-          <tr><td><a href="{{ get_url(path='@/docs/mos-and-codecs.md') }}">RTP quality analysis</a></td><td>Jitter, packet loss, estimated MOS (ITU-T G.107 E-model) per stream. RTCP XR (RFC 3611) parsing.</td></tr>
-          <tr><td><a href="{{ get_url(path='@/docs/cookbook.md') }}#4-diagnose-a-one-way-audio-complaint">VoIP diagnosis</a></td><td>One-way audio detection, NAT mismatch, SDP timeline, PDD measurement.</td></tr>
-          <tr><td><a href="{{ get_url(path='@/docs/cookbook.md') }}#61-ask-a-relay-whether-it-is-dropping-packets">Relay statistics</a></td><td>Ask a media relay (rtpengine, rtpproxy) for its own packet, loss and session counters over its read-only control port. Marked <code>relay_reported</code> &mdash; the relay's claim about itself, never what sipnab measured on the wire, so the relay's loss count, sipnab's sequence-gap loss and the far end's RTCP claim stay three facts about three points on the path rather than one contested number.</td></tr>
-          <tr><td><a href="{{ get_url(path='@/docs/filter-dsl.md') }}">Filter DSL</a></td><td>32 fields, 8 operators, boolean combinators. Named aliases for common queries.</td></tr>
-          <tr><td><a href="{{ get_url(path='@/docs/cookbook.md') }}#10-detect-sip-scanners-and-auto-block-via-fail2ban">Security</a></td><td>Scanner detection, toll fraud, digest leak, registration flood. Fail2ban output.</td></tr>
-          <tr><td><a href="{{ get_url(path='@/docs/tls-capture.md') }}">TLS/SRTP decryption</a></td><td>TLS 1.2 + 1.3 via SSLKEYLOGFILE. SRTP auth verification (SDES key extraction).</td></tr>
-          <tr><td><a href="{{ get_url(path='@/docs/plugins.md') }}">WASM plugins</a></td><td>Load third-party dialog detections as sandboxed WebAssembly (<code>--plugin</code>). Off by default, so a stock binary carries no interpreter. Needs the <code>plugins</code> feature, which the gnu and macOS builds carry and the static musl builds do not.</td></tr>
-          <tr><td><a href="{{ get_url(path='@/docs/uprobe-walkthrough.md') }}">eBPF TLS capture <em>(root, same host)</em></a></td><td><strong>This does not break TLS.</strong> It decrypts nothing, reads no other machine and recovers no key. On a host you already have root on, kernel uprobes read the SIP plaintext where the daemon hands it to OpenSSL or wolfSSL, before encryption &mdash; so no key, certificate or restart is involved.<br><br>Two backends. The default reads the writes but sees no socket, so it names the <em>process</em> rather than the peer. The <code>bpf</code> backend pairs each write with its socket and recovers the real peer addresses; it needs a build carrying the <code>bpf</code> feature (the released Linux gnu tarballs, <code>.deb</code> and <code>.rpm</code> do; the static musl builds do not) and a kernel with BTF. Linux with uprobes either way. <a href="{{ get_url(path='@/docs/uprobe-walkthrough.md') }}">Read the security implications first</a>.</td></tr>
-          <tr><td><a href="{{ get_url(path='@/docs/output-formats.md') }}">Export formats</a></td><td>PCAP, PCAP-NG, TXT, JSON, NDJSON, CSV, HTML, Markdown, WAV audio, SIPp XML, RTP JSON.</td></tr>
-          <tr><td><a href="{{ get_url(path='@/docs/integrations.md') }}#hep-protocol">HEP v2/v3</a></td><td>HEP v3 send, HEP v2/v3 receive. Feed Homer/SIPCAPTURE, or point Kamailio, OpenSIPS and Asterisk at a sipnab listener and read a whole estate from one box &mdash; the proxies already speak HEP, so nothing goes on them.</td></tr>
-          <tr><td><a href="{{ get_url(path='@/docs/api.md') }}">REST API</a></td><td>Query dialogs, streams and stats over HTTP &mdash; what sipnab saw.</td></tr>
-          <tr><td><a href="{{ get_url(path='@/docs/metrics.md') }}">Prometheus metrics</a></td><td>Counters and gauges about sipnab itself: what it captured, what it lost, what it could not read.</td></tr>
-          <tr><td><a href="{{ get_url(path='@/docs/mcp.md') }}">MCP server</a></td><td>Drive sipnab from an AI agent (Claude Code, Claude Desktop, …) over stdio or HTTP. 69 tools cover dialogs, RTP, diagnostics, and security findings. 57 are read-only; the twelve that write — file and audio export, evidence packages, repro scripts, capture swap, findings, TLS capture, shutdown, and two toll-fraud actions — each stay off until you enable them server-side.</td></tr>
-          <tr><td><a href="{{ get_url(path='@/analyze/_index.md') }}">Browser analysis</a></td><td>Analyze pcap files in the browser via WASM. Zero upload, zero install.</td></tr>
-          <tr><td><a href="{{ get_url(path='@/docs/build.md') }}">Built in Rust</a></td><td>Rust everywhere except the OS boundary: 101 <code>unsafe</code> blocks, all of them FFI, and the build rejects any block that does not state its own soundness argument. 9965 automated tests. Under 17 MB static binary.</td></tr>
+          <tr><td><a href="{{ get_url(path='@/docs/tui.md') }}">Terminal UI and headless mode</a></td><td>Browse calls interactively, or run headless for scripts and pipelines.</td></tr>
+          <tr><td><a href="{{ get_url(path='@/docs/mos-and-codecs.md') }}">RTP quality analysis</a></td><td>Jitter, packet loss and estimated MOS (ITU-T G.107 E-model) for every stream, plus RTCP XR (RFC 3611) reports.</td></tr>
+          <tr><td><a href="{{ get_url(path='@/docs/cookbook.md') }}#4-diagnose-a-one-way-audio-complaint">VoIP diagnosis</a></td><td>Finds one-way audio, NAT mismatches and slow call setup, with the SDP timeline behind each.</td></tr>
+          <tr><td><a href="{{ get_url(path='@/docs/cookbook.md') }}#61-ask-a-relay-whether-it-is-dropping-packets">Relay statistics</a></td><td>Asks rtpengine or rtpproxy for its own counters over its read-only control port, and marks them <code>relay_reported</code>: the relay's claim, kept apart from what sipnab measured.</td></tr>
+          <tr><td><a href="{{ get_url(path='@/docs/filter-dsl.md') }}">Filter DSL</a></td><td>32 fields, 8 operators and boolean logic, with named aliases for common queries.</td></tr>
+          <tr><td><a href="{{ get_url(path='@/docs/cookbook.md') }}#10-detect-sip-scanners-and-auto-block-via-fail2ban">Security</a></td><td>Detects scanners, toll fraud, leaked digest credentials and registration floods, and writes fail2ban output.</td></tr>
+          <tr><td><a href="{{ get_url(path='@/docs/tls-capture.md') }}">TLS/SRTP decryption</a></td><td>Decrypts TLS 1.2 and 1.3 with an SSLKEYLOGFILE, and verifies SRTP with the SDES keys from the SDP.</td></tr>
+          <tr><td><a href="{{ get_url(path='@/docs/plugins.md') }}">WASM plugins</a></td><td>Loads your own dialog detections as sandboxed WebAssembly (<code>--plugin</code>). Off by default, and only in builds with the <code>plugins</code> feature: the gnu and macOS builds carry it, the static musl builds do not.</td></tr>
+          <tr><td><a href="{{ get_url(path='@/docs/uprobe-walkthrough.md') }}">eBPF TLS capture <em>(root, same host)</em></a></td><td><strong>This does not break TLS.</strong> On a host where you already have root, kernel uprobes read the SIP plaintext inside OpenSSL or wolfSSL before it is encrypted, so no key, certificate or restart is involved. The <code>bpf</code> backend also recovers the peer addresses. It is in the released Linux gnu tarballs, <code>.deb</code> and <code>.rpm</code>, not the static musl builds, and needs a kernel with BTF. <a href="{{ get_url(path='@/docs/uprobe-walkthrough.md') }}">Read the security implications first</a>.</td></tr>
+          <tr><td><a href="{{ get_url(path='@/docs/output-formats.md') }}">Export formats</a></td><td>PCAP, PCAP-NG, TXT, JSON, NDJSON, CSV, HTML, Markdown, WAV audio, SIPp XML and RTP JSON.</td></tr>
+          <tr><td><a href="{{ get_url(path='@/docs/integrations.md') }}#hep-protocol">HEP v2/v3</a></td><td>Sends HEP v3 to Homer, and receives HEP v2 and v3 from Kamailio, OpenSIPS or Asterisk, so one sipnab reads every proxy with nothing installed on them.</td></tr>
+          <tr><td><a href="{{ get_url(path='@/docs/api.md') }}">REST API</a></td><td>Query dialogs, streams and stats over HTTP.</td></tr>
+          <tr><td><a href="{{ get_url(path='@/docs/metrics.md') }}">Prometheus metrics</a></td><td>Counters about sipnab itself: what it captured, what it lost and what it could not read.</td></tr>
+          <tr><td><a href="{{ get_url(path='@/docs/mcp.md') }}">MCP server</a></td><td>Lets an AI agent such as Claude Code query captures over stdio or HTTP. 69 tools cover dialogs, RTP, diagnostics, and security findings. 57 are read-only, and the twelve that write stay off until you enable them on the server.</td></tr>
+          <tr><td><a href="{{ get_url(path='@/analyze/_index.md') }}">Browser analysis</a></td><td>Opens a pcap in your browser with WebAssembly. Nothing is uploaded or installed.</td></tr>
+          <tr><td><a href="{{ get_url(path='@/docs/build.md') }}">Built in Rust</a></td><td>Rust everywhere except the OS boundary: 101 <code>unsafe</code> blocks, all of them FFI, and the build rejects any block that does not state its own soundness argument. 9984 automated tests. Under 17 MB static binary.</td></tr>
         </tbody>
       </table>
     </div>
   </div>
 </section>
 
-<!-- Standards-based quality metrics -->
-<section class="metrics" id="metrics">
-  <div class="metrics-inner">
-    <header class="section-head">
-      <p class="section-kicker">Standards-based</p>
-      <h2>Quality Metrics</h2>
-      <p class="metrics-sub">sipnab reports the metrics VoIP engineers already work in &mdash; one card per ITU-T or IETF standard, listing the figures it grounds. Every figure comes from the packets, and a figure nothing measured stays absent rather than reading as zero.</p>
-    </header>
-    <div class="metrics-grid">
-      <div class="metric-card fade-in-up">
-        <h3 class="metric-name"><a class="metric-std" href="https://www.itu.int/rec/T-REC-G.107" target="_blank" rel="noopener noreferrer">ITU-T G.107</a></h3>
-        <p class="metric-topic">The E-model</p>
-        <ul class="metric-list">
-          <li><strong>MOS</strong> &mdash; E-model R&nbsp;=&nbsp;93.2&nbsp;&minus;&nbsp;Id&nbsp;&minus;&nbsp;Ie-eff from delay plus jitter, codec and loss, mapped to a score by Annex&nbsp;B and clamped to [1.0, 4.5].</li>
-          <li><strong>Delay input</strong> &mdash; the one-way delay behind the score: your <code>[media] one_way_delay_ms</code>, else half an RTCP round trip, else 100 ms marked <code>assumed</code>.</li>
-        </ul>
-      </div>
-      <div class="metric-card fade-in-up">
-        <h3 class="metric-name"><a class="metric-std" href="https://www.itu.int/rec/T-REC-G.113" target="_blank" rel="noopener noreferrer">ITU-T G.113</a></h3>
-        <p class="metric-topic">Codec impairment</p>
-        <ul class="metric-list">
-          <li><strong>MOS grounding</strong> &mdash; the equipment impairment Ie from Table&nbsp;I.1 for G.711 and G.729, Opus scored as G.711, or your own <code>[media.codec_ie]</code>; any other codec gets a placeholder and <code>mos_grounding: unpublished</code>.</li>
-        </ul>
-      </div>
-      <div class="metric-card fade-in-up">
-        <h3 class="metric-name"><a class="metric-std" href="https://www.itu.int/rec/T-REC-G.114" target="_blank" rel="noopener noreferrer">ITU-T G.114</a></h3>
-        <p class="metric-topic">Delay guidance</p>
-        <ul class="metric-list">
-          <li><strong>Round-trip verdict</strong> &mdash; warn and bad thresholds default to the 150 ms and 400 ms one-way guidance, doubled; a stream nobody reported a round trip for carries <code>round_trip_note</code>, never a pass.</li>
-        </ul>
-      </div>
-      <div class="metric-card fade-in-up">
-        <h3 class="metric-name"><a class="metric-std" href="https://www.rfc-editor.org/rfc/rfc3550" target="_blank" rel="noopener noreferrer">RFC 3550</a></h3>
-        <p class="metric-topic">RTP and RTCP</p>
-        <ul class="metric-list">
-          <li><strong>Jitter</strong> &mdash; interarrival jitter per stream by the running estimator the specification defines, grounded only when the clock rate is known.</li>
-          <li><strong>Packet loss</strong> &mdash; lost versus expected packets from sequence-number gaps, with the lost sequence numbers kept for the loss map.</li>
-          <li><strong>Round-trip time</strong> &mdash; from a receiver report's LSR and DLSR fields (<a href="https://www.rfc-editor.org/rfc/rfc3550#section-6.4.1">section 6.4.1</a>), anchored on when sipnab saw the report, with <code>round_trip_source</code> saying so.</li>
-          <li><strong>Reception reports</strong> &mdash; the far end's own fraction lost, cumulative loss and jitter from SR and RR blocks, kept under <code>endpoint_reported</code> and never fed to the MOS.</li>
-        </ul>
-      </div>
-      <div class="metric-card fade-in-up">
-        <h3 class="metric-name"><a class="metric-std" href="https://www.rfc-editor.org/rfc/rfc3611" target="_blank" rel="noopener noreferrer">RFC 3611</a></h3>
-        <p class="metric-topic">RTCP Extended Reports</p>
-        <ul class="metric-list">
-          <li><strong>VoIP Metrics</strong> &mdash; the XR (PT=207) block of Section&nbsp;4.7: the endpoint's own R-factor, MOS-LQ and MOS-CQ, loss and discard rates, burst and gap durations, round-trip and end-system delay, under <code>endpoint_reported</code>.</li>
-          <li><strong>XR round trip</strong> &mdash; the reporting endpoint's own round trip, which wins over the SR echo when both exist: <code>round_trip_source: xr_voip_metrics</code>.</li>
-        </ul>
-      </div>
-    </div>
-  </div>
-</section>
-
-<section class="metrics" id="standards">
-  <div class="metrics-inner">
-    <header class="section-head">
-      <p class="section-kicker">On the wire</p>
-      <h2>Standards Implemented</h2>
-      <p class="metrics-sub">The protocols and formats sipnab parses, decrypts, sends and receives, one card per specification with what sipnab does under it. Every title links to the document itself.</p>
-    </header>
-    <div class="metrics-grid">
-      <div class="metric-card fade-in-up">
-        <h3 class="metric-name"><a class="metric-std" href="https://www.rfc-editor.org/rfc/rfc3261" target="_blank" rel="noopener noreferrer">RFC 3261</a></h3>
-        <p class="metric-topic">Session Initiation Protocol</p>
-        <ul class="metric-list">
-          <li><strong>Parsing</strong> &mdash; every request and response, header by header.</li>
-          <li><strong>Dialogs and timing</strong> &mdash; dialog tracking with post-dial delay, setup, ring and teardown times.</li>
-          <li><strong>Lint</strong> &mdash; conformance findings against the specification, each pointing at the frame that earned it.</li>
-        </ul>
-      </div>
-      <div class="metric-card fade-in-up">
-        <h3 class="metric-name"><a class="metric-std" href="https://www.rfc-editor.org/rfc/rfc8866" target="_blank" rel="noopener noreferrer">RFC 8866</a></h3>
-        <p class="metric-topic">Session Description Protocol</p>
-        <ul class="metric-list">
-          <li><strong>Offer/answer parsing</strong> &mdash; connection and media lines, codecs, direction attributes and <code>a=crypto</code>.</li>
-          <li><strong>SDP timeline</strong> &mdash; every offer and answer in order, with hold, resume, codec changes and media anchor moves called out.</li>
-        </ul>
-      </div>
-      <div class="metric-card fade-in-up">
-        <h3 class="metric-name"><a class="metric-std" href="https://www.rfc-editor.org/rfc/rfc3551" target="_blank" rel="noopener noreferrer">RFC 3551</a></h3>
-        <p class="metric-topic">RTP profile for audio and video</p>
-        <ul class="metric-list">
-          <li><strong>Codec identification</strong> &mdash; static payload types and clock rates from Tables 4 and 5, or the <code>a=rtpmap</code> an offer declared.</li>
-        </ul>
-      </div>
-      <div class="metric-card fade-in-up">
-        <h3 class="metric-name"><a class="metric-std" href="https://www.rfc-editor.org/rfc/rfc4733" target="_blank" rel="noopener noreferrer">RFC 4733</a></h3>
-        <p class="metric-topic">Telephone events in RTP</p>
-        <ul class="metric-list">
-          <li><strong>Digit extraction</strong> &mdash; telephone-event payloads decoded, with the repeated end packets deduplicated.</li>
-          <li><strong>Masking</strong> &mdash; every surface prints <code>x</code> for a digit until <code>--dtmf-cleartext</code> opts in, because the digits after answer are the PIN.</li>
-        </ul>
-      </div>
-      <div class="metric-card fade-in-up">
-        <h3 class="metric-name"><a class="metric-std" href="https://www.rfc-editor.org/rfc/rfc3711" target="_blank" rel="noopener noreferrer">RFC 3711</a></h3>
-        <p class="metric-topic">Secure RTP</p>
-        <ul class="metric-list">
-          <li><strong>Decryption</strong> &mdash; AES-CM key derivation and payload decryption with keys from SDES <code>a=crypto</code> lines or a key file.</li>
-          <li><strong>Authentication</strong> &mdash; stateful auth-tag verification, HMAC-SHA1 through the crypto backend.</li>
-        </ul>
-      </div>
-      <div class="metric-card fade-in-up">
-        <h3 class="metric-name"><a class="metric-std" href="https://www.rfc-editor.org/rfc/rfc8446" target="_blank" rel="noopener noreferrer">RFC 8446</a></h3>
-        <p class="metric-topic">Transport Layer Security</p>
-        <ul class="metric-list">
-          <li><strong>TLS 1.3</strong> &mdash; record decryption from the traffic secrets in an SSLKEYLOGFILE.</li>
-          <li><strong>TLS 1.2</strong> &mdash; from a <code>CLIENT_RANDOM</code> master secret plus the captured ServerHello (RFC 5246), and no plaintext sipnab cannot authenticate.</li>
-        </ul>
-      </div>
-      <div class="metric-card fade-in-up">
-        <h3 class="metric-name"><a class="metric-std" href="https://www.rfc-editor.org/rfc/rfc5389" target="_blank" rel="noopener noreferrer">RFC 5389</a></h3>
-        <p class="metric-topic">Session Traversal Utilities for NAT</p>
-        <ul class="metric-list">
-          <li><strong>Binding diagnosis</strong> &mdash; Binding Requests and Responses parsed, and the request that never came back reported as the reason a phone offered its private address.</li>
-        </ul>
-      </div>
-      <div class="metric-card fade-in-up">
-        <h3 class="metric-name"><a class="metric-std" href="https://github.com/sipcapture/HEP" target="_blank" rel="noopener noreferrer">HEP v3</a></h3>
-        <p class="metric-topic">Homer Encapsulation Protocol</p>
-        <ul class="metric-list">
-          <li><strong>Send</strong> &mdash; HEP v3 to a Homer collector with <code>-H</code>.</li>
-          <li><strong>Receive</strong> &mdash; versions 2 and 3 from every proxy in the estate with <code>-L</code>, behind a source allowlist and a rate limit.</li>
-        </ul>
-      </div>
-      <div class="metric-card fade-in-up">
-        <h3 class="metric-name"><a class="metric-std" href="https://datatracker.ietf.org/doc/draft-ietf-vcon-vcon-core/" target="_blank" rel="noopener noreferrer">draft-ietf-vcon-vcon-core</a></h3>
-        <p class="metric-topic">Virtualized Conversation</p>
-        <ul class="metric-list">
-          <li><strong>Export</strong> &mdash; one observed dialog as a vCon container: the parties, the SIP ladder, a diagnosis of the call and what the capture missed. Needs the <code>vcon</code> feature, which the gnu and macOS builds carry and the static musl builds do not.</li>
-          <li><strong>Audio inline</strong> &mdash; RTP the run retained travels inside the container as a <code>recording</code> Dialog Object with a <code>sha512</code> content hash.</li>
-        </ul>
-      </div>
-    </div>
-  </div>
-</section>
-
-<!-- Architecture callout -->
 <section class="arch-callout">
   <div class="arch-inner">
     <header class="section-head">
-      <p class="section-kicker">Production-ready</p>
-      <h2>Engineered for Production</h2>
+      <h2>Measured, not promised</h2>
     </header>
     <div class="arch-grid">
       {# The whole tile is the link, not just the label. `.arch-item:hover`
@@ -546,42 +455,44 @@ sipnab -N --json -I capture.pcap --problems</code></pre>
          offline pcap reconstruction, and the benchmarks page says so. #}
       <a class="arch-item fade-in-up" href="{{ get_url(path='@/docs/benchmarks.md') }}">
         <span class="arch-stat" data-count="3.56" data-suffix="M pkts/s">3.56M pkts/s</span>
-        <span class="arch-label">Headroom to take a whole estate's HEP feed on one box, with no collector tier &mdash; offline reconstruction, four cores (measured v0.5.160)</span>
+        <span class="arch-label">Packets per second reading a capture file on four cores: room for the HEP feed of many proxies on one box (measured v0.5.160)</span>
       </a>
       <a class="arch-item fade-in-up" href="{{ config.extra.github_url }}/actions/workflows/ci.yml">
-        <span class="arch-stat" data-count="9965" data-suffix="">9965</span>
+        <span class="arch-stat" data-count="9984" data-suffix="">9984</span>
         <span class="arch-label">Automated tests</span>
       </a>
     </div>
+    <p class="arch-more"><a href="{{ get_url(path='@/standards.md') }}">See the standards behind every number &rarr;</a></p>
   </div>
 </section>
 
-<!-- Engineering notes: the most recent, capped at three. Pulled from the
-     section so the LIST cannot go stale the way a hand-written one would.
-     The cap is three; how many appear is however many notes exist, which is
-     why nothing here states a count -- this comment said "the three most
-     recent" while the section held two, and a number in prose has to be kept
-     true by hand, which is the thing the generated list exists to avoid. -->
+{# How-tos and walkthroughs: the newest three, how-tos ahead of features, pulled from the section so the
+   list cannot go stale the way a hand-written one would. Post-mortems are left
+   out on purpose. The notes index collapses them because an account of what
+   broke is a poor front page, and this is the front page of the front page.
+   Nothing here states a count: how many appear is however many exist, up to
+   the cap, and a number in prose has to be kept true by hand. #}
 {% set notes = get_section(path="notes/_index.md") %}
-{% if notes.pages | length > 0 %}
+{% set guides = notes.pages | filter(attribute="extra.kind", value="howto") | concat(with=notes.pages | filter(attribute="extra.kind", value="feature")) %}
+{% if guides | length > 0 %}
 <section class="notes-callout" id="notes">
   <div class="notes-inner">
     <header class="notes-head">
-      <h2>Engineering notes</h2>
-      <p>How sipnab is actually built and debugged &mdash; regressions found and fixed, protocol traps, and reasoning that is hard to see from the outside. Real problems, real numbers.</p>
+      <h2>How-tos and walkthroughs</h2>
+      <p>Step-by-step guides to real jobs with sipnab, and what each new feature is for.</p>
     </header>
     <ul class="notes-grid">
-      {% for p in notes.pages | slice(end=3) %}
+      {% for p in guides | slice(end=3) %}
       <li class="notes-card">
         <a href="{{ p.permalink }}">
-          {% if p.date %}<span class="notes-card-date"><time datetime="{{ p.date }}">{{ p.date | date(format="%e %B %Y") }}</time></span>{% endif %}
+          {% if p.date %}<span class="notes-card-date"><time datetime="{{ p.date }}">{{ p.date | date(format="%-d %B %Y") }}</time></span>{% endif %}
           <span class="notes-card-title">{{ p.title }}</span>
           {% if p.description %}<span class="notes-card-desc">{{ p.description }}</span>{% endif %}
         </a>
       </li>
       {% endfor %}
     </ul>
-    <p class="notes-more"><a href="{{ get_url(path='@/notes/_index.md') }}">All engineering notes &rarr;</a></p>
+    <p class="notes-more"><a href="{{ get_url(path='@/notes/_index.md') }}">All notes &rarr;</a></p>
   </div>
 </section>
 {% endif %}
@@ -686,11 +597,41 @@ document.querySelectorAll('.copy-btn').forEach(function(btn) {
   var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)');
   if (reduce && reduce.matches) return;
 
+  // The alt text follows the image: the still frame shows one ladder, the
+  // animation shows a walk through the dialog list into it.
+  var stillSrc = hero.getAttribute('src');
+  var stillAlt = hero.getAttribute('alt');
+  var movingAlt = 'sipnab interactive TUI, animated: browsing the dialog list of the sample capture and opening a call-flow ladder';
+  var pause = document.getElementById('hero-pause');
+
+  function play() {
+    hero.src = animated;
+    hero.alt = movingAlt;
+    if (pause) {
+      pause.textContent = 'Pause animation';
+      pause.setAttribute('aria-pressed', 'false');
+    }
+  }
+  function stop() {
+    hero.src = stillSrc;
+    hero.alt = stillAlt;
+    pause.textContent = 'Play animation';
+    pause.setAttribute('aria-pressed', 'true');
+  }
+
   window.addEventListener('load', function () {
     // Decode fully before swapping. Assigning src directly would blank the
     // hero for as long as the fetch takes, trading a still image for a hole.
     var pre = new Image();
-    pre.onload = function () { hero.src = animated; };
+    pre.onload = function () {
+      play();
+      if (pause) {
+        pause.classList.add('is-live');
+        pause.addEventListener('click', function () {
+          if (pause.getAttribute('aria-pressed') === 'true') { play(); } else { stop(); }
+        });
+      }
+    };
     pre.src = animated;
   });
 })();

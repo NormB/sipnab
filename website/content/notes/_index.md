@@ -6,15 +6,14 @@ template = "notes.html"
 page_template = "note.html"
 +++
 
-Working notes from building and running sipnab. Three kinds, and the label on
-each entry says which it is:
+Each entry carries a label that says which kind it is:
 
-- **How-to** — do one thing, end to end, with the commands that actually ran.
-- **Features** — what a release added and what each part is for.
-- **Postmortems** — a real problem with real numbers. A regression that
-  shipped, a protocol assumption that turned out to be wrong, a gate that
-  passed when it should not have.
+- **How-to**: do one job, end to end, with the commands that actually ran.
+- **Feature**: what a release added and what each part is for.
+- **Post-mortem**: a real problem with real numbers. A regression that
+  shipped, a protocol assumption that turned out to be wrong, or a gate that
+  passed when it should not have. These sit in a collapsed list at the end.
 
-These are not release announcements. The [changelog](https://github.com/NormB/sipnab/blob/main/CHANGELOG.md)
-covers what changed, and the [documentation](@/docs/_index.md) is the
-reference. These cover how to use it and why it was hard.
+For what changed in each release, read the
+[changelog](https://github.com/NormB/sipnab/blob/main/CHANGELOG.md). For
+reference material, read the [documentation](@/docs/_index.md).

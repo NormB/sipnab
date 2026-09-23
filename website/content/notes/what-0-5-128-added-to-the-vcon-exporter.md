@@ -1,7 +1,7 @@
 +++
 title = "What 0.5.128 added to the vCon exporter"
 date = 2026-08-27
-description = "Seven fields the format defines and sipnab was not emitting, transfer objects for observed REFERs, a configurable media ceiling, tombstones for withheld dialogs, and [RFC 9457](https://www.rfc-editor.org/rfc/rfc9457) errors. What each one is for."
+description = "Seven fields the format defines and sipnab was not emitting, transfer objects for observed REFERs, a configurable media ceiling, tombstones for withheld dialogs, and RFC 9457 problem-detail errors. What each one is for."
 
 [extra]
 kind = "feature"
@@ -60,7 +60,7 @@ every signaling-only container for a call that answered reported a failure that
 never happened. [The full story is its own
 note](@/notes/the-container-that-said-every-call-failed.md).
 
-**REST errors carry RFC 9457 `application/problem+json`.** They used to be a
+**REST errors carry [RFC 9457](https://www.rfc-editor.org/rfc/rfc9457) `application/problem+json`.** They used to be a
 bare status code with no body, so a client got a number and had to guess which
 of a handler's several 400s it had hit. The `type` URI is the member to branch
 on, and its slug derives from the status rather than from free text at each

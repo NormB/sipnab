@@ -1,13 +1,11 @@
 +++
-title = "OpenAPI Reference"
+title = "OpenAPI reference"
 description = "The interactive OpenAPI 3.1 reference for sipnab's REST API, generated from the request handlers themselves and rendered with Scalar. Every route, parameter, response shape and status code the server actually serves."
 template = "page.html"
 
 [extra]
 openapi_reference = true
 +++
-
-# OpenAPI reference
 
 This page renders sipnab's OpenAPI 3.1 document. sipnab generates that document
 from the REST handlers themselves, so the routes the server serves and the

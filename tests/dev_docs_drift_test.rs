@@ -1485,38 +1485,67 @@ fn pages_with_diagrams_load_the_mermaid_bundle() {
     }
 }
 
-/// Every mirrored page is reachable from the Docs dropdown.
+/// Every mirrored developer page is reachable from both docs navs.
 ///
 /// The gap that started this: the developer docs shipped and the dropdown
 /// never learned about them, so the only way to the pages was a direct URL.
+///
+/// The dropdown now carries ONE developer link, to the internals index, and
+/// the docs sidebar lists the whole section through `macros::nav_section`,
+/// which iterates the section's pages rather than a hand-kept list. So a
+/// mirrored page is reachable when the index is linked from the dropdown, both
+/// sidebars render the section, and the page is in the section at all.
 #[test]
-fn every_site_internals_page_is_in_the_docs_dropdown() {
-    // Comments blanked first: replacing the Threading Model `<a>` with a Tera
-    // comment containing the same path left this green, while the text never
-    // reached rendered HTML and the page was reachable only by direct URL —
-    // precisely the gap the doc comment above says started this test.
+fn every_site_internals_page_is_reachable_from_the_docs_navs() {
+    // Comments blanked first: a link written inside a Tera comment never
+    // reaches rendered HTML, and a gate reading it would pass on prose.
     let base = markdown::blank_tera_comments(&read("website/templates/base.html"));
+    let index = "@/docs/internals/_index.md";
+    let linked = base.lines().any(|l| {
+        l.contains(index) && l.contains("<a ") && l.contains("href=") && l.contains("get_url")
+    });
+    assert!(
+        linked,
+        "the Docs dropdown in base.html has no anchor to {index}, so the \
+         developer docs are reachable only by a URL a reader does not have"
+    );
+    for template in [
+        "website/templates/page.html",
+        "website/templates/section.html",
+    ] {
+        let src = markdown::blank_tera_comments(&read(template));
+        assert!(
+            src.contains("macros::nav_section(")
+                && src.contains("section_path=\"docs/internals/_index.md\""),
+            "{template} does not render the internals section in its sidebar"
+        );
+    }
+    let macros = markdown::blank_tera_comments(&read("website/templates/macros.html"));
+    let at = macros
+        .find("macro nav_section(")
+        .expect("macros.html has no nav_section macro");
+    assert!(
+        macros[at..].contains("for p in sec.pages"),
+        "nav_section no longer lists every page of its section"
+    );
+
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("website/content/docs/internals");
     let mut missing = Vec::new();
     for page in internals_pages() {
-        let path = format!("@/docs/internals/{}", site_mirror_name(&page));
-        // The path has to appear in an anchor's href, not merely somewhere in
-        // the file: a mention in a `<script>`, an attribute or leftover markup
-        // is not a link a reader can follow.
-        let linked = base.lines().any(|l| {
-            l.contains(&path) && l.contains("<a ") && l.contains("href=") && l.contains("get_url")
-        });
-        if !linked {
-            missing.push(path);
+        let name = site_mirror_name(&page);
+        if !dir.join(&name).is_file() {
+            missing.push(name);
         }
     }
     assert!(
         missing.is_empty(),
-        "developer pages have no anchor in the Docs dropdown in base.html:\n  {}",
+        "developer pages missing from website/content/docs/internals, so no \
+         nav can reach them:\n  {}",
         missing.join("\n  ")
     );
 }
 
-/// Every OPERATOR page the generator writes is reachable from EVERY docs nav.
+/// Every OPERATOR page the generator writes is in the docs nav list.
 ///
 /// The sibling test above covers `docs/internals/` only, and the gap it leaves
 /// is the same one it was written to close. Registering
@@ -1527,21 +1556,16 @@ fn every_site_internals_page_is_in_the_docs_dropdown() {
 /// repository keeps finding in its own code — a capability built, tested,
 /// documented and not connected.
 ///
-/// THREE navs, not one. The first version of this test read `base.html` alone
-/// and passed while `sip-lint-rules.md` was missing from the sidebar in
-/// `page.html` and `section.html` — the nav every reader actually uses once
-/// they are inside the docs. A gate that checks one of two routes reports the
-/// page as reachable and is worse than no gate, because it is believed. The
-/// two navs are spelled differently on purpose here: the dropdown carries
-/// `@/docs/<page>` anchors, the sidebar passes bare filenames to
-/// `macros::nav_group(paths=[…])`, and matching one shape against the other
-/// would silently find nothing.
+/// Both docs navs render `[[extra.docs_nav]]` from website/config.toml: the
+/// sidebar every entry, the dropdown the entries marked `menu` plus "All
+/// docs". `both_docs_navs_render_the_one_list` in site_journey_test.rs holds
+/// the templates to that list, so this holds the list to the generator.
 ///
 /// Ground truth is `PAGES` in the generator, read out of the script rather
-/// than restated, so a page added there has to appear in every nav or fail
+/// than restated, so a page added there has to appear in the list or fail
 /// here.
 #[test]
-fn every_site_operator_page_is_in_every_docs_nav() {
+fn every_site_operator_page_is_in_the_docs_nav_list() {
     let script = read("scripts/build-site-pages.py");
     // The site filename is the SECOND string of each PAGES tuple, on the line
     // after the `"docs/….md",` source path. Keyed off the source path so a
@@ -1559,61 +1583,32 @@ fn every_site_operator_page_is_in_every_docs_nav() {
         pages.len()
     );
 
-    // Nav 1: the header dropdown, one `<a>` per page.
-    let base = markdown::blank_tera_comments(&read("website/templates/base.html"));
-    let mut missing = Vec::new();
-    for page in &pages {
-        let path = format!("@/docs/{page}");
-        let linked = base.lines().any(|l| {
-            l.contains(&path) && l.contains("<a ") && l.contains("href=") && l.contains("get_url")
-        });
-        if !linked {
-            missing.push(format!("base.html dropdown: {path}"));
-        }
-    }
-
-    // Navs 2 and 3: the in-page sidebar, built from `nav_group(paths=[…])`
-    // lists of bare filenames. Both templates carry their own copy of the
-    // list, so a page added to one and not the other is reachable from a
-    // section index and not from a page, or the reverse.
-    // Both compiled once, outside the loop: `clippy::regex_creation_in_loops`
-    // is denied by `--all-targets`, which the pre-commit clippy run does not
-    // pass and CI does.
-    let group_re = regex::Regex::new(r#"nav_group\([^)]*paths\s*=\s*\[([^\]]*)\]"#).expect("regex");
-    let name_re = regex::Regex::new(r#""([a-z0-9-]+\.md)""#).expect("regex");
-    for template in [
-        "website/templates/page.html",
-        "website/templates/section.html",
-    ] {
-        let src = markdown::blank_tera_comments(&read(template));
-        let listed: std::collections::BTreeSet<String> = group_re
-            .captures_iter(&src)
-            .flat_map(|c| {
-                name_re
-                    .captures_iter(&c[1])
-                    .map(|m| m[1].to_string())
-                    .collect::<Vec<_>>()
-            })
-            .collect();
-        assert!(
-            listed.len() >= 18,
-            "{template} yielded only {} sidebar entries — the nav_group call \
-             shape changed and this gate is no longer reading the sidebar",
-            listed.len()
-        );
-        for page in &pages {
-            if !listed.contains(page) {
-                missing.push(format!("{template} sidebar: {page}"));
-            }
-        }
-    }
-
+    let cfg: toml::Value =
+        toml::from_str(&read("website/config.toml")).expect("website/config.toml parses");
+    let listed: std::collections::BTreeSet<String> = cfg["extra"]
+        .get("docs_nav")
+        .and_then(|g| g.as_array())
+        .expect("website/config.toml has no [[extra.docs_nav]]")
+        .iter()
+        .flat_map(|g| g["pages"].as_array().cloned().unwrap_or_default())
+        .filter_map(|e| e["path"].as_str().map(str::to_string))
+        .collect();
+    assert!(
+        listed.len() >= 18,
+        "[[extra.docs_nav]] yielded only {} entries — the list shape changed \
+         and this gate is no longer reading it",
+        listed.len()
+    );
+    let missing: Vec<String> = pages
+        .iter()
+        .filter(|p| !listed.contains(&format!("docs/{p}")))
+        .cloned()
+        .collect();
     assert!(
         missing.is_empty(),
-        "these generated operator pages are unreachable from a docs nav, so a \
-         reader gets to them only by a URL they do not have. Add the page to \
-         the dropdown in base.html AND to the matching nav_group in both \
-         page.html and section.html:\n  {}",
+        "these generated operator pages are in no docs nav, so a reader gets \
+         to them only by a URL they do not have. Add each to \
+         [[extra.docs_nav]] in website/config.toml:\n  {}",
         missing.join("\n  ")
     );
 }

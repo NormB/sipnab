@@ -2944,7 +2944,7 @@ only and never remembers it:
   that fingerprint, the archive's name and the count. The log never holds the
   password.
 - **No surrounding spaces.** HTTP trims leading and trailing whitespace from
-  a header value (RFC 9110), so a password that starts or ends with a space
+  a header value ([RFC 9110](https://www.rfc-editor.org/rfc/rfc9110)), so a password that starts or ends with a space
   cannot travel in this header. Configure it on the server instead.
 - **No cache keeps a copy.** Every response to a request carrying the header, or
   one that read a password-protected archive, carries `Cache-Control:

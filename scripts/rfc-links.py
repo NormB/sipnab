@@ -116,6 +116,24 @@ def _line(line: str, seen: set, counts: list, link_bare: bool) -> str:
     return "`".join(parts)
 
 
+def _front_matter_lines(text: str) -> int:
+    """How many leading lines are TOML (`+++`) or YAML (`---`) front matter.
+
+    Front matter is metadata. A `description` there is printed as plain text
+    in list rows, cards and `<meta>` tags, so a Markdown link written into it
+    shows the reader brackets and a URL. The first mention in the BODY is the
+    one to link. `rfc_section_citations_are_linked` skips the same lines.
+    """
+    lines = text.split("\n")
+    if not lines or lines[0].strip() not in ("+++", "---"):
+        return 0
+    fence = lines[0].strip()
+    for n, line in enumerate(lines[1:], start=1):
+        if line.strip() == fence:
+            return n + 1
+    return 0
+
+
 def convert(text: str) -> tuple[str, int, int]:
     seen: set[str] = set()
     counts = [0, 0]
@@ -125,8 +143,9 @@ def convert(text: str) -> tuple[str, int, int]:
     # inner ``` of a ```` block as closing it and rewrites the rest of the
     # code block as prose.
     mask = fence_mask(text)
+    front = _front_matter_lines(text)
     for n, line in enumerate(text.split("\n")):
-        if n < len(mask) and mask[n]:
+        if (n < len(mask) and mask[n]) or n < front:
             out.append(line)
             continue
         out.append(_line(line, seen, counts, link_bare=True))
@@ -224,3 +243,9 @@ if __name__ == "__main__":
                 f.write_text(out)
     verb = "LINKED" if apply else "WOULD LINK"
     print(f"{verb} {tot_s} section citations + {tot_b} first mentions across {files} files")
+    # Check mode is a gate: it fails when `--apply` would change anything.
+    # It exited 0 whatever it found, so the test that calls it the tree's
+    # gate could never fail, and the first-mention half of the rule was
+    # enforced only by tests that ran `--apply` on the real checkout.
+    if files and not apply:
+        sys.exit(1)

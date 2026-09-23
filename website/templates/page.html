@@ -37,17 +37,12 @@
 <div class="doc-layout">
   <aside class="doc-sidebar" aria-label="Documentation navigation" id="doc-sidebar">
     <nav class="doc-nav" aria-label="Docs sections">
-      {{ macros::nav_group(title="Getting started", paths=["install.md", "cookbook.md", "real-world-captures.md", "tls-capture.md", "uprobe-walkthrough.md", "troubleshooting.md", "tuning-capture.md", "encapsulations.md", "rtpengine.md"], current_url=page.permalink) }}
-      {{ macros::nav_group(title="Using the TUI", paths=["tui.md", "keybindings.md", "theme.md"], current_url=page.permalink) }}
-      {{ macros::nav_group(title="CLI & automation", paths=["cli.md", "filter-dsl.md", "output-formats.md", "sip-response-codes.md", "sip-methods.md", "sip-header-fields.md", "sip-parameters.md", "sip-lint-rules.md", "mos-and-codecs.md"], current_url=page.permalink) }}
-      {{ macros::nav_group(title="Configuration", paths=["config.md"], current_url=page.permalink) }}
-      {{ macros::nav_group(title="API & integrations", paths=["api.md", "api-clients.md", "library.md", "examples.md", "metrics.md", "auth.md", "integrations.md", "plugins.md", "mcp.md", "mcp-deploy.md", "mcp-estate.md", "mcp-tools.md", "mcp-protocol.md", "vcon.md", "vcon-harness.md"], current_url=page.permalink) }}
-      {{ macros::nav_group(title="Build & benchmarks", paths=["build.md", "benchmarks.md"], current_url=page.permalink) }}
-      {{ macros::nav_section(title="Internals (developers)", section_path="docs/internals/_index.md", current_url=page.permalink) }}
+      {{ macros::docs_nav(nav=config.extra.docs_nav, current_url=page.permalink) }}
+      {{ macros::nav_section(title="Developer docs", section_path="docs/internals/_index.md", current_url=page.permalink) }}
     </nav>
   </aside>
 
-  <!-- data-pagefind-body scopes the Pagefind index to the article, not the
+  {# data-pagefind-body scopes the Pagefind index to the article, not the
        <body>. Without it every page indexes the docs sidebar too, and the
        sidebar is the same ~40 link titles on every page — so a search for
        "keybindings" would match all of them and rank nothing. It sits on
@@ -58,7 +53,7 @@
        The attribute is opt-in site-wide: once any page carries it,
        Pagefind indexes only pages that do. That is deliberate — the
        homepage, /download and /analyze are marketing and app surfaces, and
-       this box searches documentation. -->
+       this box searches documentation. #}
   <article class="doc-content" data-pagefind-body>
     <header class="doc-header">
       <p class="doc-kicker"><a href="{{ get_url(path='@/docs/_index.md') }}">Docs</a> <span aria-hidden="true">/</span> {{ page.title }}</p>
@@ -80,7 +75,7 @@
     {% endif %}
 
     <div class="doc-body">
-      <!-- `| safe` is required and not removable: `page.content` is the HTML
+      {# `| safe` is required and not removable: `page.content` is the HTML
            Zola already rendered from the page's Markdown. Escaping it would
            print the tags as literal text and every docs page would render as
            its own source. The value is not attacker-controlled — it is
@@ -89,13 +84,13 @@
            not the request. If a page's body ever comes from somewhere a
            visitor can write, this filter has to go first; the allowlist in
            every_escaping_bypass_in_the_site_templates_is_on_the_reviewed_allowlist
-           is what forces that to be a deliberate, reviewed edit. -->
+           is what forces that to be a deliberate, reviewed edit. #}
       {{ page.content | safe }}
     </div>
 
-    <!-- Prev/Next nav. data-pagefind-ignore: these two links carry the
+    {# Prev/Next nav. data-pagefind-ignore: these two links carry the
          titles of the NEIGHBORING pages, so without it every page would
-         match searches for the pages either side of it. -->
+         match searches for the pages either side of it. #}
     {% if page.lower or page.higher %}
     <nav class="doc-prevnext" aria-label="Documentation pages" data-pagefind-ignore>
       {% if page.lower %}

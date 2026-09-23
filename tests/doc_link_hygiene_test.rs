@@ -256,6 +256,31 @@ fn rfc_link_scope() -> Vec<(String, String)> {
     out
 }
 
+/// How many leading lines are TOML (`+++`) or YAML (`---`) front matter.
+///
+/// The same rule as `_front_matter_lines` in `scripts/rfc-links.py`: a page's
+/// front matter is printed as plain text (a list row, a card, a `<meta>` tag),
+/// so a Markdown link there shows the reader brackets and a URL.
+fn front_matter_lines(text: &str) -> usize {
+    let mut lines = text.lines();
+    let Some(fence) = lines.next().map(str::trim) else {
+        return 0;
+    };
+    if fence != "+++" && fence != "---" {
+        return 0;
+    }
+    lines.position(|l| l.trim() == fence).map_or(0, |n| n + 2)
+}
+
+/// Front matter is counted through its closing fence and no further.
+#[test]
+fn front_matter_lines_counts_through_the_closing_fence() {
+    assert_eq!(front_matter_lines("+++\na = 1\n+++\nbody"), 3);
+    assert_eq!(front_matter_lines("---\ntitle: x\n---\n"), 3);
+    assert_eq!(front_matter_lines("# Title\n+++\n"), 0);
+    assert_eq!(front_matter_lines("+++\nnever closed\n"), 0);
+}
+
 /// A citation naming a section must link to that section.
 ///
 /// Both spellings count: "RFC 3261 section 7.3.1", which is how this tree
@@ -272,7 +297,13 @@ fn rfc_section_citations_are_linked() {
     let mut scanned = 0usize;
     for (path, text) in rfc_link_scope() {
         scanned += 1;
+        // Front matter is metadata, printed as plain text, so the fixer
+        // leaves it alone and so does this gate: the two share one scope.
+        let front = front_matter_lines(&text);
         for (lineno, line) in prose_lines(&text) {
+            if lineno <= front {
+                continue;
+            }
             // Outside code spans only, as the fixer does: a span quotes a
             // command or a program's output, and a link inside backticks
             // renders as literal brackets.
