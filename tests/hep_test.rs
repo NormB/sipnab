@@ -572,11 +572,16 @@ fn hep_senders_reports_who_fed_the_listener_and_who_it_refused() {
 /// rewritten: the encoder derives that byte from a real transport and cannot
 /// produce the fake numbers, which is correct for a sender.
 fn hep3_with_ip_proto(ip_proto: u8, payload: &[u8]) -> Vec<u8> {
+    hep3_with_ip_proto_on(ip_proto, (5061, 5061), payload)
+}
+
+/// [`hep3_with_ip_proto`] with the inner SIP ports the HEP chunks assert.
+fn hep3_with_ip_proto_on(ip_proto: u8, (sport, dport): (u16, u16), payload: &[u8]) -> Vec<u8> {
     let ep = HepEndpoint {
         src_addr: "192.0.2.10".parse().unwrap(),
         dst_addr: "192.0.2.20".parse().unwrap(),
-        src_port: 5061,
-        dst_port: 5061,
+        src_port: sport,
+        dst_port: dport,
         transport: sipnab::net::TransportProto::Udp,
     };
     let mut datagram = build_hep_v3(&ep, Utc::now(), HepProtocol::Sip, 0, None, payload);
@@ -728,6 +733,93 @@ fn hep_parse_reads_the_transport_by_the_listener_rule() {
     for gone in ["IP protocol 22", "IP protocol 50", "IP protocol 6)"] {
         assert!(!not_decoded.contains(gone), "{gone}: {not_decoded}");
     }
+}
+
+// ── --portrange does not gate HEP input (issue #301) ────────────────────
+
+/// Inner SIP ports outside the default `--portrange` (5060-5061), as a proxy
+/// listening on 7060 reports its legs.
+const OFF_RANGE: (u16, u16) = (7060, 7061);
+
+/// **`-L` analyzes a HEP message whatever its inner SIP ports are.**
+///
+/// `--portrange` exists to pick SIP out of a capture that holds everything,
+/// the file-reading stand-in for the BPF filter a live capture applies. A
+/// HEP sender already chose what to send, and its ports are asserted in HEP
+/// chunks, not captured. The gate still applied, so a proxy tracing SIP on
+/// 7060 fed a listener that analyzed none of it and said "NOT ANALYZED ...
+/// Re-run with --portrange 1-65535".
+#[test]
+fn hep_listen_analyzes_sip_outside_the_portrange() {
+    let srv = HepListener::spawn_reporting(&["--hep-allow", "127.0.0.1/32", "--count", "1"]);
+    let call_id = "hep301-portrange-listen@192.0.2.10";
+    srv.send(&hep3_with_ip_proto_on(
+        17,
+        OFF_RANGE,
+        &traced_invite("UDP", call_id),
+    ));
+    let (stdout, stderr) = drain_until_exit(&srv);
+    assert_eq!(
+        transport_of(&stdout, call_id).as_deref(),
+        Some("UDP"),
+        "{stdout:#?}\n{stderr}"
+    );
+    assert!(!stderr.contains("NOT ANALYZED"), "{stderr}");
+}
+
+/// **`--hep-parse` does the same for HEP read out of a capture file**, and a
+/// captured frame beside it on the same off-range ports is still gated and
+/// counted: the gate is unchanged for what sipnab itself captured.
+#[test]
+fn hep_parse_analyzes_hep_outside_the_portrange_and_still_gates_the_wire() {
+    let hep_call = "hep301-portrange-parse@192.0.2.10";
+    let wire_call = "hep301-portrange-wire@10.1.0.1";
+    let hep = hep3_with_ip_proto_on(17, OFF_RANGE, &traced_invite("UDP", hep_call));
+    let frames = vec![
+        pcap_build::udp_frame([10, 1, 0, 1], [10, 2, 0, 1], 40000, 9060, &hep),
+        pcap_build::udp_frame(
+            [10, 1, 0, 1],
+            [10, 2, 0, 1],
+            OFF_RANGE.0,
+            OFF_RANGE.1,
+            &traced_invite("UDP", wire_call),
+        ),
+    ];
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("hep-off-range.pcap");
+    pcap_build::write_pcap(&path, &frames);
+
+    let out = Command::new(env!("CARGO_BIN_EXE_sipnab"))
+        .args(["-N", "-I", path.to_str().unwrap(), "--hep-parse", "--json"])
+        .env("NO_COLOR", "1")
+        .stdin(Stdio::null())
+        .output()
+        .expect("run sipnab --hep-parse");
+    assert!(out.status.success(), "{out:?}");
+    let stdout: Vec<String> = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(str::to_string)
+        .collect();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+
+    assert_eq!(
+        transport_of(&stdout, hep_call).as_deref(),
+        Some("UDP"),
+        "the HEP message is analyzed: {stdout:#?}\n{stderr}"
+    );
+    assert_eq!(
+        transport_of(&stdout, wire_call),
+        None,
+        "the captured frame is still gated: {stdout:#?}"
+    );
+    let not_analyzed = stderr
+        .lines()
+        .find(|l| l.contains("NOT ANALYZED"))
+        .unwrap_or_else(|| panic!("the gated wire frame must be counted: {stderr}"));
+    assert!(
+        not_analyzed.contains("NOT ANALYZED: 1 further SIP message(s)"),
+        "exactly the one wire frame, never the HEP message: {not_analyzed}"
+    );
 }
 
 /// **A HEP message marked TCP is a SIP message, not a lost segment.**

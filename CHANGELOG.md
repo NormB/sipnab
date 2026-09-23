@@ -40,7 +40,11 @@ entry that carries them.
   tracer's copy of it share an address pair, and a HEP message marked TCP was
   appended to the wire's held partial TLS record, which then never decrypted.
   A HEP message marked 50 never reaches the ESP decoder either, which a new
-  test pins. Reported by Giovanni
+  test pins. `--portrange` no longer gates HEP messages on `-L` or
+  `--hep-parse`. It exists to pick SIP out of a capture, and a HEP sender has
+  already chosen what to send, so a proxy tracing SIP on 7060 needed
+  `--portrange 1-65535` before any of its messages showed. SIP that sipnab
+  captures itself is gated as before. Reported by Giovanni
   Maruzzelli ([@gmaruzz](https://github.com/gmaruzz)) in
   [#301](https://github.com/NormB/sipnab/issues/301).
 - **A decrypted WSS leg is SIP over WSS.** With the keys, the TLS records of

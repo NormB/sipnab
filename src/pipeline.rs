@@ -2079,9 +2079,16 @@ pub fn classify_packet(
     // so a request using an RFC 3261 §7.1 `extension-method` was discarded here
     // — before the parser, which handles it — and never appeared in any output.
     let sip_looks_like_sip = sip::parser::starts_sip_message(effective_payload);
-    let sip_port_ok = opts
-        .sip_portrange
-        .is_none_or(|range| port_in_range(pp.src_port, pp.dst_port, range));
+    // `--portrange` picks SIP out of a capture that holds everything: the
+    // file-reading stand-in for the BPF filter a live capture applies. A HEP
+    // message was selected by its sender, and its ports are the sender's
+    // assertion, not something sipnab captured, so the gate never applies to
+    // it. It used to, and a proxy tracing SIP on 7060 fed `-L` or
+    // `--hep-parse` nothing but a NOT ANALYZED notice (issue #301).
+    let sip_port_ok = pp.input_origin == crate::capture::parse::InputOrigin::Hep
+        || opts
+            .sip_portrange
+            .is_none_or(|range| port_in_range(pp.src_port, pp.dst_port, range));
     if let Some(range) = opts.sip_portrange
         && !sip_port_ok
         && sip_looks_like_sip
