@@ -35,7 +35,12 @@ entry that carries them.
   unknown number stays NOT DECODED, by number. `--hep-parse`, which reads HEP
   datagrams out of a capture file or off an interface, now applies the same
   rule. It had labeled every unwrapped message UDP, so the same tracer feed
-  read TLS through `-L` and UDP from a file. Reported by Giovanni
+  read TLS through `-L` and UDP from a file. A HEP message also stays out of TLS decryption
+  under `--keylog`. With `-d any --keylog <file> -L`, the wire leg and the
+  tracer's copy of it share an address pair, and a HEP message marked TCP was
+  appended to the wire's held partial TLS record, which then never decrypted.
+  A HEP message marked 50 never reaches the ESP decoder either, which a new
+  test pins. Reported by Giovanni
   Maruzzelli ([@gmaruzz](https://github.com/gmaruzz)) in
   [#301](https://github.com/NormB/sipnab/issues/301).
 - **`-L` no longer loses every HEP message marked TCP.** A HEP sender marks a

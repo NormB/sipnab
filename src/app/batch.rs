@@ -4948,6 +4948,17 @@ fn try_tls_decrypt(
         return out;
     }
 
+    // A HEP message is plaintext a proxy already decrypted, whatever transport
+    // its sender named, so it has nothing to give TLS decryption. It must also
+    // take nothing: under `-d any --keylog <file> -L` the wire leg and the
+    // tracer's copy of it share an address pair, and admitting the copy here
+    // appended its SIP text to the wire's held partial record, which then
+    // never decrypted (issue #301). `InputOrigin::Hep` marks both
+    // `--hep-listen` and `--hep-parse` input.
+    if pp.input_origin == crate::capture::parse::InputOrigin::Hep {
+        return out;
+    }
+
     let src = std::net::SocketAddr::new(pp.src_addr, pp.src_port);
     let dst = std::net::SocketAddr::new(pp.dst_addr, pp.dst_port);
 
@@ -6663,6 +6674,91 @@ mod tests {
         cli.output_args.export_vcon_when = Some(expr.to_owned());
         cli.output_args.export_vcon_dir = Some(dir.to_path_buf());
         cli
+    }
+
+    // ── HEP input and TLS decryption (issue #301) ────────────────
+
+    /// A HEP message never enters TLS decryption, and the wire's TLS state
+    /// for the same address pair survives it.
+    ///
+    /// The merged setup the issue describes, `-d any --keylog <file> -L`, has
+    /// the wire leg and the tracer's decrypted copy of it on ONE address pair.
+    /// `try_tls_decrypt` admitted any TCP payload for a pair that holds a
+    /// partial TLS record, so a HEP message marked TCP (IP protocol 6) was
+    /// appended to the wire's held ciphertext: the next wire record then
+    /// parsed with SIP text inside it and never decrypted. A HEP payload is
+    /// plaintext a proxy already decrypted, so it has nothing to give TLS
+    /// decryption and must take nothing from it.
+    #[cfg(feature = "tls")]
+    #[test]
+    fn a_hep_message_leaves_the_wire_tls_state_for_its_address_pair_alone() {
+        use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+        let src = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 10)), 40000);
+        let dst = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 20)), 5061);
+        let packet = |payload: &[u8], origin| ParsedPacket {
+            frame: None,
+            frame_bytes: None,
+            timestamp: chrono::Utc::now(),
+            src_addr: src.ip(),
+            dst_addr: dst.ip(),
+            src_port: src.port(),
+            dst_port: dst.port(),
+            transport: TransportProto::Tcp,
+            payload: bytes::Bytes::copy_from_slice(payload),
+            ip_id: None,
+            tcp_seq: None,
+            tcp_flags: None,
+            fragment_offset: None,
+            more_fragments: false,
+            ip_protocol: 6,
+            dscp: None,
+            input_origin: origin,
+            hep: None,
+        };
+        let mut decryptor =
+            Some(TlsDecryptor::new(None, crate::crypto::default_backend()).expect("a decryptor"));
+        let mut reassembler = tls::TlsRecordReassembler::new(16);
+
+        // A 64-byte application-data record, split: the wire capture holds
+        // the header and the first 10 bytes of its body.
+        let body: Vec<u8> = (0u8..64).collect();
+        let mut record = vec![0x17, 0x03, 0x03, 0x00, 0x40];
+        record.extend_from_slice(&body);
+        let (head, tail) = record.split_at(15);
+        let wire = packet(head, crate::capture::parse::InputOrigin::Wire);
+        assert!(try_tls_decrypt(&wire, &mut decryptor, &mut reassembler).is_empty());
+        assert!(
+            reassembler.has_held(src, dst),
+            "the wire's partial record is held"
+        );
+
+        // The tracer's decrypted copy of a message on the same pair.
+        let sip = b"INVITE sip:bob@example.com SIP/2.0\r\nVia: SIP/2.0/TCP x;branch=z9hG4bK1\r\n\
+                    Call-ID: hep-tls-state@x\r\nCSeq: 1 INVITE\r\nContent-Length: 0\r\n\r\n";
+        let hep = packet(sip, crate::capture::parse::InputOrigin::Hep);
+        assert!(
+            try_tls_decrypt(&hep, &mut decryptor, &mut reassembler).is_empty(),
+            "a HEP message is plaintext already; TLS decryption yields nothing for it"
+        );
+        assert_eq!(
+            hep.payload.as_ref(),
+            &sip[..],
+            "and it is delivered as it arrived"
+        );
+
+        // The rest of the wire record completes it exactly, with its own bytes.
+        let records = reassembler.insert(src, dst, tail);
+        assert_eq!(
+            records.len(),
+            1,
+            "the held record completes on its own tail"
+        );
+        assert_eq!(
+            records[0].payload, body,
+            "the wire record must hold only wire bytes; HEP text inside it means \
+             the plaintext was appended to the held ciphertext"
+        );
+        assert!(!reassembler.has_held(src, dst), "nothing is left over");
     }
 
     // ── HEP unwrapping and the rtpengine control plane ──────────

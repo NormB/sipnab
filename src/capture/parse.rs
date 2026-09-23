@@ -5492,6 +5492,26 @@ mod tests {
         }
     }
 
+    /// A HEP message marked 50 is never handed to ESP decoding.
+    ///
+    /// Its payload here is a genuine ESP-NULL packet around a UDP INVITE,
+    /// which the raw path WOULD strip to the INVITE. From a HEP sender, 50
+    /// names WebSocket and the payload is the message, so it must come out
+    /// whole and labeled WS. A regression guard: HEP returns from the
+    /// pre-parsed branch before any ESP code, so this could not fail first.
+    #[test]
+    fn a_hep_message_marked_50_is_never_esp_decoded() {
+        let dg = udp_datagram(|n| pseudo_v4(ESP_SRC, ESP_DST, 17, n), 5060, 5062, INVITE);
+        let esp = esp_null(17, &dg, 12);
+        let parsed = parse_packet(&hep_packet(50, &esp)).expect("HEP 50 decodes");
+        assert_eq!(parsed.transport, TransportProto::Ws);
+        assert_eq!(
+            parsed.payload[..],
+            esp[..],
+            "the payload must be delivered as the sender sent it, never unwrapped as ESP"
+        );
+    }
+
     /// A RAW frame is not HEP. IP protocol 50 there is a real ESP packet and
     /// 22 is XNS IDP: neither becomes TLS or WS, even when the bytes behind
     /// the header are a SIP message whose Via says WSS.
