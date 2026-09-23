@@ -56,6 +56,16 @@ entry that carries them.
   is. That covers records decrypted as they arrive and records recovered when
   their keys come later. Found while reproducing
   [#301](https://github.com/NormB/sipnab/issues/301).
+  OpenSIPS writes each WebSocket frame as two TLS records, the 4-byte header
+  and then the payload, so every message it sent over WSS was still lost:
+  a lab run showed the client's 3 messages and none of the proxy's 4.
+  Decrypted WebSocket bytes now go through a per-direction stream that joins
+  a frame across records, splits several frames out of one record, and joins
+  a message fragmented across frames
+  ([RFC 6455 section 5.4](https://www.rfc-editor.org/rfc/rfc6455#section-5.4)),
+  up to `MAX_WS_MESSAGE_SIZE` (65,536) bytes. A frame the capture never
+  finished, or one that breaks RFC 6455, counts in the NOT DECODED line
+  instead of vanishing.
 - **`--keylog` is read before sipnab drops privileges.** A FIFO and
   `--keylog-fd` already were, and an ordinary keylog file was opened only
   after the drop. A proxy's keylog is usually readable by the proxy's user

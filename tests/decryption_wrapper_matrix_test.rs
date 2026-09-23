@@ -746,14 +746,8 @@ fn ws_text_frame(payload: &[u8], key: Option<[u8; 4]>) -> Vec<u8> {
     out
 }
 
-/// SIP over WSS on 7443, the port the lab's OpenSIPS used, which is not in
-/// sipnab's default WebSocket port set: the hellos in the clear, then as TLS
-/// 1.3 application data the HTTP upgrade and its 101, then an INVITE in a
-/// masked client frame and its 180 in a server frame.
-fn wss_session_frames() -> Vec<Vec<u8>> {
-    let a = [10, 9, 1, 1];
-    let b = [10, 9, 1, 2];
-    let (client, server) = (40_211u16, 7443u16);
+/// The INVITE and 180 of one call over WSS.
+fn wss_messages() -> (String, String) {
     let common = format!(
         "Via: SIP/2.0/WSS df7jal23ls0d.invalid;branch=z9hG4bKwss1\r\n\
          From: <sip:alice@10.9.1.1>;tag=wa\r\nTo: <sip:bob@10.9.1.2>\r\n\
@@ -764,6 +758,20 @@ fn wss_session_frames() -> Vec<Vec<u8>> {
          Contact: <sip:alice@df7jal23ls0d.invalid;transport=ws>\r\nContent-Length: 0\r\n\r\n"
     );
     let ringing = format!("SIP/2.0 180 Ringing\r\n{common}Content-Length: 0\r\n\r\n");
+    (invite, ringing)
+}
+
+/// The client's masking key for every frame it sends in these fixtures.
+const WS_MASK: [u8; 4] = [0x37, 0xfa, 0x21, 0x3d];
+
+/// A TLS 1.3 session on 7443, the port the lab's OpenSIPS used, which is not
+/// in sipnab's default WebSocket port set: the hellos in the clear, the HTTP
+/// upgrade and its 101 as application data, then each direction's further
+/// decrypted records in order, one TLS record each.
+fn wss_session(client_records: &[Vec<u8>], server_records: &[Vec<u8>]) -> Vec<Vec<u8>> {
+    let a = [10, 9, 1, 1];
+    let b = [10, 9, 1, 2];
+    let (client, server) = (40_211u16, 7443u16);
     let upgrade = "GET / HTTP/1.1\r\nHost: 10.9.1.2:7443\r\nUpgrade: websocket\r\n\
                    Connection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\
                    Sec-WebSocket-Protocol: sip\r\nSec-WebSocket-Version: 13\r\n\r\n";
@@ -771,14 +779,16 @@ fn wss_session_frames() -> Vec<Vec<u8>> {
                      Connection: Upgrade\r\nSec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\n\
                      Sec-WebSocket-Protocol: sip\r\n\r\n";
     let (ch, sh) = tls13_hellos();
-    let c0 = tls13_record(&CLIENT_SECRET, 0, upgrade.as_bytes());
-    let s0 = tls13_record(&SERVER_SECRET, 0, switching.as_bytes());
-    let c1 = tls13_record(
-        &CLIENT_SECRET,
-        1,
-        &ws_text_frame(invite.as_bytes(), Some([0x37, 0xfa, 0x21, 0x3d])),
-    );
-    let s1 = tls13_record(&SERVER_SECRET, 1, &ws_text_frame(ringing.as_bytes(), None));
+    let mut sends: Vec<(bool, Vec<u8>)> = vec![(true, ch), (false, sh)];
+    sends.push((true, tls13_record(&CLIENT_SECRET, 0, upgrade.as_bytes())));
+    sends.push((false, tls13_record(&SERVER_SECRET, 0, switching.as_bytes())));
+    // Client records first, then server records: a request, then its answer.
+    for (i, r) in client_records.iter().enumerate() {
+        sends.push((true, tls13_record(&CLIENT_SECRET, i as u64 + 1, r)));
+    }
+    for (i, r) in server_records.iter().enumerate() {
+        sends.push((false, tls13_record(&SERVER_SECRET, i as u64 + 1, r)));
+    }
     let mut cseq = 1000u32;
     let mut sseq = 5000u32;
     let mut frames = vec![
@@ -787,22 +797,15 @@ fn wss_session_frames() -> Vec<Vec<u8>> {
     ];
     cseq += 1;
     sseq += 1;
-    for (from_client, payload) in [
-        (true, &ch),
-        (false, &sh),
-        (true, &c0),
-        (false, &s0),
-        (true, &c1),
-        (false, &s1),
-    ] {
+    for (from_client, payload) in sends {
         if from_client {
             frames.push(pcap_build::tcp_frame(
-                a, b, client, server, cseq, 0x18, payload,
+                a, b, client, server, cseq, 0x18, &payload,
             ));
             cseq += payload.len() as u32;
         } else {
             frames.push(pcap_build::tcp_frame(
-                b, a, server, client, sseq, 0x18, payload,
+                b, a, server, client, sseq, 0x18, &payload,
             ));
             sseq += payload.len() as u32;
         }
@@ -810,22 +813,22 @@ fn wss_session_frames() -> Vec<Vec<u8>> {
     frames
 }
 
-/// **Decrypted WSS is SIP, labeled WSS** (found reproducing issue #301).
-///
-/// With the keys, the TLS records of a WSS leg decrypted, and what came out
-/// was WebSocket frames. The decrypted path framed plaintext as SIP and
-/// dropped anything else, and WebSocket unwrapping ran only on plain TCP, so
-/// the lab saw 12 records recovered and no SIP at all. The frames are
-/// recognized by their shape and their SIP content, not by port: TLS already
-/// said what this is, and 7443 is outside the default WebSocket port set.
-#[test]
-fn a_decrypted_wss_session_is_sip_over_wss() {
+/// A WebSocket frame with an explicit FIN bit and opcode.
+fn ws_frame_raw(fin: bool, opcode: u8, payload: &[u8], key: Option<[u8; 4]>) -> Vec<u8> {
+    let mut f = ws_text_frame(payload, key);
+    f[0] = if fin { 0x80 } else { 0 } | opcode;
+    f
+}
+
+/// Run sipnab over `frames` with the session's keylog, returning the
+/// `(what, transport)` of each message of the test call, and stderr.
+fn decrypt_wss(frames: &[Vec<u8>]) -> (Vec<(String, String)>, String) {
     let dir = tempfile::tempdir().expect("dir");
     let tmp = tempfile::tempdir().expect("tmp");
     let keylog = dir.path().join("session.keylog");
     std::fs::write(&keylog, tls_keylog()).expect("keylog");
     let capture = dir.path().join("wss.pcap");
-    std::fs::write(&capture, classic_pcap(&wss_session_frames())).expect("capture");
+    std::fs::write(&capture, classic_pcap(frames)).expect("capture");
     let (stdout, stderr, code) = sipnab(
         &[
             "-N",
@@ -841,7 +844,7 @@ fn a_decrypted_wss_session_is_sip_over_wss() {
         tmp.path(),
     );
     assert_eq!(code, Some(0), "{stderr}");
-    let messages: Vec<(String, String)> = stdout
+    let messages = stdout
         .lines()
         .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
         .filter(|v| v["call_id"] == WSS_CALL_ID)
@@ -856,12 +859,132 @@ fn a_decrypted_wss_session_is_sip_over_wss() {
             )
         })
         .collect();
+    (messages, stderr)
+}
+
+/// The expected pair: the INVITE and its 180, both over WSS.
+fn invite_and_ringing_over_wss() -> Vec<(String, String)> {
+    vec![
+        ("INVITE".to_string(), "WSS".to_string()),
+        ("180".to_string(), "WSS".to_string()),
+    ]
+}
+
+/// **Decrypted WSS is SIP, labeled WSS** (found reproducing issue #301).
+///
+/// With the keys, the TLS records of a WSS leg decrypted, and what came out
+/// was WebSocket frames. The decrypted path framed plaintext as SIP and
+/// dropped anything else, and WebSocket unwrapping ran only on plain TCP, so
+/// the lab saw 12 records recovered and no SIP at all. The frames are
+/// recognized by their shape and their SIP content, not by port: TLS already
+/// said what this is, and 7443 is outside the default WebSocket port set.
+#[test]
+fn a_decrypted_wss_session_is_sip_over_wss() {
+    let (invite, ringing) = wss_messages();
+    let frames = wss_session(
+        &[ws_text_frame(invite.as_bytes(), Some(WS_MASK))],
+        &[ws_text_frame(ringing.as_bytes(), None)],
+    );
+    let (messages, stderr) = decrypt_wss(&frames);
+    assert_eq!(messages, invite_and_ringing_over_wss(), "{stderr}");
+}
+
+/// **OpenSIPS's shape: one frame, two TLS records.** OpenSIPS writes the
+/// 4-byte WebSocket frame header in one TLS record and the payload in the
+/// next. A decrypted record was only recognized when it was one whole frame,
+/// so every message the proxy SENT over WSS was lost, with nothing counted:
+/// the lab saw the client's INVITE, ACK and BYE and none of the proxy's 100,
+/// 180, 200 and 200.
+#[test]
+fn a_websocket_frame_split_across_two_tls_records_is_one_message() {
+    let (invite, ringing) = wss_messages();
+    let frame = ws_text_frame(ringing.as_bytes(), None);
+    assert_eq!(
+        &frame[1..2],
+        &[126],
+        "a 16-bit length makes the header 4 bytes"
+    );
+    let (header, payload) = frame.split_at(4);
+    let frames = wss_session(
+        &[ws_text_frame(invite.as_bytes(), Some(WS_MASK))],
+        &[header.to_vec(), payload.to_vec()],
+    );
+    let (messages, stderr) = decrypt_wss(&frames);
+    assert_eq!(messages, invite_and_ringing_over_wss(), "{stderr}");
+    assert!(!stderr.contains("NOT DECODED"), "{stderr}");
+}
+
+/// The masked client direction splits the same way, the mask key included.
+#[test]
+fn a_masked_frame_split_inside_its_header_is_one_message() {
+    let (invite, ringing) = wss_messages();
+    let frame = ws_text_frame(invite.as_bytes(), Some(WS_MASK));
+    // Header is 2 + 2 + 4 bytes; cut inside the mask key.
+    let (head, rest) = frame.split_at(6);
+    let frames = wss_session(
+        &[head.to_vec(), rest.to_vec()],
+        &[ws_text_frame(ringing.as_bytes(), None)],
+    );
+    let (messages, stderr) = decrypt_wss(&frames);
+    assert_eq!(messages, invite_and_ringing_over_wss(), "{stderr}");
+}
+
+/// Two frames in one TLS record are two messages.
+#[test]
+fn two_websocket_frames_in_one_tls_record_are_two_messages() {
+    let (invite, ringing) = wss_messages();
+    let trying = ringing.replace("180 Ringing", "100 Trying");
+    let mut both = ws_text_frame(trying.as_bytes(), None);
+    both.extend_from_slice(&ws_text_frame(ringing.as_bytes(), None));
+    let frames = wss_session(&[ws_text_frame(invite.as_bytes(), Some(WS_MASK))], &[both]);
+    let (messages, stderr) = decrypt_wss(&frames);
     assert_eq!(
         messages,
         vec![
             ("INVITE".to_string(), "WSS".to_string()),
+            ("100".to_string(), "WSS".to_string()),
             ("180".to_string(), "WSS".to_string()),
         ],
-        "{stdout}\n{stderr}"
+        "{stderr}"
     );
+}
+
+/// A message fragmented across two frames ([RFC 6455 section 5.4](https://www.rfc-editor.org/rfc/rfc6455#section-5.4)):
+/// a text frame with FIN clear, then a continuation frame with FIN set.
+#[test]
+fn a_message_fragmented_across_two_websocket_frames_is_one_message() {
+    let (invite, ringing) = wss_messages();
+    let (first, second) = ringing.as_bytes().split_at(30);
+    let frames = wss_session(
+        &[ws_text_frame(invite.as_bytes(), Some(WS_MASK))],
+        &[
+            ws_frame_raw(false, 1, first, None),
+            ws_frame_raw(true, 0, second, None),
+        ],
+    );
+    let (messages, stderr) = decrypt_wss(&frames);
+    assert_eq!(messages, invite_and_ringing_over_wss(), "{stderr}");
+}
+
+/// A frame whose rest never arrives is counted as NOT DECODED, never lost in
+/// silence: here the capture ends after the 4-byte header record.
+#[test]
+fn an_abandoned_partial_websocket_frame_is_counted() {
+    let (invite, ringing) = wss_messages();
+    let frame = ws_text_frame(ringing.as_bytes(), None);
+    let frames = wss_session(
+        &[ws_text_frame(invite.as_bytes(), Some(WS_MASK))],
+        &[frame[..4].to_vec()],
+    );
+    let (messages, stderr) = decrypt_wss(&frames);
+    assert_eq!(
+        messages,
+        vec![("INVITE".to_string(), "WSS".to_string())],
+        "{stderr}"
+    );
+    let not_decoded = stderr
+        .lines()
+        .find(|l| l.starts_with("NOT DECODED:"))
+        .unwrap_or_else(|| panic!("the abandoned frame must be counted: {stderr}"));
+    assert!(not_decoded.contains("truncated frame (1)"), "{not_decoded}");
 }

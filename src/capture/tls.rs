@@ -223,6 +223,42 @@ pub struct TlsRecordReassembler {
     /// How many directions may hold a partial record at once, beyond which
     /// the least-recently-updated is evicted to bound memory.
     max_sessions: usize,
+    /// Connections whose decrypted bytes are a WebSocket session, keyed by
+    /// the address pair in either order. Same cap and eviction as above.
+    websocket_connections:
+        indexmap::IndexSet<(std::net::SocketAddr, std::net::SocketAddr), ahash::RandomState>,
+    /// Per direction of those connections, the frames not complete yet.
+    websocket: indexmap::IndexMap<
+        (std::net::SocketAddr, std::net::SocketAddr),
+        crate::capture::websocket::WsStream,
+        ahash::RandomState,
+    >,
+}
+
+/// What decrypted bytes on a WebSocket connection yielded.
+#[derive(Debug, Default)]
+pub struct WsYield {
+    /// Each complete WebSocket message, unmasked, in stream order.
+    pub messages: Vec<Vec<u8>>,
+    /// What could not be decoded, to be counted NOT DECODED.
+    pub undecodable: Vec<crate::error::CaptureError>,
+}
+
+/// The same connection whichever direction names it.
+fn connection(
+    a: std::net::SocketAddr,
+    b: std::net::SocketAddr,
+) -> (std::net::SocketAddr, std::net::SocketAddr) {
+    if a <= b { (a, b) } else { (b, a) }
+}
+
+/// A frame or message a stream still held when it was given up.
+fn abandoned(need: usize, got: usize) -> crate::error::CaptureError {
+    crate::error::CaptureError::TooShort {
+        what: "WebSocket frame",
+        need,
+        got,
+    }
 }
 
 impl TlsRecordReassembler {
@@ -234,7 +270,75 @@ impl TlsRecordReassembler {
             plaintext: indexmap::IndexMap::default(),
             leftover: indexmap::IndexMap::default(),
             max_sessions,
+            websocket_connections: indexmap::IndexSet::default(),
+            websocket: indexmap::IndexMap::default(),
         }
+    }
+
+    /// Read decrypted bytes as WebSocket when their connection is a WebSocket
+    /// session: SIP over WSS ([RFC 7118](https://www.rfc-editor.org/rfc/rfc7118)).
+    ///
+    /// A connection becomes one when its decrypted bytes start the HTTP
+    /// upgrade, its `101` answer, or a data frame
+    /// ([`crate::capture::websocket::starts_websocket`]). From then on every
+    /// decrypted chunk in either direction goes through that direction's
+    /// [`crate::capture::websocket::WsStream`], which joins frames across TLS
+    /// records.
+    ///
+    /// # Returns
+    ///
+    /// `None` when the connection is not a WebSocket session, so the caller
+    /// reads the bytes as SIP over TLS.
+    pub fn websocket_plaintext(
+        &mut self,
+        src: std::net::SocketAddr,
+        dst: std::net::SocketAddr,
+        plaintext: &[u8],
+    ) -> Option<WsYield> {
+        let conn = connection(src, dst);
+        let mut out = WsYield::default();
+        if !self.websocket_connections.contains(&conn) {
+            if !crate::capture::websocket::starts_websocket(plaintext) {
+                return None;
+            }
+            if self.websocket_connections.len() >= self.max_sessions {
+                self.websocket_connections.shift_remove_index(0);
+            }
+            self.websocket_connections.insert(conn);
+        }
+        // The handshake itself is HTTP, not frames.
+        if plaintext.starts_with(b"GET ") || plaintext.starts_with(b"HTTP/1.1 ") {
+            return Some(out);
+        }
+        let key = (src, dst);
+        if !self.websocket.contains_key(&key)
+            && self.websocket.len() >= self.max_sessions
+            && let Some((_, evicted)) = self.websocket.shift_remove_index(0)
+            && let Some((need, got)) = evicted.held()
+        {
+            out.undecodable.push(abandoned(need, got));
+        }
+        let pushed = self.websocket.entry(key).or_default().push(plaintext);
+        out.messages = pushed.messages;
+        out.undecodable
+            .extend(pushed.refused.into_iter().map(|why| {
+                crate::error::CaptureError::PacketDecode {
+                    what: "WebSocket frame",
+                    source: why.into(),
+                }
+            }));
+        Some(out)
+    }
+
+    /// Give up every WebSocket stream at the end of the input, returning one
+    /// error per stream that still held part of a frame or message, so it is
+    /// counted NOT DECODED rather than lost in silence.
+    pub fn finish_websocket(&mut self) -> Vec<crate::error::CaptureError> {
+        self.websocket
+            .drain(..)
+            .filter_map(|(_, stream)| stream.held())
+            .map(|(need, got)| abandoned(need, got))
+            .collect()
     }
 
     /// Feed one more chunk of ciphertext for the `(src, dst)` direction,

@@ -94,6 +94,100 @@ pub fn ws_ports_description() -> String {
     }
 }
 
+/// WebSocket continuation-frame opcode ([RFC 6455 section 5.4](https://www.rfc-editor.org/rfc/rfc6455#section-5.4)).
+const OPCODE_CONTINUATION: u8 = 0;
+
+/// Most bytes one SIP message may take when a sender fragments it across
+/// several WebSocket frames ([RFC 6455 section 5.4](https://www.rfc-editor.org/rfc/rfc6455#section-5.4)):
+/// the same 64 KB as one frame's payload, `MAX_FRAME_SIZE`. A message that
+/// outgrows it is counted NOT DECODED and dropped rather than held.
+pub const MAX_WS_MESSAGE_SIZE: usize = 65_536;
+
+/// One frame header, as [RFC 6455 section 5.2](https://www.rfc-editor.org/rfc/rfc6455#section-5.2) lays it out.
+///
+/// Layout only. Whether a FIN bit, reserved bit or opcode is acceptable is
+/// each caller's policy, so the byte arithmetic lives here once and the
+/// callers cannot disagree about where a frame ends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct FrameHeader {
+    /// The FIN bit: this frame ends its message.
+    pub(crate) fin: bool,
+    /// The three reserved bits, still in place (`byte0 & 0x70`).
+    pub(crate) rsv: u8,
+    /// The opcode nibble.
+    pub(crate) opcode: u8,
+    /// The masking key, when the frame is masked.
+    pub(crate) mask: Option<[u8; 4]>,
+    /// Bytes of header, mask key included.
+    pub(crate) header_len: usize,
+    /// Bytes of payload the header declares.
+    pub(crate) payload_len: usize,
+}
+
+/// Parse the frame header at the start of `data`.
+///
+/// # Returns
+///
+/// `Ok(None)` when `data` ends before the header does, which is not an error
+/// on a stream: the rest arrives in the next chunk.
+///
+/// # Errors
+///
+/// The declared payload exceeds `MAX_FRAME_SIZE`, or its length is not
+/// minimally encoded.
+pub(crate) fn parse_frame_header(data: &[u8]) -> Result<Option<FrameHeader>> {
+    let (Some(&byte0), Some(&byte1)) = (data.first(), data.get(1)) else {
+        return Ok(None);
+    };
+    let masked = byte1 & 0x80 != 0;
+    let len7 = u64::from(byte1 & 0x7F);
+    let header_len = header_size(len7, masked);
+    if data.len() < header_len {
+        return Ok(None);
+    }
+    let payload_len = match len7 {
+        126 => u64::from(u16::from_be_bytes([data[2], data[3]])),
+        127 => u64::from_be_bytes([
+            data[2], data[3], data[4], data[5], data[6], data[7], data[8], data[9],
+        ]),
+        n => n,
+    };
+    if payload_len > MAX_FRAME_SIZE {
+        bail!("WebSocket frame payload too large ({payload_len} bytes, max {MAX_FRAME_SIZE})");
+    }
+    if length_encoding_is_not_minimal(len7, payload_len) {
+        bail!(
+            "WebSocket length {payload_len} is not minimally encoded: RFC 6455 \
+             §5.2 requires the shortest form that can carry it"
+        );
+    }
+    let mask = masked.then(|| {
+        let k = header_len - 4;
+        [data[k], data[k + 1], data[k + 2], data[k + 3]]
+    });
+    Ok(Some(FrameHeader {
+        fin: byte0 & 0x80 != 0,
+        rsv: byte0 & 0x70,
+        opcode: byte0 & 0x0F,
+        mask,
+        header_len,
+        // Bounded by MAX_FRAME_SIZE just above, so it fits every usize.
+        payload_len: payload_len as usize,
+    }))
+}
+
+/// `payload` unmasked with `mask` ([RFC 6455 section 5.3](https://www.rfc-editor.org/rfc/rfc6455#section-5.3)).
+fn unmask(payload: &[u8], mask: Option<[u8; 4]>) -> Vec<u8> {
+    match mask {
+        Some(key) => payload
+            .iter()
+            .enumerate()
+            .map(|(i, &b)| b ^ key[i % 4])
+            .collect(),
+        None => payload.to_vec(),
+    }
+}
+
 /// Check if data looks like a WebSocket frame (heuristic).
 ///
 /// Returns `true` if the first two bytes are consistent with a WebSocket
@@ -127,54 +221,15 @@ fn length_encoding_is_not_minimal(len7: u64, declared: u64) -> bool {
 /// data frame: FIN bit set, reserved bits zero, opcode 1 (text) or 2
 /// (binary), and enough remaining bytes for the declared payload length.
 pub fn is_websocket_frame(data: &[u8]) -> bool {
-    if data.len() < 2 {
-        return false;
+    match parse_frame_header(data) {
+        Ok(Some(h)) => {
+            h.fin
+                && h.rsv == 0
+                && (h.opcode == OPCODE_TEXT || h.opcode == OPCODE_BINARY)
+                && data.len() >= h.header_len + h.payload_len
+        }
+        _ => false,
     }
-
-    let byte0 = data[0];
-    let byte1 = data[1];
-
-    // FIN must be set, RSV bits must be zero
-    let fin = byte0 & 0x80 != 0;
-    let rsv = byte0 & 0x70;
-    if !fin || rsv != 0 {
-        return false;
-    }
-
-    let opcode = byte0 & 0x0F;
-    if opcode != OPCODE_TEXT && opcode != OPCODE_BINARY {
-        return false;
-    }
-
-    let masked = byte1 & 0x80 != 0;
-    let len7 = (byte1 & 0x7F) as u64;
-
-    // Calculate the minimum header size
-    let header_size = header_size(len7, masked);
-
-    // Verify we have at least enough data for the header
-    if data.len() < header_size {
-        return false;
-    }
-
-    // Compute the full payload length and check it fits
-    let payload_len = match len7 {
-        126 => u16::from_be_bytes([data[2], data[3]]) as u64,
-        127 => u64::from_be_bytes([
-            data[2], data[3], data[4], data[5], data[6], data[7], data[8], data[9],
-        ]),
-        n => n,
-    };
-
-    if payload_len > MAX_FRAME_SIZE {
-        return false;
-    }
-    if length_encoding_is_not_minimal(len7, payload_len) {
-        return false;
-    }
-
-    let total = header_size as u64 + payload_len;
-    data.len() as u64 >= total
 }
 
 /// Unwrap a WebSocket frame, returning the payload bytes.
@@ -195,105 +250,194 @@ pub fn unwrap_websocket_frame(data: &[u8]) -> Result<Option<Vec<u8>>> {
             data.len()
         );
     }
-
-    let byte0 = data[0];
-    let byte1 = data[1];
-
-    let opcode = byte0 & 0x0F;
-    let masked = byte1 & 0x80 != 0;
-    let len7 = (byte1 & 0x7F) as u64;
-
-    // Control frames: close (8), ping (9), pong (10) — skip
-    if opcode >= 8 {
-        return Ok(None);
-    }
-
-    // Only handle text and binary data frames
+    let opcode = data[0] & 0x0F;
+    // Control frames (close, ping, pong) and anything that is not a text or
+    // binary data frame carry no SIP message.
     if opcode != OPCODE_TEXT && opcode != OPCODE_BINARY {
         return Ok(None);
     }
-
-    // Determine payload length
-    let (payload_len, mut offset) = match len7 {
-        126 => {
-            if data.len() < 4 {
-                bail!(
-                    "WebSocket frame truncated: need 4 bytes for extended length, have {}",
-                    data.len()
-                );
-            }
-            let len = u16::from_be_bytes([data[2], data[3]]) as u64;
-            (len, 4usize)
-        }
-        127 => {
-            if data.len() < 10 {
-                bail!(
-                    "WebSocket frame truncated: need 10 bytes for 64-bit length, have {}",
-                    data.len()
-                );
-            }
-            let len = u64::from_be_bytes([
-                data[2], data[3], data[4], data[5], data[6], data[7], data[8], data[9],
-            ]);
-            (len, 10usize)
-        }
-        n => (n, 2usize),
-    };
-
-    if payload_len > MAX_FRAME_SIZE {
-        bail!("WebSocket frame payload too large ({payload_len} bytes, max {MAX_FRAME_SIZE})");
-    }
-    if length_encoding_is_not_minimal(len7, payload_len) {
+    let Some(h) = parse_frame_header(data)? else {
         bail!(
-            "WebSocket length {payload_len} is not minimally encoded: RFC 6455 \
-             §5.2 requires the shortest form that can carry it"
+            "WebSocket frame truncated: need {} header bytes, have {}",
+            header_size(u64::from(data[1] & 0x7F), data[1] & 0x80 != 0),
+            data.len()
         );
-    }
-
-    // Read masking key if present
-    let mask_key = if masked {
-        if data.len() < offset + 4 {
-            bail!(
-                "WebSocket frame truncated: need {} bytes for mask key, have {}",
-                offset + 4,
-                data.len()
-            );
-        }
-        let key = [
-            data[offset],
-            data[offset + 1],
-            data[offset + 2],
-            data[offset + 3],
-        ];
-        offset += 4;
-        Some(key)
-    } else {
-        None
     };
-
-    let payload_len = payload_len as usize;
-    if data.len() < offset + payload_len {
+    let end = h.header_len + h.payload_len;
+    if data.len() < end {
         bail!(
-            "WebSocket frame truncated: need {} bytes total, have {}",
-            offset + payload_len,
+            "WebSocket frame truncated: need {end} bytes total, have {}",
             data.len()
         );
     }
+    Ok(Some(unmask(&data[h.header_len..end], h.mask)))
+}
 
-    let payload_data = &data[offset..offset + payload_len];
+/// Joins the WebSocket frames of one direction of a stream across the chunks
+/// they arrive in, and the frames of one message across its fragments.
+///
+/// A sender may write one frame as several chunks: OpenSIPS writes each
+/// frame's 4-byte header in one TLS record and its payload in the next. It may
+/// write several frames in one chunk, and it may fragment one message across
+/// several frames ([RFC 6455 section 5.4](https://www.rfc-editor.org/rfc/rfc6455#section-5.4)).
+/// Reading each chunk as one whole frame lost everything OpenSIPS sent over
+/// WSS (found reproducing issue #301).
+///
+/// Bounded: a frame is refused by `parse_frame_header` past `MAX_FRAME_SIZE`,
+/// so the held bytes never exceed one frame, and a fragmented message past
+/// [`MAX_WS_MESSAGE_SIZE`] is refused. Every refusal is returned to be counted.
+#[derive(Debug, Default)]
+pub struct WsStream {
+    /// Bytes of a frame not complete yet.
+    buf: Vec<u8>,
+    /// The payload so far of a message fragmented across frames.
+    message: Vec<u8>,
+    /// Whether a fragmented message is open, awaiting continuation frames.
+    in_message: bool,
+}
 
-    let payload = if let Some(key) = mask_key {
-        // XOR unmask
-        payload_data
-            .iter()
-            .enumerate()
-            .map(|(i, &b)| b ^ key[i % 4])
-            .collect()
-    } else {
-        payload_data.to_vec()
-    };
+/// What one chunk of a WebSocket stream yielded.
+#[derive(Debug, Default)]
+pub struct WsOutput {
+    /// Each complete message's payload, unmasked, in stream order.
+    pub messages: Vec<Vec<u8>>,
+    /// Why a frame or message could not be decoded, one entry each. The
+    /// stream is resynchronized at the next chunk.
+    pub refused: Vec<String>,
+}
 
-    Ok(Some(payload))
+impl WsStream {
+    /// Feed the next chunk of this direction's bytes.
+    pub fn push(&mut self, chunk: &[u8]) -> WsOutput {
+        let mut out = WsOutput::default();
+        self.buf.extend_from_slice(chunk);
+        loop {
+            let h = match parse_frame_header(&self.buf) {
+                Ok(Some(h)) => h,
+                Ok(None) => break,
+                Err(e) => {
+                    out.refused.push(e.to_string());
+                    self.reset();
+                    break;
+                }
+            };
+            let end = h.header_len + h.payload_len;
+            if self.buf.len() < end {
+                break;
+            }
+            let payload = unmask(&self.buf[h.header_len..end], h.mask);
+            self.buf.drain(..end);
+            if let Err(why) = self.take_frame(&h, payload, &mut out.messages) {
+                out.refused.push(why);
+                self.reset();
+                break;
+            }
+        }
+        out
+    }
+
+    /// Apply one complete frame to the message being assembled.
+    ///
+    /// # Errors
+    ///
+    /// The frame breaks [RFC 6455 section 5](https://www.rfc-editor.org/rfc/rfc6455#section-5):
+    /// reserved bits with no extension negotiated, an unknown opcode, a
+    /// fragmented control frame, a continuation with no message open or a new
+    /// message inside an open one, or a message past [`MAX_WS_MESSAGE_SIZE`].
+    fn take_frame(
+        &mut self,
+        h: &FrameHeader,
+        payload: Vec<u8>,
+        messages: &mut Vec<Vec<u8>>,
+    ) -> std::result::Result<(), String> {
+        if h.rsv != 0 {
+            return Err("WebSocket frame sets reserved bits".to_string());
+        }
+        match h.opcode {
+            // Close, ping, pong: may sit between fragments, carry no message.
+            8..=10 if h.fin => Ok(()),
+            8..=10 => Err("WebSocket control frame is fragmented".to_string()),
+            OPCODE_TEXT | OPCODE_BINARY if self.in_message => {
+                Err("WebSocket data frame inside an unfinished message".to_string())
+            }
+            OPCODE_TEXT | OPCODE_BINARY if h.fin => {
+                messages.push(payload);
+                Ok(())
+            }
+            OPCODE_TEXT | OPCODE_BINARY => {
+                self.message = payload;
+                self.in_message = true;
+                Ok(())
+            }
+            OPCODE_CONTINUATION if !self.in_message => {
+                Err("WebSocket continuation frame with no message open".to_string())
+            }
+            OPCODE_CONTINUATION => {
+                if self.message.len() + payload.len() > MAX_WS_MESSAGE_SIZE {
+                    return Err(format!(
+                        "WebSocket message exceeds MAX_WS_MESSAGE_SIZE ({MAX_WS_MESSAGE_SIZE} bytes)"
+                    ));
+                }
+                self.message.extend_from_slice(&payload);
+                if h.fin {
+                    messages.push(std::mem::take(&mut self.message));
+                    self.in_message = false;
+                }
+                Ok(())
+            }
+            other => Err(format!("WebSocket frame has reserved opcode {other}")),
+        }
+    }
+
+    /// Bytes held for a frame or message not complete yet.
+    pub fn pending(&self) -> usize {
+        self.buf.len() + self.message.len()
+    }
+
+    /// What an abandoned stream still holds, as `(need, got)`: the bytes the
+    /// frame in progress declares, when its header is complete, and the bytes
+    /// held. `None` when nothing is held.
+    pub fn held(&self) -> Option<(usize, usize)> {
+        let got = self.pending();
+        if got == 0 {
+            return None;
+        }
+        let need = match parse_frame_header(&self.buf) {
+            Ok(Some(h)) => self.message.len() + h.header_len + h.payload_len,
+            _ => got + 1,
+        };
+        Some((need, got))
+    }
+
+    /// Drop what is held, to resynchronize after a refusal.
+    fn reset(&mut self) {
+        self.buf.clear();
+        self.message.clear();
+        self.in_message = false;
+    }
+}
+
+/// Whether decrypted bytes begin a WebSocket session or frame stream rather
+/// than SIP: the HTTP upgrade request, the `101 Switching Protocols` answer,
+/// or bytes shaped like the start of a data frame.
+///
+/// The frame test cannot mistake SIP text: every ASCII letter and digit has
+/// a bit in `0x70` set, which a frame must leave clear, so a SIP start line or
+/// a SIP body continuation never reads as a frame.
+pub fn starts_websocket(data: &[u8]) -> bool {
+    if data.starts_with(b"HTTP/1.1 101") {
+        return true;
+    }
+    if data.starts_with(b"GET ") {
+        let head = &data[..data.len().min(2048)];
+        return head
+            .windows(9)
+            .any(|w| w.eq_ignore_ascii_case(b"websocket"));
+    }
+    matches!(
+        parse_frame_header(data),
+        Ok(Some(h)) if h.rsv == 0 && (h.opcode == OPCODE_TEXT || h.opcode == OPCODE_BINARY)
+    )
 }
 
 /// Calculate the WebSocket frame header size based on length indicator and mask bit.
@@ -314,6 +458,82 @@ fn header_size(len7: u64, masked: bool) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A frame with an explicit FIN bit and opcode, unmasked.
+    fn frame(fin: bool, opcode: u8, payload: &[u8]) -> Vec<u8> {
+        let mut f = vec![if fin { 0x80 } else { 0 } | opcode];
+        match payload.len() {
+            n if n < 126 => f.push(n as u8),
+            n => {
+                f.push(126);
+                f.extend_from_slice(&(n as u16).to_be_bytes());
+            }
+        }
+        f.extend_from_slice(payload);
+        f
+    }
+
+    /// A fragmented message past `MAX_WS_MESSAGE_SIZE` is refused and the
+    /// stream holds nothing afterwards: the bound is a refusal to count,
+    /// never an unbounded buffer.
+    #[test]
+    fn a_stream_refuses_a_message_past_its_ceiling() {
+        let mut ws = WsStream::default();
+        let big = vec![b'a'; 60_000];
+        let out = ws.push(&frame(false, OPCODE_TEXT, &big));
+        assert!(out.messages.is_empty() && out.refused.is_empty());
+        assert_eq!(ws.pending(), 60_000, "the open message is held");
+        let out = ws.push(&frame(true, OPCODE_CONTINUATION, &vec![b'b'; 10_000]));
+        assert!(out.messages.is_empty());
+        assert_eq!(out.refused.len(), 1, "{:?}", out.refused);
+        assert!(
+            out.refused[0].contains("MAX_WS_MESSAGE_SIZE"),
+            "{:?}",
+            out.refused
+        );
+        assert_eq!(ws.pending(), 0);
+    }
+
+    /// Frames that break [RFC 6455 section 5](https://www.rfc-editor.org/rfc/rfc6455#section-5) are refused one by one, and the
+    /// stream decodes the next good frame after each.
+    #[test]
+    fn a_stream_refuses_frames_that_break_the_protocol_and_recovers() {
+        for (bad, why) in [
+            (frame(true, OPCODE_CONTINUATION, b"x"), "continuation"),
+            (frame(true, 3, b"x"), "reserved opcode"),
+            (frame(false, 9, b"x"), "fragmented"),
+            (vec![0xC1, 1, b'x'], "reserved bits"),
+        ] {
+            let mut ws = WsStream::default();
+            let out = ws.push(&bad);
+            assert_eq!(out.refused.len(), 1, "{why}: {:?}", out.refused);
+            assert!(out.refused[0].contains(why), "{why}: {:?}", out.refused);
+            let out = ws.push(&frame(true, OPCODE_TEXT, b"next"));
+            assert_eq!(out.messages, vec![b"next".to_vec()], "{why}");
+        }
+    }
+
+    /// A control frame between two fragments does not end the message.
+    #[test]
+    fn a_control_frame_between_fragments_is_skipped() {
+        let mut ws = WsStream::default();
+        let mut chunk = frame(false, OPCODE_TEXT, b"INV");
+        chunk.extend_from_slice(&frame(true, 9, b"ping"));
+        chunk.extend_from_slice(&frame(true, OPCODE_CONTINUATION, b"ITE"));
+        let out = ws.push(&chunk);
+        assert_eq!(out.messages, vec![b"INVITE".to_vec()]);
+        assert!(out.refused.is_empty());
+    }
+
+    /// What an abandoned stream held is reported as need and got.
+    #[test]
+    fn held_reports_what_an_unfinished_frame_needed() {
+        let mut ws = WsStream::default();
+        assert_eq!(ws.held(), None);
+        let f = frame(true, OPCODE_TEXT, &[b'z'; 200]);
+        ws.push(&f[..4]);
+        assert_eq!(ws.held(), Some((f.len(), 4)));
+    }
 
     /// Build an unmasked WebSocket text frame with the given payload.
     fn build_unmasked_text_frame(payload: &[u8]) -> Vec<u8> {

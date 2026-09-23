@@ -3487,7 +3487,18 @@ impl BatchRunner {
                 Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break,
             };
             let parsed_packets = match received {
-                None => processor.finish(),
+                None => {
+                    // A WebSocket frame begun in a decrypted record and never
+                    // finished is counted, never dropped in silence.
+                    #[cfg(feature = "tls")]
+                    for e in tls_reassembler.finish_websocket() {
+                        crate::capture::record_undecodable(
+                            &e,
+                            crate::capture::FrameFacts::UNRECORDED,
+                        );
+                    }
+                    processor.finish()
+                }
                 Some(packet) => {
                     // Offline, this packet's timestamp is what "now" means to the next
                     // sweep. Recorded before any parse/filter step so that a capture of
@@ -3619,7 +3630,7 @@ impl BatchRunner {
                 #[cfg(feature = "tls")]
                 let effective_pps = {
                     let tls_yield = try_tls_decrypt(pp, &mut tls_decryptor, &mut tls_reassembler);
-                    packets_after_tls(pp, tls_yield, &mut tls_reassembler)
+                    packets_after_tls(pp, tls_yield)
                 };
 
                 #[cfg(not(feature = "tls"))]
@@ -4876,110 +4887,79 @@ fn apply_detector_effect(
 
 /// Attempt TLS decryption on a TCP payload.
 ///
-/// The SIP message in decrypted TLS plaintext that is one WebSocket data
-/// frame: SIP over WSS ([RFC 7118](https://www.rfc-editor.org/rfc/rfc7118)).
+/// The SIP messages in one direction's decrypted TLS plaintext, each with the
+/// transport it arrived over.
 ///
-/// Recognized by the frame's shape and the SIP inside it, never by port. TLS
-/// already said this is an encrypted session, and a WSS server listens
-/// wherever it was configured to (the lab's OpenSIPS used 7443, outside the
-/// default WebSocket port set). The decrypted path framed plaintext as SIP
-/// and dropped anything else, and the WebSocket unwrap ran only on plain TCP,
-/// so a WSS leg decrypted to nothing (found reproducing issue #301).
+/// A connection that is a WebSocket session goes through that direction's
+/// WebSocket stream, which joins a frame across TLS records, several frames
+/// in one record, and a message across its fragments, and each SIP message
+/// out of it is labeled WSS ([RFC 7118](https://www.rfc-editor.org/rfc/rfc7118)).
+/// Anything else is framed as SIP over TLS, not sniffed: a sender may write
+/// one SIP message as several records, and testing each record for SIP keeps
+/// an INVITE's headers and drops its SDP body.
 ///
-/// # Returns
+/// The session is recognized by its bytes, never by port: TLS already said
+/// this is an encrypted session, and a WSS server listens wherever it was
+/// configured to (the lab's OpenSIPS used 7443). OpenSIPS writes each frame's
+/// header and payload as two TLS records, and reading each record as one
+/// whole frame lost every message it sent (found reproducing issue #301).
 ///
-/// The SIP message, or `None` when the plaintext is not one WebSocket data
-/// frame carrying SIP.
+/// # Side effects
+///
+/// Counts every WebSocket frame or message it cannot decode as NOT DECODED.
 #[cfg(feature = "tls")]
-fn sip_in_websocket_frame(plaintext: &[u8]) -> Option<Vec<u8>> {
-    if !crate::capture::websocket::is_websocket_frame(plaintext) {
-        return None;
-    }
-    let payload = crate::capture::websocket::unwrap_websocket_frame(plaintext).ok()??;
-    sip::parser::starts_sip_message(&payload).then_some(payload)
-}
-
-/// What TLS decryption made of one packet in hand.
-#[cfg(feature = "tls")]
-#[derive(Default)]
-struct TlsYield {
-    /// Records held from before their keys existed, opened now that the keys
-    /// arrived. They belong to earlier packets, not to the one in hand.
-    recovered: Vec<crate::capture::decrypt::RecoveredRecord>,
-    /// SIP messages decrypted out of the packet in hand.
-    decrypted: capture::ParsedPackets,
-}
-
-/// The packets to analyze for one packet in hand, given what TLS decryption
-/// made of it.
-///
-/// # Arguments
-///
-/// * `pp` — the packet in hand.
-/// * `tls_yield` — what [`try_tls_decrypt`] returned for it.
-/// * `tls_reassembler` — frames recovered plaintext into SIP messages.
-///
-/// Key recovery adds to the packet in hand and never replaces it. The
-/// recovery runs on whatever packet follows the keys, and when its messages
-/// stood in for that packet, the packet was lost: a lab run under `-d any
-/// --keylog <file> --keylog-watch -L` lost a HEP BYE that way (issue #301).
-/// Each recovered message is built from its own record, a wire TLS message,
-/// rather than cloned from the packet that happened to trigger the sweep,
-/// whose origin, HEP metadata and DSCP are not the record's.
-///
-/// # Returns
-///
-/// The packets to analyze in capture-time order, borrowing `pp` when it
-/// passes through unchanged.
-#[cfg(feature = "tls")]
-fn packets_after_tls<'a>(
-    pp: &'a ParsedPacket,
-    tls_yield: TlsYield,
+fn sip_in_plaintext(
+    src: std::net::SocketAddr,
+    dst: std::net::SocketAddr,
+    plaintext: &[u8],
     tls_reassembler: &mut tls::TlsRecordReassembler,
-) -> SmallVec<[std::borrow::Cow<'a, ParsedPacket>; 1]> {
-    let mut out: SmallVec<[std::borrow::Cow<'a, ParsedPacket>; 1]> = SmallVec::new();
-    // Records held from before their keys existed come FIRST, because they
-    // are older than the packet in hand. eCapture writes a session's secrets
-    // only after the handshake, so the first application record -- the INVITE,
-    // carrying the original SDP offer -- is on the wire before any keylog line
-    // for it. Emitting the recovery after the current packet would reconstruct
-    // the dialog out of order and put the answer before the offer.
-    //
-    // Each recovered message keeps the timestamp and endpoints of the packet
-    // it actually arrived in, not of the replay: a recovered INVITE stamped
-    // now would move post-dial delay and call duration by however long the
-    // keys took.
-    for recovered in tls_yield.recovered {
-        // One WebSocket frame is one message already, labeled WSS. Anything
-        // else is framed, not sniffed -- for the same reason the live path
-        // below is. A recovered INVITE split across two records would
-        // otherwise emit its headers and drop its SDP body, which is precisely
-        // the defect this whole path exists to fix, reintroduced on the
-        // recovery side.
-        let messages: Vec<(Vec<u8>, TransportProto)> =
-            match sip_in_websocket_frame(&recovered.plaintext) {
-                Some(sip) => vec![(sip, TransportProto::Wss)],
-                None => tls_reassembler
-                    .frame_plaintext(recovered.src, recovered.dst, &recovered.plaintext)
-                    .into_iter()
-                    .filter(|msg| sip::is_sip_message(msg))
-                    .map(|msg| (msg, TransportProto::Tls))
-                    .collect(),
-            };
-        for (msg, transport) in messages {
-            // Built from the record, never from the packet that triggered the
-            // sweep: that packet's frame pointer, DSCP, origin and HEP
-            // metadata describe it, not this message. An honest absence beats
-            // another packet's ordinal and digest on the one message an
-            // operator is most likely to trace back to bytes.
-            out.push(std::borrow::Cow::Owned(ParsedPacket {
+) -> Vec<(Vec<u8>, TransportProto)> {
+    if let Some(ws) = tls_reassembler.websocket_plaintext(src, dst, plaintext) {
+        for e in &ws.undecodable {
+            crate::capture::record_undecodable(e, crate::capture::FrameFacts::UNRECORDED);
+        }
+        return ws
+            .messages
+            .into_iter()
+            .filter(|m| sip::parser::starts_sip_message(m))
+            .map(|m| (m, TransportProto::Wss))
+            .collect();
+    }
+    tls_reassembler
+        .frame_plaintext(src, dst, plaintext)
+        .into_iter()
+        .filter(|msg| sip::is_sip_message(msg))
+        .map(|msg| (msg, TransportProto::Tls))
+        .collect()
+}
+
+/// The SIP messages in TLS records held from before their keys existed and
+/// opened now that the keys arrived, one wire packet each.
+///
+/// Each message keeps the timestamp and endpoints of the packet its record
+/// actually arrived in, not of the replay: a recovered INVITE stamped now
+/// would move post-dial delay and call duration by however long the keys
+/// took. It is built from its record, never from the packet that triggered
+/// the sweep: that packet's frame pointer, DSCP, origin and HEP metadata
+/// describe it, not this message.
+#[cfg(feature = "tls")]
+fn recovered_packets(
+    recovered: Vec<crate::capture::decrypt::RecoveredRecord>,
+    tls_reassembler: &mut tls::TlsRecordReassembler,
+) -> capture::ParsedPackets {
+    let mut out = capture::ParsedPackets::new();
+    for record in recovered {
+        for (msg, transport) in
+            sip_in_plaintext(record.src, record.dst, &record.plaintext, tls_reassembler)
+        {
+            out.push(ParsedPacket {
                 frame: None,
                 frame_bytes: None,
-                timestamp: recovered.timestamp,
-                src_addr: recovered.src.ip(),
-                dst_addr: recovered.dst.ip(),
-                src_port: recovered.src.port(),
-                dst_port: recovered.dst.port(),
+                timestamp: record.timestamp,
+                src_addr: record.src.ip(),
+                dst_addr: record.dst.ip(),
+                src_port: record.src.port(),
+                dst_port: record.dst.port(),
                 transport,
                 payload: msg.into(),
                 ip_id: None,
@@ -4993,13 +4973,53 @@ fn packets_after_tls<'a>(
                 // enters decryption.
                 input_origin: crate::capture::parse::InputOrigin::Wire,
                 hep: None,
-            }));
+            });
         }
     }
+    out
+}
 
-    // The packet in hand: its decrypted SIP messages (each already stamped
-    // Tls) when it yielded any, otherwise the packet itself, whether or not
-    // a recovery ran on it.
+/// What TLS decryption made of one packet in hand.
+#[cfg(feature = "tls")]
+#[derive(Default)]
+struct TlsYield {
+    /// SIP messages from records held from before their keys existed, opened
+    /// now that the keys arrived. They belong to earlier packets, not to the
+    /// one in hand.
+    recovered: capture::ParsedPackets,
+    /// SIP messages decrypted out of the packet in hand.
+    decrypted: capture::ParsedPackets,
+}
+
+/// The packets to analyze for one packet in hand, given what TLS decryption
+/// made of it.
+///
+/// Key recovery adds to the packet in hand and never replaces it. The
+/// recovery runs on whatever packet follows the keys, and when its messages
+/// stood in for that packet, the packet was lost: a lab run under `-d any
+/// --keylog <file> --keylog-watch -L` lost a HEP BYE that way (issue #301).
+///
+/// # Returns
+///
+/// The packets to analyze in capture-time order, borrowing `pp` when it
+/// passes through unchanged.
+#[cfg(feature = "tls")]
+fn packets_after_tls(
+    pp: &ParsedPacket,
+    tls_yield: TlsYield,
+) -> SmallVec<[std::borrow::Cow<'_, ParsedPacket>; 1]> {
+    // Records held from before their keys existed come FIRST, because they
+    // are older than the packet in hand. eCapture writes a session's secrets
+    // only after the handshake, so the first application record -- the INVITE,
+    // carrying the original SDP offer -- is on the wire before any keylog line
+    // for it.
+    let mut out: SmallVec<[std::borrow::Cow<'_, ParsedPacket>; 1]> = tls_yield
+        .recovered
+        .into_iter()
+        .map(std::borrow::Cow::Owned)
+        .collect();
+    // The packet in hand: its decrypted SIP messages when it yielded any,
+    // otherwise the packet itself, whether or not a recovery ran on it.
     if tls_yield.decrypted.is_empty() {
         out.push(std::borrow::Cow::Borrowed(pp));
     } else {
@@ -5035,9 +5055,10 @@ fn try_tls_decrypt(
 
     // Records held from before their keys existed. They run on ANY packet,
     // TLS or not, because the packet that follows the keys is whatever the
-    // capture happens to hold next; `packets_after_tls` turns them into
-    // messages.
-    let recovered = decryptor.rewind_if_keys_changed();
+    // capture happens to hold next. Framed here, before the packet in hand,
+    // because they are older and share its per-direction WebSocket and SIP
+    // framing state: a frame begun in a held record ends in a later one.
+    let recovered = recovered_packets(decryptor.rewind_if_keys_changed(), tls_reassembler);
     let mut out = capture::ParsedPackets::new();
 
     // Non-TCP packets carry no TLS, but reaching this line still served a
@@ -5098,30 +5119,12 @@ fn try_tls_decrypt(
             continue;
         }
         if let Some(plaintext) = decryptor.try_decrypt_at(record, src, dst, pp.timestamp) {
-            if let Some(sip) = sip_in_websocket_frame(&plaintext) {
-                let mut decrypted_pp = pp.clone();
-                decrypted_pp.payload = sip.into();
-                decrypted_pp.transport = TransportProto::Wss;
-                out.push(decrypted_pp);
-                continue;
-            }
-            // Frame the decrypted BYTES into SIP messages rather than testing
-            // this record for "does it look like SIP". A sender may write one
-            // message as several records -- a real trunk sends the INVITE
-            // headers in one and the SDP body in the next -- and the per-record
-            // test keeps the headers while discarding the body, leaving an
-            // INVITE with no offer. sipnab then stores whatever SDP the next
-            // hop rewrote and reports a media mismatch that is not in the
-            // capture.
-            for msg in tls_reassembler.frame_plaintext(src, dst, &plaintext) {
-                if !sip::is_sip_message(&msg) {
-                    continue;
-                }
+            for (msg, transport) in sip_in_plaintext(src, dst, &plaintext, tls_reassembler) {
                 // A synthetic ParsedPacket carrying the decrypted SIP, stamped
-                // Tls so the pipeline reports the true transport origin.
+                // with the transport it arrived over (TLS or WSS).
                 let mut decrypted_pp = pp.clone();
                 decrypted_pp.payload = msg.into();
-                decrypted_pp.transport = TransportProto::Tls;
+                decrypted_pp.transport = transport;
                 out.push(decrypted_pp);
             }
         }
@@ -6964,10 +6967,13 @@ mod tests {
             InputOrigin::Hep,
         );
         let tls_yield = TlsYield {
-            recovered: vec![recovered_at(t(1), "wire-invite")],
+            recovered: recovered_packets(
+                vec![recovered_at(t(1), "wire-invite")],
+                &mut tls::TlsRecordReassembler::new(16),
+            ),
             decrypted: capture::ParsedPackets::new(),
         };
-        let out = packets_after_tls(&bye, tls_yield, &mut tls::TlsRecordReassembler::new(16));
+        let out = packets_after_tls(&bye, tls_yield);
         let out: Vec<&ParsedPacket> = out.iter().map(|p| p.as_ref()).collect();
         assert_eq!(
             out.len(),
@@ -7006,10 +7012,13 @@ mod tests {
             InputOrigin::Wire,
         );
         let tls_yield = TlsYield {
-            recovered: vec![recovered_at(t(1), "wire-invite")],
+            recovered: recovered_packets(
+                vec![recovered_at(t(1), "wire-invite")],
+                &mut tls::TlsRecordReassembler::new(16),
+            ),
             decrypted: capture::ParsedPackets::new(),
         };
-        let out = packets_after_tls(&options, tls_yield, &mut tls::TlsRecordReassembler::new(16));
+        let out = packets_after_tls(&options, tls_yield);
         assert_eq!(out.len(), 2, "the recovered INVITE and the OPTIONS in hand");
         assert!(std::ptr::eq(out[1].as_ref(), &options));
     }
@@ -7023,10 +7032,13 @@ mod tests {
         use crate::capture::parse::InputOrigin;
         let in_hand = packet_at(t(5), b"x", TransportProto::Udp, InputOrigin::Wire);
         let tls_yield = TlsYield {
-            recovered: vec![recovered_at(t(3), "second"), recovered_at(t(1), "first")],
+            recovered: recovered_packets(
+                vec![recovered_at(t(3), "second"), recovered_at(t(1), "first")],
+                &mut tls::TlsRecordReassembler::new(16),
+            ),
             decrypted: capture::ParsedPackets::new(),
         };
-        let out = packets_after_tls(&in_hand, tls_yield, &mut tls::TlsRecordReassembler::new(16));
+        let out = packets_after_tls(&in_hand, tls_yield);
         let times: Vec<_> = out.iter().map(|p| p.timestamp).collect();
         assert_eq!(times, vec![t(1), t(3), t(5)]);
     }
@@ -7045,10 +7057,10 @@ mod tests {
         record.plaintext = frame;
         let in_hand = packet_at(t(5), b"x", TransportProto::Udp, InputOrigin::Wire);
         let tls_yield = TlsYield {
-            recovered: vec![record],
+            recovered: recovered_packets(vec![record], &mut tls::TlsRecordReassembler::new(16)),
             decrypted: capture::ParsedPackets::new(),
         };
-        let out = packets_after_tls(&in_hand, tls_yield, &mut tls::TlsRecordReassembler::new(16));
+        let out = packets_after_tls(&in_hand, tls_yield);
         assert_eq!(out.len(), 2, "{out:#?}");
         assert_eq!(out[0].transport, TransportProto::Wss);
         assert_eq!(
@@ -7058,12 +7070,15 @@ mod tests {
         );
     }
 
-    /// Decrypted plaintext that is not one WebSocket frame carrying SIP is
-    /// left to the SIP framer: an HTTP upgrade, a control frame, a frame of
-    /// something else.
+    /// A WebSocket connection yields only its SIP messages, labeled WSS: not
+    /// the HTTP upgrade, not a control frame, not a data frame of something
+    /// else. A TLS connection that never started WebSocket stays SIP over TLS.
     #[cfg(feature = "tls")]
     #[test]
-    fn only_a_websocket_frame_carrying_sip_is_unwrapped() {
+    fn a_websocket_connection_yields_only_its_sip_messages() {
+        let a: std::net::SocketAddr = "192.0.2.1:40000".parse().unwrap();
+        let b: std::net::SocketAddr = "192.0.2.2:7443".parse().unwrap();
+        let mut r = tls::TlsRecordReassembler::new(16);
         let mut ping = vec![0x89u8, 4];
         ping.extend_from_slice(b"ping");
         let mut not_sip = vec![0x81u8, 5];
@@ -7075,11 +7090,24 @@ mod tests {
             &b"GET / HTTP/1.1\r\nUpgrade: websocket\r\n\r\n"[..],
             &ping[..],
             &not_sip[..],
-            &b"INVITE sip:x SIP/2.0\r\n\r\n"[..],
         ] {
-            assert!(sip_in_websocket_frame(plaintext).is_none(), "{plaintext:?}");
+            assert!(
+                sip_in_plaintext(a, b, plaintext, &mut r).is_empty(),
+                "{plaintext:?}"
+            );
         }
-        assert_eq!(sip_in_websocket_frame(&sip).as_deref(), Some(&options[..]));
+        assert_eq!(
+            sip_in_plaintext(a, b, &sip, &mut r),
+            vec![(options.to_vec(), TransportProto::Wss)]
+        );
+
+        let c: std::net::SocketAddr = "192.0.2.3:40001".parse().unwrap();
+        let invite = b"INVITE sip:x SIP/2.0\r\nContent-Length: 0\r\n\r\n";
+        assert_eq!(
+            sip_in_plaintext(c, b, invite, &mut r),
+            vec![(invite.to_vec(), TransportProto::Tls)],
+            "no WebSocket on this connection"
+        );
     }
 
     // ── HEP unwrapping and the rtpengine control plane ──────────
