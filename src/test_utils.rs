@@ -45,18 +45,46 @@ pub fn one_record_pcap(caplen: u32, origlen: u32) -> Vec<u8> {
     f
 }
 
+/// Keep one more dispatcher registered for the rest of the process.
+///
+/// tracing-core registers a call site the first time any thread reaches it,
+/// and caches the combined interest of every registered dispatcher. While only
+/// one dispatcher is registered it takes a shortcut and asks only the
+/// registering thread's own default instead. A test thread with no subscriber
+/// answers "never", and the call site then stays silent for every thread
+/// until the cache is rebuilt. A capture running at that moment, whose
+/// dispatcher was the only one, loses the event: that is how
+/// `a_relay_that_is_down_is_reported_once_not_once_per_stream` lost its
+/// closing line in CI. Rebuilding once at the start of a capture does not
+/// cover a call site first reached after it.
+///
+/// The shortcut is decided when a dispatcher registers, from how many are
+/// registered then. With this one alive, every capture registers as the
+/// second or later, so the shortcut is off for as long as any capture runs,
+/// and a call site's interest always includes the capture's own answer. A
+/// `NoSubscriber` wants nothing, so it records nothing and changes no
+/// answer. `capture_logs_sees_a_call_site_another_thread_registered_first`
+/// below fails without it.
+#[cfg(feature = "native")]
+fn keep_the_single_dispatcher_shortcut_off() {
+    static KEEP: std::sync::OnceLock<tracing::Dispatch> = std::sync::OnceLock::new();
+    KEEP.get_or_init(|| tracing::Dispatch::new(tracing::subscriber::NoSubscriber::default()));
+}
+
 /// Run `f` under a subscriber that records every event at `level` or above,
 /// and return what it wrote, without ANSI colors.
 ///
 /// The one place a unit test installs a subscriber
 /// (`tests/log_capture_hygiene_test.rs` holds that). `with_default` covers
 /// this thread only, while `tracing` caches per call site, for the whole
-/// process, whether anyone wants its events. A test thread running with no
-/// subscriber can reach a call site first and leave "nobody" cached, and
-/// then this capture misses the event. So the cache is rebuilt once this
-/// subscriber is in place.
+/// process, whether anyone wants its events. See
+/// `keep_the_single_dispatcher_shortcut_off` for how another test thread
+/// could leave "nobody" cached and hide an event from this capture. The cache
+/// is also rebuilt once this subscriber is in place, which clears a "never"
+/// cached before the capture began.
 #[cfg(feature = "native")]
 pub fn capture_logs(level: tracing::Level, f: impl FnOnce()) -> String {
+    keep_the_single_dispatcher_shortcut_off();
     use parking_lot::Mutex;
     use std::sync::Arc;
 
@@ -90,4 +118,49 @@ pub fn capture_logs(level: tracing::Level, f: impl FnOnce()) -> String {
     });
     let bytes = buf.0.lock().clone();
     String::from_utf8_lossy(&bytes).into_owned()
+}
+
+#[cfg(all(test, feature = "native"))]
+mod tests {
+    use super::capture_logs;
+
+    /// The one call site of the event below. Nothing else in the suite
+    /// reaches it, so the thread that reaches it first decides its cached
+    /// interest.
+    fn announce(n: u32) {
+        tracing::info!("capture_logs interest probe {n}");
+    }
+
+    /// An event is captured even when another thread, with no subscriber of
+    /// its own, reached its call site first while the capture was running.
+    ///
+    /// `tracing` registers a call site the first time any thread reaches it
+    /// and caches the combined interest of every live dispatcher. With exactly
+    /// one dispatcher alive (this capture's), tracing-core takes a shortcut:
+    /// it asks only the REGISTERING thread's default subscriber. A thread with
+    /// none answers "never", and the call site then stays silent for every
+    /// thread, the capturing one included, until something rebuilds the cache.
+    /// Rebuilding once at the start of the capture does not cover a call site
+    /// first reached after that. That is how
+    /// `a_relay_that_is_down_is_reported_once_not_once_per_stream` lost its
+    /// closing line in CI.
+    ///
+    /// Deterministic when this test runs alone (`cargo test --lib
+    /// capture_logs_sees_a_call_site`), where no other dispatcher exists.
+    /// Inside the full suite another test's capture may happen to be alive,
+    /// which hides the defect, so run it alone to see it fail.
+    #[test]
+    fn capture_logs_sees_a_call_site_another_thread_registered_first() {
+        let logs = capture_logs(tracing::Level::INFO, || {
+            std::thread::spawn(|| announce(1))
+                .join()
+                .expect("the probe thread does not panic");
+            announce(2);
+        });
+        assert!(
+            logs.contains("capture_logs interest probe 2"),
+            "the capturing thread's event was dropped because a thread with \
+             no subscriber registered its call site first: {logs:?}"
+        );
+    }
 }

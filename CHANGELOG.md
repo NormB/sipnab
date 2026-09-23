@@ -8,6 +8,21 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Fixed
+
+- **A log-capturing unit test no longer misses events at random.** tracing-core
+  caches, per call site, whether any subscriber wants its events, and while
+  only one dispatcher is registered it asks only the thread registering the
+  call site. A test thread with no subscriber answered "never", so a capture
+  running at that moment lost the event: that is how
+  `a_relay_that_is_down_is_reported_once_not_once_per_stream` dropped its
+  closing line in CI. `test_utils::capture_logs` now keeps a second dispatcher
+  registered for the whole run, which turns the shortcut off. A new unit test
+  reproduces the race on demand and failed on the previous fix, which rebuilt
+  the cache only at the start of a capture.
+
 ## [0.5.187] - 2026-09-22
 
 ### Added
