@@ -101,7 +101,7 @@ covers every file, and the tarballs additionally ship an individual
 | `sipnab-<version>-aarch64-unknown-linux-gnu.tar.gz` | aarch64 / arm64 | glibc >= 2.36 + libpcap | full features including audio |
 | `sipnab-<version>-x86_64-apple-darwin.tar.gz` | Intel | macOS 10.12+ | Intel Macs |
 | `sipnab-<version>-aarch64-apple-darwin.tar.gz` | Apple Silicon | macOS 11.0+ | M-series Macs |
-| `sipnab-<version>-<target>.debug` | per target | — | Linux symbol file for the binary of the same name, for reading a crash report or a core dump. One per tarball, plus `-noaudio` ones for the `-noaudio` packages |
+| `sipnab-<version>-<target>.debug` | per target | — | Linux symbol file for the binary of the same name, for reading a [crash report](troubleshooting.md#send-us-a-crash-report) or a core dump. One per tarball, plus `-noaudio` ones for the `-noaudio` packages |
 | `sipnab-<version>-<target>.dSYM.zip` | per target | — | macOS symbol bundle, the same for the two macOS tarballs |
 | `SHA256SUMS.txt` | — | — | checksums for every package, tarball, symbol file, and SBOM |
 | `sipnab-<version>.cdx.json` | — | — | CycloneDX SBOM — full dependency tree |
@@ -711,7 +711,8 @@ moves the symbols into the `.debug` file each release publishes before it
 strips the binary. The published binary carries the same code either way and
 is within 100 bytes of the same size (the split drops `.comment` and adds a
 `.gnu_debuglink`), and the
-symbol file resolves the addresses in a crash report or a core dump.
+symbol file resolves the addresses in a
+[crash report](troubleshooting.md#send-us-a-crash-report) or a core dump.
 
 ## Cross-compilation
 

@@ -7617,7 +7617,7 @@ covers every file, and the tarballs additionally ship an individual
 | `sipnab-<version>-aarch64-unknown-linux-gnu.tar.gz` | aarch64 / arm64 | glibc >= 2.36 + libpcap | full features including audio |
 | `sipnab-<version>-x86_64-apple-darwin.tar.gz` | Intel | macOS 10.12+ | Intel Macs |
 | `sipnab-<version>-aarch64-apple-darwin.tar.gz` | Apple Silicon | macOS 11.0+ | M-series Macs |
-| `sipnab-<version>-<target>.debug` | per target | — | Linux symbol file for the binary of the same name, for reading a crash report or a core dump. One per tarball, plus `-noaudio` ones for the `-noaudio` packages |
+| `sipnab-<version>-<target>.debug` | per target | — | Linux symbol file for the binary of the same name, for reading a [crash report](troubleshooting.md#send-us-a-crash-report) or a core dump. One per tarball, plus `-noaudio` ones for the `-noaudio` packages |
 | `sipnab-<version>-<target>.dSYM.zip` | per target | — | macOS symbol bundle, the same for the two macOS tarballs |
 | `SHA256SUMS.txt` | — | — | checksums for every package, tarball, symbol file, and SBOM |
 | `sipnab-<version>.cdx.json` | — | — | CycloneDX SBOM — full dependency tree |
@@ -8227,7 +8227,8 @@ moves the symbols into the `.debug` file each release publishes before it
 strips the binary. The published binary carries the same code either way and
 is within 100 bytes of the same size (the split drops `.comment` and adds a
 `.gnu_debuglink`), and the
-symbol file resolves the addresses in a crash report or a core dump.
+symbol file resolves the addresses in a
+[crash report](troubleshooting.md#send-us-a-crash-report) or a core dump.
 
 ## Cross-compilation
 
@@ -9281,6 +9282,7 @@ the cause from there.
 | SIP is over TLS and the calls never appear | [Encrypted SIP that does not decrypt](#encrypted-sip-that-does-not-decrypt) |
 | Somebody handed you a `.tgz` or `.tar` of captures, and the run looks short | [An archive of captures](#an-archive-of-captures) |
 | `--export-vcon` refuses, cannot find the call, or writes no audio | [A vCon export that fails](#a-vcon-export-that-fails) |
+| sipnab itself stopped with "sipnab panicked at" | [Send us a crash report](#send-us-a-crash-report) |
 | Nothing yet -- you have a capture and a complaint | [Start here](#start-here-one-pass-over-everything) |
 
 Whatever the symptom, three things decide whether the answer is in the capture
@@ -10319,6 +10321,125 @@ silent — the container is careful to say so, and a consumer should read the
 The usual cause is that the run did not retain the RTP payload. Audio also has
 an inline budget. A recording over it draws an out-loud refusal rather than a
 silent truncation, and the caveat names the size it turned down.
+
+---
+
+## Send us a crash report
+
+When sipnab hits a bug it cannot recover from, it stops and prints two lines
+to the terminal:
+
+```text
+sipnab panicked at src/main.rs:152:9:
+crash report written to /home/you/.local/state/sipnab/sipnab-crash-20260923-191230-2507858-0.log
+```
+
+That file is what we need. You do not have to reproduce the crash or install
+anything extra.
+
+**1. Find the report.** It is the path on the `crash report written to` line.
+By default reports land in `~/.local/state/sipnab/`, named
+`sipnab-crash-<date>-<time>-<pid>-<n>.log`. A `report_dir` in the
+[`[crash]` config section](config-reference.md#crash) moves them. If you
+closed the terminal, list the newest one:
+
+```bash
+ls -t ~/.local/state/sipnab/sipnab-crash-*.log | head -1
+```
+
+**2. Check what it contains before you send it.** The report is plain text:
+the panic message, the source line, the thread name, the version, the
+build ID of the executable, its load address, and one raw address per stack
+frame, up to `MAX_FRAMES` (256) frames.
+It contains no capture data and no packets, but the panic message can quote a
+value sipnab was handling, and the path names your home directory. Read it and
+redact what you need to.
+
+**3. Send it.** [Open an issue](https://github.com/NormB/sipnab/issues/new/choose),
+attach the `.log` file, and add the output of `sipnab --version` and the command
+you ran.
+
+A core dump is not needed, and it is not safe to share. A core holds the
+process's memory, which includes the SIP messages and media it had captured.
+Only turn on `core = true` if we ask for a core, and then keep it on your side.
+
+### What the report records, and how we read it
+
+The release strips every sipnab binary it publishes, so the backtrace in the
+report cannot name a function, and most of its lines read `<unknown>`. The `Image:`
+and `Raw frames` sections are what make it readable anyway:
+
+```text
+Image:
+  Path:      /usr/bin/sipnab
+  Build ID:  edbd855707e15a8b69f6e0fb3f0ac2bf925c23b1
+  Load base: 0xaaaac4090000
+  Target:    aarch64-unknown-linux-gnu
+
+Raw frames (runtime return address, then image+address of the call in
+that image's file. Resolve these against the symbol file named by
+the ID above):
+    0  0xaaaac4a904d4  sipnab+0xa004d3
+    1  0xaaaac4a8ffe8  sipnab+0x9fffe7
+```
+
+Each release publishes a symbol file for every binary it ships, built by the
+same compile:
+`sipnab-<version>-<target>.debug` for Linux, and
+`sipnab-<version>-<target>.dSYM.zip` for macOS. The `-noaudio` binaries inside
+the `-noaudio` `.deb` and `.rpm` packages have their own, with `-noaudio` in the
+name. The `Build ID` (Linux) or `UUID` (macOS) line pairs the report with
+exactly one of them, so a rebuild cannot stand in for it.
+
+To resolve a report yourself, download the symbol file named by the report's
+version and `Target:` line from the
+[release page](https://github.com/NormB/sipnab/releases). Name it once in a
+shell variable, here for an aarch64 glibc report, so the commands below paste
+as they are:
+
+```bash
+DEBUG=$(ls sipnab-*-aarch64-unknown-linux-gnu.debug)
+```
+
+Check that it is the right one:
+
+```bash
+readelf -n "$DEBUG" | grep 'Build ID'
+```
+
+The ID must equal the report's `Build ID` line. Then pass each `sipnab+0x…`
+address to `addr2line`. The two below are the first frames of the example
+report above:
+
+```bash
+addr2line -f -C -i -e "$DEBUG" 0xa004d3 0x9fffe7
+```
+
+Or to `llvm-symbolizer`, if you have LLVM:
+
+```bash
+llvm-symbolizer --obj="$DEBUG" 0xa004d3 0x9fffe7
+```
+
+Each address prints the function and the `src/…rs:line` it came from. The
+numbers after `+` are addresses inside the file, so they work however the
+system placed the binary in memory. They point at the call instruction, one
+byte before the return address in the first column, so each frame names the
+line that made the call.
+
+On macOS, unzip the `.dSYM.zip`, compare `dwarfdump --uuid sipnab.dSYM` with
+the report's `UUID` line, and pass the numbers after `sipnab+` to `atos`. On
+macOS they are addresses in the binary's own layout, which starts at
+`0x100000000`, so they look larger than the Linux ones. Put them in `ADDRS`,
+separated by spaces:
+
+```bash
+atos -o sipnab.dSYM/Contents/Resources/DWARF/sipnab $ADDRS
+```
+
+For `gdb` or a core file on Linux, put the `.debug` file in the same directory
+as the `sipnab` binary. The binary's `.gnu_debuglink` names that file, and
+`gdb` loads it from there without further setup.
 
 ---
 
@@ -33362,7 +33483,7 @@ processing thread, but a test that passes and a test that raced are
 indistinguishable to `cargo test`.
 
 The borrow checker does not help here either
-— it stops at `unsafe`, and most of this crate's 119 `unsafe` blocks are libc
+— it stops at `unsafe`, and most of this crate's 127 `unsafe` blocks are libc
 FFI, concentrated in privilege dropping ([`privilege.rs`](../../src/privilege.rs)
 and [`process_isolation.rs`](../../src/process_isolation.rs)) and capture setup.
 Recount with `grep -rc 'unsafe {' src/` rather than trusting that figure — this
@@ -34365,8 +34486,8 @@ be true of both, and the figure describes the Linux run.
 
 ### Symbol files
 
-The release strips every binary it publishes, so a crash report or a core
-dump from a user carries frame addresses, not function names. The symbols that resolve
+The release strips every binary it publishes, so a crash report from a user
+carries frame addresses and a build ID, not function names. The symbols that resolve
 those addresses exist only in the compile that produced the binary. A rebuild
 later is not byte-identical, so its symbols describe a different binary. The
 release therefore publishes them with the binary, one symbol file per build:
@@ -34427,6 +34548,13 @@ address from the stripped program to its function through the `.debug` file.
 holds the workflow to the step order, the uploads and the checksums, and runs
 the split step's own shell. The macOS half runs only on the release's darwin
 runners.
+
+The crash report records what the symbol file needs: the build ID or UUID of
+the executable, its load base, the target triple, and the raw address of every
+frame as `sipnab+0x…`. The number after `+` is the address inside the file, the
+form `addr2line`, `llvm-symbolizer` and `atos` take.
+[Send us a crash report](../troubleshooting.md#send-us-a-crash-report) is the
+user's side of it.
 
 ### The changelog
 

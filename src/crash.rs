@@ -16,6 +16,8 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use crate::config::CrashConfig;
 
+mod frames;
+
 /// Effective crash policy resolved from the `[crash]` config section.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CrashPolicy {
@@ -64,7 +66,7 @@ pub fn post_report_action(core: bool) -> PostAction {
 }
 
 /// Render the crash-report text: panic message, location, thread,
-/// version, and (when captured) a full backtrace.
+/// version, the image section, and (when captured) a full backtrace.
 ///
 /// # Arguments
 /// * `message` - the panic payload text.
@@ -72,6 +74,10 @@ pub fn post_report_action(core: bool) -> PostAction {
 /// * `thread` - name of the panicking thread.
 /// * `backtrace` - captured backtrace text; `None` renders a line
 ///   explaining that capture was disabled by config.
+/// * `image` - the executable's identity, load base and (when captured) the
+///   raw frame addresses, as rendered by `frames::render`. A published
+///   binary is stripped, so the backtrace above it names no functions; this
+///   section is what the matching symbol file resolves.
 ///
 /// # Returns
 /// The complete report as a string; nothing is written anywhere. Pure.
@@ -80,12 +86,14 @@ pub fn build_crash_report(
     location: &str,
     thread: &str,
     backtrace: Option<&str>,
+    image: &str,
 ) -> String {
     let mut report = format!(
         "sipnab {} crash report\n\n\
          Thread:   {thread}\n\
          Location: {location}\n\
-         Message:  {message}\n\n",
+         Message:  {message}\n\n\
+         {image}\n",
         env!("CARGO_PKG_VERSION"),
     );
     match backtrace {
@@ -479,20 +487,34 @@ fn hook_body(
     let backtrace = policy
         .backtrace
         .then(|| std::backtrace::Backtrace::force_capture().to_string());
+    // The raw addresses and the executable's build ID or UUID: what a stripped
+    // release binary can still say about where it was, and what the symbol
+    // file published beside it resolves. Frames only when backtraces are on,
+    // since they are one.
+    let raw_frames = policy.backtrace.then(frames::frame_addresses);
+    let image = frames::render(
+        &frames::loaded_images(),
+        env!("SIPNAB_TARGET"),
+        raw_frames.as_deref(),
+    );
 
     if policy.reports {
-        let report = build_crash_report(&message, &location, &thread, backtrace.as_deref());
+        let report = build_crash_report(&message, &location, &thread, backtrace.as_deref(), &image);
         match write_crash_report(&policy.report_dir, &report) {
             Ok(path) => hook_eprintln(format_args!("crash report written to {}", path.display())),
             Err(e) => {
                 hook_eprintln(format_args!("failed to write crash report: {e}"));
+                hook_eprintln(format_args!("{image}"));
                 if let Some(ref bt) = backtrace {
                     hook_eprintln(format_args!("Backtrace:\n{bt}"));
                 }
             }
         }
-    } else if let Some(ref bt) = backtrace {
-        hook_eprintln(format_args!("Backtrace:\n{bt}"));
+    } else {
+        hook_eprintln(format_args!("{image}"));
+        if let Some(ref bt) = backtrace {
+            hook_eprintln(format_args!("Backtrace:\n{bt}"));
+        }
     }
 
     terminator(post_report_action(policy.core));
@@ -562,6 +584,7 @@ mod tests {
             "src/tui/call_list.rs:509:71",
             "main",
             Some("0: sipnab::tui::call_list::render_call_list"),
+            "Image:\n  Build ID:  00ff\n",
         );
         assert!(r.contains("range start index 3 out of range"));
         assert!(r.contains("src/tui/call_list.rs:509:71"));
@@ -569,13 +592,17 @@ mod tests {
         assert!(r.contains(env!("CARGO_PKG_VERSION")));
         assert!(r.contains("Backtrace:"));
         assert!(r.contains("render_call_list"));
+        assert!(
+            r.contains("Image:\n  Build ID:  00ff\n"),
+            "image section kept verbatim:\n{r}"
+        );
     }
 
     /// With backtrace capture off, the report says so instead of
     /// silently omitting the section.
     #[test]
     fn report_without_backtrace_says_disabled() {
-        let r = build_crash_report("boom", "here.rs:1:1", "main", None);
+        let r = build_crash_report("boom", "here.rs:1:1", "main", None, "Image:\n");
         assert!(!r.contains("Backtrace:"));
         assert!(
             r.to_ascii_lowercase().contains("disabled"),
@@ -914,6 +941,69 @@ mod tests {
         assert_eq!(ours.len(), 1, "exactly one report for the probe panic");
         assert!(ours[0].contains("crash-probe"), "thread name recorded");
         assert!(ours[0].contains("Backtrace:"), "backtrace captured");
+        // What survives a stripped release binary: the identity of the file
+        // and the raw address of every frame, relative to its image.
+        assert!(
+            ours[0].contains(&format!("{}:  ", frames::ID_LABEL)),
+            "image identity recorded:\n{}",
+            ours[0]
+        );
+        assert!(
+            ours[0].contains("Load base: 0x"),
+            "load base recorded:\n{}",
+            ours[0]
+        );
+        assert!(
+            ours[0].contains("Raw frames"),
+            "raw frames recorded:\n{}",
+            ours[0]
+        );
+        assert!(
+            ours[0].lines().filter(|l| l.contains("+0x")).count() >= 2,
+            "at least two frames resolved to an image:\n{}",
+            ours[0]
+        );
+    }
+
+    /// backtrace=false still records the image identity (it costs nothing and
+    /// names the symbol file), but no frames: the user turned stack capture
+    /// off, and raw frames are a stack.
+    #[test]
+    fn hook_without_backtrace_records_identity_but_no_frames() {
+        use std::sync::{Arc, Mutex};
+        let _guard = HOOK_LOCK.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let policy = CrashPolicy {
+            reports: true,
+            backtrace: false,
+            report_dir: dir.path().to_path_buf(),
+            core: false,
+        };
+        let decided: Arc<Mutex<Option<PostAction>>> = Arc::new(Mutex::new(None));
+        let decided2 = decided.clone();
+        let prev = std::panic::take_hook();
+        install_panic_hook_with(policy, move |a| {
+            *decided2.lock().unwrap() = Some(a);
+        });
+        let _ = std::thread::spawn(|| panic!("no-backtrace identity probe")).join();
+        std::panic::set_hook(prev);
+
+        let reports: Vec<String> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| std::fs::read_to_string(e.unwrap().path()).unwrap())
+            .filter(|c| c.contains("no-backtrace identity probe"))
+            .collect();
+        assert_eq!(reports.len(), 1);
+        assert!(
+            reports[0].contains(&format!("{}:  ", frames::ID_LABEL)),
+            "identity recorded without a backtrace:\n{}",
+            reports[0]
+        );
+        assert!(
+            !reports[0].contains("Raw frames"),
+            "no frames when backtrace is off:\n{}",
+            reports[0]
+        );
     }
 
     /// reports=false must not write any file but still decide the action.

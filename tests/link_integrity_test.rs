@@ -988,7 +988,12 @@ fn wiki_intra_docs_links_resolve() {
     // 940 -> 941: docs/internals/build-ci-release.md's release-asset count
     // points at its new "Symbol files" section. Counted per file against
     // HEAD; no other page moved.
-    const EXPECTED_WIKI_LINKS: usize = 941;
+    // 941 -> 945: links to the troubleshooting page's new "Send us a crash
+    // report" section, measured by swapping each file back to HEAD: +1 in
+    // docs/troubleshooting.md (its symptom table), +2 in docs/install.md (the
+    // symbol-file row and the release profile), +1 in
+    // docs/internals/build-ci-release.md.
+    const EXPECTED_WIKI_LINKS: usize = 945;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe 6d in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

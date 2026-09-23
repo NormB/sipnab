@@ -33,6 +33,23 @@ mod markdown;
 /// would still fail this guard instead of being silently whitelisted. The
 /// label is the first element of each `docs` tuple in `readme_long_flags_exist_in_cli`.
 const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
+    // `llvm-symbolizer --obj` and `dwarfdump --uuid`, named by the
+    // troubleshooting page's "Send us a crash report", which shows how to
+    // resolve a report's frames against the published symbol file.
+    (
+        "obj",
+        &[
+            "docs/troubleshooting.md",
+            "website/content/docs/troubleshooting.md",
+        ],
+    ),
+    (
+        "uuid",
+        &[
+            "docs/troubleshooting.md",
+            "website/content/docs/troubleshooting.md",
+        ],
+    ),
     // `scripts/split-debuginfo.sh --cargo-config <target>`, named by the
     // release page's "Symbol files" section: the mode that prints the cargo
     // setting the release build needs. A script's flag, not sipnab's.

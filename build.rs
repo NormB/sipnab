@@ -39,6 +39,11 @@ fn main() {
     println!("cargo:rustc-env=SIPNAB_GIT_TAG={tag}");
     println!("cargo:rustc-env=SIPNAB_GIT_DIRTY={dirty}");
 
+    // The target triple, for the crash report: it names which published
+    // symbol file (`sipnab-<version>-<target>.debug`) matches this binary.
+    let target = std::env::var("TARGET").unwrap_or_default();
+    println!("cargo:rustc-env=SIPNAB_TARGET={target}");
+
     // A GNU build ID in every Linux binary. It is what pairs a stripped
     // release binary, and the crash report it writes, with the symbol file
     // `scripts/split-debuginfo.sh` publishes beside it. Debian's gcc adds one

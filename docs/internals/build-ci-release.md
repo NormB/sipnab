@@ -87,7 +87,7 @@ processing thread, but a test that passes and a test that raced are
 indistinguishable to `cargo test`.
 
 The borrow checker does not help here either
-— it stops at `unsafe`, and most of this crate's 119 `unsafe` blocks are libc
+— it stops at `unsafe`, and most of this crate's 127 `unsafe` blocks are libc
 FFI, concentrated in privilege dropping ([`privilege.rs`](../../src/privilege.rs)
 and [`process_isolation.rs`](../../src/process_isolation.rs)) and capture setup.
 Recount with `grep -rc 'unsafe {' src/` rather than trusting that figure — this
@@ -1090,8 +1090,8 @@ be true of both, and the figure describes the Linux run.
 
 ### Symbol files
 
-The release strips every binary it publishes, so a crash report or a core
-dump from a user carries frame addresses, not function names. The symbols that resolve
+The release strips every binary it publishes, so a crash report from a user
+carries frame addresses and a build ID, not function names. The symbols that resolve
 those addresses exist only in the compile that produced the binary. A rebuild
 later is not byte-identical, so its symbols describe a different binary. The
 release therefore publishes them with the binary, one symbol file per build:
@@ -1152,6 +1152,13 @@ address from the stripped program to its function through the `.debug` file.
 holds the workflow to the step order, the uploads and the checksums, and runs
 the split step's own shell. The macOS half runs only on the release's darwin
 runners.
+
+The crash report records what the symbol file needs: the build ID or UUID of
+the executable, its load base, the target triple, and the raw address of every
+frame as `sipnab+0x…`. The number after `+` is the address inside the file, the
+form `addr2line`, `llvm-symbolizer` and `atos` take.
+[Send us a crash report](../troubleshooting.md#send-us-a-crash-report) is the
+user's side of it.
 
 ### The changelog
 

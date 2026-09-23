@@ -22,6 +22,16 @@ entry that carries them.
   GNU build ID or Mach-O UUID, then strips the binary as before. The shipped
   code is unchanged: on aarch64, `.text` matches the previous linker-stripped
   build byte for byte.
+- **A crash report records what the published symbol file resolves.** The
+  report gains an `Image:` section with the executable's GNU build ID
+  (Linux) or Mach-O UUID (macOS), its load base and the target triple, and a
+  `Raw frames` list giving each frame as `sipnab+0x…`, the address of the
+  call in the file. `addr2line`, `llvm-symbolizer` or `atos` resolve those
+  against the matching `.debug` or `.dSYM`: on an aarch64 release build the
+  self-test panic's frames resolve to `sipnab::main` at `src/main.rs:152`,
+  the line the report's `Location:` names.
+  [Send us a crash report](docs/troubleshooting.md#send-us-a-crash-report)
+  covers what to send and how to read it.
 
 ## [0.5.188] - 2026-09-23
 
