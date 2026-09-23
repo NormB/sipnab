@@ -929,13 +929,14 @@ input:focus-visible,
 }
 
 // Pause control for the looping hero animation (WCAG 2.2.2). Positioned over
-// the image's corner rather than below it: it is revealed after `load`, and a
-// control that took space in the flow would push the page down when it
-// appeared.
+// the image's top-right corner, which the TUI leaves empty beside its status
+// line, rather than below it: it is revealed after `load`, and a control that
+// took space in the flow would push the page down when it appeared. At the
+// bottom it covered the key hints the screenshot exists to show.
 .hero-pause {
   position: absolute;
   right: 2.25rem;
-  bottom: 0.75rem;
+  top: 0.75rem;
   font: inherit;
   font-size: 0.85rem;
   padding: 0.35rem 0.8rem;
@@ -949,7 +950,7 @@ input:focus-visible,
   &.is-live { visibility: visible; }
   @media (max-width: 480px) {
     right: 1.75rem;
-    bottom: 0.5rem;
+    top: 0.5rem;
     font-size: 0.75rem;
     padding: 0.2rem 0.5rem;
   }
@@ -1307,14 +1308,44 @@ input:focus-visible,
   margin: 0 auto;
 }
 
-// One numbered step per command, each with its own block and copy button.
+// One numbered step per command, each with its own copy button. The steps
+// are single commands, so each block is one slim line with the button at its
+// right end rather than a full terminal window with a title bar: five title
+// bars stacked made the section a screen tall for five short lines.
 .qs-step {
-  font-size: 1rem;
+  font-size: 0.95rem;
   font-weight: 600;
-  margin: 1.75rem 0 0.6rem;
+  margin: 1.25rem 0 0.4rem;
 }
 
-.quickstart .code-block-wrap pre { padding: 0.9rem 1.25rem; }
+.quickstart .code-block-wrap {
+  display: flex;
+  align-items: center;
+  box-shadow: none;
+  border-radius: 8px;
+
+  // One line that scrolls sideways on a phone, never a command broken mid-URL
+  // across three lines, which reads as three commands.
+  pre {
+    flex: 1;
+    min-width: 0;
+    padding: 0.7rem 1rem;
+    white-space: pre;
+    overflow-x: auto;
+
+    code { white-space: pre; }
+  }
+
+  .code-block-head {
+    order: 2;
+    background: none;
+    border: 0;
+    padding: 0 0.6rem;
+  }
+
+  .code-block-dots,
+  .code-block-title { display: none; }
+}
 
 .arch-more {
   text-align: center;
@@ -2742,26 +2773,14 @@ input:focus-visible,
   }
 }
 
-.fade-in-up {
-  opacity: 0;
-  transform: translateY(20px);
-  transition: opacity 0.5s ease, transform 0.5s ease;
-
-  &.visible {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-
-// Stagger feature cards
-.feature-card.fade-in-up:nth-child(2).visible { transition-delay: 0.1s; }
-.feature-card.fade-in-up:nth-child(3).visible { transition-delay: 0.2s; }
-
-// Stagger arch items
-.arch-item.fade-in-up:nth-child(2).visible { transition-delay: 0.08s; }
-.arch-item.fade-in-up:nth-child(3).visible { transition-delay: 0.16s; }
-.arch-item.fade-in-up:nth-child(4).visible { transition-delay: 0.24s; }
-.arch-item.fade-in-up:nth-child(5).visible { transition-delay: 0.32s; }
+// `.fade-in-up` no longer hides anything. It held the capability cards and
+// the stat tiles at opacity 0 until an IntersectionObserver saw them scroll
+// into view, so a reader who jumped past a section, a full-page screenshot,
+// and every visitor in the minute between a deploy and the CSP job that pins
+// the new inline-script hash all saw headings over blank space. The class
+// stays because the script finds the stat tiles by it for the count-up.
+// e2e/tests/smoke.spec.js checks the cards and tiles are opaque on load,
+// with scripting off, and with the inline script blocked.
 
 // =============================================================================
 // Footer

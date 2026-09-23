@@ -44,6 +44,54 @@ test.describe('homepage', () => {
   });
 });
 
+// Content that exists only once a script has run is content a reader may
+// never see. The homepage hid its capability cards and stat tiles at opacity 0
+// until an IntersectionObserver saw them scroll into view. A full-page
+// screenshot never scrolls, a reader who jumps past a section never triggers
+// it, and while a deploy's new inline-script hash is not yet in the CDN's CSP
+// the script does not run at all. Each of those left "What you can do with it"
+// and "Measured, not promised" as headings over blank space.
+test.describe('homepage content does not wait on a script', () => {
+  const SELECTORS = ['.feature-card', '.arch-item', '.notes-card', '.comparison-table'];
+
+  async function opacities(page) {
+    return page.evaluate((sels) => sels.flatMap((s) => [...document.querySelectorAll(s)].map(
+      (e) => `${s} ${getComputedStyle(e).opacity}`,
+    )), SELECTORS);
+  }
+
+  test('every card and tile is opaque on load, without scrolling', async ({ page }) => {
+    await page.goto('/');
+    const all = await opacities(page);
+    expect(all.length, 'found no cards or tiles at all').toBeGreaterThan(8);
+    expect(all.filter((o) => !o.endsWith(' 1'))).toEqual([]);
+  });
+
+  test('every card and tile is opaque with scripting off', async ({ browser }) => {
+    const context = await browser.newContext({ javaScriptEnabled: false });
+    const page = await context.newPage();
+    await page.goto('/');
+    const all = await opacities(page);
+    expect(all.length, 'found no cards or tiles at all').toBeGreaterThan(8);
+    expect(all.filter((o) => !o.endsWith(' 1'))).toEqual([]);
+    await context.close();
+  });
+
+  // Scripting on, but the page's inline script refused, which is what a
+  // browser does between a deploy and the CSP job that pins the new hash.
+  test('every card and tile is opaque when the inline script is blocked', async ({ page }) => {
+    await page.route('**/', async (route) => {
+      const res = await route.fetch();
+      const body = (await res.text()).replace(/<script>[\s\S]*?<\/script>/g, '');
+      await route.fulfill({ response: res, body });
+    });
+    await page.goto('/');
+    const all = await opacities(page);
+    expect(all.length, 'found no cards or tiles at all').toBeGreaterThan(8);
+    expect(all.filter((o) => !o.endsWith(' 1'))).toEqual([]);
+  });
+});
+
 test.describe('documentation', () => {
   test('the docs index lists pages and they resolve', async ({ page }) => {
     await page.goto('/docs/');

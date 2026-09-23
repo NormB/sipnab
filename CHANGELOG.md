@@ -12,6 +12,22 @@ entry that carries them.
 
 ### Changed
 
+- **The homepage cards and stat tiles always show.** "What you can do with
+  it" and "Built for production" hid their cards and tiles until a script saw
+  them scroll into view, so a reader who jumped past them, a full-page
+  screenshot, and every visitor in the minute after a deploy (before the CDN
+  pinned the new script's hash) saw headings over blank space. Browser tests
+  now check the cards and tiles are visible on load, with scripting off, and
+  with the page's script blocked.
+- **Docs links carry the title of the page they open.** The Docs menu and the
+  docs sidebar show each page's own title again. Short task labels ("Fix a
+  common problem" for a page headed "Examples & Recipes") left a reader unsure
+  the click had worked. The /download sidebar now uses the same wording as
+  its section headings.
+- **Quick Start is compact.** Each command is one slim line with its Copy
+  button, and on a phone it scrolls sideways instead of breaking a URL
+  across lines. The hero's pause button sits in the image's empty top corner
+  instead of over the key hints.
 - **/download reads as tasks, one command per copy button.** Method headings
   say what the reader does ("Install with Homebrew", "Download a static Linux
   binary"), and "for the seasoned" is "every file, for scripted installs". The
