@@ -43,6 +43,17 @@ entry that carries them.
   test pins. Reported by Giovanni
   Maruzzelli ([@gmaruzz](https://github.com/gmaruzz)) in
   [#301](https://github.com/NormB/sipnab/issues/301).
+- **Key recovery under `--keylog-watch` no longer loses the packet that
+  follows the keys.** When keys arrive for TLS records sipnab held, the next
+  packet runs the recovery, whatever that packet is, and the recovered
+  messages were analyzed instead of it. That packet was lost: a lab run of
+  `-d any --keylog <file> --keylog-watch -L` lost a HEP BYE on every build,
+  and 0.5.187 loses a different message in the same run. The recovered
+  messages also copied that packet's origin, DSCP and HEP metadata, so wire
+  records could report as HEP input. Recovered messages now come in addition
+  to the packet in hand, each built from its own record as wire TLS, and a
+  packet's messages are analyzed in capture-time order. Found while
+  reproducing [#301](https://github.com/NormB/sipnab/issues/301).
 - **`-L` no longer loses every HEP message marked TCP.** A HEP sender marks a
   TCP leg with IP protocol 6, and sipnab handed each such message to its TCP
   stream reassembler. The reassembler orders segments by sequence number, HEP

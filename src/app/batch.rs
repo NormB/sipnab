@@ -12,7 +12,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use parking_lot::RwLock;
-use smallvec::{SmallVec, smallvec};
+use smallvec::SmallVec;
 
 use crate::capture::{self, CaptureConfig, ParsedPacket, PcapExportMode, PcapWriter};
 use crate::cli::Cli;
@@ -3613,22 +3613,17 @@ impl BatchRunner {
                 // packet, and can just as easily yield none yet while a record
                 // is still incomplete.
                 #[cfg(feature = "tls")]
-                let tls_decrypted = try_tls_decrypt(pp, &mut tls_decryptor, &mut tls_reassembler);
-
-                #[cfg(not(feature = "tls"))]
-                let tls_decrypted: capture::ParsedPackets = capture::ParsedPackets::new();
-
-                // If TLS decryption yielded one or more SIP messages, process
-                // those (each already stamped Tls); otherwise fall back to the
-                // original packet, exactly as the pre-reassembly `unwrap_or`
-                // did for the single-message case.
-                let effective_pps: SmallVec<[&ParsedPacket; 1]> = if tls_decrypted.is_empty() {
-                    smallvec![pp]
-                } else {
-                    tls_decrypted.iter().collect()
+                let effective_pps = {
+                    let tls_yield = try_tls_decrypt(pp, &mut tls_decryptor, &mut tls_reassembler);
+                    packets_after_tls(pp, tls_yield, &mut tls_reassembler)
                 };
 
-                for effective_pp in effective_pps.iter().copied() {
+                #[cfg(not(feature = "tls"))]
+                let effective_pps: SmallVec<
+                    [std::borrow::Cow<'_, ParsedPacket>; 1],
+                > = smallvec::smallvec![std::borrow::Cow::Borrowed(pp)];
+
+                for effective_pp in effective_pps.iter().map(|p| p.as_ref()) {
                     // Acquire write locks once per packet. The locks are uncontested
                     // in the no-API case; with --api, the API thread briefly waits
                     // for in-flight per-packet processing to finish.
@@ -4877,6 +4872,112 @@ fn apply_detector_effect(
 
 /// Attempt TLS decryption on a TCP payload.
 ///
+/// What TLS decryption made of one packet in hand.
+#[cfg(feature = "tls")]
+#[derive(Default)]
+struct TlsYield {
+    /// Records held from before their keys existed, opened now that the keys
+    /// arrived. They belong to earlier packets, not to the one in hand.
+    recovered: Vec<crate::capture::decrypt::RecoveredRecord>,
+    /// SIP messages decrypted out of the packet in hand.
+    decrypted: capture::ParsedPackets,
+}
+
+/// The packets to analyze for one packet in hand, given what TLS decryption
+/// made of it.
+///
+/// # Arguments
+///
+/// * `pp` — the packet in hand.
+/// * `tls_yield` — what [`try_tls_decrypt`] returned for it.
+/// * `tls_reassembler` — frames recovered plaintext into SIP messages.
+///
+/// Key recovery adds to the packet in hand and never replaces it. The
+/// recovery runs on whatever packet follows the keys, and when its messages
+/// stood in for that packet, the packet was lost: a lab run under `-d any
+/// --keylog <file> --keylog-watch -L` lost a HEP BYE that way (issue #301).
+/// Each recovered message is built from its own record, a wire TLS message,
+/// rather than cloned from the packet that happened to trigger the sweep,
+/// whose origin, HEP metadata and DSCP are not the record's.
+///
+/// # Returns
+///
+/// The packets to analyze in capture-time order, borrowing `pp` when it
+/// passes through unchanged.
+#[cfg(feature = "tls")]
+fn packets_after_tls<'a>(
+    pp: &'a ParsedPacket,
+    tls_yield: TlsYield,
+    tls_reassembler: &mut tls::TlsRecordReassembler,
+) -> SmallVec<[std::borrow::Cow<'a, ParsedPacket>; 1]> {
+    let mut out: SmallVec<[std::borrow::Cow<'a, ParsedPacket>; 1]> = SmallVec::new();
+    // Records held from before their keys existed come FIRST, because they
+    // are older than the packet in hand. eCapture writes a session's secrets
+    // only after the handshake, so the first application record -- the INVITE,
+    // carrying the original SDP offer -- is on the wire before any keylog line
+    // for it. Emitting the recovery after the current packet would reconstruct
+    // the dialog out of order and put the answer before the offer.
+    //
+    // Each recovered message keeps the timestamp and endpoints of the packet
+    // it actually arrived in, not of the replay: a recovered INVITE stamped
+    // now would move post-dial delay and call duration by however long the
+    // keys took.
+    for recovered in tls_yield.recovered {
+        // Framed, not sniffed -- for the same reason the live path below is.
+        // A recovered INVITE split across two records would otherwise emit its
+        // headers and drop its SDP body, which is precisely the defect this
+        // whole path exists to fix, reintroduced on the recovery side.
+        for msg in
+            tls_reassembler.frame_plaintext(recovered.src, recovered.dst, &recovered.plaintext)
+        {
+            if !sip::is_sip_message(&msg) {
+                continue;
+            }
+            // Built from the record, never from the packet that triggered the
+            // sweep: that packet's frame pointer, DSCP, origin and HEP
+            // metadata describe it, not this message. An honest absence beats
+            // another packet's ordinal and digest on the one message an
+            // operator is most likely to trace back to bytes.
+            out.push(std::borrow::Cow::Owned(ParsedPacket {
+                frame: None,
+                frame_bytes: None,
+                timestamp: recovered.timestamp,
+                src_addr: recovered.src.ip(),
+                dst_addr: recovered.dst.ip(),
+                src_port: recovered.src.port(),
+                dst_port: recovered.dst.port(),
+                transport: TransportProto::Tls,
+                payload: msg.into(),
+                ip_id: None,
+                tcp_seq: None,
+                tcp_flags: None,
+                fragment_offset: None,
+                more_fragments: false,
+                ip_protocol: TransportProto::Tls.ip_proto_number(),
+                dscp: None,
+                // Held records are only ever wire TLS: HEP input never
+                // enters decryption.
+                input_origin: crate::capture::parse::InputOrigin::Wire,
+                hep: None,
+            }));
+        }
+    }
+
+    // The packet in hand: its decrypted SIP messages (each already stamped
+    // Tls) when it yielded any, otherwise the packet itself, whether or not
+    // a recovery ran on it.
+    if tls_yield.decrypted.is_empty() {
+        out.push(std::borrow::Cow::Borrowed(pp));
+    } else {
+        out.extend(tls_yield.decrypted.into_iter().map(std::borrow::Cow::Owned));
+    }
+    // Stable, so messages sharing a timestamp keep the order they were framed
+    // in. Recovered records are older than the packet in hand, so this
+    // normally only orders the recovered ones among themselves.
+    out.sort_by_key(|p| p.timestamp);
+    out
+}
+
 /// If the payload looks like TLS, reassembles it against any tail held from
 /// a previous call on the same stream direction (a TLS record routinely
 /// spans more than one TCP segment / captured packet — see
@@ -4893,51 +4994,17 @@ fn try_tls_decrypt(
     pp: &ParsedPacket,
     tls_decryptor: &mut Option<TlsDecryptor>,
     tls_reassembler: &mut tls::TlsRecordReassembler,
-) -> capture::ParsedPackets {
+) -> TlsYield {
     let Some(decryptor) = tls_decryptor.as_mut() else {
-        return capture::ParsedPackets::new();
+        return TlsYield::default();
     };
 
+    // Records held from before their keys existed. They run on ANY packet,
+    // TLS or not, because the packet that follows the keys is whatever the
+    // capture happens to hold next; `packets_after_tls` turns them into
+    // messages.
+    let recovered = decryptor.rewind_if_keys_changed();
     let mut out = capture::ParsedPackets::new();
-
-    // Records held from before their keys existed come FIRST, because they
-    // are older than the packet in hand. eCapture writes a session's secrets
-    // only after the handshake, so the first application record -- the INVITE,
-    // carrying the original SDP offer -- is on the wire before any keylog line
-    // for it. Emitting the recovery after the current packet would reconstruct
-    // the dialog out of order and put the answer before the offer.
-    //
-    // Each recovered message keeps the timestamp and endpoints of the packet
-    // it actually arrived in, not of the replay: a recovered INVITE stamped
-    // now would move post-dial delay and call duration by however long the
-    // keys took.
-    for recovered in decryptor.rewind_if_keys_changed() {
-        // Framed, not sniffed -- for the same reason the live path below is.
-        // A recovered INVITE split across two records would otherwise emit its
-        // headers and drop its SDP body, which is precisely the defect this
-        // whole path exists to fix, reintroduced on the recovery side.
-        for msg in
-            tls_reassembler.frame_plaintext(recovered.src, recovered.dst, &recovered.plaintext)
-        {
-            if !sip::is_sip_message(&msg) {
-                continue;
-            }
-            let mut late = pp.clone();
-            late.timestamp = recovered.timestamp;
-            late.src_addr = recovered.src.ip();
-            late.dst_addr = recovered.dst.ip();
-            late.src_port = recovered.src.port();
-            late.dst_port = recovered.dst.port();
-            // The frame pointer and DSCP belong to whatever packet happened to
-            // trigger the sweep, not to this message. An honest absence beats
-            // another packet's ordinal and digest on the one message an
-            // operator is most likely to trace back to bytes.
-            late.frame = None;
-            late.payload = msg.into();
-            late.transport = TransportProto::Tls;
-            out.push(late);
-        }
-    }
 
     // Non-TCP packets carry no TLS, but reaching this line still served a
     // purpose: the recovery above runs on ANY packet. Gating it behind the
@@ -4945,7 +5012,10 @@ fn try_tls_decrypt(
     // the next TLS-looking packet on that same connection -- which on a quiet
     // trunk may never come, and at end of capture never does.
     if pp.transport != TransportProto::Tcp {
-        return out;
+        return TlsYield {
+            recovered,
+            decrypted: out,
+        };
     }
 
     // A HEP message is plaintext a proxy already decrypted, whatever transport
@@ -4956,7 +5026,10 @@ fn try_tls_decrypt(
     // never decrypted (issue #301). `InputOrigin::Hep` marks both
     // `--hep-listen` and `--hep-parse` input.
     if pp.input_origin == crate::capture::parse::InputOrigin::Hep {
-        return out;
+        return TlsYield {
+            recovered,
+            decrypted: out,
+        };
     }
 
     let src = std::net::SocketAddr::new(pp.src_addr, pp.src_port);
@@ -4974,7 +5047,10 @@ fn try_tls_decrypt(
     // reassembly this same patch added: the SIP message inside kept getting
     // lost the same way, just one layer further down.
     if !tls_reassembler.has_held(src, dst) && !tls::is_tls(&pp.payload) {
-        return out;
+        return TlsYield {
+            recovered,
+            decrypted: out,
+        };
     }
 
     let records = tls_reassembler.insert(src, dst, &pp.payload);
@@ -5010,7 +5086,10 @@ fn try_tls_decrypt(
         }
     }
 
-    out
+    TlsYield {
+        recovered,
+        decrypted: out,
+    }
 }
 
 // ── SIP output dispatch ──────────────────────────────────────────────
@@ -6726,7 +6805,11 @@ mod tests {
         record.extend_from_slice(&body);
         let (head, tail) = record.split_at(15);
         let wire = packet(head, crate::capture::parse::InputOrigin::Wire);
-        assert!(try_tls_decrypt(&wire, &mut decryptor, &mut reassembler).is_empty());
+        assert!(
+            try_tls_decrypt(&wire, &mut decryptor, &mut reassembler)
+                .decrypted
+                .is_empty()
+        );
         assert!(
             reassembler.has_held(src, dst),
             "the wire's partial record is held"
@@ -6737,7 +6820,9 @@ mod tests {
                     Call-ID: hep-tls-state@x\r\nCSeq: 1 INVITE\r\nContent-Length: 0\r\n\r\n";
         let hep = packet(sip, crate::capture::parse::InputOrigin::Hep);
         assert!(
-            try_tls_decrypt(&hep, &mut decryptor, &mut reassembler).is_empty(),
+            try_tls_decrypt(&hep, &mut decryptor, &mut reassembler)
+                .decrypted
+                .is_empty(),
             "a HEP message is plaintext already; TLS decryption yields nothing for it"
         );
         assert_eq!(
@@ -6759,6 +6844,150 @@ mod tests {
              the plaintext was appended to the held ciphertext"
         );
         assert!(!reassembler.has_held(src, dst), "nothing is left over");
+    }
+
+    // ── Key recovery never costs the packet in hand ─────────────
+
+    /// A packet at `ts` on 192.0.2.10:40000 -> 192.0.2.20:5061 carrying
+    /// `payload`, arrived through `origin`.
+    #[cfg(feature = "tls")]
+    fn packet_at(
+        ts: chrono::DateTime<chrono::Utc>,
+        payload: &[u8],
+        transport: TransportProto,
+        origin: crate::capture::parse::InputOrigin,
+    ) -> ParsedPacket {
+        use std::net::{IpAddr, Ipv4Addr};
+        ParsedPacket {
+            frame: None,
+            frame_bytes: None,
+            timestamp: ts,
+            src_addr: IpAddr::V4(Ipv4Addr::new(192, 0, 2, 10)),
+            dst_addr: IpAddr::V4(Ipv4Addr::new(192, 0, 2, 20)),
+            src_port: 40000,
+            dst_port: 5061,
+            transport,
+            payload: bytes::Bytes::copy_from_slice(payload),
+            ip_id: None,
+            tcp_seq: None,
+            tcp_flags: None,
+            fragment_offset: None,
+            more_fragments: false,
+            ip_protocol: 6,
+            dscp: Some(46),
+            input_origin: origin,
+            hep: None,
+        }
+    }
+
+    /// A record held from the wire and opened when its keys arrived.
+    #[cfg(feature = "tls")]
+    fn recovered_at(
+        ts: chrono::DateTime<chrono::Utc>,
+        call_id: &str,
+    ) -> crate::capture::decrypt::RecoveredRecord {
+        crate::capture::decrypt::RecoveredRecord {
+            plaintext: format!(
+                "INVITE sip:bob@example.com SIP/2.0\r\nCall-ID: {call_id}\r\n\
+                 CSeq: 1 INVITE\r\nContent-Length: 0\r\n\r\n"
+            )
+            .into_bytes(),
+            timestamp: ts,
+            src: "198.51.100.1:5061".parse().unwrap(),
+            dst: "198.51.100.2:40001".parse().unwrap(),
+        }
+    }
+
+    #[cfg(feature = "tls")]
+    fn t(ms: i64) -> chrono::DateTime<chrono::Utc> {
+        chrono::DateTime::from_timestamp_millis(1_790_000_000_000 + ms).unwrap()
+    }
+
+    /// **The packet whose arrival triggers key recovery is still analyzed.**
+    ///
+    /// When the keys for held wire records arrive, the next packet runs the
+    /// recovery, whatever that packet is. The recovered messages were then
+    /// analyzed INSTEAD of it, so that packet vanished: a lab run under
+    /// `-d any --keylog <file> --keylog-watch -L` lost a HEP BYE this way on
+    /// every build, and 0.5.187 lost a different message in the same run.
+    /// The recovered messages were also clones of it, so they claimed its
+    /// origin: wire records reported as HEP input.
+    #[cfg(feature = "tls")]
+    #[test]
+    fn key_recovery_keeps_the_hep_packet_in_hand_and_its_own_origin() {
+        use crate::capture::parse::InputOrigin;
+        let bye = packet_at(
+            t(5),
+            b"BYE sip:bob@example.com SIP/2.0\r\nCall-ID: hep-bye\r\n\r\n",
+            TransportProto::Tcp,
+            InputOrigin::Hep,
+        );
+        let tls_yield = TlsYield {
+            recovered: vec![recovered_at(t(1), "wire-invite")],
+            decrypted: capture::ParsedPackets::new(),
+        };
+        let out = packets_after_tls(&bye, tls_yield, &mut tls::TlsRecordReassembler::new(16));
+        let out: Vec<&ParsedPacket> = out.iter().map(|p| p.as_ref()).collect();
+        assert_eq!(
+            out.len(),
+            2,
+            "the recovered INVITE AND the HEP BYE: {out:#?}"
+        );
+
+        let invite = out[0];
+        assert!(invite.payload.starts_with(b"INVITE"), "{invite:#?}");
+        assert_eq!(
+            invite.input_origin,
+            InputOrigin::Wire,
+            "a held record came off the wire"
+        );
+        assert!(invite.hep.is_none());
+        assert_eq!(invite.transport, TransportProto::Tls);
+        assert_eq!(invite.dscp, None, "the trigger's DSCP is not the record's");
+        assert_eq!(invite.src_port, 5061, "the record's own endpoints");
+
+        assert!(
+            std::ptr::eq(out[1], &bye),
+            "the HEP BYE passes through as it arrived"
+        );
+        assert_eq!(out[1].input_origin, InputOrigin::Hep);
+    }
+
+    /// The same for a wire packet that is not TLS at all.
+    #[cfg(feature = "tls")]
+    #[test]
+    fn key_recovery_keeps_a_plain_wire_packet_in_hand() {
+        use crate::capture::parse::InputOrigin;
+        let options = packet_at(
+            t(5),
+            b"OPTIONS sip:x SIP/2.0\r\n\r\n",
+            TransportProto::Udp,
+            InputOrigin::Wire,
+        );
+        let tls_yield = TlsYield {
+            recovered: vec![recovered_at(t(1), "wire-invite")],
+            decrypted: capture::ParsedPackets::new(),
+        };
+        let out = packets_after_tls(&options, tls_yield, &mut tls::TlsRecordReassembler::new(16));
+        assert_eq!(out.len(), 2, "the recovered INVITE and the OPTIONS in hand");
+        assert!(std::ptr::eq(out[1].as_ref(), &options));
+    }
+
+    /// Everything one packet yields is analyzed in capture-time order: held
+    /// records are older than the packet whose arrival released them, and a
+    /// dialog rebuilt out of order would put the answer before the offer.
+    #[cfg(feature = "tls")]
+    #[test]
+    fn key_recovery_and_the_packet_in_hand_come_out_in_time_order() {
+        use crate::capture::parse::InputOrigin;
+        let in_hand = packet_at(t(5), b"x", TransportProto::Udp, InputOrigin::Wire);
+        let tls_yield = TlsYield {
+            recovered: vec![recovered_at(t(3), "second"), recovered_at(t(1), "first")],
+            decrypted: capture::ParsedPackets::new(),
+        };
+        let out = packets_after_tls(&in_hand, tls_yield, &mut tls::TlsRecordReassembler::new(16));
+        let times: Vec<_> = out.iter().map(|p| p.timestamp).collect();
+        assert_eq!(times, vec![t(1), t(3), t(5)]);
     }
 
     // ── HEP unwrapping and the rtpengine control plane ──────────
