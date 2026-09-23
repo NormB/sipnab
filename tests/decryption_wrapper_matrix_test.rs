@@ -719,3 +719,149 @@ fn esp_with_null_encryption_decodes_the_same_in_every_wrapper() {
         ESP_CALL_ID,
     );
 }
+
+// ── SIP over secure WebSocket ─────────────────────────────────────────
+
+const WSS_CALL_ID: &str = "wss-decrypt-1@test";
+
+/// A WebSocket text frame (RFC 6455 section 5.2) carrying `payload`, masked
+/// with `key` when the client sends it, as section 5.3 requires.
+fn ws_text_frame(payload: &[u8], key: Option<[u8; 4]>) -> Vec<u8> {
+    let mut out = vec![0x81u8]; // FIN + text
+    let mask_bit = if key.is_some() { 0x80 } else { 0 };
+    match payload.len() {
+        n if n < 126 => out.push(mask_bit | n as u8),
+        n => {
+            out.push(mask_bit | 126);
+            out.extend_from_slice(&(n as u16).to_be_bytes());
+        }
+    }
+    match key {
+        Some(k) => {
+            out.extend_from_slice(&k);
+            out.extend(payload.iter().enumerate().map(|(i, b)| b ^ k[i % 4]));
+        }
+        None => out.extend_from_slice(payload),
+    }
+    out
+}
+
+/// SIP over WSS on 7443, the port the lab's OpenSIPS used, which is not in
+/// sipnab's default WebSocket port set: the hellos in the clear, then as TLS
+/// 1.3 application data the HTTP upgrade and its 101, then an INVITE in a
+/// masked client frame and its 180 in a server frame.
+fn wss_session_frames() -> Vec<Vec<u8>> {
+    let a = [10, 9, 1, 1];
+    let b = [10, 9, 1, 2];
+    let (client, server) = (40_211u16, 7443u16);
+    let common = format!(
+        "Via: SIP/2.0/WSS df7jal23ls0d.invalid;branch=z9hG4bKwss1\r\n\
+         From: <sip:alice@10.9.1.1>;tag=wa\r\nTo: <sip:bob@10.9.1.2>\r\n\
+         Call-ID: {WSS_CALL_ID}\r\nCSeq: 1 INVITE\r\n"
+    );
+    let invite = format!(
+        "INVITE sip:bob@10.9.1.2 SIP/2.0\r\n{common}Max-Forwards: 70\r\n\
+         Contact: <sip:alice@df7jal23ls0d.invalid;transport=ws>\r\nContent-Length: 0\r\n\r\n"
+    );
+    let ringing = format!("SIP/2.0 180 Ringing\r\n{common}Content-Length: 0\r\n\r\n");
+    let upgrade = "GET / HTTP/1.1\r\nHost: 10.9.1.2:7443\r\nUpgrade: websocket\r\n\
+                   Connection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\
+                   Sec-WebSocket-Protocol: sip\r\nSec-WebSocket-Version: 13\r\n\r\n";
+    let switching = "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n\
+                     Connection: Upgrade\r\nSec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\n\
+                     Sec-WebSocket-Protocol: sip\r\n\r\n";
+    let (ch, sh) = tls13_hellos();
+    let c0 = tls13_record(&CLIENT_SECRET, 0, upgrade.as_bytes());
+    let s0 = tls13_record(&SERVER_SECRET, 0, switching.as_bytes());
+    let c1 = tls13_record(
+        &CLIENT_SECRET,
+        1,
+        &ws_text_frame(invite.as_bytes(), Some([0x37, 0xfa, 0x21, 0x3d])),
+    );
+    let s1 = tls13_record(&SERVER_SECRET, 1, &ws_text_frame(ringing.as_bytes(), None));
+    let mut cseq = 1000u32;
+    let mut sseq = 5000u32;
+    let mut frames = vec![
+        pcap_build::tcp_frame(a, b, client, server, cseq, 0x02, b""),
+        pcap_build::tcp_frame(b, a, server, client, sseq, 0x12, b""),
+    ];
+    cseq += 1;
+    sseq += 1;
+    for (from_client, payload) in [
+        (true, &ch),
+        (false, &sh),
+        (true, &c0),
+        (false, &s0),
+        (true, &c1),
+        (false, &s1),
+    ] {
+        if from_client {
+            frames.push(pcap_build::tcp_frame(
+                a, b, client, server, cseq, 0x18, payload,
+            ));
+            cseq += payload.len() as u32;
+        } else {
+            frames.push(pcap_build::tcp_frame(
+                b, a, server, client, sseq, 0x18, payload,
+            ));
+            sseq += payload.len() as u32;
+        }
+    }
+    frames
+}
+
+/// **Decrypted WSS is SIP, labeled WSS** (found reproducing issue #301).
+///
+/// With the keys, the TLS records of a WSS leg decrypted, and what came out
+/// was WebSocket frames. The decrypted path framed plaintext as SIP and
+/// dropped anything else, and WebSocket unwrapping ran only on plain TCP, so
+/// the lab saw 12 records recovered and no SIP at all. The frames are
+/// recognized by their shape and their SIP content, not by port: TLS already
+/// said what this is, and 7443 is outside the default WebSocket port set.
+#[test]
+fn a_decrypted_wss_session_is_sip_over_wss() {
+    let dir = tempfile::tempdir().expect("dir");
+    let tmp = tempfile::tempdir().expect("tmp");
+    let keylog = dir.path().join("session.keylog");
+    std::fs::write(&keylog, tls_keylog()).expect("keylog");
+    let capture = dir.path().join("wss.pcap");
+    std::fs::write(&capture, classic_pcap(&wss_session_frames())).expect("capture");
+    let (stdout, stderr, code) = sipnab(
+        &[
+            "-N",
+            "-I",
+            capture.to_str().unwrap(),
+            "--keylog",
+            keylog.to_str().unwrap(),
+            "--json",
+            "--portrange",
+            "1-65535",
+        ],
+        "warn",
+        tmp.path(),
+    );
+    assert_eq!(code, Some(0), "{stderr}");
+    let messages: Vec<(String, String)> = stdout
+        .lines()
+        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .filter(|v| v["call_id"] == WSS_CALL_ID)
+        .map(|v| {
+            let what = v["method"]
+                .as_str()
+                .map(str::to_string)
+                .unwrap_or_else(|| v["status_code"].to_string());
+            (
+                what,
+                v["transport"].as_str().unwrap_or_default().to_string(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        messages,
+        vec![
+            ("INVITE".to_string(), "WSS".to_string()),
+            ("180".to_string(), "WSS".to_string()),
+        ],
+        "{stdout}\n{stderr}"
+    );
+}

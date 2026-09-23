@@ -4876,6 +4876,29 @@ fn apply_detector_effect(
 
 /// Attempt TLS decryption on a TCP payload.
 ///
+/// The SIP message in decrypted TLS plaintext that is one WebSocket data
+/// frame: SIP over WSS ([RFC 7118](https://www.rfc-editor.org/rfc/rfc7118)).
+///
+/// Recognized by the frame's shape and the SIP inside it, never by port. TLS
+/// already said this is an encrypted session, and a WSS server listens
+/// wherever it was configured to (the lab's OpenSIPS used 7443, outside the
+/// default WebSocket port set). The decrypted path framed plaintext as SIP
+/// and dropped anything else, and the WebSocket unwrap ran only on plain TCP,
+/// so a WSS leg decrypted to nothing (found reproducing issue #301).
+///
+/// # Returns
+///
+/// The SIP message, or `None` when the plaintext is not one WebSocket data
+/// frame carrying SIP.
+#[cfg(feature = "tls")]
+fn sip_in_websocket_frame(plaintext: &[u8]) -> Option<Vec<u8>> {
+    if !crate::capture::websocket::is_websocket_frame(plaintext) {
+        return None;
+    }
+    let payload = crate::capture::websocket::unwrap_websocket_frame(plaintext).ok()??;
+    sip::parser::starts_sip_message(&payload).then_some(payload)
+}
+
 /// What TLS decryption made of one packet in hand.
 #[cfg(feature = "tls")]
 #[derive(Default)]
@@ -4927,16 +4950,23 @@ fn packets_after_tls<'a>(
     // now would move post-dial delay and call duration by however long the
     // keys took.
     for recovered in tls_yield.recovered {
-        // Framed, not sniffed -- for the same reason the live path below is.
-        // A recovered INVITE split across two records would otherwise emit its
-        // headers and drop its SDP body, which is precisely the defect this
-        // whole path exists to fix, reintroduced on the recovery side.
-        for msg in
-            tls_reassembler.frame_plaintext(recovered.src, recovered.dst, &recovered.plaintext)
-        {
-            if !sip::is_sip_message(&msg) {
-                continue;
-            }
+        // One WebSocket frame is one message already, labeled WSS. Anything
+        // else is framed, not sniffed -- for the same reason the live path
+        // below is. A recovered INVITE split across two records would
+        // otherwise emit its headers and drop its SDP body, which is precisely
+        // the defect this whole path exists to fix, reintroduced on the
+        // recovery side.
+        let messages: Vec<(Vec<u8>, TransportProto)> =
+            match sip_in_websocket_frame(&recovered.plaintext) {
+                Some(sip) => vec![(sip, TransportProto::Wss)],
+                None => tls_reassembler
+                    .frame_plaintext(recovered.src, recovered.dst, &recovered.plaintext)
+                    .into_iter()
+                    .filter(|msg| sip::is_sip_message(msg))
+                    .map(|msg| (msg, TransportProto::Tls))
+                    .collect(),
+            };
+        for (msg, transport) in messages {
             // Built from the record, never from the packet that triggered the
             // sweep: that packet's frame pointer, DSCP, origin and HEP
             // metadata describe it, not this message. An honest absence beats
@@ -4950,7 +4980,7 @@ fn packets_after_tls<'a>(
                 dst_addr: recovered.dst.ip(),
                 src_port: recovered.src.port(),
                 dst_port: recovered.dst.port(),
-                transport: TransportProto::Tls,
+                transport,
                 payload: msg.into(),
                 ip_id: None,
                 tcp_seq: None,
@@ -5068,6 +5098,13 @@ fn try_tls_decrypt(
             continue;
         }
         if let Some(plaintext) = decryptor.try_decrypt_at(record, src, dst, pp.timestamp) {
+            if let Some(sip) = sip_in_websocket_frame(&plaintext) {
+                let mut decrypted_pp = pp.clone();
+                decrypted_pp.payload = sip.into();
+                decrypted_pp.transport = TransportProto::Wss;
+                out.push(decrypted_pp);
+                continue;
+            }
             // Frame the decrypted BYTES into SIP messages rather than testing
             // this record for "does it look like SIP". A sender may write one
             // message as several records -- a real trunk sends the INVITE
@@ -6992,6 +7029,57 @@ mod tests {
         let out = packets_after_tls(&in_hand, tls_yield, &mut tls::TlsRecordReassembler::new(16));
         let times: Vec<_> = out.iter().map(|p| p.timestamp).collect();
         assert_eq!(times, vec![t(1), t(3), t(5)]);
+    }
+
+    /// A held WSS record opened by key recovery is SIP over WSS too. The lab's
+    /// WSS leg decrypted through exactly this path (12 records recovered, no
+    /// SIP), because keys arrive after the handshake.
+    #[cfg(feature = "tls")]
+    #[test]
+    fn a_recovered_websocket_frame_is_sip_over_wss() {
+        use crate::capture::parse::InputOrigin;
+        let sip = b"INVITE sip:bob@x SIP/2.0\r\nCall-ID: wss-recovered\r\n\r\n";
+        let mut frame = vec![0x81u8, sip.len() as u8];
+        frame.extend_from_slice(sip);
+        let mut record = recovered_at(t(1), "unused");
+        record.plaintext = frame;
+        let in_hand = packet_at(t(5), b"x", TransportProto::Udp, InputOrigin::Wire);
+        let tls_yield = TlsYield {
+            recovered: vec![record],
+            decrypted: capture::ParsedPackets::new(),
+        };
+        let out = packets_after_tls(&in_hand, tls_yield, &mut tls::TlsRecordReassembler::new(16));
+        assert_eq!(out.len(), 2, "{out:#?}");
+        assert_eq!(out[0].transport, TransportProto::Wss);
+        assert_eq!(
+            out[0].payload.as_ref(),
+            &sip[..],
+            "the frame's payload, unwrapped"
+        );
+    }
+
+    /// Decrypted plaintext that is not one WebSocket frame carrying SIP is
+    /// left to the SIP framer: an HTTP upgrade, a control frame, a frame of
+    /// something else.
+    #[cfg(feature = "tls")]
+    #[test]
+    fn only_a_websocket_frame_carrying_sip_is_unwrapped() {
+        let mut ping = vec![0x89u8, 4];
+        ping.extend_from_slice(b"ping");
+        let mut not_sip = vec![0x81u8, 5];
+        not_sip.extend_from_slice(b"hello");
+        let options = b"OPTIONS sip:x SIP/2.0\r\n\r\n";
+        let mut sip = vec![0x81u8, options.len() as u8];
+        sip.extend_from_slice(options);
+        for plaintext in [
+            &b"GET / HTTP/1.1\r\nUpgrade: websocket\r\n\r\n"[..],
+            &ping[..],
+            &not_sip[..],
+            &b"INVITE sip:x SIP/2.0\r\n\r\n"[..],
+        ] {
+            assert!(sip_in_websocket_frame(plaintext).is_none(), "{plaintext:?}");
+        }
+        assert_eq!(sip_in_websocket_frame(&sip).as_deref(), Some(&options[..]));
     }
 
     // ── HEP unwrapping and the rtpengine control plane ──────────

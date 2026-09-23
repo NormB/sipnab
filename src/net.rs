@@ -27,10 +27,9 @@ pub enum TransportProto {
     Ws,
     /// Secure WebSocket (SIP over WSS, RFC 7118): WebSocket inside TLS.
     ///
-    /// Only a source that states it produces this: a HEP message whose top Via
-    /// says `SIP/2.0/WSS`. The wire capture cannot tell WSS from WS, because
-    /// WebSocket frames are only visible once the TLS around them is
-    /// decrypted, and it reports `Ws`.
+    /// Produced where sipnab knows TLS carried the WebSocket: a HEP message
+    /// whose top Via says `SIP/2.0/WSS`, and a WebSocket frame decrypted out of
+    /// a TLS record. Plain WebSocket read off the wire is `Ws`.
     Wss,
 }
 

@@ -43,6 +43,15 @@ entry that carries them.
   test pins. Reported by Giovanni
   Maruzzelli ([@gmaruzz](https://github.com/gmaruzz)) in
   [#301](https://github.com/NormB/sipnab/issues/301).
+- **A decrypted WSS leg is SIP over WSS.** With the keys, the TLS records of
+  a SIP-over-secure-WebSocket leg decrypted to WebSocket frames, and sipnab
+  kept only decrypted plaintext that was itself SIP, so the leg produced no
+  messages at all: a lab run recovered 12 records and showed no SIP. A
+  decrypted record that is one WebSocket frame carrying SIP now becomes that
+  message, labeled WSS, on any port, since TLS already said what the session
+  is. That covers records decrypted as they arrive and records recovered when
+  their keys come later. Found while reproducing
+  [#301](https://github.com/NormB/sipnab/issues/301).
 - **`--keylog` is read before sipnab drops privileges.** A FIFO and
   `--keylog-fd` already were, and an ordinary keylog file was opened only
   after the drop. A proxy's keylog is usually readable by the proxy's user

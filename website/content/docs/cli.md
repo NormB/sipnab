@@ -248,7 +248,7 @@ sipnab -d eth0,eth1 --multi-device --delta-time
 | `--no-reassembly` | -- | off | Disable IP-fragment and TCP-segment reassembly; sipnab parses every packet standalone (inverse of segment reassembly). Useful for pure single-packet UDP scanning |
 | `-x`, `--quiet-bad-parse` | -- | off | Suppress the per-packet "SIP parse error" diagnostic emitted when a SIP-looking packet fails to parse. sipnab drops the packet either way; this only silences the notice on a noisy link |
 | `--portrange` | `<RANGE>` | `5060-5061` | SIP **signaling** port range. Media is never gated — RTP uses SDP-negotiated dynamic ports. The default is narrow and carriers routinely run SIP on 5070, 5080 and elsewhere, so widen it or analyze a fraction of the file — see the note below |
-| `--ws-portrange` | `<RANGE>` | `80, 443, 8080, 8443` | Ports carrying SIP-over-WebSocket ([RFC 7118](https://www.rfc-editor.org/rfc/rfc7118)), as one inclusive `START-END` range in the same grammar as `--portrange`. The shipped set is the browser's view of the web, not a deployment's: Kamailio, OpenSIPS and Janus each default to WSS outside it, and behind a reverse proxy sipnab sees whichever port the proxy forwards to — so the whole WebRTC signaling leg stays invisible. A range **replaces** the shipped set, exactly as `--portrange` replaces the default signaling ports. sipnab counts the SIP-over-WebSocket it declines to unwrap and names the ports it arrived on. Config: `[capture] ws_ports` |
+| `--ws-portrange` | `<RANGE>` | `80, 443, 8080, 8443` | Ports carrying SIP-over-WebSocket ([RFC 7118](https://www.rfc-editor.org/rfc/rfc7118)), as one inclusive `START-END` range in the same grammar as `--portrange`. The shipped set is the browser's view of the web, not a deployment's: Kamailio, OpenSIPS and Janus each default to WSS outside it, and behind a reverse proxy sipnab sees whichever port the proxy forwards to — so the whole WebRTC signaling leg stays invisible. A range **replaces** the shipped set, exactly as `--portrange` replaces the default signaling ports. sipnab counts the SIP-over-WebSocket it declines to unwrap and names the ports it arrived on. The range governs plain WebSocket only: sipnab reads a WebSocket frame it decrypts out of TLS with `--keylog` on any port and labels it WSS. Config: `[capture] ws_ports` |
 | `--multi-device` | -- | off | Open one capture per interface named in a comma-separated `-d` list, e.g. `-d eth0,docker0 --multi-device`. It does **not** enumerate interfaces for you: with a single `-d` (or none) it falls back to an ordinary single capture. On Linux the zero-argument default already sniffs every interface via the `any` pseudo-device |
 | `--no-rtp` | -- | off | Disable RTP capture and analysis |
 | `-p`, `--no-promisc` | -- | off | Do not put the interface into promiscuous mode. Promisc is on by default for a named device; the `any` pseudo-device is never promiscuous |
@@ -1317,7 +1317,7 @@ has a response travel back over the transport its Via names, and
 The `transport` field of each `--json` message carries the name, so
 `jq 'select(.transport == "WSS")'` picks these legs out of a run that also
 captures the wire. A WebSocket leg captured from the wire itself reports WS
-whether or not TLS carried it.
+when it is plain, and WSS when sipnab decrypted it with `--keylog`.
 
 `--hep-parse` reads a HEP datagram it finds on the wire or in a capture file
 by the same rule, and counts one whose number names no transport in the NOT
