@@ -301,3 +301,24 @@ def test_the_pre_commit_hook_runs_the_check_on_every_commit():
         "the pre-commit hook must run `python3 scripts/rfc-links.py` on every "
         "commit, outside any staged-path condition"
     )
+
+
+def test_front_matter_is_left_alone():
+    """Front matter is metadata, printed as plain text, never as Markdown.
+
+    A page's `description` is rendered as text in a list row, a card and a
+    `<meta>` tag, none of which render Markdown. The fixer linked the first
+    bare `RFC N` it met, and on a note that was the description, so the
+    notes index printed the brackets and the URL. The first mention in the
+    BODY is the one to link.
+    """
+    text = (
+        "+++\n"
+        'description = "Errors in RFC 9457 form, per RFC 3261 section 8.1."\n'
+        "+++\n\n"
+        "The body cites RFC 9457 too.\n"
+    )
+    out, _, _ = convert()(text)
+    head, body = out.split("+++\n\n", 1)[0], out.split("+++\n\n", 1)[1]
+    assert "](" not in head, out
+    assert "[RFC 9457](https://www.rfc-editor.org/rfc/rfc9457)" in body, out

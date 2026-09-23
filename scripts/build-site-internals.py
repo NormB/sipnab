@@ -234,6 +234,8 @@ DOCS_TO_SITE = {
     # the internals vCon page and docs/README.md point at it.
     "vcon.md": "vcon.md",
     "vcon-harness.md": "vcon-harness.md",
+    "first-cli-triage.md": "first-cli-triage.md",
+    "glossary.md": "glossary.md",
 }
 
 LINK_RE = re.compile(r"\]\(\s*([^)\s]+?\.md)(#[^)\s]*)?\s*\)")

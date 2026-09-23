@@ -85,6 +85,7 @@ const INCOMPLETE_NOT_GATED = ['color-contrast'];
 //   /docs/tui/    page.html     -- a generated docs page (Markdown body,
 //                                 sidebar, in-page table of contents)
 //   /download/    download.html -- platform tables, checksums, copy buttons
+//   /standards/   standards.html -- the standards cards behind the numbers
 //
 // Adding a template to the site without adding it here leaves it ungated, so
 // the list is asserted against the rendered site by
@@ -94,6 +95,7 @@ const PAGES = [
   { url: '/docs/', template: 'section.html' },
   { url: '/docs/tui/', template: 'page.html' },
   { url: '/download/', template: 'download.html' },
+  { url: '/standards/', template: 'standards.html' },
 ];
 
 /** Render one axe finding as something a reader can act on without opening a report. */

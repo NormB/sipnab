@@ -41,20 +41,20 @@
         </div>
         <p class="dropzone-hint">Any filename &middot; up to ~250&nbsp;MB &middot; parsed locally in your browser</p>
       </div>
-      <!-- No `accept` filter: it hides real capture names from the OS picker.
+      {# No `accept` filter: it hides real capture names from the OS picker.
            tcpdump ring buffers are tg.pcap0..9 and many captures have no
            extension, so an allowlist here would gray out exactly the files
            people are trying to open. The page checks the leading bytes
-           instead — see captureKind() in analyze.js. -->
+           instead — see captureKind() in analyze.js. #}
       <input type="file" id="file-input" hidden>
       <button class="dropzone-sample" id="load-sample" type="button">No capture handy? Load a sample call &rarr;</button>
-      <!-- role="group" + aria-labelledby, not a bare aria-label. ARIA prohibits
+      {# role="group" + aria-labelledby, not a bare aria-label. ARIA prohibits
            aria-label on a generic div: with no role there is no element to
            attach the name to, so assistive technology is free to drop it, and
            axe-core reports it (aria-prohibited-attr, serious). Naming it from
            the VISIBLE "You'll get" label rather than a second invisible string
            also removes a phrase that could drift away from what the page
-           shows. -->
+           shows. #}
       <div class="dropzone-outcome" role="group" aria-labelledby="dropzone-outcome-label">
         <span class="dropzone-outcome-label" id="dropzone-outcome-label">You'll get</span>
         <span class="dropzone-outcome-item">call list</span>

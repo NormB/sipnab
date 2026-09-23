@@ -184,7 +184,7 @@
 }
 
 .dropzone-fmt {
-  font-size: 0.72rem;
+  font-size: 0.75rem;
   letter-spacing: 0.02em;
   color: var(--text-dim);
   background: var(--surface);
@@ -196,7 +196,7 @@
 /* Size ceiling + local-processing reassurance, in the box itself. */
 .dropzone-hint {
   margin: 1rem 0 0;
-  font-size: 0.74rem;
+  font-size: 0.75rem;
   color: var(--text-dim);
 }
 
@@ -352,7 +352,7 @@
 /* Topbar health pills — summary before detail. */
 .topbar-health { display: inline-flex; gap: 0.4rem; }
 .health-pill {
-  font-size: 0.72rem;
+  font-size: 0.75rem;
   font-weight: 600;
   border-radius: 999px;
   padding: 0.08rem 0.55rem;
@@ -380,7 +380,7 @@
 }
 .flow-legend summary {
   cursor: pointer;
-  font-size: 0.72rem;
+  font-size: 0.75rem;
   color: var(--text-dim);
   text-transform: none;
   letter-spacing: 0;

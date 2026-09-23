@@ -48,7 +48,14 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
     // jq's, named by the command-line triage tutorial. `--arg id "$CALL_ID"`
     // hands the shell variable to the jq program as `$id` rather than pasting
     // it into the program text. It is a jq flag, not a sipnab one.
-    ("arg", &["docs/first-cli-triage.md"]),
+    // The site mirror carries the same command, so it carries the exemption.
+    (
+        "arg",
+        &[
+            "docs/first-cli-triage.md",
+            "website/content/docs/first-cli-triage.md",
+        ],
+    ),
     // sudo's, named by the REST API page's live-capture step.
     // `--preserve-env=SIPNAB_API_KEY` passes the key through sudo's cleared
     // environment, so the key never has to go on sipnab's command line where
@@ -3370,7 +3377,12 @@ fn no_documentation_table_repeats_a_row() {
     // registration waits on the docs nav templates.
     // Merge of docs-readability with main: 223 +2 (glossary, first-cli-triage)
     // +1 (tests/PROVENANCE.md) = 226.
-    const EXPECTED_MARKDOWN_FILES: usize = 226;
+    // 226 -> 229 on site-readability: website/content/standards.md, the
+    // /standards/ page the homepage's standards cards moved to (front matter
+    // only; its body is the standards.html template), plus the site mirrors
+    // of docs/glossary.md and docs/first-cli-triage.md, now registered in
+    // build-site-pages.py PAGES and listed under "Start here" in the docs nav.
+    const EXPECTED_MARKDOWN_FILES: usize = 229;
     /// How many tables this gate expects to walk.
     ///
     /// Named rather than written twice. The count and the failure message

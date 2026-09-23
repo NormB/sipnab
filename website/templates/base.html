@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#0a0e14">
-  <!-- Browser-level security policy. GitHub Pages cannot set response
+  {# Browser-level security policy. GitHub Pages cannot set response
        headers, so this meta CSP is the enforceable layer there; the full
        header set (incl. frame-ancestors/HSTS, which meta cannot carry)
        lives in static/_headers for hosts/proxies that honor it.
@@ -32,7 +32,7 @@
        carry no handler attributes (no_inline_event_handlers_in_templates),
        so nothing legitimate is lost. Removing 'unsafe-inline' outright needs
        the inline scripts externalized to .js files first; see
-       ops/cloudflare/README.md. -->
+       ops/cloudflare/README.md. #}
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; script-src-attr 'none'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; upgrade-insecure-requests">
   <meta name="referrer" content="strict-origin-when-cross-origin">
   <title>{% block title %}{{ config.title }}{% endblock title %}</title>
@@ -41,14 +41,14 @@
   <!-- Open Graph -->
   <meta property="og:title" content="{% block og_title %}{{ config.title }}{% endblock og_title %}">
   <meta property="og:description" content="{% block og_description %}{{ config.description }}{% endblock og_description %}">
-  <!-- og:type is per-page, not a constant. "website" is right for the
+  {# og:type is per-page, not a constant. "website" is right for the
        homepage, the download page and the two section indexes; a docs page
        or an engineering note is an `article`, which is what tells an
        unfurler to render it as a document rather than as a site. The block
        defaults to the old constant so a template that says nothing keeps
        the previous behavior; page.html and note.html override it.
        `docs_pages_declare_the_article_open_graph_type` in
-       tests/site_journey_test.rs holds the wiring. -->
+       tests/site_journey_test.rs holds the wiring. #}
   <meta property="og:type" content="{% block og_type %}website{% endblock og_type %}">
   <meta property="og:url" content="{{ config.base_url }}{% if current_path is defined %}{{ current_path }}{% endif %}">
   <meta property="og:site_name" content="sipnab">
@@ -57,7 +57,7 @@
   <meta property="og:image:height" content="630">
   <meta property="og:image:alt" content="{% block og_image_alt %}sipnab — SIP & RTP analysis tool{% endblock og_image_alt %}">
 
-  <!-- Twitter / X.
+  {# Twitter / X.
 
        There is deliberately no twitter:title or twitter:description here, and
        it is not an omission. X's card parser falls back to og:title and
@@ -82,7 +82,7 @@
        download.html, index.html) and let the two drift silently, which is
        worse than the fallback that already works.
        `the_twitter_card_relies_on_the_open_graph_fallback` in
-       tests/site_journey_test.rs pins this. -->
+       tests/site_journey_test.rs pins this. #}
   <meta name="twitter:card" content="summary_large_image">
   <meta name="twitter:image" content="{{ config.base_url }}/og-image.png">
 
@@ -91,12 +91,12 @@
 
   <!-- Favicon: classic .ico fallback for bookmarks / non-SVG clients, then inline SVG -->
   <link rel="icon" href="/favicon.ico" sizes="any">
-  <!-- Favicon (inline SVG — amber handset on ink). A telephone reads at 16px
+  {# Favicon (inline SVG — amber handset on ink). A telephone reads at 16px
        where a letterform does not: a tab strip is the one place this is seen,
-       and a glyph that small resolves to a smudge. -->
+       and a glyph that small resolves to a smudge. #}
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='4' fill='%230a0e14'/><path d='M9.6 5.5h4.1c.7 0 1.3.5 1.4 1.2l.7 3.4c.1.6-.1 1.2-.6 1.5l-2.1 1.4c1.3 2.9 3.6 5.2 6.5 6.5l1.4-2.1c.3-.5.9-.7 1.5-.6l3.4.7c.7.1 1.2.7 1.2 1.4v4.1c0 .9-.7 1.6-1.6 1.5C15.3 25.7 6.3 16.7 5.5 7.1c-.1-.9.6-1.6 1.5-1.6z' fill='%23ffcc66'/></svg>">
 
-  <!-- Fonts: self-hosted, `font-display: optional` (see the Web fonts section of
+  {# Fonts: self-hosted, `font-display: optional` (see the Web fonts section of
        style.scss). The @font-face rules are only discovered once style.css is
        parsed and text is laid out, which is late enough to miss optional's
        ~100ms block period on a first visit; preloading starts the fetch while
@@ -104,7 +104,7 @@
        always fetched in CORS mode, and a preload without it does not match,
        so the file downloads twice. Latin only -- every page's text is latin,
        and a preload the page never uses is a wasted fetch and a console
-       warning. -->
+       warning. #}
   <link rel="preload" href="{{ get_url(path='fonts/inter/inter-latin-400-normal.woff2') }}" as="font" type="font/woff2" crossorigin>
   <link rel="preload" href="{{ get_url(path='fonts/inter/inter-latin-500-normal.woff2') }}" as="font" type="font/woff2" crossorigin>
   <link rel="preload" href="{{ get_url(path='fonts/jetbrains-mono/jetbrains-mono-latin-400-normal.woff2') }}" as="font" type="font/woff2" crossorigin>
@@ -127,7 +127,7 @@
   <script src="{{ get_url(path='elasticlunr.min.js', cachebust=true) }}" defer></script>
   {% endif %}
 
-  <!-- Structured data.
+  {# Structured data.
 
        The four `| safe` expressions below are escaping bypasses and cannot be
        written any other way: `json_encode` emits its own surrounding quotes,
@@ -143,7 +143,7 @@
        needs only an unlucky edit to config.toml. The property is asserted in
        no_config_value_in_the_json_ld_block_can_close_the_script_element, and
        every bypass on the page is held to a reviewed allowlist by
-       every_escaping_bypass_in_the_site_templates_is_on_the_reviewed_allowlist. -->
+       every_escaping_bypass_in_the_site_templates_is_on_the_reviewed_allowlist. #}
   <script type="application/ld+json">
   {
     "@context": "https://schema.org",
@@ -166,9 +166,9 @@
 
   {% block head_extra %}{% endblock head_extra %}
 
-  <!-- Progressive enhancement: scroll-reveal sections start hidden and are
+  {# Progressive enhancement: scroll-reveal sections start hidden and are
        revealed by an IntersectionObserver. Without JS they must stay visible,
-       or ~half the homepage renders blank. -->
+       or ~half the homepage renders blank. #}
   <noscript><style>.fade-in-up { opacity: 1 !important; transform: none !important; }</style></noscript>
 </head>
 <body>
@@ -188,71 +188,30 @@
         <a href="{{ get_url(path='@/analyze/_index.md') }}" {% if current_path is defined and current_path is starting_with("/analyze") %}class="active"{% endif %}>Analyze</a>
         <a href="{{ get_url(path='@/notes/_index.md') }}" {% if current_path is defined and current_path is starting_with("/notes") %}class="active"{% endif %}>Notes</a>
         <div class="nav-drop" id="nav-drop">
-          <button class="nav-drop-btn{% if current_path is defined and current_path is starting_with("/docs") %} active{% endif %}" id="nav-drop-btn" aria-haspopup="true" aria-expanded="false">Docs <span class="nav-caret" aria-hidden="true">&#9662;</span></button>
-          <div class="nav-drop-menu" role="menu">
-            <a href="{{ get_url(path='@/docs/_index.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/" %}class="active"{% endif %}>Overview</a>
-            <p class="nav-drop-label" aria-hidden="true">Getting started</p>
-            <a href="{{ get_url(path='@/docs/install.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/install/" %}class="active"{% endif %}>Install</a>
-            <a href="{{ get_url(path='@/docs/cookbook.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/cookbook/" %}class="active"{% endif %}>Cookbook</a>
-            <a href="{{ get_url(path='@/docs/real-world-captures.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/cookbook/" %}class="active"{% endif %}>Real-world captures</a>
-            <a href="{{ get_url(path='@/docs/tls-capture.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/tls-capture/" %}class="active"{% endif %}>Capture SIP over TLS</a>
-            <a href="{{ get_url(path='@/docs/rtpengine.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/rtpengine/" %}class="active"{% endif %}>rtpengine Relays</a>
-            <a href="{{ get_url(path='@/docs/uprobe-walkthrough.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/uprobe-walkthrough/" %}class="active"{% endif %}>TLS Without Keys</a>
-            <a href="{{ get_url(path='@/docs/troubleshooting.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/troubleshooting/" %}class="active"{% endif %}>Troubleshooting</a>
-            <a href="{{ get_url(path='@/docs/tuning-capture.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/tuning-capture/" %}class="active"{% endif %}>Tuning Capture</a>
-            <a href="{{ get_url(path='@/docs/encapsulations.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/encapsulations/" %}class="active"{% endif %}>Encapsulations</a>
-            <p class="nav-drop-label" aria-hidden="true">Using the TUI</p>
-            <a href="{{ get_url(path='@/docs/tui.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/tui/" %}class="active"{% endif %}>TUI Walkthrough</a>
-            <a href="{{ get_url(path='@/docs/keybindings.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/keybindings/" %}class="active"{% endif %}>Keybindings</a>
-            <a href="{{ get_url(path='@/docs/theme.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/theme/" %}class="active"{% endif %}>Theme</a>
-            <p class="nav-drop-label" aria-hidden="true">CLI &amp; automation</p>
-            <a href="{{ get_url(path='@/docs/cli.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/cli/" %}class="active"{% endif %}>CLI</a>
-            <a href="{{ get_url(path='@/docs/filter-dsl.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/filter-dsl/" %}class="active"{% endif %}>Filter DSL</a>
-            <a href="{{ get_url(path='@/docs/output-formats.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/output-formats/" %}class="active"{% endif %}>Output Formats</a>
-            <a href="{{ get_url(path='@/docs/sip-response-codes.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/sip-response-codes/" %}class="active"{% endif %}>Response Codes</a>
-            <a href="{{ get_url(path='@/docs/sip-parameters.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/sip-parameters/" %}class="active"{% endif %}>Parameters</a>
-            <a href="{{ get_url(path='@/docs/mos-and-codecs.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/mos-and-codecs/" %}class="active"{% endif %}>MOS &amp; Codecs</a>
-            <a href="{{ get_url(path='@/docs/sip-methods.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/sip-methods/" %}class="active"{% endif %}>Request Methods</a>
-            <a href="{{ get_url(path='@/docs/sip-header-fields.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/sip-header-fields/" %}class="active"{% endif %}>Header Fields</a>
-            <a href="{{ get_url(path='@/docs/sip-lint-rules.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/sip-lint-rules/" %}class="active"{% endif %}>Conformance Rules</a>
-            <p class="nav-drop-label" aria-hidden="true">Configuration</p>
-            <a href="{{ get_url(path='@/docs/config.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/config/" %}class="active"{% endif %}>Config</a>
-            <p class="nav-drop-label" aria-hidden="true">API &amp; integrations</p>
-            <a href="{{ get_url(path='@/docs/api.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/api/" %}class="active"{% endif %}>API</a>
-            <a href="{{ get_url(path='@/docs/metrics.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/metrics/" %}class="active"{% endif %}>Prometheus Metrics</a>
-            <a href="{{ get_url(path='@/api-reference.md') }}" role="menuitem" {% if current_path is defined and current_path == "/api-reference/" %}class="active"{% endif %}>OpenAPI Reference</a>
-            <a href="{{ get_url(path='@/docs/library.md') }}" role="menuitem">Library API</a>
-            <a href="{{ get_url(path='@/docs/examples.md') }}" role="menuitem">Runnable Examples</a>
-            <a href="{{ get_url(path='@/docs/api-clients.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/api-clients/" %}class="active"{% endif %}>API Clients</a>
-            <a href="{{ get_url(path='@/docs/auth.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/auth/" %}class="active"{% endif %}>Authentication</a>
-            <a href="{{ get_url(path='@/docs/integrations.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/integrations/" %}class="active"{% endif %}>Integrations</a>
-            <a href="{{ get_url(path='@/docs/plugins.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/plugins/" %}class="active"{% endif %}>WASM plugins</a>
-            <a href="{{ get_url(path='@/docs/mcp.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/mcp/" %}class="active"{% endif %}>MCP</a>
-            <a href="{{ get_url(path='@/docs/mcp-deploy.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/mcp-deploy/" %}class="active"{% endif %}>MCP Deployment</a>
-            <a href="{{ get_url(path='@/docs/mcp-estate.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/mcp-estate/" %}class="active"{% endif %}>MCP Across an Estate</a>
-            <a href="{{ get_url(path='@/docs/mcp-tools.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/mcp-tools/" %}class="active"{% endif %}>MCP Tools</a>
-            <a href="{{ get_url(path='@/docs/mcp-protocol.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/mcp-protocol/" %}class="active"{% endif %}>MCP Protocol</a>
-            <a href="{{ get_url(path='@/docs/vcon.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/vcon/" %}class="active"{% endif %}>vCon Export</a>
-            <a href="{{ get_url(path='@/docs/vcon-harness.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/vcon-harness/" %}class="active"{% endif %}>vCon Capture Stack</a>
-            <p class="nav-drop-label" aria-hidden="true">Build &amp; benchmarks</p>
-            <a href="{{ get_url(path='@/docs/build.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/build/" %}class="active"{% endif %}>Build from Source</a>
-            <a href="{{ get_url(path='@/docs/benchmarks.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/benchmarks/" %}class="active"{% endif %}>Benchmarks</a>
-            <p class="nav-drop-label" aria-hidden="true">Internals (developers)</p>
-            <a href="{{ get_url(path='@/docs/internals/_index.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/internals/" %}class="active"{% endif %}>Developer Index</a>
-            <a href="{{ get_url(path='@/docs/internals/domain-primer.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/internals/domain-primer/" %}class="active"{% endif %}>Domain Primer</a>
-            <a href="{{ get_url(path='@/docs/internals/subsystem-guide.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/internals/subsystem-guide/" %}class="active"{% endif %}>Subsystem Guide</a>
-            <a href="{{ get_url(path='@/docs/internals/invariants.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/internals/invariants/" %}class="active"{% endif %}>Invariants</a>
-            <a href="{{ get_url(path='@/docs/internals/testing.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/internals/testing/" %}class="active"{% endif %}>Test Architecture</a>
-            <a href="{{ get_url(path='@/docs/internals/walkthroughs.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/internals/walkthroughs/" %}class="active"{% endif %}>Contributor Walkthroughs</a>
-            <a href="{{ get_url(path='@/docs/internals/build-ci-release.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/internals/build-ci-release/" %}class="active"{% endif %}>Build, CI and Release</a>
-            <a href="{{ get_url(path='@/docs/internals/threading.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/internals/threading/" %}class="active"{% endif %}>Threading Model</a>
-            <a href="{{ get_url(path='@/docs/internals/profiling.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/internals/profiling/" %}class="active"{% endif %}>Profiling</a>
-            <a href="{{ get_url(path='@/docs/internals/zero-copy-payloads.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/internals/zero-copy-payloads/" %}class="active"{% endif %}>Zero-Copy Payloads</a>
-            <a href="{{ get_url(path='@/docs/internals/relay-control-decoding.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/internals/relay-control-decoding/" %}class="active"{% endif %}>Relay Control Decoding</a>
-            <a href="{{ get_url(path='@/docs/internals/uprobe-capture.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/internals/uprobe-capture/" %}class="active"{% endif %}>Uprobe TLS Capture</a>
-            <a href="{{ get_url(path='@/docs/internals/rtpengine-control-plane.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/internals/rtpengine-control-plane/" %}class="active"{% endif %}>The rtpengine Control Plane</a>
-            <a href="{{ get_url(path='@/docs/internals/tui-testing.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/internals/tui-testing/" %}class="active"{% endif %}>TUI Testing</a>
-            <a href="{{ get_url(path='@/docs/internals/vcon.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/internals/vcon/" %}class="active"{% endif %}>The vCon Exporter</a>
+          <button class="nav-drop-btn{% if current_path is defined and (current_path is starting_with("/docs") or current_path == "/api-reference/") %} active{% endif %}" id="nav-drop-btn" aria-haspopup="true" aria-expanded="false">Docs <span class="nav-caret" aria-hidden="true">&#9662;</span></button>
+          {#- Built from `[[extra.docs_nav]]` in config.toml, the list the docs
+              sidebar renders too, so the two cannot name a page two ways. The
+              dropdown shows the entries marked `menu`; "All docs" leads to the
+              rest. An entry is active when the page being read IS the page it
+              links, compared on the page's own path, never a pasted literal.
+              Each group is a labeled group, so a screen reader hears the
+              heading with the items under it. -#}
+          <div class="nav-drop-menu" role="menu" aria-label="Docs">
+            <a href="{{ get_url(path='@/docs/_index.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/" %}class="active" aria-current="page"{% endif %}>Overview</a>
+            {% for group in config.extra.docs_nav %}
+            <div class="nav-drop-group" role="group" aria-labelledby="nav-grp-{{ group.id }}">
+              <p class="nav-drop-label" id="nav-grp-{{ group.id }}">{{ group.title }}</p>
+              {% for entry in group.pages %}{% if entry.menu %}
+              {% set p = get_page(path=entry.path) %}
+              <a href="{{ p.permalink }}" role="menuitem" {% if current_path is defined and current_path == p.path %}class="active" aria-current="page"{% endif %}>{{ entry.label }}</a>
+              {% endif %}{% endfor %}
+            </div>
+            {% endfor %}
+            <div class="nav-drop-group" role="group" aria-labelledby="nav-grp-dev">
+              <p class="nav-drop-label" id="nav-grp-dev">For developers</p>
+              <a href="{{ get_url(path='@/docs/internals/_index.md') }}" role="menuitem" {% if current_path is defined and current_path is starting_with("/docs/internals/") %}class="active" aria-current="page"{% endif %}>Developer docs</a>
+            </div>
+            <a class="nav-drop-all" href="{{ get_url(path='@/docs/_index.md') }}" role="menuitem">All docs &rarr;</a>
           </div>
         </div>
       </div>
@@ -278,8 +237,19 @@
     </div>
   </div>
 
+  {#- Cloudflare's Email Obfuscation rewrites anything shaped like an address
+      into "[email protected]" plus a decoding script. Nothing on this site
+      shaped like an address is one: a Call-ID such as busy-3a2b1c@192.0.2.30
+      and a SIP URI such as user@host sit in code blocks a reader copies, and a
+      reader without JavaScript got the placeholder. The CDN skips whatever
+      sits between these two markers (its Scrape Shield documentation gives
+      the syntax). Turning the feature off for the zone is the complete fix;
+      this keeps the content correct while it is on.
+      every_page_body_is_inside_the_email_obfuscation_opt_out pins it. -#}
   <main id="main">
+    <!--email_off-->
     {% block content %}{% endblock content %}
+    <!--/email_off-->
   </main>
 
   {% block footer %}

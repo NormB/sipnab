@@ -19,8 +19,8 @@ The registries, and what a page missing from one costs:
   nowhere".
 * `build-wiki.py` sections -- the page publishes to the wiki with no section,
   so the wiki index cannot reach it.
-The three navigation templates are deliberately NOT checked here.
-`every_docs_page_is_in_the_sidebar_and_dropdown_navs` already compares them
+The docs navigation is deliberately NOT checked here.
+`every_docs_page_is_in_the_docs_nav_list` already compares the one nav list
 against `website/content/docs/*.md`, which is the right set; a second check
 built on a different set reported eight pages as missing that were never meant
 to be in a sidebar.

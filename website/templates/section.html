@@ -10,19 +10,14 @@
 <div class="doc-layout">
   <aside class="doc-sidebar" aria-label="Documentation navigation" id="doc-sidebar">
     <nav class="doc-nav" aria-label="Docs sections">
-      {{ macros::nav_group(title="Getting started", paths=["install.md", "cookbook.md", "real-world-captures.md", "tls-capture.md", "uprobe-walkthrough.md", "troubleshooting.md", "tuning-capture.md", "encapsulations.md", "rtpengine.md"], current_url=section.permalink) }}
-      {{ macros::nav_group(title="Using the TUI", paths=["tui.md", "keybindings.md", "theme.md"], current_url=section.permalink) }}
-      {{ macros::nav_group(title="CLI & automation", paths=["cli.md", "filter-dsl.md", "output-formats.md", "sip-response-codes.md", "sip-methods.md", "sip-header-fields.md", "sip-parameters.md", "sip-lint-rules.md", "mos-and-codecs.md"], current_url=section.permalink) }}
-      {{ macros::nav_group(title="Configuration", paths=["config.md"], current_url=section.permalink) }}
-      {{ macros::nav_group(title="API & integrations", paths=["api.md", "api-clients.md", "library.md", "examples.md", "metrics.md", "auth.md", "integrations.md", "plugins.md", "mcp.md", "mcp-deploy.md", "mcp-estate.md", "mcp-tools.md", "mcp-protocol.md", "vcon.md", "vcon-harness.md"], current_url=section.permalink) }}
-      {{ macros::nav_group(title="Build & benchmarks", paths=["build.md", "benchmarks.md"], current_url=section.permalink) }}
-      {{ macros::nav_section(title="Internals (developers)", section_path="docs/internals/_index.md", current_url=section.permalink) }}
+      {{ macros::docs_nav(nav=config.extra.docs_nav, current_url=section.permalink) }}
+      {{ macros::nav_section(title="Developer docs", section_path="docs/internals/_index.md", current_url=section.permalink) }}
     </nav>
   </aside>
 
-  <!-- data-pagefind-body: same scoping as page.html, and the same reason —
+  {# data-pagefind-body: same scoping as page.html, and the same reason —
        indexing <body> would put the identical docs sidebar into every
-       record. See the comment there. -->
+       record. See the comment there. #}
   <article class="doc-content" data-pagefind-body>
     <header class="doc-header">
       <p class="doc-kicker">Documentation</p>
@@ -58,7 +53,7 @@
           js/docs-search.js removes that, and only once the engine has
           loaded. With scripting off, or against a site built without the
           Pagefind step, the reader sees no search box at all — they see the
-          "Reference" index further down this page, which is the same set of
+          "All docs" index further down this page, which is the same set of
           pages a search would have reached. An input that accepts text and
           can never answer is the failure being avoided.
     #}
@@ -111,20 +106,20 @@
     {% endif %}
 
     <div class="doc-body">
-      <!-- Same bypass, same justification as page.html: `section.content` is
+      {# Same bypass, same justification as page.html: `section.content` is
            HTML Zola rendered from a committed _index.md, so escaping it would
            show the markup instead of the section, and nothing a visitor sends
            can reach it. Held to the reviewed allowlist in
-           every_escaping_bypass_in_the_site_templates_is_on_the_reviewed_allowlist. -->
+           every_escaping_bypass_in_the_site_templates_is_on_the_reviewed_allowlist. #}
       {{ section.content | safe }}
     </div>
 
     {% if section.pages | length > 0 %}
-    <h2 class="doc-index-title">Reference</h2>
-    <!-- data-pagefind-ignore: every entry here is the title and
+    <h2 class="doc-index-title">All docs</h2>
+    {# data-pagefind-ignore: every entry here is the title and
          description of a page that Pagefind indexes in its own right, so
          indexing the list as well would make this landing page a
-         duplicate match for every one of them. -->
+         duplicate match for every one of them. #}
     <nav class="doc-index" aria-label="Documentation sections" data-pagefind-ignore>
       {% for page in section.pages %}
       <a href="{{ page.permalink }}" class="doc-index-item">
@@ -144,8 +139,8 @@
   </article>
 </div>
 
-<!-- The search behavior, as an external file: see the CSP note on the
+{# The search behavior, as an external file: see the CSP note on the
      #doc-search box above. cachebust=true so an edit to the script can
-     never be served from a cache against new HTML. -->
+     never be served from a cache against new HTML. #}
 <script src="{{ get_url(path='js/docs-search.js', cachebust=true) }}" defer></script>
 {% endblock content %}

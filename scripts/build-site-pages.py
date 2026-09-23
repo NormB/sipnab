@@ -401,6 +401,42 @@ PAGES: list[tuple[str, str, str, str, int, str]] = [
         "storms, false-positive detections and misleading aggregates that a "
         "curated fixture cannot show.",
     ),
+    (
+        "docs/first-cli-triage.md",
+        "first-cli-triage.md",
+        "Triage a capture from the command line",
+        "Triage a capture from the command line",
+        # 34: weight only has to be unique, and 34 was free. Where the page
+        # appears in the docs navs is set by `[[extra.docs_nav]]` in
+        # website/config.toml, which lists it under "Start here".
+        34,
+        "A first analysis without the TUI: list the calls in a capture, find "
+        "the ones that went wrong, explain one, and hand the answer to another "
+        "tool as JSON.",
+    ),
+    (
+        "docs/glossary.md",
+        "glossary.md",
+        "Glossary",
+        "Glossary",
+        35,
+        "The VoIP and sipnab terms the other pages use, each defined in one "
+        "short entry by what it means in sipnab's output.",
+    ),
+    (
+        # Hand-maintained on the site until now, and it drifted: the docs
+        # source moved its setup steps ahead of the token format, and the site
+        # copy kept the old order. Generated from here on, like every other
+        # operator page.
+        "docs/auth.md",
+        "auth.md",
+        "Bearer-token authentication",
+        "Authentication",
+        31,
+        "Bearer-token authentication for the REST API and MCP server: token "
+        "format, audience binding, configuring a signing key, minting tokens, "
+        "expiry and key rotation.",
+    ),
 ]
 
 BANNER = (
