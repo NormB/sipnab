@@ -1,5 +1,5 @@
 +++
-title = "rtpengine Relays"
+title = "Name calls on an rtpengine relay"
 weight = 32
 description = "Media captured on a standalone rtpengine relay comes back orphaned because a relay carries no SIP. Read rtpengine's own control plane to name the calls, with no change to an existing Homer pipeline."
 +++
@@ -13,7 +13,9 @@ belongs to. This page fixes that.
 has media and nothing to name it with. rtpengine knows the name — its `ng`
 control protocol carries the Call-ID and the ports it allocated — and it can
 already mirror that control plane to a Homer collector. sipnab reads that
-mirror and ties the media to the call. A call that was already up when the
+mirror and ties the media to the call.
+
+A call that was already up when the
 capture opened left no control message for the mirror to carry, so
 `--rtpengine-control` asks the relay for that one directly.
 

@@ -1,76 +1,113 @@
 +++
-title = "API Client Examples"
+title = "Call the REST API from code"
 weight = 12
-description = "Client code for the sipnab REST API in curl, Python, Node/TypeScript, Rust, and Go."
+description = "Ready-to-adapt clients for the REST API in curl, Python, Node/TypeScript, Rust and Go."
 +++
-
-Ready-to-adapt clients for the [REST API](@/docs/api.md) in curl, Python, Node/TypeScript, Rust, and Go.
 
 ## Client examples
 
-End-to-end examples in five languages. Each one covers: bearer-token auth, listing dialogs filtered by state, fetching a single dialog with pagination, scraping `/metrics`, and error handling. Adapt to your environment.
+End-to-end examples in five languages for the [REST API](@/docs/api.md). Each one covers: bearer-token auth, listing dialogs filtered by state, fetching a single dialog with pagination, scraping `/metrics`, and error handling. Adapt to your environment.
 
 > **Filter parameters:** the REST API accepts `state` (e.g. `Failed`, `Completed`, `InCall`) and `from` (regex on the From header) as query parameters on `/v1/dialogs`, plus `orphaned` and `mos_below` on `/v1/streams`. Full DSL filtering — anything more complex than a single state/from match — is **not** available over REST. For arbitrary DSL queries, use the [MCP server](@/docs/mcp.md)'s `list_dialogs` tool, which accepts a `filter` argument that runs through the same evaluator as `sipnab --filter`.
 
-> **Status codes:** the REST API returns **503 Service Unavailable** when the rate limiter turns a request away or the connection cap (not 429). 401 on bad/missing token, 404 on unknown call_id.
+> **Status codes:** the REST API returns **503 Service Unavailable**, not 429, when the per-peer rate limiter turns a request away or the in-flight request cap is full. A missing or wrong token gets 401, and an unknown `call_id` gets 404.
 
-> **Per-call response code / per-message data is not on REST.** The REST API aggregates each dialog into a summary (`call_id`, `state`, `from_user`, `to_user`, `duration_sec`, `msg_count`, `timing`, `diagnosis`, `sdp_timeline`, `streams`) — individual SIP messages and per-response status codes are **not** exposed by `/v1/dialogs` or `/v1/dialogs/{id}`. To work with per-message data programmatically, use either: (a) the CLI `sipnab -N --json ...` mode, which emits one JSON object per SIP message with `is_request`, `status_code`, `reason`, etc. (field reference: [Output Formats](@/docs/output-formats.md); see also [cookbook Recipe 3](@/docs/cookbook.md#3-find-every-failed-call-grouped-by-response-code)), or (b) the MCP `get_dialog` tool, which returns paginated `messages[]` (see [MCP](@/docs/mcp.md)).
+> **Per-call response code / per-message data is not on REST.** The REST API aggregates each dialog into a summary (`call_id`, `state`, `from_user`, `to_user`, `duration_sec`, `msg_count`, `timing`, `diagnosis`, `sdp_timeline`, `streams`) — individual SIP messages and per-response status codes are **not** exposed by `/v1/dialogs` or `/v1/dialogs/{id}`.
+>
+> To work with per-message data programmatically, use either: (a) the CLI `sipnab -N --json ...` mode, which emits one JSON object per SIP message with `is_request`, `status_code`, `reason`, etc. (field reference: [Output Formats](@/docs/output-formats.md), and see also [cookbook Recipe 3](@/docs/cookbook.md#3-find-every-failed-call-grouped-by-response-code)), or (b) the MCP `get_dialog` tool, which returns paginated `messages[]` (see [MCP](@/docs/mcp.md)).
 
 ### curl + jq one-liners
 
-The snippet sets `$API`, `$KEY` and `$H` at the top and every call below uses them, so this
-block is one paste into one shell. Lifting a single line out of the middle gives
-you a curl with unset variables, which requests `/v1/dialogs` on no host with no
-bearer token. Every call here is a read, and running the block start to finish
+Set the server address and token once per shell. Every command below reads
+`$API` and `$KEY`, so a command pasted into a shell without them requests
+`/v1/dialogs` on no host with no bearer token. Every command here is a read and
 changes nothing on the server.
 
 ```bash
 # Run all of these, in order.
-# Setup
 API="http://localhost:8080"
 KEY="my-secret-token"
-H="-H 'Authorization: Bearer $KEY'"
+```
 
-# Health check (no auth required)
-curl -fsS $API/health
+Then run whichever of these you need:
 
-# List failed dialogs (state= query param)
-curl -fsS "$API/v1/dialogs?state=Failed&limit=20" $H | jq
+- Check the server is up (no token needed):
 
-# List dialogs from a specific user (from= regex)
-curl -fsS "$API/v1/dialogs?from=alice&limit=20" $H | jq
+  ```bash
+  curl -fsS "$API/health"
+  ```
 
-# Get one full (aggregated) dialog — no per-message data over REST
-curl -fsS "$API/v1/dialogs/abc123@host" $H | jq
+- List failed dialogs (the `state=` query parameter):
 
-# Get a call report (JSON — this endpoint is JSON-only)
-curl -fsS "$API/v1/dialogs/abc123@host/report" $H | jq
+  ```bash
+  curl -fsS "$API/v1/dialogs?state=Failed&limit=20" -H "Authorization: Bearer $KEY" | jq
+  ```
 
-# Non-orphaned streams (orphaned=false)
-curl -fsS "$API/v1/streams?orphaned=false" $H | jq
+- List dialogs from one user (`from=` takes a regex):
 
-# Streams below a MOS threshold
-curl -fsS "$API/v1/streams?mos_below=3.5" $H | jq
+  ```bash
+  curl -fsS "$API/v1/dialogs?from=alice&limit=20" -H "Authorization: Bearer $KEY" | jq
+  ```
 
-# Aggregate counters
-curl -fsS "$API/v1/stats" $H | jq
+- Get one dialog, aggregated. REST carries no per-message data:
 
-# Count failed calls (aggregated — REST exposes no per-message data)
-curl -fsS "$API/v1/dialogs?state=Failed&limit=1000" $H \
-  | jq '.total'
+  ```bash
+  curl -fsS "$API/v1/dialogs/abc123@host" -H "Authorization: Bearer $KEY" | jq
+  ```
 
-# For per-call response-code histograms, use the CLI NDJSON mode —
-# sipnab -N --json emits one record per message (see Output Formats docs):
-#   sipnab -N -I capture.pcap --filter "state == 'Failed'" --json \
-#     | jq -r 'select(.is_request == false) | .status_code' \
-#     | sort | uniq -c | sort -rn
+- Get a call report. This endpoint returns JSON only:
 
-# Prometheus metrics
-curl -fsS "$API/metrics" $H | grep '^sipnab_'
+  ```bash
+  curl -fsS "$API/v1/dialogs/abc123@host/report" -H "Authorization: Bearer $KEY" | jq
+  ```
 
-# Error handling — server returns 503 (not 429) on rate-limit + conn-cap
+- List streams that are not orphaned (`orphaned=false`):
+
+  ```bash
+  curl -fsS "$API/v1/streams?orphaned=false" -H "Authorization: Bearer $KEY" | jq
+  ```
+
+- List streams below a MOS threshold:
+
+  ```bash
+  curl -fsS "$API/v1/streams?mos_below=3.5" -H "Authorization: Bearer $KEY" | jq
+  ```
+
+- Read the aggregate counters:
+
+  ```bash
+  curl -fsS "$API/v1/stats" -H "Authorization: Bearer $KEY" | jq
+  ```
+
+- Count failed calls. REST exposes no per-message data, so this counts dialogs:
+
+  ```bash
+  curl -fsS "$API/v1/dialogs?state=Failed&limit=1000" -H "Authorization: Bearer $KEY" | jq '.total'
+  ```
+
+- Read the Prometheus metrics:
+
+  ```bash
+  curl -fsS "$API/metrics" -H "Authorization: Bearer $KEY" | grep '^sipnab_'
+  ```
+
+For per-call response-code histograms, use the CLI NDJSON mode instead.
+`sipnab -N --json` emits one record per message (see
+[Output Formats](@/docs/output-formats.md)):
+
+```bash
+sipnab -N -I capture.pcap --filter "state == 'Failed'" --json \
+  | jq -r 'select(.is_request == false) | .status_code' \
+  | sort | uniq -c | sort -rn
+```
+
+To handle errors in a script, branch on the status code. The server returns
+503, not 429, when a rate limit or the connection cap turns the request away:
+
+```bash
+# Run all of these, in order.
 http_code=$(curl -s -o /dev/null -w '%{http_code}' \
-            "$API/v1/dialogs/no-such-call" $H)
+            "$API/v1/dialogs/no-such-call" -H "Authorization: Bearer $KEY")
 case "$http_code" in
   200) echo "found" ;;
   401) echo "auth failed — check --api-key" ;;
@@ -622,9 +659,9 @@ SIPNAB_API_KEY=my-secret-token go run sipnab-client.go
 
 ---
 
-## Common Patterns
+## Common patterns
 
-### Monitor failed calls in real-time (Python)
+### Monitor failed calls in real time (Python)
 
 ```python
 import time

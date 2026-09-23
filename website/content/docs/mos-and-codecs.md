@@ -1,5 +1,5 @@
 +++
-title = "MOS & Codecs"
+title = "Understand MOS and codecs"
 weight = 24
 description = "Where the quality score comes from, which codecs have a published impairment factor behind it, and which report a placeholder."
 +++
@@ -275,10 +275,12 @@ One caveat that belongs in any operator-facing report built on these numbers:
 <!-- vale Google.Passive = NO -->
 each G.113 appendix states *"This appendix does not form an integral part of
 this Recommendation"* and labels its contents *"provisional planning values …
-intended to be updated regularly"*. They are planning figures for network
-design, not measurements of the call in front of you. Only G.107.1 Annex A —
-the R-to-MOS conversion itself — is normative.
+intended to be updated regularly"*.
 <!-- vale Google.Passive = YES -->
+
+They are planning figures for network design, not measurements of the call in
+front of you. Only G.107.1 Annex A — the R-to-MOS conversion itself — is
+normative.
 
 ## Using the model in code
 

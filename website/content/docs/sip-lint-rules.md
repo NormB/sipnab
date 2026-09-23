@@ -1,5 +1,5 @@
 +++
-title = "SIP Conformance Rules"
+title = "Look up a SIP conformance rule"
 weight = 25
 description = "Every rule the SIP conformance linter runs, the RFC section behind it, the severity and basis it reports under, and how to suppress it in CI."
 +++
@@ -226,6 +226,7 @@ The two RFC 3262 rules are not exercised. The corpus contains exactly one
 reliable provisional and one `PRACK`, so their silence rests on their unit
 tests rather than on real traffic. Both fire on crafted input and both stay
 quiet under their guards, but nobody should read their zero as a measurement.
+
 Saying so is the point: an unexercised rule and a rule with nothing to find
 produce the same row, and only this note tells them apart.
 
@@ -234,7 +235,9 @@ produce the same row, and only this note tells them apart.
 RFC 4028 numbers its behavior sections 7 UAC, **8 Proxy, 9 UAS** — and the
 refresher obligation belongs to the UAS, so it cites [RFC 4028 section 9](https://www.rfc-editor.org/rfc/rfc4028#section-9). Recalling it as [section 8](https://www.rfc-editor.org/rfc/rfc4028#section-8)
 sends a reader to the proxy's rules, which say something different about the
-same header field. The citation here came from the table of contents in RFC
+same header field.
+
+The citation here came from the table of contents in RFC
 4028 rather than from memory, for the same reason the angle-bracket rule cites the
 [RFC 3261 section 20](https://www.rfc-editor.org/rfc/rfc3261#section-20) preamble instead of [section 20.10](https://www.rfc-editor.org/rfc/rfc3261#section-20.10).
 
@@ -248,15 +251,21 @@ fence it: the message has to be a response, its status has to be 2xx, and its
 
 Measured against the local corpus, where all four rules report zero. That
 number means nothing on its own — a rule that never fires and a rule with
-nothing to find produce the same row — so a probe took it apart. The corpus holds
+nothing to find produce the same row — so a probe took it apart.
+
+The corpus holds
 1,849 messages carrying `Session-Expires`, of which 471 are 2xx answers to
 `INVITE`, and every one of those 471 names a refresher. The rule reaches its
 own code path 471 times and declines each time, which is silence with evidence
-behind it rather than a rule that cannot fire. The 358 values in the corpus
+behind it rather than a rule that cannot fire.
+
+The 358 values in the corpus
 that carry no refresher are all requests, where a UAC proposes a timer and [RFC 4028 section 9](https://www.rfc-editor.org/rfc/rfc4028#section-9)
-places no obligation. No `Session-Expires` anywhere in the corpus sits below
-90, so both floor rules are quiet for the same checkable reason. A request offering a timer is the UAC
+places no obligation. A request offering a timer is the UAC
 proposing rather than answering, and [RFC 4028 section 9](https://www.rfc-editor.org/rfc/rfc4028#section-9) puts the obligation on the answer.
+
+No `Session-Expires` anywhere in the corpus sits below
+90, so both floor rules are quiet for the same checkable reason.
 
 ### Why the bracket rules split in two
 
@@ -386,7 +395,9 @@ carried settles nothing, so sipnab skips it.
 [RFC 3261 section 12.1.1](https://www.rfc-editor.org/rfc/rfc3261#section-12.1.1) makes the UAS "copy all Record-Route header field values from
 the request into the response" and "MUST maintain the order of those values",
 and [section 12.1.2](https://www.rfc-editor.org/rfc/rfc3261#section-12.1.2) has the caller build its route set from the *response*, in
-reverse. A value the response dropped is a proxy removed from a path it recorded
+reverse.
+
+A value the response dropped is a proxy removed from a path it recorded
 itself into. A value reordered sends every in-dialog request through the hops
 backwards. Both fail after the call is up, which is why they arrive as a network
 ticket rather than a signaling one.
@@ -484,7 +495,9 @@ carries 160-octet packets at an 8 kHz cadence" is not decidable from what a
 stream records. 160 octets per 20 ms is 64 kbit/s, which is exactly G.711 and is
 also a legal Opus CBR configuration. Separating the two needs the RTP timestamp
 cadence, and the stream store keeps a last timestamp and no first one, so
-nothing in it yields a clock rate. A rule that reported legal Opus CBR as a
+nothing in it yields a clock rate.
+
+A rule that reported legal Opus CBR as a
 defect would not survive week one, and this one is decidable from the SDP alone.
 
 ### The four header fields that section 7.3.1 of RFC 3261 exempts

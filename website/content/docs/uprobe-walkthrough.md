@@ -1,5 +1,5 @@
 +++
-title = "TLS Without Keys"
+title = "Read TLS without keys (eBPF)"
 weight = 28
 description = "What uprobe and eBPF capture is and is NOT, its security implications, whether your kernel supports it at all, and how to run both backends step by step."
 +++
@@ -209,7 +209,7 @@ Adds the one thing tracefs cannot: **who the peer was**.
 
 - a sipnab whose build produced the kernel programs, which takes `--features bpf`
   **and** a nightly toolchain **and** `cargo install bpf-linker` on the build
-  host;
+  host.
 - `CONFIG_DEBUG_INFO_BTF=y` at run time.
 
 Without either, sipnab **refuses** rather than falling back to `tracefs`. The

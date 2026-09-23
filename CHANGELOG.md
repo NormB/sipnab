@@ -80,6 +80,42 @@ entry that carries them.
 
 ### Changed
 
+- **The docs read one idea at a time.** Long paragraphs across the user and
+  developer docs are split into one idea each, and sentences joined
+  by semicolons are split in two, with no fact dropped. References such as
+  "recipe 11", "the 2C tunnel" and "Section 4" now name their target and link
+  to it. Setup blocks that ran several commands from one copy button are now
+  numbered steps with one command each, where the commands are independent.
+  The command-line reference opens with a "Start here" list of the six flags
+  a first run needs. The filter language page explains MOS thresholds without
+  naming internal source functions.
+- **The REST API client examples work when pasted.** The curl examples put
+  the bearer token in a shell variable that word splitting broke into four
+  words, quotes included, so every authenticated call sent a malformed
+  header. Each example is now its own block with the header written out, and the note on
+  status codes says which limits answer 503.
+- **Docs pages are titled for the job they do.** Page titles, and so the
+  Docs menu and sidebar, read as tasks: "Install sipnab", "Look up a
+  command-line flag", "Stop a capture dropping packets", "Read TLS without
+  keys (eBPF)", "Recipes for common tasks", "Learn from real captures". The
+  three pages that were all called some kind of "Examples" now say what each
+  holds. Headings on the integrations page follow suit, with the two links
+  into it updated.
+- **A docs page states its purpose once.** On 19 pages the grey lead under
+  the title and the first paragraph said the same thing. The site generators
+  now mark such a page and the lead is skipped there, and page descriptions
+  no longer show raw Markdown (backticks, "--") as literal text.
+- **Code blocks read on a phone.** The language badge and copy button sat on
+  top of a command's first line, hiding the end of any command wider than
+  the screen, and the copy button appeared only on hover, which a touch
+  screen never sends. Both now sit in a band above the code, and the button
+  shows wherever there is no hover.
+- **Smaller site fixes.** The analyze page asks for "a capture file" and lists
+  the zip and tar archives it opens. /download shows its header and tabs
+  without a fade-in. /api-reference/ has one top-level heading for screen
+  readers. The notes index group headings read as headings. The build page
+  said "Rust 1.97+" while the crate needs 1.98, and a test now holds every
+  published Rust floor to Cargo.toml.
 - **The homepage cards and stat tiles always show.** "What you can do with
   it" and "Built for production" hid their cards and tiles until a script saw
   them scroll into view, so a reader who jumped past them, a full-page

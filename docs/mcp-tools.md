@@ -10,13 +10,17 @@ This is lookup material, not reading material.
 
 
 The v0.5 sipnab MCP tool surface. No tool edits the analysis in place, and
-every response carries a ceiling. That ceiling defaults to 1000 rows and is an
+every response carries a ceiling.
+
+That ceiling defaults to 1000 rows and is an
 operator setting, not a build-time fact: `--mcp-max-rows N`, or `[limits]
 mcp_max_rows` in the config file, with the flag winning. The right value
 belongs to the consumer — a model with a small context window wants far fewer,
 a batch client piping to a file wants far more. Note this is a DIFFERENT limit
 from `dialog_limit`, which bounds dialogs tracked over the whole run and
-defaults 100x higher. One tool replaces
+defaults 100x higher.
+
+One tool replaces
 the analysis outright — `open_capture`, off unless you enable it — and it mints
 a new capture identity so the replacement cannot reach a consumer as an
 ordinary update.
@@ -95,7 +99,9 @@ ordinary update.
 > that mode in [sippulse/tfps#6](https://github.com/sippulse/tfps/pull/6),
 > merged on 2026-09-18, and no tagged release carries it yet: v0.2.1, the
 > newest, rejects `--json`. Until the next release, build TFPS from its
-> `master` branch. To check the `tfps_ctl` you have, run
+> `master` branch.
+>
+> To check the `tfps_ctl` you have, run
 > `tfps_ctl status --json`. One line of JSON means it is ready, and
 > `unknown option: --json` means it predates the mode. Against an older
 > `tfps_ctl` these answer with that error and name what to install.
@@ -206,7 +212,9 @@ A file source loads on a background thread, so an agent's first call lands
 inside a window a human client never sees: on a 921 MB capture, `list_dialogs`
 answered with 6 of 18,241 dialogs. `tail_dialogs` and `capture_status` have
 always carried `source_exhausted`. Now every tool that answers from the capture
-does. Seventeen tools are the exception, because their answer cannot move with
+does.
+
+Seventeen tools are the exception, because their answer cannot move with
 the load. Nine read something other than the capture store —
 `explain_response_code`, `explain_rule`, `decode_evidence`, `decode_ng`,
 `show_evidence`, `list_captures`, `list_tls_libraries`, `server_capabilities`
@@ -215,7 +223,9 @@ The other eight ask another process: `query_relay` and `relay_stats` put the
 question to the media relay, and `tfps_status`, `tfps_banned`, `tfps_dropped`,
 `tfps_labels`, `tfps_ban` and `tfps_unban` put it to the toll-fraud prevention
 peer. How much
-of the capture sipnab has read says nothing about what those hold. The
+of the capture sipnab has read says nothing about what those hold.
+
+The
 tools that answer with a rendered document — `render_ladder`, and
 `get_capture_report` / `get_dialog_report` in `markdown` and `text` — have no
 object to put a field in, so they say it in prose instead: a document drawn
@@ -223,6 +233,7 @@ over a capture that is still loading, or over one whose read stopped before its
 end, ends with the same `INCOMPLETE RUN` block `--report` appends, naming each
 reason. A document drawn over a capture read in full says nothing extra,
 because a caveat on every answer is a caveat nobody reads.
+
 Every other tool answers with a JSON object, so the two booleans sit in the
 object beside the tool's own fields — [`timeline`](#timeline) was the last one
 returning a bare array, and it now wraps its rows in an object for exactly this
@@ -361,7 +372,7 @@ remedies, so a non-zero figure names its own flag:
 - `unanalysed_websocket_messages` / `unanalysed_websocket_ports` —
   SIP-over-WebSocket ([RFC 7118](https://www.rfc-editor.org/rfc/rfc7118)) on a
   port outside the WebSocket set. Re-run with `--ws-portrange` covering the
-  ports listed; widening `--portrange` recovers none of it. This is the common
+  ports listed. Widening `--portrange` recovers none of it. This is the common
   case on a WSS listener behind a reverse proxy, and on Kamailio, OpenSIPS and
   Janus, which all default outside sipnab's shipped 80/443/8080/8443.
 
@@ -675,7 +686,9 @@ nothing.
 whole capture arrive?** It reads `true` when a file's read ended before the file
 did — `libpcap error: truncated dump file`, a file that would not open, a read
 that hit an error part-way through — which is the normal state of a ring
-buffer's newest member and otherwise stays invisible here. Until this field
+buffer's newest member and otherwise stays invisible here.
+
+Until this field
 landed, that condition reached stderr as `0 of 1 file(s) read in full, 1 stopped
 early` and reached this response not at all, so an agent asking whether a
 capture was sound got no answer either way. Both fields are booleans, so the response type stays
@@ -750,14 +763,18 @@ time rather than cached at startup, since a host can lose its time source while
 sipnab runs.
 
 It is irrelevant to a single capture, where one clock stamped every packet and a
-constant offset cancels out of every interval. It matters the moment you
+constant offset cancels out of every interval.
+
+It matters the moment you
 correlate across NODES: `find_correlated`'s `timing_heuristic` matches dialogs
 that started within the leg-correlation window of each other — two seconds
 unless `--leg-correlation-window` says otherwise — and that is smaller than the
 skew an undisciplined host accumulates in a day. A clock three seconds fast
 fails to correlate legs that belong together, and a slow one pulls unrelated
 legs inside the window. Widening the window to reach a B2BUA that dips a
-database before placing the outbound leg widens this exposure with it. Read `clock` from both servers before trusting a time-based
+database before placing the outbound leg widens this exposure with it.
+
+Read `clock` from both servers before trusting a time-based
 match, and prefer any of the six identifier strategies — `session_id`,
 `x_call_id`, `charging_vector_related_icid`, `sdp_origin`,
 `charging_vector_icid` or `via_branch` — none of which care what time anyone
@@ -924,21 +941,29 @@ findings list from such a capture is a **floor, not a total**.
 
 `complete` also reads `false` while the load runs, and for a source whose read
 stopped before its end. It answers "did sipnab read all of its input", so a file
-still arriving cannot satisfy it. Until this gate landed it ignored the load
+still arriving cannot satisfy it.
+
+Until this gate landed it ignored the load
 entirely and read backwards during one: on a 100 MB capture the same tool in the same
 session answered `complete: true` at `frames_read: 312` and `complete: false` at
 `frames_read: 365747` — `true` over 0.09% of the file, `false` once the whole
-file had arrived. The field keeps its name and its meaning. What changed is that
+file had arrived.
+
+The field keeps its name and its meaning. What changed is that
 the two facts under it, `source_exhausted` and `source_stopped_early`, now gate
 it and travel beside it.
 
 `markdown` and `text` answer with a rendered document, which has no envelope to
-carry either flag, so the document states the fact itself. A report drawn while
+carry either flag, so the document states the fact itself.
+
+A report drawn while
 the capture is still loading, or over one whose read stopped before its end,
 ends with an `INCOMPLETE RUN` block naming each reason — the same block
 `--report` appends, and for the same reason: the reader of a rendered report has
 no `$?` and no JSON in front of them, and a partial report looks exactly like a
-whole one. A capture read in full adds nothing and the report ends where it
+whole one.
+
+A capture read in full adds nothing and the report ends where it
 always did. Ask for `json` when you want the two booleans as fields.
 
 > Before 0.5.125 this default returned the TEXT rendering. `format` chooses
@@ -1005,12 +1030,16 @@ a capture, and one capture carrying no extension at all:
 on the first record of the file, read whole seconds, so forty rotated captures
 narrow to the two that could hold a call from 14:02 without opening each one in
 turn. Opening one is not free: [`open_capture`](#open_capture) replaces the
-loaded capture and voids every cursor and Call-ID an agent is holding. The key
+loaded capture and voids every cursor and Call-ID an agent is holding.
+
+The key
 reads `null` whenever sipnab got no first packet out of the file — a rotated
 capture that never received one, or a file it could not open — so treat `null`
 as "unknown", not as "empty". An archive always reads `null`: its first packet
 belongs to whichever member holds the earliest traffic, and finding out means
-unpacking it. sipnab reports neither a dialog count nor a
+unpacking it.
+
+sipnab reports neither a dialog count nor a
 last-packet time here, because both need the whole file parsed and a listing
 that costs a full read of every capture in the root is a listing nobody runs.
 
@@ -1210,7 +1239,9 @@ decides whose capture a fact came from once an agent holds several servers.
 A bare array hides its own size. This tool returned 50 of 2311 dialogs on a
 production capture with nothing in the reply to mark the cut, and `limit` alone
 could not close the gap: requests above 1000 clamp to the hard cap, leaving 1311
-dialogs no call could reach. An agent asked "how many calls failed?" counts the
+dialogs no call could reach.
+
+An agent asked "how many calls failed?" counts the
 rows it holds and answers with that number, so a short list does not read as an
 incomplete answer — it reads as a confident wrong one. `total_matched` and
 `truncated` name the shortfall. `cursor` closes it.
@@ -1461,7 +1492,9 @@ Carrier metrics per group, computed inside the store.
 Every question beginning with WHICH — which trunk is failing, which User-Agent
 has the worst audio, which hour it started — wants a rate, and a rate is the one
 thing a language model cannot recover from a page of rows: it would have to hold
-every dialog, classify each outcome and divide. Agents stop early and answer
+every dialog, classify each outcome and divide.
+
+Agents stop early and answer
 from the rows they happen to hold, which is how a truncated page becomes a
 confident verdict about a carrier. So this tool computes the rate where the
 dialogs live and reports the population underneath it.
@@ -1526,7 +1559,9 @@ an unpublished codec, extended to the other seven metrics.
 travels with the numbers rather than living on this page. `asr` and `ner` are
 PERCENTS here and in [`evaluate_expectations`](#evaluate_expectations), which
 takes its thresholds in the same unit: a rule reads `"value": 99`, matching the
-number you read in a report. The two tools disagreed on this before 0.5.130 --
+number you read in a report.
+
+The two tools disagreed on this before 0.5.130 --
 one percent, one a ratio -- and a threshold copied between them was wrong by a
 hundredfold in the direction that always passes.
 
@@ -1549,10 +1584,14 @@ capture as an outage that looks worse the earlier you look.
 
 **NER credits the far end where ASR does not.** A trunk full of 486s has an ASR
 of zero and works perfectly: the network delivered every call and the callee was
-busy, so reading the ASR alone escalates a healthy carrier. The five codes that
+busy, so reading the ASR alone escalates a healthy carrier.
+
+The five codes that
 count as delivered are `480`, `486`, `487`, `600` and `603` — the callee
 unavailable, busy, busy everywhere, declining, or the CALLER hanging up on a
-call that had already reached the far end. **`408 Request Timeout` is
+call that had already reached the far end.
+
+**`408 Request Timeout` is
 deliberately absent.** A proxy emits it both for a silent phone and for an
 unreachable next hop, so crediting it would credit the network for calls that
 may never have arrived, which is the exact misattribution NER exists to prevent.
@@ -1644,10 +1683,14 @@ allowed to use that way.
 this process sees it. A gnu build or a package loads the host's libpcap, a
 static musl build carries its own, and a macOS build loads the one macOS
 ships, so the same sipnab version reports different libraries on different
-hosts. `named_backends` lists the alternate capture backends (`netmap`,
+hosts.
+
+`named_backends` lists the alternate capture backends (`netmap`,
 `dpdk`, `dag`, `snf`) that the banner names. It is the report the second line
 of `sipnab --version` prints and the `libpcap` block of REST
-`GET /v1/capabilities` carries, from one function. A backend missing from it
+`GET /v1/capabilities` carries, from one function.
+
+A backend missing from it
 remains unconfirmed rather than absent: libpcap names netmap in its banner
 only from 1.10.6, and DPDK only in a DPDK-only build. [Which capture backends
 an artifact can reach](install.md#which-capture-backends-an-artifact-can-reach)
@@ -1953,7 +1996,9 @@ The DSL narrows [`list_dialogs`](#list_dialogs), [`find_problems`](#find_problem
 and [`group_dialogs`](#group_dialogs), and before this tool every way of trying
 an expression cost a page. An agent converging on a working filter — widen it,
 narrow it, try the other field name — paid for a page of fenced summaries per
-attempt and discarded every row. The two failure modes also look alike from
+attempt and discarded every row.
+
+The two failure modes also look alike from
 outside: a malformed expression comes back as `invalid_params`, which lands in
 the error channel where a model acts on it least, and an expression that parses
 but selects nothing returns the same empty page as an empty capture.
@@ -2201,7 +2246,9 @@ armed does an empty list mean the endpoint stayed clean.
 
 `failure_rate_pct` guards its denominator: it comes back `null`, not `0.0`, when
 nothing reached a final status. A zero there hands a clean bill of health to an
-endpoint nobody has measured. `registration.applicable` does the same job for
+endpoint nobody has measured.
+
+`registration.applicable` does the same job for
 REGISTER — `false` means the endpoint sent none, so the four counts under it
 read as "no input" rather than "no failures". A registration counts by the
 REQUEST rather than by the dialog's method, because a REGISTER can arrive inside
@@ -2239,7 +2286,9 @@ and `source_exhausted` is `true`.
 `next_cursor` is compound — `<RFC 3339>|<Call-ID>` — not a bare
 timestamp. Dialogs can share an `updated_at`, so resuming from the
 `(updated_at, Call-ID)` pair is what keeps a tie group split across a
-page boundary from vanishing or arriving twice. Pass it back
+page boundary from vanishing or arriving twice.
+
+Pass it back
 unmodified. A client that rebuilds a bare timestamp from a dialog's
 `updated_at` instead falls back to the pre-compound strictly after
 filter and loses or repeats the tied dialogs — that bare-timestamp
@@ -2313,6 +2362,7 @@ There is no page-size argument. This tool answers *did it happen*, and the rows
 are evidence that it did rather than a page to work through — so it returns
 what any list tool returns to a caller that named no `limit`: the default fifty
 rows, cut to `--mcp-max-rows` when the operator set that lower.
+
 [`list_dialogs`](#list_dialogs) with the same `filter` is the paging surface,
 with the cursors and field projection that belong there. The response carries
 reported either way, so a bounded page never reads as a smaller event than it
@@ -2338,7 +2388,7 @@ The numbers this tool applies, and what moves each one:
   call names no `timeout_seconds`.
 - **Deadline ceiling: 60 seconds** (`DEFAULT_MCP_MAX_WAIT_SECONDS`, which
   `await_condition` reads as `DEFAULT_MAX_WAIT_SECONDS`). The shipped value of
-  `--mcp-max-wait-seconds`; the operator moves it, and a request above it is
+  `--mcp-max-wait-seconds`. The operator moves it, and a request above it is
   clamped rather than refused.
 - **Poll default: 500 milliseconds** (`DEFAULT_POLL_INTERVAL_MS`). Used when
   the call names no `poll_interval_ms`.
@@ -2456,14 +2506,23 @@ the same claim:
 [RFC 7315 section 4.6](https://www.rfc-editor.org/rfc/rfc7315#section-4.6) says the ICID identifies *a dialog*, so a conformant B2BUA emits
 a different `icid-value` on each side and `charging_vector_icid` is silent
 across it — a match there means some intermediary copied a per-dialog
-identifier onto a second dialog, which no RFC grants. The parameter that
+identifier onto a second dialog, which no RFC grants.
+
+The parameter that
 addresses the hop is `related-icid`
-([RFC 7315 section 4.6.4.1](https://www.rfc-editor.org/rfc/rfc7315#section-4.6.4.1)), and it is optional. Two limits
-worth knowing before you rely on either: the first proxy generates the icid
-([RFC 7315 section 5.6](https://www.rfc-editor.org/rfc/rfc7315#section-5.6)), so a leg arriving from an endpoint carries none and this is useless at
-the access edge. And [RFC 7315 section 4.6.2.2](https://www.rfc-editor.org/rfc/rfc7315#section-4.6.2.2) lets the next hop *"modify the contents"*, which
-[RFC 7315 section 6.6](https://www.rfc-editor.org/rfc/rfc7315#section-6.6) calls normal behavior, so unlike `Session-ID` there is no end-to-end
-constancy requirement at all. Full argument:
+([RFC 7315 section 4.6.4.1](https://www.rfc-editor.org/rfc/rfc7315#section-4.6.4.1)), and it is optional.
+
+Two limits
+worth knowing before you rely on either:
+
+- The first proxy generates the icid
+  ([RFC 7315 section 5.6](https://www.rfc-editor.org/rfc/rfc7315#section-5.6)), so a leg arriving from an endpoint carries none and this is useless at
+  the access edge.
+- [RFC 7315 section 4.6.2.2](https://www.rfc-editor.org/rfc/rfc7315#section-4.6.2.2) lets the next hop *"modify the contents"*, which
+  [RFC 7315 section 6.6](https://www.rfc-editor.org/rfc/rfc7315#section-6.6) calls normal behavior, so unlike `Session-ID` there is no end-to-end
+  constancy requirement at all.
+
+Full argument:
 [`docs/design/icid-correlation.md`](design/icid-correlation.md).
 
 Neither strategy puts the matched value in the response. [RFC 7315 section 4.6](https://www.rfc-editor.org/rfc/rfc7315#section-4.6)'s own
@@ -2554,7 +2613,9 @@ strategies compare a value both legs carry, and the walk expands those
 transitively. `timing_heuristic` links two INVITE dialogs that share an endpoint
 address and started inside the leg-correlation window, so on a proxy carrying
 ten calls a second every dialog sits within a guess of every other. Expanded
-transitively that is not a call tree, it is the capture. Such an edge still
+transitively that is not a call tree, it is the capture.
+
+Such an edge still
 appears in `legs` with `followed: false`, so an agent that wants the next hop
 calls `get_call_tree` again rooted there and sees what it costs.
 
@@ -2839,7 +2900,9 @@ expecting one shape:
 >
 > This page said the opposite until 0.5.134 — that the fields came back
 > verbatim and that a reader should reach for `get_message` instead. Both tools
-> fenced the whole time. Treat every string in `messages[]` as attacker-written
+> fenced the whole time.
+>
+> Treat every string in `messages[]` as attacker-written
 > regardless: the markers say where the text came from, they do not make it
 > safe.
 
@@ -3345,7 +3408,9 @@ Otherwise `siprec` carries:
 `a=label` naming the `m=` line the SRC cut the recorded stream from, so on a
 call with audio and video it says which is which. The `participant_id` is the party
 that **sends** that stream, which is the only route from a recorded stream back
-to a person — nothing inside the stream element names one. sipnab reads it from
+to a person — nothing inside the stream element names one.
+
+sipnab reads it from
 `<participantstreamassoc>`, whose `<send>` children mean ownership and whose
 `<recv>` children do not. The party at the other end hears a stream without
 owning it.
@@ -3654,9 +3719,11 @@ one G.113 publishes, or one this deployment declared in `[media.codec_ie]`.
 because a bound on a placeholder picks calls out of a guess — and it goes
 wrong in both directions. A healthy AMR-WB stream never appears in a `max_mos`
 sweep, while a degraded one turns up on a figure that never described it.
+
 Reporting the skipped count keeps the difference visible: "2 streams below 3.5"
 and "2 streams below 3.5, plus 200 I cannot score" describe different captures,
 and on any network carrying AMR-WB, EVS or G.722 the second one is the truth.
+
 Omit both bounds and the sweep lists every stream, including the codecs with no
 published value, each still carrying `mos_grounded`.
 
@@ -4127,6 +4194,7 @@ A defect in the RULES is a hard error rather than a per-rule failure: an unknown
 metric, an unparseable filter, a `severity:` scope on a metric that reads no
 findings, `grounded_only` on a metric that reads no MOS, or a percentile outside
 0 to 100 all fail the whole call with `invalid_params` naming the rule's index.
+
 A misspelled metric evaluating to "fail" would look identical to traffic that
 genuinely broke the threshold, and one evaluating to "pass" would be a gate that
 checks nothing while looking green. Half a gate reporting green is the outcome
@@ -4167,7 +4235,7 @@ reg-flood, etc.). Backed by the AlertEngine's bounded ring buffer
 | `schema_version` | u32 | `1` for this shape. |
 
 > **Read `armed_kinds` before you read `findings`.** An empty findings list
-> means "nothing tripped" only on a server that armed something; on any other
+> means "nothing tripped" only on a server that armed something. On any other
 > it means nothing was watching, and the two are opposite operational states.
 > A `kinds` value outside the vocabulary fails rather than answering with an
 > empty list, which would be a third way to read `[]`. Cross-checking
@@ -4343,7 +4411,9 @@ block map TFPS read, `own map id N` or `pinned map <path>`. It is `null`,
 with `enforcement` `inactive`, when TFPS could open none. `mode` and
 `interface` are always `null`: TFPS's JSON mode does not fill them yet.
 `pairs` and `peers` count what TFPS has learned, and TFPS currently reports
-the same number for both. `last_checkpoint` is Unix seconds. sipnab looks for `tfps_ctl` only when a
+the same number for both. `last_checkpoint` is Unix seconds.
+
+sipnab looks for `tfps_ctl` only when a
 `tfps_*` tool runs: it probes nothing at startup, and a machine without TFPS
 logs nothing about it. A peer that exits non-zero, hangs past ten
 seconds, or prints something other than the agreed JSON is an `internal_error`
@@ -4743,7 +4813,9 @@ does not reproduce verbatim.
 This replaced a second walk of the header grammar, paired with the parse
 positionally. Two walks of one grammar part company — over a line with no colon,
 a non-UTF-8 line, an over-long one, or the per-message header cap — and a range
-pinned one header early still resolves, so it reads as evidence. The old design
+pinned one header early still resolves, so it reads as evidence.
+
+The old design
 handled that by dropping the WHOLE set on any disagreement, which meant one junk
 line cost every other header its range. There is one walk now, so a line the
 parser drops costs nothing.
@@ -4791,7 +4863,9 @@ decoded and is wrong — and when the frame carries no SIP-bearing transport.
 producing run read, usually an absolute path far outside this server's reach.
 This tool never opens that path: it keeps the final component and pushes it
 through `resolve_in_root`, the same guard the file tools use, which is why
-`source` above reads `sip-rtp-g711.pcap` and not the path in the pointer. Without
+`source` above reads `sip-rtp-g711.pcap` and not the path in the pointer.
+
+Without
 that step, a tool taking a caller-supplied path and returning the decoded
 contents of the file there is an arbitrary-file-read primitive wearing a
 `readOnlyHint`. A pointer naming a file outside the root comes back
@@ -4870,7 +4944,9 @@ by leg hides the interleaving that is usually the finding. Its frames come from
 [`export_capture`](#export_capture)'s writer and carry that tool's whole
 asterisk: the SIP layer is faithful, everything under it comes rebuilt from
 recorded addresses and ports, a SIP-over-TCP message writes as UDP, and RTP,
-RTCP, DNS and ICMP are absent. The RTP measurements in `call-NN-rtp.json` come
+RTCP, DNS and ICMP are absent.
+
+The RTP measurements in `call-NN-rtp.json` come
 from the ORIGINAL capture and nobody can reproduce them from the pcapng alone,
 which is exactly why the README says so.
 
@@ -5270,6 +5346,7 @@ document with a new digest and the same `uuid`. Deduplicate on the `uuid`.
 size budget carries no audio, which looks exactly like a conversation that had
 none, and the caveat explaining the difference lives inside an attachment whose
 body is JSON text. So the response repeats it where a caller reads it.
+
 `completeness.note` is the container's own caveat, verbatim.
 `completeness.max_inline_media_bytes` is the budget this run ENFORCED, never the
 compiled-in default. `completeness.omissions` carries one row per loss, each
@@ -5462,7 +5539,9 @@ The middle verdict carries the whole point.
 says "it is
 possible to have a Dialog Object with no parameters in it", the working group
 agreed that shape in issue #20 after IETF 124, and the draft's own Appendix B
-schema forbids it, because every Dialog Object requires a `start`. sipnab emits
+schema forbids it, because every Dialog Object requires a `start`.
+
+sipnab emits
 one: the consultative call of an attended transfer, which the observed leg
 never saw. A validator that folded that into a clean pass would teach a
 producer that a missing `start` is fine — and a missing `start` on a `transfer`
@@ -5623,7 +5702,9 @@ for a reason that has nothing to do with the theory.
 The `recv` sequence asserts what the capture actually held: every provisional
 code seen, plus `100` whether or not the capture held one, and the final status.
 A call with no final response in the capture asserts nothing about the outcome —
-the scenario sends the request and waits. For an INVITE the scenario sends an ACK either
+the scenario sends the request and waits.
+
+For an INVITE the scenario sends an ACK either
 way, with the Via that RFC 3261 calls for in each case: a fresh branch on a 2xx,
 because that ACK is a new transaction, and `[last_Via:]` on a non-2xx, because
 [RFC 3261 section 17.1.1.3](https://www.rfc-editor.org/rfc/rfc3261#section-17.1.1.3) makes it
@@ -6047,9 +6128,9 @@ Call [`list_tls_libraries`](#list_tls_libraries) first.
 one it is rather than a bare failure:
 
 - **not root** — sipnab drops privileges after opening its capture devices, so
-  a server started with `--user` cannot attach probes later;
+  a server started with `--user` cannot attach probes later.
 - **a live source is already running** — sipnab's stores have one writer, so a
-  uprobe capture cannot run beside one;
+  uprobe capture cannot run beside one.
 - **a capture is still loading** — poll `capture_status` until `load.done`.
 
 **An attach failure arrives later, not here.** A background thread installs
@@ -6200,10 +6281,14 @@ it.
 A bound is not a loss. `list_dialogs`, `find_problems`, `search_by_time`,
 `search_messages`, `security_findings` and the capture-wide `rtp_stats` sweep
 each report `total_matched` beside their page, so a caller sees how much of the
-answer it holds. That number describes the STORE, not the file: while the
+answer it holds.
+
+That number describes the STORE, not the file: while the
 source is still loading it counts what had arrived by then, which is why every
 one of them also carries `source_exhausted` and why the response omits
-`truncated: false` until the answer is whole. All of those except `security_findings` carry a cursor to the
+`truncated: false` until the answer is whole.
+
+All of those except `security_findings` carry a cursor to the
 rest, as do `tail_dialogs` and `get_dialog`. Asking for a `limit` above the
 ceiling does nothing — the ceiling clamps it — so either raise the ceiling with
 `--mcp-max-rows` or page.

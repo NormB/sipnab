@@ -1,12 +1,12 @@
 +++
-title = "Build from Source"
+title = "Build sipnab from source"
 weight = 30
 description = "Build sipnab from source: cargo, the feature-flag matrix, release profile, and cross-compilation."
 +++
 
 Most users should [install a binary](@/docs/install.md). Build from source when you need a custom feature set or target.
 
-## Cargo (from source)
+## Install from crates.io with cargo
 
 ```bash
 cargo install sipnab --features full
@@ -16,7 +16,7 @@ cargo install sipnab --features full
 
 ### Build prerequisites
 
-- **Rust 1.97+**
+- **Rust 1.98+**
 - **libpcap headers** (`libpcap-dev` on Debian/Ubuntu, `libpcap-devel` on RHEL/Fedora)
 - **pkg-config** (for libpcap detection during build)
 
@@ -25,12 +25,23 @@ cargo install sipnab --features full
 `cargo install` has no post-install hook, so a source install leaves you to run
 `--setup-caps` yourself. [`scripts/install-from-source.sh`](https://github.com/NormB/sipnab/blob/main/scripts/install-from-source.sh) does both:
 
-```bash
-# Run all of these, in order.
-git clone https://github.com/NormB/sipnab.git
-cd sipnab
-./scripts/install-from-source.sh --features full
-```
+1. Clone the repository:
+
+   ```bash
+   git clone https://github.com/NormB/sipnab.git
+   ```
+
+2. Change into the checkout:
+
+   ```bash
+   cd sipnab
+   ```
+
+3. Run the install script:
+
+   ```bash
+   ./scripts/install-from-source.sh --features full
+   ```
 
 It runs `cargo install --path . --bin sipnab` (forwarding any arguments), then
 on Linux invokes the binary's own `--setup-caps` so live capture works without
@@ -42,13 +53,29 @@ and compiles nothing.
 
 ### Basic build (TUI only, default features)
 
-```bash
-# Run all of these, in order.
-git clone https://github.com/NormB/sipnab.git
-cd sipnab
-cargo build --release
-sudo cp target/release/sipnab /usr/local/bin/
-```
+1. Clone the repository:
+
+   ```bash
+   git clone https://github.com/NormB/sipnab.git
+   ```
+
+2. Change into the checkout:
+
+   ```bash
+   cd sipnab
+   ```
+
+3. Build the release binary:
+
+   ```bash
+   cargo build --release
+   ```
+
+4. Copy it onto your `PATH`:
+
+   ```bash
+   sudo cp target/release/sipnab /usr/local/bin/
+   ```
 
 ### Full-features build
 
@@ -113,8 +140,9 @@ Building it needs two things a stock toolchain does not have: a nightly
 toolchain carrying the `rust-src` component, installed with `rustup`, and
 `bpf-linker` on `PATH` — either `cargo install bpf-linker` or the prebuilt
 static tarball the release workflow uses. Pick the `bpf-linker` release that
-matches your LLVM: 0.9.13 pairs with LLVM 19, 0.11 with LLVM 23.1. Without
-either, the build still succeeds and prints a warning, and the resulting binary
+matches your LLVM: 0.9.13 pairs with LLVM 19, 0.11 with LLVM 23.1.
+
+Without either, the build still succeeds and prints a warning, and the resulting binary
 refuses `--uprobe-backend bpf` at run time rather than capturing nothing. Set
 `SIPNAB_BPF_REQUIRED=1` to turn that warning into a build failure, which is
 what the release workflow does.
@@ -141,7 +169,9 @@ which build you are holding.
 
 ### Runtime dependencies
 
-`libasound.so.2` is an **optional** runtime dependency. The `audio` feature builds a separate plugin, `libsipnab_audio.so`, installed to `/usr/lib/sipnab/` by the `.deb` (or placed next to the binary in dev builds). The `sipnab` binary `dlopen`s this plugin only when you actually play a stream, so an audio-enabled binary starts fine on a host without libasound. If libasound (or the plugin) is missing, playback returns a clear error and you can still export the stream to a WAV file (F2). Only `libpcap0.8` is a hard dependency:
+`libasound.so.2` is an **optional** runtime dependency. The `audio` feature builds a separate plugin, `libsipnab_audio.so`, installed to `/usr/lib/sipnab/` by the `.deb` (or placed next to the binary in dev builds). The `sipnab` binary `dlopen`s this plugin only when you actually play a stream, so an audio-enabled binary starts fine on a host without libasound.
+
+If libasound (or the plugin) is missing, playback returns a clear error and you can still export the stream to a WAV file (F2). Only `libpcap0.8` is a hard dependency:
 
 ```bash
 apt-get install -y libpcap0.8
@@ -179,22 +209,39 @@ two produce incompatible binaries.
 Portable, no audio. This is what the release ships: static, zero runtime deps,
 runs on any Linux distro regardless of libc.
 
-```bash
-# Run all of these, in order.
-apk add --no-cache musl-dev libpcap-dev pkgconf
-cargo build --release --no-default-features \
-    --features native,tui,tls,hep,api,mcp,mcp-http
-```
+1. Install the build dependencies:
+
+   ```bash
+   apk add --no-cache musl-dev libpcap-dev pkgconf
+   ```
+
+2. Build the static binary:
+
+   ```bash
+   cargo build --release --no-default-features \
+       --features native,tui,tls,hep,api,mcp,mcp-http
+   ```
 
 Alpine-only, with audio. Dynamically linked, so `dlopen` works and the plugin
 loads. Needs alsa-lib at runtime and does NOT run on glibc hosts.
 
-```bash
-# Run all of these, in order.
-apk add --no-cache musl-dev libpcap-dev pkgconf alsa-lib alsa-lib-dev
-RUSTFLAGS="-C target-feature=-crt-static" cargo build --release --features full
-RUSTFLAGS="-C target-feature=-crt-static" cargo build --release -p sipnab-audio
-```
+1. Install the build dependencies, including ALSA:
+
+   ```bash
+   apk add --no-cache musl-dev libpcap-dev pkgconf alsa-lib alsa-lib-dev
+   ```
+
+2. Build sipnab, dynamically linked:
+
+   ```bash
+   RUSTFLAGS="-C target-feature=-crt-static" cargo build --release --features full
+   ```
+
+3. Build the audio plugin the same way:
+
+   ```bash
+   RUSTFLAGS="-C target-feature=-crt-static" cargo build --release -p sipnab-audio
+   ```
 
 A CI job checks both paths on `rust:1.97-alpine`: the full test suite passes on Alpine with zero failures and the same test count as the glibc host, and in the dynamic build the plugin links `libasound.so.2` and `dlopen`s successfully while the `sipnab` binary itself still links only libpcap, libgcc and libc.
 

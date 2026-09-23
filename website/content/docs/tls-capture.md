@@ -67,12 +67,18 @@ that is the case sipnab exists for, and the one people assume is impossible.
 The ordinary case, and the cheapest. Any TLS library built on OpenSSL, NSS or
 GnuTLS writes session keys to the file named by `SSLKEYLOGFILE`.
 
-```sh
-# Run all of these, in order.
-export SSLKEYLOGFILE=/tmp/sip-keys.log
-# start your softphone or daemon from this shell, then:
-sudo sipnab -d eth0 --keylog /tmp/sip-keys.log --keylog-watch
-```
+1. Name the key log file:
+
+   ```sh
+   export SSLKEYLOGFILE=/tmp/sip-keys.log
+   ```
+
+2. Start the endpoint from this shell, then start sipnab:
+
+   ```sh
+   # start your softphone or daemon from this shell, then:
+   sudo sipnab -d eth0 --keylog /tmp/sip-keys.log --keylog-watch
+   ```
 
 `--keylog-watch` re-reads the file as it grows, so keys minted after sipnab
 starts still decrypt. Without it you get only the sessions whose keys were
@@ -115,17 +121,24 @@ nothing, and touches no other machine.
 Dialogs carry **no addresses and port 0**, labeled `uprobe:<process>/<pid>`.
 A uprobe sees the bytes an application handed its TLS library and nothing
 about the socket underneath, so sipnab names the process rather than inventing
-a peer. If you need the addresses, use method 4.
+a peer. If you need the addresses, use
+[method 4, "Plaintext and the peer address"](@/docs/tls-capture.md#4-plaintext-and-the-peer-address).
 
 **If it attaches and reports zero messages**, the symbol is almost certainly
 wrong — OpenSSL 3 applications increasingly call `SSL_write_ex` rather than
 `SSL_write`:
 
-```sh
-# Run all of these, in order.
-nm -D --undefined-only /usr/sbin/opensips | grep -i ssl_write
-sudo sipnab -N --uprobe-tls --uprobe-symbol SSL_write_ex
-```
+1. List the write functions the daemon imports:
+
+   ```sh
+   nm -D --undefined-only /usr/sbin/opensips | grep -i ssl_write
+   ```
+
+2. Attach to `SSL_write_ex` instead:
+
+   ```sh
+   sudo sipnab -N --uprobe-tls --uprobe-symbol SSL_write_ex
+   ```
 
 Read [the security implications](@/docs/uprobe-walkthrough.md#security-implications-stated-plainly) before using this on a
 production host. It reads process memory: anyone who can run it can read every
@@ -152,15 +165,26 @@ If you would rather have keys than plaintext — keys decrypt a pcap you keep,
 and plaintext does not — [eCapture](https://github.com/gojue/ecapture) reads
 them out of a running process and sipnab consumes them unchanged:
 
-```sh
-# Run all of these, in order.
-# eCapture picks the TLS library to instrument by looking at curl. Your SIP
-# daemon may well map a different one, so name the daemon's explicitly — this
-# is the single most common reason a keylog stays empty.
-LIBSSL=$(sudo awk '/libssl/ {print $6; exit}' /proc/"$(pgrep -o opensips)"/maps)
-sudo ecapture tls -m keylog --libssl="$LIBSSL" --keylogfile=/tmp/keys.log &
-sudo sipnab -d eth0 --keylog /tmp/keys.log --keylog-watch
-```
+1. Find the TLS library your SIP daemon maps:
+
+   ```sh
+   # eCapture picks the TLS library to instrument by looking at curl. Your SIP
+   # daemon may well map a different one, so name the daemon's explicitly — this
+   # is the single most common reason a keylog stays empty.
+   LIBSSL=$(sudo awk '/libssl/ {print $6; exit}' /proc/"$(pgrep -o opensips)"/maps)
+   ```
+
+2. Start eCapture in the background, writing keys to a file:
+
+   ```sh
+   sudo ecapture tls -m keylog --libssl="$LIBSSL" --keylogfile=/tmp/keys.log &
+   ```
+
+3. Point sipnab at that key log:
+
+   ```sh
+   sudo sipnab -d eth0 --keylog /tmp/keys.log --keylog-watch
+   ```
 
 The uprobe attaches to the library, not to one process, so a forking daemon
 needs no `--pid` — it covers every worker that maps that path, and `--pid`
@@ -175,8 +199,9 @@ version:
   Nothing on the wire carries it, so sipnab searches for it — about a million
   records, roughly a day of a trunk ticking over at ten records a second. The
   search costs one AEAD tag check per candidate and runs once per direction per
-  session, so it is a one-off of about a second, not a per-record cost. Past
-  that, the keys are right and the records still do not open.
+  session, so it is a one-off of about a second, not a per-record cost.
+
+  Past that, the keys are right and the records still do not open.
 - **TLS 1.2** ([RFC 5246](https://www.rfc-editor.org/rfc/rfc5246)) is worse: a `CLIENT_RANDOM` line gives the master secret, and the
   server random and cipher suite that expand it into record keys are in the
   ServerHello. Miss the handshake and there is no way to use the secret at all,
@@ -215,7 +240,9 @@ SRTP keys arrive two ways, and sipnab reads both:
 
 Methods 3, 4 and 5 share one race. You attach the key source to a daemon that
 is already running, a call arrives, and the first records reach sipnab before
-the first key does. On a SIP session the first record is the INVITE, so the
+the first key does.
+
+On a SIP session the first record is the INVITE, so the
 symptom is not "a few records are unreadable" — it is a call with no offer in
 it, which sipnab then reports as a media mismatch or a NAT problem, because
 from the dialog's point of view that is exactly what it looks like.
@@ -264,7 +291,7 @@ Stated plainly, because time spent here is time people lose:
 - **A packet capture alone.** No amount of sipnab flags decrypts a pcap with
   no keys. If the handshake had forward secrecy, the information required is
   not in the capture and never was.
-- **The server's private key, on modern TLS.** See method 6.
+- **The server's private key, on modern TLS.** See [method 6, "The old RSA case"](@/docs/tls-capture.md#6-the-old-rsa-case).
 - **A mirror port or tap, by itself.** It gives you the same ciphertext as a
   local capture. You still need keys or plaintext from an endpoint.
 - **Any of methods 3–5 against a machine you do not control.** They read

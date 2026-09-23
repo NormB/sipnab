@@ -163,7 +163,9 @@ difference has to survive into provenance.
 It is a field on `SdpProvenance` rather than a fourth `InputOrigin` variant
 because the two are independent axes. `InputOrigin` is a TRANSPORT fact — the
 bytes arrived on the wire, over HEP, or out of a process. `EndpointAssertion`
-is a fact about the CLAIM. They cross freely: a relay's assertion arrives over
+is a fact about the CLAIM.
+
+They cross freely: a relay's assertion arrives over
 HEP today and would arrive off the wire through the same decoder tomorrow, and
 ordinary signaling arrives over every origin there is. A fourth `InputOrigin`
 would have forced every match on transport to handle a value that is not about
@@ -493,7 +495,9 @@ unread rather than leaving the operator to subtract two numbers.
   complexity: a recording subscription creates a stream that belongs to the
   call without being one of its two legs, and attributed as an ordinary leg a
   two-party call shows three streams — after which the media analysis that
-  judges one-way audio and asymmetry answers a question nobody asked. sipnab
+  judges one-way audio and asymmetry answers a question nobody asked.
+
+  sipnab
   counts them (`rtpengine::media_creating_commands_seen`) and
   [`output::dialog_report`](../../src/output/dialog_report.rs) prints that
   count beside the relay-named calls, on a line beginning `Media-creating
@@ -504,12 +508,16 @@ unread rather than leaving the operator to subtract two numbers.
   The same misattribution reaches the ACTIVE path, and there sipnab answers it
   rather than declining it. A `query` walks every side the relay holds, so a
   recording or forwarding fork comes back as a tag of its own with its own
-  relay ports. rtpengine stamps each `subscriptions` entry with a `type`:
+  relay ports.
+
+  rtpengine stamps each `subscriptions` entry with a `type`:
   `offer/answer` for the other side of a dialog, `pub/sub` for a side that only
   receives media from another. sipnab reads that stamp. A `pub/sub` peer becomes a
   media subscription rather than a party the call is with, the fork's ports are
   still attributed to the call they fork, and the startup summary names how
-  many of the ports it counted a subscriber holds. Folded together instead, a
+  many of the ports it counted a subscriber holds.
+
+  Folded together instead, a
   two-party call comes back with three parties, which is the same wrong answer
   the passive path refuses, arriving through the door sipnab does open.
 - **HEP carrying SIP or RTP off the wire.** The claim covers `ng` only.
@@ -518,7 +526,9 @@ unread rather than leaving the operator to subtract two numbers.
 - **Sending anything that changes the relay.** `offer`, `answer`, `delete`
   and `start recording` are the other half of the `ng` protocol, and every one
   of them changes a production box: it moves media, tears a call down, or
-  fills a disk. None of them is reachable: `ReadOnlyCommand` has two
+  fills a disk.
+
+  None of them is reachable: `ReadOnlyCommand` has two
   variants and `ReadOnlyRelay` has two methods, so no value in this codebase
   means `delete`. A reviewer asking "does sipnab ever tell a relay to do
   something" reads one enum instead of auditing every call site, and an edit

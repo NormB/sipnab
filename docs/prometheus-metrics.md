@@ -13,7 +13,9 @@ It is also easy to confuse with HEP, the Homer Encapsulation Protocol, because
 both are how sipnab fits into a monitoring estate — and they answer opposite
 questions. HEP is a TRANSPORT FOR SIP MESSAGES: sipnab receives them with
 [`--hep-listen`](cli-reference.md#network-listeners) or forwards them with
-`--hep-send`, and Homer stores the signaling itself. Prometheus carries no SIP
+`--hep-send`, and Homer stores the signaling itself.
+
+Prometheus carries no SIP
 at all. A scrape tells you sipnab dropped 4,000 packets. It never tells you which
 call. Wire both — they are complements, not alternatives.
 
@@ -118,7 +120,9 @@ Metric names emitted by [`src/output/prometheus.rs`](https://github.com/NormB/si
 | `sipnab_jitter_ms` | histogram | RTP jitter distribution. A ladder at 5/10/20ms, plus `[quality] jitter_warn_ms` and `jitter_bad_ms` and multiples above them (30/50/100/200ms at the shipped settings). **`--api` only.** |
 | `sipnab_loss_percent` | histogram | RTP packet-loss distribution. A ladder at 0.1/0.5%, plus `[quality] loss_warn_pct` and `loss_bad_pct` and multiples above them (1/2/5/10/20% at the shipped settings). **`--api` only.** |
 
-Two shapes of counter share that table, and an alert rule has to know which one it reads. `sipnab_capture_packets_total`, `sipnab_reassembly_timeouts_total`, `sipnab_kill_responses_sent_total`, `sipnab_capture_backpressure_blocks_total`, `sipnab_capture_undecodable_frames_total`, `sipnab_capture_snapped_frames_total`, the two MCP counters (`sipnab_mcp_tool_calls_total`, `sipnab_mcp_tool_response_bytes_total`) and the three capture-quality counters (`sipnab_capture_kernel_dropped_packets_total`, `sipnab_capture_interface_dropped_packets_total`, `sipnab_capture_invalid_timestamps_total`) count events since the process started and only ever climb, so `rate()` and `increase()` over them mean what they say. The rest — dialogs, messages, responses, streams, diagnosis findings, and the four NAT gauges — describe what sipnab tracks right now, and every one of them falls as well as rises: dialogs and streams age out of their stores, a late STUN answer clears an unanswered request, a TURN Refresh unsays a lapsed allocation. Alert on the current value or on a ratio there, never on `increase()`.
+Two shapes of counter share that table, and an alert rule has to know which one it reads. `sipnab_capture_packets_total`, `sipnab_reassembly_timeouts_total`, `sipnab_kill_responses_sent_total`, `sipnab_capture_backpressure_blocks_total`, `sipnab_capture_undecodable_frames_total`, `sipnab_capture_snapped_frames_total`, the two MCP counters (`sipnab_mcp_tool_calls_total`, `sipnab_mcp_tool_response_bytes_total`) and the three capture-quality counters (`sipnab_capture_kernel_dropped_packets_total`, `sipnab_capture_interface_dropped_packets_total`, `sipnab_capture_invalid_timestamps_total`) count events since the process started and only ever climb, so `rate()` and `increase()` over them mean what they say.
+
+The rest — dialogs, messages, responses, streams, diagnosis findings, and the four NAT gauges — describe what sipnab tracks right now, and every one of them falls as well as rises: dialogs and streams age out of their stores, a late STUN answer clears an unanswered request, a TURN Refresh unsays a lapsed allocation. Alert on the current value or on a ratio there, never on `increase()`.
 
 `sipnab_security_alerts_total{type}` reads differently from the rest, and the difference matters to an alert rule. `AlertEngine::fire` records each alert under its rule name, so the family carries only the types that have actually fired and stays absent from the scrape entirely until the first one does. An absent series therefore means "no alert of that type has fired since this process started", not "the metric is unavailable". `firing_an_alert_moves_the_metric` in [`tests/metrics_alert_wiring_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/metrics_alert_wiring_test.rs) holds the recording call to that behavior.
 

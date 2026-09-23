@@ -58,7 +58,12 @@
     <header class="doc-header">
       <p class="doc-kicker"><a href="{{ get_url(path='@/docs/_index.md') }}">Docs</a> <span aria-hidden="true">/</span> {{ page.title }}</p>
       <h1>{{ page.title }}</h1>
-      {% if page.description %}
+      {#- Skipped when the body's first paragraph already says it: the
+          generators mark such a page lead_in_body (lead_repeats in
+          scripts/build-site-internals.py), and showing both put the same
+          sentence twice under the title. The description still feeds the
+          meta tags and the docs index. -#}
+      {% if page.description and not page.extra.lead_in_body %}
       <p class="doc-lead">{{ page.description }}</p>
       {% endif %}
     </header>

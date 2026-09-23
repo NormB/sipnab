@@ -1,5 +1,5 @@
 +++
-title = "MCP Server"
+title = "Connect an AI agent (MCP)"
 weight = 14
 description = "Drive sipnab from an AI agent over the Model Context Protocol: what it is, a first working example, and where to go for deployment, the tool reference, and the protocol contract."
 +++
@@ -157,9 +157,13 @@ reference client of the Model Context Protocol project. Point it at sipnab and
 it lists every tool the binary registers, shows the JSON Schema of each tool's
 arguments, and calls one by hand so you can read the answer — what
 <https://sipnab.com/api-reference/> does for the [REST API](@/docs/api.md), for
-this surface instead. sipnab registers 69 MCP tools, which is more than anyone
+this surface instead.
+
+sipnab registers 69 MCP tools, which is more than anyone
 reads in a table, and the Tools tab is the fastest way to find the one you
-want. Inspector belongs to the protocol rather than to sipnab, so it also
+want.
+
+Inspector belongs to the protocol rather than to sipnab, so it also
 settles whose bug you are looking at.
 
 Inspector needs Node 22.19 or newer. `npx` fetches it on demand, so there is
@@ -267,11 +271,15 @@ An operator can put a note on a SIP message in the TUI, or write notes into a
 pcapng copy with `--write-annotated` (see
 [keybindings](@/docs/keybindings.md#operator-notes) and the
 [CLI reference](@/docs/cli.md#operator-notes)). No MCP tool reads a note or
-writes one, and that is a decision, not a missing tool. An agent that could read
+writes one, and that is a decision, not a missing tool.
+
+An agent that could read
 a note would cite a person's conclusion as though the capture said it. An agent
 that could write one would be putting its own text into a file that leaves the
 machine. `save_findings` stays the only thing an agent writes, and it goes to
-the log. sipnab never reads a packet comment back, so a note in a capture an MCP
+the log.
+
+sipnab never reads a packet comment back, so a note in a capture an MCP
 server opens is invisible to every tool. Invariant 13 in
 [the invariants page](https://github.com/NormB/sipnab/blob/main/docs/internals/invariants.md#13-operator-notes-are-output-never-input)
 states the rule and what enforces it.

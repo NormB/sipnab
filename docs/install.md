@@ -123,7 +123,9 @@ decides whether it was**, and the three families differ:
 > capture, such as a SPAN or mirror port, never on one the host needs.
 > libpcap's netmap module takes the interface's rings away from the kernel, so
 > the host stops receiving that interface's traffic for as long as the capture
-> runs. Measured on a veth pair: a UDP socket on the host received 0 of 5
+> runs.
+>
+> Measured on a veth pair: a UDP socket on the host received 0 of 5
 > datagrams during a `netmap:` capture, and 5 of 5 during an ordinary capture
 > on the same interface. Point it at the interface carrying your SIP service
 > and the service goes dark until sipnab exits.
@@ -141,9 +143,13 @@ netmap's `v13.0` headers, which speak netmap API 13, and a netmap module built
 from current netmap sources accepts API 14 and later. On Debian 13
 (kernel 6.12) the open fails with
 `nm_open [948] NIOCREGIF failed: Invalid argument netmap:<iface>`, and the
-kernel log says `Minimum supported API is 14 (requested 13)`. netmap `v13.0`
+kernel log says `Minimum supported API is 14 (requested 13)`.
+
+netmap `v13.0`
 itself no longer compiles against that kernel, so there is no older module to
-pair it with. The same libpcap 1.10.6 built against current netmap headers
+pair it with.
+
+The same libpcap 1.10.6 built against current netmap headers
 captures through `netmap:` on that host, and the 0.5.184 build uses them:
 its published x86_64-musl binary captured 5 of 5 SIP messages through
 `netmap:` there. On 0.5.183 and earlier, treat the musl netmap column as not
@@ -227,34 +233,82 @@ VERSION=0.5.186
 On Linux x86_64, the static musl tarball runs on any distro and any glibc,
 Alpine included:
 
-```bash
-# Run all of these, in order.
-curl -LO "https://github.com/NormB/sipnab/releases/download/v$VERSION/sipnab-$VERSION-x86_64-unknown-linux-musl.tar.gz"
-tar xzf "sipnab-$VERSION-x86_64-unknown-linux-musl.tar.gz"
-sudo install -m 755 "sipnab-$VERSION-x86_64-unknown-linux-musl/sipnab" /usr/local/bin/sipnab
-```
+1. Download the tarball:
+
+   ```bash
+   curl -LO "https://github.com/NormB/sipnab/releases/download/v$VERSION/sipnab-$VERSION-x86_64-unknown-linux-musl.tar.gz"
+   ```
+
+2. Unpack it:
+
+   ```bash
+   tar xzf "sipnab-$VERSION-x86_64-unknown-linux-musl.tar.gz"
+   ```
+
+3. Install the binary:
+
+   ```bash
+   sudo install -m 755 "sipnab-$VERSION-x86_64-unknown-linux-musl/sipnab" /usr/local/bin/sipnab
+   ```
 
 The same three steps on Linux aarch64, against the aarch64 musl tarball:
 
-```bash
-# Run all of these, in order.
-curl -LO "https://github.com/NormB/sipnab/releases/download/v$VERSION/sipnab-$VERSION-aarch64-unknown-linux-musl.tar.gz"
-tar xzf "sipnab-$VERSION-aarch64-unknown-linux-musl.tar.gz"
-sudo install -m 755 "sipnab-$VERSION-aarch64-unknown-linux-musl/sipnab" /usr/local/bin/sipnab
-```
+1. Download the tarball:
+
+   ```bash
+   curl -LO "https://github.com/NormB/sipnab/releases/download/v$VERSION/sipnab-$VERSION-aarch64-unknown-linux-musl.tar.gz"
+   ```
+
+2. Unpack it:
+
+   ```bash
+   tar xzf "sipnab-$VERSION-aarch64-unknown-linux-musl.tar.gz"
+   ```
+
+3. Install the binary:
+
+   ```bash
+   sudo install -m 755 "sipnab-$VERSION-aarch64-unknown-linux-musl/sipnab" /usr/local/bin/sipnab
+   ```
 
 A manual download of the gnu build that checks the checksum before installing.
 `TARGET` names the build, and the tarball unpacks into `./sipnab-$VERSION-$TARGET/`:
 
-```bash
-# Run all of these, in order.
-TARGET=x86_64-unknown-linux-gnu
-curl -LO "https://github.com/NormB/sipnab/releases/download/v$VERSION/sipnab-$VERSION-$TARGET.tar.gz"
-curl -LO "https://github.com/NormB/sipnab/releases/download/v$VERSION/sipnab-$VERSION-$TARGET.tar.gz.sha256"
-sha256sum -c "sipnab-$VERSION-$TARGET.tar.gz.sha256"
-tar -xzf "sipnab-$VERSION-$TARGET.tar.gz"
-sudo install -m 755 "sipnab-$VERSION-$TARGET/sipnab" /usr/local/bin/sipnab
-```
+1. Set the target:
+
+   ```bash
+   TARGET=x86_64-unknown-linux-gnu
+   ```
+
+2. Download the tarball:
+
+   ```bash
+   curl -LO "https://github.com/NormB/sipnab/releases/download/v$VERSION/sipnab-$VERSION-$TARGET.tar.gz"
+   ```
+
+3. Download its checksum file:
+
+   ```bash
+   curl -LO "https://github.com/NormB/sipnab/releases/download/v$VERSION/sipnab-$VERSION-$TARGET.tar.gz.sha256"
+   ```
+
+4. Check the checksum:
+
+   ```bash
+   sha256sum -c "sipnab-$VERSION-$TARGET.tar.gz.sha256"
+   ```
+
+5. Unpack the tarball:
+
+   ```bash
+   tar -xzf "sipnab-$VERSION-$TARGET.tar.gz"
+   ```
+
+6. Install the binary:
+
+   ```bash
+   sudo install -m 755 "sipnab-$VERSION-$TARGET/sipnab" /usr/local/bin/sipnab
+   ```
 
 The dynamic `…-unknown-linux-gnu.tar.gz` builds add TUI audio playback but
 require glibc >= 2.36 (Debian 12+, Ubuntu 23.04+) and libpcap. On an older
@@ -287,23 +341,40 @@ Download and install the amd64 (x86_64) package. Set `VERSION` to the release
 you want, e.g. 0.5.186, as in
 [Download a release binary yourself](#download-a-release-binary-yourself):
 
-```bash
-# Run all of these, in order.
-VERSION=0.5.186
-curl -LO "https://github.com/NormB/sipnab/releases/download/v$VERSION/sipnab_${VERSION}_amd64.deb"
-sudo apt install "./sipnab_${VERSION}_amd64.deb"
-```
+1. Set the version:
+
+   ```bash
+   VERSION=0.5.186
+   ```
+
+2. Download the package:
+
+   ```bash
+   curl -LO "https://github.com/NormB/sipnab/releases/download/v$VERSION/sipnab_${VERSION}_amd64.deb"
+   ```
+
+3. Install it:
+
+   ```bash
+   sudo apt install "./sipnab_${VERSION}_amd64.deb"
+   ```
 
 On an arm64 (aarch64) host, take the arm64 package instead, with `VERSION` set
 as above — installing the
 wrong-architecture `.deb` over the right one leaves you with a binary that does
 not run:
 
-```bash
-# Run all of these, in order.
-curl -LO "https://github.com/NormB/sipnab/releases/download/v$VERSION/sipnab_${VERSION}_arm64.deb"
-sudo apt install "./sipnab_${VERSION}_arm64.deb"
-```
+1. Download the package:
+
+   ```bash
+   curl -LO "https://github.com/NormB/sipnab/releases/download/v$VERSION/sipnab_${VERSION}_arm64.deb"
+   ```
+
+2. Install it:
+
+   ```bash
+   sudo apt install "./sipnab_${VERSION}_arm64.deb"
+   ```
 
 The package installs `/usr/bin/sipnab`, the man page, and a systemd unit, and
 creates a `sipnab` system user for privilege dropping. On Ubuntu 24.04+ the
@@ -318,19 +389,31 @@ in the TUI is unavailable).
 
 The headless amd64 (x86_64) package:
 
-```bash
-# Run all of these, in order.
-curl -LO "https://github.com/NormB/sipnab/releases/download/v$VERSION/sipnab_${VERSION}_amd64-noaudio.deb"
-sudo apt install "./sipnab_${VERSION}_amd64-noaudio.deb"
-```
+1. Download the package:
+
+   ```bash
+   curl -LO "https://github.com/NormB/sipnab/releases/download/v$VERSION/sipnab_${VERSION}_amd64-noaudio.deb"
+   ```
+
+2. Install it:
+
+   ```bash
+   sudo apt install "./sipnab_${VERSION}_amd64-noaudio.deb"
+   ```
 
 The headless arm64 (aarch64) package, for arm64 hosts:
 
-```bash
-# Run all of these, in order.
-curl -LO "https://github.com/NormB/sipnab/releases/download/v$VERSION/sipnab_${VERSION}_arm64-noaudio.deb"
-sudo apt install "./sipnab_${VERSION}_arm64-noaudio.deb"
-```
+1. Download the package:
+
+   ```bash
+   curl -LO "https://github.com/NormB/sipnab/releases/download/v$VERSION/sipnab_${VERSION}_arm64-noaudio.deb"
+   ```
+
+2. Install it:
+
+   ```bash
+   sudo apt install "./sipnab_${VERSION}_arm64-noaudio.deb"
+   ```
 
 Alternatively, install the standard package with
 `sudo apt install --no-install-recommends "./sipnab_${VERSION}_amd64.deb"` to
@@ -391,12 +474,23 @@ packages all ship a finished binary.
 `cargo install` has no post-install hook, so a source install leaves you to run
 `--setup-caps` yourself. [`scripts/install-from-source.sh`](https://github.com/NormB/sipnab/blob/main/scripts/install-from-source.sh) does both:
 
-```bash
-# Run all of these, in order.
-git clone https://github.com/NormB/sipnab.git
-cd sipnab
-./scripts/install-from-source.sh --features full
-```
+1. Clone the repository:
+
+   ```bash
+   git clone https://github.com/NormB/sipnab.git
+   ```
+
+2. Change into it:
+
+   ```bash
+   cd sipnab
+   ```
+
+3. Run the install script:
+
+   ```bash
+   ./scripts/install-from-source.sh --features full
+   ```
 
 It runs `cargo install --path . --bin sipnab` (forwarding any arguments), then
 on Linux invokes the binary's own `--setup-caps` so live capture works without
@@ -408,13 +502,29 @@ and compiles nothing.
 
 ### Basic build (TUI only, default features)
 
-```bash
-# Run all of these, in order.
-git clone https://github.com/NormB/sipnab.git
-cd sipnab
-cargo build --release
-sudo cp target/release/sipnab /usr/local/bin/
-```
+1. Clone the repository:
+
+   ```bash
+   git clone https://github.com/NormB/sipnab.git
+   ```
+
+2. Change into it:
+
+   ```bash
+   cd sipnab
+   ```
+
+3. Build the release binary:
+
+   ```bash
+   cargo build --release
+   ```
+
+4. Copy it onto your `PATH`:
+
+   ```bash
+   sudo cp target/release/sipnab /usr/local/bin/
+   ```
 
 ### Full-features build
 
@@ -508,7 +618,7 @@ directory**, so the in-TUI file browser (`O`) comes up empty — it shows a
 capabilities avoids this entirely. (Re-run `--setup-caps` after
 each reinstall, since replacing the file clears its capabilities.)
 
-> macOS and other non-Linux platforms have no file capabilities; run live
+> macOS and other non-Linux platforms have no file capabilities. Run live
 > capture under `sudo` there.
 
 ## Feature flags
@@ -556,9 +666,13 @@ cargo build --release --features full
 builds a separate plugin, `libsipnab_audio.so`, installed to `/usr/lib/sipnab/`
 by the `.deb` (or placed next to the binary in dev builds). The `sipnab` binary
 `dlopen`s this plugin only when you actually play a stream, so an audio-enabled
-binary starts fine on a host without libasound. If libasound (or the plugin) is
+binary starts fine on a host without libasound.
+
+If libasound (or the plugin) is
 missing, playback returns a clear error and you can still export the stream to a
-WAV file (F2). On Debian/Ubuntu the package carries `libasound2` as a `Recommends`. Install it for live playback. Only `libpcap0.8` is a hard dependency.
+WAV file (F2).
+
+On Debian/Ubuntu the package carries `libasound2` as a `Recommends`. Install it for live playback. Only `libpcap0.8` is a hard dependency.
 For a fully audio-free build, drop the `audio` feature and the plugin is not
 built.
 
@@ -707,12 +821,16 @@ first line.
 
 The list differs by artifact, and deliberately. The example above is a
 `*-linux-gnu` release binary on a Debian 13 host, whose libpcap names no
-alternate backend. Those binaries carry `bpf`, the uprobe backend that can
+alternate backend.
+
+Those binaries carry `bpf`, the uprobe backend that can
 report the peer address a TLS session went out to. The static musl tarballs and
 the macOS builds do not — musl has no room under the published size ceiling and
 `aya` is Linux-only — so on those, `--uprobe-tls` falls back to the `tracefs`
 backend, whose dialogs name a process rather than a peer, and
-`--uprobe-backend bpf` refuses rather than pretending. The musl tarballs also
+`--uprobe-backend bpf` refuses rather than pretending.
+
+The musl tarballs also
 omit `audio` (static musl has no `dlopen`).
 
 A first non-interactive run against a capture looks like this — timestamp,

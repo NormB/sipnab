@@ -206,7 +206,8 @@
            compares these blocks against website/data/mcp-examples/. Edit the
            tool, then regenerate. -->
       <div class="demo-panel active" data-demo="0" role="tabpanel" id="demo-panel-0" aria-labelledby="demo-tab-0">
-        <p class="demo-desc"><strong>Ask what a capture holds, then ask about one call in it.</strong> The first command lists every dialog: a phone registering, the PBX probing it with an OPTIONS, two subscriptions, and one call placed, answered and hung up. The second draws that call's ladder. Because the ladder puts media beside signaling, the <strong>64.3% packet loss on one direction of the audio</strong> sits next to the transactions it belongs to &mdash; and that loss arrived in three bursts rather than spread evenly, which sounds far worse to the person on the call.</p>
+        <p class="demo-desc"><strong>Ask what a capture holds, then ask about one call in it.</strong> The first command lists every dialog: a phone registering, the PBX probing it with an OPTIONS, two subscriptions, and one call placed, answered and hung up.</p>
+        <p class="demo-desc">The second command draws that call's ladder, with media beside signaling. So the <strong>64.3% packet loss on one direction of the audio</strong> sits next to the transactions it belongs to. That loss arrived in three bursts rather than spread evenly, which sounds far worse to the person on the call.</p>
         <pre class="demo-cmd"><code>demos/mcp-stdio.sh tests/pcap-samples/Asterisk_ZFONE_XLITE.pcap list_dialogs \
   | jq -c '.dialogs[] | {method, state, msg_count, duration_sec}'</code></pre>
         <pre class="demo-json"><code><!-- mcp-example:lifecycle BEGIN -->
@@ -412,12 +413,12 @@ Issues Detected:
           <tr><td><a href="{{ get_url(path='@/docs/plugins.md') }}">WASM plugins</a></td><td>Loads your own dialog detections as sandboxed WebAssembly (<code>--plugin</code>). Off by default, and only in builds with the <code>plugins</code> feature: the gnu and macOS builds carry it, the static musl builds do not.</td></tr>
           <tr><td><a href="{{ get_url(path='@/docs/uprobe-walkthrough.md') }}">eBPF TLS capture <em>(root, same host)</em></a></td><td><strong>This does not break TLS.</strong> On a host where you already have root, kernel uprobes read the SIP plaintext inside OpenSSL or wolfSSL before it is encrypted, so no key, certificate or restart is involved. The <code>bpf</code> backend also recovers the peer addresses. It is in the released Linux gnu tarballs, <code>.deb</code> and <code>.rpm</code>, not the static musl builds, and needs a kernel with BTF. <a href="{{ get_url(path='@/docs/uprobe-walkthrough.md') }}">Read the security implications first</a>.</td></tr>
           <tr><td><a href="{{ get_url(path='@/docs/output-formats.md') }}">Export formats</a></td><td>PCAP, PCAP-NG, TXT, JSON, NDJSON, CSV, HTML, Markdown, WAV audio, SIPp XML and RTP JSON.</td></tr>
-          <tr><td><a href="{{ get_url(path='@/docs/integrations.md') }}#hep-protocol">HEP v2/v3</a></td><td>Sends HEP v3 to Homer, and receives HEP v2 and v3 from Kamailio, OpenSIPS or Asterisk, so one sipnab reads every proxy with nothing installed on them.</td></tr>
+          <tr><td><a href="{{ get_url(path='@/docs/integrations.md') }}#forward-to-homer-over-hep">HEP v2/v3</a></td><td>Sends HEP v3 to Homer, and receives HEP v2 and v3 from Kamailio, OpenSIPS or Asterisk, so one sipnab reads every proxy with nothing installed on them.</td></tr>
           <tr><td><a href="{{ get_url(path='@/docs/api.md') }}">REST API</a></td><td>Query dialogs, streams and stats over HTTP.</td></tr>
           <tr><td><a href="{{ get_url(path='@/docs/metrics.md') }}">Prometheus metrics</a></td><td>Counters about sipnab itself: what it captured, what it lost and what it could not read.</td></tr>
           <tr><td><a href="{{ get_url(path='@/docs/mcp.md') }}">MCP server</a></td><td>Lets an AI agent such as Claude Code query captures over stdio or HTTP. 69 tools cover dialogs, RTP, diagnostics, and security findings. 57 are read-only, and the twelve that write stay off until you enable them on the server.</td></tr>
           <tr><td><a href="{{ get_url(path='@/analyze/_index.md') }}">Browser analysis</a></td><td>Opens a pcap in your browser with WebAssembly. Nothing is uploaded or installed.</td></tr>
-          <tr><td><a href="{{ get_url(path='@/docs/build.md') }}">Built in Rust</a></td><td>Rust everywhere except the OS boundary: 101 <code>unsafe</code> blocks, all of them FFI, and the build rejects any block that does not state its own soundness argument. 9993 automated tests. Under 17 MB static binary.</td></tr>
+          <tr><td><a href="{{ get_url(path='@/docs/build.md') }}">Built in Rust</a></td><td>Rust everywhere except the OS boundary: 101 <code>unsafe</code> blocks, all of them FFI, and the build rejects any block that does not state its own soundness argument. 9997 automated tests. Under 17 MB static binary.</td></tr>
         </tbody>
       </table>
     </div>
@@ -458,7 +459,7 @@ Issues Detected:
         <span class="arch-label">Packets per second reading a capture file on four cores: room for the HEP feed of many proxies on one box (measured v0.5.160)</span>
       </a>
       <a class="arch-item fade-in-up" href="{{ config.extra.github_url }}/actions/workflows/ci.yml">
-        <span class="arch-stat" data-count="9993" data-suffix="">9993</span>
+        <span class="arch-stat" data-count="9997" data-suffix="">9997</span>
         <span class="arch-label">Automated tests</span>
       </a>
     </div>

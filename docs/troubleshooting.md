@@ -30,8 +30,8 @@ the cause from there.
 
 Whatever the symptom, three things decide whether the answer is in the capture
 at all: it covers the right time window, it comes from a point that sees both
-directions, and `--portrange` covers the ports in use. The next section deals
-with the third.
+directions, and `--portrange` covers the ports in use.
+[Start here](#start-here-one-pass-over-everything) deals with the third.
 
 ## Start here: one pass over everything
 
@@ -45,7 +45,9 @@ asymmetries:
 sipnab -N -I capture.pcap --problems --json
 ```
 
-`--problems` is shorthand for the full Filter-DSL expression `state == 'Failed' OR one_way == true OR rtp.loss > 5.0 OR rtp.jitter > 50.0 OR nat_mismatch == true OR retransmits > 3 OR pdd > 11.0 OR ...` -- so it is a superset of "failed calls". Once you know the symptom, jump to the matching section below for the precise filter.
+`--problems` is shorthand for the full Filter-DSL expression `state == 'Failed' OR one_way == true OR rtp.loss > 5.0 OR rtp.jitter > 50.0 OR nat_mismatch == true OR retransmits > 3 OR pdd > 11.0 OR ...` -- so it is a superset of "failed calls".
+
+Once you know the symptom, jump to the matching section below for the precise filter.
 
 > **First, check you are reading the whole capture.** `--portrange` defaults to
 > `5060-5061`, and sipnab skips any SIP message whose source and destination
@@ -115,7 +117,9 @@ You should see one line per response message of each failed call (minimal exampl
 {"call_id":"def456@host","status_code":408,"reason":"Request Timeout"}
 ```
 
-Once one of those Call-IDs is worth escalating, write the detailed Markdown report for that single call and attach it to a ticket. Substitute the Call-ID you picked. The redirect overwrites `report.md` in the current directory. `--no-cli-print` is not optional here: without it sipnab dumps every message in the capture ahead of the report, and the file you attach opens with hundreds of lines of raw SIP:
+Once one of those Call-IDs is worth escalating, write the detailed Markdown report for that single call and attach it to a ticket. Substitute the Call-ID you picked. The redirect overwrites `report.md` in the current directory.
+
+`--no-cli-print` is not optional here: without it sipnab dumps every message in the capture ahead of the report, and the file you attach opens with hundreds of lines of raw SIP:
 
 ```bash
 sipnab -N -I capture.pcap --call-report "abc123@host" --markdown --no-cli-print > report.md
@@ -133,7 +137,7 @@ sipnab -N -I capture.pcap --call-report "abc123@host" --markdown --no-cli-print 
 | 488 | Not acceptable here | Codec mismatch, SDP incompatibility -- full recipe [below](#488-not-acceptable-here-codec-mismatch) |
 | 503 | Service unavailable | Upstream overload, trunk down, proxy crash |
 
-**Next steps:** If the response code is 408 or you see high `retransmits`, the problem is network-level -- check connectivity and firewall rules before touching SIP config. The next section turns that "network-level" guess into evidence.
+**Next steps:** If the response code is 408 or you see high `retransmits`, the problem is network-level -- check connectivity and firewall rules before touching SIP config. [Nothing came back](#nothing-came-back-408-or-silence----ask-the-network) turns that "network-level" guess into evidence.
 
 ---
 
@@ -185,16 +189,20 @@ Signaling Issues:
 
 1. `port unreachable` means the host is up and nothing is listening on that port. Check that the SIP service is running and bound where you think, and that the port in the `Contact`/`Via` matches what it actually listens on. **This is not a network fault.**
 2. `host unreachable` or `network unreachable` is a routing problem short of the destination -- the reporter names the hop that gave up. Nothing reached the host, so the capture says nothing about its ports.
-3. `administratively prohibited` (v4 codes 9, 10, 13; v6 type 1 code 1) is a **firewall or router ACL, not a dead host**. The peer may be perfectly healthy and answering everyone else. The fix is on the filtering device, and it is a different team from the one you call about an unreachable host. On one real corpus a single capture held 433 host-unreachable and 262 administratively prohibited errors -- treating them the same would have sent an engineer to the wrong device 262 times.
+3. `administratively prohibited` (v4 codes 9, 10, 13; v6 type 1 code 1) is a **firewall or router ACL, not a dead host**. The peer may be perfectly healthy and answering everyone else. The fix is on the filtering device, and it is a different team from the one you call about an unreachable host.
+
+   On one real corpus a single capture held 433 host-unreachable and 262 administratively prohibited errors -- treating them the same would have sent an engineer to the wrong device 262 times.
 4. No ICMP at all does **not** clear the network: most firewalls drop ICMP errors outright, and the summary can only report what the capture holds.
 
-When a call shows both `retransmissions` and `icmp_unreachable`, read them together rather than as two problems. The retransmission count is how hard the sender tried. The ICMP error is why nothing came back. sipnab annotates the retransmission finding with `icmp_cause` and stops offering its own guess at the reason, but keeps the count -- "11 OPTIONS over 300 s" and "3 INVITEs over 3 s" are the same cause and a very different operational picture.
+When a call shows both `retransmissions` and `icmp_unreachable`, read them together rather than as two problems. The retransmission count is how hard the sender tried. The ICMP error is why nothing came back.
+
+sipnab annotates the retransmission finding with `icmp_cause` and stops offering its own guess at the reason, but keeps the count -- "11 OPTIONS over 300 s" and "3 INVITEs over 3 s" are the same cause and a very different operational picture.
 
 There is no `icmp` field in the Filter DSL, so select these calls with `jq` on `--json-dialogs` as above rather than with `--filter`.
 
 ---
 
-## Dropped Calls (call answers, then disconnects mid-conversation)
+## Dropped calls (call answers, then disconnects mid-conversation)
 
 The call sets up fine, both sides talk, then it dies partway through -- often after a suspiciously round number of minutes.
 
@@ -214,7 +222,7 @@ sipnab -N -I capture.pcap --call-report 'abc123@host' --no-cli-print
 The call report shows the full SIP message timeline plus per-stream RTP stats (including first/last packet timestamps). Match the signature:
 
 - **BYE at a round interval after answer** (exactly 15 min, 30 min, 1 h -- e.g. 200 OK at `14:00:02`, BYE at `14:30:02`): [RFC 4028](https://www.rfc-editor.org/rfc/rfc4028) **session-timer expiry**. One side never sent (or never received) the session refresh re-INVITE/UPDATE and tore the call down when `Session-Expires` ran out.
-- **RTP last packet well before the BYE** (stream `last_seen` minutes earlier than the BYE): a NAT/firewall **idle timeout silently dropped the media path**; the endpoint's RTP-timeout watchdog eventually hung up.
+- **RTP last packet well before the BYE** (stream `last_seen` minutes earlier than the BYE): a NAT/firewall **idle timeout silently dropped the media path**. The endpoint's RTP-timeout watchdog eventually hung up.
 - **BYE from the carrier side, accompanied by SIP retransmits**: trunk-side reset or an upstream element recycling the session.
 
 **Next steps:**
@@ -406,7 +414,13 @@ sudo sipnab -N -d eth0 --filter "rtp.mos < 3.0 OR rtp.jitter > 50" --json
 
 **Next steps:** If jitter is high but loss is low, the problem is buffering or path instability (check for Wi-Fi hops, VPN tunnels, or missing QoS marking). If loss is high, first rule out sipnab itself, then run a path MTR/traceroute to find where packets are dropping.
 
-> **Before you chase high loss on the network, check whether *sipnab* dropped the packets.** A capture that lost packets to a full kernel ring buffer reports the missing RTP as network loss — the numbers look identical, and the fix is on the wrong machine. sipnab warns on the first drop and prints a summary at the end of a live capture; if you see that warning, or if loss looks implausibly high across *every* call at once, the figure is measuring your capture rather than the call. [Tuning capture on a busy server](tuning-capture.md) covers how to read the two drop counters, what each one means, and what to change. This applies to live capture only — an offline `-I` read of an existing pcap loses nothing, though the pcap itself may have lost detail in capture by whatever wrote it.
+> **Before you chase high loss on the network, check whether *sipnab* dropped the packets.** A capture that lost packets to a full kernel ring buffer reports the missing RTP as network loss — the numbers look identical, and the fix is on the wrong machine.
+>
+> sipnab warns on the first drop and prints a summary at the end of a live capture. If you see that warning, or if loss looks implausibly high across *every* call at once, the figure is measuring your capture rather than the call.
+>
+> [Tuning capture on a busy server](tuning-capture.md) covers how to read the two drop counters, what each one means, and what to change.
+>
+> This applies to live capture only — an offline `-I` read of an existing pcap loses nothing, though the pcap itself may have lost detail in capture by whatever wrote it.
 
 ### Deep-dive with stream detail
 
@@ -414,7 +428,7 @@ In the TUI, navigate to a call's flow view and press `Enter` on an RTP bar (or p
 
 - **MOS and jitter sparklines** -- visual trend graphs across the stream's lifetime, making it easy to spot the exact moment quality degraded.
 - **Quality intervals** -- per-interval breakdown of MOS, jitter, and loss so you can correlate degradation with specific time windows.
-- **Burst/gap analysis** ([RFC 3611](https://www.rfc-editor.org/rfc/rfc3611)) -- distinguishes between bursty loss (congestion events) and gap loss (steady-state impairment). Bursty loss points to queue overflow; gap loss points to a consistently lossy link.
+- **Burst/gap analysis** ([RFC 3611](https://www.rfc-editor.org/rfc/rfc3611)) -- distinguishes between bursty loss (congestion events) and gap loss (steady-state impairment). Bursty loss points to queue overflow. Gap loss points to a consistently lossy link.
 - **Silence detection** -- identifies periods where no RTP was flowing, which can indicate hold events, codec DTX, or network black holes.
 
 This same data is available in the browser analyzer at [sipnab.com/analyze/](https://sipnab.com/analyze/) under the **Streams** tab.
@@ -434,7 +448,9 @@ sipnab -N -I capture.pcap --filter "pdd > 3.0" --json
 The `--slow-setup` alias asks a looser question than that filter. It expands to
 `pdd > 11.0`, sipnab's own post-dial-delay threshold, which comes from ITU-T
 E.721's target for an international connection — a capture does not say what
-kind of call it holds, so the shipped figure is the most generous one. A network
+kind of call it holds, so the shipped figure is the most generous one.
+
+A network
 that knows its traffic is local or toll wants a tighter one: pass
 `--pdd-threshold 6.0` (or set `[diagnosis] post_dial_delay_secs`) and both
 `--slow-setup` and `--problems` move with it. Pair the alias with `--report` for
@@ -542,7 +558,7 @@ is a different fault from a reply that says no:
 |---|---|
 | No reply at all | Something in the path is discarding the packets. On school, campus and corporate networks that is most often a security appliance -- web filter, secure web gateway, firewall or IPS -- dropping UDP it does not recognize. Check whether one sits in this path and whether it permits UDP to the STUN/TURN port **before** suspecting the server. |
 | An error response | The server was reachable and refused. sipnab counts this as ANSWERED, because chasing a blocked path here would waste the effort. Look at the code: `401`/`438` are authentication, not connectivity. |
-| A reply arrives, media still one-way | STUN worked. The fault is downstream -- check the SDP the far end actually received, and see the private-address section above. |
+| A reply arrives, media still one-way | STUN worked. The fault is downstream -- check the SDP the far end actually received, and see [The SDP offered a private address](#the-sdp-offered-a-private-address). |
 
 A retransmission counts as **one** unanswered question with N attempts, not N
 questions: a phone that retries five times has asked once, and nothing answered it
@@ -585,11 +601,15 @@ release, which is never reported: the client asked for the teardown.
 **And it names the audio that died with the relay.** sipnab unwraps ChannelData
 and the RTP inside it reaches the stream list as ordinary media -- but carrying
 phone-to-relay addresses, so nothing in the stream list said the relay had
-carried it. Every surface now carries the join: the `--stun` allocations section says which
+carried it.
+
+Every surface now carries the join: the `--stun` allocations section says which
 channel carried which SSRC, the lapsed-allocation lines say `media on it:`, the
 `--analyze` finding counts `relayed_streams`, `--json-stun` puts a `channels`
 array on the allocation, and a relayed call's own diagnosis carries
-`media_relay` naming the relay its audio crossed. On a dashboard,
+`media_relay` naming the relay its audio crossed.
+
+On a dashboard,
 `sipnab_nat_lapsed_turn_allocation_streams` is the scale beside the allocation
 count: a relay torn down with nothing on it cost nobody a call.
 
@@ -610,7 +630,9 @@ sipnab reports it on stderr as `ICE: N candidate pair(s) show a role conflict`,
 as a `ROLE CONFLICT` line in the `--stun` ICE section, as an `ice_role_conflict`
 finding in `--analyze`, in the `ice` record of `--json-stun`, and as
 `sipnab_nat_ice_role_conflicts` for a dashboard, `/v1/stats` and the MCP
-`capture_status` tool. Each report says whether the conflict **resolved** --
+`capture_status` tool.
+
+Each report says whether the conflict **resolved** --
 the agents nominated a pair between them anyway -- because warning at full weight
 about a conflict the agents fixed in one round trip is how a reader learns to
 skip the warning that matters.
@@ -619,7 +641,9 @@ The same section answers the question ICE otherwise leaves unanswered: which
 candidate pair won. `nominated 192.0.2.10:50004 -> 203.0.113.9:16000` is the ICE
 analogue of the mapped address -- it names the path the media actually took, and
 without it a capture of an exchange that converged and one that never did read
-the same. Where **nothing** answered a single check, the ICE section says so
+the same.
+
+Where **nothing** answered a single check, the ICE section says so
 outright: ICE never completed, so the call has no media path. Those individual
 transactions also appear in the unanswered list below it, which is where sipnab
 reports the silence itself -- one silence, stated once.
@@ -704,7 +728,9 @@ sipnab -N -I capture.pcap --json-dialogs --no-cli-print --quiet \
 | 403 | Forbidden | IP not in ACL, registration not allowed for this user, or domain mismatch |
 | 423 | Interval too brief | The registrar wants a longer expiry. Increase the registration interval on the phone. |
 
-**Next steps:** A REGISTER that gets 401 followed by a second REGISTER with credentials followed by 200 is healthy. If you see repeated 401s with no successful registration, the password or auth username is wrong. If you see `retransmits > 3` on REGISTERs, the registrar may be unreachable. Three or more challenges with no 200 is exactly what `signaling_diagnosis.auth_loop` reports, and its `kind` separates the two causes: `credential_failure` (the phone answers and is re-challenged -- wrong password) from `silent_drop` (the phone never sends `Authorization` at all -- it has none configured, or does not understand the challenge).
+**Next steps:** A REGISTER that gets 401 followed by a second REGISTER with credentials followed by 200 is healthy. If you see repeated 401s with no successful registration, the password or auth username is wrong. If you see `retransmits > 3` on REGISTERs, the registrar may be unreachable.
+
+Three or more challenges with no 200 is exactly what `signaling_diagnosis.auth_loop` reports, and its `kind` separates the two causes: `credential_failure` (the phone answers and is re-challenged -- wrong password) from `silent_drop` (the phone never sends `Authorization` at all -- it has none configured, or does not understand the challenge).
 
 ---
 
@@ -755,10 +781,14 @@ tcpdump -r sample.pcap -nn 'pppoes and portrange 5060-5061' | wc -l
 
 **If you passed your own filter (a positional expression or `--bpf-file`),
 that is the cause.** sipnab uses your expression exactly as typed and never
-edits it. Drop it and let sipnab generate one: the generated filter carries an
+edits it.
+
+Drop it and let sipnab generate one: the generated filter carries an
 arm for VLAN, QinQ, PPPoE, VLAN-over-PPPoE and one or two MPLS labels, and that
 arm fires on Ethernet and on both Linux cooked headers alike. Omitting `-d` on
-Linux therefore costs no encapsulation coverage. On raw IP from a tun device
+Linux therefore costs no encapsulation coverage.
+
+On raw IP from a tun device
 and on the two loopback headers the arm compiles away to nothing, which costs
 you nothing either: none of those link types carries a tag to begin with.
 
@@ -856,7 +886,9 @@ When the sender is itself a sipnab (`--hep-send`), ask it too. Its
 `runtime_stats` or `GET /v1/runtime` carries `hep_export`, and a headless run
 ends with a `HEP export to ...` line: `connect` failures are a collector that is
 down or unreachable, and `tls_handshake` failures are a collector whose
-certificate the sender does not accept. Over UDP the sender cannot tell: a
+certificate the sender does not accept.
+
+Over UDP the sender cannot tell: a
 collector that is down produces no failure, so the collector's roster is the
 only witness.
 
@@ -914,7 +946,7 @@ producer was running for. A keylog started after the `INVITE` cannot decrypt
 that call, and neither can one from a different host. Compare the line count
 against the number of TLS sessions in the capture before you blame the file.
 
-**The producer is a pipe and nothing is reading it yet.** See below.
+**The producer is a pipe and nothing is reading it yet.** See [A FIFO keylog, and capture appears to hang](#a-fifo-keylog-and-capture-appears-to-hang).
 
 ### A FIFO keylog, and capture appears to hang
 

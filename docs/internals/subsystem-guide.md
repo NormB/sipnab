@@ -83,12 +83,13 @@ Every mode is the same six hops. Only who performs hop 5 differs.
    [`capture/hep.rs`](../../src/capture/hep.rs) produce a `Packet` whose
    `data` is a `bytes::Bytes` slice of the captured frame — no copy, here or
    anywhere downstream.
+
    A live device name goes to libpcap untouched, and libpcap picks the
    capture backend from it (`netmap:eth0` selects netmap), so which backends
    a binary reaches is a property of the libpcap it loads, not of sipnab.
    [`capture/libpcap.rs`](../../src/capture/libpcap.rs) asks that library at
    runtime through `pcap_lib_version()` and reads the banner in one pure
-   function, `parse_banner`; `--version`, the TUI help, MCP
+   function, `parse_banner`. `--version`, the TUI help, MCP
    `server_capabilities` and REST `GET /v1/capabilities` all report its
    `running()`, and none of them may name a backend the banner does not.
 2. **Channel.** [`capture::channel`](../../src/capture/channel.rs) moves it to
@@ -112,7 +113,7 @@ Every mode is the same six hops. Only who performs hop 5 differs.
    [`DialogStore`](../../src/sip/dialog_store.rs) and
    [`StreamStore`](../../src/rtp/stream_store.rs). This is the only hop that
    differs between paths.
-6. **Present.** The TUI renders from the stores under `try_read()`; every
+6. **Present.** The TUI renders from the stores under `try_read()`. Every
    serializing surface — CLI, NDJSON, REST, MCP, TUI save — projects through
    [`output/model.rs`](../../src/output/model.rs).
 

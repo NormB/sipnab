@@ -78,7 +78,7 @@ steps = [
   { title = "Turn on the detectors", href = "/docs/cli/#security" },
   { title = "Read signaling that is encrypted", href = "/docs/tls-capture/" },
   { title = "Lint a capture for conformance", href = "/docs/sip-lint-rules/" },
-  { title = "Ban a source with fail2ban", href = "/docs/integrations/#fail2ban-integration" },
+  { title = "Ban a source with fail2ban", href = "/docs/integrations/#block-scanners-with-fail2ban" },
   { title = "Write a detection of your own", href = "/docs/plugins/" },
 ]
 +++

@@ -89,19 +89,25 @@ traffic. For broader task recipes beyond the DSL, see the
 sipnab -N -I capture.pcap --filter "rtp.mos < 3.0 AND rtp.packets > 0 AND state == 'Completed'" --json
 ```
 
-`rtp.packets > 0` no longer guards against a `0.0`: an unmeasured `rtp.mos` is
-UNKNOWN, and an unknown value matches no threshold in either direction --
-`compare_opt_num` returns `false` for an absent field, and
-`a_dialog_with_no_rtp_does_not_match_a_mos_threshold` in [`src/sip/dsl.rs`](https://github.com/NormB/sipnab/blob/main/src/sip/dsl.rs) holds that. This page
-used to say the clause was mandatory because a signaling-only dialog reported
-`0.0` and satisfied the threshold. That was true before the fix and is not
-true now. The clause is still worth keeping for a different reason: it excludes
-calls that carried too few packets for the E-model to mean anything, which is a
-judgment about sample size rather than a guard against a phantom zero. Only
-completed calls -- in-progress calls
-may not have enough RTP data for an accurate MOS calculation. MOS values follow
-the ITU-T G.107 E-model: 4.0+ is toll quality, 3.5-4.0 is acceptable, below 3.0
-is noticeable degradation.
+An unmeasured `rtp.mos` is unknown, and an unknown value matches no threshold
+in either direction. A dialog that carried no RTP never matches
+`rtp.mos < 3.0`, so `rtp.packets > 0` no longer guards against a `0.0`.
+
+This page used to say the clause was mandatory, because a signaling-only
+dialog reported `0.0` and satisfied the threshold. That was true before the
+fix and is not true now.
+
+The clause is still worth keeping for a different reason. It excludes calls
+that carried too few packets for the E-model to mean anything, which is a
+judgment about sample size rather than a guard against a phantom zero. To
+select the calls that carry no media, write `rtp.packets == 0` or
+`no_media == true` instead.
+
+`state == 'Completed'` keeps only completed calls -- in-progress calls may not
+have enough RTP data for an accurate MOS calculation.
+
+MOS values follow the ITU-T G.107 E-model: 4.0+ is toll quality, 3.5-4.0 is
+acceptable, below 3.0 is noticeable degradation.
 
 ### One-way audio
 
@@ -289,7 +295,7 @@ All 32 addressable fields, organized by type. They answer to 33 names: `response
 > if any message matches). The `-e`/`--match` flag is the
 > per-message match-expression: it selects the matching messages and then
 > *follows the dialog* — every message after the first match in that dialog is
-> emitted too. Use `-e` for grep-style streaming output; use `payload` inside a
+> emitted too. Use `-e` for grep-style streaming output. Use `payload` inside a
 > larger `--filter` expression.
 
 ### Numeric fields
@@ -380,7 +386,9 @@ and nothing else. Neither one borrows the other's name, deliberately.
 `state` answers what happened. `response_code` answers why, and they are not
 the same question. Every one of 403, 404, 408, 486, 503 and 603 is
 `state == 'Failed'`, and they have different owners: a 403 is authorization, a
-408 is a timer, a 486 is the callee, a 503 is capacity upstream. Asking "which
+408 is a timer, a 486 is the callee, a 503 is capacity upstream.
+
+Asking "which
 release cause dominates on this trunk in the last ten minutes" needs the code,
 and asking it by class needs a numeric field rather than a set of names:
 
@@ -398,7 +406,9 @@ sipnab -N -I capture.pcap --filter "response_code == 503 AND dst.ip == '198.51.1
 
 A call still in progress has no final response. It matches NOTHING -- not
 `response_code < 400`, not `>= 400`, not `== 0` -- because a zero default would
-sweep every ringing call into the success bucket. Auth challenges follow
+sweep every ringing call into the success bucket.
+
+Auth challenges follow
 [`final_status_code`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs):
 a call challenged and then answered reports 200, not the 407, because the
 challenge was intermediate. A call only ever challenged reports the challenge,
@@ -420,7 +430,9 @@ because then it was the outcome.
 > **What `nat_mismatch` compares.** A dialog advertises a media address on each
 > side — the caller's in the offer, the callee's in the answer — and a
 > re-INVITE may add more. `nat_mismatch` is true when a stream carries a source
-> address that **none** of them named. Set membership, not equality against one
+> address that **none** of them named.
+>
+> Set membership, not equality against one
 > `c=` line: a healthy two-way call sources RTP from two different advertised
 > addresses, so comparing each stream against a single `c=` would flag one
 > direction of every call in the capture. Addresses only, never ports, because
@@ -446,8 +458,9 @@ because then it was the outcome.
 > stream *belonging to this dialog* belongs to no dialog: a stream counts as an
 > orphan exactly when no dialog claims it, so the two halves exclude each other
 > and the field matches nothing on any capture while `NOT rtp.orphaned` matches
-> everything. Rejecting it at the parser beats a silent falsehood. Orphaned
-> media is real and still reachable: read the "Orphaned Streams" section of
+> everything. Rejecting it at the parser beats a silent falsehood.
+>
+> Orphaned media is real and still reachable: read the "Orphaned Streams" section of
 > `--report`, or the REST API's `/v1/streams?orphaned=true`, both of which model
 > streams rather than dialogs.
 
@@ -548,7 +561,7 @@ means and what it deliberately ignores.
   aborts the process rather than returning an error. A filter over the cap is
   refused by `validate_filter` and by every flag that takes one.
 - Maximum parenthesis nesting depth: **50 levels** (`MAX_NESTING_DEPTH`).
-  It bounds recursion in the parser itself; how large the resulting tree may
+  It bounds recursion in the parser itself. How large the resulting tree may
   grow is the separate node bound above.
 - **Header name length: 256 bytes** (`MAX_HEADER_NAME_LEN`), for the
   `header.<name>` field. Whoever sent the message chose the header name, so

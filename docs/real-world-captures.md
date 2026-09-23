@@ -131,7 +131,7 @@ Two consequences follow immediately:
   sessions" from this hour describes a keepalive mesh. Filter to
   `method == 'INVITE'` before any figure reaches a report.
 - **A diagnostic sweep inherits the same ratio.** `--problems` on this capture
-  returns mostly OPTIONS transactions, and [example 4](#4-a-retransmit-storm-that-icmp-explains)
+  returns mostly OPTIONS transactions, and [example 4, "A retransmit storm that ICMP explains"](#4-a-retransmit-storm-that-icmp-explains)
   is what they turn out to be.
 
 `Redirected`, `Transferring` and `Pending` appear once or three times each. A
@@ -184,7 +184,7 @@ questions about the phones and reports silence about the trunk.
 
 The trunk capture shows the same effect at a different scale. There the default
 range skipped 4,249 of 13,460 messages, and the busiest hidden port was 8090 —
-the Kamailio cluster mesh from [example 1](#1-take-the-census-before-you-take-the-ticket),
+the Kamailio cluster mesh from [example 1, "Take the census before you take the ticket"](#1-take-the-census-before-you-take-the-ticket),
 which never touches 5060 at all.
 
 Notice what the counts do and do not move. Packets captured stays at 235,762 and
@@ -385,7 +385,7 @@ you. Same symptom, same retransmit count, two different teams to call.
 **What to do next.** Take the 12 unreachable endpoints to the trunk
 configuration and remove the ones that no longer exist. Until then each of them
 burns eleven transmissions every keepalive interval, and — as
-[example 5](#5-the-scanner-detector-flagged-the-pbx-itself) shows — makes the
+[example 5, "The scanner detector flagged the PBX itself"](#5-the-scanner-detector-flagged-the-pbx-itself) shows — makes the
 PBX look like a scanner to its own monitoring.
 
 ---
@@ -433,7 +433,7 @@ Neither detection came from a User-Agent signature — `Asterisk` and `sipsak` a
 not on any scanner list. Both came from the **behavioral** rule, which counts
 probe transactions from one source and arms on evidence of probing. The evidence
 here is probes that drew no answer, and the source of those is
-[example 4](#4-a-retransmit-storm-that-icmp-explains): a PBX sending OPTIONS to
+[example 4, "A retransmit storm that ICMP explains"](#4-a-retransmit-storm-that-icmp-explains): a PBX sending OPTIONS to
 twelve peers that no longer answer looks, to a rule counting unanswered probes,
 exactly like a sweep. The dead trunk peers manufactured the detection.
 
@@ -684,7 +684,9 @@ aggregate on any stream whose headline figure looks impossible. The aggregate is
 one running number over the whole stream, so a single discontinuity — a
 re-anchor, a hold and resume, a hand-off that preserves the SSRC — pins it high
 for the rest of the call. `is_bursty: true` beside a `gap_loss_rate` of 0.0 is
-that signature exactly. The schema for both blocks is in
+that signature exactly.
+
+The schema for both blocks is in
 [Output formats](output-formats.md#one-object-per-dialog), and
 [MOS and codecs](mos-and-codecs.md#mos-comes-from-what-sipnab-measured-never-from-what-the-far-end-claimed)
 covers what the quality score does with them.
@@ -726,7 +728,7 @@ Ringing  1.748s  RTP flowed 203.0.113.146:56998 -> 192.0.2.20:27736 only (SSRC 0
   carried audio one way is a complaint waiting to arrive. The second names its
   own cause: one-way audio **and** a NAT mismatch on the same dialog, which is
   the combination
-  [example 6](#6-nat-mismatch-is-what-an-sbc-looks-like-from-outside) exists to
+  [example 6, "NAT mismatch is what an SBC looks like from outside"](#6-nat-mismatch-is-what-an-sbc-looks-like-from-outside) exists to
   isolate. The first carries a private media address with no NAT rewrite beside
   it, so the question there is whether anything downstream rewrites that SDP.
 - The fourth row names **CN** on the B leg. CN is comfort noise
@@ -915,15 +917,16 @@ CSeq: 2 INVITE
 
 One Call-ID, two hops, and nothing in the record separates them. The access hop
 runs a `407` challenge and re-sends at `CSeq: 2`. The core hop runs its own `401`
-challenge and re-sends at `CSeq: 3`, under a top Via the edge proxy added. The
-ACK at 29.105 answers the `401` on the **core** hop and carries that hop's
+challenge and re-sends at `CSeq: 3`, under a top Via the edge proxy added.
+
+The ACK at 29.105 answers the `401` on the **core** hop and carries that hop's
 branch, while the INVITE branch sipnab recorded came from the **access** hop.
 Each branch is correct on the hop that carried it, and the finding names a real
 disagreement inside one dialog record. The disagreement comes from the vantage
 point.
 
 The `KDMQ` pair at 29.084 belongs to no call at all — it is the cluster
-replication from [example 1](#1-take-the-census-before-you-take-the-ticket),
+replication from [example 1, "Take the census before you take the ticket"](#1-take-the-census-before-you-take-the-ticket),
 interleaved into the ladder because `-e` follows a dialog and the mesh shares
 the capture.
 
@@ -937,7 +940,9 @@ run and the access-hop run, because it tests one message against itself and need
 second hop. The access hop carries all twelve offending requests, so narrowing
 to it changes nothing. Those 12 are real: twelve requests entered the network with
 no [Max-Forwards](https://www.rfc-editor.org/rfc/rfc3261#section-8.1.1.6) header
-at all. `SDP-7587-7-OPUS-RTPMAP-RATE` is real too — a device declaring
+at all.
+
+`SDP-7587-7-OPUS-RTPMAP-RATE` is real too — a device declaring
 `opus/48000/1` where [RFC 7587 section 7](https://www.rfc-editor.org/rfc/rfc7587#section-7)
 requires `opus/48000/2` — and the whole ring holds 24 of them.
 
@@ -1039,7 +1044,9 @@ nothing ever acknowledged it. `timing.retransmits: 3` says so in the same
 record: 4 challenges minus 3 retransmissions is one challenge.
 
 **What to do next.** Match on the properties, not the address — a single source
-address is one rented host. `c=IN IP4 0.0.0.0` on an INVITE from outside your
+address is one rented host.
+
+`c=IN IP4 0.0.0.0` on an INVITE from outside your
 network has no legitimate reading, and neither does a Contact whose host differs
 from the source. Both survive the attacker changing address, User-Agent and
 prefix. Block the destination prefix at the trunk as well as the source, because
@@ -1136,9 +1143,11 @@ branch=z9hG4bK4f3e.5d3ab8146fc70e29d5b1938ae0c6274b.0, INVITE branch=z9hG4bK4f3e
 
 The ACK carries the **second** node's branch while the recorded INVITE branch is
 the **first** node's — the same cross-hop shape as
-[example 10](#10-conformance-findings-move-with-the-vantage-point), except that
+[example 10, "Conformance findings move with the vantage point"](#10-conformance-findings-move-with-the-vantage-point), except that
 here the two branches come from two boxes rather than two hops, which is the
-finding rather than an artifact. The Record-Route error is separate and real: a
+finding rather than an artifact.
+
+The Record-Route error is separate and real: a
 `2xx` that returns an empty Record-Route set when the request recorded two
 entries leaves the caller with no route set, so any in-dialog request afterwards
 has nowhere to go.
@@ -1146,7 +1155,9 @@ has nowhere to go.
 **What to do next.** When a duplicate INVITE arrives on an established Call-ID,
 compare the top Via host and its branch suffix against the first attempt before
 treating it as a retransmission. A retransmission repeats the branch exactly. A
-re-fork increments a suffix and changes the sending node. Take the pair to the
+re-fork increments a suffix and changes the sending node.
+
+Take the pair to the
 carrier with both timestamps, because the gap between your `BYE` and their
 `CANCEL` is the number that identifies whose timer is wrong.
 
@@ -1160,7 +1171,7 @@ carrier with both timestamps, because the gap between your `BYE` and their
   apply, including the fail2ban wiring, the audio export and the MCP surface.
 - [Tuning capture](tuning-capture.md#3-capture-less-bpf-filters) — the BPF
   expressions that scope a capture to one hop, as
-  [example 10](#10-conformance-findings-move-with-the-vantage-point) needs.
+  [example 10, "Conformance findings move with the vantage point"](#10-conformance-findings-move-with-the-vantage-point) needs.
 - [Output formats](output-formats.md#one-object-per-dialog) — every field these
   examples read out of `--json-dialogs`, with its type and meaning.
 - [Attribute media on an rtpengine relay](rtpengine.md#the-problem-on-a-relay-capture)

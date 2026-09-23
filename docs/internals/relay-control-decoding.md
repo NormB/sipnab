@@ -58,7 +58,7 @@ not, so these stay fixed rather than following the input.
   encapsulated one.
 - **No default UDP port.** rtpproxy documents a UNIX control socket, which a
   passive capture cannot see at all. An operator names the port or there is
-  nothing to decode; guessing one would make every datagram on some arbitrary
+  nothing to decode. Guessing one would make every datagram on some arbitrary
   port a candidate control message.
 
 ## Recording streams are not legs

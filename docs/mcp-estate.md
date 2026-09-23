@@ -24,12 +24,15 @@ sipnab MCP service sees calls from the whole estate. The HEP listener is a
 plain UDP socket: **no capture privileges, no setcap, fully unprivileged.**
 
 1. **[server]** Do [Step 0](mcp-deploy.md#step-0--install-sipnab-every-server-once)
-   and create the user (2B step 2, *without* the `setcap`).
+   and create the user as in step 2 of
+   [Keep a capture running between agent sessions (2B)](mcp-deploy.md#keep-a-capture-running-between-agent-sessions),
+   *without* the `setcap`.
 
 2. **[server]** Install `/etc/systemd/system/sipnab-mcp.service` — this
-   variant listens for HEP on udp/9063 and serves MCP on loopback (pair it
-   with the 2C tunnel; for the 2B token shape instead, use its
-   `--mcp-bind`/token/allowed-host lines):
+   variant listens for HEP on udp/9063 and serves MCP on loopback. Pair it
+   with [the SSH tunnel (2C)](mcp-deploy.md#keep-a-capture-running-without-exposing-a-port).
+   For [the token shape (2B)](mcp-deploy.md#keep-a-capture-running-between-agent-sessions)
+   instead, use its `--mcp-bind`/token/allowed-host lines:
 
    ```ini
    [Unit]
@@ -110,9 +113,11 @@ plain UDP socket: **no capture privileges, no setcap, fully unprivileged.**
    count and whether it went silent, and every address the listener refused,
    with the reason.
 
-6. **[laptop]** Wire up exactly as scenario
-   [2C](mcp-deploy.md#keep-a-capture-running-without-exposing-a-port)
-   steps 3–4 (or 2B steps 8–9 for the token shape). Then ask across the
+6. **[laptop]** Wire up exactly as steps 3–4 of
+   [Keep a capture running without exposing a port (2C)](mcp-deploy.md#keep-a-capture-running-without-exposing-a-port)
+   (or steps 8–9 of
+   [Keep a capture running between agent sessions (2B)](mcp-deploy.md#keep-a-capture-running-between-agent-sessions)
+   for the token shape). Then ask across the
    estate: *"search all proxies' traffic for Call-ID X and render the
    ladder."*
 
@@ -123,8 +128,8 @@ plumbing from the proxies already exists. Two things to arrange:
 
 - **Port**: heplify-server owns udp/9060, so sipnab takes its own
   (udp/9063 above) and each proxy mirrors to **both** destinations —
-  OpenSIPS: add a second `trace_id` and a second `trace()` call;
-  Kamailio: a second duplicate destination. If a sender can't dup, put a
+  OpenSIPS: add a second `trace_id` and a second `trace()` call.
+  Kamailio: add a second duplicate destination. If a sender can't dup, put a
   small UDP fan-out (e.g. socat) in front.
 - **Budget**: cap sipnab's footprint with `[limits]` (see
   [Understand the load on a busy server](mcp-deploy.md#understand-the-load-on-a-busy-server))
@@ -143,7 +148,8 @@ with it.
 When agents connect from outside your network and SSH isn't an option:
 keep sipnab on loopback and let nginx own the public endpoint.
 
-1. **[server]** Build the loopback service with a token: 2B steps 1–3,
+1. **[server]** Build the loopback service with a token: steps 1–3 of
+   [Keep a capture running between agent sessions (2B)](mcp-deploy.md#keep-a-capture-running-between-agent-sessions),
    then a unit whose ExecStart binds loopback but keeps auth and allows
    the public hostname (nginx forwards the client's `Host:` header):
 
@@ -192,10 +198,12 @@ keep sipnab on loopback and let nginx own the public endpoint.
    `proxy_buffering off` is load-bearing: the streamable-HTTP transport
    answers with `text/event-stream`, and buffering proxies stall it.
 
-4. **[server]** Firewall: open tcp/443 only; 8731 stays closed to the
+4. **[server]** Firewall: open tcp/443 only. Port 8731 stays closed to the
    outside.
 
-5. **[laptop]** Token copy as in 2B step 8, then:
+5. **[laptop]** Copy the token as in step 8 of
+   [Keep a capture running between agent sessions (2B)](mcp-deploy.md#keep-a-capture-running-between-agent-sessions),
+   then:
 
    ```bash
    claude mcp add --transport http \
@@ -203,18 +211,24 @@ keep sipnab on loopback and let nginx own the public endpoint.
      sipnab-prod https://capture.example.com/mcp
    ```
 
-6. **[laptop]** Verify with `claude mcp list`; on failure, test the path
+6. **[laptop]** Verify with `claude mcp list`. On failure, test the path
    layer by layer: curl against `https://capture.example.com/mcp` from
-   the laptop, then the loopback curl (2B step 6) on the server.
+   the laptop, then the loopback curl from step 6 of
+   [Keep a capture running between agent sessions (2B)](mcp-deploy.md#keep-a-capture-running-between-agent-sessions)
+   on the server.
 
 ---
 
 ## Query many capture hosts from one agent
 
-Run scenario 2B, 2C, or 4 on each capture host, then give each its own
-entry in one client config:
+Run [the token service (2B)](mcp-deploy.md#keep-a-capture-running-between-agent-sessions),
+[the SSH tunnel (2C)](mcp-deploy.md#keep-a-capture-running-without-exposing-a-port),
+or [the nginx TLS endpoint (4)](#reach-sipnab-from-outside-your-network) on
+each capture host, then give each its own entry in one client config:
 
-1. **[each server]** Any persistent wiring above (2B shown here).
+1. **[each server]** Any persistent wiring above
+   ([the token service (2B)](mcp-deploy.md#keep-a-capture-running-between-agent-sessions)
+   shown here).
 
 2. **[laptop]** Register them all — the loop is one command and does nothing
    unless you take the whole of it:
@@ -238,14 +252,14 @@ entry in one client config:
    server (`mcp__sipnab-nyc1__list_dialogs`,
    `mcp__sipnab-chi1__list_dialogs`, …), so the agent can fan out:
 
-   > the caller says the 14:02 UTC call dropped; find its Call-ID on all
+   > the caller says the 14:02 UTC call dropped. Find its Call-ID on all
    > three sites and compare the ladders.
 
 ---
 
 ## Follow one call across an SBC and its PBXes
 
-*Federated tracing. Each node keeps its own capture; the agent does the joining.*
+*Federated tracing. Each node keeps its own capture. The agent does the joining.*
 
 ```mermaid
 flowchart LR
@@ -269,26 +283,49 @@ Three hops means three MCP servers and one client. Nothing about the wiring is
 different from a single node — you register each one, and the client namespaces
 the tools per server. What changes is only how the laptop reaches each server.
 
-**The laptop reaches all three directly.** Nothing between them, so use the
-2C shape on each node — a loopback bind plus an SSH tunnel per node, which
-needs no token and opens no port:
+**The laptop reaches all three directly.** Nothing between them, so use
+[the SSH tunnel shape (2C)](mcp-deploy.md#keep-a-capture-running-without-exposing-a-port)
+on each node — a loopback bind plus an SSH tunnel per node, which
+needs no token and opens no port. Open the tunnels in this order:
 
-```bash
-# Run all of these, in order.
-ssh -f -N -L 8811:127.0.0.1:8731 sbc-edge-1.example.net
-ssh -f -N -L 8812:127.0.0.1:8731 proxy-1.example.net
-ssh -f -N -L 8813:127.0.0.1:8731 pbx-1.example.net
-```
+1. Open the tunnel to the SBC on local port 8811:
 
-The local port differs per node; the remote port does not, because each node
-binds its own loopback. Then register the three:
+   ```bash
+   ssh -f -N -L 8811:127.0.0.1:8731 sbc-edge-1.example.net
+   ```
 
-```bash
-# Run all of these, in order.
-claude mcp add --transport http sipnab-sbc   http://127.0.0.1:8811/mcp
-claude mcp add --transport http sipnab-proxy http://127.0.0.1:8812/mcp
-claude mcp add --transport http sipnab-pbx   http://127.0.0.1:8813/mcp
-```
+2. Open the tunnel to the proxy on local port 8812:
+
+   ```bash
+   ssh -f -N -L 8812:127.0.0.1:8731 proxy-1.example.net
+   ```
+
+3. Open the tunnel to the PBX on local port 8813:
+
+   ```bash
+   ssh -f -N -L 8813:127.0.0.1:8731 pbx-1.example.net
+   ```
+
+The local port differs per node. The remote port does not, because each node
+binds its own loopback. Then register the three, in this order:
+
+1. Register the SBC:
+
+   ```bash
+   claude mcp add --transport http sipnab-sbc   http://127.0.0.1:8811/mcp
+   ```
+
+2. Register the proxy:
+
+   ```bash
+   claude mcp add --transport http sipnab-proxy http://127.0.0.1:8812/mcp
+   ```
+
+3. Register the PBX:
+
+   ```bash
+   claude mcp add --transport http sipnab-pbx   http://127.0.0.1:8813/mcp
+   ```
 
 Give each node a `--node-name` that matches how you think of it, because that
 string is what comes back in `capture_identity.node` and it is the only thing
@@ -301,9 +338,14 @@ ExecStart=/usr/local/bin/sipnab --mcp -N --mcp-transport http \
 
 **The nodes are behind NAT.** The tunnel commands above still work, because SSH
 dials outward from the laptop and the tunnel carries the MCP traffic back — no
-inbound rule, no port forward, no change to the MCP wiring. What does not work
-is 2B (HTTP plus a token) against a node behind NAT: there is no address to put
-in the URL. If SSH itself cannot reach the node, the node has to reach out
+inbound rule, no port forward, no change to the MCP wiring.
+
+What does not work is
+[the token service (2B)](mcp-deploy.md#keep-a-capture-running-between-agent-sessions)
+(HTTP plus a token) against a node behind NAT: there is no address to put
+in the URL.
+
+If SSH itself cannot reach the node, the node has to reach out
 instead, which means the HEP shape —
 [Collect captures from several SIP servers in one place](#collect-captures-from-several-sip-servers-in-one-place)
 — and then you have one server, not three.
@@ -316,13 +358,19 @@ Host sbc-edge-1.example.net proxy-1.example.net pbx-1.example.net
     ProxyJump bastion.example.net
 ```
 
-For the 2A stdio shape, `ssh -J bastion.example.net sbc-edge-1.example.net
+For [the SSH stdio shape (2A)](mcp-deploy.md#connect-claude-code-on-your-laptop-to-sipnab-on-a-server), `ssh -J bastion.example.net sbc-edge-1.example.net
 /usr/local/bin/sipnab --mcp -N …` does the same thing inline.
 
 > **Not measured.** Everything in this subsection above the `--node-name` line
-> is the same wiring the 2A/2B/2C sections document, applied three times. The
+> is the same wiring that
+> [the SSH stdio shape (2A)](mcp-deploy.md#connect-claude-code-on-your-laptop-to-sipnab-on-a-server),
+> [the token service (2B)](mcp-deploy.md#keep-a-capture-running-between-agent-sessions)
+> and [the SSH tunnel (2C)](mcp-deploy.md#keep-a-capture-running-without-exposing-a-port)
+> document, applied three times. The
 > tunnel, NAT and `ProxyJump` commands were **not** run against three real
-> hosts for this page: there was one machine available. The behavior that
+> hosts for this page: there was one machine available.
+>
+> The behavior that
 > *was* measured — on three sipnab servers on one host, each with its own
 > `--node-name` and its own capture — is everything below, and the transcripts
 > say which build produced them.
@@ -340,8 +388,10 @@ round trip costs seconds. Following one pointer beats fanning out.
 
 Ask it first even when you expect the box to stay a proxy on this call. If it
 did, `find_correlated` returns nothing and you carry the same Call-ID inward,
-which costs one query; if it did not, you now hold the identifier the next hop
-knows the call by. The next section is about telling those two apart.
+which costs one query. If it did not, you now hold the identifier the next hop
+knows the call by.
+[Read what matched, because the topology is not fixed](#read-what-matched-because-the-topology-is-not-fixed)
+is about telling those two apart.
 
 ### Read what matched, because the topology is not fixed
 
@@ -397,10 +447,13 @@ invites you to weigh one against the other, and they do not trade off.
 The window is two seconds unless `--leg-correlation-window` says otherwise, and
 the failure is silent in both directions: a fast clock misses legs that belong
 together, a slow one pulls unrelated calls in.
+
 `timing_clock` reports the answering node's NTP discipline at the moment of the
 query (`synchronized`, `max_error_us`, `est_error_us`, `available`), and
 `capture_health` reports the same under `clock` for any node you want to check
-without running a correlation. `synchronized: false` means treat the tree as a
+without running a correlation.
+
+`synchronized: false` means treat the tree as a
 hypothesis. `synchronized: true` with a `max_error_us` approaching the two-second
 window means the same thing — the flag says a time daemon is disciplining the
 clock, not that the clock is accurate to within the window you are matching in.
@@ -446,8 +499,10 @@ Now read `max_error_us`, and do not read it once. It is a live reading, not a
 constant, and on this one host it has reported **0.295 s** (the run above),
 **1.944 s** and **2.38 s** — an order of magnitude apart, all three while
 saying `synchronized=True`, and the last of them past the 2 s correlation
-window entirely. At the high end the clock could account for the entire match
-on its own; at the low end it could not. Nothing in the output tells you which
+window entirely.
+
+At the high end the clock could account for the entire match
+on its own. At the low end it could not. Nothing in the output tells you which
 run you are looking at except the number itself, so read yours each time. A
 figure quoted from another run — including the ones on this page — says nothing
 about your box.
@@ -472,7 +527,9 @@ because `media_diagnostics` is per-dialog and carries it:
 | `capture_status`, `list_dialogs`, `tail_dialogs`, `find_correlated`, `search_messages`, `search_by_time` | `get_dialog`, `get_dialog_report`, `triage_call`, `capture_health` |
 
 So call `capture_status` once per node and hold the name, rather than expecting
-every answer to carry it. It matters: "answered 407" is incomplete until you
+every answer to carry it.
+
+It matters: "answered 407" is incomplete until you
 know which box answered, and with three servers registered the agent has three
 places that sentence could have come from. Per-message answers carry a `frame`
 pointer instead (`tests/pcap-samples/sip-proxy.pcap#0@a57665bcdb62f03a`), which
@@ -487,12 +544,16 @@ not equally good.
 **1. Configure the SBC, proxy and PBX to insert one. Do this.** RFC 7989
 `Session-ID` exists for exactly this problem: it is a *pair* of UUIDs, one
 contributed by each endpoint, and each side reports the pair from its own point
-of view, so it survives a box that rewrites Call-ID, From tag and Via. sipnab
+of view, so it survives a box that rewrites Call-ID, From tag and Via.
+
+sipnab
 already reads it — [`src/sip/session_id.rs`](https://github.com/NormB/sipnab/blob/main/src/sip/session_id.rs) parses the header, intersects the
 non-nil halves rather than comparing strings (the halves swap direction across a
 B2BUA, so string equality would find nothing and look exactly like "unrelated
 calls"), and correlation on it reports `strategy: session_id` with
-`identifier_match: true`. Nothing on the sipnab side needs changing. The work is
+`identifier_match: true`.
+
+Nothing on the sipnab side needs changing. The work is
 one config line per box, and it converts every future trace from a guess into
 evidence.
 
@@ -501,25 +562,34 @@ evidence.
 looking for them, so if your SBC emits `X-Call-ID` by vendor convention,
 forwards SDP untouched so the [RFC 8866](https://www.rfc-editor.org/rfc/rfc8866) origin tuple survives, or sits in a
 carrier network where RFC 7315 charging headers are on the wire anyway, you get
-an identifier match today with no configuration at all. Check before you plan
+an identifier match today with no configuration at all.
+
+Check before you plan
 work — run `find_correlated` on a known B2BUA call and see what `strategy` comes
-back. Three caveats worth knowing: `sdp_origin` identifies the *media session*
-rather than the dialog, so it goes away the moment anything re-originates SDP;
-`via_branch`, though it is an identifier match, never crosses a B2BUA, because a
-back-to-back user agent opens a new transaction by definition; and
-`charging_vector_icid` is the weaker of the two charging strategies for the same
-reason the note below gives — a conformant B2BUA gives each of its two dialogs
-its own icid, so plain equality across one is a vendor behavior rather than
-something the RFC promises.
+back.
+
+Three caveats worth knowing:
+
+- `sdp_origin` identifies the *media session*
+  rather than the dialog, so it goes away the moment anything re-originates SDP.
+- `via_branch`, though it is an identifier match, never crosses a B2BUA, because a
+  back-to-back user agent opens a new transaction by definition.
+- `charging_vector_icid` is the weaker of the two charging strategies for the same
+  reason the note below gives — a conformant B2BUA gives each of its two dialogs
+  its own icid, so plain equality across one is a vendor behavior rather than
+  something the RFC promises.
 
 **3. Have sipnab compute its own identical id on each node. Do not.** The
 appeal is obvious — no config change on any SIP box — and it is the wrong trade.
 sipnab is a passive wire observer: it cannot inject a header, so "the same id on
 both nodes" would have to be *computed* from what each node independently sees.
+
 Across a re-originating B2BUA there is no guaranteed invariant to compute it
 from. Call-ID, From tag, Via branch, Contact and usually the SDP are all
 legitimately new on the far side — that is what re-origination *means*, not a
-defect to work around. Any id derived from the remainder is a heuristic dressed
+defect to work around.
+
+Any id derived from the remainder is a heuristic dressed
 as an identifier, and that is worse than the labeled heuristic already in the
 output: `timing_heuristic` announces itself as a guess and sets
 `heuristic_only`, whereas a computed id would arrive looking like proof and
@@ -537,7 +607,9 @@ identity the wire never established.
 > [RFC 7315 section 4.6](https://www.rfc-editor.org/rfc/rfc7315#section-4.6) says the ICID identifies *a dialog*, and a B2BUA is two
 > dialogs — so a conformant B2BUA emits a **different** `icid-value` on each
 > side, and plain `icid-value` equality does **not** solve the re-origination
-> case. What crosses that hop is the separate `related-icid` parameter
+> case.
+>
+> What crosses that hop is the separate `related-icid` parameter
 > ([RFC 7315 section 4.6.4.1](https://www.rfc-editor.org/rfc/rfc7315#section-4.6.4.1)), whose value is the icid of the original dialog, and which the
 > B2BUA *MAY* emit rather than must. So:
 >
@@ -545,15 +617,19 @@ identity the wire never established.
 >   This is the one that crosses a B2BUA, and only when the box chose to send it.
 > * `charging_vector_icid` (85) — the two legs carry the same `icid-value`.
 >   Useful where it happens, and it means some intermediary copied a per-dialog
->   identifier onto a second dialog; no RFC grants that.
+>   identifier onto a second dialog. No RFC grants that.
 >
 > Two further limits, both from the RFC rather than from the implementation.
 > The first proxy generates the icid ([RFC 7315 section 5.6](https://www.rfc-editor.org/rfc/rfc7315#section-5.6)), so the leg arriving from an
-> endpoint carries none and this is useless at the access edge. And
+> endpoint carries none and this is useless at the access edge.
+>
+> Also,
 > [RFC 7315 section 4.6.2.2](https://www.rfc-editor.org/rfc/rfc7315#section-4.6.2.2) permits the next hop to *"modify the contents"*, which
 > [RFC 7315 section 6.6](https://www.rfc-editor.org/rfc/rfc7315#section-6.6) calls normal
 > behavior — there is no end-to-end constancy requirement of any kind, so this
-> is not a substitute for `Session-ID`. Full argument, including what is still
+> is not a substitute for `Session-ID`.
+>
+> Full argument, including what is still
 > unverified: [`docs/design/icid-correlation.md`](design/icid-correlation.md).
 
 ### Choose between federated and centralized
@@ -570,5 +646,5 @@ newer.
 
 Centralizing needs no new code. See
 [Collect captures from several SIP servers in one place](#collect-captures-from-several-sip-servers-in-one-place).
-It is also what Homer does, at the scale of a whole enterprise system; sipnab is
+It is also what Homer does, at the scale of a whole enterprise system. sipnab is
 one binary, and it can feed Homer rather than replace it.

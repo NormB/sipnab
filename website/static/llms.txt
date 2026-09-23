@@ -6,41 +6,41 @@ This file indexes the documentation as plain text. `llms-full.txt` beside it car
 
 ## Docs
 
-- [Library API](https://sipnab.com/docs/library/): Use the Rust parser and analysis types from an external application.
-- [Runnable Examples](https://sipnab.com/docs/examples/): Run Python clients for correlation, MCP queries and vCon inspection, with local regression tests.
-- [Examples & Recipes](https://sipnab.com/docs/cookbook/): Worked examples with real output: triage, filtering, HEP, TLS decryption, MCP, observability, security and audio export, each one a command you can paste and the result it produces.
-- [Prometheus Metrics](https://sipnab.com/docs/metrics/): Every metric family sipnab emits, what each one means, which are counters and which are gauges, and the scrape config -- split out of the REST API page, which a scrape target's reader never needs.
-- [REST API](https://sipnab.com/docs/api/): sipnab's REST API: authentication, every endpoint with its response shape, status codes, curl recipes, and the security model. Metric names and their meaning are on the Prometheus metrics page.
-- [MCP Server](https://sipnab.com/docs/mcp/): Drive sipnab from an AI agent over the Model Context Protocol: what it is, a first working example, and where to go for deployment, the tool reference, and the protocol contract.
-- [Installation](https://sipnab.com/docs/install/): Install sipnab from pre-built binaries, cargo, or package managers.
-- [rtpengine Relays](https://sipnab.com/docs/rtpengine/): Media captured on a standalone rtpengine relay comes back orphaned because a relay carries no SIP. Read rtpengine's own control plane to name the calls, with no change to an existing Homer pipeline.
-- [Troubleshooting](https://sipnab.com/docs/troubleshooting/): Real-world VoIP diagnostic workflows with exact commands.
-- [TUI Walkthrough](https://sipnab.com/docs/tui/): Your first analysis in the interactive TUI, step by step -- open a capture, read the ladder, measure a delay, and inspect RTP.
-- [Keybindings](https://sipnab.com/docs/keybindings/): Complete TUI keyboard shortcut reference for all views.
-- [Theme Guide](https://sipnab.com/docs/theme/): Customize sipnab's TUI colors with 11 semantic color slots and preset themes.
-- [CLI Reference](https://sipnab.com/docs/cli/): Complete flag reference for sipnab, organized by functional group.
-- [Filter DSL](https://sipnab.com/docs/filter-dsl/): Declarative filter language for matching SIP dialogs and RTP streams.
-- [Header Fields](https://sipnab.com/docs/sip-header-fields/): Every SIP header field in the IANA registry, its compact form, and the RFC that defines it.
-- [Request Methods](https://sipnab.com/docs/sip-methods/): Every SIP method in the IANA registry, the RFC section defining it, and which dialog state machine sipnab runs it through.
-- [Parameters](https://sipnab.com/docs/sip-parameters/): Every SIP URI parameter, header-field parameter and option tag in the IANA registry, with the RFC that defines it.
-- [MOS & Codecs](https://sipnab.com/docs/mos-and-codecs/): Where the quality score comes from, which codecs have a published impairment factor behind it, and which report a placeholder.
-- [Response Codes](https://sipnab.com/docs/sip-response-codes/): Every SIP response code in the IANA registry, the RFC section that defines it, and whether it means the call failed.
-- [Output Formats](https://sipnab.com/docs/output-formats/): Machine-readable output: NDJSON, summary reports, dialog/stream JSON, and pcap/pcapng.
-- [Config Reference](https://sipnab.com/docs/config/): TOML configuration file format and all configurable sections.
-- [TLS Without Keys](https://sipnab.com/docs/uprobe-walkthrough/): What uprobe and eBPF capture is and is NOT, its security implications, whether your kernel supports it at all, and how to run both backends step by step.
-- [MCP Deployment](https://sipnab.com/docs/mcp-deploy/): Step-by-step MCP deployment scenarios: same-box stdio, remote production servers over SSH or HTTP, HEP capture hosts, TLS endpoints, fleets, and headless automation.
-- [MCP Across an Estate](https://sipnab.com/docs/mcp-estate/): Several SIP servers feeding one capture host, reaching sipnab from outside the network, one agent holding many capture hosts, and following one call across an SBC, a proxy and a PBX.
-- [MCP Tools](https://sipnab.com/docs/mcp-tools/): Every MCP tool sipnab exposes, what question each answers, and the fields it returns.
-- [MCP Protocol](https://sipnab.com/docs/mcp-protocol/): The MCP wire contract: security model, what the write verbs may do, untrusted capture text, the stdio invariant, and error semantics.
-- [SIP Conformance Rules](https://sipnab.com/docs/sip-lint-rules/): Every rule the SIP conformance linter runs, the RFC section behind it, the severity and basis it reports under, and how to suppress it in CI.
-- [Tuning Capture](https://sipnab.com/docs/tuning-capture/): Size the kernel capture ring, read the kernel and interface drop counters, tell the two apart, and decide between the `any` device and a named interface.
-- [vCon Capture Stack](https://sipnab.com/docs/vcon-harness/): Build a two-point vCon capture stack -- OpenSIPS, rtpengine, sipnab and a conserver -- then operate it, verify a stored call carries its media, and recognize the failures that look like success.
-- [vCon Export](https://sipnab.com/docs/vcon/): Export one observed dialog as a vCon container: what the format is, how to produce one, and what an observer's record does and does not let a consumer conclude.
-- [Encapsulations](https://sipnab.com/docs/encapsulations/): Which link types, EtherTypes and tunnels sipnab can read a SIP dialog out of, which it cannot, and what it reports when a frame does not decode.
-- [Examples from real traffic](https://sipnab.com/docs/real-world-captures/): Twelve findings read out of live carrier and PBX traffic, with the command, the output and what an operator does next -- the retransmit storms, false-positive detections and misleading aggregates that a curated fixture cannot show.
+- [Use sipnab as a Rust library](https://sipnab.com/docs/library/): Use the Rust parser and analysis types from an external application.
+- [Run the example Python clients](https://sipnab.com/docs/examples/): Run Python clients for correlation, MCP queries and vCon inspection, with local regression tests.
+- [Recipes for common tasks](https://sipnab.com/docs/cookbook/): Worked examples with real output: triage, filtering, HEP, TLS decryption, MCP, observability, security and audio export, each one a command you can paste and the result it produces.
+- [Scrape Prometheus metrics](https://sipnab.com/docs/metrics/): Every metric family sipnab emits, what each one means, which are counters and which are gauges, and the scrape config. Split out of the REST API page, which a scrape target's reader never needs.
+- [Query the REST API](https://sipnab.com/docs/api/): sipnab's REST API: authentication, every endpoint with its response shape, status codes, curl recipes, and the security model. Metric names and their meaning are on the Prometheus metrics page.
+- [Connect an AI agent (MCP)](https://sipnab.com/docs/mcp/): Drive sipnab from an AI agent over the Model Context Protocol: what it is, a first working example, and where to go for deployment, the tool reference, and the protocol contract.
+- [Install sipnab](https://sipnab.com/docs/install/): Install sipnab from a pre-built binary, a package, Homebrew or cargo, then check the download is genuine.
+- [Name calls on an rtpengine relay](https://sipnab.com/docs/rtpengine/): Media captured on a standalone rtpengine relay comes back orphaned because a relay carries no SIP. Read rtpengine's own control plane to name the calls, with no change to an existing Homer pipeline.
+- [Troubleshoot a call](https://sipnab.com/docs/troubleshooting/): Start from what the caller reports, find the matching section, and run the commands it gives, in order.
+- [Walk through the terminal UI](https://sipnab.com/docs/tui/): Your first analysis in the interactive TUI, step by step: open a capture, read the ladder, measure a delay, and inspect RTP.
+- [Look up a key binding](https://sipnab.com/docs/keybindings/): Complete TUI keyboard shortcut reference for all views.
+- [Change the terminal UI colors](https://sipnab.com/docs/theme/): Customize sipnab's TUI colors with 11 semantic color slots and preset themes.
+- [Look up a command-line flag](https://sipnab.com/docs/cli/): Every flag sipnab takes, grouped by job: capture, matching, output, analysis, security, the listeners and MCP.
+- [Filter calls and streams](https://sipnab.com/docs/filter-dsl/): Declarative filter language for matching SIP dialogs and RTP streams.
+- [Look up a SIP header field](https://sipnab.com/docs/sip-header-fields/): Every SIP header field in the IANA registry, its compact form, and the RFC that defines it.
+- [Look up a SIP method](https://sipnab.com/docs/sip-methods/): Every SIP method in the IANA registry, the RFC section defining it, and which dialog state machine sipnab runs it through.
+- [Look up a SIP parameter](https://sipnab.com/docs/sip-parameters/): Every SIP URI parameter, header-field parameter and option tag in the IANA registry, with the RFC that defines it.
+- [Understand MOS and codecs](https://sipnab.com/docs/mos-and-codecs/): Where the quality score comes from, which codecs have a published impairment factor behind it, and which report a placeholder.
+- [Look up a SIP response code](https://sipnab.com/docs/sip-response-codes/): Every SIP response code in the IANA registry, the RFC section that defines it, and whether it means the call failed.
+- [Choose an output format](https://sipnab.com/docs/output-formats/): Machine-readable output: NDJSON, summary reports, dialog/stream JSON, and pcap/pcapng.
+- [Configure sipnab](https://sipnab.com/docs/config/): TOML configuration file format and all configurable sections.
+- [Read TLS without keys (eBPF)](https://sipnab.com/docs/uprobe-walkthrough/): What uprobe and eBPF capture is and is NOT, its security implications, whether your kernel supports it at all, and how to run both backends step by step.
+- [Deploy the MCP server](https://sipnab.com/docs/mcp-deploy/): Step-by-step MCP deployment scenarios: same-box stdio, remote production servers over SSH or HTTP, HEP capture hosts, TLS endpoints, fleets, and headless automation.
+- [Use MCP across many servers](https://sipnab.com/docs/mcp-estate/): Several SIP servers feeding one capture host, reaching sipnab from outside the network, one agent holding many capture hosts, and following one call across an SBC, a proxy and a PBX.
+- [Look up an MCP tool](https://sipnab.com/docs/mcp-tools/): Every MCP tool sipnab exposes, what question each answers, and the fields it returns.
+- [Check the MCP protocol contract](https://sipnab.com/docs/mcp-protocol/): The MCP wire contract: security model, what the write verbs may do, untrusted capture text, the stdio invariant, and error semantics.
+- [Look up a SIP conformance rule](https://sipnab.com/docs/sip-lint-rules/): Every rule the SIP conformance linter runs, the RFC section behind it, the severity and basis it reports under, and how to suppress it in CI.
+- [Stop a capture dropping packets](https://sipnab.com/docs/tuning-capture/): Size the kernel capture ring, read the kernel and interface drop counters, tell the two apart, and decide between the any device and a named interface.
+- [Build a vCon capture stack](https://sipnab.com/docs/vcon-harness/): Build a two-point vCon capture stack (OpenSIPS, rtpengine, sipnab and a conserver), then operate it, verify a stored call carries its media, and recognize the failures that look like success.
+- [Export a call as a vCon](https://sipnab.com/docs/vcon/): Export one observed dialog as a vCon container: what the format is, how to produce one, and what an observer's record does and does not let a consumer conclude.
+- [Read SIP inside tunnels](https://sipnab.com/docs/encapsulations/): Which link types, EtherTypes and tunnels sipnab can read a SIP dialog out of, which it cannot, and what it reports when a frame does not decode.
+- [Learn from real captures](https://sipnab.com/docs/real-world-captures/): Twelve findings read out of live carrier and PBX traffic, with the command, the output and what an operator does next: the retransmit storms, false-positive detections and misleading aggregates that a curated fixture cannot show.
 - [Triage a capture from the command line](https://sipnab.com/docs/first-cli-triage/): A first analysis without the TUI: list the calls in a capture, find the ones that went wrong, explain one, and hand the answer to another tool as JSON.
 - [Glossary](https://sipnab.com/docs/glossary/): The VoIP and sipnab terms the other pages use, each defined in one short entry by what it means in sipnab's output.
-- [Authentication](https://sipnab.com/docs/auth/): Bearer-token authentication for the REST API and MCP server: token format, audience binding, configuring a signing key, minting tokens, expiry and key rotation.
+- [Authenticate API and MCP clients](https://sipnab.com/docs/auth/): Bearer-token authentication for the REST API and MCP server: token format, audience binding, configuring a signing key, minting tokens, expiry and key rotation.
 
 ## Internals
 
