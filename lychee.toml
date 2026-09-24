@@ -263,3 +263,18 @@ include_mail = false
 # (Also worth knowing if you try: lychee 0.24.2 rejects `include_fragments` as a
 # config key while accepting --include-fragments as a flag, and a rejected key
 # fails the whole config rather than being ignored.)
+
+# rfc-editor.org, one request at a time, a second apart. On 2026-09-24 two
+# consecutive Quality runs on main failed on it and on nothing else: first one
+# timeout (RFC 3891), then 8 timeouts and 15 errors, every one of them
+# www.rfc-editor.org, out of 4,110 links. RFC 3891 answered in 0.04s from here
+# while CI was timing out on it, so the host was up; eight concurrent requests
+# from one runner, each /rfc/rfcN a redirect to /rfc/rfcN.html, is the likely
+# trigger rather than a proven one. Throttling the one host keeps every RFC link
+# checked -- excluding it would not. The price, measured with lychee 0.24.2 on
+# the docs pass: about 185 requests after deduplication and redirects, 3m04s,
+# 0 errors.
+# (A table, so it has to follow every top-level key above.)
+[hosts."www.rfc-editor.org"]
+concurrency = 1
+request_interval = "1s"
