@@ -518,6 +518,45 @@ mod tests {
         out
     }
 
+    /// CPU time this thread has used, from `CLOCK_THREAD_CPUTIME_ID`.
+    ///
+    /// Not the wall clock (FLAKY-1). Under load the scheduler preempts the
+    /// test thread, and wall time counts every wait: a 1024-key parse fits in
+    /// one time slice while a 4096-key parse spans several and queues behind
+    /// the other runnable threads on each. Pinned beside three busy loops, the
+    /// wall-clock ratio read ~14.3x for a linear decoder in 19 runs of 20. CPU
+    /// time stops while the thread is off the CPU, so the ratio measures the
+    /// work again.
+    fn thread_cpu_time() -> std::time::Duration {
+        let mut ts = libc::timespec {
+            tv_sec: 0,
+            tv_nsec: 0,
+        };
+        // SAFETY: `ts` is a live, writable `timespec` for the duration of the
+        // call, and CLOCK_THREAD_CPUTIME_ID is a clock id this platform
+        // defines; clock_gettime writes only into `ts`.
+        let rc = unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut ts) };
+        assert_eq!(rc, 0, "clock_gettime(CLOCK_THREAD_CPUTIME_ID) failed");
+        std::time::Duration::new(
+            u64::try_from(ts.tv_sec).expect("a non-negative CPU time"),
+            u32::try_from(ts.tv_nsec).expect("nanoseconds under a second"),
+        )
+    }
+
+    /// The clock the ratio test below reads must not count time the thread
+    /// spends not running. A thread that sleeps uses almost no CPU, so 50 ms
+    /// asleep has to read as next to nothing.
+    #[test]
+    fn the_cpu_clock_does_not_count_time_spent_not_running() {
+        let before = thread_cpu_time();
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        let spent = thread_cpu_time() - before;
+        assert!(
+            spent < std::time::Duration::from_millis(10),
+            "50 ms asleep read as {spent:?} of CPU: this is a wall clock"
+        );
+    }
+
     /// Rejecting duplicate keys must not cost the square of the key count.
     ///
     /// The check compares each key against the ones already accepted. Written
@@ -537,17 +576,16 @@ mod tests {
     /// factor of two either side.
     #[test]
     fn rejecting_duplicate_keys_does_not_cost_the_square_of_the_key_count() {
-        use std::time::Instant;
-
-        /// Best of several runs: the minimum is the sample least polluted by
-        /// scheduling, which is what makes this survivable on a busy runner.
+        /// Best of several runs, in CPU time. Preemption no longer reaches the
+        /// samples (see `thread_cpu_time`); the minimum still trims what does,
+        /// such as a cold cache or a frequency step between runs.
         fn best(buf: &[u8]) -> std::time::Duration {
             (0..5)
                 .map(|_| {
-                    let start = Instant::now();
+                    let start = thread_cpu_time();
                     let v = decode(buf).expect("a well-formed dictionary");
                     debug_assert!(matches!(v, Value::Dict(_)));
-                    start.elapsed()
+                    thread_cpu_time() - start
                 })
                 .min()
                 .expect("five samples")
