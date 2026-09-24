@@ -755,9 +755,38 @@ fn a_hep_carried_register_flood_is_not_written_to_the_jail_log() {
             );
             sock.send_to(&hep, &bind).expect("send HEP");
         }
-        // Let the datagrams drain through the receive loop, then stop the run
-        // the way an operator does.
-        std::thread::sleep(std::time::Duration::from_millis(500));
+        // Stop the run the way an operator does, but only once the flood has
+        // been analyzed. SIGTERM ends the receive loop without draining what
+        // is still queued, so a fixed sleep here was a guess about how fast a
+        // loaded runner reads six datagrams, and CI lost that guess: the run
+        // saw no SIP at all. The alert is the evidence both runs assert, and
+        // it is written the moment the detector fires.
+        let seen = {
+            let pipe = child.stderr.take().expect("stderr piped");
+            let seen = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+            let into = std::sync::Arc::clone(&seen);
+            let reader = std::thread::spawn(move || {
+                use std::io::BufRead;
+                for line in std::io::BufReader::new(pipe).lines() {
+                    let Ok(line) = line else { break };
+                    let mut all = into.lock().expect("stderr buffer");
+                    all.push_str(&line);
+                    all.push('\n');
+                }
+            });
+            (seen, reader)
+        };
+        let alerted = |text: &str| {
+            text.lines()
+                .any(|l| l.contains("[ALERT]") && l.contains("reg_flood"))
+        };
+        let analyzed_by = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while !alerted(&seen.0.lock().expect("stderr buffer")) {
+            if std::time::Instant::now() >= analyzed_by {
+                break; // the assertions below report what stderr did say
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
         let status = std::process::Command::new("kill")
             .args(["-TERM", &child.id().to_string()])
             .status()
@@ -775,19 +804,15 @@ fn a_hep_carried_register_flood_is_not_written_to_the_jail_log() {
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
         let mut stdout = String::new();
-        let mut stderr = String::new();
         child
             .stdout
             .take()
             .expect("stdout piped")
             .read_to_string(&mut stdout)
             .expect("read stdout");
-        child
-            .stderr
-            .take()
-            .expect("stderr piped")
-            .read_to_string(&mut stderr)
-            .expect("read stderr");
+        let (seen, reader) = seen;
+        reader.join().expect("stderr reader");
+        let stderr = std::mem::take(&mut *seen.lock().expect("stderr buffer"));
         (stdout, stderr)
     };
 
