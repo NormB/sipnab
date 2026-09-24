@@ -217,7 +217,21 @@ macos_floor_intel = "10.12"
 # `strip` and `panic = "abort"`, and the only lever left is `opt-level = "z"`,
 # which trades the throughput the benchmarks page publishes. Raising a claim
 # that is no longer true beats keeping a claim that is.
-binary_size_ceiling_mb = "17"
+#
+# 17 -> 18 after 0.5.188, the first move made for growth measured before any
+# release carried it. PW-MUSL adds the `archive` feature (ZIP and 7z input,
+# archive passwords) to the musl tarballs and the -noaudio packages. Its cost
+# was measured locally, not on a published artifact: two stripped release
+# builds of the no-audio set on aarch64-unknown-linux-musl, in Alpine 3.22
+# with rustc 1.98.0, were 14,057,840 bytes without `archive` and 14,517,104
+# with it. x86_64 is unmeasured, because this host has no x86_64 musl
+# toolchain. 0.5.188 left 642,104 bytes under 17 MB, and that growth would
+# leave 182,840, under the 262,144-byte THIN_MARGIN. The pending line below
+# counts it against the margin until 0.5.189's own measurement carries it.
+# 18 MB leaves 1,690,680 bytes over 0.5.188, and 1,231,416 once it is counted.
+#
+#   pending  +459,264 bytes  against 0.5.188: `archive` in the musl set, aarch64-musl, local
+binary_size_ceiling_mb = "18"
 github_url = "https://github.com/NormB/sipnab"
 # `owner/repo`, for the places a bare slug is what the command wants rather than
 # a URL: `gh attestation verify --repo`, the releases API path. These were

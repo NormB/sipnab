@@ -438,6 +438,72 @@ fn capabilities_missing_from_the_musl_build_say_so() {
     }
 }
 
+/// Where the site says what the static musl tarball leaves out, it names
+/// exactly what the release leaves out.
+///
+/// The download page said "the two things it leaves out are TUI audio playback
+/// and WASM plugin loading" while the tarball also lacked vCon export, the
+/// eBPF uprobe backend and, until PW-MUSL, archive reading. The install guide
+/// said it "lacks only TUI audio playback". Each feature below is either
+/// absent from the musl set and named in both places, or present and named in
+/// neither.
+#[test]
+fn the_musl_build_s_omissions_are_named_where_the_site_describes_it() {
+    let features = musl_feature_set();
+    assert!(
+        features.contains("native") && features.contains("tui"),
+        "the musl feature set scan produced {features:?}, which is not a \
+         plausible feature list"
+    );
+    let download = read("website/templates/download.html");
+    let lead = download
+        .lines()
+        .find(|l| l.contains("musl-linked and fully self-contained"))
+        .expect("website/templates/download.html has no musl lead paragraph")
+        .to_string();
+    let install = read("docs/install.md");
+    let guide = install
+        .split("\n\n")
+        .find(|p| p.contains("get the static **musl** build"))
+        .expect("docs/install.md has no paragraph describing the musl build")
+        .to_string();
+    for (feature, words) in [
+        ("audio", "audio playback"),
+        ("plugins", "WASM plugin"),
+        ("vcon", "vCon"),
+        ("bpf", "eBPF"),
+    ] {
+        let absent = !features.contains(feature);
+        for (place, text) in [("the download page", &lead), ("docs/install.md", &guide)] {
+            assert_eq!(
+                text.contains(words),
+                absent,
+                "the static musl build {} `{feature}`, and {place} {} \
+                 {words:?} in what it says the tarball leaves out:\n{text}",
+                if absent { "lacks" } else { "carries" },
+                if absent {
+                    "never mentions"
+                } else {
+                    "still lists"
+                },
+            );
+        }
+    }
+    // Archives are carried now; a sentence that says the tarball leaves them
+    // out would be the old claim back.
+    assert!(
+        features.contains("archive"),
+        "release.yml no longer builds `archive` into the musl set: {features:?}"
+    );
+    for (place, text) in [("the download page", &lead), ("docs/install.md", &guide)] {
+        assert!(
+            text.contains("7z"),
+            "{place} does not say the static musl build reads ZIP and 7z \
+             archives, which it now does:\n{text}"
+        );
+    }
+}
+
 // ── D. The filter language the page counts ───────────────────────────
 
 /// `(distinct fields, accepted spellings, operators)` from `src/sip/dsl.rs`.

@@ -777,7 +777,11 @@ fn linked_code_targets_exist() {
     // `scripts/split-debuginfo.sh`, the two test files that drive it, and
     // `website/config.toml` (the size ceiling). Attributed by diffing
     // `docs/internals/` against HEAD: those four links and no other page.
-    const EXPECTED_CODE_LINKS: usize = 463;
+    // 463 -> 464: build-ci-release.md's eBPF section names
+    // `binary_size_ceiling_mb` and links `website/config.toml`, rather than
+    // quoting a ceiling figure that went stale. Attributed by diffing
+    // `docs/internals/` against HEAD: that one link and no other page changed.
+    const EXPECTED_CODE_LINKS: usize = 464;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \

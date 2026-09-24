@@ -69,8 +69,9 @@ If the shell cannot find `sipnab`, the install directory is not on your `PATH`
 On Linux the installer chooses between two builds. Hosts with glibc 2.36 or
 newer (Debian 12+, Ubuntu 23.04+) get the dynamically linked **`-gnu`** build,
 which needs libpcap from your package manager. Older hosts, and hosts with no
-glibc, get the static **musl** build, which needs nothing else and lacks only
-TUI audio playback.
+glibc, get the static **musl** build, which needs nothing else. It lacks TUI
+audio playback, WASM plugins, vCon export and the eBPF uprobe backend, and
+reads password-protected ZIP and 7z archives like every other release build.
 
 ## Download a release binary yourself
 
@@ -95,8 +96,8 @@ covers every file, and the tarballs additionally ship an individual
 | `sipnab-<version>-1.aarch64.rpm` | aarch64 / arm64 | RHEL/Fedora, glibc >= 2.36 | dnf/rpm-managed, full features |
 | `sipnab-<version>-1.x86_64-noaudio.rpm` | x86_64 / amd64 | RHEL/Fedora, glibc >= 2.36 | no ALSA weak dependency |
 | `sipnab-<version>-1.aarch64-noaudio.rpm` | aarch64 / arm64 | RHEL/Fedora, glibc >= 2.36 | no ALSA weak dependency |
-| `sipnab-<version>-x86_64-unknown-linux-musl.tar.gz` | x86_64 / amd64 | any Linux, any glibc, Alpine | static — no TUI audio playback |
-| `sipnab-<version>-aarch64-unknown-linux-musl.tar.gz` | aarch64 / arm64 | any Linux, any glibc, Alpine | static — no TUI audio playback |
+| `sipnab-<version>-x86_64-unknown-linux-musl.tar.gz` | x86_64 / amd64 | any Linux, any glibc, Alpine | static — no TUI audio playback, WASM plugins, vCon export or eBPF uprobe backend |
+| `sipnab-<version>-aarch64-unknown-linux-musl.tar.gz` | aarch64 / arm64 | any Linux, any glibc, Alpine | static — no TUI audio playback, WASM plugins, vCon export or eBPF uprobe backend |
 | `sipnab-<version>-x86_64-unknown-linux-gnu.tar.gz` | x86_64 / amd64 | glibc >= 2.36 + libpcap | full features including audio |
 | `sipnab-<version>-aarch64-unknown-linux-gnu.tar.gz` | aarch64 / arm64 | glibc >= 2.36 + libpcap | full features including audio |
 | `sipnab-<version>-x86_64-apple-darwin.tar.gz` | Intel | macOS 10.12+ | Intel Macs |
@@ -713,7 +714,7 @@ panic = "abort"
 debug = "line-tables-only"
 ```
 
-Target binary size (musl, stripped): <= 17 MB.
+Target binary size (musl, stripped): <= 18 MB.
 
 A local `cargo build --release` strips at link time, so the line tables never
 reach the binary. The release workflow appends `-C strip=none` to `RUSTFLAGS`
@@ -991,7 +992,7 @@ bookworm container, and a release-workflow gate rejects any binary linking a
 `GLIBC_` symbol newer than 2.36. A gate enforces the floor rather than estimating it.
 
 **The size ceiling.** The "Enforce published binary size" step in
-`release.yml` checks the 17 MB ceiling against the real musl artifact on every
+`release.yml` checks the 18 MB ceiling against the real musl artifact on every
 release.
 
 </details>

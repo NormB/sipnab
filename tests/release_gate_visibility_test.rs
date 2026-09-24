@@ -288,24 +288,115 @@ fn the_binary_ceiling_keeps_a_readable_margin() {
         found.len()
     );
     let (margin, largest, ceiling) = margin_of(&src, &found);
+    let pending: i64 = pending_growth(&src).iter().map(|p| p.bytes).sum();
     assert!(
         margin > 0,
-        "the record's largest measured binary is {largest} bytes, over the \
-         {ceiling} MB ceiling. The release build will refuse this."
+        "the record's largest measured binary is {largest} bytes, plus \
+         {pending} bytes of measured pending growth, over the {ceiling} MB \
+         ceiling. The release build will refuse this."
     );
     assert!(
         margin >= THIN_MARGIN,
-        "only {margin} bytes of headroom under the {ceiling} MB ceiling, and \
-         two ordinary releases of this project are about {THIN_MARGIN}. Raise \
+        "only {margin} bytes of headroom under the {ceiling} MB ceiling once \
+         the {pending} bytes of measured pending growth are counted, and two \
+         ordinary releases of this project are about {THIN_MARGIN}. Raise \
          binary_size_ceiling_mb now, with the measurement, rather than \
          discovering it when a tag has already published nothing."
+    );
+}
+
+/// A change already on `main` whose size cost was measured before a release
+/// carried it.
+///
+/// The record holds only shipped binaries, so a change known to add half a
+/// megabyte (the `archive` feature entering the musl set) was invisible to the
+/// margin until the tag that failed. A pending line is
+/// `# pending  +<n,nnn> bytes  against <version>: <what, and where measured>`,
+/// and it counts against the margin until the next release measures it.
+#[derive(Debug, PartialEq, Eq)]
+struct Pending {
+    bytes: i64,
+    against: String,
+}
+
+/// The pending-growth LINES of a config, and nothing else in it.
+fn pending_growth(src: &str) -> Vec<Pending> {
+    let re = regex::Regex::new(
+        r"(?m)^#\s+pending\s+\+([0-9]{1,3}(?:,[0-9]{3})+)\s+bytes\s+against\s+(\d+\.\d+\.\d+)\b",
+    )
+    .expect("pattern");
+    re.captures_iter(src)
+        .filter_map(|c| {
+            Some(Pending {
+                bytes: c[1].replace(',', "").parse().ok()?,
+                against: c[2].to_string(),
+            })
+        })
+        .collect()
+}
+
+/// A pending line retires with the release that measures it.
+///
+/// Its bytes are inside the next release's measurement line, so a pending line
+/// that outlives `published_version` counts the same bytes twice and pushes
+/// the ceiling up for nothing. `against` names the release it was measured
+/// against, which must still be the one published.
+#[test]
+fn a_pending_growth_line_retires_with_the_release_that_measures_it() {
+    let src = ceiling_config();
+    let published = regex::Regex::new(r#"(?m)^published_version = "([^"]+)""#)
+        .unwrap()
+        .captures(&src)
+        .expect("website/config.toml has no published_version")[1]
+        .to_string();
+    for p in pending_growth(&ceiling_comment(&src)) {
+        assert_eq!(
+            p.against, published,
+            "a pending line measured against {} is still in the ceiling \
+             record, and {published} is published now. That release's \
+             measurement line carries those {} bytes, so delete the pending \
+             line rather than count them twice.",
+            p.against, p.bytes
+        );
+    }
+}
+
+/// Measured pending growth turns a comfortable record thin.
+///
+/// Without this, a `margin_of` that ignored pending lines would pass every
+/// assertion above while the known growth waited for a tag to fail on.
+#[test]
+fn pending_growth_counts_against_the_margin() {
+    let src = "\
+# 0.5.001  16,000,000 bytes\n\
+# 0.5.002  16,100,000 bytes\n\
+# 0.5.003  16,050,000 bytes\n\
+#   pending  +524,800 bytes  against 0.5.003: a feature, measured elsewhere\n\
+binary_size_ceiling_mb = \"16\"\n";
+    let found = measurements(src);
+    assert_eq!(found.len(), 3, "a pending line is not a measurement line");
+    let pending = pending_growth(src);
+    assert_eq!(
+        pending,
+        vec![Pending {
+            bytes: 524_800,
+            against: "0.5.003".to_string()
+        }],
+        "the parser must read the pending line's bytes and release"
+    );
+    let (margin, _, _) = margin_of(src, &found);
+    assert!(
+        margin < THIN_MARGIN,
+        "16,100,000 bytes under a 16 MB ceiling leaves 677,216, and a pending \
+         +524,800 leaves {margin}: that must read as thin"
     );
 }
 
 /// Two ordinary releases of headroom, in bytes.
 const THIN_MARGIN: i64 = 256 * 1024;
 
-/// `(margin, largest_recorded, ceiling_mb)` for a config and its record.
+/// `(margin, largest_recorded, ceiling_mb)` for a config and its record, the
+/// margin net of any measured pending growth.
 ///
 /// Measured against the LARGEST recorded binary rather than the most recent
 /// one: 0.5.158 was smaller than 0.5.157, so "the last line" is not reliably
@@ -318,7 +409,8 @@ fn margin_of(src: &str, found: &[Measurement]) -> (i64, i64, i64) {
         .parse()
         .expect("the ceiling is a number");
     let largest = found.iter().map(|m| m.bytes).max().unwrap_or(0);
-    (ceiling * 1024 * 1024 - largest, largest, ceiling)
+    let pending: i64 = pending_growth(src).iter().map(|p| p.bytes).sum();
+    (ceiling * 1024 * 1024 - largest - pending, largest, ceiling)
 }
 
 /// Owed, for a mutation that survived: deleting the measurement line for the
@@ -505,6 +597,11 @@ fn the_tag_prompt_names_every_post_publish_obligation() {
         (
             "musl",
             "the binary-ceiling record wants a measurement of the SHIPPED tarball",
+        ),
+        (
+            "pending line",
+            "a pending-growth line measured against the previous release fails \
+             the ceiling gate once published_version moves",
         ),
     ] {
         assert!(

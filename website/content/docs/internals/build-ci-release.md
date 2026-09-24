@@ -31,8 +31,9 @@ The musl and macOS artifacts do NOT carry it, for two different reasons.
 12,252,424 bytes. Under the 12 MB ceiling that left 330,488 bytes of headroom
 and it did not fit.
 
-The ceiling `release.yml` enforces is 15 MB now, so it
-would fit. musl still excludes it, because what a static artifact carries is
+The ceiling `release.yml` enforces has risen several times since
+(`binary_size_ceiling_mb` in [`website/config.toml`](https://github.com/NormB/sipnab/blob/main/website/config.toml) holds the current figure),
+so it would fit. musl still excludes it, because what a static artifact carries is
 a decision about the artifact rather than about bytes, and raising a ceiling
 does not make that decision.
 

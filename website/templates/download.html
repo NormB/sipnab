@@ -257,7 +257,7 @@
   <!-- Linux (static + glibc) -->
   <div class="dl-panel" data-os="linux" id="dl-panel-linux" role="tabpanel" aria-labelledby="dl-tab-linux">
     <div class="dl-method-head"><h2>Download a static Linux binary</h2><span class="dl-rec dl-rec--blue">zero dependencies</span></div>
-    <p class="dl-lead">musl-linked and fully self-contained &mdash; runs on any distro, any glibc version, Alpine included. Download, extract, run. This is the safe choice when you&rsquo;re not sure &mdash; the two things it leaves out are TUI audio playback and WASM plugin loading, so this binary has no <code>--plugin</code> flag at all.</p>
+    <p class="dl-lead">musl-linked and fully self-contained &mdash; runs on any distro, any glibc version, Alpine included. Download, extract, run. This is the safe choice when you&rsquo;re not sure. It leaves out TUI audio playback, WASM plugin loading (so this binary has no <code>--plugin</code> flag at all), vCon export and the eBPF uprobe backend. It reads password-protected ZIP and 7z archives like every other release build.</p>
     <div class="dl-direct">
       <div class="dl-tiles">
         <a data-arch="x86" class="dl-tile" href="{{ rel }}/sipnab-{{ v }}-x86_64-unknown-linux-musl.tar.gz">

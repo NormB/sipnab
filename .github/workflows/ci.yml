@@ -610,6 +610,12 @@ jobs:
           # without tui, tls, api or mcp, the only company it keeps being
           # `native`.
           - archive
+          # The sets release.yml publishes: the static musl tarballs, and the
+          # gnu `-noaudio` .deb/.rpm with `bpf` added.
+          # ci_compiles_every_reduced_feature_set_the_release_publishes keeps
+          # these equal to what release.yml computes.
+          - "native,tui,tls,hep,api,mcp,mcp-http,metrics,archive"
+          - "native,tui,tls,hep,api,mcp,mcp-http,metrics,archive,bpf"
           - wasm
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
