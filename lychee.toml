@@ -125,6 +125,17 @@ exclude = [
   # results between runs and the old entry aged out, which is why this surfaced
   # now rather than when the link landed in 2092d3a.
   'linkedin\.com',
+  # opensips.org serves an incomplete certificate chain: the server sends its
+  # own certificate (CN=web.opensips.org) but not the Let's Encrypt intermediate
+  # (YR1) that signed it. Verified 2026-09-23: `openssl s_client` reports
+  # "Verify return code: 21 (unable to verify the first certificate)" and curl
+  # fails with ssl_verify_result 20. Browsers fetch the missing intermediate
+  # themselves, so the pages work for readers; lychee, like curl, does not, and
+  # reported docs/troubleshooting.md's link to the OpenSIPS tm module docs as
+  # "SSL certificate not trusted". Not `--insecure`: that would stop verifying
+  # every host. The link is the canonical OpenSIPS documentation, kept for
+  # readers. Revisit when opensips.org serves its full chain.
+  'opensips\.org',
   # The IEEE Registration Authority's EtherType public listing, cited by
   # docs/encapsulations.md as the authoritative source for every EtherType value
   # in it. RFC 9542 hands that question to the IEEE rather than IANA, so this is

@@ -7,11 +7,13 @@
 # Usage:
 #   split-debuginfo.sh <binary> <output-stem>
 #       ELF:    strips <binary> in place and writes <output-stem>.debug
-#       Mach-O: strips nothing (rustc already did) and zips <binary>.dSYM
-#               into <output-stem>.dSYM.zip
+#       Mach-O: runs dsymutil, zips the bundle into <output-stem>.dSYM.zip,
+#               and strips <binary> in place
+#   split-debuginfo.sh --rustflags <target-triple>
+#       prints the rustc flags the build of <target-triple> needs so that the
+#       symbols survive until this script runs, to APPEND to RUSTFLAGS
 #   split-debuginfo.sh --cargo-config <target-triple>
-#       prints the `cargo --config` value the build of <target-triple> needs
-#       so that the symbols survive until this script runs
+#       the same flags as a `cargo --config build.rustflags=[...]` value
 #
 # Why: every published binary is stripped, so a crash report or a core dump
 # from a user names no functions. The symbols come from the SAME compile as the
@@ -25,8 +27,11 @@
 # Cargo keeps rustflags out of that hash, and rustc takes the LAST `-C strip`,
 # so `-C strip=none` appended after cargo's `-C strip=symbols` produces the
 # same code as today's linker-stripped build, byte for byte in `.text`.
-# A RUSTFLAGS variable in the environment would override build.rustflags; the
-# build would then strip at link time and the split below refuses it loudly.
+# A RUSTFLAGS variable in the environment REPLACES build.rustflags, and ci.yml
+# sets RUSTFLAGS=-Dwarnings workflow-wide, so the first CI run built without
+# these flags at all. So the workflows append them to RUSTFLAGS itself:
+#   RUSTFLAGS="${RUSTFLAGS:-} $(bash scripts/split-debuginfo.sh --rustflags T)"
+# and the split below refuses a binary that was stripped anyway.
 #
 # ELF: the build appends `-C strip=none`, so the linker keeps `.symtab` and
 # the DWARF line tables `[profile.release] debug = "line-tables-only"` asks
@@ -39,10 +44,10 @@
 # objcopy cannot read an aarch64 binary on an x86_64 runner, which is how the
 # release's old `strip || true` step failed on every cross build unseen.
 #
-# Mach-O: the build keeps rustc's own strip and appends
-# `-C split-debuginfo=packed`, so rustc runs dsymutil BEFORE it strips and
-# leaves <binary>.dSYM beside the binary. This script checks that the bundle's
-# UUID is the binary's and zips it.
+# Mach-O: the build appends `-C strip=none -C split-debuginfo=unpacked`, the
+# standard Xcode flow. This script runs dsymutil on the unstripped binary,
+# checks the bundle's UUID is the binary's, zips it, strips the binary in
+# place, and checks the stripped binary kept its UUID and lost its debug map.
 #
 # Exit status is non-zero, with the reason on stderr, whenever the result would
 # be a symbol file that cannot be paired with the binary or has nothing in it.
@@ -51,12 +56,31 @@ set -euo pipefail
 
 die() { printf 'split-debuginfo: %s\n' "$*" >&2; exit 1; }
 
-cargo_config() {
+# THE rule: the rustc flags a release build of <target> needs so that its
+# symbols survive until this script runs. Everything below derives from it.
+split_rustflags() {
   case "$1" in
-    *-linux-*) printf '%s\n' 'build.rustflags=["-C","strip=none"]' ;;
-    *-apple-darwin) printf '%s\n' 'build.rustflags=["-C","split-debuginfo=packed"]' ;;
+    *-linux-*) printf '%s\n' '-C strip=none' ;;
+    # unpacked: the DWARF stays in the object files the binary's debug map
+    # points at, where dsymutil below reads it. With packed, rustc runs its
+    # own dsymutil and then DELETES those objects, and on the first CI run it
+    # left no .dSYM at all, so this script makes the bundle itself.
+    *-apple-darwin) printf '%s\n' '-C strip=none -C split-debuginfo=unpacked' ;;
     *) die "no symbol-split rule for target '$1'" ;;
   esac
+}
+
+# The same flags as a `cargo --config` value. Kept for `cross`, which may not
+# forward RUSTFLAGS into its container: a set RUSTFLAGS overrides
+# build.rustflags completely, so a build that passes both gets the flags
+# whichever of the two reaches cargo.
+cargo_config() {
+  local flags out="" f
+  flags=$(split_rustflags "$1")
+  for f in $flags; do
+    out="${out:+$out,}\"$f\""
+  done
+  printf 'build.rustflags=[%s]\n' "$out"
 }
 
 # The objcopy to use: $OBJCOPY, else the llvm-objcopy of the active Rust
@@ -95,7 +119,7 @@ split_elf() {
   id=$(elf_build_id "$bin")
   [ -n "$id" ] || die "$bin has no GNU build ID, so no symbol file could ever be matched to it. Link with -Wl,--build-id (build.rs adds it for Linux)."
   elf_sections "$bin" | grep -qx '\.debug_line' \
-    || die "$bin has no .debug_line line table: it was stripped at link time, so there is nothing to split. Build with --config '$(cargo_config x86_64-unknown-linux-gnu)'"
+    || die "$bin has no .debug_line line table: it was stripped at link time, so there is nothing to split. Build with RUSTFLAGS=\"\${RUSTFLAGS:-} $(split_rustflags x86_64-unknown-linux-gnu)\": a RUSTFLAGS set elsewhere replaces --config build.rustflags"
   elf_sections "$bin" | grep -qx '\.symtab' \
     || die "$bin has no .symtab; it was stripped before the split"
 
@@ -143,33 +167,65 @@ macho_uuid() {
   dwarfdump --uuid "$1" | awk '/^UUID:/ { print $2; exit }'
 }
 
+# Whether a Mach-O binary still carries a debug map (N_OSO stabs naming the
+# object files its DWARF lives in).
+has_debug_map() {
+  nm -ap "$1" 2>/dev/null | grep -q ' OSO '
+}
+
 split_macho() {
-  local bin="$1" stem="$2" dsym zip bid did
+  local bin="$1" stem="$2" dsym zip bid did aid
   dsym="${bin}.dSYM"
   zip="${stem}.dSYM.zip"
-  [ -d "$dsym" ] || die "no $dsym: rustc runs dsymutil only with split-debuginfo=packed, so build with --config '$(cargo_config aarch64-apple-darwin)'"
-  command -v dwarfdump >/dev/null 2>&1 || die "dwarfdump is required (Xcode command line tools)"
+  for tool in dsymutil dwarfdump strip nm ditto; do
+    command -v "$tool" >/dev/null 2>&1 || die "$tool is required (Xcode command line tools)"
+  done
+  has_debug_map "$bin" \
+    || die "$bin has no debug map: it was stripped at link time, so there is nothing to split. Build with RUSTFLAGS=\"\${RUSTFLAGS:-} $(split_rustflags aarch64-apple-darwin)\""
   bid=$(macho_uuid "$bin")
-  did=$(macho_uuid "$dsym")
   [ -n "$bid" ] || die "$bin has no LC_UUID"
+
+  rm -rf "$dsym"
+  dsymutil "$bin" -o "$dsym"
+  did=$(macho_uuid "$dsym")
   [ "$bid" = "$did" ] || die "UUID mismatch: $bin is $bid, $dsym is ${did:-none}"
   dwarfdump --debug-line "$dsym" | grep -q 'debug_line\[' \
     || die "$dsym carries no line table"
+
   mkdir -p "$(dirname "$zip")"
   rm -f "$zip"
   ditto -c -k --keepParent "$dsym" "$zip"
+
+  # All local and debug symbols, the same result as rustc's own strip. Apple's
+  # strip re-signs a linker-signed binary; codesign re-signs ad hoc if the
+  # signature does not verify, since an arm64 binary without one will not run.
+  strip "$bin"
+  if command -v codesign >/dev/null 2>&1 && ! codesign -v "$bin" >/dev/null 2>&1; then
+    codesign --force --sign - "$bin"
+  fi
+  aid=$(macho_uuid "$bin")
+  [ "$aid" = "$bid" ] || die "the strip changed $bin's UUID from $bid to ${aid:-none}"
+  if has_debug_map "$bin"; then
+    die "$bin still carries its debug map after the strip"
+  fi
+
   printf 'packaged %s: UUID %s\n' "$zip" "$bid"
   printf '  shipped binary %s bytes, symbol bundle %s bytes zipped\n' \
     "$(wc -c < "$bin" | tr -d ' ')" "$(wc -c < "$zip" | tr -d ' ')"
 }
 
 main() {
-  if [ "${1:-}" = "--cargo-config" ]; then
-    [ $# -eq 2 ] || die "usage: $0 --cargo-config <target-triple>"
-    cargo_config "$2"
-    return
-  fi
-  [ $# -eq 2 ] || die "usage: $0 <binary> <output-stem> | --cargo-config <target-triple>"
+  case "${1:-}" in
+    --rustflags)
+      [ $# -eq 2 ] || die "usage: $0 --rustflags <target-triple>"
+      split_rustflags "$2"
+      return ;;
+    --cargo-config)
+      [ $# -eq 2 ] || die "usage: $0 --cargo-config <target-triple>"
+      cargo_config "$2"
+      return ;;
+  esac
+  [ $# -eq 2 ] || die "usage: $0 <binary> <output-stem> | --rustflags <target-triple> | --cargo-config <target-triple>"
   local bin="$1" stem="$2" magic
   [ -f "$bin" ] || die "no such binary: $bin"
   magic=$(head -c 4 "$bin" | od -An -tx1 | tr -d ' \n')

@@ -392,8 +392,8 @@ wasm-opt = false
 debug = "line-tables-only"
 
 # `strip = true` holds for every build, the release included. The release
-# workflow appends `-C strip=none` through rustflags (from
-# `scripts/split-debuginfo.sh --cargo-config`) so the line tables below survive
+# workflow appends `-C strip=none` to RUSTFLAGS (from
+# `scripts/split-debuginfo.sh --rustflags`) so the line tables below survive
 # the link, then the script moves them into the published `.debug` file and
 # strips the binary itself. Do not change this profile to get the same effect:
 # cargo hashes the profile into `-C metadata`, and that changes the code.
