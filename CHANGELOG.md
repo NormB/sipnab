@@ -54,6 +54,15 @@ entry that carries them.
 
 ### Fixed
 
+- **A build without vCon export now refuses every vCon flag instead of
+  exporting nothing.** `--export-vcon-when` with `--export-vcon-dir` ran to
+  completion, exited 0 and wrote no container in a build without the `vcon`
+  feature, which includes the musl tarballs and the `-noaudio` packages. Only
+  `--export-vcon` was refused. Now `--export-vcon`, `--export-vcon-when`,
+  `--export-vcon-dir`, `--vcon-digest` and `--vcon-max-inline-media` are all
+  refused before any capture opens, and the message names each flag given and
+  the feature that provides it.
+
 - **A `netmap:` capture on a silent link now stops on SIGTERM and at
   `--duration`.** libpcap's netmap module waits for a frame inside its own
   read and goes back to waiting after every poll timeout or signal, so on a

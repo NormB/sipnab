@@ -6447,15 +6447,16 @@ fn export_vcon(
     // route, so there is nothing for a closed gate to stop. It is accepted so
     // both doors keep one signature -- a stub that dropped the parameter would
     // break the caller in exactly the build nobody runs the tests on.
-    if cli.output_args.export_vcon.is_none() {
-        return true;
+    // The same rule validate() applies, so the two doors cannot disagree
+    // about which flags this build refuses (VCON-NOFEAT-1: this door used to
+    // check --export-vcon alone and pass --export-vcon-when through).
+    match cli.vcon_refusal(false) {
+        None => true,
+        Some(refusal) => {
+            eprintln!("{refusal}.");
+            false
+        }
     }
-    eprintln!(
-        "--export-vcon needs the 'vcon' Cargo feature, which this build does \
-         not carry. Rebuild with --features vcon (or --features full); \
-         `sipnab --version` lists the features a binary was built with."
-    );
-    false
 }
 
 // ── Unit tests for the batch runner's pure helpers ──────────────────────

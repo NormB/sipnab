@@ -5228,6 +5228,45 @@ impl Cli {
     /// # Errors
     /// `crate::Error::CliValidation` with a user-facing message for each
     /// rejected combination. Pure — no side effects.
+    /// The refusal a build without the `vcon` exporter owes every vCon flag
+    /// it was given, or `None` when there is nothing to refuse.
+    ///
+    /// Every flag here is read only by the exporter, so in a build without it
+    /// each one is inert, and an inert flag on a run that exits 0 is a claim
+    /// the run never kept: `--export-vcon-when` with `--export-vcon-dir` used
+    /// to write nothing and say nothing (VCON-NOFEAT-1). `has_exporter` is a
+    /// parameter rather than `cfg!` so the rule can be driven both ways in
+    /// the builds that run tests, all of which carry the feature.
+    pub(crate) fn vcon_refusal(&self, has_exporter: bool) -> Option<String> {
+        if has_exporter {
+            return None;
+        }
+        let out = &self.output_args;
+        let given: Vec<&str> = [
+            (out.export_vcon.is_some(), "--export-vcon"),
+            (out.export_vcon_when.is_some(), "--export-vcon-when"),
+            (out.export_vcon_dir.is_some(), "--export-vcon-dir"),
+            (out.vcon_digest, "--vcon-digest"),
+            (
+                out.vcon_max_inline_media.is_some(),
+                "--vcon-max-inline-media",
+            ),
+        ]
+        .into_iter()
+        .filter_map(|(set, flag)| set.then_some(flag))
+        .collect();
+        if given.is_empty() {
+            return None;
+        }
+        Some(format!(
+            "{} {} the 'vcon' Cargo feature, which this build does not carry. \
+             Rebuild with --features vcon (or --features full); `sipnab \
+             --version` lists the features a binary was built with",
+            given.join(", "),
+            if given.len() == 1 { "needs" } else { "need" },
+        ))
+    }
+
     pub fn validate(&self) -> Result<(), crate::Error> {
         if self.tls_args.pcap_export_mode == "decrypted" {
             return Err(crate::Error::CliValidation(
@@ -5323,14 +5362,8 @@ impl Cli {
         // feature and where to check which one this binary carries, because
         // "not compiled in" is otherwise indistinguishable from a typo in the
         // Call-ID.
-        if self.output_args.export_vcon.is_some() && !cfg!(feature = "vcon") {
-            return Err(crate::Error::CliValidation(
-                "--export-vcon needs the 'vcon' Cargo feature, which this build \
-                 does not carry. Rebuild with --features vcon (or --features \
-                 full); `sipnab --version` lists the features a binary was \
-                 built with"
-                    .to_string(),
-            ));
+        if let Some(refusal) = self.vcon_refusal(cfg!(feature = "vcon")) {
+            return Err(crate::Error::CliValidation(refusal));
         }
 
         // A redaction flag on a run that exports no container. Refused rather
@@ -7200,6 +7233,86 @@ mod tests {
             cli.validate().is_ok(),
             "this build carries the vcon feature and validate() still refused"
         );
+    }
+
+    /// Every flag that only the `vcon` exporter reads, with a value where it
+    /// takes one. `--vcon-out` is absent because clap already refuses it
+    /// without `--export-vcon`, which is on this list.
+    const VCON_ONLY_FLAGS: &[&[&str]] = &[
+        &["--export-vcon", "a@b"],
+        &[
+            "--export-vcon-when",
+            "duration >= 0",
+            "--export-vcon-dir",
+            "out",
+        ],
+        &["--vcon-digest"],
+        &["--vcon-max-inline-media", "4"],
+    ];
+
+    /// VCON-NOFEAT-1: a build without the exporter used to refuse only
+    /// `--export-vcon`. `--export-vcon-when` and `--export-vcon-dir` ran, exited
+    /// 0 and wrote nothing -- the musl tarballs and -noaudio packages ship
+    /// without `vcon`. Driven with `has_exporter = false` so it runs in every
+    /// build, including the ones CI tests, which all carry the feature.
+    #[test]
+    fn every_vcon_flag_is_refused_by_a_build_without_the_exporter() {
+        for flags in VCON_ONLY_FLAGS {
+            let mut argv = vec!["sipnab", "-I", "x.pcap"];
+            argv.extend_from_slice(flags);
+            let cli = Cli::parse_from_args(argv);
+            let message = cli
+                .vcon_refusal(false)
+                .unwrap_or_else(|| panic!("{flags:?} was not refused by a build without vcon"));
+            for flag in flags.iter().filter(|f| f.starts_with("--")) {
+                assert!(
+                    message.contains(flag),
+                    "the refusal must name {flag}: {message}"
+                );
+            }
+            assert!(
+                message.contains("--features"),
+                "the refusal must say what builds a binary that can: {message}"
+            );
+        }
+    }
+
+    /// The same flags are fine in a build that carries the exporter, and a run
+    /// that names no vCon flag is never refused in either.
+    #[test]
+    fn only_a_vcon_flag_in_a_build_without_vcon_is_refused() {
+        for flags in VCON_ONLY_FLAGS {
+            let mut argv = vec!["sipnab", "-I", "x.pcap"];
+            argv.extend_from_slice(flags);
+            assert_eq!(
+                Cli::parse_from_args(argv).vcon_refusal(true),
+                None,
+                "{flags:?}"
+            );
+        }
+        let plain = Cli::parse_from_args(["sipnab", "-I", "x.pcap"]);
+        assert_eq!(plain.vcon_refusal(false), None);
+        assert_eq!(plain.vcon_refusal(true), None);
+    }
+
+    /// `validate()` asks the rule with this build's own answer, so the wiring
+    /// is exercised in every build: refused exactly when `vcon` is absent.
+    #[test]
+    fn validate_refuses_vcon_flags_exactly_when_the_build_lacks_vcon() {
+        let cli = Cli::parse_from_args([
+            "sipnab",
+            "-I",
+            "x.pcap",
+            "--export-vcon-when",
+            "duration >= 0",
+            "--export-vcon-dir",
+            "out",
+        ]);
+        let refused = cli
+            .validate()
+            .err()
+            .is_some_and(|e| e.to_string().contains("--export-vcon-when"));
+        assert_eq!(refused, !cfg!(feature = "vcon"));
     }
 
     /// A build without the exporter refuses `--export-vcon` before capture.
