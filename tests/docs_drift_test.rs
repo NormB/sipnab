@@ -54,11 +54,19 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             "website/content/docs/internals/build-ci-release.md",
         ],
     ),
-    // `scripts/split-debuginfo.sh --cargo-config <target>`, named by the
-    // release page's "Symbol files" section: the mode that prints the cargo
-    // setting the release build needs. A script's flag, not sipnab's.
+    // `scripts/split-debuginfo.sh --cargo-config <target>` and
+    // `--rustflags <target>`, named by the release page's "Symbol files"
+    // section: the modes that print the flags the release build needs.
+    // The script's flags, not sipnab's.
     (
         "cargo-config",
+        &[
+            "docs/internals/build-ci-release.md",
+            "website/content/docs/internals/build-ci-release.md",
+        ],
+    ),
+    (
+        "rustflags",
         &[
             "docs/internals/build-ci-release.md",
             "website/content/docs/internals/build-ci-release.md",

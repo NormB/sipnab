@@ -198,20 +198,31 @@ fn cargo_config(target: &str) -> std::process::Output {
 /// cargo setting instead of restating it, and the script answers correctly
 /// for every target the matrix builds.
 ///
-/// Linux appends `-C strip=none` so the linker leaves the symbols for the
-/// split. macOS keeps rustc's own strip and asks it for a packed `.dSYM`,
-/// which rustc writes with `dsymutil` before stripping.
+/// Both append `-C strip=none` so the link leaves the symbols for the split.
+/// macOS also pins `-C split-debuginfo=unpacked`, so the DWARF stays in the
+/// object files the binary's debug map points at, where the script's own
+/// `dsymutil` reads it. With `packed`, rustc deletes those objects after its
+/// own dsymutil run, and on the first CI run it produced no `.dSYM` at all.
 #[test]
 fn the_build_keeps_the_symbols_the_split_needs() {
     for step in ["Build (native)", "Build (cross)"] {
         let script = step_script(step);
         assert!(
-            script.contains("--config \"$(bash scripts/split-debuginfo.sh --cargo-config"),
-            "{step} must take its symbol setting from split-debuginfo.sh \
-             --cargo-config; without it the linker strips the symbols before \
-             the split can keep them:\n{script}"
+            script.contains(
+                "RUSTFLAGS=\"${RUSTFLAGS:-} $(bash scripts/split-debuginfo.sh --rustflags"
+            ),
+            "{step} must append split-debuginfo.sh --rustflags to RUSTFLAGS; \
+             without it the linker strips the symbols before the split can \
+             keep them:\n{script}"
         );
     }
+    // cross ALSO passes --config: whether it forwards RUSTFLAGS into its
+    // container is its choice, and --config reaches cargo either way.
+    assert!(
+        step_script("Build (cross)")
+            .contains("--config \"$(bash scripts/split-debuginfo.sh --cargo-config"),
+        "Build (cross) must also pass --cargo-config"
+    );
     let mut seen = BTreeSet::new();
     for (target, _) in matrix() {
         if !seen.insert(target.clone()) {
@@ -226,7 +237,7 @@ fn the_build_keeps_the_symbols_the_split_needs() {
         // rustflags out of that hash, and rustc takes the last `-C strip`,
         // so this build's code is byte-identical to the linker-stripped one.
         let want = if target.contains("-apple-darwin") {
-            "build.rustflags=[\"-C\",\"split-debuginfo=packed\"]"
+            "build.rustflags=[\"-C\",\"strip=none\",\"-C\",\"split-debuginfo=unpacked\"]"
         } else {
             "build.rustflags=[\"-C\",\"strip=none\"]"
         };
@@ -536,7 +547,7 @@ fn ci_job_holding(step: &str) -> String {
 /// The macOS half of the split exists only on the release's darwin runners,
 /// which run at tag time, when a failure costs a published tag. So ordinary
 /// CI, on every push, builds the release profile with the SAME symbol flags
-/// (taken from `split-debuginfo.sh --cargo-config`, as release.yml does) on
+/// (taken from `split-debuginfo.sh --rustflags`, as release.yml does) on
 /// one Linux x86_64 and one macOS runner, runs the split, and checks what the
 /// release relies on.
 #[test]
@@ -567,7 +578,9 @@ fn ci_proves_the_split_on_linux_and_macos_before_a_tag() {
     let build = step_script_in(CI, CI_BUILD_STEP);
     assert!(
         build.contains("cargo build --release")
-            && build.contains("--config \"$(bash scripts/split-debuginfo.sh --cargo-config"),
+            && build.contains(
+                "RUSTFLAGS=\"${RUSTFLAGS:-} $(bash scripts/split-debuginfo.sh --rustflags"
+            ),
         "CI must build the RELEASE profile with the flags release.yml takes \
          from the script, or it proves a different build:\n{build}"
     );
@@ -724,12 +737,23 @@ fn the_ci_proof_step_catches_what_it_must() {
 fn the_ci_proof_step_macos_branch_checks_the_zip_and_the_uuid() {
     let prove = step_script_in(CI, CI_PROVE_STEP);
     let target = "aarch64-apple-darwin";
-    let run = |make_zip: bool, dsym_uuid: &str| {
+    let run = |make_zip: bool, dsym_uuid: &str, runs: bool| {
         let dir = tempfile::tempdir().unwrap();
         let w = dir.path().to_path_buf();
         let rel = w.join("target").join(target).join("release");
         std::fs::create_dir_all(rel.join("sipnab.dSYM")).unwrap();
-        std::fs::write(rel.join("sipnab"), b"stand-in").unwrap();
+        // An executable stand-in: the step runs the split binary once.
+        let body = if runs {
+            "#!/bin/sh\necho sipnab\n"
+        } else {
+            "#!/bin/sh\nexit 137\n"
+        };
+        std::fs::write(rel.join("sipnab"), body).unwrap();
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(rel.join("sipnab"), std::fs::Permissions::from_mode(0o755))
+                .unwrap();
+        }
         std::fs::create_dir_all(w.join("scripts")).unwrap();
         let split = if make_zip {
             "mkdir -p \"$(dirname \"$2\")\"; echo zip > \"$2.dSYM.zip\"\n"
@@ -762,23 +786,129 @@ fn the_ci_proof_step_macos_branch_checks_the_zip_and_the_uuid() {
             .unwrap();
         (out, dir)
     };
-    let (good, _a) = run(true, "AAAA-1111");
+    let (good, _a) = run(true, "AAAA-1111", true);
     assert!(
         good.status.success(),
         "the macOS proof failed a good split:\n{}",
         text(&good)
     );
-    let (nozip, _b) = run(false, "AAAA-1111");
+    let (nozip, _b) = run(false, "AAAA-1111", true);
     assert!(
         !nozip.status.success() && String::from_utf8_lossy(&nozip.stdout).contains(".dSYM.zip"),
         "the macOS proof passed with no .dSYM.zip:\n{}",
         text(&nozip)
     );
-    let (mismatch, _c) = run(true, "BBBB-2222");
+    let (mismatch, _c) = run(true, "BBBB-2222", true);
     assert!(
         !mismatch.status.success()
             && String::from_utf8_lossy(&mismatch.stdout).contains("UUID mismatch"),
         "the macOS proof passed a .dSYM whose UUID is not the binary's:\n{}",
         text(&mismatch)
     );
+    // A strip that broke the signature leaves a binary macOS kills on launch.
+    let (dead, _e) = run(true, "AAAA-1111", false);
+    assert!(
+        !dead.status.success() && String::from_utf8_lossy(&dead.stdout).contains("does not run"),
+        "the macOS proof passed a split binary that does not run:\n{}",
+        text(&dead)
+    );
+}
+
+/// Every build step whose binary the split reads: (workflow, step, tool the
+/// step invokes).
+const SPLIT_BUILDS: &[(&str, &str, &str)] = &[
+    (RELEASE, "Build (native)", "cargo"),
+    (RELEASE, "Build (cross)", "cross"),
+    (CI, CI_BUILD_STEP, "cargo"),
+];
+
+/// Run one build step's shell with a stand-in for its build tool that
+/// records the RUSTFLAGS and arguments it received, with `RUSTFLAGS` already
+/// set to `ambient` the way ci.yml sets `-Dwarnings` for the whole workflow.
+#[cfg(unix)]
+fn build_step_rustflags(
+    workflow: &str,
+    step: &str,
+    tool: &str,
+    target: &str,
+    ambient: &str,
+) -> String {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let w = dir.path();
+    std::fs::create_dir_all(w.join("scripts")).unwrap();
+    std::fs::copy(dbgsym::script(), w.join("scripts/split-debuginfo.sh")).unwrap();
+    let bin = w.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let rec = w.join("seen");
+    let stub = bin.join(tool);
+    std::fs::write(
+        &stub,
+        format!(
+            "#!/bin/sh\nprintf 'RUSTFLAGS=%s\\n' \"${{RUSTFLAGS-<unset>}}\" > '{}'\n",
+            rec.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let script = step_script_in(workflow, step)
+        .replace("${{ matrix.target }}", target)
+        .replace("${{ steps.features.outputs.features }}", "native");
+    let path = format!(
+        "{}:{}",
+        bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let out = Command::new("bash")
+        .arg("-c")
+        .arg(&script)
+        .current_dir(w)
+        .env("PATH", path)
+        .env("TARGET", target)
+        .env("RUSTFLAGS", ambient)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{workflow} {step:?} failed:\n{}",
+        text(&out)
+    );
+    std::fs::read_to_string(&rec)
+        .unwrap_or_else(|_| panic!("{workflow} {step:?} never ran {tool}:\n{}", text(&out)))
+}
+
+/// A `RUSTFLAGS` set anywhere around a build REPLACES `build.rustflags` from
+/// `--config`. ci.yml sets `RUSTFLAGS: -Dwarnings` for the whole workflow, so
+/// the first CI run built both legs without the split flags, and both splits
+/// failed. Each build step must hand its tool the split flags IN RUSTFLAGS,
+/// appended to whatever was already there, for both OSes.
+#[test]
+#[cfg(unix)]
+fn every_split_build_passes_its_flags_through_rustflags() {
+    for (workflow, step, tool) in SPLIT_BUILDS {
+        for target in ["x86_64-unknown-linux-gnu", "aarch64-apple-darwin"] {
+            let want = String::from_utf8(cargo_rustflags(target).stdout).unwrap();
+            let want = want.trim();
+            let seen = build_step_rustflags(workflow, step, tool, target, "-Dwarnings");
+            assert!(
+                seen.contains("-Dwarnings") && seen.contains(want),
+                "{workflow} {step:?} for {target} handed {tool} {seen:?}; it must \
+                 keep the ambient -Dwarnings AND carry {want:?}"
+            );
+            let bare = build_step_rustflags(workflow, step, tool, target, "");
+            assert!(
+                bare.contains(want),
+                "{workflow} {step:?} with no ambient RUSTFLAGS: {bare:?}"
+            );
+        }
+    }
+}
+
+/// Run `split-debuginfo.sh --rustflags <target>`.
+fn cargo_rustflags(target: &str) -> std::process::Output {
+    Command::new("bash")
+        .arg(dbgsym::script())
+        .args(["--rustflags", target])
+        .output()
+        .expect("run split-debuginfo.sh --rustflags")
 }

@@ -243,7 +243,7 @@ jobs:
   # runs only on a tag, so a split that breaks, above all the macOS half,
   # which no other job exercises, would first fail when a tag is already
   # public. This job builds the RELEASE profile with the same symbol flags
-  # release.yml takes from `split-debuginfo.sh --cargo-config`, on one Linux
+  # release.yml takes from `split-debuginfo.sh --rustflags`, on one Linux
   # x86_64 and one macOS runner, runs the split, and checks the pairing.
   # A minimal feature set keeps it cheap: the flags and the link are what
   # decide whether the symbols survive, not which features are compiled.
@@ -298,7 +298,12 @@ jobs:
         shell: bash
         env:
           TARGET: ${{ matrix.target }}
-        run: cargo build --release --config "$(bash scripts/split-debuginfo.sh --cargo-config "$TARGET")" --target "$TARGET" --no-default-features --features native --bin sipnab
+        # Appended to the workflow's RUSTFLAGS (-Dwarnings), not passed as
+        # --config: a set RUSTFLAGS replaces --config's build.rustflags, and
+        # that is exactly how this job's first run built without the flags.
+        run: |
+          RUSTFLAGS="${RUSTFLAGS:-} $(bash scripts/split-debuginfo.sh --rustflags "$TARGET")" \
+            cargo build --release --target "$TARGET" --no-default-features --features native --bin sipnab
 
       # The script verifies the pairing itself. This step checks the result
       # again with the platform's own tools, so a script that passed its own
@@ -312,6 +317,10 @@ jobs:
           bin="target/${TARGET}/release/sipnab"
           stem="dist/sipnab-ci-${TARGET}"
           bash scripts/split-debuginfo.sh "$bin" "$stem"
+          # The stripped binary must still run: on macOS an arm64 binary whose
+          # signature the strip broke is killed on launch, and the release's
+          # smoke test would first see that on a tag.
+          "$bin" --version >/dev/null || { echo "::error::$bin does not run after the split"; exit 1; }
           case "$TARGET" in
             *-linux-*)
               dbg="${stem}.debug"

@@ -394,7 +394,13 @@ jobs:
         if: matrix.cross
         env:
           SIPNAB_BPF_REQUIRED: ${{ steps.features.outputs.bpf_required }}
-        run: cross build --release --config "$(bash scripts/split-debuginfo.sh --cargo-config ${{ matrix.target }})" --target ${{ matrix.target }} --no-default-features --features ${{ steps.features.outputs.features }} --bin sipnab
+        # The split flags go in RUSTFLAGS AND in --config: whether cross
+        # forwards RUSTFLAGS into its container is its choice, and a set
+        # RUSTFLAGS replaces --config's build.rustflags, so passing both gets
+        # the flags to cargo either way.
+        run: |
+          RUSTFLAGS="${RUSTFLAGS:-} $(bash scripts/split-debuginfo.sh --rustflags ${{ matrix.target }})" \
+            cross build --release --config "$(bash scripts/split-debuginfo.sh --cargo-config ${{ matrix.target }})" --target ${{ matrix.target }} --no-default-features --features ${{ steps.features.outputs.features }} --bin sipnab
 
       # SIPNAB_BPF_REQUIRED=1 turns build.rs's degrading default into a hard
       # error. Without it, a runner missing bpf-linker or nightly would embed an
@@ -402,17 +408,22 @@ jobs:
       # --version and refuses on every host that runs it. The degrade is right
       # for a contributor and wrong for an artefact people install.
       #
-      # `--config` from split-debuginfo.sh keeps the symbols this build makes
-      # until the split step below takes them: rustflags `-C strip=none` on
-      # Linux, `-C split-debuginfo=packed` on macOS. Rustflags rather than the
+      # `split-debuginfo.sh --rustflags` keeps the symbols this build makes
+      # until the split step below takes them: `-C strip=none`, plus
+      # `-C split-debuginfo=unpacked` on macOS. Rustflags rather than the
       # profile, because cargo hashes the profile into `-C metadata` and that
-      # changes the generated code. Both build steps take it from the script,
-      # so the build and the split read one rule.
+      # changes the generated code. APPENDED to RUSTFLAGS, never passed only
+      # as `--config`: a RUSTFLAGS set anywhere replaces `build.rustflags`,
+      # which is how ci.yml's `-Dwarnings` silently dropped them. Both build
+      # steps take them from the script, so the build and the split read one
+      # rule.
       - name: Build (native)
         if: '!matrix.cross'
         env:
           SIPNAB_BPF_REQUIRED: ${{ steps.features.outputs.bpf_required }}
-        run: cargo build --release --config "$(bash scripts/split-debuginfo.sh --cargo-config ${{ matrix.target }})" --target ${{ matrix.target }} --no-default-features --features ${{ steps.features.outputs.features }} --bin sipnab
+        run: |
+          RUSTFLAGS="${RUSTFLAGS:-} $(bash scripts/split-debuginfo.sh --rustflags ${{ matrix.target }})" \
+            cargo build --release --target ${{ matrix.target }} --no-default-features --features ${{ steps.features.outputs.features }} --bin sipnab
 
       - name: Build audio plugin (cross)
         if: matrix.cross && steps.features.outputs.audio_plugin == 'yes'

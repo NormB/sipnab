@@ -716,8 +716,8 @@ debug = "line-tables-only"
 Target binary size (musl, stripped): <= 17 MB.
 
 A local `cargo build --release` strips at link time, so the line tables never
-reach the binary. The release workflow appends `-C strip=none` to the same
-profile instead, and
+reach the binary. The release workflow appends `-C strip=none` to `RUSTFLAGS`
+for the same profile instead, and
 [`scripts/split-debuginfo.sh`](https://github.com/NormB/sipnab/blob/main/scripts/split-debuginfo.sh)
 moves the symbols into the `.debug` file each release publishes before it
 strips the binary. The published binary carries the same code either way and

@@ -8252,8 +8252,8 @@ debug = "line-tables-only"
 Target binary size (musl, stripped): <= 17 MB.
 
 A local `cargo build --release` strips at link time, so the line tables never
-reach the binary. The release workflow appends `-C strip=none` to the same
-profile instead, and
+reach the binary. The release workflow appends `-C strip=none` to `RUSTFLAGS`
+for the same profile instead, and
 [`scripts/split-debuginfo.sh`](https://github.com/NormB/sipnab/blob/main/scripts/split-debuginfo.sh)
 moves the symbols into the `.debug` file each release publishes before it
 strips the binary. The published binary carries the same code either way and
@@ -34638,8 +34638,7 @@ The split happens in the step
 [`scripts/split-debuginfo.sh`](../../scripts/split-debuginfo.sh) straight after
 the build:
 
-- **Linux.** The build appends `-C strip=none` through
-  `--config 'build.rustflags=["-C","strip=none"]'`, so the linker keeps
+- **Linux.** The build appends `-C strip=none` to `RUSTFLAGS`, so the linker keeps
   `.symtab` and the line tables `[profile.release] debug = "line-tables-only"`
   produces. The script copies them into the `.debug` file
   with compressed sections, strips the binary in place, and adds a
@@ -34647,10 +34646,13 @@ the build:
   and `build.rs` asks the linker for one on every Linux build. Stripping
   removes only non-allocated sections, so the code and data that load are the
   ones the linker wrote.
-- **macOS.** The build keeps rustc's own strip and appends
-  `-C split-debuginfo=packed` the same way, so rustc runs `dsymutil` before it
-  strips and leaves `sipnab.dSYM` beside the binary. The script
-  checks that the bundle's UUID is the binary's, then zips it.
+- **macOS.** The build appends `-C strip=none -C split-debuginfo=unpacked`,
+  so the binary keeps its debug map and the DWARF stays in the object files
+  it names. The script runs `dsymutil` itself, checks that the bundle's UUID
+  is the binary's, zips it, strips the binary in place, and checks that the
+  stripped binary kept its UUID and lost its debug map. It used to rely on
+  rustc's `split-debuginfo=packed` leaving a `.dSYM` behind, and the first CI
+  run of the macOS leg found none.
 
 **Why `rustflags` and not the profile.** Setting `profile.release.strip = false`
 works, and changes the code. Cargo hashes the profile into every crate's
@@ -34659,13 +34661,18 @@ tree `.text` came out 8,064 bytes smaller than the linker-stripped build. Cargo
 keeps `rustflags` out of that hash, and rustc obeys the last `-C strip` on its
 command line. So the profile keeps `strip = true`, the `rustflags` entry
 overrides it at the link, and `.text`, `.data`, `.eh_frame` and the program headers of the split
-binary match the linker-stripped build byte for byte. A `RUSTFLAGS` variable in
-the environment would replace `build.rustflags`, the link would strip, and the
-split would refuse the binary for having no line tables.
+binary match the linker-stripped build byte for byte.
 
-Both build steps take the `--config` value from
-`split-debuginfo.sh --cargo-config <target>`, so the build and the split read
-one rule. The script uses `llvm-objcopy` from the `llvm-tools` `rustup`
+**Appended to `RUSTFLAGS`, never only `--config`.** A `RUSTFLAGS` variable set
+anywhere replaces `build.rustflags` entirely. `ci.yml` sets
+`RUSTFLAGS: -Dwarnings` for the whole workflow, so the first CI run passed the
+flags as `--config`, built both legs without them, and both splits refused
+binaries with no line tables. Every build step therefore runs
+`RUSTFLAGS="${RUSTFLAGS:-} $(bash scripts/split-debuginfo.sh --rustflags <target>)"`,
+which keeps whatever was already set. The `cross` step also passes the same
+flags as `--config` (from `--cargo-config`), because whether `cross` forwards
+`RUSTFLAGS` into its container is its choice. The build and the split read one
+rule, the flag list in the script. The script uses `llvm-objcopy` from the `llvm-tools` `rustup`
 component, which the workflow installs: the host's GNU `objcopy` cannot read an
 aarch64 binary on an x86_64 runner, the same failure that made the old
 `strip || true` step a silent no-op on every cross build.
@@ -34689,7 +34696,7 @@ the split step's own shell.
 The release runs only on a tag, and the macOS half of the split runs on no
 other job there, so a break in it would first show on a tag that is already
 public. The `symbol-split` job in `ci.yml` closes that gap on every push. It
-builds the release profile with the same `--cargo-config` flags on
+builds the release profile with the same `--rustflags` flags on
 `x86_64-unknown-linux-gnu` and `aarch64-apple-darwin`, runs the split, and
 checks the result with the platform's own tools: on Linux, that the `.debug`
 build ID equals the binary's and that the binary has no `.symtab` and has a

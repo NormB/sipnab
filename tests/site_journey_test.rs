@@ -5755,7 +5755,11 @@ fn packaging_scripts_reference_existing_paths() {
     // 114 -> 117: ci.yml's `symbol-split` job names `scripts/split-debuginfo.sh`
     // in its header comment, its build step and its proof step. Attributed
     // from the diff of ci.yml: those three and no other.
-    const EXPECTED_REFERENCES: usize = 117;
+    // 117 -> 118: release.yml's `Build (cross)` step calls
+    // `scripts/split-debuginfo.sh` twice, `--rustflags` for RUSTFLAGS and
+    // `--cargo-config` for --config. Counted per workflow against HEAD:
+    // release.yml 3 -> 4, ci.yml unchanged at 3.
+    const EXPECTED_REFERENCES: usize = 118;
     assert_eq!(
         checked, EXPECTED_REFERENCES,
         "packaging path scan saw {checked} references, expected \
