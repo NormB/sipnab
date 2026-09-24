@@ -189,3 +189,28 @@ def test_preflight_passes_when_every_node_answers(monkeypatch):
 
     monkeypatch.setattr(lc.urllib.request, "urlopen", lambda *a, **k: Ok(b"{}"))
     lc.preflight(["http://127.0.0.1:8080", "http://127.0.0.1:8081"], "k")
+
+
+def test_the_table_names_every_codec_the_relay_carried():
+    """A transcoding relay carries two codecs, and the table must name both.
+
+    The codec column used to cut its text at six characters, so the committed
+    proxy/relay fixture pair (G.722 in, PCMU out) printed `G722,P`: a codec
+    that does not exist, in the one column a reader checks for a transcode.
+    """
+    proxy = node("p", dialogs=[{"call_id": "c1", "state": "Completed", "final_status_code": 200}])
+    relay = node(
+        "r",
+        streams=[
+            {"associated_dialog": "c1", "codec": "G722", "packets": 21, "src": "a", "dst": "b"},
+            {"associated_dialog": "c1", "codec": "PCMU", "packets": 19, "src": "b", "dst": "c"},
+        ],
+    )
+    result = {
+        "proxy": proxy, "relay": relay,
+        "proxy_dialogs": 1, "proxy_streams": 0, "relay_dialogs": 0, "relay_streams": 2,
+        "calls": lc.correlate(proxy, relay),
+    }
+    rows = [line for line in lc.render_table(result) if line.startswith("c1 ")]
+    assert len(rows) == 1, rows
+    assert " G722,PCMU " in rows[0], rows[0]

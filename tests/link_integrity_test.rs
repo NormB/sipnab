@@ -1004,7 +1004,12 @@ fn wiki_intra_docs_links_resolve() {
     // whose `c` blocks are citations rather than examples. Attributed by
     // measurement: with that file swapped back to HEAD the extractor finds
     // 948.
-    const EXPECTED_WIKI_LINKS: usize = 952;
+    // 952 -> 959: the capability examples (EX5). docs/client-examples.md +3,
+    // linking cookbook recipes 27, 26 and 7h; docs/examples.md +4, pointing
+    // recipes 27, 26, 7h and 52 at their runnable example. Attributed by
+    // measurement: with either file swapped back to HEAD the extractor finds
+    // 956 and 955 respectively.
+    const EXPECTED_WIKI_LINKS: usize = 959;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe 6d in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

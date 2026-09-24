@@ -33,6 +33,24 @@ entry that carries them.
   token. The MCP loop the deployment page shows for reading a reply that
   arrives as Server-Sent Events is now the one `clients/python/mcp_probe.py`
   runs.
+- **Four runnable examples of what sipnab does that a single-capture tool
+  does not, each run end to end in CI.** [Runnable examples](docs/client-examples.md)
+  has a new section for them. `clients/python/leg_correlate.py` joins one call
+  across two sipnabs on loopback: one replays the new
+  `tests/fixtures/opensips-proxy-signaling.pcap`, the proxy's signaling for
+  the call in `rtpengine-opensips-ng.pcap`, and the other replays that
+  relay capture. The program's table no longer truncates the codec column,
+  which printed a transcoding call's `G722,PCMU` as `G722,P`.
+  `clients/python/vcon_validate.py` checks exported vCons against the
+  working group's schema file with jsonschema. The file is vendored unchanged
+  at `tests/schemas/publisher/vcon_json_schema.json`, pinned to its commit
+  and SHA-256. A test now holds sipnab's own copy to that file except for the
+  one documented deviation. `clients/python/hep_senders.py` prints a HEP
+  collector's sender roster; CI feeds one collector from two sipnab agents
+  and checks both, and the collector's dialogs.
+  `examples/tls_plaintext_records.rs` runs the half of TLS-without-keys that
+  needs no kernel: records laid out as the BPF program publishes them,
+  through the decode the backend runs.
 
 ### Fixed
 

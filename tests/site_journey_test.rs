@@ -5778,7 +5778,12 @@ fn packaging_scripts_reference_existing_paths() {
     // `clients/python/requirements-mcp.txt` and run `scripts/smoke-clients.sh`,
     // which the smoke step's comment names too. Attributed by measurement:
     // with HEAD's ci.yml swapped back in, the scan reads 119.
-    const EXPECTED_REFERENCES: usize = 127;
+    // 127 -> 129: two, both in `.github/workflows/ci.yml`, from the Build
+    // step's new comment, which names `scripts/smoke-clients.sh` and
+    // `examples/tls_plaintext_records.rs`. Attributed by measurement:
+    // with HEAD's ci.yml swapped back in, the scan reads 127, and with HEAD's
+    // scripts/smoke-clients.sh it still reads 129.
+    const EXPECTED_REFERENCES: usize = 129;
     assert_eq!(
         checked, EXPECTED_REFERENCES,
         "packaging path scan saw {checked} references, expected \

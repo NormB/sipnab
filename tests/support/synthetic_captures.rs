@@ -89,6 +89,10 @@ pub const OWNED: &[Owned] = &[
         build: rtpengine_opensips_media_only,
     },
     Owned {
+        path: "tests/fixtures/opensips-proxy-signaling.pcap",
+        build: opensips_proxy_signaling,
+    },
+    Owned {
         path: "tests/fixtures/ice_checks.pcap",
         build: ice_checks,
     },
@@ -1360,15 +1364,33 @@ fn relayed_sdp(origin: [u8; 4], port: u16, formats: &str, extra: &str) -> String
     )
 }
 
+/// SIPp's From tag and To tag for the call.
+const OS_FROM_TAG: &str = "4062SIPpTag091";
+const OS_TO_TAG: &str = "1SIPpTag0110260";
+
+/// The four SDP bodies of the call, in the order the relay saw them: the
+/// caller's offer, the offer as the relay rewrote it for the callee, the
+/// callee's answer, and the answer as the relay rewrote it for the caller.
+///
+/// One definition for both captures of the call: the relay's control plane
+/// carries these inside `ng` messages, and the proxy carries them in SIP.
+fn opensips_sdps() -> [String; 4] {
+    const G722_AND_EVENTS: &str = "a=rtpmap:9 G722/8000\r\n\
+                                   a=rtpmap:101 telephone-event/8000\r\n\
+                                   a=fmtp:101 0-11,16\r\n";
+    [
+        sipp_sdp(OS_UAC, "6000 RTP/AVP 9 101", G722_AND_EVENTS),
+        relayed_sdp(OS_UAC, OS_RELAY_TO_UAS, "9 101", G722_AND_EVENTS),
+        sipp_sdp(OS_UAS, "6000 RTP/AVP 0", "a=rtpmap:0 PCMU/8000\r\n"),
+        relayed_sdp(OS_UAS, OS_RELAY_FROM_UAC, "9", "a=rtpmap:9 G722/8000\r\n"),
+    ]
+}
+
 /// The four control-plane messages, as the `ng` payloads HEP carries.
 fn opensips_ng_messages() -> [Vec<u8>; 4] {
     const OFFER_COOKIE: &str = "5eed_1";
     const ANSWER_COOKIE: &str = "5eed_2";
-    const FROM_TAG: &str = "4062SIPpTag091";
-    const TO_TAG: &str = "1SIPpTag0110260";
-    const G722_AND_EVENTS: &str = "a=rtpmap:9 G722/8000\r\n\
-                                   a=rtpmap:101 telephone-event/8000\r\n\
-                                   a=fmtp:101 0-11,16\r\n";
+    let [offer_sdp, offer_reply_sdp, answer_sdp, answer_reply_sdp] = opensips_sdps();
     let received_from = |ip: [u8; 4]| {
         Ben::List(vec![
             bs("IP4"),
@@ -1376,52 +1398,26 @@ fn opensips_ng_messages() -> [Vec<u8>; 4] {
         ])
     };
     let offer = bd(vec![
-        (
-            "sdp",
-            Ben::Str(sipp_sdp(OS_UAC, "6000 RTP/AVP 9 101", G722_AND_EVENTS)),
-        ),
+        ("sdp", Ben::Str(offer_sdp)),
         ("call-id", bs(OS_CALL_ID)),
         ("received-from", received_from(OS_UAC)),
-        ("from-tag", bs(FROM_TAG)),
+        ("from-tag", bs(OS_FROM_TAG)),
         ("command", bs("offer")),
     ]);
     let offer_reply = bd(vec![
-        (
-            "sdp",
-            Ben::Str(relayed_sdp(
-                OS_UAC,
-                OS_RELAY_TO_UAS,
-                "9 101",
-                G722_AND_EVENTS,
-            )),
-        ),
+        ("sdp", Ben::Str(offer_reply_sdp)),
         ("result", bs("ok")),
     ]);
     let answer = bd(vec![
-        (
-            "sdp",
-            Ben::Str(sipp_sdp(
-                OS_UAS,
-                "6000 RTP/AVP 0",
-                "a=rtpmap:0 PCMU/8000\r\n",
-            )),
-        ),
+        ("sdp", Ben::Str(answer_sdp)),
         ("call-id", bs(OS_CALL_ID)),
         ("received-from", received_from(OS_UAS)),
-        ("from-tag", bs(FROM_TAG)),
-        ("to-tag", bs(TO_TAG)),
+        ("from-tag", bs(OS_FROM_TAG)),
+        ("to-tag", bs(OS_TO_TAG)),
         ("command", bs("answer")),
     ]);
     let answer_reply = bd(vec![
-        (
-            "sdp",
-            Ben::Str(relayed_sdp(
-                OS_UAS,
-                OS_RELAY_FROM_UAC,
-                "9",
-                "a=rtpmap:9 G722/8000\r\n",
-            )),
-        ),
+        ("sdp", Ben::Str(answer_reply_sdp)),
         ("result", bs("ok")),
     ]);
     [
@@ -1537,6 +1533,227 @@ pub fn rtpengine_opensips_ng() -> Vec<u8> {
 /// changed: the control case, in which nothing names the streams.
 pub fn rtpengine_opensips_media_only() -> Vec<u8> {
     opensips_relay_capture(false)
+}
+
+// ── opensips-proxy-signaling.pcap ───────────────────────────────────
+//
+// The other half of the call above: the OpenSIPS proxy's own view of it, SIP
+// and nothing else. The proxy never touches media, so a capture on it holds
+// every message of the call and not one RTP packet, while the relay capture
+// holds the media and not one SIP message. Neither can say whether the call
+// was healthy on its own; `clients/python/leg_correlate.py` joins the two, and
+// `scripts/smoke-clients.sh` runs it against both files on loopback.
+//
+// Built for that join, not rebuilt from a harness capture: the Call-ID, the
+// tags and every SDP body are the ones the relay's control plane carries (one
+// definition, `opensips_sdps`), and the timing brackets the relay's: the
+// INVITE reaches the proxy just before the relay sees `offer`, the 200 OK
+// just before `answer`, and the BYE after the last media packet. The proxy
+// forwards the offer and the answer as the relay rewrote them, which is what
+// a proxy calling rtpengine does. Record-Route keeps it on the path, so the
+// ACK and the BYE cross it as well.
+
+/// The proxy, alone at .5 in the harness's 198.51.100.0/24.
+const OS_PROXY: [u8; 4] = [198, 51, 100, 5];
+
+/// One SIP message as the proxy's capture holds it.
+struct ProxyMessage {
+    /// Microseconds after `OS_SEC`.
+    at: u32,
+    src: [u8; 4],
+    dst: [u8; 4],
+    text: String,
+}
+
+/// Every message the proxy sent or received for the call, in capture order.
+fn opensips_proxy_messages() -> Vec<ProxyMessage> {
+    let [offer, offer_relayed, answer, answer_relayed] = opensips_sdps();
+    let ip = |a: [u8; 4]| std::net::Ipv4Addr::from(a).to_string();
+    let (uac, uas, proxy) = (ip(OS_UAC), ip(OS_UAS), ip(OS_PROXY));
+    let via_uac =
+        |branch: &str| format!("Via: SIP/2.0/UDP {uac}:5060;branch=z9hG4bK-4062-1-{branch}\r\n");
+    let via_proxy =
+        |branch: &str| format!("Via: SIP/2.0/UDP {proxy}:5060;branch=z9hG4bK-os-{branch}\r\n");
+    let rr = format!("Record-Route: <sip:{proxy};lr>\r\n");
+    let from = format!("From: sipp <sip:sipp@{uac}:5060>;tag={OS_FROM_TAG}\r\n");
+    let to = |tagged: bool| {
+        let tag = if tagged {
+            format!(";tag={OS_TO_TAG}")
+        } else {
+            String::new()
+        };
+        format!("To: service <sip:service@{proxy}:5060>{tag}\r\n")
+    };
+    let call = format!("Call-ID: {OS_CALL_ID}\r\n");
+    let body = |sdp: &str| {
+        if sdp.is_empty() {
+            "Content-Length: 0\r\n\r\n".to_string()
+        } else {
+            format!(
+                "Content-Type: application/sdp\r\nContent-Length: {}\r\n\r\n{sdp}",
+                sdp.len()
+            )
+        }
+    };
+    let uac_contact = format!("Contact: <sip:sipp@{uac}:5060>\r\n");
+    let uas_contact = format!("Contact: <sip:{uas}:5060;transport=UDP>\r\n");
+
+    // A request as the caller sends it to the proxy, and as the proxy
+    // forwards it to the callee: one Via more, Max-Forwards one less, and
+    // the Request-URI retargeted.
+    let from_uac = |first: &str, cseq: &str, tagged: bool, extra: &str, sdp: &str| {
+        format!(
+            "{first} sip:service@{proxy}:5060 SIP/2.0\r\n{}{from}{}{call}CSeq: {cseq}\r\n\
+             Max-Forwards: 70\r\n{extra}{}",
+            via_uac(cseq.split(' ').next_back().unwrap_or_default()),
+            to(tagged),
+            body(sdp)
+        )
+    };
+    let to_uas = |first: &str, cseq: &str, tagged: bool, extra: &str, sdp: &str| {
+        let method = cseq.split(' ').next_back().unwrap_or_default();
+        format!(
+            "{first} sip:service@{uas}:5060 SIP/2.0\r\n{}{}{from}{}{call}CSeq: {cseq}\r\n\
+             Max-Forwards: 69\r\n{extra}{}",
+            via_proxy(method),
+            via_uac(method),
+            to(tagged),
+            body(sdp)
+        )
+    };
+    // A response as the callee sends it to the proxy (both Vias), and as the
+    // proxy relays it to the caller (its own Via removed).
+    let from_uas = |status: &str, cseq: &str, tagged: bool, extra: &str, sdp: &str| {
+        let method = cseq.split(' ').next_back().unwrap_or_default();
+        format!(
+            "SIP/2.0 {status}\r\n{}{}{from}{}{call}CSeq: {cseq}\r\n{extra}{}",
+            via_proxy(method),
+            via_uac(method),
+            to(tagged),
+            body(sdp)
+        )
+    };
+    let to_uac = |status: &str, cseq: &str, tagged: bool, extra: &str, sdp: &str| {
+        let method = cseq.split(' ').next_back().unwrap_or_default();
+        format!(
+            "SIP/2.0 {status}\r\n{}{from}{}{call}CSeq: {cseq}\r\n{extra}{}",
+            via_uac(method),
+            to(tagged),
+            body(sdp)
+        )
+    };
+    let invite_extra = format!("{uac_contact}Subject: Performance Test\r\n");
+    let answer_extra = format!("{rr}{uas_contact}");
+    let m = |at: u32, src: [u8; 4], dst: [u8; 4], text: String| ProxyMessage { at, src, dst, text };
+    vec![
+        m(
+            875_400,
+            OS_UAC,
+            OS_PROXY,
+            from_uac("INVITE", "1 INVITE", false, &invite_extra, &offer),
+        ),
+        m(
+            875_600,
+            OS_PROXY,
+            OS_UAC,
+            to_uac("100 Giving it a try", "1 INVITE", false, "", ""),
+        ),
+        m(
+            876_100,
+            OS_PROXY,
+            OS_UAS,
+            to_uas(
+                "INVITE",
+                "1 INVITE",
+                false,
+                &format!("{rr}{invite_extra}"),
+                &offer_relayed,
+            ),
+        ),
+        m(
+            877_000,
+            OS_UAS,
+            OS_PROXY,
+            from_uas("180 Ringing", "1 INVITE", true, &answer_extra, ""),
+        ),
+        m(
+            877_100,
+            OS_PROXY,
+            OS_UAC,
+            to_uac("180 Ringing", "1 INVITE", true, &answer_extra, ""),
+        ),
+        m(
+            877_900,
+            OS_UAS,
+            OS_PROXY,
+            from_uas("200 OK", "1 INVITE", true, &answer_extra, &answer),
+        ),
+        m(
+            878_050,
+            OS_PROXY,
+            OS_UAC,
+            to_uac("200 OK", "1 INVITE", true, &answer_extra, &answer_relayed),
+        ),
+        m(
+            879_000,
+            OS_UAC,
+            OS_PROXY,
+            from_uac("ACK", "1 ACK", true, &uac_contact, ""),
+        ),
+        m(
+            879_150,
+            OS_PROXY,
+            OS_UAS,
+            to_uas("ACK", "1 ACK", true, &uac_contact, ""),
+        ),
+        m(
+            1_300_000,
+            OS_UAC,
+            OS_PROXY,
+            from_uac("BYE", "2 BYE", true, &uac_contact, ""),
+        ),
+        m(
+            1_300_150,
+            OS_PROXY,
+            OS_UAS,
+            to_uas("BYE", "2 BYE", true, &uac_contact, ""),
+        ),
+        m(
+            1_301_000,
+            OS_UAS,
+            OS_PROXY,
+            from_uas("200 OK", "2 BYE", true, &uas_contact, ""),
+        ),
+        m(
+            1_301_150,
+            OS_PROXY,
+            OS_UAC,
+            to_uac("200 OK", "2 BYE", true, &uas_contact, ""),
+        ),
+    ]
+}
+
+/// The proxy's capture of the call: thirteen SIP messages and no media.
+pub fn opensips_proxy_signaling() -> Vec<u8> {
+    let mac = |a: [u8; 4]| doc_mac(a[3]);
+    let records: Vec<Record> = opensips_proxy_messages()
+        .into_iter()
+        .enumerate()
+        .map(|(n, msg)| {
+            let ip = Ip {
+                src: msg.src,
+                dst: msg.dst,
+                tos: 0,
+                ident: 0x0500 + n as u16,
+                flags: DF,
+                checksum: true,
+            };
+            let datagram = udp(&ip, 5060, 5060, msg.text.as_bytes(), true);
+            let frame = ethernet(mac(msg.dst), mac(msg.src), &ipv4_udp(&ip, &datagram));
+            Record::whole(OS_SEC + msg.at / 1_000_000, msg.at % 1_000_000, frame)
+        })
+        .collect();
+    pcap(262_144, &records)
 }
 
 // ── STUN, TURN and ICE ──────────────────────────────────────────────

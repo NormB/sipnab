@@ -151,16 +151,24 @@ jobs:
           npm ci --ignore-scripts --no-audit --no-fund
           npx --no-install tsc --noEmit
 
+      # The examples too: scripts/smoke-clients.sh runs the one built from
+      # examples/tls_plaintext_records.rs, from beside the binary, and `cargo
+      # test` below builds every example anyway, so this adds a link, not a
+      # compile.
       - name: Build
-        run: cargo build --all-features
+        run: cargo build --all-features --bins --examples
 
       # Compiling a client proves it is a program; this proves it does what
       # its page says. scripts/smoke-clients.sh replays two committed captures
       # behind the REST API, waits until the replay is finished, and runs every
       # Go, JavaScript and Python REST client (each must exit 0 and print the
       # lines the captures produce, then exit non-zero on a wrong token) and
-      # both MCP stdio clients. The MCP SDK comes from a hash-pinned file, like
-      # every other Python install in this job.
+      # both MCP stdio clients. Then the capability examples, all on loopback:
+      # leg correlation across a proxy sipnab and a relay sipnab, vCon exports
+      # checked against the working group's schema file, a HEP collector fed
+      # by two sipnab agents, and the BPF record decode behind TLS without
+      # keys. The MCP SDK comes from a hash-pinned file, like every other
+      # Python install in this job.
       - name: Run every client program against a replayed capture
         if: runner.os == 'Linux'
         run: |

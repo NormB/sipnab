@@ -1174,3 +1174,81 @@ fn the_capture_analysis_schema_counts_are_the_count_label_table() {
          count labels"
     );
 }
+
+/// The vCon working group's schema file, byte for byte as its publisher
+/// committed it: `vcon_json_schema.json` in
+/// <https://github.com/ietf-wg-vcon/draft-ietf-vcon-vcon-core> at
+/// [`VCON_PUBLISHER_COMMIT`] (2026-06-30, "Clarified text for party email
+/// address to be clear it is not a strict mailto."). Fetched from
+/// `https://raw.githubusercontent.com/ietf-wg-vcon/draft-ietf-vcon-vcon-core/<commit>/vcon_json_schema.json`.
+const VCON_PUBLISHER_FILE: &str = "tests/schemas/publisher/vcon_json_schema.json";
+const VCON_PUBLISHER_COMMIT: &str = "265e0449004acda56612120b3d6635ffe7822cf1";
+const VCON_PUBLISHER_SHA256: &str =
+    "c0501eb64fea587db2af43afc80a76d6b094c77694f5f41a92164d04fb926c5d";
+
+/// `tests/schemas/vcon.schema.json` says it is the working group's schema
+/// with ONE local deviation, and `clients/python/vcon_validate.py` validates
+/// sipnab's containers against the publisher's file itself. Both claims rest
+/// on the two files really being that close, so this holds them to it: the
+/// publisher's bytes are the pinned ones, and sipnab's copy equals them once
+/// its `$comment` annotations are dropped and the Dialog Object's `required`
+/// list is put back.
+///
+/// Until this test existed nothing recorded which revision the copy came
+/// from. It is not the schema printed in Appendix B of
+/// draft-ietf-vcon-vcon-core-03, whose `amended` and `redacted` objects lack
+/// the `url` → `content_hash` dependency this copy carries; it is the
+/// repository file at the commit above.
+#[test]
+fn the_vendored_vcon_schema_is_the_publishers_file_but_for_one_deviation() {
+    use sha2::{Digest, Sha256};
+
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let bytes = std::fs::read(root.join(VCON_PUBLISHER_FILE))
+        .unwrap_or_else(|e| panic!("read {VCON_PUBLISHER_FILE}: {e}"));
+    let digest: String = Sha256::digest(&bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    assert_eq!(
+        digest, VCON_PUBLISHER_SHA256,
+        "{VCON_PUBLISHER_FILE} is no longer the file the publisher committed at \
+         {VCON_PUBLISHER_COMMIT}. It is vendored unchanged; a new revision is a \
+         new commit to record here, not an edit."
+    );
+
+    fn without_comments(v: &Value) -> Value {
+        match v {
+            Value::Object(m) => Value::Object(
+                m.iter()
+                    .filter(|(k, _)| k.as_str() != "$comment")
+                    .map(|(k, v)| (k.clone(), without_comments(v)))
+                    .collect(),
+            ),
+            Value::Array(a) => Value::Array(a.iter().map(without_comments).collect()),
+            other => other.clone(),
+        }
+    }
+    let publisher: Value = serde_json::from_slice(&bytes).expect("the publisher's file is JSON");
+    let ours: Value = serde_json::from_str(
+        &std::fs::read_to_string(repo_schemas().join("vcon.schema.json")).expect("read"),
+    )
+    .expect("JSON");
+    let mut ours = without_comments(&ours);
+    assert_eq!(
+        ours["definitions"]["Dialog"]["required"],
+        serde_json::json!(["start"]),
+        "the one deviation is `type` out of the Dialog Object's `required`"
+    );
+    assert_eq!(
+        publisher["definitions"]["Dialog"]["required"],
+        serde_json::json!(["type", "start"])
+    );
+    ours["definitions"]["Dialog"]["required"] =
+        publisher["definitions"]["Dialog"]["required"].clone();
+    assert!(
+        ours == without_comments(&publisher),
+        "tests/schemas/vcon.schema.json differs from the publisher's file at more \
+         than the one documented point"
+    );
+}

@@ -180,6 +180,19 @@ leaves it by gaining a real entry here, or by the file being deleted.
 - **Holds:** `rtpengine-opensips-ng.pcap` without its four HEP datagrams and
   nothing else changed: the control case, in which nothing names the streams.
 
+### tests/fixtures/opensips-proxy-signaling.pcap
+
+- **Category:** synthetic
+- **Generator:** `tests/support/synthetic_captures.rs` (`opensips_proxy_signaling`)
+- **SHA-256:** `485d5e4649774231514e9e663be1377cc4143831e74a686230e803ac1fe21c91`
+- **Holds:** the OpenSIPS proxy's view of the call in
+  `rtpengine-opensips-ng.pcap`: thirteen SIP messages from INVITE to the 200
+  OK for BYE, on both of the proxy's legs, and no media. The Call-ID, the tags
+  and all four SDP bodies are the ones the relay's control plane carries, so
+  the two files are one call seen from its two capture points. The
+  leg-correlation example in `scripts/smoke-clients.sh` replays both on
+  loopback and joins them.
+
 ### tests/fixtures/ice_checks.pcap
 
 - **Category:** synthetic

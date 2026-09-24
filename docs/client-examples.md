@@ -66,10 +66,178 @@ The MCP stdio clients start sipnab themselves:
 [`sipnab-mcp.ts`](../clients/typescript/sipnab-mcp.ts) needs `npm ci` in
 `clients/typescript`. Both take a capture path.
 
-Run everything CI runs, against a sipnab built with the `api` and `mcp`
-features:
+## Capability examples
+
+These four programs show what sipnab does that a single-capture SIP tool
+does not. CI runs each one end to end, on loopback, against committed
+captures.
+
+| Example | What it shows | How CI runs it |
+|---|---|---|
+| [leg_correlate.py](../clients/python/leg_correlate.py) | One call joined across a proxy's capture and a media relay's | Two sipnabs replaying the proxy's and the relay's view of one call |
+| [vcon_validate.py](../clients/python/vcon_validate.py) | A vCon export checked against the working group's own schema file | Exports from committed captures, checked by `jsonschema` |
+| [hep_senders.py](../clients/python/hep_senders.py) | Who is feeding a HEP collector, and what it refused | One sipnab collecting, two more sending it HEP |
+| [tls_plaintext_records.rs](../examples/tls_plaintext_records.rs) | What sipnab makes of the records its BPF TLS probe publishes | The decode alone, with no kernel |
+
+### Join one call seen at two nodes
+
+A proxy sees a call's signaling and none of its media, and a relay such as
+rtpengine sees the media and none of the signaling. The relay learns the
+Call-ID from its `ng` control plane, which rtpengine can mirror over HEP, and
+sipnab records it on each stream as `associated_dialog`. The join is
+[`leg_correlate.py`](../clients/python/leg_correlate.py) grouping the relay's
+streams by that field and pairing each group with the proxy's dialog:
+
+<!-- snippet: clients/python/leg_correlate.py#leg-join -->
+```python
+by_call: dict[str, list[dict]] = {}
+unnamed = []
+for s in relay["streams"]:
+    call_id = s.get("associated_dialog")
+    if call_id:
+        by_call.setdefault(call_id, []).append(s)
+    else:
+        unnamed.append(s)
+```
+
+The program reports streams the relay could not name as `UNNAMED MEDIA`
+rather than dropping them, and refuses two URLs that reach the same
+sipnab. CI replays [`tests/fixtures/opensips-proxy-signaling.pcap`](https://github.com/NormB/sipnab/raw/main/tests/fixtures/opensips-proxy-signaling.pcap) on one sipnab and
+[`tests/fixtures/rtpengine-opensips-ng.pcap`](https://github.com/NormB/sipnab/raw/main/tests/fixtures/rtpengine-opensips-ng.pcap) on another, one call from its two
+capture points, and expects this row:
+
+```text
+1-4062@198.51.100.21     Completed   200   2     40      G722,PCMU  4.22  yes
+```
+
+The caller sent G.722 and the relay forwarded PCMU, so transcoding shows as
+two codecs on one call. [Cookbook recipe 27](examples.md#27-compare-the-same-call-at-two-nodes)
+compares one call's messages at two nodes. This example joins the halves that
+no single node holds.
+
+### Check a vCon against the publisher's schema
+
+[`vcon_validate.py`](../clients/python/vcon_validate.py) checks containers
+against
+[`tests/schemas/publisher/vcon_json_schema.json`](https://github.com/NormB/sipnab/blob/main/tests/schemas/publisher/vcon_json_schema.json),
+the vCon working group's schema file exactly as it stands in
+[ietf-wg-vcon/draft-ietf-vcon-vcon-core](https://github.com/ietf-wg-vcon/draft-ietf-vcon-vcon-core/blob/265e0449004acda56612120b3d6635ffe7822cf1/vcon_json_schema.json)
+at commit `265e0449`. The engine is `jsonschema`, not sipnab. A plain
+`jsonschema` install checks none of the three formats the schema uses, so the
+program brings a checker for each and refuses a schema whose formats it
+cannot check:
+
+<!-- snippet: clients/python/vcon_validate.py#vcon-validate -->
+```python
+unknown = formats_in(schema) - CHECKERS.keys()
+if unknown:
+    raise UncheckableFormat(
+        f"the schema uses format(s) {sorted(unknown)} that nothing here checks"
+    )
+checker = FormatChecker(formats=())
+for name, check in CHECKERS.items():
+    checker.checks(name)(check)
+validator = Draft7Validator(schema, format_checker=checker)
+return sorted(
+    ("/" + "/".join(str(p) for p in e.absolute_path), e.message)
+    for e in validator.iter_errors(container)
+)
+```
+
+Export a container and check it:
 
 ```bash
+# Run all of these, in order.
+sipnab -N -I capture.pcap --export-vcon 'a84b4c76e66710@pc33.atlanta.example.com' --vcon-out call.vcon
+python3 clients/python/vcon_validate.py call.vcon
+```
+
+A failed call passes. A call that completed without exported media does not:
+sipnab writes its Dialog Object with no `type`, because none of the five
+types the draft defines describes a call observed without its content. That
+is sipnab's one documented deviation, and its own copy of the schema,
+[`tests/schemas/vcon.schema.json`](https://github.com/NormB/sipnab/blob/main/tests/schemas/vcon.schema.json), drops `type` from the Dialog Object's
+`required` list. A store that validates against the publisher's file refuses
+the container, and this program says so:
+
+```text
+invalid  completed.vcon
+  /dialog/0: 'type' is a required property
+```
+
+### See who feeds a HEP collector
+
+A sipnab started with `--hep-listen` collects HEP from any number of agents:
+an SBC, a proxy, or another sipnab running `--hep-send`.
+[`hep_senders.py`](../clients/python/hep_senders.py) reads
+`GET /v1/hep/senders` and prints one line per sender and one per source the
+listener refused:
+
+<!-- snippet: clients/python/hep_senders.py#hep-senders -->
+```python
+if not report["listening"]:
+    raise SystemExit("hep_senders: this sipnab has no HEP listener (start it with --hep-listen)")
+lines = []
+for s in report["senders"]:
+    silent = "  SILENT" if s["silent"] else ""
+    lines.append(f"{s['source']}  capture id {s['capture_id']}  {s['packets']} packets{silent}")
+for r in report["refused_sources"]:
+    reasons = " ".join(f"{k}={v}" for k, v in sorted(r["by_reason"].items()))
+    lines.append(f"refused {r['peer']}  {r['packets']} packets  {reasons}")
+lines.append(
+    f"{len(report['senders'])} sender(s), {report['packets_admitted']} packet(s) admitted, "
+    f"{report['packets_refused']} refused"
+)
+return lines
+```
+
+CI starts a collector on loopback and two agents, each replaying a committed
+capture to it under its own capture ID. It checks the roster and the
+collector's dialogs only after the collector's counters show every packet
+admitted, because sipnab discards unprocessed input when it stops:
+
+```text
+hep:101@127.0.0.1  capture id 101  23 packets
+hep:102@127.0.0.1  capture id 102  7 packets
+2 sender(s), 30 packet(s) admitted, 0 refused
+```
+
+The capture ID is the sender's claim. Nothing proves it without `--hep-auth`.
+[Cookbook recipe 26](examples.md#26-run-sipnab-as-a-hep-relay) covers the
+listener's flags.
+
+### Read TLS without keys: the half that needs no kernel
+
+`--uprobe-tls --uprobe-backend bpf` reads SIP out of the TLS library and pairs
+each write with the socket that sent it
+([cookbook recipe 7h](examples.md#7h-read-tls-and-who-the-peer-was)). The
+live half needs root and a kernel with BTF, so no CI runner can run it.
+[`tls_plaintext_records.rs`](../examples/tls_plaintext_records.rs) runs the
+other half: it lays out records exactly as the BPF program publishes them and
+passes each through the decode the backend runs:
+
+```bash
+cargo run --example tls_plaintext_records
+```
+
+```text
+REGISTER   127.0.0.1:36160 -> 127.0.0.1:15061  TCP  uprobe:python3/349147#0
+200 OK     127.0.0.1:15061 -> 127.0.0.1:36160  TCP  uprobe:python3/349147#1
+OPTIONS    0.0.0.0:0 -> 0.0.0.0:0  TCP  uprobe:python3/349147#2
+record 3 dropped: not a SIP message
+```
+
+The TLS library buffered the third write rather than sending it, so the
+program paired it with no socket and sipnab reports no peer rather than
+guessing one. sipnab drops the fourth, which is not SIP.
+
+## Run everything CI runs
+
+Build sipnab with every feature and its examples, then run the smoke script:
+
+```bash
+# Run all of these, in order.
+cargo build --all-features --bins --examples
 scripts/smoke-clients.sh target/debug/sipnab
 ```
 

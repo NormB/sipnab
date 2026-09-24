@@ -174,6 +174,32 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             "website/content/notes/the-assumption-nobody-timed.md",
             "docs/uprobe-walkthrough.md",
             "website/content/docs/uprobe-walkthrough.md",
+            "docs/client-examples.md",
+            "website/content/docs/examples.md",
+        ],
+    ),
+    // cargo's too: the runnable-examples page builds sipnab and its examples
+    // (`cargo build --all-features --bins --examples`) the way CI's Build step
+    // does before the smoke run, and runs one with `cargo run --example`.
+    (
+        "bins",
+        &[
+            "docs/client-examples.md",
+            "website/content/docs/examples.md",
+        ],
+    ),
+    (
+        "examples",
+        &[
+            "docs/client-examples.md",
+            "website/content/docs/examples.md",
+        ],
+    ),
+    (
+        "example",
+        &[
+            "docs/client-examples.md",
+            "website/content/docs/examples.md",
         ],
     ),
     (
@@ -3868,7 +3894,10 @@ fn no_documentation_table_repeats_a_row() {
     // client behind each REST and metrics example, and its site mirror
     // website/content/docs/examples.md. Attributed by measurement: with both
     // files swapped back to HEAD the gate reads 972.
-    const EXPECTED_TABLES: usize = 974;
+    // 974 -> 976: the capability-examples table in docs/client-examples.md
+    // and its site mirror website/content/docs/examples.md. Attributed by
+    // counting table separator rows added per file: exactly those two.
+    const EXPECTED_TABLES: usize = 976;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

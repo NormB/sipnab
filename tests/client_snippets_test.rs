@@ -35,6 +35,7 @@ const DOCS: &[&str] = &[
     "docs/rest-api.md",
     "docs/prometheus-metrics.md",
     "docs/mcp-deploy.md",
+    "docs/client-examples.md",
 ];
 
 /// Fence labels that mean a client language. The short aliases are here so a
@@ -398,6 +399,9 @@ fn the_reader_sees_every_client_fence_the_pages_hold() {
         ("docs/prometheus-metrics.md", "python", 1),
         ("docs/mcp-deploy.md", "python", 2),
         ("docs/mcp-deploy.md", "typescript", 1),
+        // The capability examples: leg_correlate.py's join, vcon_validate.py's
+        // check and hep_senders.py's roster.
+        ("docs/client-examples.md", "python", 3),
     ]
     .into_iter()
     .map(|(d, l, n)| ((d, l.to_string()), n))
@@ -427,6 +431,75 @@ fn ci_holds_every_client_language_to_its_bar() {
         missing.is_empty(),
         ".github/workflows/ci.yml no longer runs: {missing:?}"
     );
+}
+
+/// Whether `needle` occurs in `text` as a whole token: not followed by a
+/// character that would make it a longer flag or path, so `--hep-send` is not
+/// found in `--hep-sendX` or `--hep-send-transport`.
+fn contains_token(text: &str, needle: &str) -> bool {
+    text.match_indices(needle).any(|(at, _)| {
+        !text[at + needle.len()..]
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
+    })
+}
+
+/// The capability examples: what sipnab does that a generic SIP tool does
+/// not, each run end to end in CI rather than described. Leg correlation
+/// needs two sipnabs, HEP fan-in a collector and its agents, vCon validation
+/// the publisher's schema file, and TLS without keys the BPF record decode.
+/// Each line here is a piece that, removed from the smoke run or the build,
+/// turns its example back into a claim.
+#[test]
+fn every_capability_example_runs_in_ci() {
+    // Code only: a comment naming a flag is not a command running it.
+    let smoke: String = read("scripts/smoke-clients.sh")
+        .lines()
+        .filter(|l| !l.trim_start().starts_with('#'))
+        .map(|l| format!("{l}\n"))
+        .collect();
+    let missing: Vec<&str> = [
+        // Leg correlation: one call, the proxy's capture and the relay's.
+        "clients/python/leg_correlate.py",
+        "tests/fixtures/opensips-proxy-signaling.pcap",
+        "tests/fixtures/rtpengine-opensips-ng.pcap",
+        // vCon validated against the publisher's file.
+        "clients/python/vcon_validate.py",
+        "--export-vcon",
+        "tests/schemas/publisher/vcon_json_schema.json",
+        // HEP fan-in: a collector and agents sending to it.
+        "--hep-listen",
+        "--hep-send",
+        "clients/python/hep_senders.py",
+        // TLS without keys: the analysis half.
+        "examples/tls_plaintext_records",
+    ]
+    .into_iter()
+    .filter(|needle| !contains_token(&smoke, needle))
+    .collect();
+    assert!(
+        missing.is_empty(),
+        "scripts/smoke-clients.sh no longer runs: {missing:?}"
+    );
+    let ci = read(".github/workflows/ci.yml");
+    assert!(
+        ci.contains("cargo build --all-features --bins --examples"),
+        "ci.yml's Build step must build the examples, or the smoke run has no \
+         tls_plaintext_records to run"
+    );
+    let page = read("docs/client-examples.md");
+    for program in [
+        "leg_correlate.py",
+        "vcon_validate.py",
+        "hep_senders.py",
+        "tls_plaintext_records.rs",
+    ] {
+        assert!(
+            page.contains(program),
+            "docs/client-examples.md does not tell an operator about {program}"
+        );
+    }
 }
 
 // ── the reader itself ─────────────────────────────────────────────────────
@@ -486,6 +559,16 @@ fn the_fence_reader_takes_the_marker_directly_above_only() {
     let m = markers(doc);
     assert_eq!(m[0].next_fence.as_deref(), Some("go"));
     assert_eq!(m[1].next_fence, None);
+}
+
+#[test]
+fn a_token_is_matched_whole() {
+    assert!(contains_token("x --hep-send 127.0.0.1", "--hep-send"));
+    assert!(contains_token("ends with --hep-send", "--hep-send"));
+    assert!(!contains_token("x --hep-sendX y", "--hep-send"));
+    assert!(!contains_token("x --hep-send-transport tcp", "--hep-send"));
+    assert!(contains_token("a/b.pcap\"", "a/b.pcap"));
+    assert!(!contains_token("a/b.pcapng", "a/b.pcap"));
 }
 
 #[test]

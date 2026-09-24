@@ -840,3 +840,66 @@ fn the_opensips_control_plane_keeps_its_wire_shapes() {
         assert!(reply.ends_with("6:result2:oke"), "{reply}");
     }
 }
+
+// ── the OpenSIPS proxy's view of the same call ──────────────────────
+
+const OS_PROXY: &str = "tests/fixtures/opensips-proxy-signaling.pcap";
+
+/// The SIP body of a message: everything after the blank line.
+fn sip_body(message: &str) -> &str {
+    message.split_once("\r\n\r\n").map_or("", |(_, body)| body)
+}
+
+/// The proxy capture and the relay capture are two halves of ONE call, which
+/// is what makes the pair a leg-correlation fixture rather than two unrelated
+/// files. The proxy's four SDP bodies are the relay control plane's four, in
+/// order: the caller's offer arrives at the proxy and reaches the relay as
+/// `offer`, the relay's rewrite of it is what the proxy forwards to the
+/// callee, the callee's answer reaches the relay as `answer`, and the relay's
+/// rewrite of that is what the proxy relays to the caller. The proxy sees no
+/// media, and the relay sees no SIP.
+#[test]
+fn the_proxy_capture_is_the_signaling_half_of_the_relay_capture() {
+    let proxy = records(&committed(OS_PROXY));
+    let messages: Vec<String> = proxy
+        .iter()
+        .map(|r| {
+            let u = udp_of(&r.data).expect("every proxy frame is UDP");
+            assert_eq!(u.dport, 5060, "SIP only, no media");
+            String::from_utf8(u.payload.to_vec()).expect("SIP is text")
+        })
+        .collect();
+    assert!(!messages.is_empty());
+    for m in &messages {
+        assert!(
+            m.contains("\r\nCall-ID: 1-4062@198.51.100.21\r\n"),
+            "one call, the relay's: {m}"
+        );
+    }
+    let bodies: Vec<&str> = messages
+        .iter()
+        .map(|m| sip_body(m))
+        .filter(|b| !b.is_empty())
+        .collect();
+
+    // The `sdp` value of each `ng` message, in capture order: bencode writes
+    // it as `3:sdp<length>:<bytes>`.
+    let relay_sdps: Vec<String> = records(&committed(OS_NG))
+        .iter()
+        .filter_map(|r| udp_of(&r.data))
+        .filter(|u| u.dport == 9060)
+        .map(|u| {
+            let text = String::from_utf8_lossy(u.payload).into_owned();
+            let at = text.find("3:sdp").expect("every ng message carries an sdp") + 5;
+            let colon = at + text[at..].find(':').expect("a bencode length");
+            let len: usize = text[at..colon].parse().expect("a decimal length");
+            text[colon + 1..colon + 1 + len].to_string()
+        })
+        .collect();
+    assert_eq!(relay_sdps.len(), 4, "offer, reply, answer, reply");
+    assert_eq!(
+        bodies, relay_sdps,
+        "the proxy's SDP, in order, must be the relay control plane's: offer in, \
+         the relay's rewrite out, answer in, the relay's rewrite out"
+    );
+}

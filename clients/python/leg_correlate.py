@@ -101,6 +101,7 @@ def correlate(proxy: dict, relay: dict) -> list[dict]:
     ports at all -- so every call reported zero streams and the join looked
     merely empty rather than wrong.
     """
+    # snippet:start leg-join
     by_call: dict[str, list[dict]] = {}
     unnamed = []
     for s in relay["streams"]:
@@ -109,6 +110,7 @@ def correlate(proxy: dict, relay: dict) -> list[dict]:
             by_call.setdefault(call_id, []).append(s)
         else:
             unnamed.append(s)
+    # snippet:end leg-join
 
     joined = []
     for d in proxy["dialogs"]:
@@ -197,27 +199,34 @@ def main() -> int:
         print(json.dumps(result, indent=2))
         return 0
 
-    print(f"proxy  {proxy['node']:<16} {proxy['base']}")
-    print(f"       dialogs={len(proxy['dialogs']):<5} streams={len(proxy['streams'])}")
-    print(f"relay  {relay['node']:<16} {relay['base']}")
-    print(f"       dialogs={len(relay['dialogs']):<5} streams={len(relay['streams'])}")
-    print()
-    hdr = f"{'Call-ID':<24} {'State':<11} {'Code':<5} {'Strm':<5} {'Pkts':<7} {'Codec':<7} {'MOS':<5} {'2-way'}"
-    print(hdr)
-    print("-" * len(hdr))
+    print("\n".join(render_table(result)))
+    return 0
+
+
+def render_table(result: dict) -> list[str]:
+    """The human-readable report, one string per line."""
+    proxy, relay = result["proxy"], result["relay"]
+    lines = [
+        f"proxy  {proxy['node']:<16} {proxy['base']}",
+        f"       dialogs={result['proxy_dialogs']:<5} streams={result['proxy_streams']}",
+        f"relay  {relay['node']:<16} {relay['base']}",
+        f"       dialogs={result['relay_dialogs']:<5} streams={result['relay_streams']}",
+        "",
+    ]
+    hdr = f"{'Call-ID':<24} {'State':<11} {'Code':<5} {'Strm':<5} {'Pkts':<7} {'Codec':<10} {'MOS':<5} {'2-way'}"
+    lines += [hdr, "-" * len(hdr)]
     shown = [c for c in result["calls"] if c["relay_streams"]] or result["calls"]
     for c in shown[:25]:
         mos = f"{c['worst_mos']:.2f}" if c["worst_mos"] is not None else "-"
-        print(
+        lines.append(
             f"{str(c['call_id'] or '-')[:23]:<24} {str(c['state'])[:10]:<11} "
             f"{str(c['code'] or '-'):<5} {c['relay_streams']:<5} "
-            f"{c['relay_packets']:<7} {','.join(c['codecs'])[:6]:<7} {mos:<5} "
+            f"{c['relay_packets']:<7} {','.join(c['codecs']) or '-':<10} {mos:<5} "
             f"{'yes' if c['bidirectional'] else 'no'}"
         )
     correlated = sum(1 for c in result["calls"] if c["call_id"] and c["relay_streams"])
-    print()
-    print(f"  {correlated} call(s) correlated across both nodes")
-    return 0
+    lines += ["", f"  {correlated} call(s) correlated across both nodes"]
+    return lines
 
 
 if __name__ == "__main__":

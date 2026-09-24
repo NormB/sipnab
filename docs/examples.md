@@ -905,6 +905,8 @@ this backend, and a silent downgrade would hand you a capture with none.
   `nm -D --undefined-only /path/to/app | grep SSL_write` and pass
   `--uprobe-symbol` if it differs.
 
+**Runnable example:** [Read TLS without keys: the half that needs no kernel](client-examples.md#read-tls-without-keys-the-half-that-needs-no-kernel) shows what sipnab makes of the records the BPF program of this backend publishes, with no root and no BTF.
+
 ---
 
 ### 7i. One file, taken off the host, that decrypts itself
@@ -2073,6 +2075,8 @@ any other user on the host can read:
   one attempt per packet. The packet that discovers the break can vanish.
   Nothing after it does.
 
+**Runnable example:** [See who feeds a HEP collector](client-examples.md#see-who-feeds-a-hep-collector) lists each agent feeding a collector and what the listener refused. CI runs it against a collector fed by two sipnab agents.
+
 ---
 
 ## 27. Compare the same call at two nodes
@@ -2116,6 +2120,8 @@ What the difference tells you:
 
 - Clocks. Two captures from two machines are only comparable if their clocks are, and a few hundred milliseconds of skew makes a normal exchange look like a retransmission. Check NTP before reading timing differences as evidence.
 - A B2BUA **changes the `Call-ID`** between its legs by design, so this recipe compares a proxy's two sides, not a B2BUA's. Correlate those by `From`/`To` and time instead.
+
+**Runnable example:** when one node sees the signaling and another the media, as a proxy and an rtpengine relay do, neither report holds the whole call. [Join one call seen at two nodes](client-examples.md#join-one-call-seen-at-two-nodes) joins them over REST, and CI runs it against two sipnabs.
 
 ---
 
@@ -2961,6 +2967,8 @@ Pass a container somebody else produced — one a store already rejected — as 
 
 - The validator reads the vendored schema file rather than a transcription of it, and it refuses to guess: a keyword outside the draft-07 subset the file uses makes every validation report `invalid` naming the keyword. Re-vendoring a richer schema fails loudly instead of quietly certifying less than it claims.
 - Needs a build carrying the non-default `vcon` Cargo feature. Without it the tool refuses by name. `server_capabilities` lists what a given binary has.
+
+**Runnable example:** `validate_vcon` is sipnab checking its own work. [Check a vCon against the publisher's schema](client-examples.md#check-a-vcon-against-the-publishers-schema) checks an export with `jsonschema` against the working group's file itself, which refuses a Dialog Object with no `type` that sipnab's copy accepts.
 
 ---
 

@@ -19,11 +19,18 @@
 # streams whose MOS is below 3.0. No single committed capture has both, and
 # every documented query needs one or the other.
 #
-# Needs: a sipnab built with the `api` and `mcp` features (default
-# target/debug/sipnab), go, node (22.18 or later, which runs .ts files), curl,
-# the npm packages installed in clients/typescript (`npm ci`), and a Python
-# with the MCP SDK from clients/python/requirements-mcp.txt ($PYTHON, default
-# python3). CI provides all of these; a missing one fails, never skips.
+# Then the capability examples docs/client-examples.md describes: leg
+# correlation across two sipnabs, vCon exports checked against the working
+# group's schema file, a HEP collector fed by two sipnab agents, and the BPF
+# record decode behind TLS without keys. Every sipnab runs on loopback.
+#
+# Needs: a sipnab built with `--all-features --bins --examples` (default
+# target/debug/sipnab; the TLS example is read from beside it), go, node
+# (22.18 or later, which runs .ts files), curl, the npm packages installed in
+# clients/typescript (`npm ci`), and a Python with the MCP SDK from
+# clients/python/requirements-mcp.txt, which brings jsonschema ($PYTHON,
+# default python3). CI provides all of these; a missing one fails, never
+# skips.
 
 set -euo pipefail
 
@@ -37,18 +44,24 @@ for tool in go node curl "$PYTHON"; do
 	command -v "$tool" >/dev/null || { echo "smoke-clients: $tool not found" >&2; exit 1; }
 done
 [ -x "$BIN" ] || { echo "smoke-clients: no sipnab binary at $BIN" >&2; exit 1; }
+[ -x "$(dirname "$BIN")/examples/tls_plaintext_records" ] || {
+	echo "smoke-clients: build the examples too: cargo build --all-features --bins --examples" >&2
+	exit 1
+}
 [ -d clients/typescript/node_modules ] || {
 	echo "smoke-clients: run 'npm ci' in clients/typescript first" >&2
 	exit 1
 }
 
 WORK="$(mktemp -d)"
-SIPNAB_PID=""
+# Every sipnab this script starts, so an early exit stops all of them.
+PIDS=()
 cleanup() {
-	if [ -n "$SIPNAB_PID" ]; then
-		kill "$SIPNAB_PID" 2>/dev/null || true
-		wait "$SIPNAB_PID" 2>/dev/null || true
-	fi
+	local pid
+	for pid in "${PIDS[@]}"; do
+		kill "$pid" 2>/dev/null || true
+		wait "$pid" 2>/dev/null || true
+	done
 	rm -rf "$WORK"
 }
 trap cleanup EXIT
@@ -60,34 +73,54 @@ fail() {
 }
 
 # A free loopback port, so a second run on the same machine does not collide.
-PORT="$("$PYTHON" -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')"
+free_port() {
+	"$PYTHON" -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])'
+}
+PORT="$(free_port)"
 export SIPNAB_URL="http://127.0.0.1:$PORT"
 export SIPNAB_API_KEY="smoke-$$-token"
 
-"$BIN" -N --quiet --no-cli-print \
+# serve NAME PORT ARG... : start a sipnab with ARGs serving REST on PORT. Its
+# log is $WORK/NAME.log; its pid joins PIDS and is left in SERVED_PID.
+serve() {
+	local name="$1" port="$2"
+	shift 2
+	"$BIN" -N --quiet --no-cli-print "$@" \
+		--api "127.0.0.1:$port" >/dev/null 2>"$WORK/$name.log" &
+	SERVED_PID=$!
+	PIDS+=("$SERVED_PID")
+}
+
+# wait_for NAME PID URL PATTERN : poll URL until its body matches PATTERN.
+# Evidence, never a fixed sleep: sipnab drops whatever it has not processed
+# when it stops, so the checks below must start only once it has.
+wait_for() {
+	local name="$1" pid="$2" url="$3" pattern="$4"
+	for _ in $(seq 600); do
+		if ! kill -0 "$pid" 2>/dev/null; then
+			echo "smoke-clients: the $name sipnab exited before it was ready:" >&2
+			cat "$WORK/$name.log" >&2
+			exit 1
+		fi
+		if curl -sf -H "Authorization: Bearer $SIPNAB_API_KEY" "$url" 2>/dev/null |
+			grep -qE -- "$pattern"; then
+			return 0
+		fi
+		sleep 0.1
+	done
+	echo "smoke-clients: the $name sipnab never matched '$pattern' at $url in 60s" >&2
+	cat "$WORK/$name.log" >&2
+	exit 1
+}
+
+serve sipnab "$PORT" \
 	-I tests/pcap-samples/sip-problem-call.pcap \
-	-I tests/fixtures/turn_relay.pcap \
-	--api "127.0.0.1:$PORT" >/dev/null 2>"$WORK/sipnab.log" &
-SIPNAB_PID=$!
+	-I tests/fixtures/turn_relay.pcap
 
 # Ready means the API answers AND the replay is finished: `source_exhausted`
 # turns true once the last packet is read, so the counts asserted below are
 # final rather than whatever had been parsed when the socket opened.
-ready=0
-for _ in $(seq 600); do
-	if ! kill -0 "$SIPNAB_PID" 2>/dev/null; then
-		echo "smoke-clients: sipnab exited before it was ready:" >&2
-		cat "$WORK/sipnab.log" >&2
-		exit 1
-	fi
-	if curl -sf -H "Authorization: Bearer $SIPNAB_API_KEY" "$SIPNAB_URL/v1/stats" 2>/dev/null |
-		grep -q '"source_exhausted":true'; then
-		ready=1
-		break
-	fi
-	sleep 0.1
-done
-[ "$ready" = 1 ] || { echo "smoke-clients: sipnab not ready after 60s" >&2; cat "$WORK/sipnab.log" >&2; exit 1; }
+wait_for sipnab "$SERVED_PID" "$SIPNAB_URL/v1/stats" '"source_exhausted":true'
 
 # Build the Go programs once, into the scratch directory.
 (cd clients/go && go build -o "$WORK/go/" ./...)
@@ -105,6 +138,30 @@ expect() {
 	shift
 	if ! "$@" >"$WORK/out" 2>"$WORK/err"; then
 		fail "$label exited non-zero: $(head -c 400 "$WORK/err")"
+		return
+	fi
+	for line in "${want[@]}"; do
+		grep -qxF -- "$line" "$WORK/out" || fail "$label did not print '$line'; it printed: $(head -c 400 "$WORK/out")"
+	done
+	echo "ok   $label"
+}
+
+# expect_exit LABEL STATUS LINE... -- COMMAND...
+# COMMAND must exit with STATUS and print every LINE as a whole line of its
+# stdout: for a program whose refusal is its answer.
+expect_exit() {
+	local label="$1" status="$2"
+	shift 2
+	local want=()
+	while [ "$1" != "--" ]; do
+		want+=("$1")
+		shift
+	done
+	shift
+	local got=0
+	"$@" >"$WORK/out" 2>"$WORK/err" || got=$?
+	if [ "$got" != "$status" ]; then
+		fail "$label exited $got, not $status: $(head -c 400 "$WORK/err") $(head -c 400 "$WORK/out")"
 		return
 	fi
 	for line in "${want[@]}"; do
@@ -191,6 +248,119 @@ grep -q '"total_matched"' "$WORK/out" || fail "sipnab_mcp.py printed no find_pro
 expect "typescript sipnab-mcp (stdio)" -- node clients/typescript/sipnab-mcp.ts tests/fixtures/turn_relay.pcap
 grep -qE '^[0-9]+ tools available$' "$WORK/out" || fail "sipnab-mcp.ts printed no tool count"
 grep -q '"total_matched"' "$WORK/out" || fail "sipnab-mcp.ts printed no find_problems result"
+
+# ── Capability examples: what only sipnab does ───────────────────────────
+
+# Leg correlation. One call, two capture points: tests/fixtures/opensips-
+# proxy-signaling.pcap is the proxy's view (SIP, no media) and
+# tests/fixtures/rtpengine-opensips-ng.pcap the relay's (media and the relay's
+# ng control plane over HEP, no SIP). Two sipnabs replay them on loopback and
+# leg_correlate.py joins the proxy's dialog to the relay's streams.
+PROXY_PORT="$(free_port)"
+serve proxy "$PROXY_PORT" --node-name proxy -I tests/fixtures/opensips-proxy-signaling.pcap
+PROXY_PID="$SERVED_PID"
+RELAY_PORT="$(free_port)"
+serve relay "$RELAY_PORT" --node-name relay -I tests/fixtures/rtpengine-opensips-ng.pcap
+wait_for proxy "$PROXY_PID" "http://127.0.0.1:$PROXY_PORT/v1/stats" '"source_exhausted":true'
+wait_for relay "$SERVED_PID" "http://127.0.0.1:$RELAY_PORT/v1/stats" '"source_exhausted":true'
+printf '%s\n' "$SIPNAB_API_KEY" >"$WORK/api.key"
+expect "python leg_correlate (proxy + relay)" \
+	"1-4062@198.51.100.21     Completed   200   2     40      G722,PCMU  4.22  yes" \
+	"  1 call(s) correlated across both nodes" \
+	-- "$PYTHON" clients/python/leg_correlate.py --key-file "$WORK/api.key" \
+	--proxy "http://127.0.0.1:$PROXY_PORT" --relay "http://127.0.0.1:$RELAY_PORT"
+# Both URLs at one sipnab is one witness, not two, and must be refused.
+if "$PYTHON" clients/python/leg_correlate.py --key-file "$WORK/api.key" \
+	--proxy "http://127.0.0.1:$PROXY_PORT" --relay "http://127.0.0.1:$PROXY_PORT" \
+	>"$WORK/out" 2>"$WORK/err"; then
+	fail "leg_correlate.py correlated one sipnab with itself"
+elif ! grep -q "same capture instance" "$WORK/err"; then
+	fail "leg_correlate.py refused one sipnab twice without saying why: $(head -c 400 "$WORK/err")"
+else
+	echo "ok   python leg_correlate refuses one node counted twice"
+fi
+
+# vCon export, validated against the working group's schema file as its
+# publisher committed it (tests/schemas/publisher/vcon_json_schema.json) by
+# an engine sipnab did not write. A failed call exports a typed Dialog Object
+# and must pass. A completed call with no media exports one with no `type`,
+# sipnab's one documented deviation: the publisher's file must refuse it
+# naming `type`, and sipnab's own copy must accept it. A container whose
+# created_at is not a date-time must be refused, which jsonschema alone
+# would not do.
+"$BIN" -N --quiet --no-cli-print -I tests/pcap-samples/sip-problem-call.pcap \
+	--export-vcon "$CALL_ID" --vcon-out "$WORK/failed.vcon" >/dev/null 2>"$WORK/vcon.log" ||
+	fail "sipnab did not export $CALL_ID: $(head -c 400 "$WORK/vcon.log")"
+"$BIN" -N --quiet --no-cli-print -I tests/fixtures/opensips-proxy-signaling.pcap \
+	--export-vcon 1-4062@198.51.100.21 --vcon-out "$WORK/completed.vcon" >/dev/null 2>"$WORK/vcon.log" ||
+	fail "sipnab did not export 1-4062@198.51.100.21: $(head -c 400 "$WORK/vcon.log")"
+"$PYTHON" -c 'import json, sys; c = json.load(open(sys.argv[1])); c["created_at"] = "yesterday"; json.dump(c, open(sys.argv[2], "w"))' \
+	"$WORK/failed.vcon" "$WORK/undated.vcon"
+PUBLISHED_ID="checked against https://ietf.org/vcon/schemas/unsigned-vcon.json (tests/schemas/publisher/vcon_json_schema.json)"
+expect "python vcon_validate (a failed call)" "$PUBLISHED_ID" "valid    $WORK/failed.vcon" \
+	-- "$PYTHON" clients/python/vcon_validate.py --schema tests/schemas/publisher/vcon_json_schema.json "$WORK/failed.vcon"
+expect_exit "python vcon_validate (no type, publisher's file)" 1 \
+	"invalid  $WORK/completed.vcon" "  /dialog/0: 'type' is a required property" \
+	-- "$PYTHON" clients/python/vcon_validate.py --schema tests/schemas/publisher/vcon_json_schema.json "$WORK/completed.vcon"
+expect "python vcon_validate (no type, sipnab's copy)" "valid    $WORK/completed.vcon" \
+	-- "$PYTHON" clients/python/vcon_validate.py --schema tests/schemas/vcon.schema.json "$WORK/completed.vcon"
+expect_exit "python vcon_validate (created_at not a date-time)" 1 \
+	"invalid  $WORK/undated.vcon" "  /created_at: 'yesterday' is not a 'date-time'" \
+	-- "$PYTHON" clients/python/vcon_validate.py "$WORK/undated.vcon"
+
+# HEP fan-in. One sipnab is the collector (--hep-listen on loopback); two
+# more are the peers, each replaying a committed capture to it with
+# --hep-send under its own capture id. hep_senders.py must name both senders
+# with what each sent, and the collector must report the dialogs of both
+# captures. Checked only once the collector's own counters show every packet
+# admitted and every dialog built: it drops unprocessed input when it stops.
+HEP_PORT="$("$PYTHON" -c 'import socket; s = socket.socket(type=socket.SOCK_DGRAM); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')"
+COLLECTOR_PORT="$(free_port)"
+COLLECTOR="http://127.0.0.1:$COLLECTOR_PORT"
+serve collector "$COLLECTOR_PORT" --node-name collector --hep-listen "127.0.0.1:$HEP_PORT"
+COLLECTOR_PID="$SERVED_PID"
+wait_for collector "$COLLECTOR_PID" "$COLLECTOR/v1/hep/senders" '"listening":true'
+# hep_agent ID CAPTURE : replay CAPTURE to the collector as capture id ID.
+hep_agent() {
+	"$BIN" -N --quiet --no-cli-print -I "$2" --hep-send "127.0.0.1:$HEP_PORT" --hep-id "$1" \
+		>/dev/null 2>"$WORK/agent-$1.log" ||
+		fail "HEP agent $1 did not replay $2: $(head -c 400 "$WORK/agent-$1.log")"
+}
+hep_agent 101 tests/pcap-samples/sip-problem-call.pcap
+hep_agent 102 tests/fixtures/sip_call.pcap
+wait_for collector "$COLLECTOR_PID" "$COLLECTOR/v1/hep/senders" '"packets_admitted":30,'
+wait_for collector "$COLLECTOR_PID" "$COLLECTOR/v1/stats" '"completed":2,"failed":4,"in_call":0,"total":6'
+expect "python hep_senders (two agents, one collector)" \
+	"hep:101@127.0.0.1  capture id 101  23 packets" \
+	"hep:102@127.0.0.1  capture id 102  7 packets" \
+	"2 sender(s), 30 packet(s) admitted, 0 refused" \
+	-- env SIPNAB_URL="$COLLECTOR" "$PYTHON" clients/python/hep_senders.py
+expect "python stats (the collector)" "Dialogs: 6 total, 0 active, 4 failed" \
+	-- env SIPNAB_URL="$COLLECTOR" "$PYTHON" clients/python/stats.py
+expect "python get-dialog (a call agent 102 sent)" "State: Completed, Messages: 7" \
+	-- env SIPNAB_URL="$COLLECTOR" "$PYTHON" clients/python/get_dialog.py test-call-1@192.0.2.1
+# A sipnab with no HEP listener has no roster, and saying so is the answer.
+expect_exit "python hep_senders (no listener)" 1 \
+	-- "$PYTHON" clients/python/hep_senders.py
+grep -q "no HEP listener" "$WORK/err" || fail "hep_senders.py did not say the sipnab has no HEP listener: $(head -c 400 "$WORK/err")"
+
+# TLS read without keys, through the BPF backend: the analysis half. The
+# live half installs uprobes and needs root and a kernel with BTF, which no
+# CI runner offers. What sipnab does with what the kernel hands it does not:
+# examples/tls_plaintext_records.rs feeds records laid out exactly as the BPF
+# program publishes them through the same decode the backend runs, and must
+# report each peer the program paired, no peer where it paired none, and
+# nothing for a write that is not SIP. Cargo builds it beside the binary.
+TLS_EXAMPLE="$(dirname "$BIN")/examples/tls_plaintext_records"
+expect "rust tls_plaintext_records (BPF records, no kernel)" \
+	"REGISTER   127.0.0.1:36160 -> 127.0.0.1:15061  TCP  uprobe:python3/349147#0" \
+	"200 OK     127.0.0.1:15061 -> 127.0.0.1:36160  TCP  uprobe:python3/349147#1" \
+	"OPTIONS    0.0.0.0:0 -> 0.0.0.0:0  TCP  uprobe:python3/349147#2" \
+	"record 3 dropped: not a SIP message" \
+	"4 records, 3 SIP messages, 2 dialogs" \
+	"REGISTER  Registered  alice -> alice  (2 messages)  tls-reg-1@127.0.0.1" \
+	"OPTIONS   Trying  alice -> ?  (1 messages)  tls-opt-1@127.0.0.1" \
+	-- "$TLS_EXAMPLE"
 
 if [ "$FAILED" -ne 0 ]; then
 	echo "smoke-clients: $FAILED check(s) failed" >&2
