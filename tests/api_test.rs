@@ -728,6 +728,10 @@ fn rest_cannot_enable_persistence_the_command_line_never_authorized() {
 /// The mirror of the test above, and the one that proves the ceiling is read
 /// from the flags rather than hardcoded: a `persists_content` that always
 /// answered `false` would pass every other test in this file.
+// Only --export-vcon and --export-vcon-when grant content authority
+// (Cli::persists_content), and a build without `vcon` refuses both at
+// startup (VCON-NOFEAT-1), so this run exists only where they do.
+#[cfg(feature = "vcon")]
 #[test]
 fn a_run_started_with_export_flags_reports_authority_and_can_be_closed() {
     let dir = tempfile::tempdir().expect("temp dir");
@@ -761,6 +765,10 @@ fn a_run_started_with_export_flags_reports_authority_and_can_be_closed() {
 /// extractor answering before the route was reached. `[true]` is the shape
 /// that got through in development: a derived `Deserialize` reads a struct
 /// from a sequence as happily as from a map.
+// Only --export-vcon and --export-vcon-when grant content authority
+// (Cli::persists_content), and a build without `vcon` refuses both at
+// startup (VCON-NOFEAT-1), so this run exists only where they do.
+#[cfg(feature = "vcon")]
 #[test]
 fn a_malformed_persistence_body_is_refused_by_the_shipping_binary() {
     let dir = tempfile::tempdir().expect("temp dir");
