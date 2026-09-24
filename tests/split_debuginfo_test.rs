@@ -250,7 +250,9 @@ fn an_address_from_the_stripped_binary_symbolizes_against_the_symbol_file() {
 /// `<bin>.stripped`. Every call is logged to `$TOOL_LOG`. `DSYM_UUID`
 /// overrides the UUID dsymutil writes, and `KEEP_DEBUG_MAP` makes `nm` report
 /// a debug map after the strip and `STRIPPED_AT_LINK` reports none at all,
-/// to drive the refusals.
+/// to drive the refusals. `LARGE_OUTPUT` makes `nm` and `dwarfdump` print
+/// the thousands of lines a real binary produces AFTER the line the script
+/// looks for.
 const XCODE_STANDINS: &[(&str, &str)] = &[
     (
         "dsymutil",
@@ -263,7 +265,8 @@ const XCODE_STANDINS: &[(&str, &str)] = &[
         "echo \"dwarfdump $*\" >> \"$TOOL_LOG\"\ncase \"$1\" in\n\
          --uuid) if [ -d \"$2\" ]; then u=$(cat \"$2/uuid\"); else u=$(cat \"$2.uuid\"); fi\n\
          echo \"UUID: $u (arm64) $2\" ;;\n\
-         --debug-line) echo 'debug_line[0x00000000]' ;;\nesac\n",
+         --debug-line) echo 'debug_line[0x00000000]'\n\
+         if [ -n \"${LARGE_OUTPUT:-}\" ]; then i=0; while [ $i -lt 20000 ]; do echo \"0x$i 12 3 0 0 0 is_stmt\"; i=$((i+1)); done; fi ;;\nesac\n",
     ),
     (
         "ditto",
@@ -278,7 +281,8 @@ const XCODE_STANDINS: &[(&str, &str)] = &[
         "echo \"nm $*\" >> \"$TOOL_LOG\"\nfor a; do last=$a; done\n\
          if [ -n \"${STRIPPED_AT_LINK:-}\" ]; then exit 0; fi\n\
          if [ ! -e \"$last.stripped\" ] || [ -n \"${KEEP_DEBUG_MAP:-}\" ]; then\n\
-         echo '0000000000000000 - 00 0000    OSO /tmp/sipnab.o'\nfi\n",
+         echo '0000000000000000 - 00 0000    OSO /tmp/sipnab.o'\n\
+         if [ -n \"${LARGE_OUTPUT:-}\" ]; then i=0; while [ $i -lt 20000 ]; do echo \"0000000100000000 - 01 0000    FUN _sym$i\"; i=$((i+1)); done; fi\nfi\n",
     ),
     (
         "codesign",
@@ -497,5 +501,42 @@ fn the_emitted_flags_survive_an_ambient_rustflags() {
         !sections(&lost).iter().any(|s| s == ".debug_line"),
         "--config alone survived an ambient RUSTFLAGS, so this test no longer \
          shows why the workflows must append to RUSTFLAGS"
+    );
+}
+
+/// A real binary's `nm -ap` prints thousands of lines, and the debug map's
+/// first `OSO` entry comes early. `grep -q` exits at that match, the tool
+/// writing the rest dies of SIGPIPE, and under `set -o pipefail` the whole
+/// pipeline reports failure: the script called a binary WITH a debug map
+/// "stripped at link time". That is what failed CI's macOS leg twice, while
+/// a one-line stand-in could never show it.
+#[test]
+fn the_macos_split_reads_a_large_debug_map_and_line_table() {
+    let (out, log, _dir) = run_macos_split(&[("LARGE_OUTPUT", "1")]);
+    assert!(
+        out.status.success(),
+        "the split refused a binary whose tools print a lot:\n{}\nlog:\n{log}",
+        text(&out)
+    );
+}
+
+/// No `cmd | grep -q` in the script at all, not only in the two checks the
+/// large-output test drives: `grep -q` exits at its first match, the writer
+/// dies of SIGPIPE, and the script's `set -o pipefail` turns a found match
+/// into a failure. Which commands print enough to lose that race depends on
+/// the binary, so the pattern is refused everywhere.
+#[test]
+fn the_script_never_pipes_into_grep_q() {
+    let text = std::fs::read_to_string(dbgsym::script()).unwrap();
+    let offenders: Vec<(usize, &str)> = text
+        .lines()
+        .enumerate()
+        .filter(|(_, l)| !l.trim_start().starts_with('#') && l.contains("grep -q"))
+        .map(|(i, l)| (i + 1, l.trim()))
+        .collect();
+    assert!(
+        offenders.is_empty(),
+        "split-debuginfo.sh pipes into `grep -q`, which under pipefail reports \
+         a match as a failure when the writer is still printing: {offenders:?}"
     );
 }

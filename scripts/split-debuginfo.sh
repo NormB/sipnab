@@ -54,6 +54,13 @@
 
 set -euo pipefail
 
+# No `cmd | grep -q` anywhere in this file. `grep -q` exits at its first
+# match, the command still writing dies of SIGPIPE, and pipefail turns the
+# pipeline FALSE: on macOS `nm -ap` lists thousands of symbols after the first
+# OSO entry, so the debug-map check called a binary that had one "stripped at
+# link time", and failed CI's macOS leg twice. A `grep` that sends its output
+# to /dev/null reads all of its input, so the writer always finishes.
+
 die() { printf 'split-debuginfo: %s\n' "$*" >&2; exit 1; }
 
 # THE rule: the rustc flags a release build of <target> needs so that its
@@ -118,9 +125,9 @@ split_elf() {
 
   id=$(elf_build_id "$bin")
   [ -n "$id" ] || die "$bin has no GNU build ID, so no symbol file could ever be matched to it. Link with -Wl,--build-id (build.rs adds it for Linux)."
-  elf_sections "$bin" | grep -qx '\.debug_line' \
+  elf_sections "$bin" | grep -x '\.debug_line' >/dev/null \
     || die "$bin has no .debug_line line table: it was stripped at link time, so there is nothing to split. Build with RUSTFLAGS=\"\${RUSTFLAGS:-} $(split_rustflags x86_64-unknown-linux-gnu)\": a RUSTFLAGS set elsewhere replaces --config build.rustflags"
-  elf_sections "$bin" | grep -qx '\.symtab' \
+  elf_sections "$bin" | grep -x '\.symtab' >/dev/null \
     || die "$bin has no .symtab; it was stripped before the split"
 
   objcopy=$(find_objcopy)
@@ -141,18 +148,18 @@ split_elf() {
   # section (a pointer to gdb's pretty-printers), so it is part of the loaded
   # image and the linker-stripped binaries always carried it too.
   if printf '%s\n' "$secs" | grep -v -x '\.debug_gdb_scripts' \
-       | grep -qE '^(\.symtab|\.debug_.*)$'; then
+       | grep -E '^(\.symtab|\.debug_.*)$' >/dev/null; then
     die "$bin still carries symbols or DWARF after the strip"
   fi
-  printf '%s\n' "$secs" | grep -qx '\.note\.gnu\.build-id' \
+  printf '%s\n' "$secs" | grep -x '\.note\.gnu\.build-id' >/dev/null \
     || die "the strip removed .note.gnu.build-id from $bin"
-  printf '%s\n' "$secs" | grep -qx '\.gnu_debuglink' \
+  printf '%s\n' "$secs" | grep -x '\.gnu_debuglink' >/dev/null \
     || die "$bin has no .gnu_debuglink after the split"
-  readelf -p .gnu_debuglink "$bin" | grep -qF "$(basename "$debug")" \
+  readelf -p .gnu_debuglink "$bin" | grep -F "$(basename "$debug")" >/dev/null \
     || die ".gnu_debuglink in $bin does not name $(basename "$debug")"
-  printf '%s\n' "$dsecs" | grep -qx '\.debug_line' \
+  printf '%s\n' "$dsecs" | grep -x '\.debug_line' >/dev/null \
     || die "$debug has no .debug_line line table"
-  printf '%s\n' "$dsecs" | grep -qx '\.symtab' \
+  printf '%s\n' "$dsecs" | grep -x '\.symtab' >/dev/null \
     || die "$debug has no .symtab"
   did=$(elf_build_id "$debug")
   [ "$did" = "$id" ] || die "build ID mismatch: $bin is $id, $debug is ${did:-none}"
@@ -170,7 +177,7 @@ macho_uuid() {
 # Whether a Mach-O binary still carries a debug map (N_OSO stabs naming the
 # object files its DWARF lives in).
 has_debug_map() {
-  nm -ap "$1" 2>/dev/null | grep -q ' OSO '
+  nm -ap "$1" 2>/dev/null | grep ' OSO ' >/dev/null
 }
 
 split_macho() {
@@ -189,7 +196,7 @@ split_macho() {
   dsymutil "$bin" -o "$dsym"
   did=$(macho_uuid "$dsym")
   [ "$bid" = "$did" ] || die "UUID mismatch: $bin is $bid, $dsym is ${did:-none}"
-  dwarfdump --debug-line "$dsym" | grep -q 'debug_line\[' \
+  dwarfdump --debug-line "$dsym" | grep 'debug_line\[' >/dev/null \
     || die "$dsym carries no line table"
 
   mkdir -p "$(dirname "$zip")"
