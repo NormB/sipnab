@@ -20,6 +20,27 @@ SECRETS = HERE.parent / "secrets"
 PROTOCOL = "2025-06-18"
 
 
+def sse_message(body: str) -> dict | None:
+    """The first JSON-RPC message on a `data:` line of an SSE reply, or None.
+
+    The stream opens with an EMPTY `data:` keepalive before the real payload.
+    Taking the first `data:` line therefore parsed "" and failed with a JSON
+    error that pointed nowhere near the cause. docs/mcp-deploy.md shows the
+    loop between the snippet markers as the way to read a reply.
+    """
+    # snippet:start sse-data-lines
+    for line in body.splitlines():
+        if not line.startswith("data:"):
+            continue
+        chunk = line[len("data:"):].strip()
+        if not chunk:            # keepalive frame — not an error, not a message
+            continue
+        msg = json.loads(chunk)
+        # snippet:end sse-data-lines
+        return msg
+    return None
+
+
 class Mcp:
     """One MCP HTTP session against one node."""
 
@@ -69,24 +90,14 @@ class Mcp:
         # JSON itself. Handling only one of the two works until the day the
         # server picks the other.
         if raw.lstrip().startswith("event:") or raw.lstrip().startswith("data:"):
-            # The stream opens with an EMPTY `data:` keepalive before the real
-            # payload. Taking the first `data:` line therefore parsed "" and
-            # failed with a JSON error that pointed nowhere near the cause.
-            payload = None
-            for line in raw.splitlines():
-                if not line.startswith("data:"):
-                    continue
-                candidate = line[5:].strip()
-                if candidate:
-                    payload = candidate
-                    break
-            if payload is None:
+            msg = sse_message(raw)
+            if msg is None:
                 raise SystemExit(
                     f"{self.label}: {method} -> SSE reply carried no data line: "
                     f"{raw[:200]!r}"
                 )
-            raw = payload
-        msg = json.loads(raw)
+        else:
+            msg = json.loads(raw)
         if "error" in msg:
             raise SystemExit(f"{self.label}: {method} -> {msg['error']}")
         return msg.get("result")

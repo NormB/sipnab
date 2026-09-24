@@ -29,6 +29,12 @@ call. Wire both — they are complements, not alternatives.
 
 Prometheus-compatible metrics endpoint. Returns metrics in the Prometheus text exposition format (`text/plain; version=0.0.4`).
 
+The Python, Go and JavaScript examples are the core of the `metrics` programs in
+[`clients/`](https://github.com/NormB/sipnab/blob/main/clients), which CI compiles and runs against a sipnab replaying a
+committed capture. Those programs read the base URL from `SIPNAB_URL`, default
+`http://127.0.0.1:8080`, and the token from `SIPNAB_API_KEY`, default
+`my-secret-token`.
+
 **curl:**
 
 ```bash
@@ -38,34 +44,49 @@ curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" \
 
 **Python:**
 
+<!-- snippet: clients/python/metrics.py#metrics -->
 ```python
-import requests
-
-resp = requests.get(
-    "http://127.0.0.1:8080/metrics",
-    headers={"Authorization": "Bearer my-secret-token"},
+req = Request(
+    f"{BASE}/metrics",
+    headers={"Authorization": f"Bearer {TOKEN}"},
 )
-print(resp.text)  # Prometheus text format
+with urlopen(req, timeout=10) as resp:
+    print(resp.read().decode(), end="")  # Prometheus text format
 ```
 
 **Go:**
 
+<!-- snippet: clients/go/metrics/main.go#metrics -->
 ```go
-req, _ := http.NewRequest("GET", "http://127.0.0.1:8080/metrics", nil)
-req.Header.Set("Authorization", "Bearer my-secret-token")
-resp, _ := http.DefaultClient.Do(req)
+req, err := http.NewRequest(http.MethodGet, baseURL+"/metrics", nil)
+if err != nil {
+	return err
+}
+req.Header.Set("Authorization", "Bearer "+token)
+resp, err := http.DefaultClient.Do(req)
+if err != nil {
+	return err
+}
 defer resp.Body.Close()
-body, _ := io.ReadAll(resp.Body)
-fmt.Println(string(body))
+if resp.StatusCode != http.StatusOK {
+	return fmt.Errorf("GET /metrics: %s", resp.Status)
+}
+body, err := io.ReadAll(resp.Body)
+if err != nil {
+	return err
+}
+fmt.Print(string(body)) // Prometheus text format
 ```
 
 **JavaScript (Node.js):**
 
+<!-- snippet: clients/javascript/metrics.mjs#metrics -->
 ```javascript
-const resp = await fetch("http://127.0.0.1:8080/metrics", {
-  headers: { Authorization: "Bearer my-secret-token" },
+const resp = await fetch(`${base}/metrics`, {
+  headers: { Authorization: `Bearer ${token}` },
 });
-console.log(await resp.text()); // Prometheus text format
+if (!resp.ok) throw new Error(`GET /metrics: ${resp.status} ${resp.statusText}`);
+process.stdout.write(await resp.text()); // Prometheus text format
 ```
 
 **Response** (text/plain):

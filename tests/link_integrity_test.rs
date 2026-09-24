@@ -998,7 +998,13 @@ fn wiki_intra_docs_links_resolve() {
     // symbol-file row and the release profile), +1 in
     // docs/internals/build-ci-release.md.
     // Merge of DBGSYM-1 with NM1+REG1: 940 +3 (REG1) +5 (DBGSYM-1) = 948.
-    const EXPECTED_WIKI_LINKS: usize = 948;
+    // 948 -> 952: docs/client-examples.md's new "Reference-page programs"
+    // section links the three pages whose examples the programs are (REST
+    // API, Prometheus metrics, MCP deployment) and the capture-tuning page
+    // whose `c` blocks are citations rather than examples. Attributed by
+    // measurement: with that file swapped back to HEAD the extractor finds
+    // 948.
+    const EXPECTED_WIKI_LINKS: usize = 952;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe 6d in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

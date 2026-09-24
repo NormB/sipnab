@@ -5771,7 +5771,14 @@ fn packaging_scripts_reference_existing_paths() {
     // gate that holds the no-audio set to `full` minus its named exclusions.
     // Attributed by measurement: with HEAD's release.yml swapped back in, the
     // scan reads 118.
-    const EXPECTED_REFERENCES: usize = 119;
+    // 119 -> 127: eight, all in `.github/workflows/ci.yml`, from the client
+    // programs' bar. The comments name `tests/client_snippets_test.rs`,
+    // `clients/typescript/package-lock.json`, `clients/go` and
+    // `clients/typescript/sipnab-mcp.ts`; the steps `cd clients/go`, install
+    // `clients/python/requirements-mcp.txt` and run `scripts/smoke-clients.sh`,
+    // which the smoke step's comment names too. Attributed by measurement:
+    // with HEAD's ci.yml swapped back in, the scan reads 119.
+    const EXPECTED_REFERENCES: usize = 127;
     assert_eq!(
         checked, EXPECTED_REFERENCES,
         "packaging path scan saw {checked} references, expected \

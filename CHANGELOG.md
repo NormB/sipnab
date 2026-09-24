@@ -10,6 +10,30 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Added
+
+- **Every Go, JavaScript, Python and TypeScript example on the REST, metrics
+  and MCP deployment pages is now a program CI compiles and runs.** The
+  [REST API](docs/rest-api.md), [Prometheus metrics](docs/prometheus-metrics.md)
+  and [MCP deployment](docs/mcp-deploy.md) pages showed each request in
+  several languages, and nothing compiled any of them. The Go examples
+  discarded every error with `_`, so a wrong token printed a zero value
+  instead of a 401. The Python ones needed `requests`, which the page never
+  said to install. Each example is now the core of a complete program under
+  `clients/go/`, `clients/javascript/`, `clients/python/` or
+  `clients/typescript/`. The Go, JavaScript and Python programs check the
+  HTTP status and exit non-zero on failure. The Python ones use only the
+  standard library. `tests/client_snippets_test.rs` holds every such fence
+  on those pages to a marked region of its program, byte for byte. CI runs
+  `gofmt -l`, `go vet` and `go build` on the Go programs, `node --check`
+  on the JavaScript ones, and `tsc --noEmit` on the TypeScript MCP client
+  against the SDK its lockfile pins. `scripts/smoke-clients.sh` then runs
+  every program against a sipnab replaying committed captures: each must
+  print what the captures hold, and each REST client must fail on a wrong
+  token. The MCP loop the deployment page shows for reading a reply that
+  arrives as Server-Sent Events is now the one `clients/python/mcp_probe.py`
+  runs.
+
 ### Fixed
 
 - **A `netmap:` capture on a silent link now stops on SIGTERM and at

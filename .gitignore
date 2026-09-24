@@ -89,5 +89,9 @@ e2e/playwright-report/
 # file's `_measured` block rather than by committing the reports.
 e2e/.lighthouseci/
 
+# The TypeScript MCP client's SDK, installed by `npm ci` in clients/typescript.
+# As with e2e/ above, the lockfile is tracked and the tree it installs is not.
+clients/typescript/node_modules/
+
 # The working backlog is local, never committed.
 docs/design/backlog.local.md

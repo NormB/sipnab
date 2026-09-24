@@ -740,8 +740,11 @@ fails in a way that does not look like its cause.
 arrives as Server-Sent Events, so `requests.post(...).json()` raises on the
 first character. The JSON-RPC message sits on a `data:` line, and the first
 frame carries an empty `data:` keepalive that a naive parser tries to parse and
-dies on. Skip empty payloads, then parse:
+dies on. Skip empty payloads, then parse. This is the loop
+[`clients/python/mcp_probe.py`](https://github.com/NormB/sipnab/blob/main/clients/python/mcp_probe.py) runs on every
+reply:
 
+<!-- snippet: clients/python/mcp_probe.py#sse-data-lines -->
 ```python
 for line in body.splitlines():
     if not line.startswith("data:"):
@@ -2153,6 +2156,7 @@ Common failure modes:
 
 ### Drive it from Python
 
+<!-- snippet: clients/python/sipnab_mcp.py#sipnab-mcp -->
 ```python
 """Minimal MCP client driving sipnab over stdio."""
 import asyncio
@@ -2190,12 +2194,17 @@ if __name__ == "__main__":
     asyncio.run(main(sys.argv[1] if len(sys.argv) > 1 else "capture.pcap"))
 ```
 
+This is [`clients/python/sipnab_mcp.py`](https://github.com/NormB/sipnab/blob/main/clients/python/sipnab_mcp.py). CI
+runs it against a committed capture with the SDK versions
+[`clients/python/requirements-mcp.txt`](https://github.com/NormB/sipnab/blob/main/clients/python/requirements-mcp.txt)
+pins by hash.
+
 Install + run, in this order:
 
 1. Install the MCP SDK:
 
    ```bash
-   pip install 'mcp>=1.0'
+   pip install mcp
    ```
 
 2. Run the client against a capture:
@@ -2206,6 +2215,12 @@ Install + run, in this order:
 
 ### Drive it from TypeScript
 
+This is [`clients/typescript/sipnab-mcp.ts`](https://github.com/NormB/sipnab/blob/main/clients/typescript/sipnab-mcp.ts).
+CI type-checks it with `tsc --noEmit` and runs it against a committed capture,
+with the SDK version its `package-lock.json` pins. Node.js 22.18 or later runs
+the `.ts` file directly, as `node sipnab-mcp.ts /path/to/capture.pcap`.
+
+<!-- snippet: clients/typescript/sipnab-mcp.ts#sipnab-mcp -->
 ```typescript
 // npm i @modelcontextprotocol/sdk
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";

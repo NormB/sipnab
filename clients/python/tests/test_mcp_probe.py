@@ -123,3 +123,11 @@ def test_tool_output_is_parsed_out_of_the_content_envelope(monkeypatch):
     c = client_returning(f"data: {body}\n", monkeypatch)
     c.session = "s1"
     assert c.call("capture_status") == {"dialog_count": 3}
+
+
+def test_sse_message_skips_keepalives_and_returns_the_first_payload():
+    """docs/mcp-deploy.md shows this loop as the way to read an MCP reply, so
+    the loop the page shows is the one the client runs."""
+    body = 'data:\nid: 0\nretry: 3000\n\ndata: {"jsonrpc":"2.0","id":1,"result":{}}\n'
+    assert mp.sse_message(body) == {"jsonrpc": "2.0", "id": 1, "result": {}}
+    assert mp.sse_message("data: \nid: 0\n") is None

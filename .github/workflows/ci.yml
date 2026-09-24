@@ -105,8 +105,69 @@ jobs:
           python3 -m pytest clients/python/tests -q
           python3 -m pytest scripts/tests -q
 
+      # The client programs the reference pages quote, each language held to
+      # a bar. tests/client_snippets_test.rs holds every Go, JavaScript,
+      # Python and TypeScript fence in docs/rest-api.md,
+      # docs/prometheus-metrics.md and docs/mcp-deploy.md to a region of one
+      # of these programs; this is where the programs themselves are held.
+      # Go: gofmt must have nothing to rewrite, then vet and build. JavaScript:
+      # `node --check` parses each ES module. TypeScript: `npm ci` installs
+      # exactly the tree clients/typescript/package-lock.json pins, each
+      # package fixed by its integrity hash, and tsc type-checks the MCP
+      # client against that SDK. Python's bar is the step above. The smoke
+      # step after Build then runs every one of them.
+      - name: Set up Go (Linux)
+        if: runner.os == 'Linux'
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: '1.27.1'
+          # clients/go uses the standard library only, so there is no go.sum
+          # to key a module cache on.
+          cache: false
+
+      - name: Set up Node.js (Linux)
+        if: runner.os == 'Linux'
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          # Type stripping, which runs clients/typescript/sipnab-mcp.ts
+          # directly, is on by default from Node.js 22.18.
+          node-version: '24'
+
+      - name: Check the Go, JavaScript and TypeScript clients
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          cd clients/go
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "::error::gofmt would rewrite: $unformatted"
+            exit 1
+          fi
+          go vet ./...
+          go build ./...
+          cd ../javascript
+          for program in *.mjs; do node --check "$program"; done
+          cd ../typescript
+          npm ci --ignore-scripts --no-audit --no-fund
+          npx --no-install tsc --noEmit
+
       - name: Build
         run: cargo build --all-features
+
+      # Compiling a client proves it is a program; this proves it does what
+      # its page says. scripts/smoke-clients.sh replays two committed captures
+      # behind the REST API, waits until the replay is finished, and runs every
+      # Go, JavaScript and Python REST client (each must exit 0 and print the
+      # lines the captures produce, then exit non-zero on a wrong token) and
+      # both MCP stdio clients. The MCP SDK comes from a hash-pinned file, like
+      # every other Python install in this job.
+      - name: Run every client program against a replayed capture
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          python3 -m venv .venv-mcp
+          .venv-mcp/bin/python -m pip install --require-hashes -r clients/python/requirements-mcp.txt
+          PYTHON="$PWD/.venv-mcp/bin/python" scripts/smoke-clients.sh target/debug/sipnab
 
       - name: Test
         env:

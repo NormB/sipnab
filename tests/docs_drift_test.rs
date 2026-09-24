@@ -72,6 +72,13 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             "website/content/docs/internals/build-ci-release.md",
         ],
     ),
+    // TypeScript's `tsc --noEmit`, named by the MCP deployment page's "Drive it
+    // from TypeScript" section for how CI type-checks
+    // clients/typescript/sipnab-mcp.ts. The compiler's flag, not sipnab's.
+    (
+        "noEmit",
+        &["docs/mcp-deploy.md", "website/content/docs/mcp-deploy.md"],
+    ),
     // restic's and Docker's, named by the Archives section, which ranks
     // sipnab's archive password sources against the tools operators already
     // know (`restic --password-command`, `docker login --password-stdin`).
@@ -3856,7 +3863,12 @@ fn no_documentation_table_repeats_a_row() {
     // "How --hep-listen reads the transport" section (issue #301), and its
     // site mirror. Attributed by counting table separators per file against
     // HEAD: exactly those two files moved.
-    const EXPECTED_TABLES: usize = 972;
+    // 972 -> 974: the reference-page programs table in
+    // docs/client-examples.md, which lists the Go, JavaScript and Python
+    // client behind each REST and metrics example, and its site mirror
+    // website/content/docs/examples.md. Attributed by measurement: with both
+    // files swapped back to HEAD the gate reads 972.
+    const EXPECTED_TABLES: usize = 974;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

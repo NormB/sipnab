@@ -318,6 +318,16 @@ You can also paste it into <https://editor.swagger.io/>, or feed it to a client 
 
 The base URL is whatever you pass to `--api` (e.g., `http://127.0.0.1:8080`). Data endpoints use a `/v1/` prefix. Utility endpoints (`/health`, `/metrics`) have no prefix.
 
+Each Python, Go and JavaScript example below is the core of a complete program in
+[`clients/python/`](../clients/python/), [`clients/go/`](../clients/go/) or
+[`clients/javascript/`](../clients/javascript/), and CI compiles every one and runs
+it against a sipnab replaying a committed capture. The full programs add the
+imports and the error reporting. They read the base URL (`BASE`, `baseURL`,
+`base`) from `SIPNAB_URL`, default `http://127.0.0.1:8080`, and the token
+(`TOKEN`, `token`) from `SIPNAB_API_KEY`, default `my-secret-token`. The Call-ID
+or SSRC (`CALL_ID`, `callID`, `callId`, `SSRC`, `ssrc`) is the first argument,
+defaulting to the value the curl example uses.
+
 ### GET /health
 
 Health check endpoint. Returns `"ok"` with no authentication required.
@@ -330,26 +340,37 @@ curl http://127.0.0.1:8080/health
 
 **Python:**
 
+<!-- snippet: clients/python/health.py#health -->
 ```python
-import requests
-
-resp = requests.get("http://127.0.0.1:8080/health")
-print(resp.text)  # "ok"
+with urlopen(f"{BASE}/health", timeout=10) as resp:
+    print(resp.read().decode())  # "ok"
 ```
 
 **Go:**
 
+<!-- snippet: clients/go/health/main.go#health -->
 ```go
-resp, _ := http.Get("http://127.0.0.1:8080/health")
+resp, err := http.Get(baseURL + "/health")
+if err != nil {
+	return err
+}
 defer resp.Body.Close()
-body, _ := io.ReadAll(resp.Body)
+if resp.StatusCode != http.StatusOK {
+	return fmt.Errorf("GET /health: %s", resp.Status)
+}
+body, err := io.ReadAll(resp.Body)
+if err != nil {
+	return err
+}
 fmt.Println(string(body)) // "ok"
 ```
 
 **JavaScript (Node.js):**
 
+<!-- snippet: clients/javascript/health.mjs#health -->
 ```javascript
-const resp = await fetch("http://127.0.0.1:8080/health");
+const resp = await fetch(`${base}/health`);
+if (!resp.ok) throw new Error(`GET /health: ${resp.status} ${resp.statusText}`);
 console.log(await resp.text()); // "ok"
 ```
 
@@ -377,45 +398,66 @@ curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" \
 
 **Python:**
 
+<!-- snippet: clients/python/list_dialogs.py#list-dialogs -->
 ```python
-import requests
-
-resp = requests.get(
-    "http://127.0.0.1:8080/v1/dialogs",
-    headers={"Authorization": "Bearer my-secret-token"},
-    params={"state": "Failed", "limit": 10},
+query = urlencode({"state": "Failed", "limit": 10})
+req = Request(
+    f"{BASE}/v1/dialogs?{query}",
+    headers={"Authorization": f"Bearer {TOKEN}"},
 )
-data = resp.json()
+with urlopen(req, timeout=10) as resp:
+    data = json.load(resp)
 for d in data["dialogs"]:
     print(f"{d['call_id']}: {d['state']} ({d['msg_count']} msgs)")
 ```
 
 **Go:**
 
+<!-- snippet: clients/go/list-dialogs/main.go#list-dialogs -->
 ```go
-req, _ := http.NewRequest("GET",
-    "http://127.0.0.1:8080/v1/dialogs?state=Failed&limit=10", nil)
-req.Header.Set("Authorization", "Bearer my-secret-token")
-resp, _ := http.DefaultClient.Do(req)
+req, err := http.NewRequest(http.MethodGet,
+	baseURL+"/v1/dialogs?state=Failed&limit=10", nil)
+if err != nil {
+	return err
+}
+req.Header.Set("Authorization", "Bearer "+token)
+resp, err := http.DefaultClient.Do(req)
+if err != nil {
+	return err
+}
 defer resp.Body.Close()
+if resp.StatusCode != http.StatusOK {
+	return fmt.Errorf("GET /v1/dialogs: %s", resp.Status)
+}
 
 var result struct {
-    Dialogs []map[string]interface{} `json:"dialogs"`
-    Total   int                      `json:"total"`
+	Dialogs []struct {
+		CallID   string `json:"call_id"`
+		State    string `json:"state"`
+		MsgCount int    `json:"msg_count"`
+	} `json:"dialogs"`
+	Total int `json:"total"`
 }
-json.NewDecoder(resp.Body).Decode(&result)
+if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	return err
+}
+for _, d := range result.Dialogs {
+	fmt.Printf("%s: %s (%d msgs)\n", d.CallID, d.State, d.MsgCount)
+}
 fmt.Printf("%d dialogs (%d total)\n", len(result.Dialogs), result.Total)
 ```
 
 **JavaScript (Node.js):**
 
+<!-- snippet: clients/javascript/list-dialogs.mjs#list-dialogs -->
 ```javascript
-const resp = await fetch(
-  "http://127.0.0.1:8080/v1/dialogs?state=Failed&limit=10",
-  { headers: { Authorization: "Bearer my-secret-token" } }
-);
+const resp = await fetch(`${base}/v1/dialogs?state=Failed&limit=10`, {
+  headers: { Authorization: `Bearer ${token}` },
+});
+if (!resp.ok) throw new Error(`GET /v1/dialogs: ${resp.status} ${resp.statusText}`);
 const { dialogs, total } = await resp.json();
 dialogs.forEach(d => console.log(`${d.call_id}: ${d.state}`));
+console.log(`${dialogs.length} dialogs (${total} total)`);
 ```
 
 **Response:**
@@ -526,45 +568,58 @@ curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" \
 
 **Python:**
 
+<!-- snippet: clients/python/get_dialog.py#get-dialog -->
 ```python
-import requests
-from urllib.parse import quote
-
-call_id = "12013223@203.0.113.195"
-resp = requests.get(
-    f"http://127.0.0.1:8080/v1/dialogs/{quote(call_id, safe='')}",
-    headers={"Authorization": "Bearer my-secret-token"},
+req = Request(
+    f"{BASE}/v1/dialogs/{quote(CALL_ID, safe='')}",
+    headers={"Authorization": f"Bearer {TOKEN}"},
 )
-dialog = resp.json()
+with urlopen(req, timeout=10) as resp:
+    dialog = json.load(resp)
 # REST returns an aggregated dialog — `msg_count`, not the messages themselves.
 print(f"State: {dialog['state']}, Messages: {dialog['msg_count']}")
 ```
 
 **Go:**
 
+<!-- snippet: clients/go/get-dialog/main.go#get-dialog -->
 ```go
-callID := url.PathEscape("12013223@203.0.113.195")
-req, _ := http.NewRequest("GET",
-    "http://127.0.0.1:8080/v1/dialogs/"+callID, nil)
-req.Header.Set("Authorization", "Bearer my-secret-token")
-resp, _ := http.DefaultClient.Do(req)
+req, err := http.NewRequest(http.MethodGet,
+	baseURL+"/v1/dialogs/"+url.PathEscape(callID), nil)
+if err != nil {
+	return err
+}
+req.Header.Set("Authorization", "Bearer "+token)
+resp, err := http.DefaultClient.Do(req)
+if err != nil {
+	return err
+}
 defer resp.Body.Close()
+if resp.StatusCode != http.StatusOK {
+	return fmt.Errorf("GET /v1/dialogs/%s: %s", callID, resp.Status)
+}
 
-var dialog map[string]interface{}
-json.NewDecoder(resp.Body).Decode(&dialog)
-fmt.Printf("State: %s\n", dialog["state"])
+// REST returns an aggregated dialog: `msg_count`, not the messages themselves.
+var dialog struct {
+	State    string `json:"state"`
+	MsgCount int    `json:"msg_count"`
+}
+if err := json.NewDecoder(resp.Body).Decode(&dialog); err != nil {
+	return err
+}
+fmt.Printf("State: %s, Messages: %d\n", dialog.State, dialog.MsgCount)
 ```
 
 **JavaScript (Node.js):**
 
+<!-- snippet: clients/javascript/get-dialog.mjs#get-dialog -->
 ```javascript
-const callId = encodeURIComponent("12013223@203.0.113.195");
-const resp = await fetch(
-  `http://127.0.0.1:8080/v1/dialogs/${callId}`,
-  { headers: { Authorization: "Bearer my-secret-token" } }
-);
+const resp = await fetch(`${base}/v1/dialogs/${encodeURIComponent(callId)}`, {
+  headers: { Authorization: `Bearer ${token}` },
+});
+if (!resp.ok) throw new Error(`GET /v1/dialogs/${callId}: ${resp.status} ${resp.statusText}`);
 const dialog = await resp.json();
-console.log(`State: ${dialog.state}`);
+console.log(`State: ${dialog.state}, Messages: ${dialog.msg_count}`);
 ```
 
 **Response:**
@@ -771,16 +826,14 @@ curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" \
 
 **Python:**
 
+<!-- snippet: clients/python/dialog_report.py#dialog-report -->
 ```python
-import requests
-from urllib.parse import quote
-
-call_id = "12013223@203.0.113.195"
-resp = requests.get(
-    f"http://127.0.0.1:8080/v1/dialogs/{quote(call_id, safe='')}/report",
-    headers={"Authorization": "Bearer my-secret-token"},
+req = Request(
+    f"{BASE}/v1/dialogs/{quote(CALL_ID, safe='')}/report",
+    headers={"Authorization": f"Bearer {TOKEN}"},
 )
-report = resp.json()
+with urlopen(req, timeout=10) as resp:
+    report = json.load(resp)
 # `diagnosis` carries four booleans plus `hints` — there is no `summary` field.
 hints = report["diagnosis"]["hints"]
 print(f"Diagnosis: {'; '.join(hints) if hints else 'no issues detected'}")
@@ -788,26 +841,47 @@ print(f"Diagnosis: {'; '.join(hints) if hints else 'no issues detected'}")
 
 **Go:**
 
+<!-- snippet: clients/go/dialog-report/main.go#dialog-report -->
 ```go
-callID := url.PathEscape("12013223@203.0.113.195")
-req, _ := http.NewRequest("GET",
-    "http://127.0.0.1:8080/v1/dialogs/"+callID+"/report", nil)
-req.Header.Set("Authorization", "Bearer my-secret-token")
-resp, _ := http.DefaultClient.Do(req)
+req, err := http.NewRequest(http.MethodGet,
+	baseURL+"/v1/dialogs/"+url.PathEscape(callID)+"/report", nil)
+if err != nil {
+	return err
+}
+req.Header.Set("Authorization", "Bearer "+token)
+resp, err := http.DefaultClient.Do(req)
+if err != nil {
+	return err
+}
 defer resp.Body.Close()
+if resp.StatusCode != http.StatusOK {
+	return fmt.Errorf("GET /v1/dialogs/%s/report: %s", callID, resp.Status)
+}
 
-var report map[string]interface{}
-json.NewDecoder(resp.Body).Decode(&report)
+// `diagnosis` carries four booleans plus `hints`; there is no `summary` field.
+var report struct {
+	Diagnosis struct {
+		Hints []string `json:"hints"`
+	} `json:"diagnosis"`
+}
+if err := json.NewDecoder(resp.Body).Decode(&report); err != nil {
+	return err
+}
+if hints := report.Diagnosis.Hints; len(hints) > 0 {
+	fmt.Println("Diagnosis: " + strings.Join(hints, "; "))
+} else {
+	fmt.Println("Diagnosis: no issues detected")
+}
 ```
 
 **JavaScript (Node.js):**
 
+<!-- snippet: clients/javascript/dialog-report.mjs#dialog-report -->
 ```javascript
-const callId = encodeURIComponent("12013223@203.0.113.195");
-const resp = await fetch(
-  `http://127.0.0.1:8080/v1/dialogs/${callId}/report`,
-  { headers: { Authorization: "Bearer my-secret-token" } }
-);
+const resp = await fetch(`${base}/v1/dialogs/${encodeURIComponent(callId)}/report`, {
+  headers: { Authorization: `Bearer ${token}` },
+});
+if (!resp.ok) throw new Error(`GET /v1/dialogs/${callId}/report: ${resp.status} ${resp.statusText}`);
 const report = await resp.json();
 console.log(JSON.stringify(report, null, 2));
 ```
@@ -1599,45 +1673,62 @@ curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" \
 
 **Python:**
 
+<!-- snippet: clients/python/list_streams.py#list-streams -->
 ```python
-import requests
-
-resp = requests.get(
-    "http://127.0.0.1:8080/v1/streams",
-    headers={"Authorization": "Bearer my-secret-token"},
-    params={"mos_below": 3.0},
+query = urlencode({"mos_below": 3.0})
+req = Request(
+    f"{BASE}/v1/streams?{query}",
+    headers={"Authorization": f"Bearer {TOKEN}"},
 )
-data = resp.json()
+with urlopen(req, timeout=10) as resp:
+    data = json.load(resp)
 for s in data["streams"]:
     print(f"SSRC {s['ssrc']}: MOS={s['mos']:.1f}, loss={s['loss_pct']:.1f}%")
 ```
 
 **Go:**
 
+<!-- snippet: clients/go/list-streams/main.go#list-streams -->
 ```go
-req, _ := http.NewRequest("GET",
-    "http://127.0.0.1:8080/v1/streams?mos_below=3.0", nil)
-req.Header.Set("Authorization", "Bearer my-secret-token")
-resp, _ := http.DefaultClient.Do(req)
+req, err := http.NewRequest(http.MethodGet,
+	baseURL+"/v1/streams?mos_below=3.0", nil)
+if err != nil {
+	return err
+}
+req.Header.Set("Authorization", "Bearer "+token)
+resp, err := http.DefaultClient.Do(req)
+if err != nil {
+	return err
+}
 defer resp.Body.Close()
+if resp.StatusCode != http.StatusOK {
+	return fmt.Errorf("GET /v1/streams: %s", resp.Status)
+}
 
 var result struct {
-    Streams []map[string]interface{} `json:"streams"`
-    Total   int                      `json:"total"`
+	Streams []struct {
+		SSRC    string  `json:"ssrc"`
+		MOS     float64 `json:"mos"`
+		LossPct float64 `json:"loss_pct"`
+	} `json:"streams"`
+	Total int `json:"total"`
 }
-json.NewDecoder(resp.Body).Decode(&result)
+if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	return err
+}
 for _, s := range result.Streams {
-    fmt.Printf("SSRC %s: MOS=%.1f\n", s["ssrc"], s["mos"])
+	fmt.Printf("SSRC %s: MOS=%.1f, loss=%.1f%%\n", s.SSRC, s.MOS, s.LossPct)
 }
 ```
 
 **JavaScript (Node.js):**
 
+<!-- snippet: clients/javascript/list-streams.mjs#list-streams -->
 ```javascript
-const resp = await fetch(
-  "http://127.0.0.1:8080/v1/streams?mos_below=3.0",
-  { headers: { Authorization: "Bearer my-secret-token" } }
-);
+const resp = await fetch(`${base}/v1/streams?mos_below=3.0`, {
+  headers: { Authorization: `Bearer ${token}` },
+});
+if (!resp.ok) throw new Error(`GET /v1/streams: ${resp.status} ${resp.statusText}`);
 const { streams } = await resp.json();
 streams.forEach(s =>
   console.log(`SSRC ${s.ssrc}: MOS=${s.mos.toFixed(1)}, loss=${s.loss_pct.toFixed(1)}%`)
@@ -1810,37 +1901,54 @@ curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" \
 
 **Python:**
 
+<!-- snippet: clients/python/get_stream.py#get-stream -->
 ```python
-import requests
-
-resp = requests.get(
-    "http://127.0.0.1:8080/v1/streams/0x1a2b3c4d",
-    headers={"Authorization": "Bearer my-secret-token"},
+req = Request(
+    f"{BASE}/v1/streams/{quote(SSRC, safe='')}",
+    headers={"Authorization": f"Bearer {TOKEN}"},
 )
-stream = resp.json()
+with urlopen(req, timeout=10) as resp:
+    stream = json.load(resp)
 print(f"Codec: {stream['codec']}, Packets: {stream['packets']}")
 ```
 
 **Go:**
 
+<!-- snippet: clients/go/get-stream/main.go#get-stream -->
 ```go
-req, _ := http.NewRequest("GET",
-    "http://127.0.0.1:8080/v1/streams/0x1a2b3c4d", nil)
-req.Header.Set("Authorization", "Bearer my-secret-token")
-resp, _ := http.DefaultClient.Do(req)
+req, err := http.NewRequest(http.MethodGet,
+	baseURL+"/v1/streams/"+url.PathEscape(ssrc), nil)
+if err != nil {
+	return err
+}
+req.Header.Set("Authorization", "Bearer "+token)
+resp, err := http.DefaultClient.Do(req)
+if err != nil {
+	return err
+}
 defer resp.Body.Close()
+if resp.StatusCode != http.StatusOK {
+	return fmt.Errorf("GET /v1/streams/%s: %s", ssrc, resp.Status)
+}
 
-var stream map[string]interface{}
-json.NewDecoder(resp.Body).Decode(&stream)
-fmt.Printf("Codec: %s, Packets: %.0f\n", stream["codec"], stream["packets"])
+var stream struct {
+	Codec   string `json:"codec"` // empty when no codec was identified
+	Packets int    `json:"packets"`
+}
+if err := json.NewDecoder(resp.Body).Decode(&stream); err != nil {
+	return err
+}
+fmt.Printf("Codec: %s, Packets: %d\n", stream.Codec, stream.Packets)
 ```
 
 **JavaScript (Node.js):**
 
+<!-- snippet: clients/javascript/get-stream.mjs#get-stream -->
 ```javascript
-const resp = await fetch("http://127.0.0.1:8080/v1/streams/0x1a2b3c4d", {
-  headers: { Authorization: "Bearer my-secret-token" },
+const resp = await fetch(`${base}/v1/streams/${encodeURIComponent(ssrc)}`, {
+  headers: { Authorization: `Bearer ${token}` },
 });
+if (!resp.ok) throw new Error(`GET /v1/streams/${ssrc}: ${resp.status} ${resp.statusText}`);
 const stream = await resp.json();
 console.log(`Codec: ${stream.codec}, Packets: ${stream.packets}`);
 ```
@@ -2226,14 +2334,14 @@ curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" \
 
 **Python:**
 
+<!-- snippet: clients/python/stats.py#stats -->
 ```python
-import requests
-
-resp = requests.get(
-    "http://127.0.0.1:8080/v1/stats",
-    headers={"Authorization": "Bearer my-secret-token"},
+req = Request(
+    f"{BASE}/v1/stats",
+    headers={"Authorization": f"Bearer {TOKEN}"},
 )
-stats = resp.json()
+with urlopen(req, timeout=10) as resp:
+    stats = json.load(resp)
 d = stats["dialogs"]
 print(f"Dialogs: {d['total']} total, {d['active']} active, {d['failed']} failed")
 t = stats["timing"]
@@ -2242,24 +2350,44 @@ print(f"PDD: p50={t['pdd_p50_ms']}ms, p95={t['pdd_p95_ms']}ms")
 
 **Go:**
 
+<!-- snippet: clients/go/stats/main.go#stats -->
 ```go
-req, _ := http.NewRequest("GET", "http://127.0.0.1:8080/v1/stats", nil)
-req.Header.Set("Authorization", "Bearer my-secret-token")
-resp, _ := http.DefaultClient.Do(req)
+req, err := http.NewRequest(http.MethodGet, baseURL+"/v1/stats", nil)
+if err != nil {
+	return err
+}
+req.Header.Set("Authorization", "Bearer "+token)
+resp, err := http.DefaultClient.Do(req)
+if err != nil {
+	return err
+}
 defer resp.Body.Close()
+if resp.StatusCode != http.StatusOK {
+	return fmt.Errorf("GET /v1/stats: %s", resp.Status)
+}
 
-var stats map[string]interface{}
-json.NewDecoder(resp.Body).Decode(&stats)
-dialogs := stats["dialogs"].(map[string]interface{})
-fmt.Printf("Total: %.0f, Active: %.0f\n", dialogs["total"], dialogs["active"])
+var stats struct {
+	Dialogs struct {
+		Total  int `json:"total"`
+		Active int `json:"active"`
+		Failed int `json:"failed"`
+	} `json:"dialogs"`
+}
+if err := json.NewDecoder(resp.Body).Decode(&stats); err != nil {
+	return err
+}
+d := stats.Dialogs
+fmt.Printf("Dialogs: %d total, %d active, %d failed\n", d.Total, d.Active, d.Failed)
 ```
 
 **JavaScript (Node.js):**
 
+<!-- snippet: clients/javascript/stats.mjs#stats -->
 ```javascript
-const resp = await fetch("http://127.0.0.1:8080/v1/stats", {
-  headers: { Authorization: "Bearer my-secret-token" },
+const resp = await fetch(`${base}/v1/stats`, {
+  headers: { Authorization: `Bearer ${token}` },
 });
+if (!resp.ok) throw new Error(`GET /v1/stats: ${resp.status} ${resp.statusText}`);
 const stats = await resp.json();
 const { dialogs, timing } = stats;
 console.log(`Dialogs: ${dialogs.total} total, ${dialogs.active} active`);
