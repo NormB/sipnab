@@ -10,9 +10,9 @@
 //! the plaintext went out on" and "these are the bytes that happened to be in
 //! the buffer".
 
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::net::{IpAddr, Ipv4Addr};
 
-use sipnab_bpf_types::{FLAG_HAS_TUPLE, FLAG_TRUNCATED, MAX_PAYLOAD, TlsRecord};
+use sipnab_bpf_types::{FLAG_TRUNCATED, MAX_PAYLOAD, TlsRecord};
 
 #[cfg(feature = "native")]
 use crate::capture::channel::PacketTx;
@@ -27,70 +27,30 @@ const IP_PROTO_TCP: u8 = 6;
 /// would be invented — is testable without a kernel.
 #[must_use]
 pub fn decode(raw: &[u8], ordinal: u64) -> Option<Packet> {
-    let rec = read_record(raw)?;
-
-    // Only what the application wrote, bounded by what the record can hold.
-    // The kernel truncated at MAX_PAYLOAD and said so; nothing past that may
-    // be read here either.
-    let available = raw.len() - TlsRecord::HEADER_LEN;
-    let usable = (rec.len as usize).min(MAX_PAYLOAD).min(available);
-    if usable == 0 {
-        return None;
-    }
-    let data = &raw[TlsRecord::HEADER_LEN..TlsRecord::HEADER_LEN + usable];
-    if !crate::sip::is_sip_message(data) {
+    // The payload is bounded inside `read` by `len`, MAX_PAYLOAD and the
+    // bytes that arrived: the kernel truncated at MAX_PAYLOAD and said so, and
+    // nothing past that may be read here either.
+    let (rec, data) = TlsRecord::read(raw)?;
+    if data.is_empty() || !crate::sip::is_sip_message(data) {
         return None;
     }
 
-    let end = rec
-        .comm
-        .iter()
-        .position(|&b| b == 0)
-        .unwrap_or(rec.comm.len());
-    let comm = String::from_utf8_lossy(&rec.comm[..end])
+    let comm = String::from_utf8_lossy(rec.command())
         .trim()
         .replace('/', "_");
 
     // The whole point of this backend, and the one thing it must not fake.
-    let (src, dst, sport, dport) = if rec.flags & FLAG_HAS_TUPLE != 0 {
-        match rec.family {
-            sipnab_bpf_types::FAMILY_IPV4 => {
-                let s = IpAddr::V4(Ipv4Addr::new(
-                    rec.saddr[0],
-                    rec.saddr[1],
-                    rec.saddr[2],
-                    rec.saddr[3],
-                ));
-                let d = IpAddr::V4(Ipv4Addr::new(
-                    rec.daddr[0],
-                    rec.daddr[1],
-                    rec.daddr[2],
-                    rec.daddr[3],
-                ));
-                (s, d, rec.sport, rec.dport)
-            }
-            sipnab_bpf_types::FAMILY_IPV6 => (
-                IpAddr::V6(Ipv6Addr::from(rec.saddr)),
-                IpAddr::V6(Ipv6Addr::from(rec.daddr)),
-                rec.sport,
-                rec.dport,
-            ),
-            // A family sipnab does not carry. Reported as no peer rather than
-            // as a peer it cannot name.
-            _ => (
-                IpAddr::V4(Ipv4Addr::UNSPECIFIED),
-                IpAddr::V4(Ipv4Addr::UNSPECIFIED),
-                0,
-                0,
-            ),
-        }
-    } else {
-        (
+    // `socket_addrs` answers `None` without FLAG_HAS_TUPLE and for a family
+    // sipnab does not carry, and either is reported as no peer rather than as
+    // a peer it cannot name.
+    let (src, dst, sport, dport) = match rec.socket_addrs() {
+        Some((s, d)) => (s.ip(), d.ip(), s.port(), d.port()),
+        None => (
             IpAddr::V4(Ipv4Addr::UNSPECIFIED),
             IpAddr::V4(Ipv4Addr::UNSPECIFIED),
             0,
             0,
-        )
+        ),
     };
 
     let mut pkt = Packet::with_pre_parsed(
@@ -125,49 +85,6 @@ pub fn decode(raw: &[u8], ordinal: u64) -> Option<Packet> {
         );
     }
     Some(pkt)
-}
-
-/// Read the record header **by field**, never by hand-counted offset.
-///
-/// This function exists because hand-counted offsets were wrong once already
-/// and the tests were wrong in the same way, so they agreed with each other and
-/// not with the kernel: `sport` sat at 48 and was read from 64. Every address
-/// came back as `0.0.0.0:0` on a capture where the kernel had recorded the
-/// peer perfectly well.
-///
-/// Copying into the shared `#[repr(C)]` type makes the layout the single
-/// source of truth for both halves — the same reason the type lives in its own
-/// crate. Returns `None` for a record too short to hold a header rather than
-/// decoding a partial one.
-fn read_record(raw: &[u8]) -> Option<TlsRecord> {
-    if raw.len() < TlsRecord::HEADER_LEN {
-        return None;
-    }
-    // Zeroed, then overwritten with as much as arrived: a record carrying a
-    // short payload is shorter than the full struct, and the tail is padding
-    // this never reads.
-    let mut rec = TlsRecord {
-        pid: 0,
-        tid: 0,
-        len: 0,
-        flags: 0,
-        saddr: [0; 16],
-        daddr: [0; 16],
-        sport: 0,
-        dport: 0,
-        family: 0,
-        _pad: 0,
-        comm: [0; 16],
-        data: [0; MAX_PAYLOAD],
-    };
-    let n = raw.len().min(size_of::<TlsRecord>());
-    // SAFETY: `rec` is `#[repr(C)]` plain data with no padding the compiler
-    // chose and no pointers, so any byte pattern is a valid value; `n` is
-    // bounded by both buffers.
-    unsafe {
-        std::ptr::copy_nonoverlapping(raw.as_ptr(), std::ptr::from_mut(&mut rec).cast::<u8>(), n);
-    }
-    Some(rec)
 }
 
 /// Present a perf sample as one contiguous record.
@@ -325,6 +242,8 @@ pub fn attach_failed(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sipnab_bpf_types::FLAG_HAS_TUPLE;
+    use std::net::Ipv6Addr;
 
     /// Build a record **through the shared type**, exactly as the kernel does.
     ///
@@ -542,6 +461,7 @@ mod loader_tests {
     //! parser needs, and what one ring event turns into.
     use super::*;
     use crate::capture::channel::packet_channel;
+    use sipnab_bpf_types::FLAG_HAS_TUPLE;
 
     const INVITE: &[u8] = b"INVITE sip:b@example.net SIP/2.0\r\nCall-ID: x\r\n\r\n";
 

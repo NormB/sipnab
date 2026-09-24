@@ -7,7 +7,7 @@
 # anything it cannot prove. Anything added here has to compile there too.
 [package]
 name = "sipnab-bpf-types"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
 rust-version = "1.98"
 license = "MIT OR Apache-2.0"

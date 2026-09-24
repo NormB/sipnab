@@ -96,7 +96,7 @@ processing thread, but a test that passes and a test that raced are
 indistinguishable to `cargo test`.
 
 The borrow checker does not help here either
-— it stops at `unsafe`, and most of this crate's 130 `unsafe` blocks are libc
+— it stops at `unsafe`, and most of this crate's 129 `unsafe` blocks are libc
 FFI, concentrated in privilege dropping ([`privilege.rs`](https://github.com/NormB/sipnab/blob/main/src/privilege.rs)
 and [`process_isolation.rs`](https://github.com/NormB/sipnab/blob/main/src/process_isolation.rs)) and capture setup.
 Recount with `grep -rc 'unsafe {' src/` rather than trusting that figure — this
@@ -375,7 +375,8 @@ enumeration. -->
 
 `cargo fmt --all -- --check`; vale and codespell over the paths CI gives them;
 clippy (`--features full`, `-D warnings`); the
-full test suite; no `unwrap()`, `expect()` or abort macro (`panic!`,
+full test suite; the `sipnab-bpf-types` crate's own tests and doctests
+(gate 2b), which the suite leaves out because it tests the sipnab package only; no `unwrap()`, `expect()` or abort macro (`panic!`,
 `unreachable!`, `todo!`, `unimplemented!`) in production code, as
 [`scripts/check-unwrap.py`](https://github.com/NormB/sipnab/blob/main/scripts/check-unwrap.py) reads it — a
 `// gate: <macro> because <reason>` line above an abort macro excuses that one

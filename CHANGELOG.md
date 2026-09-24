@@ -12,6 +12,24 @@ entry that carries them.
 
 ### Added
 
+- **`sipnab-bpf-types` 0.1.2 shows how its records are read, and reads
+  them itself.** The crate behind `--uprobe-backend bpf` had no example on its
+  docs.rs page, and the rules a reader must get right lived only in sipnab's
+  private decoder. Its README, now also its docs.rs front page, opens with
+  what the crate powers and how an operator turns that capture on, and links
+  the [uprobe walkthrough](docs/uprobe-walkthrough.md#walkthrough-the-ebpf-backend).
+  New public functions carry the reading rules: `TlsRecord::read` refuses a
+  sample shorter than the header and bounds the payload by `len`,
+  `MAX_PAYLOAD` and the bytes that arrived, and `TlsRecord::socket_addrs`
+  reports a peer only under `FLAG_HAS_TUPLE`. `command`, `header_bytes` and
+  `ZEROED` complete them. sipnab's decoder calls them and its private copy
+  is gone, so sipnab now requires `sipnab-bpf-types` 0.1.2. Every example on
+  the page runs as a doctest and asserts, and the pre-commit hook and CI now
+  run that crate's tests, which neither ran before.
+  `tests/crate_front_page_test.rs` holds this page to the same rules as
+  sipnab's own front page. The `crates-io` release job publishes 0.1.2 with
+  the next sipnab release.
+
 - **`--reg-flood` takes its counting window and transaction timeout from you.**
   The detector counted refused credentialed REGISTERs inside a fixed
   one-second window and dropped any challenge that arrived more than 32 seconds

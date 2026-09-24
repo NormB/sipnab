@@ -456,6 +456,23 @@ if [ "$TEST_RC" -ne 0 ] || echo "$TEST_OUTPUT" | grep -q "FAILED\|error\["; then
 fi
 echo -e "${GREEN}OK${NC}"
 
+# ── 2b. The sipnab-bpf-types crate's own tests and doctests ────────
+# Step 2 tests the sipnab package only: `cargo test` without `-p` or
+# `--workspace` leaves the other members out. sipnab-bpf-types is published,
+# its README is its docs.rs front page, and the examples on it are doctests
+# that assert how a perf sample is read. Nothing ran them before this step, so
+# a broken example would have reached crates.io unnoticed. Kept out of step 2's
+# log on purpose: the homepage count is sipnab's suite, and CI counts the same.
+echo -n "  sipnab-bpf-types tests and doctests... "
+if BPF_TYPES_OUT=$(cargo test -p sipnab-bpf-types --no-fail-fast --color never 2>&1); then
+    echo -e "${GREEN}OK${NC}"
+else
+    echo -e "${RED}FAIL${NC}"
+    printf '%s\n' "$BPF_TYPES_OUT" | grep -E 'FAILED|panicked|^error' | head -n 20 || true
+    echo "  Reproduce: cargo test -p sipnab-bpf-types --no-fail-fast"
+    exit 1
+fi
+
 # ── 3. No unwrap()/expect()/panic!/unreachable! in production code ─
 echo -n "  No unwrap/expect/panic in production... "
 # The script's EXIT STATUS is the signal; it prints offenders to stderr.

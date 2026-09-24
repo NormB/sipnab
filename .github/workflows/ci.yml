@@ -177,6 +177,16 @@ jobs:
             exit 1
           fi
 
+      - name: Test the sipnab-bpf-types crate
+        # The Test step covers the sipnab package only, because `cargo test`
+        # without `-p` or `--workspace` leaves the other members out. This
+        # crate is published, and the examples on its README, which is also
+        # its docs.rs front page, are doctests that assert how a perf sample
+        # is read. Its own step, so its tests stay out of test-output.txt and
+        # the published count above stays sipnab's suite. The pre-commit hook
+        # runs the same command.
+        run: cargo test -p sipnab-bpf-types --no-fail-fast
+
       - name: Clippy
         # --all-targets so bench and test-target code is lint-gated too
         # (previously only the report-only SARIF job covered those).

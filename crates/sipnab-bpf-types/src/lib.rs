@@ -1,28 +1,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! The record the BPF program writes and sipnab reads.
-//!
-//! **One definition, two very different compilers.** The kernel half of the
-//! uprobe backend is a `no_std` crate built for `bpfel-unknown-none` with a
-//! nightly toolchain; the host half is ordinary sipnab. They exchange bytes
-//! through a perf ring, so the layout has to match exactly — and the way that
-//! goes wrong is not a compile error, it is a host that decodes a plausible SIP
-//! message out of misaligned fields.
-//!
-//! So this crate exists to be the single definition. It is `no_std` and has no
-//! dependencies, because everything here has to compile for a target with no
-//! allocator, no `std`, and a verifier that rejects anything it cannot prove.
-//!
-//! # Why the layout is spelled out
-//!
-//! `#[repr(C)]`, fixed-size arrays, and explicit padding. Rust's default
-//! representation gives no guarantee about field order, so a `repr(Rust)`
-//! struct written by one compiler and read by another is undefined in practice
-//! as well as in principle. The padding is named rather than implicit for the
-//! same reason: a hole the compiler chooses is a hole the two halves can
-//! disagree about.
-
+#![doc = include_str!("../README.md")]
 #![no_std]
+
+#[cfg(not(target_arch = "bpf"))]
+use core::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
 /// The largest plaintext one record carries.
 ///
@@ -98,6 +80,207 @@ impl TlsRecord {
     pub const HEADER_LEN: usize = core::mem::size_of::<TlsRecord>() - MAX_PAYLOAD;
 }
 
+impl TlsRecord {
+    /// A record with every byte zero, for filling in only the fields that
+    /// matter.
+    ///
+    /// Arrays longer than 32 elements have no `Default`, so this stands in for
+    /// one. A constant, not a function, so nothing 2 KiB long is ever built on
+    /// a BPF stack.
+    ///
+    /// ```
+    /// use sipnab_bpf_types::{FLAG_HAS_TUPLE, TlsRecord};
+    ///
+    /// let rec = TlsRecord { pid: 7, flags: FLAG_HAS_TUPLE, ..TlsRecord::ZEROED };
+    /// assert_eq!((rec.pid, rec.len, rec.family), (7, 0, 0));
+    /// assert!(rec.data.iter().all(|&b| b == 0));
+    /// ```
+    pub const ZEROED: Self = Self {
+        pid: 0,
+        tid: 0,
+        len: 0,
+        flags: 0,
+        saddr: [0; 16],
+        daddr: [0; 16],
+        sport: 0,
+        dport: 0,
+        family: 0,
+        _pad: 0,
+        comm: [0; 16],
+        data: [0; MAX_PAYLOAD],
+    };
+}
+
+/// The host's side of the contract: reading what the program wrote.
+///
+/// Not compiled for the BPF target. The reader returns a whole `TlsRecord` by
+/// value, and 2 KiB on the stack is four times what the BPF verifier allows,
+/// so the kernel half keeps its records in a map and never calls these.
+#[cfg(not(target_arch = "bpf"))]
+impl TlsRecord {
+    /// Read one perf sample: the record's header, and the payload that is
+    /// safe to use.
+    ///
+    /// The sample is `used_len(payload)` bytes, shorter than the struct, so it
+    /// cannot be viewed in place. The header is copied out **by the struct's
+    /// own layout**, never at offsets counted by hand. That is how sipnab once
+    /// read `sport` from 64 when the kernel wrote it at 48, and reported every
+    /// peer as `0.0.0.0:0`. The returned record's `data` holds the bytes that
+    /// arrived and zeros after them.
+    ///
+    /// The payload is the smallest of `len`, [`MAX_PAYLOAD`] and the bytes
+    /// that arrived after the header. Returns `None` for a sample shorter than
+    /// [`HEADER_LEN`](Self::HEADER_LEN) rather than decoding part of a header.
+    /// Every field is in the host's byte order, the order the kernel on the
+    /// same machine wrote.
+    ///
+    /// ```
+    /// use sipnab_bpf_types::{MAX_PAYLOAD, TlsRecord};
+    ///
+    /// let sent = TlsRecord { pid: 99, len: 7, ..TlsRecord::ZEROED };
+    /// let mut sample = sent.header_bytes().to_vec();
+    /// sample.extend_from_slice(b"OPTIONS sip:a SIP/2.0\r\n");
+    ///
+    /// // `len` bounds the payload even when more bytes arrived.
+    /// let (rec, payload) = TlsRecord::read(&sample).unwrap();
+    /// assert_eq!((rec.pid, payload), (99, &b"OPTIONS"[..]));
+    ///
+    /// // A header and nothing else is a record with nothing written.
+    /// let bare = TlsRecord::read(&sample[..TlsRecord::HEADER_LEN]).unwrap();
+    /// assert!(bare.1.is_empty());
+    ///
+    /// // One byte short of a header is refused.
+    /// assert!(TlsRecord::read(&sample[..TlsRecord::HEADER_LEN - 1]).is_none());
+    /// assert!(sample.len() - TlsRecord::HEADER_LEN <= MAX_PAYLOAD);
+    /// ```
+    #[must_use]
+    pub fn read(sample: &[u8]) -> Option<(TlsRecord, &[u8])> {
+        if sample.len() < Self::HEADER_LEN {
+            return None;
+        }
+        let mut rec = Self::ZEROED;
+        let n = sample.len().min(core::mem::size_of::<TlsRecord>());
+        // SAFETY: `TlsRecord` is `#[repr(C)]` plain data with its padding
+        // named and no pointers, so any byte pattern is a valid value. `n` is
+        // bounded by the sample and by the struct, and the two do not overlap.
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                sample.as_ptr(),
+                core::ptr::from_mut(&mut rec).cast::<u8>(),
+                n,
+            );
+        }
+        let arrived = sample.len() - Self::HEADER_LEN;
+        let usable = (rec.len as usize).min(MAX_PAYLOAD).min(arrived);
+        Some((rec, &sample[Self::HEADER_LEN..Self::HEADER_LEN + usable]))
+    }
+
+    /// The source and destination the write went out on, or `None` when the
+    /// program did not observe them.
+    ///
+    /// `None` unless [`FLAG_HAS_TUPLE`] is set: without it the address fields
+    /// hold whatever was in the buffer, and a guessed peer would look exactly
+    /// like an observed one. `None` too for a family other than
+    /// [`FAMILY_IPV4`] or [`FAMILY_IPV6`]. IPv4 is the first four bytes of
+    /// each address, and IPv6 all sixteen.
+    ///
+    /// ```
+    /// use core::net::SocketAddr;
+    /// use sipnab_bpf_types::{FAMILY_IPV4, FLAG_HAS_TUPLE, TlsRecord};
+    ///
+    /// let mut rec = TlsRecord {
+    ///     flags: FLAG_HAS_TUPLE,
+    ///     family: FAMILY_IPV4,
+    ///     sport: 40000,
+    ///     dport: 5061,
+    ///     ..TlsRecord::ZEROED
+    /// };
+    /// rec.saddr = [10, 0, 0, 5, 0xff, 0xff, 0xff, 0xff, 0, 0, 0, 0, 0, 0, 0, 0];
+    /// rec.daddr[..4].copy_from_slice(&[10, 0, 0, 9]);
+    /// assert_eq!(
+    ///     rec.socket_addrs(),
+    ///     Some((
+    ///         "10.0.0.5:40000".parse::<SocketAddr>().unwrap(),
+    ///         "10.0.0.9:5061".parse::<SocketAddr>().unwrap(),
+    ///     ))
+    /// );
+    ///
+    /// rec.flags = 0;
+    /// assert_eq!(rec.socket_addrs(), None, "no FLAG_HAS_TUPLE, no peer");
+    /// ```
+    #[must_use]
+    pub fn socket_addrs(&self) -> Option<(SocketAddr, SocketAddr)> {
+        if self.flags & FLAG_HAS_TUPLE == 0 {
+            return None;
+        }
+        let (src, dst) = match self.family {
+            FAMILY_IPV4 => {
+                let v4 = |a: &[u8; 16]| IpAddr::V4(Ipv4Addr::new(a[0], a[1], a[2], a[3]));
+                (v4(&self.saddr), v4(&self.daddr))
+            }
+            FAMILY_IPV6 => (
+                IpAddr::V6(Ipv6Addr::from(self.saddr)),
+                IpAddr::V6(Ipv6Addr::from(self.daddr)),
+            ),
+            _ => return None,
+        };
+        Some((
+            SocketAddr::new(src, self.sport),
+            SocketAddr::new(dst, self.dport),
+        ))
+    }
+
+    /// The command name of the process that wrote, up to its first NUL.
+    ///
+    /// ```
+    /// use sipnab_bpf_types::TlsRecord;
+    ///
+    /// let mut rec = TlsRecord::ZEROED;
+    /// rec.comm[..8].copy_from_slice(b"kamailio");
+    /// assert_eq!(rec.command(), b"kamailio");
+    /// ```
+    #[must_use]
+    pub fn command(&self) -> &[u8] {
+        let end = self
+            .comm
+            .iter()
+            .position(|&b| b == 0)
+            .unwrap_or(self.comm.len());
+        &self.comm[..end]
+    }
+
+    /// The first [`HEADER_LEN`](Self::HEADER_LEN) bytes of this record, as
+    /// the program puts them on the ring ahead of the payload.
+    ///
+    /// For building samples in a test, and the inverse of [`read`](Self::read).
+    ///
+    /// ```
+    /// use sipnab_bpf_types::TlsRecord;
+    ///
+    /// let sent = TlsRecord { pid: 1234, tid: 1235, ..TlsRecord::ZEROED };
+    /// let sample = sent.header_bytes();
+    /// assert_eq!(sample.len(), TlsRecord::HEADER_LEN);
+    /// let (back, payload) = TlsRecord::read(&sample).unwrap();
+    /// assert_eq!((back.pid, back.tid), (1234, 1235));
+    /// assert!(payload.is_empty());
+    /// ```
+    #[must_use]
+    pub fn header_bytes(&self) -> [u8; Self::HEADER_LEN] {
+        let mut out = [0u8; Self::HEADER_LEN];
+        // SAFETY: `TlsRecord` is `#[repr(C)]` plain data with its padding
+        // named, so its first `HEADER_LEN` bytes are all initialized. `out` is
+        // exactly that long, and the two do not overlap.
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                core::ptr::from_ref(self).cast::<u8>(),
+                out.as_mut_ptr(),
+                Self::HEADER_LEN,
+            );
+        }
+        out
+    }
+}
+
 /// Where the fields of `struct sock` sit, in bytes from its start.
 ///
 /// **Read from the running kernel's own BTF by the host and handed to the
@@ -152,6 +335,195 @@ unsafe impl aya::Pod for TlsRecord {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    extern crate std;
+    use core::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+    use std::vec::Vec;
+
+    const INVITE: &[u8] = b"INVITE sip:b@example.net SIP/2.0\r\nCall-ID: x\r\n\r\n";
+
+    /// A record with a tuple, an IPv4 pair and a command name. The bytes after
+    /// the first four of each address are deliberately not zero: an IPv4
+    /// reader looking anywhere else reads them.
+    fn ipv4_record(payload: &[u8]) -> TlsRecord {
+        let mut rec = TlsRecord {
+            pid: 4242,
+            tid: 4243,
+            len: u32::try_from(payload.len()).unwrap(),
+            flags: FLAG_HAS_TUPLE,
+            sport: 5061,
+            dport: 5060,
+            family: FAMILY_IPV4,
+            ..TlsRecord::ZEROED
+        };
+        rec.saddr = [192, 0, 2, 10, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9];
+        rec.daddr = [198, 51, 100, 7, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8];
+        rec.comm[..8].copy_from_slice(b"opensips");
+        rec.data[..payload.len()].copy_from_slice(payload);
+        rec
+    }
+
+    /// The sample the program submits: the record's own memory, cut to
+    /// `used_len`. Viewed through a pointer, as the perf ring does, and never
+    /// through `header_bytes`, so a reader and a writer that agree with each
+    /// other and not with the kernel cannot pass here together.
+    fn sample(rec: &TlsRecord, payload: usize) -> Vec<u8> {
+        // SAFETY: `TlsRecord` is `#[repr(C)]` plain data with its padding
+        // named, so every byte of it is initialized and viewing it as bytes is
+        // exactly what the perf ring does.
+        let bytes = unsafe {
+            core::slice::from_raw_parts(
+                core::ptr::from_ref(rec).cast::<u8>(),
+                core::mem::size_of::<TlsRecord>(),
+            )
+        };
+        bytes[..TlsRecord::used_len(payload)].to_vec()
+    }
+
+    #[test]
+    fn a_short_sample_decodes() {
+        let rec = ipv4_record(INVITE);
+        let raw = sample(&rec, INVITE.len());
+        assert!(raw.len() < core::mem::size_of::<TlsRecord>());
+        let (got, payload) = TlsRecord::read(&raw).expect("a whole header decodes");
+        assert_eq!(payload, INVITE);
+        assert_eq!((got.pid, got.tid, got.len), (4242, 4243, 48));
+        assert_eq!(got.flags, FLAG_HAS_TUPLE);
+        assert_eq!(&got.data[..INVITE.len()], INVITE);
+        assert!(got.data[INVITE.len()..].iter().all(|&b| b == 0));
+    }
+
+    #[test]
+    fn a_sample_shorter_than_the_header_is_refused() {
+        let raw = sample(&ipv4_record(INVITE), INVITE.len());
+        for n in 0..TlsRecord::HEADER_LEN {
+            assert!(
+                TlsRecord::read(&raw[..n]).is_none(),
+                "a {n}-byte sample has no whole header and must not decode"
+            );
+        }
+        let (_, payload) = TlsRecord::read(&raw[..TlsRecord::HEADER_LEN])
+            .expect("a bare header is a record with nothing written");
+        assert!(payload.is_empty());
+    }
+
+    #[test]
+    fn the_payload_stops_at_len() {
+        let mut rec = ipv4_record(INVITE);
+        rec.len = 6;
+        let raw = sample(&rec, INVITE.len());
+        let (_, payload) = TlsRecord::read(&raw).unwrap();
+        assert_eq!(payload, b"INVITE");
+    }
+
+    #[test]
+    fn the_payload_stops_at_the_bytes_that_arrived() {
+        let mut rec = ipv4_record(INVITE);
+        rec.len = u32::try_from(MAX_PAYLOAD).unwrap();
+        let raw = sample(&rec, INVITE.len());
+        let (_, payload) = TlsRecord::read(&raw).unwrap();
+        assert_eq!(payload, INVITE, "a claimed length must not widen the read");
+    }
+
+    #[test]
+    fn the_payload_stops_at_max_payload() {
+        // A write larger than one record, and a sample with trailing bytes:
+        // perf pads a sample to a multiple of eight bytes, so more can arrive
+        // than was sent.
+        let mut rec = ipv4_record(&[b'x'; MAX_PAYLOAD]);
+        rec.len = 5000;
+        rec.flags |= FLAG_TRUNCATED;
+        let mut raw = sample(&rec, MAX_PAYLOAD);
+        raw.extend_from_slice(&[0xAA; 7]);
+        let (got, payload) = TlsRecord::read(&raw).unwrap();
+        assert_eq!(payload.len(), MAX_PAYLOAD);
+        assert!(payload.iter().all(|&b| b == b'x'));
+        assert_eq!(got.len, 5000, "the length the application passed survives");
+        assert_ne!(got.flags & FLAG_TRUNCATED, 0);
+    }
+
+    #[test]
+    fn no_tuple_flag_means_no_peer() {
+        let mut rec = ipv4_record(INVITE);
+        rec.flags = FLAG_TRUNCATED;
+        let (got, _) = TlsRecord::read(&sample(&rec, INVITE.len())).unwrap();
+        assert_eq!(
+            got.socket_addrs(),
+            None,
+            "addresses left in the buffer must not be reported as observed"
+        );
+    }
+
+    #[test]
+    fn an_unknown_family_means_no_peer() {
+        let mut rec = ipv4_record(INVITE);
+        rec.family = 777;
+        let (got, _) = TlsRecord::read(&sample(&rec, INVITE.len())).unwrap();
+        assert_eq!(got.socket_addrs(), None);
+    }
+
+    #[test]
+    fn ipv4_sits_in_the_first_four_bytes() {
+        let (got, _) = TlsRecord::read(&sample(&ipv4_record(INVITE), INVITE.len())).unwrap();
+        let (src, dst) = got.socket_addrs().expect("the tuple was observed");
+        assert_eq!(
+            src,
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 10)), 5061)
+        );
+        assert_eq!(
+            dst,
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(198, 51, 100, 7)), 5060)
+        );
+    }
+
+    #[test]
+    fn ipv6_uses_all_sixteen_bytes() {
+        let s = Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1);
+        let d = Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 2);
+        let mut rec = ipv4_record(INVITE);
+        rec.family = FAMILY_IPV6;
+        rec.saddr = s.octets();
+        rec.daddr = d.octets();
+        let (got, _) = TlsRecord::read(&sample(&rec, INVITE.len())).unwrap();
+        assert_eq!(
+            got.socket_addrs(),
+            Some((
+                SocketAddr::new(IpAddr::V6(s), 5061),
+                SocketAddr::new(IpAddr::V6(d), 5060)
+            ))
+        );
+    }
+
+    #[test]
+    fn the_command_stops_at_its_first_nul() {
+        let rec = ipv4_record(INVITE);
+        assert_eq!(rec.command(), b"opensips");
+        let full = TlsRecord {
+            comm: *b"sixteen-bytes-ok",
+            ..TlsRecord::ZEROED
+        };
+        assert_eq!(full.command(), b"sixteen-bytes-ok");
+        assert_eq!(TlsRecord::ZEROED.command(), b"");
+    }
+
+    /// `header_bytes` is what the program puts on the ring ahead of the
+    /// payload, byte for byte.
+    #[test]
+    fn header_bytes_are_the_records_own_memory() {
+        let rec = ipv4_record(INVITE);
+        assert_eq!(
+            &rec.header_bytes()[..],
+            &sample(&rec, 0)[..],
+            "header_bytes must match the kernel's view of the same record"
+        );
+    }
+
+    #[test]
+    fn the_zeroed_record_is_all_zero() {
+        let z = TlsRecord::ZEROED;
+        assert!(z.header_bytes().iter().all(|&b| b == 0));
+        assert!(z.data.iter().all(|&b| b == 0));
+    }
 
     /// The layout is the contract. If any of these move, a host reading a
     /// record written by a kernel program built from a different revision

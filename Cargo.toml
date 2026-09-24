@@ -87,8 +87,10 @@ targets = ["x86_64-unknown-linux-gnu"]
 
 [dependencies]
 # `version` as well as `path`: crates.io resolves the published dependency by
-# version, and `cargo package` refuses a path dependency without one.
-sipnab-bpf-types = { version = "0.1.0", path = "crates/sipnab-bpf-types" }
+# version, and `cargo package` refuses a path dependency without one. 0.1.2 is
+# the first release with `TlsRecord::read`, which the uprobe decoder calls, so
+# a published sipnab must never resolve an older one.
+sipnab-bpf-types = { version = "0.1.2", path = "crates/sipnab-bpf-types" }
 # Fast, DoS-resistant (random-seeded, AES-based) hasher for the per-packet
 # stores. Replaces the default SipHash on the hot path — every RTP packet does a
 # StreamStore key lookup — while keeping flood resistance for attacker-controlled
