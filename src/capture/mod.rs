@@ -59,6 +59,10 @@ pub mod merged;
 // it: libpcap's netmap module reports filter-rejected frames as reads (NM1).
 #[cfg(feature = "native")]
 pub(crate) mod next_ex;
+// A thread that breaks a live read libpcap will not return from by itself:
+// the netmap module's read on a silent link (NM2).
+#[cfg(feature = "native")]
+pub(crate) mod breaker;
 #[cfg(feature = "native")]
 pub mod output_guard;
 pub mod packet;

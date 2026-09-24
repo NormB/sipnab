@@ -8,6 +8,20 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Fixed
+
+- **A `netmap:` capture on a silent link now stops on SIGTERM and at
+  `--duration`.** libpcap's netmap module waits for a frame inside its own
+  read and goes back to waiting after every poll timeout or signal, so on a
+  link with no traffic sipnab never got control back to see that it had been
+  asked to stop. A small thread beside each live capture now calls
+  `pcap_breakloop` when a stop is due, and the capture ends at once without
+  reading anything still queued. Measured on a silent veth pair: the older
+  build was still running 15 seconds after SIGTERM in 10 runs of 10, and the
+  fixed build exited in 30 to 71 ms, and at 3.0 seconds under `--duration 3s`.
+
 ## [0.5.189] - 2026-09-24
 
 ### Added

@@ -169,11 +169,14 @@ sits idle. An idle capture survived only because no packet had yet set a
 length to copy. Later builds check that a read delivered a packet before they
 copy it.
 
-A `netmap:` capture on a link that carries no traffic at all does not stop on
-SIGTERM until a frame arrives. libpcap's netmap module waits for a frame inside
-its own read and never hands control back to sipnab while the link is silent.
-Measured on the same host, a capture on a veth pair with IPv6 turned off was
-still running 8 seconds after SIGTERM.
+A `netmap:` capture on a link that carries no traffic at all used not to stop
+on SIGTERM until a frame arrived, and `--duration` could not end it either.
+libpcap's netmap module waits for a frame inside its own read and never hands
+control back while the link is silent. Later builds break that read with
+`pcap_breakloop` when a stop is due. Measured on the same host, on a veth pair
+with IPv6 turned off: the older build was still running 15 seconds after
+SIGTERM in 10 runs of 10, and the fixed build exited in 30 to 71 ms, and at
+3.0 seconds under `--duration 3s`.
 
 macOS builds libpcap on BPF alone, with netmap and DPDK both left out, and
 Homebrew on macOS installs the same darwin tarball rather than bringing a

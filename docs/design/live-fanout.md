@@ -305,7 +305,7 @@ to answer is what replaces `final_sweep`'s single well-defined moment.
 ### Instruments
 
 `KERNEL_DROPPED` / `IFACE_DROPPED`
-([`live.rs:907`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L907)) are the loss counters;
+([`live.rs:945`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L945)) are the loss counters;
 `sipnab_capture_queue_depth_packets` and
 `sipnab_capture_backpressure_blocks_total` are the regime discriminator
 ([section 3, "What widening CAPTURE buys, exactly"](#3-what-widening-capture-buys-exactly)).

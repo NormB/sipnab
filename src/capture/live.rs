@@ -27,6 +27,11 @@ use crate::signals;
 #[cfg(unix)]
 const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
 
+/// How often the capture's breaker checks whether to break a read that will
+/// not return by itself (NM2): the loop's own idle cadence, so a stop takes
+/// effect as quickly on a netmap link as on any other.
+const BREAKER_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
+
 /// pcap read timeout (ms) used when immediate mode is on — the interactive
 /// path, where libpcap is pinned to TPACKET_V2.
 ///
@@ -677,6 +682,25 @@ fn capture_live_group(
         config.snaplen
     );
 
+    // Some reads never come back on their own: libpcap's netmap module loops
+    // inside `pcap_next_ex` until a frame arrives, so on a silent link the
+    // checks at the top of this loop never run and SIGTERM was ignored (NM2).
+    // The breaker watches the same rule from beside the loop and calls
+    // `pcap_breakloop`, which returns the read as `NoMorePackets` below.
+    // Dropped with this function, which joins its thread.
+    let _breaker = {
+        let handle = cap.breakloop_handle();
+        let duration = config.duration;
+        super::breaker::Breaker::spawn(
+            format!("capture-stop:{device}"),
+            move || {
+                super::breaker::stop_due(signals::shutdown_requested(), start.elapsed(), duration)
+            },
+            move || handle.breakloop(),
+            BREAKER_INTERVAL,
+        )
+    };
+
     loop {
         // Ask libpcap what the kernel threw away. On a timer rather than per
         // packet: `pcap_stats` is a syscall, and a capture that polls it per
@@ -697,8 +721,12 @@ fn capture_live_group(
             }
         }
 
-        if signals::shutdown_requested() {
-            tracing::debug!("Shutdown requested, stopping live capture");
+        if super::breaker::stop_due(
+            signals::shutdown_requested(),
+            start.elapsed(),
+            config.duration,
+        ) {
+            tracing::debug!("Stop requested or --duration reached, stopping live capture");
             break;
         }
 
@@ -713,13 +741,6 @@ fn capture_live_group(
             && count >= max_count
         {
             tracing::debug!("Reached packet count limit ({max_count})");
-            break;
-        }
-
-        if let Some(duration) = config.duration
-            && start.elapsed() >= duration
-        {
-            tracing::debug!("Reached duration limit ({duration:?})");
             break;
         }
 
@@ -785,6 +806,12 @@ fn capture_live_group(
                     }
                 }
                 continue;
+            }
+            // The breaker's `pcap_breakloop` (see `_breaker` above): a stop,
+            // taken now, with whatever the kernel still holds left unread.
+            Err(pcap::Error::NoMorePackets) => {
+                tracing::debug!("Read on '{device}' broken off for a stop");
+                break;
             }
             Err(e) => {
                 tracing::error!("Capture error on '{device}': {e}");
@@ -1062,6 +1089,45 @@ mod fanout_plan_tests {
             (0, 1),
             "the live capture loop must read with next_ex::next_packet, once, \
              and never call Capture::next_packet directly"
+        );
+    }
+
+    /// NM2: libpcap's netmap read never returns on a silent link, so the loop's
+    /// own stop checks never run. The loop has to start a `Breaker` on its
+    /// handle, stop on the same rule the breaker uses, and take the broken
+    /// read (`NoMorePackets`) as a stop rather than a fatal error. No test can
+    /// hand this loop a netmap device, so the wiring is pinned on the source
+    /// and the behavior on the lab (see `capture::breaker`).
+    #[test]
+    fn the_live_loop_can_be_broken_out_of_a_read_that_never_returns() {
+        let src = include_str!("live.rs");
+        let body = src.split("#[cfg(test)]").next().expect("source has a body");
+        let code: String = body
+            .lines()
+            .map(|l| l.split("//").next().unwrap_or(""))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let group = code
+            .split("fn capture_live_group(")
+            .nth(1)
+            .expect("capture_live_group exists");
+        assert!(
+            group.contains("breaker::Breaker::spawn(") && group.contains("cap.breakloop_handle()"),
+            "capture_live_group must start a Breaker on its own pcap handle"
+        );
+        assert_eq!(
+            group.matches("breaker::stop_due(").count(),
+            2,
+            "the loop and its breaker must both stop on breaker::stop_due, one rule"
+        );
+        let arm = group
+            .split("Err(pcap::Error::NoMorePackets) =>")
+            .nth(1)
+            .expect("the loop must handle NoMorePackets, the broken read, itself");
+        let arm = arm.split("Err(").next().unwrap_or("");
+        assert!(
+            arm.contains("break;") && !arm.contains("return Err"),
+            "a broken read must end the loop as a stop, not as a capture error"
         );
     }
 
