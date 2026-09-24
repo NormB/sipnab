@@ -24,6 +24,7 @@
 //! undelivered read as `Ok(None)`.
 
 use std::ffi::c_int;
+use std::ptr::NonNull;
 
 use pcap::{Packet, PacketHeader};
 
@@ -31,7 +32,11 @@ use pcap::{Packet, PacketHeader};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum NextEx {
     /// A packet was delivered: the header and the data both point at it.
-    Packet,
+    ///
+    /// The pointers are carried as `NonNull`, built by [`classify`] with
+    /// `NonNull::new`, so the null check and the pointers the reader
+    /// dereferences are one value. A null cannot reach the dereference.
+    Packet(NonNull<PacketHeader>, NonNull<u8>),
     /// libpcap reported a read but delivered no packet. The netmap module does
     /// this for every packet its BPF filter rejects. The frame is gone, and the
     /// header pointer, if set, describes an older packet.
@@ -48,7 +53,9 @@ pub(crate) enum NextEx {
 /// header and data pointers it left behind.
 ///
 /// Pure, so the rule is testable without a netmap host. The pointers are only
-/// compared with null, never read.
+/// checked for null, never read. A delivered read comes back holding them as
+/// `NonNull`, which is the only way [`read_with`] can get a pointer to
+/// dereference.
 ///
 /// # Arguments
 ///
@@ -63,8 +70,13 @@ pub(crate) enum NextEx {
 /// define for `pcap_next_ex`, reads as [`NextEx::Error`].
 pub(crate) fn classify(retcode: c_int, header: *const PacketHeader, data: *const u8) -> NextEx {
     match retcode {
-        r if r >= 1 && (header.is_null() || data.is_null()) => NextEx::Undelivered,
-        r if r >= 1 => NextEx::Packet,
+        r if r >= 1 => match (
+            NonNull::new(header.cast_mut()),
+            NonNull::new(data.cast_mut()),
+        ) {
+            (Some(header), Some(data)) => NextEx::Packet(header, data),
+            _ => NextEx::Undelivered,
+        },
         0 => NextEx::Timeout,
         -2 => NextEx::End,
         _ => NextEx::Error,
@@ -99,15 +111,15 @@ unsafe fn read_with<'a>(
     let mut data: *const u8 = std::ptr::null();
     let retcode = read(&mut header, &mut data);
     match classify(retcode, header, data) {
-        NextEx::Packet => {
-            // SAFETY: `classify` returned `Packet`, so both pointers are
-            // non-null, and the caller's contract makes them a valid header
-            // and `caplen` bytes of data that stay put for `'a`.
+        NextEx::Packet(header, data) => {
+            // SAFETY: both pointers are `NonNull`, so neither is null, and the
+            // caller's contract makes them a valid header and `caplen` bytes
+            // of data that stay put for `'a`.
             let (header, data) = unsafe {
-                let header: &'a PacketHeader = &*header;
+                let header: &'a PacketHeader = header.as_ref();
                 (
                     header,
-                    std::slice::from_raw_parts(data, header.caplen as usize),
+                    std::slice::from_raw_parts(data.as_ptr(), header.caplen as usize),
                 )
             };
             Ok(Some(Packet::new(header, data)))
@@ -231,7 +243,11 @@ mod tests {
     fn a_delivered_read_is_a_packet_and_the_other_codes_keep_their_meaning() {
         let header = stale_header();
         let byte = 0u8;
-        assert_eq!(classify(1, &header, &byte), NextEx::Packet);
+        assert_eq!(
+            classify(1, &header, &byte),
+            NextEx::Packet(NonNull::from(&header), NonNull::from(&byte)),
+            "a delivered read carries the very pointers libpcap left behind"
+        );
         assert_eq!(
             classify(0, std::ptr::null(), std::ptr::null()),
             NextEx::Timeout
