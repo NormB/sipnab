@@ -1693,6 +1693,13 @@ fn published_binary_size_matches_the_enforced_ceiling() {
             "{doc} does not quote the {ceiling} MB ceiling from website/config.toml"
         );
     }
+    // The second quote in the install guide, in its release-gates notes. It
+    // said 17 MB while the key moved, because only the line above was pinned.
+    assert!(
+        read("docs/install.md").contains(&format!("checks the {ceiling} MB ceiling")),
+        "docs/install.md's size-ceiling note does not quote the {ceiling} MB \
+         ceiling from website/config.toml"
+    );
 
     // A claim nobody measures is the bug this replaces. The workflow step is
     // what compares it to a real artifact; without it this test only proves
@@ -5759,7 +5766,12 @@ fn packaging_scripts_reference_existing_paths() {
     // `scripts/split-debuginfo.sh` twice, `--rustflags` for RUSTFLAGS and
     // `--cargo-config` for --config. Counted per workflow against HEAD:
     // release.yml 3 -> 4, ci.yml unchanged at 3.
-    const EXPECTED_REFERENCES: usize = 118;
+    // 118 -> 119: one, in `.github/workflows/release.yml`, whose "Compute
+    // feature set" comment names `tests/release_pipeline_gate_test.rs`, the
+    // gate that holds the no-audio set to `full` minus its named exclusions.
+    // Attributed by measurement: with HEAD's release.yml swapped back in, the
+    // scan reads 118.
+    const EXPECTED_REFERENCES: usize = 119;
     assert_eq!(
         checked, EXPECTED_REFERENCES,
         "packaging path scan saw {checked} references, expected \

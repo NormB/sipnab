@@ -243,9 +243,13 @@ jobs:
         id: features
         shell: bash
         run: |
-          # No-audio set = "full minus audio". musl is ALWAYS no-audio, and not
-          # as a preference: the playback plugin is loaded with dlopen, and
-          # static musl has no dynamic loader — dlopen returns NULL with
+          # No-audio set = `full` minus `audio`, `plugins` and `vcon`, and
+          # NO_AUDIO_EXCLUSIONS in tests/release_pipeline_gate_test.rs names the
+          # same three: a feature added to `full` fails that gate until it is
+          # added here or excluded there with a reason. `archive` (ZIP and 7z
+          # input, archive passwords) is pure Rust and ships here too.
+          # musl is ALWAYS no-audio, and not as a preference: the playback
+          # plugin is loaded with dlopen, and static musl has no dynamic loader — dlopen returns NULL with
           # "Dynamic loading not supported". Compiling `audio` in would produce
           # a binary advertising a feature it cannot ever perform. (Measured;
           # the comment here previously said "impractical", which invited
@@ -253,7 +257,7 @@ jobs:
           # plugin, but only runs on musl hosts, so it is not what these
           # portable tarballs are for. The gnu `variant: noaudio` matrix entries
           # build the no-audio set with a "-noaudio" artifact suffix.
-          noaudio_set="native,tui,tls,hep,api,mcp,mcp-http,metrics"
+          noaudio_set="native,tui,tls,hep,api,mcp,mcp-http,metrics,archive"
 
           case "${{ matrix.target }}" in
             *-linux-musl)

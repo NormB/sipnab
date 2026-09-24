@@ -38,6 +38,52 @@ use super::{Encryption, Flow, Inflating, Layer, SkipReason, Stop, Walker, member
 /// The 7z method id of AES-256 with SHA-256 key derivation.
 const AES256_SHA256: &[u8] = &[0x06, 0xF1, 0x07, 0x01];
 
+/// A member's data, held to the size its header declares.
+///
+/// sevenz-rust2 checks a member's CRC only once the declared size has been
+/// read, so a decoder that stops early ends the stream with `Ok(0)` and no
+/// check at all. A wrong password makes that happen: the key decrypts to
+/// noise, and noise whose first byte is 0x00 is LZMA2's end marker. Read as
+/// is, the member is "empty" and the password looks right. Held to its size,
+/// the early end is an error, which a trial counts against the password and
+/// an ordinary read reports as a broken member.
+struct Declared<R> {
+    /// The member's data as the library decodes it.
+    inner: R,
+    /// Bytes read so far.
+    got: u64,
+    /// The size the member's header declares.
+    size: u64,
+}
+
+impl<R: Read> Declared<R> {
+    /// `inner`, held to `size` bytes.
+    fn new(inner: R, size: u64) -> Self {
+        Self {
+            inner,
+            got: 0,
+            size,
+        }
+    }
+}
+
+impl<R: Read> Read for Declared<R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        if n == 0 && !buf.is_empty() && self.got < self.size {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                format!(
+                    "the 7z member ended after {} of {} bytes",
+                    self.got, self.size
+                ),
+            ));
+        }
+        self.got += n as u64;
+        Ok(n)
+    }
+}
+
 /// Whether a `sevenz-rust2` error is its refusal of an over-large
 /// NumCyclesPower. Matched on the crate's message, which a test pins, so an
 /// upgrade that rewords it fails the build rather than the bound.
@@ -274,7 +320,7 @@ impl Walker<'_> {
                 }
             }
             let mut inner = Inflating {
-                inner: data,
+                inner: Declared::new(data, entry.size()),
                 used: std::rc::Rc::clone(&self.used),
                 limit: self.limits.max_inflated_bytes,
             };
@@ -341,6 +387,34 @@ pub(crate) mod testutil {
         // low six bits are NumCyclesPower.
         let props = at + 4 + 1;
         archive[props] = (archive[props] & 0xC0) | (power & 0x3F);
+        refresh_checksums(archive)
+    }
+
+    /// `archive` with the first byte of its content AES coder's IV set to
+    /// `value`, checksums redone. AES-CBC makes the first decrypted byte the
+    /// block's decryption XOR `IV[0]`, so stepping `value` through all 256
+    /// values walks that byte through all 256 values too, for any key.
+    #[must_use]
+    pub fn with_iv_first_byte(mut archive: Vec<u8>, value: u8) -> Vec<u8> {
+        let id = [0x06u8, 0xF1, 0x07, 0x01];
+        let at = archive
+            .windows(4)
+            .rposition(|w| w == id)
+            .expect("an AES coder in the plain header");
+        // 7-Zip's AES properties: flags and NumCyclesPower, then the sizes
+        // byte, then the salt, then the IV. Bit 7 and the high nibble give the
+        // salt's size, bit 6 and the low nibble the IV's.
+        let props = at + 4 + 1;
+        let (b0, b1) = (archive[props], archive[props + 1]);
+        let salt = usize::from(b0 >> 7) + usize::from(b1 >> 4);
+        let iv = usize::from((b0 >> 6) & 1) + usize::from(b1 & 0x0F);
+        assert!(iv > 0, "the AES coder carries no IV");
+        archive[props + 2 + salt] = value;
+        refresh_checksums(archive)
+    }
+
+    /// Redo the next-header CRC and the start header's CRC after a patch.
+    fn refresh_checksums(mut archive: Vec<u8>) -> Vec<u8> {
         let next_offset = u64::from_le_bytes(archive[12..20].try_into().expect("8")) as usize;
         let next_size = u64::from_le_bytes(archive[20..28].try_into().expect("8")) as usize;
         let header = 32 + next_offset;
@@ -370,8 +444,9 @@ mod tests {
     use super::super::password::{ArchivePassword, Candidate, Keyring, Source};
     use super::super::tar::testutil::{Spec, build as build_tar};
     use super::super::*;
-    use super::testutil::{build, with_cycles_power};
-    use std::io::Write;
+    use super::Declared;
+    use super::testutil::{build, with_cycles_power, with_iv_first_byte};
+    use std::io::{Read, Write};
 
     fn pcap_bytes(payload: &[u8]) -> Vec<u8> {
         let mut out = Vec::new();
@@ -412,6 +487,32 @@ mod tests {
                 .collect(),
             None,
         )
+    }
+
+    #[test]
+    fn a_member_that_ends_before_its_declared_size_is_an_error() {
+        let mut r = Declared::new(&b"abc"[..], 5);
+        let mut out = Vec::new();
+        let e = r.read_to_end(&mut out).expect_err("short");
+        assert_eq!(e.kind(), io::ErrorKind::UnexpectedEof);
+        assert_eq!(out, b"abc");
+        assert!(e.to_string().contains("3 of 5"), "{e}");
+    }
+
+    #[test]
+    fn a_member_of_exactly_its_declared_size_reads_clean() {
+        let mut r = Declared::new(&b"abcde"[..], 5);
+        let mut out = Vec::new();
+        assert_eq!(r.read_to_end(&mut out).expect("exact"), 5);
+        assert_eq!(r.read(&mut [0u8; 4]).expect("past the end"), 0);
+    }
+
+    #[test]
+    fn an_empty_buffer_is_not_mistaken_for_the_end() {
+        let mut r = Declared::new(&b"abc"[..], 3);
+        assert_eq!(r.read(&mut []).expect("zero-length read"), 0);
+        let mut out = Vec::new();
+        assert_eq!(r.read_to_end(&mut out).expect("then the rest"), 3);
     }
 
     fn write(dir: &std::path::Path, name: &str, bytes: &[u8]) -> std::path::PathBuf {
@@ -480,6 +581,40 @@ mod tests {
                 exp.skipped
             );
         }
+    }
+
+    /// A wrong key decrypts to noise, and LZMA2 reads some noise without
+    /// complaint: a first byte of 0x00 is its end-of-stream marker, so the
+    /// member ends empty, and 0x01/0x02 open an uncompressed chunk that
+    /// passes the noise through for the CRC to catch at the end. Neither may
+    /// count as the password opening the archive. Every first byte is tried,
+    /// so both cases are hit on every run rather than one run in ~100.
+    #[test]
+    fn no_first_decrypted_byte_lets_a_wrong_password_open_a_7z() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let a = pcap_bytes(b"every-first-byte");
+        // Two key-derivation rounds instead of 2^19: the key no longer
+        // matches what the content was encrypted with, which is the point.
+        let base = with_cycles_power(build(&[("a.pcap", &a)], Some(secret("7z-iv")), false), 1);
+        let mut opened = Vec::new();
+        for value in 0..=u8::MAX {
+            let path = write(
+                tmp.path(),
+                &format!("iv{value}.7z"),
+                &with_iv_first_byte(base.clone(), value),
+            );
+            let exp = expand_with(&path, Some(&mut ring_of(&[secret("7z-iv-wrong")])));
+            if !exp.members.is_empty()
+                || !matches!(exp.skipped.as_slice(), [s] if s.reason == SkipReason::EncryptedWrongPassword)
+            {
+                opened.push((value, exp.skipped, exp.stops));
+            }
+        }
+        assert!(
+            opened.is_empty(),
+            "a wrong password opened {} of 256: {opened:?}",
+            opened.len()
+        );
     }
 
     #[test]

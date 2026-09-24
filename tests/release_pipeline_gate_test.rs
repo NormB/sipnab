@@ -431,6 +431,21 @@ fn compiled_features_names_every_feature_cargo_declares() {
     );
 }
 
+/// The combinations of ci.yml's `features:` matrix, as written.
+fn ci_feature_combos() -> Vec<String> {
+    let ci = read(".github/workflows/ci.yml");
+    // The JOB is also called `features`, so anchoring on `trim() == "features:"`
+    // alone stops at the job header and reads nothing. The matrix key is
+    // nested; require the indent.
+    ci.lines()
+        .skip_while(|l| l.trim() != "features:" || l.len() - l.trim_start().len() < 6)
+        .skip(1)
+        .take_while(|l| l.trim_start().starts_with("- ") || l.trim_start().starts_with('#'))
+        .filter_map(|l| l.trim().strip_prefix("- "))
+        .map(|s| s.trim().trim_matches(['"', '\'']).to_string())
+        .collect()
+}
+
 /// CI compiles the `bpf` combination, with its test files.
 ///
 /// The reduced-combination matrix exists because `--all-features` alone let
@@ -439,17 +454,7 @@ fn compiled_features_names_every_feature_cargo_declares() {
 #[test]
 fn the_feature_matrix_compiles_the_bpf_combo_with_its_tests() {
     let ci = read(".github/workflows/ci.yml");
-    // The JOB is also called `features`, so anchoring on `trim() == "features:"`
-    // alone stops at the job header and reads nothing. The matrix key is
-    // nested; require the indent.
-    let combos: Vec<String> = ci
-        .lines()
-        .skip_while(|l| l.trim() != "features:" || l.len() - l.trim_start().len() < 6)
-        .skip(1)
-        .take_while(|l| l.trim_start().starts_with("- ") || l.trim_start().starts_with('#'))
-        .filter_map(|l| l.trim().strip_prefix("- "))
-        .map(|s| s.trim().trim_matches(['"', '\'']).to_string())
-        .collect();
+    let combos = ci_feature_combos();
     assert!(
         combos.len() >= 11,
         "found {} feature combinations in ci.yml ({combos:?}) — the matrix \
@@ -898,4 +903,117 @@ fn the_backend_record_refuses_a_musl_binary_with_no_libpcap_banner() {
     };
     assert!(!ok, "no banner must fail a musl build:\n{out}");
     assert!(out.contains("embeds no libpcap version banner"), "{out}");
+}
+
+// ---------------------------------------------------------------------------
+// PW-MUSL: the static musl tarballs and the -noaudio packages read archives.
+// ---------------------------------------------------------------------------
+
+/// What the no-audio set leaves out of `full`, each on purpose.
+///
+/// `audio` because the playback plugin arrives through `dlopen` and static musl
+/// has no dynamic loader. `plugins` and `vcon` because no release has ever
+/// built them into these artifacts and adding either changes what a static
+/// binary carries, a decision nobody has taken. Anything else `full` gains
+/// reaches these artifacts too, unless someone names it here with a reason.
+const NO_AUDIO_EXCLUSIONS: [&str; 3] = ["audio", "plugins", "vcon"];
+
+/// Every published binary reads password-protected ZIP and 7z archives.
+///
+/// `archive` sat in `full` only, so the gnu tarballs, the macOS builds and the
+/// full packages read `-I evidence.zip` while the static musl tarballs and the
+/// `-noaudio` .deb/.rpm refused it with "archive passwords need the 'archive'
+/// feature". The cli reference told readers "the release binaries include it".
+#[test]
+fn every_published_binary_reads_password_protected_archives() {
+    let table = feature_table();
+    let mut checked = 0usize;
+    for (target, variant) in release_matrix() {
+        let outputs = feature_step_outputs(&target, &variant);
+        let features = &outputs["features"];
+        assert!(
+            expand(features, &table).contains("archive"),
+            "release.yml builds {target} (variant {variant:?}) with \
+             `--features {features}`, which does not enable `archive`, so that \
+             binary refuses `-I evidence.zip` and every archive password flag"
+        );
+        checked += 1;
+    }
+    assert!(
+        checked >= 8,
+        "expected every release matrix entry, examined {checked}"
+    );
+}
+
+/// The no-audio set is `full` minus the named exclusions, and nothing else.
+///
+/// The release comment called it "full minus audio" while it also dropped
+/// `plugins`, `vcon` and `archive`. Reading both sides from their sources
+/// means a feature added to `full` reaches the musl and `-noaudio` artifacts
+/// unless it is excluded here by name.
+#[test]
+fn the_no_audio_set_is_full_minus_its_named_exclusions() {
+    let table = feature_table();
+    // The aggregate's own name is not a feature any binary lacks.
+    let mut full = expand("full", &table);
+    full.remove("full");
+    let excluded: BTreeSet<String> = NO_AUDIO_EXCLUSIONS.iter().map(|s| s.to_string()).collect();
+    let mut checked = 0usize;
+    for (target, variant) in release_matrix() {
+        if !target.ends_with("-linux-musl") && variant != "noaudio" {
+            continue;
+        }
+        let outputs = feature_step_outputs(&target, &variant);
+        let features = &outputs["features"];
+        let got = expand(features, &table);
+        let missing: BTreeSet<String> = full.difference(&got).cloned().collect();
+        assert_eq!(
+            missing, excluded,
+            "release.yml builds {target} (variant {variant:?}) with \
+             `--features {features}`. Against `full` it lacks {missing:?}, and \
+             the named exclusions are {excluded:?}. Add the feature to \
+             noaudio_set, or name it in NO_AUDIO_EXCLUSIONS with the reason."
+        );
+        checked += 1;
+    }
+    assert_eq!(
+        checked, 4,
+        "expected two musl entries and two gnu noaudio entries, examined {checked}"
+    );
+}
+
+/// CI compiles every reduced feature set the release publishes, with its tests.
+///
+/// The release job is the only other place these combinations build, and it
+/// runs after a tag is public. A published set that is not `full` or a superset
+/// of it must be a leg of ci.yml's feature matrix, which pre-push also runs.
+#[test]
+fn ci_compiles_every_reduced_feature_set_the_release_publishes() {
+    let table = feature_table();
+    let full = expand("full", &table);
+    let legs: Vec<BTreeSet<String>> = ci_feature_combos()
+        .iter()
+        .map(|c| expand(c, &table))
+        .collect();
+    let mut reduced = 0usize;
+    for (target, variant) in release_matrix() {
+        let outputs = feature_step_outputs(&target, &variant);
+        let features = &outputs["features"];
+        let got = expand(features, &table);
+        if got.is_superset(&full) {
+            continue;
+        }
+        reduced += 1;
+        assert!(
+            legs.contains(&got),
+            "release.yml publishes {target} (variant {variant:?}) built with \
+             `--features {features}`, and no leg of ci.yml's feature matrix \
+             compiles that set. Add it, so the combination builds before a tag \
+             rather than on one."
+        );
+    }
+    assert!(
+        reduced >= 4,
+        "expected the musl and gnu noaudio entries to be reduced sets, found {reduced}"
+    );
 }

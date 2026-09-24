@@ -70,7 +70,40 @@ entry that carries them.
   [Send us a crash report](docs/troubleshooting.md#send-us-a-crash-report)
   covers what to send and how to read it.
 
+### Changed
+
+- **The static musl tarballs and the `-noaudio` packages read ZIP and 7z
+  archives, password-protected ones included.** The `archive` feature sat in
+  the `full` build only, so `-I evidence.zip`, `-I evidence.7z` and every
+  `--archive-password*` flag worked on the gnu tarballs, the full packages and
+  macOS, and did not work on the musl tarballs or the `-noaudio` `.deb` and
+  `.rpm`, where a password flag refused with "archive passwords need the
+  'archive' feature". The
+  [CLI reference](docs/cli-reference.md#archives) already said the release
+  binaries include it. Every release binary now does. The no-audio feature set
+  is `full` minus `audio`, `plugins` and `vcon`, and a release gate now fails
+  when `full` gains a feature that neither reaches these artifacts nor is
+  excluded by name. CI's feature matrix compiles both published no-audio sets
+  with their tests, so the combination builds before a tag rather than on one.
+- **The published binary size ceiling is 18 MB, up from 17 MB.** `archive` added
+  459,264 bytes to a local aarch64 musl build of the no-audio set (x86_64 is
+  unmeasured), and the 0.5.188 x86_64 musl binary sat 642,104 bytes under
+  17 MB. The ceiling record in `website/config.toml` now counts measured
+  growth that has not shipped yet against the margin, so a change like this one raises the ceiling before the
+  release that carries it rather than failing that release. The homepage and
+  the [install guide](docs/install.md) quote the new figure.
+
 ### Fixed
+
+- **A wrong password no longer opens a 7z, one time in 256.** A wrong key
+  decrypts a 7z member to noise, and when the noise's first byte was 0x00,
+  LZMA2 read it as the end of the stream. The member came out empty with no
+  error, because the 7z library checks a member's CRC only after the size its
+  header declares has been read. sipnab took the password as the right one,
+  reported the member as empty, and never tried the remaining passwords. A
+  member that ends before its declared size is now an error: a password trial
+  counts it against the password, and an ordinary read reports the member as
+  broken rather than empty.
 
 - **A `netmap:` capture no longer crashes on the first frame its filter
   drops.** libpcap's netmap module counts a frame its BPF filter rejects as a

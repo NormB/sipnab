@@ -463,8 +463,9 @@ instead: sipnab opens it, reads the captures inside, and deletes its own
 owner-only copy of each member when the run ends. A ZIP reads like a `.tgz`,
 so everything in [Archives read like directories](#archives-read-like-directories)
 applies to it, and a ZIP nested in a tar, or a tar in a ZIP, unwraps too.
-Builds with the `archive` feature read ZIP files, and the `full` build and the
-release binaries include it.
+Builds with the `archive` feature read ZIP and 7z files. The `full` build and
+every release binary include it, the static musl tarballs and the `-noaudio`
+packages among them.
 
 | Flag | Value | Default | Description |
 |------|-------|---------|-------------|
