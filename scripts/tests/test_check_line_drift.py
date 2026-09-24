@@ -266,21 +266,6 @@ def test_applying_twice_changes_nothing_the_second_time(tmp_path):
 
 # ── which pages it reads ────────────────────────────────
 
-def _isolate_from_the_hook(monkeypatch):
-    """Drop every GIT_* variable the calling git exported.
-
-    `git commit` runs the pre-commit hook with GIT_DIR and GIT_INDEX_FILE set,
-    and every child git inherits them -- `git -C <tmp>` included, because the
-    environment wins over -C's discovery. Without this the fixture's `git add`
-    wrote a phantom `docs/public.md` into the REAL repository's index on
-    2026-09-17, and only this test failing kept it out of a commit.
-    """
-    import os
-    for key in list(os.environ):
-        if key.startswith("GIT_"):
-            monkeypatch.delenv(key)
-
-
 def _repo_with(tmp_path, tracked: dict, untracked: dict):
     import subprocess
     subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
@@ -300,7 +285,6 @@ def test_an_untracked_page_under_docs_is_not_read(tmp_path, monkeypatch):
     The pre-commit hook said 212 and passed; CI said 172 and turned main red on
     2026-09-17, over a verdict the local run could not have reproduced.
     """
-    _isolate_from_the_hook(monkeypatch)
     root = _repo_with(
         tmp_path,
         tracked={"docs/public.md": "see `src/main.rs:1`\n"},
