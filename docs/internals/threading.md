@@ -92,6 +92,7 @@ well as in the TUI. `TUI` and `batch` mean it does not.
 | Thread name | Modes | Spawned by | Role |
 |---|---|---|---|
 | `capture-<device>` | both | [`capture/native.rs`](../../src/capture/native.rs) | One per live device: pcap loop producing `Packet`s. |
+| `capture-stop:<device>` | both | [`capture/breaker.rs`](../../src/capture/breaker.rs) | Beside each live capture: calls `pcap_breakloop` when a stop is due, for reads that never return by themselves (libpcap's netmap module on a silent link). Joined when its capture ends. |
 | `capture-file` | both | [`capture/native.rs`](../../src/capture/native.rs) | Offline pcap reader feeding the same channel as live capture. |
 | `capture-hep` | both | [`capture/native.rs`](../../src/capture/native.rs) | HEP/EEP receiver on the transport `--hep-listen-transport` names; packets carry asserted addresses and carry a flag HEP-origin. On `udp` this thread reads the datagrams itself. On `tcp` and `tls` it is the accept loop, and the reading happens in the per-connection threads below. |
 | (unnamed per-connection readers) | both | [`capture/hep.rs`](../../src/capture/hep.rs) | One scoped thread per accepted HEP stream connection under `--hep-listen-transport tcp` or `tls`, up to `HEP_MAX_STREAM_CONNECTIONS`, so the listener serves several agents at once and one silent peer cannot stall the rest. Scoped, so no reader outlives the listener; each polls the stop flag on its read timeout, which is what bounds the scope's join. A TLS connection completes its handshake here rather than in the accept loop, for the same reason. |
@@ -130,6 +131,10 @@ directly abandons it.
 joins. Both signals matter and neither is redundant: dropping the receiver
 ends a thread blocked on a send, and the flag ends one blocked elsewhere in its
 loop — a live capture waiting out its read timeout reaches the flag check first.
+One read never times out: libpcap's netmap module waits inside `pcap_next_ex`
+until a frame arrives, so on a silent link the flag check is never reached.
+For that read, the capture's `capture-stop:<device>` thread sees the same flag
+and calls `pcap_breakloop`, and the loop takes the broken read as a stop.
 The join has no timeout, matching the one the batch receive loop already performs
 at end of capture. A HEP listener blocked on its socket returns in milliseconds
 rather than hanging it.

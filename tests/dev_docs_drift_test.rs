@@ -781,7 +781,9 @@ fn linked_code_targets_exist() {
     // `binary_size_ceiling_mb` and links `website/config.toml`, rather than
     // quoting a ceiling figure that went stale. Attributed by diffing
     // `docs/internals/` against HEAD: that one link and no other page changed.
-    const EXPECTED_CODE_LINKS: usize = 464;
+    // 464 -> 465: threading.md's thread table names the capture-stop thread
+    // (src/capture/breaker.rs), which breaks a silent netmap read (NM2).
+    const EXPECTED_CODE_LINKS: usize = 465;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \
