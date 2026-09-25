@@ -8,6 +8,19 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Fixed
+
+- **MCP tool schemas no longer name number formats JSON Schema does not
+  define.** Every tool's input and output schema carried formats such as
+  `uint32`, `uint64`, `int64` and `double`, which the Rust schema generator
+  writes for number types: 205 of them across 69 tools. The MCP TypeScript
+  SDK's validator warned `unknown format "uint"` for each, and a strict
+  validator refuses such a schema. They are now removed from what the server
+  advertises; the `minimum: 0` bounds that say a value is unsigned stay, and
+  any format JSON Schema does define is kept.
+
 ## [0.5.190] - 2026-09-25
 
 ### Added

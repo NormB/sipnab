@@ -280,6 +280,12 @@ grep -q '"total_matched"' "$WORK/out" || fail "sipnab_mcp.py printed no find_pro
 expect "typescript sipnab-mcp (stdio)" -- node clients/typescript/sipnab-mcp.ts tests/fixtures/turn_relay.pcap
 grep -qE '^[0-9]+ tools available$' "$WORK/out" || fail "sipnab-mcp.ts printed no tool count"
 grep -q '"total_matched"' "$WORK/out" || fail "sipnab-mcp.ts printed no find_problems result"
+# The SDK validates every tool schema it is handed, and warned `unknown format
+# "uint"` for each Rust number format schemars wrote (EX4c). sipnab now
+# advertises only formats JSON Schema defines, so the warning must be gone.
+if grep -q 'unknown format' "$WORK/err"; then
+	fail "sipnab-mcp.ts: the SDK's validator does not know a schema format: $(grep -m3 'unknown format' "$WORK/err")"
+fi
 
 # ── Capability examples: what only sipnab does ───────────────────────────
 

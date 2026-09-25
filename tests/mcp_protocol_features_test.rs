@@ -654,6 +654,110 @@ fn no_input_schema_advertises_a_spelling_a_strict_client_may_refuse() {
     );
 }
 
+/// The `format` values JSON Schema 2020-12 defines (section 7.3). Anything
+/// else is an annotation a validator may reject in strict mode.
+const JSON_SCHEMA_FORMATS: &[&str] = &[
+    "date-time",
+    "date",
+    "time",
+    "duration",
+    "email",
+    "idn-email",
+    "hostname",
+    "idn-hostname",
+    "ipv4",
+    "ipv6",
+    "uri",
+    "uri-reference",
+    "iri",
+    "iri-reference",
+    "uuid",
+    "uri-template",
+    "json-pointer",
+    "relative-json-pointer",
+    "regex",
+];
+
+/// Every `format` in `schema` that JSON Schema does not define, as `path=format`.
+fn foreign_formats(schema: &Value, path: &str, out: &mut Vec<String>) {
+    match schema {
+        Value::Object(map) => {
+            if let Some(Value::String(f)) = map.get("format")
+                && !JSON_SCHEMA_FORMATS.contains(&f.as_str())
+            {
+                out.push(format!("{path}={f}"));
+            }
+            for (k, v) in map {
+                foreign_formats(v, &format!("{path}.{k}"), out);
+            }
+        }
+        Value::Array(items) => {
+            for (i, v) in items.iter().enumerate() {
+                foreign_formats(v, &format!("{path}[{i}]"), out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// EX4c: no advertised schema, input or output, names a `format` JSON Schema
+/// does not define. `schemars` writes `uint32`, `uint64`, `int64`, `double`
+/// and the like for Rust number types; the MCP TypeScript SDK's validator
+/// warns `unknown format "uint"` on every one, and a strict one refuses the
+/// schema. The bounds that carry the meaning (`minimum: 0` for an unsigned
+/// type) stay.
+#[test]
+fn no_schema_advertises_a_format_json_schema_does_not_define() {
+    let mut wire = Wire::start();
+    let tools = wire.tools();
+    assert!(
+        tools.len() > 40,
+        "only {} tool(s) listed; this gate would pass by examining nothing",
+        tools.len()
+    );
+    let mut all: Vec<String> = Vec::new();
+    for tool in &tools {
+        let name = tool["name"].as_str().unwrap_or("?");
+        foreign_formats(
+            &tool["inputSchema"],
+            &format!("{name}.inputSchema"),
+            &mut all,
+        );
+        foreign_formats(
+            &tool["outputSchema"],
+            &format!("{name}.outputSchema"),
+            &mut all,
+        );
+    }
+    assert!(
+        all.is_empty(),
+        "{} schema format(s) JSON Schema does not define:\n  {}",
+        all.len(),
+        all.iter()
+            .take(12)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join("\n  ")
+    );
+}
+
+/// The format scan finds a foreign format at depth and leaves a defined one.
+#[test]
+fn the_format_scan_reports_a_foreign_format_and_passes_a_defined_one() {
+    let planted = json!({
+        "type": "object",
+        "properties": {
+            "n": { "type": "integer", "format": "uint64", "minimum": 0 },
+            "at": { "type": "string", "format": "date-time" }
+        },
+        "$defs": { "Inner": { "type": "number", "format": "double" } }
+    });
+    let mut found = Vec::new();
+    foreign_formats(&planted, "t", &mut found);
+    found.sort();
+    assert_eq!(found, vec!["t.$defs.Inner=double", "t.properties.n=uint64"]);
+}
+
 /// The scan can actually find something, in every place it recurses.
 ///
 /// Anti-vacuity, and not a formality: the walk crosses five container keys and

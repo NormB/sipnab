@@ -67,13 +67,77 @@ pub fn portable_router<S>(
 ) -> rmcp::handler::server::router::tool::ToolRouter<S> {
     for route in router.map.values_mut() {
         let mut input = serde_json::Value::Object((*route.attr.input_schema).clone());
-        if make_portable(&mut input) > 0
+        let changed = make_portable(&mut input) + strip_foreign_formats(&mut input);
+        if changed > 0
             && let serde_json::Value::Object(obj) = input
         {
             route.attr.input_schema = std::sync::Arc::new(obj);
         }
+        // Output schemas keep their nullable unions (see above), but a
+        // foreign `format` is only an annotation on either side, so removing
+        // it changes nothing any response is validated against.
+        if let Some(output) = route.attr.output_schema.as_ref() {
+            let mut output = serde_json::Value::Object((**output).clone());
+            if strip_foreign_formats(&mut output) > 0
+                && let serde_json::Value::Object(obj) = output
+            {
+                route.attr.output_schema = Some(std::sync::Arc::new(obj));
+            }
+        }
     }
     router
+}
+
+/// The `format` values JSON Schema 2020-12 defines (section 7.3).
+const JSON_SCHEMA_FORMATS: &[&str] = &[
+    "date-time",
+    "date",
+    "time",
+    "duration",
+    "email",
+    "idn-email",
+    "hostname",
+    "idn-hostname",
+    "ipv4",
+    "ipv6",
+    "uri",
+    "uri-reference",
+    "iri",
+    "iri-reference",
+    "uuid",
+    "uri-template",
+    "json-pointer",
+    "relative-json-pointer",
+    "regex",
+];
+
+/// Remove every `format` JSON Schema does not define, returning how many.
+///
+/// `schemars` names the Rust number type: `uint32`, `uint64`, `int64`,
+/// `double` and so on. JSON Schema defines none of them, so a validator
+/// treats each as an unknown annotation; the MCP TypeScript SDK's warns
+/// `unknown format "uint"` for every one, and a strict one refuses the schema
+/// (EX4c). The keywords that carry the meaning are left: `schemars` writes
+/// `minimum: 0` beside every unsigned format, and that is what a validator
+/// enforces. A format JSON Schema does define is kept.
+pub fn strip_foreign_formats(schema: &mut Value) -> usize {
+    match schema {
+        Value::Object(map) => {
+            let mut removed = 0;
+            if let Some(Value::String(f)) = map.get("format")
+                && !JSON_SCHEMA_FORMATS.contains(&f.as_str())
+            {
+                map.remove("format");
+                removed += 1;
+            }
+            for v in map.values_mut() {
+                removed += strip_foreign_formats(v);
+            }
+            removed
+        }
+        Value::Array(items) => items.iter_mut().map(strip_foreign_formats).sum(),
+        _ => 0,
+    }
 }
 
 /// Rewrite `["T","null"]` into `"T"` wherever the property is optional.
@@ -196,7 +260,7 @@ fn walk(node: &mut Value, optional: bool, changed: &mut usize, _root: bool) {
 
 #[cfg(test)]
 mod tests {
-    use super::{make_portable, portable_count};
+    use super::{make_portable, portable_count, strip_foreign_formats};
     use serde_json::json;
 
     /// The common case, and 169 of the 172 findings: `Option<T>` becomes
@@ -299,6 +363,38 @@ mod tests {
     }
 
     /// A schema with nothing to fix is returned byte-identical.
+    /// A number format JSON Schema does not define goes; its bound stays.
+    #[test]
+    fn a_foreign_number_format_is_removed_and_its_bound_kept() {
+        let mut s = json!({
+            "type": "object",
+            "properties": { "n": { "type": "integer", "format": "uint64", "minimum": 0 } },
+            "$defs": { "D": { "type": "number", "format": "double" } }
+        });
+        assert_eq!(strip_foreign_formats(&mut s), 2);
+        assert_eq!(
+            s["properties"]["n"],
+            json!({ "type": "integer", "minimum": 0 })
+        );
+        assert_eq!(s["$defs"]["D"], json!({ "type": "number" }));
+    }
+
+    /// A format JSON Schema defines is left where it is.
+    #[test]
+    fn a_format_json_schema_defines_is_kept() {
+        let mut s = json!({
+            "type": "object",
+            "properties": {
+                "at": { "type": "string", "format": "date-time" },
+                "id": { "type": "string", "format": "uuid" },
+                "ip": { "type": "string", "format": "ipv4" }
+            }
+        });
+        let before = s.clone();
+        assert_eq!(strip_foreign_formats(&mut s), 0);
+        assert_eq!(s, before);
+    }
+
     #[test]
     fn a_schema_with_nothing_to_fix_is_unchanged() {
         let before = json!({
