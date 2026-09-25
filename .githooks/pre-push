@@ -635,7 +635,7 @@ for commit in $tag_commits; do
 	# keeps finding. Note the FULL sha: `--commit` silently returns nothing for
 	# an abbreviated one.
 	runs=$(gh run list --commit "$commit" --limit 50 \
-		--json headSha,status,conclusion,name 2>/dev/null || echo "")
+		--json databaseId,headSha,status,conclusion,name 2>/dev/null || echo "")
 	if [ -z "$runs" ]; then
 		printf '%bSKIPPED (gh unavailable or unauthenticated)%b\n' "$YELLOW" "$NC"
 		continue
@@ -643,8 +643,17 @@ for commit in $tag_commits; do
 	# The headSha filter is redundant with --commit and kept deliberately: if a
 	# future gh ignores the flag, this still refuses to judge one commit by
 	# another commit's runs.
+	#
+	# Only the NEWEST run of each workflow speaks for the commit (GATE-DUP1).
+	# A workflow can run twice on one commit -- a duplicated push event did it
+	# to every workflow on 3d91991a -- and Quality's concurrency group then
+	# cancels the older run. Judging every run refused v0.5.187 over that
+	# canceled run although the newer one passed. `databaseId` grows with
+	# creation, so the largest per name is the latest; a re-run attempt keeps
+	# its id and replaces its own result. A canceled run with nothing newer,
+	# a newer failure and a newer run still going all still block.
 	mine=$(printf '%s' "$runs" | jq -r --arg c "$commit" \
-		'[.[] | select(.headSha == $c)] | .[] | "\(.status)/\(.conclusion // "-")/\(.name)"' 2>/dev/null || echo "")
+		'[.[] | select(.headSha == $c)] | group_by(.name) | map(max_by(.databaseId // 0)) | .[] | "\(.status)/\(.conclusion // "-")/\(.name)"' 2>/dev/null || echo "")
 	if [ -z "$mine" ]; then
 		printf '%bFAIL%b\n' "$RED" "$NC"
 		printf '\n'

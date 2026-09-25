@@ -134,6 +134,24 @@ name = "throwaway"
 path = "src/main.rs"
 EOF
 
+# The two packages the workspace excludes. Since 0561a524 (2026-09-10) the
+# hook formats `fuzz/` and `bpf/` by name, so a fixture without them failed
+# every scenario at `cargo fmt --manifest-path fuzz/Cargo.toml` -- and every
+# "gate blocks X" scenario then passed without its gate ever running, because
+# a non-zero exit was all it checked. Minimal, formatted, and compiling, so
+# each scenario reaches the gate it is about; the fuzz scenario below swaps in
+# a broken one and restores this.
+write_companions() {
+	for pkg in fuzz bpf; do
+		rm -rf "${CRATE:?}/$pkg"
+		mkdir -p "$CRATE/$pkg/src"
+		printf '[package]\nname = "throwaway-%s"\nversion = "0.0.0"\nedition = "2021"\n\n[dependencies]\n' \
+			"$pkg" >"$CRATE/$pkg/Cargo.toml"
+		printf 'fn main() {}\n' >"$CRATE/$pkg/src/main.rs"
+	done
+}
+write_companions
+
 # Deliberately UNFORMATTED: bad indentation + spacing rustfmt will rewrite.
 write_unformatted() {
 	cat >"$CRATE/src/main.rs" <<'EOF'
@@ -153,7 +171,39 @@ HOOK_CORPUS_SKIP=
 
 # Run the hook with cwd = throwaway crate. We deliberately do NOT pass through
 # the caller's SKIP_FMT_HOOK; each case sets it explicitly.
+# The rest of sipnab's shape the hook reaches for by name: the release-delivery
+# gate (`cargo test --features full --test release_delivery_test`, 76d27bf8,
+# strict by design, it must not skip at push time) and the PTY suite
+# (`cargo test --features tui --test tui_e2e_test -- --ignored`). The fixture
+# carries those features and passing targets of those names rather than the
+# hook growing a way to skip them. Ensured before every run, because several scenarios
+# rewrite Cargo.toml from scratch.
+ensure_repo_shape() {
+	for feature in full tui; do
+		grep -q "^$feature = " "$CRATE/Cargo.toml" && continue
+		if grep -q '^\[features\]' "$CRATE/Cargo.toml"; then
+			awk -v f="$feature" '{ print } /^\[features\]/ { print f " = []" }' \
+				"$CRATE/Cargo.toml" >"$TMP/Cargo.toml.new"
+			mv "$TMP/Cargo.toml.new" "$CRATE/Cargo.toml"
+		else
+			printf '\n[features]\n%s = []\n' "$feature" >>"$CRATE/Cargo.toml"
+		fi
+	done
+	# The tag gate's second check (code scanning) runs this script; its own
+	# verdicts are tested in tests/code_scanning_gate_test.rs.
+	mkdir -p "$CRATE/scripts"
+	[ -f "$CRATE/scripts/code-scanning-clean.py" ] \
+		|| printf 'raise SystemExit(0)\n' >"$CRATE/scripts/code-scanning-clean.py"
+	mkdir -p "$CRATE/tests"
+	for target in release_delivery_test tui_e2e_test; do
+		[ -f "$CRATE/tests/$target.rs" ] && continue
+		printf '#[test]\nfn stands_in_for_the_gate_that_runs_this_target() {}\n' \
+			>"$CRATE/tests/$target.rs"
+	done
+}
+
 run_hook() {
+	ensure_repo_shape
 	# $1 = value for SKIP_FMT_HOOK ("" means unset)
 	# $2 = optional pre-push stdin line ("<local_ref> <local_sha> <remote_ref>
 	#      <remote_sha>"); empty means a push with nothing on stdin.
@@ -175,6 +225,14 @@ run_hook() {
 		${HOOK_CORPUS_DIR:+SIPNAB_CORPUS="$HOOK_CORPUS_DIR"} \
 		${HOOK_CORPUS_SKIP:+SKIP_CORPUS_HOOK="$HOOK_CORPUS_SKIP"} \
 		"$HOOK" <"$TMP/refs.in" ) >"$TMP/out.log" 2>&1
+}
+
+# A blocking scenario passes only if the hook blocked AND named the gate the
+# scenario is about. A bare non-zero exit is not enough: from 2026-09-10 every
+# scenario died at the fmt step before its own gate ran, and each "blocks X"
+# still passed.
+blocked_for() { # $1 = text the gate prints when it blocks; call after run_hook
+	grep -qF "$1" "$TMP/out.log"
 }
 
 # -- GIVEN unformatted Rust, THEN hook blocks --------------------------------
@@ -234,6 +292,9 @@ EOF
 if run_hook ""; then
 	bad "clippy gate did NOT block a -D warnings violation (the gate is unreachable from this fixture)"
 	sed 's/^/    /' "$TMP/out.log"
+elif ! blocked_for "Push blocked: clippy reported warnings."; then
+	bad "clippy gate blocks a -D warnings violation: blocked, but not by that gate"
+	sed 's/^/    /' "$TMP/out.log"
 else
 	ok "clippy gate blocks a -D warnings violation"
 fi
@@ -251,6 +312,9 @@ EOF
 ( cd "$CRATE" && cargo fmt --all ) >/dev/null 2>&1 || true
 if run_hook ""; then
 	bad "rustdoc gate did NOT block a broken intra-doc link"
+	sed 's/^/    /' "$TMP/out.log"
+elif ! blocked_for "Push blocked: rustdoc reported warnings"; then
+	bad "rustdoc gate blocks a broken intra-doc link: blocked, but not by that gate"
 	sed 's/^/    /' "$TMP/out.log"
 else
 	ok "rustdoc gate blocks a broken intra-doc link"
@@ -282,10 +346,13 @@ EOF
 if run_hook ""; then
 	bad "fuzz gate did NOT block a fuzz/ workspace that fails cargo check"
 	sed 's/^/    /' "$TMP/out.log"
+elif ! blocked_for "Push blocked: fuzz targets do not compile."; then
+	bad "fuzz gate blocks a fuzz/ workspace that fails cargo check: blocked, but not by that gate"
+	sed 's/^/    /' "$TMP/out.log"
 else
 	ok "fuzz gate blocks a fuzz/ workspace that fails cargo check"
 fi
-rm -rf "$CRATE/fuzz"
+write_companions
 
 # reduced feature combinations: the gate added after a new test reflected over a
 # `native`-gated module and broke `Features (tls)` on a release commit. The
@@ -515,6 +582,9 @@ make_gh "[{\"headSha\":\"$TAGGED\",\"status\":\"completed\",\"conclusion\":\"fai
 if PATH="$STUB_BIN:$PATH" run_hook "" "$REFLINE"; then
 	bad "tag gate ALLOWED a tag on a commit whose CI failed"
 	sed 's/^/    /' "$TMP/out.log"
+elif ! blocked_for "Push blocked: CI on"; then
+	bad "tag gate blocks a tag on a commit whose CI failed: blocked, but not by that gate"
+	sed 's/^/    /' "$TMP/out.log"
 else
 	ok "tag gate blocks a tag on a commit whose CI failed"
 fi
@@ -524,14 +594,76 @@ make_gh "[{\"headSha\":\"$TAGGED\",\"status\":\"in_progress\",\"conclusion\":nul
 if PATH="$STUB_BIN:$PATH" run_hook "" "$REFLINE"; then
 	bad "tag gate ALLOWED a tag while CI was still running"
 	sed 's/^/    /' "$TMP/out.log"
+elif ! blocked_for "Push blocked: CI on"; then
+	bad "tag gate blocks a tag while CI is still running: blocked, but not by that gate"
+	sed 's/^/    /' "$TMP/out.log"
 else
 	ok "tag gate blocks a tag while CI is still running"
+fi
+
+# GATE-DUP1: the same workflow can run more than once on one commit (a
+# duplicated push event on 2026-09-23 did it to every workflow on 3d91991a).
+# The newer Quality run canceled the older one through its concurrency group
+# and passed, and the gate still refused v0.5.187 over the canceled one. Only
+# the LATEST run of each workflow speaks for the commit; `databaseId` and
+# `createdAt` say which that is.
+run_json() { # $1 = id, $2 = name, $3 = status, $4 = conclusion (json literal)
+	printf '{"databaseId":%s,"createdAt":"2026-09-23T10:%02d:00Z","headSha":"%s","status":"%s","conclusion":%s,"name":"%s"}' \
+		"$1" "$1" "$TAGGED" "$3" "$4" "$2"
+}
+
+# SUPERSEDED: the older Quality run canceled, the newer one passed -> allowed.
+make_gh "[$(run_json 1 Quality completed '"cancelled"'),$(run_json 2 Quality completed '"success"'),$(run_json 3 CI completed '"success"')]"
+if PATH="$STUB_BIN:$PATH" run_hook "" "$REFLINE"; then
+	ok "tag gate allows a commit whose canceled run a newer passing run superseded"
+else
+	bad "tag gate BLOCKED a commit whose only canceled run was superseded by a passing one"
+	sed 's/^/    /' "$TMP/out.log"
+fi
+
+# LATEST FAILED: an older pass does not excuse a newer failure -> blocked.
+make_gh "[$(run_json 1 Quality completed '"success"'),$(run_json 2 Quality completed '"failure"')]"
+if PATH="$STUB_BIN:$PATH" run_hook "" "$REFLINE"; then
+	bad "tag gate ALLOWED a commit whose latest Quality run failed"
+	sed 's/^/    /' "$TMP/out.log"
+elif ! blocked_for "Push blocked: CI on"; then
+	bad "tag gate blocks a commit whose latest run of a workflow failed: blocked, but not by that gate"
+	sed 's/^/    /' "$TMP/out.log"
+else
+	ok "tag gate blocks a commit whose latest run of a workflow failed"
+fi
+
+# LONE CANCELED: nothing newer stands in for it, so it verified nothing.
+make_gh "[$(run_json 1 Quality completed '"cancelled"'),$(run_json 2 CI completed '"success"')]"
+if PATH="$STUB_BIN:$PATH" run_hook "" "$REFLINE"; then
+	bad "tag gate ALLOWED a commit whose only Quality run was canceled"
+	sed 's/^/    /' "$TMP/out.log"
+elif ! blocked_for "Push blocked: CI on"; then
+	bad "tag gate blocks a commit whose only run of a workflow was canceled: blocked, but not by that gate"
+	sed 's/^/    /' "$TMP/out.log"
+else
+	ok "tag gate blocks a commit whose only run of a workflow was canceled"
+fi
+
+# RERUN IN FLIGHT: an older pass, a newer run still going -> not green yet.
+make_gh "[$(run_json 1 Quality completed '"success"'),$(run_json 2 Quality in_progress null)]"
+if PATH="$STUB_BIN:$PATH" run_hook "" "$REFLINE"; then
+	bad "tag gate ALLOWED a commit whose latest Quality run is still running"
+	sed 's/^/    /' "$TMP/out.log"
+elif ! blocked_for "Push blocked: CI on"; then
+	bad "tag gate blocks a commit whose latest run of a workflow is still running: blocked, but not by that gate"
+	sed 's/^/    /' "$TMP/out.log"
+else
+	ok "tag gate blocks a commit whose latest run of a workflow is still running"
 fi
 
 # NO RUNS: the commit was never pushed, so nothing has verified it.
 make_gh "[]"
 if PATH="$STUB_BIN:$PATH" run_hook "" "$REFLINE"; then
 	bad "tag gate ALLOWED a tag on a commit with no CI runs"
+	sed 's/^/    /' "$TMP/out.log"
+elif ! blocked_for "Push blocked: no CI runs found"; then
+	bad "tag gate blocks a tag on a commit with no CI runs at all: blocked, but not by that gate"
 	sed 's/^/    /' "$TMP/out.log"
 else
 	ok "tag gate blocks a tag on a commit with no CI runs at all"

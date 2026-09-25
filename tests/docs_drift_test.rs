@@ -5317,6 +5317,9 @@ fn the_tree_spells_in_us_english() {
     //   `uprobe-flavour`      an accepted flag alias since 0.5.104, and the
     //   `uprobe_flavour`      test names that exist to describe it.
     //   `"flavours"`          the MCP wire key the same alias covers.
+    //   `"cancelled"`         GitHub Actions' own `conclusion` value, which
+    //                         scripts/test-pre-push.sh's stubbed `gh run list`
+    //                         output has to reproduce verbatim (GATE-DUP1).
     const EXEMPT_CONTEXTS: &[&str] = &[
         "cancelled_count",
         "aria-labelledby",
@@ -5324,6 +5327,7 @@ fn the_tree_spells_in_us_english() {
         "uprobe-flavour",
         "uprobe_flavour",
         "\"flavours\"",
+        "\"cancelled\"",
     ];
     let british: std::collections::BTreeSet<String> =
         BRITISH.iter().map(|w| (*w).to_string()).collect();
