@@ -10,6 +10,16 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Security
+
+- **`thread_local` goes from 1.1.9 to 1.1.10**, the release that fixes the two
+  advisories a dependency scanner raised against 1.1.9 (an out-of-bounds read
+  and an integer underflow). It is a transitive dependency; the fuzz lockfile
+  already had 1.1.10.
+- **The Go example clients declare Go 1.26, not 1.24.** 1.24 stopped
+  receiving security updates when 1.26 was released; CI already built them
+  with Go 1.27.1, so only the declared minimum was out of date.
+
 ### Fixed
 
 - **MCP tool schemas no longer name number formats JSON Schema does not
