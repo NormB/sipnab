@@ -68,7 +68,12 @@ runs:
       if: steps.probe.outputs.need != ''
       uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
       with:
-        path: ~/.cache/sipnab-apt
+        # One directory per package set, the same set the key names. A job
+        # that calls this action twice (the Check job does: its libraries,
+        # then tshark) used to share one directory, so the second call found
+        # the first call's .debs, took them for its own warm cache, reinstalled
+        # them and never fetched its own package (CI on 7596678e).
+        path: ~/.cache/sipnab-apt/${{ steps.probe.outputs.slug }}
         # ImageOS pins the runner image generation: a .deb built for a newer
         # Ubuntu must not be installed onto an older image just because the
         # package names matched.
@@ -80,9 +85,10 @@ runs:
       # NEED derives from `packages`, so it carries the same caveat.
       env:
         NEED: ${{ steps.probe.outputs.need }}
+        SLUG: ${{ steps.probe.outputs.slug }}
       run: |
         set -euo pipefail
-        cache="$HOME/.cache/sipnab-apt"
+        cache="$HOME/.cache/sipnab-apt/$SLUG"
         mkdir -p "$cache"
 
         # THE COMMON PATH: no network. dpkg cannot reach one.
@@ -97,6 +103,10 @@ runs:
           # need are in the main archives.
           echo "cold cache: populating from the archives"
           timeout 180 sudo apt-get update || true
+          # apt's download directory still holds whatever an earlier call in
+          # this job fetched; emptied first, so this set's cache carries this
+          # set's closure and nothing another set left behind.
+          sudo apt-get clean
           # --download-only fetches the full dependency closure, which is what
           # makes the later `dpkg -i` of the whole directory resolvable.
           # shellcheck disable=SC2086 -- a package LIST, split on purpose.
