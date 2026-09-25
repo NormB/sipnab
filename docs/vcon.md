@@ -18,7 +18,8 @@ carries the audio, inline. None of them carries a signature or any claim that
 somebody consented to anything.
 
 **A sipnab vCon records what an instrument
-saw, not what the parties said.** The honesty section below is the one part of
+saw, not what the parties said.** [What may you conclude](#someone-handed-you-a-sipnab-vcon-what-may-you-conclude),
+below, is the one part of
 this page to read before you trust a container.
 
 ## What a vCon is, and what sipnab is to it

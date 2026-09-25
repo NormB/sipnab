@@ -1021,7 +1021,11 @@ fn wiki_intra_docs_links_resolve() {
     // recipe 55 and the filter DSL rather than restating them. Attributed by
     // measurement: with either file swapped back to HEAD the extractor finds
     // 988 and 990 respectively.
-    const EXPECTED_WIKI_LINKS: usize = 993;
+    // 993 -> 998: READ-2 links five references that were plain text:
+    // docs/vcon.md "the honesty section below" (1) and docs/tls-capture.md's
+    // row numbers and "method 3"/"method 4" (4). Attributed by measurement:
+    // with either file swapped back to HEAD the extractor finds 997 and 994.
+    const EXPECTED_WIKI_LINKS: usize = 998;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe 6d in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

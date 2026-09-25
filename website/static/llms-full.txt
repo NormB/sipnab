@@ -951,7 +951,7 @@ not examples.
 
 <!-- source: docs/examples.md -->
 
-# Examples & Recipes
+# Recipes for common tasks
 
 Recipe-style walkthroughs for the things people actually want to do. Each recipe states the problem, gives exact commands, tells you what to look for in the output, and flags common pitfalls.
 
@@ -11465,7 +11465,7 @@ If the capture itself is the problem -- drops on a busy link, a full kernel ring
 
 <!-- source: docs/tui-walkthrough.md -->
 
-# TUI Walkthrough
+# Walk through the terminal UI
 
 Your first analysis in the interactive TUI, step by step — open a capture, read
 the ladder, measure a delay, and inspect RTP.
@@ -20368,9 +20368,9 @@ The SBC is the only box that saw **both** sides of the call, so its
 the PBXes first means guessing which one took the call, and usually means asking
 all of them.
 
-That ordering also matters for a reason the section on performance makes
-concrete: server-side query time is under a millisecond, while each agent
-round trip costs seconds. Following one pointer beats fanning out.
+That ordering also matters for cost: answering a query is cheap for the
+server, but every agent round trip spends seconds of model time. Following one
+pointer beats fanning out.
 
 Ask it first even when you expect the box to stay a proxy on this call. If it
 did, `find_correlated` returns nothing and you carry the same Call-ID inward,
@@ -29716,7 +29716,8 @@ carries the audio, inline. None of them carries a signature or any claim that
 somebody consented to anything.
 
 **A sipnab vCon records what an instrument
-saw, not what the parties said.** The honesty section below is the one part of
+saw, not what the parties said.** [What may you conclude](#someone-handed-you-a-sipnab-vcon-what-may-you-conclude),
+below, is the one part of
 this page to read before you trust a container.
 
 ## What a vCon is, and what sipnab is to it

@@ -1,4 +1,4 @@
-# TUI Walkthrough
+# Walk through the terminal UI
 
 Your first analysis in the interactive TUI, step by step — open a capture, read
 the ladder, measure a delay, and inspect RTP.

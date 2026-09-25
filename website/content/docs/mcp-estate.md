@@ -391,9 +391,9 @@ The SBC is the only box that saw **both** sides of the call, so its
 the PBXes first means guessing which one took the call, and usually means asking
 all of them.
 
-That ordering also matters for a reason the section on performance makes
-concrete: server-side query time is under a millisecond, while each agent
-round trip costs seconds. Following one pointer beats fanning out.
+That ordering also matters for cost: answering a query is cheap for the
+server, but every agent round trip spends seconds of model time. Following one
+pointer beats fanning out.
 
 Ask it first even when you expect the box to stay a proxy on this call. If it
 did, `find_correlated` returns nothing and you carry the same Call-ID inward,

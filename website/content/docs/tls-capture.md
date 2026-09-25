@@ -56,8 +56,10 @@ the first row you can satisfy.
 | Only reach an old TLS 1.2 server using RSA key exchange | [`--tls-key`](#6-the-old-rsa-case) | The server's private key | Decryption, **non-PFS handshakes only** |
 | None of the above | — | — | Nothing. See [what does not work](#what-does-not-work-and-why) |
 
-**Most people want row 1 or row 3.** Row 1 if you are testing and control an
-endpoint. Row 3 if you are on a production box and cannot restart anything —
+**Most people want [`--keylog`](#1-the-endpoint-writes-a-key-log) or
+[`--uprobe-tls`](#3-no-keys-at-all-read-the-plaintext-in-the-process).**
+`--keylog` if you are testing and control an endpoint. `--uprobe-tls` if you
+are on a production box and cannot restart anything —
 that is the case sipnab exists for, and the one people assume is impossible.
 
 ---
@@ -309,7 +311,7 @@ Stated plainly, because time spent here is time people lose:
 | Symptom | Likely cause |
 |---|---|
 | `--uprobe-list` prints nothing | Not root — it can only read your own processes. Re-run with `sudo` |
-| Attaches, reports 0 messages | Wrong symbol — try `--uprobe-symbol SSL_write_ex` (see method 3) |
+| Attaches, reports 0 messages | Wrong symbol — try `--uprobe-symbol SSL_write_ex` (see [method 3](#3-no-keys-at-all-read-the-plaintext-in-the-process)) |
 | `needs this kernel's BTF` | No `CONFIG_DEBUG_INFO_BTF`; use `--uprobe-backend tracefs` |
 | `no kernel programs` | Binary lacks the `bpf` feature; use `tracefs`, or rebuild |
 | Keylog present, still encrypted | Keys minted after start — add `--keylog-watch` |
@@ -318,7 +320,7 @@ Stated plainly, because time spent here is time people lose:
 | Keys load, sessions listed, nothing decrypts | The capture joined TLS 1.3 connections already running, past the record numbers sipnab searches. Restart the connection while capturing |
 | Keys load, no sessions listed | TLS 1.2 without the handshake — the ServerHello never got captured, and the master secret alone cannot make record keys. Restart the connection while capturing |
 | TLS 1.2, right keys, still nothing | A CBC suite. sipnab refuses to emit record plaintext it cannot MAC-verify, so a forged capture cannot inject "decrypted" SIP. Configure an AES-GCM suite |
-| Addresses show `0.0.0.0:0` | Expected on the tracefs backend; use method 4 for peers |
+| Addresses show `0.0.0.0:0` | Expected on the tracefs backend; use [method 4](#4-plaintext-and-the-peer-address) for peers |
 
 More in [Troubleshooting](@/docs/troubleshooting.md) and the
 [uprobe walkthrough](@/docs/uprobe-walkthrough.md).

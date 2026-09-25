@@ -52,7 +52,7 @@ PAGES: list[tuple[str, str, str, str, int, str]] = [
         # places that were just repaired, and from the wiki; renaming it to
         # match the title would break every one of them to fix a word.
         "cookbook.md",
-        "Examples & Recipes",
+        "Recipes for common tasks",
         "Recipes for common tasks",
         2,
         "Worked examples with real output: triage, filtering, HEP, TLS "
@@ -151,7 +151,7 @@ PAGES: list[tuple[str, str, str, str, int, str]] = [
     (
         "docs/tui-walkthrough.md",
         "tui.md",
-        "TUI Walkthrough",
+        "Walk through the terminal UI",
         "Walk through the terminal UI",
         4,
         "Your first analysis in the interactive TUI, step by step: open a "
