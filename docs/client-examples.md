@@ -617,8 +617,8 @@ CI generates a signing key at run time and starts sipnab on loopback port 0,
 reading the port it logs. The signed token must print the same lines as the
 stdio run. A token signed with another key, a token minted from the same key
 for the REST API, and a request with no token must each get a `401`.
-`get_capture_report` is not in `--mcp-tools core`, so a box serving only the
-core set cannot answer this triage.
+The server runs `--mcp-tools core`, as recipe 55 deploys it, so the check also
+proves the core set can answer this triage.
 
 ### Hand an agent an evidence package and a repro script
 

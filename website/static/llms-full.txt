@@ -804,8 +804,8 @@ CI generates a signing key at run time and starts sipnab on loopback port 0,
 reading the port it logs. The signed token must print the same lines as the
 stdio run. A token signed with another key, a token minted from the same key
 for the REST API, and a request with no token must each get a `401`.
-`get_capture_report` is not in `--mcp-tools core`, so a box serving only the
-core set cannot answer this triage.
+The server runs `--mcp-tools core`, as recipe 55 deploys it, so the check also
+proves the core set can answer this triage.
 
 ### Hand an agent an evidence package and a repro script
 
@@ -14114,7 +14114,7 @@ it. See [MCP Server](mcp.md) for the full guide. [Network Listeners](#network-li
 - `sipnab -N -I dead-air.pcap --retain-audio --call-report <call-id> --json` — no MCP server involved: retain the samples so the media diagnosis can measure them, and read `diagnosis.amplitude` for dead-air spans and clip runs with the thresholds that produced them
 - `sudo sipnab -N -d eth0 --mcp --mcp-transport http --mcp-bind 127.0.0.1:8731 --mcp-max-concurrent 8` — a network-facing MCP server that runs at most eight tool calls at once and refuses the ninth with a retry-shortly error rather than queueing it
 - `sipnab -N -I capture.pcap --mcp --mcp-max-concurrent 0` — a stdio replay for one trusted agent with no concurrency cap (`0` = unlimited)
-- `sipnab -N -I capture.pcap --mcp --mcp-tools core` — a small-context agent: eight tools instead of the whole surface, so the schema block sipnab sends it before it asks anything is a fraction of the size
+- `sipnab -N -I capture.pcap --mcp --mcp-tools core` — a small-context agent: nine tools instead of the whole surface, so the schema block sipnab sends it before it asks anything is a fraction of the size
 - `sudo sipnab -N -d eth0 --mcp --mcp-transport http --mcp-tools full` — the default written out, for a service definition that should say what it offers rather than leave it to whatever the next release registers
 - `sipnab -N -I capture.pcap --mcp --quiet --mcp-audit-file /var/log/sipnab-mcp.jsonl` — record every tool call to a file that survives `--quiet`, for the question asked after the fact rather than at the console
 - `sipnab -N -I sat-trunk.pcap --one-way-delay 280` — score MOS for a satellite trunk, where the real one-way delay is 280 ms. Without it sipnab falls back to the trunk's own RTCP and, on a capture carrying none, to an assumed 100 ms that reports roughly a full point too high, because G.107's delay penalty has a knee at 177.3 ms the assumption never crosses

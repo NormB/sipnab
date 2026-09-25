@@ -86,6 +86,12 @@ impl ToolProfile {
 ///   does not save context, it spends it.
 /// * `search_messages` — the free-text way in, for the operator who has a
 ///   number or a User-Agent and nothing else.
+/// * `get_capture_report` — the capture-level verdict (clean, problems,
+///   inconclusive) with the findings behind it, the answer an agent acts on
+///   before it opens any one call. Without it a core box could list calls but
+///   not say whether the capture as a whole is healthy, so the agent triage
+///   in the client examples, run as cookbook recipe 55 deploys, failed with
+///   "tool not found" (MCP-CORE-1).
 ///
 /// Deliberately NOT here: everything that answers a follow-up question an
 /// agent only reaches after the path above (`compare_dialogs`, `explain_rule`,
@@ -98,6 +104,7 @@ pub const CORE_TOOLS: &[&str] = &[
     "aggregate_dialogs",
     "capture_status",
     "find_problems",
+    "get_capture_report",
     "get_dialog",
     "list_dialogs",
     "rtp_stats",
@@ -233,6 +240,15 @@ mod tests {
             orphaned_core_tools(&all).is_empty(),
             "an intact profile reports nothing"
         );
+    }
+
+    /// MCP-CORE-1: core carries the capture-level report. A core box that
+    /// could list calls but not say whether the capture is healthy failed the
+    /// client examples' agent triage, served as cookbook recipe 55 deploys,
+    /// with "tool not found".
+    #[test]
+    fn the_core_set_can_answer_whether_the_capture_is_healthy() {
+        assert!(CORE_TOOLS.contains(&"get_capture_report"));
     }
 
     /// The core set carries no duplicate, which would make its size a lie.

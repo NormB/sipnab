@@ -577,14 +577,16 @@ expect_exit "python agent_triage (stdio, no such capture)" 3 \
 	-- "$PYTHON" clients/python/agent_triage.py "$WORK/no-such.pcap"
 grep -q "does not exist" "$WORK/err" || fail "agent_triage.py did not pass on why sipnab failed: $(head -c 400 "$WORK/err")"
 
-# The same triage over HTTP, the shape recipe 55 deploys: a signing key file
-# (generated here, never committed), and a short-lived read-scoped token
-# minted from it. sipnab binds port 0 and the check reads the port it logs,
+# The same triage over HTTP, the shape recipe 55 deploys: `--mcp-tools core`,
+# a signing key file (generated here, never committed), and a short-lived
+# read-scoped token minted from it. Core, not the full set: the triage needs
+# get_capture_report, which core lacked until MCP-CORE-1, and a box set up by
+# the recipe must be able to run it. sipnab binds port 0 and the check reads the port it logs,
 # so no port is reserved and released first. Loopback only.
 MCP_KEY="$WORK/mcp.key"
 "$PYTHON" -c 'import base64, secrets; print(base64.b64encode(secrets.token_bytes(32)).decode())' >"$MCP_KEY"
 chmod 600 "$MCP_KEY"
-NO_COLOR=1 "$BIN" --mcp -N --mcp-transport http --mcp-bind 127.0.0.1:0 \
+NO_COLOR=1 "$BIN" --mcp -N --mcp-transport http --mcp-bind 127.0.0.1:0 --mcp-tools core \
 	--mcp-signing-key-file "$MCP_KEY" --node-name agent-box \
 	-I tests/pcap-samples/sip-problem-call.pcap >/dev/null 2>"$WORK/mcp-http.log" &
 MCP_PID=$!

@@ -101,6 +101,12 @@ entry that carries them.
 
 ### Fixed
 
+- **`--mcp-tools core` now carries `get_capture_report`.** A server set up
+  as cookbook recipe 55 describes could list calls but not say whether the
+  capture as a whole is healthy: the agent triage in the client examples got
+  "tool not found" there. The core profile is now nine tools, and the client
+  smoke run serves `core` so the recipe's own setup is what CI proves.
+
 - **A build without vCon export now refuses every vCon flag instead of
   exporting nothing.** `--export-vcon-when` with `--export-vcon-dir` ran to
   completion, exited 0 and wrote no container in a build without the `vcon`
