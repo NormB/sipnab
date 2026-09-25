@@ -6,7 +6,9 @@ description = "Ready-to-adapt clients for the REST API in curl, Python, Node/Typ
 
 ## Client examples
 
-End-to-end examples in five languages for the [REST API](@/docs/api.md). Each one covers: bearer-token auth, listing dialogs filtered by state, fetching a single dialog with pagination, scraping `/metrics`, and error handling. Adapt to your environment.
+End-to-end examples in five languages for the [REST API](@/docs/api.md). Each full client covers bearer-token auth, listing dialogs filtered by state a page at a time, fetching a single dialog, and error handling. The Python one also scrapes `/metrics`. Adapt to your environment.
+
+The Go, TypeScript and Rust clients are complete programs in the repository, under [`clients/`](https://github.com/NormB/sipnab/tree/main/clients). CI compiles each one and runs it against a sipnab replaying a committed capture, and a test holds the code on this page to those programs byte for byte. Each reads the base URL from `SIPNAB_URL` (default `http://localhost:8080`) and the bearer token from `SIPNAB_API_KEY`.
 
 > **Filter parameters:** the REST API accepts `state` (e.g. `Failed`, `Completed`, `InCall`) and `from` (regex on the From header) as query parameters on `/v1/dialogs`, plus `orphaned` and `mos_below` on `/v1/streams`. Full DSL filtering — anything more complex than a single state/from match — is **not** available over REST. For arbitrary DSL queries, use the [MCP server](@/docs/mcp.md)'s `list_dialogs` tool, which accepts a `filter` argument that runs through the same evaluator as `sipnab --filter`.
 
@@ -133,7 +135,7 @@ from typing import Any
 
 import requests
 
-API = os.environ.get("SIPNAB_API", "http://localhost:8080")
+API = os.environ.get("SIPNAB_URL", "http://localhost:8080")
 KEY = os.environ["SIPNAB_API_KEY"]  # raises KeyError if unset
 
 
@@ -250,7 +252,7 @@ from datetime import datetime, timezone
 
 import httpx
 
-API = os.environ.get("SIPNAB_API", "http://localhost:8080")
+API = os.environ.get("SIPNAB_URL", "http://localhost:8080")
 KEY = os.environ["SIPNAB_API_KEY"]
 
 
@@ -287,9 +289,10 @@ if __name__ == "__main__":
 
 ### Node.js / TypeScript
 
+<!-- snippet: clients/typescript/sipnab-client.ts#sipnab-client -->
 ```typescript
-// sipnab-client.ts — runs on Node 18+ (built-in fetch)
-const API = process.env.SIPNAB_API ?? "http://localhost:8080";
+// sipnab-client.ts: runs on Node 22.18+ (built-in fetch, type stripping)
+const API = process.env.SIPNAB_URL ?? "http://localhost:8080";
 const KEY = process.env.SIPNAB_API_KEY;
 if (!KEY) throw new Error("SIPNAB_API_KEY not set");
 
@@ -321,9 +324,9 @@ async function api<T>(
   const r = await fetch(url, {
     headers: { Authorization: `Bearer ${KEY}` },
   });
-  if (r.status === 401) throw new Error("auth failed");
-  if (r.status === 503) throw new Error("rate-limited or conn cap reached");
-  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  if (r.status === 401) throw new Error(`GET ${path}: 401 auth failed`);
+  if (r.status === 503) throw new Error(`GET ${path}: 503 rate-limited or conn cap reached`);
+  if (!r.ok) throw new Error(`GET ${path}: HTTP ${r.status}`);
   return (await r.json()) as T;
 }
 
@@ -347,12 +350,13 @@ async function listDialogs(
 
 // REST API doesn't expose per-message data — see the note at the top of
 // "Client Examples" for how to build per-call response-code histograms
-// via the CLI or MCP. Here we just summarize what REST exposes:
+// via the CLI or MCP. Here we just summarize what REST exposes. A timing
+// sipnab did not measure is absent from one dialog, not null:
 interface FullDialog {
   call_id: string;
   state: string;
   msg_count: number;
-  timing: { pdd_ms: number | null; setup_ms: number | null; retransmits: number };
+  timing: { pdd_ms?: number; setup_ms?: number; retransmits: number };
   diagnosis: { one_way_audio: boolean; nat_mismatch: boolean; no_media: boolean };
 }
 
@@ -362,109 +366,142 @@ console.log(`${failed.length} failed dialogs`);
 
 for (const d of failed.slice(0, 5)) {
   const full = await api<FullDialog>(`/v1/dialogs/${encodeURIComponent(d.call_id)}`);
+  const pdd = full.timing.pdd_ms === undefined ? "—" : `${full.timing.pdd_ms}ms`;
   console.log(`  ${d.call_id}  state=${d.state}  ` +
-              `pdd=${full.timing.pdd_ms ?? "—"}ms  ` +
+              `pdd=${pdd}  ` +
               `nat_mismatch=${full.diagnosis.nat_mismatch}`);
 }
 ```
 
-Run:
+The program is [`clients/typescript/sipnab-client.ts`](https://github.com/NormB/sipnab/blob/main/clients/typescript/sipnab-client.ts). Node.js 22.18 or later runs it directly, from a package whose `package.json` says `"type": "module"`:
 
 ```bash
-SIPNAB_API_KEY=my-secret-token npx tsx sipnab-client.ts
+SIPNAB_API_KEY=my-secret-token node sipnab-client.ts
 ```
 
 ---
 
 ### Rust (`reqwest`)
 
+<!-- snippet: clients/rust/src/main.rs#sipnab-client -->
 ```rust
-// Cargo.toml deps:
-//   reqwest = { version = "0.12", features = ["json", "blocking"] }
-//   serde   = { version = "1", features = ["derive"] }
-//   anyhow  = "1"
+// Cargo.toml [dependencies]:
+//   anyhow = "1"
+//   reqwest = { version = "0.13", default-features = false, features = ["blocking", "json"] }
+//   serde = { version = "1", features = ["derive"] }
 
-use anyhow::{anyhow, Result};
+//! Lists every failed dialog, a page at a time, and prints the post-dial
+//! delay and NAT diagnosis of the first five.
+//!
+//! SIPNAB_URL sets the API base URL (default http://localhost:8080) and
+//! SIPNAB_API_KEY the bearer token, which is required.
+
+use anyhow::{Result, anyhow, bail};
+use reqwest::Url;
 use reqwest::blocking::Client;
 use serde::Deserialize;
+use serde::de::DeserializeOwned;
 use std::env;
+use std::time::Duration;
 
 #[derive(Debug, Deserialize)]
 struct DialogSummary {
     call_id: String,
     state: String,
-    from_user: Option<String>,
-    to_user: Option<String>,
-    duration_sec: f64,
-    msg_count: u32,
 }
 
 #[derive(Debug, Deserialize)]
 struct DialogsPage {
     dialogs: Vec<DialogSummary>,
     total: usize,
-    limit: usize,
-    offset: usize,
+}
+
+#[derive(Debug, Deserialize)]
+struct Timing {
+    pdd_ms: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct Diagnosis {
+    nat_mismatch: bool,
+}
+
+/// One dialog, aggregated. REST does not expose individual messages; for
+/// those, use the CLI `sipnab -N --json` mode or the MCP `get_dialog` tool.
+#[derive(Debug, Deserialize)]
+struct FullDialog {
+    timing: Timing,
+    diagnosis: Diagnosis,
 }
 
 struct Sipnab {
-    base: String,
+    base: Url,
     client: Client,
 }
 
 impl Sipnab {
     fn new() -> Result<Self> {
-        let base = env::var("SIPNAB_API")
-            .unwrap_or_else(|_| "http://localhost:8080".into());
-        let key = env::var("SIPNAB_API_KEY")?;
+        let base = env::var("SIPNAB_URL").unwrap_or_else(|_| "http://localhost:8080".into());
+        let key = env::var("SIPNAB_API_KEY").map_err(|_| anyhow!("SIPNAB_API_KEY not set"))?;
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(
+            reqwest::header::AUTHORIZATION,
+            format!("Bearer {key}").parse()?,
+        );
         let client = Client::builder()
-            .default_headers({
-                let mut h = reqwest::header::HeaderMap::new();
-                h.insert(reqwest::header::AUTHORIZATION,
-                    format!("Bearer {key}").parse()?);
-                h
-            })
-            .timeout(std::time::Duration::from_secs(10))
+            .default_headers(headers)
+            .timeout(Duration::from_secs(10))
             .build()?;
-        Ok(Self { base, client })
+        Ok(Self {
+            base: Url::parse(&base)?,
+            client,
+        })
+    }
+
+    /// GET `segments` under the base URL, each one percent-encoded, and
+    /// decode the JSON body. Every status but 2xx is an error.
+    fn get<T: DeserializeOwned>(&self, segments: &[&str], query: &[(&str, &str)]) -> Result<T> {
+        let mut url = self.base.clone();
+        url.path_segments_mut()
+            .map_err(|()| anyhow!("{} cannot be a base URL", self.base))?
+            .pop_if_empty()
+            .extend(segments);
+        if !query.is_empty() {
+            url.query_pairs_mut().extend_pairs(query);
+        }
+        let path = url.path().to_string();
+        let resp = self.client.get(url).send()?;
+        match resp.status().as_u16() {
+            401 => bail!("GET {path}: 401 auth failed"),
+            503 => bail!("GET {path}: 503 rate-limited or conn cap reached"),
+            code if code >= 400 => bail!("GET {path}: HTTP {code}"),
+            _ => {}
+        }
+        Ok(resp.json()?)
     }
 
     fn list_dialogs(&self, state: Option<&str>) -> Result<Vec<DialogSummary>> {
         let mut all = Vec::new();
-        let mut offset = 0usize;
         loop {
-            let mut req = self.client
-                .get(format!("{}/v1/dialogs", self.base))
-                .query(&[("limit", "100"), ("offset", &offset.to_string())]);
+            let offset = all.len().to_string();
+            let mut query = vec![("limit", "100"), ("offset", offset.as_str())];
             if let Some(s) = state {
-                req = req.query(&[("state", s)]);
+                query.push(("state", s));
             }
-            let resp = req.send()?;
-            match resp.status().as_u16() {
-                401 => return Err(anyhow!("auth failed")),
-                503 => return Err(anyhow!("rate-limited or conn cap reached")),
-                code if code >= 400 => return Err(anyhow!("HTTP {code}")),
-                _ => {}
+            let page: DialogsPage = self.get(&["v1", "dialogs"], &query)?;
+            if page.dialogs.is_empty() {
+                break;
             }
-            let page: DialogsPage = resp.json()?;
-            if page.dialogs.is_empty() { break; }
-            offset += page.dialogs.len();
-            let total = page.total;
             all.extend(page.dialogs);
-            if all.len() >= total { break; }
+            if all.len() >= page.total {
+                break;
+            }
         }
         Ok(all)
     }
 
-    /// Fetch one full dialog (aggregated; no per-message data).
-    /// REST does not expose individual messages — for that, use the
-    /// CLI `sipnab -N --json` mode or the MCP `get_dialog` tool.
-    fn get_dialog(&self, call_id: &str) -> Result<serde_json::Value> {
-        let cid = urlencoding::encode(call_id);
-        let resp = self.client
-            .get(format!("{}/v1/dialogs/{}", self.base, cid))
-            .send()?;
-        Ok(resp.json()?)
+    fn get_dialog(&self, call_id: &str) -> Result<FullDialog> {
+        self.get(&["v1", "dialogs", call_id], &[])
     }
 }
 
@@ -475,183 +512,208 @@ fn main() -> Result<()> {
 
     for d in failed.iter().take(5) {
         let full = s.get_dialog(&d.call_id)?;
-        let pdd = full["timing"]["pdd_ms"].as_i64();
-        let nat_mismatch = full["diagnosis"]["nat_mismatch"].as_bool().unwrap_or(false);
-        println!("  {}  state={}  pdd={:?}ms  nat_mismatch={}",
-                 d.call_id, d.state, pdd, nat_mismatch);
+        let pdd = full
+            .timing
+            .pdd_ms
+            .map_or_else(|| "—".to_string(), |ms| format!("{ms}ms"));
+        println!(
+            "  {}  state={}  pdd={}  nat_mismatch={}",
+            d.call_id, d.state, pdd, full.diagnosis.nat_mismatch
+        );
     }
     Ok(())
 }
 ```
 
-> The per-message `sipnab -N --json` records mentioned in `get_dialog`'s doc comment appear in [Output Formats](@/docs/output-formats.md).
+The program is [`clients/rust/src/main.rs`](https://github.com/NormB/sipnab/blob/main/clients/rust/src/main.rs). To run it in a project of your own, put the three dependency lines under `[dependencies]` in its `Cargo.toml`:
+
+```bash
+SIPNAB_API_KEY=my-secret-token cargo run
+```
+
+> The per-message `sipnab -N --json` records mentioned in `FullDialog`'s doc comment appear in [Output Formats](@/docs/output-formats.md).
 
 ---
 
 ### Go (`net/http` + `encoding/json`)
 
+<!-- snippet: clients/go/sipnab-client/main.go#sipnab-client -->
 ```go
-// sipnab-client.go
+// Command sipnab-client lists every failed dialog, a page at a time, and
+// prints the post-dial delay and NAT diagnosis of the first five.
+//
+// SIPNAB_URL sets the API base URL (default http://localhost:8080) and
+// SIPNAB_API_KEY the bearer token, which is required.
 package main
 
 import (
-    "encoding/json"
-    "fmt"
-    "net/http"
-    "net/url"
-    "os"
-    "sort"
-    "time"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/url"
+	"os"
+	"time"
 )
 
 type DialogSummary struct {
-    CallID      string  `json:"call_id"`
-    State       string  `json:"state"`
-    FromUser    *string `json:"from_user"`
-    ToUser      *string `json:"to_user"`
-    DurationSec float64 `json:"duration_sec"`
-    MsgCount    int     `json:"msg_count"`
+	CallID      string  `json:"call_id"`
+	State       string  `json:"state"`
+	FromUser    *string `json:"from_user"`
+	ToUser      *string `json:"to_user"`
+	DurationSec float64 `json:"duration_sec"`
+	MsgCount    int     `json:"msg_count"`
 }
 
 type DialogTiming struct {
-    PddMs      *int64 `json:"pdd_ms"`
-    SetupMs    *int64 `json:"setup_ms"`
-    Retransmits int   `json:"retransmits"`
+	PddMs       *int64 `json:"pdd_ms"`
+	SetupMs     *int64 `json:"setup_ms"`
+	Retransmits int    `json:"retransmits"`
 }
 
 type DialogDiagnosis struct {
-    OneWayAudio  bool `json:"one_way_audio"`
-    NatMismatch  bool `json:"nat_mismatch"`
-    NoMedia      bool `json:"no_media"`
+	OneWayAudio bool `json:"one_way_audio"`
+	NatMismatch bool `json:"nat_mismatch"`
+	NoMedia     bool `json:"no_media"`
 }
 
 type FullDialog struct {
-    CallID    string          `json:"call_id"`
-    State     string          `json:"state"`
-    Timing    DialogTiming    `json:"timing"`
-    Diagnosis DialogDiagnosis `json:"diagnosis"`
+	CallID    string          `json:"call_id"`
+	State     string          `json:"state"`
+	Timing    DialogTiming    `json:"timing"`
+	Diagnosis DialogDiagnosis `json:"diagnosis"`
 }
 
 type DialogsPage struct {
-    Dialogs []DialogSummary `json:"dialogs"`
-    Total   int             `json:"total"`
-    Limit   int             `json:"limit"`
-    Offset  int             `json:"offset"`
+	Dialogs []DialogSummary `json:"dialogs"`
+	Total   int             `json:"total"`
+	Limit   int             `json:"limit"`
+	Offset  int             `json:"offset"`
 }
 
 type Sipnab struct {
-    Base   string
-    Token  string
-    Client *http.Client
+	Base   string
+	Token  string
+	Client *http.Client
 }
 
 func newSipnab() (*Sipnab, error) {
-    base := os.Getenv("SIPNAB_API")
-    if base == "" {
-        base = "http://localhost:8080"
-    }
-    token := os.Getenv("SIPNAB_API_KEY")
-    if token == "" {
-        return nil, fmt.Errorf("SIPNAB_API_KEY not set")
-    }
-    return &Sipnab{
-        Base:   base,
-        Token:  token,
-        Client: &http.Client{Timeout: 10 * time.Second},
-    }, nil
+	base := os.Getenv("SIPNAB_URL")
+	if base == "" {
+		base = "http://localhost:8080"
+	}
+	token := os.Getenv("SIPNAB_API_KEY")
+	if token == "" {
+		return nil, fmt.Errorf("SIPNAB_API_KEY not set")
+	}
+	return &Sipnab{
+		Base:   base,
+		Token:  token,
+		Client: &http.Client{Timeout: 10 * time.Second},
+	}, nil
 }
 
 func (s *Sipnab) get(path string, params url.Values, out any) error {
-    u, _ := url.Parse(s.Base + path)
-    u.RawQuery = params.Encode()
-    req, _ := http.NewRequest(http.MethodGet, u.String(), nil)
-    req.Header.Set("Authorization", "Bearer "+s.Token)
-    resp, err := s.Client.Do(req)
-    if err != nil {
-        return err
-    }
-    defer resp.Body.Close()
-    switch resp.StatusCode {
-    case 401:
-        return fmt.Errorf("auth failed")
-    case 503:
-        return fmt.Errorf("rate-limited or conn cap reached")
-    }
-    if resp.StatusCode >= 400 {
-        return fmt.Errorf("HTTP %d", resp.StatusCode)
-    }
-    return json.NewDecoder(resp.Body).Decode(out)
+	u, err := url.Parse(s.Base + path)
+	if err != nil {
+		return err
+	}
+	u.RawQuery = params.Encode()
+	req, err := http.NewRequest(http.MethodGet, u.String(), nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+s.Token)
+	resp, err := s.Client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	switch resp.StatusCode {
+	case http.StatusUnauthorized:
+		return fmt.Errorf("GET %s: 401 auth failed", path)
+	case http.StatusServiceUnavailable:
+		return fmt.Errorf("GET %s: 503 rate-limited or conn cap reached", path)
+	}
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("GET %s: HTTP %d", path, resp.StatusCode)
+	}
+	return json.NewDecoder(resp.Body).Decode(out)
 }
 
 func (s *Sipnab) ListDialogs(state string) ([]DialogSummary, error) {
-    var all []DialogSummary
-    offset := 0
-    for {
-        params := url.Values{"limit": {"100"}, "offset": {fmt.Sprint(offset)}}
-        if state != "" {
-            params.Set("state", state)
-        }
-        var page DialogsPage
-        if err := s.get("/v1/dialogs", params, &page); err != nil {
-            return nil, err
-        }
-        if len(page.Dialogs) == 0 {
-            break
-        }
-        all = append(all, page.Dialogs...)
-        offset += len(page.Dialogs)
-        if len(all) >= page.Total {
-            break
-        }
-    }
-    return all, nil
+	var all []DialogSummary
+	offset := 0
+	for {
+		params := url.Values{"limit": {"100"}, "offset": {fmt.Sprint(offset)}}
+		if state != "" {
+			params.Set("state", state)
+		}
+		var page DialogsPage
+		if err := s.get("/v1/dialogs", params, &page); err != nil {
+			return nil, err
+		}
+		if len(page.Dialogs) == 0 {
+			break
+		}
+		all = append(all, page.Dialogs...)
+		offset += len(page.Dialogs)
+		if len(all) >= page.Total {
+			break
+		}
+	}
+	return all, nil
 }
 
 // GetDialog fetches the full (aggregated) dialog. REST has no
 // per-message detail — for that, use the CLI --json mode or the
 // MCP get_dialog tool.
 func (s *Sipnab) GetDialog(callID string) (*FullDialog, error) {
-    var full FullDialog
-    if err := s.get("/v1/dialogs/"+url.PathEscape(callID), nil, &full); err != nil {
-        return nil, err
-    }
-    return &full, nil
+	var full FullDialog
+	if err := s.get("/v1/dialogs/"+url.PathEscape(callID), nil, &full); err != nil {
+		return nil, err
+	}
+	return &full, nil
 }
 
 func main() {
-    s, err := newSipnab()
-    if err != nil {
-        fmt.Fprintln(os.Stderr, err)
-        os.Exit(1)
-    }
-    failed, err := s.ListDialogs("Failed")
-    if err != nil {
-        fmt.Fprintln(os.Stderr, err)
-        os.Exit(1)
-    }
-    fmt.Printf("%d failed dialogs\n", len(failed))
-
-    for i, d := range failed {
-        if i >= 5 {
-            break
-        }
-        full, err := s.GetDialog(d.CallID)
-        if err != nil {
-            continue
-        }
-        pdd := "—"
-        if full.Timing.PddMs != nil {
-            pdd = fmt.Sprintf("%dms", *full.Timing.PddMs)
-        }
-        fmt.Printf("  %s  state=%s  pdd=%s  nat_mismatch=%t\n",
-            d.CallID, d.State, pdd, full.Diagnosis.NatMismatch)
-    }
-    // sort import no longer needed
-    _ = sort.Strings
+	if err := run(); err != nil {
+		fmt.Fprintln(os.Stderr, "sipnab-client:", err)
+		os.Exit(1)
+	}
 }
+
+func run() error {
+	s, err := newSipnab()
+	if err != nil {
+		return err
+	}
+	failed, err := s.ListDialogs("Failed")
+	if err != nil {
+		return err
+	}
+	fmt.Printf("%d failed dialogs\n", len(failed))
+
+	for i, d := range failed {
+		if i >= 5 {
+			break
+		}
+		full, err := s.GetDialog(d.CallID)
+		if err != nil {
+			return err
+		}
+		pdd := "—"
+		if full.Timing.PddMs != nil {
+			pdd = fmt.Sprintf("%dms", *full.Timing.PddMs)
+		}
+		fmt.Printf("  %s  state=%s  pdd=%s  nat_mismatch=%t\n",
+			d.CallID, d.State, pdd, full.Diagnosis.NatMismatch)
+	}
+	return nil
+}
+
 ```
 
-Run:
+The program is [`clients/go/sipnab-client/main.go`](https://github.com/NormB/sipnab/blob/main/clients/go/sipnab-client/main.go). Save it as `sipnab-client.go` and run it:
 
 ```bash
 SIPNAB_API_KEY=my-secret-token go run sipnab-client.go

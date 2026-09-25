@@ -108,8 +108,12 @@ jobs:
       # The client programs the reference pages quote, each language held to
       # a bar. tests/client_snippets_test.rs holds every Go, JavaScript,
       # Python and TypeScript fence in docs/rest-api.md,
-      # docs/prometheus-metrics.md and docs/mcp-deploy.md to a region of one
-      # of these programs; this is where the programs themselves are held.
+      # docs/prometheus-metrics.md and docs/mcp-deploy.md, and the Go, Rust
+      # and TypeScript ones on website/content/docs/api-clients.md, to a
+      # region of one of these programs; this is where the programs themselves
+      # are held. Rust's bar is elsewhere: clients/rust is a workspace member,
+      # so the Clippy step below compiles it with -D warnings and the audit
+      # job's cargo-deny and cargo-audit read the lockfile that pins it.
       # Go: gofmt must have nothing to rewrite, then vet and build. JavaScript:
       # `node --check` parses each ES module. TypeScript: `npm ci` installs
       # exactly the tree clients/typescript/package-lock.json pins, each
@@ -181,7 +185,8 @@ jobs:
       # its page says. scripts/smoke-clients.sh replays two committed captures
       # behind the REST API, waits until the replay is finished, and runs every
       # Go, JavaScript and Python REST client (each must exit 0 and print the
-      # lines the captures produce, then exit non-zero on a wrong token) and
+      # lines the captures produce, then exit non-zero on a wrong token), the
+      # Go, TypeScript and Rust clients the site's client page shows, and
       # both MCP stdio clients. Then the capability examples, all on loopback:
       # leg correlation across a proxy sipnab and a relay sipnab, vCon exports
       # checked against the working group's schema file, a HEP collector fed

@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "crates/sipnab-audio", "crates/sipnab-plugin-example", "crates/sipnab-bpf-types"]
+members = [".", "crates/sipnab-audio", "crates/sipnab-plugin-example", "crates/sipnab-bpf-types", "clients/rust"]
 # `fuzz/` is a standalone cargo-fuzz package (its own build via `cargo fuzz`);
 # it depends on this crate by path and must NOT be pulled into the workspace.
 # `bpf/` is the kernel half of the BPF capture backend: a `bpfel-unknown-none`

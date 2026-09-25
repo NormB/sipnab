@@ -14,6 +14,10 @@
 # non-zero naming the 401, because a client that swallows an error prints a
 # zero value and looks like a quiet network.
 #
+# The site's client page, website/content/docs/api-clients.md, shows one
+# whole REST client each in Go, TypeScript and Rust. They run against the
+# same sipnab, and again with a wrong token.
+#
 # The captures: tests/pcap-samples/sip-problem-call.pcap holds four failed
 # dialogs and one completed one, and tests/fixtures/turn_relay.pcap two RTP
 # streams whose MOS is below 3.0. No single committed capture has both, and
@@ -35,7 +39,8 @@
 # byte, and an aggregate cut to a model's byte budget.
 #
 # Needs: a sipnab built with `--all-features --bins --examples` (default
-# target/debug/sipnab; the TLS example is read from beside it), go, node
+# target/debug/sipnab; the TLS example is read from beside it), cargo (which
+# builds the Rust client in clients/rust), go, node
 # (22.18 or later, which runs .ts files), curl, tshark and capinfos (Ubuntu's
 # tshark package), the npm packages installed in clients/typescript
 # (`npm ci`), and a Python with the MCP SDK from
@@ -51,7 +56,7 @@ BIN="$(realpath -- "${1:-$ROOT/target/debug/sipnab}")"
 PYTHON="${PYTHON:-python3}"
 cd "$ROOT"
 
-for tool in go node curl tshark capinfos "$PYTHON"; do
+for tool in cargo go node curl tshark capinfos "$PYTHON"; do
 	command -v "$tool" >/dev/null || { echo "smoke-clients: $tool not found" >&2; exit 1; }
 done
 [ -x "$BIN" ] || { echo "smoke-clients: no sipnab binary at $BIN" >&2; exit 1; }
@@ -230,6 +235,22 @@ for name in list-dialogs get-dialog dialog-report list-streams get-stream stats 
 	refuse "go $name" -- "$WORK/go/$name"
 	refuse "javascript $name" -- node "clients/javascript/$name.mjs"
 done
+
+# The site's client page: one program per language, each listing every failed
+# dialog a page at a time and then fetching each one. None of the four failed
+# calls in sip-problem-call.pcap was rung, so each has no post-dial delay.
+SITE_CLIENT_LINES=(
+	"4 failed dialogs"
+	"  busy-3a2b1c@192.0.2.30  state=Failed  pdd=—  nat_mismatch=false"
+	"  unavail-4e5f60@192.0.2.50  state=Failed  pdd=—  nat_mismatch=false"
+)
+cargo build --quiet --locked --package sipnab-client
+expect "go sipnab-client" "${SITE_CLIENT_LINES[@]}" -- "$WORK/go/sipnab-client"
+expect "typescript sipnab-client" "${SITE_CLIENT_LINES[@]}" -- node clients/typescript/sipnab-client.ts
+expect "rust sipnab-client" "${SITE_CLIENT_LINES[@]}" -- cargo run --quiet --locked --package sipnab-client
+refuse "go sipnab-client" -- "$WORK/go/sipnab-client"
+refuse "typescript sipnab-client" -- node clients/typescript/sipnab-client.ts
+refuse "rust sipnab-client" -- cargo run --quiet --locked --package sipnab-client
 
 # health needs no token, so its failure case is an address nothing listens on.
 # The port sipnab was given is free again only after it exits, so ask for a

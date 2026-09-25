@@ -12,6 +12,24 @@ entry that carries them.
 
 ### Added
 
+- **The Go, TypeScript and Rust clients on the site's
+  [Call the REST API from code](https://sipnab.com/docs/api-clients/) page
+  are programs CI compiles and runs.** Each is now a complete program under
+  `clients/`, and a test holds the page's code to it byte for byte, as it
+  already did for the REST, metrics and MCP deployment references. The Rust
+  one, `clients/rust`, is a Cargo workspace member, so the Clippy step
+  compiles it with warnings as errors, and cargo-deny and cargo-audit read the
+  lockfile that pins its `reqwest`, `serde` and `anyhow`; it adds no crate
+  that lockfile did not already hold. `scripts/smoke-clients.sh` runs all
+  three against a replayed capture and with a wrong token. Compiling them
+  fixed what nothing had checked: the Rust example called `serde_json` and
+  `urlencoding`, neither in the dependencies it listed, and did not check
+  the status of the single-dialog request. The TypeScript one typed an
+  unmeasured post-dial delay as `null`, which a single dialog omits instead,
+  and printed it as `pdd=—ms`. The Go one discarded the errors of `url.Parse`
+  and `http.NewRequest`, and skipped without a word any dialog it could not
+  fetch. The page's Python examples still
+  use `requests` and `httpx`, which CI does not install, and are not yet held.
 - **Three AI-task programs: what an agent does with sipnab over MCP, each run
   end to end in CI.** [Runnable examples](docs/client-examples.md) has a new
   section for them, linked from the [MCP guide](docs/mcp.md).

@@ -5783,7 +5783,12 @@ fn packaging_scripts_reference_existing_paths() {
     // `examples/tls_plaintext_records.rs`. Attributed by measurement:
     // with HEAD's ci.yml swapped back in, the scan reads 127, and with HEAD's
     // scripts/smoke-clients.sh it still reads 129.
-    const EXPECTED_REFERENCES: usize = 129;
+    // 129 -> 131: two, both in `.github/workflows/ci.yml`, from the client
+    // bar's comment, which now names `website/content/docs/api-clients.md`
+    // and `clients/rust` (EX4b). Attributed by measurement: with HEAD's
+    // ci.yml swapped back in, the scan reads 129, and with HEAD's
+    // scripts/smoke-clients.sh it still reads 131.
+    const EXPECTED_REFERENCES: usize = 131;
     assert_eq!(
         checked, EXPECTED_REFERENCES,
         "packaging path scan saw {checked} references, expected \

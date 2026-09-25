@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! Every Go, JavaScript, Python and TypeScript snippet in the REST, metrics
-//! and MCP deployment references is cut from a program CI compiles and runs.
+//! Every Go, JavaScript, Python, Rust and TypeScript snippet in the REST,
+//! metrics and MCP deployment references, and on the site's own client page,
+//! is cut from a program CI compiles and runs.
 //!
 //! The references showed the same request in several languages, and nothing
 //! compiled any of them. The Go ones were fragments that discarded every
@@ -36,7 +37,18 @@ const DOCS: &[&str] = &[
     "docs/prometheus-metrics.md",
     "docs/mcp-deploy.md",
     "docs/client-examples.md",
+    // Written for the site alone: no docs/ page generates it, so the page
+    // itself is the source (tests/dev_docs_drift_test.rs derives that).
+    "website/content/docs/api-clients.md",
 ];
+
+/// Fences a page still shows that no program holds yet, as `(doc, lang)`.
+/// The Python examples on the client page import `requests` and `httpx`,
+/// which nothing in CI installs, and two of them poll forever; holding them
+/// means pinning those libraries by hash or rewriting the examples, which
+/// is its own backlog item. The inventory test below still counts them, so
+/// a new fence here cannot join them unnoticed.
+const NOT_YET_HELD: &[(&str, &str)] = &[("website/content/docs/api-clients.md", "python")];
 
 /// Fence labels that mean a client language. The short aliases are here so a
 /// fence cannot escape the gate by being relabeled `js` or `py`.
@@ -50,6 +62,8 @@ const CLIENT_LANGS: &[&str] = &[
     "python",
     "py",
     "python3",
+    "rust",
+    "rs",
     "typescript",
     "ts",
 ];
@@ -59,6 +73,7 @@ const CLIENT_TREES: &[&str] = &[
     "clients/go",
     "clients/javascript",
     "clients/python",
+    "clients/rust",
     "clients/typescript",
 ];
 
@@ -268,6 +283,7 @@ fn every_client_fence_names_the_program_it_is_cut_from() {
     let unmarked: Vec<String> = all_client_fences()
         .iter()
         .filter(|f| f.source.is_none())
+        .filter(|f| !NOT_YET_HELD.contains(&(f.doc, f.lang.as_str())))
         .map(|f| format!("  {}:{} ```{}", f.doc, f.line, f.lang))
         .collect();
     assert!(
@@ -406,6 +422,13 @@ fn the_reader_sees_every_client_fence_the_pages_hold() {
         // evidence_handoff.py's package check and aggregate_for_model.py's
         // bound.
         ("docs/client-examples.md", "python", 12),
+        // The site's client page (EX4b): one whole program per language, the
+        // Go, TypeScript and Rust ones held to clients/, and the four Python
+        // ones NOT_YET_HELD names.
+        ("website/content/docs/api-clients.md", "go", 1),
+        ("website/content/docs/api-clients.md", "python", 4),
+        ("website/content/docs/api-clients.md", "rust", 1),
+        ("website/content/docs/api-clients.md", "typescript", 1),
     ]
     .into_iter()
     .map(|(d, l, n)| ((d, l.to_string()), n))
@@ -426,6 +449,12 @@ fn ci_holds_every_client_language_to_its_bar() {
         "node --check",
         "python3 -m compileall -q clients/python",
         "npx --no-install tsc --noEmit",
+        // Rust: clients/rust is a workspace member, so the Clippy step
+        // compiles it with every warning an error, and the audit job's
+        // `cargo deny check` and `cargo audit` read the one Cargo.lock that
+        // pins its dependencies.
+        "cargo clippy --workspace --all-features --all-targets -- -D warnings",
+        "cargo deny check",
         "scripts/smoke-clients.sh",
     ]
     .into_iter()
@@ -434,6 +463,84 @@ fn ci_holds_every_client_language_to_its_bar() {
     assert!(
         missing.is_empty(),
         ".github/workflows/ci.yml no longer runs: {missing:?}"
+    );
+}
+
+/// The site's client page: each program it shows in full, and how
+/// scripts/smoke-clients.sh runs it against the replayed capture.
+const SITE_CLIENTS: &[(&str, &str)] = &[
+    ("clients/go/sipnab-client/main.go", "$WORK/go/sipnab-client"),
+    (
+        "clients/typescript/sipnab-client.ts",
+        "clients/typescript/sipnab-client.ts",
+    ),
+    ("clients/rust/src/main.rs", "--package sipnab-client"),
+];
+
+/// Every program the site's client page shows is marked on it, and the smoke
+/// run starts each one. A program that compiles but never meets a server
+/// could still print a zero value on a wrong token.
+#[test]
+fn every_site_client_runs_against_a_replayed_capture() {
+    let smoke: String = read("scripts/smoke-clients.sh")
+        .lines()
+        .filter(|l| !l.trim_start().starts_with('#'))
+        .map(|l| format!("{l}\n"))
+        .collect();
+    let page = read("website/content/docs/api-clients.md");
+    let mut missing = Vec::new();
+    for (program, run) in SITE_CLIENTS {
+        if !page.contains(&format!("{MARKER_OPEN}{program}#")) {
+            missing.push(format!(
+                "website/content/docs/api-clients.md shows no region of {program}"
+            ));
+        }
+        if !contains_token(&smoke, run) {
+            missing.push(format!(
+                "scripts/smoke-clients.sh does not run {program} ({run})"
+            ));
+        }
+    }
+    assert!(missing.is_empty(), "{}", missing.join("\n"));
+}
+
+/// The Rust program is a member of the workspace, which is what puts it under
+/// the Clippy step, cargo-deny and cargo-audit, and the dependencies its
+/// region tells a reader to add are the ones its manifest declares. The page
+/// once listed three crates and the program used five.
+#[test]
+fn the_rust_client_is_a_workspace_member_and_its_region_names_its_dependencies() {
+    let root = read("Cargo.toml");
+    let members = root
+        .lines()
+        .find(|l| l.starts_with("members = "))
+        .expect("the root Cargo.toml lists its workspace members");
+    assert!(
+        members.contains("\"clients/rust\""),
+        "clients/rust is not a workspace member: {members}"
+    );
+    let manifest = read("clients/rust/Cargo.toml");
+    let deps: BTreeSet<String> = manifest
+        .split("[dependencies]")
+        .nth(1)
+        .expect("clients/rust/Cargo.toml has a [dependencies] table")
+        .lines()
+        .take_while(|l| !l.starts_with('['))
+        .filter(|l| !l.trim().is_empty() && !l.trim_start().starts_with('#'))
+        .map(|l| l.trim().to_string())
+        .collect();
+    let program = region(&read("clients/rust/src/main.rs"), "sipnab-client")
+        .expect("clients/rust/src/main.rs has the sipnab-client region");
+    let shown: BTreeSet<String> = program
+        .lines()
+        .take_while(|l| l.starts_with("//"))
+        .filter_map(|l| l.strip_prefix("//   "))
+        .map(|l| l.trim().to_string())
+        .collect();
+    assert_eq!(
+        shown, deps,
+        "the dependency lines at the top of the region must be \
+         clients/rust/Cargo.toml's [dependencies], one per `//   ` line"
     );
 }
 

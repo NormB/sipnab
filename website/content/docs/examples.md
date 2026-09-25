@@ -71,6 +71,14 @@ The MCP stdio clients start sipnab themselves:
 [`sipnab-mcp.ts`](https://github.com/NormB/sipnab/blob/main/clients/typescript/sipnab-mcp.ts) needs `npm ci` in
 `clients/typescript`. Both take a capture path.
 
+The site's [Call the REST API from code](https://sipnab.com/docs/api-clients/)
+page shows three whole REST clients, held the same way:
+[`clients/go/sipnab-client`](https://github.com/NormB/sipnab/blob/main/clients/go/sipnab-client/main.go),
+[`clients/typescript/sipnab-client.ts`](https://github.com/NormB/sipnab/blob/main/clients/typescript/sipnab-client.ts)
+and [`clients/rust`](https://github.com/NormB/sipnab/blob/main/clients/rust/src/main.rs), a member of the Cargo
+workspace. Each lists the failed dialogs a page at a time and fetches each
+one. Run the Rust one with `cargo run -p sipnab-client`.
+
 ## Capability examples
 
 These four programs show what sipnab does that a single-capture SIP tool
