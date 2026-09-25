@@ -6,19 +6,25 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/sipnab -N -d %i --api :8080 --metrics :9100 --json --syslog
-User=root
-Group=root
-# sipnab drops privileges internally after opening capture device
-# Use --user sipnab to specify the unprivileged user
+# Captures on every interface and logs to syslog. The metrics endpoint
+# listens on loopback only. Change any of it with a drop-in
+# (`systemctl edit sipnab`) rather than editing this file: a package
+# upgrade replaces it. The REST API is off until a drop-in adds --api,
+# with the key in SIPNAB_API_KEY from an EnvironmentFile= so that it never
+# appears on the command line.
+ExecStart=/usr/bin/sipnab -N -d any --no-cli-print --syslog --metrics 127.0.0.1:9090
+# Both packages create the sipnab user. The two capabilities are all that
+# live capture needs, so the daemon never runs as root.
+User=sipnab
+Group=sipnab
+AmbientCapabilities=CAP_NET_RAW CAP_NET_ADMIN
+CapabilityBoundingSet=CAP_NET_RAW CAP_NET_ADMIN
 
 # Security hardening
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
-ReadWritePaths=/var/log
-CapabilityBoundingSet=CAP_NET_RAW CAP_NET_ADMIN
 
 # Resource limits
 LimitNOFILE=65535

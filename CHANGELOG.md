@@ -36,8 +36,27 @@ entry that carries them.
   receiving security updates when 1.26 was released; CI already built them
   with Go 1.27.1, so only the declared minimum was out of date.
 
+### Added
+
+- **`clients/python/vcon_forward.py` sends the vCons sipnab writes to a vCon
+  server.** sipnab's `--export-vcon-dir` spool is a queue nothing drained. The
+  forwarder posts each container to vcon-server's scoped ingress route, deletes
+  it only once the server has taken it and only if the file is still the one it
+  sent, stops on a refused key, and moves a container the server rejects to
+  `rejected/`. Standard library only; tested against a real HTTP server.
+
 ### Fixed
 
+- **The systemd unit in the `.deb` and `.rpm` can start.** It ran
+  `/usr/local/bin/sipnab`, while both packages install `/usr/bin/sipnab`, so
+  `systemctl start sipnab` failed with `status=203/EXEC` on every install. It
+  also passed `-d %i` in a unit that is not a template (an empty interface),
+  opened the REST API on every interface with no key, streamed every SIP message
+  into the journal, and took port 9100, which node_exporter uses. It now
+  captures on every interface as the `sipnab` user with only `CAP_NET_RAW` and
+  `CAP_NET_ADMIN`, logs to syslog, serves metrics on `127.0.0.1:9090`, and
+  leaves the API off. `tests/packaged_unit_test.rs` ties it to the paths the
+  package builders install and to sipnab's own argument parser.
 - **MCP tool schemas no longer name number formats JSON Schema does not
   define.** Every tool's input and output schema carried formats such as
   `uint32`, `uint64`, `int64` and `double`, which the Rust schema generator

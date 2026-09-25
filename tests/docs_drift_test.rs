@@ -1128,10 +1128,12 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
         "discard-all-secrets",
         &["docs/cli-reference.md", "website/content/docs/cli.md"],
     ),
-    // systemctl (mcp service management)
+    // systemctl's, on `systemctl enable --now` (service management)
     (
         "now",
         &[
+            "docs/install.md",
+            "website/content/docs/install.md",
             "docs/mcp-deploy.md",
             "website/content/docs/mcp-deploy.md",
             "docs/mcp-estate.md",

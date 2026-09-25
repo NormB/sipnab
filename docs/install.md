@@ -398,6 +398,13 @@ The package installs `/usr/bin/sipnab`, the man page, and a systemd unit, and
 creates a `sipnab` system user for privilege dropping. On Ubuntu 24.04+ the
 dependency resolves to `libpcap0.8t64`.
 
+The unit is not started for you. `sudo systemctl enable --now sipnab` starts a
+capture on every interface as the `sipnab` user, with only the two capabilities
+live capture needs. It logs to syslog, keeps the per-message stream out of the
+journal, and serves metrics on `127.0.0.1:9090`. The REST API stays off. Change
+any of that with a drop-in (`sudo systemctl edit sipnab`), which a package
+upgrade leaves alone.
+
 The standard package ships the audio playback plugin and therefore
 *Recommends* `libasound2`, which apt installs by default — pulling the ALSA
 stack (~500 kB) onto the system. For headless servers, each release also
