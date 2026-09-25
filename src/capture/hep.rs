@@ -4538,7 +4538,14 @@ mod tests {
         )
         .expect("the trusted collector's handshake");
         send_one(&sender).expect("the first packet crosses the trusted session");
-        let _ = done1.recv_timeout(MUST_ARRIVE);
+        // Its port is bound again below, so the first collector must be gone:
+        // a result thrown away here turned a slow exit into a bind failure
+        // that named nothing.
+        let first_exit = done1.recv_timeout(MUST_ARRIVE);
+        assert!(
+            matches!(first_exit, Ok(Ok(()))),
+            "the first collector must have exited before its port is reused: {first_exit:?}"
+        );
 
         let second = CaptureConfig {
             duration: Some(Duration::from_secs(15)),
@@ -4900,12 +4907,74 @@ mod tests {
             .expect("group-readable is how a key reaches a service account");
     }
 
+    /// A port handed to a listener must be one no other test's `bind(0)` can
+    /// be given. The kernel allocates `bind(0)` from its ephemeral range, and
+    /// in a run of thousands of parallel tests a port released there is soon
+    /// reused: `a_collector_the_sender_no_longer_trusts_counts_as_a_tls_handshake_failure`
+    /// binds one port twice, two seconds apart, and failed in CI's coverage
+    /// run with "the listener must report a successful bind".
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_test_listener_port_is_outside_the_kernels_ephemeral_range() {
+        let range = std::fs::read_to_string("/proc/sys/net/ipv4/ip_local_port_range")
+            .expect("the kernel publishes its ephemeral range");
+        let low: u16 = range
+            .split_whitespace()
+            .next()
+            .and_then(|n| n.parse().ok())
+            .expect("the range starts with a port number");
+        let mut handed_out = std::collections::HashSet::new();
+        for _ in 0..32 {
+            let bind = free_tcp_port();
+            assert!(
+                handed_out.insert(bind.clone()),
+                "{bind} handed out twice in one process"
+            );
+            let port: u16 = bind
+                .rsplit(':')
+                .next()
+                .and_then(|p| p.parse().ok())
+                .expect("host:port");
+            assert!(
+                port < low,
+                "{bind} is inside the ephemeral range starting at {low}: any bind(0) may take it"
+            );
+            std::net::TcpListener::bind(&bind).expect("the port handed out is free");
+        }
+    }
+
     /// Reserve a free loopback TCP port and give it back as `host:port`.
+    ///
+    /// Chosen BELOW the kernel's ephemeral range, never by `bind(0)`: a port
+    /// `bind(0)` hands out is one every other parallel test's `bind(0)` can be
+    /// handed the moment it is released, and a caller that binds it twice (a
+    /// collector restarted on the same address) leaves it free for seconds.
+    /// A counter keeps parallel tests in this process on different ports.
     fn free_tcp_port() -> String {
-        let probe = std::net::TcpListener::bind("127.0.0.1:0").expect("reserve a port");
-        let addr = probe.local_addr().expect("local_addr");
-        drop(probe);
-        addr.to_string()
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static NEXT: AtomicU32 = AtomicU32::new(0);
+        const FLOOR: u32 = 20_000;
+        let span = u32::from(ephemeral_range_start())
+            .saturating_sub(FLOOR)
+            .max(1);
+        let start = std::process::id() % span;
+        for _ in 0..span {
+            let port = FLOOR + (start + NEXT.fetch_add(1, Ordering::Relaxed)) % span;
+            let addr = format!("127.0.0.1:{port}");
+            if std::net::TcpListener::bind(&addr).is_ok() {
+                return addr;
+            }
+        }
+        panic!("no free loopback port below the ephemeral range");
+    }
+
+    /// Where the kernel starts handing out `bind(0)` ports: Linux publishes
+    /// it; elsewhere, the IANA dynamic range's start, which macOS uses.
+    fn ephemeral_range_start() -> u16 {
+        std::fs::read_to_string("/proc/sys/net/ipv4/ip_local_port_range")
+            .ok()
+            .and_then(|r| r.split_whitespace().next().and_then(|n| n.parse().ok()))
+            .unwrap_or(49_152)
     }
 
     /// A HEP v3 packet with `body` as its payload and `capture_id` stamped on
@@ -4961,9 +5030,10 @@ mod tests {
             let r = capture_hep(&bind_thread, &config, tx, &opts, Some(ready_tx));
             let _ = done_tx.send(r.map_err(|e| format!("{e:#}")));
         });
+        let ready = ready_rx.recv_timeout(MUST_ARRIVE);
         assert!(
-            matches!(ready_rx.recv_timeout(MUST_ARRIVE), Ok(Ok(()))),
-            "the listener must report a successful bind"
+            matches!(ready, Ok(Ok(()))),
+            "the listener must report a successful bind on {bind}: {ready:?}"
         );
         (rx, done_rx)
     }
