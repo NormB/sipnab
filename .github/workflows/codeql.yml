@@ -119,3 +119,7 @@ jobs:
       uses: github/codeql-action/analyze@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4
       with:
         category: "/language:${{matrix.language}}"
+        # The findings go up as SARIF either way. Uploading the database
+        # means zipping it first, and that zip once ran 18+ minutes into the
+        # job's 30-minute bound. Nothing reads the uploaded database.
+        upload-database: false

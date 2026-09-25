@@ -731,3 +731,40 @@ fn an_artifact_upload_of_a_hidden_path_opts_into_hidden_files() {
         offenders.join("\n  ")
     );
 }
+
+/// CodeQL's analyze step uploads the database it built by default, and to
+/// upload it first zips it with `codeql database bundle`. Nothing here reads
+/// that upload: the findings travel as SARIF, which the step sends either way.
+/// The zip took 25-35 s on five runs, then 18+ minutes (killed by the job's
+/// 30-minute bound) and 11m45s on 2026-09-17, so it is the one step that can
+/// fail a clean analysis on time alone. Raising the bound would hide the growth;
+/// turning the upload off removes the step. In the pinned action, the
+/// `upload-database` check returns before either `bundleDb` call in
+/// `src/database-upload.ts`.
+#[test]
+fn codeql_analyze_does_not_bundle_a_database_nobody_reads() {
+    let mut checked = 0usize;
+    let mut uploading: Vec<String> = Vec::new();
+    for (name, body) in workflows() {
+        for step in steps(&body) {
+            if !step.contains("github/codeql-action/analyze@") {
+                continue;
+            }
+            checked += 1;
+            let off = step.lines().any(|l| l.trim() == "upload-database: false");
+            if !off {
+                uploading.push(format!("{name}:\n{step}"));
+            }
+        }
+    }
+    assert!(
+        checked > 0,
+        "no codeql-action/analyze step found -- this test would pass vacuously"
+    );
+    assert!(
+        uploading.is_empty(),
+        "these CodeQL analyze steps still upload (and so bundle) the database; \
+         set `upload-database: false`:\n{}",
+        uploading.join("\n")
+    );
+}
