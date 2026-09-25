@@ -503,6 +503,242 @@ wrote alice.pcap: 7 SIP message(s), every call whole, no other call
 tshark -r 'alice.pcap' -Y 'sip.Call-ID == "completed-9f8e7d@192.0.2.10"' -V
 ```
 
+## AI tasks
+
+Each of these programs does what an agent does with sipnab over MCP, and
+ends with the answer the agent would act on. They share
+[`mcp_calls.py`](https://github.com/NormB/sipnab/blob/main/clients/python/mcp_calls.py), which reaches sipnab over
+stdio through the MCP SDK in
+[`clients/python/requirements-mcp.txt`](https://github.com/NormB/sipnab/blob/main/clients/python/requirements-mcp.txt),
+or over HTTP through the client in
+[`mcp_probe.py`](https://github.com/NormB/sipnab/blob/main/clients/python/mcp_probe.py). Before asking anything
+else, each waits for `capture_status` to report the file read to its end,
+because an answer given earlier describes part of the capture. CI runs every
+program against committed captures and checks the exact lines it prints,
+plus a failure case.
+
+| Program | What it does | How CI runs it |
+|---|---|---|
+| [agent_triage.py](https://github.com/NormB/sipnab/blob/main/clients/python/agent_triage.py) | `list_dialogs` and `get_capture_report` to one verdict, and the calls to look at next | Over stdio on four captures, then over HTTP with signed tokens |
+| [evidence_handoff.py](https://github.com/NormB/sipnab/blob/main/clients/python/evidence_handoff.py) | An evidence package and a SIPp scenario per call, read back and checked | Twice over one capture; the two runs must match byte for byte |
+| [aggregate_for_model.py](https://github.com/NormB/sipnab/blob/main/clients/python/aggregate_for_model.py) | A filter, `aggregate_dialogs`, and JSON cut to a byte budget | Three budgets, an unknown filter field, and a budget nothing fits |
+
+### Triage a capture over MCP, as an agent
+
+[`agent_triage.py`](https://github.com/NormB/sipnab/blob/main/clients/python/agent_triage.py) starts sipnab as an
+MCP stdio child, pages through `list_dialogs` with its cursor, and asks
+`get_capture_report` for the findings. The verdict is the one
+[`triage.py`](#triage-a-capture-to-one-verdict) gives, with the same exit
+status. The program adds what an agent needs from two answers: a check that
+both describe one capture, a summary by state, and one `next:` line per call
+a finding names, with the tool to call next:
+
+<!-- snippet: clients/python/agent_triage.py#agent-verdict -->
+```python
+result, lines = triage.verdict(report)
+disagree = []
+if len(rows) != total:
+    disagree.append(
+        f"inconclusive: list_dialogs reported {total} dialog(s) and paging returned {len(rows)}"
+    )
+if report["dialogs_examined"] != total:
+    disagree.append(
+        f"inconclusive: get_capture_report examined {report['dialogs_examined']} dialog(s) "
+        f"and list_dialogs holds {total}, so the two answers are not about one capture"
+    )
+named = named_calls(report)
+# A finding that omitted evidence counted calls it does not name, so a
+# Failed dialog missing from the names may be one of those.
+omitted = any(f.get("evidence_omitted") for f in report["findings"])
+unexplained = [] if omitted else [
+    r["call_id"] for r in rows if r["state"] == "Failed" and r["call_id"] not in named
+]
+if disagree or (unexplained and result == "clean"):
+    result = "inconclusive"
+by_state = collections.Counter(r["state"] for r in rows)
+ordered = sorted(by_state.items(), key=lambda kv: (-kv[1], kv[0]))
+summary = ", ".join(f"{n} {state}" for state, n in ordered)
+lines = disagree + lines
+lines.append(f"summary: {len(rows)} dialog(s) listed: {summary}" if rows else "summary: no dialog listed")
+lines += [f"unexplained: {c} is Failed and no finding names it" for c in unexplained]
+lines += [f"next: triage_call {c}" for c in named]
+return result, lines
+```
+
+```bash
+python3 clients/python/agent_triage.py capture.pcap
+```
+
+Against [`tests/pcap-samples/sip-problem-call.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-problem-call.pcap) it exits `1`:
+
+```text
+problems: 23 frame(s), 5 dialog(s), 0 stream(s)
+  major  server_failure  2 call(s)
+    decline-7c6d5e@198.51.100.30  Decline
+    unavail-4e5f60@192.0.2.50  Service Unavailable
+  minor  request_failure  2 call(s)
+    busy-3a2b1c@192.0.2.30  Busy Here
+    notfound-1b2c3d@203.0.113.30  Not Found
+summary: 5 dialog(s) listed: 4 Failed, 1 Completed
+next: triage_call decline-7c6d5e@198.51.100.30
+next: triage_call unavail-4e5f60@192.0.2.50
+next: triage_call busy-3a2b1c@192.0.2.30
+next: triage_call notfound-1b2c3d@203.0.113.30
+```
+
+A dialog in the `Failed` state that no finding names, while the report says
+clean, makes the verdict inconclusive: one of the two answers is wrong, and
+an agent that picked either would be guessing.
+
+### Reach a production box over HTTP with a signed token
+
+The same program takes `--url` and `--token-file` instead of a capture, and
+asks a sipnab serving `--mcp-transport http`. The server holds a signing key,
+and each agent gets a short-lived token minted from it with
+`--mint-token --token-scope read`, the shape
+[cookbook recipe 55](@/docs/cookbook.md#55-set-up-the-mcp-server-for-a-hosted-agent)
+deploys. A `read` token reaches only the tools annotated read-only, which
+includes every tool this triage calls. The client is the one in
+`mcp_probe.py`:
+
+<!-- snippet: clients/python/mcp_calls.py#signed-http -->
+```python
+node = mcp_probe.Mcp(url, token, "sipnab")
+# A refused token fails here, as SystemExit naming the HTTP status:
+# sipnab answers 401 before any session exists.
+node.initialize()
+
+async def call(name: str, arguments: dict):
+    return node.call(name, arguments)
+```
+
+```bash
+# Run all of these, in order.
+sipnab --mint-token --token-scope read --token-id agent-a --mcp-signing-key-file /etc/sipnab/mcp.key --mcp-token-ttl 900 >agent.token
+python3 clients/python/agent_triage.py --url http://127.0.0.1:8731 --token-file agent.token
+```
+
+CI generates a signing key at run time and starts sipnab on loopback port 0,
+reading the port it logs. The signed token must print the same lines as the
+stdio run. A token signed with another key, a token minted from the same key
+for the REST API, and a request with no token must each get a `401`.
+`get_capture_report` is not in `--mcp-tools core`, so a box serving only the
+core set cannot answer this triage.
+
+### Hand an agent an evidence package and a repro script
+
+[`evidence_handoff.py`](https://github.com/NormB/sipnab/blob/main/clients/python/evidence_handoff.py) takes the
+calls the findings name and asks `build_evidence_package` for one directory
+holding them, then `generate_repro` for a SIPp scenario per call, pinning the
+Request-URI. sipnab writes both under `--mcp-file-root` and never over a name
+already taken. The program reads the files back rather than trusting either
+answer:
+
+<!-- snippet: clients/python/evidence_handoff.py#package-check -->
+```python
+pkg = root / name
+problems = []
+named = set(answer["files"])
+on_disk = {p.name for p in pkg.iterdir()}
+for f in sorted(named - on_disk):
+    problems.append(f"{name}/{f}: named in the answer and not on disk")
+for f in sorted(on_disk - named):
+    problems.append(f"{name}/{f}: on disk and not named in the answer")
+if "manifest.json" in on_disk:
+    manifest = json.loads((pkg / "manifest.json").read_text())
+    listed = [c["call_id"] for c in manifest["calls"]]
+    if listed != call_ids:
+        problems.append(f"{name}/manifest.json lists {listed}, not {call_ids}")
+if "README.md" in on_disk and REBUILT not in (pkg / "README.md").read_text():
+    problems.append(f"{name}/README.md does not say the frames were rebuilt, not copied")
+return problems
+```
+
+Each scenario on disk must be the text the answer returned, and must assert
+the final response the capture held. The program prints one `sha256` line
+per file, relative to the file root:
+
+```bash
+python3 clients/python/evidence_handoff.py capture.pcap --file-root /var/lib/sipnab/evidence --name failed-calls
+```
+
+```text
+package failed-calls: 4 call(s), 16 message(s)
+repro failed-calls.call-01.xml  decline-7c6d5e@198.51.100.30  asserts 603  pinned request_uri
+repro failed-calls.call-02.xml  unavail-4e5f60@192.0.2.50  asserts 503  pinned request_uri
+repro failed-calls.call-03.xml  busy-3a2b1c@192.0.2.30  asserts 486  pinned request_uri
+repro failed-calls.call-04.xml  notfound-1b2c3d@203.0.113.30  asserts 404  pinned request_uri
+```
+
+CI runs it twice over one capture into two file roots and requires the same
+output and byte-identical files. The one difference between the two runs is
+the absolute path each answer carries, which the program prints relative to
+its root. Nothing else needs normalizing: the package holds no clock time,
+host name or random value. The package files and scenario files match across
+time zones and capture file paths. The README and manifest name the sipnab
+version, so the hashes change with a release, and CI compares two runs
+rather than pinning them.
+
+### Aggregate dialogs into bounded JSON for a model
+
+[`aggregate_for_model.py`](https://github.com/NormB/sipnab/blob/main/clients/python/aggregate_for_model.py) sends a
+[filter-DSL](@/docs/filter-dsl.md) expression to `aggregate_dialogs` and prints one
+line of JSON no longer than `--max-bytes`. sipnab bounds the number of
+buckets (`--mcp-max-rows`) and the length of each value taken from a packet
+(256 bytes, then a marker). It does not bound the answer as a whole, because
+the budget belongs to the model reading it. So the program makes the cut,
+whole buckets at a time:
+
+<!-- snippet: clients/python/aggregate_for_model.py#model-bound -->
+```python
+buckets = answer["buckets"]
+if sum(b["count"] for b in buckets) + answer["other_count"] != answer["total_matched"]:
+    raise ValueError(
+        f"sipnab's buckets and other_count do not add up to total_matched "
+        f"{answer['total_matched']}; refusing to pass on a wrong total"
+    )
+
+def doc(kept: int) -> str:
+    return encode({
+        "group_by": answer["group_by"],
+        "filter": filter_expr,
+        "total_matched": answer["total_matched"],
+        "distinct_values": answer["distinct_values"],
+        "buckets": [{"value": b["value"], "count": b["count"]} for b in buckets[:kept]],
+        "other_count": answer["other_count"] + sum(b["count"] for b in buckets[kept:]),
+        "omitted_buckets": len(buckets) - kept,
+    })
+
+def fits(kept: int) -> bool:
+    return len(doc(kept).encode("utf-8")) <= max_bytes
+
+if not fits(0):
+    raise ValueError(
+        f"the answer is {len(doc(0).encode('utf-8'))} byte(s) with no bucket at all, "
+        f"over the {max_bytes}-byte budget"
+    )
+# Fewer buckets is never longer, so the most that fit is found by halving.
+lo, hi = 0, len(buckets)
+while lo < hi:
+    mid = (lo + hi + 1) // 2
+    lo, hi = (mid, hi) if fits(mid) else (lo, mid - 1)
+return doc(lo), len(buckets) - lo
+```
+
+A cut in the middle of a string leaves a model an unterminated value to
+complete. Dropping whole buckets into `other_count` keeps the JSON valid
+under every budget and keeps the counts adding up to `total_matched`.
+Values sipnab took from packets keep its untrusted-data markers, which is
+why the budget counts bytes: each marker character is three.
+
+```bash
+python3 clients/python/aggregate_for_model.py capture.pcap --group-by response_code --filter "state == 'Failed'" --max-bytes 200
+```
+
+```text
+{"group_by":"response_code","filter":"state == 'Failed'","total_matched":4,"distinct_values":4,"buckets":[{"value":"404","count":1},{"value":"486","count":1}],"other_count":2,"omitted_buckets":2}
+```
+
 ## Run everything CI runs
 
 Build sipnab with every feature and its examples, then run the smoke script.

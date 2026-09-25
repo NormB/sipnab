@@ -12,6 +12,28 @@ entry that carries them.
 
 ### Added
 
+- **Three AI-task programs: what an agent does with sipnab over MCP, each run
+  end to end in CI.** [Runnable examples](docs/client-examples.md) has a new
+  section for them, linked from the [MCP guide](docs/mcp.md).
+  `clients/python/agent_triage.py` pages `list_dialogs`, asks
+  `get_capture_report`, and prints `triage.py`'s verdict with a summary by
+  state and the calls to call `triage_call` on next. It calls a failed dialog
+  no finding names inconclusive rather than clean. It runs over MCP stdio,
+  and over HTTP with a read-scoped token minted from a signing key, the shape
+  cookbook recipe 55 deploys. CI checks that the two transports print the
+  same verdict and that a token signed with another key, a token minted for
+  the REST API, and a request with no token each get a `401`.
+  `clients/python/evidence_handoff.py` has `build_evidence_package` and
+  `generate_repro` write a package and a SIPp scenario per call under
+  `--mcp-file-root`, then reads every file back against the answers. CI runs
+  it twice over one capture and requires byte-identical files.
+  `clients/python/aggregate_for_model.py` sends a filter-DSL expression to
+  `aggregate_dialogs` and cuts the answer to a byte budget by folding whole
+  buckets into `other_count`, so the JSON stays valid and its counts still
+  add up. `clients/python/mcp_calls.py` gives the three one tool-call
+  interface over either transport, reusing the MCP SDK for stdio and
+  `mcp_probe.py` for HTTP, and waits for `capture_status` to report the file
+  read to its end before any question.
 - **Five operator-task programs, one per multi-step cookbook recipe, each run
   end to end in CI.** [Runnable examples](docs/client-examples.md) has a new
   section for them, and each recipe links to its program.

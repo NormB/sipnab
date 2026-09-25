@@ -1015,7 +1015,13 @@ fn wiki_intra_docs_links_resolve() {
     // recipe links, the cookbook link above it and recipe 10c. Attributed by
     // measurement: with either file swapped back to HEAD the extractor finds
     // 973 and 971 respectively.
-    const EXPECTED_WIKI_LINKS: usize = 985;
+    // 985 -> 993: the AI tasks (EX7). docs/mcp.md +5, its "Where to go next"
+    // row linking the four AI-task sections and the section above them;
+    // docs/client-examples.md +3, pointing at triage.py's section, cookbook
+    // recipe 55 and the filter DSL rather than restating them. Attributed by
+    // measurement: with either file swapped back to HEAD the extractor finds
+    // 988 and 990 respectively.
+    const EXPECTED_WIKI_LINKS: usize = 993;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe 6d in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

@@ -24,10 +24,15 @@
 # group's schema file, a HEP collector fed by two sipnab agents, and the BPF
 # record decode behind TLS without keys. Every sipnab runs on loopback.
 #
-# Last, the operator tasks: one program per multi-step cookbook recipe,
+# Next, the operator tasks: one program per multi-step cookbook recipe,
 # triage to a verdict, failed calls by response code, one-way audio and whose
 # loss it is, a scanner banned through TFPS, and one customer's calls
 # exported from rotated captures and opened by tshark.
+#
+# Last, the AI tasks, over MCP: an agent triage over stdio and again over
+# HTTP with a token minted from a signing key generated at run time, an
+# evidence package and repro scripts written twice and compared byte for
+# byte, and an aggregate cut to a model's byte budget.
 #
 # Needs: a sipnab built with `--all-features --bins --examples` (default
 # target/debug/sipnab; the TLS example is read from beside it), go, node
@@ -534,6 +539,161 @@ expect_exit "python customer_export (another customer shares an address)" 1 \
 expect_exit "python customer_export (no such customer)" 1 \
 	-- "$PYTHON" clients/python/customer_export.py "$WORK/rotated" --user nobody --out "$WORK/export/nobody.pcap"
 grep -q "no call for nobody" "$WORK/err" || fail "customer_export.py did not say nobody has no call: $(head -c 400 "$WORK/err")"
+
+# ── AI tasks: what an agent does with sipnab over MCP ────────────────────
+#
+# Each program is an MCP client; with a capture it starts sipnab as a stdio
+# child through SIPNAB_BIN, and waits for capture_status to say the file is
+# read to its end before asking anything else.
+
+# Agent triage over stdio: capture_status, list_dialogs, get_capture_report,
+# one verdict. The exit status is triage.py's.
+PROBLEM_TRIAGE=(
+	"problems: 23 frame(s), 5 dialog(s), 0 stream(s)"
+	"  major  server_failure  2 call(s)"
+	"    decline-7c6d5e@198.51.100.30  Decline"
+	"    unavail-4e5f60@192.0.2.50  Service Unavailable"
+	"  minor  request_failure  2 call(s)"
+	"    busy-3a2b1c@192.0.2.30  Busy Here"
+	"    notfound-1b2c3d@203.0.113.30  Not Found"
+	"summary: 5 dialog(s) listed: 4 Failed, 1 Completed"
+	"next: triage_call decline-7c6d5e@198.51.100.30"
+	"next: triage_call unavail-4e5f60@192.0.2.50"
+	"next: triage_call busy-3a2b1c@192.0.2.30"
+	"next: triage_call notfound-1b2c3d@203.0.113.30"
+)
+expect_exit "python agent_triage (stdio, four failed calls)" 1 "${PROBLEM_TRIAGE[@]}" \
+	-- "$PYTHON" clients/python/agent_triage.py tests/pcap-samples/sip-problem-call.pcap
+cp "$WORK/out" "$WORK/agent-stdio.out"
+expect "python agent_triage (stdio, one clean call)" \
+	"clean: 7 frame(s), 1 dialog(s), 0 stream(s)" \
+	"summary: 1 dialog(s) listed: 1 Completed" \
+	-- "$PYTHON" clients/python/agent_triage.py tests/fixtures/sip_call.pcap
+expect_exit "python agent_triage (stdio, no dialog to judge)" 2 \
+	"inconclusive: 10 frame(s) and no SIP dialog or RTP stream to judge, so an empty finding list proves nothing" \
+	"summary: no dialog listed" \
+	-- "$PYTHON" clients/python/agent_triage.py tests/fixtures/udp_5060.pcap
+expect_exit "python agent_triage (stdio, no such capture)" 3 \
+	-- "$PYTHON" clients/python/agent_triage.py "$WORK/no-such.pcap"
+grep -q "does not exist" "$WORK/err" || fail "agent_triage.py did not pass on why sipnab failed: $(head -c 400 "$WORK/err")"
+
+# The same triage over HTTP, the shape recipe 55 deploys: a signing key file
+# (generated here, never committed), and a short-lived read-scoped token
+# minted from it. sipnab binds port 0 and the check reads the port it logs,
+# so no port is reserved and released first. Loopback only.
+MCP_KEY="$WORK/mcp.key"
+"$PYTHON" -c 'import base64, secrets; print(base64.b64encode(secrets.token_bytes(32)).decode())' >"$MCP_KEY"
+chmod 600 "$MCP_KEY"
+NO_COLOR=1 "$BIN" --mcp -N --mcp-transport http --mcp-bind 127.0.0.1:0 \
+	--mcp-signing-key-file "$MCP_KEY" --node-name agent-box \
+	-I tests/pcap-samples/sip-problem-call.pcap >/dev/null 2>"$WORK/mcp-http.log" &
+MCP_PID=$!
+PIDS+=("$MCP_PID")
+MCP_URL=""
+for _ in $(seq 600); do
+	kill -0 "$MCP_PID" 2>/dev/null || { cat "$WORK/mcp-http.log" >&2; echo "smoke-clients: the HTTP MCP sipnab exited" >&2; exit 1; }
+	MCP_URL="$(sed -n 's/.*MCP HTTP server listening on \(127\.0\.0\.1:[0-9]*\).*/http:\/\/\1/p' "$WORK/mcp-http.log")"
+	[ -z "$MCP_URL" ] || break
+	sleep 0.1
+done
+[ -n "$MCP_URL" ] || { cat "$WORK/mcp-http.log" >&2; echo "smoke-clients: the HTTP MCP sipnab never said where it listens" >&2; exit 1; }
+# mint TOKEN_FILE ARG... : a token from sipnab --mint-token.
+mint() {
+	local out="$1"
+	shift
+	"$BIN" --mint-token "$@" >"$out" 2>"$WORK/mint.log" || fail "sipnab --mint-token $*: $(head -c 400 "$WORK/mint.log")"
+}
+mint "$WORK/agent.token" --token-scope read --token-id agent-ci --mcp-signing-key-file "$MCP_KEY" --mcp-token-ttl 900
+"$PYTHON" -c 'import base64, secrets; print(base64.b64encode(secrets.token_bytes(32)).decode())' >"$WORK/other.key"
+mint "$WORK/wrong-key.token" --token-scope read --mcp-signing-key-file "$WORK/other.key"
+# The same key, minted for the REST API: a token names the surface it is for.
+mint "$WORK/api-audience.token" --api-signing-key-file "$MCP_KEY"
+expect_exit "python agent_triage (HTTP, signed read token)" 1 "${PROBLEM_TRIAGE[@]}" \
+	-- "$PYTHON" clients/python/agent_triage.py --url "$MCP_URL" --token-file "$WORK/agent.token"
+cmp -s "$WORK/out" "$WORK/agent-stdio.out" ||
+	fail "agent_triage.py printed one verdict over stdio and another over HTTP: $(diff "$WORK/agent-stdio.out" "$WORK/out" | head -c 400)"
+for token in wrong-key api-audience; do
+	expect_exit "python agent_triage (HTTP, $token token)" 3 \
+		-- "$PYTHON" clients/python/agent_triage.py --url "$MCP_URL" --token-file "$WORK/$token.token"
+	[ ! -s "$WORK/out" ] || fail "agent_triage.py printed a verdict with a $token token"
+	grep -q "HTTP 401" "$WORK/err" || fail "agent_triage.py did not name the 401 for a $token token: $(head -c 400 "$WORK/err")"
+done
+# No Authorization header at all: refused before any MCP session exists.
+UNSIGNED="$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+	-H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' \
+	-d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"smoke","version":"0"}}}' \
+	"$MCP_URL/mcp" || true)"
+if [ "$UNSIGNED" = 401 ]; then
+	echo "ok   the HTTP MCP sipnab refuses a request with no token"
+else
+	fail "the HTTP MCP sipnab answered $UNSIGNED, not 401, to a request with no token"
+fi
+
+# An evidence package and a repro script per call, written under
+# --mcp-file-root, read back and checked, twice: two runs over one capture
+# must print the same lines and write byte-identical files. The one thing
+# that differs between the runs is the absolute path under each root, which
+# sipnab's answer carries and the program prints relative to the root.
+HANDOFF_LINES=(
+	"package failed-calls: 4 call(s), 16 message(s)"
+	"repro failed-calls.call-01.xml  decline-7c6d5e@198.51.100.30  asserts 603  pinned request_uri"
+	"repro failed-calls.call-02.xml  unavail-4e5f60@192.0.2.50  asserts 503  pinned request_uri"
+	"repro failed-calls.call-03.xml  busy-3a2b1c@192.0.2.30  asserts 486  pinned request_uri"
+	"repro failed-calls.call-04.xml  notfound-1b2c3d@203.0.113.30  asserts 404  pinned request_uri"
+)
+for run in 1 2; do
+	mkdir -p "$WORK/handoff-$run"
+	expect "python evidence_handoff (run $run)" "${HANDOFF_LINES[@]}" \
+		-- "$PYTHON" clients/python/evidence_handoff.py tests/pcap-samples/sip-problem-call.pcap \
+		--file-root "$WORK/handoff-$run" --name failed-calls
+	grep -q '^PROBLEM' "$WORK/out" && fail "evidence_handoff.py found a problem: $(grep '^PROBLEM' "$WORK/out" | head -c 400)"
+	cp "$WORK/out" "$WORK/handoff-$run.out"
+done
+if cmp -s "$WORK/handoff-1.out" "$WORK/handoff-2.out" &&
+	diff -r "$WORK/handoff-1" "$WORK/handoff-2" >"$WORK/handoff.diff" 2>&1; then
+	echo "ok   two runs wrote a byte-identical package and repro scripts"
+else
+	fail "two evidence_handoff.py runs over one capture differ: $(head -c 400 "$WORK/handoff.diff") $(diff "$WORK/handoff-1.out" "$WORK/handoff-2.out" | head -c 400)"
+fi
+[ "$(grep -c '^sha256 ' "$WORK/handoff-1.out")" = 15 ] ||
+	fail "evidence_handoff.py did not digest the 11 package files and 4 scenarios"
+capinfos -c "$WORK/handoff-1/failed-calls/signaling.pcapng" >"$WORK/capinfos.out" 2>&1 || true
+grep -qE '^Number of packets: +16$' "$WORK/capinfos.out" ||
+	fail "capinfos does not count the package's 16 messages: $(head -c 400 "$WORK/capinfos.out")"
+# sipnab never writes over a name that is taken.
+expect_exit "python evidence_handoff (the name is taken)" 1 \
+	-- "$PYTHON" clients/python/evidence_handoff.py tests/pcap-samples/sip-problem-call.pcap \
+	--file-root "$WORK/handoff-1" --name failed-calls
+grep -q "already exists" "$WORK/err" || fail "evidence_handoff.py did not pass on sipnab's refusal: $(head -c 400 "$WORK/err")"
+expect_exit "python evidence_handoff (no finding names a call)" 2 \
+	"nothing to package: no finding names a call" \
+	-- "$PYTHON" clients/python/evidence_handoff.py tests/fixtures/sip_call.pcap --file-root "$WORK/handoff-1"
+
+# Filter DSL into aggregate_dialogs into JSON under a model's byte budget.
+# Whole buckets fold into other_count; the counts still add up.
+expect "python aggregate_for_model (failed calls by code)" \
+	'{"group_by":"response_code","filter":"state == '"'"'Failed'"'"'","total_matched":4,"distinct_values":4,"buckets":[{"value":"404","count":1},{"value":"486","count":1},{"value":"503","count":1},{"value":"603","count":1}],"other_count":0,"omitted_buckets":0}' \
+	-- "$PYTHON" clients/python/aggregate_for_model.py tests/pcap-samples/sip-problem-call.pcap \
+	--group-by response_code --filter "state == 'Failed'"
+expect "python aggregate_for_model (the same, in 200 bytes)" \
+	'{"group_by":"response_code","filter":"state == '"'"'Failed'"'"'","total_matched":4,"distinct_values":4,"buckets":[{"value":"404","count":1},{"value":"486","count":1}],"other_count":2,"omitted_buckets":2}' \
+	-- "$PYTHON" clients/python/aggregate_for_model.py tests/pcap-samples/sip-problem-call.pcap \
+	--group-by response_code --filter "state == 'Failed'" --max-bytes 200
+expect "python aggregate_for_model (User-Agents from packets, in 300 bytes)" \
+	'{"group_by":"ua","filter":null,"total_matched":8,"distinct_values":3,"buckets":[{"value":"⟦untrusted-capture-data⟧friendly-scanner⟦/untrusted-capture-data⟧","count":6}],"other_count":2,"omitted_buckets":2}' \
+	-- "$PYTHON" clients/python/aggregate_for_model.py tests/fixtures/sip-scanner-and-register-flood.pcap \
+	--group-by ua --max-bytes 300
+# The line and its newline, within the budget in bytes, not characters.
+[ "$(head -n 1 "$WORK/out" | tr -d '\n' | wc -c)" -le 300 ] ||
+	fail "aggregate_for_model.py printed more than its 300-byte budget"
+expect_exit "python aggregate_for_model (a filter field sipnab does not know)" 1 \
+	-- "$PYTHON" clients/python/aggregate_for_model.py tests/pcap-samples/sip-problem-call.pcap \
+	--group-by response_code --filter "bogus == 1"
+grep -q "unknown field 'bogus'" "$WORK/err" || fail "aggregate_for_model.py did not pass on sipnab's refusal: $(head -c 400 "$WORK/err")"
+expect_exit "python aggregate_for_model (a budget nothing fits)" 1 \
+	-- "$PYTHON" clients/python/aggregate_for_model.py tests/pcap-samples/sip-problem-call.pcap \
+	--group-by response_code --max-bytes 50
+grep -q "over the 50-byte budget" "$WORK/err" || fail "aggregate_for_model.py did not say the budget is too small: $(head -c 400 "$WORK/err")"
 
 if [ "$FAILED" -ne 0 ]; then
 	echo "smoke-clients: $FAILED check(s) failed" >&2

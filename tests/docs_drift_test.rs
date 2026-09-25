@@ -220,6 +220,47 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             "website/content/docs/examples.md",
         ],
     ),
+    // The AI-task programs' own options (EX7): `--url` and `--token-file`
+    // point `agent_triage.py` at a sipnab serving MCP over HTTP and at the
+    // token it presents, `--file-root` and `--name` are where
+    // `evidence_handoff.py` has sipnab write the package (it passes the root
+    // on as `--mcp-file-root`), and `--max-bytes` is the budget
+    // `aggregate_for_model.py` cuts its JSON to. None is a sipnab flag.
+    (
+        "url",
+        &[
+            "docs/client-examples.md",
+            "website/content/docs/examples.md",
+        ],
+    ),
+    (
+        "token-file",
+        &[
+            "docs/client-examples.md",
+            "website/content/docs/examples.md",
+        ],
+    ),
+    (
+        "file-root",
+        &[
+            "docs/client-examples.md",
+            "website/content/docs/examples.md",
+        ],
+    ),
+    (
+        "name",
+        &[
+            "docs/client-examples.md",
+            "website/content/docs/examples.md",
+        ],
+    ),
+    (
+        "max-bytes",
+        &[
+            "docs/client-examples.md",
+            "website/content/docs/examples.md",
+        ],
+    ),
     (
         "all-targets",
         &["website/content/notes/the-assumption-nobody-timed.md"],
@@ -3920,7 +3961,11 @@ fn no_documentation_table_repeats_a_row() {
     // counting separator rows added per file in the staged diff: one in each
     // of those two, and one in website/static/llms-full.txt, which this gate
     // does not walk.
-    const EXPECTED_TABLES: usize = 978;
+    // 978 -> 980: the AI-tasks table in docs/client-examples.md and its site
+    // mirror website/content/docs/examples.md (EX7). Attributed by counting
+    // separator rows added per file in the staged diff: one in each of those
+    // two, one in website/static/llms-full.txt (not walked), none removed.
+    const EXPECTED_TABLES: usize = 980;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

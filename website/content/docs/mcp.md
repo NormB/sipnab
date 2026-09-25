@@ -291,3 +291,4 @@ states the rule and what enforces it.
 | Run it against a remote server, keep a capture alive between sessions, or expose it as a service | [MCP deployment](@/docs/mcp-deploy.md) |
 | Know what a tool returns, field by field | [MCP tool reference](@/docs/mcp-tools.md) |
 | Write a client, or review the security model | [MCP protocol](@/docs/mcp-protocol.md) |
+| Run what an agent does, end to end: triage over [stdio](@/docs/examples.md#triage-a-capture-over-mcp-as-an-agent) or [HTTP with a signed token](@/docs/examples.md#reach-a-production-box-over-http-with-a-signed-token), an [evidence package with repro scripts](@/docs/examples.md#hand-an-agent-an-evidence-package-and-a-repro-script), or an [aggregate cut to a model's budget](@/docs/examples.md#aggregate-dialogs-into-bounded-json-for-a-model) | [Runnable client examples](@/docs/examples.md#ai-tasks) |

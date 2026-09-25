@@ -401,8 +401,11 @@ fn the_reader_sees_every_client_fence_the_pages_hold() {
         ("docs/mcp-deploy.md", "typescript", 1),
         // The capability examples: leg_correlate.py's join, vcon_validate.py's
         // check and hep_senders.py's roster. Then one region from each of the
-        // five operator-task programs.
-        ("docs/client-examples.md", "python", 8),
+        // five operator-task programs. Then the four AI-task regions (EX7):
+        // agent_triage.py's verdict, mcp_calls.py's signed HTTP session,
+        // evidence_handoff.py's package check and aggregate_for_model.py's
+        // bound.
+        ("docs/client-examples.md", "python", 12),
     ]
     .into_iter()
     .map(|(d, l, n)| ((d, l.to_string()), n))
@@ -619,6 +622,89 @@ fn every_operator_task_runs_in_ci_and_is_linked_from_its_recipes() {
                 )),
                 Some(_) => {}
             }
+        }
+    }
+    assert!(unlinked.is_empty(), "{}", unlinked.join("\n"));
+}
+
+/// The AI tasks: what an agent does with sipnab over MCP, each a program CI
+/// runs against committed captures. `anchor` is the program's section of
+/// docs/client-examples.md, which docs/mcp.md links so a reader of the MCP
+/// guide finds the program that exercises it. `agent_triage.py` has two
+/// sections, one per transport, because the HTTP one is a separate check.
+const AI_TASKS: &[(&str, &str)] = &[
+    (
+        "clients/python/agent_triage.py",
+        "triage-a-capture-over-mcp-as-an-agent",
+    ),
+    (
+        "clients/python/agent_triage.py",
+        "reach-a-production-box-over-http-with-a-signed-token",
+    ),
+    (
+        "clients/python/evidence_handoff.py",
+        "hand-an-agent-an-evidence-package-and-a-repro-script",
+    ),
+    (
+        "clients/python/aggregate_for_model.py",
+        "aggregate-dialogs-into-bounded-json-for-a-model",
+    ),
+];
+
+/// Each AI task runs in CI, has its section, and is linked from the MCP
+/// guide. The flags are the pieces that make the checks what they claim:
+/// an HTTP server with a signing key and a token minted from it (the shape
+/// recipe 55 deploys), and a file root for the evidence package. Without
+/// them the HTTP check would be a stdio check with a different name.
+#[test]
+fn every_ai_task_runs_in_ci_and_is_linked_from_the_mcp_guide() {
+    let smoke: String = read("scripts/smoke-clients.sh")
+        .lines()
+        .filter(|l| !l.trim_start().starts_with('#'))
+        .map(|l| format!("{l}\n"))
+        .collect();
+    let mut missing: Vec<String> = [
+        "--mcp-transport",
+        "--mcp-signing-key-file",
+        "--mint-token",
+        // evidence_handoff.py's root, which it passes on as --mcp-file-root.
+        "--file-root",
+    ]
+    .into_iter()
+    .filter(|needle| !contains_token(&smoke, needle))
+    .map(str::to_string)
+    .collect();
+    for (program, _) in AI_TASKS {
+        if !contains_token(&smoke, program) {
+            missing.push((*program).to_string());
+        }
+    }
+    if !read("clients/python/evidence_handoff.py").contains("\"--mcp-file-root\"") {
+        missing.push("evidence_handoff.py starting sipnab with --mcp-file-root".to_string());
+    }
+    missing.dedup();
+    assert!(
+        missing.is_empty(),
+        "scripts/smoke-clients.sh no longer runs: {missing:?}"
+    );
+
+    let page = read("docs/client-examples.md");
+    let guide = read("docs/mcp.md");
+    let mut unlinked = Vec::new();
+    for (program, anchor) in AI_TASKS {
+        let name = program.rsplit('/').next().expect("a file name");
+        let section_present = page
+            .lines()
+            .filter(|l| l.starts_with("### "))
+            .any(|l| markdown_slug(l.trim_start_matches('#').trim()) == *anchor);
+        if !section_present || !page.contains(name) {
+            unlinked.push(format!(
+                "docs/client-examples.md has no `### ` section slugged {anchor} describing {name}"
+            ));
+        }
+        let link = format!("client-examples.md#{anchor}");
+        if !guide.contains(&link) {
+            unlinked.push(format!("docs/mcp.md does not link {link} ({name})"));
         }
     }
     assert!(unlinked.is_empty(), "{}", unlinked.join("\n"));

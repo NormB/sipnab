@@ -186,10 +186,13 @@ jobs:
       # leg correlation across a proxy sipnab and a relay sipnab, vCon exports
       # checked against the working group's schema file, a HEP collector fed
       # by two sipnab agents, and the BPF record decode behind TLS without
-      # keys. Last, the operator tasks, one program per multi-step cookbook
+      # keys. Next, the operator tasks, one program per multi-step cookbook
       # recipe, each checked for the exact lines its captures produce and a
-      # failure case. The MCP SDK comes from a hash-pinned file, like every
-      # other Python install in this job.
+      # failure case. Last, the AI tasks over MCP: triage over stdio and over
+      # loopback HTTP with signed tokens, an evidence package and repro
+      # scripts written twice and compared byte for byte, and an aggregate
+      # cut to a model's byte budget. The MCP SDK comes from a hash-pinned
+      # file, like every other Python install in this job.
       - name: Run every client program against a replayed capture
         if: runner.os == 'Linux'
         run: |
