@@ -783,7 +783,12 @@ fn linked_code_targets_exist() {
     // `docs/internals/` against HEAD: that one link and no other page changed.
     // 464 -> 465: threading.md's thread table names the capture-stop thread
     // (src/capture/breaker.rs), which breaks a silent netmap read (NM2).
-    const EXPECTED_CODE_LINKS: usize = 465;
+    // 465 -> 470: the cookbook output goldens (EX8). testing.md links
+    // tests/cli/cookbook/ three times (the CLI golden tier, its regenerate
+    // row, the gate roster), scripts/check-cookbook.py once and
+    // tests/cookbook_recipes_test.rs once. Attributed by measurement: with
+    // testing.md swapped back to HEAD the extractor finds 465.
+    const EXPECTED_CODE_LINKS: usize = 470;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \

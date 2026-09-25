@@ -32,8 +32,12 @@ the reason it cannot. An entry with no reason is refused, and so is an entry
 that exempts nothing: a skip list outlives the reason nobody wrote down, and
 then outlives the problem too.
 
+Every EXECUTED command also has its output pinned by a trycmd golden under
+tests/cli/cookbook/, or a reason in `OUTPUT_UNPINNED`; a command with neither,
+and a golden no command produces, fail the run (see "Output goldens" below).
+
 Usage:
-    scripts/check-cookbook.py [--binary PATH] [--verbose]
+    scripts/check-cookbook.py [--binary PATH] [--verbose] [--bless]
                               [--exempt 'SUBSTRING=REASON' ...]
     scripts/check-cookbook.py --dump-exemptions
 
@@ -43,6 +47,8 @@ Exits non-zero if any command fails its check.
 from __future__ import annotations
 
 import argparse
+import dataclasses
+import hashlib
 import os
 import re
 import shlex
@@ -104,6 +110,223 @@ CAPTURE_SUFFIXES = (".pcap", ".pcapng", ".cap")
 READER_SUPPLIED_FLAGS: frozenset[str] = frozenset({"--plugin", "--notes"})
 
 UNCOVERABLE: dict[str, str] = {}
+
+# ---- Output goldens ----------------------------------------------------------
+#
+# Executing a command proves it exits 0. It does not prove it still PRINTS what
+# the recipe's prose describes: a formatter that drops a column, or a report
+# that starts saying "No SIP traffic found", exits 0 just the same. So every
+# executed command also has its output pinned by a trycmd golden in GOLDENS,
+# run by tests/cli_goldens.rs under the same determinism env as every other
+# CLI golden.
+#
+# The command in each golden is the one THIS script executes, spelled by
+# `golden_case` -- the same `substitute` the RUN mode uses, with a
+# repo-relative fixture and a per-case output directory in place of the
+# absolute path and the temp directory. One rule, two spellings of its
+# inputs; there is no second mapping to drift from this one.
+#
+# Regenerate (a decision, not a fix -- read the diff):
+#     python3 scripts/check-cookbook.py --bless
+#     TRYCMD=overwrite cargo test --features full --test cli_goldens
+# `--bless` writes a command-only case for each executed command that lacks
+# one and deletes each case no executed command produces; trycmd then fills
+# in the output.
+GOLDENS = REPO / "tests" / "cli" / "cookbook"
+
+# How a golden names the fixture. tests/cli_goldens.rs copies the fixture to
+# this path inside the scratch directory the cookbook cases run in, so the
+# command reads the way a reader's would and carries no absolute path.
+GOLDEN_FIXTURE = "tests/pcap-samples/sip-rtp-g711.pcap"
+
+# Flags whose value is a path sipnab WRITES. Each is redirected into a
+# directory of its own: in RUN mode a fresh temp directory, in a golden a
+# directory named after the case. Two recipes that both write `./vcons` would
+# otherwise share it, and sipnab refuses to write over an existing
+# `--redact-map` -- so the second case's output would depend on which ran
+# first. Measured 2026-09-25: the second run of recipe 51 exits 1 with
+# "--redact-map './redact-map.json' already exists".
+OUTPUT_FLAGS = frozenset({
+    "-O", "--output",
+    "--export-vcon-dir", "--vcon-out", "--redact-map", "--evidence-out",
+    "--run-provenance-file", "--tui-audit-file", "--mcp-audit-file",
+})
+
+# Executed commands whose OUTPUT cannot be pinned, each mapped to the reason.
+# Same discipline as UNCOVERABLE: the key is a literal substring of the
+# `sipnab ...` invocation, an entry with no reason is refused, an entry that
+# exempts nothing is refused, and an entry for a command that HAS a golden is
+# refused too -- one of the two is wrong, and a reader cannot tell which.
+# These commands stay exit-status-only.
+OUTPUT_UNPINNED: dict[str, str] = {
+    # Recipes 1, 4, 7 and 13 open the TUI (no -N). A trycmd case has no
+    # terminal, so the TUI fails to start ("No such device or address") and
+    # the run prints nothing; a golden would pin that failed start as the
+    # expected output. What the TUI draws is pinned where a terminal exists:
+    # tests/tui_snapshot_test.rs and tests/tui_e2e_test.rs.
+    "sipnab -I capture.pcap": "opens the TUI, which needs a terminal a trycmd "
+        "case does not have; TUI output is pinned by tui_snapshot_test and "
+        "tui_e2e_test instead",
+    "sipnab -I encrypted.pcap": "opens the TUI, which needs a terminal a "
+        "trycmd case does not have; TUI output is pinned by tui_snapshot_test "
+        "and tui_e2e_test instead",
+}
+
+
+@dataclasses.dataclass(frozen=True)
+class Executed:
+    """One command this script ran, and the argv its golden must carry."""
+
+    recipe: str
+    inv: str
+    argv: tuple[str, ...]
+    # `golden_case`'s key: the file name `--bless` gives this command's case.
+    key: str = ""
+
+
+@dataclasses.dataclass
+class GoldenGaps:
+    """What `golden_gaps` found. Every list non-empty is a failure."""
+
+    missing: list[Executed]
+    stale: list[Path]
+    exempt: list[tuple[Executed, str]]
+    unused_reasons: list[str]
+    contradictory: list[str]
+    pinned: int
+
+
+def substitute(
+    argv: list[str], *, fixture: str, outdir: Path, call_ids: list[str]
+) -> tuple[list[str], bool]:
+    """Replace a recipe's placeholders. Returns (argv, input_was_replaced).
+
+    Only the INPUT path becomes the fixture. Substituting by suffix alone
+    also rewrote `-O decrypted.pcap`, which pointed output at the input and
+    made sipnab refuse -- correctly, it will not overwrite the capture it is
+    reading. That refusal read as a failing recipe. Every written path goes
+    into `outdir` instead (see OUTPUT_FLAGS).
+    """
+    subbed: list[str] = []
+    replaced = False
+    prev = ""
+    for a in argv:
+        is_capture = a.endswith(CAPTURE_SUFFIXES) and not Path(a).exists()
+        if prev in OUTPUT_FLAGS and a != "-":
+            subbed.append(str(outdir / Path(a).name))
+        elif is_capture:
+            subbed.append(fixture)
+            replaced = True
+        elif prev == "--call-report" and a not in call_ids:
+            # The page says `abc123@host`, a placeholder by design.
+            # A real id from the fixture is what proves the flag.
+            subbed.append(call_ids[0])
+        else:
+            subbed.append(a)
+        prev = a
+    return subbed, replaced
+
+
+def golden_case(argv: list[str], call_ids: list[str]) -> tuple[str, list[str]]:
+    """(key, argv) of the golden that pins this command's output.
+
+    The key names the case file and the directory its outputs go to. It is a
+    hash of the command with the output directory held constant, so it stays
+    put when recipes are renumbered, and two placeholder spellings of the
+    same run (`capture.pcap`, `huge.pcap`) are one case, not two.
+    """
+    probe, _ = substitute(
+        argv, fixture=GOLDEN_FIXTURE, outdir=Path("OUT"), call_ids=call_ids
+    )
+    key = hashlib.sha256("\0".join(probe).encode()).hexdigest()[:10]
+    subbed, _ = substitute(
+        argv, fixture=GOLDEN_FIXTURE, outdir=Path(key), call_ids=call_ids
+    )
+    return key, subbed
+
+
+_PLAIN = re.compile(r"^[A-Za-z0-9_@%+=:,./-]+$")
+
+
+def _quote(arg: str) -> str:
+    """Quote one argument the way the cookbook would, parseable by shlex."""
+    if _PLAIN.match(arg):
+        return arg
+    if "'" not in arg:
+        return f"'{arg}'"
+    if not any(c in arg for c in '"$`\\'):
+        return f'"{arg}"'
+    return shlex.quote(arg)
+
+
+def render_command(argv: list[str]) -> str:
+    """The `sipnab ...` line a golden carries after its `$ `."""
+    return " ".join(["sipnab", *(_quote(a) for a in argv)])
+
+
+def parse_golden_text(text: str) -> list[list[str]]:
+    """The argv (without `sipnab`) of every `$ ` command in a trycmd file."""
+    out: list[list[str]] = []
+    for line in text.split("\n"):
+        if line.startswith("$ "):
+            words = shlex.split(line[2:])
+            out.append(words[1:] if words[:1] == ["sipnab"] else words)
+    return out
+
+
+def read_goldens(directory: Path) -> tuple[dict[tuple[str, ...], Path], list[str]]:
+    """Map each golden's argv to its file, plus any malformed-file errors.
+
+    One command per file is the contract: the file name IS the key, and a
+    second command in the file would be pinned under the wrong name.
+    """
+    goldens: dict[tuple[str, ...], Path] = {}
+    errors: list[str] = []
+    for path in sorted(directory.glob("*.trycmd")):
+        cmds = parse_golden_text(path.read_text())
+        if len(cmds) != 1:
+            errors.append(f"{path.name}: {len(cmds)} commands, expected exactly 1")
+            continue
+        goldens[tuple(cmds[0])] = path
+    return goldens, errors
+
+
+def golden_gaps(
+    executed: list[Executed],
+    goldens: dict[tuple[str, ...], Path],
+    unpinned: dict[str, str],
+) -> GoldenGaps:
+    """Compare what ran with what is pinned. Pure, so both sides are driven."""
+    missing: list[Executed] = []
+    exempt: list[tuple[Executed, str]] = []
+    used: set[str] = set()
+    contradictory: set[str] = set()
+    covered: set[tuple[str, ...]] = set()
+    seen_missing: set[tuple[str, ...]] = set()
+    for e in executed:
+        reason_key = next((p for p in unpinned if p in e.inv), None)
+        if reason_key is not None:
+            used.add(reason_key)
+            if e.argv in goldens:
+                contradictory.add(reason_key)
+                covered.add(e.argv)
+            else:
+                exempt.append((e, unpinned[reason_key]))
+            continue
+        if e.argv in goldens:
+            covered.add(e.argv)
+        elif e.argv not in seen_missing:
+            seen_missing.add(e.argv)
+            missing.append(e)
+    stale = [p for a, p in goldens.items() if a not in covered]
+    return GoldenGaps(
+        missing=missing,
+        stale=sorted(stale),
+        exempt=exempt,
+        unused_reasons=[p for p in unpinned if p not in used],
+        contradictory=sorted(contradictory),
+        pinned=len(covered),
+    )
 
 
 def validate_exemptions(table: dict[str, str]) -> str | None:
@@ -229,6 +452,32 @@ def fixture_call_ids(binary: Path) -> list[str]:
     return ids
 
 
+def bless(executed: list[Executed]) -> None:
+    """Write missing command-only goldens and delete stale ones.
+
+    The expected output is left EMPTY on purpose: trycmd then fails every new
+    case until `TRYCMD=overwrite` records what the command really prints, so
+    a blessed-but-never-filled golden cannot pass by pinning nothing.
+    """
+    GOLDENS.mkdir(parents=True, exist_ok=True)
+    goldens, _ = read_goldens(GOLDENS)
+    gaps = golden_gaps(executed, goldens, OUTPUT_UNPINNED)
+    # A golden beside an OUTPUT_UNPINNED reason contradicts it; the table is
+    # the human decision, so the golden is the one that goes.
+    unpinned = {
+        goldens[e.argv]
+        for e in executed
+        if e.argv in goldens and any(p in e.inv for p in OUTPUT_UNPINNED)
+    }
+    for path in sorted(set(gaps.stale) | unpinned):
+        path.unlink()
+        print(f"BLESS  deleted {path.relative_to(REPO)}")
+    for e in gaps.missing:
+        path = GOLDENS / f"{e.key}.trycmd"
+        path.write_text(f"```\n$ {render_command(list(e.argv))}\n```\n")
+        print(f"BLESS  wrote   {path.relative_to(REPO)}  [{e.recipe}]")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--binary", default=str(REPO / "target" / "debug" / "sipnab"))
@@ -249,7 +498,19 @@ def main() -> int:
              "exit. Read by the Rust gate, so it inspects the table this "
              "script actually uses rather than re-parsing this file's source.",
     )
+    ap.add_argument(
+        "--bless",
+        action="store_true",
+        help=f"write a command-only golden in {GOLDENS.relative_to(REPO)} for "
+             "each executed command that has none, and delete each golden no "
+             "executed command produces. Then run TRYCMD=overwrite cargo test "
+             "--features full --test cli_goldens to fill in the output.",
+    )
     args = ap.parse_args()
+
+    if (bad := validate_exemptions(OUTPUT_UNPINNED)) is not None:
+        print(f"FATAL: OUTPUT_UNPINNED: {bad}", file=sys.stderr)
+        return 2
 
     exemptions = dict(UNCOVERABLE)
     for spec in args.exempt:
@@ -293,6 +554,7 @@ def main() -> int:
     commands = extract_commands(COOKBOOK.read_text())
     ran = flagged = failed = uncovered = exempt = 0
     failures: list[str] = []
+    executed: list[Executed] = []
 
     def uncover(recipe: str, why: str, shown: str) -> None:
         """Record one command no mode could check.
@@ -374,30 +636,12 @@ def main() -> int:
                 print(f"FLAGS  ok  [{recipe}] {inv[:80]}")
             continue
 
-        # RUN mode: substitute the placeholders and execute.
-        #
-        # Only the INPUT path becomes the fixture. Substituting by suffix alone
-        # also rewrote `-O decrypted.pcap`, which pointed output at the input
-        # and made sipnab refuse -- correctly, it will not overwrite the
-        # capture it is reading. That refusal read as a failing recipe.
+        # RUN mode: substitute the placeholders (see `substitute`) and execute.
         with tempfile.TemporaryDirectory() as tmp:
-            subbed: list[str] = []
-            replaced = False
-            prev = ""
-            for a in argv:
-                is_capture = a.endswith(CAPTURE_SUFFIXES) and not Path(a).exists()
-                if is_capture and prev in ("-O", "--output", "--pcap-export"):
-                    subbed.append(str(Path(tmp) / Path(a).name))
-                elif is_capture:
-                    subbed.append(str(DEFAULT_FIXTURE))
-                    replaced = True
-                elif prev == "--call-report" and a not in call_ids:
-                    # The page says `abc123@host`, a placeholder by design.
-                    # A real id from the fixture is what proves the flag.
-                    subbed.append(call_ids[0])
-                else:
-                    subbed.append(a)
-                prev = a
+            subbed, replaced = substitute(
+                argv, fixture=str(DEFAULT_FIXTURE), outdir=Path(tmp),
+                call_ids=call_ids,
+            )
 
             if not replaced and "-I" not in names and "--input" not in names:
                 # Reads no file and serves nothing this machine can host --
@@ -434,6 +678,10 @@ def main() -> int:
                 env={**os.environ, "NO_COLOR": "1"},
             )
         ran += 1
+        key, golden_argv = golden_case(argv, call_ids)
+        executed.append(
+            Executed(recipe=recipe, inv=inv, argv=tuple(golden_argv), key=key)
+        )
         if proc.returncode != 0:
             failed += 1
             tail = (proc.stderr or proc.stdout).strip().split("\n")[-3:]
@@ -456,12 +704,52 @@ def main() -> int:
         )
         return 2
 
+    # ---- Output goldens: every executed command pinned, or a stated reason.
+    if args.bless:
+        bless(executed)
+    goldens, malformed = read_goldens(GOLDENS)
+    gaps = golden_gaps(executed, goldens, OUTPUT_UNPINNED)
+    for problem in malformed:
+        failed += 1
+        failures.append(f"malformed golden {problem}")
+    for e in gaps.missing:
+        failed += 1
+        failures.append(
+            f"[{e.recipe}] NO GOLDEN -- its output is pinned by nothing\n    "
+            f"{e.inv[:120]}\n    want: $ {render_command(list(e.argv))[:160]}\n    "
+            "Run `python3 scripts/check-cookbook.py --bless`, then "
+            "`TRYCMD=overwrite cargo test --features full --test cli_goldens`, "
+            "and read the diff -- or add it to OUTPUT_UNPINNED with the reason."
+        )
+    for path in gaps.stale:
+        failed += 1
+        failures.append(
+            f"STALE GOLDEN {path.relative_to(REPO)} -- no executed cookbook "
+            "command produces its command line; `--bless` deletes it"
+        )
+    for pattern in gaps.unused_reasons:
+        failed += 1
+        failures.append(f"OUTPUT_UNPINNED entry {pattern!r} exempts nothing -- delete it")
+    for pattern in gaps.contradictory:
+        failed += 1
+        failures.append(
+            f"OUTPUT_UNPINNED entry {pattern!r} names a command that has a golden "
+            "-- delete one of the two"
+        )
+    if args.verbose:
+        for e, reason in gaps.exempt:
+            print(f"EXIT-ONLY  [{e.recipe}] {e.inv[:60]}\n    {reason}")
+
     print()
     print(f"cookbook commands checked: {ran + flagged}")
     print(f"  executed against a fixture : {ran}")
     print(f"  flag-checked (needs a host): {flagged}")
     print(f"  UNCOVERED                  : {uncovered}")
     print(f"  exempt, with a reason      : {exempt}")
+    print("cookbook output goldens (distinct executed commands):")
+    print(f"  output pinned by a golden  : {gaps.pinned}")
+    print(f"  exit-only, with a reason   : {len({e.argv for e, _ in gaps.exempt})}")
+    print(f"  NO GOLDEN                  : {len(gaps.missing)}")
     print(f"  FAILED                     : {failed}")
     if failures:
         print("\n--- failures ---")

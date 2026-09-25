@@ -1,0 +1,35 @@
+```
+$ sipnab -N -I tests/pcap-samples/sip-rtp-g711.pcap --call-report 1-1966@10.0.2.20 --markdown --no-cli-print
+# Call Report: 1-1966@10.0.2.20
+
+## Summary
+
+| Field | Value |
+|-------|-------|
+| Time | 2016-11-26 14:52:59 -> 14:53:08 (8s) |
+| From | sipp |
+| To | test |
+| State | Completed |
+| Cause | Q.850 cause 16 "NORMAL_CLEARING" [Reason] |
+
+## Timing
+
+| Metric | Value |
+|--------|-------|
+| PDD | - |
+| Setup | 0.00s |
+| Ring | - |
+| Teardown | 0.00s |
+| Retransmits | 0 |
+
+## Media Streams
+
+| SSRC | Codec | Source | Destination | Packets | Jitter | Loss |
+|------|-------|--------|-------------|---------|--------|------|
+| 0x343da99b | PCMU | 10.0.2.15:27942 | 10.0.2.20:6000 | 425 | 0ms | 0.0% |
+
+## Issues
+
+- RTP flowed 10.0.2.15:27942 -> 10.0.2.20:6000 only (SSRC 0x343da99b). No reverse media flow detected.
+
+```

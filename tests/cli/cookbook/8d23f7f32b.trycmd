@@ -1,0 +1,30 @@
+```
+$ sipnab -N -I tests/pcap-samples/sip-rtp-g711.pcap --call-report 1-1966@10.0.2.20 --no-cli-print
+Call Report: 1-1966@10.0.2.20
+════════════════════════════════════════
+Time:       2016-11-26 14:52:59 -> 14:53:08 (8s)
+From:       "PCMU/8000" <sip:sipp@...>
+To:         "test" <sip:test@...>
+Result:     Completed (BYE)
+Cause:      Q.850 cause 16 "NORMAL_CLEARING" [Reason]
+Frame:      tests/pcap-samples/sip-rtp-g711.pcap#0@db88659b94678546
+
+Timing:
+  PDD:        -
+  Setup:      0.00s
+  Ring:       -
+  Teardown:   0.00s
+  Retransmits: 0
+
+SIP Transactions:
+  INVITE -> 100 -> 200 (4ms)
+  ACK
+  BYE -> 200 (8504ms)
+
+Media Streams:
+  RTP 10.0.2.15->10.0.2.20 PCMU SSRC=0x343da99b pkts=425 jitter=0ms loss=0.0%
+
+Issues Detected:
+  - RTP flowed 10.0.2.15:27942 -> 10.0.2.20:6000 only (SSRC 0x343da99b). No reverse media flow detected.
+
+```

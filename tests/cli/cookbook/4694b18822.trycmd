@@ -1,0 +1,14 @@
+```
+$ sipnab -N -I tests/pcap-samples/sip-rtp-g711.pcap --ws-portrange 1-65535 --report --no-cli-print
+Call-ID                          From           To             State        Code   Duration   Msgs   PDD      Tags            
+-------------------------------------------------------------------------------------------------------------------------
+1-1966@10.0.2.20                 sipp           test           Completed    200    8s         6      -        -               
+1-1968@10.0.2.20                 sipp           test           InCall       200    0s         4      -        -               
+
+RTP Streams:
+SSRC         PT   Codec    Clock  Source                Destination           Pkts    Lost   Loss%   Jitter   Dur    Kbps   
+--------------------------------------------------------------------------------------------------------------------------
+0x343da99b   0    PCMU     8000   10.0.2.15:27942       10.0.2.20:6000        425     0      0.0%    0ms      8s     64     
+0x343ffa34   8    PCMA     8000   10.0.2.15:28102       10.0.2.20:6000        414     0      0.0%    0ms      8s     64     
+
+```

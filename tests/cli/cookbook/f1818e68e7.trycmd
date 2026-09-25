@@ -1,0 +1,99 @@
+```
+$ sipnab -N -I tests/pcap-samples/sip-rtp-g711.pcap --call-report 1-1966@10.0.2.20 --json --no-cli-print
+{
+  "schema_version": 1,
+  "call_id": "1-1966@10.0.2.20",
+  "from": "sipp",
+  "to": "test",
+  "from_display": "PCMU/8000",
+  "to_display": "test",
+  "state": "Completed",
+  "final_status_code": 200,
+  "final_status_reason": "OK",
+  "method": "INVITE",
+  "msg_count": 6,
+  "duration_sec": 8.504,
+  "timing": {
+    "setup_ms": 4,
+    "trying_delay_ms": 0,
+    "teardown_ms": 0,
+    "retransmits": 0
+  },
+  "sdp_timeline": [
+    {
+      "timestamp": "2016-11-26T14:52:59.666393+00:00",
+      "direction": "offer",
+      "codecs": [
+        "PCMU"
+      ],
+      "media_addr": "10.0.2.20",
+      "media_port": 6000,
+      "mode": "recvonly"
+    },
+    {
+      "timestamp": "2016-11-26T14:52:59.670743+00:00",
+      "direction": "answer",
+      "codecs": [
+        "PCMU",
+        "telephone-event"
+      ],
+      "media_addr": "10.0.2.15",
+      "media_port": 27942,
+      "mode": "sendonly",
+      "event": "MediaAnchorChange"
+    }
+  ],
+  "diagnosis": {
+    "one_way_audio": true,
+    "nat_mismatch": false,
+    "no_media": false,
+    "private_media_address": false,
+    "hints": [
+      "RTP flowed 10.0.2.15:27942 -> 10.0.2.20:6000 only (SSRC 0x343da99b). No reverse media flow detected."
+    ]
+  },
+  "termination": {
+    "cause_code": 16,
+    "cause_text": "NORMAL_CLEARING",
+    "protocol": "Q.850",
+    "source_header": "Reason",
+    "frame_ref": 4
+  },
+  "frame": "tests/pcap-samples/sip-rtp-g711.pcap#0@db88659b94678546",
+  "input_origin": "wire",
+  "streams": [
+    {
+      "schema_version": 1,
+      "ssrc": "0x343da99b",
+      "codec": "PCMU",
+      "payload_type": 0,
+      "src": "10.0.2.15:27942",
+      "dst": "10.0.2.20:6000",
+      "packets": 425,
+      "octets": 68000,
+      "jitter_ms": 0.0054046519599899685,
+      "loss_pct": 0.0,
+      "orphaned": false,
+      "associated_dialog": "1-1966@10.0.2.20",
+      "first_seen": "2016-11-26T14:52:59.689083+00:00",
+      "last_seen": "2016-11-26T14:53:08.169060+00:00",
+      "quality_intervals": [
+        {
+          "timestamp": "2016-11-26T14:53:04.709076+00:00",
+          "jitter_ms": 0.0063823922199494915,
+          "loss_pct": 0.0,
+          "packets": 252,
+          "mos": 4.358100053908192,
+          "r_factor": 90.79984682258673,
+          "verdict": "acceptable",
+          "mos_grounded": true
+        }
+      ],
+      "frame": "tests/pcap-samples/sip-rtp-g711.pcap#5@ae02f78d2d48b4f0",
+      "dscp": 0,
+      "input_origin": "wire",
+      "dialog_assertion": "signaled"
+    }
+  ]
+}
+```

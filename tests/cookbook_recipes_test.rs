@@ -13,7 +13,10 @@
 //!
 //! - **executed** — the command reads a capture and exits, so the placeholder
 //!   path is replaced with a real fixture and the command is RUN. Proves the
-//!   flags parse, the run completes, and the status is zero.
+//!   flags parse, the run completes, and the status is zero. Its OUTPUT is
+//!   pinned too: each distinct executed command has a trycmd golden under
+//!   `tests/cli/cookbook/` (run by `tests/cli_goldens.rs`), or a reason in the
+//!   checker's `OUTPUT_UNPINNED` table, and the checker fails on neither.
 //! - **flag-checked** — the command needs a live interface, root, or a socket
 //!   to serve on. It is not run; every long flag it names must exist in
 //!   `sipnab --help`. Weaker, but it catches the failure that actually happens
@@ -115,6 +118,33 @@ fn every_cookbook_command_still_works() {
         "{uncovered} cookbook command(s) are covered by no check at all. \
          Either make them checkable, or record each one in `UNCOVERABLE` in \
          scripts/check-cookbook.py with the reason it cannot be:\n{stdout}"
+    );
+
+    // EX8: exiting 0 is not printing the right thing. Every EXECUTED command
+    // has its output pinned by a golden under tests/cli/cookbook/ (run by
+    // tests/cli_goldens.rs), or sits in the checker's `OUTPUT_UNPINNED` table
+    // with the reason it cannot be. The checker already fails the run on a
+    // gap; these read the summary so a checker that stopped comparing — and so
+    // printed no line — cannot pass by saying nothing.
+    let no_golden = count("NO GOLDEN").unwrap_or_else(|| {
+        panic!("the checker printed no NO GOLDEN count; its summary has changed shape:\n{stdout}")
+    });
+    assert_eq!(
+        no_golden, 0,
+        "{no_golden} executed cookbook command(s) have no output golden and no \
+         recorded reason. Run `python3 scripts/check-cookbook.py --bless`, then \
+         `TRYCMD=overwrite cargo test --features full --test cli_goldens`, and \
+         read the diff:\n{stdout}"
+    );
+    let pinned = count("output pinned by a golden").unwrap_or(0);
+    // 72, measured 2026-09-25: 95 executions are 77 distinct commands (some
+    // recipes repeat one another already ran), and 5 of those open the TUI
+    // and sit in OUTPUT_UNPINNED. An anchor below that, not an equality: a
+    // new recipe raises it without editing this line.
+    assert!(
+        pinned >= 70,
+        "only {pinned} cookbook commands have an output golden; the golden \
+         reader has probably stopped finding tests/cli/cookbook/*.trycmd:\n{stdout}"
     );
 }
 

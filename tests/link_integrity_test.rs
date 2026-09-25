@@ -1025,7 +1025,11 @@ fn wiki_intra_docs_links_resolve() {
     // docs/vcon.md "the honesty section below" (1) and docs/tls-capture.md's
     // row numbers and "method 3"/"method 4" (4). Attributed by measurement:
     // with either file swapped back to HEAD the extractor finds 997 and 994.
-    const EXPECTED_WIKI_LINKS: usize = 998;
+    // 998 -> 999: the cookbook output goldens (EX8). docs/internals/testing.md
+    // +1, the gate-roster row for cookbook_recipes_test linking the cookbook
+    // it guards. Attributed by measurement: with testing.md swapped back to
+    // HEAD the extractor finds 998.
+    const EXPECTED_WIKI_LINKS: usize = 999;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe 6d in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

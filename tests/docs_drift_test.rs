@@ -890,6 +890,15 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
     // placeholder in the "add a CLI flag" walkthrough. docs/internals/ is in the
     // corpus because it is published (wiki + site nav), so a phantom sipnab flag
     // there is a real defect; these belong to other tools and are excused per page.
+    // `scripts/check-cookbook.py --bless`, the first half of regenerating the
+    // cookbook output goldens.
+    (
+        "bless",
+        &[
+            "docs/internals/testing.md",
+            "website/content/docs/internals/testing.md",
+        ],
+    ),
     (
         "accept",
         &[

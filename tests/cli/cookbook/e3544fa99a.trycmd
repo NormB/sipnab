@@ -1,0 +1,6 @@
+```
+$ sipnab -N -I tests/pcap-samples/sip-rtp-g711.pcap -O e3544fa99a/one-customer.pcapng --pcapng --no-cli-print 'host 192.0.2.10'
+No SIP traffic found. Check that the capture contains SIP packets (typically UDP port 5060-5061).
+Tip: Use 'sipnab -N -I file.pcap --hexdump' to inspect raw packet content.
+
+```

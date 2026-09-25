@@ -1,0 +1,111 @@
+```
+$ sipnab -N -I tests/pcap-samples/sip-rtp-g711.pcap --lint --lint-fail-on error
+14:52:59.666 10.0.2.20:5060 -> 10.0.2.15:5060 INVITE UDP
+INVITE sip:test@10.0.2.15:5060 SIP/2.0
+Via: SIP/2.0/UDP 10.0.2.20:5060;branch=z9hG4bK-1966-1-0
+From: "PCMU/8000" <sip:sipp@10.0.2.20:5060>;tag=1
+To: test <sip:test@10.0.2.15:5060>
+Call-ID: 1-1966@10.0.2.20
+CSeq: 1 INVITE
+Contact: sip:sipp@10.0.2.20:5060
+Max-Forwards: 70
+Content-Type: application/sdp
+Content-Length:   123
+
+v=0
+o=- 42 42 IN IP4 10.0.2.20
+s=-
+c=IN IP4 10.0.2.20
+t=0 0
+m=audio 6000 RTP/AVP 0
+a=rtpmap:0 PCMU/8000
+a=recvonly
+14:52:59.666 10.0.2.15:5060 -> 10.0.2.20:5060 100 Trying UDP
+14:52:59.670 10.0.2.15:5060 -> 10.0.2.20:5060 200 OK UDP
+SIP/2.0 200 OK
+Via: SIP/2.0/UDP 10.0.2.20:5060;branch=z9hG4bK-1966-1-0
+From: "PCMU/8000" <sip:sipp@10.0.2.20:5060>;tag=1
+To: test <sip:test@10.0.2.15:5060>;tag=QvN92t713vSZK
+Call-ID: 1-1966@10.0.2.20
+CSeq: 1 INVITE
+Contact: <sip:test@10.0.2.15:5060;transport=udp>
+User-Agent: FreeSWITCH-mod_sofia/1.6.12-20-b91a0a6~64bit
+Accept: application/sdp
+Allow: INVITE, ACK, BYE, CANCEL, OPTIONS, MESSAGE, INFO, UPDATE, REGISTER, REFER, NOTIFY, PUBLISH, SUBSCRIBE
+Supported: timer, path, replaces
+Allow-Events: talk, hold, conference, presence, as-feature-event, dialog, line-seize, call-info, sla, include-session-description, presence.winfo, message-summary, refer
+Content-Type: application/sdp
+Content-Disposition: session
+Content-Length: 226
+Remote-Party-ID: "test" <sip:test@10.0.2.15>;party=calling;privacy=off;screen=no
+
+v=0
+o=FreeSWITCH 1480144037 1480144038 IN IP4 10.0.2.15
+s=FreeSWITCH
+c=IN IP4 10.0.2.15
+t=0 0
+m=audio 27942 RTP/AVP 0 101
+a=rtpmap:0 PCMU/8000
+a=rtpmap:101 telephone-event/8000
+a=fmtp:101 0-16
+a=sendonly
+a=ptime:20
+14:52:59.670 10.0.2.20:5060 -> 10.0.2.15:5060 ACK UDP
+14:53:08.170 10.0.2.15:5060 -> 10.0.2.20:5060 BYE UDP
+14:53:08.170 10.0.2.20:5060 -> 10.0.2.15:5060 200 OK UDP
+14:53:08.286 10.0.2.20:5060 -> 10.0.2.15:5060 INVITE UDP
+INVITE sip:test@10.0.2.15:5060 SIP/2.0
+Via: SIP/2.0/UDP 10.0.2.20:5060;branch=z9hG4bK-1968-1-0
+From: "PCMA/8000" <sip:sipp@10.0.2.20:5060>;tag=1
+To: test <sip:test@10.0.2.15:5060>
+Call-ID: 1-1968@10.0.2.20
+CSeq: 1 INVITE
+Contact: sip:sipp@10.0.2.20:5060
+Max-Forwards: 70
+Content-Type: application/sdp
+Content-Length:   123
+
+v=0
+o=- 42 42 IN IP4 10.0.2.20
+s=-
+c=IN IP4 10.0.2.20
+t=0 0
+m=audio 6000 RTP/AVP 8
+a=rtpmap:8 PCMA/8000
+a=recvonly
+14:53:08.286 10.0.2.15:5060 -> 10.0.2.20:5060 100 Trying UDP
+14:53:08.290 10.0.2.15:5060 -> 10.0.2.20:5060 200 OK UDP
+SIP/2.0 200 OK
+Via: SIP/2.0/UDP 10.0.2.20:5060;branch=z9hG4bK-1968-1-0
+From: "PCMA/8000" <sip:sipp@10.0.2.20:5060>;tag=1
+To: test <sip:test@10.0.2.15:5060>;tag=r5e24Nr505FjF
+Call-ID: 1-1968@10.0.2.20
+CSeq: 1 INVITE
+Contact: <sip:test@10.0.2.15:5060;transport=udp>
+User-Agent: FreeSWITCH-mod_sofia/1.6.12-20-b91a0a6~64bit
+Accept: application/sdp
+Allow: INVITE, ACK, BYE, CANCEL, OPTIONS, MESSAGE, INFO, UPDATE, REGISTER, REFER, NOTIFY, PUBLISH, SUBSCRIBE
+Supported: timer, path, replaces
+Allow-Events: talk, hold, conference, presence, as-feature-event, dialog, line-seize, call-info, sla, include-session-description, presence.winfo, message-summary, refer
+Content-Type: application/sdp
+Content-Disposition: session
+Content-Length: 226
+Remote-Party-ID: "test" <sip:test@10.0.2.15>;party=calling;privacy=off;screen=no
+
+v=0
+o=FreeSWITCH 1480143886 1480143887 IN IP4 10.0.2.15
+s=FreeSWITCH
+c=IN IP4 10.0.2.15
+t=0 0
+m=audio 28102 RTP/AVP 8 101
+a=rtpmap:8 PCMA/8000
+a=rtpmap:101 telephone-event/8000
+a=fmtp:101 0-16
+a=sendonly
+a=ptime:20
+14:53:08.290 10.0.2.20:5060 -> 10.0.2.15:5060 ACK UDP
+info: SDP-3264-6.1-ANSWER-EXTRA-FORMAT [1-1966@10.0.2.20] §6.1 permits this and says why it rarely helps: the answerer cannot send with a format the offer never listed. Equipment that reads the answer as the negotiated set picks one of these and sends media the far end drops. (RFC 3264 §6.1) observed=m=audio line 0 answers with ["101"], absent from the offer expected=formats drawn from ["0"]
+info: SDP-3264-6.1-ANSWER-EXTRA-FORMAT [1-1968@10.0.2.20] §6.1 permits this and says why it rarely helps: the answerer cannot send with a format the offer never listed. Equipment that reads the answer as the negotiated set picks one of these and sends media the far end drops. (RFC 3264 §6.1) observed=m=audio line 0 answers with ["101"], absent from the offer expected=formats drawn from ["8"]
+Lint: 2 finding(s) across 2 dialog(s)
+
+```

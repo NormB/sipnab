@@ -1,0 +1,3 @@
+```
+$ sipnab -N -I tests/pcap-samples/sip-rtp-g711.pcap --kill-scanner --fail2ban
+```

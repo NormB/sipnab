@@ -10,6 +10,22 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Added
+
+- **The output of every cookbook command that runs without a live host is
+  now pinned.**
+  `scripts/check-cookbook.py` already ran each command in `docs/examples.md`
+  that reads a capture file and checked its exit status, but a command that
+  exits 0 can still print the wrong thing. Each of the 72 distinct commands it
+  runs now has a trycmd golden under `tests/cli/cookbook/` holding its exact
+  output, generated from the same command-to-fixture mapping the checker uses.
+  The checker fails when a command it runs has no golden and no reason
+  recorded, or when a golden matches no command. Five commands stay
+  exit-status-only because they open the terminal interface, which a golden
+  cannot drive. `python3 scripts/check-cookbook.py --bless` followed by
+  `TRYCMD=overwrite cargo test --features full --test cli_goldens` regenerates
+  the goldens.
+
 ### Security
 
 - **`thread_local` goes from 1.1.9 to 1.1.10**, the release that fixes the two
