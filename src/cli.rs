@@ -1229,6 +1229,11 @@ pub struct OutputArgs {
     ///
     /// Conditional emission produces one container per matching dialog, which
     /// is why this pairs with `--export-vcon-dir` rather than `--vcon-out`.
+    ///
+    /// On a live capture each matching call's container is written while the
+    /// capture runs, about ten seconds after the call ends, and a stopped live
+    /// run writes nothing more. With `-I` every container is written at the
+    /// end of the run.
     #[arg(
         help_heading = "Output",
         long = "export-vcon-when",
@@ -4220,6 +4225,22 @@ impl Cli {
         self.output_args.redact
     }
 
+    /// Whether this run writes `--export-vcon-when` containers WHILE it runs.
+    ///
+    /// A live capture (a device, or `--hep-listen`) never reaches the end of
+    /// its input, and the usual way it ends is a stop signal, which writes
+    /// nothing. So a live run writes each matching call's container on the
+    /// periodic sweep, soon after the call ends. A `-I` run reads to the end
+    /// and writes everything there, as it always has.
+    ///
+    /// THE rule for "live export": the receive loop and [`Self::validate`]
+    /// both ask it, so the run that exports live and the run whose
+    /// end-of-run-only flags are refused cannot drift apart.
+    #[must_use]
+    pub fn exports_vcon_live(&self) -> bool {
+        !self.has_input() && self.output_args.export_vcon_when.is_some()
+    }
+
     /// Dialog cap: `--limit`, else `[limits] dialog_limit`, else the default.
     ///
     /// The explicit flag wins because it is the more specific instruction —
@@ -5267,6 +5288,43 @@ impl Cli {
         ))
     }
 
+    /// The refusal a live `--export-vcon-when` owes a flag that only does its
+    /// work at the end of a run, or `None` when there is nothing to refuse.
+    ///
+    /// A live run writes each container on a sweep while it captures, and a
+    /// live run stopped by a signal writes nothing at its end, because
+    /// stopping sipnab must leave no residual data behind. `--redact` (with
+    /// its `--redact-map`) and `--content-deny-tombstone` write their reverse
+    /// map and their tombstones at the END of a run, which a stopped live run
+    /// never reaches: accepting them would promise a file that is never
+    /// written. They work with `-I`, which always reaches its end.
+    pub(crate) fn live_vcon_refusal(&self) -> Option<String> {
+        if !self.exports_vcon_live() {
+            return None;
+        }
+        let out = &self.output_args;
+        let given: Vec<&str> = [
+            (out.redact, "--redact"),
+            (out.redact_map.is_some(), "--redact-map"),
+            (out.content_deny_tombstone, "--content-deny-tombstone"),
+        ]
+        .into_iter()
+        .filter_map(|(set, flag)| set.then_some(flag))
+        .collect();
+        if given.is_empty() {
+            return None;
+        }
+        Some(format!(
+            "{} cannot be used with --export-vcon-when on a live capture. A live \
+             run writes each call's container shortly after the call ends, and a \
+             run stopped by a signal writes nothing more, so the redaction map and \
+             tombstones this run would write at its end are never written. Use \
+             {} with -I on a saved capture, which always runs to its end",
+            given.join(", "),
+            if given.len() == 1 { "it" } else { "them" },
+        ))
+    }
+
     pub fn validate(&self) -> Result<(), crate::Error> {
         if self.tls_args.pcap_export_mode == "decrypted" {
             return Err(crate::Error::CliValidation(
@@ -5363,6 +5421,9 @@ impl Cli {
         // "not compiled in" is otherwise indistinguishable from a typo in the
         // Call-ID.
         if let Some(refusal) = self.vcon_refusal(cfg!(feature = "vcon")) {
+            return Err(crate::Error::CliValidation(refusal));
+        }
+        if let Some(refusal) = self.live_vcon_refusal() {
             return Err(crate::Error::CliValidation(refusal));
         }
 
@@ -7293,6 +7354,97 @@ mod tests {
         let plain = Cli::parse_from_args(["sipnab", "-I", "x.pcap"]);
         assert_eq!(plain.vcon_refusal(false), None);
         assert_eq!(plain.vcon_refusal(true), None);
+    }
+
+    /// LIVE-VCON-1: a live `--export-vcon-when` writes each container on a
+    /// sweep while the capture runs, and a signal-stopped live run writes
+    /// nothing at its end. `--redact-map` and `--content-deny-tombstone` only
+    /// write at the end of a run, so on a live run the reverse map or the
+    /// tombstones would never be written. Refused, with the reason and the
+    /// `-I` alternative in the message.
+    #[test]
+    fn a_live_vcon_export_refuses_the_flags_that_only_write_at_the_end() {
+        let live = ["sipnab", "-N", "-d", "any"];
+        let hep = ["sipnab", "-N", "--hep-listen", "127.0.0.1:9060"];
+        let export = [
+            "--export-vcon-when",
+            "state == 'Completed'",
+            "--export-vcon-dir",
+            "/tmp/spool",
+        ];
+        let end_only: [&[&str]; 3] = [
+            &["--redact"],
+            &["--redact", "--redact-map", "/tmp/map.json"],
+            &[
+                "--content-deny-header",
+                "X-No-Record",
+                "--content-deny-tombstone",
+            ],
+        ];
+        for source in [&live[..], &hep[..]] {
+            for extra in end_only {
+                let mut argv: Vec<&str> = source.to_vec();
+                argv.extend_from_slice(&export);
+                argv.extend_from_slice(extra);
+                let cli = Cli::parse_from_args(argv.clone());
+                let refusal = cli
+                    .live_vcon_refusal()
+                    .unwrap_or_else(|| panic!("{argv:?} was not refused"));
+                let named = extra
+                    .iter()
+                    .rev()
+                    .find(|f| f.starts_with("--"))
+                    .expect("every case names a flag");
+                assert!(
+                    refusal.contains(named),
+                    "the refusal must name {named}: {refusal}"
+                );
+                assert!(
+                    refusal.contains("-I"),
+                    "the refusal must say the flag works with -I: {refusal}"
+                );
+                assert!(
+                    matches!(cli.validate(), Err(crate::Error::CliValidation(_))),
+                    "validate() must refuse {argv:?}"
+                );
+            }
+        }
+    }
+
+    /// The same flags on a `-I` run, and a live export without them, are not
+    /// refused: the rule is about live runs and end-of-run-only flags together.
+    #[test]
+    fn a_file_run_or_a_live_run_without_end_only_flags_is_not_refused() {
+        let file = Cli::parse_from_args([
+            "sipnab",
+            "-N",
+            "-I",
+            "x.pcap",
+            "--export-vcon-when",
+            "state == 'Completed'",
+            "--export-vcon-dir",
+            "/tmp/spool",
+            "--redact",
+            "--redact-map",
+            "/tmp/map.json",
+            "--content-deny-header",
+            "X-No-Record",
+            "--content-deny-tombstone",
+        ]);
+        assert_eq!(file.live_vcon_refusal(), None);
+        let live = Cli::parse_from_args([
+            "sipnab",
+            "-N",
+            "-d",
+            "any",
+            "--export-vcon-when",
+            "state == 'Completed'",
+            "--export-vcon-dir",
+            "/tmp/spool",
+            "--content-deny-header",
+            "X-No-Record",
+        ]);
+        assert_eq!(live.live_vcon_refusal(), None);
     }
 
     /// `validate()` asks the rule with this build's own answer, so the wiring

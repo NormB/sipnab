@@ -13459,7 +13459,7 @@ selects only problem calls from user 1001.
 | `--report` | -- | off | Generate summary report after capture completes. Requires `-N` |
 | `--call-report` | `<CALL-ID>` | -- | Generate a detailed report for a specific Call-ID. Implies non-interactive |
 | `--export-vcon` | `<CALL-ID>` | -- | Export one dialog as an observer vCon container ([`draft-ietf-vcon-vcon-core`](https://datatracker.ietf.org/doc/draft-ietf-vcon-vcon-core/), syntax `0.4.0`): unsigned, with no party names, with the audio this run retained inline up to `--vcon-max-inline-media`, and with what the capture missed attached. Goes to stdout unless `--vcon-out` names a file, and then silences the per-message stream so the container stays parseable. Implies non-interactive. Needs the `vcon` Cargo feature, which `full` has and the default set does not. More: [Export a call as a vCon](vcon.md) |
-| `--export-vcon-when` | `<EXPR>` | -- | Emit a vCon for every dialog matching this filter expression, one container per dialog, into `--export-vcon-dir`. `EXPR` is the language `--filter` already speaks ([`docs/filter-dsl.md`](https://github.com/NormB/sipnab/blob/main/docs/filter-dsl.md)), so `state == 'Failed'` and `response_code >= 400 and rtp.codec == 'PCMU'` work without new syntax. Reusing the language rather than growing a flag per policy is deliberate: one flag for failures, another for calls with media, another for a duration threshold, and so on enumerates the cases somebody thought of. The case nobody thought of is the one an operator needs at three in the morning. Parsed before the capture opens, so a malformed expression fails the run instead of leaving an empty directory a reader takes for "nothing matched". Conflicts with `--export-vcon`, which answers the same question for one named call. Implies non-interactive, and unlike `--export-vcon` it leaves stdout alone, because the containers go to a directory. Needs the `vcon` Cargo feature |
+| `--export-vcon-when` | `<EXPR>` | -- | Emit a vCon for every dialog matching this filter expression, one container per dialog, into `--export-vcon-dir`. `EXPR` is the language `--filter` already speaks ([`docs/filter-dsl.md`](https://github.com/NormB/sipnab/blob/main/docs/filter-dsl.md)), so `state == 'Failed'` and `response_code >= 400 and rtp.codec == 'PCMU'` work without new syntax. Reusing the language rather than growing a flag per policy is deliberate: one flag for failures, another for calls with media, another for a duration threshold, and so on enumerates the cases somebody thought of. The case nobody thought of is the one an operator needs at three in the morning. Parsed before the capture opens, so a malformed expression fails the run instead of leaving an empty directory a reader takes for "nothing matched". Conflicts with `--export-vcon`, which answers the same question for one named call. Implies non-interactive, and unlike `--export-vcon` it leaves stdout alone, because the containers go to a directory. On a live capture (`-d` or `--hep-listen`), sipnab writes each matching call's container while the capture runs, about ten seconds after the call ends. A stopped live run writes nothing more, so stopping sipnab leaves no call data behind. With `-I`, sipnab writes every container at the end of the run. A live run refuses `--redact`, `--redact-map` and `--content-deny-tombstone`, which only write at the end of a run; use them with `-I`. Needs the `vcon` Cargo feature |
 | `--export-vcon-dir` | `<DIR>` | -- | Directory for the containers `--export-vcon-when` produces, created if absent. Each file takes its Call-ID as a name, with every character outside `A-Za-z0-9._-` becoming `_` and the whole truncated, because a Call-ID is text whoever placed the call chose and this is the first path sipnab builds from one. Requires `--export-vcon-when`: a destination for containers no predicate selects is a flag that does nothing |
 | `--vcon-max-inline-media` | `<MIB>` | `5` | Largest inline media body a vCon may carry, in MiB. The shipped 5 comes from a measurement rather than taste: one probed vCon store answered HTTP 204 for a roughly 12 MB container, wrote the record to its database, and then had its file spool refuse the payload, with neither transport reporting the partial write. That budget is a property of the CONSUMER and not of the format, so raise it once you know what reads your containers. `0` refuses every inline body, which says "never inline media" without turning the exporter off, and the refusal still appears in the completeness caveat. Batch export, the REST server and the MCP server all read this one value. Needs the `vcon` Cargo feature |
 | `--content-deny-header` | `<NAME>` | -- | Suppress content for any dialog carrying this header. No default, so the feature stays inert until you name one: sipnab ships no opinion about which header your switches emit, and a built-in guess would either miss yours or silently match one you did not mean. PRESENCE suppresses and the value plays no part, because a rule keyed on a value raises the question of what an unrecognized value means, and the only safe answer to "I do not understand this deny flag" is to deny. Matched case-insensitively, as SIP header names are (RFC 3261 7.3.1). **Deny only.** A header asking sipnab to RECORD is an assertion by whoever sent the request, and this tool already refuses that class of claim -- every vCon party carries `validation: "none"`. Acting on such an assertion to be more conservative costs at worst a container nobody kept. Acting on one to retain content would hand the retention decision to anyone who can set a header, so no permit flag exists here. Needs the `vcon` Cargo feature |
@@ -29804,6 +29804,28 @@ Nothing in sipnab ships the containers anywhere — the export path writes files
 and makes no outbound connection — so whatever forwards them to a store is a
 separate program watching that directory. These are the guarantees it may rely
 on.
+
+**When a container appears depends on where the calls come from.**
+
+- On a live capture (`-d` or `--hep-listen`), sipnab writes a matching call's
+  container while it keeps capturing. It checks every five seconds, and writes
+  a call once the call has ended (Completed, Canceled, Failed, Redirected,
+  Expired or Terminated) and has been quiet for five seconds. Expect the
+  container about ten seconds after the call's last message at the latest. If
+  the call changes after that, for example a late `200 OK` answers a canceled
+  call, sipnab writes the container again under the same name.
+- A live capture that you stop (`systemctl stop`, SIGTERM, Ctrl-C, or an MCP
+  client that goes away) writes nothing more. Calls that had not yet been
+  written are not written on the way out, because stopping sipnab must leave
+  no call data behind. A live run that ends on its own (`--duration`,
+  `--autostop`) writes the matching calls the checks had not reached yet, and
+  does not write a second copy of any container already written.
+- With `-I`, sipnab reads the whole capture and writes every container at the
+  end, as before.
+
+sipnab refuses `--redact`, `--redact-map` and `--content-deny-tombstone` on a
+live capture with `--export-vcon-when`, because they write their files at the end
+of the run, and a stopped live run never gets there. Use them with `-I`.
 
 **A name resolves to a whole container, or to nothing.** Every write stages the
 bytes under a dot-prefixed sibling, flushes them to the filesystem, and renames

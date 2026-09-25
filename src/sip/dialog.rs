@@ -107,6 +107,35 @@ impl DialogState {
             Self::Transferring => "Transferring",
         }
     }
+    /// Whether the dialog has ended: nothing more is expected on it.
+    ///
+    /// THE list of end states. The live vCon export writes a container for a
+    /// dialog in one of these and never for a running one, so a second copy
+    /// of this list elsewhere would let the two disagree about when a call is
+    /// over. Exhaustive rather than a wildcard, so a new variant has to be
+    /// classified here.
+    ///
+    /// Final is not the same as frozen: a `Canceled` call can still be
+    /// answered by a `2xx` that raced the `CANCEL`. Callers that act on a
+    /// final state watch `updated_at` for exactly that reason.
+    #[must_use]
+    pub const fn is_final(&self) -> bool {
+        match self {
+            Self::Completed
+            | Self::Canceled
+            | Self::Failed
+            | Self::Redirected
+            | Self::Expired
+            | Self::Terminated => true,
+            Self::Trying
+            | Self::Ringing
+            | Self::InCall
+            | Self::Registered
+            | Self::Pending
+            | Self::Active
+            | Self::Transferring => false,
+        }
+    }
 }
 
 impl std::fmt::Display for DialogState {
@@ -1936,6 +1965,32 @@ mod tests {
                 canonical,
                 "the filter DSL compares against a different spelling for \
                  {state:?}, so a filter naming it would match nothing"
+            );
+        }
+    }
+
+    /// `is_final` names exactly the states a dialog ends in, over every state.
+    ///
+    /// Walks `ALL` rather than a hand-picked sample, so a new variant is
+    /// classified the day it is added. The live vCon export writes a
+    /// container for a final dialog and never for a running one: a state
+    /// wrongly counted final exports a call mid-conversation, and one wrongly
+    /// counted running is never exported while the capture runs.
+    #[test]
+    fn is_final_names_exactly_the_states_a_dialog_ends_in() {
+        let expected_final = [
+            DialogState::Completed,
+            DialogState::Canceled,
+            DialogState::Failed,
+            DialogState::Redirected,
+            DialogState::Expired,
+            DialogState::Terminated,
+        ];
+        for state in DialogState::ALL {
+            assert_eq!(
+                state.is_final(),
+                expected_final.contains(&state),
+                "{state:?} is classified the wrong way by is_final"
             );
         }
     }

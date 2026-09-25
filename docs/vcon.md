@@ -100,6 +100,28 @@ and makes no outbound connection — so whatever forwards them to a store is a
 separate program watching that directory. These are the guarantees it may rely
 on.
 
+**When a container appears depends on where the calls come from.**
+
+- On a live capture (`-d` or `--hep-listen`), sipnab writes a matching call's
+  container while it keeps capturing. It checks every five seconds, and writes
+  a call once the call has ended (Completed, Canceled, Failed, Redirected,
+  Expired or Terminated) and has been quiet for five seconds. Expect the
+  container about ten seconds after the call's last message at the latest. If
+  the call changes after that, for example a late `200 OK` answers a canceled
+  call, sipnab writes the container again under the same name.
+- A live capture that you stop (`systemctl stop`, SIGTERM, Ctrl-C, or an MCP
+  client that goes away) writes nothing more. Calls that had not yet been
+  written are not written on the way out, because stopping sipnab must leave
+  no call data behind. A live run that ends on its own (`--duration`,
+  `--autostop`) writes the matching calls the checks had not reached yet, and
+  does not write a second copy of any container already written.
+- With `-I`, sipnab reads the whole capture and writes every container at the
+  end, as before.
+
+sipnab refuses `--redact`, `--redact-map` and `--content-deny-tombstone` on a
+live capture with `--export-vcon-when`, because they write their files at the end
+of the run, and a stopped live run never gets there. Use them with `-I`.
+
 **A name resolves to a whole container, or to nothing.** Every write stages the
 bytes under a dot-prefixed sibling, flushes them to the filesystem, and renames
 into place. A reader polling the directory therefore never sees a truncated

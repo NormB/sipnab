@@ -57,6 +57,18 @@ entry that carries them.
   `CAP_NET_ADMIN`, logs to syslog, serves metrics on `127.0.0.1:9090`, and
   leaves the API off. `tests/packaged_unit_test.rs` ties it to the paths the
   package builders install and to sipnab's own argument parser.
+- **A live `--export-vcon-when` writes each call's container while the
+  capture runs, and a stopped run writes nothing more.** On a live capture
+  (`-d` or `--hep-listen`), sipnab wrote no container while calls completed,
+  and then wrote them all when it was stopped. That left the spool directory
+  empty for as long as the capture ran, and it kept call data on disk after a
+  stop. Now a matching call's container is written about ten seconds after the
+  call ends, and SIGTERM, Ctrl-C or an MCP client going away writes nothing.
+  A live run that ends on its own (`--duration`, `--autostop`) writes only
+  the calls not already written. `-I` runs still write at the end. A live
+  `--export-vcon-when` now refuses `--redact`, `--redact-map` and
+  `--content-deny-tombstone`, which only write at the end of a run; they
+  still work with `-I`.
 - **MCP tool schemas no longer name number formats JSON Schema does not
   define.** Every tool's input and output schema carried formats such as
   `uint32`, `uint64`, `int64` and `double`, which the Rust schema generator

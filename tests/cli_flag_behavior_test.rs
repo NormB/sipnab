@@ -880,6 +880,253 @@ fn a_hep_carried_register_flood_is_not_written_to_the_jail_log() {
     );
 }
 
+/// LIVE-VCON-1: a live `--export-vcon-when` writes a finished call's container
+/// while the capture is still running, and a stop signal writes nothing more.
+///
+/// Measured on 0.5.190: a live capture wrote no container while calls
+/// completed, and `systemctl stop` then wrote every one of them. That broke
+/// the spool contract (a directory a forwarder drains as calls end) and the
+/// rule that stopping sipnab leaves no residual data behind.
+///
+/// Driven through a real `--hep-listen` on loopback, which is a live source
+/// that needs no root. The first call's container must appear while the
+/// process is still running. The second call is delivered, confirmed read
+/// (its seven messages reach stdout), and the run is stopped with SIGTERM at
+/// once, inside the settle period, so the live path cannot have written it
+/// and only an end-of-run flush could: the container must not exist.
+#[cfg(all(feature = "hep", feature = "vcon", target_os = "linux"))]
+#[test]
+fn a_live_vcon_export_writes_while_running_and_nothing_on_a_stop() {
+    use chrono::Utc;
+    use sipnab::capture::hep::{HepEndpoint, HepProtocol, build_hep_v3};
+    use std::io::BufRead;
+
+    const FIRST: &str = "live-vcon-first@10.1.0.1";
+    const SECOND: &str = "live-vcon-second@10.1.0.1";
+    const CALLER: [u8; 4] = [10, 1, 0, 1];
+    const CALLEE: [u8; 4] = [10, 2, 0, 1];
+
+    // One complete call: INVITE/100/180/200/ACK/BYE/200.
+    let call = |call_id: &str| -> Vec<(String, [u8; 4], [u8; 4])> {
+        let head = |start: &str, via_branch: &str, to_tag: bool, cseq: &str| {
+            format!(
+                "{start}\r\n\
+                 Via: SIP/2.0/UDP 10.1.0.1:5060;branch={via_branch}\r\n\
+                 Max-Forwards: 70\r\n\
+                 From: <sip:alice@10.1.0.1>;tag=a1\r\n\
+                 To: <sip:bob@10.2.0.1>{}\r\n\
+                 Call-ID: {call_id}\r\n\
+                 CSeq: {cseq}\r\n\
+                 Contact: <sip:alice@10.1.0.1:5060>\r\n\
+                 Content-Length: 0\r\n\r\n",
+                if to_tag { ";tag=b1" } else { "" }
+            )
+        };
+        vec![
+            (
+                head(
+                    "INVITE sip:bob@10.2.0.1 SIP/2.0",
+                    "z9hG4bKi",
+                    false,
+                    "1 INVITE",
+                ),
+                CALLER,
+                CALLEE,
+            ),
+            (
+                head("SIP/2.0 100 Trying", "z9hG4bKi", false, "1 INVITE"),
+                CALLEE,
+                CALLER,
+            ),
+            (
+                head("SIP/2.0 180 Ringing", "z9hG4bKi", true, "1 INVITE"),
+                CALLEE,
+                CALLER,
+            ),
+            (
+                head("SIP/2.0 200 OK", "z9hG4bKi", true, "1 INVITE"),
+                CALLEE,
+                CALLER,
+            ),
+            (
+                head("ACK sip:bob@10.2.0.1 SIP/2.0", "z9hG4bKa", true, "1 ACK"),
+                CALLER,
+                CALLEE,
+            ),
+            (
+                head("BYE sip:bob@10.2.0.1 SIP/2.0", "z9hG4bKb", true, "2 BYE"),
+                CALLER,
+                CALLEE,
+            ),
+            (
+                head("SIP/2.0 200 OK", "z9hG4bKb", true, "2 BYE"),
+                CALLEE,
+                CALLER,
+            ),
+        ]
+    };
+    let endpoint = |src: [u8; 4], dst: [u8; 4]| HepEndpoint {
+        src_addr: std::net::IpAddr::from(src),
+        dst_addr: std::net::IpAddr::from(dst),
+        src_port: 5060,
+        dst_port: 5060,
+        transport: sipnab::net::TransportProto::Udp,
+    };
+    let port = {
+        let s = std::net::UdpSocket::bind("127.0.0.1:0").expect("bind an ephemeral port");
+        s.local_addr().expect("read it back").port()
+    };
+    let udp_port_bound = |port: u16| {
+        let needle = format!("0100007F:{port:04X}");
+        std::fs::read_to_string("/proc/net/udp")
+            .map(|t| t.lines().any(|l| l.contains(&needle)))
+            .unwrap_or(false)
+    };
+    // Every container in the spool, as text. A name still being written is
+    // a temporary the writer renames into place, so only parseable JSON counts.
+    let containers = |dir: &std::path::Path| -> Vec<String> {
+        std::fs::read_dir(dir)
+            .map(|rd| {
+                rd.flatten()
+                    .filter_map(|e| std::fs::read_to_string(e.path()).ok())
+                    .filter(|t| serde_json::from_str::<serde_json::Value>(t).is_ok())
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+
+    let spool = tempfile::tempdir().expect("tempdir");
+    let bind = format!("127.0.0.1:{port}");
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_sipnab"))
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .args([
+            "-N",
+            "--hep-listen",
+            &bind,
+            "--hep-parse",
+            "--export-vcon-when",
+            "state == 'Completed'",
+            "--export-vcon-dir",
+            spool.path().to_str().expect("utf-8 temp path"),
+        ])
+        .env("NO_COLOR", "1")
+        .env("SIPNAB_LOG", "info")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn sipnab");
+
+    // Drain both pipes on threads, so a full pipe never stalls the run and
+    // the test can watch stdout for the messages it delivered.
+    let drain = |pipe: Box<dyn std::io::Read + Send>| {
+        let text = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+        let into = std::sync::Arc::clone(&text);
+        let reader = std::thread::spawn(move || {
+            for line in std::io::BufReader::new(pipe).lines() {
+                let Ok(line) = line else { break };
+                let mut all = into.lock().expect("pipe buffer");
+                all.push_str(&line);
+                all.push('\n');
+            }
+        });
+        (text, reader)
+    };
+    let (stdout, out_reader) = drain(Box::new(child.stdout.take().expect("stdout piped")));
+    let (stderr, err_reader) = drain(Box::new(child.stderr.take().expect("stderr piped")));
+    let lines_out = || stdout.lock().expect("stdout buffer").lines().count();
+
+    let ready_by = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while !udp_port_bound(port) {
+        assert!(
+            std::time::Instant::now() < ready_by,
+            "the HEP listener never bound {bind}:\n{}",
+            stderr.lock().expect("stderr buffer")
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let sock = std::net::UdpSocket::bind("127.0.0.1:0").expect("sender socket");
+    let deliver = |call_id: &str| {
+        for (sip, src, dst) in call(call_id) {
+            let hep = build_hep_v3(
+                &endpoint(src, dst),
+                Utc::now(),
+                HepProtocol::Sip,
+                0,
+                None,
+                sip.as_bytes(),
+            );
+            sock.send_to(&hep, &bind).expect("send HEP");
+        }
+    };
+
+    // The first call: its container must appear while the run is running.
+    deliver(FIRST);
+    let written_by = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        assert!(
+            child.try_wait().expect("try_wait").is_none(),
+            "sipnab exited before writing the first container:\n{}",
+            stderr.lock().expect("stderr buffer")
+        );
+        if containers(spool.path()).iter().any(|t| t.contains(FIRST)) {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < written_by,
+            "no container for a completed call within 30 s of a LIVE run \
+             (it is only written at the end of the run):\nstdout:\n{}\nstderr:\n{}",
+            stdout.lock().expect("stdout buffer"),
+            stderr.lock().expect("stderr buffer")
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    assert!(
+        child.try_wait().expect("try_wait").is_none(),
+        "the container must be written by a running process"
+    );
+
+    // The second call: confirmed read, then stopped at once.
+    let before = lines_out();
+    deliver(SECOND);
+    let read_by = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while lines_out() < before + 7 {
+        assert!(
+            std::time::Instant::now() < read_by,
+            "the second call was never read, so the stop below would prove \
+             nothing:\n{}",
+            stdout.lock().expect("stdout buffer")
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let status = std::process::Command::new("kill")
+        .args(["-TERM", &child.id().to_string()])
+        .status()
+        .expect("run kill");
+    assert!(status.success(), "kill -TERM failed");
+    let exit_by = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while child.try_wait().expect("try_wait").is_none() {
+        if std::time::Instant::now() >= exit_by {
+            let _ = child.kill();
+            panic!("sipnab did not exit within 30 s of SIGTERM");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    out_reader.join().expect("stdout reader");
+    err_reader.join().expect("stderr reader");
+
+    let written = containers(spool.path());
+    assert!(
+        written.iter().any(|t| t.contains(FIRST)),
+        "the first call's container must still be there"
+    );
+    assert!(
+        !written.iter().any(|t| t.contains(SECOND)),
+        "a stopped live run wrote the second call's container on its way out; \
+         a stop must leave no residual data:\n{}",
+        stderr.lock().expect("stderr buffer")
+    );
+}
+
 /// `--alert reg-flood:50/10s:5m` end to end: once the rule fires for a source,
 /// a second flood from that source inside five minutes raises no alert, and
 /// one after the five minutes does.

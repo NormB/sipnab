@@ -1177,6 +1177,8 @@ fn report_parallel_run(
         vcon_filter,
         r.packets_read,
         None,
+        // `--cores` reads files only, so there was no live export to follow.
+        VconRunEnd::Whole,
     );
     if !cli.mode_args.quiet {
         tracing::info!(
@@ -3334,7 +3336,11 @@ impl BatchRunner {
         // Wall time for a live device, the capture's own timeline for `-I`.
         // See `SweepClock` for why the two cannot share one rule.
         let mut sweep_clock = SweepClock::new(cli.has_input());
-        let sweep_interval = std::time::Duration::from_secs(5);
+        let sweep_interval = SWEEP_INTERVAL;
+        // What the live vCon export has written so far. `None` unless this is
+        // a live run with `--export-vcon-when`; see `Cli::exports_vcon_live`.
+        #[cfg(feature = "vcon")]
+        let mut live_vcon = cli.exports_vcon_live().then(LiveVconTracker::default);
         // --keylog-watch's own cadence — real wall time via Instant, not
         // sweep_clock. sweep_clock advances from packet timestamps, so on a
         // quiet link it never advances at all; the packet that matters is an
@@ -3424,7 +3430,25 @@ impl BatchRunner {
             // [`crate::rtp::stream::RtpStream::orphaned`].
             if let Some(now) = sweep_clock.take_due(sweep_interval) {
                 processor.sweep();
-                let compacted = dialog_store.write().compact_idle(now.get());
+                let compacted = sweep_dialog_store(&dialog_store, now.get(), |ds| {
+                    #[cfg(feature = "vcon")]
+                    if let Some(tracker) = live_vcon.as_mut() {
+                        let ss = stream_store.read();
+                        let gate = servers.as_ref().map(|s| s.persistence_gate.as_ref());
+                        live_vcon_sweep(
+                            &cli,
+                            vcon_filter_expr.as_ref(),
+                            ds,
+                            &ss,
+                            total_count,
+                            gate,
+                            tracker,
+                            now.get(),
+                        );
+                    }
+                    #[cfg(not(feature = "vcon"))]
+                    let _ = ds;
+                });
                 if compacted.messages_evicted > 0 {
                     tracing::debug!(
                         "idle-dialog compaction: dropped {} messages from {} dialogs",
@@ -3750,6 +3774,14 @@ impl BatchRunner {
             }
         }
 
+        // Read once, here, before anything below can ask for a shutdown of its
+        // own: a live run stopped by a signal (or by its MCP client going
+        // away) writes no vCon at its end. See `VconRunEnd::Stopped`.
+        #[cfg(feature = "vcon")]
+        let vcon_end = vcon_run_end(live_vcon.as_ref(), signals::shutdown_requested());
+        #[cfg(not(feature = "vcon"))]
+        let vcon_end = VconRunEnd::Whole;
+
         // A no-op today — every packet drains before the loop can break — and
         // kept because the cost of being wrong is silent data loss. A future
         // `break` added inside the per-packet body would otherwise discard that
@@ -3899,7 +3931,14 @@ impl BatchRunner {
                 vcon_filter_expr.as_ref(),
                 total_count,
                 gate,
+                vcon_end,
             ) {
+                crate::capture::archive::release_run_and_exit(1);
+            }
+            // A sweep that could not write a container it owed said so when
+            // it happened; the exit status says it again for a script.
+            #[cfg(feature = "vcon")]
+            if live_vcon.as_ref().is_some_and(LiveVconTracker::failed) {
                 crate::capture::archive::release_run_and_exit(1);
             }
         }
@@ -5413,6 +5452,7 @@ fn unwrap_hep(pp: &ParsedPacket) -> Option<Result<ParsedPacket, crate::error::Ca
 /// Prints the requested reports to stdout, the not-found error (and the
 /// opt-in `SIPNAB_PERF_STATS=1` perf line) to stderr; reads the
 /// `SIPNAB_PERF_STATS` environment variable.
+#[allow(clippy::too_many_arguments)]
 pub fn generate_reports(
     cli: &Cli,
     dialog_store: &DialogStore,
@@ -5421,6 +5461,7 @@ pub fn generate_reports(
     vcon_filter: Option<&FilterExpr>,
     frames_read: u64,
     gate: Option<&crate::output::persistence::PersistenceGate>,
+    vcon_end: VconRunEnd<'_>,
 ) -> bool {
     // SNB-0015 probe: set SIPNAB_PERF_STATS=1 to surface the per-run work that
     // scales with call count. `endpoint_link_scan_visits` is the cost that was
@@ -5700,6 +5741,7 @@ pub fn generate_reports(
         stream_store,
         frames_read,
         gate,
+        vcon_end,
     ) {
         return false;
     }
@@ -5824,13 +5866,363 @@ fn write_redaction_map(
     Ok(table.len())
 }
 
+/// How often the receive loop sweeps its stores, and how long a finished call
+/// must stay quiet before a live run writes its vCon.
+///
+/// One constant for both on purpose. A settle period shorter than the sweep
+/// would be unobservable (nothing looks between sweeps), and a longer one would
+/// only delay every container by whole sweeps. With the two equal, a matching
+/// call's container is written by the second sweep after its last message at
+/// the latest: about ten seconds.
+const SWEEP_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Which dialogs the live vCon export has already written, and at which
+/// `updated_at`.
+///
+/// Keyed by Call-ID and holding the `updated_at` the container was built at,
+/// so a dialog that changes after it was written (a `2xx` that raced a
+/// `CANCEL`, a late `BYE`) is written again with what it became. Entries for
+/// dialogs the store no longer holds are pruned every sweep, so the map is
+/// bounded by the store it describes rather than by the length of the run.
+///
+/// The end-of-run export reads it too: a live run that ends on its own writes
+/// only what the sweeps did not, because a forwarder that already took a
+/// container out of the spool would otherwise get it twice.
+#[derive(Debug, Default)]
+pub struct LiveVconTracker {
+    /// Call-ID to the `updated_at` its container was written at.
+    written: std::collections::HashMap<String, chrono::DateTime<chrono::Utc>>,
+    /// Set when a sweep could not write a container it owed, so the run can
+    /// end non-zero instead of reporting an export that did not happen.
+    failed: bool,
+}
+
+impl LiveVconTracker {
+    /// The `updated_at` this dialog's container was written at, if one was.
+    #[must_use]
+    pub fn written_at(&self, call_id: &str) -> Option<chrono::DateTime<chrono::Utc>> {
+        self.written.get(call_id).copied()
+    }
+
+    /// Record that `call_id`'s container was written at `updated_at`.
+    pub fn record(&mut self, call_id: &str, updated_at: chrono::DateTime<chrono::Utc>) {
+        self.written.insert(call_id.to_owned(), updated_at);
+    }
+
+    /// Forget every dialog `still_held` says the store no longer holds.
+    pub fn prune(&mut self, still_held: impl Fn(&str) -> bool) {
+        self.written.retain(|call_id, _| still_held(call_id));
+    }
+
+    /// How many dialogs are tracked.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.written.len()
+    }
+
+    /// Whether nothing is tracked.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.written.is_empty()
+    }
+
+    /// Whether a sweep failed to write a container it owed.
+    #[must_use]
+    pub fn failed(&self) -> bool {
+        self.failed
+    }
+}
+
+/// What the end-of-run vCon export owes, given how the run went.
+///
+/// A `-I` run, and any run without the live export, writes every selected
+/// dialog at its end, as it always has. A live run has already written what
+/// finished while it ran, so its end depends on WHY it ended.
+#[derive(Debug, Clone, Copy)]
+pub enum VconRunEnd<'a> {
+    /// Write every selected dialog.
+    Whole,
+    /// A live run stopped by a signal (or by the MCP client going away, which
+    /// takes the same path): write nothing. Stopping sipnab must leave no
+    /// residual data behind, so a stop is never a flush.
+    Stopped,
+    /// A live run that ended on its own (`--duration`, autostop): write the
+    /// selected dialogs the live sweeps have not already written at their
+    /// current `updated_at`.
+    AfterLive(&'a LiveVconTracker),
+}
+
+/// What the end-of-run export owes a run, from whether it exported live and
+/// whether a signal stopped it.
+#[cfg(feature = "vcon")]
+fn vcon_run_end(live: Option<&LiveVconTracker>, stopped_by_signal: bool) -> VconRunEnd<'_> {
+    match live {
+        None => VconRunEnd::Whole,
+        Some(_) if stopped_by_signal => VconRunEnd::Stopped,
+        Some(tracker) => VconRunEnd::AfterLive(tracker),
+    }
+}
+
+/// One sweep's dialog work, in the order it has to happen: `live_export`
+/// first, then idle compaction.
+///
+/// Compaction trims an idle dialog's messages, so an export that ran after it
+/// would write a container with the middle of the call missing. Kept in one
+/// small function so that order is a fact a test can check, rather than two
+/// adjacent lines in the receive loop that a later edit can swap.
+fn sweep_dialog_store(
+    dialog_store: &RwLock<DialogStore>,
+    now: chrono::DateTime<chrono::Utc>,
+    live_export: impl FnOnce(&DialogStore),
+) -> crate::sip::dialog_store::CompactStats {
+    live_export(&dialog_store.read());
+    dialog_store.write().compact_idle(now)
+}
+
+/// Whether a live sweep writes this dialog's container now.
+///
+/// Pure, and every input an argument, so each condition can be driven on its
+/// own: the dialog is in a final state, it has been quiet for `settle`
+/// measured from `updated_at` to the sweep's `now`, and it has not already
+/// been written at this same `updated_at`.
+#[cfg(feature = "vcon")]
+fn live_vcon_due(
+    state: &crate::sip::dialog::DialogState,
+    updated_at: chrono::DateTime<chrono::Utc>,
+    now: chrono::DateTime<chrono::Utc>,
+    settle: chrono::TimeDelta,
+    already_exported_at: Option<chrono::DateTime<chrono::Utc>>,
+) -> bool {
+    state.is_final() && now - updated_at >= settle && already_exported_at != Some(updated_at)
+}
+
+/// The live vCon export for one sweep: write every dialog that matches
+/// `--export-vcon-when`, has ended, and has been quiet for [`SWEEP_INTERVAL`].
+///
+/// Selection goes through [`vcon_selection`], the path the end-of-run export
+/// takes, so the predicate and the deny header mean the same thing in both.
+/// The capture analysis only runs when at least one dialog is due, because a
+/// sweep with nothing to write should cost a selection and nothing more.
+///
+/// A failure is logged and remembered on the tracker rather than ending the
+/// capture: the next sweep tries again, and the run exits non-zero at its end.
+///
+/// Returns how many containers this sweep wrote.
+#[cfg(feature = "vcon")]
+#[allow(clippy::too_many_arguments)]
+fn live_vcon_sweep(
+    cli: &Cli,
+    vcon_filter: Option<&crate::sip::dsl::FilterExpr>,
+    dialog_store: &DialogStore,
+    stream_store: &StreamStore,
+    frames_read: u64,
+    gate: Option<&crate::output::persistence::PersistenceGate>,
+    tracker: &mut LiveVconTracker,
+    now: chrono::DateTime<chrono::Utc>,
+) -> usize {
+    tracker.prune(|call_id| dialog_store.get(call_id).is_some());
+    // The gate at write time decides, as it does at the end of a run.
+    if gate.is_some_and(|g| !g.writes_permitted()) {
+        return 0;
+    }
+    let (selection, suppressed_by_deny, _denied) =
+        match vcon_selection(cli, vcon_filter, dialog_store, stream_store) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::error!("{e:#}");
+                tracker.failed = true;
+                return 0;
+            }
+        };
+    let settle = chrono::TimeDelta::from_std(SWEEP_INTERVAL).unwrap_or(chrono::TimeDelta::MAX);
+    let due: Vec<&crate::sip::dialog::SipDialog> = selection
+        .dialogs
+        .iter()
+        .map(|(dialog, _)| *dialog)
+        .filter(|dialog| {
+            live_vcon_due(
+                dialog.state(),
+                dialog.updated_at,
+                now,
+                settle,
+                tracker.written_at(&dialog.call_id),
+            )
+        })
+        .collect();
+    if due.is_empty() {
+        return 0;
+    }
+    let dir = match prepare_export_dir(cli) {
+        Ok(dir) => dir,
+        Err(message) => {
+            tracing::error!("{message}");
+            tracker.failed = true;
+            return 0;
+        }
+    };
+    let (written, failure) = match write_vcon_containers(
+        cli,
+        dir,
+        &VconBatch {
+            dialog_store,
+            stream_store,
+            frames_read,
+            gate,
+            suppressed_by_deny,
+        },
+        &due,
+        &[],
+        None,
+    ) {
+        Ok(n) => (n, None),
+        Err((n, message)) => (n, Some(message)),
+    };
+    for dialog in due.iter().take(written) {
+        tracker.record(&dialog.call_id, dialog.updated_at);
+    }
+    if written > 0 {
+        tracing::info!(
+            "Wrote {written} vCon container(s) to '{}' for calls that ended.",
+            dir.display()
+        );
+    }
+    if let Some(message) = failure {
+        tracing::error!("{message}");
+        tracker.failed = true;
+    }
+    written
+}
+
+/// The capture a batch of containers is drawn from, and what the run
+/// withheld from it.
+#[cfg(feature = "vcon")]
+struct VconBatch<'a> {
+    /// Every dialog the run holds; the analysis is drawn from all of them.
+    dialog_store: &'a DialogStore,
+    /// Every stream the run holds.
+    stream_store: &'a StreamStore,
+    /// Frames read so far, for the capture facts.
+    frames_read: u64,
+    /// The REST persistence gate, when a companion server runs.
+    gate: Option<&'a crate::output::persistence::PersistenceGate>,
+    /// How many dialogs the deny header removed from the selection.
+    suppressed_by_deny: u64,
+}
+
+/// Write one container per dialog in `dialogs`, and a withheld-dialog
+/// container per dialog in `tombstones`, into `dir`.
+///
+/// THE writer: the end-of-run export and every live sweep call it, so a
+/// container means the same thing whichever of them wrote it. `--vcon-digest`
+/// prints one line per container here, on stdout.
+///
+/// The capture facts and analysis are built once per call and shared by every
+/// container in it, and not built at all when there is nothing to write.
+///
+/// # Errors
+///
+/// `(written, message)`: how many containers were written before the one that
+/// failed, and a message naming it. Dialogs are written in order, so the first
+/// `written` of `dialogs` are on disk.
+#[cfg(feature = "vcon")]
+fn write_vcon_containers(
+    cli: &Cli,
+    dir: &std::path::Path,
+    batch: &VconBatch<'_>,
+    dialogs: &[&crate::sip::dialog::SipDialog],
+    tombstones: &[&crate::sip::dialog::SipDialog],
+    redactor: Option<&crate::output::redact::Redactor<'_>>,
+) -> Result<usize, (usize, String)> {
+    if dialogs.is_empty() && tombstones.is_empty() {
+        return Ok(0);
+    }
+    let mut facts = crate::analysis::CaptureFacts::observed(
+        batch.dialog_store,
+        batch.stream_store,
+        batch.frames_read,
+    );
+    // What this run deliberately did not write. Recorded on the facts BEFORE
+    // the analysis runs, so every container built from them carries the same
+    // account -- a container that named a different number from its siblings
+    // would read as two runs.
+    facts.dialogs_suppressed_by_deny = batch.suppressed_by_deny;
+    facts.gate_closed_during_run = batch
+        .gate
+        .is_some_and(crate::output::persistence::PersistenceGate::closed_during_run);
+    let analysis =
+        crate::analysis::analyze_with(batch.dialog_store, batch.stream_store, None, &facts);
+    let header = cli
+        .output_args
+        .content_deny_header
+        .as_deref()
+        .unwrap_or("(unnamed)");
+    // Tombstones last: every full container is on disk before the first one.
+    let work = dialogs
+        .iter()
+        .map(|d| (*d, false))
+        .chain(tombstones.iter().map(|d| (*d, true)));
+    let mut written = 0_usize;
+    for (dialog, withheld) in work {
+        let context = crate::output::vcon::ExportContext {
+            capture_id: crate::output::vcon::dialog_capture_id(dialog),
+            facts: &facts,
+            analysis: Some(&analysis),
+            max_inline_media_bytes: media_budget(cli),
+        };
+        let container = if withheld {
+            crate::output::vcon::export_withheld_dialog(dialog, &context, header)
+        } else {
+            crate::output::vcon::export_dialog(dialog, &context)
+        };
+        let json =
+            crate::output::vcon::sealed_json(&crate::output::vcon::seal(container, redactor))
+                .map_err(|e| {
+                    let what = if withheld {
+                        "withheld-dialog vCon"
+                    } else {
+                        "vCon"
+                    };
+                    (
+                        written,
+                        format!(
+                            "The {what} for Call-ID '{}' would not serialize: {e}",
+                            dialog.call_id
+                        ),
+                    )
+                })?;
+        let path = dir.join(vcon_file_name(&dialog.call_id));
+        write_container_atomically(&path, json.as_bytes()).map_err(|e| {
+            (
+                written,
+                format!(
+                    "Could not write '{}': {e}. {written} container(s) were written before this.",
+                    path.display()
+                ),
+            )
+        })?;
+        if cli.output_args.vcon_digest {
+            // stdout, while the summary goes to stderr: the digests are data
+            // an operator redirects to a file, and mixing them with progress
+            // text would put a "Wrote N containers" line inside their
+            // SHA256SUMS.
+            println!("{}", digest_line(&path, json.as_bytes()));
+        }
+        written += 1;
+    }
+    Ok(written)
+}
+
 /// Write one container per dialog the predicate selected.
 ///
 /// Reports the count on stderr rather than staying silent. A run that matched
 /// nothing and a run that wrote forty containers look identical from the shell
 /// otherwise, and the first is the one an operator needs to know about --
 /// `--export-vcon` already refuses silence for the same reason.
-#[cfg(feature = "vcon")]
+///
+/// Test-only: the run reaches the same code through [`export_vcon`], which
+/// passes what the live sweeps wrote to [`export_vcon_selection_after`]. The
+/// tests that pin the end-of-run behavior of a whole selection call it here.
+#[cfg(all(feature = "vcon", test))]
 fn export_vcon_selection(
     cli: &Cli,
     vcon_filter: Option<&crate::sip::dsl::FilterExpr>,
@@ -5838,6 +6230,29 @@ fn export_vcon_selection(
     stream_store: &StreamStore,
     frames_read: u64,
     gate: Option<&crate::output::persistence::PersistenceGate>,
+) -> bool {
+    export_vcon_selection_after(
+        cli,
+        vcon_filter,
+        dialog_store,
+        stream_store,
+        frames_read,
+        gate,
+        None,
+    )
+}
+
+/// [`export_vcon_selection`], leaving out every dialog `live` already wrote
+/// at its current `updated_at`.
+#[cfg(feature = "vcon")]
+fn export_vcon_selection_after(
+    cli: &Cli,
+    vcon_filter: Option<&crate::sip::dsl::FilterExpr>,
+    dialog_store: &DialogStore,
+    stream_store: &StreamStore,
+    frames_read: u64,
+    gate: Option<&crate::output::persistence::PersistenceGate>,
+    live: Option<&LiveVconTracker>,
 ) -> bool {
     let (selection, suppressed_by_deny, denied) =
         match vcon_selection(cli, vcon_filter, dialog_store, stream_store) {
@@ -5869,105 +6284,42 @@ fn export_vcon_selection(
         .as_ref()
         .map(crate::output::redact::RedactionPolicy::redactor);
 
-    let mut facts =
-        crate::analysis::CaptureFacts::observed(dialog_store, stream_store, frames_read);
-    // What this run deliberately did not write. Recorded on the facts BEFORE
-    // the analysis runs, so every container built from them carries the same
-    // account -- a container that named a different number from its siblings
-    // would read as two runs.
-    facts.dialogs_suppressed_by_deny = suppressed_by_deny;
-    facts.gate_closed_during_run =
-        gate.is_some_and(crate::output::persistence::PersistenceGate::closed_during_run);
-    let analysis = crate::analysis::analyze_with(dialog_store, stream_store, None, &facts);
-    let mut written = 0_usize;
-    for (dialog, _) in &selection.dialogs {
-        let container = crate::output::vcon::export_dialog(
-            dialog,
-            &crate::output::vcon::ExportContext {
-                capture_id: crate::output::vcon::dialog_capture_id(dialog),
-                facts: &facts,
-                analysis: Some(&analysis),
-                max_inline_media_bytes: media_budget(cli),
-            },
-        );
-        let json = match crate::output::vcon::sealed_json(&crate::output::vcon::seal(
-            container,
-            redactor.as_ref(),
-        )) {
-            Ok(j) => j,
-            Err(e) => {
-                eprintln!(
-                    "The vCon for Call-ID '{}' would not serialize: {e}",
-                    dialog.call_id
-                );
-                return false;
-            }
-        };
-        let path = dir.join(vcon_file_name(&dialog.call_id));
-        if let Err(e) = write_container_atomically(&path, json.as_bytes()) {
-            eprintln!(
-                "Could not write '{}': {e}. {written} container(s) were written before this.",
-                path.display()
-            );
+    let dialogs: Vec<&crate::sip::dialog::SipDialog> = selection
+        .dialogs
+        .iter()
+        .map(|(dialog, _)| *dialog)
+        .filter(|dialog| {
+            live.is_none_or(|t| t.written_at(&dialog.call_id) != Some(dialog.updated_at))
+        })
+        .collect();
+    // Tombstones only on request. Writing them at all reveals that the calls
+    // EXISTED, which is a disclosure an operator has to choose -- see
+    // `--content-deny-tombstone`. The default discards `denied` here.
+    let tombstones: &[&crate::sip::dialog::SipDialog] = if cli.output_args.content_deny_tombstone {
+        &denied
+    } else {
+        &[]
+    };
+    let written = match write_vcon_containers(
+        cli,
+        dir,
+        &VconBatch {
+            dialog_store,
+            stream_store,
+            frames_read,
+            gate,
+            suppressed_by_deny,
+        },
+        &dialogs,
+        tombstones,
+        redactor.as_ref(),
+    ) {
+        Ok(n) => n,
+        Err((_, message)) => {
+            eprintln!("{message}");
             return false;
         }
-        if cli.output_args.vcon_digest {
-            // stdout, while the summary below goes to stderr: the digests are
-            // data an operator redirects to a file, and mixing them with
-            // progress text would put a "Wrote N containers" line inside their
-            // SHA256SUMS.
-            println!("{}", digest_line(&path, json.as_bytes()));
-        }
-        written += 1;
-    }
-
-    // Tombstones last, and only on request. Writing them at all reveals that
-    // the calls EXISTED, which is a disclosure an operator has to choose --
-    // see `--content-deny-tombstone`. The default discards `denied` here.
-    if cli.output_args.content_deny_tombstone {
-        let header = cli
-            .output_args
-            .content_deny_header
-            .as_deref()
-            .unwrap_or("(unnamed)");
-        for dialog in &denied {
-            let container = crate::output::vcon::export_withheld_dialog(
-                dialog,
-                &crate::output::vcon::ExportContext {
-                    capture_id: crate::output::vcon::dialog_capture_id(dialog),
-                    facts: &facts,
-                    analysis: Some(&analysis),
-                    max_inline_media_bytes: media_budget(cli),
-                },
-                header,
-            );
-            let json = match crate::output::vcon::sealed_json(&crate::output::vcon::seal(
-                container,
-                redactor.as_ref(),
-            )) {
-                Ok(j) => j,
-                Err(e) => {
-                    eprintln!(
-                        "The withheld-dialog vCon for Call-ID '{}' would not serialize: {e}",
-                        dialog.call_id
-                    );
-                    return false;
-                }
-            };
-            let path = dir.join(vcon_file_name(&dialog.call_id));
-            if let Err(e) = write_container_atomically(&path, json.as_bytes()) {
-                eprintln!(
-                    "Could not write '{}': {e}. {written} container(s) were written before this.",
-                    path.display()
-                );
-                return false;
-            }
-            if cli.output_args.vcon_digest {
-                println!("{}", digest_line(&path, json.as_bytes()));
-            }
-            written += 1;
-        }
-    }
+    };
 
     if let Some(r) = redactor.as_ref() {
         let report = r.policy().report();
@@ -6302,6 +6654,7 @@ fn export_vcon(
     stream_store: &StreamStore,
     frames_read: u64,
     gate: Option<&crate::output::persistence::PersistenceGate>,
+    end: VconRunEnd<'_>,
 ) -> bool {
     // The gate is consulted here, above both export forms, because both write
     // content and a check on one of them would leave the other writing through
@@ -6312,13 +6665,21 @@ fn export_vcon(
         return true;
     }
     if cli.output_args.export_vcon_when.is_some() {
-        return export_vcon_selection(
+        let live = match end {
+            VconRunEnd::Whole => None,
+            // Answered `true`: a stop that writes nothing is what was asked
+            // for, not a failed export. See `VconRunEnd::Stopped`.
+            VconRunEnd::Stopped => return true,
+            VconRunEnd::AfterLive(tracker) => Some(tracker),
+        };
+        return export_vcon_selection_after(
             cli,
             vcon_filter,
             dialog_store,
             stream_store,
             frames_read,
             gate,
+            live,
         );
     }
     let Some(call_id) = cli.output_args.export_vcon.as_deref() else {
@@ -6441,6 +6802,7 @@ fn export_vcon(
     _stream_store: &StreamStore,
     _frames_read: u64,
     _gate: Option<&crate::output::persistence::PersistenceGate>,
+    _end: VconRunEnd<'_>,
 ) -> bool {
     // The gate is ignored here rather than consulted, and the difference is
     // only apparent: a build without the feature writes no container by any
@@ -6571,6 +6933,300 @@ mod tests {
         store.process_message(invite_msg("failed-call@example.com"));
         store.process_message(response_msg("failed-call@example.com", 486, "Busy Here"));
         store
+    }
+
+    // ── Live vCon export (LIVE-VCON-1) ─────────────────────────────
+
+    /// The settle period the live export uses, as the predicate takes it.
+    #[cfg(feature = "vcon")]
+    fn settle() -> chrono::TimeDelta {
+        chrono::TimeDelta::from_std(SWEEP_INTERVAL).expect("five seconds fits")
+    }
+
+    /// A final dialog quiet for the settle period, never written, is due.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn a_final_settled_unwritten_dialog_is_due() {
+        let t = chrono::Utc::now();
+        assert!(live_vcon_due(
+            &sip::dialog::DialogState::Completed,
+            t,
+            t + settle(),
+            settle(),
+            None
+        ));
+    }
+
+    /// A final dialog still inside the settle period is not due yet: a
+    /// retransmitted BYE or a late 200 may still arrive.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn a_final_dialog_inside_the_settle_period_is_not_due() {
+        let t = chrono::Utc::now();
+        let just_short = t + settle() - chrono::TimeDelta::milliseconds(1);
+        assert!(!live_vcon_due(
+            &sip::dialog::DialogState::Completed,
+            t,
+            just_short,
+            settle(),
+            None
+        ));
+    }
+
+    /// No running dialog is ever due, however long it has been quiet: a call
+    /// on hold is quiet and not over. Walks every state `is_final` rejects.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn no_running_dialog_is_due_however_quiet() {
+        let t = chrono::Utc::now();
+        let running: Vec<_> = sip::dialog::DialogState::ALL
+            .into_iter()
+            .filter(|s| !s.is_final())
+            .collect();
+        assert!(!running.is_empty(), "the walk must cover something");
+        for state in running {
+            assert!(
+                !live_vcon_due(&state, t, t + chrono::TimeDelta::hours(1), settle(), None),
+                "{state:?} is not an end state, so it must never be written live"
+            );
+        }
+    }
+
+    /// A dialog already written at its current `updated_at` is not written
+    /// again; one that changed since is.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn a_dialog_is_written_again_only_when_it_changed() {
+        let t = chrono::Utc::now();
+        let now = t + settle();
+        let state = sip::dialog::DialogState::Failed;
+        assert!(
+            !live_vcon_due(&state, t, now, settle(), Some(t)),
+            "written at this updated_at already"
+        );
+        assert!(
+            live_vcon_due(
+                &state,
+                t,
+                now,
+                settle(),
+                Some(t - chrono::TimeDelta::seconds(1))
+            ),
+            "the dialog changed after it was written, so it is owed again"
+        );
+    }
+
+    /// The tracker forgets dialogs the store no longer holds and keeps the
+    /// rest, so it cannot outgrow the store it describes.
+    #[test]
+    fn the_live_tracker_prunes_dialogs_the_store_dropped() {
+        let t = chrono::Utc::now();
+        let mut tracker = LiveVconTracker::default();
+        tracker.record("kept", t);
+        tracker.record("gone", t);
+        tracker.prune(|id| id == "kept");
+        assert_eq!(tracker.len(), 1, "only the held dialog survives");
+        assert_eq!(tracker.written_at("kept"), Some(t));
+        assert_eq!(tracker.written_at("gone"), None);
+    }
+
+    /// A live sweep writes the ended, settled, matching dialog, not the
+    /// running one, and does not write it twice.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn a_live_sweep_writes_ended_settled_calls_once() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let cli = cli_exporting_to(tmp.path(), "response_code >= 200");
+        let dialogs = two_dialogs_one_failed();
+        let streams = StreamStore::new(16);
+        let mut tracker = LiveVconTracker::default();
+        let later = chrono::Utc::now() + settle() + chrono::TimeDelta::seconds(1);
+
+        let n = live_vcon_sweep(&cli, None, &dialogs, &streams, 4, None, &mut tracker, later);
+        assert_eq!(n, 1, "only the failed (ended) call is due");
+        let files = containers_in(tmp.path());
+        assert_eq!(files.len(), 1, "{files:?}");
+        let text = std::fs::read_to_string(&files[0]).expect("readable");
+        assert!(text.contains("failed-call@example.com"), "{text}");
+        assert!(!tracker.failed());
+
+        let again = live_vcon_sweep(&cli, None, &dialogs, &streams, 4, None, &mut tracker, later);
+        assert_eq!(again, 0, "a written call is not written again unchanged");
+    }
+
+    /// A live sweep inside the settle period writes nothing and creates no
+    /// directory: the analysis and the directory wait for a due dialog.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn a_live_sweep_before_the_settle_period_writes_nothing() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let spool = tmp.path().join("spool");
+        let cli = cli_exporting_to(&spool, "response_code >= 200");
+        let mut tracker = LiveVconTracker::default();
+        let n = live_vcon_sweep(
+            &cli,
+            None,
+            &two_dialogs_one_failed(),
+            &StreamStore::new(16),
+            4,
+            None,
+            &mut tracker,
+            chrono::Utc::now(),
+        );
+        assert_eq!(n, 0);
+        assert!(!spool.exists(), "nothing was due, so nothing was created");
+    }
+
+    /// The deny header applies to the live export exactly as at the end of a
+    /// run, because both select through `vcon_selection`.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn a_live_sweep_honors_the_deny_header() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let mut cli = cli_exporting_to(tmp.path(), "response_code >= 200");
+        cli.output_args.content_deny_header = Some("X-No-Record".to_owned());
+        let mut store = DialogStore::new(16, true);
+        store.process_message(invite_with_header("denied@example.com", "X-No-Record", "1"));
+        store.process_message(response_msg("denied@example.com", 486, "Busy Here"));
+        let mut tracker = LiveVconTracker::default();
+        let later = chrono::Utc::now() + settle() + chrono::TimeDelta::seconds(1);
+        let n = live_vcon_sweep(
+            &cli,
+            None,
+            &store,
+            &StreamStore::new(16),
+            2,
+            None,
+            &mut tracker,
+            later,
+        );
+        assert_eq!(n, 0, "a denied call must not be written live");
+    }
+
+    /// A signal stop writes nothing at the end of a live run; a natural end
+    /// writes what the sweeps did not; a run with no live export writes all.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn how_a_run_ended_decides_what_its_end_writes() {
+        let tracker = LiveVconTracker::default();
+        assert!(matches!(
+            vcon_run_end(Some(&tracker), true),
+            VconRunEnd::Stopped
+        ));
+        assert!(matches!(
+            vcon_run_end(Some(&tracker), false),
+            VconRunEnd::AfterLive(_)
+        ));
+        assert!(matches!(vcon_run_end(None, true), VconRunEnd::Whole));
+        assert!(matches!(vcon_run_end(None, false), VconRunEnd::Whole));
+    }
+
+    /// The end of a signal-stopped live run writes no container, and says
+    /// it succeeded: the stop is what the operator asked for.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn a_stopped_live_run_writes_nothing_at_its_end() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let spool = tmp.path().join("spool");
+        assert!(export_vcon(
+            &cli_exporting_to(&spool, "response_code >= 200"),
+            None,
+            &two_dialogs_one_failed(),
+            &StreamStore::new(16),
+            4,
+            None,
+            VconRunEnd::Stopped,
+        ));
+        assert!(!spool.exists(), "a stop is never a flush");
+    }
+
+    /// A live run that ends on its own skips what the sweeps already wrote at
+    /// the same `updated_at`, and writes a dialog that changed since.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn a_natural_end_skips_what_the_live_sweeps_wrote() {
+        let dialogs = two_dialogs_one_failed();
+        let failed = dialogs.get("failed-call@example.com").expect("fixture");
+        let ok = dialogs.get("ok-call@example.com").expect("fixture");
+
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let mut tracker = LiveVconTracker::default();
+        tracker.record(&failed.call_id, failed.updated_at);
+        assert!(export_vcon(
+            &cli_exporting_to(tmp.path(), "response_code >= 200"),
+            None,
+            &dialogs,
+            &StreamStore::new(16),
+            4,
+            None,
+            VconRunEnd::AfterLive(&tracker),
+        ));
+        let names: Vec<String> = containers_in(tmp.path())
+            .iter()
+            .map(|p| std::fs::read_to_string(p).expect("readable"))
+            .collect();
+        assert_eq!(names.len(), 1, "only the call the sweeps did not write");
+        assert!(names[0].contains("ok-call@example.com"));
+
+        let changed = tempfile::tempdir().expect("temp dir");
+        let mut stale = LiveVconTracker::default();
+        stale.record(
+            &failed.call_id,
+            failed.updated_at - chrono::TimeDelta::seconds(1),
+        );
+        stale.record(&ok.call_id, ok.updated_at);
+        assert!(export_vcon(
+            &cli_exporting_to(changed.path(), "response_code >= 200"),
+            None,
+            &dialogs,
+            &StreamStore::new(16),
+            4,
+            None,
+            VconRunEnd::AfterLive(&stale),
+        ));
+        let files = containers_in(changed.path());
+        assert_eq!(files.len(), 1, "{files:?}");
+        let text = std::fs::read_to_string(&files[0]).expect("readable");
+        assert!(
+            text.contains("failed-call@example.com"),
+            "a call that changed after it was written is written again"
+        );
+    }
+
+    /// The live export sees a dialog BEFORE idle compaction trims it.
+    ///
+    /// Compaction keeps at most `keep_messages_per_idle_dialog` (20 by
+    /// default) messages of a dialog idle past the window (10 minutes by
+    /// default). A 27-message dialog swept eleven minutes after its last
+    /// message is trimmed by compaction, so the export callback must see all
+    /// 27 and the store must hold fewer afterwards: the second half proves
+    /// the fixture is one compaction actually touches.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn a_sweep_exports_before_it_compacts() {
+        const CALL: &str = "long-call@example.com";
+        let store = RwLock::new(DialogStore::new(16, true));
+        {
+            let mut ds = store.write();
+            ds.process_message(invite_msg(CALL));
+            for _ in 0..25 {
+                ds.process_message(response_msg(CALL, 180, "Ringing"));
+            }
+            ds.process_message(response_msg(CALL, 486, "Busy Here"));
+        }
+        let before = store.read().get(CALL).expect("tracked").messages.len();
+        assert!(before > 20, "the fixture must exceed the retention cap");
+
+        let mut seen = 0;
+        let now = chrono::Utc::now() + chrono::TimeDelta::minutes(11);
+        sweep_dialog_store(&store, now, |ds| {
+            seen = ds.get(CALL).expect("tracked").messages.len();
+        });
+        assert_eq!(seen, before, "the export must see the untrimmed dialog");
+        assert!(
+            store.read().get(CALL).expect("tracked").messages.len() < before,
+            "compaction must have run after it, or this test proves nothing"
+        );
     }
 
     /// `--export-vcon-when` selects the dialogs its expression matches.
@@ -7682,6 +8338,7 @@ mod tests {
             &StreamStore::new(16),
             7,
             Some(&gate),
+            VconRunEnd::Whole,
         );
 
         assert!(
@@ -7723,6 +8380,7 @@ mod tests {
             &StreamStore::new(16),
             7,
             Some(&gate),
+            VconRunEnd::Whole,
         ));
         assert!(
             !out.exists(),
@@ -7753,6 +8411,7 @@ mod tests {
             &StreamStore::new(16),
             7,
             Some(&gate),
+            VconRunEnd::Whole,
         ));
         assert_eq!(
             std::fs::read_dir(tmp.path())
@@ -7791,6 +8450,7 @@ mod tests {
             &StreamStore::new(16),
             7,
             None,
+            VconRunEnd::Whole,
         ));
 
         let gated = tempfile::tempdir().expect("temp dir");
@@ -7801,6 +8461,7 @@ mod tests {
             &StreamStore::new(16),
             7,
             Some(&crate::output::persistence::PersistenceGate::new(true)),
+            VconRunEnd::Whole,
         ));
 
         let ungated_names = names(ungated.path());
@@ -7835,6 +8496,7 @@ mod tests {
             &StreamStore::new(16),
             7,
             Some(&gate),
+            VconRunEnd::Whole,
         ));
         assert_eq!(
             std::fs::read_dir(tmp.path())
@@ -7853,6 +8515,7 @@ mod tests {
             &StreamStore::new(16),
             7,
             Some(&gate),
+            VconRunEnd::Whole,
         ));
         assert!(
             std::fs::read_dir(tmp.path())
@@ -7882,6 +8545,7 @@ mod tests {
             &StreamStore::new(16),
             7,
             Some(&gate),
+            VconRunEnd::Whole,
         ));
     }
 
@@ -11220,12 +11884,30 @@ mod tests {
         // Empty --report summary path.
         let mut cli = base_cli();
         cli.output_args.report = true;
-        generate_reports(&cli, &dialog_store, &stream_store, None, None, 0, None);
+        generate_reports(
+            &cli,
+            &dialog_store,
+            &stream_store,
+            None,
+            None,
+            0,
+            None,
+            VconRunEnd::Whole,
+        );
 
         // --call-report for an unknown Call-ID hits the "not found" warn arm.
         let mut cli = base_cli();
         cli.output_args.call_report = Some("does-not-exist".to_string());
-        generate_reports(&cli, &dialog_store, &stream_store, None, None, 0, None);
+        generate_reports(
+            &cli,
+            &dialog_store,
+            &stream_store,
+            None,
+            None,
+            0,
+            None,
+            VconRunEnd::Whole,
+        );
 
         // Insert a dialog, then --call-report finds it across all formats.
         let call_id = "report-1@example.com";
@@ -11252,7 +11934,16 @@ mod tests {
             let mut cli = base_cli();
             cli.output_args.call_report = Some(call_id.to_string());
             setup(&mut cli);
-            generate_reports(&cli, &dialog_store, &stream_store, None, None, 0, None);
+            generate_reports(
+                &cli,
+                &dialog_store,
+                &stream_store,
+                None,
+                None,
+                0,
+                None,
+                VconRunEnd::Whole,
+            );
         }
     }
 
