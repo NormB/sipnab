@@ -231,9 +231,278 @@ The TLS library buffered the third write rather than sending it, so the
 program paired it with no socket and sipnab reports no peer rather than
 guessing one. sipnab drops the fourth, which is not SIP.
 
+## Operator tasks
+
+Each of these programs carries out one multi-step recipe from the
+[cookbook](examples.md), the steps an operator would otherwise type one at a
+time, and ends with the answer the recipe is for. Single-command recipes stay
+recipes. CI runs each program against committed captures and checks the exact
+lines it prints, plus a failure case: a wrong token, a missing call or
+customer, a capture with nothing to judge, or no TFPS.
+
+| Program | Recipes | How CI runs it |
+|---|---|---|
+| [triage.py](../clients/python/triage.py) | [1](examples.md#1-triage-a-pcap-fast), [16](examples.md#16-analyze-a-capture-into-one-machine-readable-verdict) | Four failed calls, one clean call, and a capture with no dialog to judge |
+| [failed_calls.py](../clients/python/failed_calls.py) | [3](examples.md#3-find-every-failed-call-grouped-by-response-code), [30](examples.md#30-find-calls-that-answered-and-were-never-acknowledged) | A sipnab serving four failed calls and one answer nobody acknowledged |
+| [one_way_audio.py](../clients/python/one_way_audio.py) | [4](examples.md#4-diagnose-a-one-way-audio-complaint), [11](examples.md#11-find-why-a-call-sounds-bad-in-one-direction-only), [22](examples.md#22-measure-whether-the-loss-is-yours-or-the-networks) | A phone behind NAT that hears the far end and is not heard |
+| [scanner_ban.py](../clients/python/scanner_ban.py) | [10](examples.md#10-detect-sip-scanners-and-auto-block-via-fail2ban), [23](examples.md#23-find-the-device-flooding-register) | A scanner and two flooding sources, banned through a stand-in for `tfps_ctl` |
+| [customer_export.py](../clients/python/customer_export.py) | [39](examples.md#39-collect-a-directory-of-rotated-captures-into-one-analysis), [32](examples.md#32-export-one-customers-calls-as-a-smaller-capture), [40](examples.md#40-open-the-same-evidence-in-wireshark) | Three rotated files, one export, opened by `tshark` and `capinfos` |
+
+The two programs that read a capture file, `triage.py` and
+`customer_export.py`, run sipnab themselves. `scanner_ban.py` does both: it
+reads the capture, then bans through a running sipnab. Each finds sipnab through
+`--sipnab`, else `SIPNAB_BIN`, else `PATH`. The REST programs read
+`SIPNAB_URL` and `SIPNAB_API_KEY`, like the reference-page programs.
+
+### Triage a capture to one verdict
+
+[`triage.py`](../clients/python/triage.py) runs `--json-analyze` and turns
+its one object into a verdict and an exit status: `0` clean, `1` problems,
+`2` inconclusive, `3` sipnab could not read the input. The third verdict is
+the reason the program exists. A capture with no SIP in it, or with its SIP
+outside `--portrange`, analyzes to an empty list of findings, and an empty
+list reads as clean:
+
+<!-- snippet: clients/python/triage.py#triage-verdict -->
+```python
+seen = (
+    f"{analysis['frames_read']} frame(s), {analysis['dialogs_examined']} dialog(s), "
+    f"{analysis['streams_examined']} stream(s)"
+)
+findings = analysis["findings"]
+if not analysis["complete"]:
+    head, result = f"inconclusive: sipnab did not analyze all of the capture ({seen})", "inconclusive"
+elif findings:
+    head, result = f"problems: {seen}", "problems"
+elif analysis["dialogs_examined"] == 0 and analysis["streams_examined"] == 0:
+    head = (
+        f"inconclusive: {analysis['frames_read']} frame(s) and no SIP dialog or RTP "
+        "stream to judge, so an empty finding list proves nothing"
+    )
+    result = "inconclusive"
+else:
+    head, result = f"clean: {seen}", "clean"
+lines = [head]
+for f in findings:
+    lines.append(f"  {f['severity']}  {f['kind']}  {f['occurrences']} {f['unit']}(s)")
+    lines.extend(evidence_lines(f))
+return result, lines
+```
+
+```bash
+python3 clients/python/triage.py capture.pcap
+```
+
+Against [`tests/pcap-samples/sip-problem-call.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-problem-call.pcap) it exits `1`:
+
+```text
+problems: 23 frame(s), 5 dialog(s), 0 stream(s)
+  major  server_failure  2 call(s)
+    decline-7c6d5e@198.51.100.30  Decline
+    unavail-4e5f60@192.0.2.50  Service Unavailable
+  minor  request_failure  2 call(s)
+    busy-3a2b1c@192.0.2.30  Busy Here
+    notfound-1b2c3d@203.0.113.30  Not Found
+```
+
+### Group failed calls by response code
+
+The shell histogram in recipe 3 counts every response inside a failed call,
+so the `100 Trying` before a `486` counts too.
+[`failed_calls.py`](../clients/python/failed_calls.py) counts each call once,
+under its final code, through `GET /v1/aggregate`, and names the calls in each
+group. A call answered and never acknowledged has not failed, so the grouping
+cannot show it. The program reads those calls from the capture's findings
+(`GET /v1/report`):
+
+<!-- snippet: clients/python/failed_calls.py#failed-calls -->
+```python
+aggregate = get("/v1/aggregate", by="response_code", filter=FAILED)
+calls = {}
+for bucket in aggregate["buckets"]:
+    code = bucket["value"]
+    if code == "(none)":
+        # No final code to filter on: counted, not listed.
+        calls[code] = ([], bucket["count"])
+        continue
+    page = get("/v1/dialogs", filter=f"{FAILED} AND response_code == {code}")
+    calls[code] = ([d["call_id"] for d in page["dialogs"]], page["total"])
+report = get("/v1/report")
+```
+
+sipnab reports a missing `ACK` only once the answer has waited
+`--ack-timeout`, which defaults to [RFC 3261](https://www.rfc-editor.org/rfc/rfc3261) Timer H, 32 seconds. CI starts
+sipnab with `--ack-timeout 5` against
+[`tests/fixtures/sip-answered-never-acked.pcap`](https://github.com/NormB/sipnab/raw/main/tests/fixtures/sip-answered-never-acked.pcap),
+whose answer waited 31.5 seconds, beside the four failed calls:
+
+```text
+4 failed call(s), by final response code:
+  404  1 call(s)
+    notfound-1b2c3d@203.0.113.30
+  486  1 call(s)
+    busy-3a2b1c@192.0.2.30
+  503  1 call(s)
+    unavail-4e5f60@192.0.2.50
+  603  1 call(s)
+    decline-7c6d5e@198.51.100.30
+1 call(s) answered and never acknowledged:
+  noack-5d4c3b@192.0.2.70  31.5s elapsed with no ACK, answer sent 11 time(s)
+```
+
+### Diagnose one-way audio, and whose loss it is
+
+[`one_way_audio.py`](../clients/python/one_way_audio.py) takes a Call-ID and
+prints the call's diagnosis and streams (recipe 4), the asymmetry signals the
+filter language holds and the report does not (recipe 11), and whether the
+loss figures belong to the network or to the capture (recipe 22). sipnab
+counts a packet the capture host dropped as network loss, so the last line
+comes from `GET /v1/stats`:
+
+<!-- snippet: clients/python/one_way_audio.py#whose-loss -->
+```python
+kernel = quality["kernel_dropped_packets"]
+interface = quality["interface_dropped_packets"]
+lines = []
+if kernel:
+    lines.append(
+        f"capture: {kernel} packet(s) dropped by the kernel buffer on the capture host, "
+        "counted above as network loss (raise -B/--buffer, narrow the BPF filter, "
+        "or lower --snaplen)"
+    )
+if interface:
+    lines.append(
+        f"capture: {interface} packet(s) dropped by the interface or its driver, counted "
+        "above as network loss (a bigger buffer cannot fix these: check the NIC)"
+    )
+if not lines:
+    lines.append(
+        "capture: no packet dropped by the kernel buffer or the interface, "
+        "so the loss above is the network's"
+    )
+snapped, undecodable = quality["snapped_frames"], quality["undecodable_frames"]
+if snapped or undecodable:
+    lines.append(
+        f"capture: {snapped} frame(s) cut short by the snaplen and {undecodable} frame(s) "
+        "it could not decode; loss figures may be low as well as high"
+    )
+return lines
+```
+
+For the phone behind NAT in
+[`tests/fixtures/stun_sdp_mismatch.pcap`](https://github.com/NormB/sipnab/raw/main/tests/fixtures/stun_sdp_mismatch.pcap),
+media flows both ways, and the reply arrives from an address no SDP offered:
+
+```text
+stun-sdp-mismatch-1@192.168.10.50  Completed  200
+one-way audio: yes
+NAT mismatch: yes
+  0x11223344  192.168.10.50:40000 -> 198.51.100.30:41000  PCMU  30 packets  loss 0.0%
+  0x55667788  203.0.113.7:41000 -> 192.168.10.50:40000  PCMU  30 packets  loss 0.0%
+hint: RTP flowed 192.168.10.50:40000 -> 198.51.100.30:41000 only (SSRC 0x11223344). No reverse media flow detected.
+```
+
+Three more hints follow, then `asymmetry: none` and the capture's verdict on
+its own loss. Loss upstream of the capture point, such as a SPAN port that
+mirrors one direction, is invisible to both counters.
+
+### Ban a scanner through TFPS, and verify it
+
+sipnab recommends and applies nothing ([recipe 10c](examples.md#10c-block-a-scanner-with-a-rule-sipnab-wrote-after-reading-the-evidence)).
+[`scanner_ban.py`](../clients/python/scanner_ban.py) reads the accusations
+`--recommend-block` prints, bans through `POST /v1/tfps/ban` only the sources
+with no counter-evidence, and counts a ban only once `GET /v1/tfps/banned`
+lists it as enforced. A source that completed a registration before its
+credentials went wrong is the device recipe 23 finds, and a ban would cut
+off a working peer. The program withholds that source and names it:
+
+<!-- snippet: clients/python/scanner_ban.py#tfps-ban -->
+```python
+failed, applied = False, []
+for a in ban:
+    body = {"ip": a["ip"]} if args.ttl is None else {"ip": a["ip"], "ttl_secs": args.ttl}
+    action = call("POST", "/v1/tfps/ban", body)["action"]
+    print(describe_action(action, a["rules"]))
+    if action["applied"]:
+        applied.append(a["ip"])
+    else:
+        failed = True
+for line in withheld:
+    print(line)
+missing = unverified(applied, call("GET", "/v1/tfps/banned")["rows"])
+for ip in missing:
+    print(f"NOT in TFPS's banned list: {ip}")
+print(f"verified {len(applied) - len(missing)} of {len(applied)} ban(s) in TFPS's banned list")
+```
+
+```bash
+python3 clients/python/scanner_ban.py capture.pcap --ttl 3600 --reg-flood-threshold 10
+```
+
+Against [`tests/fixtures/sip-scanner-and-register-flood.pcap`](https://github.com/NormB/sipnab/raw/main/tests/fixtures/sip-scanner-and-register-flood.pcap), with `--ttl 0`:
+
+```text
+banned 198.51.100.77 (reg_flood) with no expiry
+banned 203.0.113.42 (scanner) with no expiry
+withheld 192.0.2.10 (reg_flood): it also completed a registration or a call in this capture
+verified 2 of 2 ban(s) in TFPS's banned list
+```
+
+TFPS's `ban` writes a pinned BPF map as root, so CI cannot run the real
+peer. It starts sipnab with `--tfps-ctl` naming
+[`clients/python/tests/fake_tfps_ctl.py`](https://github.com/NormB/sipnab/blob/main/clients/python/tests/fake_tfps_ctl.py),
+which answers in the documents `tfps_ctl --json` prints: a test holds every
+line to the fixtures pinned against the real binary. It keeps its block list
+in a file, and CI checks that the file holds the two banned addresses. Run the
+program against a real TFPS before trusting it with a production block list.
+
+### Export the calls of one customer from rotated captures
+
+[`customer_export.py`](../clients/python/customer_export.py) takes a
+directory of rotated captures (recipe 39) and a SIP user. It exports that
+user's calls with `-O` and a BPF expression over their addresses (recipe 32)
+and prints the `tshark` command that opens the result (recipe 40). BPF
+selects addresses, not users, so the program reads the export back before it
+calls it done:
+
+<!-- snippet: clients/python/customer_export.py#export-check -->
+```python
+problems = []
+for call_id, call in sorted(wanted.items()):
+    found = got.get(call_id)
+    if found is None:
+        problems.append(f"{call_id}: not in the export")
+    elif found["messages"] != call["messages"]:
+        problems.append(
+            f"{call_id}: {found['messages']} of its {call['messages']} message(s) are in the export"
+        )
+for call_id in sorted(set(got) - set(wanted)):
+    problems.append(
+        f"{call_id}: another customer's call shares an address with this one, "
+        "and BPF cannot separate them"
+    )
+return problems
+```
+
+When another customer's call shares an address, the program removes the
+export rather than handing it over, and recipe 32's vCon export is the way
+to go. CI cuts `sip-problem-call.pcap` into three files the way a wrapped
+`tcpdump -C -W` ring leaves them, exports the call placed by `alice`, which crosses all
+three, and has `capinfos` and `tshark` read the result:
+
+```text
+alice: 1 call(s)
+  completed-9f8e7d@192.0.2.10  7 message(s)
+BPF: host 192.0.2.10 or host 192.0.2.20
+wrote alice.pcap: 7 SIP message(s), every call whole, no other call
+tshark -r 'alice.pcap' -Y 'sip.Call-ID == "completed-9f8e7d@192.0.2.10"' -V
+```
+
 ## Run everything CI runs
 
-Build sipnab with every feature and its examples, then run the smoke script:
+Build sipnab with every feature and its examples, then run the smoke script.
+The operator tasks also need `tshark` and `capinfos`, from Ubuntu's `tshark`
+package:
 
 ```bash
 # Run all of these, in order.

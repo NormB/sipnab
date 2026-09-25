@@ -220,6 +220,8 @@ a sample in the repository that holds four failed calls, the first lines read:
 - The TUI requires a tty. If you're SSH'd in without `-t`, force `-N` mode.
 - For large pcaps (>1 GB), prefer `-N` first. The TUI loads everything into memory.
 
+**Runnable example:** [Triage a capture to one verdict](@/docs/examples.md#triage-a-capture-to-one-verdict) turns this triage into one verdict and an exit status, and tells a capture with nothing to judge apart from a clean one.
+
 ---
 
 ## 2. Live capture, narrow to a single user
@@ -301,6 +303,8 @@ The histogram output looks like (`uniq -c` count, then status code):
 - The histogram counts *all* response codes seen in messages of failed dialogs (so a single failed call with `100 Trying → 488` contributes both 100 and 488). For just the final response per call, use `--call-report <id>` per dialog.
 - The dialog summary returned by the REST API (`/v1/dialogs`) has no `status_code` field. That's a per-message field only available in CLI `--json` output or via `/v1/dialogs/{id}` (which includes the full message list).
 
+**Runnable example:** [Group failed calls by response code](@/docs/examples.md#group-failed-calls-by-response-code) groups each failed call once under its final code over REST, names the calls, and adds the ones answered and never acknowledged (recipe 30).
+
 ---
 
 ## 4. Diagnose a one-way audio complaint
@@ -360,6 +364,8 @@ The first command should print a diagnosis object like:
 **Pitfalls:**
 
 - If both streams show packets but the user still reports silence, the issue is downstream of sipnab (codec mismatch, jitter buffer underflow, bad headset). Use [11. Find why a call sounds bad in one direction only](#11-find-why-a-call-sounds-bad-in-one-direction-only) for codec asymmetry checks.
+
+**Runnable example:** [Diagnose one-way audio, and whose loss it is](@/docs/examples.md#diagnose-one-way-audio-and-whose-loss-it-is) runs this diagnosis, the asymmetry checks of recipe 11 and the capture-loss check of recipe 22 for one Call-ID.
 
 ---
 
@@ -1451,6 +1457,8 @@ The hook is rate-limited (`--exec-rate-limit 10` default) and runs in a sandboxe
 - Forging the source of a kill response needs a raw socket, and a raw socket needs `CAP_NET_RAW`. Run sipnab as root or with capabilities: it opens the raw socket and starts the scanner-kill worker process before it drops privileges, and the worker keeps that socket and gives up everything else. Without the capability, responses still go out, from sipnab's own port.
 - `--kill-ua "<regex>"` adds a custom User-Agent pattern beyond the built-in scanner list.
 
+**Runnable example:** [Ban a scanner through TFPS, and verify it](@/docs/examples.md#ban-a-scanner-through-tfps-and-verify-it) bans through `POST /v1/tfps/ban` only the sources `--recommend-block` finds no counter-evidence for, then checks TFPS's banned list.
+
 ---
 
 <!-- vale sipnab.Headings = YES -->
@@ -1501,6 +1509,8 @@ From an MCP client, multiple alias names go through `find_problems` instead: `to
 
 - `sipnab -N --filter '<expr>' --json` emits **per-message** records for every message of every matching dialog. Pipe through `jq -s 'unique_by(.call_id)'` if you want one record per affected call.
 - The `diagnosis` block in CLI `--json` output and in the REST API today only exposes `one_way_audio`, `nat_mismatch`, `no_media`, and free-form `hints`. The five asymmetry booleans are filterable via the DSL but aren't in the JSON shape — if you need them in your output, use the MCP `find_problems` tool. JSON `--call-report` uses the same dialog projection and does not add them.
+
+**Runnable example:** [Diagnose one-way audio, and whose loss it is](@/docs/examples.md#diagnose-one-way-audio-and-whose-loss-it-is) asks all five asymmetry filters about one call, beside its one-way diagnosis.
 
 ---
 
@@ -1718,6 +1728,8 @@ the distinction a pipeline most needs.
 - This is a summary, not a substitute for `--report`: it tells you the capture's verdict, not each stream's jitter.
 - A capture whose SIP sits outside `--portrange` analyzes cleanly because it saw no SIP. Check the packet counts in the same object before trusting a green result.
 
+**Runnable example:** [Triage a capture to one verdict](@/docs/examples.md#triage-a-capture-to-one-verdict) reads this object and exits `0`, `1` or `2` for clean, problems or inconclusive, the third for a capture with no SIP to judge.
+
 ---
 
 ## 17. Inspect what NAT did to a call
@@ -1899,6 +1911,8 @@ Live capture on 'eth0' finished: 4821003 packets, no drops
 - Operators routinely respond to *any* drop by raising `-B`. That does nothing at all for interface drops and wastes memory while the real problem goes unaddressed.
 - Both counters zero does not mean the capture is complete: a frame can arrive intact and still be unreadable, or `--snaplen` can cut it short. `--report` counts those separately. See [tuning](@/docs/tuning-capture.md#1-are-you-dropping-packets).
 
+**Runnable example:** [Diagnose one-way audio, and whose loss it is](@/docs/examples.md#diagnose-one-way-audio-and-whose-loss-it-is) ends a one-way-audio diagnosis with this answer: the loss is the network's, or the capture host dropped packets and the loss figures include them.
+
 ---
 
 ## 23. Find the device flooding REGISTER
@@ -1929,6 +1943,8 @@ error, and it does not stop on its own:
 
 - A storm from many sources with one `From` is credential reuse, not one broken phone. Group by `src` before concluding.
 - Registration traffic is often on a different port from calls. If the counts look impossibly low, widen `--portrange`.
+
+**Runnable example:** [Ban a scanner through TFPS, and verify it](@/docs/examples.md#ban-a-scanner-through-tfps-and-verify-it) withholds a flooding device that completed a registration earlier in the capture, and bans the ones that never did.
 
 ---
 
@@ -2244,6 +2260,8 @@ sipnab -N -I capture.pcap --no-final-response-timeout 30 --analyze
 - Lowering `--no-final-response-timeout` reports **every call still ringing when the capture stopped**, which on a live tap is a normal state and not a fault. Read it against how the capture ended.
 - These change what sipnab reports, not what the capture holds. A missing ACK that arrived after the last packet in the file is missing from the file, not from the network.
 
+**Runnable example:** [Group failed calls by response code](@/docs/examples.md#group-failed-calls-by-response-code) lists the calls answered and never acknowledged beside the failed ones. CI runs it against a sipnab started with `--ack-timeout 5`.
+
 ---
 
 ## 31. Set the quality thresholds to your own network
@@ -2331,6 +2349,8 @@ sipnab -N -I capture.pcap --export-vcon-when "from.user == '1001'" --export-vcon
 
 - A filter selects **dialogs**, so a call whose INVITE was outside the capture has no dialog to match and its packets are not written.
 - sipnab refuses to write its output over its input. Name a different path, in a different directory if you are working in place.
+
+**Runnable example:** [Export the calls of one customer from rotated captures](@/docs/examples.md#export-the-calls-of-one-customer-from-rotated-captures) builds the BPF expression from the customer's calls, reads the export back, and removes it when another customer's call shares an address.
 
 ---
 
@@ -2563,6 +2583,8 @@ sipnab -N -I '/var/captures/*.pcap' --recursive --report --no-cli-print
 - `-l`/`--limit` bounds dialogs for the whole **run**, not per file. A 27-file directory reaches the cap 27 times sooner than one file does, and eviction drops the oldest dialogs — the worst ones to lose for a post-mortem. Raise it ([43. Keep a long-running capture inside a memory budget](#43-keep-a-long-running-capture-inside-a-memory-budget)).
 - `--recursive` is off on purpose: descending silently can analyze several times the traffic you pointed at, and nothing in the output would say so.
 
+**Runnable example:** [Export the calls of one customer from rotated captures](@/docs/examples.md#export-the-calls-of-one-customer-from-rotated-captures) reads a directory of rotated captures, exports one customer's calls and checks the export holds them whole.
+
 ---
 
 ## 40. Open the same evidence in Wireshark
@@ -2595,6 +2617,8 @@ sipnab -N -I capture.pcap --tshark-filter 'sip.Call-ID == "abc123@host"' --no-cl
 
 - `--wireshark` only prints text, so it needs neither Wireshark nor a display on the capture host. Open the capture in Wireshark separately and paste the printed filter.
 - A tshark display filter is not sipnab's filter DSL and not a BPF expression. All three languages appear in this cookbook, and none of them accepts the syntax of the other two.
+
+**Runnable example:** [Export the calls of one customer from rotated captures](@/docs/examples.md#export-the-calls-of-one-customer-from-rotated-captures) ends with the `tshark` command for the export. CI runs that command and `capinfos` against it.
 
 ---
 

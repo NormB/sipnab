@@ -237,3 +237,28 @@ leaves it by gaining a real entry here, or by the file being deleted.
   except for the MAC addresses, now in the RFC 7042 block, and the two SDP
   bodies' `Content-Length`, which the original gave as 126 for a 134-byte
   body.
+
+### tests/fixtures/sip-answered-never-acked.pcap
+
+- **Category:** synthetic
+- **Generator:** `tests/support/synthetic_captures.rs` (`answered_never_acked`)
+- **SHA-256:** `88aa4f509ca720909c2c3c6012642967d6b36644d0db9ba123701f16680799b7`
+- **Holds:** one INVITE from 192.0.2.70 to 192.0.2.80, answered `200 OK`
+  and retransmitted on [RFC 3261](https://www.rfc-editor.org/rfc/rfc3261) Timer G, eleven times over 31.5 seconds, with
+  no `ACK` and no `BYE` after it. The operator-task program
+  `clients/python/failed_calls.py` reads it in `scripts/smoke-clients.sh`
+  (cookbook recipe 30), against a sipnab started with `--ack-timeout 5`.
+
+### tests/fixtures/sip-scanner-and-register-flood.pcap
+
+- **Category:** synthetic
+- **Generator:** `tests/support/synthetic_captures.rs` (`scanner_and_register_flood`)
+- **SHA-256:** `60d2b1bcbd7fee110205d3b8d33b22ef31be7e3cfeed4f7941668e9ce49d0632`
+- **Holds:** a registrar at 192.0.2.20. A PBX at 192.0.2.10 registers and is
+  accepted. A `friendly-scanner` at 203.0.113.42 sends OPTIONS to six
+  extensions. A device at 198.51.100.77 sends twelve credentialed REGISTERs
+  in one second, each challenged `401`. Then the PBX does the same. The
+  operator-task program `clients/python/scanner_ban.py` reads it in
+  `scripts/smoke-clients.sh` (cookbook recipes 10 and 23): sipnab accuses all
+  three sources, and the PBX's earlier registration is the counter-evidence
+  that keeps it from being banned.

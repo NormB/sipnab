@@ -418,9 +418,278 @@ The TLS library buffered the third write rather than sending it, so the
 program paired it with no socket and sipnab reports no peer rather than
 guessing one. sipnab drops the fourth, which is not SIP.
 
+## Operator tasks
+
+Each of these programs carries out one multi-step recipe from the
+[cookbook](examples.md), the steps an operator would otherwise type one at a
+time, and ends with the answer the recipe is for. Single-command recipes stay
+recipes. CI runs each program against committed captures and checks the exact
+lines it prints, plus a failure case: a wrong token, a missing call or
+customer, a capture with nothing to judge, or no TFPS.
+
+| Program | Recipes | How CI runs it |
+|---|---|---|
+| [triage.py](../clients/python/triage.py) | [1](examples.md#1-triage-a-pcap-fast), [16](examples.md#16-analyze-a-capture-into-one-machine-readable-verdict) | Four failed calls, one clean call, and a capture with no dialog to judge |
+| [failed_calls.py](../clients/python/failed_calls.py) | [3](examples.md#3-find-every-failed-call-grouped-by-response-code), [30](examples.md#30-find-calls-that-answered-and-were-never-acknowledged) | A sipnab serving four failed calls and one answer nobody acknowledged |
+| [one_way_audio.py](../clients/python/one_way_audio.py) | [4](examples.md#4-diagnose-a-one-way-audio-complaint), [11](examples.md#11-find-why-a-call-sounds-bad-in-one-direction-only), [22](examples.md#22-measure-whether-the-loss-is-yours-or-the-networks) | A phone behind NAT that hears the far end and is not heard |
+| [scanner_ban.py](../clients/python/scanner_ban.py) | [10](examples.md#10-detect-sip-scanners-and-auto-block-via-fail2ban), [23](examples.md#23-find-the-device-flooding-register) | A scanner and two flooding sources, banned through a stand-in for `tfps_ctl` |
+| [customer_export.py](../clients/python/customer_export.py) | [39](examples.md#39-collect-a-directory-of-rotated-captures-into-one-analysis), [32](examples.md#32-export-one-customers-calls-as-a-smaller-capture), [40](examples.md#40-open-the-same-evidence-in-wireshark) | Three rotated files, one export, opened by `tshark` and `capinfos` |
+
+The two programs that read a capture file, `triage.py` and
+`customer_export.py`, run sipnab themselves. `scanner_ban.py` does both: it
+reads the capture, then bans through a running sipnab. Each finds sipnab through
+`--sipnab`, else `SIPNAB_BIN`, else `PATH`. The REST programs read
+`SIPNAB_URL` and `SIPNAB_API_KEY`, like the reference-page programs.
+
+### Triage a capture to one verdict
+
+[`triage.py`](../clients/python/triage.py) runs `--json-analyze` and turns
+its one object into a verdict and an exit status: `0` clean, `1` problems,
+`2` inconclusive, `3` sipnab could not read the input. The third verdict is
+the reason the program exists. A capture with no SIP in it, or with its SIP
+outside `--portrange`, analyzes to an empty list of findings, and an empty
+list reads as clean:
+
+<!-- snippet: clients/python/triage.py#triage-verdict -->
+```python
+seen = (
+    f"{analysis['frames_read']} frame(s), {analysis['dialogs_examined']} dialog(s), "
+    f"{analysis['streams_examined']} stream(s)"
+)
+findings = analysis["findings"]
+if not analysis["complete"]:
+    head, result = f"inconclusive: sipnab did not analyze all of the capture ({seen})", "inconclusive"
+elif findings:
+    head, result = f"problems: {seen}", "problems"
+elif analysis["dialogs_examined"] == 0 and analysis["streams_examined"] == 0:
+    head = (
+        f"inconclusive: {analysis['frames_read']} frame(s) and no SIP dialog or RTP "
+        "stream to judge, so an empty finding list proves nothing"
+    )
+    result = "inconclusive"
+else:
+    head, result = f"clean: {seen}", "clean"
+lines = [head]
+for f in findings:
+    lines.append(f"  {f['severity']}  {f['kind']}  {f['occurrences']} {f['unit']}(s)")
+    lines.extend(evidence_lines(f))
+return result, lines
+```
+
+```bash
+python3 clients/python/triage.py capture.pcap
+```
+
+Against [`tests/pcap-samples/sip-problem-call.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-problem-call.pcap) it exits `1`:
+
+```text
+problems: 23 frame(s), 5 dialog(s), 0 stream(s)
+  major  server_failure  2 call(s)
+    decline-7c6d5e@198.51.100.30  Decline
+    unavail-4e5f60@192.0.2.50  Service Unavailable
+  minor  request_failure  2 call(s)
+    busy-3a2b1c@192.0.2.30  Busy Here
+    notfound-1b2c3d@203.0.113.30  Not Found
+```
+
+### Group failed calls by response code
+
+The shell histogram in recipe 3 counts every response inside a failed call,
+so the `100 Trying` before a `486` counts too.
+[`failed_calls.py`](../clients/python/failed_calls.py) counts each call once,
+under its final code, through `GET /v1/aggregate`, and names the calls in each
+group. A call answered and never acknowledged has not failed, so the grouping
+cannot show it. The program reads those calls from the capture's findings
+(`GET /v1/report`):
+
+<!-- snippet: clients/python/failed_calls.py#failed-calls -->
+```python
+aggregate = get("/v1/aggregate", by="response_code", filter=FAILED)
+calls = {}
+for bucket in aggregate["buckets"]:
+    code = bucket["value"]
+    if code == "(none)":
+        # No final code to filter on: counted, not listed.
+        calls[code] = ([], bucket["count"])
+        continue
+    page = get("/v1/dialogs", filter=f"{FAILED} AND response_code == {code}")
+    calls[code] = ([d["call_id"] for d in page["dialogs"]], page["total"])
+report = get("/v1/report")
+```
+
+sipnab reports a missing `ACK` only once the answer has waited
+`--ack-timeout`, which defaults to [RFC 3261](https://www.rfc-editor.org/rfc/rfc3261) Timer H, 32 seconds. CI starts
+sipnab with `--ack-timeout 5` against
+[`tests/fixtures/sip-answered-never-acked.pcap`](https://github.com/NormB/sipnab/raw/main/tests/fixtures/sip-answered-never-acked.pcap),
+whose answer waited 31.5 seconds, beside the four failed calls:
+
+```text
+4 failed call(s), by final response code:
+  404  1 call(s)
+    notfound-1b2c3d@203.0.113.30
+  486  1 call(s)
+    busy-3a2b1c@192.0.2.30
+  503  1 call(s)
+    unavail-4e5f60@192.0.2.50
+  603  1 call(s)
+    decline-7c6d5e@198.51.100.30
+1 call(s) answered and never acknowledged:
+  noack-5d4c3b@192.0.2.70  31.5s elapsed with no ACK, answer sent 11 time(s)
+```
+
+### Diagnose one-way audio, and whose loss it is
+
+[`one_way_audio.py`](../clients/python/one_way_audio.py) takes a Call-ID and
+prints the call's diagnosis and streams (recipe 4), the asymmetry signals the
+filter language holds and the report does not (recipe 11), and whether the
+loss figures belong to the network or to the capture (recipe 22). sipnab
+counts a packet the capture host dropped as network loss, so the last line
+comes from `GET /v1/stats`:
+
+<!-- snippet: clients/python/one_way_audio.py#whose-loss -->
+```python
+kernel = quality["kernel_dropped_packets"]
+interface = quality["interface_dropped_packets"]
+lines = []
+if kernel:
+    lines.append(
+        f"capture: {kernel} packet(s) dropped by the kernel buffer on the capture host, "
+        "counted above as network loss (raise -B/--buffer, narrow the BPF filter, "
+        "or lower --snaplen)"
+    )
+if interface:
+    lines.append(
+        f"capture: {interface} packet(s) dropped by the interface or its driver, counted "
+        "above as network loss (a bigger buffer cannot fix these: check the NIC)"
+    )
+if not lines:
+    lines.append(
+        "capture: no packet dropped by the kernel buffer or the interface, "
+        "so the loss above is the network's"
+    )
+snapped, undecodable = quality["snapped_frames"], quality["undecodable_frames"]
+if snapped or undecodable:
+    lines.append(
+        f"capture: {snapped} frame(s) cut short by the snaplen and {undecodable} frame(s) "
+        "it could not decode; loss figures may be low as well as high"
+    )
+return lines
+```
+
+For the phone behind NAT in
+[`tests/fixtures/stun_sdp_mismatch.pcap`](https://github.com/NormB/sipnab/raw/main/tests/fixtures/stun_sdp_mismatch.pcap),
+media flows both ways, and the reply arrives from an address no SDP offered:
+
+```text
+stun-sdp-mismatch-1@192.168.10.50  Completed  200
+one-way audio: yes
+NAT mismatch: yes
+  0x11223344  192.168.10.50:40000 -> 198.51.100.30:41000  PCMU  30 packets  loss 0.0%
+  0x55667788  203.0.113.7:41000 -> 192.168.10.50:40000  PCMU  30 packets  loss 0.0%
+hint: RTP flowed 192.168.10.50:40000 -> 198.51.100.30:41000 only (SSRC 0x11223344). No reverse media flow detected.
+```
+
+Three more hints follow, then `asymmetry: none` and the capture's verdict on
+its own loss. Loss upstream of the capture point, such as a SPAN port that
+mirrors one direction, is invisible to both counters.
+
+### Ban a scanner through TFPS, and verify it
+
+sipnab recommends and applies nothing ([recipe 10c](examples.md#10c-block-a-scanner-with-a-rule-sipnab-wrote-after-reading-the-evidence)).
+[`scanner_ban.py`](../clients/python/scanner_ban.py) reads the accusations
+`--recommend-block` prints, bans through `POST /v1/tfps/ban` only the sources
+with no counter-evidence, and counts a ban only once `GET /v1/tfps/banned`
+lists it as enforced. A source that completed a registration before its
+credentials went wrong is the device recipe 23 finds, and a ban would cut
+off a working peer. The program withholds that source and names it:
+
+<!-- snippet: clients/python/scanner_ban.py#tfps-ban -->
+```python
+failed, applied = False, []
+for a in ban:
+    body = {"ip": a["ip"]} if args.ttl is None else {"ip": a["ip"], "ttl_secs": args.ttl}
+    action = call("POST", "/v1/tfps/ban", body)["action"]
+    print(describe_action(action, a["rules"]))
+    if action["applied"]:
+        applied.append(a["ip"])
+    else:
+        failed = True
+for line in withheld:
+    print(line)
+missing = unverified(applied, call("GET", "/v1/tfps/banned")["rows"])
+for ip in missing:
+    print(f"NOT in TFPS's banned list: {ip}")
+print(f"verified {len(applied) - len(missing)} of {len(applied)} ban(s) in TFPS's banned list")
+```
+
+```bash
+python3 clients/python/scanner_ban.py capture.pcap --ttl 3600 --reg-flood-threshold 10
+```
+
+Against [`tests/fixtures/sip-scanner-and-register-flood.pcap`](https://github.com/NormB/sipnab/raw/main/tests/fixtures/sip-scanner-and-register-flood.pcap), with `--ttl 0`:
+
+```text
+banned 198.51.100.77 (reg_flood) with no expiry
+banned 203.0.113.42 (scanner) with no expiry
+withheld 192.0.2.10 (reg_flood): it also completed a registration or a call in this capture
+verified 2 of 2 ban(s) in TFPS's banned list
+```
+
+TFPS's `ban` writes a pinned BPF map as root, so CI cannot run the real
+peer. It starts sipnab with `--tfps-ctl` naming
+[`clients/python/tests/fake_tfps_ctl.py`](https://github.com/NormB/sipnab/blob/main/clients/python/tests/fake_tfps_ctl.py),
+which answers in the documents `tfps_ctl --json` prints: a test holds every
+line to the fixtures pinned against the real binary. It keeps its block list
+in a file, and CI checks that the file holds the two banned addresses. Run the
+program against a real TFPS before trusting it with a production block list.
+
+### Export the calls of one customer from rotated captures
+
+[`customer_export.py`](../clients/python/customer_export.py) takes a
+directory of rotated captures (recipe 39) and a SIP user. It exports that
+user's calls with `-O` and a BPF expression over their addresses (recipe 32)
+and prints the `tshark` command that opens the result (recipe 40). BPF
+selects addresses, not users, so the program reads the export back before it
+calls it done:
+
+<!-- snippet: clients/python/customer_export.py#export-check -->
+```python
+problems = []
+for call_id, call in sorted(wanted.items()):
+    found = got.get(call_id)
+    if found is None:
+        problems.append(f"{call_id}: not in the export")
+    elif found["messages"] != call["messages"]:
+        problems.append(
+            f"{call_id}: {found['messages']} of its {call['messages']} message(s) are in the export"
+        )
+for call_id in sorted(set(got) - set(wanted)):
+    problems.append(
+        f"{call_id}: another customer's call shares an address with this one, "
+        "and BPF cannot separate them"
+    )
+return problems
+```
+
+When another customer's call shares an address, the program removes the
+export rather than handing it over, and recipe 32's vCon export is the way
+to go. CI cuts `sip-problem-call.pcap` into three files the way a wrapped
+`tcpdump -C -W` ring leaves them, exports the call placed by `alice`, which crosses all
+three, and has `capinfos` and `tshark` read the result:
+
+```text
+alice: 1 call(s)
+  completed-9f8e7d@192.0.2.10  7 message(s)
+BPF: host 192.0.2.10 or host 192.0.2.20
+wrote alice.pcap: 7 SIP message(s), every call whole, no other call
+tshark -r 'alice.pcap' -Y 'sip.Call-ID == "completed-9f8e7d@192.0.2.10"' -V
+```
+
 ## Run everything CI runs
 
-Build sipnab with every feature and its examples, then run the smoke script:
+Build sipnab with every feature and its examples, then run the smoke script.
+The operator tasks also need `tshark` and `capinfos`, from Ubuntu's `tshark`
+package:
 
 ```bash
 # Run all of these, in order.
@@ -652,6 +921,8 @@ a sample in the repository that holds four failed calls, the first lines read:
 - The TUI requires a tty. If you're SSH'd in without `-t`, force `-N` mode.
 - For large pcaps (>1 GB), prefer `-N` first. The TUI loads everything into memory.
 
+**Runnable example:** [Triage a capture to one verdict](client-examples.md#triage-a-capture-to-one-verdict) turns this triage into one verdict and an exit status, and tells a capture with nothing to judge apart from a clean one.
+
 ---
 
 ## 2. Live capture, narrow to a single user
@@ -733,6 +1004,8 @@ The histogram output looks like (`uniq -c` count, then status code):
 - The histogram counts *all* response codes seen in messages of failed dialogs (so a single failed call with `100 Trying → 488` contributes both 100 and 488). For just the final response per call, use `--call-report <id>` per dialog.
 - The dialog summary returned by the REST API (`/v1/dialogs`) has no `status_code` field. That's a per-message field only available in CLI `--json` output or via `/v1/dialogs/{id}` (which includes the full message list).
 
+**Runnable example:** [Group failed calls by response code](client-examples.md#group-failed-calls-by-response-code) groups each failed call once under its final code over REST, names the calls, and adds the ones answered and never acknowledged (recipe 30).
+
 ---
 
 ## 4. Diagnose a one-way audio complaint
@@ -792,6 +1065,8 @@ The first command should print a diagnosis object like:
 **Pitfalls:**
 
 - If both streams show packets but the user still reports silence, the issue is downstream of sipnab (codec mismatch, jitter buffer underflow, bad headset). Use [11. Find why a call sounds bad in one direction only](#11-find-why-a-call-sounds-bad-in-one-direction-only) for codec asymmetry checks.
+
+**Runnable example:** [Diagnose one-way audio, and whose loss it is](client-examples.md#diagnose-one-way-audio-and-whose-loss-it-is) runs this diagnosis, the asymmetry checks of recipe 11 and the capture-loss check of recipe 22 for one Call-ID.
 
 ---
 
@@ -1883,6 +2158,8 @@ The hook is rate-limited (`--exec-rate-limit 10` default) and runs in a sandboxe
 - Forging the source of a kill response needs a raw socket, and a raw socket needs `CAP_NET_RAW`. Run sipnab as root or with capabilities: it opens the raw socket and starts the scanner-kill worker process before it drops privileges, and the worker keeps that socket and gives up everything else. Without the capability, responses still go out, from sipnab's own port.
 - `--kill-ua "<regex>"` adds a custom User-Agent pattern beyond the built-in scanner list.
 
+**Runnable example:** [Ban a scanner through TFPS, and verify it](client-examples.md#ban-a-scanner-through-tfps-and-verify-it) bans through `POST /v1/tfps/ban` only the sources `--recommend-block` finds no counter-evidence for, then checks TFPS's banned list.
+
 ---
 
 <!-- vale sipnab.Headings = YES -->
@@ -1933,6 +2210,8 @@ From an MCP client, multiple alias names go through `find_problems` instead: `to
 
 - `sipnab -N --filter '<expr>' --json` emits **per-message** records for every message of every matching dialog. Pipe through `jq -s 'unique_by(.call_id)'` if you want one record per affected call.
 - The `diagnosis` block in CLI `--json` output and in the REST API today only exposes `one_way_audio`, `nat_mismatch`, `no_media`, and free-form `hints`. The five asymmetry booleans are filterable via the DSL but aren't in the JSON shape — if you need them in your output, use the MCP `find_problems` tool. JSON `--call-report` uses the same dialog projection and does not add them.
+
+**Runnable example:** [Diagnose one-way audio, and whose loss it is](client-examples.md#diagnose-one-way-audio-and-whose-loss-it-is) asks all five asymmetry filters about one call, beside its one-way diagnosis.
 
 ---
 
@@ -2150,6 +2429,8 @@ the distinction a pipeline most needs.
 - This is a summary, not a substitute for `--report`: it tells you the capture's verdict, not each stream's jitter.
 - A capture whose SIP sits outside `--portrange` analyzes cleanly because it saw no SIP. Check the packet counts in the same object before trusting a green result.
 
+**Runnable example:** [Triage a capture to one verdict](client-examples.md#triage-a-capture-to-one-verdict) reads this object and exits `0`, `1` or `2` for clean, problems or inconclusive, the third for a capture with no SIP to judge.
+
 ---
 
 ## 17. Inspect what NAT did to a call
@@ -2331,6 +2612,8 @@ Live capture on 'eth0' finished: 4821003 packets, no drops
 - Operators routinely respond to *any* drop by raising `-B`. That does nothing at all for interface drops and wastes memory while the real problem goes unaddressed.
 - Both counters zero does not mean the capture is complete: a frame can arrive intact and still be unreadable, or `--snaplen` can cut it short. `--report` counts those separately. See [tuning](tuning-capture.md#1-are-you-dropping-packets).
 
+**Runnable example:** [Diagnose one-way audio, and whose loss it is](client-examples.md#diagnose-one-way-audio-and-whose-loss-it-is) ends a one-way-audio diagnosis with this answer: the loss is the network's, or the capture host dropped packets and the loss figures include them.
+
 ---
 
 ## 23. Find the device flooding REGISTER
@@ -2361,6 +2644,8 @@ error, and it does not stop on its own:
 
 - A storm from many sources with one `From` is credential reuse, not one broken phone. Group by `src` before concluding.
 - Registration traffic is often on a different port from calls. If the counts look impossibly low, widen `--portrange`.
+
+**Runnable example:** [Ban a scanner through TFPS, and verify it](client-examples.md#ban-a-scanner-through-tfps-and-verify-it) withholds a flooding device that completed a registration earlier in the capture, and bans the ones that never did.
 
 ---
 
@@ -2676,6 +2961,8 @@ sipnab -N -I capture.pcap --no-final-response-timeout 30 --analyze
 - Lowering `--no-final-response-timeout` reports **every call still ringing when the capture stopped**, which on a live tap is a normal state and not a fault. Read it against how the capture ended.
 - These change what sipnab reports, not what the capture holds. A missing ACK that arrived after the last packet in the file is missing from the file, not from the network.
 
+**Runnable example:** [Group failed calls by response code](client-examples.md#group-failed-calls-by-response-code) lists the calls answered and never acknowledged beside the failed ones. CI runs it against a sipnab started with `--ack-timeout 5`.
+
 ---
 
 ## 31. Set the quality thresholds to your own network
@@ -2763,6 +3050,8 @@ sipnab -N -I capture.pcap --export-vcon-when "from.user == '1001'" --export-vcon
 
 - A filter selects **dialogs**, so a call whose INVITE was outside the capture has no dialog to match and its packets are not written.
 - sipnab refuses to write its output over its input. Name a different path, in a different directory if you are working in place.
+
+**Runnable example:** [Export the calls of one customer from rotated captures](client-examples.md#export-the-calls-of-one-customer-from-rotated-captures) builds the BPF expression from the customer's calls, reads the export back, and removes it when another customer's call shares an address.
 
 ---
 
@@ -2995,6 +3284,8 @@ sipnab -N -I '/var/captures/*.pcap' --recursive --report --no-cli-print
 - `-l`/`--limit` bounds dialogs for the whole **run**, not per file. A 27-file directory reaches the cap 27 times sooner than one file does, and eviction drops the oldest dialogs — the worst ones to lose for a post-mortem. Raise it ([43. Keep a long-running capture inside a memory budget](#43-keep-a-long-running-capture-inside-a-memory-budget)).
 - `--recursive` is off on purpose: descending silently can analyze several times the traffic you pointed at, and nothing in the output would say so.
 
+**Runnable example:** [Export the calls of one customer from rotated captures](client-examples.md#export-the-calls-of-one-customer-from-rotated-captures) reads a directory of rotated captures, exports one customer's calls and checks the export holds them whole.
+
 ---
 
 ## 40. Open the same evidence in Wireshark
@@ -3027,6 +3318,8 @@ sipnab -N -I capture.pcap --tshark-filter 'sip.Call-ID == "abc123@host"' --no-cl
 
 - `--wireshark` only prints text, so it needs neither Wireshark nor a display on the capture host. Open the capture in Wireshark separately and paste the printed filter.
 - A tshark display filter is not sipnab's filter DSL and not a BPF expression. All three languages appear in this cookbook, and none of them accepts the syntax of the other two.
+
+**Runnable example:** [Export the calls of one customer from rotated captures](client-examples.md#export-the-calls-of-one-customer-from-rotated-captures) ends with the `tshark` command for the export. CI runs that command and `capinfos` against it.
 
 ---
 
@@ -33538,7 +33831,7 @@ drifted.
 
 | Artifact | Regenerate with |
 |---|---|
-| [`tests/fixtures/`](../../tests/fixtures) — capture fixtures | Every capture in the directory comes from [`tests/support/synthetic_captures.rs`](../../tests/support/synthetic_captures.rs), and so do the two SIPp media files in `harness/sipp/scenarios/` and the two fuzz seeds in `fuzz/corpus/pcap_reader/` named `truncated-sip` and `empty-classic`: fourteen in all. `cargo run --features native --bin gen_fixture` writes them, and `synthetic_captures_test` fails when a committed byte differs from what the generator builds. The directory's other fixtures, the JSON goldens, `ng` replies and TLS keys, stay as checked in. [`tests/PROVENANCE.md`](../../tests/PROVENANCE.md) records where every capture outside `tests/pcap-samples/` came from, and `every_committed_capture_is_public_or_synthetic` refuses one with no entry, finding captures by their leading bytes rather than their names. |
+| [`tests/fixtures/`](../../tests/fixtures) — capture fixtures | Every capture in the directory comes from [`tests/support/synthetic_captures.rs`](../../tests/support/synthetic_captures.rs), and so do the two SIPp media files in `harness/sipp/scenarios/` and the two fuzz seeds in `fuzz/corpus/pcap_reader/` named `truncated-sip` and `empty-classic`: seventeen in all. `cargo run --features native --bin gen_fixture` writes them, and `synthetic_captures_test` fails when a committed byte differs from what the generator builds. The directory's other fixtures, the JSON goldens, `ng` replies and TLS keys, stay as checked in. [`tests/PROVENANCE.md`](../../tests/PROVENANCE.md) records where every capture outside `tests/pcap-samples/` came from, and `every_committed_capture_is_public_or_synthetic` refuses one with no entry, finding captures by their leading bytes rather than their names. |
 | [`tests/snapshots/`](../../tests/snapshots) — TUI buffers | `cargo insta test --features tui --accept` (needs `cargo install cargo-insta`) |
 | [`tests/cli/`](../../tests/cli) — trycmd goldens | `TRYCMD=overwrite cargo test --features full --test cli_goldens` |
 | [`tests/schemas/`](../../tests/schemas) — JSON Schemas | Hand-maintained; `json_schema_test` validates output against them. |

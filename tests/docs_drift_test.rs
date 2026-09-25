@@ -202,6 +202,24 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             "website/content/docs/examples.md",
         ],
     ),
+    // The operator-task programs' own options, which the runnable-examples
+    // page documents: `--sipnab` names the sipnab binary a program runs, and
+    // `--ttl` is how long `scanner_ban.py` asks TFPS to hold a ban (it
+    // becomes `ttl_secs` in `POST /v1/tfps/ban`). Neither is a sipnab flag.
+    (
+        "sipnab",
+        &[
+            "docs/client-examples.md",
+            "website/content/docs/examples.md",
+        ],
+    ),
+    (
+        "ttl",
+        &[
+            "docs/client-examples.md",
+            "website/content/docs/examples.md",
+        ],
+    ),
     (
         "all-targets",
         &["website/content/notes/the-assumption-nobody-timed.md"],
@@ -3897,7 +3915,12 @@ fn no_documentation_table_repeats_a_row() {
     // 974 -> 976: the capability-examples table in docs/client-examples.md
     // and its site mirror website/content/docs/examples.md. Attributed by
     // counting table separator rows added per file: exactly those two.
-    const EXPECTED_TABLES: usize = 976;
+    // 976 -> 978: the operator-tasks table in docs/client-examples.md and its
+    // site mirror website/content/docs/examples.md (EX6). Attributed by
+    // counting separator rows added per file in the staged diff: one in each
+    // of those two, and one in website/static/llms-full.txt, which this gate
+    // does not walk.
+    const EXPECTED_TABLES: usize = 978;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

@@ -16,7 +16,19 @@ def test_library_and_example_index_are_generated(tmp_path):
 
 def test_client_programs_and_their_tests_are_in_ci():
     workflow = (ROOT / ".github/workflows/ci.yml").read_text()
-    for name in ("hep_senders", "leg_correlate", "mcp_probe", "vcon_validate", "vcon_view"):
+    for name in (
+        "customer_export",
+        "failed_calls",
+        "hep_senders",
+        "leg_correlate",
+        "mcp_probe",
+        "one_way_audio",
+        "scanner_ban",
+        "sipnab_dsl",
+        "triage",
+        "vcon_validate",
+        "vcon_view",
+    ):
         assert (ROOT / "clients/python" / f"{name}.py").is_file()
         assert (ROOT / "clients/python/tests" / f"test_{name}.py").is_file()
     assert "python3 -m pytest clients/python/tests" in workflow

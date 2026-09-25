@@ -1009,7 +1009,13 @@ fn wiki_intra_docs_links_resolve() {
     // recipes 27, 26, 7h and 52 at their runnable example. Attributed by
     // measurement: with either file swapped back to HEAD the extractor finds
     // 956 and 955 respectively.
-    const EXPECTED_WIKI_LINKS: usize = 959;
+    // 959 -> 985: the operator tasks (EX6). docs/examples.md +12, pointing
+    // recipes 1, 3, 4, 10, 11, 16, 22, 23, 30, 32, 39 and 40 at their
+    // program; docs/client-examples.md +14, the operator-tasks table's twelve
+    // recipe links, the cookbook link above it and recipe 10c. Attributed by
+    // measurement: with either file swapped back to HEAD the extractor finds
+    // 973 and 971 respectively.
+    const EXPECTED_WIKI_LINKS: usize = 985;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe 6d in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

@@ -24,10 +24,16 @@
 # group's schema file, a HEP collector fed by two sipnab agents, and the BPF
 # record decode behind TLS without keys. Every sipnab runs on loopback.
 #
+# Last, the operator tasks: one program per multi-step cookbook recipe,
+# triage to a verdict, failed calls by response code, one-way audio and whose
+# loss it is, a scanner banned through TFPS, and one customer's calls
+# exported from rotated captures and opened by tshark.
+#
 # Needs: a sipnab built with `--all-features --bins --examples` (default
 # target/debug/sipnab; the TLS example is read from beside it), go, node
-# (22.18 or later, which runs .ts files), curl, the npm packages installed in
-# clients/typescript (`npm ci`), and a Python with the MCP SDK from
+# (22.18 or later, which runs .ts files), curl, tshark and capinfos (Ubuntu's
+# tshark package), the npm packages installed in clients/typescript
+# (`npm ci`), and a Python with the MCP SDK from
 # clients/python/requirements-mcp.txt, which brings jsonschema ($PYTHON,
 # default python3). CI provides all of these; a missing one fails, never
 # skips.
@@ -40,7 +46,7 @@ BIN="$(realpath -- "${1:-$ROOT/target/debug/sipnab}")"
 PYTHON="${PYTHON:-python3}"
 cd "$ROOT"
 
-for tool in go node curl "$PYTHON"; do
+for tool in go node curl tshark capinfos "$PYTHON"; do
 	command -v "$tool" >/dev/null || { echo "smoke-clients: $tool not found" >&2; exit 1; }
 done
 [ -x "$BIN" ] || { echo "smoke-clients: no sipnab binary at $BIN" >&2; exit 1; }
@@ -361,6 +367,173 @@ expect "rust tls_plaintext_records (BPF records, no kernel)" \
 	"REGISTER  Registered  alice -> alice  (2 messages)  tls-reg-1@127.0.0.1" \
 	"OPTIONS   Trying  alice -> ?  (1 messages)  tls-opt-1@127.0.0.1" \
 	-- "$TLS_EXAMPLE"
+
+# ── Operator tasks: one program per multi-step cookbook recipe ──────────
+#
+# The CLI programs run sipnab themselves and find it through SIPNAB_BIN; the
+# REST ones ask one sipnab, "ops", serving three captures at once.
+export SIPNAB_BIN="$BIN"
+
+# Triage to one verdict (recipes 1 and 16). The exit status IS the verdict:
+# 1 for findings, 0 for clean, 2 for a capture with nothing to judge, which
+# --json-analyze alone reports as an empty, clean-looking list. 3 is sipnab
+# failing to read the input at all.
+expect_exit "python triage (four failed calls)" 1 \
+	"problems: 23 frame(s), 5 dialog(s), 0 stream(s)" \
+	"  major  server_failure  2 call(s)" \
+	"    decline-7c6d5e@198.51.100.30  Decline" \
+	"    unavail-4e5f60@192.0.2.50  Service Unavailable" \
+	"  minor  request_failure  2 call(s)" \
+	"    busy-3a2b1c@192.0.2.30  Busy Here" \
+	"    notfound-1b2c3d@203.0.113.30  Not Found" \
+	-- "$PYTHON" clients/python/triage.py tests/pcap-samples/sip-problem-call.pcap
+expect "python triage (one clean call)" "clean: 7 frame(s), 1 dialog(s), 0 stream(s)" \
+	-- "$PYTHON" clients/python/triage.py tests/fixtures/sip_call.pcap
+expect_exit "python triage (no dialog to judge)" 2 \
+	"inconclusive: 10 frame(s) and no SIP dialog or RTP stream to judge, so an empty finding list proves nothing" \
+	-- "$PYTHON" clients/python/triage.py tests/fixtures/udp_5060.pcap
+expect_exit "python triage (no such capture)" 3 \
+	-- "$PYTHON" clients/python/triage.py "$WORK/no-such.pcap"
+grep -q "does not exist" "$WORK/err" || fail "triage.py did not pass on why sipnab failed: $(head -c 400 "$WORK/err")"
+
+# The ops sipnab. sip-problem-call.pcap holds four failed calls, sip-answered-
+# never-acked.pcap a call answered and never acknowledged, which sipnab
+# reports only after --ack-timeout (recipe 30: the answer waited 31.5 s, under
+# the 32 s Timer H default), and stun_sdp_mismatch.pcap a one-way call behind
+# NAT. --tfps-ctl names the fake tfps_ctl beside the Python tests: TFPS bans
+# by writing a BPF map as root, which no runner allows. The fake answers in
+# the documents the real one prints (clients/python/tests/
+# test_fake_tfps_ctl.py holds it to the pinned fixtures) and keeps its block
+# list in FAKE_TFPS_STATE, which sipnab passes on to it.
+export FAKE_TFPS_STATE="$WORK/tfps-block-list.json"
+OPS_PORT="$(free_port)"
+OPS="http://127.0.0.1:$OPS_PORT"
+serve ops "$OPS_PORT" --node-name ops --ack-timeout 5 \
+	--tfps-ctl clients/python/tests/fake_tfps_ctl.py \
+	-I tests/pcap-samples/sip-problem-call.pcap \
+	-I tests/fixtures/sip-answered-never-acked.pcap \
+	-I tests/fixtures/stun_sdp_mismatch.pcap
+wait_for ops "$SERVED_PID" "$OPS/v1/stats" '"source_exhausted":true'
+
+# Failed calls by final response code, and the call nobody acknowledged
+# (recipes 3 and 30).
+expect "python failed_calls (four failures, one missing ACK)" \
+	"4 failed call(s), by final response code:" \
+	"  404  1 call(s)" "    notfound-1b2c3d@203.0.113.30" \
+	"  486  1 call(s)" "    busy-3a2b1c@192.0.2.30" \
+	"  503  1 call(s)" "    unavail-4e5f60@192.0.2.50" \
+	"  603  1 call(s)" "    decline-7c6d5e@198.51.100.30" \
+	"1 call(s) answered and never acknowledged:" \
+	"  noack-5d4c3b@192.0.2.70  31.5s elapsed with no ACK, answer sent 11 time(s)" \
+	-- env SIPNAB_URL="$OPS" "$PYTHON" clients/python/failed_calls.py
+# The first sipnab holds the same failures and no unacknowledged call.
+expect "python failed_calls (no missing ACK)" \
+	"4 failed call(s), by final response code:" \
+	"0 call(s) answered and never acknowledged (a call counts once its answer has waited sipnab's --ack-timeout)" \
+	-- "$PYTHON" clients/python/failed_calls.py
+refuse "python failed_calls" -- env SIPNAB_URL="$OPS" "$PYTHON" clients/python/failed_calls.py
+
+# One-way audio and whose loss it is (recipes 4, 11 and 22). The replay
+# dropped nothing, so the loss is the network's; none of the five asymmetry
+# filters matches this call.
+NAT_CALL="stun-sdp-mismatch-1@192.168.10.50"
+expect "python one_way_audio (a phone behind NAT)" \
+	"$NAT_CALL  Completed  200" \
+	"one-way audio: yes" \
+	"NAT mismatch: yes" \
+	"  0x11223344  192.168.10.50:40000 -> 198.51.100.30:41000  PCMU  30 packets  loss 0.0%" \
+	"  0x55667788  203.0.113.7:41000 -> 192.168.10.50:40000  PCMU  30 packets  loss 0.0%" \
+	"hint: RTP flowed 192.168.10.50:40000 -> 198.51.100.30:41000 only (SSRC 0x11223344). No reverse media flow detected." \
+	"asymmetry: none" \
+	"capture: no packet dropped by the kernel buffer or the interface, so the loss above is the network's" \
+	-- env SIPNAB_URL="$OPS" "$PYTHON" clients/python/one_way_audio.py "$NAT_CALL"
+expect_exit "python one_way_audio (no such call)" 1 \
+	-- env SIPNAB_URL="$OPS" "$PYTHON" clients/python/one_way_audio.py no-such-call@192.0.2.1
+grep -q "HTTP 404" "$WORK/err" || fail "one_way_audio.py did not name the 404: $(head -c 400 "$WORK/err")"
+refuse "python one_way_audio" -- env SIPNAB_URL="$OPS" "$PYTHON" clients/python/one_way_audio.py "$NAT_CALL"
+
+# A scanner and a flooding device banned through POST /v1/tfps/ban, and the
+# banned list read back (recipes 10 and 23). sipnab accuses three sources;
+# the PBX completed a registration before its credentials went wrong, so it
+# is withheld. --ttl 0 makes the expiry "none" and the lines exact.
+SCAN_CAPTURE=tests/fixtures/sip-scanner-and-register-flood.pcap
+expect "python scanner_ban (two banned, the PBX withheld)" \
+	"banned 198.51.100.77 (reg_flood) with no expiry" \
+	"banned 203.0.113.42 (scanner) with no expiry" \
+	"withheld 192.0.2.10 (reg_flood): it also completed a registration or a call in this capture" \
+	"verified 2 of 2 ban(s) in TFPS's banned list" \
+	-- env SIPNAB_URL="$OPS" "$PYTHON" clients/python/scanner_ban.py "$SCAN_CAPTURE" \
+	--ttl 0 --reg-flood-threshold 10
+# The peer's own record, not the program's report of it: what reached it.
+BLOCKED="$("$PYTHON" -c 'import json, sys; print(" ".join(sorted(json.load(open(sys.argv[1])))))' "$FAKE_TFPS_STATE")"
+[ "$BLOCKED" = "198.51.100.77 203.0.113.42" ] ||
+	fail "the TFPS stand-in holds '$BLOCKED', not the two banned sources"
+refuse "python scanner_ban" -- env SIPNAB_URL="$OPS" "$PYTHON" clients/python/scanner_ban.py "$SCAN_CAPTURE"
+# The first sipnab has no TFPS beside it, and saying so is the answer.
+expect_exit "python scanner_ban (no TFPS)" 1 \
+	-- "$PYTHON" clients/python/scanner_ban.py "$SCAN_CAPTURE" --reg-flood-threshold 10
+grep -q "no TFPS beside" "$WORK/err" || fail "scanner_ban.py did not say TFPS is missing: $(head -c 400 "$WORK/err")"
+expect "python scanner_ban (nobody accused)" "no source accused in tests/fixtures/sip_call.pcap" \
+	-- env SIPNAB_URL="$OPS" "$PYTHON" clients/python/scanner_ban.py tests/fixtures/sip_call.pcap
+
+# One customer's calls from rotated captures, exported and opened by tshark
+# (recipes 39, 32 and 40). sip-problem-call.pcap is cut into three files the
+# way a wrapped `tcpdump -C -W` ring leaves them: the oldest packets in
+# tg.pcap2, the newest in tg.pcap1. alice's call crosses all three.
+mkdir -p "$WORK/rotated" "$WORK/export"
+"$PYTHON" - tests/pcap-samples/sip-problem-call.pcap "$WORK/rotated" <<'SPLIT'
+import pathlib, struct, sys
+data = pathlib.Path(sys.argv[1]).read_bytes()
+order = ">" if data[:4] == b"\xa1\xb2\xc3\xd4" else "<"
+records, at = [], 24
+while at < len(data):
+    size = 16 + struct.unpack_from(order + "I", data, at + 8)[0]
+    records.append(data[at:at + size])
+    at += size
+assert len(records) == 23, len(records)
+for name, part in (("tg.pcap2", records[:3]), ("tg.pcap0", records[3:21]), ("tg.pcap1", records[21:])):
+    pathlib.Path(sys.argv[2], name).write_bytes(data[:24] + b"".join(part))
+SPLIT
+ALICE="$WORK/export/alice.pcap"
+expect "python customer_export (alice, from three rotated files)" \
+	"alice: 1 call(s)" \
+	"  completed-9f8e7d@192.0.2.10  7 message(s)" \
+	"BPF: host 192.0.2.10 or host 192.0.2.20" \
+	"wrote $ALICE: 7 SIP message(s), every call whole, no other call" \
+	"tshark -r '$ALICE' -Y 'sip.Call-ID == \"completed-9f8e7d@192.0.2.10\"' -V" \
+	-- "$PYTHON" clients/python/customer_export.py "$WORK/rotated" --user alice --out "$ALICE"
+# Recipe 40, checked by Wireshark's own engine rather than by sipnab: the
+# export opens, holds the call's seven packets and nothing else, and the
+# command sipnab printed runs and shows the INVITE.
+# Each tool writes to a file before grep reads it: `grep -q` exits at its
+# first match, and under pipefail the writer's SIGPIPE would fail the check.
+capinfos -c "$ALICE" >"$WORK/capinfos.out" 2>&1 || true
+grep -qE '^Number of packets: +7$' "$WORK/capinfos.out" ||
+	fail "capinfos does not count 7 packets in $ALICE: $(head -c 400 "$WORK/capinfos.out")"
+CALLS="$(tshark -r "$ALICE" -Y sip -T fields -e sip.Call-ID | sort | uniq -c | tr -s ' ')"
+[ "$CALLS" = " 7 completed-9f8e7d@192.0.2.10" ] ||
+	fail "tshark reads '$CALLS' in $ALICE, not alice's 7 messages alone"
+TSHARK_CMD="$(grep '^tshark ' "$WORK/out" || true)"
+if [ -z "$TSHARK_CMD" ]; then
+	fail "customer_export.py printed no tshark command"
+elif ! { bash -c "$TSHARK_CMD" >"$WORK/tshark.out" 2>&1 &&
+	grep -q 'Request-Line: INVITE sip:bob@192.0.2.20 SIP/2.0' "$WORK/tshark.out"; }; then
+	fail "the printed tshark command did not show alice's INVITE: $TSHARK_CMD"
+else
+	echo "ok   tshark opens the export with the command sipnab printed"
+fi
+# The same customer beside another capture whose calls share the registrar's
+# address: BPF cannot separate them, so the export is refused and removed.
+SHARED="$WORK/export/shared.pcap"
+expect_exit "python customer_export (another customer shares an address)" 1 \
+	"reg-pbx@192.0.2.10: another customer's call shares an address with this one, and BPF cannot separate them" \
+	"refused: removed $SHARED rather than hand over a partial or wider capture" \
+	-- "$PYTHON" clients/python/customer_export.py "$WORK/rotated" "$SCAN_CAPTURE" \
+	--user alice --out "$SHARED"
+[ ! -e "$SHARED" ] || fail "customer_export.py left the refused export at $SHARED"
+expect_exit "python customer_export (no such customer)" 1 \
+	-- "$PYTHON" clients/python/customer_export.py "$WORK/rotated" --user nobody --out "$WORK/export/nobody.pcap"
+grep -q "no call for nobody" "$WORK/err" || fail "customer_export.py did not say nobody has no call: $(head -c 400 "$WORK/err")"
 
 if [ "$FAILED" -ne 0 ]; then
 	echo "smoke-clients: $FAILED check(s) failed" >&2

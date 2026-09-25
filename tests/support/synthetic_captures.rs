@@ -108,6 +108,14 @@ pub const OWNED: &[Owned] = &[
         path: "tests/fixtures/stun_sdp_mismatch.pcap",
         build: stun_sdp_mismatch,
     },
+    Owned {
+        path: "tests/fixtures/sip-answered-never-acked.pcap",
+        build: answered_never_acked,
+    },
+    Owned {
+        path: "tests/fixtures/sip-scanner-and-register-flood.pcap",
+        build: scanner_and_register_flood,
+    },
 ];
 
 // ── the pcap container ──────────────────────────────────────────────
@@ -2408,5 +2416,192 @@ pub fn stun_sdp_mismatch() -> Vec<u8> {
     push(8000, PHONE, 5060, PROXY, 5060, bye.as_bytes());
     let ok = response("200 OK", "bye-1", "2 BYE", "");
     push(8050, PROXY, 5060, PHONE, 5060, ok.as_bytes());
+    pcap(65535, &records)
+}
+
+// ── operator-task fixtures ──────────────────────────────────────────
+//
+// The captures the operator-task programs in clients/python run against in
+// scripts/smoke-clients.sh: a call answered and never acknowledged (cookbook
+// recipe 30), and a registrar watched while a scanner probes it and two
+// sources retry refused credentials (recipes 10 and 23).
+
+/// The MAC addresses of every frame in the operator-task fixtures.
+const OPERATOR_MACS: ([u8; 6], [u8; 6]) = (doc_mac(0x12), doc_mac(0x11));
+
+/// One SIP datagram between two documentation addresses on port 5060.
+fn sip_frame(ident: u16, src: [u8; 4], dst: [u8; 4], text: &str) -> Vec<u8> {
+    stun_frame(
+        OPERATOR_MACS,
+        src,
+        5060,
+        dst,
+        5060,
+        0,
+        ident,
+        text.as_bytes(),
+    )
+}
+
+/// An INVITE answered `200 OK` whose `ACK` never arrives.
+///
+/// 192.0.2.70 calls 192.0.2.80. The callee answers one second in, and
+/// retransmits the `200 OK` on RFC 3261 Timer G (T1 = 500 ms, doubling to
+/// T2 = 4 s) until 64*T1 after the first answer: eleven transmissions over
+/// 31.5 s, then silence. No `ACK` and no `BYE` follow, so the capture ends
+/// with the call up on one side only. The last answer is 31.5 s after the
+/// first, under the 32 s Timer H sipnab defaults to, so the finding needs
+/// `--ack-timeout` below that, as recipe 30 shows.
+pub fn answered_never_acked() -> Vec<u8> {
+    const CALLER: [u8; 4] = [192, 0, 2, 70];
+    const CALLEE: [u8; 4] = [192, 0, 2, 80];
+    let call_id = "noack-5d4c3b@192.0.2.70";
+    let head = |first: &str, to_tag: &str, cseq: &str| {
+        format!(
+            "{first}\r\n\
+             Via: SIP/2.0/UDP 192.0.2.70:5060;branch=z9hG4bK-noack-1\r\n\
+             From: \"kate\" <sip:kate@192.0.2.70>;tag=k1\r\n\
+             To: <sip:liam@192.0.2.80>{to_tag}\r\n\
+             Call-ID: {call_id}\r\n\
+             CSeq: {cseq}\r\n"
+        )
+    };
+    let invite = head("INVITE sip:liam@192.0.2.80 SIP/2.0", "", "1 INVITE")
+        + "Max-Forwards: 70\r\n\
+           Contact: <sip:kate@192.0.2.70:5060>\r\n\
+           User-Agent: sipnab-fixture/1\r\n\
+           Content-Length: 0\r\n\r\n";
+    let reply = |status: &str, to_tag: &str| {
+        head(&format!("SIP/2.0 {status}"), to_tag, "1 INVITE")
+            + "Contact: <sip:liam@192.0.2.80:5060>\r\nContent-Length: 0\r\n\r\n"
+    };
+    let mut records = vec![
+        at_ms(LEGACY_EPOCH, 0, sip_frame(1, CALLER, CALLEE, &invite)),
+        at_ms(
+            LEGACY_EPOCH,
+            10,
+            sip_frame(2, CALLEE, CALLER, &reply("100 Trying", "")),
+        ),
+        at_ms(
+            LEGACY_EPOCH,
+            300,
+            sip_frame(3, CALLEE, CALLER, &reply("180 Ringing", ";tag=l1")),
+        ),
+    ];
+    // Timer G: 500 ms, doubling, capped at T2 = 4 s, until 64*T1 = 32 s.
+    let ok = reply("200 OK", ";tag=l1");
+    let (mut at, mut interval, mut ident) = (1000u32, 500u32, 4u16);
+    while at - 1000 <= 32_000 {
+        records.push(at_ms(
+            LEGACY_EPOCH,
+            at,
+            sip_frame(ident, CALLEE, CALLER, &ok),
+        ));
+        ident += 1;
+        at += interval;
+        interval = (interval * 2).min(4000);
+    }
+    pcap(65535, &records)
+}
+
+/// A registrar probed by a scanner and hammered by two sources whose
+/// credentials it refuses.
+///
+/// The registrar is 192.0.2.20. The PBX at 192.0.2.10 registers and is
+/// accepted. The scanner at 203.0.113.42 sends OPTIONS as `friendly-scanner`
+/// to six extensions, each answered `404`. The device at 198.51.100.77
+/// (`SynthSwitch/1.0`) sends twelve REGISTERs carrying the same credentials
+/// inside one second, each challenged `401`, the pattern recipe 23 describes.
+/// Then the PBX does the same after its credentials change: twelve refused
+/// retries, from a source that completed a registration earlier in the file,
+/// which is the counter-evidence recipe 10c exists to show.
+pub fn scanner_and_register_flood() -> Vec<u8> {
+    const REGISTRAR: [u8; 4] = [192, 0, 2, 20];
+    const PBX: [u8; 4] = [192, 0, 2, 10];
+    const SCANNER: [u8; 4] = [203, 0, 113, 42];
+    const DEVICE: [u8; 4] = [198, 51, 100, 77];
+    let mut ident = 0x2000u16;
+    let mut records = Vec::new();
+    let mut push = |ms: u32, src: [u8; 4], dst: [u8; 4], text: &str| {
+        ident += 1;
+        records.push(at_ms(LEGACY_EPOCH, ms, sip_frame(ident, src, dst, text)));
+    };
+    let auth = |user: &str| {
+        format!(
+            "Authorization: Digest username=\"{user}\", realm=\"example.com\", \
+             nonce=\"5f1e2d3c\", uri=\"sip:example.com\", \
+             response=\"0123456789abcdef0123456789abcdef\"\r\n"
+        )
+    };
+    // One REGISTER transaction and its answer: `status` is the final response.
+    let register = |host: &str, user: &str, ua: &str, n: u32, status: &str| {
+        let via = format!("Via: SIP/2.0/UDP {host}:5060;branch=z9hG4bK-{user}-{n}\r\n");
+        let common = format!(
+            "From: <sip:{user}@example.com>;tag={user}-t\r\n\
+             To: <sip:{user}@example.com>\r\n\
+             Call-ID: reg-{user}@{host}\r\n\
+             CSeq: {n} REGISTER\r\n"
+        );
+        let request = format!(
+            "REGISTER sip:example.com SIP/2.0\r\n{via}Max-Forwards: 70\r\n{common}\
+             Contact: <sip:{user}@{host}:5060>\r\nExpires: 3600\r\n{}\
+             User-Agent: {ua}\r\nContent-Length: 0\r\n\r\n",
+            auth(user)
+        );
+        let challenge = if status.starts_with("401") {
+            "WWW-Authenticate: Digest realm=\"example.com\", nonce=\"6a7b8c9d\"\r\n"
+        } else {
+            ""
+        };
+        let response =
+            format!("SIP/2.0 {status}\r\n{via}{common}{challenge}Content-Length: 0\r\n\r\n");
+        (request, response)
+    };
+
+    let (req, resp) = register("192.0.2.10", "pbx", "SynthPBX/2.0", 1, "200 OK");
+    push(0, PBX, REGISTRAR, &req);
+    push(20, REGISTRAR, PBX, &resp);
+
+    for (k, ext) in (100u32..106).enumerate() {
+        let k = k as u32;
+        let via = format!("Via: SIP/2.0/UDP 203.0.113.42:5060;branch=z9hG4bK-scan-{ext}\r\n");
+        let common = format!(
+            "From: <sip:scan@203.0.113.42>;tag=scan{ext}\r\n\
+             To: <sip:{ext}@192.0.2.20>\r\n\
+             Call-ID: scan-{ext}@203.0.113.42\r\n\
+             CSeq: 1 OPTIONS\r\n"
+        );
+        let probe = format!(
+            "OPTIONS sip:{ext}@192.0.2.20 SIP/2.0\r\n{via}Max-Forwards: 70\r\n{common}\
+             User-Agent: friendly-scanner\r\nContent-Length: 0\r\n\r\n"
+        );
+        let refusal = format!("SIP/2.0 404 Not Found\r\n{via}{common}Content-Length: 0\r\n\r\n");
+        push(1000 + k * 100, SCANNER, REGISTRAR, &probe);
+        push(1010 + k * 100, REGISTRAR, SCANNER, &refusal);
+    }
+
+    for n in 0..12u32 {
+        let (req, resp) = register(
+            "198.51.100.77",
+            "sw77",
+            "SynthSwitch/1.0",
+            n + 1,
+            "401 Unauthorized",
+        );
+        push(3000 + n * 80, DEVICE, REGISTRAR, &req);
+        push(3010 + n * 80, REGISTRAR, DEVICE, &resp);
+    }
+
+    for n in 0..12u32 {
+        let (req, resp) = register(
+            "192.0.2.10",
+            "pbx",
+            "SynthPBX/2.0",
+            n + 2,
+            "401 Unauthorized",
+        );
+        push(6000 + n * 80, PBX, REGISTRAR, &req);
+        push(6010 + n * 80, REGISTRAR, PBX, &resp);
+    }
     pcap(65535, &records)
 }

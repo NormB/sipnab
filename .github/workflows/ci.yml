@@ -158,6 +158,25 @@ jobs:
       - name: Build
         run: cargo build --all-features --bins --examples
 
+      # tshark and capinfos, for the operator task that exports one customer's
+      # calls (cookbook recipe 40): Wireshark's own engine, not sipnab, must
+      # open the export and run the command sipnab printed for it. Ubuntu's
+      # package, through the cached installer every hosted job uses. The
+      # preseed answers the one question wireshark-common asks (may non-root
+      # users capture: no) before dpkg configures it, so nothing waits for a
+      # terminal this job does not have.
+      - name: Answer wireshark-common's install question (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          echo "wireshark-common wireshark-common/install-setuid boolean false" |
+            sudo debconf-set-selections
+
+      - name: Install tshark (Linux)
+        if: runner.os == 'Linux'
+        uses: ./.github/actions/system-deps
+        with:
+          packages: tshark
+
       # Compiling a client proves it is a program; this proves it does what
       # its page says. scripts/smoke-clients.sh replays two committed captures
       # behind the REST API, waits until the replay is finished, and runs every
@@ -167,8 +186,10 @@ jobs:
       # leg correlation across a proxy sipnab and a relay sipnab, vCon exports
       # checked against the working group's schema file, a HEP collector fed
       # by two sipnab agents, and the BPF record decode behind TLS without
-      # keys. The MCP SDK comes from a hash-pinned file, like every other
-      # Python install in this job.
+      # keys. Last, the operator tasks, one program per multi-step cookbook
+      # recipe, each checked for the exact lines its captures produce and a
+      # failure case. The MCP SDK comes from a hash-pinned file, like every
+      # other Python install in this job.
       - name: Run every client program against a replayed capture
         if: runner.os == 'Linux'
         run: |

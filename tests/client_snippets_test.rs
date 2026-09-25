@@ -400,8 +400,9 @@ fn the_reader_sees_every_client_fence_the_pages_hold() {
         ("docs/mcp-deploy.md", "python", 2),
         ("docs/mcp-deploy.md", "typescript", 1),
         // The capability examples: leg_correlate.py's join, vcon_validate.py's
-        // check and hep_senders.py's roster.
-        ("docs/client-examples.md", "python", 3),
+        // check and hep_senders.py's roster. Then one region from each of the
+        // five operator-task programs.
+        ("docs/client-examples.md", "python", 8),
     ]
     .into_iter()
     .map(|(d, l, n)| ((d, l.to_string()), n))
@@ -502,6 +503,141 @@ fn every_capability_example_runs_in_ci() {
     }
 }
 
+/// The operator tasks: one program per multi-step cookbook recipe, each
+/// linked from the recipes it carries out and run end to end in CI. `anchor`
+/// is the program's section of docs/client-examples.md, and `recipes` the
+/// numbered sections of docs/examples.md that point at it.
+const OPERATOR_TASKS: &[(&str, &str, &[u32])] = &[
+    (
+        "clients/python/triage.py",
+        "triage-a-capture-to-one-verdict",
+        &[1, 16],
+    ),
+    (
+        "clients/python/failed_calls.py",
+        "group-failed-calls-by-response-code",
+        &[3, 30],
+    ),
+    (
+        "clients/python/one_way_audio.py",
+        "diagnose-one-way-audio-and-whose-loss-it-is",
+        &[4, 11, 22],
+    ),
+    (
+        "clients/python/scanner_ban.py",
+        "ban-a-scanner-through-tfps-and-verify-it",
+        &[10, 23],
+    ),
+    (
+        "clients/python/customer_export.py",
+        "export-the-calls-of-one-customer-from-rotated-captures",
+        &[39, 32, 40],
+    ),
+];
+
+/// The text of cookbook section `n`: from its `## n.` heading to the next
+/// second-level heading, subsections included.
+fn cookbook_section(cookbook: &str, n: u32) -> Option<String> {
+    let heading = format!("## {n}. ");
+    let start = cookbook.lines().position(|l| l.starts_with(&heading))?;
+    let body: Vec<&str> = cookbook
+        .lines()
+        .skip(start + 1)
+        .take_while(|l| !l.starts_with("## "))
+        .collect();
+    Some(body.join("\n"))
+}
+
+/// Each operator task is a program CI runs against committed captures, a
+/// section on the runnable-examples page, and a pointer from every recipe it
+/// carries out. Removing any of the three turns the task back into a claim:
+/// a program nobody runs, a program nobody finds, or a recipe that stops at
+/// the first command.
+#[test]
+fn every_operator_task_runs_in_ci_and_is_linked_from_its_recipes() {
+    let smoke: String = read("scripts/smoke-clients.sh")
+        .lines()
+        .filter(|l| !l.trim_start().starts_with('#'))
+        .map(|l| format!("{l}\n"))
+        .collect();
+    let mut missing: Vec<String> = [
+        // The captures the tasks run against, beside the older ones.
+        "tests/fixtures/sip-answered-never-acked.pcap",
+        "tests/fixtures/sip-scanner-and-register-flood.pcap",
+        "tests/pcap-samples/sip-problem-call.pcap",
+        "tests/fixtures/stun_sdp_mismatch.pcap",
+        // Recipe 30's timer, which the answered-never-acked capture needs.
+        "--ack-timeout",
+        // The TFPS peer the ban is relayed to, and the fake standing in for it.
+        "--tfps-ctl",
+        "clients/python/tests/fake_tfps_ctl.py",
+        // Recipe 40: the export opened by Wireshark's own engine.
+        "capinfos",
+        "tshark",
+    ]
+    .into_iter()
+    .filter(|needle| !contains_token(&smoke, needle))
+    .map(str::to_string)
+    .collect();
+    for (program, _, _) in OPERATOR_TASKS {
+        if !contains_token(&smoke, program) {
+            missing.push((*program).to_string());
+        }
+    }
+    assert!(
+        missing.is_empty(),
+        "scripts/smoke-clients.sh no longer runs: {missing:?}"
+    );
+
+    let ci = read(".github/workflows/ci.yml");
+    assert!(
+        ci.contains("packages: tshark"),
+        "ci.yml must install tshark before the smoke run, or recipe 40's check has \
+         nothing to open the export with"
+    );
+
+    let page = read("docs/client-examples.md");
+    let cookbook = read("docs/examples.md");
+    let mut unlinked = Vec::new();
+    for (program, anchor, recipes) in OPERATOR_TASKS {
+        let name = program.rsplit('/').next().expect("a file name");
+        let heading_slug_present = page
+            .lines()
+            .filter(|l| l.starts_with("### "))
+            .any(|l| markdown_slug(l.trim_start_matches('#').trim()) == *anchor);
+        if !heading_slug_present || !page.contains(name) {
+            unlinked.push(format!(
+                "docs/client-examples.md has no `### ` section slugged {anchor} describing {name}"
+            ));
+        }
+        let link = format!("client-examples.md#{anchor}");
+        for n in *recipes {
+            match cookbook_section(&cookbook, *n) {
+                None => unlinked.push(format!("docs/examples.md has no recipe {n}")),
+                Some(text) if !text.contains(&link) => unlinked.push(format!(
+                    "docs/examples.md recipe {n} does not link {link} ({name})"
+                )),
+                Some(_) => {}
+            }
+        }
+    }
+    assert!(unlinked.is_empty(), "{}", unlinked.join("\n"));
+}
+
+/// The anchor a heading gets: lowercase, spaces to hyphens, and every other
+/// character that is not alphanumeric, `-` or `_` dropped.
+fn markdown_slug(heading: &str) -> String {
+    heading
+        .to_lowercase()
+        .chars()
+        .filter_map(|c| match c {
+            ' ' => Some('-'),
+            c if c.is_alphanumeric() || c == '-' || c == '_' => Some(c),
+            _ => None,
+        })
+        .collect()
+}
+
 // ── the reader itself ─────────────────────────────────────────────────────
 
 #[test]
@@ -569,6 +705,28 @@ fn a_token_is_matched_whole() {
     assert!(!contains_token("x --hep-send-transport tcp", "--hep-send"));
     assert!(contains_token("a/b.pcap\"", "a/b.pcap"));
     assert!(!contains_token("a/b.pcapng", "a/b.pcap"));
+}
+
+#[test]
+fn a_heading_slugs_the_way_the_page_anchors_it() {
+    assert_eq!(
+        markdown_slug("Export one customer's calls, whole"),
+        "export-one-customers-calls-whole"
+    );
+    assert_eq!(
+        markdown_slug("Ban a scanner through TFPS, and verify it"),
+        "ban-a-scanner-through-tfps-and-verify-it"
+    );
+}
+
+#[test]
+fn a_cookbook_section_runs_to_the_next_second_level_heading() {
+    let doc = "## 9. Nine\nnine\n## 10. Ten\nten\n### 10a. Sub\nsub\n## 11. Eleven\n";
+    assert_eq!(
+        cookbook_section(doc, 10).as_deref(),
+        Some("ten\n### 10a. Sub\nsub")
+    );
+    assert_eq!(cookbook_section(doc, 1), None);
 }
 
 #[test]

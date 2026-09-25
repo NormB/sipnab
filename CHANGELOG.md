@@ -12,6 +12,31 @@ entry that carries them.
 
 ### Added
 
+- **Five operator-task programs, one per multi-step cookbook recipe, each run
+  end to end in CI.** [Runnable examples](docs/client-examples.md) has a new
+  section for them, and each recipe links to its program.
+  `clients/python/triage.py` turns `--json-analyze` into a verdict and an exit
+  status, and reports a capture with no dialog to judge as inconclusive rather
+  than clean (recipes 1 and 16). `clients/python/failed_calls.py` groups
+  failed calls once each under their final response code over REST, and names
+  the calls answered and never acknowledged (recipes 3 and 30).
+  `clients/python/one_way_audio.py` prints one call's one-way diagnosis, its
+  asymmetry signals, and whether the loss is the network's or the capture's
+  (recipes 4, 11 and 22). `clients/python/scanner_ban.py` bans through
+  `POST /v1/tfps/ban` only the sources `--recommend-block` finds no
+  counter-evidence for, and counts a ban only once TFPS lists it (recipes 10
+  and 23). `clients/python/customer_export.py` exports one customer's calls
+  from rotated captures, reads the export back, removes it when another
+  customer's call shares an address, and prints the `tshark` command that
+  opens it (recipes 39, 32 and 40). `scripts/smoke-clients.sh` runs each
+  program against committed captures, with a failure case for each. Two
+  captures are new and synthetic:
+  `tests/fixtures/sip-answered-never-acked.pcap` and
+  `tests/fixtures/sip-scanner-and-register-flood.pcap`. CI's Check job now
+  installs `tshark`, which opens the export and runs the command the program
+  printed. TFPS cannot run on a CI runner, so the ban runs against
+  `clients/python/tests/fake_tfps_ctl.py`, a stand-in held by its tests to
+  the fixtures pinned against the real `tfps_ctl`.
 - **Every Go, JavaScript, Python and TypeScript example on the REST, metrics
   and MCP deployment pages is now a program CI compiles and runs.** The
   [REST API](docs/rest-api.md), [Prometheus metrics](docs/prometheus-metrics.md)

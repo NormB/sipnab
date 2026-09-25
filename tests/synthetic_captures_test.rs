@@ -3,10 +3,12 @@
 //! The synthetic captures are exactly what their generator builds, and carry
 //! nothing from a real network.
 //!
-//! `tests/support/synthetic_captures.rs` owns fourteen committed captures: the
+//! `tests/support/synthetic_captures.rs` owns seventeen committed captures: the
 //! two oldest fixtures, two rtpengine relay pairs, two fuzz seeds, the two
-//! media files SIPp plays in the harness, and four STUN, TURN and ICE
-//! fixtures. The generator is the provenance: a reader can see in a diff every address,
+//! media files SIPp plays in the harness, four STUN, TURN and ICE fixtures,
+//! an OpenSIPS proxy's view of one call, and the two captures the
+//! operator-task programs run against. The generator is the provenance: a
+//! reader can see in a diff every address,
 //! every header and every timing a capture holds. That stays true only while
 //! the committed bytes are the generator's output, so the first test here
 //! rebuilds each one and compares. A hand edit, a capture dropped in under the
