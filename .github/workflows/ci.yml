@@ -647,6 +647,30 @@ jobs:
   # trips SC2046 at its `set -- $(awk ...)`, where the word splitting is the
   # point. Silencing that correctly is its own change, not a rider on this one.
   # Pure bash — no Rust toolchain needed.
+  pre-push-scenarios:
+    # The pre-push hook's own BDD suite, which nothing ran. From 2026-09-10 to
+    # 2026-09-25 its throwaway fixture lacked the fuzz/ and bpf/ packages the
+    # hook formats by name, so every scenario died at the fmt step: the
+    # "allow" ones failed and every "gate blocks X" one passed without its
+    # gate running. Nobody noticed because the suite was run by hand, or not
+    # at all. Here it fails CI the moment the hook and its fixture drift apart
+    # again (GATE-DUP1). Tools the hook treats as optional (tmux, zola, vale,
+    # yanglint, extra rustup targets) stay absent: those gates report NOT
+    # CHECKED, which is what the scenarios expect of a bare runner.
+    # Observed locally: about 4 minutes.
+    timeout-minutes: 30
+    name: Pre-push hook scenarios
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@ce678459e9fc7500d337468f904b95f1b5c10b5e # 1.98.1
+        with:
+          components: clippy, rustfmt
+      - name: Run the pre-push hook against its scenarios
+        run: sh scripts/test-pre-push.sh
+
   bench-scripts:
     # Bounds how long this job can hold the main-branch concurrency
     # group, which never supersedes. Observed: 0.1 min.
@@ -945,7 +969,7 @@ jobs:
 
   ci-success:
     # Bounds how long this job can hold the main-branch concurrency
-    # group, which never supersedes. Observed: 0.0 min, but it waits on 13 needs.
+    # group, which never supersedes. Observed: 0.0 min, but it waits on 14 needs.
     timeout-minutes: 10
     name: CI success
     if: always()
@@ -956,7 +980,7 @@ jobs:
     # check on main still green.
     needs: [check, install-sh, deb-package, rpm-packaging, homebrew-formula,
             tsan-verdict, bench-scripts, features, crate-package, audit,
-            fuzz-check, code-scanning-clean, symbol-split]
+            fuzz-check, code-scanning-clean, symbol-split, pre-push-scenarios]
     runs-on: ubuntu-latest
     steps:
       - name: Verify all required jobs succeeded

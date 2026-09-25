@@ -5788,7 +5788,11 @@ fn packaging_scripts_reference_existing_paths() {
     // and `clients/rust` (EX4b). Attributed by measurement: with HEAD's
     // ci.yml swapped back in, the scan reads 129, and with HEAD's
     // scripts/smoke-clients.sh it still reads 131.
-    const EXPECTED_REFERENCES: usize = 131;
+    // 131 -> 132: one, `scripts/test-pre-push.sh` in the new
+    // pre-push-scenarios job's run step in `.github/workflows/ci.yml`
+    // (GATE-DUP1). Attributed by measurement: with HEAD's ci.yml the scan
+    // reads 131.
+    const EXPECTED_REFERENCES: usize = 132;
     assert_eq!(
         checked, EXPECTED_REFERENCES,
         "packaging path scan saw {checked} references, expected \
