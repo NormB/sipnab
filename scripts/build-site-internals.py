@@ -234,6 +234,10 @@ DOCS_TO_SITE = {
     # the internals vCon page and docs/README.md point at it.
     "vcon.md": "vcon.md",
     "vcon-harness.md": "vcon-harness.md",
+    "vcon-server.md": "vcon-server.md",
+    "vcon-sipnab.md": "vcon-sipnab.md",
+    "tfps.md": "tfps.md",
+    "tfps-sipnab.md": "tfps-sipnab.md",
     "first-cli-triage.md": "first-cli-triage.md",
     "glossary.md": "glossary.md",
 }

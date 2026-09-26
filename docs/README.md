@@ -83,6 +83,15 @@ Each answers "how do I …?" and assumes you already know what you want.
 - **[Build a vCon capture stack](vcon-harness.md)**: OpenSIPS, rtpengine,
   sipnab and a conserver on one node or two, and the failures that look like
   success.
+- **[Add a vCon server to an OpenSIPS voice stack](vcon-server.md)**:
+  vcon-server, Valkey and PostgreSQL, with OpenSIPS recording every call into
+  it over SIPREC. No sipnab involved.
+- **[Send sipnab's vCons to a vCon server](vcon-sipnab.md)**: a vCon for every
+  finished call, forwarded to vcon-server on the same machine or another.
+- **[Add TFPS to an OpenSIPS voice stack](tfps.md)**: block attacking SIP
+  sources in the kernel before they reach OpenSIPS. No sipnab involved.
+- **[Let sipnab see and control TFPS](tfps-sipnab.md)**: what TFPS blocks and
+  why, and ban or unban on request, locally or over SSH.
 - **[Write a WASM plugin](plugins.md)**: add your own detection to sipnab's
   diagnosis without forking it.
 - **[Recolor the TUI](theme-guide.md)**: colors and preset palettes.

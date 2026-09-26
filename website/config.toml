@@ -333,6 +333,16 @@ pages = [
 ]
 
 [[extra.docs_nav]]
+id = "stack"
+title = "Add to your voice stack"
+pages = [
+  { path = "docs/vcon-server.md", menu = true },
+  { path = "docs/vcon-sipnab.md", menu = true },
+  { path = "docs/tfps.md", menu = true },
+  { path = "docs/tfps-sipnab.md", menu = true },
+]
+
+[[extra.docs_nav]]
 id = "build"
 title = "Build and measure"
 pages = [

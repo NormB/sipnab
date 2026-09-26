@@ -41,6 +41,10 @@ This file indexes the documentation as plain text. `llms-full.txt` beside it car
 - [Triage a capture from the command line](https://sipnab.com/docs/first-cli-triage/): A first analysis without the TUI: list the calls in a capture, find the ones that went wrong, explain one, and hand the answer to another tool as JSON.
 - [Glossary](https://sipnab.com/docs/glossary/): The VoIP and sipnab terms the other pages use, each defined in one short entry by what it means in sipnab's output.
 - [Authenticate API and MCP clients](https://sipnab.com/docs/auth/): Bearer-token authentication for the REST API and MCP server: token format, audience binding, configuring a signing key, minting tokens, expiry and key rotation.
+- [Add a vCon server to an OpenSIPS voice stack](https://sipnab.com/docs/vcon-server/): Install vcon-server with Valkey and PostgreSQL, build OpenSIPS and rtpengine from their main branches, and have OpenSIPS record every call into it over SIPREC. No sipnab involved.
+- [Send sipnab's vCons to a vCon server](https://sipnab.com/docs/vcon-sipnab/): Have sipnab write a vCon for every finished call and forward each one to vcon-server, on the same machine or another, kept apart from recorded calls.
+- [Add TFPS to an OpenSIPS voice stack](https://sipnab.com/docs/tfps/): Install TFPS, which blocks attacking SIP sources in the kernel with XDP, tell it whom to trust, watch it block a scanner, and operate it. No sipnab involved.
+- [Let sipnab see and control TFPS](https://sipnab.com/docs/tfps-sipnab/): Have sipnab report what TFPS blocks and ban or unban on request, over REST and MCP, with TFPS on the same machine or reached over SSH.
 
 ## Internals
 

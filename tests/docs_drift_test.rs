@@ -1186,6 +1186,139 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
         "server-url",
         &["docs/mcp.md", "website/content/docs/mcp.md"],
     ),
+    // useradd's, creating the system accounts the voice-stack guides run services as.
+    (
+        "system",
+        &[
+            "docs/vcon-server.md",
+            "website/content/docs/vcon-server.md",
+            "docs/tfps-sipnab.md",
+            "website/content/docs/tfps-sipnab.md",
+        ],
+    ),
+    // useradd's, creating the system accounts the voice-stack guides run services as.
+    (
+        "home-dir",
+        &[
+            "docs/vcon-server.md",
+            "website/content/docs/vcon-server.md",
+            "docs/tfps-sipnab.md",
+            "website/content/docs/tfps-sipnab.md",
+        ],
+    ),
+    // useradd's, creating the system accounts the voice-stack guides run services as.
+    (
+        "shell",
+        &[
+            "docs/vcon-server.md",
+            "website/content/docs/vcon-server.md",
+            "docs/tfps-sipnab.md",
+            "website/content/docs/tfps-sipnab.md",
+        ],
+    ),
+    // useradd's, creating the system accounts the voice-stack guides run services as.
+    (
+        "create-home",
+        &["docs/tfps-sipnab.md", "website/content/docs/tfps-sipnab.md"],
+    ),
+    // systemctl's, on `systemctl enable --now` in the voice-stack guides.
+    (
+        "now",
+        &[
+            "docs/vcon-server.md",
+            "website/content/docs/vcon-server.md",
+            "docs/vcon-sipnab.md",
+            "website/content/docs/vcon-sipnab.md",
+            "docs/tfps.md",
+            "website/content/docs/tfps.md",
+        ],
+    ),
+    // tfps and tfps_ctl's (TFPS, the XDP blocker the TFPS guides install).
+    ("all", &["docs/tfps.md", "website/content/docs/tfps.md"]),
+    // tfps and tfps_ctl's (TFPS, the XDP blocker the TFPS guides install).
+    (
+        "no-enforce",
+        &["docs/tfps.md", "website/content/docs/tfps.md"],
+    ),
+    // tfps and tfps_ctl's (TFPS, the XDP blocker the TFPS guides install).
+    ("ttl", &["docs/tfps.md", "website/content/docs/tfps.md"]),
+    // tfps and tfps_ctl's (TFPS, the XDP blocker the TFPS guides install).
+    ("why", &["docs/tfps.md", "website/content/docs/tfps.md"]),
+    // apt-get's and dpkg's, installing the voice stack's build tools.
+    (
+        "no-install-recommends",
+        &["docs/vcon-server.md", "website/content/docs/vcon-server.md"],
+    ),
+    // apt-get's and dpkg's, installing the voice stack's build tools.
+    (
+        "print-architecture",
+        &["docs/vcon-server.md", "website/content/docs/vcon-server.md"],
+    ),
+    // docker compose's and curl's, starting vcon-server and posting to it.
+    (
+        "build",
+        &["docs/vcon-server.md", "website/content/docs/vcon-server.md"],
+    ),
+    // docker compose's and curl's, starting vcon-server and posting to it.
+    (
+        "since",
+        &["docs/vcon-server.md", "website/content/docs/vcon-server.md"],
+    ),
+    // docker compose's and curl's, starting vcon-server and posting to it.
+    (
+        "tail",
+        &["docs/vcon-server.md", "website/content/docs/vcon-server.md"],
+    ),
+    // docker compose's and curl's, starting vcon-server and posting to it.
+    (
+        "data-binary",
+        &["docs/vcon-server.md", "website/content/docs/vcon-server.md"],
+    ),
+    // valkey-server's and uvicorn's, in the vCon guide's compose file.
+    (
+        "save",
+        &["docs/vcon-server.md", "website/content/docs/vcon-server.md"],
+    ),
+    // valkey-server's and uvicorn's, in the vCon guide's compose file.
+    (
+        "notify-keyspace-events",
+        &["docs/vcon-server.md", "website/content/docs/vcon-server.md"],
+    ),
+    // valkey-server's and uvicorn's, in the vCon guide's compose file.
+    (
+        "appendonly",
+        &["docs/vcon-server.md", "website/content/docs/vcon-server.md"],
+    ),
+    // valkey-server's and uvicorn's, in the vCon guide's compose file.
+    (
+        "dir",
+        &["docs/vcon-server.md", "website/content/docs/vcon-server.md"],
+    ),
+    // valkey-server's and uvicorn's, in the vCon guide's compose file.
+    (
+        "host",
+        &["docs/vcon-server.md", "website/content/docs/vcon-server.md"],
+    ),
+    // valkey-server's and uvicorn's, in the vCon guide's compose file.
+    (
+        "port",
+        &["docs/vcon-server.md", "website/content/docs/vcon-server.md"],
+    ),
+    // vcon_forward.py's (clients/python), the spool forwarder the sipnab-to-vCon guide runs.
+    (
+        "spool",
+        &["docs/vcon-sipnab.md", "website/content/docs/vcon-sipnab.md"],
+    ),
+    // vcon_forward.py's (clients/python), the spool forwarder the sipnab-to-vCon guide runs.
+    (
+        "url",
+        &["docs/vcon-sipnab.md", "website/content/docs/vcon-sipnab.md"],
+    ),
+    // vcon_forward.py's (clients/python), the spool forwarder the sipnab-to-vCon guide runs.
+    (
+        "ingress-list",
+        &["docs/vcon-sipnab.md", "website/content/docs/vcon-sipnab.md"],
+    ),
 ];
 
 /// True when `flag` is a known foreign-tool flag excused in `doc` specifically.
@@ -3538,7 +3671,9 @@ fn no_documentation_table_repeats_a_row() {
     // only; its body is the standards.html template), plus the site mirrors
     // of docs/glossary.md and docs/first-cli-triage.md, now registered in
     // build-site-pages.py PAGES and listed under "Start here" in the docs nav.
-    const EXPECTED_MARKDOWN_FILES: usize = 229;
+    // 229 -> 237: the four voice-stack guides (vcon-server, vcon-sipnab, tfps,
+    // tfps-sipnab) under docs/ and their four generated site pages.
+    const EXPECTED_MARKDOWN_FILES: usize = 237;
     /// How many tables this gate expects to walk.
     ///
     /// Named rather than written twice. The count and the failure message
@@ -3976,7 +4111,9 @@ fn no_documentation_table_repeats_a_row() {
     // mirror website/content/docs/examples.md (EX7). Attributed by counting
     // separator rows added per file in the staged diff: one in each of those
     // two, one in website/static/llms-full.txt (not walked), none removed.
-    const EXPECTED_TABLES: usize = 980;
+    // 980 -> 992: the four voice-stack guides add 6 tables (vcon-server 2,
+    // vcon-sipnab 1, tfps 2, tfps-sipnab 1), each in docs/ and on the site.
+    const EXPECTED_TABLES: usize = 992;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

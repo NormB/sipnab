@@ -440,6 +440,48 @@ PAGES: list[tuple[str, str, str, str, int, str]] = [
         "format, audience binding, configuring a signing key, minting tokens, "
         "expiry and key rotation.",
     ),
+    # The four "add it to your voice stack" guides (2026-09-25). 40-43 were
+    # the next free weights on the SITE side; sidebar order comes from the
+    # nav group in website/config.toml.
+    (
+        "docs/vcon-server.md",
+        "vcon-server.md",
+        "Add a vCon server to an OpenSIPS voice stack",
+        "Add a vCon server to an OpenSIPS voice stack",
+        40,
+        "Install vcon-server with Valkey and PostgreSQL, build OpenSIPS and "
+        "rtpengine from their main branches, and have OpenSIPS record every call "
+        "into it over SIPREC. No sipnab involved.",
+    ),
+    (
+        "docs/vcon-sipnab.md",
+        "vcon-sipnab.md",
+        "Send sipnab's vCons to a vCon server",
+        "Send sipnab's vCons to a vCon server",
+        41,
+        "Have sipnab write a vCon for every finished call and forward each one to "
+        "vcon-server, on the same machine or another, kept apart from recorded "
+        "calls.",
+    ),
+    (
+        "docs/tfps.md",
+        "tfps.md",
+        "Add TFPS to an OpenSIPS voice stack",
+        "Add TFPS to an OpenSIPS voice stack",
+        42,
+        "Install TFPS, which blocks attacking SIP sources in the kernel with XDP, "
+        "tell it whom to trust, watch it block a scanner, and operate it. No "
+        "sipnab involved.",
+    ),
+    (
+        "docs/tfps-sipnab.md",
+        "tfps-sipnab.md",
+        "Let sipnab see and control TFPS",
+        "Let sipnab see and control TFPS",
+        43,
+        "Have sipnab report what TFPS blocks and ban or unban on request, over "
+        "REST and MCP, with TFPS on the same machine or reached over SSH.",
+    ),
 ]
 
 BANNER = (

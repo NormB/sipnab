@@ -32579,6 +32579,1506 @@ rotated naturally already. Long-TTL tokens are the ones to check.
 
 ---
 
+<!-- source: docs/vcon-server.md -->
+
+# Add a vCon server to an OpenSIPS voice stack
+
+A [vCon](glossary.md#vcon) is a JSON container that holds one conversation:
+who took part, the recording, and anything a later tool adds, such as a
+transcript. This guide stands up a vCon server beside an OpenSIPS proxy and has
+OpenSIPS record every call into it. This guide does not use sipnab. When you have
+this working, [Send sipnab's vCons to a vCon server](vcon-sipnab.md) adds sipnab
+as a second source.
+
+The parts, and what each one does:
+
+| Part | Role |
+|---|---|
+| **vcon-server** | Receives vCons over HTTP, runs them through a processing chain, and stores them. Its worker process is the *conserver*. |
+| **Valkey** | The conserver's working store: queues and cached vCons. Valkey is the open-source fork of Redis and speaks the same protocol. |
+| **PostgreSQL** | Keeps the finished vCons. |
+| **OpenSIPS** | Your SIP proxy. Its `siprec` module starts a recording for each call. |
+| **rtpengine** | Relays each call's media and sends a copy of it to the recorder. |
+| **vcon-siprec-adapter** | The recorder. It receives the copy over SIPREC, turns each finished call into a vCon, and posts it to vcon-server. |
+
+SIPREC ([RFC 7866](https://www.rfc-editor.org/rfc/rfc7866)) is the standard way for a SIP server to hand a copy of a call
+to a recorder: the proxy opens a second SIP session to the recorder and sends it
+both directions of the audio.
+
+Everything below runs on one machine, which keeps the example short. The
+[last section](#put-the-parts-on-different-machines) says what changes when the
+parts live on different machines.
+
+## Tested on
+
+Every command on this page ran as written, in order, on 2026-09-25 on two
+x86_64 virtual machines with 2 cores and 4 GB of memory: a clean Debian 13
+(kernel 6.12.63), and Ubuntu 24.04.5 (kernel 6.8.0). The commands pin the
+components to the versions below. Newer commits may behave differently, and
+pinning them keeps the guide describing what you get.
+
+| Software | Version or commit |
+|---|---|
+| Docker Engine / Compose | 29.8.1 / v5.5.1, from the Docker apt repository |
+| vcon-server | [`d441470b`](https://github.com/vcon-dev/vcon-server/commit/d441470b), main on 2026-09-20 |
+| Valkey / PostgreSQL | `valkey/valkey:9.1.2-alpine` / `postgres:17.11-alpine` |
+| OpenSIPS | [`f46ef9337b`](https://github.com/OpenSIPS/opensips/commit/f46ef9337b), master, 4.1.0-dev |
+| rtpengine | [`8da4be3355`](https://github.com/sipwise/rtpengine/commit/8da4be3355), master, packaged as 26.3.0.0 |
+| vcon-siprec-adapter | [`fa09b939d3`](https://github.com/vcon-dev/vcon-siprec-adapter/commit/fa09b939d3), main |
+| SIPp (for the test call) | the distribution's `sip-tester`: 3.7.3 on Debian, 3.7.2 on Ubuntu |
+
+The whole vCon stack used about 165 MiB of memory while idle.
+
+The examples use `192.0.2.10` as the machine's address. Replace it with yours
+everywhere it appears.
+
+## 1. Install Docker
+
+vcon-server runs as containers. Install Docker Engine and the Compose plugin
+from the Docker repository:
+
+```bash
+# Run all of these, in order.
+sudo apt-get update
+sudo apt-get install -y ca-certificates curl git
+sudo install -m 0755 -d /etc/apt/keyrings
+. /etc/os-release
+sudo curl -fsSL "https://download.docker.com/linux/$ID/gpg" -o /etc/apt/keyrings/docker.asc
+sudo chmod a+r /etc/apt/keyrings/docker.asc
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/$ID $VERSION_CODENAME stable" \
+  | sudo tee /etc/apt/sources.list.d/docker.list >/dev/null
+sudo apt-get update
+sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+sudo usermod -aG docker "$USER"
+```
+
+Log out and back in so that your account's new `docker` group takes effect,
+then check:
+
+```bash
+docker compose version
+```
+
+## 2. Install the vCon server
+
+Check out vcon-server at the tested commit:
+
+```bash
+# Run all of these, in order.
+sudo mkdir -p /opt/vcon && sudo chown "$USER": /opt/vcon
+cd /opt/vcon
+git clone https://github.com/vcon-dev/vcon-server.git
+git -C vcon-server checkout d441470b
+```
+
+The `docker-compose.yml` in the checkout runs Redis and development tooling. Write a
+smaller one beside the checkout that runs Valkey and PostgreSQL instead:
+
+```bash
+cat > /opt/vcon/compose.yml <<'EOF'
+name: vcon
+
+services:
+  valkey:
+    image: valkey/valkey:9.1.2-alpine
+    command: ["valkey-server", "--save", "20", "1", "--notify-keyspace-events", "Ex",
+              "--appendonly", "yes", "--dir", "/data"]
+    volumes: [valkey_data:/data]
+    healthcheck:
+      test: ["CMD-SHELL", "valkey-cli ping | grep -q PONG"]
+      interval: 10s
+      retries: 12
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:17.11-alpine
+    environment:
+      POSTGRES_DB: vcon
+      POSTGRES_USER: vcon
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes: [postgres_data:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U vcon -d vcon"]
+      interval: 10s
+      retries: 12
+    restart: unless-stopped
+
+  conserver:
+    build: {context: ./vcon-server, dockerfile: ./docker/Dockerfile}
+    command: ["python", "/app/conserver/main.py"]
+    volumes:
+      - ./vcon-server:/app
+      - ./config.yml:/app/config.yml:ro
+    env_file: [.env]
+    depends_on:
+      valkey: {condition: service_healthy}
+      postgres: {condition: service_healthy}
+    restart: unless-stopped
+
+  api:
+    build: {context: ./vcon-server, dockerfile: ./docker/Dockerfile}
+    command: ["uvicorn", "api:app", "--host", "0.0.0.0", "--port", "8000"]
+    volumes:
+      - ./vcon-server:/app
+      - ./config.yml:/app/config.yml:ro
+    ports: ["8000:8000"]
+    env_file: [.env]
+    depends_on:
+      valkey: {condition: service_healthy}
+    restart: unless-stopped
+
+volumes:
+  valkey_data: {}
+  postgres_data: {}
+EOF
+```
+
+Create the two files that hold secrets. `umask 077` makes both readable by you
+alone. Each secret is a fresh random value:
+
+```bash
+# Run all of these, in order.
+cd /opt/vcon
+umask 077
+cat > .env <<EOF
+REDIS_URL=redis://valkey
+CONSERVER_CONFIG_FILE=/app/config.yml
+CONSERVER_API_TOKEN=$(openssl rand -hex 32)
+POSTGRES_PASSWORD=$(openssl rand -hex 24)
+EOF
+. ./.env
+cat > config.yml <<EOF
+ingress_auth:
+  siprec: "$(openssl rand -hex 32)"
+
+links:
+  mark_recorder:
+    module: links.tag
+    options:
+      tags: [vcon_role:recorder]
+
+storages:
+  postgres_recorded:
+    module: storage.postgres
+    options:
+      host: postgres
+      port: 5432
+      database: vcon
+      user: vcon
+      password: "$POSTGRES_PASSWORD"
+      table_name: vcons_recorded
+
+chains:
+  siprec_recorder:
+    links: [mark_recorder]
+    ingress_lists: [siprec]
+    storages: [postgres_recorded]
+    enabled: 1
+EOF
+umask 022
+```
+
+What that configuration says:
+
+- **`ingress_auth`** gives the ingress list `siprec` its own key. A producer
+  that holds this key can post to `siprec` and nothing else. The full
+  `CONSERVER_API_TOKEN` in `.env` is for reading vCons back; keep it off the
+  producers.
+- **`chains`** routes everything that arrives on `siprec` through the
+  `mark_recorder` link, which tags each vCon `vcon_role:recorder`, and into the
+  `vcons_recorded` table. PostgreSQL creates the table on the first write.
+
+Start it and check that the API answers:
+
+```bash
+# Run all of these, in order.
+cd /opt/vcon
+docker compose up -d --build
+until curl -sf localhost:8000/health; do sleep 2; done; echo
+docker compose ps
+```
+
+The API takes a few seconds to start, so the `until` line waits for `/health`
+to answer `{"status":"healthy",...}`. All four services then show `running`,
+and `valkey` and `postgres` also show `healthy`.
+
+### Prove it stores what it accepts
+
+The ingress route answers `204` when it has *queued* a vCon, not when it has
+stored it. Post a small one and look for it in PostgreSQL:
+
+```bash
+# Run all of these, in order.
+cd /opt/vcon
+KEY=$(sed -n 's/^  siprec: "\(.*\)"/\1/p' config.yml)
+UUID=$(cat /proc/sys/kernel/random/uuid)
+printf '{"vcon":"0.0.1","uuid":"%s","created_at":"%s","parties":[{"tel":"+15551230001"},{"tel":"+15551230002"}],"dialog":[],"analysis":[],"attachments":[]}' \
+  "$UUID" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > /tmp/test.vcon.json
+curl -s -o /dev/null -w '%{http_code}\n' -X POST \
+  "localhost:8000/vcon/external-ingress?ingress_list=siprec" \
+  -H "x-conserver-api-token: $KEY" -H "Content-Type: application/json" \
+  --data-binary @/tmp/test.vcon.json
+rm /tmp/test.vcon.json
+sleep 3
+docker compose exec -T postgres psql -U vcon -d vcon -c \
+  "select id, vcon_json->'attachments' from vcons_recorded where id='$UUID'"
+```
+
+The `curl` prints `204`, and the query returns one row whose attachment is the
+`["vcon_role:recorder"]` tag. A wrong key gets `403` instead.
+
+## 3. Build rtpengine
+
+rtpengine's own documentation recommends building Debian packages from the
+source tree, which gives you a systemd unit, a configuration file and a clean
+uninstall. The build installs its dependencies from the tree's
+`debian/control`, then runs rtpengine's test suite, which takes a while:
+
+```bash
+# Run all of these, in order.
+sudo apt-get install -y --no-install-recommends build-essential devscripts equivs fakeroot
+sudo mkdir -p /usr/local/src/voice && sudo chown "$USER": /usr/local/src/voice
+cd /usr/local/src/voice
+git clone https://github.com/sipwise/rtpengine.git
+cd rtpengine
+git checkout 8da4be3355
+sudo mk-build-deps -i -r -t "apt-get -y --no-install-recommends" debian/control
+dpkg-buildpackage -us -uc -b -j2
+cd ..
+sudo apt-get install -y ./ngcp-rtpengine-daemon_26.3.0.0+0~mr26.3.0.0_amd64.deb \
+  ./ngcp-rtpengine-utils_26.3.0.0+0~mr26.3.0.0_all.deb
+```
+
+The package's configuration asks for rtpengine's kernel forwarding module, which
+this guide does not install. Tell it to forward in userspace, and restart it:
+
+```bash
+# Run all of these, in order.
+sudo sed -i '0,/^table = 0/s//table = -1/' /etc/rtpengine/rtpengine.conf
+sudo systemctl restart ngcp-rtpengine-daemon
+systemctl is-active ngcp-rtpengine-daemon
+```
+
+It listens for OpenSIPS on `127.0.0.1:2223` and relays media on ports
+30000-39999.
+
+## 4. Build OpenSIPS
+
+OpenSIPS master builds with compiler optimizations turned off, which is right
+for OpenSIPS's own developers and wrong for a proxy carrying calls. Turn them
+back on before you build, and add the `siprec` module, which the default build
+leaves out:
+
+```bash
+# Run all of these, in order.
+sudo apt-get install -y --no-install-recommends bison flex uuid-dev pkg-config libncurses-dev
+cd /usr/local/src/voice
+git clone https://github.com/OpenSIPS/opensips.git
+cd opensips
+git checkout f46ef9337b
+make Makefile.conf
+sed -i 's/^DEFS+= -DCC_O0/#DEFS+= -DCC_O0/' Makefile.conf
+make -j2 all include_modules="siprec"
+sudo make install include_modules="siprec"
+/usr/local/sbin/opensips -V | head -2
+```
+
+The second line of `opensips -V` lists the build flags. `CC_O0` is no longer
+among them.
+
+Leave `DBG_MALLOC` as it is. With both it and `CC_O0` switched off, this commit
+of master does not compile: `net/tcp_conn_defs.h` calls `get_ticks()` without
+including the header that declares it, and only `DBG_MALLOC`'s headers happen
+to supply it.
+
+OpenSIPS installs under `/usr/local`: the binary is `/usr/local/sbin/opensips`,
+modules are in `/usr/local/lib64/opensips/modules/`, and OpenSIPS reads its
+configuration from `/usr/local/etc/opensips/`.
+
+## 5. Configure OpenSIPS to record every call
+
+This configuration is a minimal proxy with recording added. Your own script
+does much more (registration, authentication, routing to carriers). The
+recording part is the block marked below, and the `loadmodule` lines it needs.
+
+```bash
+sudo tee /usr/local/etc/opensips/opensips.cfg >/dev/null <<'EOF'
+# OpenSIPS as a SIP proxy that records every call over SIPREC.
+log_level=3
+stderror_enabled=no
+syslog_enabled=yes
+syslog_facility=LOG_LOCAL0
+udp_workers=2
+open_files_limit=4096
+
+socket=udp:192.0.2.10:5060   # the address your phones and carriers reach
+
+mpath="/usr/local/lib64/opensips/modules/"
+
+loadmodule "proto_udp.so"   # built into the core, but still loaded by name
+loadmodule "signaling.so"
+loadmodule "sl.so"
+loadmodule "tm.so"
+loadmodule "rr.so"
+loadmodule "maxfwd.so"
+loadmodule "sipmsgops.so"
+
+loadmodule "mi_fifo.so"
+modparam("mi_fifo", "fifo_name", "/run/opensips/opensips_fifo")
+
+# Recording: siprec needs dialog, b2b_entities and rtp_relay, loaded first.
+loadmodule "dialog.so"
+loadmodule "uac_auth.so"
+loadmodule "b2b_entities.so"
+loadmodule "siprec.so"
+loadmodule "rtp_relay.so"
+loadmodule "rtpengine.so"
+modparam("rtpengine", "rtpengine_sock", "udp:127.0.0.1:2223")
+
+route {
+	if (!mf_process_maxfwd_header(10)) {
+		send_reply(483, "Too Many Hops");
+		exit;
+	}
+
+	if (has_totag()) {
+		if (is_method("ACK") && t_check_trans()) {
+			t_relay();
+			exit;
+		}
+		if (!loose_route()) {
+			send_reply(404, "Not here");
+			exit;
+		}
+		t_relay();
+		exit;
+	}
+
+	if (is_method("CANCEL")) {
+		if (t_check_trans())
+			t_relay();
+		exit;
+	}
+	t_check_trans();
+
+	if (!is_method("INVITE")) {
+		send_reply(405, "Method Not Allowed");
+		exit;
+	}
+
+	record_route();
+
+	# --- recording starts here ---
+	create_dialog();
+	rtp_relay_engage("rtpengine");
+	siprec_start_recording("sip:127.0.0.1:5090");
+	# --- recording ends here ---
+
+	# Where the call goes. Here, a test callee on this machine; in your
+	# stack, lookup("location"), dispatcher or a carrier.
+	$du = "sip:127.0.0.1:5070";
+	t_relay();
+}
+EOF
+```
+
+What the recording block does, line by line:
+
+- `create_dialog()` makes OpenSIPS track the call, so that it knows when the
+  call ends and can end the recording with it.
+- `rtp_relay_engage("rtpengine")` puts rtpengine in the media path. The recorder
+  can only receive a copy of audio that passes through rtpengine.
+- `siprec_start_recording("sip:127.0.0.1:5090")` opens the SIPREC session to the
+  recorder. It starts only when the callee's SDP arrives, usually in the
+  `200 OK`.
+
+`loadmodule "uac_auth.so"` is there because `b2b_entities` asks for it at
+startup. Leaving it out works, but logs a warning on every start.
+
+Run OpenSIPS as its own user, under systemd:
+
+```bash
+# Run all of these, in order.
+sudo useradd --system --home-dir /run/opensips --shell /usr/sbin/nologin opensips
+sudo chown root:opensips /usr/local/etc/opensips /usr/local/etc/opensips/opensips.cfg
+sudo chmod 750 /usr/local/etc/opensips
+sudo chmod 640 /usr/local/etc/opensips/opensips.cfg
+sudo tee /etc/systemd/system/opensips.service >/dev/null <<'EOF'
+[Unit]
+Description=OpenSIPS SIP server
+After=network.target ngcp-rtpengine-daemon.service
+
+[Service]
+Type=forking
+User=opensips
+Group=opensips
+RuntimeDirectory=opensips
+RuntimeDirectoryMode=775
+PIDFile=/run/opensips/opensips.pid
+ExecStart=/usr/local/sbin/opensips -P /run/opensips/opensips.pid -f /usr/local/etc/opensips/opensips.cfg -m 64 -M 8
+Restart=always
+TimeoutStopSec=30s
+LimitNOFILE=262144
+
+[Install]
+WantedBy=multi-user.target
+EOF
+sudo /usr/local/sbin/opensips -C -f /usr/local/etc/opensips/opensips.cfg
+sudo systemctl daemon-reload
+sudo systemctl enable --now opensips
+systemctl is-active opensips
+```
+
+`opensips -C` checks the configuration and prints `config file ok` before you
+start anything.
+
+## 6. Install the recorder
+
+vcon-siprec-adapter runs as a container. It uses the host's network directly,
+because a call's audio arrives on a range of UDP ports and publishing a range
+through Docker is slow. Its ports stay clear of everything else on this
+machine: SIP on `127.0.0.1:5090`, audio on 40000-40999, and its health
+check on `127.0.0.1:8081`.
+
+```bash
+# Run all of these, in order.
+sudo mkdir -p /opt/siprec && sudo chown "$USER": /opt/siprec
+cd /opt/siprec
+git clone https://github.com/vcon-dev/vcon-siprec-adapter.git
+git -C vcon-siprec-adapter checkout fa09b939d3
+mkdir -p vcons dlq logs
+KEY=$(sed -n 's/^  siprec: "\(.*\)"/\1/p' /opt/vcon/config.yml)
+umask 077
+cat > config.yaml <<EOF
+server:
+  listen_address: "127.0.0.1"
+  sip_port_udp: 5090
+  sip_port_tcp: 5090
+  sip_port_tls: 5091
+  tls_cert: null
+  tls_key: null
+  user_agent: "SIPREC-SRS/1.0"
+  max_sessions: 100
+  session_timeout: 3600
+
+storage:
+  local_path: "/app/vcons"
+  filename_pattern: "{timestamp}_{call_id}.vcon.json"
+  create_directories: true
+  cleanup_temp_files: true
+
+webhooks:
+  enabled: true
+  dlq_path: "/app/dlq"
+  endpoints:
+    - url: "http://127.0.0.1:8000/vcon/external-ingress?ingress_list=siprec"
+      headers:
+        x-conserver-api-token: "$KEY"
+      retry_attempts: 3
+      timeout: 30
+      backoff_factor: 2.0
+      hmac_secret: null
+
+media:
+  mode: "inline"
+  publisher: "none"
+
+signing:
+  enabled: false
+
+health:
+  enabled: true
+  host: "127.0.0.1"
+  port: 8081
+
+rtp:
+  buffer_size: 65536
+  supported_codecs: ["PCMU/8000", "PCMA/8000", "G722/8000", "opus/48000"]
+  audio_format: "wav"
+  sample_rate: 8000
+  channels: 1
+  port_range_start: 40000
+  port_range_end: 40999
+
+lawful_basis:
+  enabled: true
+  lawful_basis: "legitimate_interests"
+  purposes: ["recording"]
+  expiration: null
+  justification: "Recorded by the operator of this SIP service."
+
+logging:
+  level: "INFO"
+  file: "/app/logs/siprec-srs.log"
+  max_size: "10MB"
+  backup_count: 5
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+EOF
+umask 022
+cat > compose.yml <<'EOF'
+name: siprec
+
+services:
+  srs:
+    build: ./vcon-siprec-adapter
+    network_mode: host
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+      - ./vcons:/app/vcons
+      - ./dlq:/app/dlq
+      - ./logs:/app/logs
+    environment:
+      SIPREC_PUBLIC_IP: 127.0.0.1
+    restart: unless-stopped
+EOF
+docker compose up -d --build
+sleep 5
+curl -s 127.0.0.1:8081/healthz
+```
+
+The health check answers `{"status": "ok", ...}`. Four settings deserve a word:
+
+- **`sip_port_tls: 5091` with no certificate.** TLS stays off. The adapter's
+  own `config.yaml` points at certificate files that do not exist, and it does
+  not start with them. Its validator also refuses a TLS port of `null`.
+- **`webhooks`** posts each finished vCon to the `siprec` ingress list with that
+  list's key. If every attempt fails, the vCon goes to `dlq/` (dead-letter
+  queue) instead, so it is not lost.
+- **`storage.local_path`** keeps a copy of every vCon, audio included, in
+  `/opt/siprec/vcons`. That copy is call data; the
+  [operating section](#9-operate-it) says how to clear it.
+- **`signing: enabled: false`.** A signed (JWS) vCon does not match the shape
+  vcon-server's ingress route accepts.
+
+## 7. Place a test call
+
+SIPp plays both ends: a callee that echoes audio back, and a caller that dials
+through OpenSIPS and plays a recorded G.711 sample. SIPp's built-in caller
+ignores the `Record-Route` header OpenSIPS adds, so its `BYE` would miss the
+proxy and draw `404 Not here`. The three `sed` lines make it honor the route set,
+the way a real phone does, and drop the DTMF clip the recorder cannot store:
+
+```bash
+# Run all of these, in order.
+sudo apt-get install -y sip-tester
+mkdir -p ~/sipp/pcap && cd ~/sipp
+ln -sf /usr/share/sip-tester/*.pcap pcap/
+sipp -sd uac_pcap > uac_rr.xml
+sed -i 's|<recv response="200" rtd="true" crlf="true">|<recv response="200" rtd="true" crlf="true" rrs="true">|' uac_rr.xml
+sed -i -E 's#^( *)(ACK|BYE) sip:\[service\]@\[remote_ip\]:\[remote_port\] SIP/2.0#\1\2 [next_url] SIP/2.0\n\1[routes]#' uac_rr.xml
+sed -i '/dtmf_2833_1.pcap/d' uac_rr.xml
+sipp -sn uas -i 127.0.0.1 -p 5070 -rtp_echo -m 1 -bg
+sudo sipp -sf uac_rr.xml 192.0.2.10:5060 -i 192.0.2.10 -p 5080 -s echo -m 1 -timeout 90s
+```
+
+The caller needs `sudo` because it plays the audio sample through a raw socket.
+At the end SIPp's statistics screen shows `Successful call` at 1.
+
+## 8. Find the call's vCon
+
+When the call ends, the recorder builds the vCon and posts it. Its log names the
+vCon's UUID:
+
+```bash
+# Run all of these, in order.
+cd /opt/siprec
+docker compose logs --since 5m srs | grep -E "Vcon object initialized|delivered vCon"
+```
+
+Look it up in PostgreSQL, with the UUID from that log line:
+
+```bash
+# Run all of these, in order.
+cd /opt/vcon
+docker compose exec -T postgres psql -U vcon -d vcon -c \
+  "select id, jsonb_array_length(vcon_json->'parties') as parties,
+          jsonb_array_length(vcon_json->'dialog') as recordings
+     from vcons_recorded order by created_at desc limit 1"
+```
+
+The test call produced one vCon with 2 parties and 2 recordings, one for each
+direction of the audio, each an `audio/wav` of about 150 KB.
+
+## 9. Operate it
+
+**Check health.**
+
+```bash
+# Run all of these, in order.
+curl -s -w '\n' localhost:8000/health          # vcon-server API
+curl -s -w '\n' 127.0.0.1:8081/healthz         # recorder
+systemctl is-active opensips ngcp-rtpengine-daemon
+cd /opt/vcon && docker compose ps
+```
+
+**Read the logs.**
+
+```bash
+# Run all of these, in order.
+cd /opt/vcon && docker compose logs --tail 50 conserver
+cd /opt/siprec && docker compose logs --tail 50 srs
+sudo journalctl -u opensips -n 50
+sudo journalctl -u ngcp-rtpengine-daemon -n 50
+```
+
+The conserver logs one `Completed processing vCon <uuid> ... Chain:
+siprec_recorder` line for every vCon it stores.
+
+**Restart after a configuration change.** vcon-server reads `config.yml` on each
+request, but restart it anyway so that both processes agree:
+
+```bash
+# Run all of these, in order.
+cd /opt/vcon && docker compose restart conserver api
+sudo systemctl restart opensips
+```
+
+**Clear the recorder's local copies.** Once a vCon is in PostgreSQL, the copy in
+`/opt/siprec/vcons` is a second copy of the call. The container writes it as
+root, so remove it with `sudo`. This deletes copies more than a day old:
+
+```bash
+sudo find /opt/siprec/vcons -name '*.vcon.json' -mtime +1 -delete
+```
+
+Check `/opt/siprec/dlq` as well: anything there is a vCon that never reached
+vcon-server.
+
+**Back up the store.** Everything worth keeping is in PostgreSQL:
+
+```bash
+# Run all of these, in order.
+cd /opt/vcon
+docker compose exec -T postgres pg_dump -U vcon vcon | gzip > vcon-$(date +%F).sql.gz
+```
+
+**Uninstall.** `docker compose down -v` removes the containers *and* their
+volumes, which is every stored vCon:
+
+```bash
+# Run all of these, in order.
+cd /opt/siprec && docker compose down
+cd /opt/vcon && docker compose down -v
+sudo systemctl disable --now opensips ngcp-rtpengine-daemon
+sudo apt-get purge -y ngcp-rtpengine-daemon ngcp-rtpengine-utils
+```
+
+## Put the parts on different machines
+
+Nothing above depends on sharing a machine except the addresses:
+
+- **vcon-server on its own machine.** Change the recorder's webhook `url` to
+  that machine's address. Port 8000 is now reachable from the network, so allow
+  it only from the machines that post vCons.
+- **The recorder on its own machine.** Change the address in
+  `siprec_start_recording()` to the recorder's, set `listen_address` and
+  `SIPREC_PUBLIC_IP` to the address OpenSIPS and rtpengine reach it on, and open
+  its SIP port and its audio range (40000-40999) to them.
+- **rtpengine on its own machine.** Change `rtpengine_sock` to that machine and
+  make rtpengine's control port listen on an address OpenSIPS can reach
+  (`listen-ng` in `/etc/rtpengine/rtpengine.conf`).
+
+## When something does not work
+
+- **`ERROR:core:main: no transport protocol loaded`.** `loadmodule
+  "proto_udp.so"` is missing. The OpenSIPS binary contains the module, but
+  the script must still name it.
+- **`loading config file ... Permission denied`.** OpenSIPS runs as `opensips`
+  and cannot read its configuration. `make install` creates
+  `/usr/local/etc/opensips` readable by root alone, so give the group both the
+  directory and the file, as in step 5.
+- **The test call's `BYE` gets `404 Not here`.** The caller ignored the route
+  set. Use the edited `uac_rr.xml`, not SIPp's built-in `uac_pcap`.
+- **`/health` answers but nothing reaches PostgreSQL.** A `204` from the ingress
+  route means queued. Read `docker compose logs conserver`; a storage failure is
+  logged there.
+- **rtpengine logs `FAILED TO OPEN KERNEL TABLE 0`.** `table = -1` was not set,
+  or the service was not restarted after setting it.
+
+---
+
+<!-- source: docs/vcon-sipnab.md -->
+
+# Send sipnab's vCons to a vCon server
+
+sipnab can write a [vCon](glossary.md#vcon) for every call it sees. Unlike the
+recording in [Add a vCon server to an OpenSIPS voice stack](vcon-server.md),
+sipnab is not in the call path: it reads a copy of the traffic, so it needs
+nothing from OpenSIPS and changes nothing about how OpenSIPS handles calls. It
+writes each vCon to a directory. A small forwarder sends them from there to
+vcon-server and deletes each one once the server has taken it.
+
+This guide starts where the vCon server guide ends, with vcon-server running.
+The first part puts sipnab on the same machine. The last section says what
+changes when sipnab runs on another machine.
+
+## Keep recorded and observed vCons apart
+
+A vCon from the recorder holds the audio a party to the call handed over. A vCon
+from sipnab holds what a passive observer saw on the wire, which can be less:
+a packet the capture missed is not in it. Consumers should be able to tell the
+two apart, so this guide gives sipnab its own ingress list, `sipnab`, and its
+own chain, which tags each vCon `vcon_role:observer` and stores it in a separate
+table, `vcons_observed`. The recorder's vCons stay in `vcons_recorded`.
+
+## Tested on
+
+Run on 2026-09-25 on the Debian 13 x86_64 machine from the vCon server guide,
+with sipnab from its `.deb`.
+
+## 1. Add an ingress list and a chain for sipnab
+
+Add a key, a tag and a table for sipnab to `/opt/vcon/config.yml`, leaving the
+recorder's settings as they are:
+
+```bash
+# Run all of these, in order.
+cd /opt/vcon
+. ./.env
+python3 - "$(openssl rand -hex 32)" "$POSTGRES_PASSWORD" <<'EOF'
+import sys
+key, password = sys.argv[1], sys.argv[2]
+path = "config.yml"
+text = open(path).read()
+text = text.replace("ingress_auth:\n", f'ingress_auth:\n  sipnab: "{key}"\n', 1)
+text = text.replace("links:\n", "links:\n  mark_observer:\n    module: links.tag\n"
+                    "    options:\n      tags: [vcon_role:observer]\n", 1)
+text = text.replace("storages:\n", "storages:\n  postgres_observed:\n"
+                    "    module: storage.postgres\n    options:\n      host: postgres\n"
+                    "      port: 5432\n      database: vcon\n      user: vcon\n"
+                    f'      password: "{password}"\n      table_name: vcons_observed\n', 1)
+text += ("  sipnab_observer:\n    links: [mark_observer]\n    ingress_lists: [sipnab]\n"
+         "    storages: [postgres_observed]\n    enabled: 1\n")
+open(path, "w").write(text)
+EOF
+docker compose restart conserver api
+```
+
+`config.yml` now has two keys under `ingress_auth`, two links, two entries under
+`storages` and
+two chains.
+
+## 2. Install sipnab
+
+```bash
+# Run all of these, in order.
+V=$(curl -fsSL https://api.github.com/repos/NormB/sipnab/releases/latest \
+  | python3 -c 'import json,sys; print(json.load(sys.stdin)["tag_name"].lstrip("v"))')
+curl -fsSLO https://github.com/NormB/sipnab/releases/download/v$V/sipnab_${V}_amd64.deb
+curl -fsSL https://github.com/NormB/sipnab/releases/download/v$V/SHA256SUMS.txt \
+  | grep " sipnab_${V}_amd64.deb$" | sha256sum -c -
+sudo apt-get install -y ./sipnab_${V}_amd64.deb
+```
+
+## 3. Have sipnab write a vCon for every finished call
+
+sipnab's package runs it as the `sipnab` user under systemd. A drop-in adds
+three things to what it does:
+
+- **`--export-vcon-when "state == 'Completed'"`** picks the calls to write, in
+  the same language `--filter` uses ([Filter language](filter-dsl.md)). This one
+  writes every call that ended with a `BYE`; `state == 'Failed'` would write
+  the failed ones instead.
+- **`--export-vcon-dir /var/spool/sipnab-vcon`** is where the files go.
+- **`--retain-audio`** keeps each call's audio so that the vCon can carry it.
+  Without it the vCon holds the signaling only.
+
+For the audio to be there at all, sipnab has to capture it. By default it
+captures only the SIP ports, so give it a capture filter that also admits the
+media ports. rtpengine relays media on 30000-39999 in the vCon server guide:
+
+```bash
+# Run all of these, in order.
+sudo install -d -o sipnab -g sipnab -m 0750 /var/spool/sipnab-vcon
+sudo mkdir -p /etc/systemd/system/sipnab.service.d
+sudo tee /etc/systemd/system/sipnab.service.d/vcon.conf >/dev/null <<'EOF'
+[Service]
+ExecStart=
+ExecStart=/usr/bin/sipnab -N -d any --no-cli-print --syslog --metrics 127.0.0.1:9090 \
+  --retain-audio \
+  --export-vcon-when "state == 'Completed'" \
+  --export-vcon-dir /var/spool/sipnab-vcon \
+  "port 5060 or port 5090 or udp portrange 30000-39999"
+ReadWritePaths=/var/spool/sipnab-vcon
+EOF
+sudo systemctl daemon-reload
+sudo systemctl enable --now sipnab
+```
+
+sipnab needs `ReadWritePaths` because the unit makes the rest of the file system
+read-only to sipnab.
+
+Following [Let sipnab see and control TFPS](tfps-sipnab.md) as well? Both
+guides replace sipnab's `ExecStart` in a drop-in, and systemd uses the last
+`ExecStart=` it reads, taking drop-ins in file-name order. So one silently
+replaces the other. Put the flags from both into one drop-in instead.
+
+**When the file appears.** On a live capture, sipnab writes a call's vCon
+within about ten seconds of the call ending: it checks every five seconds, and
+waits until the call has been quiet for five. If you stop
+sipnab, it writes nothing more: calls that ended in the last few seconds before
+the stop are not written. Stopping means stopping, and sipnab keeps no call data
+behind.
+
+## 4. Install the forwarder
+
+sipnab never sends a vCon anywhere itself. `vcon_forward.py`, from sipnab's
+repository, posts each file in the directory to vcon-server's `sipnab` ingress
+list and deletes it once the server has taken it. It needs only Python's
+standard library.
+
+```bash
+# Run all of these, in order.
+V=$(curl -fsSL https://api.github.com/repos/NormB/sipnab/releases/latest \
+  | python3 -c 'import json,sys; print(json.load(sys.stdin)["tag_name"].lstrip("v"))')
+sudo install -d /usr/local/lib/sipnab
+sudo curl -fsSL -o /usr/local/lib/sipnab/vcon_forward.py \
+  https://raw.githubusercontent.com/NormB/sipnab/v$V/clients/python/vcon_forward.py
+KEY=$(sed -n 's/^  sipnab: "\(.*\)"/\1/p' /opt/vcon/config.yml)
+sudo sh -c "umask 077; printf 'VCON_INGRESS_TOKEN=%s\n' '$KEY' > /etc/sipnab/vcon-forward.env"
+sudo tee /etc/systemd/system/sipnab-vcon-forward.service >/dev/null <<'EOF'
+[Unit]
+Description=Forward sipnab vCons to the vCon server
+After=network-online.target sipnab.service
+Wants=network-online.target
+
+[Service]
+User=sipnab
+Group=sipnab
+EnvironmentFile=/etc/sipnab/vcon-forward.env
+ExecStart=/usr/bin/python3 /usr/local/lib/sipnab/vcon_forward.py \
+  --spool /var/spool/sipnab-vcon --url http://127.0.0.1:8000 --ingress-list sipnab
+Restart=on-failure
+RestartSec=10
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/spool/sipnab-vcon
+
+[Install]
+WantedBy=multi-user.target
+EOF
+sudo systemctl daemon-reload
+sudo systemctl enable --now sipnab-vcon-forward
+```
+
+The key lives in a file only root can read. systemd reads it before starting the
+forwarder, so it never appears on a command line.
+
+What the forwarder does with each file:
+
+| The server answers | The forwarder |
+|---|---|
+| `2xx` | deletes the file, unless sipnab replaced it during the send, in which case it sends the new one on the next pass |
+| `401`, `403` or `404` | stops: the key or the list name is wrong, and retrying would not help |
+| another `4xx` | moves the file to `rejected/` in the directory, for a person to read |
+| `5xx`, or no answer | keeps the file and tries again five seconds later |
+
+## 5. Place a call and find its vCon
+
+Place the test call from the vCon server guide. After about ten seconds:
+
+```bash
+# Run all of these, in order.
+sudo journalctl -u sipnab-vcon-forward -n 5
+sudo ls /var/spool/sipnab-vcon
+cd /opt/vcon
+docker compose exec -T postgres psql -U vcon -d vcon -c \
+  "select id, vcon_json->'attachments'->-1->>'body' as tags,
+          jsonb_array_length(vcon_json->'dialog') as dialogs
+     from vcons_observed order by created_at desc limit 5"
+```
+
+The forwarder logs `sent <file>` for each vCon, the directory is empty, and
+`vcons_observed` has the vCons tagged `["vcon_role:observer"]`.
+
+The test call makes two vCons in `vcons_observed`, not one. sipnab sees the
+call and also the SIPREC session OpenSIPS opens to the recorder, which is a SIP
+call of its own. The SIPREC session's first message goes to the recorder's port,
+5090, so this expression keeps the call and leaves the recording session out:
+
+```text
+state == 'Completed' and dst.port != 5090
+```
+
+## Run sipnab on a different machine
+
+sipnab has to see the calls, so it runs on a machine the SIP and media traffic
+reaches, or on one that receives a copy of it (a mirror port, or a HEP feed).
+The forwarder runs beside sipnab, because it reads sipnab's directory.
+
+On that machine, do steps 2, 3 and 4 as they are, with two changes:
+
+- In the forwarder's unit, point `--url` at the vCon server:
+  `--url http://192.0.2.10:8000`.
+- Copy the `sipnab` key from the vCon server's `config.yml` into
+  `/etc/sipnab/vcon-forward.env` by hand, as `VCON_INGRESS_TOKEN=<key>`.
+
+On the vCon server, port 8000 is now reachable from the network. Allow it only
+from the machines that post vCons. The key is for posting to one list. The
+`CONSERVER_API_TOKEN` in `/opt/vcon/.env` reads every vCon, so it never leaves
+the vCon server.
+
+## When something does not work
+
+- **The directory stays empty after a call.** Check that the call matches the
+  expression: `sipnab -N -I` on a capture of it, with `--report`, shows its
+  state. On a stopped sipnab, see "When the file appears" above.
+- **The vCon has no audio.** Either `--retain-audio` is missing, or the capture
+  filter does not admit the media ports.
+- **The forwarder stops with `answered 403`.** The key in
+  `/etc/sipnab/vcon-forward.env` does not match the `sipnab` key in
+  `config.yml`.
+- **Files pile up in `rejected/`.** vcon-server refused them. Its log says why:
+  `docker compose logs conserver`.
+
+---
+
+<!-- source: docs/tfps.md -->
+
+# Add TFPS to an OpenSIPS voice stack
+
+[TFPS](https://github.com/sippulse/tfps) watches the SIP traffic arriving at a
+machine and blocks the sources that are attacking it: scanners such as
+SIPVicious, password guessers, and callers trying to run up international fraud.
+It blocks them in the kernel with an XDP program, before the packets reach your
+SIP server. It does not sit in the call path and needs nothing from OpenSIPS. It
+reads a copy of the traffic, the way a capture tool does.
+
+Install it on the machine that receives SIP from the Internet, which is usually
+the machine running OpenSIPS. This guide does not use sipnab. When TFPS is working,
+[Let sipnab see and control TFPS](tfps-sipnab.md) adds sipnab.
+
+Two terms used below:
+
+- **XDP** (eXpress Data Path) is a hook in the Linux network driver where a small
+  program can drop a packet before the rest of the kernel sees it. TFPS's program
+  drops packets to or from your SIP ports whose source it has blocked, and passes
+  everything else, so a blocked address can still reach SSH.
+- **BTF** (BPF Type Format) is a description of the running kernel's data
+  structures, at `/sys/kernel/btf/vmlinux`. TFPS compiles its XDP program against
+  it during the install, so the kernel needs BTF built in.
+
+## Tested on
+
+Every command on this page ran as written, in order, on 2026-09-25 on a
+clean Ubuntu 24.04.5 virtual machine (kernel `6.8.0-139-generic`), and step by
+step on a clean Debian 13 one (kernel `6.12.63+deb13-amd64`). Both were x86_64
+with 2 cores and 2 GB of memory, and used the
+[TFPS v0.2.1](https://github.com/sippulse/tfps/releases/tag/v0.2.1) release.
+TFPS's prebuilt binaries are x86_64 only.
+
+The examples use `192.0.2.20` for the TFPS machine and `198.51.100.60` for a second
+machine that plays the attacker. Replace both with yours.
+
+## 1. Check the kernel
+
+TFPS needs Linux 5.15 or newer, built with BTF:
+
+```bash
+# Run all of these, in order.
+uname -r
+ls -l /sys/kernel/btf/vmlinux
+```
+
+The file must exist. Debian 11, Ubuntu 22.04 and later distribution kernels have
+it.
+
+## 2. Install TFPS
+
+Download the release and check it against the checksum published beside it:
+
+```bash
+# Run all of these, in order.
+mkdir -p ~/tfps && cd ~/tfps
+curl -fsSLO https://github.com/sippulse/tfps/releases/download/v0.2.1/tfps-x86_64-linux-musl.tar.gz
+curl -fsSLO https://github.com/sippulse/tfps/releases/download/v0.2.1/tfps-x86_64-linux-musl.tar.gz.sha256
+sha256sum -c tfps-x86_64-linux-musl.tar.gz.sha256
+tar xzf tfps-x86_64-linux-musl.tar.gz
+```
+
+`sha256sum` prints `tfps-x86_64-linux-musl.tar.gz: OK`.
+
+The installer compiles the XDP program on this machine. It installs `clang` and
+`bpftool` for that, but not the BPF headers the program includes, so install
+them first:
+
+```bash
+sudo apt-get install -y libbpf-dev
+```
+
+Without `libbpf-dev` the install stops at `fatal error: 'bpf/bpf_helpers.h' file
+not found`.
+
+Run the installer from the tarball you checked. Pointing it at the file with
+`TFPS_TARBALL` makes it install exactly those bytes. The one-line
+`curl ... | sh` form on TFPS's site fetches master's installer script instead:
+
+```bash
+# Run all of these, in order.
+cd ~/tfps
+sudo TFPS_TARBALL="$PWD/tfps-x86_64-linux-musl.tar.gz" sh tfps-x86_64-linux-musl/packaging/install.sh
+```
+
+It ends with `tfps is running`. What it installed:
+
+| Path | What |
+|---|---|
+| `/usr/local/bin/tfps` | the daemon |
+| `/usr/local/bin/tfps_ctl` | the command you use to ask it questions and lift blocks |
+| `/usr/local/lib/tfps/tfps_xdp.o` | the XDP program, compiled for this kernel |
+| `/etc/systemd/system/tfps.service` | the unit; the installer replaces it on upgrade |
+| `/etc/tfps/config.json` | settings, written once and never overwritten |
+| `/var/lib/tfps/tfps.db` | what TFPS has learned, and its audit log |
+
+## 3. Check that it is enforcing
+
+```bash
+# Run all of these, in order.
+systemctl is-active tfps
+sudo journalctl -u tfps -n 30
+sudo tfps_ctl status
+```
+
+The journal's startup report names the interface TFPS chose (the one carrying
+the default route), the mode, `PREVENTION`, and where the XDP program went, for
+example `XDP native (DRV) on eth0`. It also lists the addresses it never
+blocks. Out of the box that is only this machine's own addresses.
+
+## 4. Tell it which sources to trust
+
+A carrier that delivers calls to you, a monitoring system, and your own
+management network should never lose access. List them in `ignoreip` in
+`/etc/tfps/config.json`, as single addresses or ranges. This adds a management
+range and one carrier to the settings the installer wrote:
+
+```bash
+# Run all of these, in order.
+sudo tee /etc/tfps/config.json >/dev/null <<'EOF'
+{
+  "ports": [5060],
+  "intl_prefixes": ["+", "00", "011", "9011"],
+  "learn_days": 30,
+  "block_ttl": 3600,
+  "stats_every": 60,
+  "ignoreip": ["192.168.10.0/24", "203.0.113.7"]
+}
+EOF
+sudo systemctl restart tfps
+sleep 2
+sudo journalctl -u tfps -n 30 | grep -A4 ignoreip | tail -5
+```
+
+`ports` are the SIP ports TFPS watches and blocks on. List `5061` as well if
+you take SIP over TLS. TFPS detects attacks only in SIP it can read, which means
+UDP: it cannot read encrypted SIP, and it does not reassemble SIP over TCP. A
+source it has blocked, though, loses every listed port, TCP and TLS
+included. TFPS's README lists these limits under "What it does not do".
+`block_ttl` is how long a block lasts, in seconds.
+
+Do not list the address of a firewall that forwards SIP to this machine unless
+it rewrites the source address, in which case fix the forward instead. With a
+plain port forward TFPS sees each attacker's own address. If the firewall
+replaces it with its own, every attacker looks like the firewall, and trusting
+the firewall trusts them all.
+
+## 5. Watch it block an attacker
+
+From a second machine, send one SIP request the way a scanner does, with
+SIPVicious's `friendly-scanner` user agent, then a second one. This uses only
+Python's standard library:
+
+```bash
+python3 - <<'EOF'
+import socket, time, uuid
+TARGET = ("192.0.2.20", 5060)
+def options(n):
+    cid = uuid.uuid4().hex
+    return (f"OPTIONS sip:100@{TARGET[0]} SIP/2.0\r\n"
+            f"Via: SIP/2.0/UDP 198.51.100.60:5098;branch=z9hG4bK{cid}\r\n"
+            "Max-Forwards: 70\r\n"
+            f"From: <sip:100@198.51.100.60>;tag={n}\r\n"
+            f"To: <sip:100@{TARGET[0]}>\r\n"
+            f"Call-ID: {cid}\r\nCSeq: 1 OPTIONS\r\n"
+            "User-Agent: friendly-scanner\r\nContent-Length: 0\r\n\r\n").encode()
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+s.sendto(options(1), TARGET)
+time.sleep(2)
+s.sendto(options(2), TARGET)
+EOF
+```
+
+Then, on the TFPS machine:
+
+```bash
+# Run all of these, in order.
+sudo tfps_ctl banned --why
+sudo tfps_ctl stats | head -6
+sudo journalctl -u tfps -n 5 | grep BLOCKED
+```
+
+The first request got the sender blocked for an hour, and the kernel dropped the
+second before anything else saw it:
+
+```text
+SOURCE           EXPIRES IN  REASON
+198.51.100.60               59m  user-agent (friendly)
+```
+
+```text
+  seen on SIP ports : 2
+  dropped by XDP    : 1 (50.0% — gone before sngrep)
+```
+
+The test has to come from a second machine: TFPS never blocks the machine it
+runs on.
+
+## 6. Operate it
+
+`tfps_ctl` reads and changes what the running daemon holds. Reading or changing
+blocks needs root.
+
+| Command | What it does |
+|---|---|
+| `sudo tfps_ctl status` | what is running, what TFPS blocks, how fresh the learned state is |
+| `sudo tfps_ctl stats` | every counter: kernel drops, the traffic mix, what got blocked |
+| `sudo tfps_ctl banned --why` | every blocked source, the time left and the reason |
+| `sudo tfps_ctl unban 198.51.100.60` | lift a block; `--all` lifts every one |
+| `sudo tfps_ctl ban 192.0.2.10 --ttl 600` | block a source by hand for 600 seconds; `--ttl 0` is forever |
+| `sudo tfps_ctl log --limit 20` | the audit log of blocks, newest first |
+
+Blocks live in the kernel. They last while `tfps` runs, and `tfps_ctl ban` and
+`unban` work only while it is running.
+
+**Observe before you enforce.** For the first days on a busy machine, you can
+have TFPS decide without blocking. The journal records every decision as `WOULD BLOCK`
+instead. Add a drop-in rather than editing the unit, because an upgrade replaces
+the unit:
+
+```bash
+sudo systemctl edit tfps
+```
+
+```ini
+[Service]
+ExecStart=
+ExecStart=/usr/local/bin/tfps --no-enforce
+```
+
+In this mode TFPS attaches no XDP program, so `tfps_ctl banned` answers `no loaded
+eBPF map called 'blocked'`: there is nothing to list. The journal holds the
+decisions, as `WOULD BLOCK peer=... (observe only)`.
+
+To start blocking, remove the drop-in and restart:
+
+```bash
+# Run all of these, in order.
+sudo systemctl revert tfps
+sudo systemctl restart tfps
+```
+
+**Upgrade** by running the installer again with the newer tarball. It replaces
+the binaries, the XDP program and the unit, and keeps `/etc/tfps/config.json`
+and `/var/lib/tfps`.
+
+**Uninstall.** Stopping the service removes the XDP program, so no block
+outlives it:
+
+```bash
+# Run all of these, in order.
+sudo systemctl disable --now tfps
+sudo rm -f /etc/systemd/system/tfps.service /usr/local/bin/tfps /usr/local/bin/tfps_ctl
+sudo rm -rf /usr/local/lib/tfps
+sudo systemctl daemon-reload
+```
+
+`/var/lib/tfps` and `/etc/tfps` stay behind, so that a reinstall keeps what TFPS
+learned. Remove them too if you no longer want it:
+
+```bash
+sudo rm -rf /var/lib/tfps /etc/tfps
+```
+
+## When something does not work
+
+- **`fatal error: 'bpf/bpf_helpers.h' file not found`.** Install `libbpf-dev`
+  and run the installer again.
+- **`no /sys/kernel/btf/vmlinux`.** The kernel has no BTF or is older than 5.15.
+  Use a distribution kernel.
+- **Nothing is ever blocked.** Check the startup report's `ignoreip` list and
+  where your SIP arrives from. If a firewall forwards SIP with its own address as
+  the source, TFPS sees one source, and `ignoreip` may already trust it.
+- **You blocked yourself.** A block covers only the SIP ports, so SSH still
+  works: `sudo tfps_ctl unban <your address>`.
+
+---
+
+<!-- source: docs/tfps-sipnab.md -->
+
+# Let sipnab see and control TFPS
+
+[TFPS](tfps.md) blocks attacking SIP sources in the kernel. sipnab can ask it
+what it is blocking and why, and can block or unblock an address on your
+behalf, through its REST API and its MCP tools. sipnab never blocks anything on
+its own: every ban through sipnab is one you ask for.
+
+This guide starts where [Add TFPS to an OpenSIPS voice stack](tfps.md) ends,
+with TFPS installed and enforcing. It covers sipnab on the same machine as TFPS,
+and sipnab on a different machine.
+
+## What sipnab asks TFPS
+
+sipnab runs `tfps_ctl`, TFPS's own command, and reads its answers:
+
+| sipnab route | MCP tool | Runs | Needs |
+|---|---|---|---|
+| `GET /v1/tfps/status` | `tfps_status` | `tfps_ctl status` | the block map, to report enforcement |
+| `GET /v1/tfps/banned` | `tfps_banned` | `tfps_ctl banned` | the block map |
+| `GET /v1/tfps/labels` | `tfps_labels` | `tfps_ctl log` | the database |
+| `POST /v1/tfps/ban` | `tfps_ban` | `tfps_ctl ban` | the block map and `/etc/tfps/config.json` |
+| `POST /v1/tfps/unban` | `tfps_unban` | `tfps_ctl unban` | the block map |
+| `GET /v1/tfps/dropped` | `tfps_dropped` | nothing yet | a TFPS release that reports its kernel drops; none does yet, so this answers `502` |
+
+The [REST API reference](rest-api.md) gives every request and response.
+
+## Tested on
+
+Every command on this page ran as written, in order, on 2026-09-25 and
+2026-09-26, on x86_64 virtual machines. The same-machine setup ran on Ubuntu
+24.04.5. The different-machine setup ran with sipnab on Debian 13, reaching
+TFPS on the Ubuntu one over SSH. Both used sipnab's `.deb`.
+
+## 1. Build TFPS from master
+
+sipnab reads `tfps_ctl`'s answers as JSON, asking with `--json`. That option is
+on TFPS's master branch, merged 2026-09-18 as
+[`984577dc`](https://github.com/sippulse/tfps/commit/984577dc), and is in no
+release yet: v0.2.1 answers `unknown option`. Until a release carries it, build
+master. The installer builds from a checkout and upgrades the release in place,
+keeping `/etc/tfps/config.json` and what TFPS has learned:
+
+```bash
+# Run all of these, in order.
+sudo apt-get install -y git libbpf-dev
+sudo git clone https://github.com/sippulse/tfps.git /usr/local/src/tfps
+sudo git -C /usr/local/src/tfps checkout 984577dc
+cd /usr/local/src/tfps
+sudo TMPDIR=/var/tmp sh packaging/install.sh
+sudo tfps_ctl status --json
+```
+
+The build downloads a temporary Rust toolchain, compiles, installs and removes
+the toolchain again. It needs about 1.5 GB of free memory.
+
+`TMPDIR=/var/tmp` matters on Debian 13, where `/tmp` is a RAM disk sized to half
+the memory: on a 2 GB machine the toolchain does not fit there and the build
+fails with `No space left on device`.
+
+The last command prints one line of JSON, starting
+`{"enforcement":"active",...`. This build still calls itself `0.2.1` in that
+line, because master has not changed its version number since the release.
+
+## 2. Install sipnab
+
+```bash
+# Run all of these, in order.
+V=$(curl -fsSL https://api.github.com/repos/NormB/sipnab/releases/latest \
+  | python3 -c 'import json,sys; print(json.load(sys.stdin)["tag_name"].lstrip("v"))')
+curl -fsSLO https://github.com/NormB/sipnab/releases/download/v$V/sipnab_${V}_amd64.deb
+curl -fsSL https://github.com/NormB/sipnab/releases/download/v$V/SHA256SUMS.txt \
+  | grep " sipnab_${V}_amd64.deb$" | sha256sum -c -
+sudo apt-get install -y ./sipnab_${V}_amd64.deb
+```
+
+The package runs sipnab as the `sipnab` user, capturing on every interface.
+
+## 3. sipnab on the same machine as TFPS
+
+**Turn on the REST API.** Keep the key out of the command line, where every user
+on the machine could read it, by putting it in a file only root can read.
+systemd reads it before it starts sipnab:
+
+```bash
+# Run all of these, in order.
+sudo sh -c 'umask 077; printf "SIPNAB_API_KEY=%s\n" "$(openssl rand -hex 32)" > /etc/sipnab/api.env'
+sudo mkdir -p /etc/systemd/system/sipnab.service.d
+sudo tee /etc/systemd/system/sipnab.service.d/tfps.conf >/dev/null <<'EOF'
+[Service]
+EnvironmentFile=/etc/sipnab/api.env
+ExecStart=
+ExecStart=/usr/bin/sipnab -N -d any --no-cli-print --syslog --metrics 127.0.0.1:9090 \
+  --api 127.0.0.1:8080 --tfps-ctl /usr/local/bin/tfps_ctl
+EOF
+```
+
+The API listens on `127.0.0.1` only. Put a TLS proxy in front of it before you
+open it to the network.
+
+Following [Send sipnab's vCons to a vCon server](vcon-sipnab.md) as well? Both
+guides replace sipnab's `ExecStart` in a drop-in, and systemd uses the last
+`ExecStart=` it reads, taking drop-ins in file-name order. So one silently
+replaces the other. Put the flags from both into one drop-in instead.
+
+**Give sipnab what `tfps_ctl` needs.** sipnab runs without root. The `tfps_ctl`
+it starts inherits sipnab's privileges, and TFPS's commands need more than a
+capture does:
+
+- **To read or change blocks,** `tfps_ctl` has to find TFPS's block map in the
+  kernel by name. That takes `CAP_BPF` and `CAP_SYS_ADMIN`. With `CAP_BPF` alone
+  it fails with `no loaded eBPF map called 'blocked'`.
+- **To ban,** `tfps_ctl` reads `/etc/tfps/config.json`, to refuse addresses you
+  told TFPS to trust. The file is readable by root only.
+
+```bash
+# Run all of these, in order.
+sudo tee /etc/systemd/system/sipnab.service.d/tfps-caps.conf >/dev/null <<'EOF'
+[Service]
+AmbientCapabilities=CAP_NET_RAW CAP_NET_ADMIN CAP_BPF CAP_SYS_ADMIN
+CapabilityBoundingSet=CAP_NET_RAW CAP_NET_ADMIN CAP_BPF CAP_SYS_ADMIN
+EOF
+sudo chgrp sipnab /etc/tfps/config.json
+sudo chmod 640 /etc/tfps/config.json
+sudo systemctl daemon-reload
+sudo systemctl restart sipnab
+```
+
+Know what you are granting. `CAP_SYS_ADMIN` is a broad capability, and sipnab
+parses traffic from the Internet. If you only want to *read* what TFPS decided,
+skip the capabilities: `labels` works without them, and `status` still answers,
+reporting enforcement as `inactive` because it cannot see the map. The
+[different-machine setup](#4-sipnab-on-a-different-machine) below grants sipnab
+nothing, and works on one machine too.
+
+The installer never rewrites `/etc/tfps/config.json`, so the group you gave it
+survives TFPS upgrades. Anything secret in that file, such as an APIBAN key, is
+now readable by sipnab.
+
+**Try it.**
+
+```bash
+# Run all of these, in order.
+KEY=$(sudo sed -n 's/^SIPNAB_API_KEY=//p' /etc/sipnab/api.env)
+curl -s -w '\n' -H "Authorization: Bearer $KEY" 127.0.0.1:8080/v1/tfps/status
+curl -s -w '\n' -X POST -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' \
+  -d '{"ip":"198.51.100.20","ttl_secs":600}' 127.0.0.1:8080/v1/tfps/ban
+curl -s -w '\n' -H "Authorization: Bearer $KEY" 127.0.0.1:8080/v1/tfps/banned
+curl -s -w '\n' -X POST -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' \
+  -d '{"ip":"198.51.100.20"}' 127.0.0.1:8080/v1/tfps/unban
+```
+
+The status reports `"enforcement":"active"`, the ban answers `"applied":true`,
+`banned` lists `198.51.100.20` with its expiry, and the unban answers
+`"applied":true`. TFPS refuses to ban its own machine: the answer is
+`"applied":false` with `"refused":"local"`.
+
+## 4. sipnab on a different machine
+
+sipnab starts `tfps_ctl` as a local program, and does not care whether that
+program is TFPS's or a script. On the sipnab machine, a two-line script that
+runs `tfps_ctl` on the TFPS machine over SSH takes its place. On the TFPS
+machine, a dedicated account's key can run `tfps_ctl` and nothing else.
+
+This way sipnab needs no extra privileges at all. The one privileged thing, a
+`sudo` rule for `tfps_ctl`, stays on the TFPS machine.
+
+**On the sipnab machine,** make a key for the connection:
+
+```bash
+# Run all of these, in order.
+sudo install -d -o sipnab -g sipnab -m 0700 /etc/sipnab/tfps
+sudo -u sipnab ssh-keygen -q -t ed25519 -N '' -C sipnab-tfps -f /etc/sipnab/tfps/key
+sudo cat /etc/sipnab/tfps/key.pub
+```
+
+**On the TFPS machine,** create the account, a forced command that passes the
+arguments to `tfps_ctl` and nothing else, and a `sudo` rule for `tfps_ctl`
+alone. Paste the public key from the last step where it says `PUBLIC-KEY`:
+
+```bash
+# Run all of these, in order.
+sudo useradd --system --create-home --home-dir /var/lib/sipnabctl --shell /bin/sh sipnabctl
+sudo install -d -m 0755 /usr/local/lib/tfps-remote
+sudo tee /usr/local/lib/tfps-remote/serve >/dev/null <<'EOF'
+#!/bin/sh
+# Forced command for sipnab's key: run tfps_ctl with the arguments sipnab
+# sent, and nothing else. set -f stops the shell expanding * or ? in them;
+# the arguments are split on spaces and never evaluated.
+set -f
+exec sudo -n /usr/local/bin/tfps_ctl $SSH_ORIGINAL_COMMAND
+EOF
+sudo chmod 0755 /usr/local/lib/tfps-remote/serve
+echo 'sipnabctl ALL=(root) NOPASSWD: /usr/local/bin/tfps_ctl' | sudo tee /etc/sudoers.d/sipnabctl >/dev/null
+sudo chmod 0440 /etc/sudoers.d/sipnabctl
+sudo visudo -cf /etc/sudoers.d/sipnabctl
+sudo install -d -o sipnabctl -g sipnabctl -m 0700 /var/lib/sipnabctl/.ssh
+echo 'restrict,command="/usr/local/lib/tfps-remote/serve" PUBLIC-KEY' \
+  | sudo tee /var/lib/sipnabctl/.ssh/authorized_keys >/dev/null
+sudo chown sipnabctl: /var/lib/sipnabctl/.ssh/authorized_keys
+sudo chmod 0600 /var/lib/sipnabctl/.ssh/authorized_keys
+```
+
+`restrict` turns off port forwarding, agent forwarding and terminals for the
+key, and `command=` means the key runs `serve` whatever the other side asks for.
+An attempt to slip in a second command, such as `status;id`, reaches `tfps_ctl`
+as one unknown argument, and `tfps_ctl` refuses it.
+
+**Back on the sipnab machine,** write the script that stands in for `tfps_ctl`,
+record the TFPS machine's host key, and try it. Replace `192.0.2.20` with the
+TFPS machine's address:
+
+```bash
+# Run all of these, in order.
+sudo tee /etc/sipnab/tfps/tfps_ctl >/dev/null <<'EOF'
+#!/bin/sh
+exec ssh -o BatchMode=yes -o UserKnownHostsFile=/etc/sipnab/tfps/known_hosts \
+  -i /etc/sipnab/tfps/key sipnabctl@192.0.2.20 -- "$@"
+EOF
+sudo chmod 0755 /etc/sipnab/tfps/tfps_ctl
+ssh-keyscan -t ed25519 192.0.2.20 | sudo -u sipnab tee /etc/sipnab/tfps/known_hosts >/dev/null
+sudo -u sipnab /etc/sipnab/tfps/tfps_ctl status --json
+```
+
+The last line prints TFPS's status as JSON. Check the host key that
+`ssh-keyscan` recorded against the TFPS machine's own
+(`ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` there) before you rely on it.
+
+Then point sipnab at the script. Use the API key file from
+[section 3](#3-sipnab-on-the-same-machine-as-tfps), and not the capability
+drop-in:
+
+```bash
+# Run all of these, in order.
+sudo sh -c 'umask 077; printf "SIPNAB_API_KEY=%s\n" "$(openssl rand -hex 32)" > /etc/sipnab/api.env'
+sudo mkdir -p /etc/systemd/system/sipnab.service.d
+sudo tee /etc/systemd/system/sipnab.service.d/tfps.conf >/dev/null <<'EOF'
+[Service]
+EnvironmentFile=/etc/sipnab/api.env
+ReadWritePaths=/etc/sipnab/tfps
+ExecStart=
+ExecStart=/usr/bin/sipnab -N -d any --no-cli-print --syslog --metrics 127.0.0.1:9090 \
+  --api 127.0.0.1:8080 --tfps-ctl /etc/sipnab/tfps/tfps_ctl
+EOF
+sudo systemctl daemon-reload
+sudo systemctl restart sipnab
+```
+
+The `curl` commands from section 3 work unchanged.
+
+## When something does not work
+
+- **`unknown option: --json`.** The TFPS in use is a release. Build master, as
+  in step 1.
+- **`no loaded eBPF map called 'blocked' — is tfps running, and are you root?`**
+  Either TFPS is not running, or sipnab lacks `CAP_BPF` and `CAP_SYS_ADMIN`.
+- **`reading /etc/tfps/config.json: Permission denied`.** Give the file to the
+  `sipnab` group, as in section 3.
+- **`/v1/tfps/dropped` answers `502`.** Expected: no TFPS build has `dropped`
+  yet.
+- **`installed: false`.** sipnab cannot find `tfps_ctl`. Check the path given to
+  `--tfps-ctl`.
+
+---
+
 <!-- source: docs/internals/domain-primer.md -->
 
 # SIP and RTP: the model the code assumes

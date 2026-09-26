@@ -723,6 +723,7 @@ UUID
 UUIDs
 valgrind
 validator
+Valkey
 vCon
 vCons
 Vec

@@ -1029,7 +1029,12 @@ fn wiki_intra_docs_links_resolve() {
     // +1, the gate-roster row for cookbook_recipes_test linking the cookbook
     // it guards. Attributed by measurement: with testing.md swapped back to
     // HEAD the extractor finds 998.
-    const EXPECTED_WIKI_LINKS: usize = 999;
+    // 999 -> 1016: the four voice-stack guides (vcon-server.md, vcon-sipnab.md,
+    // tfps.md, tfps-sipnab.md) +13 and their docs/README.md index entries +4.
+    // Attributed by measurement: with the four pages set aside the extractor
+    // finds 1003. 1016 -> 1018: the note on each sipnab guide that links to the
+    // other one, about combining their ExecStart drop-ins.
+    const EXPECTED_WIKI_LINKS: usize = 1018;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe 6d in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file
@@ -2208,7 +2213,9 @@ fn every_docs_page_is_linked_from_the_index() {
     // added file, no others.
     // 52 -> 53: docs/client-examples.md, linked from the documentation index.
     // 53 -> 55: docs/glossary.md and docs/first-cli-triage.md.
-    const EXPECTED_DOCS_PAGES: usize = 55;
+    // 55 -> 59: the four voice-stack guides, vcon-server.md, vcon-sipnab.md,
+    // tfps.md and tfps-sipnab.md.
+    const EXPECTED_DOCS_PAGES: usize = 59;
     // Links are extracted from PROSE, not from the file's bytes. A raw
     // `contains("](backers.md")` counted a link that had been wrapped in an
     // HTML comment: the substring was still there, the page was reachable from

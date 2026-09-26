@@ -109,6 +109,9 @@ const NOT_A_SUFFIX: &[&str] = &[
     // and it appears on almost every command line this project documents.
     "disable",
     "wise",
+    // A company name, not a word: Sipwise, which publishes rtpengine at
+    // github.com/sipwise/rtpengine, as the voice-stack guides link it.
+    "sipwise",
 ];
 
 /// Paths the scan does not read, each with the reason it cannot.
