@@ -19,7 +19,7 @@
 # this repository can pin those. The trust boundary for fuzzing is OSS-Fuzz's
 # infrastructure either way; the pin here buys a reproducible build of the
 # targets, not an unbroken chain.
-FROM gcr.io/oss-fuzz-base/base-builder-rust:v1@sha256:433319ea1a6bbea6c1db1915a5d385021908cc62026d9f0efda2270ef6060de3
+FROM gcr.io/oss-fuzz-base/base-builder-rust:v1@sha256:bc7d32d2a86bbe8afa49fdaa1a7665d17125cae20bfdc581e5335ef97aebcd2a
 
 # The builder image's Rust is a year behind sipnab's. It ships
 # `nightly-2025-09-05` --- rustc 1.91.0-nightly --- and this crate's
