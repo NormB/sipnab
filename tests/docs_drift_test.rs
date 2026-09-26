@@ -1194,6 +1194,8 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             "website/content/docs/vcon-server.md",
             "docs/tfps-sipnab.md",
             "website/content/docs/tfps-sipnab.md",
+            "docs/rtpengine-relay.md",
+            "website/content/docs/rtpengine-relay.md",
         ],
     ),
     // useradd's, creating the system accounts the voice-stack guides run services as.
@@ -1204,6 +1206,8 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             "website/content/docs/vcon-server.md",
             "docs/tfps-sipnab.md",
             "website/content/docs/tfps-sipnab.md",
+            "docs/rtpengine-relay.md",
+            "website/content/docs/rtpengine-relay.md",
         ],
     ),
     // useradd's, creating the system accounts the voice-stack guides run services as.
@@ -1214,6 +1218,8 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             "website/content/docs/vcon-server.md",
             "docs/tfps-sipnab.md",
             "website/content/docs/tfps-sipnab.md",
+            "docs/rtpengine-relay.md",
+            "website/content/docs/rtpengine-relay.md",
         ],
     ),
     // useradd's, creating the system accounts the voice-stack guides run services as.
@@ -1231,6 +1237,8 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             "website/content/docs/vcon-sipnab.md",
             "docs/tfps.md",
             "website/content/docs/tfps.md",
+            "docs/rtpengine-relay.md",
+            "website/content/docs/rtpengine-relay.md",
         ],
     ),
     // tfps and tfps_ctl's (TFPS, the XDP blocker the TFPS guides install).
@@ -1247,7 +1255,12 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
     // apt-get's and dpkg's, installing the voice stack's build tools.
     (
         "no-install-recommends",
-        &["docs/vcon-server.md", "website/content/docs/vcon-server.md"],
+        &[
+            "docs/vcon-server.md",
+            "website/content/docs/vcon-server.md",
+            "docs/rtpengine-relay.md",
+            "website/content/docs/rtpengine-relay.md",
+        ],
     ),
     // apt-get's and dpkg's, installing the voice stack's build tools.
     (
@@ -3673,7 +3686,9 @@ fn no_documentation_table_repeats_a_row() {
     // build-site-pages.py PAGES and listed under "Start here" in the docs nav.
     // 229 -> 237: the four voice-stack guides (vcon-server, vcon-sipnab, tfps,
     // tfps-sipnab) under docs/ and their four generated site pages.
-    const EXPECTED_MARKDOWN_FILES: usize = 237;
+    // 237 -> 241: the two rtpengine guides (rtpengine-relay, rtpengine-sipnab)
+    // under docs/ and their two generated site pages; the four added files.
+    const EXPECTED_MARKDOWN_FILES: usize = 241;
     /// How many tables this gate expects to walk.
     ///
     /// Named rather than written twice. The count and the failure message
@@ -4117,7 +4132,10 @@ fn no_documentation_table_repeats_a_row() {
     // and its site mirror website/content/docs/examples.md (EX1). Attributed
     // the same way: one separator row added in each, one in llms-full.txt
     // (not walked), none removed.
-    const EXPECTED_TABLES: usize = 994;
+    // 994 -> 998: docs/rtpengine-relay.md's two tables (the parts, and the
+    // versions it was tested on) and the same two on its site page;
+    // docs/rtpengine-sipnab.md has none.
+    const EXPECTED_TABLES: usize = 998;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

@@ -8,6 +8,26 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Added
+
+- **Two voice-stack guides for rtpengine.** [Add rtpengine to an OpenSIPS
+  voice stack](https://sipnab.com/docs/rtpengine-relay/) builds rtpengine and
+  OpenSIPS, anchors every call's media on the relay and proves it with a test
+  call, with no sipnab involved. [Let sipnab name rtpengine's
+  media](https://sipnab.com/docs/rtpengine-sipnab/) has sipnab name the media
+  on the relay: by asking the relay about calls already up, and from the
+  relay's mirrored control plane when the relay has a machine of its own. Every
+  command ran as written on clean Debian 13 and Ubuntu 24.04, and the two-machine
+  case on two machines. The home page's voice-stack section links both.
+
+### Fixed
+
+- **The vCon server guide's uninstall removes rtpengine's build dependencies.**
+  It purged the two rtpengine packages and left `ngcp-rtpengine-build-deps`,
+  and with it every package the build had pulled in.
+
 ## [0.5.192] - 2026-09-26
 
 ### Added

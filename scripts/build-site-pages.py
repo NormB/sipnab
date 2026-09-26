@@ -482,6 +482,25 @@ PAGES: list[tuple[str, str, str, str, int, str]] = [
         "Have sipnab report what TFPS blocks and ban or unban on request, over "
         "REST and MCP, with TFPS on the same machine or reached over SSH.",
     ),
+    (
+        "docs/rtpengine-relay.md",
+        "rtpengine-relay.md",
+        "Add rtpengine to an OpenSIPS voice stack",
+        "Add rtpengine to an OpenSIPS voice stack",
+        44,
+        "Build rtpengine and OpenSIPS, anchor every call's media on the relay, "
+        "prove it with a test call, and operate it. No sipnab involved.",
+    ),
+    (
+        "docs/rtpengine-sipnab.md",
+        "rtpengine-sipnab.md",
+        "Let sipnab name rtpengine's media",
+        "Let sipnab name rtpengine's media",
+        45,
+        "Have sipnab name the media on an rtpengine relay, from the relay's "
+        "mirrored control plane or by asking it, with the relay on the same "
+        "machine as OpenSIPS or its own.",
+    ),
 ]
 
 BANNER = (

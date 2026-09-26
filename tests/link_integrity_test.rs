@@ -1034,7 +1034,11 @@ fn wiki_intra_docs_links_resolve() {
     // Attributed by measurement: with the four pages set aside the extractor
     // finds 1003. 1016 -> 1018: the note on each sipnab guide that links to the
     // other one, about combining their ExecStart drop-ins.
-    const EXPECTED_WIKI_LINKS: usize = 1018;
+    // 1018 -> 1028: the rtpengine guides. rtpengine-relay.md links
+    // rtpengine-sipnab.md twice and its own last section once;
+    // rtpengine-sipnab.md links rtpengine-relay.md and rtpengine.md five
+    // times; docs/README.md lists both pages.
+    const EXPECTED_WIKI_LINKS: usize = 1028;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe 6d in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file
@@ -2215,7 +2219,8 @@ fn every_docs_page_is_linked_from_the_index() {
     // 53 -> 55: docs/glossary.md and docs/first-cli-triage.md.
     // 55 -> 59: the four voice-stack guides, vcon-server.md, vcon-sipnab.md,
     // tfps.md and tfps-sipnab.md.
-    const EXPECTED_DOCS_PAGES: usize = 59;
+    // 59 -> 61: docs/rtpengine-relay.md and docs/rtpengine-sipnab.md.
+    const EXPECTED_DOCS_PAGES: usize = 61;
     // Links are extracted from PROSE, not from the file's bytes. A raw
     // `contains("](backers.md")` counted a link that had been wrapped in an
     // HTML comment: the substring was still there, the page was reachable from

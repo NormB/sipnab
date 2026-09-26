@@ -342,6 +342,8 @@ pages = [
   { path = "docs/vcon-sipnab.md", menu = true },
   { path = "docs/tfps.md", menu = true },
   { path = "docs/tfps-sipnab.md", menu = true },
+  { path = "docs/rtpengine-relay.md", menu = true },
+  { path = "docs/rtpengine-sipnab.md", menu = true },
 ]
 
 [[extra.docs_nav]]

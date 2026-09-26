@@ -670,14 +670,20 @@ docker compose exec -T postgres pg_dump -U vcon vcon | gzip > vcon-$(date +%F).s
 ```
 
 **Uninstall.** `docker compose down -v` removes the containers *and* their
-volumes, which is every stored vCon:
+volumes, which is every stored vCon. The rtpengine build installed its build
+dependencies through one package, `ngcp-rtpengine-build-deps`. Purging it and
+running `autoremove` removes them. `autoremove` also removes any other package
+that nothing depends on any more, so on a machine that runs other software,
+drop `-y` and read its list first.
+
 
 ```bash
 # Run all of these, in order.
 cd /opt/siprec && docker compose down
 cd /opt/vcon && docker compose down -v
 sudo systemctl disable --now opensips ngcp-rtpengine-daemon
-sudo apt-get purge -y ngcp-rtpengine-daemon ngcp-rtpengine-utils
+sudo apt-get purge -y ngcp-rtpengine-daemon ngcp-rtpengine-utils ngcp-rtpengine-build-deps
+sudo apt-get autoremove -y
 ```
 
 ## Put the parts on different machines

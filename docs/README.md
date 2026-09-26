@@ -92,6 +92,10 @@ Each answers "how do I …?" and assumes you already know what you want.
   sources in the kernel before they reach OpenSIPS. No sipnab involved.
 - **[Let sipnab see and control TFPS](tfps-sipnab.md)**: what TFPS blocks and
   why, and ban or unban on request, locally or over SSH.
+- **[Add rtpengine to an OpenSIPS voice stack](rtpengine-relay.md)**: anchor
+  every call's media on an rtpengine relay. No sipnab involved.
+- **[Let sipnab name rtpengine's media](rtpengine-sipnab.md)**: tie the media
+  on a relay to its call, from the relay's control plane or by asking it.
 - **[Write a WASM plugin](plugins.md)**: add your own detection to sipnab's
   diagnosis without forking it.
 - **[Recolor the TUI](theme-guide.md)**: colors and preset palettes.

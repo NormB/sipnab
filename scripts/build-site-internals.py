@@ -238,6 +238,8 @@ DOCS_TO_SITE = {
     "vcon-sipnab.md": "vcon-sipnab.md",
     "tfps.md": "tfps.md",
     "tfps-sipnab.md": "tfps-sipnab.md",
+    "rtpengine-relay.md": "rtpengine-relay.md",
+    "rtpengine-sipnab.md": "rtpengine-sipnab.md",
     "first-cli-triage.md": "first-cli-triage.md",
     "glossary.md": "glossary.md",
 }
