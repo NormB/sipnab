@@ -667,6 +667,77 @@ fn vcon_digest_prints_a_sha256sum_line_for_each_container_written() {
     assert_eq!(digest, expected, "the digest is of the bytes on disk");
 }
 
+/// `--export-vcon-when` puts the call's audio in each container, as
+/// `--export-vcon` does for one call, when the run retained it.
+///
+/// Up to 0.5.190 the spool writer built every container with the
+/// signaling-only exporter: `--retain-audio` held the payload and no
+/// `--export-vcon-when` container ever carried it, so a call with media
+/// read as a call without. Found running the sipnab-to-vCon guide on a VM.
+/// The body is compared with the single-call export's, so the two paths
+/// cannot drift apart again.
+#[test]
+fn export_vcon_when_carries_the_calls_audio_like_export_vcon() {
+    const G711: &str = "tests/pcap-samples/sip-rtp-g711.pcap";
+    const CALL: &str = "1-1966@10.0.2.20";
+    let dir = tempfile::tempdir().expect("tempdir");
+    let spool = dir.path().join("vcons");
+    let one = dir.path().join("one.json");
+
+    let run = sipnab(&[
+        "-N",
+        "-I",
+        G711,
+        "--no-cli-print",
+        "--retain-audio",
+        "--export-vcon-when",
+        "state == 'Completed'",
+        "--export-vcon-dir",
+        s(&spool),
+    ]);
+    assert_eq!(run.code, Some(0), "{}", run.dump());
+    let single = sipnab(&[
+        "-N",
+        "-I",
+        G711,
+        "--no-cli-print",
+        "--retain-audio",
+        "--export-vcon",
+        CALL,
+        "--vcon-out",
+        s(&one),
+    ]);
+    assert_eq!(single.code, Some(0), "{}", single.dump());
+
+    let recording = |v: &serde_json::Value| -> Option<serde_json::Value> {
+        v["dialog"]
+            .as_array()?
+            .iter()
+            .find(|d| d["type"] == "recording")
+            .cloned()
+    };
+    let read = |p: &Path| -> serde_json::Value {
+        serde_json::from_slice(&std::fs::read(p).expect("read container")).expect("json")
+    };
+    let spooled = std::fs::read_dir(&spool)
+        .expect("the spool exists")
+        .map(|e| e.expect("entry").path())
+        .find(|p| {
+            p.file_name()
+                .is_some_and(|n| n.to_string_lossy().starts_with("1-1966"))
+        })
+        .expect("a container for the call");
+    let from_spool = recording(&read(&spooled))
+        .unwrap_or_else(|| panic!("the --export-vcon-when container carries no recording"));
+    let from_single =
+        recording(&read(&one)).expect("the --export-vcon container carries a recording");
+    assert_eq!(from_spool["mediatype"], "audio/x-wav");
+    assert_eq!(
+        from_spool["body"], from_single["body"],
+        "the two export paths inline different audio for the same call"
+    );
+}
+
 // ── Output switches ───────────────────────────────────────────────────────
 
 /// `--wireshark` on a capture holding no SIP says so, rather than printing an

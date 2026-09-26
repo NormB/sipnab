@@ -47,6 +47,13 @@ entry that carries them.
 
 ### Fixed
 
+- **`--export-vcon-when` containers carry the call's audio when the run kept
+  it.** The spool writer built every container with the signaling-only
+  exporter, so with `--retain-audio` the audio was held and never written:
+  a call that had media read as one without. Only the single-call
+  `--export-vcon` inlined it. Both now decode the audio through one function,
+  and a test holds the spool's recording to be byte-identical to the
+  single-call export's for the same call.
 - **The systemd unit in the `.deb` and `.rpm` can start.** It ran
   `/usr/local/bin/sipnab`, while both packages install `/usr/bin/sipnab`, so
   `systemctl start sipnab` failed with `status=203/EXEC` on every install. It

@@ -6109,6 +6109,38 @@ struct VconBatch<'a> {
     suppressed_by_deny: u64,
 }
 
+/// Decode the audio sipnab retained for one dialog's streams.
+///
+/// Media is attempted ALWAYS, never gated on a second flag. `--retain-audio`
+/// is already the operator's opt-in: without it there is no payload to
+/// decode, and the container then carries the exporter's own explanation of
+/// what was measured instead of an absence a reader has to interpret.
+///
+/// Both export paths call this, the single-call `--export-vcon` and the
+/// `--export-vcon-when` spool, so one call gets the same audio from either.
+/// The spool path once used the signaling-only exporter and dropped it.
+#[cfg(feature = "vcon")]
+fn decode_observed_audio(
+    stream_store: &StreamStore,
+    call_id: &str,
+) -> anyhow::Result<crate::rtp::audio_export::DialogAudio> {
+    let streams: Vec<&crate::rtp::stream::RtpStream> = stream_store.streams_for(call_id).collect();
+    crate::rtp::audio_export::decode_dialog_audio(&streams)
+}
+
+/// What the exporter is told about a dialog's audio, from
+/// [`decode_observed_audio`]'s result and its error text.
+#[cfg(feature = "vcon")]
+fn observed_audio<'a>(
+    decoded: &'a anyhow::Result<crate::rtp::audio_export::DialogAudio>,
+    reason: &'a str,
+) -> crate::output::vcon::ObservedAudio<'a> {
+    match decoded.as_ref() {
+        Ok(audio) => crate::output::vcon::ObservedAudio::Decoded(audio),
+        Err(_) => crate::output::vcon::ObservedAudio::NothingToDecode(reason),
+    }
+}
+
 /// Write one container per dialog in `dialogs`, and a withheld-dialog
 /// container per dialog in `tombstones`, into `dir`.
 ///
@@ -6172,7 +6204,16 @@ fn write_vcon_containers(
         let container = if withheld {
             crate::output::vcon::export_withheld_dialog(dialog, &context, header)
         } else {
-            crate::output::vcon::export_dialog(dialog, &context)
+            let decoded = decode_observed_audio(batch.stream_store, &dialog.call_id);
+            let reason = decoded
+                .as_ref()
+                .err()
+                .map_or_else(String::new, |e| e.to_string());
+            crate::output::vcon::export_dialog_with_audio(
+                dialog,
+                &context,
+                observed_audio(&decoded, &reason),
+            )
         };
         let json =
             crate::output::vcon::sealed_json(&crate::output::vcon::seal(container, redactor))
@@ -6700,17 +6741,12 @@ fn export_vcon(
     // is already the operator's opt-in: without it there is no payload to
     // decode, and the container then carries the exporter's own explanation of
     // what was measured instead of an absence a reader has to interpret.
-    let dialog_streams: Vec<&crate::rtp::stream::RtpStream> =
-        stream_store.streams_for(call_id).collect();
-    let decoded = crate::rtp::audio_export::decode_dialog_audio(&dialog_streams);
+    let decoded = decode_observed_audio(stream_store, call_id);
     let reason = decoded
         .as_ref()
         .err()
         .map_or_else(String::new, |e| e.to_string());
-    let audio = match decoded.as_ref() {
-        Ok(audio) => crate::output::vcon::ObservedAudio::Decoded(audio),
-        Err(_) => crate::output::vcon::ObservedAudio::NothingToDecode(&reason),
-    };
+    let audio = observed_audio(&decoded, &reason);
 
     let container = crate::output::vcon::export_dialog_with_audio(
         dialog,
