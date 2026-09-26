@@ -10,8 +10,23 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Added
+
+- **The Python examples on the [API clients](https://sipnab.com/docs/api-clients/)
+  page run in CI.** The four (a `requests` client, an `httpx` poller, a failed-call
+  monitor and a paginator) are programs under `clients/python/`, held byte for
+  byte to the page, and the client smoke run executes each against a replayed
+  capture. `requests` and `httpx` are pinned by hash in
+  `clients/python/requirements-examples.txt`. The monitor and paginator now read
+  `SIPNAB_URL` and `SIPNAB_API_KEY` like the other examples, and every one that
+  meets a wrong key now says `401`.
+
 ### Fixed
 
+- **The client smoke run no longer prints `ok` for a check it just failed.**
+  `expect` and `expect_exit` counted a missing line as a failure and then
+  printed `ok` for the same check. They now live in `scripts/lib/smoke-expect.sh`,
+  with tests.
 - **A TUI that cannot start exits 1 and says why.** With no terminal,
   `sipnab -I <file>` logged `TUI error: No such device or address` and exited
   0, so a script, a service manager or a CI step saw a run that worked, and the

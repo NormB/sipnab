@@ -48,7 +48,7 @@ const DOCS: &[&str] = &[
 /// means pinning those libraries by hash or rewriting the examples, which
 /// is its own backlog item. The inventory test below still counts them, so
 /// a new fence here cannot join them unnoticed.
-const NOT_YET_HELD: &[(&str, &str)] = &[("website/content/docs/api-clients.md", "python")];
+const NOT_YET_HELD: &[(&str, &str)] = &[];
 
 /// Fence labels that mean a client language. The short aliases are here so a
 /// fence cannot escape the gate by being relabeled `js` or `py`.

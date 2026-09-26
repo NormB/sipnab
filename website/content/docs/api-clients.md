@@ -125,6 +125,16 @@ esac
 
 ### Python (sync, `requests`)
 
+The Python examples on this page use `requests` and `httpx`:
+
+```bash
+pip install requests httpx
+```
+
+CI runs each one against a live sipnab, with the versions pinned in
+[`clients/python/requirements-examples.txt`](https://github.com/NormB/sipnab/blob/main/clients/python/requirements-examples.txt).
+
+<!-- snippet: clients/python/sipnab_client.py#sipnab-client -->
 ```python
 """sipnab REST client — sync version using requests."""
 from __future__ import annotations
@@ -155,9 +165,9 @@ class SipnabClient:
         r = self.session.get(f"{self.base}{path}", params=params,
                              timeout=self.timeout)
         if r.status_code == 401:
-            raise SipnabError("authentication failed")
+            raise SipnabError("authentication failed (401)")
         if r.status_code == 503:
-            raise SipnabError("rate-limited or connection cap reached")
+            raise SipnabError("rate-limited or connection cap reached (503)")
         r.raise_for_status()
         return r.json()
 
@@ -244,6 +254,7 @@ SIPNAB_API_KEY=my-secret-token python3 sipnab_client.py
 
 For tailing dialogs in near-real-time without blocking:
 
+<!-- snippet: clients/python/tail_dialogs.py#tail-dialogs -->
 ```python
 """sipnab REST client — async, periodic polling."""
 import asyncio
@@ -725,18 +736,22 @@ SIPNAB_API_KEY=my-secret-token go run sipnab-client.go
 
 ### Monitor failed calls in real time (Python)
 
+<!-- snippet: clients/python/monitor_failed.py#monitor-failed -->
 ```python
+import os
 import time
+
 import requests
 
-API = "http://127.0.0.1:8080"
-KEY = "my-secret-token"
+API = os.environ.get("SIPNAB_URL", "http://127.0.0.1:8080")
+KEY = os.environ["SIPNAB_API_KEY"]
 HEADERS = {"Authorization": f"Bearer {KEY}"}
 
 seen = set()
 while True:
     resp = requests.get(f"{API}/v1/dialogs", headers=HEADERS,
                         params={"state": "Failed"})
+    resp.raise_for_status()
     for d in resp.json()["dialogs"]:
         cid = d["call_id"]
         if cid not in seen:
@@ -777,11 +792,14 @@ scrape_configs:
 
 ### Paginate through all dialogs (Python)
 
+<!-- snippet: clients/python/paginate_dialogs.py#paginate-dialogs -->
 ```python
+import os
+
 import requests
 
-API = "http://127.0.0.1:8080"
-HEADERS = {"Authorization": "Bearer my-secret-token"}
+API = os.environ.get("SIPNAB_URL", "http://127.0.0.1:8080")
+HEADERS = {"Authorization": f"Bearer {os.environ['SIPNAB_API_KEY']}"}
 
 offset = 0
 limit = 100
@@ -791,6 +809,7 @@ while True:
     resp = requests.get(f"{API}/v1/dialogs",
                         headers=HEADERS,
                         params={"limit": limit, "offset": offset})
+    resp.raise_for_status()
     data = resp.json()
     all_dialogs.extend(data["dialogs"])
     if offset + limit >= data["total"]:

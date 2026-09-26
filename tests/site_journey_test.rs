@@ -5792,7 +5792,9 @@ fn packaging_scripts_reference_existing_paths() {
     // pre-push-scenarios job's run step in `.github/workflows/ci.yml`
     // (GATE-DUP1). Attributed by measurement: with HEAD's ci.yml the scan
     // reads 131.
-    const EXPECTED_REFERENCES: usize = 132;
+    // 132 -> 133: ci.yml's client smoke step installs
+    // clients/python/requirements-examples.txt (EX4b).
+    const EXPECTED_REFERENCES: usize = 133;
     assert_eq!(
         checked, EXPECTED_REFERENCES,
         "packaging path scan saw {checked} references, expected \

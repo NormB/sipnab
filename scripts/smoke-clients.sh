@@ -83,10 +83,9 @@ cleanup() {
 trap cleanup EXIT
 
 FAILED=0
-fail() {
-	echo "FAIL: $*" >&2
-	FAILED=$((FAILED + 1))
-}
+# fail, expect and expect_exit: see scripts/lib/smoke-expect.sh.
+# shellcheck source=lib/smoke-expect.sh
+. "$(dirname "$0")/lib/smoke-expect.sh"
 
 # A free loopback port, so a second run on the same machine does not collide.
 free_port() {
@@ -141,50 +140,6 @@ wait_for sipnab "$SERVED_PID" "$SIPNAB_URL/v1/stats" '"source_exhausted":true'
 # Build the Go programs once, into the scratch directory.
 (cd clients/go && go build -o "$WORK/go/" ./...)
 
-# expect LABEL LINE... -- COMMAND...
-# COMMAND must exit 0 and print every LINE as a whole line of its stdout.
-expect() {
-	local label="$1"
-	shift
-	local want=()
-	while [ "$1" != "--" ]; do
-		want+=("$1")
-		shift
-	done
-	shift
-	if ! "$@" >"$WORK/out" 2>"$WORK/err"; then
-		fail "$label exited non-zero: $(head -c 400 "$WORK/err")"
-		return
-	fi
-	for line in "${want[@]}"; do
-		grep -qxF -- "$line" "$WORK/out" || fail "$label did not print '$line'; it printed: $(head -c 400 "$WORK/out")"
-	done
-	echo "ok   $label"
-}
-
-# expect_exit LABEL STATUS LINE... -- COMMAND...
-# COMMAND must exit with STATUS and print every LINE as a whole line of its
-# stdout: for a program whose refusal is its answer.
-expect_exit() {
-	local label="$1" status="$2"
-	shift 2
-	local want=()
-	while [ "$1" != "--" ]; do
-		want+=("$1")
-		shift
-	done
-	shift
-	local got=0
-	"$@" >"$WORK/out" 2>"$WORK/err" || got=$?
-	if [ "$got" != "$status" ]; then
-		fail "$label exited $got, not $status: $(head -c 400 "$WORK/err") $(head -c 400 "$WORK/out")"
-		return
-	fi
-	for line in "${want[@]}"; do
-		grep -qxF -- "$line" "$WORK/out" || fail "$label did not print '$line'; it printed: $(head -c 400 "$WORK/out")"
-	done
-	echo "ok   $label"
-}
 
 # refuse LABEL -- COMMAND...
 # COMMAND must exit non-zero, print nothing on stdout, and name the 401.
@@ -251,6 +206,27 @@ expect "rust sipnab-client" "${SITE_CLIENT_LINES[@]}" -- cargo run --quiet --loc
 refuse "go sipnab-client" -- "$WORK/go/sipnab-client"
 refuse "typescript sipnab-client" -- node clients/typescript/sipnab-client.ts
 refuse "rust sipnab-client" -- cargo run --quiet --locked --package sipnab-client
+
+# The site page's Python examples, which use requests and httpx. Both are
+# pinned by hash in clients/python/requirements-examples.txt, which CI
+# installs into the same virtual environment as the MCP SDK.
+expect "python sipnab_client (requests)" "4 failed dialogs" -- "$PYTHON" clients/python/sipnab_client.py
+refuse "python sipnab_client (requests)" -- "$PYTHON" clients/python/sipnab_client.py
+expect "python paginate_dialogs (requests)" "Fetched 5 dialogs" -- "$PYTHON" clients/python/paginate_dialogs.py
+refuse "python paginate_dialogs (requests)" -- "$PYTHON" clients/python/paginate_dialogs.py
+# The two below poll forever, as the page means them to. Each runs for five
+# seconds and `timeout` ends it with 124; what it printed by then is checked.
+expect_exit "python monitor_failed (requests, polls)" 124 \
+	"FAILED: busy-3a2b1c@192.0.2.30 from=carol to=dave" \
+	"FAILED: unavail-4e5f60@192.0.2.50 from=ivan to=judy" \
+	-- env PYTHONUNBUFFERED=1 timeout 5 "$PYTHON" clients/python/monitor_failed.py
+refuse "python monitor_failed (requests)" -- "$PYTHON" clients/python/monitor_failed.py
+# tail_dialogs starts each line with the time it printed it, so that column
+# is cut off before the lines are compared.
+expect_exit "python tail_dialogs (httpx, polls)" 124 \
+	"Completed   completed-9f8e7d@192.0.2.10  alice → bob" \
+	"Failed      busy-3a2b1c@192.0.2.30  carol → dave" \
+	-- bash -c 'set -o pipefail; PYTHONUNBUFFERED=1 timeout 5 "$0" clients/python/tail_dialogs.py | cut -d" " -f3-' "$PYTHON"
 
 # health needs no token, so its failure case is an address nothing listens on.
 # The port sipnab was given is free again only after it exits, so ask for a

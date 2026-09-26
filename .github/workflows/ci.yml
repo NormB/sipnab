@@ -204,6 +204,9 @@ jobs:
           set -euo pipefail
           python3 -m venv .venv-mcp
           .venv-mcp/bin/python -m pip install --require-hashes -r clients/python/requirements-mcp.txt
+          # The site's Python client examples use requests and httpx. Shared
+          # packages are pinned to the same versions in both files.
+          .venv-mcp/bin/python -m pip install --require-hashes -r clients/python/requirements-examples.txt
           PYTHON="$PWD/.venv-mcp/bin/python" scripts/smoke-clients.sh target/debug/sipnab
 
       - name: Test
