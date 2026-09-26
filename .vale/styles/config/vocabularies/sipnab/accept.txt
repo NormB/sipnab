@@ -724,6 +724,7 @@ UUIDs
 valgrind
 validator
 Valkey
+sipcapture
 vCon
 vCons
 Vec

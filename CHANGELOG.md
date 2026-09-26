@@ -12,6 +12,14 @@ entry that carries them.
 
 ### Added
 
+- **Two voice-stack guides for Homer.** [Add Homer to an OpenSIPS voice
+  stack](https://sipnab.com/docs/homer/) runs heplify-server, homer-app and
+  PostgreSQL, has OpenSIPS send every call to Homer over HEP, and finds the
+  call, with no sipnab involved. [Connect sipnab to
+  Homer](https://sipnab.com/docs/homer-sipnab/) has OpenSIPS send the same HEP
+  to sipnab, and has sipnab on a second machine forward what it captures to
+  Homer under its own capture id. Every command ran as written on clean Debian
+  13 and Ubuntu 24.04; the forwarding case on two machines.
 - **Two voice-stack guides for rtpengine.** [Add rtpengine to an OpenSIPS
   voice stack](https://sipnab.com/docs/rtpengine-relay/) builds rtpengine and
   OpenSIPS, anchors every call's media on the relay and proves it with a test

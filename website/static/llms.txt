@@ -47,6 +47,8 @@ This file indexes the documentation as plain text. `llms-full.txt` beside it car
 - [Let sipnab see and control TFPS](https://sipnab.com/docs/tfps-sipnab/): Have sipnab report what TFPS blocks and ban or unban on request, over REST and MCP, with TFPS on the same machine or reached over SSH.
 - [Add rtpengine to an OpenSIPS voice stack](https://sipnab.com/docs/rtpengine-relay/): Build rtpengine and OpenSIPS, anchor every call's media on the relay, prove it with a test call, and operate it. No sipnab involved.
 - [Let sipnab name rtpengine's media](https://sipnab.com/docs/rtpengine-sipnab/): Have sipnab name the media on an rtpengine relay, from the relay's mirrored control plane or by asking it, with the relay on the same machine as OpenSIPS or its own.
+- [Add Homer to an OpenSIPS voice stack](https://sipnab.com/docs/homer/): Run heplify-server, homer-app and PostgreSQL, have OpenSIPS send every call to Homer over HEP, and find the call. No sipnab involved.
+- [Connect sipnab to Homer](https://sipnab.com/docs/homer-sipnab/): Have OpenSIPS send its HEP to sipnab as well as to Homer, and have sipnab on another machine forward what it captures to Homer.
 
 ## Internals
 

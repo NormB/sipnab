@@ -1196,6 +1196,8 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             "website/content/docs/tfps-sipnab.md",
             "docs/rtpengine-relay.md",
             "website/content/docs/rtpengine-relay.md",
+            "docs/homer.md",
+            "website/content/docs/homer.md",
         ],
     ),
     // useradd's, creating the system accounts the voice-stack guides run services as.
@@ -1208,6 +1210,8 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             "website/content/docs/tfps-sipnab.md",
             "docs/rtpengine-relay.md",
             "website/content/docs/rtpengine-relay.md",
+            "docs/homer.md",
+            "website/content/docs/homer.md",
         ],
     ),
     // useradd's, creating the system accounts the voice-stack guides run services as.
@@ -1220,6 +1224,8 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             "website/content/docs/tfps-sipnab.md",
             "docs/rtpengine-relay.md",
             "website/content/docs/rtpengine-relay.md",
+            "docs/homer.md",
+            "website/content/docs/homer.md",
         ],
     ),
     // useradd's, creating the system accounts the voice-stack guides run services as.
@@ -1239,6 +1245,8 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             "website/content/docs/tfps.md",
             "docs/rtpengine-relay.md",
             "website/content/docs/rtpengine-relay.md",
+            "docs/homer.md",
+            "website/content/docs/homer.md",
         ],
     ),
     // tfps and tfps_ctl's (TFPS, the XDP blocker the TFPS guides install).
@@ -1260,12 +1268,19 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             "website/content/docs/vcon-server.md",
             "docs/rtpengine-relay.md",
             "website/content/docs/rtpengine-relay.md",
+            "docs/homer.md",
+            "website/content/docs/homer.md",
         ],
     ),
     // apt-get's and dpkg's, installing the voice stack's build tools.
     (
         "print-architecture",
-        &["docs/vcon-server.md", "website/content/docs/vcon-server.md"],
+        &[
+            "docs/vcon-server.md",
+            "website/content/docs/vcon-server.md",
+            "docs/homer.md",
+            "website/content/docs/homer.md",
+        ],
     ),
     // docker compose's and curl's, starting vcon-server and posting to it.
     (
@@ -1280,7 +1295,12 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
     // docker compose's and curl's, starting vcon-server and posting to it.
     (
         "tail",
-        &["docs/vcon-server.md", "website/content/docs/vcon-server.md"],
+        &[
+            "docs/vcon-server.md",
+            "website/content/docs/vcon-server.md",
+            "docs/homer.md",
+            "website/content/docs/homer.md",
+        ],
     ),
     // docker compose's and curl's, starting vcon-server and posting to it.
     (
@@ -1331,6 +1351,15 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
     (
         "ingress-list",
         &["docs/vcon-sipnab.md", "website/content/docs/vcon-sipnab.md"],
+    ),
+    // psql's, in the Homer guide's database init script (CREATE DATABASE).
+    (
+        "username",
+        &["docs/homer.md", "website/content/docs/homer.md"],
+    ),
+    (
+        "dbname",
+        &["docs/homer.md", "website/content/docs/homer.md"],
     ),
 ];
 
@@ -3688,7 +3717,9 @@ fn no_documentation_table_repeats_a_row() {
     // tfps-sipnab) under docs/ and their four generated site pages.
     // 237 -> 241: the two rtpengine guides (rtpengine-relay, rtpengine-sipnab)
     // under docs/ and their two generated site pages; the four added files.
-    const EXPECTED_MARKDOWN_FILES: usize = 241;
+    // 241 -> 245: the two Homer guides (homer, homer-sipnab) under docs/ and
+    // their two generated site pages.
+    const EXPECTED_MARKDOWN_FILES: usize = 245;
     /// How many tables this gate expects to walk.
     ///
     /// Named rather than written twice. The count and the failure message
@@ -4135,7 +4166,9 @@ fn no_documentation_table_repeats_a_row() {
     // 994 -> 998: docs/rtpengine-relay.md's two tables (the parts, and the
     // versions it was tested on) and the same two on its site page;
     // docs/rtpengine-sipnab.md has none.
-    const EXPECTED_TABLES: usize = 998;
+    // 998 -> 1002: docs/homer.md's two tables (the parts, and the versions it
+    // was tested on) and the same two on its site page; homer-sipnab.md has none.
+    const EXPECTED_TABLES: usize = 1002;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

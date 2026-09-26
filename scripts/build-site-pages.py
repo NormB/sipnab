@@ -501,6 +501,24 @@ PAGES: list[tuple[str, str, str, str, int, str]] = [
         "mirrored control plane or by asking it, with the relay on the same "
         "machine as OpenSIPS or its own.",
     ),
+    (
+        "docs/homer.md",
+        "homer.md",
+        "Add Homer to an OpenSIPS voice stack",
+        "Add Homer to an OpenSIPS voice stack",
+        46,
+        "Run heplify-server, homer-app and PostgreSQL, have OpenSIPS send every "
+        "call to Homer over HEP, and find the call. No sipnab involved.",
+    ),
+    (
+        "docs/homer-sipnab.md",
+        "homer-sipnab.md",
+        "Connect sipnab to Homer",
+        "Connect sipnab to Homer",
+        47,
+        "Have OpenSIPS send its HEP to sipnab as well as to Homer, and have "
+        "sipnab on another machine forward what it captures to Homer.",
+    ),
 ]
 
 BANNER = (

@@ -96,6 +96,10 @@ Each answers "how do I …?" and assumes you already know what you want.
   every call's media on an rtpengine relay. No sipnab involved.
 - **[Let sipnab name rtpengine's media](rtpengine-sipnab.md)**: tie the media
   on a relay to its call, from the relay's control plane or by asking it.
+- **[Add Homer to an OpenSIPS voice stack](homer.md)**: a searchable history
+  of every call, sent by OpenSIPS over HEP. No sipnab involved.
+- **[Connect sipnab to Homer](homer-sipnab.md)**: sipnab as a second HEP
+  receiver beside Homer, or as a source that forwards to it.
 - **[Write a WASM plugin](plugins.md)**: add your own detection to sipnab's
   diagnosis without forking it.
 - **[Recolor the TUI](theme-guide.md)**: colors and preset palettes.

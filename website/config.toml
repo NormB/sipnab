@@ -344,6 +344,8 @@ pages = [
   { path = "docs/tfps-sipnab.md", menu = true },
   { path = "docs/rtpengine-relay.md", menu = true },
   { path = "docs/rtpengine-sipnab.md", menu = true },
+  { path = "docs/homer.md", menu = true },
+  { path = "docs/homer-sipnab.md", menu = true },
 ]
 
 [[extra.docs_nav]]
