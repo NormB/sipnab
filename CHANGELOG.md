@@ -28,6 +28,19 @@ entry that carries them.
 
 ### Fixed
 
+- **A live `--export-vcon` writes its call's container when the call ends,
+  and a stop writes nothing.** On a live capture (`-d` or `--hep-listen`),
+  `--export-vcon <CALL-ID> --vcon-out <FILE>` created the file only when
+  sipnab was stopped, so SIGTERM left call data on disk. The container is now
+  written about ten seconds after the call ends, while the capture runs, to
+  `--vcon-out` or to stdout. A stopped live run writes nothing, and exits as it
+  would have without the export. A live run that ends on its own
+  (`--duration`, `--autostop`) writes the call then if it was not already
+  written, and still fails when the Call-ID never appeared. `-I` runs still
+  write at the end. A live `--export-vcon` now refuses `--redact` and
+  `--redact-map`, which only write at the end of a run; they still work with
+  `-I`.
+
 - **The configuration reference describes `[tfps] db` as sipnab passes it.**
   It said `--db=<path>`; sipnab passes `--db` and the path as two arguments,
   which is what a wrapper script standing in for `tfps_ctl` receives. A test

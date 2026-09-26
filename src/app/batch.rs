@@ -3338,7 +3338,8 @@ impl BatchRunner {
         let mut sweep_clock = SweepClock::new(cli.has_input());
         let sweep_interval = SWEEP_INTERVAL;
         // What the live vCon export has written so far. `None` unless this is
-        // a live run with `--export-vcon-when`; see `Cli::exports_vcon_live`.
+        // a live run with `--export-vcon-when` or `--export-vcon`; see
+        // `Cli::exports_vcon_live`.
         #[cfg(feature = "vcon")]
         let mut live_vcon = cli.exports_vcon_live().then(LiveVconTracker::default);
         // --keylog-watch's own cadence — real wall time via Instant, not
@@ -5979,6 +5980,20 @@ fn sweep_dialog_store(
     dialog_store.write().compact_idle(now)
 }
 
+/// Whether the live sweeps already wrote this dialog's container at its
+/// current `updated_at`, so the end of the run does not owe it again.
+#[cfg(feature = "vcon")]
+fn written_live(live: Option<&LiveVconTracker>, dialog: &crate::sip::dialog::SipDialog) -> bool {
+    live.is_some_and(|t| t.written_at(&dialog.call_id) == Some(dialog.updated_at))
+}
+
+/// How long a dialog must stay quiet before a live sweep writes it, as the
+/// predicate takes it: one [`SWEEP_INTERVAL`].
+#[cfg(feature = "vcon")]
+fn live_settle() -> chrono::TimeDelta {
+    chrono::TimeDelta::from_std(SWEEP_INTERVAL).unwrap_or(chrono::TimeDelta::MAX)
+}
+
 /// Whether a live sweep writes this dialog's container now.
 ///
 /// Pure, and every input an argument, so each condition can be driven on its
@@ -5997,7 +6012,9 @@ fn live_vcon_due(
 }
 
 /// The live vCon export for one sweep: write every dialog that matches
-/// `--export-vcon-when`, has ended, and has been quiet for [`SWEEP_INTERVAL`].
+/// `--export-vcon-when`, has ended, and has been quiet for [`SWEEP_INTERVAL`],
+/// or, for `--export-vcon <CALL-ID>`, that one call under the same rule (see
+/// [`live_single_vcon_sweep`]).
 ///
 /// Selection goes through [`vcon_selection`], the path the end-of-run export
 /// takes, so the predicate and the deny header mean the same thing in both.
@@ -6025,6 +6042,17 @@ fn live_vcon_sweep(
     if gate.is_some_and(|g| !g.writes_permitted()) {
         return 0;
     }
+    if let Some(call_id) = cli.output_args.export_vcon.as_deref() {
+        return live_single_vcon_sweep(
+            cli,
+            call_id,
+            dialog_store,
+            stream_store,
+            frames_read,
+            tracker,
+            now,
+        );
+    }
     let (selection, suppressed_by_deny, _denied) =
         match vcon_selection(cli, vcon_filter, dialog_store, stream_store) {
             Ok(s) => s,
@@ -6034,7 +6062,7 @@ fn live_vcon_sweep(
                 return 0;
             }
         };
-    let settle = chrono::TimeDelta::from_std(SWEEP_INTERVAL).unwrap_or(chrono::TimeDelta::MAX);
+    let settle = live_settle();
     let due: Vec<&crate::sip::dialog::SipDialog> = selection
         .dialogs
         .iter()
@@ -6091,6 +6119,47 @@ fn live_vcon_sweep(
         tracker.failed = true;
     }
     written
+}
+
+/// One live sweep's share of `--export-vcon <CALL-ID>`: write that call's
+/// container once it is due by [`live_vcon_due`], the rule the
+/// `--export-vcon-when` spool follows, and record it on the tracker.
+///
+/// A call the store does not hold (yet) is not an error here: it may still
+/// arrive, and the end of a run that ends on its own says so if it never did.
+/// The container goes through [`write_single_vcon`], the writer the end-of-run
+/// export uses, so it is the same container whichever of the two wrote it.
+///
+/// Returns how many containers this sweep wrote: 0 or 1.
+#[cfg(feature = "vcon")]
+fn live_single_vcon_sweep(
+    cli: &Cli,
+    call_id: &str,
+    dialog_store: &DialogStore,
+    stream_store: &StreamStore,
+    frames_read: u64,
+    tracker: &mut LiveVconTracker,
+    now: chrono::DateTime<chrono::Utc>,
+) -> usize {
+    let Some(dialog) = dialog_store.get(call_id) else {
+        return 0;
+    };
+    if !live_vcon_due(
+        dialog.state(),
+        dialog.updated_at,
+        now,
+        live_settle(),
+        tracker.written_at(call_id),
+    ) {
+        return 0;
+    }
+    if !write_single_vcon(cli, dialog, dialog_store, stream_store, frames_read) {
+        tracker.failed = true;
+        return 0;
+    }
+    tracker.record(call_id, dialog.updated_at);
+    tracing::info!("Wrote the vCon container for Call-ID '{call_id}', which ended.");
+    1
 }
 
 /// The capture a batch of containers is drawn from, and what the run
@@ -6329,9 +6398,7 @@ fn export_vcon_selection_after(
         .dialogs
         .iter()
         .map(|(dialog, _)| *dialog)
-        .filter(|dialog| {
-            live.is_none_or(|t| t.written_at(&dialog.call_id) != Some(dialog.updated_at))
-        })
+        .filter(|dialog| !written_live(live, dialog))
         .collect();
     // Tombstones only on request. Writing them at all reveals that the calls
     // EXISTED, which is a disclosure an operator has to choose -- see
@@ -6705,14 +6772,14 @@ fn export_vcon(
     if gate.is_some_and(|g| !g.writes_permitted()) {
         return true;
     }
+    let live = match end {
+        VconRunEnd::Whole => None,
+        // Answered `true`: a stop that writes nothing is what was asked for,
+        // not a failed export. See `VconRunEnd::Stopped`.
+        VconRunEnd::Stopped => return true,
+        VconRunEnd::AfterLive(tracker) => Some(tracker),
+    };
     if cli.output_args.export_vcon_when.is_some() {
-        let live = match end {
-            VconRunEnd::Whole => None,
-            // Answered `true`: a stop that writes nothing is what was asked
-            // for, not a failed export. See `VconRunEnd::Stopped`.
-            VconRunEnd::Stopped => return true,
-            VconRunEnd::AfterLive(tracker) => Some(tracker),
-        };
         return export_vcon_selection_after(
             cli,
             vcon_filter,
@@ -6733,7 +6800,32 @@ fn export_vcon(
         );
         return false;
     };
+    // A live run that ended on its own: the sweep already wrote this call
+    // when it ended, and writing it again unchanged would hand a reader of
+    // `--vcon-out` (or of stdout) the same container twice.
+    if written_live(live, dialog) {
+        return true;
+    }
+    write_single_vcon(cli, dialog, dialog_store, stream_store, frames_read)
+}
 
+/// Build the `--export-vcon` container for `dialog` and write it to
+/// `--vcon-out`, atomically, or to stdout; say on stderr why it did not.
+///
+/// THE single-call writer: the end-of-run export and every live sweep call
+/// it, so the container is the same whichever of them wrote it.
+///
+/// The capture analysis is run here rather than reused from `--analyze`,
+/// because `--export-vcon` does not require `--analyze` (see [`export_vcon`]).
+#[cfg(feature = "vcon")]
+fn write_single_vcon(
+    cli: &Cli,
+    dialog: &crate::sip::dialog::SipDialog,
+    dialog_store: &DialogStore,
+    stream_store: &StreamStore,
+    frames_read: u64,
+) -> bool {
+    let call_id = dialog.call_id.as_str();
     let facts = crate::analysis::CaptureFacts::observed(dialog_store, stream_store, frames_read);
     let analysis = crate::analysis::analyze_with(dialog_store, stream_store, None, &facts);
 
@@ -7227,6 +7319,187 @@ mod tests {
             text.contains("failed-call@example.com"),
             "a call that changed after it was written is written again"
         );
+    }
+
+    /// A `Cli` exporting the one call `call_id` to `out`, as
+    /// `--export-vcon <call_id> --vcon-out <out>` would.
+    #[cfg(feature = "vcon")]
+    fn cli_exporting_one(out: &std::path::Path, call_id: &str) -> Cli {
+        let mut cli = Cli::parse_from_args(["sipnab"]);
+        cli.output_args.export_vcon = Some(call_id.to_owned());
+        cli.output_args.vcon_out = Some(out.to_path_buf());
+        cli
+    }
+
+    /// A dialog the tracker holds at its current `updated_at` was written
+    /// live; one it holds at an older one, or not at all, was not.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn written_live_means_written_at_the_current_updated_at() {
+        let dialogs = two_dialogs_one_failed();
+        let failed = dialogs.get("failed-call@example.com").expect("fixture");
+        assert!(
+            !written_live(None, failed),
+            "no live export, nothing written"
+        );
+        let mut tracker = LiveVconTracker::default();
+        assert!(!written_live(Some(&tracker), failed));
+        tracker.record(
+            &failed.call_id,
+            failed.updated_at - chrono::TimeDelta::seconds(1),
+        );
+        assert!(
+            !written_live(Some(&tracker), failed),
+            "it changed after it was written"
+        );
+        tracker.record(&failed.call_id, failed.updated_at);
+        assert!(written_live(Some(&tracker), failed));
+    }
+
+    /// STOP-AUDIT-1: a live sweep writes the `--export-vcon` call to
+    /// `--vcon-out` once it has ended and settled, records it, and does not
+    /// write it again unchanged. Before the settle period it writes nothing.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn a_live_sweep_writes_the_single_call_once_it_ends_and_settles() {
+        const CALL: &str = "failed-call@example.com";
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let out = tmp.path().join("one.json");
+        let cli = cli_exporting_one(&out, CALL);
+        let dialogs = two_dialogs_one_failed();
+        let streams = StreamStore::new(16);
+        let mut tracker = LiveVconTracker::default();
+
+        let early = live_vcon_sweep(
+            &cli,
+            None,
+            &dialogs,
+            &streams,
+            4,
+            None,
+            &mut tracker,
+            chrono::Utc::now(),
+        );
+        assert_eq!(early, 0, "inside the settle period nothing is due");
+        assert!(!out.exists(), "a call that has not settled is not written");
+
+        let later = chrono::Utc::now() + settle() + chrono::TimeDelta::seconds(1);
+        let n = live_vcon_sweep(&cli, None, &dialogs, &streams, 4, None, &mut tracker, later);
+        assert_eq!(n, 1, "the ended, settled call is written");
+        assert!(!tracker.failed());
+        let text = std::fs::read_to_string(&out).expect("the container was written");
+        let json: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
+        assert!(json["uuid"].is_string(), "not a vCon: {json}");
+        assert!(text.contains(CALL), "{text}");
+        assert!(!text.contains("ok-call@example.com"), "only the named call");
+        let updated_at = dialogs.get(CALL).expect("fixture").updated_at;
+        assert_eq!(tracker.written_at(CALL), Some(updated_at));
+
+        std::fs::remove_file(&out).expect("remove");
+        let again = live_vcon_sweep(&cli, None, &dialogs, &streams, 4, None, &mut tracker, later);
+        assert_eq!(again, 0, "a written call is not written again unchanged");
+        assert!(!out.exists());
+    }
+
+    /// STOP-AUDIT-1: a live sweep never writes the `--export-vcon` call while
+    /// it is still running, however long it has been quiet: a call on hold is
+    /// quiet and not over.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn a_live_sweep_does_not_write_a_running_single_call() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let out = tmp.path().join("one.json");
+        let cli = cli_exporting_one(&out, "ok-call@example.com");
+        let mut tracker = LiveVconTracker::default();
+        let n = live_vcon_sweep(
+            &cli,
+            None,
+            &two_dialogs_one_failed(),
+            &StreamStore::new(16),
+            4,
+            None,
+            &mut tracker,
+            chrono::Utc::now() + chrono::TimeDelta::hours(1),
+        );
+        assert_eq!(n, 0);
+        assert!(
+            !out.exists(),
+            "an answered call that has not ended is not written"
+        );
+        assert!(!tracker.failed(), "nothing owed is not a failure");
+    }
+
+    /// STOP-AUDIT-1: the end of a signal-stopped live run writes no
+    /// `--export-vcon` container, and answers success.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn a_stopped_live_run_writes_no_single_call_container() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let out = tmp.path().join("one.json");
+        assert!(export_vcon(
+            &cli_exporting_one(&out, "failed-call@example.com"),
+            None,
+            &two_dialogs_one_failed(),
+            &StreamStore::new(16),
+            4,
+            None,
+            VconRunEnd::Stopped,
+        ));
+        assert!(!out.exists(), "a stop is never a flush");
+    }
+
+    /// STOP-AUDIT-1: a live run that ends on its own writes the
+    /// `--export-vcon` call only when the sweeps have not already written it
+    /// at its current `updated_at`, and still reports a call that never
+    /// appeared.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn a_natural_end_writes_the_single_call_only_if_the_sweeps_did_not() {
+        const CALL: &str = "failed-call@example.com";
+        let dialogs = two_dialogs_one_failed();
+        let updated_at = dialogs.get(CALL).expect("fixture").updated_at;
+        let run = |tracker: &LiveVconTracker, call_id: &str, out: &std::path::Path| {
+            export_vcon(
+                &cli_exporting_one(out, call_id),
+                None,
+                &dialogs,
+                &StreamStore::new(16),
+                4,
+                None,
+                VconRunEnd::AfterLive(tracker),
+            )
+        };
+        let tmp = tempfile::tempdir().expect("temp dir");
+
+        let mut written = LiveVconTracker::default();
+        written.record(CALL, updated_at);
+        let out = tmp.path().join("written.json");
+        assert!(run(&written, CALL, &out));
+        assert!(
+            !out.exists(),
+            "the sweep already wrote it at this updated_at"
+        );
+
+        let mut stale = LiveVconTracker::default();
+        stale.record(CALL, updated_at - chrono::TimeDelta::seconds(1));
+        let out = tmp.path().join("stale.json");
+        assert!(run(&stale, CALL, &out));
+        let text = std::fs::read_to_string(&out).expect("changed since, so written");
+        assert!(text.contains(CALL), "{text}");
+
+        let out = tmp.path().join("never.json");
+        assert!(
+            !run(&LiveVconTracker::default(), CALL, &out) || out.exists(),
+            "a call the sweeps never wrote is written at a natural end"
+        );
+        assert!(out.exists(), "a call the sweeps never wrote is written");
+
+        let out = tmp.path().join("absent.json");
+        assert!(
+            !run(&LiveVconTracker::default(), "absent@example.com", &out),
+            "a call that never appeared is still an error"
+        );
+        assert!(!out.exists());
     }
 
     /// The live export sees a dialog BEFORE idle compaction trims it.

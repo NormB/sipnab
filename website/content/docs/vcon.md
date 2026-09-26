@@ -81,6 +81,15 @@ path with nothing to write to it is a mistake sipnab would rather name than
 ignore. And sipnab refuses a `--vcon-out` that names the capture it is reading,
 because an export that overwrites its own evidence is not an export.
 
+On a live capture (`-d` or `--hep-listen`), `--export-vcon` writes the call's
+container when that call ends, on the same timing the spool below follows:
+once the call has ended and has been quiet for five seconds, while sipnab keeps
+capturing. A live capture that you stop writes nothing, so a call that had not
+ended and settled leaves no `--vcon-out` file behind. A live run that ends on
+its own (`--duration`, `--autostop`) writes the call then if it was not already
+written, and still fails if that Call-ID never appeared. With `-I`, sipnab
+writes the container at the end of the run, as before.
+
 The TUI does not offer the export. It is a live view of a running capture, and
 it points at the doors above — its help screen names the REST route and the
 feature flag rather than growing a key binding that would do nothing in a build
@@ -124,8 +133,9 @@ on.
   end, as before.
 
 sipnab refuses `--redact`, `--redact-map` and `--content-deny-tombstone` on a
-live capture with `--export-vcon-when`, because they write their files at the end
-of the run, and a stopped live run never gets there. Use them with `-I`.
+live capture with `--export-vcon-when`, and `--redact` and `--redact-map` on a
+live capture with `--export-vcon`, because they write their files at the end of
+the run, and a stopped live run never gets there. Use them with `-I`.
 
 **A name resolves to a whole container, or to nothing.** Every write stages the
 bytes under a dot-prefixed sibling, flushes them to the filesystem, and renames

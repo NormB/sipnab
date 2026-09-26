@@ -1213,6 +1213,10 @@ pub struct OutputArgs {
     /// reason `--call-report` does: a container written into a TUI's alternate
     /// screen reaches nobody, and the run still exits 0.
     ///
+    /// On a live capture the container is written when that call ends, about
+    /// ten seconds after its last message, and a stopped live run writes
+    /// nothing. With `-I` it is written at the end of the run.
+    ///
     /// Needs the `vcon` Cargo feature, which is in `full` and not in the
     /// default set. A build without it refuses the flag by name instead of
     /// exporting nothing; `sipnab --version` lists what this binary carries.
@@ -4225,20 +4229,23 @@ impl Cli {
         self.output_args.redact
     }
 
-    /// Whether this run writes `--export-vcon-when` containers WHILE it runs.
+    /// Whether this run writes its vCon containers WHILE it runs: the
+    /// `--export-vcon-when` spool, or the one `--export-vcon <CALL-ID>` call.
     ///
     /// A live capture (a device, or `--hep-listen`) never reaches the end of
     /// its input, and the usual way it ends is a stop signal, which writes
-    /// nothing. So a live run writes each matching call's container on the
-    /// periodic sweep, soon after the call ends. A `-I` run reads to the end
-    /// and writes everything there, as it always has.
+    /// nothing. So a live run writes each matching call's container (or the
+    /// one named call's) on the periodic sweep, soon after the call ends. A
+    /// `-I` run reads to the end and writes everything there, as it always has.
     ///
     /// THE rule for "live export": the receive loop and [`Self::validate`]
     /// both ask it, so the run that exports live and the run whose
     /// end-of-run-only flags are refused cannot drift apart.
     #[must_use]
     pub fn exports_vcon_live(&self) -> bool {
-        !self.has_input() && self.output_args.export_vcon_when.is_some()
+        !self.has_input()
+            && (self.output_args.export_vcon_when.is_some()
+                || self.output_args.export_vcon.is_some())
     }
 
     /// Dialog cap: `--limit`, else `[limits] dialog_limit`, else the default.
@@ -5288,8 +5295,9 @@ impl Cli {
         ))
     }
 
-    /// The refusal a live `--export-vcon-when` owes a flag that only does its
-    /// work at the end of a run, or `None` when there is nothing to refuse.
+    /// The refusal a live `--export-vcon-when` or `--export-vcon` owes a flag
+    /// that only does its work at the end of a run, or `None` when there is
+    /// nothing to refuse.
     ///
     /// A live run writes each container on a sweep while it captures, and a
     /// live run stopped by a signal writes nothing at its end, because
@@ -5314,12 +5322,17 @@ impl Cli {
         if given.is_empty() {
             return None;
         }
+        let export = if out.export_vcon.is_some() {
+            "--export-vcon"
+        } else {
+            "--export-vcon-when"
+        };
         Some(format!(
-            "{} cannot be used with --export-vcon-when on a live capture. A live \
-             run writes each call's container shortly after the call ends, and a \
-             run stopped by a signal writes nothing more, so the redaction map and \
-             tombstones this run would write at its end are never written. Use \
-             {} with -I on a saved capture, which always runs to its end",
+            "{} cannot be used with {export} on a live capture. A live run writes \
+             each call's container shortly after the call ends, and a run stopped \
+             by a signal writes nothing more, so the redaction map and tombstones \
+             this run would write at its end are never written. Use {} with -I on \
+             a saved capture, which always runs to its end",
             given.join(", "),
             if given.len() == 1 { "it" } else { "them" },
         ))
@@ -7445,6 +7458,77 @@ mod tests {
             "X-No-Record",
         ]);
         assert_eq!(live.live_vcon_refusal(), None);
+    }
+
+    /// STOP-AUDIT-1: a live `--export-vcon <CALL-ID>` is a live export, so the
+    /// call's container is written when the call ends and a stop writes
+    /// nothing. The same flag on a `-I` run is not.
+    #[test]
+    fn a_live_single_call_export_is_a_live_export() {
+        for source in [
+            &["sipnab", "-N", "-d", "any"][..],
+            &["sipnab", "-N", "--hep-listen", "127.0.0.1:9060"][..],
+        ] {
+            let mut argv = source.to_vec();
+            argv.extend_from_slice(&["--export-vcon", "c@x", "--vcon-out", "/tmp/one.json"]);
+            assert!(
+                Cli::parse_from_args(argv.clone()).exports_vcon_live(),
+                "{argv:?} is a live export"
+            );
+        }
+        let file = Cli::parse_from_args([
+            "sipnab",
+            "-N",
+            "-I",
+            "x.pcap",
+            "--export-vcon",
+            "c@x",
+            "--vcon-out",
+            "/tmp/one.json",
+        ]);
+        assert!(!file.exports_vcon_live(), "a -I run writes at its end");
+    }
+
+    /// STOP-AUDIT-1: `--redact` (and `--redact-map`) on a live `--export-vcon`
+    /// is refused like on a live `--export-vcon-when`: the map is written at
+    /// the end of a run, which a stopped live run never reaches. The message
+    /// names the export flag the operator actually gave.
+    #[test]
+    fn a_live_single_call_export_refuses_redaction() {
+        for extra in [
+            &["--redact"][..],
+            &["--redact", "--redact-map", "/tmp/map.json"][..],
+        ] {
+            let mut argv = vec![
+                "sipnab",
+                "-N",
+                "--hep-listen",
+                "127.0.0.1:9060",
+                "--export-vcon",
+                "c@x",
+                "--vcon-out",
+                "/tmp/one.json",
+            ];
+            argv.extend_from_slice(extra);
+            let cli = Cli::parse_from_args(argv.clone());
+            let refusal = cli
+                .live_vcon_refusal()
+                .unwrap_or_else(|| panic!("{argv:?} was not refused"));
+            let named = extra
+                .iter()
+                .rev()
+                .find(|f| f.starts_with("--"))
+                .expect("every case names a flag");
+            assert!(refusal.contains(named), "must name {named}: {refusal}");
+            assert!(
+                refusal.contains("--export-vcon ") && !refusal.contains("--export-vcon-when"),
+                "must name the export flag given: {refusal}"
+            );
+            assert!(
+                matches!(cli.validate(), Err(crate::Error::CliValidation(_))),
+                "validate() must refuse {argv:?}"
+            );
+        }
     }
 
     /// `validate()` asks the rule with this build's own answer, so the wiring
