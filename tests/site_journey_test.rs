@@ -10787,3 +10787,41 @@ fn the_analyze_drop_zone_names_the_archives_it_opens() {
         "the drop zone asks for a .pcap when it takes pcapng and archives too"
     );
 }
+
+/// The homepage's "Add it to your voice stack" section links exactly the
+/// guides in the docs nav's "Add to your voice stack" group.
+///
+/// The guides are added one at a time (vCon and TFPS first; rtpengine, Homer,
+/// Prometheus, fail2ban, TLS, Kamailio and rtpproxy are planned), and each one
+/// is registered in website/config.toml. Without this, a guide could reach
+/// the nav and never the homepage, or the homepage could keep linking a guide
+/// the nav dropped.
+#[test]
+fn homepage_voice_stack_section_links_every_stack_guide() {
+    let page = read("website/templates/index.html");
+    let span = element_span(
+        &page,
+        "<section class=\"features stack\" id=\"voice-stack\"",
+        "section",
+    );
+    let section = &page[span.start..span.end];
+    let re = regex::Regex::new(r"@/(docs/[A-Za-z0-9_/-]+\.md)").unwrap();
+    let linked: BTreeSet<String> = re
+        .captures_iter(section)
+        .map(|c| c[1].to_string())
+        .collect();
+    let guides: BTreeSet<String> = docs_nav_list()
+        .into_iter()
+        .filter(|e| e.group == "Add to your voice stack")
+        .map(|e| e.path)
+        .collect();
+    assert!(
+        !guides.is_empty(),
+        "website/config.toml has no \"Add to your voice stack\" docs_nav group — renamed?"
+    );
+    assert_eq!(
+        linked, guides,
+        "the homepage voice-stack section (left) and the nav's voice-stack group (right) \
+         list different guides"
+    );
+}

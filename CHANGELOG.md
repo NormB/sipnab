@@ -12,6 +12,11 @@ entry that carries them.
 
 ### Added
 
+- **The home page links the voice-stack guides.** A new "Add it to your voice
+  stack" section, after "What you can do with it", has a card each for vCon
+  and TFPS, linking the stand-alone install guide and the sipnab guide. A test
+  holds the section to the docs navigation's voice-stack group, so a guide
+  added to one and not the other fails the build.
 - **The Python examples on the [API clients](https://sipnab.com/docs/api-clients/)
   page run in CI.** The four (a `requests` client, an `httpx` poller, a failed-call
   monitor and a paginator) are programs under `clients/python/`, held byte for

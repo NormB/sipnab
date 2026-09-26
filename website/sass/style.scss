@@ -1295,6 +1295,32 @@ input:focus-visible,
   .feature-card--blue &  { color: $link; background: rgba($link, 0.08); }
 }
 
+// The voice-stack guides: one card per component, each linking its two
+// guides (install it, then connect sipnab), so the card is a `div` holding
+// links rather than a link itself.
+.stack .section-sub {
+  color: $text-dim;
+  margin: 0.5rem auto 0;
+  max-width: 44rem;
+}
+
+.stack-links {
+  list-style: none;
+  margin: 1rem 0 0;
+  padding: 0;
+
+  li { margin: 0.35rem 0; }
+
+  a {
+    color: $link;
+    font-weight: 600;
+    text-decoration: none;
+
+    &::after { content: " \2192"; }
+    &:hover { text-decoration: underline; }
+  }
+}
+
 // =============================================================================
 // Quick Start
 // =============================================================================
