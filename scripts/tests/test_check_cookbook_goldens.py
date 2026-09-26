@@ -143,3 +143,36 @@ def test_a_reason_beside_a_golden_is_reported_as_contradictory():
         runs, goldens={("-N", "--x"): Path("k.trycmd")}, unpinned={"--x": "why"}
     )
     assert gaps.contradictory == ["--x"]
+
+
+# ── TUI commands with no terminal (TTY-EXIT-1) ───────────────────────────
+
+REFUSAL = (
+    "sipnab: the terminal UI could not start: No such device or address "
+    "(os error 6). It needs a terminal; add -N for a run without one."
+)
+
+
+def test_a_tui_command_that_reached_the_tui_and_was_refused_counts_as_run():
+    # With no terminal the TUI refuses and sipnab exits 1. For a command the
+    # table already says opens the TUI, that refusal proves the arguments
+    # parsed and the capture opened: everything up to the terminal worked.
+    assert cc.reached_the_tui("sipnab -I capture.pcap", 1, REFUSAL)
+
+
+def test_a_tui_command_that_failed_for_another_reason_still_fails():
+    assert not cc.reached_the_tui(
+        "sipnab -I capture.pcap", 2, "error: unexpected argument '--bogus'"
+    )
+    assert not cc.reached_the_tui("sipnab -I capture.pcap", 1, "Error: cannot open capture")
+
+
+def test_the_refusal_does_not_excuse_a_command_the_table_does_not_name():
+    # A -N command that somehow reached the TUI is a defect, not a pass.
+    assert not cc.reached_the_tui("sipnab -N -I capture.pcap --report", 1, REFUSAL)
+
+
+def test_exit_zero_is_not_how_a_tui_command_passes_any_more():
+    # Before the fix the TUI exited 0 having drawn nothing; the checker read
+    # that as success. Only the explicit refusal counts now.
+    assert not cc.reached_the_tui("sipnab -I capture.pcap", 0, "")

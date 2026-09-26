@@ -8,6 +8,19 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Fixed
+
+- **A TUI that cannot start exits 1 and says why.** With no terminal,
+  `sipnab -I <file>` logged `TUI error: No such device or address` and exited
+  0, so a script, a service manager or a CI step saw a run that worked, and the
+  cookbook checker counted five TUI commands as passing that had done nothing.
+  It now prints `sipnab: the terminal UI could not start: ... It needs a
+  terminal; add -N for a run without one.` on stderr, even with logging off,
+  and exits 1 after the normal shutdown. The checker counts that refusal, and
+  only that, as a TUI command having run as far as it can without a terminal.
+
 ## [0.5.191] - 2026-09-26
 
 ### Added

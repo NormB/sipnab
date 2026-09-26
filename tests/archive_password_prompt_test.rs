@@ -113,6 +113,12 @@ struct Session {
     /// stdout and stderr, drained as they arrive: a trace-level run writes
     /// more than a pipe holds, and an undrained pipe stops it mid-write.
     drains: Vec<std::thread::JoinHandle<Vec<u8>>>,
+    /// Cursor-position queries (`ESC [6n`) already answered. A real terminal
+    /// answers each one; the TUI's terminal library asks at startup and gives
+    /// up after two seconds without an answer. Until this was answered, the
+    /// TUI in these tests never started, and the tests passed only because a
+    /// TUI that failed to start exited 0 (TTY-EXIT-1).
+    answered: usize,
 }
 
 /// Read `src` to its end on a thread.
@@ -177,6 +183,7 @@ fn start_with(args: &[&str], tmpdir: &Path, with_tty: bool, stdout_tty: bool) ->
         pty,
         screen: String::new(),
         drains,
+        answered: 0,
     }
 }
 
@@ -218,6 +225,13 @@ impl Session {
         if got > 0 {
             self.screen
                 .push_str(&String::from_utf8_lossy(&buf[..got as usize]));
+        }
+        // Counted over the whole screen, so a query split across two reads
+        // is still answered once.
+        let asked = self.screen.matches("\u{1b}[6n").count();
+        while self.answered < asked {
+            self.type_in(b"\x1b[1;1R");
+            self.answered += 1;
         }
     }
 

@@ -160,9 +160,9 @@ OUTPUT_FLAGS = frozenset({
 # These commands stay exit-status-only.
 OUTPUT_UNPINNED: dict[str, str] = {
     # Recipes 1, 4, 7 and 13 open the TUI (no -N). A trycmd case has no
-    # terminal, so the TUI fails to start ("No such device or address") and
-    # the run prints nothing; a golden would pin that failed start as the
-    # expected output. What the TUI draws is pinned where a terminal exists:
+    # terminal, so the TUI refuses to start and sipnab exits 1 with
+    # TUI_REFUSAL; a golden would pin that refusal as the expected output, and
+    # reached_the_tui counts the refusal as the run succeeding this far. What the TUI draws is pinned where a terminal exists:
     # tests/tui_snapshot_test.rs and tests/tui_e2e_test.rs.
     "sipnab -I capture.pcap": "opens the TUI, which needs a terminal a trycmd "
         "case does not have; TUI output is pinned by tui_snapshot_test and "
@@ -194,6 +194,24 @@ class GoldenGaps:
     unused_reasons: list[str]
     contradictory: list[str]
     pinned: int
+
+
+# What sipnab prints when a TUI cannot start (src/app/tui_mode.rs). With no
+# terminal, which this checker never has, it exits 1 with this line.
+TUI_REFUSAL = "the terminal UI could not start"
+
+
+def reached_the_tui(inv: str, returncode: int, stderr: str) -> bool:
+    """Whether a failed run is a TUI command stopping at the missing terminal.
+
+    Only for commands OUTPUT_UNPINNED names as opening the TUI, and only on
+    exit 1 with sipnab's own refusal: that proves the arguments parsed and the
+    capture opened, which is everything this checker can see without a
+    terminal. Up to 0.5.191 the TUI exited 0 having drawn nothing, and this
+    checker counted that as a pass (TTY-EXIT-1).
+    """
+    names_a_tui_command = any(p in inv for p in OUTPUT_UNPINNED)
+    return names_a_tui_command and returncode == 1 and TUI_REFUSAL in stderr
 
 
 def substitute(
@@ -682,7 +700,7 @@ def main() -> int:
         executed.append(
             Executed(recipe=recipe, inv=inv, argv=tuple(golden_argv), key=key)
         )
-        if proc.returncode != 0:
+        if proc.returncode != 0 and not reached_the_tui(inv, proc.returncode, proc.stderr):
             failed += 1
             tail = (proc.stderr or proc.stdout).strip().split("\n")[-3:]
             failures.append(

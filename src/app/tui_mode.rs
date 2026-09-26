@@ -921,7 +921,11 @@ pub fn run_tui_mode(
     let from_to_mode = resolve_from_to_mode(&cli, &config);
 
     // Run TUI on the main thread
-    if let Err(e) = crate::tui::run_tui_with_pause(
+    // Held until the end of the run, after the threads are joined and the
+    // trail is closed, so a TUI that could not start still shuts down like
+    // any other run. Only then does it decide the exit status: a TUI that
+    // never drew must not report success (TTY-EXIT-1).
+    let tui_failure = crate::tui::run_tui_with_pause(
         Arc::clone(&dialog_store),
         Arc::clone(&stream_store),
         Some(paused_flag),
@@ -976,7 +980,9 @@ pub fn run_tui_mode(
             notes,
             notes_path,
         },
-    ) {
+    )
+    .err();
+    if let Some(e) = tui_failure.as_ref() {
         tracing::error!("TUI error: {e}");
     }
 
@@ -1019,6 +1025,17 @@ pub fn run_tui_mode(
     }
 
     drop(handle);
+
+    // eprintln (not only tracing) so the reason survives logging being off:
+    // it decides the exit status, and a status with no reason is the defect
+    // this replaces.
+    if let Some(e) = tui_failure {
+        eprintln!(
+            "sipnab: the terminal UI could not start: {e}. It needs a terminal; \
+             add -N for a run without one."
+        );
+        crate::capture::archive::release_run_and_exit(1);
+    }
 }
 
 /// Unit tests for the parts of TUI mode that are reachable without a
