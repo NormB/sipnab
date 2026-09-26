@@ -48,7 +48,7 @@ version = "0.5.191"
 # Bumped after a release finishes publishing, not while cutting it.
 # `site_advertises_only_a_released_version` requires a matching `v<x.y.z>` tag,
 # so advertising something unreleased fails the suite rather than the visitor.
-published_version = "0.5.190"
+published_version = "0.5.191"
 # Release date of `published_version` above -- NOT of `version`, further up.
 # `download.html` renders this beside `published_version` in a single sentence,
 # so the date belongs to the release a reader can actually download.
@@ -57,7 +57,7 @@ published_version = "0.5.190"
 # untagged version is the conflation the published_version split exists to
 # prevent. `site_release_date_matches_changelog` reads `published_version` and
 # enforces this.
-release_date = "2026-09-25"
+release_date = "2026-09-26"
 # Minimum glibc of the released -gnu binaries and .debs. This is NOT a free
 # choice: it is whatever the "Enforce glibc floor" step in release.yml admits,
 # and it must equal SIPNAB_GLIBC_FLOOR in static/install.sh, which decides
@@ -141,6 +141,7 @@ macos_floor_intel = "10.12"
 #   0.5.188  17,183,688 bytes   (+28,736, leaving 642,104 bytes of headroom under 17 MB)
 #   0.5.189  17,806,848 bytes   (+623,160, leaving 1,067,520 bytes of headroom under 18 MB)
 #   0.5.190  17,811,008 bytes   (+4,160, leaving 1,063,360 bytes of headroom under 18 MB)
+#   0.5.191  17,815,104 bytes   (+4,096, leaving 1,059,264 bytes of headroom under 18 MB)
 #
 # So 0.5.159 shipped one ordinary release away from tipping and nothing said
 # so. The 118,784 bytes are `find_in_captures` -- a 66th MCP tool with derived
