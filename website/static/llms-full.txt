@@ -215,6 +215,32 @@ python3 -m compileall -q clients/python
 python3 -m pytest clients/python/tests -q
 ```
 
+## Languages and lifecycle
+
+sipnab declares client examples in six languages: Rust, Python, Go,
+JavaScript (TypeScript counts as JavaScript), C and C++. An operator's program walks
+through six steps, and each language should have one program per step:
+
+- **configure**: starts sipnab from a configuration it writes or chooses.
+- **capture**: starts sipnab on a capture source and takes its output.
+- **read**: reads captured data from a running sipnab.
+- **command**: changes something through sipnab, such as banning a source.
+- **process**: turns what it read into an answer an operator acts on.
+- **stop**: stops a running sipnab through its own interface.
+
+"Not yet" marks a step that language has no program for. A test holds this
+table to the programs in `clients/`, so a program listed here exists and makes
+the call its step needs.
+
+| Language | configure | capture | read | command | process | stop |
+|---|---|---|---|---|---|---|
+| Rust | Not yet | Not yet | [rust/src/main.rs](../clients/rust/src/main.rs) | Not yet | Not yet | Not yet |
+| Python | Not yet | [python/agent_triage.py](../clients/python/agent_triage.py) | [python/list_dialogs.py](../clients/python/list_dialogs.py) | [python/scanner_ban.py](../clients/python/scanner_ban.py) | [python/failed_calls.py](../clients/python/failed_calls.py) | Not yet |
+| Go | Not yet | Not yet | [go/list-dialogs/main.go](../clients/go/list-dialogs/main.go) | Not yet | Not yet | Not yet |
+| JavaScript | Not yet | Not yet | [javascript/list-dialogs.mjs](../clients/javascript/list-dialogs.mjs) | Not yet | Not yet | Not yet |
+| C | Not yet | Not yet | Not yet | Not yet | Not yet | Not yet |
+| C++ | Not yet | Not yet | Not yet | Not yet | Not yet | Not yet |
+
 ## Reference-page programs
 
 Each Python, Go, JavaScript and TypeScript example on the

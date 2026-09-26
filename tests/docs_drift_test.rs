@@ -4113,7 +4113,11 @@ fn no_documentation_table_repeats_a_row() {
     // two, one in website/static/llms-full.txt (not walked), none removed.
     // 980 -> 992: the four voice-stack guides add 6 tables (vcon-server 2,
     // vcon-sipnab 1, tfps 2, tfps-sipnab 1), each in docs/ and on the site.
-    const EXPECTED_TABLES: usize = 992;
+    // 992 -> 994: the language-by-lifecycle table in docs/client-examples.md
+    // and its site mirror website/content/docs/examples.md (EX1). Attributed
+    // the same way: one separator row added in each, one in llms-full.txt
+    // (not walked), none removed.
+    const EXPECTED_TABLES: usize = 994;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

@@ -12,6 +12,12 @@ entry that carries them.
 
 ### Added
 
+- **The [runnable examples](https://sipnab.com/docs/examples/) page shows which
+  languages have a program for each step.** Six languages (Rust, Python, Go,
+  JavaScript, C, C++) against six steps (configure, capture, read, command,
+  process, stop), with "Not yet" where a language has no program. A test holds
+  the table to the programs in `clients/`, checks each one makes the call its
+  step needs, and pins the number of gaps at 29.
 - **The home page links the voice-stack guides.** A new "Add it to your voice
   stack" section, after "What you can do with it", has a card each for vCon
   and TFPS, linking the stand-alone install guide and the sipnab guide. A test
