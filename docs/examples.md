@@ -521,12 +521,12 @@ sipnab -N -d eth0 --hep-listen 127.0.0.1:9060 "udp portrange 10000-20000"
 Raised by Dan Jenkins ([@danjenkins](https://github.com/danjenkins)) from
 OpenSIPS deployment experience.
 
-The BPF expression is not optional decoration. Without one, the interface gets
-sipnab's auto-generated *signaling* filter and captures no media whatsoever —
-while every message the mirror already sent also arrives off the wire, doubling
-each dialog's message ladder. Name your media ports and nothing else, because
-sipnab
-warns if you forget.
+The BPF expression narrows the capture to your media ports. Without one, the
+interface gets sipnab's auto-generated filter, which on a run like this admits
+media only: RTP on any port, with the signaling left to the mirror. Up to
+0.5.192 that filter was signaling-only, so the interface captured no media and
+every mirrored message arrived a second time off the wire. `--no-rtp` still
+gives the interface the signaling filter, and sipnab warns about that.
 
 
 **What you get that a single source cannot give you.** The two accounts are
