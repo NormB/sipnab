@@ -24,6 +24,18 @@ entry that carries them.
 
 ### Fixed
 
+- **A live capture measures media by default.** With no filter of your own,
+  sipnab generated a kernel filter that admitted SIP signaling only, so every
+  default live capture (including the packaged systemd service) dropped every
+  RTP packet and reported calls with no media, while the documentation said
+  media was never gated. A call through an rtpengine relay reported 13 SIP
+  messages and 0 RTP packets. The generated filter now also admits UDP on any
+  port whose first payload byte marks RTP version 2, over IPv4 and IPv6.
+  `--no-rtp` keeps it signaling-only. With `--hep-listen` as well as `-d`, the
+  interface takes the media only, since the mirror delivers the signaling;
+  it used to take the signaling a second time and no media. The TUI's status
+  line now describes the filter it runs with: it said `SIP + RTP` while the
+  filter admitted no RTP.
 - **The vCon server guide's uninstall removes rtpengine's build dependencies.**
   It purged the two rtpengine packages and left `ngcp-rtpengine-build-deps`,
   and with it every package the build had pulled in.

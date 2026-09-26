@@ -779,12 +779,18 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
         tracing::warn!("{msg}");
     }
 
+    // Whether this run analyzes media, which decides what the generated
+    // filter admits. The same precedence every other reader of `no_rtp` uses.
+    let media = !(cli.capture_args.no_rtp || config.capture.no_rtp.unwrap_or(false));
+    let composite = matches!(source, Some(CaptureSource::Composite(_)));
+
     // Two sources with a signaling-only filter is a run that measures no media
-    // and doubles every dialog. Emitted before the filter is built so the
-    // operator reads it beside the "Auto-generated BPF filter:" line it
+    // and doubles every dialog; with media on, the generated filter is
+    // media-only and neither happens. Emitted before the filter is built so
+    // the operator reads it beside the "Auto-generated BPF filter:" line it
     // explains.
     if let Some(msg) =
-        composite_filter_warning(source.as_ref(), capture_config.bpf_filter.is_some())
+        composite_filter_warning(source.as_ref(), capture_config.bpf_filter.is_some(), media)
     {
         tracing::warn!("{msg}");
     }
@@ -800,7 +806,14 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
     let tunnel_ports = resolve_tunnel_ports(cli)?;
     if capture_config.bpf_filter.is_none() && is_live {
         let (lo, hi) = portrange;
-        let filter = auto_bpf_filter(lo, hi, &tunnel_ports);
+        // A composite's HEP listener already delivers the signaling, so its
+        // interface takes only the media the mirror cannot carry. Taking the
+        // signaling off the wire too would deliver every message twice.
+        let filter = if composite && media {
+            MEDIA_FILTER_ARM.to_string()
+        } else {
+            auto_capture_filter(lo, hi, &tunnel_ports, media)
+        };
         tracing::info!("Auto-generated BPF filter: {filter}");
         if let Some(msg) = tunnel_omission_notice(&tunnel_ports) {
             tracing::warn!("{msg}");
@@ -3597,6 +3610,44 @@ fn ip_and_ports_at(ip_off: usize, lo: u16, hi: u16) -> String {
     format!("({v4} or {v6})")
 }
 
+/// Admits RTP and RTCP on any UDP port: the first payload byte carries
+/// version 2 in its top two bits, which both share.
+///
+/// Media travels on whatever ports SDP negotiated, which no port range can
+/// name in advance, so the only thing to filter on is what the packet is. The
+/// test is one byte and cheap in the kernel. It also admits other UDP whose
+/// first byte happens to look the same (a quarter of random first bytes do);
+/// the RTP parser rejects those in userspace, as it would without a filter.
+///
+/// Two arms, because libpcap's transport-relative `udp[8]` compiles for IPv4
+/// only: its program rejects every frame whose EtherType is not 0x0800, so an
+/// IPv6 RTP packet never matched it. IPv6 is read at the network layer:
+/// next header 17 (UDP), then the payload's first byte 48 bytes in, past the
+/// 40-byte IPv6 header and the 8-byte UDP header. That assumes no extension
+/// headers, as the IPv6 arms of `auto_bpf_filter` do. Both follow the IP
+/// header wherever the link header puts it, on Ethernet and on the cooked
+/// header `-d any` uses. Media inside a VLAN tag or a tunnel is not covered,
+/// as SIP inside them is by `auto_bpf_filter`'s encapsulated arms.
+pub const MEDIA_FILTER_ARM: &str =
+    "((udp and udp[8] & 0xc0 = 0x80) or (ip6 and ip6[6] = 17 and ip6[48] & 0xc0 = 0x80))";
+
+/// The filter a live capture gets when the operator gives none.
+///
+/// Signaling from `auto_bpf_filter`, plus the media when sipnab will analyze
+/// it. Until LIVE-MEDIA-1 the default was signaling alone, so the kernel
+/// dropped every RTP packet of every default live capture while the
+/// documentation said media was never gated: a call through an rtpengine
+/// relay reported 13 SIP messages and 0 RTP packets. With `media` false
+/// (`--no-rtp`), nothing would read the media, so it stays out.
+pub fn auto_capture_filter(lo: u16, hi: u16, tunnel_ports: &[u16], media: bool) -> String {
+    let signaling = auto_bpf_filter(lo, hi, tunnel_ports);
+    if media {
+        format!("{signaling} or {MEDIA_FILTER_ARM}")
+    } else {
+        signaling
+    }
+}
+
 /// Build the BPF filter sipnab installs when it captures live and the operator
 /// gave no filter of their own.
 ///
@@ -3876,7 +3927,10 @@ fn hep_listen_ignored_warning(cli: &Cli, source: Option<&CaptureSource>) -> Opti
 }
 
 /// The message to log when a composite source will capture no media, or `None`
-/// when the interface member has a filter that can see some.
+/// when the interface member has a filter that can see some: the operator's,
+/// or the media-only default a composite gets whenever RTP analysis is on.
+/// What follows is why the signaling default, which a composite now gets only
+/// under `--no-rtp`, was wrong for it.
 ///
 /// A live capture with no explicit BPF expression gets the auto-generated
 /// signaling filter — `portrange 5060-5061` plus its encapsulated arms — and
@@ -3893,8 +3947,12 @@ fn hep_listen_ignored_warning(cli: &Cli, source: Option<&CaptureSource>) -> Opti
 /// what it saw.
 ///
 /// Returns the message rather than logging it, so it can be asserted on.
-fn composite_filter_warning(source: Option<&CaptureSource>, has_filter: bool) -> Option<String> {
-    if has_filter || !matches!(source, Some(CaptureSource::Composite(_))) {
+fn composite_filter_warning(
+    source: Option<&CaptureSource>,
+    has_filter: bool,
+    media: bool,
+) -> Option<String> {
+    if has_filter || media || !matches!(source, Some(CaptureSource::Composite(_))) {
         return None;
     }
     Some(
@@ -6456,10 +6514,122 @@ mod tests {
         assert_eq!(explicit_filter_encap_notice("host 192.0.2.1"), None);
     }
 
+    // ── media in the default live filter (LIVE-MEDIA-1) ─────────────────
+
+    /// An RTP version-2 packet: `0x80` (V=2, no padding, extension or CSRC),
+    /// payload type 8, then sequence, timestamp and SSRC, then 20 bytes of
+    /// audio.
+    fn rtp_payload() -> Vec<u8> {
+        let mut p = vec![0x80, 0x08, 0x12, 0x34];
+        p.extend_from_slice(&0x0000_1000u32.to_be_bytes());
+        p.extend_from_slice(&0xdee0_ee8fu32.to_be_bytes());
+        p.extend_from_slice(&[0xd5; 20]);
+        p
+    }
+
+    /// The defect: with no filter given, a live capture admitted SIP ports
+    /// only, so the kernel dropped every RTP packet, and a call through an
+    /// rtpengine relay on Ubuntu 24.04 reported 13 SIP messages and 0 RTP
+    /// packets. Media uses whatever ports SDP negotiated, so the default must
+    /// admit RTP on any port: here a relay port to a phone's, on the cooked
+    /// header `-d any` uses, over IPv4 and IPv6, and on plain Ethernet.
+    #[test]
+    fn a_default_live_filter_admits_rtp_on_any_port() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let filter = auto_capture_filter(5060, 5061, &[], true);
+        let mut v4 = sll2(0x0800);
+        v4.extend_from_slice(&ipv4_udp(31452, 7000, &rtp_payload()));
+        let mut v6 = sll2(0x86dd);
+        v6.extend_from_slice(&ipv6_udp(31452, 7000, &rtp_payload()));
+        let mut ether = eth(0x0800);
+        ether.extend_from_slice(&ipv4_udp(6000, 34356, &rtp_payload()));
+        assert_eq!(
+            count_frames(dir.path(), "rtp-any", DLT_LINUX_SLL2, &[v4, v6], &filter),
+            2,
+            "RTP on a negotiated port must reach sipnab on the any device"
+        );
+        assert_eq!(
+            count_frames(dir.path(), "rtp-eth", DLT_EN10MB, &[ether], &filter),
+            1,
+            "RTP on a negotiated port must reach sipnab on an Ethernet device"
+        );
+    }
+
+    /// Admitting media is not admitting everything: a datagram whose first
+    /// byte is not RTP version 2 stays out, so a DNS query to port 53 costs
+    /// the process nothing.
+    #[test]
+    fn the_media_arm_leaves_other_udp_out() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let filter = auto_capture_filter(5060, 5061, &[], true);
+        let mut dns = sll2(0x0800);
+        dns.extend_from_slice(&ipv4_udp(40000, 53, &[0x12, 0x34, 0x01, 0x00, 0, 1, 0, 0]));
+        assert_eq!(
+            count_frames(dir.path(), "dns", DLT_LINUX_SLL2, &[dns], &filter),
+            0
+        );
+    }
+
+    /// SIP still gets in with media admitted.
+    #[test]
+    fn the_media_filter_still_admits_sip() {
+        let with_media = auto_capture_filter(5060, 5061, &[], true);
+        assert_eq!(
+            count_matching(&plain_fixture(), &with_media),
+            count_matching(&plain_fixture(), &auto_bpf_filter(5060, 5061, &[])),
+        );
+    }
+
+    /// With RTP analysis off (`--no-rtp`), the default stays signaling-only:
+    /// nothing would read the media, so the kernel should not copy it.
+    #[test]
+    fn with_rtp_off_the_default_stays_signaling_only() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let filter = auto_capture_filter(5060, 5061, &[], false);
+        assert_eq!(filter, auto_bpf_filter(5060, 5061, &[]));
+        let mut v4 = sll2(0x0800);
+        v4.extend_from_slice(&ipv4_udp(31452, 7000, &rtp_payload()));
+        assert_eq!(
+            count_frames(dir.path(), "rtp-off", DLT_LINUX_SLL2, &[v4], &filter),
+            0
+        );
+    }
+
+    /// The plan gives a live capture the media-admitting default.
+    #[test]
+    fn plan_admits_media_in_a_live_capture_by_default() {
+        let mut cli = base_cli();
+        cli.capture_args.device = Some("any".into());
+        let plan = plan(&cli, &Config::default()).expect("plan");
+        assert_eq!(
+            plan.capture_config.bpf_filter.as_deref(),
+            Some(auto_capture_filter(5060, 5061, &[], true).as_str())
+        );
+        assert_ne!(
+            plan.capture_config.bpf_filter.as_deref(),
+            Some(auto_bpf_filter(5060, 5061, &[]).as_str()),
+            "the signaling-only filter is the defect"
+        );
+    }
+
+    /// `--no-rtp` keeps the plan's default signaling-only.
+    #[test]
+    fn plan_keeps_the_default_signaling_only_with_no_rtp() {
+        let mut cli = base_cli();
+        cli.capture_args.device = Some("any".into());
+        cli.capture_args.no_rtp = true;
+        let plan = plan(&cli, &Config::default()).expect("plan");
+        assert_eq!(
+            plan.capture_config.bpf_filter.as_deref(),
+            Some(auto_bpf_filter(5060, 5061, &[]).as_str())
+        );
+    }
+
     // ── plan() wiring ──────────────────────────────────────────────────
 
     /// A live capture with no explicit filter gets the encapsulation-aware
-    /// filter — the exact string, not something like it.
+    /// signaling filter plus the media arm — the exact string, not something
+    /// like it.
     #[test]
     fn plan_generates_the_encapsulation_aware_filter_for_a_live_capture() {
         let mut cli = base_cli();
@@ -6467,7 +6637,7 @@ mod tests {
         let plan = plan(&cli, &Config::default()).expect("plan");
         assert_eq!(
             plan.capture_config.bpf_filter.as_deref(),
-            Some(auto_bpf_filter(5060, 5061, &[]).as_str())
+            Some(auto_capture_filter(5060, 5061, &[], true).as_str())
         );
     }
 
@@ -6480,7 +6650,7 @@ mod tests {
         let plan = plan(&cli, &Config::default()).expect("plan");
         assert_eq!(
             plan.capture_config.bpf_filter.as_deref(),
-            Some(auto_bpf_filter(5060, 5061, TUNNEL_PORTS_DEFAULT).as_str())
+            Some(auto_capture_filter(5060, 5061, TUNNEL_PORTS_DEFAULT, true).as_str())
         );
     }
 
@@ -6493,7 +6663,7 @@ mod tests {
         let plan = plan(&cli, &Config::default()).expect("plan");
         assert_eq!(
             plan.capture_config.bpf_filter.as_deref(),
-            Some(auto_bpf_filter(5080, 5090, &[]).as_str())
+            Some(auto_capture_filter(5080, 5090, &[], true).as_str())
         );
     }
 
@@ -6609,8 +6779,8 @@ mod tests {
         );
     }
 
-    /// A composite with no BPF filter measures no media and doubles every
-    /// dialog, and the auto-generated filter is what makes that happen — so
+    /// A composite with no BPF filter and RTP off measures no media and
+    /// doubles every dialog, and the auto-generated filter is what makes that happen — so
     /// the warning has to arrive with it, not instead of it.
     #[test]
     fn composite_filter_warning_fires_when_nothing_names_the_media_ports() {
@@ -6620,8 +6790,8 @@ mod tests {
             },
             hep_src("127.0.0.1:19060"),
         ]);
-        let msg = composite_filter_warning(Some(&composite), false)
-            .expect("a composite with no filter captures no media");
+        let msg = composite_filter_warning(Some(&composite), false, false)
+            .expect("a composite with no filter and no media captures no media");
         assert!(
             msg.contains("no media"),
             "say what will be missing, not merely that a filter is absent: {msg}"
@@ -6632,9 +6802,15 @@ mod tests {
         );
 
         assert_eq!(
-            composite_filter_warning(Some(&composite), true),
+            composite_filter_warning(Some(&composite), true, false),
             None,
             "an operator who named their ports needs no advice"
+        );
+        assert_eq!(
+            composite_filter_warning(Some(&composite), false, true),
+            None,
+            "with media on, the default is media-only: nothing is missing and \
+             nothing is doubled"
         );
     }
 
@@ -6645,23 +6821,24 @@ mod tests {
         let live = CaptureSource::Live {
             device: "eth0".into(),
         };
-        assert_eq!(composite_filter_warning(Some(&live), false), None);
+        assert_eq!(composite_filter_warning(Some(&live), false, false), None);
         assert_eq!(
-            composite_filter_warning(Some(&hep_src("127.0.0.1:19060")), false),
+            composite_filter_warning(Some(&hep_src("127.0.0.1:19060")), false, false),
             None
         );
-        assert_eq!(composite_filter_warning(None, false), None);
+        assert_eq!(composite_filter_warning(None, false, false), None);
     }
 
-    /// The composite's NIC member must still get the auto-generated filter.
+    /// The composite's NIC member gets a generated filter, and it is the media.
     ///
     /// `is_live` used to be `matches!(source, Live | None)`, and a composite is
     /// neither — so a composite would have opened its interface with NO filter
-    /// and handed every frame on the link to the parser. The warning above
-    /// tells the operator the filter is signaling-only; this pins that a filter
-    /// is generated at all.
+    /// and handed every frame on the link to the parser. Then it got the
+    /// signaling default, which is the wrong half: the HEP listener already
+    /// delivers the signaling, so every message arrived twice, and the RTP the
+    /// interface member is there for never arrived at all (LIVE-MEDIA-1).
     #[test]
-    fn a_composite_still_gets_the_generated_bpf_filter_for_its_interface() {
+    fn a_composite_interface_gets_the_media_only_default() {
         let mut cli = base_cli();
         cli.capture_args.device = Some("eth0".into());
         cli.hep_args.hep_listen = Some("127.0.0.1:19060".into());
@@ -6673,9 +6850,24 @@ mod tests {
         );
         assert_eq!(
             plan.capture_config.bpf_filter.as_deref(),
-            Some(auto_bpf_filter(5060, 5061, &[]).as_str()),
-            "the interface member needs a filter; without one the composite \
-             opens the link wide"
+            Some(MEDIA_FILTER_ARM),
+            "the interface member needs a filter, and it is the media: the \
+             mirror carries the signaling"
+        );
+    }
+
+    /// With `--no-rtp`, a composite's interface keeps the signaling default:
+    /// there is no media to take, and the warning says what that costs.
+    #[test]
+    fn a_composite_with_rtp_off_keeps_the_signaling_default() {
+        let mut cli = base_cli();
+        cli.capture_args.device = Some("eth0".into());
+        cli.capture_args.no_rtp = true;
+        cli.hep_args.hep_listen = Some("127.0.0.1:19060".into());
+        let plan = plan(&cli, &Config::default()).expect("plan");
+        assert_eq!(
+            plan.capture_config.bpf_filter.as_deref(),
+            Some(auto_bpf_filter(5060, 5061, &[]).as_str())
         );
     }
 

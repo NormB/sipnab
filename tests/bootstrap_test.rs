@@ -102,7 +102,8 @@ fn portrange_resolution_and_error() {
 /// only, and never overrides an explicit filter.
 ///
 /// The generated expression is encapsulation-aware — it is compared against
-/// `bootstrap::auto_bpf_filter`, whose own tests pin it to exact frame counts
+/// `bootstrap::auto_capture_filter` (the signaling of `auto_bpf_filter` plus
+/// the media arm), whose own tests pin it to exact frame counts
 /// through libpcap. Here the question is only which runs get one.
 #[test]
 fn bpf_autogeneration_rules() {
@@ -126,8 +127,13 @@ fn bpf_autogeneration_rules() {
     let f = bpf_for(&["-d", "eth0"]);
     assert_eq!(
         f.as_deref(),
+        Some(bootstrap::auto_capture_filter(5060, 5061, &[], true).as_str()),
+        "live capture with no explicit filter gets the auto-generated BPF, media included"
+    );
+    assert_eq!(
+        bpf_for(&["-d", "eth0", "--no-rtp"]).as_deref(),
         Some(bootstrap::auto_bpf_filter(5060, 5061, &[]).as_str()),
-        "live capture with no explicit filter gets the auto-generated BPF"
+        "--no-rtp keeps the generated filter signaling-only"
     );
     assert!(
         f.as_deref()
@@ -137,7 +143,7 @@ fn bpf_autogeneration_rules() {
 
     assert_eq!(
         bpf_for(&["-d", "eth0", "--portrange", "5080-5080"]).as_deref(),
-        Some(bootstrap::auto_bpf_filter(5080, 5080, &[]).as_str()),
+        Some(bootstrap::auto_capture_filter(5080, 5080, &[], true).as_str()),
         "degenerate range uses the single-port form"
     );
 
@@ -145,13 +151,16 @@ fn bpf_autogeneration_rules() {
     // asked for: it captures whole ports, so it can never be a default.
     assert_eq!(
         bpf_for(&["-d", "eth0", "--capture-tunnels"]).as_deref(),
-        Some(bootstrap::auto_bpf_filter(5060, 5061, bootstrap::TUNNEL_PORTS_DEFAULT).as_str()),
+        Some(
+            bootstrap::auto_capture_filter(5060, 5061, bootstrap::TUNNEL_PORTS_DEFAULT, true)
+                .as_str()
+        ),
         "--capture-tunnels adds the tunnel ports"
     );
 
     assert_eq!(
         bpf_for(&["-d", "eth0", "--capture-tunnels=8472"]).as_deref(),
-        Some(bootstrap::auto_bpf_filter(5060, 5061, &[8472]).as_str()),
+        Some(bootstrap::auto_capture_filter(5060, 5061, &[8472], true).as_str()),
         "a custom tunnel port list is honored verbatim"
     );
 

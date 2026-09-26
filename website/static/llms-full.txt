@@ -9734,7 +9734,7 @@ does not, work down this list:
 | No relay-named calls, streams still orphaned | rtpengine sends RTCP stats only | Set `homer-enable-ng = true` and restart |
 | Nothing at all on the wire | rtpengine has no `homer` destination | Set one |
 | Configured, but still nothing on the wire | The destination refuses the datagrams | See below |
-| Control traffic visible, streams still orphaned | Capture missed the HEP, or a filter excluded it | Widen the filter; the default filter excludes media |
+| Control traffic visible, streams still orphaned | Capture missed the HEP, or a filter excluded it | Widen the filter. A filter of your own must admit the relay's media ports; sipnab 0.5.192 and earlier admitted no media by default |
 | Control traffic visible and in the filter, still orphaned | `--hep-parse` on a build before 0.5.128 | Leave `--hep-parse` off, or upgrade. See below |
 | Relay-named calls appear but media does not | The media is on ports your filter drops | Include the `port-min`–`port-max` range |
 
@@ -11103,6 +11103,10 @@ Two cases the generated filter still does not cover:
   capture](tuning-capture.md)).
 - **SIP on a port outside `--portrange`** -- widen it (see [Start
   here](#start-here-one-pass-over-everything)).
+
+The generated filter also admits RTP on any port, but untagged only, over IPv4
+and IPv6 without extension headers. Media inside a VLAN tag or a tunnel needs
+a filter of your own that names it.
 
 One more thing the encapsulated arm cannot reach: an IPv4 header carrying
 **options**, because a BPF byte offset has to be a constant and the arm cannot
@@ -13016,6 +13020,17 @@ sipnab -d eth0,eth1 --multi-device --delta-time
 > `portrange` would match none of that traffic. See
 > [How the generated filter reaches encapsulated SIP](encapsulations.md#how-the-generated-filter-reaches-encapsulated-sip)
 > for the offsets it probes and its two limits.
+>
+> **The auto-generated filter admits the media too.** RTP travels on whatever
+> ports SDP negotiated, so the filter admits UDP on any port whose first
+> payload byte marks RTP version 2, over IPv4 and IPv6 without extension
+> headers. Media inside a VLAN tag or a tunnel is not admitted: name it in a
+> filter of your own. With `--no-rtp` the filter stays signaling-only, since
+> nothing would read the media. With `--hep-listen` as well as `-d`, the
+> interface takes the media only, because the HEP mirror already delivers the
+> signaling and taking it off the wire too would deliver every message twice.
+> Up to 0.5.192 the filter admitted signaling only, and a default live capture
+> measured no media at all.
 >
 > **UDP tunnels are opt-in.** GTP-U, VXLAN and GENEVE are not covered by
 > default and sipnab says so at startup. BPF cannot parse a variable-length
@@ -34591,11 +34606,13 @@ sipnab --version
 
 ## 2. Let sipnab see the media
 
-When you give it no capture filter, a live sipnab builds one that admits SIP
-signaling only: ports 5060-5061. The kernel then drops every RTP packet before
-sipnab sees it, and a report shows the calls with no audio at all. To measure
-the media, give sipnab a filter that admits rtpengine's media ports too. This
-guide uses the range from the rtpengine guide, 30000-39999:
+When you give it no capture filter, a live sipnab builds one. Up to 0.5.192,
+that filter admitted SIP signaling only, ports 5060-5061: the kernel dropped
+every RTP packet before sipnab saw it, and a report showed the calls with no
+audio at all. Later versions admit RTP on any port as well. Either way, give
+sipnab a filter that names rtpengine's media ports. It works on every version,
+and it keeps the capture to the relay's own traffic. This guide uses the range
+from the rtpengine guide, 30000-39999:
 
 ```text
 portrange 5060-5061 or udp portrange 30000-39999

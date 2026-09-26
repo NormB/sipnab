@@ -250,7 +250,7 @@ does not, work down this list:
 | No relay-named calls, streams still orphaned | rtpengine sends RTCP stats only | Set `homer-enable-ng = true` and restart |
 | Nothing at all on the wire | rtpengine has no `homer` destination | Set one |
 | Configured, but still nothing on the wire | The destination refuses the datagrams | See below |
-| Control traffic visible, streams still orphaned | Capture missed the HEP, or a filter excluded it | Widen the filter; the default filter excludes media |
+| Control traffic visible, streams still orphaned | Capture missed the HEP, or a filter excluded it | Widen the filter. A filter of your own must admit the relay's media ports; sipnab 0.5.192 and earlier admitted no media by default |
 | Control traffic visible and in the filter, still orphaned | `--hep-parse` on a build before 0.5.128 | Leave `--hep-parse` off, or upgrade. See below |
 | Relay-named calls appear but media does not | The media is on ports your filter drops | Include the `port-min`–`port-max` range |
 

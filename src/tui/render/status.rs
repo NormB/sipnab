@@ -91,24 +91,46 @@ fn fit_bpf_to_cols(bpf: &str, cols: usize) -> String {
     out
 }
 
-/// What status line 2 shows for the auto-generated default capture filter.
+/// What status line 2 shows for the auto-generated default capture filter,
+/// one text per shape `plan` can generate.
 ///
 /// The generated live filter is one portrange arm plus an encapsulation arm per
 /// link-header/tunnel-depth offset -- well over a thousand columns -- and a
 /// truncated prefix of it reads as a complete filter that does less than it
 /// does. So the default is summarized rather than shown raw; the full text is on
-/// the startup log line, exactly as `fit_bpf_to_cols` notes.
-const BPF_DEFAULT_SUMMARY: &str = "default (SIP + RTP, all encapsulations)";
+/// the startup log line, exactly as `fit_bpf_to_cols` notes. SIP is admitted
+/// inside every encapsulation the filter knows; RTP only untagged.
+const BPF_DEFAULT_SIP_AND_RTP: &str = "default (SIP, all encapsulations; RTP)";
+/// The generated default with RTP analysis off (`--no-rtp`).
+const BPF_DEFAULT_SIP_ONLY: &str = "default (SIP only, all encapsulations)";
+/// A composite's interface, whose signaling comes from the HEP listener.
+const BPF_DEFAULT_RTP_ONLY: &str = "default (RTP only; SIP from HEP)";
 
 /// The text to draw in status line 2's BPF slot, fitted to `cols`.
 ///
-/// A `generated` default is shown as [`BPF_DEFAULT_SUMMARY`], not its raw
+/// A `generated` default is shown as its [`default_summary`], not its raw
 /// expression. An operator's own filter is shown verbatim, cut with `…` only
 /// when it overflows the row. `live_only` appends the `[live capture]` marker
 /// for the offline-after-`O` case (the filter belongs to the live half still
 /// running behind an opened file), on either kind.
+/// What the generated default in `expr` admits, in words.
+///
+/// Read from the expression rather than passed alongside it, so the words
+/// cannot describe a different filter from the one the kernel runs. A fixed
+/// `SIP + RTP` stood here while the default admitted no RTP at all
+/// (LIVE-MEDIA-1).
+fn default_summary(expr: &str) -> &'static str {
+    let sip = expr.contains("portrange");
+    let rtp = expr.contains(crate::app::bootstrap::MEDIA_FILTER_ARM);
+    match (sip, rtp) {
+        (true, true) => BPF_DEFAULT_SIP_AND_RTP,
+        (false, true) => BPF_DEFAULT_RTP_ONLY,
+        _ => BPF_DEFAULT_SIP_ONLY,
+    }
+}
+
 fn bpf_display(generated: bool, bpf: &str, live_only: bool, cols: usize) -> String {
-    let base = if generated { BPF_DEFAULT_SUMMARY } else { bpf };
+    let base = if generated { default_summary(bpf) } else { bpf };
     let shown = if live_only && !bpf.is_empty() {
         format!("{base} [live capture]")
     } else {
@@ -722,11 +744,36 @@ mod tests {
     fn a_generated_default_is_summarized_not_shown_raw() {
         let raw = "udp and (portrange 5060-5061 or ip proto 41) or ".repeat(40);
         let out = bpf_display(true, &raw, false, 200);
-        assert_eq!(out, BPF_DEFAULT_SUMMARY);
+        assert_eq!(out, default_summary(&raw));
         assert!(
             !out.contains("portrange"),
             "the raw generated expression must not leak into the slot: {out}"
         );
+    }
+
+    /// The summary says what the generated filter admits, read from the filter
+    /// itself. It used to say `SIP + RTP` whatever was generated, while the
+    /// default admitted no RTP at all (LIVE-MEDIA-1); with `--no-rtp` it still
+    /// admits none, and on a composite it admits RTP and no SIP.
+    #[test]
+    fn the_summary_names_what_the_generated_filter_admits() {
+        use crate::app::bootstrap::{MEDIA_FILTER_ARM, auto_capture_filter};
+        let both = bpf_display(
+            true,
+            &auto_capture_filter(5060, 5061, &[], true),
+            false,
+            200,
+        );
+        assert!(both.contains("SIP") && both.contains("RTP"), "{both}");
+        let sip = bpf_display(
+            true,
+            &auto_capture_filter(5060, 5061, &[], false),
+            false,
+            200,
+        );
+        assert!(sip.contains("SIP") && !sip.contains("RTP"), "{sip}");
+        let rtp = bpf_display(true, MEDIA_FILTER_ARM, false, 200);
+        assert!(rtp.contains("RTP only"), "{rtp}");
     }
 
     /// An operator's own filter is shown verbatim when it fits -- pasteable into
@@ -761,7 +808,7 @@ mod tests {
     fn the_live_marker_rides_on_the_summary() {
         let out = bpf_display(true, "anything", true, 200);
         assert!(
-            out.starts_with(BPF_DEFAULT_SUMMARY),
+            out.starts_with(default_summary("anything")),
             "the summary comes first: {out}"
         );
         assert!(

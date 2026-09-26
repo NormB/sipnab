@@ -432,7 +432,7 @@ means no loss.
 
 **`--cores` is untouched.** `RunMode::CoresFile` requires `cli.has_input()`
 ([`src/app/bootstrap.rs:687`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L687)), so it never sees a live or HEP source. The existing
-`cores_ignored_warning` ([`src/app/bootstrap.rs:4000`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L4000)) already names both reasons a
+`cores_ignored_warning` ([`src/app/bootstrap.rs:4058`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L4058)) already names both reasons a
 run stays single-threaded. A composite source adds nothing here and needs
 nothing.
 
@@ -496,7 +496,7 @@ sipnab -N -d eth0 -L 127.0.0.1:9060 udp portrange 10000-20000
 
 `plan` already sets the precedent: `--cores` with `--json` exits 2 with a precise
 message ([`src/app/bootstrap.rs:629-655`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L629-L655)), `--cores` on a live source warns
-(`cores_ignored_warning`, [`src/app/bootstrap.rs:4000`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L4000)), `-I` beating `-d` warns
+(`cores_ignored_warning`, [`src/app/bootstrap.rs:4058`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L4058)), `-I` beating `-d` warns
 ([`src/app/bootstrap.rs:315`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L315)). Three rules follow that precedent:
 
 1. **Refuse what produces a wrong answer.** `-I` with a composite; `-O` with a
@@ -626,7 +626,9 @@ Four departures from the plan above, each for a reason:
    not in the plan because the plan did not notice that the auto-generated BPF
    filter is signaling-only: a composite with no explicit filter would capture no
    media at all — the exact thing the feature exists to capture — while doubling
-   every dialog's message ladder (F6).
+   every dialog's message ladder (F6). Since LIVE-MEDIA-1 (2026-09-26) the
+   generated default for a composite is media-only, so neither happens, and the
+   warning fires only under `--no-rtp`.
 
 ### Stage 2 — Provenance and honest limits — **SHIPPED**
 
@@ -936,7 +938,10 @@ operator towards. `composite_filter_warning` exists because the auto-generated
 BPF filter is signaling-only and a composite run wants media, so the operator
 writes a media-only filter and the wire then carries no signaling at all. Under
 a run-level gate every call in that deployment comes out mirror-only, and a
-finding on every call is a finding on none.
+finding on every call is a finding on none. Since LIVE-MEDIA-1 (2026-09-26) the
+generated default for a composite is itself media-only, so that deployment is
+now the default rather than the operator's choice, and the per-call gate
+matters more.
 
 On a single-source run the gate is one pass of `Copy`-byte comparisons that
 stops as soon as both witnesses are known to have spoken, allocating nothing.

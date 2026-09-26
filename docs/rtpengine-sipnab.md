@@ -61,11 +61,13 @@ sipnab --version
 
 ## 2. Let sipnab see the media
 
-When you give it no capture filter, a live sipnab builds one that admits SIP
-signaling only: ports 5060-5061. The kernel then drops every RTP packet before
-sipnab sees it, and a report shows the calls with no audio at all. To measure
-the media, give sipnab a filter that admits rtpengine's media ports too. This
-guide uses the range from the rtpengine guide, 30000-39999:
+When you give it no capture filter, a live sipnab builds one. Up to 0.5.192,
+that filter admitted SIP signaling only, ports 5060-5061: the kernel dropped
+every RTP packet before sipnab saw it, and a report showed the calls with no
+audio at all. Later versions admit RTP on any port as well. Either way, give
+sipnab a filter that names rtpengine's media ports. It works on every version,
+and it keeps the capture to the relay's own traffic. This guide uses the range
+from the rtpengine guide, 30000-39999:
 
 ```text
 portrange 5060-5061 or udp portrange 30000-39999

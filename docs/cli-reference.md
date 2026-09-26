@@ -266,6 +266,17 @@ sipnab -d eth0,eth1 --multi-device --delta-time
 > [How the generated filter reaches encapsulated SIP](encapsulations.md#how-the-generated-filter-reaches-encapsulated-sip)
 > for the offsets it probes and its two limits.
 >
+> **The auto-generated filter admits the media too.** RTP travels on whatever
+> ports SDP negotiated, so the filter admits UDP on any port whose first
+> payload byte marks RTP version 2, over IPv4 and IPv6 without extension
+> headers. Media inside a VLAN tag or a tunnel is not admitted: name it in a
+> filter of your own. With `--no-rtp` the filter stays signaling-only, since
+> nothing would read the media. With `--hep-listen` as well as `-d`, the
+> interface takes the media only, because the HEP mirror already delivers the
+> signaling and taking it off the wire too would deliver every message twice.
+> Up to 0.5.192 the filter admitted signaling only, and a default live capture
+> measured no media at all.
+>
 > **UDP tunnels are opt-in.** GTP-U, VXLAN and GENEVE are not covered by
 > default and sipnab says so at startup. BPF cannot parse a variable-length
 > GTP-U extension-header chain to reach the inner port, so the only way to

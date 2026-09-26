@@ -875,6 +875,10 @@ Two cases the generated filter still does not cover:
 - **SIP on a port outside `--portrange`** -- widen it (see [Start
   here](#start-here-one-pass-over-everything)).
 
+The generated filter also admits RTP on any port, but untagged only, over IPv4
+and IPv6 without extension headers. Media inside a VLAN tag or a tunnel needs
+a filter of your own that names it.
+
 One more thing the encapsulated arm cannot reach: an IPv4 header carrying
 **options**, because a BPF byte offset has to be a constant and the arm cannot
 multiply the IHL nibble into the port offset. The untagged `portrange` handles
