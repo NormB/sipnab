@@ -11,7 +11,11 @@
 //! The run happens under `setsid --wait`, which starts it in a new session
 //! with no controlling terminal and returns its exit status, so the test
 //! behaves the same from a developer's terminal as it does in CI.
-#![cfg(all(feature = "tui", unix))]
+//!
+//! Linux only: `setsid` is util-linux's, and macOS does not ship it. What is
+//! tested does not differ by platform (how sipnab treats the TUI's error), so
+//! running it on Linux alone loses nothing.
+#![cfg(all(feature = "tui", target_os = "linux"))]
 
 use std::process::{Command, Stdio};
 
