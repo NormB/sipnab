@@ -23,6 +23,10 @@ entry that carries them.
 
 ### Fixed
 
+- **The configuration reference describes `[tfps] db` as sipnab passes it.**
+  It said `--db=<path>`; sipnab passes `--db` and the path as two arguments,
+  which is what a wrapper script standing in for `tfps_ctl` receives. A test
+  now builds the argument list and holds the page to it.
 - **The client smoke run no longer prints `ok` for a check it just failed.**
   `expect` and `expect_exit` counted a missing line as a failure and then
   printed `ok` for the same check. They now live in `scripts/lib/smoke-expect.sh`,

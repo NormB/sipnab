@@ -278,7 +278,7 @@ runs, and does nothing about TFPS at any other time.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `ctl` | string | -- | Path to `tfps_ctl`. `--tfps-ctl` overrides it. Absent: sipnab looks on `PATH` the moment a TFPS tool runs, and a machine with no `tfps_ctl` anywhere answers `installed: false` on every TFPS surface |
-| `db` | string | -- | The TFPS database, passed to every `tfps_ctl` call as `--db=<path>`. Absent: `tfps_ctl` uses its own default |
+| `db` | string | -- | The TFPS database, passed to every `tfps_ctl` call as `--db <path>`: two arguments, which a wrapper script standing in for `tfps_ctl` receives as `"$@"`. Absent: `tfps_ctl` uses its own default |
 
 ```toml
 [tfps]

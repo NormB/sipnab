@@ -165,6 +165,16 @@ const PER_PAGE: &[(&str, &str)] = &[
     ),
 ];
 
+/// Keys that describe the HOST at the moment of the answer, not the capture:
+/// they move between any two calls, whatever the page size, so comparing them
+/// across two calls tests the clock rather than the paging.
+const AT_ANSWER: &[(&str, &str)] = &[(
+    "timing_clock",
+    "the kernel's clock-sync report when this answer was made; its error bound \
+     grows while the clock is between NTP updates (980500 then 981000 us across \
+     one pair of calls on 2026-09-26), so two calls a moment apart differ",
+)];
+
 /// A page whose rows sit one level inside the key that carries them.
 ///
 /// `Copy` because [`PROBES`] holds it by value and every probe is read through
@@ -1272,6 +1282,7 @@ fn a_page_size_never_moves_a_capture_wide_claim() {
         for key in keys {
             if key == probe.page
                 || PER_PAGE.iter().any(|(k, _)| k == key)
+                || AT_ANSWER.iter().any(|(k, _)| k == key)
                 || probe.per_page.iter().any(|(k, _)| k == key)
             {
                 continue;
