@@ -8,7 +8,7 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
-## [Unreleased]
+## [0.5.193] - 2026-09-27
 
 ### Added
 
@@ -38,6 +38,14 @@ entry that carries them.
   relay's mirrored control plane when the relay has a machine of its own. Every
   command ran as written on clean Debian 13 and Ubuntu 24.04, and the two-machine
   case on two machines. The home page's voice-stack section links both.
+
+### Changed
+
+- **The OpenAPI document lists a nullable reference's alternatives in a
+  different order.** utoipa 6 writes the reference first and `null` second,
+  where utoipa 5 wrote them the other way round. With the alternatives of each
+  `oneOf` sorted, the old and new documents are identical, so the contract a
+  client codes against is unchanged.
 
 ### Fixed
 
