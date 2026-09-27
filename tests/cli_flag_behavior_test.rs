@@ -79,22 +79,97 @@ fn udp_ports_owned_by(pid: u32) -> Vec<u16> {
 #[cfg(target_os = "linux")]
 #[test]
 fn udp_ports_owned_by_finds_this_process_socket_and_not_another() {
+    // Started before the socket exists, so it cannot have inherited it: a
+    // child spawned after would hold the socket for an instant inside its
+    // execve, which is what `listener_candidates` is for, not what this test
+    // is about.
+    let mut other = std::process::Command::new("sleep")
+        .arg("30")
+        .spawn()
+        .expect("spawn a process with no sockets");
     let mine = std::net::UdpSocket::bind("127.0.0.1:0").expect("bind");
     let port = mine.local_addr().expect("local addr").port();
     assert!(
         udp_ports_owned_by(std::process::id()).contains(&port),
         "this process's own socket on {port} was not found"
     );
-    let mut other = std::process::Command::new("sleep")
-        .arg("30")
-        .spawn()
-        .expect("spawn a process with no sockets");
     let found = udp_ports_owned_by(other.id());
     other.kill().expect("kill");
     let _ = other.wait();
     assert!(
         !found.contains(&port),
         "a process that holds no socket was credited with this one's port {port}"
+    );
+}
+
+/// The ports `child` holds that can be its own listener: every port it holds
+/// except those the harness process holds too.
+///
+/// `Command::spawn` returns once the child's `execve` has released the
+/// harness's memory, and the kernel closes the close-on-exec descriptors a
+/// moment later in that same `execve`. In between, the child still holds every
+/// socket the harness has open. Under load the child is preempted there, and a
+/// read of its descriptors credited it with the harness's own socket (the red
+/// `udp_ports_owned_by_finds_this_process_socket_and_not_another` on CI's
+/// arm64 runner, 2026-09-27; 4999 of 5000 spawns on one contended core
+/// reproduced it). A port the harness also holds is inherited, never bound.
+fn listener_candidates(child: &[u16], harness: &[u16]) -> Vec<u16> {
+    child
+        .iter()
+        .copied()
+        .filter(|p| !harness.contains(p))
+        .collect()
+}
+
+/// What two consecutive reads of the child's candidate ports settle.
+#[derive(Debug, PartialEq)]
+enum Settled {
+    /// No single port has held across both reads yet.
+    Pending,
+    /// One port, present in both reads.
+    Port(u16),
+    /// More than one port held across both reads.
+    Ambiguous(Vec<u16>),
+}
+
+/// A candidate counts only when it holds across two reads, so a socket the
+/// child held for an instant, such as one the harness closed while the child
+/// was still inside `execve`, is never taken for its listener.
+fn settle(previous: &[u16], now: &[u16]) -> Settled {
+    let mut held: Vec<u16> = now
+        .iter()
+        .copied()
+        .filter(|p| previous.contains(p))
+        .collect();
+    held.sort_unstable();
+    held.dedup();
+    match held.as_slice() {
+        [] => Settled::Pending,
+        [port] => Settled::Port(*port),
+        _ => Settled::Ambiguous(held),
+    }
+}
+
+#[test]
+fn a_port_the_harness_itself_holds_is_never_the_listener() {
+    assert_eq!(
+        listener_candidates(&[5000, 6000], &[5000, 7000]),
+        vec![6000]
+    );
+    assert_eq!(listener_candidates(&[5000], &[5000]), Vec::<u16>::new());
+    assert_eq!(listener_candidates(&[6000], &[]), vec![6000]);
+}
+
+#[test]
+fn a_listener_port_must_hold_across_two_reads() {
+    assert_eq!(settle(&[], &[6000]), Settled::Pending);
+    assert_eq!(settle(&[6000], &[]), Settled::Pending);
+    assert_eq!(settle(&[5000], &[6000]), Settled::Pending);
+    assert_eq!(settle(&[6000], &[6000]), Settled::Port(6000));
+    assert_eq!(settle(&[5000, 6000], &[6000]), Settled::Port(6000));
+    assert_eq!(
+        settle(&[6000, 7000], &[7000, 6000]),
+        Settled::Ambiguous(vec![6000, 7000])
     );
 }
 
@@ -110,6 +185,7 @@ fn wait_for_own_udp_listener(
     stderr: &dyn Fn() -> String,
 ) -> String {
     let by = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let mut previous = Vec::new();
     loop {
         if let Some(status) = child.try_wait().expect("try_wait") {
             panic!(
@@ -117,11 +193,18 @@ fn wait_for_own_udp_listener(
                 stderr()
             );
         }
-        match udp_ports_owned_by(child.id()).as_slice() {
-            [port] => return format!("127.0.0.1:{port}"),
-            [] => {}
-            many => panic!("sipnab holds {many:?} on 127.0.0.1; which one is the HEP listener?"),
+        let now = listener_candidates(
+            &udp_ports_owned_by(child.id()),
+            &udp_ports_owned_by(std::process::id()),
+        );
+        match settle(&previous, &now) {
+            Settled::Port(port) => return format!("127.0.0.1:{port}"),
+            Settled::Pending => {}
+            Settled::Ambiguous(many) => {
+                panic!("sipnab holds {many:?} on 127.0.0.1; which one is the HEP listener?")
+            }
         }
+        previous = now;
         assert!(
             std::time::Instant::now() < by,
             "the HEP listener never bound within 30 s:\n{}",
