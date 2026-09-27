@@ -3628,11 +3628,11 @@
           "hep_export": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/RuntimeHepExport",
                 "description": "The `--hep-send` exporter's deliveries and failures. Present only on\na run that exports."
+              },
+              {
+                "type": "null"
               }
             ]
           },
@@ -3658,11 +3658,11 @@
           "rates": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/RuntimeRates",
                 "description": "Rates across the sampled window. Present only when the caller sent\n`sample_seconds`."
+              },
+              {
+                "type": "null"
               }
             ]
           },
@@ -4182,11 +4182,11 @@
           "capture_identity": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/CaptureIdentity",
                 "description": "WHICH capture these counts came from, and which revision of its\nstores. `null` when nobody told this server what it is attached to."
+              },
+              {
+                "type": "null"
               }
             ]
           },
@@ -4850,11 +4850,11 @@
           "action": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/TfpsAction",
                 "description": "What TFPS did, when it was asked -- a refusal included."
+              },
+              {
+                "type": "null"
               }
             ]
           },
@@ -5477,11 +5477,11 @@
           "status": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/TfpsStatus",
                 "description": "What it said, when it did."
+              },
+              {
+                "type": "null"
               }
             ]
           },

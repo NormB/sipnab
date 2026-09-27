@@ -202,7 +202,7 @@ tokio = { version = "1", features = ["full"], optional = true }
 #
 # Default features kept: the only one is `macros`, which is the whole point --
 # `#[utoipa::path]` and `#[derive(OpenApi)]` live there.
-utoipa = { version = "5", optional = true }
+utoipa = { version = "6", optional = true }
 
 # Password-protected ZIP members (feature `archive`). READ only: sipnab never
 # writes an encrypted archive with it. The crate's own docs call its crypto
