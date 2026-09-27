@@ -6,7 +6,7 @@
 # Pinned by digest, matching `.clusterfuzzlite/Dockerfile`. OSS-Fuzz's
 # convention is a bare image name; if submission ever requires that, this
 # is the line to change and the reason to record.
-FROM gcr.io/oss-fuzz-base/base-builder-rust:v1@sha256:433319ea1a6bbea6c1db1915a5d385021908cc62026d9f0efda2270ef6060de3
+FROM gcr.io/oss-fuzz-base/base-builder-rust:v1@sha256:bc7d32d2a86bbe8afa49fdaa1a7665d17125cae20bfdc581e5335ef97aebcd2a
 
 # The builder image ships nightly Rust and cargo-fuzz. It does not ship
 # libpcap, which sipnab's `native` feature links; see the note in
