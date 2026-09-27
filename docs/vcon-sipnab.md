@@ -82,9 +82,9 @@ three things to what it does:
 - **`--retain-audio`** keeps each call's audio so that the vCon can carry it.
   Without it the vCon holds the signaling only.
 
-For the audio to be there at all, sipnab has to capture it. By default it
-captures only the SIP ports, so give it a capture filter that also admits the
-media ports. rtpengine relays media on 30000-39999 in the vCon server guide:
+For the audio to be there at all, sipnab has to capture it. Up to 0.5.192 it
+captured only the SIP ports by default, and later versions capture the media
+too. Either way, give it a capture filter that names the media ports. rtpengine relays media on 30000-39999 in the vCon server guide:
 
 ```bash
 # Run all of these, in order.

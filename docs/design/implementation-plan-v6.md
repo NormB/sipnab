@@ -2478,7 +2478,7 @@ SIP over TLS (SIPS, port 5061) is increasingly common. Without decryption, sipna
 
 **Docs — 5.4 deliverables:**
 - [ ] Rustdoc on `output/prometheus.rs`
-- [ ] `docs/prometheus.md` — Prometheus integration guide: all metrics with descriptions, label values, histogram buckets, scrape configuration, recommended recording rules
+- [ ] [`docs/prometheus.md`](https://github.com/NormB/sipnab/blob/main/docs/prometheus.md) — Prometheus integration guide: all metrics with descriptions, label values, histogram buckets, scrape configuration, recommended recording rules
 - [ ] `docs/grafana-dashboard.md` — example Grafana dashboard: panels for call rate, PDD, MOS distribution, concurrent calls, security alerts (include JSON dashboard definition)
 - [ ] [`contrib/grafana/sipnab-dashboard.json`](https://github.com/NormB/sipnab/blob/main/contrib/grafana/sipnab-dashboard.json) — importable Grafana dashboard
 - [ ] [`contrib/prometheus/sipnab-alerts.yml`](https://github.com/NormB/sipnab/blob/main/contrib/prometheus/sipnab-alerts.yml) — example alerting rules for Prometheus Alertmanager

@@ -100,6 +100,10 @@ Each answers "how do I …?" and assumes you already know what you want.
   of every call, sent by OpenSIPS over HEP. No sipnab involved.
 - **[Connect sipnab to Homer](homer-sipnab.md)**: sipnab as a second HEP
   receiver beside Homer, or as a source that forwards to it.
+- **[Add Prometheus and Grafana to an OpenSIPS voice stack](prometheus.md)**:
+  OpenSIPS's statistics, stored and graphed. No sipnab involved.
+- **[Add sipnab's metrics to Prometheus](prometheus-sipnab.md)**: sipnab's call
+  and media series beside OpenSIPS's, with sipnab's dashboard.
 - **[Write a WASM plugin](plugins.md)**: add your own detection to sipnab's
   diagnosis without forking it.
 - **[Recolor the TUI](theme-guide.md)**: colors and preset palettes.

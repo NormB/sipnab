@@ -33440,9 +33440,9 @@ three things to what it does:
 - **`--retain-audio`** keeps each call's audio so that the vCon can carry it.
   Without it the vCon holds the signaling only.
 
-For the audio to be there at all, sipnab has to capture it. By default it
-captures only the SIP ports, so give it a capture filter that also admits the
-media ports. rtpengine relays media on 30000-39999 in the vCon server guide:
+For the audio to be there at all, sipnab has to capture it. Up to 0.5.192 it
+captured only the SIP ports by default, and later versions capture the media
+too. Either way, give it a capture filter that names the media ports. rtpengine relays media on 30000-39999 in the vCon server guide:
 
 ```bash
 # Run all of these, in order.
@@ -35371,6 +35371,530 @@ and to the machines where sipnab forwards.
 - **sipnab's copies are missing from Homer.** Check that the second machine
   can reach UDP port 9060 on the Homer machine, and that sipnab's capture saw
   the call: run it with `--report` and look for the Call-ID.
+
+---
+
+<!-- source: docs/prometheus.md -->
+
+# Add Prometheus and Grafana to an OpenSIPS voice stack
+
+[Prometheus](https://prometheus.io) collects numbers over time: how many calls
+are up, how many failed, how busy each process is. It reads them from each
+program's metrics endpoint every few seconds and keeps the history.
+[Grafana](https://grafana.com) draws that history as dashboards and alerts on
+it.
+
+This guide stands up both beside an OpenSIPS proxy, has OpenSIPS publish its
+statistics, and shows a test call in the numbers. This guide does not use
+sipnab. When you have this working,
+[Add sipnab's metrics to Prometheus](prometheus-sipnab.md) adds sipnab's
+own.
+
+The parts, and what each one does:
+
+| Part | Role |
+|---|---|
+| **Prometheus** | Scrapes each metrics endpoint every 5 seconds and stores the series, on port 9090. |
+| **Grafana** | Dashboards over what Prometheus stored, on port 3000. |
+| **OpenSIPS** | Your SIP proxy. Its `prometheus` module publishes its statistics over its `httpd` module, on `127.0.0.1:8888`. |
+
+Everything below runs on one machine. The
+[last section](#put-the-parts-on-different-machines) says what changes when
+they are apart.
+
+## Tested on
+
+Every command on this page ran as written, in order, on 2026-09-26 on two
+x86_64 virtual machines with 2 cores and 3 GB of memory: a clean Debian 13
+(kernel 6.12.63), and Ubuntu 24.04.5 (kernel 6.8.0). The commands pin the
+components to the versions below.
+
+| Software | Version or commit |
+|---|---|
+| Docker Engine / Compose | from the Docker apt repository |
+| Prometheus | `prom/prometheus:v3.15.0` |
+| Grafana | `grafana/grafana:13.2.2` |
+| OpenSIPS | [`f46ef9337b`](https://github.com/OpenSIPS/opensips/commit/f46ef9337b), master, 4.1.0-dev |
+| SIPp (for the test call) | the distribution's `sip-tester` |
+
+The examples use `192.0.2.10` as the machine's address. Replace it with yours
+everywhere it appears.
+
+## 1. Install Docker
+
+Prometheus and Grafana run as containers. Install Docker Engine and the
+Compose plugin from the Docker repository:
+
+```bash
+# Run all of these, in order.
+sudo apt-get update
+sudo apt-get install -y ca-certificates curl git
+sudo install -m 0755 -d /etc/apt/keyrings
+. /etc/os-release
+sudo curl -fsSL "https://download.docker.com/linux/$ID/gpg" -o /etc/apt/keyrings/docker.asc
+sudo chmod a+r /etc/apt/keyrings/docker.asc
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/$ID $VERSION_CODENAME stable" \
+  | sudo tee /etc/apt/sources.list.d/docker.list >/dev/null
+sudo apt-get update
+sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+sudo usermod -aG docker "$USER"
+```
+
+Log out and back in so that your account's new `docker` group takes effect,
+then check:
+
+```bash
+docker compose version
+```
+
+## 2. Build OpenSIPS with its metrics endpoint
+
+The `prometheus` module is part of OpenSIPS's default build, but the `httpd`
+module it publishes through is not: it needs `libmicrohttpd`. Install that and
+build `httpd` too. OpenSIPS master also builds with compiler optimizations
+turned off, which is right for OpenSIPS's own developers and wrong for a proxy
+carrying calls, so turn them back on:
+
+```bash
+# Run all of these, in order.
+sudo apt-get install -y --no-install-recommends build-essential bison flex uuid-dev pkg-config libncurses-dev libssl-dev libmicrohttpd-dev
+sudo mkdir -p /usr/local/src/voice && sudo chown "$USER": /usr/local/src/voice
+cd /usr/local/src/voice
+git clone https://github.com/OpenSIPS/opensips.git
+cd opensips
+git checkout f46ef9337b
+make Makefile.conf
+sed -i 's/^DEFS+= -DCC_O0/#DEFS+= -DCC_O0/' Makefile.conf
+make -j2 all include_modules="httpd"
+sudo make install include_modules="httpd"
+/usr/local/sbin/opensips -V | head -2
+```
+
+Leave `DBG_MALLOC` as it is. With both it and `CC_O0` switched off, this commit
+of master does not compile: `net/tcp_conn_defs.h` calls `get_ticks()` without
+including the header that declares it, and only `DBG_MALLOC`'s headers happen
+to supply it.
+
+## 3. Configure OpenSIPS to publish its statistics
+
+This configuration is a minimal proxy with the metrics endpoint added. The
+metrics part is the block of `loadmodule` and `modparam` lines marked below.
+
+```bash
+sudo tee /usr/local/etc/opensips/opensips.cfg >/dev/null <<'EOF'
+# OpenSIPS as a SIP proxy that publishes its statistics for Prometheus.
+log_level=3
+stderror_enabled=no
+syslog_enabled=yes
+syslog_facility=LOG_LOCAL0
+udp_workers=2
+open_files_limit=4096
+
+socket=udp:192.0.2.10:5060   # the address your phones and carriers reach
+
+mpath="/usr/local/lib64/opensips/modules/"
+
+loadmodule "proto_udp.so"   # built into the core, but still loaded by name
+loadmodule "signaling.so"
+loadmodule "sl.so"
+loadmodule "tm.so"
+loadmodule "rr.so"
+loadmodule "maxfwd.so"
+loadmodule "sipmsgops.so"
+loadmodule "dialog.so"
+
+loadmodule "mi_fifo.so"
+modparam("mi_fifo", "fifo_name", "/run/opensips/opensips_fifo")
+
+# --- metrics start here ---
+loadmodule "httpd.so"
+modparam("httpd", "ip", "127.0.0.1")
+modparam("httpd", "port", 8888)
+loadmodule "prometheus.so"
+modparam("prometheus", "statistics", "core: dialog: tm: shmem: load:")
+# --- metrics end here ---
+
+route {
+	if (!mf_process_maxfwd_header(10)) {
+		send_reply(483, "Too Many Hops");
+		exit;
+	}
+
+	if (has_totag()) {
+		if (is_method("ACK") && t_check_trans()) {
+			t_relay();
+			exit;
+		}
+		if (!loose_route()) {
+			send_reply(404, "Not here");
+			exit;
+		}
+		t_relay();
+		exit;
+	}
+
+	if (is_method("CANCEL")) {
+		if (t_check_trans())
+			t_relay();
+		exit;
+	}
+	t_check_trans();
+
+	if (!is_method("INVITE")) {
+		send_reply(405, "Method Not Allowed");
+		exit;
+	}
+
+	record_route();
+	create_dialog();
+
+	# Where the call goes. Here, a test callee on this machine; in your
+	# stack, lookup("location"), dispatcher or a carrier.
+	$du = "sip:127.0.0.1:5070";
+	t_relay();
+}
+EOF
+```
+
+What the metrics lines do:
+
+- `httpd` serves HTTP on `127.0.0.1:8888`, the loopback address, so only this
+  machine can read the statistics.
+- `prometheus` publishes them at `/metrics` on that server. It publishes
+  nothing until `statistics` names what to publish; here the core, dialog,
+  transaction, memory and load groups. Each statistic becomes a series named
+  `opensips_` and the statistic's name, such as `opensips_processed_dialogs`.
+- `create_dialog()` makes OpenSIPS track each call, which is what the dialog
+  statistics count.
+
+Run OpenSIPS as its own user, under systemd:
+
+```bash
+# Run all of these, in order.
+sudo useradd --system --home-dir /run/opensips --shell /usr/sbin/nologin opensips
+sudo chown root:opensips /usr/local/etc/opensips /usr/local/etc/opensips/opensips.cfg
+sudo chmod 750 /usr/local/etc/opensips
+sudo chmod 640 /usr/local/etc/opensips/opensips.cfg
+sudo tee /etc/systemd/system/opensips.service >/dev/null <<'EOF'
+[Unit]
+Description=OpenSIPS SIP server
+After=network.target
+
+[Service]
+Type=forking
+User=opensips
+Group=opensips
+RuntimeDirectory=opensips
+RuntimeDirectoryMode=775
+PIDFile=/run/opensips/opensips.pid
+ExecStart=/usr/local/sbin/opensips -P /run/opensips/opensips.pid -f /usr/local/etc/opensips/opensips.cfg -m 64 -M 8
+Restart=always
+TimeoutStopSec=30s
+LimitNOFILE=262144
+
+[Install]
+WantedBy=multi-user.target
+EOF
+sudo /usr/local/sbin/opensips -C -f /usr/local/etc/opensips/opensips.cfg
+sudo systemctl daemon-reload
+sudo systemctl enable --now opensips
+systemctl is-active opensips
+curl -s 127.0.0.1:8888/metrics | grep -m3 '^opensips_'
+```
+
+The last line prints the first three series OpenSIPS publishes.
+
+## 4. Start Prometheus and Grafana
+
+Both run with the host's own network, so that Prometheus can reach OpenSIPS's
+endpoint on the loopback address. Choose a Grafana admin password and put it
+in `.env`, where Compose reads it:
+
+```bash
+# Run all of these, in order.
+sudo mkdir -p /opt/monitoring && sudo chown "$USER": /opt/monitoring
+cd /opt/monitoring
+echo "GF_PASS=$(openssl rand -hex 12)" > .env
+chmod 600 .env
+mkdir -p grafana/datasources
+cat > prometheus.yml <<'EOF'
+global:
+  scrape_interval: 5s
+
+scrape_configs:
+  - job_name: opensips
+    static_configs:
+      - targets: ["127.0.0.1:8888"]
+EOF
+cat > grafana/datasources/prometheus.yml <<'EOF'
+apiVersion: 1
+datasources:
+  - name: Prometheus
+    type: prometheus
+    uid: prometheus
+    url: http://127.0.0.1:9090
+    isDefault: true
+EOF
+cat > docker-compose.yml <<'EOF'
+services:
+  prometheus:
+    image: prom/prometheus:v3.15.0
+    network_mode: host
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=15d
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:13.2.2
+    network_mode: host
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GF_PASS}
+    volumes:
+      - ./grafana/datasources:/etc/grafana/provisioning/datasources:ro
+      - grafana-data:/var/lib/grafana
+    restart: unless-stopped
+
+volumes:
+  prometheus-data:
+  grafana-data:
+EOF
+docker compose up -d
+until curl -fs -o /dev/null localhost:9090/-/ready; do sleep 2; done
+until curl -fs -o /dev/null localhost:3000/api/health; do sleep 2; done
+echo ready
+```
+
+`--storage.tsdb.retention.time=15d` is how long Prometheus keeps the history.
+
+Check that Prometheus reaches OpenSIPS:
+
+```bash
+curl -s localhost:9090/api/v1/targets | python3 -c 'import sys,json; [print(t["labels"]["job"], t["health"]) for t in json.load(sys.stdin)["data"]["activeTargets"]]'
+```
+
+It prints `opensips up`. Open Grafana at `http://192.0.2.10:3000` and log in as
+`admin` with the password in `/opt/monitoring/.env`. The Prometheus data source
+is already there.
+
+## 5. Place a test call and watch the counter
+
+SIPp plays both ends: a callee on this machine, and a caller that dials through
+OpenSIPS. SIPp's built-in caller ignores the `Record-Route` header OpenSIPS
+adds, so its `BYE` would miss the proxy and draw `404 Not here`. The two `sed`
+lines make it honor the route set, the way a real phone does:
+
+```bash
+# Run all of these, in order.
+sudo apt-get install -y sip-tester
+mkdir -p ~/sipp && cd ~/sipp
+sipp -sd uac > uac_rr.xml
+sed -i 's|<recv response="200" rtd="true">|<recv response="200" rtd="true" rrs="true">|' uac_rr.xml
+sed -i -E 's#^( *)(ACK|BYE) sip:\[service\]@\[remote_ip\]:\[remote_port\] SIP/2.0#\1\2 [next_url] SIP/2.0\n\1[routes]#' uac_rr.xml
+sipp -sn uas -i 127.0.0.1 -p 5070 -m 1 -bg
+sipp -sf uac_rr.xml 192.0.2.10:5060 -i 192.0.2.10 -p 5080 -m 1 -d 1000 -timeout 20s
+```
+
+Prometheus scrapes every 5 seconds. Wait for one scrape, then ask it how many
+dialogs OpenSIPS has processed:
+
+```bash
+# Run all of these, in order.
+sleep 6
+curl -s localhost:9090/api/v1/query --data-urlencode 'query=opensips_processed_dialogs' \
+  | python3 -c 'import sys,json; print(json.load(sys.stdin)["data"]["result"][0]["value"][1])'
+```
+
+It prints 1, the test call.
+
+## 6. Operate it
+
+**Check health and read the logs.**
+
+```bash
+# Run all of these, in order.
+cd /opt/monitoring && docker compose ps
+docker compose logs --tail 20 prometheus
+systemctl is-active opensips
+```
+
+**Restart.** Prometheus misses the scrapes while it is down, and shows a gap.
+
+```bash
+# Run all of these, in order.
+cd /opt/monitoring && docker compose restart
+sudo systemctl restart opensips
+```
+
+A restart of OpenSIPS starts its counters again from zero.
+
+**Uninstall.** `docker compose down -v` removes the containers *and* their
+volumes, which is the stored history and Grafana's settings:
+
+```bash
+# Run all of these, in order.
+cd /opt/monitoring && docker compose down -v
+sudo systemctl disable --now opensips
+```
+
+## Put the parts on different machines
+
+- **Prometheus on its own machine.** OpenSIPS's endpoint has no
+  authentication, so keep it on an address only Prometheus can reach: set
+  `modparam("httpd", "ip", ...)` to an internal address, allow port 8888 from
+  the Prometheus machine only, and change the scrape target to that address.
+- **Several SIP servers.** Add each one to the `targets` list. Prometheus labels
+  every series with the target it came from.
+
+## When something does not work
+
+- **`curl 127.0.0.1:8888/metrics` prints no `opensips_` lines.** The
+  `statistics` parameter is missing. The `prometheus` module publishes nothing
+  until it names what to publish.
+- **OpenSIPS does not start: `failed to load module 'httpd.so'`.** It was not
+  built. Build with `include_modules="httpd"`, which needs `libmicrohttpd-dev`.
+- **The target shows `down`.** Check `curl 127.0.0.1:8888/metrics` on the
+  OpenSIPS machine, then that the target address in `prometheus.yml` matches.
+
+---
+
+<!-- source: docs/prometheus-sipnab.md -->
+
+# Add sipnab's metrics to Prometheus
+
+OpenSIPS's statistics say what the proxy did: calls routed, transactions,
+memory. sipnab's say what the calls themselves looked like on the wire: how
+many completed and failed, post-dial delay, and the quality of their audio. In
+the same Prometheus, the two sit side by side on one dashboard.
+
+This guide adds sipnab to the Prometheus and Grafana from
+[Add Prometheus and Grafana to an OpenSIPS voice stack](prometheus.md), and
+imports the dashboard that ships with sipnab. Every series sipnab publishes,
+and what it means, is in [Prometheus metrics](prometheus-metrics.md).
+
+## Tested on
+
+Every command on this page ran as written, in order, on 2026-09-26, with
+sipnab 0.5.192 from its release package, on the Debian 13 (kernel 6.12.63) and
+Ubuntu 24.04.5 (kernel 6.8.0) machines that
+[the Prometheus guide](prometheus.md) had set up. The examples use
+`192.0.2.10` as the machine's address.
+
+## 1. Install sipnab
+
+```bash
+# Run all of these, in order.
+V=$(curl -fsSL https://api.github.com/repos/NormB/sipnab/releases/latest \
+  | python3 -c 'import json,sys; print(json.load(sys.stdin)["tag_name"].lstrip("v"))')
+curl -fsSLO https://github.com/NormB/sipnab/releases/download/v$V/sipnab_${V}_amd64.deb
+curl -fsSL https://github.com/NormB/sipnab/releases/download/v$V/SHA256SUMS.txt \
+  | grep " sipnab_${V}_amd64.deb$" | sha256sum -c -
+sudo apt-get install -y ./sipnab_${V}_amd64.deb
+sipnab --version
+```
+
+## 2. Run sipnab with its metrics on a free port
+
+sipnab's package runs it under systemd as the `sipnab` user, with its metrics
+on `127.0.0.1:9090`. That is Prometheus's own port, so move sipnab's to
+`127.0.0.1:9091` in a drop-in.
+
+The call counts need only the SIP, which sipnab captures by default. The media
+series (MOS, jitter, loss) need the audio too: sipnab 0.5.192 and earlier
+capture it only when a capture filter names its ports, as the
+[rtpengine guide](rtpengine-sipnab.md#2-let-sipnab-see-the-media) does, and
+later versions capture it by default.
+
+```bash
+# Run all of these, in order.
+sudo mkdir -p /etc/systemd/system/sipnab.service.d
+sudo tee /etc/systemd/system/sipnab.service.d/metrics.conf >/dev/null <<'EOF'
+[Service]
+ExecStart=
+ExecStart=/usr/bin/sipnab -N -d any --no-cli-print --syslog --metrics 127.0.0.1:9091
+EOF
+sudo systemctl daemon-reload
+sudo systemctl enable --now sipnab
+systemctl is-active sipnab
+until curl -fs -o /dev/null 127.0.0.1:9091/metrics; do sleep 1; done
+curl -s 127.0.0.1:9091/metrics | grep -m3 '^sipnab_'
+```
+
+The empty `ExecStart=` line clears the package's command before the next line
+sets this one. If another guide's drop-in also sets `ExecStart`, systemd uses
+only the last one it reads, so put all the flags in one drop-in.
+
+## 3. Scrape sipnab
+
+Add sipnab to Prometheus's targets, and restart Prometheus so that it reads
+the change. The `until` line waits for Prometheus to scrape both targets once:
+
+```bash
+# Run all of these, in order.
+cd /opt/monitoring
+cat >> prometheus.yml <<'EOF'
+  - job_name: sipnab
+    static_configs:
+      - targets: ["127.0.0.1:9091"]
+EOF
+docker compose restart prometheus
+targets() { curl -s localhost:9090/api/v1/targets | python3 -c 'import sys,json; [print(t["labels"]["job"], t["health"]) for t in json.load(sys.stdin)["data"]["activeTargets"]]'; }
+until [ "$(targets 2>/dev/null | grep -c ' up$')" = 2 ]; do sleep 2; done
+curl -s localhost:9090/api/v1/targets | python3 -c 'import sys,json; [print(t["labels"]["job"], t["health"]) for t in json.load(sys.stdin)["data"]["activeTargets"]]'
+```
+
+It prints `opensips up` and `sipnab up`.
+
+## 4. Import sipnab's dashboard
+
+The dashboard ships in sipnab's repository as [`contrib/grafana/sipnab-dashboard.json`](https://github.com/NormB/sipnab/blob/main/contrib/grafana/sipnab-dashboard.json).
+It asks, on import, which Prometheus data source to use. Import it through
+Grafana's API, answering with the data source the Prometheus guide provisioned:
+
+```bash
+# Run all of these, in order.
+cd /opt/monitoring
+V=$(sipnab --version | head -1 | awk '{print $2}')
+curl -fsSL "https://raw.githubusercontent.com/NormB/sipnab/v$V/contrib/grafana/sipnab-dashboard.json" -o sipnab-dashboard.json
+python3 -c 'import json; d=json.load(open("sipnab-dashboard.json")); print(json.dumps({"dashboard": d, "overwrite": True, "inputs": [{"name": "DS_PROMETHEUS", "type": "datasource", "pluginId": "prometheus", "value": "prometheus"}]}))' > import.json
+curl -fs -u "admin:$(sed -n 's/^GF_PASS=//p' .env)" -H 'Content-Type: application/json' \
+  -d @import.json localhost:3000/api/dashboards/import | python3 -c 'import sys,json; print(json.load(sys.stdin)["importedUrl"])'
+rm import.json
+```
+
+The last line prints the dashboard's path. Open it under
+`http://192.0.2.10:3000`: the dashboard is **sipnab Overview**.
+
+## 5. Place a call and watch sipnab count it
+
+Place a test call as in
+[step 5 of the Prometheus guide](prometheus.md#5-place-a-test-call-and-watch-the-counter),
+then ask Prometheus how many calls sipnab saw complete:
+
+```bash
+# Run all of these, in order.
+cd ~/sipp
+sipp -sn uas -i 127.0.0.1 -p 5070 -m 1 -bg
+sipp -sf uac_rr.xml 192.0.2.10:5060 -i 192.0.2.10 -p 5080 -m 1 -d 1000 -timeout 20s
+sleep 8
+curl -s localhost:9090/api/v1/query --data-urlencode 'query=sum(sipnab_dialogs_total{state="completed"})' \
+  | python3 -c 'import sys,json; print(json.load(sys.stdin)["data"]["result"][0]["value"][1])'
+```
+
+It prints 1: sipnab saw the call from its `INVITE` to its `BYE`. OpenSIPS's
+own `opensips_processed_dialogs` counted the same call.
+
+## When something does not work
+
+- **`systemctl is-active sipnab` does not say `active`.** Read `journalctl -u
+  sipnab`. `Failed to bind metrics server on 127.0.0.1:9090: Address already in
+  use` means something else, here Prometheus, holds the port, and systemd keeps
+  restarting sipnab. Check the drop-in's `--metrics` port.
+- **The `sipnab` target is `down`.** Check `curl 127.0.0.1:9091/metrics` on
+  the machine, then the target in `/opt/monitoring/prometheus.yml`.
 
 ---
 

@@ -1198,6 +1198,8 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             "website/content/docs/rtpengine-relay.md",
             "docs/homer.md",
             "website/content/docs/homer.md",
+            "docs/prometheus.md",
+            "website/content/docs/prometheus.md",
         ],
     ),
     // useradd's, creating the system accounts the voice-stack guides run services as.
@@ -1212,6 +1214,8 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             "website/content/docs/rtpengine-relay.md",
             "docs/homer.md",
             "website/content/docs/homer.md",
+            "docs/prometheus.md",
+            "website/content/docs/prometheus.md",
         ],
     ),
     // useradd's, creating the system accounts the voice-stack guides run services as.
@@ -1226,6 +1230,8 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             "website/content/docs/rtpengine-relay.md",
             "docs/homer.md",
             "website/content/docs/homer.md",
+            "docs/prometheus.md",
+            "website/content/docs/prometheus.md",
         ],
     ),
     // useradd's, creating the system accounts the voice-stack guides run services as.
@@ -1247,6 +1253,10 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             "website/content/docs/rtpengine-relay.md",
             "docs/homer.md",
             "website/content/docs/homer.md",
+            "docs/prometheus.md",
+            "website/content/docs/prometheus.md",
+            "docs/prometheus-sipnab.md",
+            "website/content/docs/prometheus-sipnab.md",
         ],
     ),
     // tfps and tfps_ctl's (TFPS, the XDP blocker the TFPS guides install).
@@ -1270,6 +1280,8 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             "website/content/docs/rtpengine-relay.md",
             "docs/homer.md",
             "website/content/docs/homer.md",
+            "docs/prometheus.md",
+            "website/content/docs/prometheus.md",
         ],
     ),
     // apt-get's and dpkg's, installing the voice stack's build tools.
@@ -1280,6 +1292,8 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             "website/content/docs/vcon-server.md",
             "docs/homer.md",
             "website/content/docs/homer.md",
+            "docs/prometheus.md",
+            "website/content/docs/prometheus.md",
         ],
     ),
     // docker compose's and curl's, starting vcon-server and posting to it.
@@ -1300,6 +1314,8 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             "website/content/docs/vcon-server.md",
             "docs/homer.md",
             "website/content/docs/homer.md",
+            "docs/prometheus.md",
+            "website/content/docs/prometheus.md",
         ],
     ),
     // docker compose's and curl's, starting vcon-server and posting to it.
@@ -1360,6 +1376,21 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
     (
         "dbname",
         &["docs/homer.md", "website/content/docs/homer.md"],
+    ),
+    // curl's, POSTing a PromQL query to Prometheus's API in the Prometheus guides.
+    (
+        "data-urlencode",
+        &[
+            "docs/prometheus.md",
+            "website/content/docs/prometheus.md",
+            "docs/prometheus-sipnab.md",
+            "website/content/docs/prometheus-sipnab.md",
+        ],
+    ),
+    // Prometheus's own (--storage.tsdb.retention.time), in the Prometheus guide's compose file.
+    (
+        "storage",
+        &["docs/prometheus.md", "website/content/docs/prometheus.md"],
     ),
 ];
 
@@ -3719,7 +3750,9 @@ fn no_documentation_table_repeats_a_row() {
     // under docs/ and their two generated site pages; the four added files.
     // 241 -> 245: the two Homer guides (homer, homer-sipnab) under docs/ and
     // their two generated site pages.
-    const EXPECTED_MARKDOWN_FILES: usize = 245;
+    // 245 -> 249: the two Prometheus guides (prometheus, prometheus-sipnab)
+    // under docs/ and their two generated site pages.
+    const EXPECTED_MARKDOWN_FILES: usize = 249;
     /// How many tables this gate expects to walk.
     ///
     /// Named rather than written twice. The count and the failure message
@@ -4168,7 +4201,10 @@ fn no_documentation_table_repeats_a_row() {
     // docs/rtpengine-sipnab.md has none.
     // 998 -> 1002: docs/homer.md's two tables (the parts, and the versions it
     // was tested on) and the same two on its site page; homer-sipnab.md has none.
-    const EXPECTED_TABLES: usize = 1002;
+    // 1002 -> 1006: docs/prometheus.md's two tables (the parts, and the
+    // versions it was tested on) and the same two on its site page;
+    // prometheus-sipnab.md has none.
+    const EXPECTED_TABLES: usize = 1006;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

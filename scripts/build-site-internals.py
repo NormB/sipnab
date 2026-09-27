@@ -242,6 +242,8 @@ DOCS_TO_SITE = {
     "rtpengine-sipnab.md": "rtpengine-sipnab.md",
     "homer.md": "homer.md",
     "homer-sipnab.md": "homer-sipnab.md",
+    "prometheus.md": "prometheus.md",
+    "prometheus-sipnab.md": "prometheus-sipnab.md",
     "first-cli-triage.md": "first-cli-triage.md",
     "glossary.md": "glossary.md",
 }

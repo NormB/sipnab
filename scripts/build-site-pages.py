@@ -519,6 +519,24 @@ PAGES: list[tuple[str, str, str, str, int, str]] = [
         "Have OpenSIPS send its HEP to sipnab as well as to Homer, and have "
         "sipnab on another machine forward what it captures to Homer.",
     ),
+    (
+        "docs/prometheus.md",
+        "prometheus.md",
+        "Add Prometheus and Grafana to an OpenSIPS voice stack",
+        "Add Prometheus and Grafana to an OpenSIPS voice stack",
+        48,
+        "Run Prometheus and Grafana, have OpenSIPS publish its statistics, and "
+        "watch a test call in the numbers. No sipnab involved.",
+    ),
+    (
+        "docs/prometheus-sipnab.md",
+        "prometheus-sipnab.md",
+        "Add sipnab's metrics to Prometheus",
+        "Add sipnab's metrics to Prometheus",
+        49,
+        "Run sipnab as a service with its metrics beside Prometheus, scrape it, "
+        "and import the dashboard that ships with sipnab.",
+    ),
 ]
 
 BANNER = (

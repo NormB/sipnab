@@ -12,6 +12,15 @@ entry that carries them.
 
 ### Added
 
+- **Two voice-stack guides for Prometheus and Grafana.** [Add Prometheus and
+  Grafana to an OpenSIPS voice stack](https://sipnab.com/docs/prometheus/)
+  builds OpenSIPS with its `httpd` and `prometheus` modules, runs Prometheus and
+  Grafana, and watches a test call move OpenSIPS's dialog counter, with no
+  sipnab involved. [Add sipnab's metrics to
+  Prometheus](https://sipnab.com/docs/prometheus-sipnab/) runs sipnab as a
+  service with its metrics on a port beside Prometheus's, scrapes it, and
+  imports `contrib/grafana`'s dashboard. Every command ran as written on clean
+  Debian 13 and Ubuntu 24.04.
 - **Two voice-stack guides for Homer.** [Add Homer to an OpenSIPS voice
   stack](https://sipnab.com/docs/homer/) runs heplify-server, homer-app and
   PostgreSQL, has OpenSIPS send every call to Homer over HEP, and finds the

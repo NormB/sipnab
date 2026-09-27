@@ -49,6 +49,8 @@ This file indexes the documentation as plain text. `llms-full.txt` beside it car
 - [Let sipnab name rtpengine's media](https://sipnab.com/docs/rtpengine-sipnab/): Have sipnab name the media on an rtpengine relay, from the relay's mirrored control plane or by asking it, with the relay on the same machine as OpenSIPS or its own.
 - [Add Homer to an OpenSIPS voice stack](https://sipnab.com/docs/homer/): Run heplify-server, homer-app and PostgreSQL, have OpenSIPS send every call to Homer over HEP, and find the call. No sipnab involved.
 - [Connect sipnab to Homer](https://sipnab.com/docs/homer-sipnab/): Have OpenSIPS send its HEP to sipnab as well as to Homer, and have sipnab on another machine forward what it captures to Homer.
+- [Add Prometheus and Grafana to an OpenSIPS voice stack](https://sipnab.com/docs/prometheus/): Run Prometheus and Grafana, have OpenSIPS publish its statistics, and watch a test call in the numbers. No sipnab involved.
+- [Add sipnab's metrics to Prometheus](https://sipnab.com/docs/prometheus-sipnab/): Run sipnab as a service with its metrics beside Prometheus, scrape it, and import the dashboard that ships with sipnab.
 
 ## Internals
 
