@@ -296,8 +296,8 @@ These offer a copyleft option alongside permissive ones. sipnab elects the permi
 | regex-automata | 0.4.16 | MIT OR Apache-2.0 |
 | regex-syntax | 0.8.11 | MIT OR Apache-2.0 |
 | ring | 0.17.14 | Apache-2.0 AND ISC |
-| rmcp | 3.4.0 | Apache-2.0 |
-| rmcp-macros | 3.4.0 | Apache-2.0 |
+| rmcp | 3.4.1 | Apache-2.0 |
+| rmcp-macros | 3.4.1 | Apache-2.0 |
 | rsa | 0.9.10 | MIT OR Apache-2.0 |
 | rustc_version | 0.4.1 | MIT OR Apache-2.0 |
 | rustix | 1.1.4 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
@@ -353,9 +353,9 @@ These offer a copyleft option alongside permissive ones. sipnab elects the permi
 | termios | 0.3.3 | MIT |
 | termwiz | 0.23.3 | MIT |
 | thiserror | 1.0.69 | MIT OR Apache-2.0 |
-| thiserror | 2.0.20 | MIT OR Apache-2.0 |
+| thiserror | 2.0.21 | MIT OR Apache-2.0 |
 | thiserror-impl | 1.0.69 | MIT OR Apache-2.0 |
-| thiserror-impl | 2.0.20 | MIT OR Apache-2.0 |
+| thiserror-impl | 2.0.21 | MIT OR Apache-2.0 |
 | thread_local | 1.1.10 | MIT OR Apache-2.0 |
 | time | 0.3.47 | MIT OR Apache-2.0 |
 | time-core | 0.1.8 | MIT OR Apache-2.0 |
