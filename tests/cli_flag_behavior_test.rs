@@ -33,6 +33,104 @@ const FIXTURE_CALL_ID: &str = "test-call-1@192.0.2.1";
 ///
 /// # Side effects
 /// Spawns the compiled `sipnab` binary as a subprocess.
+/// The 127.0.0.1 UDP ports process `pid` itself holds.
+///
+/// Read from the kernel: the socket inodes behind the process's own file
+/// descriptors, matched against `/proc/net/udp`. The live HEP harnesses used
+/// to pick a port by binding 127.0.0.1:0 and letting go, start sipnab on it,
+/// and wait until "a socket" held it. Under the parallel suite another socket
+/// could take the port first; sipnab's bind then failed, the wait still
+/// passed on the other socket, and the test sent its call to a stranger and
+/// failed 30 s later saying the call was never read (PORT-RACE-FLAKE-1).
+/// Asking which port sipnab itself holds, after it bound 127.0.0.1:0, leaves
+/// nothing to race.
+#[cfg(target_os = "linux")]
+fn udp_ports_owned_by(pid: u32) -> Vec<u16> {
+    let inodes: Vec<String> = std::fs::read_dir(format!("/proc/{pid}/fd"))
+        .map(|dir| {
+            dir.filter_map(|e| std::fs::read_link(e.ok()?.path()).ok())
+                .filter_map(|l| {
+                    let l = l.to_string_lossy().into_owned();
+                    l.strip_prefix("socket:[")?
+                        .strip_suffix(']')
+                        .map(str::to_owned)
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let table = std::fs::read_to_string("/proc/net/udp").unwrap_or_default();
+    table
+        .lines()
+        .skip(1)
+        .filter_map(|line| {
+            let cols: Vec<&str> = line.split_whitespace().collect();
+            let (ip, port) = cols.get(1)?.split_once(':')?;
+            let inode = cols.get(9)?;
+            (ip == "0100007F" && inodes.iter().any(|i| i == inode))
+                .then(|| u16::from_str_radix(port, 16).ok())
+                .flatten()
+        })
+        .collect()
+}
+
+/// A socket this test process binds is found under this process's pid, and
+/// only there: the lookup goes through the process's own descriptors, so a
+/// socket another process holds on a port can never be mistaken for it.
+#[cfg(target_os = "linux")]
+#[test]
+fn udp_ports_owned_by_finds_this_process_socket_and_not_another() {
+    let mine = std::net::UdpSocket::bind("127.0.0.1:0").expect("bind");
+    let port = mine.local_addr().expect("local addr").port();
+    assert!(
+        udp_ports_owned_by(std::process::id()).contains(&port),
+        "this process's own socket on {port} was not found"
+    );
+    let mut other = std::process::Command::new("sleep")
+        .arg("30")
+        .spawn()
+        .expect("spawn a process with no sockets");
+    let found = udp_ports_owned_by(other.id());
+    other.kill().expect("kill");
+    let _ = other.wait();
+    assert!(
+        !found.contains(&port),
+        "a process that holds no socket was credited with this one's port {port}"
+    );
+}
+
+/// Wait until `child` holds its HEP listener's socket, and return its address.
+///
+/// The child was started with `--hep-listen 127.0.0.1:0`, so the kernel picked
+/// the port and only the child can hold it. Fails at once, with `stderr()`,
+/// if the child exits first; before, a listener that never bound left the
+/// harness sending its call into the void and failing 30 s later.
+#[cfg(all(feature = "hep", target_os = "linux"))]
+fn wait_for_own_udp_listener(
+    child: &mut std::process::Child,
+    stderr: &dyn Fn() -> String,
+) -> String {
+    let by = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        if let Some(status) = child.try_wait().expect("try_wait") {
+            panic!(
+                "sipnab exited ({status}) before its HEP listener bound:\n{}",
+                stderr()
+            );
+        }
+        match udp_ports_owned_by(child.id()).as_slice() {
+            [port] => return format!("127.0.0.1:{port}"),
+            [] => {}
+            many => panic!("sipnab holds {many:?} on 127.0.0.1; which one is the HEP listener?"),
+        }
+        assert!(
+            std::time::Instant::now() < by,
+            "the HEP listener never bound within 30 s:\n{}",
+            stderr()
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
 fn run(args: &[&str]) -> String {
     let (stdout, stderr, code) = run_support::run(args, Some("off"));
     assert!(code == Some(0), "sipnab {args:?} failed: {stderr}");
@@ -691,32 +789,13 @@ fn a_hep_carried_register_flood_is_not_written_to_the_jail_log() {
         .flat_map(|i| [(register(i), SBC, REGISTRAR), (refusal(i), REGISTRAR, SBC)])
         .collect();
 
-    /// Bind an ephemeral UDP port and release it, so the listener can take it.
-    fn free_udp_port() -> u16 {
-        let s = std::net::UdpSocket::bind("127.0.0.1:0").expect("bind an ephemeral port");
-        let p = s.local_addr().expect("read it back").port();
-        drop(s);
-        p
-    }
-
-    /// Whether a UDP socket is bound to 127.0.0.1:`port`, read from the
-    /// kernel's own table rather than inferred from a log line.
-    fn udp_port_bound(port: u16) -> bool {
-        let needle = format!("0100007F:{port:04X}");
-        std::fs::read_to_string("/proc/net/udp")
-            .map(|t| t.lines().any(|l| l.contains(&needle)))
-            .unwrap_or(false)
-    }
-
     // Run the listener, deliver `exchange` to it as HEP, stop it, and return
     // (stdout, stderr).
     let listen = |extra: &[&str]| -> (String, String) {
-        let port = free_udp_port();
-        let bind = format!("127.0.0.1:{port}");
         let mut args = vec![
             "-N",
             "--hep-listen",
-            &bind,
+            "127.0.0.1:0",
             "--hep-parse",
             "--reg-flood",
             "--reg-flood-threshold",
@@ -734,14 +813,9 @@ fn a_hep_carried_register_flood_is_not_written_to_the_jail_log() {
             .spawn()
             .expect("spawn sipnab");
 
-        let ready_by = std::time::Instant::now() + std::time::Duration::from_secs(30);
-        while !udp_port_bound(port) {
-            assert!(
-                std::time::Instant::now() < ready_by,
-                "the HEP listener never bound {bind}"
-            );
-            std::thread::sleep(std::time::Duration::from_millis(20));
-        }
+        let bind = wait_for_own_udp_listener(&mut child, &|| {
+            "(stderr is read when the run ends)".to_string()
+        });
 
         let sock = std::net::UdpSocket::bind("127.0.0.1:0").expect("sender socket");
         for (sip, src, dst) in &exchange {
@@ -985,16 +1059,6 @@ fn a_live_vcon_export_writes_while_running_and_nothing_on_a_stop() {
     const SECOND: &str = "live-vcon-second@10.1.0.1";
     let call = live_hep_call;
     let endpoint = live_hep_endpoint;
-    let port = {
-        let s = std::net::UdpSocket::bind("127.0.0.1:0").expect("bind an ephemeral port");
-        s.local_addr().expect("read it back").port()
-    };
-    let udp_port_bound = |port: u16| {
-        let needle = format!("0100007F:{port:04X}");
-        std::fs::read_to_string("/proc/net/udp")
-            .map(|t| t.lines().any(|l| l.contains(&needle)))
-            .unwrap_or(false)
-    };
     // Every container in the spool, as text. A name still being written is
     // a temporary the writer renames into place, so only parseable JSON counts.
     let containers = |dir: &std::path::Path| -> Vec<String> {
@@ -1009,13 +1073,12 @@ fn a_live_vcon_export_writes_while_running_and_nothing_on_a_stop() {
     };
 
     let spool = tempfile::tempdir().expect("tempdir");
-    let bind = format!("127.0.0.1:{port}");
     let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_sipnab"))
         .current_dir(env!("CARGO_MANIFEST_DIR"))
         .args([
             "-N",
             "--hep-listen",
-            &bind,
+            "127.0.0.1:0",
             "--hep-parse",
             "--export-vcon-when",
             "state == 'Completed'",
@@ -1048,15 +1111,9 @@ fn a_live_vcon_export_writes_while_running_and_nothing_on_a_stop() {
     let (stderr, err_reader) = drain(Box::new(child.stderr.take().expect("stderr piped")));
     let lines_out = || stdout.lock().expect("stdout buffer").lines().count();
 
-    let ready_by = std::time::Instant::now() + std::time::Duration::from_secs(30);
-    while !udp_port_bound(port) {
-        assert!(
-            std::time::Instant::now() < ready_by,
-            "the HEP listener never bound {bind}:\n{}",
-            stderr.lock().expect("stderr buffer")
-        );
-        std::thread::sleep(std::time::Duration::from_millis(20));
-    }
+    let bind = wait_for_own_udp_listener(&mut child, &|| {
+        stderr.lock().expect("stderr buffer").clone()
+    });
     let sock = std::net::UdpSocket::bind("127.0.0.1:0").expect("sender socket");
     let deliver = |call_id: &str| {
         for (sip, src, dst) in call(call_id) {
@@ -1160,23 +1217,12 @@ fn run_live_single_vcon_export(
     use sipnab::capture::hep::{HepProtocol, build_hep_v3};
     use std::io::BufRead;
 
-    let port = {
-        let s = std::net::UdpSocket::bind("127.0.0.1:0").expect("bind an ephemeral port");
-        s.local_addr().expect("read it back").port()
-    };
-    let udp_port_bound = |port: u16| {
-        let needle = format!("0100007F:{port:04X}");
-        std::fs::read_to_string("/proc/net/udp")
-            .map(|t| t.lines().any(|l| l.contains(&needle)))
-            .unwrap_or(false)
-    };
-    let bind = format!("127.0.0.1:{port}");
     let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_sipnab"))
         .current_dir(env!("CARGO_MANIFEST_DIR"))
         .args([
             "-N",
             "--hep-listen",
-            &bind,
+            "127.0.0.1:0",
             "--hep-parse",
             "--export-vcon",
             call_id,
@@ -1205,15 +1251,9 @@ fn run_live_single_vcon_export(
     let (stdout, out_reader) = drain(Box::new(child.stdout.take().expect("stdout piped")));
     let (stderr, err_reader) = drain(Box::new(child.stderr.take().expect("stderr piped")));
 
-    let ready_by = std::time::Instant::now() + std::time::Duration::from_secs(30);
-    while !udp_port_bound(port) {
-        assert!(
-            std::time::Instant::now() < ready_by,
-            "the HEP listener never bound {bind}:\n{}",
-            stderr.lock().expect("stderr buffer")
-        );
-        std::thread::sleep(std::time::Duration::from_millis(20));
-    }
+    let bind = wait_for_own_udp_listener(&mut child, &|| {
+        stderr.lock().expect("stderr buffer").clone()
+    });
     let sock = std::net::UdpSocket::bind("127.0.0.1:0").expect("sender socket");
     for (sip, src, dst) in live_hep_call(call_id) {
         let hep = build_hep_v3(
@@ -1259,10 +1299,16 @@ fn run_live_single_vcon_export(
     } else {
         while stdout.lock().expect("stdout buffer").lines().count() < 7 {
             assert!(
+                child.try_wait().expect("try_wait").is_none(),
+                "sipnab exited before reading the call:\n{}",
+                stderr.lock().expect("stderr buffer")
+            );
+            assert!(
                 std::time::Instant::now() < by,
                 "the call was never read, so the stop below would prove \
-                 nothing:\n{}",
-                stdout.lock().expect("stdout buffer")
+                 nothing:\nstdout:\n{}\nstderr:\n{}",
+                stdout.lock().expect("stdout buffer"),
+                stderr.lock().expect("stderr buffer")
             );
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
